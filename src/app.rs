@@ -1,9 +1,11 @@
 use egui::{Align, Layout, RichText, WidgetText};
 use egui_extras::RetainedImage;
-use nostr_rust::events::Event;
+//use nostr_rust::events::Event;
 use poll_promise::Promise;
 use std::borrow::{Borrow, Cow};
 use std::collections::HashMap;
+
+use crate::Event;
 
 type ImageCache = HashMap<String, Promise<ehttp::Result<RetainedImage>>>;
 
@@ -57,7 +59,7 @@ impl Damus {
 fn parse_response(response: ehttp::Response) -> Result<RetainedImage, String> {
     let content_type = response.content_type().unwrap_or_default();
 
-    if content_type.starts_with("image/svg+xml") {
+    if content_type.starts_with("image/svg") {
         RetainedImage::from_svg_bytes(&response.url, &response.bytes)
     } else if content_type.starts_with("image/") {
         RetainedImage::from_image_bytes(&response.url, &response.bytes)
@@ -99,29 +101,46 @@ fn render_pfp(ctx: &egui::Context, img_cache: &mut ImageCache, ui: &mut egui::Ui
     }
 }
 
-fn render_event(ctx: &egui::Context, img_cache: &mut ImageCache, ui: &mut egui::Ui, ev: &Event) {
-    render_pfp(
-        ctx,
-        img_cache,
-        ui,
-        //"https://damus.io/img/damus.svg".into(),
-        "http://cdn.jb55.com/img/red-me.jpg".into(),
-    );
-    ui.label(&ev.content);
+fn render_username(ui: &mut egui::Ui, pk: &str) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        ui.label(&pk[0..8]);
+        ui.label(":");
+        ui.label(&pk[64 - 8..]);
+    });
 }
 
-fn render_events(ctx: &egui::Context, app: &mut Damus, ui: &mut egui::Ui) {
-    for ev in &app.events {
-        ui.spacing_mut().item_spacing.y = 10.0;
-        render_event(ctx, &mut app.img_cache, ui, ev);
-    }
+fn render_event(ctx: &egui::Context, img_cache: &mut ImageCache, ui: &mut egui::Ui, ev: &Event) {
+    ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
+        let damus_pic = "https://damus.io/img/damus.svg".into();
+        let jb55_pic = "http://cdn.jb55.com/img/red-me.jpg".into();
+        let pic =
+            if ev.pub_key == "32e1827635450ebb3c5a7d12c1f8e7b2b514439ac10a67eef3d9fd9c5c68e245" {
+                jb55_pic
+            } else {
+                damus_pic
+            };
+
+        render_pfp(ctx, img_cache, ui, pic);
+
+        ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+            render_username(ui, &ev.pub_key);
+
+            ui.label(&ev.content);
+        })
+    });
 }
 
 fn timeline_view(ctx: &egui::Context, app: &mut Damus, ui: &mut egui::Ui) {
+    //let row_height = 100_f32;
+    //let total_rows = app.events.len();
     ui.heading("Timeline");
 
-    egui::ScrollArea::vertical().show(ui, |ui| {
-        render_events(ctx, app, ui);
+    egui::ScrollArea::both().show(ui, |ui| {
+        for ev in &app.events {
+            ui.separator();
+            render_event(ctx, &mut app.img_cache, ui, ev);
+        }
     });
 
     /*
@@ -159,12 +178,8 @@ fn render_damus(ctx: &egui::Context, _frame: &mut eframe::Frame, app: &mut Damus
     egui::CentralPanel::default().show(ctx, |ui| {
         // The central panel the region left after adding TopPanel's and SidePanel's
 
-        ui.heading("eframe template");
-        ui.hyperlink("https://github.com/emilk/eframe_template");
-        ui.add(egui::github_link_file!(
-            "https://github.com/emilk/eframe_template/blob/master/",
-            "Source code."
-        ));
+        ui.heading("Damus Desktop");
+        ui.hyperlink("https://damus.io");
         egui::warn_if_debug_build(ui);
     });
 }
@@ -189,17 +204,30 @@ impl eframe::App for Damus {
             created_at: 1667781968,
             kind: 1,
             tags: vec![],
-            content: "yello\nthere".to_string(),
+            content: "yello\nthere\nbeep\nboop\nyoink".to_string(),
+            sig: "af02c971015995f79e07fa98aaf98adeeb6a56d0005e451ee4e78844cff712a6bc0f2109f72a878975f162dcefde4173b65ebd4c3d3ab3b520a9dcac6acf092d".to_string(),
+        };
+
+        let test_event2 = Event {
+            id: "6938e3cd841f3111dbdbd909f87fd52c3d1f1e4a07fd121d1243196e532811cb".to_string(),
+            pub_key: "32e1827635450ebb3c5a7d12c1f8e7b2b514439ac10a67eef3d9fd9c5c68e245".to_string(),
+            created_at: 1667781968,
+            kind: 1,
+            tags: vec![],
+            content: "yo yo\nwhats up\nnotmuch".to_string(),
             sig: "af02c971015995f79e07fa98aaf98adeeb6a56d0005e451ee4e78844cff712a6bc0f2109f72a878975f162dcefde4173b65ebd4c3d3ab3b520a9dcac6acf092d".to_string(),
         };
 
         if self.events.len() == 0 {
             self.events.push(test_event.clone());
-            println!("{}", &self.events[0].content);
+            self.events.push(test_event2.clone());
             self.events.push(test_event.clone());
-            println!("{}", &self.events[1].content);
+            self.events.push(test_event2.clone());
             self.events.push(test_event.clone());
-            println!("{}", &self.events[2].content);
+            self.events.push(test_event2.clone());
+            self.events.push(test_event.clone());
+            self.events.push(test_event2.clone());
+            self.events.push(test_event.clone());
         }
 
         render_damus(ctx, _frame, self);

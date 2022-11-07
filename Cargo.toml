@@ -12,11 +12,13 @@ rust-version = "1.60"
 egui = "0.19.0"
 eframe = { version = "0.19.0", features = ["persistence"] }
 serde = { version = "1", features = ["derive"] } # You only need this if you want app persistence
-nostr_rust = { git = "git://jb55.com/nostr_rust", rev = "ccf7e521fe3bb9ca8f86516aef2c1f71db0213ed" }
+#nostr_rust = { git = "git://jb55.com/nostr_rust", rev = "ccf7e521fe3bb9ca8f86516aef2c1f71db0213ed" }
 ehttp = "0.2.0"
 image = { version = "0.24", features = ["jpeg", "png", "webp"] }
 egui_extras = { version = "0.19.0", features = ["image", "svg"] }
 poll-promise = "0.2.0"
+serde_json = { version = "1", default-features = false, features = ["std"] }
+serde_derive = "1"
 
 # native:
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
