@@ -1,2 +1,3 @@
 [build]
-filehash = false
+filehash = true
+public_url = "/webv3/"

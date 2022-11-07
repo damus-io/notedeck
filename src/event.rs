@@ -1,5 +1,4 @@
 use serde_derive::{Deserialize, Serialize};
-use serde_json::json;
 
 /// Event is the struct used to represent a Nostr event
 #[derive(Serialize, Deserialize, Debug, Clone)]
