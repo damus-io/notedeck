@@ -8,7 +8,7 @@ use ::egui::FontDefinitions;
 use chrono::Timelike;
 use egui_wgpu_backend::{RenderPass, ScreenDescriptor};
 use egui_winit_platform::{Platform, PlatformDescriptor};
-use log::{error, warn};
+use log::{error, info, warn};
 use std::iter;
 use std::time::Instant;
 use wgpu::CompositeAlphaMode;
@@ -65,6 +65,7 @@ fn android_main(app: winit::platform::android::activity::AndroidApp) {
         .build();
     main(event_loop);
 }
+
 pub fn main(mut event_loop: EventLoop<WinitEvent>) {
     //'Cannot get the native window, it's null and will always be null before Event::Resumed and after Event::Suspended. Make sure you only call this function between those events.', ..../winit-c2fdb27092aba5a7/418cc44/src/platform_impl/android/mod.rs:1028:13
     warn!("Winit build window at {} line {}", file!(), line!());

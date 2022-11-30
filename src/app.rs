@@ -5,6 +5,7 @@ use egui_extras::RetainedImage;
 use poll_promise::Promise;
 //use std::borrow::{Borrow, Cow};
 use egui::Context;
+use log::error;
 use std::collections::HashMap;
 use std::hash::Hash;
 use tracing::debug;
@@ -134,7 +135,8 @@ fn render_pfp<'a>(ui: &mut egui::Ui, img_cache: &mut ImageCache<'a>, pk: &str, u
         None => {
             ui.spinner(); // still loading
         }
-        Some(Err(_err)) => {
+        Some(Err(err)) => {
+            error!("Initial image load failed: {}", err);
             let failed_key = UrlKey::Failed(&url);
             let m_failed_promise = img_cache.get_mut(&failed_key);
             if m_failed_promise.is_none() {
@@ -146,7 +148,8 @@ fn render_pfp<'a>(ui: &mut egui::Ui, img_cache: &mut ImageCache<'a>, pk: &str, u
                 None => {
                     ui.spinner(); // still loading
                 }
-                Some(Err(_err)) => {
+                Some(Err(e)) => {
+                    error!("Image load error: {}", e);
                     ui.label("❌");
                 }
                 Some(Ok(img)) => {
@@ -176,7 +179,9 @@ fn render_username(ui: &mut egui::Ui, pk: &str) {
 fn render_event(ui: &mut egui::Ui, img_cache: &mut ImageCache<'_>, ev: &Event) {
     ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
         let damus_pic = "https://damus.io/img/damus.svg".into();
-        let jb55_pic = "https://damus.io/img/red-me.jpg".into();
+        //let damus_pic = "https://192.168.87.26/img/damus.svg".into();
+        let jb55_pic = "https://cdn.jb55.com/img/red-me.jpg".into();
+        //let jb55_pic = "http://192.168.87.26/img/red-me.jpg".into();
         let pic =
             if ev.pub_key == "32e1827635450ebb3c5a7d12c1f8e7b2b514439ac10a67eef3d9fd9c5c68e245" {
                 jb55_pic
