@@ -3,7 +3,7 @@ name = "damus"
 version = "0.1.0"
 authors = ["William Casarin <jb55@jb55.com>"]
 edition = "2021"
-rust-version = "1.60"
+#rust-version = "1.60"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -15,7 +15,7 @@ chrono = "0.4"
 egui = "0.19.0"
 egui_extras = { version = "0.19.0", features = ["image", "svg"] }
 egui_wgpu_backend = "0.20.0"
-egui-winit = "0.19.0"
+#egui-winit = "0.19.0"
 egui_winit_platform = {git = "https://github.com/inferrna/egui_winit_platform.git"}
 ehttp = "0.2.0"
 epi = "0.17.0"
@@ -32,6 +32,8 @@ sha2 = "0.10.6"
 tracing = "0.1.37"
 tracing-subscriber = "0.3"
 wgpu = "0.14.0"
+egui_demo_lib = "0.19"
+
 #winit = "0.27.1"
 
 [target.'cfg(debug_assertions)'.dependencies]
@@ -56,7 +58,7 @@ tracing-wasm = "0.2"
 #winit = { git="https://github.com/rust-windowing/winit.git", default-features = false, features = ["android-native-activity"] }
 
 [package.metadata.android]
-package = "com.damus"
+#package = "com.damus"
 apk_name = "damus"
 #assets = "assets"
 
@@ -70,13 +72,13 @@ name = "android.permission.WRITE_EXTERNAL_STORAGE"
 max_sdk_version = 18
 
 # See https://developer.android.com/guide/topics/manifest/application-element
-[package.metadata.android.application]
-label = "Damus"
+#[package.metadata.android.application]
+#label = "Damus"
 
 # See https://developer.android.com/guide/topics/manifest/application-element#debug
 #
 # Defaults to false.
-debuggable = false
+#debuggable = false
 
 # See https://developer.android.com/guide/topics/manifest/application-element#theme
 #

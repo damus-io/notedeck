@@ -225,8 +225,9 @@ pub fn run_evloop(mut event_loop: EventLoop<Event>) {
 
     warn!("DemoWindows default at {} line {}", file!(), line!());
     // Display the demo application that ships with egui.
-    let mut app = Damus::new();
-    app.add_test_events();
+    let mut app = egui_demo_lib::DemoWindows::default();
+    //let mut app = Damus::new();
+    //app.add_test_events();
 
     let start_time = Instant::now();
 
