@@ -2,3 +2,6 @@
 .buildcmd
 /target
 /dist
+.direnv/
+*.patch
+*.txt

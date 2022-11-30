@@ -319,18 +319,18 @@ fn add_test_events(damus: &mut Damus<'_>) {
     }
 }
 
-//impl eframe::App for Damus<'_> {
-//    /// Called by the frame work to save state before shutdown.
-//    fn save(&mut self, storage: &mut dyn eframe::Storage) {
-//        eframe::set_value(storage, eframe::APP_KEY, self);
-//    }
-//
-//    /// Called each time the UI needs repainting, which may be many times per second.
-//    /// Put your widgets into a `SidePanel`, `TopPanel`, `CentralPanel`, `Window` or `Area`.
-//    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-//        update_damus(ctx)
-//    }
-//}
+impl eframe::App for Damus<'_> {
+    /// Called by the frame work to save state before shutdown.
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        //eframe::set_value(storage, eframe::APP_KEY, self);
+    }
+
+    /// Called each time the UI needs repainting, which may be many times per second.
+    /// Put your widgets into a `SidePanel`, `TopPanel`, `CentralPanel`, `Window` or `Area`.
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.ui(ctx);
+    }
+}
 
 pub const LOREM_IPSUM: &str = "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.";
 
