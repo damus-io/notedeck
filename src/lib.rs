@@ -84,7 +84,7 @@ pub fn main(mut event_loop: EventLoop<WinitEvent>) {
         });
 
     warn!("WGPU new instance at {} line {}", file!(), line!());
-    let mut instance = wgpu::Instance::new(wgpu::Backends::PRIMARY);
+    let instance = wgpu::Instance::new(wgpu::Backends::PRIMARY);
 
     let mut size = window.inner_size();
     let outer_size = window.outer_size();
@@ -101,6 +101,8 @@ pub fn main(mut event_loop: EventLoop<WinitEvent>) {
         font_definitions: FontDefinitions::default(),
         style: Default::default(),
     });
+
+    let mut recreate_surface = false;
 
     #[cfg(target_os = "android")]
     let mut platform = {
@@ -121,8 +123,9 @@ pub fn main(mut event_loop: EventLoop<WinitEvent>) {
                     StartCause::Init => {}
                 },
                 WindowEvent {
-                    window_id,
+                    //window_id,
                     ref event,
+                    ..
                 } => {
                     if let winit::event::WindowEvent::Resized(r) = event {
                         size = *r;
@@ -131,6 +134,7 @@ pub fn main(mut event_loop: EventLoop<WinitEvent>) {
                 DeviceEvent { .. } => {}
                 UserEvent(_) => {}
                 Suspended => {
+                    info!("Suspended");
                     control_flow.set_poll();
                 }
                 Resumed => {
@@ -153,10 +157,13 @@ pub fn main(mut event_loop: EventLoop<WinitEvent>) {
                             line!()
                         );
                     }
+
+                    info!("Resumed");
+                    recreate_surface = true;
                     control_flow.set_exit();
                 }
                 MainEventsCleared => {}
-                RedrawRequested(rdr) => {}
+                RedrawRequested(_rdr) => {}
                 RedrawEventsCleared => {}
                 LoopDestroyed => {}
             };
@@ -228,8 +235,6 @@ pub fn main(mut event_loop: EventLoop<WinitEvent>) {
 
     let start_time = Instant::now();
 
-    let mut in_bad_state = false;
-
     warn!("Enter the loop");
     event_loop.run(move |event, _, control_flow| {
         // Pass the winit events to the platform integration.
@@ -245,14 +250,14 @@ pub fn main(mut event_loop: EventLoop<WinitEvent>) {
                         // This error occurs when the app is minimized on Windows.
                         // Silently return here to prevent spamming the console with:
                         error!("The underlying surface has changed, and therefore the swap chain must be updated");
-                        in_bad_state = true;
+                        recreate_surface = true;
                         return;
                     }
                     Err(wgpu::SurfaceError::Lost) => {
                         // This error occurs when the app is minimized on Windows.
                         // Silently return here to prevent spamming the console with:
                         error!("LOST surface, drop frame. Originally: \"The swap chain has been lost and needs to be recreated\"");
-                        in_bad_state = true;
+                        recreate_surface = true;
                         return;
                     }
                     Err(e) => {
@@ -337,16 +342,19 @@ pub fn main(mut event_loop: EventLoop<WinitEvent>) {
                 _ => {}
             },
             Resumed => {
-                if in_bad_state {
+                info!("Damus Resumed (recreate surface? {})", recreate_surface);
+                if recreate_surface {
                     //https://github.com/gfx-rs/wgpu/issues/2302
                     warn!("WGPU new surface at {} line {}", file!(), line!());
                     surface = unsafe { instance.create_surface(&window) };
                     warn!("surface configure at {} line {}", file!(), line!());
                     surface.configure(&device, &surface_config);
-                    in_bad_state = false;
+                    recreate_surface = false;
                 }
             },
-            Suspended => (),
+            Suspended => {
+                recreate_surface = true;
+            },
             _ => (),
         }
     });
