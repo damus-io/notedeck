@@ -1,20 +1,33 @@
-//use egui::{Align, Layout, RichText, WidgetText};
+//use egui::TextureFilter;
 use egui_extras::RetainedImage;
+
 //use nostr_rust::events::Event;
 use poll_promise::Promise;
 //use std::borrow::{Borrow, Cow};
+use egui::Context;
 use std::collections::HashMap;
+use std::hash::Hash;
+use tracing::debug;
 
 use crate::Event;
 
-type ImageCache = HashMap<String, Promise<ehttp::Result<RetainedImage>>>;
+#[derive(Hash, Eq, PartialEq, Clone, Debug)]
+enum UrlKey<'a> {
+    Orig(&'a str),
+    Failed(&'a str),
+}
+
+type ImageCache<'a> = HashMap<UrlKey<'a>, Promise<ehttp::Result<RetainedImage>>>;
 
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
 #[derive(serde::Deserialize, serde::Serialize)]
-#[serde(default)] // if we add new fields, give them default values when deserializing old state
-pub struct Damus {
+#[serde(default)] // if we add new fields, give them default values when
+                  // deserializing old state
+pub struct Damus<'a> {
     // Example stuff:
     label: String,
+
+    composing: bool,
 
     n_panels: u32,
 
@@ -22,18 +35,19 @@ pub struct Damus {
     events: Vec<Event>,
 
     #[serde(skip)]
-    img_cache: ImageCache,
+    img_cache: ImageCache<'a>,
 
     // this how you opt-out of serialization of a member
     #[serde(skip)]
     value: f32,
 }
 
-impl Default for Damus {
+impl Default for Damus<'_> {
     fn default() -> Self {
         Self {
             // Example stuff:
             label: "Hello World!".to_owned(),
+            composing: false,
             events: vec![],
             img_cache: HashMap::new(),
             value: 2.7,
@@ -42,17 +56,34 @@ impl Default for Damus {
     }
 }
 
-impl Damus {
+pub fn is_mobile(ctx: &egui::Context) -> bool {
+    let screen_size = ctx.input().screen_rect().size();
+    screen_size.x < 550.0
+}
+
+impl Damus<'_> {
+    pub fn ui(&mut self, ctx: &Context) {
+        if is_mobile(ctx) {
+            render_damus_mobile(ctx, self)
+        } else {
+            render_damus_desktop(ctx, self)
+        }
+    }
+
+    pub fn add_test_events(&mut self) {
+        add_test_events(self);
+    }
+
     /// Called once before the first frame.
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new() -> Self {
         // This is also where you can customized the look at feel of egui using
         // `cc.egui_ctx.set_visuals` and `cc.egui_ctx.set_fonts`.
 
         // Load previous app state (if any).
         // Note that you must enable the `persistence` feature for this to work.
-        if let Some(storage) = cc.storage {
-            return eframe::get_value(storage, eframe::APP_KEY).unwrap_or_default();
-        }
+        //if let Some(storage) = cc.storage {
+        //return eframe::get_value(storage, eframe::APP_KEY).unwrap_or_default();
+        //}
 
         Default::default()
     }
@@ -80,28 +111,58 @@ fn fetch_img(ctx: &egui::Context, url: &str) -> Promise<ehttp::Result<RetainedIm
     let ctx = ctx.clone();
     ehttp::fetch(request, move |response| {
         let image = response.and_then(parse_response);
-        sender.send(image); // send the results back to the UI thread. ctx.request_repaint();
+        sender.send(image); // send the results back to the UI thread.
+        ctx.request_repaint();
     });
     promise
 }
 
-fn render_pfp(ui: &mut egui::Ui, img_cache: &mut ImageCache, url: String) {
-    let m_cached_promise = img_cache.get_mut(&url);
+fn robohash(hash: &str) -> String {
+    return format!("https://robohash.org/{}", hash);
+}
+
+fn render_pfp<'a>(ui: &mut egui::Ui, img_cache: &mut ImageCache<'a>, pk: &str, url: &'a str) {
+    let urlkey = UrlKey::Orig(url);
+    let m_cached_promise = img_cache.get(&urlkey);
     if m_cached_promise.is_none() {
-        img_cache.insert(url.clone(), fetch_img(ui.ctx(), &url));
+        debug!("urlkey: {:?}", &urlkey);
+        img_cache.insert(UrlKey::Orig(url), fetch_img(ui.ctx(), &url));
     }
 
-    match img_cache[&url].ready() {
+    let pfp_size = 50.0;
+
+    match img_cache[&urlkey].ready() {
         None => {
             ui.spinner(); // still loading
         }
-        Some(Err(err)) => {
-            ui.colored_label(ui.visuals().error_fg_color, err); // something went wrong
+        Some(Err(_err)) => {
+            let failed_key = UrlKey::Failed(&url);
+            let m_failed_promise = img_cache.get_mut(&failed_key);
+            if m_failed_promise.is_none() {
+                debug!("failed key: {:?}", &failed_key);
+                img_cache.insert(UrlKey::Failed(url), fetch_img(ui.ctx(), &robohash(pk)));
+            }
+
+            match img_cache[&failed_key].ready() {
+                None => {
+                    ui.spinner(); // still loading
+                }
+                Some(Err(_err)) => {
+                    ui.label("❌");
+                }
+                Some(Ok(img)) => {
+                    pfp_image(ui, img, pfp_size);
+                }
+            }
         }
-        Some(Ok(image)) => {
-            image.show_max_size(ui, egui::vec2(64.0, 64.0));
+        Some(Ok(img)) => {
+            pfp_image(ui, img, pfp_size);
         }
     }
+}
+
+fn pfp_image(ui: &mut egui::Ui, img: &RetainedImage, size: f32) -> egui::Response {
+    img.show_max_size(ui, egui::vec2(size, size))
 }
 
 fn render_username(ui: &mut egui::Ui, pk: &str) {
@@ -113,7 +174,7 @@ fn render_username(ui: &mut egui::Ui, pk: &str) {
     });
 }
 
-fn render_event(ui: &mut egui::Ui, img_cache: &mut ImageCache, ev: &Event) {
+fn render_event(ui: &mut egui::Ui, img_cache: &mut ImageCache<'_>, ev: &Event) {
     ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
         let damus_pic = "https://damus.io/img/damus.svg".into();
         let jb55_pic = "https://damus.io/img/red-me.jpg".into();
@@ -124,7 +185,7 @@ fn render_event(ui: &mut egui::Ui, img_cache: &mut ImageCache, ev: &Event) {
                 damus_pic
             };
 
-        render_pfp(ui, img_cache, pic);
+        render_pfp(ui, img_cache, &ev.pub_key, pic);
 
         ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
             render_username(ui, &ev.pub_key);
@@ -134,7 +195,7 @@ fn render_event(ui: &mut egui::Ui, img_cache: &mut ImageCache, ev: &Event) {
     });
 }
 
-fn timeline_view(ui: &mut egui::Ui, app: &mut Damus) {
+fn timeline_view(ui: &mut egui::Ui, app: &mut Damus<'_>) {
     ui.heading("Timeline");
 
     egui::ScrollArea::vertical()
@@ -147,7 +208,7 @@ fn timeline_view(ui: &mut egui::Ui, app: &mut Damus) {
         });
 }
 
-fn render_damus(ctx: &egui::Context, _frame: &mut eframe::Frame, app: &mut Damus) {
+fn render_panel(ctx: &egui::Context, app: &mut Damus<'_>) {
     egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
         ui.horizontal_wrapped(|ui| {
             ui.visuals_mut().button_frame = false;
@@ -172,6 +233,17 @@ fn render_damus(ctx: &egui::Context, _frame: &mut eframe::Frame, app: &mut Damus
             }
         });
     });
+}
+
+fn render_damus_mobile(ctx: &egui::Context, app: &mut Damus<'_>) {
+    let panel_width = ctx.input().screen_rect.width();
+    egui::CentralPanel::default().show(ctx, |ui| {
+        timeline_panel(ui, app, panel_width, 0);
+    });
+}
+
+fn render_damus_desktop(ctx: &egui::Context, app: &mut Damus<'_>) {
+    render_panel(ctx, app);
 
     let screen_size = ctx.input().screen_rect.width();
     let calc_panel_width = (screen_size / app.n_panels as f32) - 30.0;
@@ -194,7 +266,7 @@ fn render_damus(ctx: &egui::Context, _frame: &mut eframe::Frame, app: &mut Damus
     });
 }
 
-fn timeline_panel(ui: &mut egui::Ui, app: &mut Damus, panel_width: f32, ind: u32) {
+fn timeline_panel(ui: &mut egui::Ui, app: &mut Damus<'_>, panel_width: f32, ind: u32) {
     egui::SidePanel::left(format!("l{}", ind))
         .resizable(false)
         .max_width(panel_width)
@@ -204,55 +276,57 @@ fn timeline_panel(ui: &mut egui::Ui, app: &mut Damus, panel_width: f32, ind: u32
         });
 }
 
-impl eframe::App for Damus {
-    /// Called by the frame work to save state before shutdown.
-    fn save(&mut self, storage: &mut dyn eframe::Storage) {
-        eframe::set_value(storage, eframe::APP_KEY, self);
-    }
+fn add_test_events(damus: &mut Damus<'_>) {
+    // Examples of how to create different panels and windows.
+    // Pick whichever suits you.
+    // Tip: a good default choice is to just keep the `CentralPanel`.
+    // For inspiration and more examples, go to https://emilk.github.io/egui
 
-    /// Called each time the UI needs repainting, which may be many times per second.
-    /// Put your widgets into a `SidePanel`, `TopPanel`, `CentralPanel`, `Window` or `Area`.
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Examples of how to create different panels and windows.
-        // Pick whichever suits you.
-        // Tip: a good default choice is to just keep the `CentralPanel`.
-        // For inspiration and more examples, go to https://emilk.github.io/egui
+    let test_event = Event {
+        id: "6938e3cd841f3111dbdbd909f87fd52c3d1f1e4a07fd121d1243196e532811cb".to_string(),
+        pub_key: "f0a6ff7f70b872de6d82c8daec692a433fd23b6a49f25923c6f034df715cdeec".to_string(),
+        created_at: 1667781968,
+        kind: 1,
+        tags: vec![],
+        content: LOREM_IPSUM.into(),
+        sig: "af02c971015995f79e07fa98aaf98adeeb6a56d0005e451ee4e78844cff712a6bc0f2109f72a878975f162dcefde4173b65ebd4c3d3ab3b520a9dcac6acf092d".to_string(),
+    };
 
-        let test_event = Event {
-            id: "6938e3cd841f3111dbdbd909f87fd52c3d1f1e4a07fd121d1243196e532811cb".to_string(),
-            pub_key: "f0a6ff7f70b872de6d82c8daec692a433fd23b6a49f25923c6f034df715cdeec".to_string(),
-            created_at: 1667781968,
-            kind: 1,
-            tags: vec![],
-            content: LOREM_IPSUM.into(),
-            sig: "af02c971015995f79e07fa98aaf98adeeb6a56d0005e451ee4e78844cff712a6bc0f2109f72a878975f162dcefde4173b65ebd4c3d3ab3b520a9dcac6acf092d".to_string(),
-        };
+    let test_event2 = Event {
+        id: "6938e3cd841f3111dbdbd909f87fd52c3d1f1e4a07fd121d1243196e532811cb".to_string(),
+        pub_key: "32e1827635450ebb3c5a7d12c1f8e7b2b514439ac10a67eef3d9fd9c5c68e245".to_string(),
+        created_at: 1667781968,
+        kind: 1,
+        tags: vec![],
+        content: LOREM_IPSUM_LONG.into(),
+        sig: "af02c971015995f79e07fa98aaf98adeeb6a56d0005e451ee4e78844cff712a6bc0f2109f72a878975f162dcefde4173b65ebd4c3d3ab3b520a9dcac6acf092d".to_string(),
+    };
 
-        let test_event2 = Event {
-            id: "6938e3cd841f3111dbdbd909f87fd52c3d1f1e4a07fd121d1243196e532811cb".to_string(),
-            pub_key: "32e1827635450ebb3c5a7d12c1f8e7b2b514439ac10a67eef3d9fd9c5c68e245".to_string(),
-            created_at: 1667781968,
-            kind: 1,
-            tags: vec![],
-            content: LOREM_IPSUM_LONG.into(),
-            sig: "af02c971015995f79e07fa98aaf98adeeb6a56d0005e451ee4e78844cff712a6bc0f2109f72a878975f162dcefde4173b65ebd4c3d3ab3b520a9dcac6acf092d".to_string(),
-        };
-
-        if self.events.len() == 0 {
-            self.events.push(test_event.clone());
-            self.events.push(test_event2.clone());
-            self.events.push(test_event.clone());
-            self.events.push(test_event2.clone());
-            self.events.push(test_event.clone());
-            self.events.push(test_event2.clone());
-            self.events.push(test_event.clone());
-            self.events.push(test_event2.clone());
-            self.events.push(test_event.clone());
-        }
-
-        render_damus(ctx, _frame, self);
+    if damus.events.len() == 0 {
+        damus.events.push(test_event.clone());
+        damus.events.push(test_event2.clone());
+        damus.events.push(test_event.clone());
+        damus.events.push(test_event2.clone());
+        damus.events.push(test_event.clone());
+        damus.events.push(test_event2.clone());
+        damus.events.push(test_event.clone());
+        damus.events.push(test_event2.clone());
+        damus.events.push(test_event.clone());
     }
 }
+
+//impl eframe::App for Damus<'_> {
+//    /// Called by the frame work to save state before shutdown.
+//    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+//        eframe::set_value(storage, eframe::APP_KEY, self);
+//    }
+//
+//    /// Called each time the UI needs repainting, which may be many times per second.
+//    /// Put your widgets into a `SidePanel`, `TopPanel`, `CentralPanel`, `Window` or `Area`.
+//    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+//        update_damus(ctx)
+//    }
+//}
 
 pub const LOREM_IPSUM: &str = "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.";
 
