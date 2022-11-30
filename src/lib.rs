@@ -34,18 +34,19 @@ struct ExampleRepaintSignal(std::sync::Mutex<winit::event_loop::EventLoopProxy<W
 
 impl epi::backend::RepaintSignal for ExampleRepaintSignal {
     fn request_repaint(&self) {
-        self.0
-            .lock()
-            .unwrap_or_else(|e| {
-                panic!(
+        match self.0.lock() {
+            Err(e) => {
+                error!(
                     "Failed to lock guard at {} line {} with error\n{}",
                     file!(),
                     line!(),
                     e
-                )
-            })
-            .send_event(WinitEvent::RequestRedraw)
-            .ok();
+                );
+            }
+            Ok(e) => {
+                let _ = e.send_event(WinitEvent::RequestRedraw);
+            }
+        };
     }
 }
 
