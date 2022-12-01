@@ -85,7 +85,9 @@ impl Damus<'_> {
         //return eframe::get_value(storage, eframe::APP_KEY).unwrap_or_default();
         //}
 
-        Default::default()
+        let mut d: Self = Default::default();
+        d.add_test_events();
+        d
     }
 }
 

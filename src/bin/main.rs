@@ -13,7 +13,7 @@ fn main() {
     eframe::run_native(
         "Damus Desktop",
         native_options,
-        Box::new(|cc| Box::new(Damus::new())),
+        Box::new(|_cc| Box::new(Damus::new())),
     );
 }
 
@@ -30,7 +30,7 @@ fn main() {
     eframe::start_web(
         "the_canvas_id", // hardcode it
         web_options,
-        Box::new(|cc| Box::new(Damus::new())),
+        Box::new(|_cc| Box::new(Damus::new())),
     )
     .expect("failed to start eframe");
 }
