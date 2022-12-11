@@ -1,4 +1,5 @@
 //use egui::TextureFilter;
+//use egui_android::SimpleApp;
 use egui_extras::RetainedImage;
 
 //use nostr_rust::events::Event;
@@ -61,15 +62,15 @@ pub fn is_mobile(ctx: &egui::Context) -> bool {
     screen_size.x < 550.0
 }
 
-impl Damus<'_> {
-    pub fn ui(&mut self, ctx: &Context) {
-        if is_mobile(ctx) {
-            render_damus_mobile(ctx, self)
-        } else {
-            render_damus_desktop(ctx, self)
-        }
+fn damus_update(damus: &mut Damus, ctx: &Context) {
+    if is_mobile(ctx) {
+        render_damus_mobile(ctx, damus);
+    } else {
+        render_damus_desktop(ctx, damus);
     }
+}
 
+impl Damus<'_> {
     pub fn add_test_events(&mut self) {
         add_test_events(self);
     }
@@ -208,8 +209,8 @@ fn timeline_view(ui: &mut egui::Ui, app: &mut Damus<'_>) {
         .auto_shrink([false; 2])
         .show(ui, |ui| {
             for ev in &app.events {
-                ui.separator();
                 render_event(ui, &mut app.img_cache, ev);
+                ui.separator();
             }
         });
 }
@@ -231,7 +232,7 @@ fn render_panel(ctx: &egui::Context, app: &mut Damus<'_>) {
             if app.n_panels != 1 {
                 if ui
                     .add(egui::Button::new("-").frame(false))
-                    .on_hover_text("Add Timeline")
+                    .on_hover_text("Remove Timeline")
                     .clicked()
                 {
                     app.n_panels -= 1;
@@ -260,6 +261,15 @@ fn render_damus_desktop(ctx: &egui::Context, app: &mut Damus<'_>) {
     } else {
         calc_panel_width
     };
+
+    if app.n_panels == 1 {
+        let panel_width = ctx.input().screen_rect.width();
+        egui::CentralPanel::default().show(ctx, |ui| {
+            timeline_panel(ui, app, panel_width, 0);
+        });
+
+        return;
+    }
 
     egui::CentralPanel::default().show(ctx, |ui| {
         egui::ScrollArea::horizontal()
@@ -323,14 +333,14 @@ fn add_test_events(damus: &mut Damus<'_>) {
 
 impl eframe::App for Damus<'_> {
     /// Called by the frame work to save state before shutdown.
-    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+    fn save(&mut self, _storage: &mut dyn eframe::Storage) {
         //eframe::set_value(storage, eframe::APP_KEY, self);
     }
 
     /// Called each time the UI needs repainting, which may be many times per second.
     /// Put your widgets into a `SidePanel`, `TopPanel`, `CentralPanel`, `Window` or `Area`.
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.ui(ctx);
+        damus_update(self, ctx);
     }
 }
 

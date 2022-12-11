@@ -20,8 +20,10 @@ in
 
 mkShell {
   nativeBuildInputs = [
-    cargo-edit cargo-watch rustup rustfmt libiconv pkgconfig cmake fontconfig
+    cargo-udeps cargo-edit cargo-watch rustup rustfmt libiconv pkgconfig cmake fontconfig
     brotli wabt
+
+    heaptrack
 
     # android
     jre openssl libiconv androidsdk

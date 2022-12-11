@@ -11,42 +11,22 @@ edition = "2021"
 crate-type = ["lib", "cdylib"]
 
 [dependencies]
-chrono = "0.4"
-egui = "0.19.0"
-eframe = "0.19.0"
-egui_extras = { version = "0.19.0", features = ["image", "svg"] }
-#egui-winit = "0.19.0"
+#egui-android = { git = "https://github.com/jb55/egui-android.git" }  
+egui = "0.20.0"
+eframe = { version = "0.20.0", features = [ "wgpu" ] }
+#eframe = "0.20.0"
+egui_extras = { version = "0.20.0", features = ["image", "svg"] }
 ehttp = "0.2.0"
-epi = "0.17.0"
-hex = "0.4.3"
 image = { version = "0.24", features = ["jpeg", "png", "webp"] }
 log = "0.4.17"
-#nostr_rust = { git = "git://jb55.com/nostr_rust", rev = "ccf7e521fe3bb9ca8f86516aef2c1f71db0213ed" }
 poll-promise = "0.2.0"
-pollster = "0.2"
 serde_derive = "1"
-serde_json = { version = "1", default-features = false, features = ["std"] }
 serde = { version = "1", features = ["derive"] } # You only need this if you want app persistence
-sha2 = "0.10.6"
 tracing = "0.1.37"
 tracing-subscriber = "0.3"
-
-#winit = "0.27.1"
-
-# This dependency will only be included when targeting Android
-[target.'cfg(target_os = "android")'.dependencies]
-egui_wgpu_backend = "0.20.0"
-wgpu = "0.14.0"
-winit = { git="https://github.com/rust-windowing/winit.git", default-features = false, features = ["android-native-activity"] }
-egui_winit_platform = {git = "https://github.com/inferrna/egui_winit_platform.git"}
-
-[target.'cfg(debug_assertions)'.dependencies]
-simple_logger = "*"
-android_logger = "0.11.1"
-
-# This dependency will only be included when targeting Android
-[target.'cfg(not(target_os = "android"))'.dependencies]
-winit = { git="https://github.com/rust-windowing/winit.git" }
+ewebsock = "0.2.0"
+#wasm-bindgen = "0.2.83"
+wasm-bindgen-futures = "0.4"
 
 
 # web:
@@ -54,12 +34,15 @@ winit = { git="https://github.com/rust-windowing/winit.git" }
 console_error_panic_hook = "0.1.6"
 tracing-wasm = "0.2"
 
-# This dependency will only be included when targeting Android
-#[target.'cfg(target_os = "android")'.dependencies]
-#winit = { git="https://github.com/rust-windowing/winit.git", default-features = false, features = ["android-native-activity"] }
+[target.'cfg(target_os = "android")'.dependencies]
+android_logger = "0.11.1"
+#android-activity = "0.4.0"
+#winit = "0.27.5"
+#winit = { version = "0.28", features = [ "android-native-activity" ] }
+#winit = { git="https://github.com/rust-windowing/winit.git", rev = "2a58b785fed2a3746f7c7eebce95bce67ddfd27c", features = ["android-native-activity"] }
 
 [package.metadata.android]
-#package = "com.damus"
+package = "com.damus.app"
 apk_name = "damus"
 #assets = "assets"
 
@@ -75,39 +58,5 @@ max_sdk_version = 18
 [[package.metadata.android.uses_permission]]
 name = "android.permission.INTERNET"
 
-# See https://developer.android.com/guide/topics/manifest/application-element
-#[package.metadata.android.application]
-#label = "Damus"
-
-# See https://developer.android.com/guide/topics/manifest/application-element#debug
-#
-# Defaults to false.
-#debuggable = false
-
-# See https://developer.android.com/guide/topics/manifest/application-element#theme
-#
-# Example shows setting the theme of an application to fullscreen.
-#theme = "@android:style/Theme.DeviceDefault.NoActionBar.Fullscreen"
-
-# Virtual path your application's icon for any mipmap level.
-# If not specified, an icon will not be included in the APK.
-#icon = "@mipmap/ic_launcher"
-
-# See https://developer.android.com/guide/topics/manifest/application-element#label
-#
-# Defaults to the compiled artifact's name.
-
-
-#[profile.release]
-#opt-level = 2 # fast and small wasm
-
-
-#[patch.crates-io]
-# If you want to use the bleeding edge version of egui and eframe:
-# egui = { git = "https://github.com/emilk/egui", branch = "master" }
-# eframe = { git = "https://github.com/emilk/egui", branch = "master" }
-
-# If you fork https://github.com/emilk/egui you can test with:
-#egui = { path = "../egui/crates/egui" }
-#eframe = { path = "../egui/crates/eframe" }
-#egui_extras = { path = "../egui/crates/egui_extras", features = ["image", "svg"] }
+[package.metadata.android.application]
+label = "Damus"
