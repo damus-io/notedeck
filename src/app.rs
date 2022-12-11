@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::hash::Hash;
 use tracing::debug;
 
-use crate::Event;
+use enostr::{Event, RelayPool};
 
 #[derive(Hash, Eq, PartialEq, Clone, Debug)]
 enum UrlKey<'a> {
@@ -33,6 +33,9 @@ pub struct Damus<'a> {
     n_panels: u32,
 
     #[serde(skip)]
+    pool: RelayPool,
+
+    #[serde(skip)]
     events: Vec<Event>,
 
     #[serde(skip)]
@@ -49,6 +52,7 @@ impl Default for Damus<'_> {
             // Example stuff:
             label: "Hello World!".to_owned(),
             composing: false,
+            pool: RelayPool::default(),
             events: vec![],
             img_cache: HashMap::new(),
             value: 2.7,
@@ -63,6 +67,10 @@ pub fn is_mobile(ctx: &egui::Context) -> bool {
 }
 
 fn damus_update(damus: &mut Damus, ctx: &Context) {
+    render_damus(damus, ctx);
+}
+
+fn render_damus(damus: &mut Damus, ctx: &Context) {
     if is_mobile(ctx) {
         render_damus_mobile(ctx, damus);
     } else {
@@ -185,17 +193,17 @@ fn render_event(ui: &mut egui::Ui, img_cache: &mut ImageCache<'_>, ev: &Event) {
         //let damus_pic = "https://192.168.87.26/img/damus.svg".into();
         let jb55_pic = "https://cdn.jb55.com/img/red-me.jpg".into();
         //let jb55_pic = "http://192.168.87.26/img/red-me.jpg".into();
-        let pic =
-            if ev.pub_key == "32e1827635450ebb3c5a7d12c1f8e7b2b514439ac10a67eef3d9fd9c5c68e245" {
-                jb55_pic
-            } else {
-                damus_pic
-            };
+        let pic = if ev.pubkey == "32e1827635450ebb3c5a7d12c1f8e7b2b514439ac10a67eef3d9fd9c5c68e245"
+        {
+            jb55_pic
+        } else {
+            damus_pic
+        };
 
-        render_pfp(ui, img_cache, &ev.pub_key, pic);
+        render_pfp(ui, img_cache, &ev.pubkey, pic);
 
         ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
-            render_username(ui, &ev.pub_key);
+            render_username(ui, &ev.pubkey);
 
             ui.label(&ev.content);
         })
@@ -300,7 +308,7 @@ fn add_test_events(damus: &mut Damus<'_>) {
 
     let test_event = Event {
         id: "6938e3cd841f3111dbdbd909f87fd52c3d1f1e4a07fd121d1243196e532811cb".to_string(),
-        pub_key: "f0a6ff7f70b872de6d82c8daec692a433fd23b6a49f25923c6f034df715cdeec".to_string(),
+        pubkey: "f0a6ff7f70b872de6d82c8daec692a433fd23b6a49f25923c6f034df715cdeec".to_string(),
         created_at: 1667781968,
         kind: 1,
         tags: vec![],
@@ -310,7 +318,7 @@ fn add_test_events(damus: &mut Damus<'_>) {
 
     let test_event2 = Event {
         id: "6938e3cd841f3111dbdbd909f87fd52c3d1f1e4a07fd121d1243196e532811cb".to_string(),
-        pub_key: "32e1827635450ebb3c5a7d12c1f8e7b2b514439ac10a67eef3d9fd9c5c68e245".to_string(),
+        pubkey: "32e1827635450ebb3c5a7d12c1f8e7b2b514439ac10a67eef3d9fd9c5c68e245".to_string(),
         created_at: 1667781968,
         kind: 1,
         tags: vec![],

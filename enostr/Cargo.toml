@@ -1,0 +1,12 @@
+[package]
+name = "enostr"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+ewebsock = "0.2.0"
+serde_derive = "1"
+serde = { version = "1", features = ["derive"] } # You only need this if you want app persistence
+serde_json = "1.0.89"

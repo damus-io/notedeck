@@ -645,7 +645,8 @@ dependencies = [
  "egui",
  "egui_extras",
  "ehttp",
- "ewebsock",
+ "enostr",
+ "ewebsock 0.2.0 (git+https://github.com/jb55/ewebsock.git?rev=93420aa96a990e7513647db775751a2dc9d4a1ba)",
  "image",
  "log",
  "poll-promise",
@@ -654,7 +655,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tracing-wasm",
- "wasm-bindgen-futures",
 ]
 
 [[package]]
@@ -915,6 +915,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "enostr"
+version = "0.1.0"
+dependencies = [
+ "ewebsock 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "serde",
+ "serde_derive",
+ "serde_json",
+]
+
+[[package]]
 name = "enumset"
 version = "1.0.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -976,6 +986,24 @@ name = "ewebsock"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "689197e24a57aee379b3bbef527e70607fc6d4b58fae4f1d98a2c6d91503e230"
+dependencies = [
+ "async-stream",
+ "futures",
+ "futures-util",
+ "js-sys",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+ "tungstenite",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
+name = "ewebsock"
+version = "0.2.0"
+source = "git+https://github.com/jb55/ewebsock.git?rev=93420aa96a990e7513647db775751a2dc9d4a1ba#93420aa96a990e7513647db775751a2dc9d4a1ba"
 dependencies = [
  "async-stream",
  "futures",
@@ -2360,6 +2388,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "ryu"
+version = "1.0.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4501abdff3ae82a1c1b477a17252eb69cee9e66eb915c1abaa4f44d873df9f09"
+
+[[package]]
 name = "safe_arch"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2435,6 +2469,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "serde_json"
+version = "1.0.89"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "020ff22c755c2ed3f8cf162dbb41a7268d934702f3ed3631656ea597e08fc3db"
+dependencies = [
+ "itoa",
+ "ryu",
+ "serde",
 ]
 
 [[package]]

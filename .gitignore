@@ -1,7 +1,9 @@
 .build-result
 .buildcmd
-/target
+target
+.git
 /dist
 .direnv/
+src/camera.rs
 *.patch
 *.txt

@@ -24,9 +24,10 @@ serde_derive = "1"
 serde = { version = "1", features = ["derive"] } # You only need this if you want app persistence
 tracing = "0.1.37"
 tracing-subscriber = "0.3"
-ewebsock = "0.2.0"
+ewebsock = { git = "https://github.com/jb55/ewebsock.git", rev = "93420aa96a990e7513647db775751a2dc9d4a1ba" }
 #wasm-bindgen = "0.2.83"
-wasm-bindgen-futures = "0.4"
+#wasm-bindgen-futures = "0.4"
+enostr = { path = "enostr" } 
 
 
 # web:

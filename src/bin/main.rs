@@ -2,7 +2,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
 use damus::Damus;
 use eframe;
-use log::info;
 
 // Entry point for wasm
 //#[cfg(target_arch = "wasm32")]
@@ -41,3 +40,4 @@ pub fn main() {
         .expect("failed to start eframe");
     });
 }
+

@@ -1,9 +1,10 @@
 mod app;
 //mod camera;
-mod event;
+mod error;
 
 pub use app::Damus;
-pub use event::Event;
+
+pub type Result<T> = std::result::Result<T, error::Error>;
 
 //#[cfg(target_os = "android")]
 //use egui_android::run_android;
