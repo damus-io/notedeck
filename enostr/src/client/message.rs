@@ -1,4 +1,5 @@
-use crate::{Event, Filter}
+use crate::{Event, Filter};
+use serde_json::json;
 
 /// Messages sent by clients, received by relays
 #[derive(Debug, Eq, PartialEq)]
@@ -16,8 +17,8 @@ pub enum ClientMessage {
 }
 
 impl ClientMessage {
-    pub fn event(ev: Event) -> Self {
-        ClientMessage::Event {ev}
+    pub fn event(event: Event) -> Self {
+        ClientMessage::Event { event }
     }
 
     pub fn req(sub_id: String, filters: Vec<Filter>) -> Self {
@@ -31,11 +32,8 @@ impl ClientMessage {
     pub fn to_json(&self) -> String {
         match self {
             Self::Event { event } => json!(["EVENT", event]).to_string(),
-            Self::Req {
-                subscription_id,
-                filters,
-            } => {
-                let mut json = json!(["REQ", subscription_id]);
+            Self::Req { sub_id, filters } => {
+                let mut json = json!(["REQ", sub_id]);
                 let mut filters = json!(filters);
 
                 if let Some(json) = json.as_array_mut() {
@@ -46,7 +44,7 @@ impl ClientMessage {
 
                 json.to_string()
             }
-            Self::Close { subscription_id } => json!(["CLOSE", subscription_id]).to_string(),
+            Self::Close { sub_id } => json!(["CLOSE", sub_id]).to_string(),
         }
     }
 }

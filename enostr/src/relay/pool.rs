@@ -4,13 +4,13 @@ use crate::Result;
 use tracing::error;
 
 #[derive(Debug)]
-pub struct PoolMessage<'a> {
-    relay: &'a str,
-    event: RelayEvent,
+pub struct PoolEvent<'a> {
+    pub relay: &'a str,
+    pub event: RelayEvent,
 }
 
 pub struct RelayPool {
-    relays: Vec<Relay>,
+    pub relays: Vec<Relay>,
 }
 
 impl Default for RelayPool {
@@ -47,12 +47,12 @@ impl RelayPool {
         Ok(())
     }
 
-    pub fn try_recv(&self) -> Option<PoolMessage<'_>> {
+    pub fn try_recv(&self) -> Option<PoolEvent<'_>> {
         for relay in &self.relays {
             if let Some(msg) = relay.receiver.try_recv() {
                 match msg.try_into() {
                     Ok(event) => {
-                        return Some(PoolMessage {
+                        return Some(PoolEvent {
                             event,
                             relay: &relay.url,
                         });

@@ -1,6 +1,6 @@
-use ewebsock::{WsReceiver, WsSender};
+use ewebsock::{WsMessage, WsReceiver, WsSender};
 
-use crate::Result;
+use crate::{ClientMessage, Filter, Result};
 use std::fmt;
 use std::hash::{Hash, Hasher};
 
@@ -56,5 +56,11 @@ impl Relay {
             receiver,
             status,
         })
+    }
+
+    pub fn subscribe(&mut self, subid: String, filters: Vec<Filter>) {
+        let cmd = ClientMessage::req(subid, filters);
+        let txt = WsMessage::Text(cmd.to_json());
+        self.sender.send(txt);
     }
 }

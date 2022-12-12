@@ -21,3 +21,58 @@ pub struct Filter {
     #[serde(skip_serializing_if = "Option::is_none")]
     limit: Option<u16>,
 }
+
+impl Filter {
+    pub fn new() -> Filter {
+        Filter {
+            ids: None,
+            authors: None,
+            kinds: None,
+            events: None,
+            pubkeys: None,
+            since: None,
+            until: None,
+            limit: None,
+        }
+    }
+
+    pub fn ids(mut self, ids: Vec<String>) -> Self {
+        self.ids = Some(ids);
+        self
+    }
+
+    pub fn authors(mut self, authors: Vec<String>) -> Self {
+        self.authors = Some(authors);
+        self
+    }
+
+    pub fn kinds(mut self, kinds: Vec<u64>) -> Self {
+        self.kinds = Some(kinds);
+        self
+    }
+
+    pub fn events(mut self, events: Vec<String>) -> Self {
+        self.events = Some(events);
+        self
+    }
+
+    pub fn pubkeys(mut self, pubkeys: Vec<String>) -> Self {
+        self.pubkeys = Some(pubkeys);
+        self
+    }
+
+    pub fn since(mut self, since: u64) -> Self {
+        self.since = Some(since);
+        self
+    }
+
+    pub fn until(mut self, until: u64) -> Self {
+        self.until = Some(until);
+        self
+    }
+
+    pub fn limit(mut self, limit: u16) -> Self {
+        self.limit = Some(limit);
+        self
+    }
+}

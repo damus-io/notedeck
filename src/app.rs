@@ -2,6 +2,7 @@
 //use egui_android::SimpleApp;
 use egui_extras::RetainedImage;
 
+use enostr::{Filter, RelayEvent, RelayMessage};
 //use nostr_rust::events::Event;
 use poll_promise::Promise;
 //use std::borrow::{Borrow, Cow};
@@ -9,7 +10,7 @@ use egui::Context;
 //use log::error;
 use std::collections::HashMap;
 use std::hash::Hash;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use enostr::{Event, RelayPool};
 
@@ -73,6 +74,34 @@ fn relay_setup(pool: &mut RelayPool, ctx: &egui::Context) {
     }
 }
 
+fn send_initial_filters(pool: &mut RelayPool, relay_url: &str) {
+    let filter = Filter::new().limit(20).kinds(vec![1, 42]);
+    let subid = "initial";
+    for relay in &mut pool.relays {
+        if relay.url == relay_url {
+            relay.subscribe(subid.to_string(), vec![filter]);
+            return;
+        }
+    }
+}
+
+fn try_process_event(damus: &mut Damus) {
+    let m_ev = damus.pool.try_recv();
+    if m_ev.is_none() {
+        return;
+    }
+    let ev = m_ev.unwrap();
+    let relay = ev.relay.to_owned();
+
+    match &ev.event {
+        RelayEvent::Opened => send_initial_filters(&mut damus.pool, &relay),
+        RelayEvent::Closed => warn!("{} connection closed", &relay), /* TODO: handle reconnects */
+        RelayEvent::Other(msg) => debug!("Other ws message: {:?}", msg),
+        RelayEvent::Message(msg) => process_message(damus, &msg),
+    }
+    //info!("recv {:?}", ev)
+}
+
 fn update_damus(damus: &mut Damus, ctx: &egui::Context) {
     if damus.state == DamusState::Initializing {
         damus.pool = RelayPool::new();
@@ -80,9 +109,11 @@ fn update_damus(damus: &mut Damus, ctx: &egui::Context) {
         damus.state = DamusState::Initialized;
     }
 
-    if let Some(ev) = damus.pool.try_recv() {
-        info!("recv {:?}", ev)
-    }
+    try_process_event(damus);
+}
+
+fn process_message(damus: &mut Damus, msg: &RelayMessage) {
+    info!("process message {:?}", msg);
 }
 
 fn render_damus(damus: &mut Damus, ctx: &Context) {
