@@ -1,7 +1,8 @@
 use crate::relay::message::RelayEvent;
 use crate::relay::Relay;
-use crate::Result;
-use tracing::error;
+use crate::{ClientMessage, Result};
+use ewebsock::WsMessage;
+use tracing::{debug, error};
 
 #[derive(Debug)]
 pub struct PoolEvent<'a> {
@@ -34,6 +35,21 @@ impl RelayPool {
         return false;
     }
 
+    pub fn send(&mut self, cmd: &ClientMessage) {
+        for relay in &mut self.relays {
+            relay.send(cmd);
+        }
+    }
+
+    pub fn send_to(&mut self, cmd: &ClientMessage, relay_url: &str) {
+        for relay in &mut self.relays {
+            if relay.url == relay_url {
+                relay.send(cmd);
+                return;
+            }
+        }
+    }
+
     // Adds a websocket url to the RelayPool.
     pub fn add_url(
         &mut self,
@@ -47,11 +63,23 @@ impl RelayPool {
         Ok(())
     }
 
-    pub fn try_recv(&self) -> Option<PoolEvent<'_>> {
-        for relay in &self.relays {
+    /// Attempts to receive a pool event from a list of relays. The function searches each relay in the list in order, attempting to receive a message from each. If a message is received, return it. If no message is received from any relays, None is returned.
+    pub fn try_recv(&mut self) -> Option<PoolEvent<'_>> {
+        for relay in &mut self.relays {
             if let Some(msg) = relay.receiver.try_recv() {
                 match msg.try_into() {
                     Ok(event) => {
+                        // let's just handle pongs here.
+                        // We only need to do this natively.
+                        #[cfg(not(target_arch = "wasm32"))]
+                        match event {
+                            RelayEvent::Other(WsMessage::Ping(ref bs)) => {
+                                debug!("pong {}", &relay.url);
+                                relay.sender.send(WsMessage::Pong(bs.to_owned()));
+                            }
+                            _ => {}
+                        }
+
                         return Some(PoolEvent {
                             event,
                             relay: &relay.url,
@@ -68,6 +96,4 @@ impl RelayPool {
 
         None
     }
-
-    pub fn connect() {}
 }

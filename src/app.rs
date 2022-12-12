@@ -1,10 +1,12 @@
 use egui_extras::RetainedImage;
 
+use crate::contacts::Contacts;
+use crate::Result;
 use egui::Context;
-use enostr::{Filter, RelayEvent, RelayMessage};
+use enostr::{ClientMessage, EventId, Filter, Profile, Pubkey, RelayEvent, RelayMessage};
 use poll_promise::Promise;
-use std::collections::HashMap;
-use std::hash::Hash;
+use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 use tracing::{debug, error, info, warn};
 
 use enostr::{Event, RelayPool};
@@ -15,7 +17,15 @@ enum UrlKey<'a> {
     Failed(&'a str),
 }
 
-type ImageCache<'a> = HashMap<UrlKey<'a>, Promise<ehttp::Result<RetainedImage>>>;
+impl UrlKey<'_> {
+    fn to_u64(&self) -> u64 {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.hash(&mut hasher);
+        hasher.finish()
+    }
+}
+
+type ImageCache = HashMap<u64, Promise<Result<RetainedImage>>>;
 
 #[derive(Eq, PartialEq, Clone)]
 pub enum DamusState {
@@ -24,35 +34,28 @@ pub enum DamusState {
 }
 
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
-pub struct Damus<'a> {
-    // Example stuff:
-    label: String,
+pub struct Damus {
     state: DamusState,
-    composing: bool,
+    contacts: Contacts,
     n_panels: u32,
 
     pool: RelayPool,
 
-    all_events: HashMap<String, Event>,
-    events: Vec<String>,
+    all_events: HashMap<EventId, Event>,
+    events: Vec<EventId>,
 
-    img_cache: ImageCache<'a>,
-
-    value: f32,
+    img_cache: ImageCache,
 }
 
-impl Default for Damus<'_> {
+impl Default for Damus {
     fn default() -> Self {
         Self {
-            // Example stuff:
-            label: "Hello World!".to_owned(),
             state: DamusState::Initializing,
-            composing: false,
+            contacts: Contacts::new(),
             all_events: HashMap::new(),
             pool: RelayPool::default(),
             events: vec![],
             img_cache: HashMap::new(),
-            value: 2.7,
             n_panels: 1,
         }
     }
@@ -65,14 +68,17 @@ pub fn is_mobile(ctx: &egui::Context) -> bool {
 
 fn relay_setup(pool: &mut RelayPool, ctx: &egui::Context) {
     let ctx = ctx.clone();
-    let wakeup = move || ctx.request_repaint();
+    let wakeup = move || {
+        debug!("Woke up");
+        ctx.request_repaint();
+    };
     if let Err(e) = pool.add_url("wss://relay.damus.io".to_string(), wakeup) {
         error!("{:?}", e)
     }
 }
 
 fn send_initial_filters(pool: &mut RelayPool, relay_url: &str) {
-    let filter = Filter::new().limit(20).kinds(vec![1, 42]);
+    let filter = Filter::new().limit(100).kinds(vec![1, 42]);
     let subid = "initial";
     for relay in &mut pool.relays {
         if relay.url == relay_url {
@@ -92,8 +98,9 @@ fn try_process_event(damus: &mut Damus) {
 
     match ev.event {
         RelayEvent::Opened => send_initial_filters(&mut damus.pool, &relay),
-        RelayEvent::Closed => warn!("{} connection closed", &relay), /* TODO: handle reconnects */
-        RelayEvent::Other(msg) => debug!("Other ws message: {:?}", msg),
+        // TODO: handle reconnects
+        RelayEvent::Closed => warn!("{} connection closed", &relay),
+        RelayEvent::Other(msg) => debug!("other event {:?}", &msg),
         RelayEvent::Message(msg) => process_message(damus, &relay, msg),
     }
     //info!("recv {:?}", ev)
@@ -109,9 +116,47 @@ fn update_damus(damus: &mut Damus, ctx: &egui::Context) {
     try_process_event(damus);
 }
 
-fn process_event(damus: &mut Damus, subid: &str, event: Event) {
+fn process_metadata_event(damus: &mut Damus, ev: &Event) {
+    if let Some(prev_id) = damus.contacts.events.get(&ev.pubkey) {
+        if let Some(prev_ev) = damus.all_events.get(prev_id) {
+            // This profile event is older, ignore it
+            if prev_ev.created_at >= ev.created_at {
+                return;
+            }
+        }
+    }
+
+    let profile: core::result::Result<serde_json::Value, serde_json::Error> =
+        serde_json::from_str(&ev.content);
+
+    match profile {
+        Err(e) => {
+            debug!("Invalid profile data '{}': {:?}", &ev.content, &e);
+        }
+        Ok(v) if !v.is_object() => {
+            debug!("Invalid profile data: '{}'", &ev.content);
+        }
+        Ok(profile) => {
+            damus
+                .contacts
+                .events
+                .insert(ev.pubkey.clone(), ev.id.clone());
+
+            damus
+                .contacts
+                .profiles
+                .insert(ev.pubkey.clone(), Profile::new(profile));
+        }
+    }
+}
+
+fn process_event(damus: &mut Damus, _subid: &str, event: Event) {
     if damus.all_events.get(&event.id).is_some() {
         return;
+    }
+
+    if event.kind == 0 {
+        process_metadata_event(damus, &event);
     }
 
     let cloned_id = event.id.clone();
@@ -119,12 +164,42 @@ fn process_event(damus: &mut Damus, subid: &str, event: Event) {
     damus.events.push(cloned_id);
 }
 
+fn get_unknown_author_ids(damus: &Damus) -> Vec<Pubkey> {
+    let mut authors: HashSet<Pubkey> = HashSet::new();
+
+    for (_evid, ev) in damus.all_events.iter() {
+        if !damus.contacts.profiles.contains_key(&ev.pubkey) {
+            authors.insert(ev.pubkey.clone());
+        }
+    }
+
+    authors.into_iter().collect()
+}
+
+fn handle_eose(damus: &mut Damus, subid: &str, relay_url: &str) {
+    if subid == "initial" {
+        let authors = get_unknown_author_ids(damus);
+        let n_authors = authors.len();
+        let filter = Filter::new().authors(authors).kinds(vec![0]);
+        info!(
+            "Getting {} unknown author profiles from {}",
+            n_authors, relay_url
+        );
+        let msg = ClientMessage::req("profiles".to_string(), vec![filter]);
+        damus.pool.send_to(&msg, relay_url);
+    } else if subid == "profiles" {
+        info!("Got profiles from {}", relay_url);
+        let msg = ClientMessage::close("profiles".to_string());
+        damus.pool.send_to(&msg, relay_url);
+    }
+}
+
 fn process_message(damus: &mut Damus, relay: &str, msg: RelayMessage) {
     match msg {
         RelayMessage::Event(subid, ev) => process_event(damus, &subid, ev),
         RelayMessage::Notice(msg) => warn!("Notice from {}: {}", relay, msg),
         RelayMessage::OK(cr) => info!("OK {:?}", cr),
-        RelayMessage::Eose(sid) => info!("EOSE {}", sid),
+        RelayMessage::Eose(sid) => handle_eose(damus, &sid, relay),
     }
 }
 
@@ -136,7 +211,7 @@ fn render_damus(damus: &mut Damus, ctx: &Context) {
     }
 }
 
-impl Damus<'_> {
+impl Damus {
     pub fn add_test_events(&mut self) {
         add_test_events(self);
     }
@@ -157,58 +232,63 @@ impl Damus<'_> {
 }
 
 #[allow(clippy::needless_pass_by_value)]
-fn parse_response(response: ehttp::Response) -> Result<RetainedImage, String> {
+fn parse_response(response: ehttp::Response) -> Result<RetainedImage> {
     let content_type = response.content_type().unwrap_or_default();
 
     if content_type.starts_with("image/svg") {
-        RetainedImage::from_svg_bytes(&response.url, &response.bytes)
+        Ok(RetainedImage::from_svg_bytes(
+            &response.url,
+            &response.bytes,
+        )?)
     } else if content_type.starts_with("image/") {
-        RetainedImage::from_image_bytes(&response.url, &response.bytes)
+        Ok(RetainedImage::from_image_bytes(
+            &response.url,
+            &response.bytes,
+        )?)
     } else {
-        Err(format!(
-            "Expected image, found content-type {:?}",
-            content_type
-        ))
+        Err(format!("Expected image, found content-type {:?}", content_type).into())
     }
 }
 
-fn fetch_img(ctx: &egui::Context, url: &str) -> Promise<ehttp::Result<RetainedImage>> {
+fn fetch_img(ctx: &egui::Context, url: &str) -> Promise<Result<RetainedImage>> {
+    // TODO: fetch image from local cache
+    fetch_img_from_net(ctx, url)
+}
+
+fn fetch_img_from_net(ctx: &egui::Context, url: &str) -> Promise<Result<RetainedImage>> {
     let (sender, promise) = Promise::new();
     let request = ehttp::Request::get(url);
     let ctx = ctx.clone();
     ehttp::fetch(request, move |response| {
-        let image = response.and_then(parse_response);
+        let image = response.map_err(Into::into).and_then(parse_response);
         sender.send(image); // send the results back to the UI thread.
         ctx.request_repaint();
     });
     promise
 }
 
-fn robohash(hash: &str) -> String {
-    return format!("https://robohash.org/{}", hash);
-}
-
-fn render_pfp<'a>(ui: &mut egui::Ui, img_cache: &mut ImageCache<'a>, pk: &str, url: &'a str) {
-    let urlkey = UrlKey::Orig(url);
+fn render_pfp(ui: &mut egui::Ui, img_cache: &mut ImageCache, url: &str) {
+    let urlkey = UrlKey::Orig(url).to_u64();
     let m_cached_promise = img_cache.get(&urlkey);
     if m_cached_promise.is_none() {
         debug!("urlkey: {:?}", &urlkey);
-        img_cache.insert(UrlKey::Orig(url), fetch_img(ui.ctx(), &url));
+        img_cache.insert(urlkey, fetch_img(ui.ctx(), url));
     }
 
     let pfp_size = 50.0;
+    let no_pfp_url = "https://damus.io/img/no-profile.svg";
 
     match img_cache[&urlkey].ready() {
         None => {
             ui.spinner(); // still loading
         }
-        Some(Err(err)) => {
-            error!("Initial image load failed: {}", err);
-            let failed_key = UrlKey::Failed(&url);
+        Some(Err(_err)) => {
+            let failed_key = UrlKey::Failed(url).to_u64();
             let m_failed_promise = img_cache.get_mut(&failed_key);
             if m_failed_promise.is_none() {
                 debug!("failed key: {:?}", &failed_key);
-                img_cache.insert(UrlKey::Failed(url), fetch_img(ui.ctx(), &robohash(pk)));
+                let no_pfp = fetch_img(ui.ctx(), no_pfp_url);
+                img_cache.insert(failed_key, no_pfp);
             }
 
             match img_cache[&failed_key].ready() {
@@ -216,7 +296,7 @@ fn render_pfp<'a>(ui: &mut egui::Ui, img_cache: &mut ImageCache<'a>, pk: &str, u
                     ui.spinner(); // still loading
                 }
                 Some(Err(e)) => {
-                    error!("Image load error: {}", e);
+                    error!("Image load error: {:?}", e);
                     ui.label("❌");
                 }
                 Some(Ok(img)) => {
@@ -243,45 +323,47 @@ fn render_username(ui: &mut egui::Ui, pk: &str) {
     });
 }
 
-fn render_event(ui: &mut egui::Ui, img_cache: &mut ImageCache<'_>, ev: &Event) {
-    ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
-        let damus_pic = "https://damus.io/img/damus.svg".into();
-        //let damus_pic = "https://192.168.87.26/img/damus.svg".into();
-        let jb55_pic = "https://cdn.jb55.com/img/red-me.jpg".into();
-        //let jb55_pic = "http://192.168.87.26/img/red-me.jpg".into();
-        let pic = if ev.pubkey == "32e1827635450ebb3c5a7d12c1f8e7b2b514439ac10a67eef3d9fd9c5c68e245"
-        {
-            jb55_pic
-        } else {
-            damus_pic
-        };
+fn render_events(ui: &mut egui::Ui, damus: &mut Damus) {
+    for evid in &damus.events {
+        if !damus.all_events.contains_key(evid) {
+            return;
+        }
 
-        render_pfp(ui, img_cache, &ev.pubkey, pic);
+        ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
+            let ev = damus.all_events.get(evid).unwrap();
 
-        ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
-            render_username(ui, &ev.pubkey);
+            let m_pic = damus
+                .contacts
+                .profiles
+                .get(&ev.pubkey)
+                .and_then(|p| p.picture());
 
-            ui.label(&ev.content);
-        })
-    });
+            if let Some(pic) = m_pic {
+                render_pfp(ui, &mut damus.img_cache, pic);
+            }
+
+            ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                render_username(ui, ev.pubkey.as_ref());
+
+                ui.label(&ev.content);
+            })
+        });
+
+        ui.separator();
+    }
 }
 
-fn timeline_view(ui: &mut egui::Ui, app: &mut Damus<'_>) {
+fn timeline_view(ui: &mut egui::Ui, app: &mut Damus) {
     ui.heading("Timeline");
 
     egui::ScrollArea::vertical()
         .auto_shrink([false; 2])
         .show(ui, |ui| {
-            for evid in &app.events {
-                if let Some(ev) = app.all_events.get(evid) {
-                    render_event(ui, &mut app.img_cache, ev);
-                    ui.separator();
-                }
-            }
+            render_events(ui, app);
         });
 }
 
-fn render_panel(ctx: &egui::Context, app: &mut Damus<'_>) {
+fn render_panel(ctx: &egui::Context, app: &mut Damus) {
     egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
         ui.horizontal_wrapped(|ui| {
             ui.visuals_mut().button_frame = false;
@@ -295,27 +377,26 @@ fn render_panel(ctx: &egui::Context, app: &mut Damus<'_>) {
                 app.n_panels += 1;
             }
 
-            if app.n_panels != 1 {
-                if ui
+            if app.n_panels != 1
+                && ui
                     .add(egui::Button::new("-").frame(false))
                     .on_hover_text("Remove Timeline")
                     .clicked()
-                {
-                    app.n_panels -= 1;
-                }
+            {
+                app.n_panels -= 1;
             }
         });
     });
 }
 
-fn render_damus_mobile(ctx: &egui::Context, app: &mut Damus<'_>) {
+fn render_damus_mobile(ctx: &egui::Context, app: &mut Damus) {
     let panel_width = ctx.input().screen_rect.width();
     egui::CentralPanel::default().show(ctx, |ui| {
         timeline_panel(ui, app, panel_width, 0);
     });
 }
 
-fn render_damus_desktop(ctx: &egui::Context, app: &mut Damus<'_>) {
+fn render_damus_desktop(ctx: &egui::Context, app: &mut Damus) {
     render_panel(ctx, app);
 
     let screen_size = ctx.input().screen_rect.width();
@@ -348,7 +429,7 @@ fn render_damus_desktop(ctx: &egui::Context, app: &mut Damus<'_>) {
     });
 }
 
-fn timeline_panel(ui: &mut egui::Ui, app: &mut Damus<'_>, panel_width: f32, ind: u32) {
+fn timeline_panel(ui: &mut egui::Ui, app: &mut Damus, panel_width: f32, ind: u32) {
     egui::SidePanel::left(format!("l{}", ind))
         .resizable(false)
         .max_width(panel_width)
@@ -358,15 +439,15 @@ fn timeline_panel(ui: &mut egui::Ui, app: &mut Damus<'_>, panel_width: f32, ind:
         });
 }
 
-fn add_test_events(damus: &mut Damus<'_>) {
+fn add_test_events(damus: &mut Damus) {
     // Examples of how to create different panels and windows.
     // Pick whichever suits you.
     // Tip: a good default choice is to just keep the `CentralPanel`.
     // For inspiration and more examples, go to https://emilk.github.io/egui
 
     let test_event = Event {
-        id: "6938e3cd841f3111dbdbd909f87fd52c3d1f1e4a07fd121d1243196e532811cb".to_string(),
-        pubkey: "f0a6ff7f70b872de6d82c8daec692a433fd23b6a49f25923c6f034df715cdeec".to_string(),
+        id: "6938e3cd841f3111dbdbd909f87fd52c3d1f1e4a07fd121d1243196e532811cb".to_string().into(),
+        pubkey: "f0a6ff7f70b872de6d82c8daec692a433fd23b6a49f25923c6f034df715cdeec".to_string().into(),
         created_at: 1667781968,
         kind: 1,
         tags: vec![],
@@ -375,8 +456,8 @@ fn add_test_events(damus: &mut Damus<'_>) {
     };
 
     let test_event2 = Event {
-        id: "6938e3cd841f3111dbdbd909f87fd52c3d1f1e4a07fd121d1243196e532811cb".to_string(),
-        pubkey: "32e1827635450ebb3c5a7d12c1f8e7b2b514439ac10a67eef3d9fd9c5c68e245".to_string(),
+        id: "6938e3cd841f3111dbdbd909f87fd52c3d1f1e4a07fd121d1243196e532811cb".to_string().into(),
+        pubkey: "32e1827635450ebb3c5a7d12c1f8e7b2b514439ac10a67eef3d9fd9c5c68e245".to_string().into(),
         created_at: 1667781968,
         kind: 1,
         tags: vec![],
@@ -391,7 +472,7 @@ fn add_test_events(damus: &mut Damus<'_>) {
         .all_events
         .insert(test_event2.id.clone(), test_event2.clone());
 
-    if damus.events.len() == 0 {
+    if damus.events.is_empty() {
         damus.events.push(test_event.id.clone());
         damus.events.push(test_event2.id.clone());
         damus.events.push(test_event.id.clone());
@@ -399,12 +480,12 @@ fn add_test_events(damus: &mut Damus<'_>) {
         damus.events.push(test_event.id.clone());
         damus.events.push(test_event2.id.clone());
         damus.events.push(test_event.id.clone());
-        damus.events.push(test_event2.id.clone());
-        damus.events.push(test_event.id.clone());
+        damus.events.push(test_event2.id);
+        damus.events.push(test_event.id);
     }
 }
 
-impl eframe::App for Damus<'_> {
+impl eframe::App for Damus {
     /// Called by the frame work to save state before shutdown.
     fn save(&mut self, _storage: &mut dyn eframe::Storage) {
         //eframe::set_value(storage, eframe::APP_KEY, self);

@@ -1,5 +1,6 @@
 mod app;
 //mod camera;
+mod contacts;
 mod error;
 
 pub use app::Damus;

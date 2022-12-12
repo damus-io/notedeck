@@ -58,9 +58,12 @@ impl Relay {
         })
     }
 
-    pub fn subscribe(&mut self, subid: String, filters: Vec<Filter>) {
-        let cmd = ClientMessage::req(subid, filters);
-        let txt = WsMessage::Text(cmd.to_json());
+    pub fn send(&mut self, msg: &ClientMessage) {
+        let txt = WsMessage::Text(msg.to_json());
         self.sender.send(txt);
+    }
+
+    pub fn subscribe(&mut self, subid: String, filters: Vec<Filter>) {
+        self.send(&ClientMessage::req(subid, filters));
     }
 }

@@ -1,19 +1,20 @@
+use crate::{EventId, Pubkey};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Debug, Eq, PartialEq, Clone)]
 pub struct Filter {
     #[serde(skip_serializing_if = "Option::is_none")]
-    ids: Option<Vec<String>>,
+    ids: Option<Vec<EventId>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    authors: Option<Vec<String>>,
+    authors: Option<Vec<Pubkey>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     kinds: Option<Vec<u64>>,
     #[serde(rename = "#e")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    events: Option<Vec<String>>,
+    events: Option<Vec<EventId>>,
     #[serde(rename = "#p")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pubkeys: Option<Vec<String>>,
+    pubkeys: Option<Vec<Pubkey>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     since: Option<u64>, // unix timestamp seconds
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -36,12 +37,12 @@ impl Filter {
         }
     }
 
-    pub fn ids(mut self, ids: Vec<String>) -> Self {
+    pub fn ids(mut self, ids: Vec<EventId>) -> Self {
         self.ids = Some(ids);
         self
     }
 
-    pub fn authors(mut self, authors: Vec<String>) -> Self {
+    pub fn authors(mut self, authors: Vec<Pubkey>) -> Self {
         self.authors = Some(authors);
         self
     }
@@ -51,12 +52,12 @@ impl Filter {
         self
     }
 
-    pub fn events(mut self, events: Vec<String>) -> Self {
+    pub fn events(mut self, events: Vec<EventId>) -> Self {
         self.events = Some(events);
         self
     }
 
-    pub fn pubkeys(mut self, pubkeys: Vec<String>) -> Self {
+    pub fn pubkeys(mut self, pubkeys: Vec<Pubkey>) -> Self {
         self.pubkeys = Some(pubkeys);
         self
     }

@@ -651,10 +651,12 @@ dependencies = [
  "poll-promise",
  "serde",
  "serde_derive",
+ "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",
  "tracing-wasm",
+ "wasm-bindgen-futures",
 ]
 
 [[package]]

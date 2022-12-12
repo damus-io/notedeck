@@ -1,4 +1,4 @@
-use crate::{Error, Result};
+use crate::{Error, Pubkey, Result};
 use serde_derive::{Deserialize, Serialize};
 use std::hash::{Hash, Hasher};
 
@@ -6,10 +6,10 @@ use std::hash::{Hash, Hasher};
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Event {
     /// 32-bytes sha256 of the the serialized event data
-    pub id: String,
+    pub id: EventId,
     /// 32-bytes hex-encoded public key of the event creator
     #[serde(rename = "pubkey")]
-    pub pubkey: String,
+    pub pubkey: Pubkey,
     /// unix timestamp in seconds
     pub created_at: u64,
     /// integer
@@ -26,7 +26,7 @@ pub struct Event {
 // Implement Hash trait
 impl Hash for Event {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.id.hash(state);
+        self.id.0.hash(state);
     }
 }
 
@@ -59,8 +59,8 @@ impl Event {
         sig: &str,
     ) -> Result<Self> {
         let event = Event {
-            id: id.to_string(),
-            pubkey: pubkey.to_string(),
+            id: id.to_string().into(),
+            pubkey: pubkey.to_string().into(),
             created_at,
             kind,
             tags,
@@ -77,5 +77,20 @@ impl std::str::FromStr for Event {
 
     fn from_str(s: &str) -> Result<Self> {
         Event::from_json(s)
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Eq, PartialEq, Clone, Hash)]
+pub struct EventId(String);
+
+impl From<String> for EventId {
+    fn from(s: String) -> Self {
+        EventId(s)
+    }
+}
+
+impl From<EventId> for String {
+    fn from(evid: EventId) -> Self {
+        evid.0
     }
 }
