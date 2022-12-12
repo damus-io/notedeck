@@ -1,13 +1,8 @@
-//use egui::TextureFilter;
-//use egui_android::SimpleApp;
 use egui_extras::RetainedImage;
 
-use enostr::{Filter, RelayEvent, RelayMessage};
-//use nostr_rust::events::Event;
-use poll_promise::Promise;
-//use std::borrow::{Borrow, Cow};
 use egui::Context;
-//use log::error;
+use enostr::{Filter, RelayEvent, RelayMessage};
+use poll_promise::Promise;
 use std::collections::HashMap;
 use std::hash::Hash;
 use tracing::{debug, error, info, warn};
@@ -38,7 +33,8 @@ pub struct Damus<'a> {
 
     pool: RelayPool,
 
-    events: Vec<Event>,
+    all_events: HashMap<String, Event>,
+    events: Vec<String>,
 
     img_cache: ImageCache<'a>,
 
@@ -52,6 +48,7 @@ impl Default for Damus<'_> {
             label: "Hello World!".to_owned(),
             state: DamusState::Initializing,
             composing: false,
+            all_events: HashMap::new(),
             pool: RelayPool::default(),
             events: vec![],
             img_cache: HashMap::new(),
@@ -93,11 +90,11 @@ fn try_process_event(damus: &mut Damus) {
     let ev = m_ev.unwrap();
     let relay = ev.relay.to_owned();
 
-    match &ev.event {
+    match ev.event {
         RelayEvent::Opened => send_initial_filters(&mut damus.pool, &relay),
         RelayEvent::Closed => warn!("{} connection closed", &relay), /* TODO: handle reconnects */
         RelayEvent::Other(msg) => debug!("Other ws message: {:?}", msg),
-        RelayEvent::Message(msg) => process_message(damus, &msg),
+        RelayEvent::Message(msg) => process_message(damus, &relay, msg),
     }
     //info!("recv {:?}", ev)
 }
@@ -112,8 +109,23 @@ fn update_damus(damus: &mut Damus, ctx: &egui::Context) {
     try_process_event(damus);
 }
 
-fn process_message(damus: &mut Damus, msg: &RelayMessage) {
-    info!("process message {:?}", msg);
+fn process_event(damus: &mut Damus, subid: &str, event: Event) {
+    if damus.all_events.get(&event.id).is_some() {
+        return;
+    }
+
+    let cloned_id = event.id.clone();
+    damus.all_events.insert(cloned_id.clone(), event);
+    damus.events.push(cloned_id);
+}
+
+fn process_message(damus: &mut Damus, relay: &str, msg: RelayMessage) {
+    match msg {
+        RelayMessage::Event(subid, ev) => process_event(damus, &subid, ev),
+        RelayMessage::Notice(msg) => warn!("Notice from {}: {}", relay, msg),
+        RelayMessage::OK(cr) => info!("OK {:?}", cr),
+        RelayMessage::Eose(sid) => info!("EOSE {}", sid),
+    }
 }
 
 fn render_damus(damus: &mut Damus, ctx: &Context) {
@@ -260,9 +272,11 @@ fn timeline_view(ui: &mut egui::Ui, app: &mut Damus<'_>) {
     egui::ScrollArea::vertical()
         .auto_shrink([false; 2])
         .show(ui, |ui| {
-            for ev in &app.events {
-                render_event(ui, &mut app.img_cache, ev);
-                ui.separator();
+            for evid in &app.events {
+                if let Some(ev) = app.all_events.get(evid) {
+                    render_event(ui, &mut app.img_cache, ev);
+                    ui.separator();
+                }
             }
         });
 }
@@ -370,16 +384,23 @@ fn add_test_events(damus: &mut Damus<'_>) {
         sig: "af02c971015995f79e07fa98aaf98adeeb6a56d0005e451ee4e78844cff712a6bc0f2109f72a878975f162dcefde4173b65ebd4c3d3ab3b520a9dcac6acf092d".to_string(),
     };
 
+    damus
+        .all_events
+        .insert(test_event.id.clone(), test_event.clone());
+    damus
+        .all_events
+        .insert(test_event2.id.clone(), test_event2.clone());
+
     if damus.events.len() == 0 {
-        damus.events.push(test_event.clone());
-        damus.events.push(test_event2.clone());
-        damus.events.push(test_event.clone());
-        damus.events.push(test_event2.clone());
-        damus.events.push(test_event.clone());
-        damus.events.push(test_event2.clone());
-        damus.events.push(test_event.clone());
-        damus.events.push(test_event2.clone());
-        damus.events.push(test_event.clone());
+        damus.events.push(test_event.id.clone());
+        damus.events.push(test_event2.id.clone());
+        damus.events.push(test_event.id.clone());
+        damus.events.push(test_event2.id.clone());
+        damus.events.push(test_event.id.clone());
+        damus.events.push(test_event2.id.clone());
+        damus.events.push(test_event.id.clone());
+        damus.events.push(test_event2.id.clone());
+        damus.events.push(test_event.id.clone());
     }
 }
 

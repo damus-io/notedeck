@@ -1,5 +1,6 @@
 use crate::{Error, Result};
 use serde_derive::{Deserialize, Serialize};
+use std::hash::{Hash, Hasher};
 
 /// Event is the struct used to represent a Nostr event
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -20,6 +21,13 @@ pub struct Event {
     pub content: String,
     /// 64-bytes signature of the sha256 hash of the serialized event data, which is the same as the "id" field
     pub sig: String,
+}
+
+// Implement Hash trait
+impl Hash for Event {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
+    }
 }
 
 impl PartialEq for Event {
