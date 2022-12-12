@@ -46,9 +46,9 @@ impl PartialEq for Relay {
 impl Eq for Relay {}
 
 impl Relay {
-    pub fn new(url: String) -> Result<Self> {
+    pub fn new(url: String, wakeup: impl Fn() + Send + Sync + 'static) -> Result<Self> {
         let status = RelayStatus::Connecting;
-        let (sender, receiver) = ewebsock::connect(&url)?;
+        let (sender, receiver) = ewebsock::connect_with_wakeup(&url, wakeup)?;
 
         Ok(Self {
             url,

@@ -1,6 +1,7 @@
 use crate::relay::message::RelayEvent;
 use crate::relay::Relay;
 use crate::Result;
+use tracing::error;
 
 #[derive(Debug)]
 pub struct PoolMessage<'a> {
@@ -20,8 +21,8 @@ impl Default for RelayPool {
 
 impl RelayPool {
     // Constructs a new, empty RelayPool.
-    pub fn new(relays: Vec<Relay>) -> RelayPool {
-        RelayPool { relays: relays }
+    pub fn new() -> RelayPool {
+        RelayPool { relays: vec![] }
     }
 
     pub fn has(&self, url: &str) -> bool {
@@ -34,8 +35,12 @@ impl RelayPool {
     }
 
     // Adds a websocket url to the RelayPool.
-    pub fn add_url(&mut self, url: String) -> Result<()> {
-        let relay = Relay::new(url)?;
+    pub fn add_url(
+        &mut self,
+        url: String,
+        wakeup: impl Fn() + Send + Sync + 'static,
+    ) -> Result<()> {
+        let relay = Relay::new(url, wakeup)?;
 
         self.relays.push(relay);
 
@@ -45,12 +50,18 @@ impl RelayPool {
     pub fn try_recv(&self) -> Option<PoolMessage<'_>> {
         for relay in &self.relays {
             if let Some(msg) = relay.receiver.try_recv() {
-                if let Ok(event) = msg.try_into() {
-                    let pmsg = PoolMessage {
-                        event,
-                        relay: &relay.url,
-                    };
-                    return Some(pmsg);
+                match msg.try_into() {
+                    Ok(event) => {
+                        return Some(PoolMessage {
+                            event,
+                            relay: &relay.url,
+                        });
+                    }
+
+                    Err(e) => {
+                        error!("{:?}", e);
+                        continue;
+                    }
                 }
             }
         }

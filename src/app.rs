@@ -6,10 +6,10 @@ use egui_extras::RetainedImage;
 use poll_promise::Promise;
 //use std::borrow::{Borrow, Cow};
 use egui::Context;
-use log::error;
+//use log::error;
 use std::collections::HashMap;
 use std::hash::Hash;
-use tracing::debug;
+use tracing::{debug, error, info};
 
 use enostr::{Event, RelayPool};
 
@@ -21,28 +21,26 @@ enum UrlKey<'a> {
 
 type ImageCache<'a> = HashMap<UrlKey<'a>, Promise<ehttp::Result<RetainedImage>>>;
 
+#[derive(Eq, PartialEq, Clone)]
+pub enum DamusState {
+    Initializing,
+    Initialized,
+}
+
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
-#[derive(serde::Deserialize, serde::Serialize)]
-#[serde(default)] // if we add new fields, give them default values when deserializing old state
 pub struct Damus<'a> {
     // Example stuff:
     label: String,
-
+    state: DamusState,
     composing: bool,
-
     n_panels: u32,
 
-    #[serde(skip)]
     pool: RelayPool,
 
-    #[serde(skip)]
     events: Vec<Event>,
 
-    #[serde(skip)]
     img_cache: ImageCache<'a>,
 
-    // this how you opt-out of serialization of a member
-    #[serde(skip)]
     value: f32,
 }
 
@@ -51,6 +49,7 @@ impl Default for Damus<'_> {
         Self {
             // Example stuff:
             label: "Hello World!".to_owned(),
+            state: DamusState::Initializing,
             composing: false,
             pool: RelayPool::default(),
             events: vec![],
@@ -66,8 +65,24 @@ pub fn is_mobile(ctx: &egui::Context) -> bool {
     screen_size.x < 550.0
 }
 
-fn damus_update(damus: &mut Damus, ctx: &Context) {
-    render_damus(damus, ctx);
+fn relay_setup(pool: &mut RelayPool, ctx: &egui::Context) {
+    let ctx = ctx.clone();
+    let wakeup = move || ctx.request_repaint();
+    if let Err(e) = pool.add_url("wss://relay.damus.io".to_string(), wakeup) {
+        error!("{:?}", e)
+    }
+}
+
+fn update_damus(damus: &mut Damus, ctx: &egui::Context) {
+    if damus.state == DamusState::Initializing {
+        damus.pool = RelayPool::new();
+        relay_setup(&mut damus.pool, ctx);
+        damus.state = DamusState::Initialized;
+    }
+
+    if let Some(ev) = damus.pool.try_recv() {
+        info!("recv {:?}", ev)
+    }
 }
 
 fn render_damus(damus: &mut Damus, ctx: &Context) {
@@ -94,9 +109,7 @@ impl Damus<'_> {
         //return eframe::get_value(storage, eframe::APP_KEY).unwrap_or_default();
         //}
 
-        let mut d: Self = Default::default();
-        d.add_test_events();
-        d
+        Default::default()
     }
 }
 
@@ -348,7 +361,8 @@ impl eframe::App for Damus<'_> {
     /// Called each time the UI needs repainting, which may be many times per second.
     /// Put your widgets into a `SidePanel`, `TopPanel`, `CentralPanel`, `Window` or `Area`.
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        damus_update(self, ctx);
+        update_damus(self, ctx);
+        render_damus(self, ctx);
     }
 }
 
