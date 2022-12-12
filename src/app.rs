@@ -1,7 +1,7 @@
 use egui_extras::RetainedImage;
 
 use crate::contacts::Contacts;
-use crate::Result;
+use crate::{Error, Result};
 use egui::Context;
 use enostr::{ClientMessage, EventId, Filter, Profile, Pubkey, RelayEvent, RelayMessage};
 use poll_promise::Promise;
@@ -260,7 +260,7 @@ fn fetch_img_from_net(ctx: &egui::Context, url: &str) -> Promise<Result<Retained
     let request = ehttp::Request::get(url);
     let ctx = ctx.clone();
     ehttp::fetch(request, move |response| {
-        let image = response.map_err(Into::into).and_then(parse_response);
+        let image = response.map_err(Error::Generic).and_then(parse_response);
         sender.send(image); // send the results back to the UI thread.
         ctx.request_repaint();
     });
@@ -276,7 +276,6 @@ fn render_pfp(ui: &mut egui::Ui, img_cache: &mut ImageCache, url: &str) {
     }
 
     let pfp_size = 50.0;
-    let no_pfp_url = "https://damus.io/img/no-profile.svg";
 
     match img_cache[&urlkey].ready() {
         None => {
@@ -284,10 +283,14 @@ fn render_pfp(ui: &mut egui::Ui, img_cache: &mut ImageCache, url: &str) {
         }
         Some(Err(_err)) => {
             let failed_key = UrlKey::Failed(url).to_u64();
+            debug!(
+                "has failed promise? {}",
+                img_cache.contains_key(&failed_key)
+            );
             let m_failed_promise = img_cache.get_mut(&failed_key);
             if m_failed_promise.is_none() {
-                debug!("failed key: {:?}", &failed_key);
-                let no_pfp = fetch_img(ui.ctx(), no_pfp_url);
+                warn!("failed key: {:?}", &failed_key);
+                let no_pfp = fetch_img(ui.ctx(), no_pfp_url());
                 img_cache.insert(failed_key, no_pfp);
             }
 
@@ -323,6 +326,10 @@ fn render_username(ui: &mut egui::Ui, pk: &str) {
     });
 }
 
+fn no_pfp_url() -> &'static str {
+    "https://damus.io/img/no-profile.svg"
+}
+
 fn render_events(ui: &mut egui::Ui, damus: &mut Damus) {
     for evid in &damus.events {
         if !damus.all_events.contains_key(evid) {
@@ -332,14 +339,14 @@ fn render_events(ui: &mut egui::Ui, damus: &mut Damus) {
         ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
             let ev = damus.all_events.get(evid).unwrap();
 
-            let m_pic = damus
+            match damus
                 .contacts
                 .profiles
                 .get(&ev.pubkey)
-                .and_then(|p| p.picture());
-
-            if let Some(pic) = m_pic {
-                render_pfp(ui, &mut damus.img_cache, pic);
+                .and_then(|p| p.picture())
+            {
+                Some(pic) => render_pfp(ui, &mut damus.img_cache, pic),
+                None => render_pfp(ui, &mut damus.img_cache, no_pfp_url()),
             }
 
             ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {

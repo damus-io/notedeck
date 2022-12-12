@@ -4,6 +4,7 @@ mod contacts;
 mod error;
 
 pub use app::Damus;
+pub use error::Error;
 
 pub type Result<T> = std::result::Result<T, error::Error>;
 
