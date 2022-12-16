@@ -396,9 +396,19 @@ fn render_panel(ctx: &egui::Context, app: &mut Damus) {
     });
 }
 
+fn set_app_style(ui: &mut egui::Ui) {
+    if ui.visuals().dark_mode {
+        ui.visuals_mut().override_text_color = Some(egui::Color32::WHITE);
+        ui.visuals_mut().panel_fill = egui::Color32::from_rgb(30, 30, 30);
+    } else {
+        ui.visuals_mut().override_text_color = Some(egui::Color32::BLACK);
+    };
+}
+
 fn render_damus_mobile(ctx: &egui::Context, app: &mut Damus) {
     let panel_width = ctx.input().screen_rect.width();
     egui::CentralPanel::default().show(ctx, |ui| {
+        set_app_style(ui);
         timeline_panel(ui, app, panel_width, 0);
     });
 }
@@ -419,6 +429,7 @@ fn render_damus_desktop(ctx: &egui::Context, app: &mut Damus) {
     if app.n_panels == 1 {
         let panel_width = ctx.input().screen_rect.width();
         egui::CentralPanel::default().show(ctx, |ui| {
+            set_app_style(ui);
             timeline_panel(ui, app, panel_width, 0);
         });
 
@@ -426,6 +437,7 @@ fn render_damus_desktop(ctx: &egui::Context, app: &mut Damus) {
     }
 
     egui::CentralPanel::default().show(ctx, |ui| {
+        set_app_style(ui);
         egui::ScrollArea::horizontal()
             .auto_shrink([false; 2])
             .show(ui, |ui| {
