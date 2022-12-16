@@ -317,12 +317,18 @@ fn pfp_image(ui: &mut egui::Ui, img: &RetainedImage, size: f32) -> egui::Respons
     img.show_max_size(ui, egui::vec2(size, size))
 }
 
-fn render_username(ui: &mut egui::Ui, pk: &str) {
+fn render_username(ui: &mut egui::Ui, contacts: &Contacts, pk: &Pubkey) {
     ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 0.0;
-        ui.label(&pk[0..8]);
+        //ui.spacing_mut().item_spacing.x = 0.0;
+        if let Some(prof) = contacts.profiles.get(pk) {
+            if let Some(display_name) = prof.display_name() {
+                ui.label(display_name);
+            }
+        }
+
+        ui.label(&pk.as_ref()[0..8]);
         ui.label(":");
-        ui.label(&pk[64 - 8..]);
+        ui.label(&pk.as_ref()[64 - 8..]);
     });
 }
 
@@ -345,12 +351,14 @@ fn render_events(ui: &mut egui::Ui, damus: &mut Damus) {
                 .get(&ev.pubkey)
                 .and_then(|p| p.picture())
             {
+                // these have different lifetimes and types,
+                // so the calls must be separate
                 Some(pic) => render_pfp(ui, &mut damus.img_cache, pic),
                 None => render_pfp(ui, &mut damus.img_cache, no_pfp_url()),
             }
 
             ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
-                render_username(ui, ev.pubkey.as_ref());
+                render_username(ui, &damus.contacts, &ev.pubkey);
 
                 ui.label(&ev.content);
             })
