@@ -78,7 +78,10 @@ fn relay_setup(pool: &mut RelayPool, ctx: &egui::Context) {
 }
 
 fn send_initial_filters(pool: &mut RelayPool, relay_url: &str) {
-    let filter = Filter::new().limit(100).kinds(vec![1, 42]);
+    let filter = Filter::new().limit(100).kinds(vec![1, 42]).pubkeys(
+        ["32e1827635450ebb3c5a7d12c1f8e7b2b514439ac10a67eef3d9fd9c5c68e245".into()].into(),
+    );
+
     let subid = "initial";
     for relay in &mut pool.relays {
         if relay.url == relay_url {

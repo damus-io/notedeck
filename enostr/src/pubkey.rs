@@ -15,6 +15,12 @@ impl From<String> for Pubkey {
     }
 }
 
+impl From<&str> for Pubkey {
+    fn from(s: &str) -> Self {
+        Pubkey(s.to_owned())
+    }
+}
+
 impl From<Pubkey> for String {
     fn from(pk: Pubkey) -> Self {
         pk.0
