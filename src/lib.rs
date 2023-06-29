@@ -2,6 +2,7 @@ mod app;
 //mod camera;
 mod contacts;
 mod error;
+mod parser;
 
 pub use app::Damus;
 pub use error::Error;
