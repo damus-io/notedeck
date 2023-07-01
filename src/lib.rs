@@ -3,6 +3,7 @@ mod app;
 mod contacts;
 mod error;
 mod parser;
+mod result;
 
 pub use app::Damus;
 pub use error::Error;
