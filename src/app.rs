@@ -1,6 +1,7 @@
 use egui_extras::RetainedImage;
 
 use crate::contacts::Contacts;
+use crate::fonts::setup_fonts;
 use crate::{Error, Result};
 use egui::Context;
 use enostr::{ClientMessage, EventId, Filter, Profile, Pubkey, RelayEvent, RelayMessage};
@@ -111,6 +112,7 @@ fn try_process_event(damus: &mut Damus) {
 
 fn update_damus(damus: &mut Damus, ctx: &egui::Context) {
     if damus.state == DamusState::Initializing {
+        setup_fonts(ctx);
         damus.pool = RelayPool::new();
         relay_setup(&mut damus.pool, ctx);
         damus.state = DamusState::Initialized;
@@ -235,7 +237,7 @@ impl Damus {
 }
 
 #[allow(clippy::needless_pass_by_value)]
-fn parse_response(response: ehttp::Response) -> Result<RetainedImage> {
+fn parse_img_response(response: ehttp::Response) -> Result<RetainedImage> {
     let content_type = response.content_type().unwrap_or_default();
 
     if content_type.starts_with("image/svg") {
@@ -263,7 +265,9 @@ fn fetch_img_from_net(ctx: &egui::Context, url: &str) -> Promise<Result<Retained
     let request = ehttp::Request::get(url);
     let ctx = ctx.clone();
     ehttp::fetch(request, move |response| {
-        let image = response.map_err(Error::Generic).and_then(parse_response);
+        let image = response
+            .map_err(Error::Generic)
+            .and_then(parse_img_response);
         sender.send(image); // send the results back to the UI thread.
         ctx.request_repaint();
     });
@@ -318,6 +322,7 @@ fn render_pfp(ui: &mut egui::Ui, img_cache: &mut ImageCache, url: &str) {
 
 fn pfp_image(ui: &mut egui::Ui, img: &RetainedImage, size: f32) -> egui::Response {
     img.show_max_size(ui, egui::vec2(size, size))
+    //.with_options()
 }
 
 fn render_username(ui: &mut egui::Ui, contacts: &Contacts, pk: &Pubkey) {
@@ -329,9 +334,11 @@ fn render_username(ui: &mut egui::Ui, contacts: &Contacts, pk: &Pubkey) {
             }
         }
 
+        /*
         ui.label(&pk.as_ref()[0..8]);
         ui.label(":");
         ui.label(&pk.as_ref()[64 - 8..]);
+        */
     });
 }
 

@@ -2,6 +2,10 @@ mod app;
 //mod camera;
 mod contacts;
 mod error;
+//mod note;
+//mod block;
+mod fonts;
+mod images;
 mod parser;
 mod result;
 
