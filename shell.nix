@@ -26,10 +26,10 @@ mkShell {
     heaptrack
 
     # android
-    jre openssl libiconv androidsdk
+    #jre openssl libiconv androidsdk
   ];
 
-  ANDROID_HOME = android-home;
-  NDK_HOME = ndk-home;
+  #ANDROID_HOME = android-home;
+  #NDK_HOME = ndk-home;
   LD_LIBRARY_PATH="${x11libs}";
 }
