@@ -6,7 +6,6 @@ mod error;
 //mod block;
 mod fonts;
 mod images;
-mod parser;
 mod result;
 
 pub use app::Damus;
