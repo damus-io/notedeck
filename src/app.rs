@@ -334,16 +334,12 @@ fn render_events(ui: &mut egui::Ui, damus: &mut Damus) {
             ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
                 render_username(ui, &damus.contacts, &ev.pubkey);
 
-                selectable_text(ui, &ev.content);
+                ui.label(&ev.content);
             })
         });
 
         ui.separator();
     }
-}
-
-fn selectable_text(ui: &mut egui::Ui, mut text: &str) {
-    ui.add(egui::TextEdit::multiline(&mut text));
 }
 
 fn timeline_view(ui: &mut egui::Ui, app: &mut Damus) {
