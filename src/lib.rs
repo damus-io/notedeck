@@ -7,6 +7,7 @@ mod error;
 mod fonts;
 mod images;
 mod result;
+mod ui;
 
 pub use app::Damus;
 pub use error::Error;

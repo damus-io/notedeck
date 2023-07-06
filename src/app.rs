@@ -1,10 +1,11 @@
-use egui_extras::RetainedImage;
-
 use crate::contacts::Contacts;
 use crate::fonts::setup_fonts;
 use crate::images::fetch_img;
-use crate::{Error, Result};
-use egui::{ColorImage, Context, Key, TextureHandle, TextureId};
+use crate::ui::padding;
+use crate::Result;
+use egui::containers::scroll_area::ScrollBarVisibility;
+use egui::widgets::Spinner;
+use egui::{Color32, Context, Frame, TextureHandle, TextureId};
 use enostr::{ClientMessage, EventId, Filter, Profile, Pubkey, RelayEvent, RelayMessage};
 use poll_promise::Promise;
 use std::collections::{HashMap, HashSet};
@@ -47,6 +48,7 @@ pub struct Damus {
     events: Vec<EventId>,
 
     img_cache: ImageCache,
+    bg_color: Color32,
 }
 
 impl Default for Damus {
@@ -59,6 +61,7 @@ impl Default for Damus {
             events: vec![],
             img_cache: HashMap::new(),
             n_panels: 1,
+            bg_color: Color32::from_rgb(31, 31, 31),
         }
     }
 }
@@ -94,7 +97,7 @@ fn send_initial_filters(pool: &mut RelayPool, relay_url: &str) {
 }
 
 fn try_process_event(damus: &mut Damus, ctx: &egui::Context) {
-    let amount = 0.1;
+    let amount = 0.2;
     if ctx.input(|i| i.key_pressed(egui::Key::PlusEquals)) {
         ctx.set_pixels_per_point(ctx.pixels_per_point() + amount);
     } else if ctx.input(|i| i.key_pressed(egui::Key::Minus)) {
@@ -250,11 +253,11 @@ fn render_pfp(ui: &mut egui::Ui, img_cache: &mut ImageCache, url: &str) {
         img_cache.insert(urlkey, fetch_img(ui.ctx(), url));
     }
 
-    let pfp_size = 50.0;
+    let pfp_size = 40.0;
 
     match img_cache[&urlkey].ready() {
         None => {
-            ui.spinner(); // still loading
+            ui.add(Spinner::new().size(40.0));
         }
         Some(Err(_err)) => {
             let failed_key = UrlKey::Failed(url).to_u64();
@@ -299,7 +302,7 @@ fn render_username(ui: &mut egui::Ui, contacts: &Contacts, pk: &Pubkey) {
         //ui.spacing_mut().item_spacing.x = 0.0;
         if let Some(prof) = contacts.profiles.get(pk) {
             if let Some(display_name) = prof.display_name() {
-                ui.label(display_name);
+                ui.strong(display_name);
             }
         }
 
@@ -324,22 +327,24 @@ fn render_events(ui: &mut egui::Ui, damus: &mut Damus) {
         ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
             let ev = damus.all_events.get(evid).unwrap();
 
-            match damus
-                .contacts
-                .profiles
-                .get(&ev.pubkey)
-                .and_then(|p| p.picture())
-            {
-                // these have different lifetimes and types,
-                // so the calls must be separate
-                Some(pic) => render_pfp(ui, &mut damus.img_cache, pic),
-                None => render_pfp(ui, &mut damus.img_cache, no_pfp_url()),
-            }
+            padding(10.0, ui, |ui| {
+                match damus
+                    .contacts
+                    .profiles
+                    .get(&ev.pubkey)
+                    .and_then(|p| p.picture())
+                {
+                    // these have different lifetimes and types,
+                    // so the calls must be separate
+                    Some(pic) => render_pfp(ui, &mut damus.img_cache, pic),
+                    None => render_pfp(ui, &mut damus.img_cache, no_pfp_url()),
+                }
 
-            ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
-                render_username(ui, &damus.contacts, &ev.pubkey);
+                ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                    render_username(ui, &damus.contacts, &ev.pubkey);
 
-                ui.label(&ev.content);
+                    ui.weak(&ev.content);
+                })
             })
         });
 
@@ -348,9 +353,10 @@ fn render_events(ui: &mut egui::Ui, damus: &mut Damus) {
 }
 
 fn timeline_view(ui: &mut egui::Ui, app: &mut Damus) {
-    ui.heading("Timeline");
+    padding(10.0, ui, |ui| ui.heading("Timeline"));
 
     egui::ScrollArea::vertical()
+        .scroll_bar_visibility(ScrollBarVisibility::AlwaysHidden)
         .auto_shrink([false; 2])
         .show(ui, |ui| {
             render_events(ui, app);
@@ -415,29 +421,34 @@ fn render_damus_desktop(ctx: &egui::Context, app: &mut Damus) {
 
     if app.n_panels == 1 {
         let panel_width = ctx.screen_rect().width();
-        egui::CentralPanel::default().show(ctx, |ui| {
-            set_app_style(ui);
-            timeline_panel(ui, app, panel_width, 0);
-        });
+        egui::CentralPanel::default()
+            .frame(Frame::default().fill(app.bg_color))
+            .show(ctx, |ui| {
+                set_app_style(ui);
+                timeline_panel(ui, app, panel_width, 0);
+            });
 
         return;
     }
 
-    egui::CentralPanel::default().show(ctx, |ui| {
-        set_app_style(ui);
-        egui::ScrollArea::horizontal()
-            .auto_shrink([false; 2])
-            .show(ui, |ui| {
-                for ind in 0..app.n_panels {
-                    timeline_panel(ui, app, panel_width, ind);
-                }
-            });
-    });
+    egui::CentralPanel::default()
+        .frame(Frame::default().fill(app.bg_color))
+        .show(ctx, |ui| {
+            set_app_style(ui);
+            egui::ScrollArea::horizontal()
+                .auto_shrink([false; 2])
+                .show(ui, |ui| {
+                    for ind in 0..app.n_panels {
+                        timeline_panel(ui, app, panel_width, ind);
+                    }
+                });
+        });
 }
 
 fn timeline_panel(ui: &mut egui::Ui, app: &mut Damus, panel_width: f32, ind: u32) {
     egui::SidePanel::left(format!("l{}", ind))
         .resizable(false)
+        .frame(Frame::none().fill(app.bg_color))
         .max_width(panel_width)
         .min_width(panel_width)
         .show_inside(ui, |ui| {
