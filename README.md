@@ -1,5 +1,3 @@
-# damus
+# Damus NoteDeck
 
-codename: domus
-
-The final damus client
+A tweetdeck-style multiplatform nostr client
