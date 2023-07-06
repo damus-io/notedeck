@@ -4,7 +4,7 @@ use crate::contacts::Contacts;
 use crate::fonts::setup_fonts;
 use crate::images::fetch_img;
 use crate::{Error, Result};
-use egui::{ColorImage, Context, TextureHandle, TextureId};
+use egui::{ColorImage, Context, Key, TextureHandle, TextureId};
 use enostr::{ClientMessage, EventId, Filter, Profile, Pubkey, RelayEvent, RelayMessage};
 use poll_promise::Promise;
 use std::collections::{HashMap, HashSet};
@@ -93,20 +93,25 @@ fn send_initial_filters(pool: &mut RelayPool, relay_url: &str) {
     }
 }
 
-fn try_process_event(damus: &mut Damus) {
-    let m_ev = damus.pool.try_recv();
-    if m_ev.is_none() {
-        return;
+fn try_process_event(damus: &mut Damus, ctx: &egui::Context) {
+    let amount = 0.1;
+    if ctx.input(|i| i.key_pressed(egui::Key::PlusEquals)) {
+        ctx.set_pixels_per_point(ctx.pixels_per_point() + amount);
+    } else if ctx.input(|i| i.key_pressed(egui::Key::Minus)) {
+        ctx.set_pixels_per_point(ctx.pixels_per_point() - amount);
     }
-    let ev = m_ev.unwrap();
-    let relay = ev.relay.to_owned();
 
-    match ev.event {
-        RelayEvent::Opened => send_initial_filters(&mut damus.pool, &relay),
-        // TODO: handle reconnects
-        RelayEvent::Closed => warn!("{} connection closed", &relay),
-        RelayEvent::Other(msg) => debug!("other event {:?}", &msg),
-        RelayEvent::Message(msg) => process_message(damus, &relay, msg),
+    // pool stuff
+    if let Some(ev) = damus.pool.try_recv() {
+        let relay = ev.relay.to_owned();
+
+        match ev.event {
+            RelayEvent::Opened => send_initial_filters(&mut damus.pool, &relay),
+            // TODO: handle reconnects
+            RelayEvent::Closed => warn!("{} connection closed", &relay),
+            RelayEvent::Other(msg) => debug!("other event {:?}", &msg),
+            RelayEvent::Message(msg) => process_message(damus, &relay, msg),
+        }
     }
     //info!("recv {:?}", ev)
 }
@@ -119,7 +124,7 @@ fn update_damus(damus: &mut Damus, ctx: &egui::Context) {
         damus.state = DamusState::Initialized;
     }
 
-    try_process_event(damus);
+    try_process_event(damus, ctx);
 }
 
 fn process_metadata_event(damus: &mut Damus, ev: &Event) {
