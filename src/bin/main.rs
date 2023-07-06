@@ -15,7 +15,7 @@ async fn main() {
 
     let native_options = eframe::NativeOptions::default();
     let _res = eframe::run_native(
-        "Damus Desktop",
+        "Damus NoteDeck",
         native_options,
         Box::new(|_cc| Box::new(Damus::new())),
     );

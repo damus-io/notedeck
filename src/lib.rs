@@ -33,7 +33,7 @@ pub fn android_main(app: AndroidApp) {
     }));
 
     eframe::run_native(
-        "Damus Desktop",
+        "Damus NoteDeck",
         options,
         Box::new(|_cc| Box::new(Damus::new())),
     );
