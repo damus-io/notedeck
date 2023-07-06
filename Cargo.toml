@@ -12,10 +12,10 @@ crate-type = ["lib", "cdylib"]
 
 [dependencies]
 #egui-android = { git = "https://github.com/jb55/egui-android.git" }  
-egui = "0.20.0"
-eframe = { version = "0.20.0", features = [ "wgpu" ] }
+egui = "0.22.0"
+eframe = { version = "0.22.0", features = [ "wgpu" ] }
 #eframe = "0.20.0"
-egui_extras = { version = "0.20.0", features = ["image", "svg"] }
+egui_extras = { version = "0.22.0", features = ["image", "svg"] }
 ehttp = "0.2.0"
 image = { version = "0.24", features = ["jpeg", "png", "webp"] }
 log = "0.4.17"

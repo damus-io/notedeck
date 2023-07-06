@@ -64,7 +64,7 @@ impl Default for Damus {
 }
 
 pub fn is_mobile(ctx: &egui::Context) -> bool {
-    let screen_size = ctx.input().screen_rect().size();
+    let screen_size = ctx.screen_rect().size();
     screen_size.x < 550.0
 }
 
@@ -388,7 +388,7 @@ fn set_app_style(ui: &mut egui::Ui) {
 }
 
 fn render_damus_mobile(ctx: &egui::Context, app: &mut Damus) {
-    let panel_width = ctx.input().screen_rect.width();
+    let panel_width = ctx.screen_rect().width();
     egui::CentralPanel::default().show(ctx, |ui| {
         set_app_style(ui);
         timeline_panel(ui, app, panel_width, 0);
@@ -398,7 +398,7 @@ fn render_damus_mobile(ctx: &egui::Context, app: &mut Damus) {
 fn render_damus_desktop(ctx: &egui::Context, app: &mut Damus) {
     render_panel(ctx, app);
 
-    let screen_size = ctx.input().screen_rect.width();
+    let screen_size = ctx.screen_rect().width();
     let calc_panel_width = (screen_size / app.n_panels as f32) - 30.0;
     let min_width = 300.0;
     let need_scroll = calc_panel_width < min_width;
@@ -409,7 +409,7 @@ fn render_damus_desktop(ctx: &egui::Context, app: &mut Damus) {
     };
 
     if app.n_panels == 1 {
-        let panel_width = ctx.input().screen_rect.width();
+        let panel_width = ctx.screen_rect().width();
         egui::CentralPanel::default().show(ctx, |ui| {
             set_app_style(ui);
             timeline_panel(ui, app, panel_width, 0);

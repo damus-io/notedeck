@@ -14,7 +14,7 @@ async fn main() {
     tracing_subscriber::fmt::init();
 
     let native_options = eframe::NativeOptions::default();
-    eframe::run_native(
+    let _res = eframe::run_native(
         "Damus Desktop",
         native_options,
         Box::new(|_cc| Box::new(Damus::new())),
