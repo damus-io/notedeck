@@ -2,8 +2,9 @@ use egui_extras::RetainedImage;
 
 use crate::contacts::Contacts;
 use crate::fonts::setup_fonts;
+use crate::images::fetch_img;
 use crate::{Error, Result};
-use egui::Context;
+use egui::{ColorImage, Context, TextureHandle, TextureId};
 use enostr::{ClientMessage, EventId, Filter, Profile, Pubkey, RelayEvent, RelayMessage};
 use poll_promise::Promise;
 use std::collections::{HashMap, HashSet};
@@ -26,7 +27,7 @@ impl UrlKey<'_> {
     }
 }
 
-type ImageCache = HashMap<u64, Promise<Result<RetainedImage>>>;
+type ImageCache = HashMap<u64, Promise<Result<TextureHandle>>>;
 
 #[derive(Eq, PartialEq, Clone)]
 pub enum DamusState {
@@ -236,44 +237,6 @@ impl Damus {
     }
 }
 
-#[allow(clippy::needless_pass_by_value)]
-fn parse_img_response(response: ehttp::Response) -> Result<RetainedImage> {
-    let content_type = response.content_type().unwrap_or_default();
-
-    if content_type.starts_with("image/svg") {
-        Ok(RetainedImage::from_svg_bytes(
-            &response.url,
-            &response.bytes,
-        )?)
-    } else if content_type.starts_with("image/") {
-        Ok(RetainedImage::from_image_bytes(
-            &response.url,
-            &response.bytes,
-        )?)
-    } else {
-        Err(format!("Expected image, found content-type {:?}", content_type).into())
-    }
-}
-
-fn fetch_img(ctx: &egui::Context, url: &str) -> Promise<Result<RetainedImage>> {
-    // TODO: fetch image from local cache
-    fetch_img_from_net(ctx, url)
-}
-
-fn fetch_img_from_net(ctx: &egui::Context, url: &str) -> Promise<Result<RetainedImage>> {
-    let (sender, promise) = Promise::new();
-    let request = ehttp::Request::get(url);
-    let ctx = ctx.clone();
-    ehttp::fetch(request, move |response| {
-        let image = response
-            .map_err(Error::Generic)
-            .and_then(parse_img_response);
-        sender.send(image); // send the results back to the UI thread.
-        ctx.request_repaint();
-    });
-    promise
-}
-
 fn render_pfp(ui: &mut egui::Ui, img_cache: &mut ImageCache, url: &str) {
     let urlkey = UrlKey::Orig(url).to_u64();
     let m_cached_promise = img_cache.get(&urlkey);
@@ -310,18 +273,19 @@ fn render_pfp(ui: &mut egui::Ui, img_cache: &mut ImageCache, url: &str) {
                     ui.label("❌");
                 }
                 Some(Ok(img)) => {
-                    pfp_image(ui, img, pfp_size);
+                    pfp_image(ui, img.into(), pfp_size);
                 }
             }
         }
         Some(Ok(img)) => {
-            pfp_image(ui, img, pfp_size);
+            pfp_image(ui, img.into(), pfp_size);
         }
     }
 }
 
-fn pfp_image(ui: &mut egui::Ui, img: &RetainedImage, size: f32) -> egui::Response {
-    img.show_max_size(ui, egui::vec2(size, size))
+fn pfp_image(ui: &mut egui::Ui, img: TextureId, size: f32) -> egui::Response {
+    //img.show_max_size(ui, egui::vec2(size, size))
+    ui.image(img, egui::vec2(size, size))
     //.with_options()
 }
 

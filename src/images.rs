@@ -1,4 +1,9 @@
-use egui::{Color32, ColorImage};
+use crate::error::Error;
+use crate::result::Result;
+use egui::{Color32, ColorImage, TextureHandle};
+use egui_extras::image::FitTo;
+use image::imageops::FilterType;
+use poll_promise::Promise;
 
 pub fn round_image(image: &mut ColorImage) {
     // The radius to the edge of of the avatar circle
@@ -42,4 +47,67 @@ pub fn round_image(image: &mut ColorImage) {
             *pixel = Color32::TRANSPARENT;
         }
     }
+}
+
+fn process_pfp_bitmap(size: u32, image: &mut image::DynamicImage) -> ColorImage {
+    // Crop square
+    let smaller = image.width().min(image.height());
+
+    if image.width() > smaller {
+        let excess = image.width() - smaller;
+        *image = image.crop_imm(excess / 2, 0, image.width() - excess, image.height());
+    } else if image.height() > smaller {
+        let excess = image.height() - smaller;
+        *image = image.crop_imm(0, excess / 2, image.width(), image.height() - excess);
+    }
+    let image = image.resize(size, size, FilterType::CatmullRom); // DynamicImage
+    let image_buffer = image.into_rgba8(); // RgbaImage (ImageBuffer)
+    let mut color_image = ColorImage::from_rgba_unmultiplied(
+        [
+            image_buffer.width() as usize,
+            image_buffer.height() as usize,
+        ],
+        image_buffer.as_flat_samples().as_slice(),
+    );
+    round_image(&mut color_image);
+    color_image
+}
+
+fn parse_img_response(response: ehttp::Response) -> Result<ColorImage> {
+    let content_type = response.content_type().unwrap_or_default();
+    let size: u32 = 100;
+
+    if content_type.starts_with("image/svg") {
+        let mut color_image =
+            egui_extras::image::load_svg_bytes_with_size(&response.bytes, FitTo::Size(size, size))?;
+        round_image(&mut color_image);
+        Ok(color_image)
+    } else if content_type.starts_with("image/") {
+        let mut dyn_image = image::load_from_memory(&response.bytes)?;
+        Ok(process_pfp_bitmap(size, &mut dyn_image))
+    } else {
+        Err(format!("Expected image, found content-type {:?}", content_type).into())
+    }
+}
+
+pub fn fetch_img(ctx: &egui::Context, url: &str) -> Promise<Result<TextureHandle>> {
+    // TODO: fetch image from local cache
+    fetch_img_from_net(ctx, url)
+}
+
+fn fetch_img_from_net(ctx: &egui::Context, url: &str) -> Promise<Result<TextureHandle>> {
+    let (sender, promise) = Promise::new();
+    let request = ehttp::Request::get(url);
+    let ctx = ctx.clone();
+    let cloned_url = url.to_owned();
+    ehttp::fetch(request, move |response| {
+        let handle = response
+            .map_err(Error::Generic)
+            .and_then(parse_img_response)
+            .map(|img| ctx.load_texture(&cloned_url, img, Default::default()));
+
+        sender.send(handle); // send the results back to the UI thread.
+        ctx.request_repaint();
+    });
+    promise
 }

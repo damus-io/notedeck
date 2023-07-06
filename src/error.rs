@@ -1,9 +1,10 @@
 use shatter::parser;
 
-#[derive(Eq, PartialEq, Debug)]
+#[derive(Debug)]
 pub enum Error {
     Nostr(enostr::Error),
     Shatter(parser::Error),
+    Image(image::error::ImageError),
     Generic(String),
 }
 
@@ -16,6 +17,12 @@ impl From<String> for Error {
 impl From<parser::Error> for Error {
     fn from(s: parser::Error) -> Self {
         Error::Shatter(s)
+    }
+}
+
+impl From<image::error::ImageError> for Error {
+    fn from(err: image::error::ImageError) -> Self {
+        Error::Image(err)
     }
 }
 
