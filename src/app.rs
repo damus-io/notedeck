@@ -421,34 +421,30 @@ fn render_damus_desktop(ctx: &egui::Context, app: &mut Damus) {
 
     if app.n_panels == 1 {
         let panel_width = ctx.screen_rect().width();
-        egui::CentralPanel::default()
-            .frame(Frame::default().fill(app.bg_color))
-            .show(ctx, |ui| {
-                set_app_style(ui);
-                timeline_panel(ui, app, panel_width, 0);
-            });
+        egui::CentralPanel::default().show(ctx, |ui| {
+            set_app_style(ui);
+            timeline_panel(ui, app, panel_width, 0);
+        });
 
         return;
     }
 
-    egui::CentralPanel::default()
-        .frame(Frame::default().fill(app.bg_color))
-        .show(ctx, |ui| {
-            set_app_style(ui);
-            egui::ScrollArea::horizontal()
-                .auto_shrink([false; 2])
-                .show(ui, |ui| {
-                    for ind in 0..app.n_panels {
-                        timeline_panel(ui, app, panel_width, ind);
-                    }
-                });
-        });
+    egui::CentralPanel::default().show(ctx, |ui| {
+        set_app_style(ui);
+        egui::ScrollArea::horizontal()
+            .auto_shrink([false; 2])
+            .show(ui, |ui| {
+                for ind in 0..app.n_panels {
+                    timeline_panel(ui, app, panel_width, ind);
+                }
+            });
+    });
 }
 
 fn timeline_panel(ui: &mut egui::Ui, app: &mut Damus, panel_width: f32, ind: u32) {
     egui::SidePanel::left(format!("l{}", ind))
         .resizable(false)
-        .frame(Frame::none().fill(app.bg_color))
+        .frame(Frame::none())
         .max_width(panel_width)
         .min_width(panel_width)
         .show_inside(ui, |ui| {
