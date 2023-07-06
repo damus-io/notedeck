@@ -19,7 +19,7 @@ egui_extras = { version = "0.20.0", features = ["image", "svg"] }
 ehttp = "0.2.0"
 image = { version = "0.24", features = ["jpeg", "png", "webp"] }
 log = "0.4.17"
-poll-promise = "0.2.0"
+poll-promise = { git = "https://github.com/EmbarkStudios/poll-promise", rev = "b493586107b0e508860aa2e9d18049fd8cd9d13f" } # todo: update to 0.2.1 when it's released. 0.2.0 was crashing on m1
 serde_derive = "1"
 serde = { version = "1", features = ["derive"] } # You only need this if you want app persistence
 tracing = "0.1.37"
