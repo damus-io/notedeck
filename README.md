@@ -1,3 +1,3 @@
 # Damus NoteDeck
 
-A tweetdeck-style multiplatform nostr client
+A tweetdeck-style multiplatform nostr client.
