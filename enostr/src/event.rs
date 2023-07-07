@@ -83,6 +83,12 @@ impl std::str::FromStr for Event {
 #[derive(Serialize, Deserialize, Debug, Eq, PartialEq, Clone, Hash)]
 pub struct EventId(String);
 
+impl AsRef<str> for EventId {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
 impl From<String> for EventId {
     fn from(s: String) -> Self {
         EventId(s)
