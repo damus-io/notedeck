@@ -295,7 +295,7 @@ fn render_pfp(ui: &mut egui::Ui, img_cache: &mut ImageCache, url: &str) {
 
             match img_cache[&failed_key].ready() {
                 None => {
-                    ui.spinner(); // still loading
+                    ui.add(Spinner::new().size(40.0));
                 }
                 Some(Err(e)) => {
                     error!("Image load error: {:?}", e);
