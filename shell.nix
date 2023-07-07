@@ -16,6 +16,7 @@ let
   androidsdk = androidComposition.androidsdk;
   android-home = "${androidsdk}/libexec/android-sdk";
   ndk-home = "${android-home}/ndk/${ndk-version}";
+  use_android = true;
 in
 
 mkShell {
@@ -25,11 +26,10 @@ mkShell {
 
     heaptrack
 
-    # android
-    #jre openssl libiconv androidsdk
-  ];
+  ] ++ pkgs.lib.optional use_android [ jre openssl libiconv androidsdk ] ;
 
-  #ANDROID_HOME = android-home;
-  #NDK_HOME = ndk-home;
   LD_LIBRARY_PATH="${x11libs}";
-}
+} // (if !use_android then {} else {
+  ANDROID_HOME = android-home;
+  NDK_HOME = ndk-home;
+})
