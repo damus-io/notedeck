@@ -5,8 +5,8 @@ use crate::ui::padding;
 use crate::Result;
 use egui::containers::scroll_area::ScrollBarVisibility;
 use egui::widgets::Spinner;
-use egui::{Color32, Context, Frame, TextureHandle, TextureId};
-use enostr::{ClientMessage, EventId, Filter, Profile, Pubkey, RelayEvent, RelayMessage};
+use egui::{Context, Frame, TextureHandle, TextureId};
+use enostr::{ClientMessage, Filter, NoteId, Profile, Pubkey, RelayEvent, RelayMessage};
 use poll_promise::Promise;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
@@ -44,11 +44,10 @@ pub struct Damus {
 
     pool: RelayPool,
 
-    all_events: HashMap<EventId, Event>,
-    events: Vec<EventId>,
+    all_events: HashMap<NoteId, Event>,
+    events: Vec<NoteId>,
 
     img_cache: ImageCache,
-    bg_color: Color32,
 }
 
 impl Default for Damus {
@@ -58,10 +57,9 @@ impl Default for Damus {
             contacts: Contacts::new(),
             all_events: HashMap::new(),
             pool: RelayPool::default(),
-            events: vec![],
+            events: Vec::with_capacity(2000),
             img_cache: HashMap::new(),
             n_panels: 1,
-            bg_color: Color32::from_rgb(31, 31, 31),
         }
     }
 }
@@ -459,8 +457,8 @@ fn add_test_events(damus: &mut Damus) {
     // For inspiration and more examples, go to https://emilk.github.io/egui
 
     let test_event = Event {
-        id: "6938e3cd841f3111dbdbd909f87fd52c3d1f1e4a07fd121d1243196e532811cb".to_string().into(),
-        pubkey: "f0a6ff7f70b872de6d82c8daec692a433fd23b6a49f25923c6f034df715cdeec".to_string().into(),
+        id: "6938e3cd841f3111dbdbd909f87fd52c3d1f1e4a07fd121d1243196e532811cb".try_into().unwrap(),
+        pubkey: "f0a6ff7f70b872de6d82c8daec692a433fd23b6a49f25923c6f034df715cdeec".try_into().unwrap(),
         created_at: 1667781968,
         kind: 1,
         tags: vec![],
@@ -469,8 +467,8 @@ fn add_test_events(damus: &mut Damus) {
     };
 
     let test_event2 = Event {
-        id: "6938e3cd841f3111dbdbd909f87fd52c3d1f1e4a07fd121d1243196e532811cb".to_string().into(),
-        pubkey: "32e1827635450ebb3c5a7d12c1f8e7b2b514439ac10a67eef3d9fd9c5c68e245".to_string().into(),
+        id: "6938e3cd841f3111dbdbd909f87fd52c3d1f1e4a07fd121d1243196e532811cb".try_into().unwrap(),
+        pubkey: "32e1827635450ebb3c5a7d12c1f8e7b2b514439ac10a67eef3d9fd9c5c68e245".try_into().unwrap(),
         created_at: 1667781968,
         kind: 1,
         tags: vec![],

@@ -8,7 +8,7 @@ mod relay;
 
 pub use client::ClientMessage;
 pub use error::Error;
-pub use event::{Event, EventId};
+pub use event::{Event, NoteId};
 pub use ewebsock;
 pub use filter::Filter;
 pub use profile::Profile;

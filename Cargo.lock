@@ -1051,6 +1051,7 @@ name = "enostr"
 version = "0.1.0"
 dependencies = [
  "ewebsock",
+ "hex",
  "serde",
  "serde_derive",
  "serde_json",

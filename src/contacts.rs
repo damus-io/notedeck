@@ -1,8 +1,8 @@
-use enostr::{EventId, Profile, Pubkey};
+use enostr::{NoteId, Profile, Pubkey};
 use std::collections::HashMap;
 
 pub struct Contacts {
-    pub events: HashMap<Pubkey, EventId>,
+    pub events: HashMap<Pubkey, NoteId>,
     pub profiles: HashMap<Pubkey, Profile>,
 }
 

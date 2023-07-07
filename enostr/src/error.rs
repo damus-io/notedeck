@@ -6,6 +6,7 @@ pub enum Error {
     MessageDecodeFailed,
     InvalidSignature,
     Json(serde_json::Error),
+    Hex(hex::FromHexError),
     Generic(String),
 }
 
@@ -34,5 +35,11 @@ impl From<String> for Error {
 impl From<serde_json::Error> for Error {
     fn from(e: serde_json::Error) -> Self {
         Error::Json(e)
+    }
+}
+
+impl From<hex::FromHexError> for Error {
+    fn from(e: hex::FromHexError) -> Self {
+        Error::Hex(e)
     }
 }

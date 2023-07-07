@@ -1,4 +1,5 @@
 use crate::{Error, Pubkey, Result};
+use hex;
 use serde_derive::{Deserialize, Serialize};
 use std::hash::{Hash, Hasher};
 
@@ -6,7 +7,7 @@ use std::hash::{Hash, Hasher};
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Event {
     /// 32-bytes sha256 of the the serialized event data
-    pub id: EventId,
+    pub id: NoteId,
     /// 32-bytes hex-encoded public key of the event creator
     #[serde(rename = "pubkey")]
     pub pubkey: Pubkey,
@@ -59,7 +60,7 @@ impl Event {
         sig: &str,
     ) -> Result<Self> {
         let event = Event {
-            id: id.to_string().into(),
+            id: id.try_into()?,
             pubkey: pubkey.to_string().into(),
             created_at,
             kind,
@@ -80,17 +81,57 @@ impl std::str::FromStr for Event {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Eq, PartialEq, Clone, Hash)]
-pub struct EventId(String);
+#[derive(Serialize, Debug, Eq, PartialEq, Clone, Hash)]
+pub struct NoteId([u8; 32]);
 
-impl From<String> for EventId {
-    fn from(s: String) -> Self {
-        EventId(s)
+// Implement `Deserialize` for `NoteId`.
+impl<'de> serde::Deserialize<'de> for NoteId {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        // Deserialize the JSON string
+        let s = String::deserialize(deserializer)?;
+
+        // Convert the hex string to bytes
+        let bytes = hex::decode(&s).map_err(serde::de::Error::custom)?;
+
+        // Check that the length is exactly 32
+        if bytes.len() != 32 {
+            return Err(serde::de::Error::custom("Expected exactly 32 bytes"));
+        }
+
+        // Convert the Vec<u8> to [u8; 32]
+        let mut array = [0; 32];
+        array.copy_from_slice(&bytes);
+
+        Ok(NoteId(array))
     }
 }
 
-impl From<EventId> for String {
-    fn from(evid: EventId) -> Self {
-        evid.0
+impl TryFrom<String> for NoteId {
+    type Error = hex::FromHexError;
+
+    fn try_from(s: String) -> std::result::Result<Self, Self::Error> {
+        let s: &str = &s;
+        NoteId::try_from(s)
+    }
+}
+
+impl From<[u8; 32]> for NoteId {
+    fn from(s: [u8; 32]) -> Self {
+        NoteId(s)
+    }
+}
+
+impl TryFrom<&str> for NoteId {
+    type Error = hex::FromHexError;
+
+    fn try_from(s: &str) -> std::result::Result<Self, Self::Error> {
+        let decoded = hex::decode(s)?;
+        match decoded.try_into() {
+            Ok(bs) => Ok(NoteId(bs)),
+            Err(_) => Err(hex::FromHexError::InvalidStringLength),
+        }
     }
 }
