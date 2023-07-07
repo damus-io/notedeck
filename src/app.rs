@@ -5,7 +5,7 @@ use crate::ui::padding;
 use crate::Result;
 use egui::containers::scroll_area::ScrollBarVisibility;
 use egui::widgets::Spinner;
-use egui::{Color32, Context, Frame, TextureHandle, TextureId};
+use egui::{Context, Frame, TextureHandle, TextureId};
 use enostr::{ClientMessage, EventId, Filter, Profile, Pubkey, RelayEvent, RelayMessage};
 use poll_promise::Promise;
 use std::collections::{HashMap, HashSet};
@@ -48,7 +48,6 @@ pub struct Damus {
     events: Vec<EventId>,
 
     img_cache: ImageCache,
-    bg_color: Color32,
 }
 
 impl Default for Damus {
@@ -61,7 +60,6 @@ impl Default for Damus {
             events: vec![],
             img_cache: HashMap::new(),
             n_panels: 1,
-            bg_color: Color32::from_rgb(31, 31, 31),
         }
     }
 }
