@@ -331,6 +331,8 @@ fn render_username(ui: &mut egui::Ui, contacts: &Contacts, pk: &Pubkey) {
             if let Some(display_name) = prof.display_name() {
                 ui.strong(display_name);
             }
+        } else {
+            ui.strong("nostrich");
         }
 
         /*
