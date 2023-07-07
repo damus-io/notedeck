@@ -117,8 +117,16 @@ fn try_process_event(damus: &mut Damus, ctx: &egui::Context) {
     //info!("recv {:?}", ev)
 }
 
+#[cfg(feature = "profiling")]
+fn setup_profiling() {
+    puffin::set_scopes_on(true); // tell puffin to collect data
+}
+
 fn update_damus(damus: &mut Damus, ctx: &egui::Context) {
     if damus.state == DamusState::Initializing {
+        #[cfg(feature = "profiling")]
+        setup_profiling();
+
         setup_fonts(ctx);
         damus.pool = RelayPool::new();
         relay_setup(&mut damus.pool, ctx);
@@ -129,6 +137,9 @@ fn update_damus(damus: &mut Damus, ctx: &egui::Context) {
 }
 
 fn process_metadata_event(damus: &mut Damus, ev: &Event) {
+    #[cfg(feature = "profiling")]
+    puffin::profile_function!();
+
     if let Some(prev_id) = damus.contacts.events.get(&ev.pubkey) {
         if let Some(prev_ev) = damus.all_events.get(prev_id) {
             // This profile event is older, ignore it
@@ -163,6 +174,9 @@ fn process_metadata_event(damus: &mut Damus, ev: &Event) {
 }
 
 fn process_event(damus: &mut Damus, _subid: &str, event: Event) {
+    #[cfg(feature = "profiling")]
+    puffin::profile_function!();
+
     if damus.all_events.get(&event.id).is_some() {
         return;
     }
@@ -177,6 +191,9 @@ fn process_event(damus: &mut Damus, _subid: &str, event: Event) {
 }
 
 fn get_unknown_author_ids(damus: &Damus) -> Vec<Pubkey> {
+    #[cfg(feature = "profiling")]
+    puffin::profile_function!();
+
     let mut authors: HashSet<Pubkey> = HashSet::new();
 
     for (_evid, ev) in damus.all_events.iter() {
@@ -221,6 +238,9 @@ fn render_damus(damus: &mut Damus, ctx: &Context) {
     } else {
         render_damus_desktop(ctx, damus);
     }
+
+    #[cfg(feature = "profiling")]
+    puffin_egui::profiler_window(ctx);
 }
 
 impl Damus {
@@ -244,6 +264,9 @@ impl Damus {
 }
 
 fn render_pfp(ui: &mut egui::Ui, img_cache: &mut ImageCache, url: &str) {
+    #[cfg(feature = "profiling")]
+    puffin::profile_function!();
+
     let urlkey = UrlKey::Orig(url).to_u64();
     let m_cached_promise = img_cache.get(&urlkey);
     if m_cached_promise.is_none() {
@@ -290,12 +313,18 @@ fn render_pfp(ui: &mut egui::Ui, img_cache: &mut ImageCache, url: &str) {
 }
 
 fn pfp_image(ui: &mut egui::Ui, img: TextureId, size: f32) -> egui::Response {
+    #[cfg(feature = "profiling")]
+    puffin::profile_function!();
+
     //img.show_max_size(ui, egui::vec2(size, size))
     ui.image(img, egui::vec2(size, size))
     //.with_options()
 }
 
 fn render_username(ui: &mut egui::Ui, contacts: &Contacts, pk: &Pubkey) {
+    #[cfg(feature = "profiling")]
+    puffin::profile_function!();
+
     ui.horizontal(|ui| {
         //ui.spacing_mut().item_spacing.x = 0.0;
         if let Some(prof) = contacts.profiles.get(pk) {
@@ -317,6 +346,9 @@ fn no_pfp_url() -> &'static str {
 }
 
 fn render_events(ui: &mut egui::Ui, damus: &mut Damus) {
+    #[cfg(feature = "profiling")]
+    puffin::profile_function!();
+
     for evid in &damus.events {
         if !damus.all_events.contains_key(evid) {
             return;
@@ -406,6 +438,8 @@ fn render_damus_mobile(ctx: &egui::Context, app: &mut Damus) {
 
 fn render_damus_desktop(ctx: &egui::Context, app: &mut Damus) {
     render_panel(ctx, app);
+    #[cfg(feature = "profiling")]
+    puffin::profile_function!();
 
     let screen_size = ctx.screen_rect().width();
     let calc_panel_width = (screen_size / app.n_panels as f32) - 30.0;
@@ -505,6 +539,8 @@ impl eframe::App for Damus {
     /// Called each time the UI needs repainting, which may be many times per second.
     /// Put your widgets into a `SidePanel`, `TopPanel`, `CentralPanel`, `Window` or `Area`.
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        #[cfg(feature = "profiling")]
+        puffin::GlobalProfiler::lock().new_frame();
         update_damus(self, ctx);
         render_damus(self, ctx);
     }

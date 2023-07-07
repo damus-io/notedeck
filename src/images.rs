@@ -6,6 +6,9 @@ use image::imageops::FilterType;
 use poll_promise::Promise;
 
 pub fn round_image(image: &mut ColorImage) {
+    #[cfg(feature = "profiling")]
+    puffin::profile_function!();
+
     // The radius to the edge of of the avatar circle
     let edge_radius = image.size[0] as f32 / 2.0;
     let edge_radius_squared = edge_radius * edge_radius;
@@ -50,6 +53,9 @@ pub fn round_image(image: &mut ColorImage) {
 }
 
 fn process_pfp_bitmap(size: u32, image: &mut image::DynamicImage) -> ColorImage {
+    #[cfg(features = "profiling")]
+    puffin::profile_function!();
+
     // Crop square
     let smaller = image.width().min(image.height());
 
@@ -74,15 +80,23 @@ fn process_pfp_bitmap(size: u32, image: &mut image::DynamicImage) -> ColorImage 
 }
 
 fn parse_img_response(response: ehttp::Response) -> Result<ColorImage> {
+    #[cfg(feature = "profiling")]
+    puffin::profile_function!();
+
     let content_type = response.content_type().unwrap_or_default();
     let size: u32 = 100;
 
     if content_type.starts_with("image/svg") {
+        #[cfg(feature = "profiling")]
+        puffin::profile_scope!("load_svg");
+
         let mut color_image =
             egui_extras::image::load_svg_bytes_with_size(&response.bytes, FitTo::Size(size, size))?;
         round_image(&mut color_image);
         Ok(color_image)
     } else if content_type.starts_with("image/") {
+        #[cfg(feature = "profiling")]
+        puffin::profile_scope!("load_from_memory");
         let mut dyn_image = image::load_from_memory(&response.bytes)?;
         Ok(process_pfp_bitmap(size, &mut dyn_image))
     } else {
