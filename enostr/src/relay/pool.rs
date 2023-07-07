@@ -1,8 +1,14 @@
 use crate::relay::message::RelayEvent;
 use crate::relay::Relay;
 use crate::{ClientMessage, Result};
+
+#[cfg(not(target_arch = "wasm32"))]
 use ewebsock::WsMessage;
-use tracing::{debug, error};
+
+#[cfg(not(target_arch = "wasm32"))]
+use tracing::debug;
+
+use tracing::error;
 
 #[derive(Debug)]
 pub struct PoolEvent<'a> {
