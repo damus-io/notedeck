@@ -13,7 +13,7 @@ crate-type = ["lib", "cdylib"]
 [dependencies]
 #egui-android = { git = "https://github.com/jb55/egui-android.git" }  
 egui = "0.22.0"
-eframe = { version = "0.22.0", default-features = false, features = [ "glow" ] }
+eframe = { version = "0.22.0", default-features = false, features = [ "glow", "wgpu", "android-native-activity" ] }
 #eframe = "0.22.0"
 egui_extras = { version = "0.22.0", features = ["image", "svg"] }
 ehttp = "0.2.0"
@@ -46,11 +46,12 @@ wasm-bindgen-futures = "0.4"
 tokio = { version = "1.16", features = ["macros", "rt-multi-thread"] }
 tracing-subscriber = "0.3"
 
+
 [target.'cfg(target_os = "android")'.dependencies]
 android_logger = "0.11.1"
-#android-activity = "0.4.0"
-#winit = "0.27.5"
-#winit = { version = "0.28", features = [ "android-native-activity" ] }
+android-activity = { version = "0.4", features = [ "native-activity" ] }
+#winit = "0.28.6"
+winit = { version = "0.28", features = [ "android-native-activity" ] }
 #winit = { git="https://github.com/rust-windowing/winit.git", rev = "2a58b785fed2a3746f7c7eebce95bce67ddfd27c", features = ["android-native-activity"] }
 
 [package.metadata.android]

@@ -1,4 +1,4 @@
-{ pkgs ? import <nixpkgs> {} }:
+{ pkgs ? import <nixpkgs> {}, use_android ? true }:
 with pkgs;
 let
   x11libs = lib.makeLibraryPath [ xorg.libX11 xorg.libXcursor xorg.libXrandr xorg.libXi libglvnd vulkan-loader vulkan-validation-layers ];
@@ -16,10 +16,9 @@ let
   androidsdk = androidComposition.androidsdk;
   android-home = "${androidsdk}/libexec/android-sdk";
   ndk-home = "${android-home}/ndk/${ndk-version}";
-  use_android = true;
 in
 
-mkShell {
+mkShell ({
   nativeBuildInputs = [
     cargo-udeps cargo-edit cargo-watch rustup rustfmt libiconv pkgconfig cmake fontconfig
     brotli wabt
@@ -32,4 +31,4 @@ mkShell {
 } // (if !use_android then {} else {
   ANDROID_HOME = android-home;
   NDK_HOME = ndk-home;
-})
+}))

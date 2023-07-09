@@ -12,6 +12,7 @@ mod ui;
 
 pub use app::Damus;
 pub use error::Error;
+use winit::platform::android::EventLoopBuilderExtAndroid;
 
 pub type Result<T> = std::result::Result<T, error::Error>;
 
@@ -23,7 +24,8 @@ use winit::platform::android::activity::AndroidApp;
 
 #[cfg(target_os = "android")]
 #[no_mangle]
-pub fn android_main(app: AndroidApp) {
+#[tokio::main]
+pub async fn android_main(app: AndroidApp) {
     std::env::set_var("RUST_BACKTRACE", "full");
     android_logger::init_once(android_logger::Config::default().with_min_level(log::Level::Info));
 
@@ -33,7 +35,7 @@ pub fn android_main(app: AndroidApp) {
         builder.with_android_app(app);
     }));
 
-    eframe::run_native(
+    let res_ = eframe::run_native(
         "Damus NoteDeck",
         options,
         Box::new(|_cc| Box::new(Damus::new())),

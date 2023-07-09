@@ -601,6 +601,7 @@ dependencies = [
 name = "damus"
 version = "0.1.0"
 dependencies = [
+ "android-activity",
  "android_logger",
  "console_error_panic_hook",
  "eframe",
@@ -623,6 +624,7 @@ dependencies = [
  "tracing-subscriber",
  "tracing-wasm",
  "wasm-bindgen-futures",
+ "winit",
 ]
 
 [[package]]
@@ -691,12 +693,14 @@ dependencies = [
  "log",
  "objc",
  "percent-encoding",
+ "pollster",
  "puffin 0.15.0",
  "raw-window-handle",
  "thiserror",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+ "wgpu",
  "winapi",
  "winit",
 ]
@@ -2051,6 +2055,12 @@ source = "git+https://github.com/EmbarkStudios/poll-promise?rev=b493586107b0e508
 dependencies = [
  "static_assertions",
 ]
+
+[[package]]
+name = "pollster"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "22686f4785f02a4fcc856d3b3bb19bf6c8160d103f7a99cc258bddd0251dc7f2"
 
 [[package]]
 name = "ppv-lite86"

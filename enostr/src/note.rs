@@ -75,17 +75,13 @@ struct EventRefs {
     refs: Vec<EventRef>,
 }
 
-struct TextNote {
-    event: Event,
-    shards: Shards,
-    refs: EventRefs,
-}
-
 struct DM {
     decrypted: Option<String>,
     shards: Shards,
 }
 
-enum Note {
-    Text(TextNote),
+struct Note {
+    event: NostrEvent,
+    shards: Shards,
+    refs: EventRef,
 }
