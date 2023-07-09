@@ -13,6 +13,8 @@ mod frame_history;
 
 pub use app::Damus;
 pub use error::Error;
+
+#[cfg(target_os = "android")]
 use winit::platform::android::EventLoopBuilderExtAndroid;
 
 pub type Result<T> = std::result::Result<T, error::Error>;

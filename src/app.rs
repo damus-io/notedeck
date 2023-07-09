@@ -7,7 +7,7 @@ use crate::ui::padding;
 use crate::Result;
 use egui::containers::scroll_area::ScrollBarVisibility;
 use egui::widgets::Spinner;
-use egui::{Context, Frame, TextureHandle, TextureId};
+use egui::{Context, Frame, Margin, TextureHandle, TextureId};
 use enostr::{ClientMessage, EventId, Filter, Profile, Pubkey, RelayEvent, RelayMessage};
 use poll_promise::Promise;
 use std::collections::{HashMap, HashSet};
@@ -410,8 +410,33 @@ fn timeline_view(ui: &mut egui::Ui, app: &mut Damus) {
         });
 }
 
+fn top_panel(ctx: &egui::Context) -> egui::TopBottomPanel {
+    // mobile needs padding, at least on android
+    if is_mobile(ctx) {
+        let mut top_margin = Margin::default();
+        top_margin.top = 50.0;
+
+        let frame = Frame {
+            inner_margin: top_margin,
+            fill: ctx.style().visuals.panel_fill,
+            ..Default::default()
+        };
+
+        return egui::TopBottomPanel::top("top_panel").frame(frame);
+    }
+
+    egui::TopBottomPanel::top("top_panel").frame(Frame::none())
+}
+
+#[inline]
+fn horizontal_centered() -> egui::Layout {
+    egui::Layout::left_to_right(egui::Align::Center)
+}
+
 fn render_panel(ctx: &egui::Context, app: &mut Damus) {
-    egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
+    top_panel(ctx).show(ctx, |ui| {
+        set_app_style(ui);
+
         ui.horizontal_wrapped(|ui| {
             ui.visuals_mut().button_frame = false;
             egui::widgets::global_dark_light_mode_switch(ui);
@@ -452,7 +477,13 @@ fn set_app_style(ui: &mut egui::Ui) {
 }
 
 fn render_damus_mobile(ctx: &egui::Context, app: &mut Damus) {
+    render_panel(ctx, app);
+
+    #[cfg(feature = "profiling")]
+    puffin::profile_function!();
+
     let panel_width = ctx.screen_rect().width();
+
     egui::CentralPanel::default().show(ctx, |ui| {
         set_app_style(ui);
         timeline_panel(ui, app, panel_width, 0);
