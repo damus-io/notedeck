@@ -9,6 +9,7 @@ mod fonts;
 mod images;
 mod result;
 mod ui;
+mod frame_history;
 
 pub use app::Damus;
 pub use error::Error;

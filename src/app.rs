@@ -1,6 +1,7 @@
 use crate::abbrev;
 use crate::contacts::Contacts;
 use crate::fonts::setup_fonts;
+use crate::frame_history::FrameHistory;
 use crate::images::fetch_img;
 use crate::ui::padding;
 use crate::Result;
@@ -49,6 +50,8 @@ pub struct Damus {
     events: Vec<EventId>,
 
     img_cache: ImageCache,
+
+    frame_history: crate::frame_history::FrameHistory,
 }
 
 impl Default for Damus {
@@ -61,6 +64,7 @@ impl Default for Damus {
             events: vec![],
             img_cache: HashMap::new(),
             n_panels: 1,
+            frame_history: FrameHistory::default(),
         }
     }
 }
@@ -428,6 +432,12 @@ fn render_panel(ctx: &egui::Context, app: &mut Damus) {
             {
                 app.n_panels -= 1;
             }
+
+            ui.label(format!(
+                "FPS: {:.2}, {:10.1}ms",
+                app.frame_history.fps(),
+                app.frame_history.mean_frame_time() * 1e3
+            ));
         });
     });
 }
@@ -551,7 +561,10 @@ impl eframe::App for Damus {
 
     /// Called each time the UI needs repainting, which may be many times per second.
     /// Put your widgets into a `SidePanel`, `TopPanel`, `CentralPanel`, `Window` or `Area`.
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        self.frame_history
+            .on_new_frame(ctx.input(|i| i.time), frame.info().cpu_usage);
+
         #[cfg(feature = "profiling")]
         puffin::GlobalProfiler::lock().new_frame();
         update_damus(self, ctx);
