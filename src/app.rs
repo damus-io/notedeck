@@ -1,3 +1,4 @@
+use crate::abbrev;
 use crate::contacts::Contacts;
 use crate::fonts::setup_fonts;
 use crate::images::fetch_img;
@@ -321,6 +322,16 @@ fn pfp_image(ui: &mut egui::Ui, img: TextureId, size: f32) -> egui::Response {
     //.with_options()
 }
 
+fn ui_abbreviate_name(ui: &mut egui::Ui, name: &str, len: usize) {
+    if name.len() > len {
+        let closest = abbrev::floor_char_boundary(name, len);
+        ui.strong(&name[..closest]);
+        ui.strong("...");
+    } else {
+        ui.strong(name);
+    }
+}
+
 fn render_username(ui: &mut egui::Ui, contacts: &Contacts, pk: &Pubkey) {
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
@@ -329,7 +340,7 @@ fn render_username(ui: &mut egui::Ui, contacts: &Contacts, pk: &Pubkey) {
         //ui.spacing_mut().item_spacing.x = 0.0;
         if let Some(prof) = contacts.profiles.get(pk) {
             if let Some(display_name) = prof.display_name() {
-                ui.strong(display_name);
+                ui_abbreviate_name(ui, &display_name, 20);
             }
         } else {
             ui.strong("nostrich");
