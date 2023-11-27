@@ -43,6 +43,7 @@ pub struct Damus {
     state: DamusState,
     contacts: Contacts,
     n_panels: u32,
+    compose: String,
 
     pool: RelayPool,
 
@@ -64,6 +65,7 @@ impl Default for Damus {
             events: vec![],
             img_cache: HashMap::new(),
             n_panels: 1,
+            compose: "".to_string(),
             frame_history: FrameHistory::default(),
         }
     }
@@ -486,7 +488,9 @@ fn render_damus_mobile(ctx: &egui::Context, app: &mut Damus) {
 
     egui::CentralPanel::default().show(ctx, |ui| {
         set_app_style(ui);
-        timeline_panel(ui, app, panel_width, 0);
+        timeline_panel(ui, panel_width, 0, |ui| {
+            timeline_view(ui, app);
+        });
     });
 }
 
@@ -509,7 +513,10 @@ fn render_damus_desktop(ctx: &egui::Context, app: &mut Damus) {
         let panel_width = ctx.screen_rect().width();
         egui::CentralPanel::default().show(ctx, |ui| {
             set_app_style(ui);
-            timeline_panel(ui, app, panel_width, 0);
+            timeline_panel(ui, panel_width, 0, |ui| {
+                postbox(ui, app);
+                timeline_view(ui, app);
+            });
         });
 
         return;
@@ -521,21 +528,48 @@ fn render_damus_desktop(ctx: &egui::Context, app: &mut Damus) {
             .auto_shrink([false; 2])
             .show(ui, |ui| {
                 for ind in 0..app.n_panels {
-                    timeline_panel(ui, app, panel_width, ind);
+                    if ind == 0 {
+                        postbox(ui, app);
+                    }
+                    timeline_panel(ui, panel_width, ind, |ui| {
+                        timeline_view(ui, app);
+                    });
                 }
             });
     });
 }
 
-fn timeline_panel(ui: &mut egui::Ui, app: &mut Damus, panel_width: f32, ind: u32) {
+fn postbox(ui: &mut egui::Ui, app: &mut Damus) {
+    let output = egui::TextEdit::multiline(&mut app.compose)
+        .hint_text("Type something!")
+        .show(ui);
+
+    /*
+    let width = ui.available_width();
+    let height = 100.0;
+    let shapes = [Shape::Rect(RectShape {
+        rect: epaint::Rect::from_min_max(pos2(10.0, 10.0), pos2(width, height)),
+        rounding: epaint::Rounding::same(10.0),
+        fill: Color32::from_rgb(0x25, 0x25, 0x25),
+        stroke: Stroke::new(2.0, Color32::from_rgb(0x39, 0x39, 0x39)),
+    })];
+
+    ui.painter().extend(shapes);
+    */
+}
+
+fn timeline_panel<R>(
+    ui: &mut egui::Ui,
+    panel_width: f32,
+    ind: u32,
+    add_contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> egui::InnerResponse<R> {
     egui::SidePanel::left(format!("l{}", ind))
         .resizable(false)
         .frame(Frame::none())
         .max_width(panel_width)
         .min_width(panel_width)
-        .show_inside(ui, |ui| {
-            timeline_view(ui, app);
-        });
+        .show_inside(ui, add_contents)
 }
 
 fn add_test_events(damus: &mut Damus) {
