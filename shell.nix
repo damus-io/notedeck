@@ -20,7 +20,7 @@ in
 
 mkShell ({
   nativeBuildInputs = [
-    cargo-udeps cargo-edit cargo-watch rustup rustfmt libiconv pkgconfig cmake fontconfig
+    cargo-udeps cargo-edit cargo-watch rustup rustfmt libiconv pkg-config cmake fontconfig
     brotli wabt
 
     heaptrack
