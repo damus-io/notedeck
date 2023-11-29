@@ -16,7 +16,11 @@ Once you have your dev shell setup, you can build with this command:
 $ cargo apk run --release 
 ```
 
-This will build and run the app on your android device.
+This will build and run the app on your android device. If you don't have the `aarch64-linux-android` rust target yet, you can install it with:
+
+```
+$ rustup target add aarch64-linux-android
+```
 
 You can also just type
 

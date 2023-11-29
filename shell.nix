@@ -25,7 +25,7 @@ mkShell ({
 
     heaptrack
 
-  ] ++ pkgs.lib.optional use_android [ jre openssl libiconv androidsdk ] ;
+  ] ++ pkgs.lib.optional use_android [ jre openssl libiconv androidsdk cargo-apk ] ;
 
   LD_LIBRARY_PATH="${x11libs}";
 } // (if !use_android then {} else {
