@@ -32,3 +32,8 @@ To run the multiplatform desktop version of the app called NoteDeck.
  
 
 [direnv]: https://direnv.net/
+
+## Funding
+
+Damus Android is FOSS community and grant funded project. If you want to help accelerate development to pay for devs send sats here:  
+https://damus.io/android/
