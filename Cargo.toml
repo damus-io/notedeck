@@ -57,6 +57,12 @@ winit = { version = "0.28", features = [ "android-native-activity" ] }
 [package.metadata.android]
 package = "com.damus.app"
 apk_name = "damus"
+#build_targets = ["armv7-linux-androideabi", "aarch64-linux-android" ]
+
+[package.metadata.android.sdk]
+min_sdk_version = 22
+target_sdk_version = 30
+#max_sdk_version = 29
 #assets = "assets"
 
 [[package.metadata.android.uses_feature]]
@@ -66,7 +72,7 @@ version = 1
 
 [[package.metadata.android.uses_permission]]
 name = "android.permission.WRITE_EXTERNAL_STORAGE"
-max_sdk_version = 18
+max_sdk_version = 30
 
 [package.metadata.android.signing.release]
 path = "damus.keystore"
