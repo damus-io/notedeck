@@ -8,6 +8,7 @@ use crate::Result;
 use egui::containers::scroll_area::ScrollBarVisibility;
 use egui::widgets::Spinner;
 use egui::{Context, Frame, Margin, TextureHandle, TextureId};
+use egui_extras::Size;
 use enostr::{ClientMessage, EventId, Filter, Profile, Pubkey, RelayEvent, RelayMessage};
 use poll_promise::Promise;
 use std::collections::{HashMap, HashSet};
@@ -72,6 +73,7 @@ impl Default for Damus {
 }
 
 pub fn is_mobile(ctx: &egui::Context) -> bool {
+    //true
     let screen_size = ctx.screen_rect().size();
     screen_size.x < 550.0
 }
@@ -82,7 +84,10 @@ fn relay_setup(pool: &mut RelayPool, ctx: &egui::Context) {
         debug!("Woke up");
         ctx.request_repaint();
     };
-    if let Err(e) = pool.add_url("wss://relay.damus.io".to_string(), wakeup) {
+    if let Err(e) = pool.add_url("wss://relay.damus.io".to_string(), wakeup.clone()) {
+        error!("{:?}", e)
+    }
+    if let Err(e) = pool.add_url("wss://purplepag.es".to_string(), wakeup) {
         error!("{:?}", e)
     }
 }
@@ -364,38 +369,82 @@ fn no_pfp_url() -> &'static str {
     "https://damus.io/img/no-profile.svg"
 }
 
-fn render_events(ui: &mut egui::Ui, damus: &mut Damus) {
+fn render_notes_in_viewport(
+    ui: &mut egui::Ui,
+    damus: &mut Damus,
+    viewport: egui::Rect,
+    row_height: f32,
+    font_id: egui::FontId,
+) {
+    let num_rows = 10_000;
+    ui.set_height(row_height * num_rows as f32);
+
+    let first_item = (viewport.min.y / row_height).floor().max(0.0) as usize;
+    let last_item = (viewport.max.y / row_height).ceil() as usize + 1;
+    let last_item = last_item.min(num_rows);
+
+    let mut used_rect = egui::Rect::NOTHING;
+
+    for i in first_item..last_item {
+        let padding = (i % 100) as f32;
+        let indent = (((i as f32) / 10.0).sin() * 20.0) + 10.0;
+        let x = ui.min_rect().left() + indent;
+        let y = ui.min_rect().top() + i as f32 * row_height;
+        let text = format!(
+            "This is row {}/{}, indented by {} pixels",
+            i + 1,
+            num_rows,
+            indent
+        );
+        let text_rect = ui.painter().text(
+            egui::pos2(x, y),
+            egui::Align2::LEFT_TOP,
+            text,
+            font_id.clone(),
+            ui.visuals().text_color(),
+        );
+        used_rect = used_rect.union(text_rect);
+    }
+
+    ui.allocate_rect(used_rect, egui::Sense::hover()); // make sure it is visible!
+}
+
+fn render_note(ui: &mut egui::Ui, damus: &mut Damus, index: usize) {
+    ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
+        let ev = damus.all_events.get(&damus.events[index]).unwrap();
+
+        padding(10.0, ui, |ui| {
+            match damus
+                .contacts
+                .profiles
+                .get(&ev.pubkey)
+                .and_then(|p| p.picture())
+            {
+                // these have different lifetimes and types,
+                // so the calls must be separate
+                Some(pic) => render_pfp(ui, &mut damus.img_cache, pic),
+                None => render_pfp(ui, &mut damus.img_cache, no_pfp_url()),
+            }
+
+            ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                render_username(ui, &damus.contacts, &ev.pubkey);
+
+                ui.weak(&ev.content);
+            })
+        })
+    });
+}
+
+fn render_notes(ui: &mut egui::Ui, damus: &mut Damus) {
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
 
-    for evid in &damus.events {
-        if !damus.all_events.contains_key(evid) {
-            return;
+    for i in 0..damus.events.len() {
+        if !damus.all_events.contains_key(&damus.events[i]) {
+            continue;
         }
 
-        ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
-            let ev = damus.all_events.get(evid).unwrap();
-
-            padding(10.0, ui, |ui| {
-                match damus
-                    .contacts
-                    .profiles
-                    .get(&ev.pubkey)
-                    .and_then(|p| p.picture())
-                {
-                    // these have different lifetimes and types,
-                    // so the calls must be separate
-                    Some(pic) => render_pfp(ui, &mut damus.img_cache, pic),
-                    None => render_pfp(ui, &mut damus.img_cache, no_pfp_url()),
-                }
-
-                ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
-                    render_username(ui, &damus.contacts, &ev.pubkey);
-
-                    ui.weak(&ev.content);
-                })
-            })
-        });
+        render_note(ui, damus, i);
 
         ui.separator();
     }
@@ -404,30 +453,40 @@ fn render_events(ui: &mut egui::Ui, damus: &mut Damus) {
 fn timeline_view(ui: &mut egui::Ui, app: &mut Damus) {
     padding(10.0, ui, |ui| ui.heading("Timeline"));
 
+    /*
+    let font_id = egui::TextStyle::Body.resolve(ui.style());
+    let row_height = ui.fonts(|f| f.row_height(&font_id)) + ui.spacing().item_spacing.y;
+    */
+
     egui::ScrollArea::vertical()
         .scroll_bar_visibility(ScrollBarVisibility::AlwaysHidden)
         .auto_shrink([false; 2])
+        /*
+        .show_viewport(ui, |ui, viewport| {
+            render_notes_in_viewport(ui, app, viewport, row_height, font_id);
+        });
+        */
         .show(ui, |ui| {
-            render_events(ui, app);
+            render_notes(ui, app);
         });
 }
 
 fn top_panel(ctx: &egui::Context) -> egui::TopBottomPanel {
     // mobile needs padding, at least on android
-    if is_mobile(ctx) {
-        let mut top_margin = Margin::default();
-        top_margin.top = 50.0;
+    //if is_mobile(ctx) {
+    let mut top_margin = Margin::default();
+    top_margin.top = 50.0;
 
-        let frame = Frame {
-            inner_margin: top_margin,
-            fill: ctx.style().visuals.panel_fill,
-            ..Default::default()
-        };
+    let frame = Frame {
+        inner_margin: top_margin,
+        fill: ctx.style().visuals.panel_fill,
+        ..Default::default()
+    };
 
-        return egui::TopBottomPanel::top("top_panel").frame(frame);
-    }
+    return egui::TopBottomPanel::top("top_panel").frame(frame);
+    //}
 
-    egui::TopBottomPanel::top("top_panel").frame(Frame::none())
+    //egui::TopBottomPanel::top("top_panel").frame(Frame::none())
 }
 
 #[inline]
@@ -471,7 +530,7 @@ fn render_panel(ctx: &egui::Context, app: &mut Damus) {
 
 fn set_app_style(ui: &mut egui::Ui) {
     if ui.visuals().dark_mode {
-        ui.visuals_mut().override_text_color = Some(egui::Color32::WHITE);
+        ui.visuals_mut().override_text_color = Some(egui::Color32::from_rgb(250, 250, 250));
         ui.visuals_mut().panel_fill = egui::Color32::from_rgb(30, 30, 30);
     } else {
         ui.visuals_mut().override_text_color = Some(egui::Color32::BLACK);
@@ -514,7 +573,7 @@ fn render_damus_desktop(ctx: &egui::Context, app: &mut Damus) {
         egui::CentralPanel::default().show(ctx, |ui| {
             set_app_style(ui);
             timeline_panel(ui, panel_width, 0, |ui| {
-                postbox(ui, app);
+                //postbox(ui, app);
                 timeline_view(ui, app);
             });
         });
@@ -529,7 +588,7 @@ fn render_damus_desktop(ctx: &egui::Context, app: &mut Damus) {
             .show(ui, |ui| {
                 for ind in 0..app.n_panels {
                     if ind == 0 {
-                        postbox(ui, app);
+                        //postbox(ui, app);
                     }
                     timeline_panel(ui, panel_width, ind, |ui| {
                         timeline_view(ui, app);
