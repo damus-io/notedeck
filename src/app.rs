@@ -202,7 +202,7 @@ fn process_event(damus: &mut Damus, _subid: &str, event: Event) {
 
     let cloned_id = event.id.clone();
     damus.all_events.insert(cloned_id.clone(), event);
-    damus.events.push(cloned_id);
+    damus.events.insert(0, cloned_id);
 }
 
 fn get_unknown_author_ids(damus: &Damus) -> Vec<Pubkey> {
@@ -526,6 +526,8 @@ fn render_panel(ctx: &egui::Context, app: &mut Damus) {
                 app.frame_history.fps(),
                 app.frame_history.mean_frame_time() * 1e3
             ));
+
+            ui.label(format!("{} notes", app.events.len()));
         });
     });
 }
