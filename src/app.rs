@@ -13,6 +13,7 @@ use enostr::{ClientMessage, EventId, Filter, Profile, Pubkey, RelayEvent, RelayM
 use poll_promise::Promise;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
+use std::time::Duration;
 use tracing::{debug, error, info, warn};
 
 use enostr::{Event, RelayPool};
@@ -62,7 +63,7 @@ impl Default for Damus {
             state: DamusState::Initializing,
             contacts: Contacts::new(),
             all_events: HashMap::new(),
-            pool: RelayPool::default(),
+            pool: RelayPool::new(),
             events: vec![],
             img_cache: HashMap::new(),
             n_panels: 1,
@@ -99,6 +100,7 @@ fn send_initial_filters(pool: &mut RelayPool, relay_url: &str) {
 
     let subid = "initial";
     for relay in &mut pool.relays {
+        let relay = &mut relay.relay;
         if relay.url == relay_url {
             relay.subscribe(subid.to_string(), vec![filter]);
             return;
@@ -113,6 +115,8 @@ fn try_process_event(damus: &mut Damus, ctx: &egui::Context) {
     } else if ctx.input(|i| i.key_pressed(egui::Key::Minus)) {
         ctx.set_pixels_per_point(ctx.pixels_per_point() - amount);
     }
+
+    damus.pool.keepalive_ping();
 
     // pool stuff
     if let Some(ev) = damus.pool.try_recv() {
@@ -250,6 +254,8 @@ fn render_damus(damus: &mut Damus, ctx: &Context) {
     } else {
         render_damus_desktop(ctx, damus);
     }
+
+    ctx.request_repaint_after(Duration::from_secs(1));
 
     #[cfg(feature = "profiling")]
     puffin_egui::profiler_window(ctx);
