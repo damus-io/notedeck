@@ -63,6 +63,14 @@ impl Relay {
         self.sender.send(txt);
     }
 
+    pub fn connect(&mut self, wakeup: impl Fn() + Send + Sync + 'static) -> Result<()> {
+        let (sender, receiver) = ewebsock::connect_with_wakeup(&self.url, wakeup)?;
+        self.status = RelayStatus::Connecting;
+        self.sender = sender;
+        self.receiver = receiver;
+        Ok(())
+    }
+
     pub fn ping(&mut self) {
         let msg = WsMessage::Ping(vec![]);
         self.sender.send(msg);

@@ -1,5 +1,5 @@
 use crate::relay::message::RelayEvent;
-use crate::relay::Relay;
+use crate::relay::{Relay, RelayStatus};
 use crate::{ClientMessage, Result};
 
 use std::time::{Duration, Instant};
@@ -21,6 +21,8 @@ pub struct PoolEvent<'a> {
 pub struct PoolRelay {
     pub relay: Relay,
     pub last_ping: Instant,
+    pub last_connect_attempt: Instant,
+    pub retry_connect_after: Duration,
 }
 
 impl PoolRelay {
@@ -28,7 +30,13 @@ impl PoolRelay {
         PoolRelay {
             relay: relay,
             last_ping: Instant::now(),
+            last_connect_attempt: Instant::now(),
+            retry_connect_after: Self::initial_reconnect_duration(),
         }
+    }
+
+    pub fn initial_reconnect_duration() -> Duration {
+        Duration::from_secs(2)
     }
 }
 
@@ -68,14 +76,43 @@ impl RelayPool {
 
     /// Keep relay connectiongs alive by pinging relays that haven't been
     /// pinged in awhile. Adjust ping rate with [`ping_rate`].
-    pub fn keepalive_ping(&mut self) {
+    pub fn keepalive_ping(&mut self, wakeup: impl Fn() + Send + Sync + Clone + 'static) {
         for relay in &mut self.relays {
             let now = std::time::Instant::now();
-            let should_ping = now - relay.last_ping > self.ping_rate;
-            if should_ping {
-                debug!("pinging {}", relay.relay.url);
-                relay.relay.ping();
-                relay.last_ping = Instant::now();
+
+            match relay.relay.status {
+                RelayStatus::Disconnected => {
+                    let reconnect_at = relay.last_connect_attempt + relay.retry_connect_after;
+                    if now > reconnect_at {
+                        relay.last_connect_attempt = now;
+                        let next_duration = Duration::from_millis(
+                            ((relay.retry_connect_after.as_millis() as f64) * 1.5) as u64,
+                        );
+                        debug!(
+                            "bumping reconnect duration from {:?} to {:?} and retrying connect",
+                            relay.retry_connect_after, next_duration
+                        );
+                        relay.retry_connect_after = next_duration;
+                        relay.relay.connect(wakeup.clone());
+                    } else {
+                        // let's wait a bit before we try again
+                    }
+                }
+
+                RelayStatus::Connected => {
+                    relay.retry_connect_after = PoolRelay::initial_reconnect_duration();
+
+                    let should_ping = now - relay.last_ping > self.ping_rate;
+                    if should_ping {
+                        debug!("pinging {}", relay.relay.url);
+                        relay.relay.ping();
+                        relay.last_ping = Instant::now();
+                    }
+                }
+
+                RelayStatus::Connecting => {
+                    // cool story bro
+                }
             }
         }
     }
@@ -94,7 +131,7 @@ impl RelayPool {
     pub fn add_url(
         &mut self,
         url: String,
-        wakeup: impl Fn() + Send + Sync + 'static,
+        wakeup: impl Fn() + Send + Sync + Clone + 'static,
     ) -> Result<()> {
         let relay = Relay::new(url, wakeup)?;
         let pool_relay = PoolRelay::new(relay);
@@ -111,6 +148,7 @@ impl RelayPool {
             if let Some(msg) = relay.receiver.try_recv() {
                 match msg.try_into() {
                     Ok(event) => {
+                        relay.status = RelayStatus::Connected;
                         // let's just handle pongs here.
                         // We only need to do this natively.
                         #[cfg(not(target_arch = "wasm32"))]
@@ -129,7 +167,8 @@ impl RelayPool {
                     }
 
                     Err(e) => {
-                        error!("{:?}", e);
+                        relay.status = RelayStatus::Disconnected;
+                        error!("try_recv {:?}", e);
                         continue;
                     }
                 }

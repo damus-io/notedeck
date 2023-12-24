@@ -115,7 +115,11 @@ fn try_process_event(damus: &mut Damus, ctx: &egui::Context) {
         ctx.set_pixels_per_point(ctx.pixels_per_point() - amount);
     }
 
-    damus.pool.keepalive_ping();
+    let ctx2 = ctx.clone();
+    let wakeup = move || {
+        ctx2.request_repaint();
+    };
+    damus.pool.keepalive_ping(wakeup);
 
     // pool stuff
     while let Some(ev) = damus.pool.try_recv() {
