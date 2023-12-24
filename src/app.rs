@@ -84,18 +84,26 @@ fn relay_setup(pool: &mut RelayPool, ctx: &egui::Context) {
     let wakeup = move || {
         ctx.request_repaint();
     };
+    if let Err(e) = pool.add_url("ws://127.0.0.1:8090".to_string(), wakeup.clone()) {
+        error!("{:?}", e)
+    }
+    /*
     if let Err(e) = pool.add_url("wss://relay.damus.io".to_string(), wakeup.clone()) {
         error!("{:?}", e)
     }
     if let Err(e) = pool.add_url("wss://purplepag.es".to_string(), wakeup) {
         error!("{:?}", e)
     }
+    */
 }
 
 fn send_initial_filters(pool: &mut RelayPool, relay_url: &str) {
+    /*
     let filter = Filter::new().limit(100).kinds(vec![1, 42]).pubkeys(
         ["32e1827635450ebb3c5a7d12c1f8e7b2b514439ac10a67eef3d9fd9c5c68e245".into()].into(),
     );
+    */
+    let filter = Filter::new().limit(2);
 
     let subid = "initial";
     for relay in &mut pool.relays {
@@ -133,6 +141,7 @@ fn try_process_event(damus: &mut Damus, ctx: &egui::Context) {
             RelayEvent::Message(msg) => process_message(damus, &relay, msg),
         }
     }
+
     //info!("recv {:?}", ev)
 }
 
@@ -460,18 +469,16 @@ fn render_notes(ui: &mut egui::Ui, damus: &mut Damus) {
 fn timeline_view(ui: &mut egui::Ui, app: &mut Damus) {
     padding(10.0, ui, |ui| ui.heading("Timeline"));
 
-    /*
     let font_id = egui::TextStyle::Body.resolve(ui.style());
     let row_height = ui.fonts(|f| f.row_height(&font_id)) + ui.spacing().item_spacing.y;
-    */
 
     egui::ScrollArea::vertical()
         .scroll_bar_visibility(ScrollBarVisibility::AlwaysHidden)
         .auto_shrink([false; 2])
         /*
-        .show_viewport(ui, |ui, viewport| {
-            render_notes_in_viewport(ui, app, viewport, row_height, font_id);
-        });
+            .show_viewport(ui, |ui, viewport| {
+                render_notes_in_viewport(ui, app, viewport, row_height, font_id);
+            });
         */
         .show(ui, |ui| {
             render_notes(ui, app);
