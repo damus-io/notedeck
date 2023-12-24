@@ -119,7 +119,7 @@ fn try_process_event(damus: &mut Damus, ctx: &egui::Context) {
     damus.pool.keepalive_ping();
 
     // pool stuff
-    if let Some(ev) = damus.pool.try_recv() {
+    while let Some(ev) = damus.pool.try_recv() {
         let relay = ev.relay.to_owned();
 
         match ev.event {
