@@ -82,7 +82,6 @@ pub fn is_mobile(ctx: &egui::Context) -> bool {
 fn relay_setup(pool: &mut RelayPool, ctx: &egui::Context) {
     let ctx = ctx.clone();
     let wakeup = move || {
-        debug!("Woke up");
         ctx.request_repaint();
     };
     if let Err(e) = pool.add_url("wss://relay.damus.io".to_string(), wakeup.clone()) {
