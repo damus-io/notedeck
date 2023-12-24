@@ -294,10 +294,7 @@ fn render_pfp(ui: &mut egui::Ui, img_cache: &mut ImageCache, url: &str) {
         }
         Some(Err(_err)) => {
             let failed_key = UrlKey::Failed(url).to_u64();
-            debug!(
-                "has failed promise? {}",
-                img_cache.contains_key(&failed_key)
-            );
+            //debug!("has failed promise? {}", img_cache.contains_key(&failed_key));
             let m_failed_promise = img_cache.get_mut(&failed_key);
             if m_failed_promise.is_none() {
                 warn!("failed key: {:?}", &failed_key);
@@ -310,7 +307,7 @@ fn render_pfp(ui: &mut egui::Ui, img_cache: &mut ImageCache, url: &str) {
                     ui.add(Spinner::new().size(40.0));
                 }
                 Some(Err(e)) => {
-                    error!("Image load error: {:?}", e);
+                    //error!("Image load error: {:?}", e);
                     ui.label("❌");
                 }
                 Some(Ok(img)) => {
