@@ -429,7 +429,7 @@ fn render_note(ui: &mut egui::Ui, damus: &mut Damus, index: usize) {
             ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
                 render_username(ui, &damus.contacts, &ev.pubkey);
 
-                ui.weak(&ev.content);
+                ui.label(&ev.content);
             })
         })
     });
