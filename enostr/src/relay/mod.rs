@@ -63,6 +63,11 @@ impl Relay {
         self.sender.send(txt);
     }
 
+    pub fn ping(&mut self) {
+        let msg = WsMessage::Ping(vec![]);
+        self.sender.send(msg);
+    }
+
     pub fn subscribe(&mut self, subid: String, filters: Vec<Filter>) {
         self.send(&ClientMessage::req(subid, filters));
     }
