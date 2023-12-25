@@ -6,62 +6,62 @@ use serde_json::Value;
 use ewebsock::{WsEvent, WsMessage};
 
 #[derive(Debug, Eq, PartialEq)]
-pub struct CommandResult {
-    event_id: String,
+pub struct CommandResult<'a> {
+    event_id: &'a str,
     status: bool,
-    message: String,
+    message: &'a str,
 }
 
 #[derive(Debug, Eq, PartialEq)]
-pub enum RelayMessage {
-    OK(CommandResult),
-    Eose(String),
-    Event(String, Event),
-    Notice(String),
+pub enum RelayMessage<'a> {
+    OK(CommandResult<'a>),
+    Eose(&'a str),
+    Event(&'a str, &'a str),
+    Notice(&'a str),
 }
 
 #[derive(Debug)]
-pub enum RelayEvent {
+pub enum RelayEvent<'a> {
     Opened,
     Closed,
-    Other(WsMessage),
-    Message(RelayMessage),
+    Other(&'a WsMessage),
+    Error(Error),
+    Message(RelayMessage<'a>),
 }
 
-impl TryFrom<WsEvent> for RelayEvent {
-    type Error = Error;
-
-    fn try_from(message: WsEvent) -> Result<Self> {
-        match message {
-            WsEvent::Opened => Ok(RelayEvent::Opened),
-            WsEvent::Closed => Ok(RelayEvent::Closed),
-            WsEvent::Message(ws_msg) => ws_msg.try_into(),
-            WsEvent::Error(s) => Err(s.into()),
+impl<'a> From<&'a WsEvent> for RelayEvent<'a> {
+    fn from(event: &'a WsEvent) -> RelayEvent<'a> {
+        match event {
+            WsEvent::Opened => RelayEvent::Opened,
+            WsEvent::Closed => RelayEvent::Closed,
+            WsEvent::Message(ref ws_msg) => ws_msg.into(),
+            WsEvent::Error(s) => RelayEvent::Error(Error::Generic(s.to_owned())),
         }
     }
 }
 
-impl TryFrom<WsMessage> for RelayEvent {
-    type Error = Error;
-
-    fn try_from(wsmsg: WsMessage) -> Result<Self> {
+impl<'a> From<&'a WsMessage> for RelayEvent<'a> {
+    fn from(wsmsg: &'a WsMessage) -> RelayEvent<'a> {
         match wsmsg {
-            WsMessage::Text(s) => RelayMessage::from_json(&s).map(RelayEvent::Message),
-            wsmsg => Ok(RelayEvent::Other(wsmsg)),
+            WsMessage::Text(ref s) => match RelayMessage::from_json(&s).map(RelayEvent::Message) {
+                Ok(msg) => msg,
+                Err(err) => RelayEvent::Error(err),
+            },
+            wsmsg => RelayEvent::Error(Error::MessageDecodeFailed),
         }
     }
 }
 
-impl RelayMessage {
-    pub fn eose(subid: String) -> Self {
+impl<'a> RelayMessage<'a> {
+    pub fn eose(subid: &'a str) -> Self {
         RelayMessage::Eose(subid)
     }
 
-    pub fn notice(msg: String) -> Self {
+    pub fn notice(msg: &'a str) -> Self {
         RelayMessage::Notice(msg)
     }
 
-    pub fn ok(event_id: String, status: bool, message: String) -> Self {
+    pub fn ok(event_id: &'a str, status: bool, message: &'a str) -> Self {
         RelayMessage::OK(CommandResult {
             event_id: event_id,
             status,
@@ -69,75 +69,62 @@ impl RelayMessage {
         })
     }
 
-    pub fn event(ev: Event, sub_id: String) -> Self {
+    pub fn event(ev: &'a str, sub_id: &'a str) -> Self {
         RelayMessage::Event(sub_id, ev)
     }
 
     // I was lazy and took this from the nostr crate. thx yuki!
-    pub fn from_json(msg: &str) -> Result<Self> {
+    pub fn from_json(msg: &'a str) -> Result<RelayMessage<'a>> {
         if msg.is_empty() {
             return Err(Error::MessageEmpty);
         }
 
-        let v: Vec<Value> = serde_json::from_str(msg).map_err(|_| Error::MessageDecodeFailed)?;
-
         // Notice
         // Relay response format: ["NOTICE", <message>]
-        if v[0] == "NOTICE" {
-            if v.len() != 2 {
-                return Err(Error::MessageDecodeFailed);
-            }
-            let v_notice: String =
-                serde_json::from_value(v[1].clone()).map_err(|_| Error::MessageDecodeFailed)?;
-            return Ok(Self::notice(v_notice));
+        if &msg[0..=9] == "[\"NOTICE\"," {
+            // TODO: there could be more than one space, whatever
+            let start = if msg.bytes().nth(10) == Some(b' ') {
+                12
+            } else {
+                11
+            };
+            let end = msg.len() - 2;
+            return Ok(Self::notice(&msg[start..end]));
         }
 
         // Event
         // Relay response format: ["EVENT", <subscription id>, <event JSON>]
-        if v[0] == "EVENT" {
-            if v.len() != 3 {
-                return Err(Error::MessageDecodeFailed);
-            }
-
-            let event =
-                Event::from_json(&v[2].to_string()).map_err(|_| Error::MessageDecodeFailed)?;
-
-            let subscription_id: String =
-                serde_json::from_value(v[1].clone()).map_err(|_| Error::MessageDecodeFailed)?;
-
-            return Ok(Self::event(event, subscription_id));
+        if &msg[0..=7] == "[\"EVENT\"" {
+            return Ok(Self::event(msg, "fixme"));
         }
 
         // EOSE (NIP-15)
         // Relay response format: ["EOSE", <subscription_id>]
-        if v[0] == "EOSE" {
-            if v.len() != 2 {
-                return Err(Error::MessageDecodeFailed);
-            }
-
-            let subscription_id: String =
-                serde_json::from_value(v[1].clone()).map_err(|_| Error::MessageDecodeFailed)?;
-
-            return Ok(Self::eose(subscription_id));
+        if &msg[0..=7] == "[\"EOSE\"," {
+            let start = if msg.bytes().nth(8) == Some(b' ') {
+                10
+            } else {
+                9
+            };
+            let end = msg.len() - 2;
+            return Ok(Self::eose(&msg[start..end]));
         }
 
         // OK (NIP-20)
-        // Relay response format: ["OK", <event_id>, <true|false>, <message>]
-        if v[0] == "OK" {
-            if v.len() != 4 {
+        // Relay response format: ["OK",<event_id>, <true|false>, <message>]
+        if &msg[0..=4] == "[\"OK\"," {
+            // TODO: fix this
+            let event_id = &msg[7..71];
+            let booly = &msg[73..77];
+            let status: bool = if booly == "true" {
+                true
+            } else if booly == "false" {
+                false
+            } else {
                 return Err(Error::MessageDecodeFailed);
-            }
+            };
 
-            let event_id: String =
-                serde_json::from_value(v[1].clone()).map_err(|_| Error::MessageDecodeFailed)?;
-
-            let status: bool =
-                serde_json::from_value(v[2].clone()).map_err(|_| Error::MessageDecodeFailed)?;
-
-            let message: String =
-                serde_json::from_value(v[3].clone()).map_err(|_| Error::MessageDecodeFailed)?;
-
-            return Ok(Self::ok(event_id, status, message));
+            return Ok(Self::ok(event_id, status, "fixme"));
         }
 
         Err(Error::MessageDecodeFailed)
@@ -202,9 +189,9 @@ mod tests {
     #[test]
     fn test_handle_invalid_event() {
         //Mising Event field
-        let invalid_event_msg = r#"["EVENT", "random_string"]"#;
+        let invalid_event_msg = r#"["EVENT","random_string"]"#;
         //Event JSON with incomplete content
-        let invalid_event_msg_content = r#"["EVENT", "random_string", {"id":"70b10f70c1318967eddf12527799411b1a9780ad9c43858f5e5fcd45486a13a5","pubkey":"379e863e8357163b5bce5d2688dc4f1dcc2d505222fb8d74db600f30535dfdfe"}]"#;
+        let invalid_event_msg_content = r#"["EVENT","random_string",{"id":"70b10f70c1318967eddf12527799411b1a9780ad9c43858f5e5fcd45486a13a5","pubkey":"379e863e8357163b5bce5d2688dc4f1dcc2d505222fb8d74db600f30535dfdfe"}]"#;
 
         assert_eq!(
             RelayMessage::from_json(invalid_event_msg).unwrap_err(),
@@ -239,14 +226,14 @@ mod tests {
 
         // The subscription ID is not string
         assert_eq!(
-            RelayMessage::from_json(r#"["EOSE", 404]"#).unwrap_err(),
+            RelayMessage::from_json(r#"["EOSE",404]"#).unwrap_err(),
             Error::MessageDecodeFailed
         );
     }
 
     #[test]
     fn test_handle_valid_ok() -> Result<()> {
-        let valid_ok_msg = r#"["OK", "b1a649ebe8b435ec71d3784793f3bbf4b93e64e17568a741aecd4c7ddeafce30", true, "pow: difficulty 25>=24"]"#;
+        let valid_ok_msg = r#"["OK","b1a649ebe8b435ec71d3784793f3bbf4b93e64e17568a741aecd4c7ddeafce30",true,"pow: difficulty 25>=24"]"#;
         let handled_valid_ok_msg = RelayMessage::ok(
             "b1a649ebe8b435ec71d3784793f3bbf4b93e64e17568a741aecd4c7ddeafce30".to_string(),
             true,
@@ -262,7 +249,7 @@ mod tests {
         // Missing params
         assert_eq!(
             RelayMessage::from_json(
-                r#"["OK", "b1a649ebe8b435ec71d3784793f3bbf4b93e64e17568a741aecd4c7ddeafce30"]"#
+                r#"["OK","b1a649ebe8b435ec71d3784793f3bbf4b93e64e17568a741aecd4c7ddeafce30"]"#
             )
             .unwrap_err(),
             Error::MessageDecodeFailed
@@ -270,13 +257,13 @@ mod tests {
 
         // Invalid status
         assert_eq!(
-            RelayMessage::from_json(r#"["OK", "b1a649ebe8b435ec71d3784793f3bbf4b93e64e17568a741aecd4c7ddeafce30", hello, ""]"#).unwrap_err(),
+            RelayMessage::from_json(r#"["OK","b1a649ebe8b435ec71d3784793f3bbf4b93e64e17568a741aecd4c7ddeafce30",hello,""]"#).unwrap_err(),
             Error::MessageDecodeFailed
         );
 
         // Invalid message
         assert_eq!(
-            RelayMessage::from_json(r#"["OK", "b1a649ebe8b435ec71d3784793f3bbf4b93e64e17568a741aecd4c7ddeafce30", hello, 404]"#).unwrap_err(),
+            RelayMessage::from_json(r#"["OK","b1a649ebe8b435ec71d3784793f3bbf4b93e64e17568a741aecd4c7ddeafce30",hello,404]"#).unwrap_err(),
             Error::MessageDecodeFailed
         );
     }

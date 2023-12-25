@@ -24,6 +24,7 @@ serde_derive = "1"
 serde = { version = "1", features = ["derive"] } # You only need this if you want app persistence
 tracing = "0.1.37"
 #wasm-bindgen = "0.2.83"
+nostrdb = { git = "https://github.com/damus-io/nostrdb-rs.git", rev = "2c0d43497d626e61a8de7a1efaff13d44e30d556" }
 enostr = { path = "enostr" } 
 serde_json = "1.0.89"
 env_logger = "0.10.0"

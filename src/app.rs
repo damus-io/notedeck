@@ -125,7 +125,7 @@ fn try_process_event(damus: &mut Damus, ctx: &egui::Context) {
     while let Some(ev) = damus.pool.try_recv() {
         let relay = ev.relay.to_owned();
 
-        match ev.event {
+        match ev.event.into() {
             RelayEvent::Opened => send_initial_filters(&mut damus.pool, &relay),
             // TODO: handle reconnects
             RelayEvent::Closed => warn!("{} connection closed", &relay),
@@ -192,13 +192,11 @@ fn process_metadata_event(damus: &mut Damus, ev: &Event) {
     }
 }
 
-fn process_event(damus: &mut Damus, _subid: &str, event: Event) {
+fn process_event(damus: &mut Damus, _subid: &str, event: &str) {
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
 
-    if damus.all_events.get(&event.id).is_some() {
-        return;
-    }
+    damus.ndb.process_event(&event);
 
     let kind = event.kind;
     if kind == 0 {
@@ -243,8 +241,8 @@ fn handle_eose(damus: &mut Damus, subid: &str, relay_url: &str) {
     }
 }
 
-fn process_message(damus: &mut Damus, relay: &str, msg: RelayMessage) {
-    match msg {
+fn process_message(damus: &mut Damus, relay: &str, msg: &RelayMessage) {
+    match msg.into() {
         RelayMessage::Event(subid, ev) => process_event(damus, &subid, ev),
         RelayMessage::Notice(msg) => warn!("Notice from {}: {}", relay, msg),
         RelayMessage::OK(cr) => info!("OK {:?}", cr),
