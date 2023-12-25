@@ -445,7 +445,7 @@ fn render_notes(ui: &mut egui::Ui, damus: &mut Damus) {
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
 
-    for i in 0..damus.events.len() {
+    for i in 0..damus.events.len().min(50) {
         if !damus.all_events.contains_key(&damus.events[i]) {
             continue;
         }
