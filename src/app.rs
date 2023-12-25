@@ -200,13 +200,14 @@ fn process_event(damus: &mut Damus, _subid: &str, event: Event) {
         return;
     }
 
-    if event.kind == 0 {
+    let kind = event.kind;
+    if kind == 0 {
         process_metadata_event(damus, &event);
+    } else if kind == 1 {
+        let cloned_id = event.id.clone();
+        damus.all_events.insert(cloned_id.clone(), event);
+        damus.events.insert(0, cloned_id);
     }
-
-    let cloned_id = event.id.clone();
-    damus.all_events.insert(cloned_id.clone(), event);
-    damus.events.insert(0, cloned_id);
 }
 
 fn get_unknown_author_ids(damus: &Damus) -> Vec<Pubkey> {
