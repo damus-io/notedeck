@@ -1,6 +1,6 @@
 use crate::abbrev;
 use crate::contacts::Contacts;
-use crate::fonts::setup_fonts;
+use crate::fonts::{setup_fonts, setup_gossip_fonts};
 use crate::frame_history::FrameHistory;
 use crate::images::fetch_img;
 use crate::ui::padding;
@@ -146,7 +146,7 @@ fn update_damus(damus: &mut Damus, ctx: &egui::Context) {
         #[cfg(feature = "profiling")]
         setup_profiling();
 
-        setup_fonts(ctx);
+        setup_gossip_fonts(ctx);
         damus.pool = RelayPool::new();
         relay_setup(&mut damus.pool, ctx);
         damus.state = DamusState::Initialized;
