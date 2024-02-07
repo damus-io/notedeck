@@ -1,7 +1,6 @@
 use crate::error::Error;
 use crate::result::Result;
-use egui::{Color32, ColorImage, TextureHandle};
-use egui_extras::image::FitTo;
+use egui::{Color32, ColorImage, SizeHint, TextureHandle};
 use image::imageops::FilterType;
 use poll_promise::Promise;
 
@@ -90,8 +89,10 @@ fn parse_img_response(response: ehttp::Response) -> Result<ColorImage> {
         #[cfg(feature = "profiling")]
         puffin::profile_scope!("load_svg");
 
-        let mut color_image =
-            egui_extras::image::load_svg_bytes_with_size(&response.bytes, FitTo::Size(size, size))?;
+        let mut color_image = egui_extras::image::load_svg_bytes_with_size(
+            &response.bytes,
+            Some(SizeHint::Size(size, size)),
+        )?;
         round_image(&mut color_image);
         Ok(color_image)
     } else if content_type.starts_with("image/") {

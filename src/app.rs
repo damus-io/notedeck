@@ -7,7 +7,7 @@ use crate::ui::padding;
 use crate::Result;
 use egui::containers::scroll_area::ScrollBarVisibility;
 use egui::widgets::Spinner;
-use egui::{Context, Frame, Margin, TextureHandle, TextureId};
+use egui::{Context, Frame, ImageSource, Margin, TextureHandle, TextureId};
 use egui_extras::Size;
 use enostr::{ClientMessage, EventId, Filter, Profile, Pubkey, RelayEvent, RelayMessage};
 use poll_promise::Promise;
@@ -94,7 +94,11 @@ fn relay_setup(pool: &mut RelayPool, ctx: &egui::Context) {
 
 fn send_initial_filters(pool: &mut RelayPool, relay_url: &str) {
     let filter = Filter::new().limit(100).kinds(vec![1, 42]).pubkeys(
-        ["32e1827635450ebb3c5a7d12c1f8e7b2b514439ac10a67eef3d9fd9c5c68e245".into()].into(),
+        [
+            Pubkey::from_hex("32e1827635450ebb3c5a7d12c1f8e7b2b514439ac10a67eef3d9fd9c5c68e245")
+                .unwrap(),
+        ]
+        .into(),
     );
 
     let subid = "initial";
@@ -109,7 +113,7 @@ fn send_initial_filters(pool: &mut RelayPool, relay_url: &str) {
 
 fn try_process_event(damus: &mut Damus, ctx: &egui::Context) {
     let amount = 0.2;
-    if ctx.input(|i| i.key_pressed(egui::Key::PlusEquals)) {
+    if ctx.input(|i| i.key_pressed(egui::Key::Plus)) {
         ctx.set_pixels_per_point(ctx.pixels_per_point() + amount);
     } else if ctx.input(|i| i.key_pressed(egui::Key::Minus)) {
         ctx.set_pixels_per_point(ctx.pixels_per_point() - amount);
@@ -321,22 +325,22 @@ fn render_pfp(ui: &mut egui::Ui, img_cache: &mut ImageCache, url: &str) {
                     ui.label("❌");
                 }
                 Some(Ok(img)) => {
-                    pfp_image(ui, img.into(), pfp_size);
+                    pfp_image(ui, img, pfp_size);
                 }
             }
         }
         Some(Ok(img)) => {
-            pfp_image(ui, img.into(), pfp_size);
+            pfp_image(ui, img, pfp_size);
         }
     }
 }
 
-fn pfp_image(ui: &mut egui::Ui, img: TextureId, size: f32) -> egui::Response {
+fn pfp_image<'a>(ui: &mut egui::Ui, img: impl Into<ImageSource<'a>>, size: f32) -> egui::Response {
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
 
     //img.show_max_size(ui, egui::vec2(size, size))
-    ui.image(img, egui::vec2(size, size))
+    ui.image(img)
     //.with_options()
 }
 
@@ -647,8 +651,8 @@ fn add_test_events(damus: &mut Damus) {
     // For inspiration and more examples, go to https://emilk.github.io/egui
 
     let test_event = Event {
-        id: "6938e3cd841f3111dbdbd909f87fd52c3d1f1e4a07fd121d1243196e532811cb".to_string().into(),
-        pubkey: "f0a6ff7f70b872de6d82c8daec692a433fd23b6a49f25923c6f034df715cdeec".to_string().into(),
+        id: EventId::from_hex("6938e3cd841f3111dbdbd909f87fd52c3d1f1e4a07fd121d1243196e532811cb").unwrap(),
+        pubkey: Pubkey::from_hex("f0a6ff7f70b872de6d82c8daec692a433fd23b6a49f25923c6f034df715cdeec").unwrap(),
         created_at: 1667781968,
         kind: 1,
         tags: vec![],
@@ -657,8 +661,8 @@ fn add_test_events(damus: &mut Damus) {
     };
 
     let test_event2 = Event {
-        id: "6938e3cd841f3111dbdbd909f87fd52c3d1f1e4a07fd121d1243196e532811cb".to_string().into(),
-        pubkey: "32e1827635450ebb3c5a7d12c1f8e7b2b514439ac10a67eef3d9fd9c5c68e245".to_string().into(),
+        id: EventId::from_hex("6938e3cd841f3111dbdbd909f87fd52c3d1f1e4a07fd121d1243196e532811cb").unwrap(),
+        pubkey: Pubkey::from_hex("32e1827635450ebb3c5a7d12c1f8e7b2b514439ac10a67eef3d9fd9c5c68e245").unwrap(),
         created_at: 1667781968,
         kind: 1,
         tags: vec![],

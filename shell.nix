@@ -1,7 +1,7 @@
 { pkgs ? import <nixpkgs> {}, use_android ? true }:
 with pkgs;
 let
-  x11libs = lib.makeLibraryPath [ xorg.libX11 xorg.libXcursor xorg.libXrandr xorg.libXi libglvnd vulkan-loader vulkan-validation-layers ];
+  x11libs = lib.makeLibraryPath [ xorg.libX11 xorg.libXcursor xorg.libXrandr xorg.libXi libglvnd vulkan-loader vulkan-validation-layers libxkbcommon ];
   ndk-version = "24.0.8215888";
   #ndk-version = "21.0.6113669";
 
