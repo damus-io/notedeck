@@ -153,9 +153,11 @@ fn try_process_event(damus: &mut Damus, ctx: &egui::Context) {
 
     // do we have any new processed events?
     if let Some(ref sub) = damus.home_sub {
-        let new_notes = damus.ndb.poll_for_notes(sub, 50);
-        if new_notes.len() > 0 {
-            info!("{} new notes! {:?}", new_notes.len(), new_notes);
+        let new_note_ids = damus.ndb.poll_for_notes(sub, 100);
+        if new_note_ids.len() > 0 {
+            info!("{} new notes! {:?}", new_note_ids.len(), new_note_ids);
+
+            for note in new_note_ids {}
         }
     }
 }
@@ -167,7 +169,9 @@ fn setup_profiling() {
 
 fn setup_initial_nostrdb_subs(damus: &mut Damus) -> Result<()> {
     let filter: nostrdb::Filter = crate::filter::convert_enostr_filter(&get_home_filter());
-    damus.home_sub = Some(damus.ndb.subscribe(filter)?);
+    damus.home_sub = Some(damus.ndb.subscribe(vec![filter])?);
+    //damus.ndb.query()
+
     Ok(())
 }
 
