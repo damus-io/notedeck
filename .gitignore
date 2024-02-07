@@ -8,3 +8,4 @@ src/camera.rs
 *.patch
 *.txt
 /tags
+*.mdb
