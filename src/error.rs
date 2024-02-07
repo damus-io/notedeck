@@ -3,6 +3,7 @@ use shatter::parser;
 #[derive(Debug)]
 pub enum Error {
     Nostr(enostr::Error),
+    Ndb(nostrdb::Error),
     Shatter(parser::Error),
     Image(image::error::ImageError),
     Generic(String),
@@ -17,6 +18,12 @@ impl From<String> for Error {
 impl From<parser::Error> for Error {
     fn from(s: parser::Error) -> Self {
         Error::Shatter(s)
+    }
+}
+
+impl From<nostrdb::Error> for Error {
+    fn from(e: nostrdb::Error) -> Self {
+        Error::Ndb(e)
     }
 }
 

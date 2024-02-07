@@ -8,6 +8,7 @@ mod abbrev;
 mod fonts;
 mod images;
 mod result;
+mod filter;
 mod ui;
 mod frame_history;
 

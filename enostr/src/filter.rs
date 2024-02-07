@@ -4,23 +4,23 @@ use serde::{Deserialize, Serialize};
 #[derive(Serialize, Deserialize, Debug, Eq, PartialEq, Clone)]
 pub struct Filter {
     #[serde(skip_serializing_if = "Option::is_none")]
-    ids: Option<Vec<EventId>>,
+    pub ids: Option<Vec<EventId>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    authors: Option<Vec<Pubkey>>,
+    pub authors: Option<Vec<Pubkey>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    kinds: Option<Vec<u64>>,
+    pub kinds: Option<Vec<u64>>,
     #[serde(rename = "#e")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    events: Option<Vec<EventId>>,
+    pub events: Option<Vec<EventId>>,
     #[serde(rename = "#p")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pubkeys: Option<Vec<Pubkey>>,
+    pub pubkeys: Option<Vec<Pubkey>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    since: Option<u64>, // unix timestamp seconds
+    pub since: Option<u64>, // unix timestamp seconds
     #[serde(skip_serializing_if = "Option::is_none")]
-    until: Option<u64>, // unix timestamp seconds
+    pub until: Option<u64>, // unix timestamp seconds
     #[serde(skip_serializing_if = "Option::is_none")]
-    limit: Option<u16>,
+    pub limit: Option<u16>,
 }
 
 impl Filter {

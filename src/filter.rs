@@ -1,37 +1,36 @@
-impl From<enostr::Filter> for nostrdb::Filter {}
-    fn from(filter: enostr::Filter) -> Self {
-        let mut nfilter = nostrdb::Filter::new();
+pub fn convert_enostr_filter(filter: &enostr::Filter) -> nostrdb::Filter {
+    let mut nfilter = nostrdb::Filter::new();
 
-        if let Some(ids) = filter.ids {
-            nfilter.ids(ids)
-        }
-
-        if let Some(authors) = filter.authors {
-            nfilter.authors(authors)
-        }
-
-        if let Some(kinds) = filter.kinds {
-            nfilter.kinds(kinds)
-        }
-
-        // #e
-        if let Some(events) = filter.events {
-            nfilter.tags(events, 'e')
-        }
-
-        // #p
-        if let Some(pubkeys) = filter.pubkeys {
-            nfilter.pubkeys(pubkeys)
-        }
-
-        if let Some(since) = filter.since {
-            nfilter.since(since)
-        }
-
-        if let Some(limit) = filter.limit {
-            nfilter.limit(limit)
-        }
-
-        nfilter
+    if let Some(ref ids) = filter.ids {
+        nfilter.ids(ids.iter().map(|a| *a.bytes()).collect());
     }
+
+    if let Some(ref authors) = filter.authors {
+        let authors: Vec<[u8; 32]> = authors.iter().map(|a| a.bytes()).collect();
+        nfilter.authors(authors);
+    }
+
+    if let Some(ref kinds) = filter.kinds {
+        nfilter.kinds(kinds.clone());
+    }
+
+    // #e
+    if let Some(ref events) = filter.events {
+        nfilter.events(events.iter().map(|a| *a.bytes()).collect());
+    }
+
+    // #p
+    if let Some(ref pubkeys) = filter.pubkeys {
+        nfilter.pubkeys(pubkeys.iter().map(|a| a.bytes()).collect());
+    }
+
+    if let Some(since) = filter.since {
+        nfilter.since(since);
+    }
+
+    if let Some(limit) = filter.limit {
+        nfilter.limit(limit.into());
+    }
+
+    nfilter
 }

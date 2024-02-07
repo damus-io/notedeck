@@ -1,21 +1,19 @@
-use crate::relay::message::RelayEvent;
+use crate::relay::message::{RelayEvent, RelayMessage};
 use crate::relay::{Relay, RelayStatus};
 use crate::{ClientMessage, Result};
 
 use std::time::{Duration, Instant};
 
 #[cfg(not(target_arch = "wasm32"))]
-use ewebsock::WsMessage;
+use ewebsock::{WsEvent, WsMessage};
 
 #[cfg(not(target_arch = "wasm32"))]
-use tracing::debug;
-
-use tracing::error;
+use tracing::{debug, error, info};
 
 #[derive(Debug)]
 pub struct PoolEvent<'a> {
     pub relay: &'a str,
-    pub event: RelayEvent,
+    pub event: ewebsock::WsEvent,
 }
 
 pub struct PoolRelay {
@@ -145,37 +143,38 @@ impl RelayPool {
     /// function searches each relay in the list in order, attempting to
     /// receive a message from each. If a message is received, return it.
     /// If no message is received from any relays, None is returned.
-    pub fn try_recv(&mut self) -> Option<PoolEvent<'_>> {
+    pub fn try_recv<'a>(&'a mut self) -> Option<PoolEvent<'a>> {
         for relay in &mut self.relays {
             let relay = &mut relay.relay;
-            if let Some(msg) = relay.receiver.try_recv() {
-                match msg.try_into() {
-                    Ok(event) => {
+            if let Some(event) = relay.receiver.try_recv() {
+                match &event {
+                    WsEvent::Opened => {
                         relay.status = RelayStatus::Connected;
-
+                    }
+                    WsEvent::Closed => {
+                        relay.status = RelayStatus::Disconnected;
+                    }
+                    WsEvent::Error(err) => {
+                        error!("{:?}", err);
+                        relay.status = RelayStatus::Disconnected;
+                    }
+                    WsEvent::Message(ev) => {
                         // let's just handle pongs here.
                         // We only need to do this natively.
                         #[cfg(not(target_arch = "wasm32"))]
-                        match event {
-                            RelayEvent::Other(WsMessage::Ping(ref bs)) => {
+                        match &ev {
+                            WsMessage::Ping(ref bs) => {
                                 debug!("pong {}", &relay.url);
                                 relay.sender.send(WsMessage::Pong(bs.to_owned()));
                             }
                             _ => {}
                         }
-
-                        return Some(PoolEvent {
-                            event,
-                            relay: &relay.url,
-                        });
-                    }
-
-                    Err(e) => {
-                        relay.status = RelayStatus::Disconnected;
-                        error!("try_recv {:?}", e);
-                        continue;
                     }
                 }
+                return Some(PoolEvent {
+                    event,
+                    relay: &relay.url,
+                });
             }
         }
 

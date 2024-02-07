@@ -10,6 +10,7 @@ use egui::widgets::Spinner;
 use egui::{Context, Frame, ImageSource, Margin, TextureHandle, TextureId};
 use egui_extras::Size;
 use enostr::{ClientMessage, EventId, Filter, Profile, Pubkey, RelayEvent, RelayMessage};
+use nostrdb::{Config, Ndb, Subscription};
 use poll_promise::Promise;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
@@ -48,25 +49,31 @@ pub struct Damus {
     compose: String,
 
     pool: RelayPool,
+    home_sub: Option<Subscription>,
 
     all_events: HashMap<EventId, Event>,
     events: Vec<EventId>,
 
     img_cache: ImageCache,
+    ndb: Ndb,
 
     frame_history: crate::frame_history::FrameHistory,
 }
 
 impl Default for Damus {
     fn default() -> Self {
+        let mut config = Config::new();
+        config.set_ingester_threads(2);
         Self {
             state: DamusState::Initializing,
             contacts: Contacts::new(),
             all_events: HashMap::new(),
             pool: RelayPool::new(),
+            home_sub: None,
             events: vec![],
             img_cache: HashMap::new(),
             n_panels: 1,
+            ndb: Ndb::new(".", &config).expect("ndb"),
             compose: "".to_string(),
             frame_history: FrameHistory::default(),
         }
@@ -92,14 +99,19 @@ fn relay_setup(pool: &mut RelayPool, ctx: &egui::Context) {
     }
 }
 
-fn send_initial_filters(pool: &mut RelayPool, relay_url: &str) {
-    let filter = Filter::new().limit(100).kinds(vec![1, 42]).pubkeys(
+fn get_home_filter() -> Filter {
+    Filter::new().limit(100).kinds(vec![1, 42]).pubkeys(
         [
             Pubkey::from_hex("32e1827635450ebb3c5a7d12c1f8e7b2b514439ac10a67eef3d9fd9c5c68e245")
                 .unwrap(),
         ]
         .into(),
-    );
+    )
+}
+
+fn send_initial_filters(pool: &mut RelayPool, relay_url: &str) {
+    let filter = get_home_filter();
+    info!("Sending initial filters to {}", relay_url);
 
     let subid = "initial";
     for relay in &mut pool.relays {
@@ -129,20 +141,34 @@ fn try_process_event(damus: &mut Damus, ctx: &egui::Context) {
     while let Some(ev) = damus.pool.try_recv() {
         let relay = ev.relay.to_owned();
 
-        match ev.event {
+        match (&ev.event).into() {
             RelayEvent::Opened => send_initial_filters(&mut damus.pool, &relay),
             // TODO: handle reconnects
             RelayEvent::Closed => warn!("{} connection closed", &relay),
+            RelayEvent::Error(e) => error!("{}", e),
             RelayEvent::Other(msg) => debug!("other event {:?}", &msg),
-            RelayEvent::Message(msg) => process_message(damus, &relay, msg),
+            RelayEvent::Message(msg) => process_message(damus, &relay, &msg),
         }
     }
-    //info!("recv {:?}", ev)
+
+    // do we have any new processed events?
+    if let Some(ref sub) = damus.home_sub {
+        let new_notes = damus.ndb.poll_for_notes(sub, 50);
+        if new_notes.len() > 0 {
+            info!("{} new notes! {:?}", new_notes.len(), new_notes);
+        }
+    }
 }
 
 #[cfg(feature = "profiling")]
 fn setup_profiling() {
     puffin::set_scopes_on(true); // tell puffin to collect data
+}
+
+fn setup_initial_nostrdb_subs(damus: &mut Damus) -> Result<()> {
+    let filter: nostrdb::Filter = crate::filter::convert_enostr_filter(&get_home_filter());
+    damus.home_sub = Some(damus.ndb.subscribe(filter)?);
+    Ok(())
 }
 
 fn update_damus(damus: &mut Damus, ctx: &egui::Context) {
@@ -154,6 +180,7 @@ fn update_damus(damus: &mut Damus, ctx: &egui::Context) {
         damus.pool = RelayPool::new();
         relay_setup(&mut damus.pool, ctx);
         damus.state = DamusState::Initialized;
+        setup_initial_nostrdb_subs(damus).expect("home subscription failed");
     }
 
     try_process_event(damus, ctx);
@@ -196,15 +223,15 @@ fn process_metadata_event(damus: &mut Damus, ev: &Event) {
     }
 }
 
-fn process_event(damus: &mut Damus, _subid: &str, event: Event) {
+fn process_event(damus: &mut Damus, _subid: &str, event: &str) {
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
 
-    if damus.all_events.get(&event.id).is_some() {
-        return;
-    }
+    //info!("processing event {}", event);
+    damus.ndb.process_event(&event);
 
-    let kind = event.kind;
+    /*
+    let kind = event.kind();
     if kind == 0 {
         process_metadata_event(damus, &event);
     } else if kind == 1 {
@@ -212,6 +239,7 @@ fn process_event(damus: &mut Damus, _subid: &str, event: Event) {
         damus.all_events.insert(cloned_id.clone(), event);
         damus.events.insert(0, cloned_id);
     }
+    */
 }
 
 fn get_unknown_author_ids(damus: &Damus) -> Vec<Pubkey> {
@@ -247,7 +275,7 @@ fn handle_eose(damus: &mut Damus, subid: &str, relay_url: &str) {
     }
 }
 
-fn process_message(damus: &mut Damus, relay: &str, msg: RelayMessage) {
+fn process_message(damus: &mut Damus, relay: &str, msg: &RelayMessage) {
     match msg {
         RelayMessage::Event(subid, ev) => process_event(damus, &subid, ev),
         RelayMessage::Notice(msg) => warn!("Notice from {}: {}", relay, msg),
