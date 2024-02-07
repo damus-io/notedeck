@@ -1,5 +1,6 @@
-use crate::{Error, Pubkey, Result};
-use serde_derive::{Deserialize, Serialize};
+use crate::{Error, Pubkey};
+use log::debug;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::hash::{Hash, Hasher};
 
 /// Event is the struct used to represent a Nostr event
@@ -8,7 +9,6 @@ pub struct Event {
     /// 32-bytes sha256 of the the serialized event data
     pub id: EventId,
     /// 32-bytes hex-encoded public key of the event creator
-    #[serde(rename = "pubkey")]
     pub pubkey: Pubkey,
     /// unix timestamp in seconds
     pub created_at: u64,
@@ -39,11 +39,11 @@ impl PartialEq for Event {
 impl Eq for Event {}
 
 impl Event {
-    pub fn from_json(s: &str) -> Result<Self> {
+    pub fn from_json(s: &str) -> Result<Self, Error> {
         serde_json::from_str(s).map_err(Into::into)
     }
 
-    pub fn verify(&self) -> Result<Self> {
+    pub fn verify(&self) -> Result<Self, Error> {
         return Err(Error::InvalidSignature);
     }
 
@@ -57,46 +57,62 @@ impl Event {
         tags: Vec<Vec<String>>,
         content: &str,
         sig: &str,
-    ) -> Result<Self> {
-        let event = Event {
-            id: id.to_string().into(),
-            pubkey: pubkey.to_string().into(),
+    ) -> Result<Self, Error> {
+        Ok(Event {
+            id: EventId::from_hex(id)?,
+            pubkey: Pubkey::from_hex(pubkey)?,
             created_at,
             kind,
             tags,
             content: content.to_string(),
             sig: sig.to_string(),
-        };
-
-        event.verify()
+        })
     }
 }
 
 impl std::str::FromStr for Event {
     type Err = Error;
 
-    fn from_str(s: &str) -> Result<Self> {
+    fn from_str(s: &str) -> Result<Self, Error> {
         Event::from_json(s)
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Eq, PartialEq, Clone, Hash)]
-pub struct EventId(String);
+#[derive(Debug, Eq, PartialEq, Clone, Hash)]
+pub struct EventId([u8; 32]);
 
-impl AsRef<str> for EventId {
-    fn as_ref(&self) -> &str {
+impl EventId {
+    pub fn hex(&self) -> String {
+        hex::encode(self.bytes())
+    }
+
+    pub fn bytes(&self) -> &[u8; 32] {
         &self.0
     }
-}
 
-impl From<String> for EventId {
-    fn from(s: String) -> Self {
-        EventId(s)
+    pub fn from_hex(hex_str: &str) -> Result<Self, Error> {
+        let evid = EventId(hex::decode(hex_str)?.as_slice().try_into().unwrap());
+        Ok(evid)
     }
 }
 
-impl From<EventId> for String {
-    fn from(evid: EventId) -> Self {
-        evid.0
+// Custom serialize function for Pubkey
+impl Serialize for EventId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.hex())
+    }
+}
+
+// Custom deserialize function for Pubkey
+impl<'de> Deserialize<'de> for EventId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        EventId::from_hex(&s).map_err(serde::de::Error::custom)
     }
 }

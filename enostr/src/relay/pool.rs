@@ -141,7 +141,10 @@ impl RelayPool {
         Ok(())
     }
 
-    /// Attempts to receive a pool event from a list of relays. The function searches each relay in the list in order, attempting to receive a message from each. If a message is received, return it. If no message is received from any relays, None is returned.
+    /// Attempts to receive a pool event from a list of relays. The
+    /// function searches each relay in the list in order, attempting to
+    /// receive a message from each. If a message is received, return it.
+    /// If no message is received from any relays, None is returned.
     pub fn try_recv(&mut self) -> Option<PoolEvent<'_>> {
         for relay in &mut self.relays {
             let relay = &mut relay.relay;
@@ -149,6 +152,7 @@ impl RelayPool {
                 match msg.try_into() {
                     Ok(event) => {
                         relay.status = RelayStatus::Connected;
+
                         // let's just handle pongs here.
                         // We only need to do this natively.
                         #[cfg(not(target_arch = "wasm32"))]

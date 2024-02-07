@@ -1,10 +1,14 @@
+use nostr::prelude::secp256k1;
 use serde_json;
+use std::fmt;
 
 #[derive(Debug)]
 pub enum Error {
-    MessageEmpty,
-    MessageDecodeFailed,
+    Empty,
+    DecodeFailed,
+    HexDecodeFailed,
     InvalidSignature,
+    Secp(secp256k1::Error),
     Json(serde_json::Error),
     Generic(String),
 }
@@ -12,13 +16,29 @@ pub enum Error {
 impl std::cmp::PartialEq for Error {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (Error::MessageEmpty, Error::MessageEmpty) => true,
-            (Error::MessageDecodeFailed, Error::MessageDecodeFailed) => true,
+            (Error::Empty, Error::Empty) => true,
+            (Error::DecodeFailed, Error::DecodeFailed) => true,
+            (Error::HexDecodeFailed, Error::HexDecodeFailed) => true,
             (Error::InvalidSignature, Error::InvalidSignature) => true,
             // This is slightly wrong but whatevs
             (Error::Json(..), Error::Json(..)) => true,
             (Error::Generic(left), Error::Generic(right)) => left == right,
+            (Error::Secp(left), Error::Secp(right)) => left == right,
             _ => false,
+        }
+    }
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => write!(f, "message is empty"),
+            Self::DecodeFailed => write!(f, "decoding failed"),
+            Self::InvalidSignature => write!(f, "invalid signature"),
+            Self::HexDecodeFailed => write!(f, "hex decoding failed"),
+            Self::Secp(e) => write!(f, "{e}"),
+            Self::Json(e) => write!(f, "{e}"),
+            Self::Generic(e) => write!(f, "{e}"),
         }
     }
 }
@@ -28,6 +48,18 @@ impl std::cmp::Eq for Error {}
 impl From<String> for Error {
     fn from(s: String) -> Self {
         Error::Generic(s)
+    }
+}
+
+impl From<hex::FromHexError> for Error {
+    fn from(_e: hex::FromHexError) -> Self {
+        Error::HexDecodeFailed
+    }
+}
+
+impl From<secp256k1::Error> for Error {
+    fn from(e: secp256k1::Error) -> Self {
+        Error::Secp(e)
     }
 }
 
