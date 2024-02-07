@@ -22,7 +22,7 @@ log = "0.4.17"
 poll-promise = { git = "https://github.com/EmbarkStudios/poll-promise", rev = "b493586107b0e508860aa2e9d18049fd8cd9d13f" } # todo: update to 0.2.1 when it's released. 0.2.0 was crashing on m1
 serde_derive = "1"
 serde = { version = "1", features = ["derive"] } # You only need this if you want app persistence
-tracing = "0.1.37"
+tracing = "0.1.40"
 #wasm-bindgen = "0.2.83"
 enostr = { path = "enostr" } 
 serde_json = "1.0.89"
@@ -30,7 +30,7 @@ env_logger = "0.10.0"
 shatter = "0.1.1"
 puffin_egui = { version = "0.25.0", optional = true }
 puffin = { version = "0.16.0", optional = true }
-nostrdb = { git = "https://github.com/damus-io/nostrdb-rs", rev = "7246513b4e4ed2544af3aa7d8785dd34a8bbefa9" }
+nostrdb = { git = "https://github.com/damus-io/nostrdb-rs", rev = "07c64d6f9956c3898ed0555c38aa5ed5bd482cd2" }
 
 [features]
 default = []
