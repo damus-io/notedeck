@@ -151,7 +151,7 @@ fn send_initial_filters(pool: &mut RelayPool, relay_url: &str) {
     }
 }
 
-fn try_process_event(damus: &mut Damus, ctx: &egui::Context) {
+fn try_process_event(damus: &mut Damus, ctx: &egui::Context) -> Result<()> {
     let amount = 0.2;
     if ctx.input(|i| i.key_pressed(egui::Key::Equals)) {
         ctx.set_pixels_per_point(ctx.pixels_per_point() + amount);
@@ -179,14 +179,42 @@ fn try_process_event(damus: &mut Damus, ctx: &egui::Context) {
         }
     }
 
+    let txn = Transaction::new(&damus.ndb)?;
+    let mut seen_pubkeys: HashSet<&[u8; 32]> = HashSet::new();
     for timeline in 0..damus.timelines.len() {
-        if let Err(err) = poll_notes_for_timeline(damus, timeline) {
+        if let Err(err) = poll_notes_for_timeline(damus, &txn, timeline, &mut seen_pubkeys) {
             error!("{}", err);
         }
     }
+
+    let mut pubkeys_to_fetch: Vec<&[u8; 32]> = vec![];
+    for pubkey in seen_pubkeys {
+        if let Err(_) = damus.ndb.get_profile_by_pubkey(&txn, pubkey) {
+            pubkeys_to_fetch.push(pubkey)
+        }
+    }
+
+    if pubkeys_to_fetch.len() > 0 {
+        let filter = Filter::new()
+            .authors(pubkeys_to_fetch.iter().map(|p| Pubkey::new(*p)).collect())
+            .kinds(vec![0]);
+        info!(
+            "Getting {} unknown author profiles from relays",
+            pubkeys_to_fetch.len()
+        );
+        let msg = ClientMessage::req("profiles".to_string(), vec![filter]);
+        damus.pool.send(&msg);
+    }
+
+    Ok(())
 }
 
-fn poll_notes_for_timeline(damus: &mut Damus, timeline: usize) -> Result<()> {
+fn poll_notes_for_timeline<'a>(
+    damus: &mut Damus,
+    txn: &'a Transaction,
+    timeline: usize,
+    pubkeys: &mut HashSet<&'a [u8; 32]>,
+) -> Result<()> {
     let sub = if let Some(sub) = &damus.timelines[timeline].subscription {
         sub
     } else {
@@ -197,10 +225,6 @@ fn poll_notes_for_timeline(damus: &mut Damus, timeline: usize) -> Result<()> {
     if new_note_ids.len() > 0 {
         info!("{} new notes! {:?}", new_note_ids.len(), new_note_ids);
     }
-
-    let txn = Transaction::new(&damus.ndb)?;
-
-    let mut pubkeys: HashSet<&[u8; 32]> = HashSet::new();
 
     let new_refs = new_note_ids
         .iter()
