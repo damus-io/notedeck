@@ -876,7 +876,6 @@ dependencies = [
  "serde",
  "serde_derive",
  "serde_json",
- "shatter",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -978,7 +977,6 @@ dependencies = [
  "objc",
  "parking_lot",
  "percent-encoding",
- "pollster",
  "puffin",
  "raw-window-handle 0.5.2",
  "raw-window-handle 0.6.0",
@@ -988,7 +986,6 @@ dependencies = [
  "wasm-bindgen-futures",
  "web-sys",
  "web-time",
- "wgpu",
  "winapi",
  "winit",
 ]
@@ -2667,12 +2664,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "pollster"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "22686f4785f02a4fcc856d3b3bb19bf6c8160d103f7a99cc258bddd0251dc7f2"
-
-[[package]]
 name = "powerfmt"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4268,7 +4259,6 @@ dependencies = [
  "cfg_aliases",
  "js-sys",
  "log",
- "naga",
  "parking_lot",
  "profiling",
  "raw-window-handle 0.6.0",
@@ -4318,7 +4308,6 @@ dependencies = [
  "arrayvec",
  "ash",
  "bitflags 2.4.2",
- "block",
  "cfg_aliases",
  "core-graphics-types",
  "glow",

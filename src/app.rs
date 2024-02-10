@@ -1,5 +1,6 @@
 use crate::abbrev;
 use crate::contacts::Contacts;
+use crate::error::Error;
 use crate::fonts::{setup_fonts, setup_gossip_fonts};
 use crate::frame_history::FrameHistory;
 use crate::images::fetch_img;
@@ -71,14 +72,19 @@ impl Ord for NoteRef {
 
 struct Timeline {
     pub notes: Vec<NoteRef>,
+    pub subscription: Option<Subscription>,
 }
 
 impl Timeline {
     pub fn new() -> Self {
         let mut notes: Vec<NoteRef> = vec![];
         notes.reserve(1000);
+        let subscription: Option<Subscription> = None;
 
-        Timeline { notes }
+        Timeline {
+            notes,
+            subscription,
+        }
     }
 }
 
@@ -90,7 +96,6 @@ pub struct Damus {
     compose: String,
 
     pool: RelayPool,
-    home_sub: Option<Subscription>,
 
     timelines: Vec<Timeline>,
 
@@ -174,34 +179,50 @@ fn try_process_event(damus: &mut Damus, ctx: &egui::Context) {
         }
     }
 
-    // do we have any new processed events?
-    if let Some(ref sub) = damus.home_sub {
-        let new_note_ids = damus.ndb.poll_for_notes(sub, 100);
-        if new_note_ids.len() > 0 {
-            info!("{} new notes! {:?}", new_note_ids.len(), new_note_ids);
-        }
-
-        if let Ok(txn) = Transaction::new(&damus.ndb) {
-            let new_refs = new_note_ids
-                .iter()
-                .map(|key| {
-                    let note = damus
-                        .ndb
-                        .get_note_by_key(&txn, NoteKey::new(*key))
-                        .expect("no note??");
-                    NoteRef {
-                        key: NoteKey::new(*key),
-                        created_at: note.created_at(),
-                    }
-                })
-                .collect();
-
-            damus.timelines[0].notes =
-                timeline::merge_sorted_vecs(&damus.timelines[0].notes, &new_refs);
-        } else {
-            error!("Transaction error when polling")
+    for timeline in 0..damus.timelines.len() {
+        if let Err(err) = poll_notes_for_timeline(damus, timeline) {
+            error!("{}", err);
         }
     }
+}
+
+fn poll_notes_for_timeline(damus: &mut Damus, timeline: usize) -> Result<()> {
+    let sub = if let Some(sub) = &damus.timelines[timeline].subscription {
+        sub
+    } else {
+        return Err(Error::NoActiveSubscription);
+    };
+
+    let new_note_ids = damus.ndb.poll_for_notes(&sub, 100);
+    if new_note_ids.len() > 0 {
+        info!("{} new notes! {:?}", new_note_ids.len(), new_note_ids);
+    }
+
+    let txn = Transaction::new(&damus.ndb)?;
+
+    let mut pubkeys: HashSet<&[u8; 32]> = HashSet::new();
+
+    let new_refs = new_note_ids
+        .iter()
+        .map(|key| {
+            let note = damus
+                .ndb
+                .get_note_by_key(&txn, NoteKey::new(*key))
+                .expect("no note??");
+
+            pubkeys.insert(note.pubkey());
+
+            NoteRef {
+                key: NoteKey::new(*key),
+                created_at: note.created_at(),
+            }
+        })
+        .collect();
+
+    damus.timelines[timeline].notes =
+        timeline::merge_sorted_vecs(&damus.timelines[timeline].notes, &new_refs);
+
+    Ok(())
 }
 
 #[cfg(feature = "profiling")]
@@ -212,7 +233,7 @@ fn setup_profiling() {
 fn setup_initial_nostrdb_subs(damus: &mut Damus) -> Result<()> {
     let filter: nostrdb::Filter = crate::filter::convert_enostr_filter(&get_home_filter());
     let filters = vec![filter];
-    damus.home_sub = Some(damus.ndb.subscribe(filters.clone())?);
+    damus.timelines[0].subscription = Some(damus.ndb.subscribe(filters.clone())?);
     let txn = Transaction::new(&damus.ndb)?;
     let res = damus.ndb.query(&txn, filters, 100)?;
     damus.timelines[0].notes = res
@@ -353,7 +374,6 @@ impl Damus {
             state: DamusState::Initializing,
             contacts: Contacts::new(),
             pool: RelayPool::new(),
-            home_sub: None,
             img_cache: HashMap::new(),
             n_panels: 1,
             timelines: vec![Timeline::new()],
