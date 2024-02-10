@@ -7,21 +7,23 @@ use nostr::key::XOnlyPublicKey;
 use std::fmt;
 
 #[derive(Debug, Eq, PartialEq, Clone, Hash)]
-pub struct Pubkey(XOnlyPublicKey);
+pub struct Pubkey([u8; 32]);
 
 impl Pubkey {
+    pub fn new(data: &[u8; 32]) -> Self {
+        Self(*data)
+    }
+
     pub fn hex(&self) -> String {
         hex::encode(self.bytes())
     }
 
-    pub fn bytes(&self) -> [u8; 32] {
-        self.0.serialize()
+    pub fn bytes(&self) -> &[u8; 32] {
+        &self.0
     }
 
     pub fn from_hex(hex_str: &str) -> Result<Self, Error> {
-        Ok(Pubkey(XOnlyPublicKey::from_slice(
-            hex::decode(hex_str)?.as_slice(),
-        )?))
+        Ok(Pubkey(hex::decode(hex_str)?.as_slice().try_into()?))
     }
 }
 

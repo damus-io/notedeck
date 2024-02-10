@@ -6,7 +6,7 @@ pub fn convert_enostr_filter(filter: &enostr::Filter) -> nostrdb::Filter {
     }
 
     if let Some(ref authors) = filter.authors {
-        let authors: Vec<[u8; 32]> = authors.iter().map(|a| a.bytes()).collect();
+        let authors: Vec<[u8; 32]> = authors.iter().map(|a| *a.bytes()).collect();
         nfilter.authors(authors);
     }
 
@@ -21,7 +21,7 @@ pub fn convert_enostr_filter(filter: &enostr::Filter) -> nostrdb::Filter {
 
     // #p
     if let Some(ref pubkeys) = filter.pubkeys {
-        nfilter.pubkeys(pubkeys.iter().map(|a| a.bytes()).collect());
+        nfilter.pubkeys(pubkeys.iter().map(|a| *a.bytes()).collect());
     }
 
     if let Some(since) = filter.since {
@@ -32,5 +32,5 @@ pub fn convert_enostr_filter(filter: &enostr::Filter) -> nostrdb::Filter {
         nfilter.limit(limit.into());
     }
 
-    nfilter
+    nfilter.build()
 }

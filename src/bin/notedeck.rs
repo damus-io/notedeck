@@ -14,10 +14,11 @@ async fn main() {
     tracing_subscriber::fmt::init();
 
     let native_options = eframe::NativeOptions::default();
+
     let _res = eframe::run_native(
         "Damus NoteDeck",
         native_options,
-        Box::new(|_cc| Box::new(Damus::new())),
+        Box::new(|cc| Box::new(Damus::new(cc))),
     );
 }
 

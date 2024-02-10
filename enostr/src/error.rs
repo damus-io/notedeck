@@ -1,5 +1,6 @@
 use nostr::prelude::secp256k1;
 use serde_json;
+use std::array::TryFromSliceError;
 use std::fmt;
 
 #[derive(Debug)]
@@ -7,6 +8,7 @@ pub enum Error {
     Empty,
     DecodeFailed,
     HexDecodeFailed,
+    InvalidByteSize,
     InvalidSignature,
     Secp(secp256k1::Error),
     Json(serde_json::Error),
@@ -20,6 +22,7 @@ impl std::cmp::PartialEq for Error {
             (Error::DecodeFailed, Error::DecodeFailed) => true,
             (Error::HexDecodeFailed, Error::HexDecodeFailed) => true,
             (Error::InvalidSignature, Error::InvalidSignature) => true,
+            (Error::InvalidByteSize, Error::InvalidByteSize) => true,
             // This is slightly wrong but whatevs
             (Error::Json(..), Error::Json(..)) => true,
             (Error::Generic(left), Error::Generic(right)) => left == right,
@@ -36,6 +39,7 @@ impl fmt::Display for Error {
             Self::DecodeFailed => write!(f, "decoding failed"),
             Self::InvalidSignature => write!(f, "invalid signature"),
             Self::HexDecodeFailed => write!(f, "hex decoding failed"),
+            Self::InvalidByteSize => write!(f, "invalid byte size"),
             Self::Secp(e) => write!(f, "{e}"),
             Self::Json(e) => write!(f, "{e}"),
             Self::Generic(e) => write!(f, "{e}"),
@@ -48,6 +52,12 @@ impl std::cmp::Eq for Error {}
 impl From<String> for Error {
     fn from(s: String) -> Self {
         Error::Generic(s)
+    }
+}
+
+impl From<TryFromSliceError> for Error {
+    fn from(_e: TryFromSliceError) -> Self {
+        Error::InvalidByteSize
     }
 }
 

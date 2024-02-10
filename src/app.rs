@@ -3,15 +3,20 @@ use crate::contacts::Contacts;
 use crate::fonts::{setup_fonts, setup_gossip_fonts};
 use crate::frame_history::FrameHistory;
 use crate::images::fetch_img;
+use crate::timeline;
 use crate::ui::padding;
 use crate::Result;
 use egui::containers::scroll_area::ScrollBarVisibility;
+use egui::load::SizedTexture;
 use egui::widgets::Spinner;
 use egui::{Context, Frame, ImageSource, Margin, TextureHandle, TextureId};
 use egui_extras::Size;
 use enostr::{ClientMessage, EventId, Filter, Profile, Pubkey, RelayEvent, RelayMessage};
-use nostrdb::{Config, Ndb, Subscription};
+use nostrdb::{
+    Config, Ndb, NdbProfile, NdbProfileRecord, NoteKey, ProfileRecord, Subscription, Transaction,
+};
 use poll_promise::Promise;
+use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::time::Duration;
@@ -35,10 +40,45 @@ impl UrlKey<'_> {
 
 type ImageCache = HashMap<u64, Promise<Result<TextureHandle>>>;
 
-#[derive(Eq, PartialEq, Clone)]
+#[derive(Debug, Eq, PartialEq, Clone)]
 pub enum DamusState {
     Initializing,
     Initialized,
+}
+
+#[derive(Debug, Eq, PartialEq, Copy, Clone)]
+pub struct NoteRef {
+    pub key: NoteKey,
+    pub created_at: u64,
+}
+
+impl PartialOrd for NoteRef {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        match self.created_at.cmp(&other.created_at) {
+            Ordering::Equal => self.key.cmp(&other.key).into(),
+            Ordering::Less => Some(Ordering::Greater),
+            Ordering::Greater => Some(Ordering::Less),
+        }
+    }
+}
+
+impl Ord for NoteRef {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.partial_cmp(other).unwrap()
+    }
+}
+
+struct Timeline {
+    pub notes: Vec<NoteRef>,
+}
+
+impl Timeline {
+    pub fn new() -> Self {
+        let mut notes: Vec<NoteRef> = vec![];
+        notes.reserve(1000);
+
+        Timeline { notes }
+    }
 }
 
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
@@ -51,8 +91,7 @@ pub struct Damus {
     pool: RelayPool,
     home_sub: Option<Subscription>,
 
-    all_events: HashMap<EventId, Event>,
-    events: Vec<EventId>,
+    timelines: Vec<Timeline>,
 
     img_cache: ImageCache,
     ndb: Ndb,
@@ -67,12 +106,11 @@ impl Default for Damus {
         Self {
             state: DamusState::Initializing,
             contacts: Contacts::new(),
-            all_events: HashMap::new(),
             pool: RelayPool::new(),
             home_sub: None,
-            events: vec![],
             img_cache: HashMap::new(),
             n_panels: 1,
+            timelines: vec![Timeline::new()],
             ndb: Ndb::new(".", &config).expect("ndb"),
             compose: "".to_string(),
             frame_history: FrameHistory::default(),
@@ -91,6 +129,9 @@ fn relay_setup(pool: &mut RelayPool, ctx: &egui::Context) {
     let wakeup = move || {
         ctx.request_repaint();
     };
+    if let Err(e) = pool.add_url("ws://localhost:8080".to_string(), wakeup.clone()) {
+        error!("{:?}", e)
+    }
     if let Err(e) = pool.add_url("wss://relay.damus.io".to_string(), wakeup.clone()) {
         error!("{:?}", e)
     }
@@ -125,7 +166,7 @@ fn send_initial_filters(pool: &mut RelayPool, relay_url: &str) {
 
 fn try_process_event(damus: &mut Damus, ctx: &egui::Context) {
     let amount = 0.2;
-    if ctx.input(|i| i.key_pressed(egui::Key::Plus)) {
+    if ctx.input(|i| i.key_pressed(egui::Key::Equals)) {
         ctx.set_pixels_per_point(ctx.pixels_per_point() + amount);
     } else if ctx.input(|i| i.key_pressed(egui::Key::Minus)) {
         ctx.set_pixels_per_point(ctx.pixels_per_point() - amount);
@@ -156,8 +197,27 @@ fn try_process_event(damus: &mut Damus, ctx: &egui::Context) {
         let new_note_ids = damus.ndb.poll_for_notes(sub, 100);
         if new_note_ids.len() > 0 {
             info!("{} new notes! {:?}", new_note_ids.len(), new_note_ids);
+        }
 
-            for note in new_note_ids {}
+        if let Ok(txn) = Transaction::new(&damus.ndb) {
+            let new_refs = new_note_ids
+                .iter()
+                .map(|key| {
+                    let note = damus
+                        .ndb
+                        .get_note_by_key(&txn, NoteKey::new(*key))
+                        .expect("no note??");
+                    NoteRef {
+                        key: NoteKey::new(*key),
+                        created_at: note.created_at(),
+                    }
+                })
+                .collect();
+
+            damus.timelines[0].notes =
+                timeline::merge_sorted_vecs(&damus.timelines[0].notes, &new_refs);
+        } else {
+            error!("Transaction error when polling")
         }
     }
 }
@@ -169,8 +229,17 @@ fn setup_profiling() {
 
 fn setup_initial_nostrdb_subs(damus: &mut Damus) -> Result<()> {
     let filter: nostrdb::Filter = crate::filter::convert_enostr_filter(&get_home_filter());
-    damus.home_sub = Some(damus.ndb.subscribe(vec![filter])?);
-    //damus.ndb.query()
+    let filters = vec![filter];
+    damus.home_sub = Some(damus.ndb.subscribe(filters.clone())?);
+    let txn = Transaction::new(&damus.ndb)?;
+    let res = damus.ndb.query(&txn, filters, 100)?;
+    damus.timelines[0].notes = res
+        .iter()
+        .map(|qr| NoteRef {
+            key: qr.note_key,
+            created_at: qr.note.created_at(),
+        })
+        .collect();
 
     Ok(())
 }
@@ -188,43 +257,6 @@ fn update_damus(damus: &mut Damus, ctx: &egui::Context) {
     }
 
     try_process_event(damus, ctx);
-}
-
-fn process_metadata_event(damus: &mut Damus, ev: &Event) {
-    #[cfg(feature = "profiling")]
-    puffin::profile_function!();
-
-    if let Some(prev_id) = damus.contacts.events.get(&ev.pubkey) {
-        if let Some(prev_ev) = damus.all_events.get(prev_id) {
-            // This profile event is older, ignore it
-            if prev_ev.created_at >= ev.created_at {
-                return;
-            }
-        }
-    }
-
-    let profile: core::result::Result<serde_json::Value, serde_json::Error> =
-        serde_json::from_str(&ev.content);
-
-    match profile {
-        Err(e) => {
-            debug!("Invalid profile data '{}': {:?}", &ev.content, &e);
-        }
-        Ok(v) if !v.is_object() => {
-            debug!("Invalid profile data: '{}'", &ev.content);
-        }
-        Ok(profile) => {
-            damus
-                .contacts
-                .events
-                .insert(ev.pubkey.clone(), ev.id.clone());
-
-            damus
-                .contacts
-                .profiles
-                .insert(ev.pubkey.clone(), Profile::new(profile));
-        }
-    }
 }
 
 fn process_event(damus: &mut Damus, _subid: &str, event: &str) {
@@ -246,26 +278,36 @@ fn process_event(damus: &mut Damus, _subid: &str, event: &str) {
     */
 }
 
-fn get_unknown_author_ids(damus: &Damus) -> Vec<Pubkey> {
+fn get_unknown_author_ids<'a>(
+    txn: &'a Transaction,
+    damus: &Damus,
+    timeline: usize,
+) -> Result<Vec<&'a [u8; 32]>> {
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
 
-    let mut authors: HashSet<Pubkey> = HashSet::new();
+    let mut authors: HashSet<&'a [u8; 32]> = HashSet::new();
 
-    for (_evid, ev) in damus.all_events.iter() {
-        if !damus.contacts.profiles.contains_key(&ev.pubkey) {
-            authors.insert(ev.pubkey.clone());
+    for noteref in &damus.timelines[timeline].notes {
+        let note = damus.ndb.get_note_by_key(&txn, noteref.key)?;
+        let profile = damus.ndb.get_profile_by_pubkey(&txn, note.pubkey());
+
+        if profile.is_err() {
+            authors.insert(note.pubkey());
         }
     }
 
-    authors.into_iter().collect()
+    Ok(authors.into_iter().collect())
 }
 
-fn handle_eose(damus: &mut Damus, subid: &str, relay_url: &str) {
+fn handle_eose(damus: &mut Damus, subid: &str, relay_url: &str) -> Result<()> {
     if subid == "initial" {
-        let authors = get_unknown_author_ids(damus);
+        let txn = Transaction::new(&damus.ndb)?;
+        let authors = get_unknown_author_ids(&txn, damus, 0)?;
         let n_authors = authors.len();
-        let filter = Filter::new().authors(authors).kinds(vec![0]);
+        let filter = Filter::new()
+            .authors(authors.iter().map(|p| Pubkey::new(*p)).collect())
+            .kinds(vec![0]);
         info!(
             "Getting {} unknown author profiles from {}",
             n_authors, relay_url
@@ -276,7 +318,11 @@ fn handle_eose(damus: &mut Damus, subid: &str, relay_url: &str) {
         info!("Got profiles from {}", relay_url);
         let msg = ClientMessage::close("profiles".to_string());
         damus.pool.send_to(&msg, relay_url);
+    } else {
+        warn!("got unknown eose subid {}", subid);
     }
+
+    Ok(())
 }
 
 fn process_message(damus: &mut Damus, relay: &str, msg: &RelayMessage) {
@@ -284,7 +330,9 @@ fn process_message(damus: &mut Damus, relay: &str, msg: &RelayMessage) {
         RelayMessage::Event(subid, ev) => process_event(damus, &subid, ev),
         RelayMessage::Notice(msg) => warn!("Notice from {}: {}", relay, msg),
         RelayMessage::OK(cr) => info!("OK {:?}", cr),
-        RelayMessage::Eose(sid) => handle_eose(damus, &sid, relay),
+        RelayMessage::Eose(sid) => {
+            handle_eose(damus, &sid, relay);
+        }
     }
 }
 
@@ -302,12 +350,8 @@ fn render_damus(damus: &mut Damus, ctx: &Context) {
 }
 
 impl Damus {
-    pub fn add_test_events(&mut self) {
-        add_test_events(self);
-    }
-
     /// Called once before the first frame.
-    pub fn new() -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         // This is also where you can customized the look at feel of egui using
         // `cc.egui_ctx.set_visuals` and `cc.egui_ctx.set_fonts`.
 
@@ -316,6 +360,10 @@ impl Damus {
         //if let Some(storage) = cc.storage {
         //return eframe::get_value(storage, eframe::APP_KEY).unwrap_or_default();
         //}
+        //
+
+        cc.egui_ctx
+            .set_pixels_per_point(cc.egui_ctx.pixels_per_point() + 0.4);
 
         Default::default()
     }
@@ -367,12 +415,12 @@ fn render_pfp(ui: &mut egui::Ui, img_cache: &mut ImageCache, url: &str) {
     }
 }
 
-fn pfp_image<'a>(ui: &mut egui::Ui, img: impl Into<ImageSource<'a>>, size: f32) -> egui::Response {
+fn pfp_image<'a>(ui: &mut egui::Ui, img: &TextureHandle, size: f32) -> egui::Response {
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
 
     //img.show_max_size(ui, egui::vec2(size, size))
-    ui.image(img)
+    ui.add(egui::Image::new(img).max_width(size))
     //.with_options()
 }
 
@@ -386,15 +434,17 @@ fn ui_abbreviate_name(ui: &mut egui::Ui, name: &str, len: usize) {
     }
 }
 
-fn render_username(ui: &mut egui::Ui, contacts: &Contacts, pk: &Pubkey) {
+fn render_username(ui: &mut egui::Ui, profile: Option<&ProfileRecord>, pk: &[u8; 32]) {
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
 
     ui.horizontal(|ui| {
         //ui.spacing_mut().item_spacing.x = 0.0;
-        if let Some(prof) = contacts.profiles.get(pk) {
-            if let Some(display_name) = prof.display_name() {
-                ui_abbreviate_name(ui, &display_name, 20);
+        if let Some(profile) = profile {
+            if let Some(prof) = profile.record.profile() {
+                if let Some(display_name) = prof.display_name() {
+                    ui_abbreviate_name(ui, display_name, 20);
+                }
             }
         } else {
             ui.strong("nostrich");
@@ -452,16 +502,27 @@ fn render_notes_in_viewport(
     ui.allocate_rect(used_rect, egui::Sense::hover()); // make sure it is visible!
 }
 
-fn render_note(ui: &mut egui::Ui, damus: &mut Damus, index: usize) {
+fn render_note(ui: &mut egui::Ui, damus: &mut Damus, note_key: NoteKey) {
     ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
-        let ev = damus.all_events.get(&damus.events[index]).unwrap();
+        let txn = if let Ok(txn) = Transaction::new(&damus.ndb) {
+            txn
+        } else {
+            return;
+        };
+
+        let ev = if let Ok(ev) = damus.ndb.get_note_by_key(&txn, note_key) {
+            ev
+        } else {
+            return;
+        };
+
+        let profile = damus.ndb.get_profile_by_pubkey(&txn, ev.pubkey());
 
         padding(10.0, ui, |ui| {
-            match damus
-                .contacts
-                .profiles
-                .get(&ev.pubkey)
-                .and_then(|p| p.picture())
+            match profile
+                .as_ref()
+                .ok()
+                .and_then(|p| p.record.profile()?.picture())
             {
                 // these have different lifetimes and types,
                 // so the calls must be separate
@@ -470,30 +531,28 @@ fn render_note(ui: &mut egui::Ui, damus: &mut Damus, index: usize) {
             }
 
             ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
-                render_username(ui, &damus.contacts, &ev.pubkey);
+                render_username(ui, profile.as_ref().ok(), ev.pubkey());
 
-                ui.label(&ev.content);
+                ui.weak(ev.content());
             })
-        })
+        });
     });
 }
 
-fn render_notes(ui: &mut egui::Ui, damus: &mut Damus) {
+fn render_notes(ui: &mut egui::Ui, damus: &mut Damus, timeline: usize) {
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
 
-    for i in 0..damus.events.len().min(50) {
-        if !damus.all_events.contains_key(&damus.events[i]) {
-            continue;
-        }
+    let num_notes = damus.timelines[timeline].notes.len();
 
-        render_note(ui, damus, i);
+    for i in 0..num_notes {
+        render_note(ui, damus, damus.timelines[timeline].notes[i].key);
 
         ui.separator();
     }
 }
 
-fn timeline_view(ui: &mut egui::Ui, app: &mut Damus) {
+fn timeline_view(ui: &mut egui::Ui, app: &mut Damus, timeline: usize) {
     padding(10.0, ui, |ui| ui.heading("Timeline"));
 
     /*
@@ -510,7 +569,7 @@ fn timeline_view(ui: &mut egui::Ui, app: &mut Damus) {
         });
         */
         .show(ui, |ui| {
-            render_notes(ui, app);
+            render_notes(ui, app, timeline);
         });
 }
 
@@ -537,7 +596,7 @@ fn horizontal_centered() -> egui::Layout {
     egui::Layout::left_to_right(egui::Align::Center)
 }
 
-fn render_panel(ctx: &egui::Context, app: &mut Damus) {
+fn render_panel<'a>(ctx: &egui::Context, app: &'a mut Damus, timeline_ind: usize) {
     top_panel(ctx).show(ctx, |ui| {
         set_app_style(ui);
 
@@ -568,7 +627,8 @@ fn render_panel(ctx: &egui::Context, app: &mut Damus) {
                 app.frame_history.mean_frame_time() * 1e3
             ));
 
-            ui.label(format!("{} notes", app.events.len()));
+            let timeline = &app.timelines[timeline_ind];
+            ui.label(format!("{} notes", timeline.notes.len()));
         });
     });
 }
@@ -583,7 +643,7 @@ fn set_app_style(ui: &mut egui::Ui) {
 }
 
 fn render_damus_mobile(ctx: &egui::Context, app: &mut Damus) {
-    render_panel(ctx, app);
+    render_panel(ctx, app, 0);
 
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
@@ -593,13 +653,13 @@ fn render_damus_mobile(ctx: &egui::Context, app: &mut Damus) {
     egui::CentralPanel::default().show(ctx, |ui| {
         set_app_style(ui);
         timeline_panel(ui, panel_width, 0, |ui| {
-            timeline_view(ui, app);
+            timeline_view(ui, app, 0);
         });
     });
 }
 
 fn render_damus_desktop(ctx: &egui::Context, app: &mut Damus) {
-    render_panel(ctx, app);
+    render_panel(ctx, app, 0);
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
 
@@ -619,7 +679,7 @@ fn render_damus_desktop(ctx: &egui::Context, app: &mut Damus) {
             set_app_style(ui);
             timeline_panel(ui, panel_width, 0, |ui| {
                 //postbox(ui, app);
-                timeline_view(ui, app);
+                timeline_view(ui, app, 0);
             });
         });
 
@@ -636,7 +696,8 @@ fn render_damus_desktop(ctx: &egui::Context, app: &mut Damus) {
                         //postbox(ui, app);
                     }
                     timeline_panel(ui, panel_width, ind, |ui| {
-                        timeline_view(ui, app);
+                        // TODO: add new timeline to each panel
+                        timeline_view(ui, app, 0);
                     });
                 }
             });
@@ -674,52 +735,6 @@ fn timeline_panel<R>(
         .max_width(panel_width)
         .min_width(panel_width)
         .show_inside(ui, add_contents)
-}
-
-fn add_test_events(damus: &mut Damus) {
-    // Examples of how to create different panels and windows.
-    // Pick whichever suits you.
-    // Tip: a good default choice is to just keep the `CentralPanel`.
-    // For inspiration and more examples, go to https://emilk.github.io/egui
-
-    let test_event = Event {
-        id: EventId::from_hex("6938e3cd841f3111dbdbd909f87fd52c3d1f1e4a07fd121d1243196e532811cb").unwrap(),
-        pubkey: Pubkey::from_hex("f0a6ff7f70b872de6d82c8daec692a433fd23b6a49f25923c6f034df715cdeec").unwrap(),
-        created_at: 1667781968,
-        kind: 1,
-        tags: vec![],
-        content: LOREM_IPSUM.into(),
-        sig: "af02c971015995f79e07fa98aaf98adeeb6a56d0005e451ee4e78844cff712a6bc0f2109f72a878975f162dcefde4173b65ebd4c3d3ab3b520a9dcac6acf092d".to_string(),
-    };
-
-    let test_event2 = Event {
-        id: EventId::from_hex("6938e3cd841f3111dbdbd909f87fd52c3d1f1e4a07fd121d1243196e532811cb").unwrap(),
-        pubkey: Pubkey::from_hex("32e1827635450ebb3c5a7d12c1f8e7b2b514439ac10a67eef3d9fd9c5c68e245").unwrap(),
-        created_at: 1667781968,
-        kind: 1,
-        tags: vec![],
-        content: LOREM_IPSUM_LONG.into(),
-        sig: "af02c971015995f79e07fa98aaf98adeeb6a56d0005e451ee4e78844cff712a6bc0f2109f72a878975f162dcefde4173b65ebd4c3d3ab3b520a9dcac6acf092d".to_string(),
-    };
-
-    damus
-        .all_events
-        .insert(test_event.id.clone(), test_event.clone());
-    damus
-        .all_events
-        .insert(test_event2.id.clone(), test_event2.clone());
-
-    if damus.events.is_empty() {
-        damus.events.push(test_event.id.clone());
-        damus.events.push(test_event2.id.clone());
-        damus.events.push(test_event.id.clone());
-        damus.events.push(test_event2.id.clone());
-        damus.events.push(test_event.id.clone());
-        damus.events.push(test_event2.id.clone());
-        damus.events.push(test_event.id.clone());
-        damus.events.push(test_event2.id);
-        damus.events.push(test_event.id);
-    }
 }
 
 impl eframe::App for Damus {

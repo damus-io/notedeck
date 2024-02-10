@@ -11,6 +11,7 @@ mod result;
 mod filter;
 mod ui;
 mod frame_history;
+mod timeline;
 
 pub use app::Damus;
 pub use error::Error;
