@@ -575,20 +575,20 @@ fn timeline_view(ui: &mut egui::Ui, app: &mut Damus, timeline: usize) {
 
 fn top_panel(ctx: &egui::Context) -> egui::TopBottomPanel {
     // mobile needs padding, at least on android
-    //if is_mobile(ctx) {
-    let mut top_margin = Margin::default();
-    top_margin.top = 50.0;
+    if is_mobile(ctx) {
+        let mut top_margin = Margin::default();
+        top_margin.top = 50.0;
 
-    let frame = Frame {
-        inner_margin: top_margin,
-        fill: ctx.style().visuals.panel_fill,
-        ..Default::default()
-    };
+        let frame = Frame {
+            inner_margin: top_margin,
+            fill: ctx.style().visuals.panel_fill,
+            ..Default::default()
+        };
 
-    return egui::TopBottomPanel::top("top_panel").frame(frame);
-    //}
+        return egui::TopBottomPanel::top("top_panel").frame(frame);
+    }
 
-    //egui::TopBottomPanel::top("top_panel").frame(Frame::none())
+    egui::TopBottomPanel::top("top_panel").frame(Frame::none())
 }
 
 #[inline]
