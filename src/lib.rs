@@ -34,6 +34,7 @@ pub async fn android_main(app: AndroidApp) {
     std::env::set_var("RUST_BACKTRACE", "full");
     android_logger::init_once(android_logger::Config::default().with_min_level(log::Level::Info));
 
+    let path = app.internal_data_path().expect("data path");
     let mut options = eframe::NativeOptions::default();
     options.renderer = eframe::Renderer::Wgpu;
     options.event_loop_builder = Some(Box::new(move |builder| {
@@ -43,6 +44,6 @@ pub async fn android_main(app: AndroidApp) {
     let res_ = eframe::run_native(
         "Damus NoteDeck",
         options,
-        Box::new(|cc| Box::new(Damus::new(cc))),
+        Box::new(|cc| Box::new(Damus::new(cc, path))),
     );
 }

@@ -19,6 +19,7 @@ use poll_promise::Promise;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tracing::{debug, error, info, warn};
 
@@ -97,25 +98,6 @@ pub struct Damus {
     ndb: Ndb,
 
     frame_history: crate::frame_history::FrameHistory,
-}
-
-impl Default for Damus {
-    fn default() -> Self {
-        let mut config = Config::new();
-        config.set_ingester_threads(2);
-        Self {
-            state: DamusState::Initializing,
-            contacts: Contacts::new(),
-            pool: RelayPool::new(),
-            home_sub: None,
-            img_cache: HashMap::new(),
-            n_panels: 1,
-            timelines: vec![Timeline::new()],
-            ndb: Ndb::new(".", &config).expect("ndb"),
-            compose: "".to_string(),
-            frame_history: FrameHistory::default(),
-        }
-    }
 }
 
 pub fn is_mobile(ctx: &egui::Context) -> bool {
@@ -351,7 +333,7 @@ fn render_damus(damus: &mut Damus, ctx: &Context) {
 
 impl Damus {
     /// Called once before the first frame.
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new<P: AsRef<Path>>(cc: &eframe::CreationContext<'_>, data_path: P) -> Self {
         // This is also where you can customized the look at feel of egui using
         // `cc.egui_ctx.set_visuals` and `cc.egui_ctx.set_fonts`.
 
@@ -363,9 +345,22 @@ impl Damus {
         //
 
         cc.egui_ctx
-            .set_pixels_per_point(cc.egui_ctx.pixels_per_point() + 0.4);
+            .set_pixels_per_point(cc.egui_ctx.pixels_per_point() + 0.2);
 
-        Default::default()
+        let mut config = Config::new();
+        config.set_ingester_threads(2);
+        Self {
+            state: DamusState::Initializing,
+            contacts: Contacts::new(),
+            pool: RelayPool::new(),
+            home_sub: None,
+            img_cache: HashMap::new(),
+            n_panels: 1,
+            timelines: vec![Timeline::new()],
+            ndb: Ndb::new(data_path.as_ref().to_str().expect("db path ok"), &config).expect("ndb"),
+            compose: "".to_string(),
+            frame_history: FrameHistory::default(),
+        }
     }
 }
 
@@ -577,7 +572,7 @@ fn top_panel(ctx: &egui::Context) -> egui::TopBottomPanel {
     // mobile needs padding, at least on android
     if is_mobile(ctx) {
         let mut top_margin = Margin::default();
-        top_margin.top = 50.0;
+        top_margin.top = 20.0;
 
         let frame = Frame {
             inner_margin: top_margin,

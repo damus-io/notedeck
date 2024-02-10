@@ -18,7 +18,7 @@ async fn main() {
     let _res = eframe::run_native(
         "Damus NoteDeck",
         native_options,
-        Box::new(|cc| Box::new(Damus::new(cc))),
+        Box::new(|cc| Box::new(Damus::new(cc, "."))),
     );
 }
 
@@ -35,7 +35,7 @@ pub fn main() {
         eframe::start_web(
             "the_canvas_id", // hardcode it
             web_options,
-            Box::new(|cc| Box::new(Damus::new(cc))),
+            Box::new(|cc| Box::new(Damus::new(cc, "."))),
         )
         .await
         .expect("failed to start eframe");
