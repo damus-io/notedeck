@@ -35,7 +35,7 @@ pub fn main() {
         eframe::start_web(
             "the_canvas_id", // hardcode it
             web_options,
-            Box::new(|_cc| Box::new(Damus::new())),
+            Box::new(|cc| Box::new(Damus::new(cc))),
         )
         .await
         .expect("failed to start eframe");
