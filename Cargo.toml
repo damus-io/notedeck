@@ -1,5 +1,5 @@
 [package]
-name = "damus"
+name = "notedeck"
 version = "0.1.0"
 authors = ["William Casarin <jb55@jb55.com>"]
 edition = "2021"
