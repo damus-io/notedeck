@@ -482,8 +482,8 @@ fn render_username(ui: &mut egui::Ui, profile: Option<&ProfileRecord>, _pk: &[u8
         //ui.spacing_mut().item_spacing.x = 0.0;
         if let Some(profile) = profile {
             if let Some(prof) = profile.record.profile() {
-                if let Some(display_name) = prof.display_name() {
-                    ui_abbreviate_name(ui, display_name, 20);
+                if prof.display_name().is_some() && prof.display_name().unwrap() != "" {
+                    ui_abbreviate_name(ui, prof.display_name().unwrap(), 20);
                 } else if let Some(name) = prof.name() {
                     ui_abbreviate_name(ui, name, 20);
                 }
