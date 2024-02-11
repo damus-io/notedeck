@@ -13,7 +13,8 @@ use egui::{Color32, Context, Frame, Margin, TextureHandle};
 
 use enostr::{ClientMessage, Filter, Pubkey, RelayEvent, RelayMessage};
 use nostrdb::{
-    Block, BlockType, Config, Mention, Ndb, Note, NoteKey, ProfileRecord, Subscription, Transaction,
+    Block, BlockType, Blocks, Config, Mention, Ndb, Note, NoteKey, ProfileRecord, Subscription,
+    Transaction,
 };
 use poll_promise::Promise;
 use std::cmp::Ordering;
@@ -209,6 +210,44 @@ fn try_process_event(damus: &mut Damus, ctx: &egui::Context) -> Result<()> {
     Ok(())
 }
 
+fn get_unknown_note_pubkeys<'a>(
+    ndb: &Ndb,
+    txn: &'a Transaction,
+    note: &Note<'a>,
+    note_key: NoteKey,
+    pubkeys: &mut HashSet<&'a [u8; 32]>,
+) -> Result<()> {
+    // the author pubkey
+
+    if let Err(_) = ndb.get_profile_by_pubkey(txn, note.pubkey()) {
+        pubkeys.insert(note.pubkey());
+    }
+
+    let blocks = ndb.get_blocks_by_key(txn, note_key)?;
+    for block in blocks.iter(note) {
+        let blocktype = block.blocktype();
+        match block.blocktype() {
+            BlockType::MentionBech32 => match block.as_mention().unwrap() {
+                Mention::Pubkey(npub) => {
+                    if let Err(_) = ndb.get_profile_by_pubkey(txn, npub.pubkey()) {
+                        pubkeys.insert(npub.pubkey());
+                    }
+                }
+                Mention::Profile(nprofile) => {
+                    if let Err(_) = ndb.get_profile_by_pubkey(txn, nprofile.pubkey()) {
+                        pubkeys.insert(nprofile.pubkey());
+                    }
+                }
+                _ => {}
+            },
+
+            _ => {}
+        }
+    }
+
+    Ok(())
+}
+
 fn poll_notes_for_timeline<'a>(
     damus: &mut Damus,
     txn: &'a Transaction,
@@ -229,12 +268,13 @@ fn poll_notes_for_timeline<'a>(
     let new_refs = new_note_ids
         .iter()
         .map(|key| {
+            let note_key = NoteKey::new(*key);
             let note = damus
                 .ndb
-                .get_note_by_key(&txn, NoteKey::new(*key))
+                .get_note_by_key(&txn, note_key)
                 .expect("no note??");
 
-            pubkeys.insert(note.pubkey());
+            let _ = get_unknown_note_pubkeys(&damus.ndb, txn, &note, note_key, pubkeys);
 
             NoteRef {
                 key: NoteKey::new(*key),
@@ -293,7 +333,7 @@ fn process_event(damus: &mut Damus, _subid: &str, event: &str) {
     puffin::profile_function!();
 
     //info!("processing event {}", event);
-    if let Err(err) = damus.ndb.process_event(&event) {
+    if let Err(_err) = damus.ndb.process_event(&event) {
         error!("error processing event {}", event);
     }
 }
@@ -310,11 +350,7 @@ fn get_unknown_author_ids<'a>(
 
     for noteref in &damus.timelines[timeline].notes {
         let note = damus.ndb.get_note_by_key(&txn, noteref.key)?;
-        let profile = damus.ndb.get_profile_by_pubkey(&txn, note.pubkey());
-
-        if profile.is_err() {
-            authors.insert(note.pubkey());
-        }
+        let _ = get_unknown_note_pubkeys(&damus.ndb, txn, &note, note.key().unwrap(), &mut authors);
     }
 
     Ok(authors.into_iter().collect())
@@ -335,7 +371,6 @@ fn handle_eose(damus: &mut Damus, subid: &str, relay_url: &str) -> Result<()> {
         let msg = ClientMessage::req("profiles".to_string(), vec![filter]);
         damus.pool.send_to(&msg, relay_url);
     } else if subid == "profiles" {
-        info!("Got profiles from {}", relay_url);
         let msg = ClientMessage::close("profiles".to_string());
         damus.pool.send_to(&msg, relay_url);
     } else {
@@ -623,7 +658,9 @@ fn render_note(ui: &mut egui::Ui, damus: &mut Damus, note_key: NoteKey) -> Resul
 
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing.x = 0.0;
-                    render_note_contents(ui, damus, &txn, &note, note_key);
+                    if let Err(_err) = render_note_contents(ui, damus, &txn, &note, note_key) {
+                        warn!("could not render note contents for note {:?}", note_key)
+                    }
                 });
             })
         });
@@ -639,7 +676,7 @@ fn render_notes(ui: &mut egui::Ui, damus: &mut Damus, timeline: usize) {
     let num_notes = damus.timelines[timeline].notes.len();
 
     for i in 0..num_notes {
-        render_note(ui, damus, damus.timelines[timeline].notes[i].key);
+        let _ = render_note(ui, damus, damus.timelines[timeline].notes[i].key);
 
         ui.separator();
     }
