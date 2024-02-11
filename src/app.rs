@@ -9,7 +9,7 @@ use crate::Result;
 use egui::containers::scroll_area::ScrollBarVisibility;
 
 use egui::widgets::Spinner;
-use egui::{Color32, Context, Frame, Margin, TextureHandle};
+use egui::{Color32, Context, Frame, Hyperlink, Margin, RichText, TextureHandle};
 
 use enostr::{ClientMessage, Filter, Pubkey, RelayEvent, RelayMessage};
 use nostrdb::{
@@ -628,6 +628,13 @@ fn render_note_contents(
             BlockType::Hashtag => {
                 ui.colored_label(PURPLE, "#");
                 ui.colored_label(PURPLE, block.as_str());
+            }
+
+            BlockType::Url => {
+                ui.add(Hyperlink::from_label_and_url(
+                    RichText::new(block.as_str()).color(PURPLE),
+                    block.as_str(),
+                ));
             }
 
             BlockType::Text => {
