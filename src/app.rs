@@ -12,7 +12,7 @@ use egui::widgets::Spinner;
 use egui::{Context, Frame, Margin, TextureHandle};
 
 use enostr::{ClientMessage, Filter, Pubkey, RelayEvent, RelayMessage};
-use nostrdb::{Config, Ndb, NoteKey, ProfileRecord, Subscription, Transaction};
+use nostrdb::{Config, Ndb, Note, NoteKey, ProfileRecord, Subscription, Transaction};
 use poll_promise::Promise;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
@@ -292,17 +292,6 @@ fn process_event(damus: &mut Damus, _subid: &str, event: &str) {
     if let Err(err) = damus.ndb.process_event(&event) {
         error!("error processing event {}", event);
     }
-
-    /*
-    let kind = event.kind();
-    if kind == 0 {
-        process_metadata_event(damus, &event);
-    } else if kind == 1 {
-        let cloned_id = event.id.clone();
-        damus.all_events.insert(cloned_id.clone(), event);
-        damus.events.insert(0, cloned_id);
-    }
-    */
 }
 
 fn get_unknown_author_ids<'a>(
@@ -544,23 +533,24 @@ fn render_notes_in_viewport(
     ui.allocate_rect(used_rect, egui::Sense::hover()); // make sure it is visible!
 }
 
-fn render_note(ui: &mut egui::Ui, damus: &mut Damus, note_key: NoteKey) {
+fn render_note_contents<'a>(
+    ui: &mut egui::Ui,
+    damus: &mut Damus,
+    txn: &'a Transaction,
+    note: &'a Note,
+) -> Result<()> {
+    ui.weak(note.content());
+    Ok(())
+}
+
+fn render_note(ui: &mut egui::Ui, damus: &mut Damus, note_key: NoteKey) -> Result<()> {
+    let txn = Transaction::new(&damus.ndb)?;
+    let note = damus.ndb.get_note_by_key(&txn, note_key)?;
+
     ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
-        let txn = if let Ok(txn) = Transaction::new(&damus.ndb) {
-            txn
-        } else {
-            return;
-        };
+        let profile = damus.ndb.get_profile_by_pubkey(&txn, note.pubkey());
 
-        let ev = if let Ok(ev) = damus.ndb.get_note_by_key(&txn, note_key) {
-            ev
-        } else {
-            return;
-        };
-
-        let profile = damus.ndb.get_profile_by_pubkey(&txn, ev.pubkey());
-
-        padding(10.0, ui, |ui| {
+        padding(5.0, ui, |ui| {
             match profile
                 .as_ref()
                 .ok()
@@ -573,12 +563,14 @@ fn render_note(ui: &mut egui::Ui, damus: &mut Damus, note_key: NoteKey) {
             }
 
             ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
-                render_username(ui, profile.as_ref().ok(), ev.pubkey());
+                render_username(ui, profile.as_ref().ok(), note.pubkey());
 
-                ui.weak(ev.content());
+                render_note_contents(ui, damus, &txn, &note);
             })
         });
     });
+
+    Ok(())
 }
 
 fn render_notes(ui: &mut egui::Ui, damus: &mut Damus, timeline: usize) {
