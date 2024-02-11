@@ -428,6 +428,8 @@ impl Damus {
         cc.egui_ctx
             .set_pixels_per_point(cc.egui_ctx.pixels_per_point() + 0.2);
 
+        egui_extras::install_image_loaders(&cc.egui_ctx);
+
         let mut config = Config::new();
         config.set_ingester_threads(2);
         Self {
@@ -605,46 +607,60 @@ fn render_note_contents(
     puffin::profile_function!();
 
     let blocks = damus.ndb.get_blocks_by_key(txn, note_key)?;
+    let mut images: Vec<String> = vec![];
 
-    for block in blocks.iter(note) {
-        match block.blocktype() {
-            BlockType::MentionBech32 => {
-                ui.colored_label(PURPLE, "@");
-                match block.as_mention().unwrap() {
-                    Mention::Pubkey(npub) => {
-                        let profile = damus.ndb.get_profile_by_pubkey(txn, npub.pubkey()).ok();
-                        if let Some(name) = profile.as_ref().and_then(|p| get_profile_name(p)) {
-                            ui.colored_label(PURPLE, name);
-                        } else {
-                            ui.colored_label(PURPLE, "nostrich");
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+
+        for block in blocks.iter(note) {
+            match block.blocktype() {
+                BlockType::MentionBech32 => {
+                    ui.colored_label(PURPLE, "@");
+                    match block.as_mention().unwrap() {
+                        Mention::Pubkey(npub) => {
+                            let profile = damus.ndb.get_profile_by_pubkey(txn, npub.pubkey()).ok();
+                            if let Some(name) = profile.as_ref().and_then(|p| get_profile_name(p)) {
+                                ui.colored_label(PURPLE, name);
+                            } else {
+                                ui.colored_label(PURPLE, "nostrich");
+                            }
+                        }
+                        _ => {
+                            ui.colored_label(PURPLE, block.as_str());
                         }
                     }
-                    _ => {
-                        ui.colored_label(PURPLE, block.as_str());
+                }
+
+                BlockType::Hashtag => {
+                    ui.colored_label(PURPLE, "#");
+                    ui.colored_label(PURPLE, block.as_str());
+                }
+
+                BlockType::Url => {
+                    let url = block.as_str().to_lowercase();
+                    if url.ends_with("png") || url.ends_with("jpg") {
+                        images.push(url);
+                    } else {
+                        ui.add(Hyperlink::from_label_and_url(
+                            RichText::new(block.as_str()).color(PURPLE),
+                            block.as_str(),
+                        ));
                     }
                 }
-            }
 
-            BlockType::Hashtag => {
-                ui.colored_label(PURPLE, "#");
-                ui.colored_label(PURPLE, block.as_str());
-            }
+                BlockType::Text => {
+                    ui.weak(block.as_str());
+                }
 
-            BlockType::Url => {
-                ui.add(Hyperlink::from_label_and_url(
-                    RichText::new(block.as_str()).color(PURPLE),
-                    block.as_str(),
-                ));
-            }
-
-            BlockType::Text => {
-                ui.weak(block.as_str());
-            }
-
-            _ => {
-                ui.colored_label(PURPLE, block.as_str());
+                _ => {
+                    ui.colored_label(PURPLE, block.as_str());
+                }
             }
         }
+    });
+
+    for image in images {
+        ui.image(image);
     }
 
     Ok(())
@@ -672,12 +688,9 @@ fn render_note(ui: &mut egui::Ui, damus: &mut Damus, note_key: NoteKey) -> Resul
             ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
                 render_username(ui, profile.as_ref().ok(), note.pubkey());
 
-                ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing.x = 0.0;
-                    if let Err(_err) = render_note_contents(ui, damus, &txn, &note, note_key) {
-                        warn!("could not render note contents for note {:?}", note_key)
-                    }
-                });
+                if let Err(_err) = render_note_contents(ui, damus, &txn, &note, note_key) {
+                    warn!("could not render note contents for note {:?}", note_key)
+                }
             })
         });
     });
