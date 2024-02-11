@@ -780,6 +780,7 @@ fn render_panel<'a>(ctx: &egui::Context, app: &'a mut Damus, timeline_ind: usize
 }
 
 fn set_app_style(ui: &mut egui::Ui) {
+    ui.visuals_mut().hyperlink_color = PURPLE;
     if ui.visuals().dark_mode {
         ui.visuals_mut().override_text_color = Some(egui::Color32::from_rgb(250, 250, 250));
         ui.visuals_mut().panel_fill = egui::Color32::from_rgb(30, 30, 30);
