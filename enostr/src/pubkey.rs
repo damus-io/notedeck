@@ -3,7 +3,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use crate::Error;
 use hex;
 use log::debug;
-use nostr::key::XOnlyPublicKey;
+//use nostr::key::XOnlyPublicKey;
 use std::fmt;
 
 #[derive(Debug, Eq, PartialEq, Clone, Hash)]

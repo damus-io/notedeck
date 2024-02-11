@@ -1,4 +1,4 @@
-use nostr::prelude::secp256k1;
+//use nostr::prelude::secp256k1;
 use serde_json;
 use std::array::TryFromSliceError;
 use std::fmt;
@@ -10,7 +10,7 @@ pub enum Error {
     HexDecodeFailed,
     InvalidByteSize,
     InvalidSignature,
-    Secp(secp256k1::Error),
+    // Secp(secp256k1::Error),
     Json(serde_json::Error),
     Generic(String),
 }
@@ -26,7 +26,7 @@ impl std::cmp::PartialEq for Error {
             // This is slightly wrong but whatevs
             (Error::Json(..), Error::Json(..)) => true,
             (Error::Generic(left), Error::Generic(right)) => left == right,
-            (Error::Secp(left), Error::Secp(right)) => left == right,
+            //(Error::Secp(left), Error::Secp(right)) => left == right,
             _ => false,
         }
     }
@@ -40,7 +40,7 @@ impl fmt::Display for Error {
             Self::InvalidSignature => write!(f, "invalid signature"),
             Self::HexDecodeFailed => write!(f, "hex decoding failed"),
             Self::InvalidByteSize => write!(f, "invalid byte size"),
-            Self::Secp(e) => write!(f, "{e}"),
+            //Self::Secp(e) => write!(f, "{e}"),
             Self::Json(e) => write!(f, "{e}"),
             Self::Generic(e) => write!(f, "{e}"),
         }
@@ -67,11 +67,13 @@ impl From<hex::FromHexError> for Error {
     }
 }
 
+/*
 impl From<secp256k1::Error> for Error {
     fn from(e: secp256k1::Error) -> Self {
         Error::Secp(e)
     }
 }
+*/
 
 impl From<serde_json::Error> for Error {
     fn from(e: serde_json::Error) -> Self {
