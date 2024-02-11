@@ -1,6 +1,6 @@
 #![warn(clippy::all, rust_2018_idioms)]
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
-use damus::Damus;
+use notedeck::Damus;
 
 // Entry point for wasm
 //#[cfg(target_arch = "wasm32")]
@@ -13,7 +13,13 @@ async fn main() {
     // Log to stdout (if you run with `RUST_LOG=debug`).
     tracing_subscriber::fmt::init();
 
-    let native_options = eframe::NativeOptions::default();
+    let window_builder = Box::new(|builder: egui::ViewportBuilder| {
+        builder.with_fullsize_content_view(true)
+            .with_titlebar_shown(false)
+            .with_title_shown(false)
+    });
+    let mut native_options = eframe::NativeOptions::default();
+    native_options.window_builder = Some(window_builder); 
 
     let _res = eframe::run_native(
         "Damus NoteDeck",

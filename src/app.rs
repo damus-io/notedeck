@@ -650,7 +650,7 @@ fn render_note(ui: &mut egui::Ui, damus: &mut Damus, note_key: NoteKey) -> Resul
     ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
         let profile = damus.ndb.get_profile_by_pubkey(&txn, note.pubkey());
 
-        padding(5.0, ui, |ui| {
+        padding(6.0, ui, |ui| {
             match profile
                 .as_ref()
                 .ok()
@@ -692,7 +692,7 @@ fn render_notes(ui: &mut egui::Ui, damus: &mut Damus, timeline: usize) {
 }
 
 fn timeline_view(ui: &mut egui::Ui, app: &mut Damus, timeline: usize) {
-    padding(10.0, ui, |ui| ui.heading("Timeline"));
+    padding(4.0, ui, |ui| ui.heading("Notifications"));
 
     /*
     let font_id = egui::TextStyle::Body.resolve(ui.style());
@@ -713,28 +713,28 @@ fn timeline_view(ui: &mut egui::Ui, app: &mut Damus, timeline: usize) {
 }
 
 fn top_panel(ctx: &egui::Context) -> egui::TopBottomPanel {
-    // mobile needs padding, at least on android
-    if is_mobile(ctx) {
-        let mut top_margin = Margin::default();
-        top_margin.top = 20.0;
+    let mut top_margin = Margin::default();
+    top_margin.top = 4.0;
+    top_margin.left = 8.0;
+    top_margin.right = 8.0;
+    //top_margin.bottom = -20.0;
 
-        let frame = Frame {
-            inner_margin: top_margin,
-            fill: ctx.style().visuals.panel_fill,
-            ..Default::default()
-        };
+    let frame = Frame {
+        inner_margin: top_margin,
+        fill: ctx.style().visuals.panel_fill,
+        ..Default::default()
+    };
 
-        return egui::TopBottomPanel::top("top_panel").frame(frame);
-    }
-
-    egui::TopBottomPanel::top("top_panel").frame(Frame::none())
+    egui::TopBottomPanel::top("top_panel")
+        .frame(frame)
+        .show_separator_line(false)
 }
 
 fn render_panel<'a>(ctx: &egui::Context, app: &'a mut Damus, timeline_ind: usize) {
     top_panel(ctx).show(ctx, |ui| {
         set_app_style(ui);
 
-        ui.horizontal_wrapped(|ui| {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
             ui.visuals_mut().button_frame = false;
             egui::widgets::global_dark_light_mode_switch(ui);
 
@@ -755,14 +755,19 @@ fn render_panel<'a>(ctx: &egui::Context, app: &'a mut Damus, timeline_ind: usize
                 app.n_panels -= 1;
             }
 
-            ui.label(format!(
-                "FPS: {:.2}, {:10.1}ms",
-                app.frame_history.fps(),
-                app.frame_history.mean_frame_time() * 1e3
-            ));
+            #[cfg(feature = "profiling")]
+            {
+                ui.weak(format!(
+                    "FPS: {:.2}, {:10.1}ms",
+                    app.frame_history.fps(),
+                    app.frame_history.mean_frame_time() * 1e3
+                ));
 
-            let timeline = &app.timelines[timeline_ind];
-            ui.label(format!("{} notes", timeline.notes.len()));
+                ui.weak(format!(
+                    "{} notes",
+                    &app.timelines[timeline_ind].notes.len()
+                ));
+            }
         });
     });
 }
