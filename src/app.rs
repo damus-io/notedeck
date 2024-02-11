@@ -9,7 +9,7 @@ use crate::Result;
 use egui::containers::scroll_area::ScrollBarVisibility;
 
 use egui::widgets::Spinner;
-use egui::{Color32, Context, Frame, Hyperlink, Margin, RichText, TextureHandle};
+use egui::{Color32, Context, Frame, Hyperlink, Image, Margin, RichText, TextureHandle};
 
 use enostr::{ClientMessage, Filter, Pubkey, RelayEvent, RelayMessage};
 use nostrdb::{
@@ -660,7 +660,13 @@ fn render_note_contents(
     });
 
     for image in images {
-        ui.image(image);
+        let resp = ui.add(Image::new(image.clone()));
+        resp.context_menu(|ui| {
+            if ui.button("Copy Link").clicked() {
+                ui.ctx().copy_text(image);
+                ui.close_menu();
+            }
+        });
     }
 
     Ok(())
