@@ -123,6 +123,12 @@ fn relay_setup(pool: &mut RelayPool, ctx: &egui::Context) {
     if let Err(e) = pool.add_url("wss://relay.damus.io".to_string(), wakeup.clone()) {
         error!("{:?}", e)
     }
+    if let Err(e) = pool.add_url("wss://nos.lol".to_string(), wakeup.clone()) {
+        error!("{:?}", e)
+    }
+    if let Err(e) = pool.add_url("wss://nostr.wine".to_string(), wakeup.clone()) {
+        error!("{:?}", e)
+    }
     if let Err(e) = pool.add_url("wss://purplepag.es".to_string(), wakeup) {
         error!("{:?}", e)
     }
@@ -595,6 +601,9 @@ fn render_note_contents(
     note: &Note,
     note_key: NoteKey,
 ) -> Result<()> {
+    #[cfg(feature = "profiling")]
+    puffin::profile_function!();
+
     let blocks = damus.ndb.get_blocks_by_key(txn, note_key)?;
 
     for block in blocks.iter(note) {
