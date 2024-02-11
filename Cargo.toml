@@ -15,7 +15,7 @@ crate-type = ["lib", "cdylib"]
 egui = "0.26.0"
 eframe = { version = "0.26.0", default-features = false, features = [ "glow", "wgpu", "android-native-activity" ] }
 #eframe = "0.22.0"
-egui_extras = { version = "0.26.0", features = ["image", "svg"] }
+egui_extras = { version = "0.26.0", features = ["all_loaders"] }
 ehttp = "0.2.0"
 image = { version = "0.24", features = ["jpeg", "png", "webp"] }
 log = "0.4.17"
