@@ -1,30 +1,27 @@
 use crate::abbrev;
-use crate::contacts::Contacts;
 use crate::error::Error;
-use crate::fonts::{setup_fonts, setup_gossip_fonts};
+use crate::fonts::setup_gossip_fonts;
 use crate::frame_history::FrameHistory;
 use crate::images::fetch_img;
 use crate::timeline;
 use crate::ui::padding;
 use crate::Result;
 use egui::containers::scroll_area::ScrollBarVisibility;
-use egui::load::SizedTexture;
+
 use egui::widgets::Spinner;
-use egui::{Context, Frame, ImageSource, Margin, TextureHandle, TextureId};
-use egui_extras::Size;
-use enostr::{ClientMessage, EventId, Filter, Profile, Pubkey, RelayEvent, RelayMessage};
-use nostrdb::{
-    Config, Ndb, NdbProfile, NdbProfileRecord, NoteKey, ProfileRecord, Subscription, Transaction,
-};
+use egui::{Context, Frame, Margin, TextureHandle};
+
+use enostr::{ClientMessage, Filter, Pubkey, RelayEvent, RelayMessage};
+use nostrdb::{Config, Ndb, NoteKey, ProfileRecord, Subscription, Transaction};
 use poll_promise::Promise;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 use tracing::{debug, error, info, warn};
 
-use enostr::{Event, RelayPool};
+use enostr::RelayPool;
 
 #[derive(Hash, Eq, PartialEq, Clone, Debug)]
 enum UrlKey<'a> {
@@ -91,7 +88,6 @@ impl Timeline {
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
 pub struct Damus {
     state: DamusState,
-    contacts: Contacts,
     n_panels: u32,
     compose: String,
 
@@ -283,7 +279,9 @@ fn update_damus(damus: &mut Damus, ctx: &egui::Context) {
         setup_initial_nostrdb_subs(damus).expect("home subscription failed");
     }
 
-    try_process_event(damus, ctx);
+    if let Err(err) = try_process_event(damus, ctx) {
+        error!("error processing event: {}", err);
+    }
 }
 
 fn process_event(damus: &mut Damus, _subid: &str, event: &str) {
@@ -291,7 +289,9 @@ fn process_event(damus: &mut Damus, _subid: &str, event: &str) {
     puffin::profile_function!();
 
     //info!("processing event {}", event);
-    damus.ndb.process_event(&event);
+    if let Err(err) = damus.ndb.process_event(&event) {
+        error!("error processing event {}", event);
+    }
 
     /*
     let kind = event.kind();
@@ -358,7 +358,9 @@ fn process_message(damus: &mut Damus, relay: &str, msg: &RelayMessage) {
         RelayMessage::Notice(msg) => warn!("Notice from {}: {}", relay, msg),
         RelayMessage::OK(cr) => info!("OK {:?}", cr),
         RelayMessage::Eose(sid) => {
-            handle_eose(damus, &sid, relay);
+            if let Err(err) = handle_eose(damus, &sid, relay) {
+                error!("error handling eose: {}", err);
+            }
         }
     }
 }
@@ -396,7 +398,6 @@ impl Damus {
         config.set_ingester_threads(2);
         Self {
             state: DamusState::Initializing,
-            contacts: Contacts::new(),
             pool: RelayPool::new(),
             img_cache: HashMap::new(),
             n_panels: 1,
@@ -439,7 +440,7 @@ fn render_pfp(ui: &mut egui::Ui, img_cache: &mut ImageCache, url: &str) {
                 None => {
                     ui.add(Spinner::new().size(40.0));
                 }
-                Some(Err(e)) => {
+                Some(Err(_e)) => {
                     //error!("Image load error: {:?}", e);
                     ui.label("❌");
                 }
@@ -473,7 +474,7 @@ fn ui_abbreviate_name(ui: &mut egui::Ui, name: &str, len: usize) {
     }
 }
 
-fn render_username(ui: &mut egui::Ui, profile: Option<&ProfileRecord>, pk: &[u8; 32]) {
+fn render_username(ui: &mut egui::Ui, profile: Option<&ProfileRecord>, _pk: &[u8; 32]) {
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
 
@@ -505,7 +506,7 @@ fn no_pfp_url() -> &'static str {
 
 fn render_notes_in_viewport(
     ui: &mut egui::Ui,
-    damus: &mut Damus,
+    _damus: &mut Damus,
     viewport: egui::Rect,
     row_height: f32,
     font_id: egui::FontId,
@@ -520,7 +521,7 @@ fn render_notes_in_viewport(
     let mut used_rect = egui::Rect::NOTHING;
 
     for i in first_item..last_item {
-        let padding = (i % 100) as f32;
+        let _padding = (i % 100) as f32;
         let indent = (((i as f32) / 10.0).sin() * 20.0) + 10.0;
         let x = ui.min_rect().left() + indent;
         let y = ui.min_rect().top() + i as f32 * row_height;
@@ -632,11 +633,6 @@ fn top_panel(ctx: &egui::Context) -> egui::TopBottomPanel {
     egui::TopBottomPanel::top("top_panel").frame(Frame::none())
 }
 
-#[inline]
-fn horizontal_centered() -> egui::Layout {
-    egui::Layout::left_to_right(egui::Align::Center)
-}
-
 fn render_panel<'a>(ctx: &egui::Context, app: &'a mut Damus, timeline_ind: usize) {
     top_panel(ctx).show(ctx, |ui| {
         set_app_style(ui);
@@ -746,7 +742,7 @@ fn render_damus_desktop(ctx: &egui::Context, app: &mut Damus) {
 }
 
 fn postbox(ui: &mut egui::Ui, app: &mut Damus) {
-    let output = egui::TextEdit::multiline(&mut app.compose)
+    let _output = egui::TextEdit::multiline(&mut app.compose)
         .hint_text("Type something!")
         .show(ui);
 
@@ -796,9 +792,3 @@ impl eframe::App for Damus {
         render_damus(self, ctx);
     }
 }
-
-pub const LOREM_IPSUM: &str = "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.";
-
-pub const LOREM_IPSUM_LONG: &str = "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.
-
-Curabitur pretium tincidunt lacus. Nulla gravida orci a odio. Nullam varius, turpis et commodo pharetra, est eros bibendum elit, nec luctus magna felis sollicitudin mauris. Integer in mauris eu nibh euismod gravida. Duis ac tellus et risus vulputate vehicula. Donec lobortis risus a elit. Etiam tempor. Ut ullamcorper, ligula eu tempor congue, eros est euismod turpis, id tincidunt sapien risus a quam. Maecenas fermentum consequat mi. Donec fermentum. Pellentesque malesuada nulla a mi. Duis sapien sem, aliquet nec, commodo eget, consequat quis, neque. Aliquam faucibus, elit ut dictum aliquet, felis nisl adipiscing sapien, sed malesuada diam lacus eget erat. Cras mollis scelerisque nunc. Nullam arcu. Aliquam consequat. Curabitur augue lorem, dapibus quis, laoreet et, pretium ac, nisi. Aenean magna nisl, mollis quis, molestie eu, feugiat in, orci. In hac habitasse platea dictumst.";

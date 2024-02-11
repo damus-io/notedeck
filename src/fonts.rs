@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 
 pub fn setup_fonts(ctx: &egui::Context) {
     let mut fonts = FontDefinitions::default();
-    let mut families = BTreeMap::<String, FontData>::new();
+    let _families = BTreeMap::<String, FontData>::new();
 
     let our_font: String = "onest".to_owned();
 

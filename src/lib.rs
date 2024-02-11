@@ -1,6 +1,5 @@
 mod app;
 //mod camera;
-mod contacts;
 mod error;
 //mod note;
 //mod block;

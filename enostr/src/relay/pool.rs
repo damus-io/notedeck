@@ -1,4 +1,3 @@
-use crate::relay::message::{RelayEvent, RelayMessage};
 use crate::relay::{Relay, RelayStatus};
 use crate::{ClientMessage, Result};
 
@@ -8,7 +7,7 @@ use std::time::{Duration, Instant};
 use ewebsock::{WsEvent, WsMessage};
 
 #[cfg(not(target_arch = "wasm32"))]
-use tracing::{debug, error, info};
+use tracing::{debug, error};
 
 #[derive(Debug)]
 pub struct PoolEvent<'a> {
@@ -91,7 +90,9 @@ impl RelayPool {
                             relay.retry_connect_after, next_duration
                         );
                         relay.retry_connect_after = next_duration;
-                        relay.relay.connect(wakeup.clone());
+                        if let Err(err) = relay.relay.connect(wakeup.clone()) {
+                            error!("error connecting to relay: {}", err);
+                        }
                     } else {
                         // let's wait a bit before we try again
                     }

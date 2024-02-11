@@ -1,5 +1,5 @@
 use crate::{Error, Pubkey};
-use log::debug;
+
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::hash::{Hash, Hasher};
 

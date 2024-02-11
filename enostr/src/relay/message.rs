@@ -1,8 +1,8 @@
 use crate::Error;
-use crate::Event;
+
 use crate::Result;
-use serde_json::Value;
-use tracing::{error, info};
+
+use tracing::{error};
 
 use ewebsock::{WsEvent, WsMessage};
 
