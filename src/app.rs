@@ -483,6 +483,8 @@ fn render_username(ui: &mut egui::Ui, profile: Option<&ProfileRecord>, pk: &[u8;
             if let Some(prof) = profile.record.profile() {
                 if let Some(display_name) = prof.display_name() {
                     ui_abbreviate_name(ui, display_name, 20);
+                } else if let Some(name) = prof.name() {
+                    ui_abbreviate_name(ui, name, 20);
                 }
             }
         } else {
