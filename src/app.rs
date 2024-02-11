@@ -9,10 +9,12 @@ use crate::Result;
 use egui::containers::scroll_area::ScrollBarVisibility;
 
 use egui::widgets::Spinner;
-use egui::{Context, Frame, Margin, TextureHandle};
+use egui::{Color32, Context, Frame, Margin, TextureHandle};
 
 use enostr::{ClientMessage, Filter, Pubkey, RelayEvent, RelayMessage};
-use nostrdb::{Config, Ndb, Note, NoteKey, ProfileRecord, Subscription, Transaction};
+use nostrdb::{
+    Block, BlockType, Config, Mention, Ndb, Note, NoteKey, ProfileRecord, Subscription, Transaction,
+};
 use poll_promise::Promise;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
@@ -22,6 +24,8 @@ use std::time::Duration;
 use tracing::{debug, error, info, warn};
 
 use enostr::RelayPool;
+
+const PURPLE: Color32 = Color32::from_rgb(0xCC, 0x43, 0xC5);
 
 #[derive(Hash, Eq, PartialEq, Clone, Debug)]
 enum UrlKey<'a> {
@@ -533,13 +537,65 @@ fn render_notes_in_viewport(
     ui.allocate_rect(used_rect, egui::Sense::hover()); // make sure it is visible!
 }
 
-fn render_note_contents<'a>(
+fn get_profile_name<'a>(record: &'a ProfileRecord) -> Option<&'a str> {
+    let profile = record.record.profile()?;
+    let display_name = profile.display_name();
+    let name = profile.name();
+
+    if display_name.is_some() && display_name.unwrap() != "" {
+        return display_name;
+    }
+
+    if name.is_some() && name.unwrap() != "" {
+        return name;
+    }
+
+    None
+}
+
+fn render_note_contents(
     ui: &mut egui::Ui,
     damus: &mut Damus,
-    txn: &'a Transaction,
-    note: &'a Note,
+    txn: &Transaction,
+    note: &Note,
+    note_key: NoteKey,
 ) -> Result<()> {
-    ui.weak(note.content());
+    let blocks = damus.ndb.get_blocks_by_key(txn, note_key)?;
+
+    for block in blocks.iter(note) {
+        match block.blocktype() {
+            BlockType::MentionBech32 => {
+                ui.colored_label(PURPLE, "@");
+                match block.as_mention().unwrap() {
+                    Mention::Pubkey(npub) => {
+                        let profile = damus.ndb.get_profile_by_pubkey(txn, npub.pubkey()).ok();
+                        if let Some(name) = profile.as_ref().and_then(|p| get_profile_name(p)) {
+                            ui.colored_label(PURPLE, name);
+                        } else {
+                            ui.colored_label(PURPLE, "nostrich");
+                        }
+                    }
+                    _ => {
+                        ui.colored_label(PURPLE, block.as_str());
+                    }
+                }
+            }
+
+            BlockType::Hashtag => {
+                ui.colored_label(PURPLE, "#");
+                ui.colored_label(PURPLE, block.as_str());
+            }
+
+            BlockType::Text => {
+                ui.weak(block.as_str());
+            }
+
+            _ => {
+                ui.colored_label(PURPLE, block.as_str());
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -565,7 +621,10 @@ fn render_note(ui: &mut egui::Ui, damus: &mut Damus, note_key: NoteKey) -> Resul
             ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
                 render_username(ui, profile.as_ref().ok(), note.pubkey());
 
-                render_note_contents(ui, damus, &txn, &note);
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    render_note_contents(ui, damus, &txn, &note, note_key);
+                });
             })
         });
     });
