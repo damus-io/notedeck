@@ -46,12 +46,10 @@ pub fn setup_gossip_fonts(ctx: &egui::Context) {
         )),
     );
 
-    if cfg!(feature = "lang-cjk") {
-        font_data.insert(
-            "NotoSansCJK".to_owned(),
-            FontData::from_static(include_bytes!("../assets/fonts/NotoSansCJK-Regular.ttc")),
-        );
-    }
+    font_data.insert(
+        "NotoSansCJK".to_owned(),
+        FontData::from_static(include_bytes!("../assets/fonts/NotoSansCJK-Regular.ttc")),
+    );
 
     font_data.insert(
         "Inconsolata".to_owned(),
@@ -79,9 +77,9 @@ pub fn setup_gossip_fonts(ctx: &egui::Context) {
     );
 
     let mut proportional = vec!["DejaVuSans".to_owned(), "NotoEmoji-Regular".to_owned()];
-    if cfg!(feature = "lang-cjk") {
-        proportional.push("NotoSansCJK".to_owned());
-    }
+    //if cfg!(feature = "lang-cjk") {
+    proportional.push("NotoSansCJK".to_owned());
+    //}
 
     families.insert(FontFamily::Proportional, proportional);
 
