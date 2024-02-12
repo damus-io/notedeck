@@ -95,6 +95,7 @@ pub struct Damus {
     state: DamusState,
     n_panels: u32,
     compose: String,
+    initial_filter: Vec<enostr::Filter>,
 
     pool: RelayPool,
 
@@ -144,15 +145,14 @@ fn get_home_filter() -> Filter {
     )
 }
 
-fn send_initial_filters(pool: &mut RelayPool, relay_url: &str) {
-    let filter = get_home_filter();
+fn send_initial_filters(damus: &mut Damus, relay_url: &str) {
     info!("Sending initial filters to {}", relay_url);
 
     let subid = "initial";
-    for relay in &mut pool.relays {
+    for relay in &mut damus.pool.relays {
         let relay = &mut relay.relay;
         if relay.url == relay_url {
-            relay.subscribe(subid.to_string(), vec![filter]);
+            relay.subscribe(subid.to_string(), damus.initial_filter.clone());
             return;
         }
     }
@@ -177,7 +177,7 @@ fn try_process_event(damus: &mut Damus, ctx: &egui::Context) -> Result<()> {
         let relay = ev.relay.to_owned();
 
         match (&ev.event).into() {
-            RelayEvent::Opened => send_initial_filters(&mut damus.pool, &relay),
+            RelayEvent::Opened => send_initial_filters(damus, &relay),
             // TODO: handle reconnects
             RelayEvent::Closed => warn!("{} connection closed", &relay),
             RelayEvent::Error(e) => error!("{}", e),
@@ -301,11 +301,14 @@ fn setup_profiling() {
 }
 
 fn setup_initial_nostrdb_subs(damus: &mut Damus) -> Result<()> {
-    let filter: nostrdb::Filter = crate::filter::convert_enostr_filter(&get_home_filter());
-    let filters = vec![filter];
+    let filters: Vec<nostrdb::Filter> = damus
+        .initial_filter
+        .iter()
+        .map(|f| crate::filter::convert_enostr_filter(f))
+        .collect();
     damus.timelines[0].subscription = Some(damus.ndb.subscribe(filters.clone())?);
     let txn = Transaction::new(&damus.ndb)?;
-    let res = damus.ndb.query(&txn, filters, 100)?;
+    let res = damus.ndb.query(&txn, filters, 1000)?;
     damus.timelines[0].notes = res
         .iter()
         .map(|qr| NoteRef {
@@ -414,7 +417,11 @@ fn render_damus(damus: &mut Damus, ctx: &Context) {
 
 impl Damus {
     /// Called once before the first frame.
-    pub fn new<P: AsRef<Path>>(cc: &eframe::CreationContext<'_>, data_path: P) -> Self {
+    pub fn new<P: AsRef<Path>>(
+        cc: &eframe::CreationContext<'_>,
+        data_path: P,
+        args: Vec<String>,
+    ) -> Self {
         // This is also where you can customized the look at feel of egui using
         // `cc.egui_ctx.set_visuals` and `cc.egui_ctx.set_fonts`.
 
@@ -430,12 +437,19 @@ impl Damus {
 
         egui_extras::install_image_loaders(&cc.egui_ctx);
 
+        let initial_filter = if args.len() > 1 {
+            serde_json::from_str(&args[1]).unwrap()
+        } else {
+            vec![get_home_filter()]
+        };
+
         let mut config = Config::new();
         config.set_ingester_threads(2);
         Self {
             state: DamusState::Initializing,
             pool: RelayPool::new(),
             img_cache: HashMap::new(),
+            initial_filter,
             n_panels: 1,
             timelines: vec![Timeline::new()],
             ndb: Ndb::new(data_path.as_ref().to_str().expect("db path ok"), &config).expect("ndb"),
@@ -602,14 +616,21 @@ fn render_note_contents(
     txn: &Transaction,
     note: &Note,
     note_key: NoteKey,
-) -> Result<()> {
+) {
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
 
-    let blocks = damus.ndb.get_blocks_by_key(txn, note_key)?;
     let mut images: Vec<String> = vec![];
 
     ui.horizontal_wrapped(|ui| {
+        let blocks = if let Ok(blocks) = damus.ndb.get_blocks_by_key(txn, note_key) {
+            blocks
+        } else {
+            warn!("note content '{}'", note.content());
+            ui.weak(note.content());
+            return;
+        };
+
         ui.spacing_mut().item_spacing.x = 0.0;
 
         for block in blocks.iter(note) {
@@ -668,8 +689,6 @@ fn render_note_contents(
             }
         });
     }
-
-    Ok(())
 }
 
 fn render_note(ui: &mut egui::Ui, damus: &mut Damus, note_key: NoteKey) -> Result<()> {
@@ -694,9 +713,7 @@ fn render_note(ui: &mut egui::Ui, damus: &mut Damus, note_key: NoteKey) -> Resul
             ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
                 render_username(ui, profile.as_ref().ok(), note.pubkey());
 
-                if let Err(_err) = render_note_contents(ui, damus, &txn, &note, note_key) {
-                    warn!("could not render note contents for note {:?}", note_key)
-                }
+                render_note_contents(ui, damus, &txn, &note, note_key);
             })
         });
     });

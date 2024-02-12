@@ -24,7 +24,7 @@ async fn main() {
     let _res = eframe::run_native(
         "Damus NoteDeck",
         native_options,
-        Box::new(|cc| Box::new(Damus::new(cc, "."))),
+        Box::new(|cc| Box::new(Damus::new(cc, ".", std::env::args().collect()))),
     );
 }
 

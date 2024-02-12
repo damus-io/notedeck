@@ -2,7 +2,7 @@ use crate::Error;
 
 use crate::Result;
 
-use tracing::{error};
+use tracing::error;
 
 use ewebsock::{WsEvent, WsMessage};
 
@@ -49,7 +49,7 @@ impl<'a> From<&'a WsMessage> for RelayEvent<'a> {
                 Err(err) => RelayEvent::Error(err),
             },
             wsmsg => {
-                error!("got {:?} instead of WsMessage::Text", wsmsg);
+                //error!("got {:?} instead of WsMessage::Text", wsmsg);
                 RelayEvent::Error(Error::DecodeFailed)
             }
         }
