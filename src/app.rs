@@ -658,15 +658,17 @@ fn render_note_contents(
                 }
 
                 BlockType::Url => {
+                    /*
                     let url = block.as_str().to_lowercase();
                     if url.ends_with("png") || url.ends_with("jpg") {
                         images.push(url);
                     } else {
-                        ui.add(Hyperlink::from_label_and_url(
-                            RichText::new(block.as_str()).color(PURPLE),
-                            block.as_str(),
-                        ));
-                    }
+                    */
+                    ui.add(Hyperlink::from_label_and_url(
+                        RichText::new(block.as_str()).color(PURPLE),
+                        block.as_str(),
+                    ));
+                    //}
                 }
 
                 BlockType::Text => {
