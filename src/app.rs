@@ -10,7 +10,7 @@ use crate::Result;
 use egui::containers::scroll_area::ScrollBarVisibility;
 
 use egui::widgets::Spinner;
-use egui::{Color32, Context, Frame, Hyperlink, Image, Margin, RichText, TextureHandle};
+use egui::{Color32, Context, Frame, Hyperlink, Image, Label, Margin, RichText, TextureHandle};
 
 use enostr::{ClientMessage, Filter, Pubkey, RelayEvent, RelayMessage};
 use nostrdb::{
@@ -461,10 +461,10 @@ impl Damus {
         }
     }
 
-    pub fn get_note_cache_mut(&mut self, note_ref: &NoteRef) -> &mut NoteCache {
+    pub fn get_note_cache_mut(&mut self, note_key: NoteKey, created_at: u64) -> &mut NoteCache {
         self.note_cache
-            .entry(note_ref.key)
-            .or_insert_with(|| NoteCache::new(note_ref.created_at))
+            .entry(note_key)
+            .or_insert_with(|| NoteCache::new(created_at))
     }
 }
 
@@ -702,7 +702,26 @@ fn render_note_contents(
     }
 }
 
+fn render_reltime(ui: &mut egui::Ui, note_cache: &mut NoteCache) {
+    #[cfg(feature = "profiling")]
+    puffin::profile_function!();
+
+    ui.add(Label::new(
+        RichText::new("⋅")
+            .size(10.0)
+            .color(ui.visuals().weak_text_color()),
+    ));
+    ui.add(Label::new(
+        RichText::new(note_cache.reltime_str())
+            .size(10.0)
+            .color(ui.visuals().weak_text_color()),
+    ));
+}
+
 fn render_note(ui: &mut egui::Ui, damus: &mut Damus, note_key: NoteKey) -> Result<()> {
+    #[cfg(feature = "profiling")]
+    puffin::profile_function!();
+
     let txn = Transaction::new(&damus.ndb)?;
     let note = damus.ndb.get_note_by_key(&txn, note_key)?;
 
@@ -722,7 +741,14 @@ fn render_note(ui: &mut egui::Ui, damus: &mut Damus, note_key: NoteKey) -> Resul
             }
 
             ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
-                render_username(ui, profile.as_ref().ok(), note.pubkey());
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 2.0;
+
+                    render_username(ui, profile.as_ref().ok(), note.pubkey());
+
+                    let note_cache = damus.get_note_cache_mut(note_key, note.created_at());
+                    render_reltime(ui, note_cache);
+                });
 
                 render_note_contents(ui, damus, &txn, &note, note_key);
             })
