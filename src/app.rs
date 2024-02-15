@@ -3,6 +3,7 @@ use crate::error::Error;
 use crate::fonts::setup_gossip_fonts;
 use crate::frame_history::FrameHistory;
 use crate::images::fetch_img;
+use crate::notecache::NoteCache;
 use crate::timeline;
 use crate::ui::padding;
 use crate::Result;
@@ -97,6 +98,7 @@ pub struct Damus {
     compose: String,
     initial_filter: Vec<enostr::Filter>,
 
+    note_cache: HashMap<NoteKey, NoteCache>,
     pool: RelayPool,
 
     timelines: Vec<Timeline>,
@@ -449,6 +451,7 @@ impl Damus {
             state: DamusState::Initializing,
             pool: RelayPool::new(),
             img_cache: HashMap::new(),
+            note_cache: HashMap::new(),
             initial_filter,
             n_panels: 1,
             timelines: vec![Timeline::new()],
@@ -456,6 +459,12 @@ impl Damus {
             compose: "".to_string(),
             frame_history: FrameHistory::default(),
         }
+    }
+
+    pub fn get_note_cache_mut(&mut self, note_ref: &NoteRef) -> &mut NoteCache {
+        self.note_cache
+            .entry(note_ref.key)
+            .or_insert_with(|| NoteCache::new(note_ref.created_at))
     }
 }
 

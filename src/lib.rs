@@ -11,6 +11,7 @@ mod filter;
 mod ui;
 mod timecache;
 mod time;
+mod notecache;
 mod frame_history;
 mod timeline;
 
