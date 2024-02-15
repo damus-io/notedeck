@@ -308,7 +308,7 @@ fn setup_initial_nostrdb_subs(damus: &mut Damus) -> Result<()> {
         .collect();
     damus.timelines[0].subscription = Some(damus.ndb.subscribe(filters.clone())?);
     let txn = Transaction::new(&damus.ndb)?;
-    let res = damus.ndb.query(&txn, filters, 1000)?;
+    let res = damus.ndb.query(&txn, filters, 200)?;
     damus.timelines[0].notes = res
         .iter()
         .map(|qr| NoteRef {
