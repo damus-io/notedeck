@@ -800,7 +800,7 @@ fn render_panel<'a>(ctx: &egui::Context, app: &'a mut Damus, timeline_ind: usize
                 app.n_panels -= 1;
             }
 
-            #[cfg(feature = "profiling")]
+            //#[cfg(feature = "profiling")]
             {
                 ui.weak(format!(
                     "FPS: {:.2}, {:10.1}ms",
