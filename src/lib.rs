@@ -10,6 +10,7 @@ mod result;
 mod filter;
 mod ui;
 mod timecache;
+mod time;
 mod frame_history;
 mod timeline;
 
