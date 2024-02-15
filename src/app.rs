@@ -10,7 +10,9 @@ use crate::Result;
 use egui::containers::scroll_area::ScrollBarVisibility;
 
 use egui::widgets::Spinner;
-use egui::{Color32, Context, Frame, Hyperlink, Image, Label, Margin, RichText, TextureHandle};
+use egui::{
+    Color32, Context, Frame, Hyperlink, Image, Label, Margin, RichText, Style, TextureHandle,
+};
 
 use enostr::{ClientMessage, Filter, Pubkey, RelayEvent, RelayMessage};
 use nostrdb::{
@@ -870,12 +872,19 @@ fn render_damus_mobile(ctx: &egui::Context, app: &mut Damus) {
 
     let panel_width = ctx.screen_rect().width();
 
-    egui::CentralPanel::default().show(ctx, |ui| {
-        set_app_style(ui);
+    main_panel(&ctx.style()).show(ctx, |ui| {
         timeline_panel(ui, panel_width, 0, |ui| {
             timeline_view(ui, app, 0);
         });
     });
+}
+
+fn main_panel(style: &Style) -> egui::CentralPanel {
+    egui::CentralPanel::default().frame(Frame {
+        inner_margin: Margin::same(0.0),
+        fill: style.visuals.panel_fill,
+        ..Default::default()
+    })
 }
 
 fn render_damus_desktop(ctx: &egui::Context, app: &mut Damus) {
@@ -895,7 +904,7 @@ fn render_damus_desktop(ctx: &egui::Context, app: &mut Damus) {
 
     if app.n_panels == 1 {
         let panel_width = ctx.screen_rect().width();
-        egui::CentralPanel::default().show(ctx, |ui| {
+        main_panel(&ctx.style()).show(ctx, |ui| {
             set_app_style(ui);
             timeline_panel(ui, panel_width, 0, |ui| {
                 //postbox(ui, app);
@@ -906,7 +915,7 @@ fn render_damus_desktop(ctx: &egui::Context, app: &mut Damus) {
         return;
     }
 
-    egui::CentralPanel::default().show(ctx, |ui| {
+    main_panel(&ctx.style()).show(ctx, |ui| {
         set_app_style(ui);
         egui::ScrollArea::horizontal()
             .auto_shrink([false; 2])
