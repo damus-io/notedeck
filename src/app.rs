@@ -375,15 +375,17 @@ fn handle_eose(damus: &mut Damus, subid: &str, relay_url: &str) -> Result<()> {
         let txn = Transaction::new(&damus.ndb)?;
         let authors = get_unknown_author_ids(&txn, damus, 0)?;
         let n_authors = authors.len();
-        let filter = Filter::new()
-            .authors(authors.iter().map(|p| Pubkey::new(*p)).collect())
-            .kinds(vec![0]);
-        info!(
-            "Getting {} unknown author profiles from {}",
-            n_authors, relay_url
-        );
-        let msg = ClientMessage::req("profiles".to_string(), vec![filter]);
-        damus.pool.send_to(&msg, relay_url);
+        if n_authors > 0 {
+            let filter = Filter::new()
+                .authors(authors.iter().map(|p| Pubkey::new(*p)).collect())
+                .kinds(vec![0]);
+            info!(
+                "Getting {} unknown author profiles from {}",
+                n_authors, relay_url
+            );
+            let msg = ClientMessage::req("profiles".to_string(), vec![filter]);
+            damus.pool.send_to(&msg, relay_url);
+        }
     } else if subid == "profiles" {
         let msg = ClientMessage::close("profiles".to_string());
         damus.pool.send_to(&msg, relay_url);
