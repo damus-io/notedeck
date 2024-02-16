@@ -490,7 +490,7 @@ fn render_pfp(ui: &mut egui::Ui, img_cache: &mut ImageCache, url: &str) {
 
     match img_cache[&urlkey].ready() {
         None => {
-            ui.add(Spinner::new().size(40.0));
+            ui.add(Spinner::new().size(pfp_size));
         }
         Some(Err(_err)) => {
             let failed_key = UrlKey::Failed(url).to_u64();
@@ -504,7 +504,7 @@ fn render_pfp(ui: &mut egui::Ui, img_cache: &mut ImageCache, url: &str) {
 
             match img_cache[&failed_key].ready() {
                 None => {
-                    ui.add(Spinner::new().size(40.0));
+                    ui.add(Spinner::new().size(pfp_size));
                 }
                 Some(Err(_e)) => {
                     //error!("Image load error: {:?}", e);
