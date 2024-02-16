@@ -19,37 +19,9 @@ impl NamedFontFamily {
     }
 }
 
-pub fn setup_fonts(ctx: &egui::Context) {
-    let mut fonts = FontDefinitions::default();
-    let _families = BTreeMap::<String, FontData>::new();
-
-    let our_font: String = "onest".to_owned();
-
-    // Install my own font (maybe supporting non-latin characters):
-    fonts.font_data.insert(
-        our_font.clone(),
-        FontData::from_static(include_bytes!(
-            "../assets/fonts/onest/OnestRegular1602-hint.ttf"
-        )),
-    ); // .ttf and .otf supported
-
-    // Put my font first (highest priority):
-    fonts
-        .families
-        .get_mut(&egui::FontFamily::Proportional)
-        .unwrap()
-        .insert(0, our_font);
-
-    // Put my font as last fallback for monospace:
-    //fonts.families.get_mut(&FontFamily::Monospace).unwrap()
-    //.push("onest".to_owned());
-
-    ctx.set_fonts(fonts);
-}
-
 // Use gossip's approach to font loading. This includes japanese fonts
 // for rending stuff from japanese users.
-pub fn setup_gossip_fonts(ctx: &egui::Context) {
+pub fn setup_fonts(ctx: &egui::Context) {
     let mut font_data: BTreeMap<String, FontData> = BTreeMap::new();
     let mut families = BTreeMap::new();
 

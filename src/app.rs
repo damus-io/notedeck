@@ -1,6 +1,6 @@
 use crate::abbrev;
 use crate::error::Error;
-use crate::fonts::{setup_gossip_fonts, NamedFontFamily};
+use crate::fonts::{setup_fonts, NamedFontFamily};
 use crate::frame_history::FrameHistory;
 use crate::images::fetch_img;
 use crate::notecache::NoteCache;
@@ -439,7 +439,7 @@ impl Damus {
         //}
         //
 
-        setup_gossip_fonts(&cc.egui_ctx);
+        setup_fonts(&cc.egui_ctx);
 
         cc.egui_ctx
             .set_pixels_per_point(cc.egui_ctx.pixels_per_point() + 0.2);
