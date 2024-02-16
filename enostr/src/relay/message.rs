@@ -48,10 +48,7 @@ impl<'a> From<&'a WsMessage> for RelayEvent<'a> {
                 Ok(msg) => msg,
                 Err(err) => RelayEvent::Error(err),
             },
-            wsmsg => {
-                //error!("got {:?} instead of WsMessage::Text", wsmsg);
-                RelayEvent::Error(Error::DecodeFailed)
-            }
+            wsmsg => RelayEvent::Other(wsmsg),
         }
     }
 }
