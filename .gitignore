@@ -2,6 +2,7 @@
 .buildcmd
 target
 .git
+cache
 /dist
 .direnv/
 src/camera.rs

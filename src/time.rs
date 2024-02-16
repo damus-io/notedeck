@@ -1,4 +1,4 @@
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Show a relative time string based on some timestamp
 pub fn time_ago_since(timestamp: u64) -> String {

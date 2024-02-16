@@ -1,8 +1,16 @@
 use crate::error::Error;
 use crate::result::Result;
+use crate::imgcache::ImageCache;
 use egui::{Color32, ColorImage, SizeHint, TextureHandle};
 use image::imageops::FilterType;
 use poll_promise::Promise;
+use tokio::fs;
+use std::path;
+use std::collections::HashMap;
+
+//pub type ImageCacheKey = String;
+//pub type ImageCacheValue = Promise<Result<TextureHandle>>;
+//pub type ImageCache = HashMap<String, ImageCacheValue>;
 
 pub fn round_image(image: &mut ColorImage) {
     #[cfg(feature = "profiling")]
@@ -78,12 +86,11 @@ fn process_pfp_bitmap(size: u32, image: &mut image::DynamicImage) -> ColorImage 
     color_image
 }
 
-fn parse_img_response(response: ehttp::Response) -> Result<ColorImage> {
+fn parse_img_response(response: ehttp::Response, size: u32) -> Result<ColorImage> {
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
 
     let content_type = response.content_type().unwrap_or_default();
-    let size: u32 = 100;
 
     if content_type.starts_with("image/svg") {
         #[cfg(feature = "profiling")]
@@ -105,24 +112,70 @@ fn parse_img_response(response: ehttp::Response) -> Result<ColorImage> {
     }
 }
 
-pub fn fetch_img(ctx: &egui::Context, url: &str) -> Promise<Result<TextureHandle>> {
-    // TODO: fetch image from local cache
-    fetch_img_from_net(ctx, url)
+fn fetch_img_from_disk(ctx: &egui::Context, url: &str, path: &path::Path) -> Promise<Result<TextureHandle>> {
+    let ctx = ctx.clone();
+    let url = url.to_owned();
+    let path = path.to_owned();
+    Promise::spawn_async(async move { 
+        let data = fs::read(path).await?;
+        let image_buffer = image::load_from_memory(&data)?;
+
+        // TODO: remove unwrap here
+        let flat_samples = image_buffer.as_flat_samples_u8().unwrap();
+        let img = ColorImage::from_rgba_unmultiplied(
+            [
+                image_buffer.width() as usize,
+                image_buffer.height() as usize,
+            ],
+            flat_samples.as_slice(),
+        );
+
+        Ok(ctx.load_texture(&url, img, Default::default()))
+    })
 }
 
-fn fetch_img_from_net(ctx: &egui::Context, url: &str) -> Promise<Result<TextureHandle>> {
+pub fn fetch_img(
+    img_cache: &ImageCache,
+    ctx: &egui::Context,
+    url: &str,
+    size: u32,
+) -> Promise<Result<TextureHandle>> {
+    let key = ImageCache::key(url);
+    let path = img_cache.cache_dir.join(&key);
+
+    if path.exists() {
+        fetch_img_from_disk(ctx, url, &path)
+    } else {
+        fetch_img_from_net(&img_cache.cache_dir, ctx, url, size)
+    }
+
+    // TODO: fetch image from local cache
+}
+
+fn fetch_img_from_net(cache_path: &path::Path, ctx: &egui::Context, url: &str, size: u32) -> Promise<Result<TextureHandle>> {
     let (sender, promise) = Promise::new();
     let request = ehttp::Request::get(url);
     let ctx = ctx.clone();
     let cloned_url = url.to_owned();
+    let cache_path = cache_path.to_owned();
     ehttp::fetch(request, move |response| {
         let handle = response
             .map_err(Error::Generic)
-            .and_then(parse_img_response)
-            .map(|img| ctx.load_texture(&cloned_url, img, Default::default()));
+            .and_then(|resp| parse_img_response(resp, size))
+            .map(|img| {
+                let texture_handle = ctx.load_texture(&cloned_url, img.clone(), Default::default());
+
+                // write to disk
+                std::thread::spawn(move || {
+                    ImageCache::write(&cache_path, &cloned_url, img)
+                });
+
+                texture_handle
+            });
 
         sender.send(handle); // send the results back to the UI thread.
         ctx.request_repaint();
     });
+
     promise
 }

@@ -7,6 +7,7 @@ mod abbrev;
 mod fonts;
 mod images;
 mod result;
+mod imgcache;
 mod filter;
 mod ui;
 mod timecache;

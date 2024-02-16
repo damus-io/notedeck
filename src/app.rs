@@ -3,16 +3,18 @@ use crate::error::Error;
 use crate::fonts::{setup_fonts, NamedFontFamily};
 use crate::frame_history::FrameHistory;
 use crate::images::fetch_img;
+use crate::imgcache::ImageCache;
 use crate::notecache::NoteCache;
 use crate::timeline;
 use crate::ui::padding;
 use crate::Result;
 use egui::containers::scroll_area::ScrollBarVisibility;
+use std::borrow::Cow;
 
 use egui::widgets::Spinner;
 use egui::{
-    Color32, Context, Frame, Hyperlink, Image, Label, Margin, RichText, Style, TextureHandle,
-    Visuals,
+    Color32, Context, Frame, Hyperlink, Image, Label, Margin, RichText, Sense, Style,
+    TextureHandle, Vec2, Visuals,
 };
 
 use enostr::{ClientMessage, Filter, Pubkey, RelayEvent, RelayMessage};
@@ -32,22 +34,6 @@ use enostr::RelayPool;
 
 const PURPLE: Color32 = Color32::from_rgb(0xCC, 0x43, 0xC5);
 const DARK_BG: Color32 = egui::Color32::from_rgb(40, 44, 52);
-
-#[derive(Hash, Eq, PartialEq, Clone, Debug)]
-enum UrlKey<'a> {
-    Orig(&'a str),
-    Failed(&'a str),
-}
-
-impl UrlKey<'_> {
-    fn to_u64(&self) -> u64 {
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        self.hash(&mut hasher);
-        hasher.finish()
-    }
-}
-
-type ImageCache = HashMap<u64, Promise<Result<TextureHandle>>>;
 
 #[derive(Debug, Eq, PartialEq, Clone)]
 pub enum DamusState {
@@ -454,12 +440,15 @@ impl Damus {
             vec![get_home_filter()]
         };
 
+        let imgcache_dir = data_path.as_ref().join("cache/img");
+        std::fs::create_dir_all(imgcache_dir.clone());
+
         let mut config = Config::new();
         config.set_ingester_threads(2);
         Self {
             state: DamusState::Initializing,
             pool: RelayPool::new(),
-            img_cache: HashMap::new(),
+            img_cache: ImageCache::new(imgcache_dir),
             note_cache: HashMap::new(),
             initial_filter,
             n_panels: 1,
@@ -477,48 +466,55 @@ impl Damus {
     }
 }
 
-fn render_pfp(ui: &mut egui::Ui, img_cache: &mut ImageCache, url: &str) {
+fn paint_circle(ui: &mut egui::Ui, size: f32) {
+    let (rect, _response) = ui.allocate_at_least(Vec2::new(size, size), Sense::hover());
+    ui.painter()
+        .circle_filled(rect.center(), size / 2.0, ui.visuals().weak_text_color());
+}
+
+fn render_pfp(ui: &mut egui::Ui, damus: &mut Damus, url: &str) {
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
 
-    let urlkey = UrlKey::Orig(url).to_u64();
-    let m_cached_promise = img_cache.get(&urlkey);
+    let ui_size = 30.0;
+
+    // We will want to downsample these so it's not blurry on hi res displays
+    let img_size = (ui_size * 2.0) as u32;
+
+    let m_cached_promise = damus.img_cache.map().get(url);
     if m_cached_promise.is_none() {
-        debug!("urlkey: {:?}", &urlkey);
-        img_cache.insert(urlkey, fetch_img(ui.ctx(), url));
+        let res = fetch_img(&damus.img_cache, ui.ctx(), url, img_size);
+        damus.img_cache.map_mut().insert(url.to_owned(), res);
     }
 
-    let pfp_size = 40.0;
-
-    match img_cache[&urlkey].ready() {
+    match damus.img_cache.map()[url].ready() {
         None => {
-            ui.add(Spinner::new().size(pfp_size));
+            ui.add(Spinner::new().size(ui_size));
         }
+
+        // Failed to fetch profile!
         Some(Err(_err)) => {
-            let failed_key = UrlKey::Failed(url).to_u64();
-            //debug!("has failed promise? {}", img_cache.contains_key(&failed_key));
-            let m_failed_promise = img_cache.get_mut(&failed_key);
+            let m_failed_promise = damus.img_cache.map().get(url);
             if m_failed_promise.is_none() {
-                warn!("failed key: {:?}", &failed_key);
-                let no_pfp = fetch_img(ui.ctx(), no_pfp_url());
-                img_cache.insert(failed_key, no_pfp);
+                let no_pfp = fetch_img(&damus.img_cache, ui.ctx(), no_pfp_url(), img_size);
+                damus.img_cache.map_mut().insert(url.to_owned(), no_pfp);
             }
 
-            match img_cache[&failed_key].ready() {
+            match damus.img_cache.map().get(url).unwrap().ready() {
                 None => {
-                    ui.add(Spinner::new().size(pfp_size));
+                    paint_circle(ui, ui_size);
                 }
                 Some(Err(_e)) => {
                     //error!("Image load error: {:?}", e);
-                    ui.label("❌");
+                    paint_circle(ui, ui_size);
                 }
                 Some(Ok(img)) => {
-                    pfp_image(ui, img, pfp_size);
+                    pfp_image(ui, img, ui_size);
                 }
             }
         }
         Some(Ok(img)) => {
-            pfp_image(ui, img, pfp_size);
+            pfp_image(ui, img, ui_size);
         }
     }
 }
@@ -744,8 +740,8 @@ fn render_note(ui: &mut egui::Ui, damus: &mut Damus, note_key: NoteKey) -> Resul
             {
                 // these have different lifetimes and types,
                 // so the calls must be separate
-                Some(pic) => render_pfp(ui, &mut damus.img_cache, pic),
-                None => render_pfp(ui, &mut damus.img_cache, no_pfp_url()),
+                Some(pic) => render_pfp(ui, damus, pic),
+                None => render_pfp(ui, damus, no_pfp_url()),
             }
 
             ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
