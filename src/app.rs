@@ -1,6 +1,6 @@
 use crate::abbrev;
 use crate::error::Error;
-use crate::fonts::setup_gossip_fonts;
+use crate::fonts::{setup_gossip_fonts, NamedFontFamily};
 use crate::frame_history::FrameHistory;
 use crate::images::fetch_img;
 use crate::notecache::NoteCache;
@@ -12,6 +12,7 @@ use egui::containers::scroll_area::ScrollBarVisibility;
 use egui::widgets::Spinner;
 use egui::{
     Color32, Context, Frame, Hyperlink, Image, Label, Margin, RichText, Style, TextureHandle,
+    Visuals,
 };
 
 use enostr::{ClientMessage, Filter, Pubkey, RelayEvent, RelayMessage};
@@ -30,6 +31,7 @@ use tracing::{debug, error, info, warn};
 use enostr::RelayPool;
 
 const PURPLE: Color32 = Color32::from_rgb(0xCC, 0x43, 0xC5);
+const DARK_BG: Color32 = egui::Color32::from_rgb(40, 44, 52);
 
 #[derive(Hash, Eq, PartialEq, Clone, Debug)]
 enum UrlKey<'a> {
@@ -329,7 +331,6 @@ fn update_damus(damus: &mut Damus, ctx: &egui::Context) {
         #[cfg(feature = "profiling")]
         setup_profiling();
 
-        setup_gossip_fonts(ctx);
         damus.pool = RelayPool::new();
         relay_setup(&mut damus.pool, ctx);
         damus.state = DamusState::Initialized;
@@ -407,6 +408,10 @@ fn process_message(damus: &mut Damus, relay: &str, msg: &RelayMessage) {
 }
 
 fn render_damus(damus: &mut Damus, ctx: &Context) {
+    ctx.style_mut(|style| {
+        set_app_style(&mut style.visuals);
+    });
+
     if is_mobile(ctx) {
         render_damus_mobile(ctx, damus);
     } else {
@@ -435,6 +440,8 @@ impl Damus {
         //return eframe::get_value(storage, eframe::APP_KEY).unwrap_or_default();
         //}
         //
+
+        setup_gossip_fonts(&cc.egui_ctx);
 
         cc.egui_ctx
             .set_pixels_per_point(cc.egui_ctx.pixels_per_point() + 0.2);
@@ -531,7 +538,9 @@ fn ui_abbreviate_name(ui: &mut egui::Ui, name: &str, len: usize) {
         ui.strong(&name[..closest]);
         ui.strong("...");
     } else {
-        ui.strong(name);
+        ui.add(Label::new(
+            RichText::new(name).family(NamedFontFamily::Medium.as_family()),
+        ));
     }
 }
 
@@ -683,7 +692,7 @@ fn render_note_contents(
                 }
 
                 BlockType::Text => {
-                    ui.weak(block.as_str());
+                    ui.label(block.as_str());
                 }
 
                 _ => {
@@ -708,15 +717,12 @@ fn render_reltime(ui: &mut egui::Ui, note_cache: &mut NoteCache) {
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
 
-    ui.add(Label::new(
-        RichText::new("⋅")
-            .size(10.0)
-            .color(ui.visuals().weak_text_color()),
-    ));
+    let color = Color32::from_rgb(0x8A, 0x8A, 0x8A);
+    ui.add(Label::new(RichText::new("⋅").size(10.0).color(color)));
     ui.add(Label::new(
         RichText::new(note_cache.reltime_str())
             .size(10.0)
-            .color(ui.visuals().weak_text_color()),
+            .color(color),
     ));
 }
 
@@ -814,8 +820,6 @@ fn top_panel(ctx: &egui::Context) -> egui::TopBottomPanel {
 
 fn render_panel<'a>(ctx: &egui::Context, app: &'a mut Damus, timeline_ind: usize) {
     top_panel(ctx).show(ctx, |ui| {
-        set_app_style(ui);
-
         ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
             ui.visuals_mut().button_frame = false;
             egui::widgets::global_dark_light_mode_switch(ui);
@@ -854,13 +858,15 @@ fn render_panel<'a>(ctx: &egui::Context, app: &'a mut Damus, timeline_ind: usize
     });
 }
 
-fn set_app_style(ui: &mut egui::Ui) {
-    ui.visuals_mut().hyperlink_color = PURPLE;
-    if ui.visuals().dark_mode {
-        ui.visuals_mut().override_text_color = Some(egui::Color32::from_rgb(250, 250, 250));
-        ui.visuals_mut().panel_fill = egui::Color32::from_rgb(30, 30, 30);
+fn set_app_style(visuals: &mut Visuals) {
+    visuals.hyperlink_color = PURPLE;
+    if visuals.dark_mode {
+        visuals.override_text_color = Some(egui::Color32::from_rgb(250, 250, 250));
+        visuals.panel_fill = egui::Color32::from_rgb(31, 31, 31);
+        //visuals.override_text_color = Some(egui::Color32::from_rgb(170, 177, 190));
+        //visuals.panel_fill = egui::Color32::from_rgb(40, 44, 52);
     } else {
-        ui.visuals_mut().override_text_color = Some(egui::Color32::BLACK);
+        visuals.override_text_color = Some(egui::Color32::BLACK);
     };
 }
 
@@ -905,7 +911,6 @@ fn render_damus_desktop(ctx: &egui::Context, app: &mut Damus) {
     if app.n_panels == 1 {
         let panel_width = ctx.screen_rect().width();
         main_panel(&ctx.style()).show(ctx, |ui| {
-            set_app_style(ui);
             timeline_panel(ui, panel_width, 0, |ui| {
                 //postbox(ui, app);
                 timeline_view(ui, app, 0);
@@ -916,7 +921,6 @@ fn render_damus_desktop(ctx: &egui::Context, app: &mut Damus) {
     }
 
     main_panel(&ctx.style()).show(ctx, |ui| {
-        set_app_style(ui);
         egui::ScrollArea::horizontal()
             .auto_shrink([false; 2])
             .show(ui, |ui| {
