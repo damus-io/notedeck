@@ -408,9 +408,7 @@ fn process_message(damus: &mut Damus, relay: &str, msg: &RelayMessage) {
 }
 
 fn render_damus(damus: &mut Damus, ctx: &Context) {
-    ctx.style_mut(|style| {
-        set_app_style(&mut style.visuals);
-    });
+    ctx.style_mut(set_app_style);
 
     if is_mobile(ctx) {
         render_damus_mobile(ctx, damus);
@@ -858,7 +856,8 @@ fn render_panel<'a>(ctx: &egui::Context, app: &'a mut Damus, timeline_ind: usize
     });
 }
 
-fn set_app_style(visuals: &mut Visuals) {
+fn set_app_style(style: &mut Style) {
+    let visuals = &mut style.visuals;
     visuals.hyperlink_color = PURPLE;
     if visuals.dark_mode {
         visuals.override_text_color = Some(egui::Color32::from_rgb(250, 250, 250));
