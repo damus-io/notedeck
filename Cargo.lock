@@ -292,6 +292,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "base32"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "23ce669cd6c8588f79e15cf450314f9638f967fc5770ff1c7c1deb0925ea7cfa"
+
+[[package]]
 name = "base64"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -838,7 +844,6 @@ dependencies = [
  "objc",
  "parking_lot",
  "percent-encoding",
- "pollster",
  "puffin",
  "raw-window-handle 0.5.2",
  "raw-window-handle 0.6.0",
@@ -848,7 +853,6 @@ dependencies = [
  "wasm-bindgen-futures",
  "web-sys",
  "web-time",
- "wgpu",
  "winapi",
  "winit",
 ]
@@ -1361,9 +1365,9 @@ dependencies = [
 
 [[package]]
 name = "gif"
-version = "0.12.0"
+version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "80792593675e051cf94a4b111980da2ba60d4a83e43e0048c5693baab3977045"
+checksum = "3fb2d69b19215e18bb912fa30f7ce15846e301408695e44e0ef719f1da9e19f2"
 dependencies = [
  "color_quant",
  "weezl",
@@ -1629,9 +1633,9 @@ dependencies = [
 
 [[package]]
 name = "image"
-version = "0.24.8"
+version = "0.24.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "034bbe799d1909622a74d1193aa50147769440040ff36cb2baa947609b0a4e23"
+checksum = "5690139d2f55868e080017335e4b94cb7414274c74f1669c84fb5feba2c9f69d"
 dependencies = [
  "bytemuck",
  "byteorder",
@@ -2071,6 +2075,7 @@ version = "0.1.0"
 dependencies = [
  "android-activity 0.4.3",
  "android_logger",
+ "base32",
  "console_error_panic_hook",
  "eframe",
  "egui",
@@ -2078,6 +2083,7 @@ dependencies = [
  "ehttp 0.2.0",
  "enostr",
  "env_logger 0.10.2",
+ "hex",
  "image",
  "log",
  "nostrdb",
@@ -2367,10 +2373,13 @@ dependencies = [
 
 [[package]]
 name = "poll-promise"
-version = "0.2.0"
-source = "git+https://github.com/EmbarkStudios/poll-promise?rev=b493586107b0e508860aa2e9d18049fd8cd9d13f#b493586107b0e508860aa2e9d18049fd8cd9d13f"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5f6a58fecbf9da8965bcdb20ce4fd29788d1acee68ddbb64f0ba1b81bccdb7df"
 dependencies = [
+ "document-features",
  "static_assertions",
+ "tokio",
 ]
 
 [[package]]
@@ -2386,12 +2395,6 @@ dependencies = [
  "tracing",
  "windows-sys 0.52.0",
 ]
-
-[[package]]
-name = "pollster"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "22686f4785f02a4fcc856d3b3bb19bf6c8160d103f7a99cc258bddd0251dc7f2"
 
 [[package]]
 name = "powerfmt"
@@ -3808,7 +3811,6 @@ dependencies = [
  "cfg_aliases",
  "js-sys",
  "log",
- "naga",
  "parking_lot",
  "profiling",
  "raw-window-handle 0.6.0",
@@ -3858,7 +3860,6 @@ dependencies = [
  "arrayvec",
  "ash",
  "bitflags 2.4.2",
- "block",
  "cfg_aliases",
  "core-graphics-types",
  "glow",

@@ -13,13 +13,13 @@ crate-type = ["lib", "cdylib"]
 [dependencies]
 #egui-android = { git = "https://github.com/jb55/egui-android.git" }  
 egui = "0.26.0"
-eframe = { version = "0.26.0", default-features = false, features = [ "glow", "wgpu", "android-native-activity" ] }
+eframe = { version = "0.26.0", default-features = false, features = [ "glow", "wpgu", "android-native-activity" ] }
 #eframe = "0.22.0"
 egui_extras = { version = "0.26.0", features = ["all_loaders"] }
 ehttp = "0.2.0"
 image = { version = "0.24", features = ["jpeg", "png", "webp"] }
 log = "0.4.17"
-poll-promise = { git = "https://github.com/EmbarkStudios/poll-promise", rev = "b493586107b0e508860aa2e9d18049fd8cd9d13f" } # todo: update to 0.2.1 when it's released. 0.2.0 was crashing on m1
+poll-promise = { version = "0.3.0", features = ["tokio"] }
 serde_derive = "1"
 serde = { version = "1", features = ["derive"] } # You only need this if you want app persistence
 tracing = "0.1.40"
@@ -30,6 +30,8 @@ env_logger = "0.10.0"
 puffin_egui = { version = "0.26.0", optional = true }
 puffin = { version = "0.19.0", optional = true }
 nostrdb = { git = "https://github.com/damus-io/nostrdb-rs", rev = "750539d0b71ed81ec626e4670eccf34950ad2942" }
+hex = "0.4.3"
+base32 = "0.4.0"
 
 [features]
 default = []
@@ -51,7 +53,7 @@ wasm-bindgen-futures = "0.4"
 
 # native:
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-tokio = { version = "1.16", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1.16", features = ["macros", "rt-multi-thread", "fs"] }
 tracing-subscriber = "0.3"
 
 
