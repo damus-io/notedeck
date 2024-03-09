@@ -14,6 +14,7 @@ crate-type = ["lib", "cdylib"]
 #egui-android = { git = "https://github.com/jb55/egui-android.git" }  
 egui = "0.26.0"
 eframe = { version = "0.26.0", default-features = false, features = [ "glow", "wgpu", "android-native-activity" ] }
+#eframe = { version = "0.26.0", default-features = false, features = [ "glow", "android-native-activity" ] }
 #eframe = "0.22.0"
 egui_extras = { version = "0.26.0", features = ["all_loaders"] }
 ehttp = "0.2.0"

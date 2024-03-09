@@ -13,8 +13,8 @@ use std::borrow::Cow;
 
 use egui::widgets::Spinner;
 use egui::{
-    Color32, Context, Frame, Hyperlink, Image, Label, Margin, RichText, Sense, Style,
-    TextureHandle, Vec2, Visuals,
+    CollapsingHeader, Color32, Context, Frame, Hyperlink, Image, Label, Margin, RichText, Sense,
+    Style, TextureHandle, Vec2, Visuals,
 };
 
 use enostr::{ClientMessage, Filter, Pubkey, RelayEvent, RelayMessage};
@@ -300,7 +300,7 @@ fn setup_initial_nostrdb_subs(damus: &mut Damus) -> Result<()> {
         .collect();
     damus.timelines[0].subscription = Some(damus.ndb.subscribe(filters.clone())?);
     let txn = Transaction::new(&damus.ndb)?;
-    let res = damus.ndb.query(&txn, filters, 200)?;
+    let res = damus.ndb.query(&txn, filters, 100)?;
     damus.timelines[0].notes = res
         .iter()
         .map(|qr| NoteRef {
@@ -642,7 +642,7 @@ fn render_note_contents(
         let blocks = if let Ok(blocks) = damus.ndb.get_blocks_by_key(txn, note_key) {
             blocks
         } else {
-            warn!("note content '{}'", note.content());
+            warn!("missing note content blocks? '{}'", note.content());
             ui.weak(note.content());
             return;
         };
@@ -755,6 +755,8 @@ fn render_note(ui: &mut egui::Ui, damus: &mut Damus, note_key: NoteKey) -> Resul
                 });
 
                 render_note_contents(ui, damus, &txn, &note, note_key);
+
+                //render_note_actionbar(ui, damus);
             })
         });
     });
@@ -859,7 +861,8 @@ fn set_app_style(style: &mut Style) {
     visuals.hyperlink_color = PURPLE;
     if visuals.dark_mode {
         visuals.override_text_color = Some(egui::Color32::from_rgb(250, 250, 250));
-        visuals.panel_fill = egui::Color32::from_rgb(31, 31, 31);
+        //visuals.panel_fill = egui::Color32::from_rgb(31, 31, 31);
+        visuals.panel_fill = egui::Color32::from_rgb(0, 0, 0);
         //visuals.override_text_color = Some(egui::Color32::from_rgb(170, 177, 190));
         //visuals.panel_fill = egui::Color32::from_rgb(40, 44, 52);
     } else {
