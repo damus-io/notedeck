@@ -756,12 +756,20 @@ fn render_note(ui: &mut egui::Ui, damus: &mut Damus, note_key: NoteKey) -> Resul
 
                 render_note_contents(ui, damus, &txn, &note, note_key);
 
-                //render_note_actionbar(ui, damus);
+                render_note_actionbar(ui);
             })
         });
     });
 
     Ok(())
+}
+
+fn render_note_actionbar(ui: &mut egui::Ui) {
+    ui.horizontal(|ui| {
+        if ui.button("reply").clicked() {}
+
+        if ui.button("like").clicked() {}
+    });
 }
 
 fn render_notes(ui: &mut egui::Ui, damus: &mut Damus, timeline: usize) {
