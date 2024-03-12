@@ -722,17 +722,39 @@ fn render_reltime(ui: &mut egui::Ui, note_cache: &mut NoteCache) {
     ));
 }
 
-fn render_note(ui: &mut egui::Ui, damus: &mut Damus, note_key: NoteKey) -> Result<()> {
+fn circle_icon(ui: &mut egui::Ui, openness: f32, response: &egui::Response) {
+    let stroke = ui.style().interact(&response).fg_stroke;
+    let radius = egui::lerp(2.0..=3.0, openness);
+    ui.painter()
+        .circle_filled(response.rect.center(), radius, stroke.color);
+}
+
+#[derive(Hash, Clone, Copy)]
+struct NoteTimelineKey {
+    timeline: usize,
+    note_key: NoteKey,
+}
+
+fn render_note(
+    ui: &mut egui::Ui,
+    damus: &mut Damus,
+    note_key: NoteKey,
+    timeline: usize,
+) -> Result<()> {
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
 
     let txn = Transaction::new(&damus.ndb)?;
     let note = damus.ndb.get_note_by_key(&txn, note_key)?;
+    let id = egui::Id::new(NoteTimelineKey { note_key, timeline });
 
     ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
         let profile = damus.ndb.get_profile_by_pubkey(&txn, note.pubkey());
 
-        padding(6.0, ui, |ui| {
+        let mut collapse_state =
+            egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false);
+
+        let inner_resp = padding(6.0, ui, |ui| {
             match profile
                 .as_ref()
                 .ok()
@@ -756,36 +778,59 @@ fn render_note(ui: &mut egui::Ui, damus: &mut Damus, note_key: NoteKey) -> Resul
 
                 render_note_contents(ui, damus, &txn, &note, note_key);
 
-                render_note_actionbar(ui);
-            })
+                //let header_res = ui.horizontal(|ui| {});
+
+                collapse_state.show_body_unindented(ui, |ui| render_note_actionbar(ui));
+            });
         });
+
+        let resp = ui.interact(inner_resp.response.rect, id, Sense::hover());
+
+        if resp.hovered() ^ collapse_state.is_open() {
+            info!("clicked {:?}, {}", note_key, collapse_state.is_open());
+            collapse_state.toggle(ui);
+            collapse_state.store(ui.ctx());
+        }
     });
 
     Ok(())
 }
 
-fn render_note_actionbar(ui: &mut egui::Ui) {
+fn render_note_actionbar(ui: &mut egui::Ui) -> egui::InnerResponse<()> {
     ui.horizontal(|ui| {
-        if ui.button("reply").clicked() {}
+        if ui
+            .add(
+                egui::Button::image(egui::Image::new(egui::include_image!(
+                    "../assets/icons/reply.png"
+                )))
+                .fill(ui.style().visuals.panel_fill),
+            )
+            .clicked()
+        {}
 
-        if ui.button("like").clicked() {}
-    });
+        //if ui.add(egui::Button::new("like")).clicked() {}
+    })
 }
 
-fn render_notes(ui: &mut egui::Ui, damus: &mut Damus, timeline: usize) {
+fn render_notes(ui: &mut egui::Ui, damus: &mut Damus, timeline: usize, test_panel_id: usize) {
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
 
     let num_notes = damus.timelines[timeline].notes.len();
 
     for i in 0..num_notes {
-        let _ = render_note(ui, damus, damus.timelines[timeline].notes[i].key);
+        let _ = render_note(
+            ui,
+            damus,
+            damus.timelines[timeline].notes[i].key,
+            test_panel_id,
+        );
 
         ui.separator();
     }
 }
 
-fn timeline_view(ui: &mut egui::Ui, app: &mut Damus, timeline: usize) {
+fn timeline_view(ui: &mut egui::Ui, app: &mut Damus, timeline: usize, test_panel_id: usize) {
     padding(4.0, ui, |ui| ui.heading("Notifications"));
 
     /*
@@ -802,7 +847,7 @@ fn timeline_view(ui: &mut egui::Ui, app: &mut Damus, timeline: usize) {
         });
         */
         .show(ui, |ui| {
-            render_notes(ui, app, timeline);
+            render_notes(ui, app, timeline, test_panel_id);
         });
 }
 
@@ -888,7 +933,7 @@ fn render_damus_mobile(ctx: &egui::Context, app: &mut Damus) {
 
     main_panel(&ctx.style()).show(ctx, |ui| {
         timeline_panel(ui, panel_width, 0, |ui| {
-            timeline_view(ui, app, 0);
+            timeline_view(ui, app, 0, 0);
         });
     });
 }
@@ -921,7 +966,7 @@ fn render_damus_desktop(ctx: &egui::Context, app: &mut Damus) {
         main_panel(&ctx.style()).show(ctx, |ui| {
             timeline_panel(ui, panel_width, 0, |ui| {
                 //postbox(ui, app);
-                timeline_view(ui, app, 0);
+                timeline_view(ui, app, 0, 0);
             });
         });
 
@@ -938,7 +983,7 @@ fn render_damus_desktop(ctx: &egui::Context, app: &mut Damus) {
                     }
                     timeline_panel(ui, panel_width, ind, |ui| {
                         // TODO: add new timeline to each panel
-                        timeline_view(ui, app, 0);
+                        timeline_view(ui, app, 0, ind as usize);
                     });
                 }
             });
