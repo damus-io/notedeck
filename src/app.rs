@@ -1,4 +1,5 @@
 use crate::abbrev;
+use crate::colors;
 use crate::error::Error;
 use crate::fonts::{setup_fonts, NamedFontFamily};
 use crate::frame_history::FrameHistory;
@@ -7,6 +8,7 @@ use crate::imgcache::ImageCache;
 use crate::notecache::NoteCache;
 use crate::timeline;
 use crate::ui::padding;
+use crate::widgets::note::NoteContents;
 use crate::Result;
 use egui::containers::scroll_area::ScrollBarVisibility;
 use std::borrow::Cow;
@@ -31,9 +33,6 @@ use std::time::Duration;
 use tracing::{debug, error, info, warn};
 
 use enostr::RelayPool;
-
-const PURPLE: Color32 = Color32::from_rgb(0xCC, 0x43, 0xC5);
-const DARK_BG: Color32 = egui::Color32::from_rgb(40, 44, 52);
 
 #[derive(Debug, Eq, PartialEq, Clone)]
 pub enum DamusState {
@@ -615,105 +614,6 @@ fn render_notes_in_viewport(
     ui.allocate_rect(used_rect, egui::Sense::hover()); // make sure it is visible!
 }
 
-fn get_profile_name<'a>(record: &'a ProfileRecord) -> Option<&'a str> {
-    let profile = record.record.profile()?;
-    let display_name = profile.display_name();
-    let name = profile.name();
-
-    if display_name.is_some() && display_name.unwrap() != "" {
-        return display_name;
-    }
-
-    if name.is_some() && name.unwrap() != "" {
-        return name;
-    }
-
-    None
-}
-
-fn render_note_contents(
-    ui: &mut egui::Ui,
-    damus: &mut Damus,
-    txn: &Transaction,
-    note: &Note,
-    note_key: NoteKey,
-) {
-    #[cfg(feature = "profiling")]
-    puffin::profile_function!();
-
-    let mut images: Vec<String> = vec![];
-
-    ui.horizontal_wrapped(|ui| {
-        let blocks = if let Ok(blocks) = damus.ndb.get_blocks_by_key(txn, note_key) {
-            blocks
-        } else {
-            warn!("missing note content blocks? '{}'", note.content());
-            ui.weak(note.content());
-            return;
-        };
-
-        ui.spacing_mut().item_spacing.x = 0.0;
-
-        for block in blocks.iter(note) {
-            match block.blocktype() {
-                BlockType::MentionBech32 => {
-                    ui.colored_label(PURPLE, "@");
-                    match block.as_mention().unwrap() {
-                        Mention::Pubkey(npub) => {
-                            let profile = damus.ndb.get_profile_by_pubkey(txn, npub.pubkey()).ok();
-                            if let Some(name) = profile.as_ref().and_then(|p| get_profile_name(p)) {
-                                ui.colored_label(PURPLE, name);
-                            } else {
-                                ui.colored_label(PURPLE, "nostrich");
-                            }
-                        }
-                        _ => {
-                            ui.colored_label(PURPLE, block.as_str());
-                        }
-                    }
-                }
-
-                BlockType::Hashtag => {
-                    ui.colored_label(PURPLE, "#");
-                    ui.colored_label(PURPLE, block.as_str());
-                }
-
-                BlockType::Url => {
-                    /*
-                    let url = block.as_str().to_lowercase();
-                    if url.ends_with("png") || url.ends_with("jpg") {
-                        images.push(url);
-                    } else {
-                    */
-                    ui.add(Hyperlink::from_label_and_url(
-                        RichText::new(block.as_str()).color(PURPLE),
-                        block.as_str(),
-                    ));
-                    //}
-                }
-
-                BlockType::Text => {
-                    ui.label(block.as_str());
-                }
-
-                _ => {
-                    ui.colored_label(PURPLE, block.as_str());
-                }
-            }
-        }
-    });
-
-    for image in images {
-        let resp = ui.add(Image::new(image.clone()));
-        resp.context_menu(|ui| {
-            if ui.button("Copy Link").clicked() {
-                ui.ctx().copy_text(image);
-                ui.close_menu();
-            }
-        });
-    }
-}
-
 fn render_reltime(ui: &mut egui::Ui, note_cache: &mut NoteCache) {
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
@@ -781,18 +681,32 @@ fn render_note(
                     render_reltime(ui, note_cache);
                 });
 
-                render_note_contents(ui, damus, &txn, &note, note_key);
+                let note_sidebar_size = 20.0;
+
+                ui.horizontal(|ui| {
+                    let mut size = ui.available_size();
+                    size.x -= note_sidebar_size;
+
+                    let contents = NoteContents::new(damus, &txn, &note, note_key);
+                    //let resp = render_note_contents(ui, damus, &txn, &note, note_key);
+                    //ui.allocate_space()
+                    //
+                    ui.add_sized(size, contents);
+
+                    collapse_state.show_body_unindented(ui, |ui| {
+                        ui.set_width(note_sidebar_size);
+                        render_note_actionbar(ui)
+                    });
+                });
 
                 //let header_res = ui.horizontal(|ui| {});
-
-                collapse_state.show_body_unindented(ui, |ui| render_note_actionbar(ui));
             });
         });
 
         let resp = ui.interact(inner_resp.response.rect, id, Sense::hover());
 
         if resp.hovered() ^ collapse_state.is_open() {
-            info!("clicked {:?}, {}", note_key, collapse_state.is_open());
+            //info!("clicked {:?}, {}", note_key, collapse_state.is_open());
             collapse_state.toggle(ui);
             collapse_state.store(ui.ctx());
         }
@@ -802,7 +716,7 @@ fn render_note(
 }
 
 fn render_note_actionbar(ui: &mut egui::Ui) -> egui::InnerResponse<()> {
-    ui.horizontal(|ui| {
+    ui.vertical(|ui| {
         if ui
             .add(
                 egui::Button::image(egui::Image::new(egui::include_image!(
@@ -916,7 +830,7 @@ fn render_panel<'a>(ctx: &egui::Context, app: &'a mut Damus, timeline_ind: usize
 
 fn set_app_style(style: &mut Style) {
     let visuals = &mut style.visuals;
-    visuals.hyperlink_color = PURPLE;
+    visuals.hyperlink_color = colors::PURPLE;
     if visuals.dark_mode {
         visuals.override_text_color = Some(egui::Color32::from_rgb(250, 250, 250));
         //visuals.panel_fill = egui::Color32::from_rgb(31, 31, 31);

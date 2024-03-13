@@ -4,6 +4,7 @@ mod error;
 //mod note;
 //mod block;
 mod abbrev;
+mod widgets;
 mod fonts;
 mod images;
 mod result;
@@ -15,6 +16,8 @@ mod time;
 mod notecache;
 mod frame_history;
 mod timeline;
+mod colors;
+mod profile;
 
 pub use app::Damus;
 pub use error::Error;
