@@ -94,7 +94,7 @@ pub struct Damus {
     timelines: Vec<Timeline>,
 
     img_cache: ImageCache,
-    ndb: Ndb,
+    pub ndb: Ndb,
 
     frame_history: crate::frame_history::FrameHistory,
 }
