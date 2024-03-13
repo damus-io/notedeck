@@ -127,8 +127,8 @@ fn relay_setup(pool: &mut RelayPool, ctx: &egui::Context) {
     }
 }
 
-fn get_home_filter() -> Filter {
-    Filter::new().limit(100).kinds(vec![1, 42]).pubkeys(
+fn get_home_filter(limit: u16) -> Filter {
+    Filter::new().limit(limit).kinds(vec![1, 42]).pubkeys(
         [
             Pubkey::from_hex("32e1827635450ebb3c5a7d12c1f8e7b2b514439ac10a67eef3d9fd9c5c68e245")
                 .unwrap(),
@@ -300,7 +300,11 @@ fn setup_initial_nostrdb_subs(damus: &mut Damus) -> Result<()> {
         .collect();
     damus.timelines[0].subscription = Some(damus.ndb.subscribe(filters.clone())?);
     let txn = Transaction::new(&damus.ndb)?;
-    let res = damus.ndb.query(&txn, filters, 100)?;
+    let res = damus.ndb.query(
+        &txn,
+        filters,
+        damus.initial_filter[0].limit.unwrap_or(1000) as i32,
+    )?;
     damus.timelines[0].notes = res
         .iter()
         .map(|qr| NoteRef {
@@ -434,10 +438,11 @@ impl Damus {
 
         egui_extras::install_image_loaders(&cc.egui_ctx);
 
+        let initial_limit = 100;
         let initial_filter = if args.len() > 1 {
             serde_json::from_str(&args[1]).unwrap()
         } else {
-            vec![get_home_filter()]
+            vec![get_home_filter(initial_limit)]
         };
 
         let imgcache_dir = data_path.as_ref().join("cache/img");
