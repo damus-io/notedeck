@@ -1,5 +1,7 @@
 .build-result
 .buildcmd
+perf.data
+perf.data.old
 target
 .git
 cache
