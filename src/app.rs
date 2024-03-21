@@ -681,23 +681,9 @@ fn render_note(
                     render_reltime(ui, note_cache);
                 });
 
-                let note_sidebar_size = 20.0;
+                ui.add(NoteContents::new(damus, &txn, &note, note_key));
 
-                ui.horizontal(|ui| {
-                    let mut size = ui.available_size();
-                    size.x -= note_sidebar_size;
-
-                    let contents = NoteContents::new(damus, &txn, &note, note_key);
-                    //let resp = render_note_contents(ui, damus, &txn, &note, note_key);
-                    //ui.allocate_space()
-                    //
-                    ui.add_sized(size, contents);
-
-                    collapse_state.show_body_unindented(ui, |ui| {
-                        ui.set_width(note_sidebar_size);
-                        render_note_actionbar(ui)
-                    });
-                });
+                render_note_actionbar(ui);
 
                 //let header_res = ui.horizontal(|ui| {});
             });
@@ -716,13 +702,20 @@ fn render_note(
 }
 
 fn render_note_actionbar(ui: &mut egui::Ui) -> egui::InnerResponse<()> {
-    ui.vertical(|ui| {
+    ui.horizontal(|ui| {
+        let img_data = if ui.style().visuals.dark_mode {
+            egui::include_image!("../assets/icons/reply.png")
+        } else {
+            egui::include_image!("../assets/icons/reply-dark.png")
+        };
+
+        ui.spacing_mut().button_padding = egui::vec2(0.0, 0.0);
         if ui
             .add(
-                egui::Button::image(egui::Image::new(egui::include_image!(
-                    "../assets/icons/reply.png"
-                )))
-                .fill(ui.style().visuals.panel_fill),
+                egui::Button::image(egui::Image::new(img_data).max_width(10.0))
+                    //.stroke(egui::Stroke::NONE)
+                    .frame(false)
+                    .fill(ui.style().visuals.panel_fill),
             )
             .clicked()
         {}
