@@ -739,7 +739,7 @@ fn render_notes(ui: &mut egui::Ui, damus: &mut Damus, timeline: usize, test_pane
             test_panel_id,
         );
 
-        ui.separator();
+        ui.add(egui::Separator::default().spacing(0.0));
     }
 }
 
@@ -760,6 +760,7 @@ fn timeline_view(ui: &mut egui::Ui, app: &mut Damus, timeline: usize, test_panel
         });
         */
         .show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
             render_notes(ui, app, timeline, test_panel_id);
         });
 }
