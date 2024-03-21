@@ -399,7 +399,8 @@ fn process_message(damus: &mut Damus, relay: &str, msg: &RelayMessage) {
 }
 
 fn render_damus(damus: &mut Damus, ctx: &Context) {
-    ctx.style_mut(set_app_style);
+    //ctx.style_mut(|s| set_app_style(s, is_mobile(ctx)));
+    ctx.style_mut(|s| set_app_style(s, true));
 
     if is_mobile(ctx) {
         render_damus_mobile(ctx, damus);
@@ -821,13 +822,17 @@ fn render_panel<'a>(ctx: &egui::Context, app: &'a mut Damus, timeline_ind: usize
     });
 }
 
-fn set_app_style(style: &mut Style) {
+fn set_app_style(style: &mut Style, is_mobile: bool) {
     let visuals = &mut style.visuals;
     visuals.hyperlink_color = colors::PURPLE;
     if visuals.dark_mode {
         visuals.override_text_color = Some(egui::Color32::from_rgb(250, 250, 250));
         //visuals.panel_fill = egui::Color32::from_rgb(31, 31, 31);
-        visuals.panel_fill = egui::Color32::from_rgb(0, 0, 0);
+        if is_mobile {
+            visuals.panel_fill = egui::Color32::from_rgb(0, 0, 0);
+        } else {
+            visuals.panel_fill = egui::Color32::from_rgb(31, 31, 31);
+        }
         //visuals.override_text_color = Some(egui::Color32::from_rgb(170, 177, 190));
         //visuals.panel_fill = egui::Color32::from_rgb(40, 44, 52);
     } else {
@@ -880,6 +885,16 @@ fn render_damus_desktop(ctx: &egui::Context, app: &mut Damus) {
                 //postbox(ui, app);
                 timeline_view(ui, app, 0, 0);
             });
+
+            /*
+            egui::Area::new("test")
+                .fixed_pos(egui::pos2(50.0, 50.0))
+                //.resizable(false)
+                //.title_bar(false)
+                .show(ctx, |ui| {
+                    ui.label("Test");
+                });
+                */
         });
 
         return;
