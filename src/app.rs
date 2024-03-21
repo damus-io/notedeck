@@ -302,7 +302,7 @@ fn setup_initial_nostrdb_subs(damus: &mut Damus) -> Result<()> {
     let res = damus.ndb.query(
         &txn,
         filters,
-        damus.initial_filter[0].limit.unwrap_or(1000) as i32,
+        damus.initial_filter[0].limit.unwrap_or(200) as i32,
     )?;
     damus.timelines[0].notes = res
         .iter()
@@ -442,7 +442,8 @@ impl Damus {
         let initial_filter = if args.len() > 1 {
             serde_json::from_str(&args[1]).unwrap()
         } else {
-            vec![get_home_filter(initial_limit)]
+            serde_json::from_str(&include_str!("../queries/timeline.json")).unwrap()
+            //vec![get_home_filter(initial_limit)]
         };
 
         let imgcache_dir = data_path.as_ref().join("cache/img");
@@ -744,8 +745,7 @@ fn render_notes(ui: &mut egui::Ui, damus: &mut Damus, timeline: usize, test_pane
 }
 
 fn timeline_view(ui: &mut egui::Ui, app: &mut Damus, timeline: usize, test_panel_id: usize) {
-    padding(4.0, ui, |ui| ui.heading("Notifications"));
-
+    //padding(4.0, ui, |ui| ui.heading("Notifications"));
     /*
     let font_id = egui::TextStyle::Body.resolve(ui.style());
     let row_height = ui.fonts(|f| f.row_height(&font_id)) + ui.spacing().item_spacing.y;
