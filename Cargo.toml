@@ -33,6 +33,7 @@ puffin = { version = "0.19.0", optional = true }
 nostrdb = { git = "https://github.com/damus-io/nostrdb-rs", rev = "2675e7244554e40c9ee10d82b42bc647fef4c17d" }
 hex = "0.4.3"
 base32 = "0.4.0"
+nostr-sdk = "0.29.0"
 
 [features]
 default = []
