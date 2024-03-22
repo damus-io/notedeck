@@ -24,6 +24,11 @@ pub fn convert_enostr_filter(filter: &enostr::Filter) -> nostrdb::Filter {
         nfilter.pubkeys(pubkeys.iter().map(|a| *a.bytes()).collect());
     }
 
+    // #t
+    if let Some(ref hashtags) = filter.hashtags {
+        nfilter.tags(hashtags.clone(), 't');
+    }
+
     if let Some(since) = filter.since {
         nfilter.since(since);
     }

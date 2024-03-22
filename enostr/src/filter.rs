@@ -15,6 +15,9 @@ pub struct Filter {
     #[serde(rename = "#p")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pubkeys: Option<Vec<Pubkey>>,
+    #[serde(rename = "#t")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hashtags: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub since: Option<u64>, // unix timestamp seconds
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -31,6 +34,7 @@ impl Filter {
             kinds: None,
             events: None,
             pubkeys: None,
+            hashtags: None,
             since: None,
             until: None,
             limit: None,
