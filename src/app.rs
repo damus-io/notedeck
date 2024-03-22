@@ -63,17 +63,19 @@ impl Ord for NoteRef {
 }
 
 struct Timeline {
+    pub filter: Vec<Filter>,
     pub notes: Vec<NoteRef>,
     pub subscription: Option<Subscription>,
 }
 
 impl Timeline {
-    pub fn new() -> Self {
+    pub fn new(filter: Vec<Filter>) -> Self {
         let mut notes: Vec<NoteRef> = vec![];
         notes.reserve(1000);
         let subscription: Option<Subscription> = None;
 
         Timeline {
+            filter,
             notes,
             subscription,
         }
@@ -83,9 +85,7 @@ impl Timeline {
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
 pub struct Damus {
     state: DamusState,
-    n_panels: u32,
     compose: String,
-    initial_filter: Vec<enostr::Filter>,
 
     note_cache: HashMap<NoteKey, NoteCache>,
     pool: RelayPool,
@@ -138,12 +138,15 @@ fn get_home_filter(limit: u16) -> Filter {
 
 fn send_initial_filters(damus: &mut Damus, relay_url: &str) {
     info!("Sending initial filters to {}", relay_url);
+    let mut c: u32 = 1;
 
-    let subid = "initial";
     for relay in &mut damus.pool.relays {
         let relay = &mut relay.relay;
         if relay.url == relay_url {
-            relay.subscribe(subid.to_string(), damus.initial_filter.clone());
+            for timeline in &damus.timelines {
+                relay.subscribe(format!("initial{}", c), timeline.filter.clone());
+                c += 1;
+            }
             return;
         }
     }
@@ -292,25 +295,32 @@ fn setup_profiling() {
 }
 
 fn setup_initial_nostrdb_subs(damus: &mut Damus) -> Result<()> {
-    let filters: Vec<nostrdb::Filter> = damus
-        .initial_filter
-        .iter()
-        .map(|f| crate::filter::convert_enostr_filter(f))
-        .collect();
-    damus.timelines[0].subscription = Some(damus.ndb.subscribe(filters.clone())?);
-    let txn = Transaction::new(&damus.ndb)?;
-    let res = damus.ndb.query(
-        &txn,
-        filters,
-        damus.initial_filter[0].limit.unwrap_or(200) as i32,
-    )?;
-    damus.timelines[0].notes = res
-        .iter()
-        .map(|qr| NoteRef {
-            key: qr.note_key,
-            created_at: qr.note.created_at(),
-        })
-        .collect();
+    for timeline in &mut damus.timelines {
+        let filters: Vec<nostrdb::Filter> = timeline
+            .filter
+            .iter()
+            .map(|f| crate::filter::convert_enostr_filter(f))
+            .collect();
+        timeline.subscription = Some(damus.ndb.subscribe(filters.clone())?);
+        let txn = Transaction::new(&damus.ndb)?;
+        info!(
+            "querying sub {} {:?}",
+            timeline.subscription.as_ref().unwrap().id,
+            timeline.filter
+        );
+        let res = damus.ndb.query(
+            &txn,
+            filters,
+            timeline.filter[0].limit.unwrap_or(200) as i32,
+        )?;
+        timeline.notes = res
+            .iter()
+            .map(|qr| NoteRef {
+                key: qr.note_key,
+                created_at: qr.note.created_at(),
+            })
+            .collect();
+    }
 
     Ok(())
 }
@@ -360,7 +370,7 @@ fn get_unknown_author_ids<'a>(
 }
 
 fn handle_eose(damus: &mut Damus, subid: &str, relay_url: &str) -> Result<()> {
-    if subid == "initial" {
+    if subid.starts_with("initial") {
         let txn = Transaction::new(&damus.ndb)?;
         let authors = get_unknown_author_ids(&txn, damus, 0)?;
         let n_authors = authors.len();
@@ -438,11 +448,16 @@ impl Damus {
 
         egui_extras::install_image_loaders(&cc.egui_ctx);
 
+        let mut timelines: Vec<Timeline> = vec![];
         let initial_limit = 100;
-        let initial_filter = if args.len() > 1 {
-            serde_json::from_str(&args[1]).unwrap()
+        if args.len() > 1 {
+            for arg in &args[1..] {
+                let filter = serde_json::from_str(&arg).unwrap();
+                timelines.push(Timeline::new(filter));
+            }
         } else {
-            serde_json::from_str(&include_str!("../queries/timeline.json")).unwrap()
+            let filter = serde_json::from_str(&include_str!("../queries/global.json")).unwrap();
+            timelines.push(Timeline::new(filter));
             //vec![get_home_filter(initial_limit)]
         };
 
@@ -456,9 +471,7 @@ impl Damus {
             pool: RelayPool::new(),
             img_cache: ImageCache::new(imgcache_dir),
             note_cache: HashMap::new(),
-            initial_filter,
-            n_panels: 1,
-            timelines: vec![Timeline::new()],
+            timelines,
             ndb: Ndb::new(data_path.as_ref().to_str().expect("db path ok"), &config).expect("ndb"),
             compose: "".to_string(),
             frame_history: FrameHistory::default(),
@@ -726,25 +739,20 @@ fn render_note_actionbar(ui: &mut egui::Ui) -> egui::InnerResponse<()> {
     })
 }
 
-fn render_notes(ui: &mut egui::Ui, damus: &mut Damus, timeline: usize, test_panel_id: usize) {
+fn render_notes(ui: &mut egui::Ui, damus: &mut Damus, timeline: usize) {
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
 
     let num_notes = damus.timelines[timeline].notes.len();
 
     for i in 0..num_notes {
-        let _ = render_note(
-            ui,
-            damus,
-            damus.timelines[timeline].notes[i].key,
-            test_panel_id,
-        );
+        let _ = render_note(ui, damus, damus.timelines[timeline].notes[i].key, timeline);
 
         ui.add(egui::Separator::default().spacing(0.0));
     }
 }
 
-fn timeline_view(ui: &mut egui::Ui, app: &mut Damus, timeline: usize, test_panel_id: usize) {
+fn timeline_view(ui: &mut egui::Ui, app: &mut Damus, timeline: usize) {
     //padding(4.0, ui, |ui| ui.heading("Notifications"));
     /*
     let font_id = egui::TextStyle::Body.resolve(ui.style());
@@ -761,7 +769,7 @@ fn timeline_view(ui: &mut egui::Ui, app: &mut Damus, timeline: usize, test_panel
         */
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
-            render_notes(ui, app, timeline, test_panel_id);
+            render_notes(ui, app, timeline);
         });
 }
 
@@ -789,6 +797,7 @@ fn render_panel<'a>(ctx: &egui::Context, app: &'a mut Damus, timeline_ind: usize
             ui.visuals_mut().button_frame = false;
             egui::widgets::global_dark_light_mode_switch(ui);
 
+            /*
             if ui
                 .add(egui::Button::new("+").frame(false))
                 .on_hover_text("Add Timeline")
@@ -805,6 +814,7 @@ fn render_panel<'a>(ctx: &egui::Context, app: &'a mut Damus, timeline_ind: usize
             {
                 app.n_panels -= 1;
             }
+            */
 
             //#[cfg(feature = "profiling")]
             {
@@ -851,7 +861,7 @@ fn render_damus_mobile(ctx: &egui::Context, app: &mut Damus) {
 
     main_panel(&ctx.style()).show(ctx, |ui| {
         timeline_panel(ui, panel_width, 0, |ui| {
-            timeline_view(ui, app, 0, 0);
+            timeline_view(ui, app, 0);
         });
     });
 }
@@ -870,7 +880,7 @@ fn render_damus_desktop(ctx: &egui::Context, app: &mut Damus) {
     puffin::profile_function!();
 
     let screen_size = ctx.screen_rect().width();
-    let calc_panel_width = (screen_size / app.n_panels as f32) - 30.0;
+    let calc_panel_width = (screen_size / app.timelines.len() as f32) - 30.0;
     let min_width = 300.0;
     let need_scroll = calc_panel_width < min_width;
     let panel_width = if need_scroll {
@@ -879,12 +889,12 @@ fn render_damus_desktop(ctx: &egui::Context, app: &mut Damus) {
         calc_panel_width
     };
 
-    if app.n_panels == 1 {
+    if app.timelines.len() == 1 {
         let panel_width = ctx.screen_rect().width();
         main_panel(&ctx.style()).show(ctx, |ui| {
             timeline_panel(ui, panel_width, 0, |ui| {
                 //postbox(ui, app);
-                timeline_view(ui, app, 0, 0);
+                timeline_view(ui, app, 0);
             });
 
             /*
@@ -905,13 +915,13 @@ fn render_damus_desktop(ctx: &egui::Context, app: &mut Damus) {
         egui::ScrollArea::horizontal()
             .auto_shrink([false; 2])
             .show(ui, |ui| {
-                for ind in 0..app.n_panels {
-                    if ind == 0 {
+                for timeline_ind in 0..app.timelines.len() {
+                    if timeline_ind == 0 {
                         //postbox(ui, app);
                     }
-                    timeline_panel(ui, panel_width, ind, |ui| {
+                    timeline_panel(ui, panel_width, timeline_ind as u32, |ui| {
                         // TODO: add new timeline to each panel
-                        timeline_view(ui, app, 0, ind as usize);
+                        timeline_view(ui, app, timeline_ind);
                     });
                 }
             });
