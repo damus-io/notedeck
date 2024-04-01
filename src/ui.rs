@@ -1,4 +1,4 @@
-use egui::style::Margin;
+use egui::Margin;
 
 pub fn padding<R>(
     amount: impl Into<Margin>,
