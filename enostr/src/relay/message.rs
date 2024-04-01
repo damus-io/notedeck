@@ -1,9 +1,4 @@
-use crate::Error;
-
-use crate::Result;
-
-use tracing::error;
-
+use crate::{Error, Result};
 use ewebsock::{WsEvent, WsMessage};
 
 #[derive(Debug, Eq, PartialEq)]

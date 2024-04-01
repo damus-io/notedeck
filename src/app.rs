@@ -12,23 +12,18 @@ use crate::ui::padding;
 use crate::widgets::note::NoteContents;
 use crate::Result;
 use egui::containers::scroll_area::ScrollBarVisibility;
-use std::borrow::Cow;
 
 use egui::widgets::Spinner;
-use egui::{
-    CollapsingHeader, Color32, Context, Frame, Hyperlink, Image, Label, Margin, RichText, Sense,
-    Style, TextureHandle, Vec2, Visuals,
-};
+use egui::{Color32, Context, Frame, Label, Margin, RichText, Sense, Style, TextureHandle, Vec2};
 
 use enostr::{ClientMessage, Filter, Pubkey, RelayEvent, RelayMessage};
 use nostrdb::{
-    Block, BlockType, Blocks, Config, Mention, Ndb, Note, NoteKey, ProfileRecord, Subscription,
-    Transaction,
+    BlockType, Config, Mention, Ndb, Note, NoteKey, ProfileRecord, Subscription, Transaction,
 };
-use poll_promise::Promise;
+
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
-use std::hash::{Hash, Hasher};
+use std::hash::Hash;
 use std::path::Path;
 use std::time::Duration;
 use tracing::{debug, error, info, warn};
@@ -86,8 +81,7 @@ impl Timeline {
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
 pub struct Damus {
     state: DamusState,
-    compose: String,
-
+    //compose: String,
     note_cache: HashMap<NoteKey, NoteCache>,
     pool: RelayPool,
 
@@ -125,16 +119,6 @@ fn relay_setup(pool: &mut RelayPool, ctx: &egui::Context) {
     if let Err(e) = pool.add_url("wss://purplepag.es".to_string(), wakeup) {
         error!("{:?}", e)
     }
-}
-
-fn get_home_filter(limit: u16) -> Filter {
-    Filter::new().limit(limit).kinds(vec![1, 42]).pubkeys(
-        [
-            Pubkey::from_hex("32e1827635450ebb3c5a7d12c1f8e7b2b514439ac10a67eef3d9fd9c5c68e245")
-                .unwrap(),
-        ]
-        .into(),
-    )
 }
 
 fn send_initial_filters(damus: &mut Damus, relay_url: &str) {
@@ -226,7 +210,7 @@ fn get_unknown_note_pubkeys<'a>(
 
     let blocks = ndb.get_blocks_by_key(txn, note_key)?;
     for block in blocks.iter(note) {
-        let blocktype = block.blocktype();
+        let _blocktype = block.blocktype();
         match block.blocktype() {
             BlockType::MentionBech32 => match block.as_mention().unwrap() {
                 Mention::Pubkey(npub) => {
@@ -445,7 +429,7 @@ impl Damus {
         setup_cc(cc);
 
         let mut timelines: Vec<Timeline> = vec![];
-        let initial_limit = 100;
+        let _initial_limit = 100;
         if args.len() > 1 {
             for arg in &args[1..] {
                 let filter = serde_json::from_str(&arg).unwrap();
@@ -454,11 +438,10 @@ impl Damus {
         } else {
             let filter = serde_json::from_str(&include_str!("../queries/global.json")).unwrap();
             timelines.push(Timeline::new(filter));
-            //vec![get_home_filter(initial_limit)]
         };
 
         let imgcache_dir = data_path.as_ref().join("cache/img");
-        std::fs::create_dir_all(imgcache_dir.clone());
+        let _ = std::fs::create_dir_all(imgcache_dir.clone());
 
         let mut config = Config::new();
         config.set_ingester_threads(2);
@@ -469,7 +452,7 @@ impl Damus {
             note_cache: HashMap::new(),
             timelines,
             ndb: Ndb::new(data_path.as_ref().to_str().expect("db path ok"), &config).expect("ndb"),
-            compose: "".to_string(),
+            //compose: "".to_string(),
             frame_history: FrameHistory::default(),
         }
     }
@@ -585,6 +568,7 @@ fn no_pfp_url() -> &'static str {
     "https://damus.io/img/no-profile.svg"
 }
 
+/*
 fn render_notes_in_viewport(
     ui: &mut egui::Ui,
     _damus: &mut Damus,
@@ -624,6 +608,7 @@ fn render_notes_in_viewport(
 
     ui.allocate_rect(used_rect, egui::Sense::hover()); // make sure it is visible!
 }
+*/
 
 fn render_reltime(ui: &mut egui::Ui, note_cache: &mut NoteCache) {
     #[cfg(feature = "profiling")]
@@ -638,12 +623,14 @@ fn render_reltime(ui: &mut egui::Ui, note_cache: &mut NoteCache) {
     ));
 }
 
+/*
 fn circle_icon(ui: &mut egui::Ui, openness: f32, response: &egui::Response) {
     let stroke = ui.style().interact(&response).fg_stroke;
     let radius = egui::lerp(2.0..=3.0, openness);
     ui.painter()
         .circle_filled(response.rect.center(), radius, stroke.color);
 }
+*/
 
 #[derive(Hash, Clone, Copy)]
 struct NoteTimelineKey {
@@ -924,12 +911,12 @@ fn render_damus_desktop(ctx: &egui::Context, app: &mut Damus) {
     });
 }
 
+/*
 fn postbox(ui: &mut egui::Ui, app: &mut Damus) {
     let _output = egui::TextEdit::multiline(&mut app.compose)
         .hint_text("Type something!")
         .show(ui);
 
-    /*
     let width = ui.available_width();
     let height = 100.0;
     let shapes = [Shape::Rect(RectShape {
@@ -940,8 +927,8 @@ fn postbox(ui: &mut egui::Ui, app: &mut Damus) {
     })];
 
     ui.painter().extend(shapes);
-    */
 }
+    */
 
 fn timeline_panel<R>(
     ui: &mut egui::Ui,

@@ -42,7 +42,7 @@ fn render_note_contents(
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
 
-    let mut images: Vec<String> = vec![];
+    let images: Vec<String> = vec![];
 
     let resp = ui.horizontal_wrapped(|ui| {
         let blocks = if let Ok(blocks) = damus.ndb.get_blocks_by_key(txn, note_key) {

@@ -1,17 +1,13 @@
-use crate::{Error, Result};
+use crate::Result;
 use egui::TextureHandle;
 use poll_promise::Promise;
 
 use egui::ColorImage;
-use hex;
-use std::borrow::Cow;
-use std::collections::hash_map::Entry;
+
 use std::collections::HashMap;
 use std::fs::File;
-use std::hash::{Hash, Hasher};
-use std::io;
+
 use std::path;
-use tokio::fs;
 
 pub type ImageCacheValue = Promise<Result<TextureHandle>>;
 pub type ImageCacheMap = HashMap<String, ImageCacheValue>;
@@ -33,12 +29,13 @@ impl ImageCache {
         let file_path = cache_dir.join(&Self::key(url));
         let file = File::options().write(true).create(true).open(file_path)?;
         let encoder = image::codecs::webp::WebPEncoder::new_lossless(file);
+
         encoder.encode(
             data.as_raw(),
             data.size[0] as u32,
             data.size[1] as u32,
             image::ColorType::Rgba8,
-        );
+        )?;
 
         Ok(())
     }

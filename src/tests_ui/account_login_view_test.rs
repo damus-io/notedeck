@@ -7,7 +7,7 @@ pub struct AccountLoginTest {
 }
 
 impl EguiTestCase for AccountLoginTest {
-    fn new(supr: EguiTestSetup) -> Self {
+    fn new(_supr: EguiTestSetup) -> Self {
         AccountLoginTest {
             manager: LoginManager::new(),
         }

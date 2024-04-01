@@ -100,7 +100,7 @@ pub fn setup_fonts(ctx: &egui::Context) {
         ),
     );
 
-    let mut proportional = vec![
+    let proportional = vec![
         "Onest".to_owned(),
         "DejaVuSans".to_owned(),
         "NotoEmoji".to_owned(),

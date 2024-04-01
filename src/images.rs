@@ -6,7 +6,7 @@ use image::imageops::FilterType;
 use poll_promise::Promise;
 use tokio::fs;
 use std::path;
-use std::collections::HashMap;
+
 
 //pub type ImageCacheKey = String;
 //pub type ImageCacheValue = Promise<Result<TextureHandle>>;
