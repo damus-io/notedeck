@@ -20,6 +20,7 @@ mod colors;
 mod profile;
 mod key_parsing;
 mod login_manager;
+mod account_login_view;
 
 #[cfg(test)]
 #[macro_use]
