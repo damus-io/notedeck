@@ -3,6 +3,7 @@ name = "notedeck"
 version = "0.1.0"
 authors = ["William Casarin <jb55@jb55.com>"]
 edition = "2021"
+default-run = "notedeck"
 #rust-version = "1.60"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -93,3 +94,11 @@ name = "android.permission.INTERNET"
 
 [package.metadata.android.application]
 label = "Damus"
+
+[[bin]]
+name = "notedeck"
+path = "src/bin/notedeck.rs"
+
+[[bin]]
+name = "ui_test_harness"
+path = "src/tests_ui/main.rs"

@@ -19,9 +19,9 @@ mod timeline;
 mod colors;
 mod profile;
 mod key_parsing;
-mod login_manager;
-mod account_login_view;
-mod app_creation;
+pub mod login_manager;
+pub mod account_login_view;
+pub mod app_creation;
 
 #[cfg(test)]
 #[macro_use]
