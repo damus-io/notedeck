@@ -19,6 +19,7 @@ mod timeline;
 mod colors;
 mod profile;
 mod key_parsing;
+mod login_manager;
 
 #[cfg(test)]
 #[macro_use]
