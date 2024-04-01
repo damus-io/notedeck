@@ -21,6 +21,7 @@ mod profile;
 mod key_parsing;
 mod login_manager;
 mod account_login_view;
+mod app_creation;
 
 #[cfg(test)]
 #[macro_use]

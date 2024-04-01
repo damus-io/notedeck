@@ -1,7 +1,8 @@
 use crate::abbrev;
+use crate::app_creation::setup_cc;
 use crate::colors;
 use crate::error::Error;
-use crate::fonts::{setup_fonts, NamedFontFamily};
+use crate::fonts::NamedFontFamily;
 use crate::frame_history::FrameHistory;
 use crate::images::fetch_img;
 use crate::imgcache::ImageCache;
@@ -441,12 +442,7 @@ impl Damus {
         //}
         //
 
-        setup_fonts(&cc.egui_ctx);
-
-        cc.egui_ctx
-            .set_pixels_per_point(cc.egui_ctx.pixels_per_point() + 0.2);
-
-        egui_extras::install_image_loaders(&cc.egui_ctx);
+        setup_cc(cc);
 
         let mut timelines: Vec<Timeline> = vec![];
         let initial_limit = 100;
