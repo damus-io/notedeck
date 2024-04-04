@@ -10,29 +10,54 @@ Look it actually runs on android!
 
 <img src="https://cdn.jb55.com/s/bebeeadf7001fae1.png" height="500px" />
 
-## Compiling
+# Developer Setup
+
+## Linux/MacOS
+
+First, install [nix][nix] if you don't have it.
 
 The `shell.nix` provides a reproducible build environment for android and rust. I recommend using [direnv][direnv] to load this environment when you `cd` into the directory.
+
+If you don't have [direnv][direnv], enter the dev shell via:
+
+```bash
+$ nix-shell
+```
 
 Once you have your dev shell setup, you can build with this command:
 
 ```bash
-$ cargo apk run --release 
+$ cargo run --release 
 ```
 
-This will build and run the app on your android device. If you don't have the `aarch64-linux-android` rust target yet, you can install it with:
+## Android
+
+The dev shell should also have all of the android-sdk dependencies needed for development, but you still need the `aarch64-linux-android` rustup target installed:
 
 ```
 $ rustup target add aarch64-linux-android
 ```
 
-You can also just type
+To run on a real device, just type:
 
 ```bash
-$ cargo run --release
+$ cargo apk run --release
 ```
 
-To run the multiplatform desktop version of the app called NoteDeck.
- 
+## Android Emulator
+
+- Install [Android Studio](https://developer.android.com/studio)
+- Open 'Device Manager' in Android Studio
+- Add a new device with API level `34` and ABI `arm64-v8a` (even though the app uses 30, the 30 emulator can't find the vulkan adapter, but 34 works fine)
+- Start up the emulator
+
+while the emulator is running, run:
+
+```bash
+cargo apk run --release
+```
+
+The app should appear on the emulator
 
 [direnv]: https://direnv.net/
+[nix]: https://nixos.org/download/
