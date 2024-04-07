@@ -110,6 +110,9 @@ fn relay_setup(pool: &mut RelayPool, ctx: &egui::Context) {
     if let Err(e) = pool.add_url("wss://relay.damus.io".to_string(), wakeup.clone()) {
         error!("{:?}", e)
     }
+    if let Err(e) = pool.add_url("wss://pyramid.fiatjaf.com".to_string(), wakeup.clone()) {
+        error!("{:?}", e)
+    }
     if let Err(e) = pool.add_url("wss://nos.lol".to_string(), wakeup.clone()) {
         error!("{:?}", e)
     }
@@ -253,16 +256,12 @@ fn poll_notes_for_timeline<'a>(
     let new_refs = new_note_ids
         .iter()
         .map(|key| {
-            let note_key = NoteKey::new(*key);
-            let note = damus
-                .ndb
-                .get_note_by_key(&txn, note_key)
-                .expect("no note??");
+            let note = damus.ndb.get_note_by_key(&txn, *key).expect("no note??");
 
-            let _ = get_unknown_note_pubkeys(&damus.ndb, txn, &note, note_key, pubkeys);
+            let _ = get_unknown_note_pubkeys(&damus.ndb, txn, &note, *key, pubkeys);
 
             NoteRef {
-                key: NoteKey::new(*key),
+                key: *key,
                 created_at: note.created_at(),
             }
         })
