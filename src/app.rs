@@ -250,7 +250,7 @@ fn poll_notes_for_timeline<'a>(
 
     let new_note_ids = damus.ndb.poll_for_notes(&sub, 100);
     if new_note_ids.len() > 0 {
-        info!("{} new notes! {:?}", new_note_ids.len(), new_note_ids);
+        debug!("{} new notes! {:?}", new_note_ids.len(), new_note_ids);
     }
 
     let new_refs = new_note_ids
