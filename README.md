@@ -12,7 +12,7 @@ Look it actually runs on android!
 
 # Developer Setup
 
-## Linux/MacOS
+## Desktop (Linux/MacOS, Windows?)
 
 First, install [nix][nix] if you don't have it.
 
