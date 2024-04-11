@@ -1,8 +1,6 @@
-use crate::abbrev;
 use crate::app_creation::setup_cc;
 use crate::colors;
 use crate::error::Error;
-use crate::fonts::NamedFontFamily;
 use crate::frame_history::FrameHistory;
 use crate::images::fetch_img;
 use crate::imgcache::ImageCache;
@@ -18,9 +16,7 @@ use egui::widgets::Spinner;
 use egui::{Color32, Context, Frame, Label, Margin, RichText, Sense, Style, TextureHandle, Vec2};
 
 use enostr::{ClientMessage, Filter, Pubkey, RelayEvent, RelayMessage};
-use nostrdb::{
-    BlockType, Config, Mention, Ndb, Note, NoteKey, ProfileRecord, Subscription, Transaction,
-};
+use nostrdb::{BlockType, Config, Mention, Ndb, Note, NoteKey, Subscription, Transaction};
 
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
@@ -617,11 +613,10 @@ fn render_irc_note(
     ui: &mut egui::Ui,
     damus: &mut Damus,
     note_key: NoteKey,
-    timeline: usize,
+    _timeline: usize,
 ) -> Result<()> {
     let txn = Transaction::new(&damus.ndb)?;
     let note = damus.ndb.get_note_by_key(&txn, note_key)?;
-    let id = egui::Id::new(NoteTimelineKey { note_key, timeline });
 
     ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
         let profile = damus.ndb.get_profile_by_pubkey(&txn, note.pubkey());
