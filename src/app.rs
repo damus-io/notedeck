@@ -10,6 +10,7 @@ use crate::notecache::NoteCache;
 use crate::timeline;
 use crate::ui::padding;
 use crate::widgets::note::NoteContents;
+use crate::widgets::username::Username;
 use crate::Result;
 use egui::containers::scroll_area::ScrollBarVisibility;
 
@@ -84,6 +85,7 @@ pub struct Damus {
     //compose: String,
     note_cache: HashMap<NoteKey, NoteCache>,
     pool: RelayPool,
+    irc_mode: bool,
 
     timelines: Vec<Timeline>,
 
@@ -450,6 +452,7 @@ impl Damus {
             img_cache: ImageCache::new(imgcache_dir),
             note_cache: HashMap::new(),
             timelines,
+            irc_mode: false,
             ndb: Ndb::new(data_path.as_ref().to_str().expect("db path ok"), &config).expect("ndb"),
             //compose: "".to_string(),
             frame_history: FrameHistory::default(),
@@ -525,44 +528,6 @@ fn pfp_image<'a>(ui: &mut egui::Ui, img: &TextureHandle, size: f32) -> egui::Res
     //.with_options()
 }
 
-fn ui_abbreviate_name(ui: &mut egui::Ui, name: &str, len: usize) {
-    if name.len() > len {
-        let closest = abbrev::floor_char_boundary(name, len);
-        ui.strong(&name[..closest]);
-        ui.strong("...");
-    } else {
-        ui.add(Label::new(
-            RichText::new(name).family(NamedFontFamily::Medium.as_family()),
-        ));
-    }
-}
-
-fn render_username(ui: &mut egui::Ui, profile: Option<&ProfileRecord>, _pk: &[u8; 32]) {
-    #[cfg(feature = "profiling")]
-    puffin::profile_function!();
-
-    ui.horizontal(|ui| {
-        //ui.spacing_mut().item_spacing.x = 0.0;
-        if let Some(profile) = profile {
-            if let Some(prof) = profile.record.profile() {
-                if prof.display_name().is_some() && prof.display_name().unwrap() != "" {
-                    ui_abbreviate_name(ui, prof.display_name().unwrap(), 20);
-                } else if let Some(name) = prof.name() {
-                    ui_abbreviate_name(ui, name, 20);
-                }
-            }
-        } else {
-            ui.strong("nostrich");
-        }
-
-        /*
-        ui.label(&pk.as_ref()[0..8]);
-        ui.label(":");
-        ui.label(&pk.as_ref()[64 - 8..]);
-        */
-    });
-}
-
 fn no_pfp_url() -> &'static str {
     "https://damus.io/img/no-profile.svg"
 }
@@ -609,17 +574,28 @@ fn render_notes_in_viewport(
 }
 */
 
-fn render_reltime(ui: &mut egui::Ui, note_cache: &mut NoteCache) {
+fn render_reltime(
+    ui: &mut egui::Ui,
+    note_cache: &mut NoteCache,
+    before: bool,
+) -> egui::InnerResponse<()> {
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
 
-    let color = Color32::from_rgb(0x8A, 0x8A, 0x8A);
-    ui.add(Label::new(RichText::new("⋅").size(10.0).color(color)));
-    ui.add(Label::new(
-        RichText::new(note_cache.reltime_str())
-            .size(10.0)
-            .color(color),
-    ));
+    ui.horizontal(|ui| {
+        let color = Color32::from_rgb(0x8A, 0x8A, 0x8A);
+        if before {
+            ui.add(Label::new(RichText::new("⋅").size(10.0).color(color)));
+        }
+        ui.add(Label::new(
+            RichText::new(note_cache.reltime_str())
+                .size(10.0)
+                .color(color),
+        ));
+        if !before {
+            ui.add(Label::new(RichText::new("⋅").size(10.0).color(color)));
+        }
+    })
 }
 
 /*
@@ -635,6 +611,61 @@ fn circle_icon(ui: &mut egui::Ui, openness: f32, response: &egui::Response) {
 struct NoteTimelineKey {
     timeline: usize,
     note_key: NoteKey,
+}
+
+fn render_irc_note(
+    ui: &mut egui::Ui,
+    damus: &mut Damus,
+    note_key: NoteKey,
+    timeline: usize,
+) -> Result<()> {
+    let txn = Transaction::new(&damus.ndb)?;
+    let note = damus.ndb.get_note_by_key(&txn, note_key)?;
+    let id = egui::Id::new(NoteTimelineKey { note_key, timeline });
+
+    ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
+        let profile = damus.ndb.get_profile_by_pubkey(&txn, note.pubkey());
+
+        //ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+
+            let note_cache = damus.get_note_cache_mut(note_key, note.created_at());
+            let (_id, rect) = ui.allocate_space(egui::vec2(50.0, 20.0));
+            ui.allocate_rect(rect, Sense::hover());
+            ui.put(rect, |ui: &mut egui::Ui| {
+                ui.set_clip_rect(rect);
+                render_reltime(ui, note_cache, false).response
+            });
+            let (_id, rect) = ui.allocate_space(egui::vec2(200.0, 20.0));
+            ui.allocate_rect(rect, Sense::hover());
+            ui.put(rect, |ui: &mut egui::Ui| {
+                ui.set_clip_rect(rect);
+                ui.add(
+                    Username::new(profile.as_ref().ok(), note.pubkey())
+                        .abbreviated(15)
+                        .pk_colored(true),
+                )
+            });
+
+            ui.add(NoteContents::new(damus, &txn, &note, note_key));
+        });
+
+        //render_note_actionbar(ui);
+
+        //let header_res = ui.horizontal(|ui| {});
+        //});
+
+        //let resp = ui.interact(inner_resp.response.rect, id, Sense::hover());
+
+        //if resp.hovered() ^ collapse_state.is_open() {
+        //info!("clicked {:?}, {}", note_key, collapse_state.is_open());
+        //collapse_state.toggle(ui);
+        //collapse_state.store(ui.ctx());
+        //}
+    });
+
+    Ok(())
 }
 
 fn render_note(
@@ -671,11 +702,10 @@ fn render_note(
             ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 2.0;
-
-                    render_username(ui, profile.as_ref().ok(), note.pubkey());
+                    ui.add(Username::new(profile.as_ref().ok(), note.pubkey()).abbreviated(20));
 
                     let note_cache = damus.get_note_cache_mut(note_key, note.created_at());
-                    render_reltime(ui, note_cache);
+                    render_reltime(ui, note_cache, true);
                 });
 
                 ui.add(NoteContents::new(damus, &txn, &note, note_key));
@@ -727,8 +757,14 @@ fn render_notes(ui: &mut egui::Ui, damus: &mut Damus, timeline: usize) {
 
     let num_notes = damus.timelines[timeline].notes.len();
 
+    let renderer = if damus.irc_mode {
+        render_irc_note
+    } else {
+        render_note
+    };
+
     for i in 0..num_notes {
-        let _ = render_note(ui, damus, damus.timelines[timeline].notes[i].key, timeline);
+        let _ = renderer(ui, damus, damus.timelines[timeline].notes[i].key, timeline);
 
         ui.add(egui::Separator::default().spacing(0.0));
     }
@@ -778,6 +814,13 @@ fn render_panel<'a>(ctx: &egui::Context, app: &'a mut Damus, timeline_ind: usize
         ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
             ui.visuals_mut().button_frame = false;
             egui::widgets::global_dark_light_mode_switch(ui);
+            if ui
+                .add(egui::Button::new("A").frame(false))
+                .on_hover_text("IRC mode")
+                .clicked()
+            {
+                app.irc_mode = !app.irc_mode;
+            }
 
             /*
             if ui
