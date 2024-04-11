@@ -10,6 +10,14 @@ Look it actually runs on android!
 
 <img src="https://cdn.jb55.com/s/bebeeadf7001fae1.png" height="500px" />
 
+## Usage
+
+You can customize the columns by passing them as command-line arguments. This is only for testing and will likely change.
+
+```bash
+$ ./target/release/notedeck "$(cat queries/timeline.json)" "$(cat queries/notifications.json)"
+```
+
 # Developer Setup
 
 ## Desktop (Linux/MacOS, Windows?)
