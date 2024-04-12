@@ -271,3 +271,68 @@ fn login_textedit(text: &mut dyn TextBuffer) -> TextEdit {
         .min_size(Vec2::new(0.0, 40.0))
         .margin(Margin::same(12.0))
 }
+
+pub struct MobileAccountLoginView<'a> {
+    ctx: &'a egui::Context,
+    manager: &'a mut LoginManager,
+}
+
+impl<'a> MobileAccountLoginView<'a> {
+    pub fn new(ctx: &'a egui::Context, manager: &'a mut LoginManager) -> Self {
+        MobileAccountLoginView { ctx, manager }
+    }
+
+    pub fn panel(&mut self) {
+        let frame = egui::CentralPanel::default();
+
+        frame.show(self.ctx, |_| {
+            Window::new("Login")
+                .movable(true)
+                .constrain(true)
+                .collapsible(false)
+                .drag_to_scroll(false)
+                .title_bar(false)
+                .resizable(false)
+                .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+                .frame(Frame::central_panel(&self.ctx.style()))
+                .max_width(self.ctx.screen_rect().width() - 32.0) // margin
+                .show(self.ctx, |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.add(logo_unformatted().max_width(256.0));
+                        ui.add_space(64.0);
+                        ui.label(login_info_text());
+                        ui.add_space(32.0);
+                        ui.label(login_title_text());
+                    });
+
+                    ui.horizontal(|ui| {
+                        ui.label(login_textedit_info_text());
+                    });
+
+                    ui.vertical_centered_justified(|ui| {
+                        ui.add(login_textedit(&mut self.manager.login_key));
+
+                        if ui.add(login_button()).clicked() {
+                            self.manager.promise =
+                                Some(perform_key_retrieval(&self.manager.login_key));
+                        }
+                    });
+
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new("New to Nostr?")
+                                .color(ui.style().visuals.noninteractive().fg_stroke.color)
+                                .text_style(NotedeckTextStyle::Body.text_style()),
+                        );
+
+                        if ui
+                            .add(Button::new(RichText::new("Create Account")).frame(false))
+                            .clicked()
+                        {
+                            // TODO: navigate to 'create account' screen
+                        }
+                    });
+                });
+        });
+    }
+}
