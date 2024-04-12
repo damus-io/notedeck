@@ -1,3 +1,9 @@
+pub mod note;
+pub mod username;
+
+pub use note::Note;
+pub use username::Username;
+
 use egui::Margin;
 
 pub fn padding<R>(

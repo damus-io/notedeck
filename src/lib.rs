@@ -4,7 +4,6 @@ mod error;
 //mod note;
 //mod block;
 mod abbrev;
-mod widgets;
 mod fonts;
 mod images;
 mod result;

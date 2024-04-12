@@ -1,7 +1,7 @@
 pub mod contents;
 pub use contents::NoteContents;
 
-use crate::{widgets, Damus};
+use crate::{ui, Damus};
 use egui::{Color32, Label, RichText, Sense, TextureHandle, Vec2};
 use nostrdb::{NoteKey, Transaction};
 
@@ -65,7 +65,7 @@ impl<'a> Note<'a> {
                     ui.allocate_rect(rect, Sense::hover());
                     ui.put(rect, |ui: &mut egui::Ui| {
                         ui.add(
-                            widgets::Username::new(profile.as_ref().ok(), note.pubkey())
+                            ui::Username::new(profile.as_ref().ok(), note.pubkey())
                                 .abbreviated(8)
                                 .pk_colored(true),
                         )
@@ -114,7 +114,7 @@ impl<'a> Note<'a> {
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 2.0;
                             ui.add(
-                                widgets::Username::new(profile.as_ref().ok(), note.pubkey())
+                                ui::Username::new(profile.as_ref().ok(), note.pubkey())
                                     .abbreviated(20),
                             );
 

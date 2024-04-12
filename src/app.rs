@@ -5,7 +5,7 @@ use crate::frame_history::FrameHistory;
 use crate::imgcache::ImageCache;
 use crate::notecache::NoteCache;
 use crate::timeline;
-use crate::widgets;
+use crate::ui;
 use crate::Result;
 use egui::containers::scroll_area::ScrollBarVisibility;
 
@@ -522,7 +522,7 @@ fn render_notes(ui: &mut egui::Ui, damus: &mut Damus, timeline: usize) {
     let num_notes = damus.timelines[timeline].notes.len();
 
     for i in 0..num_notes {
-        let note = widgets::Note::new(damus, damus.timelines[timeline].notes[i].key, timeline);
+        let note = ui::Note::new(damus, damus.timelines[timeline].notes[i].key, timeline);
         ui.add(note);
         ui.add(egui::Separator::default().spacing(0.0));
     }
