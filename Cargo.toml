@@ -104,5 +104,5 @@ name = "notedeck"
 path = "src/bin/notedeck.rs"
 
 [[bin]]
-name = "ui_test_harness"
-path = "src/tests_ui/main.rs"
+name = "ui_preview"
+path = "src/ui_preview/main.rs"

@@ -7,15 +7,15 @@ use egui::{
 };
 use egui::{Image, TextBuffer, TextEdit};
 
-pub struct AccountLoginView<'a> {
+pub struct DesktopAccountLoginView<'a> {
     ctx: &'a egui::Context,
     manager: &'a mut LoginManager,
     generate_y_intercept: Option<f32>,
 }
 
-impl<'a> AccountLoginView<'a> {
+impl<'a> DesktopAccountLoginView<'a> {
     pub fn new(ctx: &'a egui::Context, manager: &'a mut LoginManager) -> Self {
-        AccountLoginView {
+        DesktopAccountLoginView {
             ctx,
             manager,
             generate_y_intercept: None,
