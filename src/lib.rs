@@ -21,6 +21,7 @@ mod key_parsing;
 pub mod login_manager;
 pub mod account_login_view;
 pub mod app_creation;
+mod app_style;
 
 #[cfg(test)]
 #[macro_use]
