@@ -3,11 +3,11 @@ pub use contents::NoteContents;
 
 use crate::{ui, Damus};
 use egui::{Color32, Label, RichText, Sense, TextureHandle, Vec2};
-use nostrdb::{NoteKey, Transaction};
+use nostrdb::NoteKey;
 
 pub struct Note<'a> {
     app: &'a mut Damus,
-    note_key: NoteKey,
+    note: &'a nostrdb::Note<'a>,
     timeline: usize,
 }
 
@@ -19,128 +19,119 @@ struct NoteTimelineKey {
 
 impl<'a> egui::Widget for Note<'a> {
     fn ui(self, ui: &mut egui::Ui) -> egui::Response {
-        let res = if self.app.textmode {
+        if self.app.textmode {
             self.textmode_ui(ui)
         } else {
             self.standard_ui(ui)
-        };
-
-        if let Ok(resp) = res {
-            resp
-        } else {
-            ui.label("Could not render note")
         }
     }
 }
 
 impl<'a> Note<'a> {
-    pub fn new(app: &'a mut Damus, note_key: NoteKey, timeline: usize) -> Self {
+    pub fn new(app: &'a mut Damus, note: &'a nostrdb::Note<'a>, timeline: usize) -> Self {
         Note {
             app,
-            note_key,
+            note,
             timeline,
         }
     }
 
-    fn textmode_ui(self, ui: &mut egui::Ui) -> Result<egui::Response, nostrdb::Error> {
-        let txn = Transaction::new(&self.app.ndb)?;
-        let note = self.app.ndb.get_note_by_key(&txn, self.note_key)?;
+    fn textmode_ui(self, ui: &mut egui::Ui) -> egui::Response {
+        let note_key = self.note.key().expect("todo: implement non-db notes");
+        let txn = self.note.txn().expect("todo: implement non-db notes");
 
-        Ok(ui
-            .with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
-                let profile = self.app.ndb.get_profile_by_pubkey(&txn, note.pubkey());
+        ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
+            let profile = self.app.ndb.get_profile_by_pubkey(txn, self.note.pubkey());
 
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 2.0;
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
 
-                    let note_cache = self
-                        .app
-                        .get_note_cache_mut(self.note_key, note.created_at());
-                    let (_id, rect) = ui.allocate_space(egui::vec2(50.0, 20.0));
-                    ui.allocate_rect(rect, Sense::hover());
-                    ui.put(rect, |ui: &mut egui::Ui| {
-                        render_reltime(ui, note_cache, false).response
-                    });
-                    let (_id, rect) = ui.allocate_space(egui::vec2(150.0, 20.0));
-                    ui.allocate_rect(rect, Sense::hover());
-                    ui.put(rect, |ui: &mut egui::Ui| {
-                        ui.add(
-                            ui::Username::new(profile.as_ref().ok(), note.pubkey())
-                                .abbreviated(8)
-                                .pk_colored(true),
-                        )
-                    });
+                let note_cache = self
+                    .app
+                    .get_note_cache_mut(note_key, self.note.created_at());
 
-                    ui.add(NoteContents::new(self.app, &txn, &note, self.note_key));
+                let (_id, rect) = ui.allocate_space(egui::vec2(50.0, 20.0));
+                ui.allocate_rect(rect, Sense::hover());
+                ui.put(rect, |ui: &mut egui::Ui| {
+                    render_reltime(ui, note_cache, false).response
                 });
-            })
-            .response)
+                let (_id, rect) = ui.allocate_space(egui::vec2(150.0, 20.0));
+                ui.allocate_rect(rect, Sense::hover());
+                ui.put(rect, |ui: &mut egui::Ui| {
+                    ui.add(
+                        ui::Username::new(profile.as_ref().ok(), self.note.pubkey())
+                            .abbreviated(8)
+                            .pk_colored(true),
+                    )
+                });
+
+                ui.add(NoteContents::new(self.app, txn, self.note, note_key));
+            });
+        })
+        .response
     }
 
-    pub fn standard_ui(self, ui: &mut egui::Ui) -> Result<egui::Response, nostrdb::Error> {
+    pub fn standard_ui(self, ui: &mut egui::Ui) -> egui::Response {
         #[cfg(feature = "profiling")]
         puffin::profile_function!();
-
-        let txn = Transaction::new(&self.app.ndb)?;
-        let note = self.app.ndb.get_note_by_key(&txn, self.note_key)?;
-        let note_key = self.note_key;
+        let note_key = self.note.key().expect("todo: support non-db notes");
+        let txn = self.note.txn().expect("todo: support non-db notes");
         let timeline = self.timeline;
         let id = egui::Id::new(NoteTimelineKey { note_key, timeline });
 
-        Ok(ui
-            .with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
-                let profile = self.app.ndb.get_profile_by_pubkey(&txn, note.pubkey());
+        ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
+            let profile = self.app.ndb.get_profile_by_pubkey(txn, self.note.pubkey());
 
-                let mut collapse_state =
-                    egui::collapsing_header::CollapsingState::load_with_default_open(
-                        ui.ctx(),
-                        id,
-                        false,
-                    );
+            let mut collapse_state =
+                egui::collapsing_header::CollapsingState::load_with_default_open(
+                    ui.ctx(),
+                    id,
+                    false,
+                );
 
-                let inner_resp = crate::ui::padding(6.0, ui, |ui| {
-                    match profile
-                        .as_ref()
-                        .ok()
-                        .and_then(|p| p.record.profile()?.picture())
-                    {
-                        // these have different lifetimes and types,
-                        // so the calls must be separate
-                        Some(pic) => render_pfp(ui, self.app, pic),
-                        None => render_pfp(ui, self.app, no_pfp_url()),
-                    }
-
-                    ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 2.0;
-                            ui.add(
-                                ui::Username::new(profile.as_ref().ok(), note.pubkey())
-                                    .abbreviated(20),
-                            );
-
-                            let note_cache = self
-                                .app
-                                .get_note_cache_mut(self.note_key, note.created_at());
-                            render_reltime(ui, note_cache, true);
-                        });
-
-                        ui.add(NoteContents::new(self.app, &txn, &note, self.note_key));
-
-                        render_note_actionbar(ui);
-
-                        //let header_res = ui.horizontal(|ui| {});
-                    });
-                });
-
-                let resp = ui.interact(inner_resp.response.rect, id, Sense::hover());
-
-                if resp.hovered() ^ collapse_state.is_open() {
-                    //info!("clicked {:?}, {}", self.note_key, collapse_state.is_open());
-                    collapse_state.toggle(ui);
-                    collapse_state.store(ui.ctx());
+            let inner_resp = crate::ui::padding(6.0, ui, |ui| {
+                match profile
+                    .as_ref()
+                    .ok()
+                    .and_then(|p| p.record.profile()?.picture())
+                {
+                    // these have different lifetimes and types,
+                    // so the calls must be separate
+                    Some(pic) => render_pfp(ui, self.app, pic),
+                    None => render_pfp(ui, self.app, no_pfp_url()),
                 }
-            })
-            .response)
+
+                ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 2.0;
+                        ui.add(
+                            ui::Username::new(profile.as_ref().ok(), self.note.pubkey())
+                                .abbreviated(20),
+                        );
+
+                        let note_cache = self
+                            .app
+                            .get_note_cache_mut(note_key, self.note.created_at());
+                        render_reltime(ui, note_cache, true);
+                    });
+
+                    ui.add(NoteContents::new(self.app, txn, self.note, note_key));
+
+                    render_note_actionbar(ui);
+
+                    //let header_res = ui.horizontal(|ui| {});
+                });
+            });
+
+            let resp = ui.interact(inner_resp.response.rect, id, Sense::hover());
+
+            if resp.hovered() ^ collapse_state.is_open() {
+                //info!("clicked {:?}, {}", self.note_key, collapse_state.is_open());
+                collapse_state.toggle(ui);
+                collapse_state.store(ui.ctx());
+            }
+        })
+        .response
     }
 }
 

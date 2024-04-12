@@ -515,17 +515,28 @@ struct NoteTimelineKey {
     note_key: NoteKey,
 }
 
-fn render_notes(ui: &mut egui::Ui, damus: &mut Damus, timeline: usize) {
+fn render_notes(ui: &mut egui::Ui, damus: &mut Damus, timeline: usize) -> Result<()> {
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
 
     let num_notes = damus.timelines[timeline].notes.len();
+    let txn = Transaction::new(&damus.ndb)?;
 
     for i in 0..num_notes {
-        let note = ui::Note::new(damus, damus.timelines[timeline].notes[i].key, timeline);
-        ui.add(note);
+        let note_key = damus.timelines[timeline].notes[i].key;
+        let note = if let Ok(note) = damus.ndb.get_note_by_key(&txn, note_key) {
+            note
+        } else {
+            warn!("failed to query note {:?}", note_key);
+            continue;
+        };
+
+        let note_ui = ui::Note::new(damus, &note, timeline);
+        ui.add(note_ui);
         ui.add(egui::Separator::default().spacing(0.0));
     }
+
+    Ok(())
 }
 
 fn timeline_view(ui: &mut egui::Ui, app: &mut Damus, timeline: usize) {
@@ -545,7 +556,7 @@ fn timeline_view(ui: &mut egui::Ui, app: &mut Damus, timeline: usize) {
         */
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
-            render_notes(ui, app, timeline);
+            let _ = render_notes(ui, app, timeline);
         });
 }
 
