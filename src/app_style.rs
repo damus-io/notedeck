@@ -2,8 +2,10 @@ use crate::colors::{dark_color_theme, light_color_theme, ColorTheme, DarkTheme, 
 use egui::{
     epaint::Shadow,
     style::{WidgetVisuals, Widgets},
-    Button, Context, Rounding, Stroke, Style, Ui, Visuals,
+    Button, Context, FontId, Rounding, Stroke, Style, TextStyle, Ui, Visuals,
 };
+use strum::IntoEnumIterator;
+use strum_macros::EnumIter;
 
 const WIDGET_ROUNDING: Rounding = Rounding::same(8.0);
 
@@ -32,6 +34,63 @@ pub fn user_requested_visuals_change(cur_darkmode: bool, ui: &mut Ui) -> Option<
         return Some(dark_mode());
     }
     None
+}
+
+/// Create custom text sizes for any FontSizes
+pub fn create_text_styles(ctx: &Context, font_size: fn(NotedeckTextStyle) -> f32) -> Style {
+    let mut style = (*ctx.style()).clone();
+
+    style.text_styles = NotedeckTextStyle::iter().map(|text_style| {
+        (text_style.text_style(), FontId::new(font_size(text_style), egui::FontFamily::Proportional))
+    }).collect();
+
+    style
+}
+
+pub fn desktop_font_size(text_style: NotedeckTextStyle) -> f32 {
+    match text_style {
+        NotedeckTextStyle::Heading => 48.0,
+        NotedeckTextStyle::Heading2 => 24.0,
+        NotedeckTextStyle::Heading3 => 20.0,
+        NotedeckTextStyle::Body => 13.0,
+        NotedeckTextStyle::Button => 13.0,
+        NotedeckTextStyle::Small => 12.0,
+    }
+}
+
+pub fn mobile_font_size(text_style: NotedeckTextStyle) -> f32 {
+    // TODO: tweak text sizes for optimal mobile viewing
+    match text_style {
+        NotedeckTextStyle::Heading => 48.0,
+        NotedeckTextStyle::Heading2 => 24.0,
+        NotedeckTextStyle::Heading3 => 20.0,
+        NotedeckTextStyle::Body => 13.0,
+        NotedeckTextStyle::Button => 13.0,
+        NotedeckTextStyle::Small => 12.0,
+    }
+}
+
+#[derive(EnumIter)]
+pub enum NotedeckTextStyle {
+    Heading,
+    Heading2,
+    Heading3,
+    Body,
+    Button,
+    Small,
+}
+
+impl NotedeckTextStyle {
+    pub fn text_style(&self) -> TextStyle {
+        match self {
+            Self::Heading => TextStyle::Heading,
+            Self::Heading2 => TextStyle::Name("Heading2".into()),
+            Self::Heading3 => TextStyle::Name("Heading3".into()),
+            Self::Body => TextStyle::Body,
+            Self::Button => TextStyle::Button,
+            Self::Small => TextStyle::Small,
+        }
+    }
 }
 
 pub fn create_themed_visuals(theme: ColorTheme, default: Visuals) -> Visuals {
