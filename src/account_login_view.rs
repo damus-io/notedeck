@@ -1,12 +1,11 @@
-use crate::colors::{
-    ALMOST_WHITE, DARKER_BG, DARK_BG_1, DARK_ISH_BG, GRAY_SECONDARY, RED_700, SEMI_DARKER_BG, WHITE,
-};
+use crate::app_style::NotedeckTextStyle;
 use crate::key_parsing::{perform_key_retrieval, LoginError};
 use crate::login_manager::LoginManager;
 use egui::{
-    epaint::Shadow, Align, Align2, Button, Color32, Frame, Id, LayerId, Margin, Pos2, Rect,
+    Align, Align2, Button, Color32, Frame, Id, LayerId, Margin, Pos2, Rect,
     RichText, Rounding, Ui, Vec2, Window,
 };
+use egui::{Image, TextBuffer, TextEdit};
 
 pub struct AccountLoginView<'a> {
     ctx: &'a egui::Context,
@@ -22,12 +21,9 @@ impl<'a> AccountLoginView<'a> {
             generate_y_intercept: None,
         }
     }
+
     pub fn panel(&mut self) {
-        let frame = egui::CentralPanel::default().frame(Frame {
-            inner_margin: Margin::same(0.0),
-            fill: DARKER_BG,
-            ..Default::default()
-        });
+        let frame = egui::CentralPanel::default();
 
         let screen_width = self.ctx.screen_rect().max.x;
         let screen_height = self.ctx.screen_rect().max.y;
@@ -64,9 +60,10 @@ impl<'a> AccountLoginView<'a> {
                 ),
             };
 
+            let top_background_color = ui.visuals().noninteractive().bg_fill;
             ui.painter_at(top_rect)
                 .with_layer_id(LayerId::background())
-                .rect_filled(top_rect, Rounding::ZERO, DARK_ISH_BG);
+                .rect_filled(top_rect, Rounding::ZERO, top_background_color);
         });
     }
 
@@ -86,37 +83,16 @@ impl<'a> AccountLoginView<'a> {
             .resizable(false)
             .anchor(Align2::CENTER_CENTER, [0f32, y_offset])
             .max_width(538.0)
-            .frame(
-                egui::Frame::default()
-                    .fill(DARK_ISH_BG)
-                    .rounding(egui::Rounding::from(32f32))
-                    .stroke(egui::Stroke::new(1.0, DARK_BG_1))
-                    .shadow(Shadow {
-                        offset: [0.0, 8.0].into(),
-                        blur: 24.0,
-                        spread: 0.0,
-                        color: egui::Color32::from_rgba_unmultiplied(0x6D, 0x6D, 0x6D, 0x14),
-                    }),
-            )
+            .frame(egui::Frame::window(ui.style()).inner_margin(Margin::ZERO))
             .show(ui.ctx(), |ui| {
                 ui.vertical_centered(|ui| {
                     ui.add_space(40.0);
-                    ui.label(
-                        RichText::new("Login")
-                            .size(24f32)
-                            .color(WHITE)
-                            .strong()
-                            .line_height(Some(36f32)),
-                    );
+
+                    ui.label(login_title_text());
 
                     ui.add_space(16f32);
 
-                    ui.label(
-                        RichText::new("Enter your private key to start using Notedeck")
-                            .size(13f32)
-                            .color(GRAY_SECONDARY)
-                            .line_height(Some(19.5)),
-                    );
+                    ui.label(login_window_info_text(ui));
 
                     ui.add_space(24.0);
 
@@ -130,9 +106,9 @@ impl<'a> AccountLoginView<'a> {
 
                     let y_margin: f32 = 24.0;
                     let generate_frame = egui::Frame::default()
-                        .fill(Color32::from_rgb(0x26, 0x26, 0x26)) // TODO: gradient
-                        .rounding(egui::Rounding::from(32f32))
-                        .stroke(egui::Stroke::new(1.0, DARK_BG_1))
+                        .fill(ui.style().noninteractive().bg_fill) // TODO: gradient
+                        .rounding(ui.style().visuals.window_rounding)
+                        .stroke(ui.style().noninteractive().bg_stroke)
                         .inner_margin(Margin::symmetric(48.0, y_margin));
 
                     generate_frame.show(ui, |ui| {
@@ -146,8 +122,7 @@ impl<'a> AccountLoginView<'a> {
 
     fn top_title_area(&mut self, ui: &mut egui::Ui) {
         ui.vertical_centered(|ui| {
-            let logo_gradient_data = egui::include_image!("../assets/Logo-Gradient-2x.png");
-            ui.add(egui::Image::new(logo_gradient_data).max_width(232.0));
+            ui.add(logo_unformatted().max_width(232.0));
 
             ui.add_space(48.0);
 
@@ -162,40 +137,20 @@ impl<'a> AccountLoginView<'a> {
             //         .strong()
             //         .line_height(Some(72.0)),
             // );
-            ui.label(
-                RichText::new("The best alternative to tweetDeck built in nostr protocol")
-                    .size(24.0)
-                    .line_height(Some(36.0))
-                    .color(ALMOST_WHITE),
-            );
+            ui.label(login_info_text());
         });
     }
 
     fn login_form(&mut self, ui: &mut egui::Ui) {
         ui.vertical_centered_justified(|ui| {
             ui.horizontal(|ui| {
-                ui.label(
-                    RichText::new("Enter your key")
-                        .color(WHITE)
-                        .strong()
-                        .line_height(Some(19.5f32))
-                        .size(13f32),
-                );
+                ui.label(login_textedit_info_text());
             });
 
             ui.add_space(8f32);
 
             ui.add(
-                egui::TextEdit::singleline(&mut self.manager.login_key)
-                    .hint_text(
-                        RichText::new("Your key here...")
-                            .size(13f32)
-                            .line_height(Some(19.5f32))
-                            .color(GRAY_SECONDARY),
-                    )
-                    .margin(Margin::symmetric(12.0, 12.0))
-                    .min_size(Vec2::new(440.0, 40.0))
-                    .vertical_align(Align::Center),
+                login_textedit(&mut self.manager.login_key).min_size(Vec2::new(440.0, 40.0)),
             );
 
             ui.add_space(8.0);
@@ -215,11 +170,11 @@ impl<'a> AccountLoginView<'a> {
             if let Some(err) = &self.manager.error {
                 ui.horizontal(|ui| {
                     let error_label = match err {
-                        LoginError::InvalidKey => {
-                            egui::Label::new(RichText::new("Invalid key.").color(RED_700))
-                        }
+                        LoginError::InvalidKey => egui::Label::new(
+                            RichText::new("Invalid key.").color(ui.visuals().error_fg_color),
+                        ),
                         LoginError::Nip05Failed(e) => {
-                            egui::Label::new(RichText::new(e).color(RED_700))
+                            egui::Label::new(RichText::new(e).color(ui.visuals().error_fg_color))
                         }
                     };
                     ui.add(error_label.truncate(true));
@@ -228,16 +183,7 @@ impl<'a> AccountLoginView<'a> {
 
             ui.add_space(8.0);
 
-            let login_button = Button::new(
-                RichText::new("Login now — let's do this!")
-                    .line_height(Some(16.25f32))
-                    .strong()
-                    .size(13f32)
-                    .color(WHITE),
-            )
-            .rounding(Rounding::same(8f32))
-            .min_size(Vec2::new(442.0, 40.0))
-            .fill(Color32::from_rgb(0xF8, 0x69, 0xB6)); // TODO: gradient
+            let login_button = login_button().min_size(Vec2::new(442.0, 40.0));
 
             if ui.add(login_button).clicked() {
                 self.manager.promise = Some(perform_key_retrieval(&self.manager.login_key));
@@ -247,40 +193,81 @@ impl<'a> AccountLoginView<'a> {
 
     fn generate_group(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.label(
-                RichText::new("New in nostr?")
-                    .size(20f32)
-                    .line_height(Some(30f32))
-                    .color(ALMOST_WHITE),
-            );
+            ui.label(RichText::new("New in nostr?").text_style(NotedeckTextStyle::Heading3.text_style()));
 
             ui.label(
                 RichText::new(" — we got you!")
-                    .size(20f32)
-                    .line_height(Some(30f32))
-                    .color(GRAY_SECONDARY),
+                    .text_style(NotedeckTextStyle::Heading3.text_style())
+                    .color(ui.visuals().noninteractive().fg_stroke.color),
             );
         });
 
         ui.add_space(6.0);
 
         ui.horizontal(|ui| {
-            ui.label(
-                RichText::new("Quickly generate your keys. Make sure you save them safely.")
-                    .color(GRAY_SECONDARY)
-                    .size(13f32)
-                    .line_height(Some(19.5f32)),
-            );
+            ui.label(generate_info_text().color(ui.visuals().noninteractive().fg_stroke.color));
         });
 
         ui.add_space(16.0);
 
-        let generate_button = Button::new(RichText::new("Generate keys").color(WHITE))
-            .fill(SEMI_DARKER_BG)
-            .min_size(Vec2::new(442.0, 40.0))
-            .rounding(Rounding::same(8.0));
+        let generate_button = generate_keys_button().min_size(Vec2::new(442.0, 40.0));
         if ui.add(generate_button).clicked() {
             // TODO: keygen
         }
     }
+}
+
+fn login_title_text() -> RichText {
+    RichText::new("Login")
+        .text_style(NotedeckTextStyle::Heading2.text_style())
+        .strong()
+}
+
+fn login_info_text() -> RichText {
+    RichText::new("The best alternative to tweetDeck built in nostr protocol")
+        .text_style(NotedeckTextStyle::Heading3.text_style())
+}
+
+fn login_window_info_text(ui: &Ui) -> RichText {
+    RichText::new("Enter your private key to start using Notedeck")
+        .text_style(NotedeckTextStyle::Body.text_style())
+        .color(ui.visuals().noninteractive().fg_stroke.color)
+}
+
+fn login_textedit_info_text() -> RichText {
+    RichText::new("Enter your key")
+        .strong()
+        .text_style(NotedeckTextStyle::Body.text_style())
+}
+
+fn logo_unformatted() -> Image<'static> {
+    let logo_gradient_data = egui::include_image!("../assets/Logo-Gradient-2x.png");
+    return egui::Image::new(logo_gradient_data);
+}
+
+fn generate_info_text() -> RichText {
+    RichText::new("Quickly generate your keys. Make sure you save them safely.")
+        .text_style(NotedeckTextStyle::Body.text_style())
+}
+
+fn generate_keys_button() -> Button<'static> {
+    Button::new(RichText::new("Generate keys").text_style(NotedeckTextStyle::Body.text_style()))
+}
+
+fn login_button() -> Button<'static> {
+    Button::new(
+        RichText::new("Login now — let's do this!")
+            .text_style(NotedeckTextStyle::Body.text_style())
+            .strong(),
+    )
+    .fill(Color32::from_rgb(0xF8, 0x69, 0xB6)) // TODO: gradient
+    .min_size(Vec2::new(0.0, 40.0))
+}
+
+fn login_textedit(text: &mut dyn TextBuffer) -> TextEdit {
+    egui::TextEdit::singleline(text)
+        .hint_text(RichText::new("Your key here...").text_style(NotedeckTextStyle::Body.text_style()))
+        .vertical_align(Align::Center)
+        .min_size(Vec2::new(0.0, 40.0))
+        .margin(Margin::same(12.0))
 }
