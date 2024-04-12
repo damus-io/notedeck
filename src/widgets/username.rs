@@ -1,5 +1,5 @@
 use crate::fonts::NamedFontFamily;
-use egui::{Color32, Label, RichText, Widget};
+use egui::{Color32, RichText, Widget};
 use nostrdb::ProfileRecord;
 
 pub struct Username<'a> {
@@ -35,15 +35,16 @@ impl<'a> Username<'a> {
 impl<'a> Widget for Username<'a> {
     fn ui(self, ui: &mut egui::Ui) -> egui::Response {
         ui.horizontal(|ui| {
-            //ui.spacing_mut().item_spacing.x = 0.0;
+            ui.spacing_mut().item_spacing.x = 0.0;
+
+            let color = if self.pk_colored {
+                Some(pk_color(self.pk))
+            } else {
+                None
+            };
+
             if let Some(profile) = self.profile {
                 if let Some(prof) = profile.record.profile() {
-                    let color = if self.pk_colored {
-                        Some(pk_color(self.pk))
-                    } else {
-                        None
-                    };
-
                     if prof.display_name().is_some() && prof.display_name().unwrap() != "" {
                         ui_abbreviate_name(ui, prof.display_name().unwrap(), self.abbrev, color);
                     } else if let Some(name) = prof.name() {
@@ -51,24 +52,40 @@ impl<'a> Widget for Username<'a> {
                     }
                 }
             } else {
-                ui.strong("nostrich");
+                let mut txt = RichText::new("nostrich").family(NamedFontFamily::Medium.as_family());
+                if let Some(col) = color {
+                    txt = txt.color(col)
+                }
+                ui.label(txt);
             }
         })
         .response
     }
 }
 
+fn colored_name(name: &str, color: Option<Color32>) -> RichText {
+    let mut txt = RichText::new(name).family(NamedFontFamily::Medium.as_family());
+
+    if let Some(color) = color {
+        txt = txt.color(color);
+    }
+
+    txt
+}
+
 fn ui_abbreviate_name(ui: &mut egui::Ui, name: &str, len: usize, color: Option<Color32>) {
-    if name.len() > len {
+    let should_abbrev = name.len() > len;
+    let name = if should_abbrev {
         let closest = crate::abbrev::floor_char_boundary(name, len);
-        ui.strong(&name[..closest]);
-        ui.strong("...");
+        &name[..closest]
     } else {
-        let mut txt = RichText::new(name).family(NamedFontFamily::Medium.as_family());
-        if let Some(c) = color {
-            txt = txt.color(c);
-        }
-        ui.add(Label::new(txt));
+        name
+    };
+
+    ui.label(colored_name(name, color));
+
+    if should_abbrev {
+        ui.label(colored_name("...", color));
     }
 }
 

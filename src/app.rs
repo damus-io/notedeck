@@ -629,13 +629,11 @@ fn render_irc_note(
             let (_id, rect) = ui.allocate_space(egui::vec2(50.0, 20.0));
             ui.allocate_rect(rect, Sense::hover());
             ui.put(rect, |ui: &mut egui::Ui| {
-                ui.set_clip_rect(rect);
                 render_reltime(ui, note_cache, false).response
             });
             let (_id, rect) = ui.allocate_space(egui::vec2(150.0, 20.0));
             ui.allocate_rect(rect, Sense::hover());
             ui.put(rect, |ui: &mut egui::Ui| {
-                ui.set_clip_rect(rect);
                 ui.add(
                     Username::new(profile.as_ref().ok(), note.pubkey())
                         .abbreviated(8)
