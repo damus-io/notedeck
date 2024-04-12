@@ -29,7 +29,7 @@ tracing = "0.1.40"
 enostr = { path = "enostr" } 
 serde_json = "1.0.89"
 env_logger = "0.10.0"
-puffin_egui = { version = "0.26.0", optional = true }
+puffin_egui = { version = "0.27.0", optional = true }
 puffin = { version = "0.19.0", optional = true }
 #nostrdb = { git = "https://github.com/damus-io/nostrdb-rs", rev = "2675e7244554e40c9ee10d82b42bc647fef4c17d" }
 nostrdb = "0.3.0"
