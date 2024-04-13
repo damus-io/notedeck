@@ -3,18 +3,11 @@ pub use contents::NoteContents;
 
 use crate::{ui, Damus};
 use egui::{Color32, Label, RichText, Sense, TextureHandle, Vec2};
-use nostrdb::NoteKey;
 
 pub struct Note<'a> {
     app: &'a mut Damus,
     note: &'a nostrdb::Note<'a>,
-    timeline: usize,
-}
-
-#[derive(Hash, Clone, Copy)]
-struct NoteTimelineKey {
-    timeline: usize,
-    note_key: NoteKey,
+    actionbar: bool,
 }
 
 impl<'a> egui::Widget for Note<'a> {
@@ -28,12 +21,18 @@ impl<'a> egui::Widget for Note<'a> {
 }
 
 impl<'a> Note<'a> {
-    pub fn new(app: &'a mut Damus, note: &'a nostrdb::Note<'a>, timeline: usize) -> Self {
+    pub fn new(app: &'a mut Damus, note: &'a nostrdb::Note<'a>) -> Self {
+        let actionbar = true;
         Note {
             app,
             note,
-            timeline,
+            actionbar,
         }
+    }
+
+    pub fn actionbar(mut self, enable: bool) -> Self {
+        self.actionbar = enable;
+        self
     }
 
     fn textmode_ui(self, ui: &mut egui::Ui) -> egui::Response {
@@ -76,20 +75,20 @@ impl<'a> Note<'a> {
         puffin::profile_function!();
         let note_key = self.note.key().expect("todo: support non-db notes");
         let txn = self.note.txn().expect("todo: support non-db notes");
-        let timeline = self.timeline;
-        let id = egui::Id::new(NoteTimelineKey { note_key, timeline });
 
         ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
             let profile = self.app.ndb.get_profile_by_pubkey(txn, self.note.pubkey());
 
+            /*
             let mut collapse_state =
                 egui::collapsing_header::CollapsingState::load_with_default_open(
                     ui.ctx(),
                     id,
                     false,
                 );
+                */
 
-            let inner_resp = crate::ui::padding(6.0, ui, |ui| {
+            crate::ui::padding(6.0, ui, |ui| {
                 match profile
                     .as_ref()
                     .ok()
@@ -117,19 +116,21 @@ impl<'a> Note<'a> {
 
                     ui.add(NoteContents::new(self.app, txn, self.note, note_key));
 
-                    render_note_actionbar(ui);
+                    if self.actionbar {
+                        render_note_actionbar(ui);
+                    }
 
                     //let header_res = ui.horizontal(|ui| {});
                 });
             });
 
-            let resp = ui.interact(inner_resp.response.rect, id, Sense::hover());
+            //let resp = ui.interact(inner_resp.response.rect, id, Sense::hover());
 
-            if resp.hovered() ^ collapse_state.is_open() {
-                //info!("clicked {:?}, {}", self.note_key, collapse_state.is_open());
-                collapse_state.toggle(ui);
-                collapse_state.store(ui.ctx());
-            }
+            //if resp.hovered() ^ collapse_state.is_open() {
+            //info!("clicked {:?}, {}", self.note_key, collapse_state.is_open());
+            //collapse_state.toggle(ui);
+            //collapse_state.store(ui.ctx());
+            //}
         })
         .response
     }

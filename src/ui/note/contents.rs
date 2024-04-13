@@ -1,5 +1,5 @@
-use crate::{colors, Damus};
-use egui::{Hyperlink, Image, RichText};
+use crate::{colors, ui, Damus};
+use egui::{Color32, Hyperlink, Image, RichText};
 use nostrdb::{BlockType, Mention, Note, NoteKey, Transaction};
 use tracing::warn;
 
@@ -32,6 +32,31 @@ impl egui::Widget for NoteContents<'_> {
     }
 }
 
+fn render_note_preview(
+    ui: &mut egui::Ui,
+    app: &mut Damus,
+    txn: &Transaction,
+    id: &[u8; 32],
+    _id_str: &str,
+) -> egui::Response {
+    let note = if let Ok(note) = app.ndb.get_note_by_id(txn, id) {
+        note
+    } else {
+        return ui.colored_label(Color32::RED, "TODO: COULD NOT LOAD");
+        /*
+        return ui
+            .horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                ui.colored_label(colors::PURPLE, "@");
+                ui.colored_label(colors::PURPLE, &id_str[4..16]);
+            })
+            .response;
+            */
+    };
+
+    ui.add(ui::Note::new(app, &note).actionbar(false))
+}
+
 fn render_note_contents(
     ui: &mut egui::Ui,
     damus: &mut Damus,
@@ -43,6 +68,7 @@ fn render_note_contents(
     puffin::profile_function!();
 
     let images: Vec<String> = vec![];
+    let mut inline_note: Option<(&[u8; 32], &str)> = None;
 
     let resp = ui.horizontal_wrapped(|ui| {
         let blocks = if let Ok(blocks) = damus.ndb.get_blocks_by_key(txn, note_key) {
@@ -57,29 +83,40 @@ fn render_note_contents(
 
         for block in blocks.iter(note) {
             match block.blocktype() {
-                BlockType::MentionBech32 => {
-                    ui.colored_label(colors::PURPLE, "@");
-                    match block.as_mention().unwrap() {
-                        Mention::Pubkey(npub) => {
-                            let profile = damus.ndb.get_profile_by_pubkey(txn, npub.pubkey()).ok();
-                            if let Some(name) = profile
-                                .as_ref()
-                                .and_then(|p| crate::profile::get_profile_name(p))
-                            {
-                                ui.colored_label(colors::PURPLE, name);
-                            } else {
-                                ui.colored_label(colors::PURPLE, "nostrich");
-                            }
-                        }
-                        _ => {
-                            ui.colored_label(colors::PURPLE, block.as_str());
+                BlockType::MentionBech32 => match block.as_mention().unwrap() {
+                    Mention::Pubkey(npub) => {
+                        ui.colored_label(colors::PURPLE, "@");
+                        let profile = damus.ndb.get_profile_by_pubkey(txn, npub.pubkey()).ok();
+                        if let Some(name) = profile
+                            .as_ref()
+                            .and_then(|p| crate::profile::get_profile_name(p))
+                        {
+                            ui.colored_label(colors::PURPLE, name);
+                        } else {
+                            ui.colored_label(colors::PURPLE, "nostrich");
                         }
                     }
-                }
+
+                    Mention::Note(note) => {
+                        inline_note = Some((note.id(), block.as_str()));
+                    }
+
+                    Mention::Event(note) => {
+                        inline_note = Some((note.id(), block.as_str()));
+                    }
+
+                    _ => {
+                        ui.colored_label(colors::PURPLE, "@");
+                        ui.colored_label(colors::PURPLE, &block.as_str()[4..16]);
+                    }
+                },
 
                 BlockType::Hashtag => {
-                    ui.colored_label(colors::PURPLE, "#");
-                    ui.colored_label(colors::PURPLE, block.as_str());
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 0.0;
+                        ui.colored_label(colors::PURPLE, "#");
+                        ui.colored_label(colors::PURPLE, block.as_str());
+                    });
                 }
 
                 BlockType::Url => {
@@ -106,6 +143,10 @@ fn render_note_contents(
             }
         }
     });
+
+    if let Some((id, block_str)) = inline_note {
+        render_note_preview(ui, damus, txn, id, block_str);
+    }
 
     for image in images {
         let img_resp = ui.add(Image::new(image.clone()));
