@@ -1,5 +1,4 @@
 use crate::app_creation::setup_cc;
-use crate::colors;
 use crate::app_style::user_requested_visuals_change;
 use crate::error::Error;
 use crate::frame_history::FrameHistory;
@@ -618,7 +617,7 @@ fn render_panel<'a>(ctx: &egui::Context, app: &'a mut Damus, timeline_ind: usize
             ui.visuals_mut().button_frame = false;
 
             if let Some(new_visuals) =
-                user_requested_visuals_change(ctx.style().visuals.dark_mode, ui)
+                user_requested_visuals_change(is_mobile(ctx), ctx.style().visuals.dark_mode, ui)
             {
                 ctx.set_visuals(new_visuals)
             }

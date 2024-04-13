@@ -1,4 +1,4 @@
-use crate::colors::{dark_color_theme, light_color_theme, ColorTheme, DarkTheme, LightTheme};
+use crate::colors::{dark_color_theme, light_color_theme, ColorTheme};
 use egui::{
     epaint::Shadow,
     style::{WidgetVisuals, Widgets},
@@ -13,11 +13,15 @@ pub fn light_mode() -> Visuals {
     create_themed_visuals(light_color_theme(), Visuals::light())
 }
 
-pub fn dark_mode() -> Visuals {
-    create_themed_visuals(dark_color_theme(), Visuals::dark())
+pub fn dark_mode(mobile: bool) -> Visuals {
+    create_themed_visuals(dark_color_theme(mobile), Visuals::dark())
 }
 
-pub fn user_requested_visuals_change(cur_darkmode: bool, ui: &mut Ui) -> Option<Visuals> {
+pub fn user_requested_visuals_change(
+    mobile: bool,
+    cur_darkmode: bool,
+    ui: &mut Ui,
+) -> Option<Visuals> {
     if cur_darkmode {
         if ui
             .add(Button::new("☀").frame(false))
@@ -31,7 +35,7 @@ pub fn user_requested_visuals_change(cur_darkmode: bool, ui: &mut Ui) -> Option<
         .on_hover_text("Switch to dark mode")
         .clicked()
     {
-        return Some(dark_mode());
+        return Some(dark_mode(mobile));
     }
     None
 }
@@ -40,9 +44,14 @@ pub fn user_requested_visuals_change(cur_darkmode: bool, ui: &mut Ui) -> Option<
 pub fn create_text_styles(ctx: &Context, font_size: fn(NotedeckTextStyle) -> f32) -> Style {
     let mut style = (*ctx.style()).clone();
 
-    style.text_styles = NotedeckTextStyle::iter().map(|text_style| {
-        (text_style.text_style(), FontId::new(font_size(text_style), egui::FontFamily::Proportional))
-    }).collect();
+    style.text_styles = NotedeckTextStyle::iter()
+        .map(|text_style| {
+            (
+                text_style.text_style(),
+                FontId::new(font_size(text_style), egui::FontFamily::Proportional),
+            )
+        })
+        .collect();
 
     style
 }

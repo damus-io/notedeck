@@ -18,11 +18,11 @@ pub fn generate_native_options() -> NativeOptions {
     })
 }
 
-fn generate_native_options_with_builder_modifiers(apply_builder_modifiers: fn(egui::ViewportBuilder) -> egui::ViewportBuilder) -> NativeOptions {
+fn generate_native_options_with_builder_modifiers(
+    apply_builder_modifiers: fn(egui::ViewportBuilder) -> egui::ViewportBuilder,
+) -> NativeOptions {
     let window_builder =
-        Box::new(
-            move |builder: egui::ViewportBuilder| apply_builder_modifiers(builder)
-        );
+        Box::new(move |builder: egui::ViewportBuilder| apply_builder_modifiers(builder));
 
     eframe::NativeOptions {
         window_builder: Some(window_builder),
@@ -48,7 +48,7 @@ pub fn setup_cc(cc: &eframe::CreationContext<'_>) {
 
     egui_extras::install_image_loaders(ctx);
 
-    ctx.set_visuals(dark_mode());
+    ctx.set_visuals(dark_mode(is_mobile(ctx)));
 
     ctx.set_style(if is_mobile(ctx) {
         create_text_styles(ctx, mobile_font_size)

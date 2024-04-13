@@ -3,7 +3,6 @@ use egui::Color32;
 pub const PURPLE: Color32 = Color32::from_rgb(0xCC, 0x43, 0xC5);
 //pub const DARK_BG: Color32 = egui::Color32::from_rgb(40, 44, 52);
 const GRAY_SECONDARY: Color32 = Color32::from_rgb(0x8A, 0x8A, 0x8A);
-const WHITE: Color32 = Color32::from_rgb(0xFF, 0xFF, 0xFF);
 const BLACK: Color32 = Color32::from_rgb(0x00, 0x00, 0x00);
 const RED_700: Color32 = Color32::from_rgb(0xC7, 0x37, 0x5A);
 
@@ -43,15 +42,12 @@ pub struct ColorTheme {
     pub inactive_weak_bg_fill: Color32,
 }
 
-pub struct DarkTheme;
-pub struct LightTheme;
-
-pub fn dark_color_theme() -> ColorTheme {
+pub fn dark_color_theme(mobile: bool) -> ColorTheme {
     ColorTheme {
         // VISUALS
-        panel_fill: DARKER_BG,
+        panel_fill: if mobile { Color32::BLACK } else { DARKER_BG },
         extreme_bg_color: SEMI_DARKER_BG,
-        text_color: WHITE,
+        text_color: Color32::WHITE,
         err_fg_color: RED_700,
         hyperlink_color: PURPLE,
 
@@ -75,7 +71,7 @@ pub fn dark_color_theme() -> ColorTheme {
 pub fn light_color_theme() -> ColorTheme {
     ColorTheme {
         // VISUALS
-        panel_fill: LIGHT_GRAY,
+        panel_fill: Color32::WHITE,
         extreme_bg_color: EVEN_DARKER_GRAY,
         text_color: BLACK,
         err_fg_color: RED_700,
