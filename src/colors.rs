@@ -9,7 +9,7 @@ const RED_700: Color32 = Color32::from_rgb(0xC7, 0x37, 0x5A);
 
 // BACKGROUNDS
 const SEMI_DARKER_BG: Color32 = Color32::from_rgb(0x39, 0x39, 0x39);
-const DARKER_BG: Color32 = Color32::from_rgb(0x1E, 0x1E, 0x1E);
+const DARKER_BG: Color32 = Color32::from_rgb(0x1F, 0x1F, 0x1F);
 const DARK_BG: Color32 = Color32::from_rgb(0x2C, 0x2C, 0x2C);
 const DARK_ISH_BG: Color32 = Color32::from_rgb(0x22, 0x22, 0x22);
 const SEMI_DARK_BG: Color32 = Color32::from_rgb(0x44, 0x44, 0x44);
