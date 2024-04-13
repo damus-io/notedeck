@@ -33,6 +33,10 @@ pub fn convert_enostr_filter(filter: &enostr::Filter) -> nostrdb::Filter {
         nfilter.since(since);
     }
 
+    if let Some(until) = filter.until {
+        nfilter.until(until);
+    }
+
     if let Some(limit) = filter.limit {
         nfilter.limit(limit.into());
     }
