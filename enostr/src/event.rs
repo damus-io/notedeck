@@ -82,6 +82,10 @@ impl std::str::FromStr for Event {
 pub struct EventId([u8; 32]);
 
 impl EventId {
+    pub fn new(id: [u8; 32]) -> Self {
+        EventId(id)
+    }
+
     pub fn hex(&self) -> String {
         hex::encode(self.bytes())
     }

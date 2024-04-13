@@ -163,46 +163,59 @@ fn try_process_event(damus: &mut Damus, ctx: &egui::Context) -> Result<()> {
     }
 
     let txn = Transaction::new(&damus.ndb)?;
-    let mut seen_pubkeys: HashSet<&[u8; 32]> = HashSet::new();
+    let mut unknown_ids: HashSet<UnknownId> = HashSet::new();
     for timeline in 0..damus.timelines.len() {
-        if let Err(err) = poll_notes_for_timeline(damus, &txn, timeline, &mut seen_pubkeys) {
+        if let Err(err) = poll_notes_for_timeline(damus, &txn, timeline, &mut unknown_ids) {
             error!("{}", err);
         }
     }
 
-    let mut pubkeys_to_fetch: Vec<&[u8; 32]> = vec![];
-    for pubkey in seen_pubkeys {
-        if let Err(_) = damus.ndb.get_profile_by_pubkey(&txn, pubkey) {
-            pubkeys_to_fetch.push(pubkey)
-        }
-    }
-
-    if pubkeys_to_fetch.len() > 0 {
-        let filter = Filter::new()
-            .authors(pubkeys_to_fetch.iter().map(|p| Pubkey::new(*p)).collect())
-            .kinds(vec![0]);
+    let unknown_ids: Vec<UnknownId> = unknown_ids.into_iter().collect();
+    if let Some(filters) = get_unknown_ids_filter(&unknown_ids) {
         info!(
             "Getting {} unknown author profiles from relays",
-            pubkeys_to_fetch.len()
+            unknown_ids.len()
         );
-        let msg = ClientMessage::req("profiles".to_string(), vec![filter]);
+        let msg = ClientMessage::req("unknown_ids".to_string(), filters);
         damus.pool.send(&msg);
     }
 
     Ok(())
 }
 
-fn get_unknown_note_pubkeys<'a>(
+#[derive(Hash, Clone, Copy, PartialEq, Eq)]
+enum UnknownId<'a> {
+    Pubkey(&'a [u8; 32]),
+    Id(&'a [u8; 32]),
+}
+
+impl<'a> UnknownId<'a> {
+    pub fn is_pubkey(&self) -> Option<&'a [u8; 32]> {
+        match self {
+            UnknownId::Pubkey(pk) => Some(pk),
+            _ => None,
+        }
+    }
+
+    pub fn is_id(&self) -> Option<&'a [u8; 32]> {
+        match self {
+            UnknownId::Id(id) => Some(id),
+            _ => None,
+        }
+    }
+}
+
+fn get_unknown_note_ids<'a>(
     ndb: &Ndb,
     txn: &'a Transaction,
     note: &Note<'a>,
     note_key: NoteKey,
-    pubkeys: &mut HashSet<&'a [u8; 32]>,
+    ids: &mut HashSet<UnknownId<'a>>,
 ) -> Result<()> {
     // the author pubkey
 
-    if let Err(_) = ndb.get_profile_by_pubkey(txn, note.pubkey()) {
-        pubkeys.insert(note.pubkey());
+    if ndb.get_profile_by_pubkey(txn, note.pubkey()).is_err() {
+        ids.insert(UnknownId::Pubkey(note.pubkey()));
     }
 
     let blocks = ndb.get_blocks_by_key(txn, note_key)?;
@@ -211,13 +224,23 @@ fn get_unknown_note_pubkeys<'a>(
         match block.blocktype() {
             BlockType::MentionBech32 => match block.as_mention().unwrap() {
                 Mention::Pubkey(npub) => {
-                    if let Err(_) = ndb.get_profile_by_pubkey(txn, npub.pubkey()) {
-                        pubkeys.insert(npub.pubkey());
+                    if ndb.get_profile_by_pubkey(txn, npub.pubkey()).is_err() {
+                        ids.insert(UnknownId::Pubkey(npub.pubkey()));
                     }
                 }
                 Mention::Profile(nprofile) => {
-                    if let Err(_) = ndb.get_profile_by_pubkey(txn, nprofile.pubkey()) {
-                        pubkeys.insert(nprofile.pubkey());
+                    if ndb.get_profile_by_pubkey(txn, nprofile.pubkey()).is_err() {
+                        ids.insert(UnknownId::Pubkey(nprofile.pubkey()));
+                    }
+                }
+                Mention::Event(ev) => {
+                    if ndb.get_note_by_id(txn, ev.id()).is_err() {
+                        ids.insert(UnknownId::Id(ev.id()));
+                    }
+                }
+                Mention::Note(note) => {
+                    if ndb.get_note_by_id(txn, note.id()).is_err() {
+                        ids.insert(UnknownId::Id(note.id()));
                     }
                 }
                 _ => {}
@@ -234,7 +257,7 @@ fn poll_notes_for_timeline<'a>(
     damus: &mut Damus,
     txn: &'a Transaction,
     timeline: usize,
-    pubkeys: &mut HashSet<&'a [u8; 32]>,
+    ids: &mut HashSet<UnknownId<'a>>,
 ) -> Result<()> {
     let sub = if let Some(sub) = &damus.timelines[timeline].subscription {
         sub
@@ -252,7 +275,7 @@ fn poll_notes_for_timeline<'a>(
         .map(|key| {
             let note = damus.ndb.get_note_by_key(&txn, *key).expect("no note??");
 
-            let _ = get_unknown_note_pubkeys(&damus.ndb, txn, &note, *key, pubkeys);
+            let _ = get_unknown_note_ids(&damus.ndb, txn, &note, *key, ids);
 
             NoteRef {
                 key: *key,
@@ -281,7 +304,7 @@ fn setup_initial_nostrdb_subs(damus: &mut Damus) -> Result<()> {
             .collect();
         timeline.subscription = Some(damus.ndb.subscribe(filters.clone())?);
         let txn = Transaction::new(&damus.ndb)?;
-        info!(
+        debug!(
             "querying sub {} {:?}",
             timeline.subscription.as_ref().unwrap().id,
             timeline.filter
@@ -329,42 +352,61 @@ fn process_event(damus: &mut Damus, _subid: &str, event: &str) {
     }
 }
 
-fn get_unknown_author_ids<'a>(
-    txn: &'a Transaction,
-    damus: &Damus,
-    timeline: usize,
-) -> Result<Vec<&'a [u8; 32]>> {
+fn get_unknown_ids<'a>(txn: &'a Transaction, damus: &Damus) -> Result<Vec<UnknownId<'a>>> {
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
 
-    let mut authors: HashSet<&'a [u8; 32]> = HashSet::new();
+    let mut ids: HashSet<UnknownId> = HashSet::new();
 
-    for noteref in &damus.timelines[timeline].notes {
-        let note = damus.ndb.get_note_by_key(&txn, noteref.key)?;
-        let _ = get_unknown_note_pubkeys(&damus.ndb, txn, &note, note.key().unwrap(), &mut authors);
+    for timeline in &damus.timelines {
+        for noteref in &timeline.notes {
+            let note = damus.ndb.get_note_by_key(&txn, noteref.key)?;
+            let _ = get_unknown_note_ids(&damus.ndb, txn, &note, note.key().unwrap(), &mut ids);
+        }
     }
 
-    Ok(authors.into_iter().collect())
+    Ok(ids.into_iter().collect())
+}
+
+fn get_unknown_ids_filter<'a>(ids: &[UnknownId<'a>]) -> Option<Vec<Filter>> {
+    if ids.is_empty() {
+        return None;
+    }
+
+    let mut filters: Vec<Filter> = vec![];
+
+    let pks: Vec<Pubkey> = ids
+        .iter()
+        .flat_map(|id| id.is_pubkey().map(Pubkey::new))
+        .collect();
+    if !pks.is_empty() {
+        let pk_filter = Filter::new().authors(pks).kinds(vec![0]);
+
+        filters.push(pk_filter);
+    }
+
+    let note_ids: Vec<enostr::EventId> = ids
+        .iter()
+        .flat_map(|id| id.is_id().map(|id| enostr::EventId::new(*id)))
+        .collect();
+    if !note_ids.is_empty() {
+        filters.push(Filter::new().ids(note_ids));
+    }
+
+    Some(filters)
 }
 
 fn handle_eose(damus: &mut Damus, subid: &str, relay_url: &str) -> Result<()> {
     if subid.starts_with("initial") {
         let txn = Transaction::new(&damus.ndb)?;
-        let authors = get_unknown_author_ids(&txn, damus, 0)?;
-        let n_authors = authors.len();
-        if n_authors > 0 {
-            let filter = Filter::new()
-                .authors(authors.iter().map(|p| Pubkey::new(*p)).collect())
-                .kinds(vec![0]);
-            info!(
-                "Getting {} unknown author profiles from {}",
-                n_authors, relay_url
-            );
-            let msg = ClientMessage::req("profiles".to_string(), vec![filter]);
+        let ids = get_unknown_ids(&txn, damus)?;
+        if let Some(filters) = get_unknown_ids_filter(&ids) {
+            info!("Getting {} unknown ids from {}", ids.len(), relay_url);
+            let msg = ClientMessage::req("unknown_ids".to_string(), filters);
             damus.pool.send_to(&msg, relay_url);
         }
-    } else if subid == "profiles" {
-        let msg = ClientMessage::close("profiles".to_string());
+    } else if subid == "unknown_ids" {
+        let msg = ClientMessage::close("unknown_ids".to_string());
         damus.pool.send_to(&msg, relay_url);
     } else {
         warn!("got unknown eose subid {}", subid);
@@ -509,12 +551,6 @@ fn circle_icon(ui: &mut egui::Ui, openness: f32, response: &egui::Response) {
 }
 */
 
-#[derive(Hash, Clone, Copy)]
-struct NoteTimelineKey {
-    timeline: usize,
-    note_key: NoteKey,
-}
-
 fn render_notes(ui: &mut egui::Ui, damus: &mut Damus, timeline: usize) -> Result<()> {
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
@@ -531,7 +567,7 @@ fn render_notes(ui: &mut egui::Ui, damus: &mut Damus, timeline: usize) -> Result
             continue;
         };
 
-        let note_ui = ui::Note::new(damus, &note, timeline);
+        let note_ui = ui::Note::new(damus, &note);
         ui.add(note_ui);
         ui.add(egui::Separator::default().spacing(0.0));
     }
