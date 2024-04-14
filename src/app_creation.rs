@@ -11,10 +11,6 @@ pub fn generate_native_options() -> NativeOptions {
             .with_fullsize_content_view(true)
             .with_titlebar_shown(false)
             .with_title_shown(false)
-            .with_min_inner_size([
-                660.0 * (1.0 + UI_SCALE_FACTOR),
-                720.0 * (1.0 + UI_SCALE_FACTOR),
-            ])
     })
 }
 
