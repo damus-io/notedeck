@@ -2,12 +2,23 @@ pub mod contents;
 pub use contents::NoteContents;
 
 use crate::{ui, Damus};
+use bitflags::bitflags;
 use egui::{Color32, Label, RichText, Sense, TextureHandle, Vec2};
+
+bitflags! {
+    // Attributes can be applied to flags types
+    #[repr(transparent)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub struct NoteFlags: u32 {
+        const actionbar     = 0b00000001;
+        const note_previews = 0b00000010;
+    }
+}
 
 pub struct Note<'a> {
     app: &'a mut Damus,
     note: &'a nostrdb::Note<'a>,
-    actionbar: bool,
+    flags: NoteFlags,
 }
 
 impl<'a> egui::Widget for Note<'a> {
@@ -22,16 +33,21 @@ impl<'a> egui::Widget for Note<'a> {
 
 impl<'a> Note<'a> {
     pub fn new(app: &'a mut Damus, note: &'a nostrdb::Note<'a>) -> Self {
-        let actionbar = true;
-        Note {
-            app,
-            note,
-            actionbar,
-        }
+        let flags = NoteFlags::actionbar;
+        Note { app, note, flags }
+    }
+
+    #[inline]
+    pub fn has_actionbar(&self) -> bool {
+        (self.flags & NoteFlags::actionbar) == NoteFlags::actionbar
     }
 
     pub fn actionbar(mut self, enable: bool) -> Self {
-        self.actionbar = enable;
+        if enable {
+            self.flags = self.flags | NoteFlags::actionbar;
+        } else {
+            self.flags = self.flags & !NoteFlags::actionbar;
+        }
         self
     }
 
@@ -116,7 +132,7 @@ impl<'a> Note<'a> {
 
                     ui.add(NoteContents::new(self.app, txn, self.note, note_key));
 
-                    if self.actionbar {
+                    if self.has_actionbar() {
                         render_note_actionbar(ui);
                     }
 
