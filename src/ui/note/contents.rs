@@ -40,7 +40,15 @@ fn render_note_preview(
     _id_str: &str,
 ) -> egui::Response {
     let note = if let Ok(note) = app.ndb.get_note_by_id(txn, id) {
-        note
+        // TODO: support other preview kinds
+        if note.kind() == 1 {
+            note
+        } else {
+            return ui.colored_label(
+                Color32::RED,
+                format!("TODO: can't preview kind {}", note.kind()),
+            );
+        }
     } else {
         return ui.colored_label(Color32::RED, "TODO: COULD NOT LOAD");
         /*
