@@ -1,3 +1,4 @@
+use crate::ui::note::NoteOptions;
 use crate::{colors, ui, Damus};
 use egui::{Color32, Hyperlink, Image, RichText};
 use nostrdb::{BlockType, Mention, Note, NoteKey, Transaction};
@@ -8,6 +9,7 @@ pub struct NoteContents<'a> {
     txn: &'a Transaction,
     note: &'a Note<'a>,
     note_key: NoteKey,
+    options: NoteOptions,
 }
 
 impl<'a> NoteContents<'a> {
@@ -16,19 +18,29 @@ impl<'a> NoteContents<'a> {
         txn: &'a Transaction,
         note: &'a Note,
         note_key: NoteKey,
+        options: ui::note::NoteOptions,
     ) -> Self {
         NoteContents {
             damus,
             txn,
             note,
             note_key,
+            options,
         }
     }
 }
 
 impl egui::Widget for NoteContents<'_> {
     fn ui(self, ui: &mut egui::Ui) -> egui::Response {
-        render_note_contents(ui, self.damus, self.txn, self.note, self.note_key).response
+        render_note_contents(
+            ui,
+            self.damus,
+            self.txn,
+            self.note,
+            self.note_key,
+            self.options,
+        )
+        .response
     }
 }
 
@@ -62,7 +74,11 @@ fn render_note_preview(
             */
     };
 
-    ui.add(ui::Note::new(app, &note).actionbar(false))
+    ui.add(
+        ui::Note::new(app, &note)
+            .actionbar(false)
+            .note_previews(false),
+    )
 }
 
 fn render_note_contents(
@@ -71,6 +87,7 @@ fn render_note_contents(
     txn: &Transaction,
     note: &Note,
     note_key: NoteKey,
+    options: NoteOptions,
 ) -> egui::InnerResponse<()> {
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
@@ -105,11 +122,11 @@ fn render_note_contents(
                         }
                     }
 
-                    Mention::Note(note) => {
+                    Mention::Note(note) if options.has_note_previews() => {
                         inline_note = Some((note.id(), block.as_str()));
                     }
 
-                    Mention::Event(note) => {
+                    Mention::Event(note) if options.has_note_previews() => {
                         inline_note = Some((note.id(), block.as_str()));
                     }
 

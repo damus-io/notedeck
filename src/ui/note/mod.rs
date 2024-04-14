@@ -1,24 +1,16 @@
 pub mod contents;
+pub mod options;
+
 pub use contents::NoteContents;
+pub use options::NoteOptions;
 
 use crate::{ui, Damus};
-use bitflags::bitflags;
 use egui::{Color32, Label, RichText, Sense, TextureHandle, Vec2};
-
-bitflags! {
-    // Attributes can be applied to flags types
-    #[repr(transparent)]
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct NoteFlags: u32 {
-        const actionbar     = 0b00000001;
-        const note_previews = 0b00000010;
-    }
-}
 
 pub struct Note<'a> {
     app: &'a mut Damus,
     note: &'a nostrdb::Note<'a>,
-    flags: NoteFlags,
+    flags: NoteOptions,
 }
 
 impl<'a> egui::Widget for Note<'a> {
@@ -33,22 +25,26 @@ impl<'a> egui::Widget for Note<'a> {
 
 impl<'a> Note<'a> {
     pub fn new(app: &'a mut Damus, note: &'a nostrdb::Note<'a>) -> Self {
-        let flags = NoteFlags::actionbar;
+        let flags = NoteOptions::actionbar | NoteOptions::note_previews;
         Note { app, note, flags }
     }
 
-    #[inline]
-    pub fn has_actionbar(&self) -> bool {
-        (self.flags & NoteFlags::actionbar) == NoteFlags::actionbar
+    pub fn actionbar(mut self, enable: bool) -> Self {
+        self.options_mut().set_actionbar(enable);
+        self
     }
 
-    pub fn actionbar(mut self, enable: bool) -> Self {
-        if enable {
-            self.flags = self.flags | NoteFlags::actionbar;
-        } else {
-            self.flags = self.flags & !NoteFlags::actionbar;
-        }
+    pub fn note_previews(mut self, enable: bool) -> Self {
+        self.options_mut().set_note_previews(enable);
         self
+    }
+
+    pub fn options(&self) -> NoteOptions {
+        self.flags
+    }
+
+    pub fn options_mut(&mut self) -> &mut NoteOptions {
+        &mut self.flags
     }
 
     fn textmode_ui(self, ui: &mut egui::Ui) -> egui::Response {
@@ -80,7 +76,9 @@ impl<'a> Note<'a> {
                     )
                 });
 
-                ui.add(NoteContents::new(self.app, txn, self.note, note_key));
+                ui.add(NoteContents::new(
+                    self.app, txn, self.note, note_key, self.flags,
+                ));
             });
         })
         .response
@@ -130,9 +128,15 @@ impl<'a> Note<'a> {
                         render_reltime(ui, note_cache, true);
                     });
 
-                    ui.add(NoteContents::new(self.app, txn, self.note, note_key));
+                    ui.add(NoteContents::new(
+                        self.app,
+                        txn,
+                        self.note,
+                        note_key,
+                        self.options(),
+                    ));
 
-                    if self.has_actionbar() {
+                    if self.options().has_actionbar() {
                         render_note_actionbar(ui);
                     }
 
