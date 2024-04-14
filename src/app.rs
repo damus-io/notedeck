@@ -233,16 +233,31 @@ fn get_unknown_note_ids<'a>(
                         ids.insert(UnknownId::Pubkey(nprofile.pubkey()));
                     }
                 }
-                Mention::Event(ev) => {
-                    if ndb.get_note_by_id(txn, ev.id()).is_err() {
+                Mention::Event(ev) => match ndb.get_note_by_id(txn, ev.id()) {
+                    Err(_) => {
                         ids.insert(UnknownId::Id(ev.id()));
+                        if let Some(pk) = ev.pubkey() {
+                            if ndb.get_profile_by_pubkey(txn, pk).is_err() {
+                                ids.insert(UnknownId::Pubkey(pk));
+                            }
+                        }
                     }
-                }
-                Mention::Note(note) => {
-                    if ndb.get_note_by_id(txn, note.id()).is_err() {
+                    Ok(note) => {
+                        if ndb.get_profile_by_pubkey(txn, note.pubkey()).is_err() {
+                            ids.insert(UnknownId::Pubkey(note.pubkey()));
+                        }
+                    }
+                },
+                Mention::Note(note) => match ndb.get_note_by_id(txn, note.id()) {
+                    Err(_) => {
                         ids.insert(UnknownId::Id(note.id()));
                     }
-                }
+                    Ok(note) => {
+                        if ndb.get_profile_by_pubkey(txn, note.pubkey()).is_err() {
+                            ids.insert(UnknownId::Pubkey(note.pubkey()));
+                        }
+                    }
+                },
                 _ => {}
             },
 
