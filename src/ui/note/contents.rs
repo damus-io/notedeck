@@ -44,6 +44,8 @@ impl egui::Widget for NoteContents<'_> {
     }
 }
 
+/// Render an inline note preview with a border. These are used when
+/// notes are references within a note
 fn render_note_preview(
     ui: &mut egui::Ui,
     app: &mut Damus,
@@ -74,11 +76,22 @@ fn render_note_preview(
             */
     };
 
-    ui.add(
-        ui::Note::new(app, &note)
-            .actionbar(false)
-            .note_previews(false),
-    )
+    egui::Frame::none()
+        //.fill(egui::Color32::BLACK.gamma_multiply(0.2))
+        //
+        .rounding(egui::Rounding::same(10.0))
+        .stroke(egui::Stroke::new(
+            1.0,
+            egui::Color32::from_rgb(0x2C, 0x2C, 0x2C),
+        ))
+        .show(ui, |ui| {
+            ui.add(
+                ui::Note::new(app, &note)
+                    .actionbar(false)
+                    .note_previews(false),
+            )
+        })
+        .response
 }
 
 fn render_note_contents(
