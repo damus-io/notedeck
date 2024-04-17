@@ -75,3 +75,11 @@ The app should appear on the emulator
 
 [direnv]: https://direnv.net/
 [nix]: https://nixos.org/download/
+
+## Contributing
+Configure the developer environment:
+```bash
+./scripts/dev_setup.sh
+```
+
+This will add the pre-commit hook to your local repository to suggest proper formatting before commits.
