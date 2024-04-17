@@ -1,11 +1,15 @@
 mod account_login_preview;
 mod egui_preview_setup;
+mod relay_view_preview;
 use account_login_preview::{DesktopAccountLoginPreview, MobileAccountLoginPreview};
 use egui_preview_setup::{EguiPreviewCase, EguiPreviewSetup};
 use notedeck::app_creation::{generate_mobile_emulator_native_options, generate_native_options};
+use relay_view_preview::RelayViewPreview;
 use std::env;
 
-fn run_test_app<F, T, O>(create_supr: F, create_child: O, is_mobile: bool)
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::main]
+async fn run_test_app<F, T, O>(create_supr: F, create_child: O, is_mobile: bool)
 where
     F: 'static + FnOnce(&eframe::CreationContext<'_>) -> EguiPreviewSetup,
     T: 'static + EguiPreviewCase,
@@ -38,6 +42,12 @@ fn main() {
             ),
             "MobileAccountLoginPreview" => {
                 run_test_app(EguiPreviewSetup::new, MobileAccountLoginPreview::new, true)
+            }
+            "DesktopRelayViewPreview" => {
+                run_test_app(EguiPreviewSetup::new, RelayViewPreview::new, false)
+            }
+            "MobileRelayViewPreview" => {
+                run_test_app(EguiPreviewSetup::new, RelayViewPreview::new, true)
             }
             _ => println!("Component not found."),
         }
