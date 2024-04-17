@@ -17,6 +17,8 @@ mod key_parsing;
 pub mod login_manager;
 mod notecache;
 mod profile;
+pub mod relay_pool_manager;
+pub mod relay_view;
 mod result;
 mod time;
 mod timecache;
