@@ -42,10 +42,10 @@ pub struct ColorTheme {
     pub inactive_weak_bg_fill: Color32,
 }
 
-pub fn dark_color_theme(mobile: bool) -> ColorTheme {
+pub fn desktop_dark_color_theme() -> ColorTheme {
     ColorTheme {
         // VISUALS
-        panel_fill: if mobile { Color32::BLACK } else { DARKER_BG },
+        panel_fill: DARKER_BG,
         extreme_bg_color: SEMI_DARKER_BG,
         text_color: Color32::WHITE,
         err_fg_color: RED_700,
@@ -65,6 +65,13 @@ pub fn dark_color_theme(mobile: bool) -> ColorTheme {
         inactive_bg_stroke_color: SEMI_DARKER_BG,
         inactive_bg_fill: Color32::from_rgb(0x25, 0x25, 0x25),
         inactive_weak_bg_fill: SEMI_DARK_BG,
+    }
+}
+
+pub fn mobile_dark_color_theme() -> ColorTheme {
+    ColorTheme {
+        panel_fill: Color32::BLACK,
+        ..desktop_dark_color_theme()
     }
 }
 

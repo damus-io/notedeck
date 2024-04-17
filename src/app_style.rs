@@ -1,4 +1,6 @@
-use crate::colors::{dark_color_theme, light_color_theme, ColorTheme};
+use crate::colors::{
+    desktop_dark_color_theme, light_color_theme, mobile_dark_color_theme, ColorTheme,
+};
 use egui::{
     epaint::Shadow,
     style::{WidgetVisuals, Widgets},
@@ -14,7 +16,14 @@ pub fn light_mode() -> Visuals {
 }
 
 pub fn dark_mode(mobile: bool) -> Visuals {
-    create_themed_visuals(dark_color_theme(mobile), Visuals::dark())
+    create_themed_visuals(
+        if mobile {
+            mobile_dark_color_theme()
+        } else {
+            desktop_dark_color_theme()
+        },
+        Visuals::dark(),
+    )
 }
 
 pub fn user_requested_visuals_change(
