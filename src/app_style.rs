@@ -3,7 +3,7 @@ use crate::colors::{
 };
 use egui::{
     epaint::Shadow,
-    style::{WidgetVisuals, Widgets},
+    style::{Selection, WidgetVisuals, Widgets},
     Button, Context, FontFamily, FontId, Rounding, Stroke, Style, TextStyle, Ui, Visuals,
 };
 use strum::IntoEnumIterator;
@@ -132,6 +132,13 @@ pub fn create_themed_visuals(theme: ColorTheme, default: Visuals) -> Visuals {
         hyperlink_color: theme.hyperlink_color,
         override_text_color: Some(theme.text_color),
         panel_fill: theme.panel_fill,
+        selection: Selection {
+            bg_fill: theme.selection_color,
+            stroke: Stroke {
+                width: 1.0,
+                color: theme.selection_color,
+            },
+        },
         widgets: Widgets {
             noninteractive: WidgetVisuals {
                 bg_fill: theme.noninteractive_bg_fill,

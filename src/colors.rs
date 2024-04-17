@@ -5,6 +5,8 @@ pub const PURPLE: Color32 = Color32::from_rgb(0xCC, 0x43, 0xC5);
 const GRAY_SECONDARY: Color32 = Color32::from_rgb(0x8A, 0x8A, 0x8A);
 const BLACK: Color32 = Color32::from_rgb(0x00, 0x00, 0x00);
 const RED_700: Color32 = Color32::from_rgb(0xC7, 0x37, 0x5A);
+const GREEN_700: Color32 = Color32::from_rgb(0x24, 0xEC, 0xC9);
+const ORANGE_700: Color32 = Color32::from_rgb(0xF6, 0xB1, 0x4A);
 
 // BACKGROUNDS
 const SEMI_DARKER_BG: Color32 = Color32::from_rgb(0x39, 0x39, 0x39);
@@ -24,7 +26,9 @@ pub struct ColorTheme {
     pub extreme_bg_color: Color32,
     pub text_color: Color32,
     pub err_fg_color: Color32,
+    pub warn_fg_color: Color32,
     pub hyperlink_color: Color32,
+    pub selection_color: Color32,
 
     // WINDOW
     pub window_fill: Color32,
@@ -49,7 +53,9 @@ pub fn desktop_dark_color_theme() -> ColorTheme {
         extreme_bg_color: SEMI_DARKER_BG,
         text_color: Color32::WHITE,
         err_fg_color: RED_700,
+        warn_fg_color: ORANGE_700,
         hyperlink_color: PURPLE,
+        selection_color: GREEN_700,
 
         // WINDOW
         window_fill: DARK_ISH_BG,
@@ -82,7 +88,9 @@ pub fn light_color_theme() -> ColorTheme {
         extreme_bg_color: EVEN_DARKER_GRAY,
         text_color: BLACK,
         err_fg_color: RED_700,
+        warn_fg_color: ORANGE_700,
         hyperlink_color: PURPLE,
+        selection_color: GREEN_700,
 
         // WINDOW
         window_fill: MID_GRAY,
