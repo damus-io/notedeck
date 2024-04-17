@@ -4,7 +4,7 @@ use crate::colors::{
 use egui::{
     epaint::Shadow,
     style::{WidgetVisuals, Widgets},
-    Button, Context, FontId, Rounding, Stroke, Style, TextStyle, Ui, Visuals,
+    Button, Context, FontFamily, FontId, Rounding, Stroke, Style, TextStyle, Ui, Visuals,
 };
 use strum::IntoEnumIterator;
 use strum_macros::EnumIter;
@@ -50,14 +50,14 @@ pub fn user_requested_visuals_change(
 }
 
 /// Create custom text sizes for any FontSizes
-pub fn create_text_styles(ctx: &Context, font_size: fn(NotedeckTextStyle) -> f32) -> Style {
+pub fn create_text_styles(ctx: &Context, font_size: fn(&NotedeckTextStyle) -> f32) -> Style {
     let mut style = (*ctx.style()).clone();
 
     style.text_styles = NotedeckTextStyle::iter()
         .map(|text_style| {
             (
                 text_style.text_style(),
-                FontId::new(font_size(text_style), egui::FontFamily::Proportional),
+                FontId::new(font_size(&text_style), text_style.font_family()),
             )
         })
         .collect();
@@ -65,24 +65,26 @@ pub fn create_text_styles(ctx: &Context, font_size: fn(NotedeckTextStyle) -> f32
     style
 }
 
-pub fn desktop_font_size(text_style: NotedeckTextStyle) -> f32 {
+pub fn desktop_font_size(text_style: &NotedeckTextStyle) -> f32 {
     match text_style {
         NotedeckTextStyle::Heading => 48.0,
         NotedeckTextStyle::Heading2 => 24.0,
         NotedeckTextStyle::Heading3 => 20.0,
         NotedeckTextStyle::Body => 13.0,
+        NotedeckTextStyle::Monospace => 13.0,
         NotedeckTextStyle::Button => 13.0,
         NotedeckTextStyle::Small => 12.0,
     }
 }
 
-pub fn mobile_font_size(text_style: NotedeckTextStyle) -> f32 {
+pub fn mobile_font_size(text_style: &NotedeckTextStyle) -> f32 {
     // TODO: tweak text sizes for optimal mobile viewing
     match text_style {
         NotedeckTextStyle::Heading => 48.0,
         NotedeckTextStyle::Heading2 => 24.0,
         NotedeckTextStyle::Heading3 => 20.0,
         NotedeckTextStyle::Body => 13.0,
+        NotedeckTextStyle::Monospace => 13.0,
         NotedeckTextStyle::Button => 13.0,
         NotedeckTextStyle::Small => 12.0,
     }
@@ -94,6 +96,7 @@ pub enum NotedeckTextStyle {
     Heading2,
     Heading3,
     Body,
+    Monospace,
     Button,
     Small,
 }
@@ -105,8 +108,21 @@ impl NotedeckTextStyle {
             Self::Heading2 => TextStyle::Name("Heading2".into()),
             Self::Heading3 => TextStyle::Name("Heading3".into()),
             Self::Body => TextStyle::Body,
+            Self::Monospace => TextStyle::Monospace,
             Self::Button => TextStyle::Button,
             Self::Small => TextStyle::Small,
+        }
+    }
+
+    pub fn font_family(&self) -> FontFamily {
+        match self {
+            Self::Heading => FontFamily::Proportional,
+            Self::Heading2 => FontFamily::Proportional,
+            Self::Heading3 => FontFamily::Proportional,
+            Self::Body => FontFamily::Proportional,
+            Self::Monospace => FontFamily::Monospace,
+            Self::Button => FontFamily::Proportional,
+            Self::Small => FontFamily::Proportional,
         }
     }
 }
