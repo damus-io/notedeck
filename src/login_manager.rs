@@ -8,7 +8,7 @@ pub struct LoginManager {
     pub login_key: String,
     pub promise: Option<Promise<Result<Keys, LoginError>>>,
     pub error: Option<LoginError>,
-    pub key_on_error: Option<String>
+    pub key_on_error: Option<String>,
 }
 
 impl LoginManager {
@@ -17,7 +17,7 @@ impl LoginManager {
             login_key: String::new(),
             promise: None,
             error: None,
-            key_on_error: None
+            key_on_error: None,
         }
     }
 }

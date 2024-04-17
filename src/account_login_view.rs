@@ -2,8 +2,8 @@ use crate::app_style::NotedeckTextStyle;
 use crate::key_parsing::{perform_key_retrieval, LoginError};
 use crate::login_manager::LoginManager;
 use egui::{
-    Align, Align2, Button, Color32, Frame, Id, LayerId, Margin, Pos2, Rect,
-    RichText, Rounding, Ui, Vec2, Window,
+    Align, Align2, Button, Color32, Frame, Id, LayerId, Margin, Pos2, Rect, RichText, Rounding, Ui,
+    Vec2, Window,
 };
 use egui::{Image, TextBuffer, TextEdit};
 
@@ -149,9 +149,7 @@ impl<'a> DesktopAccountLoginView<'a> {
 
             ui.add_space(8f32);
 
-            ui.add(
-                login_textedit(&mut self.manager.login_key).min_size(Vec2::new(440.0, 40.0)),
-            );
+            ui.add(login_textedit(&mut self.manager.login_key).min_size(Vec2::new(440.0, 40.0)));
 
             ui.add_space(8.0);
 
@@ -193,7 +191,9 @@ impl<'a> DesktopAccountLoginView<'a> {
 
     fn generate_group(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.label(RichText::new("New in nostr?").text_style(NotedeckTextStyle::Heading3.text_style()));
+            ui.label(
+                RichText::new("New in nostr?").text_style(NotedeckTextStyle::Heading3.text_style()),
+            );
 
             ui.label(
                 RichText::new(" — we got you!")
@@ -266,7 +266,9 @@ fn login_button() -> Button<'static> {
 
 fn login_textedit(text: &mut dyn TextBuffer) -> TextEdit {
     egui::TextEdit::singleline(text)
-        .hint_text(RichText::new("Your key here...").text_style(NotedeckTextStyle::Body.text_style()))
+        .hint_text(
+            RichText::new("Your key here...").text_style(NotedeckTextStyle::Body.text_style()),
+        )
         .vertical_align(Align::Center)
         .min_size(Vec2::new(0.0, 40.0))
         .margin(Margin::same(12.0))

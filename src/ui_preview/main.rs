@@ -2,7 +2,7 @@ mod account_login_preview;
 mod egui_preview_setup;
 use account_login_preview::{DesktopAccountLoginPreview, MobileAccountLoginPreview};
 use egui_preview_setup::{EguiPreviewCase, EguiPreviewSetup};
-use notedeck::app_creation::{generate_native_options, generate_mobile_emulator_native_options};
+use notedeck::app_creation::{generate_mobile_emulator_native_options, generate_native_options};
 use std::env;
 
 fn run_test_app<F, T, O>(create_supr: F, create_child: O, is_mobile: bool)
@@ -26,15 +26,16 @@ where
     );
 }
 
-
 fn main() {
     let args: Vec<String> = env::args().collect();
 
     if args.len() > 1 {
         match args[1].as_str() {
-            "DesktopAccountLoginPreview" => {
-                run_test_app(EguiPreviewSetup::new, DesktopAccountLoginPreview::new, false)
-            }
+            "DesktopAccountLoginPreview" => run_test_app(
+                EguiPreviewSetup::new,
+                DesktopAccountLoginPreview::new,
+                false,
+            ),
             "MobileAccountLoginPreview" => {
                 run_test_app(EguiPreviewSetup::new, MobileAccountLoginPreview::new, true)
             }
