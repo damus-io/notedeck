@@ -70,6 +70,20 @@ fn relay_setup(pool: &mut RelayPool, ctx: &egui::Context) {
     }
 }
 
+fn since_optimize_filter(filter: &mut enostr::Filter, notes: &[NoteRef]) {
+    // Get the latest entry in the events
+    if notes.is_empty() {
+        return;
+    }
+
+    // get the latest note
+    let latest = notes[0];
+    let since = latest.created_at - 60;
+
+    // update the filters
+    filter.since = Some(since);
+}
+
 fn send_initial_filters(damus: &mut Damus, relay_url: &str) {
     info!("Sending initial filters to {}", relay_url);
     let mut c: u32 = 1;
@@ -78,7 +92,11 @@ fn send_initial_filters(damus: &mut Damus, relay_url: &str) {
         let relay = &mut relay.relay;
         if relay.url == relay_url {
             for timeline in &damus.timelines {
-                relay.subscribe(format!("initial{}", c), timeline.filter.clone());
+                let mut filter = timeline.filter.clone();
+                for f in &mut filter {
+                    since_optimize_filter(f, &timeline.notes);
+                }
+                relay.subscribe(format!("initial{}", c), filter);
                 c += 1;
             }
             return;
