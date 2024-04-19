@@ -23,7 +23,7 @@ mod result;
 mod time;
 mod timecache;
 mod timeline;
-mod ui;
+pub mod ui;
 
 #[cfg(test)]
 #[macro_use]

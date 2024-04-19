@@ -1,74 +1,142 @@
 use crate::app_style::NotedeckTextStyle;
 use crate::key_parsing::{perform_key_retrieval, LoginError};
 use crate::login_manager::LoginManager;
+use crate::ui;
+use crate::ui::{Preview, View};
 use egui::{
     Align, Align2, Button, Color32, Frame, Id, LayerId, Margin, Pos2, Rect, RichText, Rounding, Ui,
     Vec2, Window,
 };
 use egui::{Image, TextBuffer, TextEdit};
 
-pub struct DesktopAccountLoginView<'a> {
-    ctx: &'a egui::Context,
+pub struct AccountLoginView<'a> {
     manager: &'a mut LoginManager,
     generate_y_intercept: Option<f32>,
 }
 
-impl<'a> DesktopAccountLoginView<'a> {
-    pub fn new(ctx: &'a egui::Context, manager: &'a mut LoginManager) -> Self {
-        DesktopAccountLoginView {
-            ctx,
+impl<'a> View for AccountLoginView<'a> {
+    fn ui(&mut self, ui: &mut egui::Ui) {
+        if ui::is_mobile(ui.ctx()) {
+            self.show_mobile(ui);
+        } else {
+            self.show(ui);
+        }
+    }
+}
+
+impl<'a> AccountLoginView<'a> {
+    pub fn new(manager: &'a mut LoginManager) -> Self {
+        AccountLoginView {
             manager,
             generate_y_intercept: None,
         }
     }
 
-    pub fn panel(&mut self) {
-        let frame = egui::CentralPanel::default();
+    fn show(&mut self, ui: &mut egui::Ui) -> egui::Response {
+        let screen_width = ui.ctx().screen_rect().max.x;
+        let screen_height = ui.ctx().screen_rect().max.y;
 
-        let screen_width = self.ctx.screen_rect().max.x;
-        let screen_height = self.ctx.screen_rect().max.y;
+        let title_layer = LayerId::new(egui::Order::Background, Id::new("Title layer"));
 
-        frame.show(self.ctx, |ui| {
-            let title_layer = LayerId::new(egui::Order::Background, Id::new("Title layer"));
-
-            let mut top_panel_height: Option<f32> = None;
-            ui.with_layer_id(title_layer, |ui| {
-                egui::TopBottomPanel::top("Top")
-                    .resizable(false)
-                    .default_height(340.0)
-                    .frame(Frame::none())
-                    .show_separator_line(false)
-                    .show_inside(ui, |ui| {
-                        top_panel_height = Some(ui.available_rect_before_wrap().bottom());
-                        self.top_title_area(ui);
-                    });
-            });
-
-            egui::TopBottomPanel::bottom("Bottom")
+        let mut top_panel_height: Option<f32> = None;
+        ui.with_layer_id(title_layer, |ui| {
+            egui::TopBottomPanel::top("Top")
                 .resizable(false)
+                .default_height(340.0)
                 .frame(Frame::none())
                 .show_separator_line(false)
                 .show_inside(ui, |ui| {
-                    self.window(ui, top_panel_height.unwrap_or(0.0));
+                    top_panel_height = Some(ui.available_rect_before_wrap().bottom());
+                    self.top_title_area(ui);
                 });
-
-            let top_rect = Rect {
-                min: Pos2::ZERO,
-                max: Pos2::new(
-                    screen_width,
-                    self.generate_y_intercept.unwrap_or(screen_height * 0.5),
-                ),
-            };
-
-            let top_background_color = ui.visuals().noninteractive().bg_fill;
-            ui.painter_at(top_rect)
-                .with_layer_id(LayerId::background())
-                .rect_filled(top_rect, Rounding::ZERO, top_background_color);
         });
+
+        egui::TopBottomPanel::bottom("Bottom")
+            .resizable(false)
+            .frame(Frame::none())
+            .show_separator_line(false)
+            .show_inside(ui, |ui| {
+                self.window(ui, top_panel_height.unwrap_or(0.0));
+            });
+
+        let top_rect = Rect {
+            min: Pos2::ZERO,
+            max: Pos2::new(
+                screen_width,
+                self.generate_y_intercept.unwrap_or(screen_height * 0.5),
+            ),
+        };
+
+        let top_background_color = ui.visuals().noninteractive().bg_fill;
+        ui.painter_at(top_rect)
+            .with_layer_id(LayerId::background())
+            .rect_filled(top_rect, Rounding::ZERO, top_background_color);
+
+        egui::CentralPanel::default()
+            .show(ui.ctx(), |ui: &mut egui::Ui| {})
+            .response
+    }
+
+    fn mobile_ui(&mut self, ui: &mut egui::Ui) -> egui::Response {
+        ui.vertical(|ui| {
+            ui.vertical_centered(|ui| {
+                ui.add(logo_unformatted().max_width(256.0));
+                ui.add_space(64.0);
+                ui.label(login_info_text());
+                ui.add_space(32.0);
+                ui.label(login_title_text());
+            });
+
+            ui.horizontal(|ui| {
+                ui.label(login_textedit_info_text());
+            });
+
+            ui.vertical_centered_justified(|ui| {
+                ui.add(login_textedit(&mut self.manager.login_key));
+
+                if ui.add(login_button()).clicked() {
+                    self.manager.promise = Some(perform_key_retrieval(&self.manager.login_key));
+                }
+            });
+
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new("New to Nostr?")
+                        .color(ui.style().visuals.noninteractive().fg_stroke.color)
+                        .text_style(NotedeckTextStyle::Body.text_style()),
+                );
+
+                if ui
+                    .add(Button::new(RichText::new("Create Account")).frame(false))
+                    .clicked()
+                {
+                    // TODO: navigate to 'create account' screen
+                }
+            });
+        })
+        .response
+    }
+
+    pub fn show_mobile(&mut self, ui: &mut egui::Ui) -> egui::Response {
+        egui::CentralPanel::default()
+            .show(ui.ctx(), |_| {
+                Window::new("Login")
+                    .movable(true)
+                    .constrain(true)
+                    .collapsible(false)
+                    .drag_to_scroll(false)
+                    .title_bar(false)
+                    .resizable(false)
+                    .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+                    .frame(Frame::central_panel(&ui.ctx().style()))
+                    .max_width(ui.ctx().screen_rect().width() - 32.0) // margin
+                    .show(ui.ctx(), |ui| self.mobile_ui(ui));
+            })
+            .response
     }
 
     fn window(&mut self, ui: &mut Ui, top_panel_height: f32) {
-        let needed_height_over_top = (self.ctx.screen_rect().bottom() / 2.0) - 230.0;
+        let needed_height_over_top = (ui.ctx().screen_rect().bottom() / 2.0) - 230.0;
         let y_offset = if top_panel_height > needed_height_over_top {
             top_panel_height - needed_height_over_top
         } else {
@@ -274,67 +342,21 @@ fn login_textedit(text: &mut dyn TextBuffer) -> TextEdit {
         .margin(Margin::same(12.0))
 }
 
-pub struct MobileAccountLoginView<'a> {
-    ctx: &'a egui::Context,
-    manager: &'a mut LoginManager,
+pub struct AccountLoginPreview {
+    manager: LoginManager,
 }
 
-impl<'a> MobileAccountLoginView<'a> {
-    pub fn new(ctx: &'a egui::Context, manager: &'a mut LoginManager) -> Self {
-        MobileAccountLoginView { ctx, manager }
+impl View for AccountLoginPreview {
+    fn ui(&mut self, ui: &mut egui::Ui) {
+        AccountLoginView::new(&mut self.manager).ui(ui);
     }
+}
 
-    pub fn panel(&mut self) {
-        let frame = egui::CentralPanel::default();
+impl<'a> Preview for AccountLoginView<'a> {
+    type Prev = AccountLoginPreview;
 
-        frame.show(self.ctx, |_| {
-            Window::new("Login")
-                .movable(true)
-                .constrain(true)
-                .collapsible(false)
-                .drag_to_scroll(false)
-                .title_bar(false)
-                .resizable(false)
-                .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
-                .frame(Frame::central_panel(&self.ctx.style()))
-                .max_width(self.ctx.screen_rect().width() - 32.0) // margin
-                .show(self.ctx, |ui| {
-                    ui.vertical_centered(|ui| {
-                        ui.add(logo_unformatted().max_width(256.0));
-                        ui.add_space(64.0);
-                        ui.label(login_info_text());
-                        ui.add_space(32.0);
-                        ui.label(login_title_text());
-                    });
-
-                    ui.horizontal(|ui| {
-                        ui.label(login_textedit_info_text());
-                    });
-
-                    ui.vertical_centered_justified(|ui| {
-                        ui.add(login_textedit(&mut self.manager.login_key));
-
-                        if ui.add(login_button()).clicked() {
-                            self.manager.promise =
-                                Some(perform_key_retrieval(&self.manager.login_key));
-                        }
-                    });
-
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new("New to Nostr?")
-                                .color(ui.style().visuals.noninteractive().fg_stroke.color)
-                                .text_style(NotedeckTextStyle::Body.text_style()),
-                        );
-
-                        if ui
-                            .add(Button::new(RichText::new("Create Account")).frame(false))
-                            .clicked()
-                        {
-                            // TODO: navigate to 'create account' screen
-                        }
-                    });
-                });
-        });
+    fn preview() -> Self::Prev {
+        let manager = LoginManager::new();
+        AccountLoginPreview { manager }
     }
 }

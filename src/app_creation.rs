@@ -1,6 +1,6 @@
-use crate::app::is_mobile;
 use crate::app_style::{create_text_styles, dark_mode, desktop_font_size, mobile_font_size};
 use crate::fonts::setup_fonts;
+use crate::ui::is_mobile;
 use eframe::NativeOptions;
 
 pub const UI_SCALE_FACTOR: f32 = 0.2;

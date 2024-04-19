@@ -1,57 +1,72 @@
-mod account_login_preview;
-mod egui_preview_setup;
-mod relay_view_preview;
-use account_login_preview::{DesktopAccountLoginPreview, MobileAccountLoginPreview};
-use egui_preview_setup::{EguiPreviewCase, EguiPreviewSetup};
-use notedeck::app_creation::{generate_mobile_emulator_native_options, generate_native_options};
-use relay_view_preview::RelayViewPreview;
+use notedeck::account_login_view::AccountLoginView;
+use notedeck::app_creation::{
+    generate_mobile_emulator_native_options, generate_native_options, setup_cc,
+};
+use notedeck::relay_view::RelayView;
+use notedeck::ui::{Preview, PreviewApp};
 use std::env;
 
-#[cfg(not(target_arch = "wasm32"))]
-#[tokio::main]
-async fn run_test_app<F, T, O>(create_supr: F, create_child: O, is_mobile: bool)
-where
-    F: 'static + FnOnce(&eframe::CreationContext<'_>) -> EguiPreviewSetup,
-    T: 'static + EguiPreviewCase,
-    O: 'static + FnOnce(EguiPreviewSetup) -> T,
-{
-    tracing_subscriber::fmt::init();
-
-    let native_options = if is_mobile {
-        generate_mobile_emulator_native_options()
-    } else {
-        generate_native_options()
-    };
-
-    let _ = eframe::run_native(
-        "UI Preview Runner",
-        native_options,
-        Box::new(|cc| Box::new(create_child(create_supr(cc)))),
-    );
+struct PreviewRunner {
+    force_mobile: bool,
 }
 
-fn main() {
-    let args: Vec<String> = env::args().collect();
+impl PreviewRunner {
+    fn new(force_mobile: bool) -> Self {
+        PreviewRunner { force_mobile }
+    }
 
-    if args.len() > 1 {
-        match args[1].as_str() {
-            "DesktopAccountLoginPreview" => run_test_app(
-                EguiPreviewSetup::new,
-                DesktopAccountLoginPreview::new,
-                false,
-            ),
-            "MobileAccountLoginPreview" => {
-                run_test_app(EguiPreviewSetup::new, MobileAccountLoginPreview::new, true)
-            }
-            "DesktopRelayViewPreview" => {
-                run_test_app(EguiPreviewSetup::new, RelayViewPreview::new, false)
-            }
-            "MobileRelayViewPreview" => {
-                run_test_app(EguiPreviewSetup::new, RelayViewPreview::new, true)
-            }
-            _ => println!("Component not found."),
+    async fn run<P>(self, preview: P)
+    where
+        P: Into<PreviewApp> + 'static,
+    {
+        tracing_subscriber::fmt::init();
+
+        let native_options = if self.force_mobile {
+            generate_mobile_emulator_native_options()
+        } else {
+            generate_native_options()
+        };
+
+        let _ = eframe::run_native(
+            "UI Preview Runner",
+            native_options,
+            Box::new(|cc| {
+                setup_cc(cc);
+                Box::new(Into::<PreviewApp>::into(preview))
+            }),
+        );
+    }
+}
+
+#[tokio::main]
+async fn main() {
+    let mut name: Option<String> = None;
+    let mut is_mobile = false;
+
+    for arg in env::args() {
+        if arg == "--mobile" {
+            is_mobile = true;
+        } else {
+            name = Some(arg);
         }
+    }
+
+    let name = if let Some(name) = name {
+        name
     } else {
-        println!("Please specify a component to test.");
+        println!("Please specify a component to test");
+        return;
+    };
+
+    let runner = PreviewRunner::new(is_mobile);
+
+    match name.as_ref() {
+        "AccountLoginView" => {
+            runner.run(AccountLoginView::preview()).await;
+        }
+        "RelayView" => {
+            runner.run(RelayView::preview()).await;
+        }
+        _ => println!("Component not found."),
     }
 }

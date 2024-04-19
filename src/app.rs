@@ -6,6 +6,7 @@ use crate::imgcache::ImageCache;
 use crate::notecache::NoteCache;
 use crate::timeline;
 use crate::ui;
+use crate::ui::is_mobile;
 use crate::Result;
 use egui::containers::scroll_area::ScrollBarVisibility;
 
@@ -85,12 +86,6 @@ pub struct Damus {
     pub ndb: Ndb,
 
     frame_history: crate::frame_history::FrameHistory,
-}
-
-pub fn is_mobile(ctx: &egui::Context) -> bool {
-    //true
-    let screen_size = ctx.screen_rect().size();
-    screen_size.x < 550.0
 }
 
 fn relay_setup(pool: &mut RelayPool, ctx: &egui::Context) {

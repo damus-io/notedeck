@@ -1,52 +1,52 @@
 use crate::relay_pool_manager::{RelayPoolManager, RelayStatus};
+use crate::ui::{Preview, View};
 use egui::{Align, Button, Frame, Layout, Margin, Rgba, RichText, Rounding, Ui, Vec2};
 
 use crate::app_style::NotedeckTextStyle;
+use enostr::RelayPool;
 
 pub struct RelayView<'a> {
-    ctx: &'a egui::Context,
     manager: RelayPoolManager<'a>,
 }
 
-impl<'a> RelayView<'a> {
-    pub fn new(ctx: &'a egui::Context, manager: RelayPoolManager<'a>) -> Self {
-        RelayView { ctx, manager }
-    }
+impl<'a> View for RelayView<'a> {
+    fn ui(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(24.0);
 
-    pub fn panel(&'a mut self) {
-        let mut indices_to_remove: Option<Vec<usize>> = None;
-
-        egui::CentralPanel::default().show(self.ctx, |ui| {
-            ui.add_space(24.0);
-
-            ui.horizontal(|ui| {
-                ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                    ui.label(
-                        RichText::new("Relays")
-                            .text_style(NotedeckTextStyle::Heading2.text_style()),
-                    );
-                });
-
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if ui.add(add_relay_button()).clicked() {
-                        // TODO: navigate to 'add relay view'
-                    };
-                });
+        ui.horizontal(|ui| {
+            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                ui.label(
+                    RichText::new("Relays").text_style(NotedeckTextStyle::Heading2.text_style()),
+                );
             });
 
-            ui.add_space(8.0);
-
-            egui::ScrollArea::vertical()
-                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
-                .auto_shrink([false; 2])
-                .show(ui, |ui| {
-                    indices_to_remove = self.show_relays(ui);
-                });
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui.add(add_relay_button()).clicked() {
+                    // TODO: navigate to 'add relay view'
+                };
+            });
         });
 
-        if let Some(indices) = indices_to_remove {
-            self.manager.remove_relays(indices);
-        }
+        ui.add_space(8.0);
+
+        egui::ScrollArea::vertical()
+            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+            .auto_shrink([false; 2])
+            .show(ui, |ui| {
+                if let Some(indices) = self.show_relays(ui) {
+                    self.manager.remove_relays(indices);
+                }
+            });
+    }
+}
+
+impl<'a> RelayView<'a> {
+    pub fn new(manager: RelayPoolManager<'a>) -> Self {
+        RelayView { manager }
+    }
+
+    pub fn panel(&mut self, ui: &mut egui::Ui) {
+        egui::CentralPanel::default().show(ui.ctx(), |ui| self.ui(ui));
     }
 
     /// Show the current relays, and returns the indices of relays the user requested to delete
@@ -168,4 +168,45 @@ fn get_connection_icon(status: &RelayStatus) -> egui::Image<'static> {
     };
 
     egui::Image::new(img_data)
+}
+
+// PREVIEWS
+
+pub struct RelayViewPreview {
+    pool: RelayPool,
+}
+
+#[allow(unused_must_use)]
+impl RelayViewPreview {
+    fn new() -> Self {
+        let mut pool = RelayPool::new();
+        let wakeup = move || {};
+
+        pool.add_url("wss://relay.damus.io".to_string(), wakeup);
+        pool.add_url("wss://eden.nostr.land".to_string(), wakeup);
+        pool.add_url("wss://nostr.wine".to_string(), wakeup);
+        pool.add_url("wss://nos.lol".to_string(), wakeup);
+        pool.add_url("wss://test_relay_url_long_00000000000000000000000000000000000000000000000000000000000000000000000000000000000".to_string(), wakeup);
+
+        for _ in 0..20 {
+            pool.add_url("tmp".to_string(), wakeup);
+        }
+
+        RelayViewPreview { pool }
+    }
+}
+
+impl View for RelayViewPreview {
+    fn ui(&mut self, ui: &mut egui::Ui) {
+        self.pool.try_recv();
+        RelayView::new(RelayPoolManager::new(&mut self.pool)).ui(ui)
+    }
+}
+
+impl<'a> Preview for RelayView<'a> {
+    type Prev = RelayViewPreview;
+
+    fn preview() -> Self::Prev {
+        RelayViewPreview::new()
+    }
 }
