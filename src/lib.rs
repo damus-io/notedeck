@@ -20,6 +20,7 @@ mod profile;
 pub mod relay_pool_manager;
 pub mod relay_view;
 mod result;
+mod test_data;
 mod time;
 mod timecache;
 mod timeline;

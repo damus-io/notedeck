@@ -172,41 +172,34 @@ fn get_connection_icon(status: &RelayStatus) -> egui::Image<'static> {
 
 // PREVIEWS
 
-pub struct RelayViewPreview {
-    pool: RelayPool,
-}
+mod preview {
+    use super::*;
+    use crate::test_data::sample_pool;
 
-#[allow(unused_must_use)]
-impl RelayViewPreview {
-    fn new() -> Self {
-        let mut pool = RelayPool::new();
-        let wakeup = move || {};
+    pub struct RelayViewPreview {
+        pool: RelayPool,
+    }
 
-        pool.add_url("wss://relay.damus.io".to_string(), wakeup);
-        pool.add_url("wss://eden.nostr.land".to_string(), wakeup);
-        pool.add_url("wss://nostr.wine".to_string(), wakeup);
-        pool.add_url("wss://nos.lol".to_string(), wakeup);
-        pool.add_url("wss://test_relay_url_long_00000000000000000000000000000000000000000000000000000000000000000000000000000000000".to_string(), wakeup);
-
-        for _ in 0..20 {
-            pool.add_url("tmp".to_string(), wakeup);
+    impl RelayViewPreview {
+        fn new() -> Self {
+            RelayViewPreview {
+                pool: sample_pool(),
+            }
         }
-
-        RelayViewPreview { pool }
     }
-}
 
-impl View for RelayViewPreview {
-    fn ui(&mut self, ui: &mut egui::Ui) {
-        self.pool.try_recv();
-        RelayView::new(RelayPoolManager::new(&mut self.pool)).ui(ui)
+    impl View for RelayViewPreview {
+        fn ui(&mut self, ui: &mut egui::Ui) {
+            self.pool.try_recv();
+            RelayView::new(RelayPoolManager::new(&mut self.pool)).ui(ui)
+        }
     }
-}
 
-impl<'a> Preview for RelayView<'a> {
-    type Prev = RelayViewPreview;
+    impl<'a> Preview for RelayView<'a> {
+        type Prev = RelayViewPreview;
 
-    fn preview() -> Self::Prev {
-        RelayViewPreview::new()
+        fn preview() -> Self::Prev {
+            RelayViewPreview::new()
+        }
     }
 }
