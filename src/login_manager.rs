@@ -4,6 +4,7 @@ use poll_promise::Promise;
 
 /// Helper storage object for retrieving the plaintext key from the user and converting it into a
 /// nostr-sdk Keys object if possible.
+#[derive(Default)]
 pub struct LoginManager {
     pub login_key: String,
     pub promise: Option<Promise<Result<Keys, LoginError>>>,
@@ -13,11 +14,6 @@ pub struct LoginManager {
 
 impl LoginManager {
     pub fn new() -> Self {
-        LoginManager {
-            login_key: String::new(),
-            promise: None,
-            error: None,
-            key_on_error: None,
-        }
+        LoginManager::default()
     }
 }

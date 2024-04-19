@@ -36,19 +36,19 @@ pub struct NoteRef {
     pub created_at: u64,
 }
 
-impl PartialOrd for NoteRef {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+impl Ord for NoteRef {
+    fn cmp(&self, other: &Self) -> Ordering {
         match self.created_at.cmp(&other.created_at) {
-            Ordering::Equal => self.key.cmp(&other.key).into(),
-            Ordering::Less => Some(Ordering::Greater),
-            Ordering::Greater => Some(Ordering::Less),
+            Ordering::Equal => self.key.cmp(&other.key),
+            Ordering::Less => Ordering::Greater,
+            Ordering::Greater => Ordering::Less,
         }
     }
 }
 
-impl Ord for NoteRef {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.partial_cmp(other).unwrap()
+impl PartialOrd for NoteRef {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
     }
 }
 
@@ -60,8 +60,7 @@ struct Timeline {
 
 impl Timeline {
     pub fn new(filter: Vec<Filter>) -> Self {
-        let mut notes: Vec<NoteRef> = vec![];
-        notes.reserve(1000);
+        let notes: Vec<NoteRef> = Vec::with_capacity(1000);
         let subscription: Option<Subscription> = None;
 
         Timeline {
@@ -215,47 +214,46 @@ fn get_unknown_note_ids<'a>(
 
     let blocks = ndb.get_blocks_by_key(txn, note_key)?;
     for block in blocks.iter(note) {
-        let _blocktype = block.blocktype();
-        match block.blocktype() {
-            BlockType::MentionBech32 => match block.as_mention().unwrap() {
-                Mention::Pubkey(npub) => {
-                    if ndb.get_profile_by_pubkey(txn, npub.pubkey()).is_err() {
-                        ids.insert(UnknownId::Pubkey(npub.pubkey()));
-                    }
-                }
-                Mention::Profile(nprofile) => {
-                    if ndb.get_profile_by_pubkey(txn, nprofile.pubkey()).is_err() {
-                        ids.insert(UnknownId::Pubkey(nprofile.pubkey()));
-                    }
-                }
-                Mention::Event(ev) => match ndb.get_note_by_id(txn, ev.id()) {
-                    Err(_) => {
-                        ids.insert(UnknownId::Id(ev.id()));
-                        if let Some(pk) = ev.pubkey() {
-                            if ndb.get_profile_by_pubkey(txn, pk).is_err() {
-                                ids.insert(UnknownId::Pubkey(pk));
-                            }
-                        }
-                    }
-                    Ok(note) => {
-                        if ndb.get_profile_by_pubkey(txn, note.pubkey()).is_err() {
-                            ids.insert(UnknownId::Pubkey(note.pubkey()));
-                        }
-                    }
-                },
-                Mention::Note(note) => match ndb.get_note_by_id(txn, note.id()) {
-                    Err(_) => {
-                        ids.insert(UnknownId::Id(note.id()));
-                    }
-                    Ok(note) => {
-                        if ndb.get_profile_by_pubkey(txn, note.pubkey()).is_err() {
-                            ids.insert(UnknownId::Pubkey(note.pubkey()));
-                        }
-                    }
-                },
-                _ => {}
-            },
+        if block.blocktype() != BlockType::MentionBech32 {
+            continue;
+        }
 
+        match block.as_mention().unwrap() {
+            Mention::Pubkey(npub) => {
+                if ndb.get_profile_by_pubkey(txn, npub.pubkey()).is_err() {
+                    ids.insert(UnknownId::Pubkey(npub.pubkey()));
+                }
+            }
+            Mention::Profile(nprofile) => {
+                if ndb.get_profile_by_pubkey(txn, nprofile.pubkey()).is_err() {
+                    ids.insert(UnknownId::Pubkey(nprofile.pubkey()));
+                }
+            }
+            Mention::Event(ev) => match ndb.get_note_by_id(txn, ev.id()) {
+                Err(_) => {
+                    ids.insert(UnknownId::Id(ev.id()));
+                    if let Some(pk) = ev.pubkey() {
+                        if ndb.get_profile_by_pubkey(txn, pk).is_err() {
+                            ids.insert(UnknownId::Pubkey(pk));
+                        }
+                    }
+                }
+                Ok(note) => {
+                    if ndb.get_profile_by_pubkey(txn, note.pubkey()).is_err() {
+                        ids.insert(UnknownId::Pubkey(note.pubkey()));
+                    }
+                }
+            },
+            Mention::Note(note) => match ndb.get_note_by_id(txn, note.id()) {
+                Err(_) => {
+                    ids.insert(UnknownId::Id(note.id()));
+                }
+                Ok(note) => {
+                    if ndb.get_profile_by_pubkey(txn, note.pubkey()).is_err() {
+                        ids.insert(UnknownId::Pubkey(note.pubkey()));
+                    }
+                }
+            },
             _ => {}
         }
     }
@@ -275,15 +273,15 @@ fn poll_notes_for_timeline<'a>(
         return Err(Error::NoActiveSubscription);
     };
 
-    let new_note_ids = damus.ndb.poll_for_notes(&sub, 100);
-    if new_note_ids.len() > 0 {
+    let new_note_ids = damus.ndb.poll_for_notes(sub, 100);
+    if !new_note_ids.is_empty() {
         debug!("{} new notes! {:?}", new_note_ids.len(), new_note_ids);
     }
 
-    let new_refs = new_note_ids
+    let new_refs: Vec<NoteRef> = new_note_ids
         .iter()
         .map(|key| {
-            let note = damus.ndb.get_note_by_key(&txn, *key).expect("no note??");
+            let note = damus.ndb.get_note_by_key(txn, *key).expect("no note??");
 
             let _ = get_unknown_note_ids(&damus.ndb, txn, &note, *key, ids);
 
@@ -310,7 +308,7 @@ fn setup_initial_nostrdb_subs(damus: &mut Damus) -> Result<()> {
         let filters: Vec<nostrdb::Filter> = timeline
             .filter
             .iter()
-            .map(|f| crate::filter::convert_enostr_filter(f))
+            .map(crate::filter::convert_enostr_filter)
             .collect();
         timeline.subscription = Some(damus.ndb.subscribe(filters.clone())?);
         let txn = Transaction::new(&damus.ndb)?;
@@ -357,7 +355,7 @@ fn process_event(damus: &mut Damus, _subid: &str, event: &str) {
     puffin::profile_function!();
 
     //info!("processing event {}", event);
-    if let Err(_err) = damus.ndb.process_event(&event) {
+    if let Err(_err) = damus.ndb.process_event(event) {
         error!("error processing event {}", event);
     }
 }
@@ -370,7 +368,7 @@ fn get_unknown_ids<'a>(txn: &'a Transaction, damus: &Damus) -> Result<Vec<Unknow
 
     for timeline in &damus.timelines {
         for noteref in &timeline.notes {
-            let note = damus.ndb.get_note_by_key(&txn, noteref.key)?;
+            let note = damus.ndb.get_note_by_key(txn, noteref.key)?;
             let _ = get_unknown_note_ids(&damus.ndb, txn, &note, note.key().unwrap(), &mut ids);
         }
     }
@@ -378,7 +376,7 @@ fn get_unknown_ids<'a>(txn: &'a Transaction, damus: &Damus) -> Result<Vec<Unknow
     Ok(ids.into_iter().collect())
 }
 
-fn get_unknown_ids_filter<'a>(ids: &[UnknownId<'a>]) -> Option<Vec<Filter>> {
+fn get_unknown_ids_filter(ids: &[UnknownId<'_>]) -> Option<Vec<Filter>> {
     if ids.is_empty() {
         return None;
     }
@@ -427,11 +425,11 @@ fn handle_eose(damus: &mut Damus, subid: &str, relay_url: &str) -> Result<()> {
 
 fn process_message(damus: &mut Damus, relay: &str, msg: &RelayMessage) {
     match msg {
-        RelayMessage::Event(subid, ev) => process_event(damus, &subid, ev),
+        RelayMessage::Event(subid, ev) => process_event(damus, subid, ev),
         RelayMessage::Notice(msg) => warn!("Notice from {}: {}", relay, msg),
         RelayMessage::OK(cr) => info!("OK {:?}", cr),
         RelayMessage::Eose(sid) => {
-            if let Err(err) = handle_eose(damus, &sid, relay) {
+            if let Err(err) = handle_eose(damus, sid, relay) {
                 error!("error handling eose: {}", err);
             }
         }
@@ -474,11 +472,11 @@ impl Damus {
         let _initial_limit = 100;
         if args.len() > 1 {
             for arg in &args[1..] {
-                let filter = serde_json::from_str(&arg).unwrap();
+                let filter = serde_json::from_str(arg).unwrap();
                 timelines.push(Timeline::new(filter));
             }
         } else {
-            let filter = serde_json::from_str(&include_str!("../queries/global.json")).unwrap();
+            let filter = serde_json::from_str(include_str!("../queries/global.json")).unwrap();
             timelines.push(Timeline::new(filter));
         };
 
@@ -604,11 +602,12 @@ fn timeline_view(ui: &mut egui::Ui, app: &mut Damus, timeline: usize) {
 }
 
 fn top_panel(ctx: &egui::Context) -> egui::TopBottomPanel {
-    let mut top_margin = Margin::default();
-    top_margin.top = 4.0;
-    top_margin.left = 8.0;
-    top_margin.right = 8.0;
-    //top_margin.bottom = -20.0;
+    let top_margin = egui::Margin {
+        top: 4.0,
+        left: 8.0,
+        right: 8.0,
+        ..Default::default()
+    };
 
     let frame = Frame {
         inner_margin: top_margin,
@@ -621,7 +620,7 @@ fn top_panel(ctx: &egui::Context) -> egui::TopBottomPanel {
         .show_separator_line(false)
 }
 
-fn render_panel<'a>(ctx: &egui::Context, app: &'a mut Damus, timeline_ind: usize) {
+fn render_panel(ctx: &egui::Context, app: &mut Damus, timeline_ind: usize) {
     top_panel(ctx).show(ctx, |ui| {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
             ui.visuals_mut().button_frame = false;

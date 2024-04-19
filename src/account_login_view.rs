@@ -73,7 +73,7 @@ impl<'a> AccountLoginView<'a> {
             .rect_filled(top_rect, Rounding::ZERO, top_background_color);
 
         egui::CentralPanel::default()
-            .show(ui.ctx(), |ui: &mut egui::Ui| {})
+            .show(ui.ctx(), |_ui: &mut egui::Ui| {})
             .response
     }
 

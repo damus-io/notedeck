@@ -26,8 +26,12 @@ impl ImageCache {
     }
 
     pub fn write(cache_dir: &path::Path, url: &str, data: ColorImage) -> Result<()> {
-        let file_path = cache_dir.join(&Self::key(url));
-        let file = File::options().write(true).create(true).open(file_path)?;
+        let file_path = cache_dir.join(Self::key(url));
+        let file = File::options()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(file_path)?;
         let encoder = image::codecs::webp::WebPEncoder::new_lossless(file);
 
         encoder.encode(

@@ -6,7 +6,7 @@ pub fn time_ago_since(timestamp: u64) -> String {
         .duration_since(UNIX_EPOCH)
         .expect("Time went backwards")
         .as_secs();
-    let duration = now.checked_sub(timestamp).unwrap_or(0);
+    let duration = now.saturating_sub(timestamp);
 
     let years = duration / 31_536_000; // seconds in a year
     if years >= 1 {

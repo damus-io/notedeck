@@ -59,7 +59,7 @@ pub fn round_image(image: &mut ColorImage) {
 }
 
 fn process_pfp_bitmap(size: u32, image: &mut image::DynamicImage) -> ColorImage {
-    #[cfg(features = "profiling")]
+    #[cfg(feature = "profiling")]
     puffin::profile_function!();
 
     // Crop square
@@ -144,7 +144,7 @@ pub fn fetch_img(
     size: u32,
 ) -> Promise<Result<TextureHandle>> {
     let key = ImageCache::key(url);
-    let path = img_cache.cache_dir.join(&key);
+    let path = img_cache.cache_dir.join(key);
 
     if path.exists() {
         fetch_img_from_disk(ctx, url, &path)

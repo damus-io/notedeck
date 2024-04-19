@@ -7,14 +7,14 @@ pub enum NamedFontFamily {
 }
 
 impl NamedFontFamily {
-    pub fn as_str(self) -> &'static str {
+    pub fn as_str(&mut self) -> &'static str {
         match self {
             //Self::Bold => "bold",
             Self::Medium => "medium",
         }
     }
 
-    pub fn as_family(self) -> egui::FontFamily {
+    pub fn as_family(&mut self) -> egui::FontFamily {
         egui::FontFamily::Name(self.as_str().into())
     }
 }

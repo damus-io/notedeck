@@ -18,6 +18,6 @@ impl NoteCache {
     }
 
     pub fn reltime_str(&mut self) -> &str {
-        return &self.reltime.get();
+        return self.reltime.get();
     }
 }

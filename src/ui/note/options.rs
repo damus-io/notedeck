@@ -24,18 +24,18 @@ impl NoteOptions {
     #[inline]
     pub fn set_note_previews(&mut self, enable: bool) {
         if enable {
-            *self = *self | NoteOptions::note_previews;
+            *self |= NoteOptions::note_previews;
         } else {
-            *self = *self & !NoteOptions::note_previews;
+            *self &= !NoteOptions::note_previews;
         }
     }
 
     #[inline]
     pub fn set_actionbar(&mut self, enable: bool) {
         if enable {
-            *self = *self | NoteOptions::actionbar;
+            *self |= NoteOptions::actionbar;
         } else {
-            *self = *self & !NoteOptions::actionbar;
+            *self &= !NoteOptions::actionbar;
         }
     }
 }

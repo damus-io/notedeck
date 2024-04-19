@@ -1,4 +1,4 @@
-pub fn merge_sorted_vecs<T: Ord + Copy>(vec1: &Vec<T>, vec2: &Vec<T>) -> Vec<T> {
+pub fn merge_sorted_vecs<T: Ord + Copy>(vec1: &[T], vec2: &[T]) -> Vec<T> {
     let mut merged = Vec::with_capacity(vec1.len() + vec2.len());
     let mut i = 0;
     let mut j = 0;

@@ -228,7 +228,7 @@ fn render_pfp(ui: &mut egui::Ui, damus: &mut Damus, url: &str) {
     }
 }
 
-fn pfp_image<'a>(ui: &mut egui::Ui, img: &TextureHandle, size: f32) -> egui::Response {
+fn pfp_image(ui: &mut egui::Ui, img: &TextureHandle, size: f32) -> egui::Response {
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
 
