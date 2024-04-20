@@ -76,8 +76,32 @@ The app should appear on the emulator
 [direnv]: https://direnv.net/
 [nix]: https://nixos.org/download/
 
+## Previews
+
+You can preview individual widgets and views by running the preview script:
+
+```bash
+./preview RelayView
+./preview ProfilePreview
+# ... etc
+```
+
+When adding new previews you need to implement the Preview trait for your
+view/widget and then add it to the `src/ui_preview/main.rs` bin:
+
+```rust
+previews!(runner, name,
+    RelayView,
+    AccountLoginView,
+    ProfilePreview,
+);
+```
+
+
 ## Contributing
+
 Configure the developer environment:
+
 ```bash
 ./scripts/dev_setup.sh
 ```
