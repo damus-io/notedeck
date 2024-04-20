@@ -8,9 +8,10 @@ use crate::timeline;
 use crate::ui;
 use crate::ui::is_mobile;
 use crate::Result;
-use egui::containers::scroll_area::ScrollBarVisibility;
 
+use egui::containers::scroll_area::ScrollBarVisibility;
 use egui::{Context, Frame, Margin, Style};
+use egui_extras::{Size, StripBuilder};
 
 use enostr::{ClientMessage, Filter, Pubkey, RelayEvent, RelayMessage};
 use nostrdb::{BlockType, Config, Mention, Ndb, Note, NoteKey, Subscription, Transaction};
@@ -588,8 +589,8 @@ fn timeline_view(ui: &mut egui::Ui, app: &mut Damus, timeline: usize) {
     */
 
     egui::ScrollArea::vertical()
-        .scroll_bar_visibility(ScrollBarVisibility::AlwaysHidden)
-        .auto_shrink([false; 2])
+        .scroll_bar_visibility(ScrollBarVisibility::AlwaysVisible)
+        //.auto_shrink([false; 2])
         /*
         .show_viewport(ui, |ui, viewport| {
             render_notes_in_viewport(ui, app, viewport, row_height, font_id);
@@ -597,6 +598,7 @@ fn timeline_view(ui: &mut egui::Ui, app: &mut Damus, timeline: usize) {
         */
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
+            ui.spacing_mut().item_spacing.x = 4.0;
             let _ = render_notes(ui, app, timeline);
         });
 }
@@ -681,12 +683,8 @@ fn render_damus_mobile(ctx: &egui::Context, app: &mut Damus) {
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
 
-    let panel_width = ctx.screen_rect().width();
-
     main_panel(&ctx.style()).show(ctx, |ui| {
-        timeline_panel(ui, panel_width, 0, |ui| {
-            timeline_view(ui, app, 0);
-        });
+        timeline_view(ui, app, 0);
     });
 }
 
@@ -705,51 +703,43 @@ fn render_damus_desktop(ctx: &egui::Context, app: &mut Damus) {
 
     let screen_size = ctx.screen_rect().width();
     let calc_panel_width = (screen_size / app.timelines.len() as f32) - 30.0;
-    let min_width = 300.0;
+    let min_width = 320.0;
     let need_scroll = calc_panel_width < min_width;
-    let panel_width = if need_scroll {
-        min_width
+    let panel_sizes = if need_scroll {
+        Size::exact(min_width)
     } else {
-        calc_panel_width
+        Size::remainder()
     };
 
     if app.timelines.len() == 1 {
-        let panel_width = ctx.screen_rect().width();
         main_panel(&ctx.style()).show(ctx, |ui| {
-            timeline_panel(ui, panel_width, 0, |ui| {
-                //postbox(ui, app);
-                timeline_view(ui, app, 0);
-            });
-
-            /*
-            egui::Area::new("test")
-                .fixed_pos(egui::pos2(50.0, 50.0))
-                //.resizable(false)
-                //.title_bar(false)
-                .show(ctx, |ui| {
-                    ui.label("Test");
-                });
-                */
+            timeline_view(ui, app, 0);
         });
 
         return;
     }
 
     main_panel(&ctx.style()).show(ctx, |ui| {
-        egui::ScrollArea::horizontal()
-            .auto_shrink([false; 2])
-            .show(ui, |ui| {
-                for timeline_ind in 0..app.timelines.len() {
-                    if timeline_ind == 0 {
-                        //postbox(ui, app);
-                    }
-                    timeline_panel(ui, panel_width, timeline_ind as u32, |ui| {
-                        // TODO: add new timeline to each panel
-                        timeline_view(ui, app, timeline_ind);
-                    });
-                }
+        ui.spacing_mut().item_spacing.x = 0.0;
+        if need_scroll {
+            egui::ScrollArea::horizontal().show(ui, |ui| {
+                timelines_view(ui, panel_sizes, app, app.timelines.len());
             });
+        } else {
+            timelines_view(ui, panel_sizes, app, app.timelines.len());
+        }
     });
+}
+
+fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus, timelines: usize) {
+    StripBuilder::new(ui)
+        .sizes(sizes, timelines)
+        .clip(true)
+        .horizontal(|mut strip| {
+            for timeline_ind in 0..timelines {
+                strip.cell(|ui| timeline_view(ui, app, timeline_ind));
+            }
+        });
 }
 
 /*
@@ -770,20 +760,6 @@ fn postbox(ui: &mut egui::Ui, app: &mut Damus) {
     ui.painter().extend(shapes);
 }
     */
-
-fn timeline_panel<R>(
-    ui: &mut egui::Ui,
-    panel_width: f32,
-    ind: u32,
-    add_contents: impl FnOnce(&mut egui::Ui) -> R,
-) -> egui::InnerResponse<R> {
-    egui::SidePanel::left(format!("l{}", ind))
-        .resizable(false)
-        .frame(Frame::none())
-        .max_width(panel_width)
-        .min_width(panel_width)
-        .show_inside(ui, add_contents)
-}
 
 impl eframe::App for Damus {
     /// Called by the frame work to save state before shutdown.
