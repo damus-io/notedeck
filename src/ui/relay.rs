@@ -117,10 +117,10 @@ fn add_relay_button() -> egui::Button<'static> {
 
 fn delete_button(dark_mode: bool) -> egui::Button<'static> {
     let img_data = if dark_mode {
-        egui::include_image!("../assets/icons/delete_icon_4x.png")
+        egui::include_image!("../../assets/icons/delete_icon_4x.png")
     } else {
         // TODO: use light delete icon
-        egui::include_image!("../assets/icons/delete_icon_4x.png")
+        egui::include_image!("../../assets/icons/delete_icon_4x.png")
     };
 
     egui::Button::image(egui::Image::new(img_data).max_width(10.0)).frame(false)
@@ -160,10 +160,12 @@ fn show_connection_status(ui: &mut Ui, status: &RelayStatus) {
 
 fn get_connection_icon(status: &RelayStatus) -> egui::Image<'static> {
     let img_data = match status {
-        RelayStatus::Connected => egui::include_image!("../assets/icons/connected_icon_4x.png"),
-        RelayStatus::Connecting => egui::include_image!("../assets/icons/connecting_icon_4x.png"),
+        RelayStatus::Connected => egui::include_image!("../../assets/icons/connected_icon_4x.png"),
+        RelayStatus::Connecting => {
+            egui::include_image!("../../assets/icons/connecting_icon_4x.png")
+        }
         RelayStatus::Disconnected => {
-            egui::include_image!("../assets/icons/disconnected_icon_4x.png")
+            egui::include_image!("../../assets/icons/disconnected_icon_4x.png")
         }
     };
 

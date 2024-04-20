@@ -18,7 +18,6 @@ pub mod login_manager;
 mod notecache;
 mod profile;
 pub mod relay_pool_manager;
-pub mod relay_view;
 mod result;
 mod test_data;
 mod time;
