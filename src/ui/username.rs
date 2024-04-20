@@ -44,7 +44,7 @@ impl<'a> Widget for Username<'a> {
             };
 
             if let Some(profile) = self.profile {
-                if let Some(prof) = profile.record.profile() {
+                if let Some(prof) = profile.record().profile() {
                     if prof.display_name().is_some() && prof.display_name().unwrap() != "" {
                         ui_abbreviate_name(ui, prof.display_name().unwrap(), self.abbrev, color);
                     } else if let Some(name) = prof.name() {

@@ -123,16 +123,27 @@ fn render_note_contents(
             match block.blocktype() {
                 BlockType::MentionBech32 => match block.as_mention().unwrap() {
                     Mention::Pubkey(npub) => {
-                        ui.colored_label(colors::PURPLE, "@");
-                        let profile = damus.ndb.get_profile_by_pubkey(txn, npub.pubkey()).ok();
-                        if let Some(name) = profile
-                            .as_ref()
-                            .and_then(|p| crate::profile::get_profile_name(p))
-                        {
-                            ui.colored_label(colors::PURPLE, name);
-                        } else {
-                            ui.colored_label(colors::PURPLE, "nostrich");
-                        }
+                        ui.horizontal(|ui| {
+                            let profile = damus.ndb.get_profile_by_pubkey(txn, npub.pubkey()).ok();
+
+                            let name: String = if let Some(name) =
+                                profile.as_ref().and_then(crate::profile::get_profile_name)
+                            {
+                                format!("@{}", name)
+                            } else {
+                                "@nostrich".to_string()
+                            };
+
+                            let resp = ui.colored_label(colors::PURPLE, &name);
+
+                            if let Some(rec) = profile.as_ref() {
+                                resp.on_hover_ui_at_pointer(|ui| {
+                                    egui::Frame::default().show(ui, |ui| {
+                                        ui.add(ui::ProfilePreview::new(rec));
+                                    });
+                                });
+                            }
+                        });
                     }
 
                     Mention::Note(note) if options.has_note_previews() => {

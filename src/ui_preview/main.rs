@@ -2,8 +2,7 @@ use notedeck::account_login_view::AccountLoginView;
 use notedeck::app_creation::{
     generate_mobile_emulator_native_options, generate_native_options, setup_cc,
 };
-use notedeck::relay_view::RelayView;
-use notedeck::ui::{Preview, PreviewApp};
+use notedeck::ui::{Preview, PreviewApp, ProfilePreview, RelayView};
 use std::env;
 
 struct PreviewRunner {
@@ -38,6 +37,20 @@ impl PreviewRunner {
     }
 }
 
+macro_rules! previews {
+    // Accept a runner and name variable, followed by one or more identifiers for the views
+    ($runner:expr, $name:expr, $($view:ident),* $(,)?) => {
+        match $name.as_ref() {
+            $(
+                stringify!($view) => {
+                    $runner.run($view::preview()).await;
+                }
+            )*
+            _ => println!("Component not found."),
+        }
+    };
+}
+
 #[tokio::main]
 async fn main() {
     let mut name: Option<String> = None;
@@ -60,13 +73,5 @@ async fn main() {
 
     let runner = PreviewRunner::new(is_mobile);
 
-    match name.as_ref() {
-        "AccountLoginView" => {
-            runner.run(AccountLoginView::preview()).await;
-        }
-        "RelayView" => {
-            runner.run(RelayView::preview()).await;
-        }
-        _ => println!("Component not found."),
-    }
+    previews!(runner, name, RelayView, AccountLoginView, ProfilePreview,);
 }

@@ -106,7 +106,7 @@ impl<'a> Note<'a> {
                 match profile
                     .as_ref()
                     .ok()
-                    .and_then(|p| p.record.profile()?.picture())
+                    .and_then(|p| p.record().profile()?.picture())
                 {
                     // these have different lifetimes and types,
                     // so the calls must be separate

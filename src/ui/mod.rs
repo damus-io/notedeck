@@ -1,10 +1,12 @@
 pub mod note;
 pub mod preview;
+pub mod profile;
 pub mod relay;
 pub mod username;
 
 pub use note::Note;
 pub use preview::{Preview, PreviewApp};
+pub use profile::ProfilePreview;
 pub use relay::RelayView;
 pub use username::Username;
 
