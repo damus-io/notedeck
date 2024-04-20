@@ -8,6 +8,13 @@ pub use username::Username;
 
 use egui::Margin;
 
+/// This is kind of like the Widget trait but is meant for larger top-level
+/// views that are typically stateful. The Widget trait forces us to add mutable
+/// implementations at the type level, which screws us when generating Previews
+/// for a Widget. I would have just Widget instead of making this Trait otherwise.
+///
+/// There is some precendent for this, it looks like there's a similar trait
+/// in the egui demo library.
 pub trait View {
     fn ui(&mut self, ui: &mut egui::Ui);
 }
