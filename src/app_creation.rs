@@ -1,4 +1,4 @@
-use crate::app_style::{create_text_styles, dark_mode, desktop_font_size, mobile_font_size};
+use crate::app_style::{create_custom_style, dark_mode, desktop_font_size, mobile_font_size};
 use crate::fonts::setup_fonts;
 use crate::ui::is_mobile;
 use eframe::NativeOptions;
@@ -47,8 +47,8 @@ pub fn setup_cc(cc: &eframe::CreationContext<'_>) {
     ctx.set_visuals(dark_mode(is_mobile(ctx)));
 
     ctx.set_style(if is_mobile(ctx) {
-        create_text_styles(ctx, mobile_font_size)
+        create_custom_style(ctx, mobile_font_size)
     } else {
-        create_text_styles(ctx, desktop_font_size)
+        create_custom_style(ctx, desktop_font_size)
     });
 }
