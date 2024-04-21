@@ -1,5 +1,6 @@
 use crate::app_style::NotedeckTextStyle;
 use crate::images;
+use crate::DisplayName;
 use egui::load::TexturePoll;
 use egui::{RichText, Sense};
 use egui_extras::Size;
@@ -58,14 +59,29 @@ impl<'a> ProfilePreview<'a> {
         }
     }
 
-    fn body(ui: &mut egui::Ui, profile: &ProfileRecord<'_>) -> egui::Response {
+    fn body(ui: &mut egui::Ui, profile: &ProfileRecord<'_>) {
         let name = if let Some(name) = crate::profile::get_profile_name(profile) {
             name
         } else {
-            "nostrich"
+            DisplayName::One("??")
         };
 
-        ui.label(RichText::new(name).text_style(NotedeckTextStyle::Heading3.text_style()))
+        match name {
+            DisplayName::One(n) => {
+                ui.label(RichText::new(n).text_style(NotedeckTextStyle::Heading3.text_style()));
+            }
+
+            DisplayName::Both {
+                display_name,
+                username,
+            } => {
+                ui.label(
+                    RichText::new(display_name)
+                        .text_style(NotedeckTextStyle::Heading3.text_style()),
+                );
+                ui.label(RichText::new(format!("@{}", username)));
+            }
+        }
     }
 }
 

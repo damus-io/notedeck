@@ -129,19 +129,17 @@ fn render_note_contents(
                             let name: String = if let Some(name) =
                                 profile.as_ref().and_then(crate::profile::get_profile_name)
                             {
-                                format!("@{}", name)
+                                format!("@{}", name.username())
                             } else {
-                                "@nostrich".to_string()
+                                "??".to_string()
                             };
 
                             let resp = ui.colored_label(colors::PURPLE, &name);
 
                             if let Some(rec) = profile.as_ref() {
                                 resp.on_hover_ui_at_pointer(|ui| {
-                                    egui::Frame::default().show(ui, |ui| {
-                                        ui.set_max_width(300.0);
-                                        ui.add(ui::ProfilePreview::new(rec));
-                                    });
+                                    ui.set_max_width(300.0);
+                                    ui.add(ui::ProfilePreview::new(rec));
                                 });
                             }
                         });
