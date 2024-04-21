@@ -4,9 +4,8 @@ pub mod options;
 pub use contents::NoteContents;
 pub use options::NoteOptions;
 
-use crate::imgcache::ImageCache;
 use crate::{colors, ui, Damus};
-use egui::{Label, RichText, Sense, TextureHandle, Vec2};
+use egui::{Label, RichText, Sense};
 
 pub struct Note<'a> {
     app: &'a mut Damus,
@@ -102,8 +101,15 @@ impl<'a> Note<'a> {
                 {
                     // these have different lifetimes and types,
                     // so the calls must be separate
-                    Some(pic) => render_pfp(ui, &mut self.app.img_cache, pic),
-                    None => render_pfp(ui, &mut self.app.img_cache, no_pfp_url()),
+                    Some(pic) => {
+                        ui.add(ui::ProfilePic::new(&mut self.app.img_cache, pic));
+                    }
+                    None => {
+                        ui.add(ui::ProfilePic::new(
+                            &mut self.app.img_cache,
+                            ui::ProfilePic::no_pfp_url(),
+                        ));
+                    }
                 }
 
                 ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
@@ -159,73 +165,6 @@ fn render_note_actionbar(ui: &mut egui::Ui) -> egui::InnerResponse<()> {
 
         //if ui.add(egui::Button::new("like")).clicked() {}
     })
-}
-
-// TODO: move to widget
-fn render_pfp(ui: &mut egui::Ui, img_cache: &mut ImageCache, url: &str) {
-    #[cfg(feature = "profiling")]
-    puffin::profile_function!();
-
-    let ui_size = 30.0;
-
-    // We will want to downsample these so it's not blurry on hi res displays
-    let img_size = (ui_size * 2.0) as u32;
-
-    let m_cached_promise = img_cache.map().get(url);
-    if m_cached_promise.is_none() {
-        let res = crate::images::fetch_img(&img_cache, ui.ctx(), url, img_size);
-        img_cache.map_mut().insert(url.to_owned(), res);
-    }
-
-    match img_cache.map()[url].ready() {
-        None => {
-            ui.add(egui::Spinner::new().size(ui_size));
-        }
-
-        // Failed to fetch profile!
-        Some(Err(_err)) => {
-            let m_failed_promise = img_cache.map().get(url);
-            if m_failed_promise.is_none() {
-                let no_pfp = crate::images::fetch_img(&img_cache, ui.ctx(), no_pfp_url(), img_size);
-                img_cache.map_mut().insert(url.to_owned(), no_pfp);
-            }
-
-            match img_cache.map().get(url).unwrap().ready() {
-                None => {
-                    paint_circle(ui, ui_size);
-                }
-                Some(Err(_e)) => {
-                    //error!("Image load error: {:?}", e);
-                    paint_circle(ui, ui_size);
-                }
-                Some(Ok(img)) => {
-                    pfp_image(ui, img, ui_size);
-                }
-            }
-        }
-        Some(Ok(img)) => {
-            pfp_image(ui, img, ui_size);
-        }
-    }
-}
-
-fn pfp_image(ui: &mut egui::Ui, img: &TextureHandle, size: f32) -> egui::Response {
-    #[cfg(feature = "profiling")]
-    puffin::profile_function!();
-
-    //img.show_max_size(ui, egui::vec2(size, size))
-    ui.add(egui::Image::new(img).max_width(size))
-    //.with_options()
-}
-
-fn no_pfp_url() -> &'static str {
-    "https://damus.io/img/no-profile.svg"
-}
-
-fn paint_circle(ui: &mut egui::Ui, size: f32) {
-    let (rect, _response) = ui.allocate_at_least(Vec2::new(size, size), Sense::hover());
-    ui.painter()
-        .circle_filled(rect.center(), size / 2.0, ui.visuals().weak_text_color());
 }
 
 fn render_reltime(
