@@ -4,8 +4,8 @@ pub mod options;
 pub use contents::NoteContents;
 pub use options::NoteOptions;
 
-use crate::{ui, Damus};
-use egui::{Color32, Label, RichText, Sense, TextureHandle, Vec2};
+use crate::{colors, ui, Damus};
+use egui::{Label, RichText, Sense, TextureHandle, Vec2};
 
 pub struct Note<'a> {
     app: &'a mut Damus,
@@ -237,17 +237,20 @@ fn render_reltime(
     puffin::profile_function!();
 
     ui.horizontal(|ui| {
-        let color = Color32::from_rgb(0x8A, 0x8A, 0x8A);
         if before {
-            ui.add(Label::new(RichText::new("⋅").size(10.0).color(color)));
+            ui.add(Label::new(
+                RichText::new("⋅").size(10.0).color(colors::GRAY_SECONDARY),
+            ));
         }
         ui.add(Label::new(
             RichText::new(note_cache.reltime_str())
                 .size(10.0)
-                .color(color),
+                .color(colors::GRAY_SECONDARY),
         ));
         if !before {
-            ui.add(Label::new(RichText::new("⋅").size(10.0).color(color)));
+            ui.add(Label::new(
+                RichText::new("⋅").size(10.0).color(colors::GRAY_SECONDARY),
+            ));
         }
     })
 }

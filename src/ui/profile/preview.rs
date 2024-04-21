@@ -1,6 +1,5 @@
 use crate::app_style::NotedeckTextStyle;
-use crate::images;
-use crate::DisplayName;
+use crate::{colors, images, DisplayName};
 use egui::load::TexturePoll;
 use egui::{RichText, Sense};
 use egui_extras::Size;
@@ -66,22 +65,33 @@ impl<'a> ProfilePreview<'a> {
             DisplayName::One("??")
         };
 
-        match name {
-            DisplayName::One(n) => {
-                ui.label(RichText::new(n).text_style(NotedeckTextStyle::Heading3.text_style()));
+        crate::ui::padding(12.0, ui, |ui| {
+            match name {
+                DisplayName::One(n) => {
+                    ui.label(RichText::new(n).text_style(NotedeckTextStyle::Heading3.text_style()));
+                }
+
+                DisplayName::Both {
+                    display_name,
+                    username,
+                } => {
+                    ui.label(
+                        RichText::new(display_name)
+                            .text_style(NotedeckTextStyle::Heading3.text_style()),
+                    );
+
+                    ui.label(
+                        RichText::new(format!("@{}", username))
+                            .size(12.0)
+                            .color(colors::MID_GRAY),
+                    );
+                }
             }
 
-            DisplayName::Both {
-                display_name,
-                username,
-            } => {
-                ui.label(
-                    RichText::new(display_name)
-                        .text_style(NotedeckTextStyle::Heading3.text_style()),
-                );
-                ui.label(RichText::new(format!("@{}", username)));
+            if let Some(about) = profile.record().profile().and_then(|p| p.about()) {
+                ui.label(about);
             }
-        }
+        });
     }
 }
 

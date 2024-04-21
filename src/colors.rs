@@ -2,7 +2,7 @@ use egui::Color32;
 
 pub const PURPLE: Color32 = Color32::from_rgb(0xCC, 0x43, 0xC5);
 //pub const DARK_BG: Color32 = egui::Color32::from_rgb(40, 44, 52);
-const GRAY_SECONDARY: Color32 = Color32::from_rgb(0x8A, 0x8A, 0x8A);
+pub const GRAY_SECONDARY: Color32 = Color32::from_rgb(0x8A, 0x8A, 0x8A);
 const BLACK: Color32 = Color32::from_rgb(0x00, 0x00, 0x00);
 const RED_700: Color32 = Color32::from_rgb(0xC7, 0x37, 0x5A);
 const GREEN_700: Color32 = Color32::from_rgb(0x24, 0xEC, 0xC9);
@@ -16,7 +16,7 @@ const DARK_ISH_BG: Color32 = Color32::from_rgb(0x22, 0x22, 0x22);
 const SEMI_DARK_BG: Color32 = Color32::from_rgb(0x44, 0x44, 0x44);
 
 const LIGHT_GRAY: Color32 = Color32::from_rgb(0xc8, 0xc8, 0xc8); // 78%
-const MID_GRAY: Color32 = Color32::from_rgb(0xba, 0xba, 0xba); // 72%
+pub const MID_GRAY: Color32 = Color32::from_rgb(0xbd, 0xbd, 0xbd);
 const DARKER_GRAY: Color32 = Color32::from_rgb(0xa5, 0xa5, 0xa5); // 65%
 const EVEN_DARKER_GRAY: Color32 = Color32::from_rgb(0x89, 0x89, 0x89); // 54%
 
@@ -93,11 +93,11 @@ pub fn light_color_theme() -> ColorTheme {
         selection_color: GREEN_700,
 
         // WINDOW
-        window_fill: MID_GRAY,
+        window_fill: Color32::WHITE,
         window_stroke_color: DARKER_GRAY,
 
         // NONINTERACTIVE WIDGET
-        noninteractive_bg_fill: MID_GRAY,
+        noninteractive_bg_fill: Color32::WHITE,
         noninteractive_weak_bg_fill: EVEN_DARKER_GRAY,
         noninteractive_bg_stroke_color: DARKER_GRAY,
         noninteractive_fg_stroke_color: GRAY_SECONDARY,
