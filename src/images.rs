@@ -1,7 +1,7 @@
 use crate::error::Error;
 use crate::imgcache::ImageCache;
 use crate::result::Result;
-use egui::{Color32, ColorImage, SizeHint, TextureHandle};
+use egui::{pos2, Color32, ColorImage, Rect, Sense, SizeHint, TextureHandle};
 use image::imageops::FilterType;
 use poll_promise::Promise;
 use std::path;
@@ -10,6 +10,50 @@ use tokio::fs;
 //pub type ImageCacheKey = String;
 //pub type ImageCacheValue = Promise<Result<TextureHandle>>;
 //pub type ImageCache = HashMap<String, ImageCacheValue>;
+
+// NOTE(jb55): chatgpt wrote this because I was too dumb to
+pub fn aspect_fill(
+    ui: &mut egui::Ui,
+    sense: Sense,
+    texture_id: egui::TextureId,
+    aspect_ratio: f32,
+) -> egui::Response {
+    let frame = ui.available_rect_before_wrap(); // Get the available frame space in the current layout
+    let frame_ratio = frame.width() / frame.height();
+
+    let (width, height) = if frame_ratio > aspect_ratio {
+        // Frame is wider than the content
+        (frame.width(), frame.width() / aspect_ratio)
+    } else {
+        // Frame is taller than the content
+        (frame.height() * aspect_ratio, frame.height())
+    };
+
+    let content_rect = Rect::from_min_size(
+        frame.min
+            + egui::vec2(
+                (frame.width() - width) / 2.0,
+                (frame.height() - height) / 2.0,
+            ),
+        egui::vec2(width, height),
+    );
+
+    // Set the clipping rectangle to the frame
+    //let clip_rect = ui.clip_rect(); // Preserve the original clipping rectangle
+    //ui.set_clip_rect(frame);
+
+    let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+
+    let (response, painter) = ui.allocate_painter(ui.available_size(), sense);
+
+    // Draw the texture within the calculated rect, potentially clipping it
+    painter.rect_filled(content_rect, 0.0, ui.ctx().style().visuals.window_fill());
+    painter.image(texture_id, content_rect, uv, Color32::WHITE);
+
+    // Restore the original clipping rectangle
+    //ui.set_clip_rect(clip_rect);
+    response
+}
 
 pub fn round_image(image: &mut ColorImage) {
     #[cfg(feature = "profiling")]
