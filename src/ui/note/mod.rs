@@ -4,6 +4,7 @@ pub mod options;
 pub use contents::NoteContents;
 pub use options::NoteOptions;
 
+use crate::imgcache::ImageCache;
 use crate::{colors, ui, Damus};
 use egui::{Label, RichText, Sense, TextureHandle, Vec2};
 
@@ -101,8 +102,8 @@ impl<'a> Note<'a> {
                 {
                     // these have different lifetimes and types,
                     // so the calls must be separate
-                    Some(pic) => render_pfp(ui, self.app, pic),
-                    None => render_pfp(ui, self.app, no_pfp_url()),
+                    Some(pic) => render_pfp(ui, &mut self.app.img_cache, pic),
+                    None => render_pfp(ui, &mut self.app.img_cache, no_pfp_url()),
                 }
 
                 ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
@@ -161,7 +162,7 @@ fn render_note_actionbar(ui: &mut egui::Ui) -> egui::InnerResponse<()> {
 }
 
 // TODO: move to widget
-fn render_pfp(ui: &mut egui::Ui, damus: &mut Damus, url: &str) {
+fn render_pfp(ui: &mut egui::Ui, img_cache: &mut ImageCache, url: &str) {
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
 
@@ -170,27 +171,26 @@ fn render_pfp(ui: &mut egui::Ui, damus: &mut Damus, url: &str) {
     // We will want to downsample these so it's not blurry on hi res displays
     let img_size = (ui_size * 2.0) as u32;
 
-    let m_cached_promise = damus.img_cache.map().get(url);
+    let m_cached_promise = img_cache.map().get(url);
     if m_cached_promise.is_none() {
-        let res = crate::images::fetch_img(&damus.img_cache, ui.ctx(), url, img_size);
-        damus.img_cache.map_mut().insert(url.to_owned(), res);
+        let res = crate::images::fetch_img(&img_cache, ui.ctx(), url, img_size);
+        img_cache.map_mut().insert(url.to_owned(), res);
     }
 
-    match damus.img_cache.map()[url].ready() {
+    match img_cache.map()[url].ready() {
         None => {
             ui.add(egui::Spinner::new().size(ui_size));
         }
 
         // Failed to fetch profile!
         Some(Err(_err)) => {
-            let m_failed_promise = damus.img_cache.map().get(url);
+            let m_failed_promise = img_cache.map().get(url);
             if m_failed_promise.is_none() {
-                let no_pfp =
-                    crate::images::fetch_img(&damus.img_cache, ui.ctx(), no_pfp_url(), img_size);
-                damus.img_cache.map_mut().insert(url.to_owned(), no_pfp);
+                let no_pfp = crate::images::fetch_img(&img_cache, ui.ctx(), no_pfp_url(), img_size);
+                img_cache.map_mut().insert(url.to_owned(), no_pfp);
             }
 
-            match damus.img_cache.map().get(url).unwrap().ready() {
+            match img_cache.map().get(url).unwrap().ready() {
                 None => {
                     paint_circle(ui, ui_size);
                 }
