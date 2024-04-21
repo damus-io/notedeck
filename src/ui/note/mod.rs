@@ -93,15 +93,6 @@ impl<'a> Note<'a> {
         ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
             let profile = self.app.ndb.get_profile_by_pubkey(txn, self.note.pubkey());
 
-            /*
-            let mut collapse_state =
-                egui::collapsing_header::CollapsingState::load_with_default_open(
-                    ui.ctx(),
-                    id,
-                    false,
-                );
-                */
-
             crate::ui::padding(6.0, ui, |ui| {
                 match profile
                     .as_ref()
@@ -139,18 +130,8 @@ impl<'a> Note<'a> {
                     if self.options().has_actionbar() {
                         render_note_actionbar(ui);
                     }
-
-                    //let header_res = ui.horizontal(|ui| {});
                 });
             });
-
-            //let resp = ui.interact(inner_resp.response.rect, id, Sense::hover());
-
-            //if resp.hovered() ^ collapse_state.is_open() {
-            //info!("clicked {:?}, {}", self.note_key, collapse_state.is_open());
-            //collapse_state.toggle(ui);
-            //collapse_state.store(ui.ctx());
-            //}
         })
         .response
     }
