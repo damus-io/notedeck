@@ -481,7 +481,7 @@ impl Damus {
             timelines.push(Timeline::new(filter));
         };
 
-        let imgcache_dir = data_path.as_ref().join("cache/img");
+        let imgcache_dir = data_path.as_ref().join(ImageCache::rel_datadir());
         let _ = std::fs::create_dir_all(imgcache_dir.clone());
 
         let mut config = Config::new();

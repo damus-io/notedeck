@@ -90,10 +90,12 @@ impl<'a> Note<'a> {
         let note_key = self.note.key().expect("todo: support non-db notes");
         let txn = self.note.txn().expect("todo: support non-db notes");
 
-        ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
-            let profile = self.app.ndb.get_profile_by_pubkey(txn, self.note.pubkey());
+        crate::ui::padding(12.0, ui, |ui| {
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
+                ui.spacing_mut().item_spacing.x = 16.0;
 
-            crate::ui::padding(6.0, ui, |ui| {
+                let profile = self.app.ndb.get_profile_by_pubkey(txn, self.note.pubkey());
+
                 match profile
                     .as_ref()
                     .ok()

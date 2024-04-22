@@ -139,7 +139,7 @@ fn render_note_contents(
                             if let Some(rec) = profile.as_ref() {
                                 resp.on_hover_ui_at_pointer(|ui| {
                                     ui.set_max_width(300.0);
-                                    ui.add(ui::ProfilePreview::new(rec));
+                                    ui.add(ui::ProfilePreview::new(rec, &mut damus.img_cache));
                                 });
                             }
                         });

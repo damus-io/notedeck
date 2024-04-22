@@ -3,7 +3,7 @@ use crate::fonts::setup_fonts;
 use crate::ui::is_mobile;
 use eframe::NativeOptions;
 
-pub const UI_SCALE_FACTOR: f32 = 0.2;
+//pub const UI_SCALE_FACTOR: f32 = 0.2;
 
 pub fn generate_native_options() -> NativeOptions {
     generate_native_options_with_builder_modifiers(|builder| {
@@ -40,7 +40,7 @@ pub fn setup_cc(cc: &eframe::CreationContext<'_>) {
     let ctx = &cc.egui_ctx;
     setup_fonts(ctx);
 
-    ctx.set_pixels_per_point(ctx.pixels_per_point() + UI_SCALE_FACTOR);
+    //ctx.set_pixels_per_point(ctx.pixels_per_point() + UI_SCALE_FACTOR);
 
     egui_extras::install_image_loaders(ctx);
 

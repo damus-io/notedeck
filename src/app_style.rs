@@ -75,7 +75,7 @@ pub fn desktop_font_size(text_style: &NotedeckTextStyle) -> f32 {
         NotedeckTextStyle::Heading => 48.0,
         NotedeckTextStyle::Heading2 => 24.0,
         NotedeckTextStyle::Heading3 => 20.0,
-        NotedeckTextStyle::Body => 13.0,
+        NotedeckTextStyle::Body => 16.0,
         NotedeckTextStyle::Monospace => 13.0,
         NotedeckTextStyle::Button => 13.0,
         NotedeckTextStyle::Small => 12.0,

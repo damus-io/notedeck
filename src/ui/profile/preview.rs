@@ -1,20 +1,24 @@
 use crate::app_style::NotedeckTextStyle;
+use crate::imgcache::ImageCache;
+use crate::ui::ProfilePic;
 use crate::{colors, images, DisplayName};
 use egui::load::TexturePoll;
 use egui::{RichText, Sense};
 use egui_extras::Size;
 use nostrdb::ProfileRecord;
 
-pub struct ProfilePreview<'a> {
+pub struct ProfilePreview<'a, 'cache> {
     profile: &'a ProfileRecord<'a>,
+    cache: &'cache mut ImageCache,
     banner_height: Size,
 }
 
-impl<'a> ProfilePreview<'a> {
-    pub fn new(profile: &'a ProfileRecord<'a>) -> Self {
+impl<'a, 'cache> ProfilePreview<'a, 'cache> {
+    pub fn new(profile: &'a ProfileRecord<'a>, cache: &'cache mut ImageCache) -> Self {
         let banner_height = Size::exact(80.0);
         ProfilePreview {
             profile,
+            cache,
             banner_height,
         }
     }
@@ -58,14 +62,22 @@ impl<'a> ProfilePreview<'a> {
         }
     }
 
-    fn body(ui: &mut egui::Ui, profile: &ProfileRecord<'_>) {
-        let name = if let Some(name) = crate::profile::get_profile_name(profile) {
+    fn body(self, ui: &mut egui::Ui) {
+        let name = if let Some(name) = crate::profile::get_profile_name(self.profile) {
             name
         } else {
             DisplayName::One("??")
         };
 
         crate::ui::padding(12.0, ui, |ui| {
+            let url = if let Some(url) = self.profile.record().profile().and_then(|p| p.picture()) {
+                url
+            } else {
+                ProfilePic::no_pfp_url()
+            };
+
+            ui.add(ProfilePic::new(self.cache, url).size(80.0));
+
             match name {
                 DisplayName::One(n) => {
                     ui.label(RichText::new(n).text_style(NotedeckTextStyle::Heading3.text_style()));
@@ -88,21 +100,21 @@ impl<'a> ProfilePreview<'a> {
                 }
             }
 
-            if let Some(about) = profile.record().profile().and_then(|p| p.about()) {
+            if let Some(about) = self.profile.record().profile().and_then(|p| p.about()) {
                 ui.label(about);
             }
         });
     }
 }
 
-impl<'a> egui::Widget for ProfilePreview<'a> {
+impl<'a, 'cache> egui::Widget for ProfilePreview<'a, 'cache> {
     fn ui(self, ui: &mut egui::Ui) -> egui::Response {
         ui.vertical(|ui| {
             ui.add_sized([ui.available_size().x, 80.0], |ui: &mut egui::Ui| {
                 ProfilePreview::banner(ui, self.profile)
             });
 
-            ProfilePreview::body(ui, self.profile);
+            self.body(ui);
         })
         .response
     }
@@ -116,12 +128,14 @@ mod previews {
 
     pub struct ProfilePreviewPreview<'a> {
         profile: ProfileRecord<'a>,
+        cache: ImageCache,
     }
 
     impl<'a> ProfilePreviewPreview<'a> {
         pub fn new() -> Self {
             let profile = test_profile_record();
-            ProfilePreviewPreview { profile }
+            let cache = ImageCache::new(ImageCache::rel_datadir().into());
+            ProfilePreviewPreview { profile, cache }
         }
     }
 
@@ -133,11 +147,11 @@ mod previews {
 
     impl<'a> View for ProfilePreviewPreview<'a> {
         fn ui(&mut self, ui: &mut egui::Ui) {
-            ProfilePreview::new(&self.profile).ui(ui);
+            ProfilePreview::new(&self.profile, &mut self.cache).ui(ui);
         }
     }
 
-    impl<'a> Preview for ProfilePreview<'a> {
+    impl<'a, 'cache> Preview for ProfilePreview<'a, 'cache> {
         /// A preview of the profile preview :D
         type Prev = ProfilePreviewPreview<'a>;
 

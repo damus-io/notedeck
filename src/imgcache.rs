@@ -25,6 +25,10 @@ impl ImageCache {
         }
     }
 
+    pub fn rel_datadir() -> &'static str {
+        "cache/img"
+    }
+
     pub fn write(cache_dir: &path::Path, url: &str, data: ColorImage) -> Result<()> {
         let file_path = cache_dir.join(Self::key(url));
         let file = File::options()
