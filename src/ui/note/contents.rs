@@ -53,6 +53,9 @@ fn render_note_preview(
     id: &[u8; 32],
     _id_str: &str,
 ) -> egui::Response {
+    #[cfg(feature = "profiling")]
+    puffin::profile_function!();
+
     let note = if let Ok(note) = app.ndb.get_note_by_id(txn, id) {
         // TODO: support other preview kinds
         if note.kind() == 1 {
@@ -123,6 +126,9 @@ fn render_note_contents(
             match block.blocktype() {
                 BlockType::MentionBech32 => match block.as_mention().unwrap() {
                     Mention::Pubkey(npub) => {
+                        #[cfg(feature = "profiling")]
+                        puffin::profile_scope!("pubkey contents");
+
                         ui.horizontal(|ui| {
                             let profile = damus.ndb.get_profile_by_pubkey(txn, npub.pubkey()).ok();
 
@@ -154,17 +160,14 @@ fn render_note_contents(
                     }
 
                     _ => {
-                        ui.colored_label(colors::PURPLE, "@");
-                        ui.colored_label(colors::PURPLE, &block.as_str()[4..16]);
+                        ui.colored_label(colors::PURPLE, format!("@{}", &block.as_str()[4..16]));
                     }
                 },
 
                 BlockType::Hashtag => {
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 0.0;
-                        ui.colored_label(colors::PURPLE, "#");
-                        ui.colored_label(colors::PURPLE, block.as_str());
-                    });
+                    #[cfg(feature = "profiling")]
+                    puffin::profile_scope!("hashtag contents");
+                    ui.colored_label(colors::PURPLE, format!("#{}", block.as_str()));
                 }
 
                 BlockType::Url => {
@@ -174,6 +177,8 @@ fn render_note_contents(
                         images.push(url);
                     } else {
                     */
+                    #[cfg(feature = "profiling")]
+                    puffin::profile_scope!("url contents");
                     ui.add(Hyperlink::from_label_and_url(
                         RichText::new(block.as_str()).color(colors::PURPLE),
                         block.as_str(),
@@ -182,6 +187,8 @@ fn render_note_contents(
                 }
 
                 BlockType::Text => {
+                    #[cfg(feature = "profiling")]
+                    puffin::profile_scope!("text contents");
                     ui.label(block.as_str());
                 }
 
