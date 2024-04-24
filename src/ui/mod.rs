@@ -1,3 +1,4 @@
+pub mod anim;
 pub mod note;
 pub mod preview;
 pub mod profile;

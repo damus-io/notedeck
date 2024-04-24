@@ -16,8 +16,12 @@ impl<'cache, 'url> egui::Widget for ProfilePic<'cache, 'url> {
 
 impl<'cache, 'url> ProfilePic<'cache, 'url> {
     pub fn new(cache: &'cache mut ImageCache, url: &'url str) -> Self {
-        let size = 32.0;
+        let size = Self::default_size();
         ProfilePic { cache, url, size }
+    }
+
+    pub fn default_size() -> f32 {
+        32.0
     }
 
     pub fn no_pfp_url() -> &'static str {
