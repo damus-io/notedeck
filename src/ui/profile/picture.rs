@@ -100,12 +100,14 @@ fn paint_circle(ui: &mut egui::Ui, size: f32) -> egui::Response {
 
 mod preview {
     use super::*;
+    use crate::ui;
     use nostrdb::*;
     use std::collections::HashSet;
 
     pub struct ProfilePicPreview {
         cache: ImageCache,
-        urls: Vec<String>,
+        ndb: Ndb,
+        keys: Vec<ProfileKey>,
     }
 
     impl ProfilePicPreview {
@@ -116,9 +118,9 @@ mod preview {
             let filters = vec![Filter::new().kinds(vec![0]).build()];
             let cache = ImageCache::new("cache/img".into());
             let mut pks = HashSet::new();
-            let mut urls = HashSet::new();
+            let mut keys = HashSet::new();
 
-            for query_result in ndb.query(&txn, filters, 1000).unwrap() {
+            for query_result in ndb.query(&txn, filters, 2000).unwrap() {
                 pks.insert(query_result.note.pubkey());
             }
 
@@ -128,22 +130,53 @@ mod preview {
                 } else {
                     continue;
                 };
-                if let Some(url) = profile.record().profile().and_then(|p| p.picture()) {
-                    urls.insert(url.to_string());
+
+                if profile
+                    .record()
+                    .profile()
+                    .and_then(|p| p.picture())
+                    .is_none()
+                {
+                    continue;
                 }
+
+                keys.insert(profile.key().expect("should not be owned"));
             }
 
-            let urls = urls.into_iter().collect();
-
-            ProfilePicPreview { cache, urls }
+            let keys = keys.into_iter().collect();
+            ProfilePicPreview { cache, ndb, keys }
         }
     }
 
     impl View for ProfilePicPreview {
         fn ui(&mut self, ui: &mut egui::Ui) {
             ui.horizontal_wrapped(|ui| {
-                for url in &self.urls {
-                    ui.add(ProfilePic::new(&mut self.cache, &url));
+                let txn = Transaction::new(&self.ndb).unwrap();
+                for key in &self.keys {
+                    let profile = self.ndb.get_profile_by_key(&txn, *key).unwrap();
+                    let url = profile
+                        .record()
+                        .profile()
+                        .expect("should have profile")
+                        .picture()
+                        .expect("should have picture");
+
+                    let expand_size = 10.0;
+                    let anim_speed = 0.05;
+
+                    let (rect, size) = ui::anim::hover_expand(
+                        ui,
+                        egui::Id::new(profile.key().unwrap()),
+                        ui::ProfilePic::default_size(),
+                        expand_size,
+                        anim_speed,
+                    );
+
+                    ui.put(rect, ui::ProfilePic::new(&mut self.cache, url).size(size))
+                        .on_hover_ui_at_pointer(|ui| {
+                            ui.set_max_width(300.0);
+                            ui.add(ui::ProfilePreview::new(&profile, &mut self.cache));
+                        });
                 }
             });
         }
