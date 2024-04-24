@@ -2,7 +2,7 @@ use notedeck::account_login_view::AccountLoginView;
 use notedeck::app_creation::{
     generate_mobile_emulator_native_options, generate_native_options, setup_cc,
 };
-use notedeck::ui::{Preview, PreviewApp, ProfilePreview, RelayView};
+use notedeck::ui::{Preview, PreviewApp, ProfilePreview, RelayView, ProfilePic};
 use std::env;
 
 struct PreviewRunner {
@@ -73,5 +73,5 @@ async fn main() {
 
     let runner = PreviewRunner::new(is_mobile);
 
-    previews!(runner, name, RelayView, AccountLoginView, ProfilePreview,);
+    previews!(runner, name, RelayView, AccountLoginView, ProfilePreview, ProfilePic);
 }

@@ -1,2 +1,2 @@
 #!/usr/bin/env bash
-cargo run --bin ui_preview -- "$@"
+cargo run --bin ui_preview --release -- "$@"

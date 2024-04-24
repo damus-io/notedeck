@@ -1,5 +1,5 @@
 use crate::imgcache::ImageCache;
-
+use crate::ui::{Preview, View};
 use egui::{vec2, Sense, TextureHandle};
 
 pub struct ProfilePic<'cache, 'url> {
@@ -96,4 +96,64 @@ fn paint_circle(ui: &mut egui::Ui, size: f32) -> egui::Response {
         .circle_filled(rect.center(), size / 2.0, ui.visuals().weak_text_color());
 
     response
+}
+
+mod preview {
+    use super::*;
+    use nostrdb::*;
+    use std::collections::HashSet;
+
+    pub struct ProfilePicPreview {
+        cache: ImageCache,
+        urls: Vec<String>,
+    }
+
+    impl ProfilePicPreview {
+        fn new() -> Self {
+            let config = Config::new();
+            let ndb = Ndb::new(".", &config).expect("ndb");
+            let txn = Transaction::new(&ndb).unwrap();
+            let filters = vec![Filter::new().kinds(vec![0]).build()];
+            let cache = ImageCache::new("cache/img".into());
+            let mut pks = HashSet::new();
+            let mut urls = HashSet::new();
+
+            for query_result in ndb.query(&txn, filters, 1000).unwrap() {
+                pks.insert(query_result.note.pubkey());
+            }
+
+            for pk in pks {
+                let profile = if let Ok(profile) = ndb.get_profile_by_pubkey(&txn, pk) {
+                    profile
+                } else {
+                    continue;
+                };
+                if let Some(url) = profile.record().profile().and_then(|p| p.picture()) {
+                    urls.insert(url.to_string());
+                }
+            }
+
+            let urls = urls.into_iter().collect();
+
+            ProfilePicPreview { cache, urls }
+        }
+    }
+
+    impl View for ProfilePicPreview {
+        fn ui(&mut self, ui: &mut egui::Ui) {
+            ui.horizontal_wrapped(|ui| {
+                for url in &self.urls {
+                    ui.add(ProfilePic::new(&mut self.cache, &url));
+                }
+            });
+        }
+    }
+
+    impl<'cache, 'url> Preview for ProfilePic<'cache, 'url> {
+        type Prev = ProfilePicPreview;
+
+        fn preview() -> Self::Prev {
+            ProfilePicPreview::new()
+        }
+    }
 }

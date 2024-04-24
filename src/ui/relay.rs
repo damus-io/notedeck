@@ -193,7 +193,7 @@ mod preview {
     impl View for RelayViewPreview {
         fn ui(&mut self, ui: &mut egui::Ui) {
             self.pool.try_recv();
-            RelayView::new(RelayPoolManager::new(&mut self.pool)).ui(ui)
+            RelayView::new(RelayPoolManager::new(&mut self.pool)).ui(ui);
         }
     }
 
