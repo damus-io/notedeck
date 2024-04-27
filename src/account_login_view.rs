@@ -16,7 +16,17 @@ pub struct AccountLoginView<'a> {
 
 impl<'a> View for AccountLoginView<'a> {
     fn ui(&mut self, ui: &mut egui::Ui) {
-        if ui::is_mobile(ui.ctx()) {
+        let is_mobile = ui::is_mobile(ui.ctx());
+        if let Some(key) = self.manager.check_for_successful_login() {
+            // TODO: route to "home"
+            println!("successful login with key: {:?}", key);
+            return if is_mobile {
+                // route to "home" on mobile
+            } else {
+                // route to "home" on desktop
+            };
+        }
+        if is_mobile {
             self.show_mobile(ui);
         } else {
             self.show(ui);
@@ -93,6 +103,8 @@ impl<'a> AccountLoginView<'a> {
 
             ui.vertical_centered_justified(|ui| {
                 ui.add(login_textedit(self.manager));
+
+                self.loading_and_error(ui);
 
                 if ui.add(login_button()).clicked() {
                     self.manager.apply_login();
@@ -219,29 +231,7 @@ impl<'a> AccountLoginView<'a> {
 
             ui.add(login_textedit(self.manager).min_size(Vec2::new(440.0, 40.0)));
 
-            ui.add_space(8.0);
-
-            ui.vertical_centered(|ui| {
-                if self.manager.is_awaiting_network() {
-                    ui.add(egui::Spinner::new());
-                }
-            });
-
-            if let Some(err) = self.manager.check_for_error() {
-                ui.horizontal(|ui| {
-                    let error_label = match err {
-                        LoginError::InvalidKey => egui::Label::new(
-                            RichText::new("Invalid key.").color(ui.visuals().error_fg_color),
-                        ),
-                        LoginError::Nip05Failed(e) => {
-                            egui::Label::new(RichText::new(e).color(ui.visuals().error_fg_color))
-                        }
-                    };
-                    ui.add(error_label.truncate(true));
-                });
-            }
-
-            ui.add_space(8.0);
+            self.loading_and_error(ui);
 
             let login_button = login_button().min_size(Vec2::new(442.0, 40.0));
 
@@ -249,6 +239,22 @@ impl<'a> AccountLoginView<'a> {
                 self.manager.apply_login()
             }
         });
+    }
+
+    fn loading_and_error(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(8.0);
+
+        ui.vertical_centered(|ui| {
+            if self.manager.is_awaiting_network() {
+                ui.add(egui::Spinner::new());
+            }
+        });
+
+        if let Some(err) = self.manager.check_for_error() {
+            show_error(ui, err);
+        }
+
+        ui.add_space(8.0);
     }
 
     fn generate_group(&mut self, ui: &mut egui::Ui) {
@@ -277,6 +283,20 @@ impl<'a> AccountLoginView<'a> {
             // TODO: keygen
         }
     }
+}
+
+fn show_error(ui: &mut egui::Ui, err: &LoginError) {
+    ui.horizontal(|ui| {
+        let error_label = match err {
+            LoginError::InvalidKey => {
+                egui::Label::new(RichText::new("Invalid key.").color(ui.visuals().error_fg_color))
+            }
+            LoginError::Nip05Failed(e) => {
+                egui::Label::new(RichText::new(e).color(ui.visuals().error_fg_color))
+            }
+        };
+        ui.add(error_label.truncate(true));
+    });
 }
 
 fn login_title_text() -> RichText {
