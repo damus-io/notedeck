@@ -1,5 +1,5 @@
 use crate::app_style::NotedeckTextStyle;
-use crate::key_parsing::{perform_key_retrieval, LoginError};
+use crate::key_parsing::LoginError;
 use crate::login_manager::LoginManager;
 use crate::ui;
 use crate::ui::{Preview, View};
@@ -7,7 +7,7 @@ use egui::{
     Align, Align2, Button, Color32, Frame, Id, LayerId, Margin, Pos2, Rect, RichText, Rounding, Ui,
     Vec2, Window,
 };
-use egui::{Image, TextBuffer, TextEdit};
+use egui::{Image, TextEdit};
 
 pub struct AccountLoginView<'a> {
     manager: &'a mut LoginManager,
@@ -92,10 +92,10 @@ impl<'a> AccountLoginView<'a> {
             });
 
             ui.vertical_centered_justified(|ui| {
-                ui.add(login_textedit(&mut self.manager.login_key));
+                ui.add(login_textedit(self.manager));
 
                 if ui.add(login_button()).clicked() {
-                    self.manager.promise = Some(perform_key_retrieval(&self.manager.login_key));
+                    self.manager.apply_login();
                 }
             });
 
@@ -217,23 +217,17 @@ impl<'a> AccountLoginView<'a> {
 
             ui.add_space(8f32);
 
-            ui.add(login_textedit(&mut self.manager.login_key).min_size(Vec2::new(440.0, 40.0)));
+            ui.add(login_textedit(self.manager).min_size(Vec2::new(440.0, 40.0)));
 
             ui.add_space(8.0);
 
             ui.vertical_centered(|ui| {
-                if self.manager.promise.is_some() {
+                if self.manager.is_awaiting_network() {
                     ui.add(egui::Spinner::new());
                 }
             });
 
-            if let Some(error_key) = &self.manager.key_on_error {
-                if self.manager.login_key != *error_key {
-                    self.manager.error = None;
-                    self.manager.key_on_error = None;
-                }
-            }
-            if let Some(err) = &self.manager.error {
+            if let Some(err) = self.manager.check_for_error() {
                 ui.horizontal(|ui| {
                     let error_label = match err {
                         LoginError::InvalidKey => egui::Label::new(
@@ -252,7 +246,7 @@ impl<'a> AccountLoginView<'a> {
             let login_button = login_button().min_size(Vec2::new(442.0, 40.0));
 
             if ui.add(login_button).clicked() {
-                self.manager.promise = Some(perform_key_retrieval(&self.manager.login_key));
+                self.manager.apply_login()
             }
         });
     }
@@ -332,14 +326,16 @@ fn login_button() -> Button<'static> {
     .min_size(Vec2::new(0.0, 40.0))
 }
 
-fn login_textedit(text: &mut dyn TextBuffer) -> TextEdit {
-    egui::TextEdit::singleline(text)
-        .hint_text(
-            RichText::new("Your key here...").text_style(NotedeckTextStyle::Body.text_style()),
-        )
-        .vertical_align(Align::Center)
-        .min_size(Vec2::new(0.0, 40.0))
-        .margin(Margin::same(12.0))
+fn login_textedit(manager: &mut LoginManager) -> TextEdit {
+    manager.get_login_textedit(|text| {
+        egui::TextEdit::singleline(text)
+            .hint_text(
+                RichText::new("Your key here...").text_style(NotedeckTextStyle::Body.text_style()),
+            )
+            .vertical_align(Align::Center)
+            .min_size(Vec2::new(0.0, 40.0))
+            .margin(Margin::same(12.0))
+    })
 }
 
 pub struct AccountLoginPreview {
