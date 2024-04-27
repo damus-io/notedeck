@@ -1,10 +1,12 @@
 pub mod anim;
+pub mod mention;
 pub mod note;
 pub mod preview;
 pub mod profile;
 pub mod relay;
 pub mod username;
 
+pub use mention::Mention;
 pub use note::Note;
 pub use preview::{Preview, PreviewApp};
 pub use profile::{ProfilePic, ProfilePreview};

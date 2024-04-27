@@ -6,6 +6,7 @@ pub use options::NoteOptions;
 
 use crate::{colors, ui, Damus};
 use egui::{Label, RichText, Sense};
+use nostrdb::{NoteKey, Transaction};
 use std::hash::{Hash, Hasher};
 
 pub struct Note<'a> {
@@ -35,6 +36,90 @@ impl Hash for ProfileAnimId {
         state.write_u8(0x12);
         self.profile_key.hash(state);
         self.note_key.hash(state);
+    }
+}
+
+fn reply_desc(
+    ui: &mut egui::Ui,
+    txn: &Transaction,
+    app: &mut Damus,
+    note_key: NoteKey,
+    note: &nostrdb::Note<'_>,
+) {
+    #[cfg(feature = "profiling")]
+    puffin::profile_function!();
+
+    let note_reply = app
+        .get_note_cache_mut(note_key, note)
+        .reply
+        .borrow(note.tags());
+
+    let reply = if let Some(reply) = note_reply.reply() {
+        reply
+    } else {
+        // not a reply, nothing to do here
+        return;
+    };
+
+    ui.add(Label::new(
+        RichText::new("replying to")
+            .size(10.0)
+            .color(colors::GRAY_SECONDARY),
+    ));
+
+    let reply_note = if let Ok(reply_note) = app.ndb.get_note_by_id(txn, reply.id) {
+        reply_note
+    } else {
+        ui.add(Label::new(
+            RichText::new("a note")
+                .size(10.0)
+                .color(colors::GRAY_SECONDARY),
+        ));
+        return;
+    };
+
+    if note_reply.is_reply_to_root() {
+        // We're replying to the root, let's show this
+        ui.add(ui::Mention::new(app, txn, reply_note.pubkey()).size(10.0));
+        ui.add(Label::new(
+            RichText::new("'s note")
+                .size(10.0)
+                .color(colors::GRAY_SECONDARY),
+        ));
+    } else if let Some(root) = note_reply.root() {
+        // replying to another post in a thread, not the root
+
+        if let Ok(root_note) = app.ndb.get_note_by_id(txn, root.id) {
+            if root_note.pubkey() == reply_note.pubkey() {
+                // simply "replying to bob's note" when replying to bob in his thread
+                ui.add(ui::Mention::new(app, txn, reply_note.pubkey()).size(10.0));
+                ui.add(Label::new(
+                    RichText::new("'s note")
+                        .size(10.0)
+                        .color(colors::GRAY_SECONDARY),
+                ));
+            } else {
+                // replying to bob in alice's thread
+
+                ui.add(ui::Mention::new(app, txn, reply_note.pubkey()).size(10.0));
+                ui.add(Label::new(
+                    RichText::new("in").size(10.0).color(colors::GRAY_SECONDARY),
+                ));
+                ui.add(ui::Mention::new(app, txn, root_note.pubkey()).size(10.0));
+                ui.add(Label::new(
+                    RichText::new("'s thread")
+                        .size(10.0)
+                        .color(colors::GRAY_SECONDARY),
+                ));
+            }
+        } else {
+            ui.add(ui::Mention::new(app, txn, reply_note.pubkey()).size(10.0));
+            ui.add(Label::new(
+                RichText::new("in someone's thread")
+                    .size(10.0)
+                    .color(colors::GRAY_SECONDARY),
+            ));
+        }
     }
 }
 
@@ -69,32 +154,30 @@ impl<'a> Note<'a> {
         ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
             let profile = self.app.ndb.get_profile_by_pubkey(txn, self.note.pubkey());
 
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 2.0;
+            //ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
 
-                let note_cache = self
-                    .app
-                    .get_note_cache_mut(note_key, self.note.created_at());
+            let note_cache = self.app.get_note_cache_mut(note_key, self.note);
 
-                let (_id, rect) = ui.allocate_space(egui::vec2(50.0, 20.0));
-                ui.allocate_rect(rect, Sense::hover());
-                ui.put(rect, |ui: &mut egui::Ui| {
-                    render_reltime(ui, note_cache, false).response
-                });
-                let (_id, rect) = ui.allocate_space(egui::vec2(150.0, 20.0));
-                ui.allocate_rect(rect, Sense::hover());
-                ui.put(rect, |ui: &mut egui::Ui| {
-                    ui.add(
-                        ui::Username::new(profile.as_ref().ok(), self.note.pubkey())
-                            .abbreviated(8)
-                            .pk_colored(true),
-                    )
-                });
-
-                ui.add(NoteContents::new(
-                    self.app, txn, self.note, note_key, self.flags,
-                ));
+            let (_id, rect) = ui.allocate_space(egui::vec2(50.0, 20.0));
+            ui.allocate_rect(rect, Sense::hover());
+            ui.put(rect, |ui: &mut egui::Ui| {
+                render_reltime(ui, note_cache, false).response
             });
+            let (_id, rect) = ui.allocate_space(egui::vec2(150.0, 20.0));
+            ui.allocate_rect(rect, Sense::hover());
+            ui.put(rect, |ui: &mut egui::Ui| {
+                ui.add(
+                    ui::Username::new(profile.as_ref().ok(), self.note.pubkey())
+                        .abbreviated(8)
+                        .pk_colored(true),
+                )
+            });
+
+            ui.add(NoteContents::new(
+                self.app, txn, self.note, note_key, self.flags,
+            ));
+            //});
         })
         .response
     }
@@ -163,10 +246,13 @@ impl<'a> Note<'a> {
                                 .abbreviated(20),
                         );
 
-                        let note_cache = self
-                            .app
-                            .get_note_cache_mut(note_key, self.note.created_at());
+                        let note_cache = self.app.get_note_cache_mut(note_key, self.note);
                         render_reltime(ui, note_cache, true);
+                    });
+
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 2.0;
+                        reply_desc(ui, txn, self.app, note_key, self.note);
                     });
 
                     ui.add(NoteContents::new(
@@ -210,6 +296,12 @@ fn render_note_actionbar(ui: &mut egui::Ui) -> egui::InnerResponse<()> {
     })
 }
 
+fn secondary_label(ui: &mut egui::Ui, s: impl Into<String>) {
+    ui.add(Label::new(
+        RichText::new(s).size(10.0).color(colors::GRAY_SECONDARY),
+    ));
+}
+
 fn render_reltime(
     ui: &mut egui::Ui,
     note_cache: &mut crate::notecache::NoteCache,
@@ -220,19 +312,13 @@ fn render_reltime(
 
     ui.horizontal(|ui| {
         if before {
-            ui.add(Label::new(
-                RichText::new("⋅").size(10.0).color(colors::GRAY_SECONDARY),
-            ));
+            secondary_label(ui, "⋅");
         }
-        ui.add(Label::new(
-            RichText::new(note_cache.reltime_str())
-                .size(10.0)
-                .color(colors::GRAY_SECONDARY),
-        ));
+
+        secondary_label(ui, note_cache.reltime_str());
+
         if !before {
-            ui.add(Label::new(
-                RichText::new("⋅").size(10.0).color(colors::GRAY_SECONDARY),
-            ));
+            secondary_label(ui, "⋅");
         }
     })
 }

@@ -115,13 +115,16 @@ fn add_relay_button() -> egui::Button<'static> {
     Button::new("+ Add relay").min_size(Vec2::new(0.0, 32.0))
 }
 
-fn delete_button(dark_mode: bool) -> egui::Button<'static> {
+fn delete_button(_dark_mode: bool) -> egui::Button<'static> {
+    /*
     let img_data = if dark_mode {
         egui::include_image!("../../assets/icons/delete_icon_4x.png")
     } else {
         // TODO: use light delete icon
         egui::include_image!("../../assets/icons/delete_icon_4x.png")
     };
+    */
+    let img_data = egui::include_image!("../../assets/icons/delete_icon_4x.png");
 
     egui::Button::image(egui::Image::new(img_data).max_width(10.0)).frame(false)
 }

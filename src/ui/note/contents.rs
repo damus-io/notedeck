@@ -97,29 +97,6 @@ fn render_note_preview(
         .response
 }
 
-fn mention_ui(app: &mut Damus, txn: &Transaction, pk: &[u8; 32], ui: &mut egui::Ui) {
-    #[cfg(feature = "profiling")]
-    puffin::profile_function!();
-
-    let profile = app.ndb.get_profile_by_pubkey(txn, pk).ok();
-
-    let name: String =
-        if let Some(name) = profile.as_ref().and_then(crate::profile::get_profile_name) {
-            format!("@{}", name.username())
-        } else {
-            "??".to_string()
-        };
-
-    let resp = ui.colored_label(colors::PURPLE, &name);
-
-    if let Some(rec) = profile.as_ref() {
-        resp.on_hover_ui_at_pointer(|ui| {
-            ui.set_max_width(300.0);
-            ui.add(ui::ProfilePreview::new(rec, &mut app.img_cache));
-        });
-    }
-}
-
 fn render_note_contents(
     ui: &mut egui::Ui,
     damus: &mut Damus,
@@ -149,11 +126,11 @@ fn render_note_contents(
             match block.blocktype() {
                 BlockType::MentionBech32 => match block.as_mention().unwrap() {
                     Mention::Profile(profile) => {
-                        mention_ui(damus, txn, profile.pubkey(), ui);
+                        ui.add(ui::Mention::new(damus, txn, profile.pubkey()));
                     }
 
                     Mention::Pubkey(npub) => {
-                        mention_ui(damus, txn, npub.pubkey(), ui);
+                        ui.add(ui::Mention::new(damus, txn, npub.pubkey()));
                     }
 
                     Mention::Note(note) if options.has_note_previews() => {

@@ -499,10 +499,10 @@ impl Damus {
         }
     }
 
-    pub fn get_note_cache_mut(&mut self, note_key: NoteKey, created_at: u64) -> &mut NoteCache {
+    pub fn get_note_cache_mut(&mut self, note_key: NoteKey, note: &Note<'_>) -> &mut NoteCache {
         self.note_cache
             .entry(note_key)
-            .or_insert_with(|| NoteCache::new(created_at))
+            .or_insert_with(|| NoteCache::new(note))
     }
 }
 
