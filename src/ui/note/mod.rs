@@ -4,7 +4,7 @@ pub mod options;
 pub use contents::NoteContents;
 pub use options::NoteOptions;
 
-use crate::{colors, ui, Damus};
+use crate::{colors, ui, ui::is_mobile, Damus};
 use egui::{Label, RichText, Sense};
 use nostrdb::{NoteKey, Transaction};
 use std::hash::{Hash, Hasher};
@@ -207,28 +207,32 @@ impl<'a> Note<'a> {
                         let profile_key = profile.as_ref().unwrap().record().note_key();
                         let note_key = note_key.as_u64();
 
-                        let (rect, size) = ui::anim::hover_expand(
-                            ui,
-                            egui::Id::new(ProfileAnimId {
-                                profile_key,
-                                note_key,
-                            }),
-                            ui::ProfilePic::default_size(),
-                            expand_size,
-                            anim_speed,
-                        );
+                        if is_mobile(ui.ctx()) {
+                            ui.add(ui::ProfilePic::new(&mut self.app.img_cache, pic));
+                        } else {
+                            let (rect, size) = ui::anim::hover_expand(
+                                ui,
+                                egui::Id::new(ProfileAnimId {
+                                    profile_key,
+                                    note_key,
+                                }),
+                                ui::ProfilePic::default_size(),
+                                expand_size,
+                                anim_speed,
+                            );
 
-                        ui.put(
-                            rect,
-                            ui::ProfilePic::new(&mut self.app.img_cache, pic).size(size),
-                        )
-                        .on_hover_ui_at_pointer(|ui| {
-                            ui.set_max_width(300.0);
-                            ui.add(ui::ProfilePreview::new(
-                                profile.as_ref().unwrap(),
-                                &mut self.app.img_cache,
-                            ));
-                        });
+                            ui.put(
+                                rect,
+                                ui::ProfilePic::new(&mut self.app.img_cache, pic).size(size),
+                            )
+                            .on_hover_ui_at_pointer(|ui| {
+                                ui.set_max_width(300.0);
+                                ui.add(ui::ProfilePreview::new(
+                                    profile.as_ref().unwrap(),
+                                    &mut self.app.img_cache,
+                                ));
+                            });
+                        }
                     }
                     None => {
                         ui.add(ui::ProfilePic::new(
