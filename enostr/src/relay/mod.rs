@@ -1,6 +1,7 @@
 use ewebsock::{WsMessage, WsReceiver, WsSender};
 
 use crate::{ClientMessage, Filter, Result};
+use log::info;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 
@@ -77,6 +78,10 @@ impl Relay {
     }
 
     pub fn subscribe(&mut self, subid: String, filters: Vec<Filter>) {
+        info!(
+            "sending '{}' subscription to relay pool: {:?}",
+            subid, filters
+        );
         self.send(&ClientMessage::req(subid, filters));
     }
 }
