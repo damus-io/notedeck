@@ -21,7 +21,7 @@ impl<'cache, 'url> ProfilePic<'cache, 'url> {
     }
 
     pub fn default_size() -> f32 {
-        32.0
+        38.0
     }
 
     pub fn no_pfp_url() -> &'static str {
