@@ -39,6 +39,7 @@ nostr-sdk = "0.29.0"
 strum = "0.26"
 strum_macros = "0.26"
 bitflags = "2.5.0"
+egui_virtual_list = "0.3.0"
 
 
 [features]

@@ -5,18 +5,16 @@ use crate::frame_history::FrameHistory;
 use crate::imgcache::ImageCache;
 use crate::notecache::NoteCache;
 use crate::timeline;
-use crate::ui;
+use crate::timeline::{NoteRef, Timeline};
 use crate::ui::is_mobile;
 use crate::Result;
 
-use egui::containers::scroll_area::ScrollBarVisibility;
 use egui::{Context, Frame, Margin, Style};
 use egui_extras::{Size, StripBuilder};
 
 use enostr::{ClientMessage, Filter, Pubkey, RelayEvent, RelayMessage};
-use nostrdb::{BlockType, Config, Mention, Ndb, Note, NoteKey, Subscription, Transaction};
+use nostrdb::{BlockType, Config, Mention, Ndb, Note, NoteKey, Transaction};
 
-use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::path::Path;
@@ -31,47 +29,6 @@ pub enum DamusState {
     Initialized,
 }
 
-#[derive(Debug, Eq, PartialEq, Copy, Clone)]
-pub struct NoteRef {
-    pub key: NoteKey,
-    pub created_at: u64,
-}
-
-impl Ord for NoteRef {
-    fn cmp(&self, other: &Self) -> Ordering {
-        match self.created_at.cmp(&other.created_at) {
-            Ordering::Equal => self.key.cmp(&other.key),
-            Ordering::Less => Ordering::Greater,
-            Ordering::Greater => Ordering::Less,
-        }
-    }
-}
-
-impl PartialOrd for NoteRef {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-struct Timeline {
-    pub filter: Vec<Filter>,
-    pub notes: Vec<NoteRef>,
-    pub subscription: Option<Subscription>,
-}
-
-impl Timeline {
-    pub fn new(filter: Vec<Filter>) -> Self {
-        let notes: Vec<NoteRef> = Vec::with_capacity(1000);
-        let subscription: Option<Subscription> = None;
-
-        Timeline {
-            filter,
-            notes,
-            subscription,
-        }
-    }
-}
-
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
 pub struct Damus {
     state: DamusState,
@@ -80,7 +37,7 @@ pub struct Damus {
     pool: RelayPool,
     pub textmode: bool,
 
-    timelines: Vec<Timeline>,
+    pub timelines: Vec<Timeline>,
 
     pub img_cache: ImageCache,
     pub ndb: Ndb,
@@ -557,52 +514,6 @@ fn circle_icon(ui: &mut egui::Ui, openness: f32, response: &egui::Response) {
 }
 */
 
-fn render_notes(ui: &mut egui::Ui, damus: &mut Damus, timeline: usize) -> Result<()> {
-    #[cfg(feature = "profiling")]
-    puffin::profile_function!();
-
-    let num_notes = damus.timelines[timeline].notes.len();
-    let txn = Transaction::new(&damus.ndb)?;
-
-    for i in 0..num_notes {
-        let note_key = damus.timelines[timeline].notes[i].key;
-        let note = if let Ok(note) = damus.ndb.get_note_by_key(&txn, note_key) {
-            note
-        } else {
-            warn!("failed to query note {:?}", note_key);
-            continue;
-        };
-
-        let note_ui = ui::Note::new(damus, &note);
-        ui.add(note_ui);
-        ui.add(egui::Separator::default().spacing(0.0));
-    }
-
-    Ok(())
-}
-
-fn timeline_view(ui: &mut egui::Ui, app: &mut Damus, timeline: usize) {
-    //padding(4.0, ui, |ui| ui.heading("Notifications"));
-    /*
-    let font_id = egui::TextStyle::Body.resolve(ui.style());
-    let row_height = ui.fonts(|f| f.row_height(&font_id)) + ui.spacing().item_spacing.y;
-    */
-
-    egui::ScrollArea::vertical()
-        .scroll_bar_visibility(ScrollBarVisibility::AlwaysVisible)
-        //.auto_shrink([false; 2])
-        /*
-        .show_viewport(ui, |ui, viewport| {
-            render_notes_in_viewport(ui, app, viewport, row_height, font_id);
-        });
-        */
-        .show(ui, |ui| {
-            ui.spacing_mut().item_spacing.y = 0.0;
-            ui.spacing_mut().item_spacing.x = 4.0;
-            let _ = render_notes(ui, app, timeline);
-        });
-}
-
 fn top_panel(ctx: &egui::Context) -> egui::TopBottomPanel {
     let top_margin = egui::Margin {
         top: 4.0,
@@ -684,7 +595,7 @@ fn render_damus_mobile(ctx: &egui::Context, app: &mut Damus) {
     puffin::profile_function!();
 
     main_panel(&ctx.style()).show(ctx, |ui| {
-        timeline_view(ui, app, 0);
+        timeline::timeline_view(ui, app, 0);
     });
 }
 
@@ -713,7 +624,7 @@ fn render_damus_desktop(ctx: &egui::Context, app: &mut Damus) {
 
     if app.timelines.len() == 1 {
         main_panel(&ctx.style()).show(ctx, |ui| {
-            timeline_view(ui, app, 0);
+            timeline::timeline_view(ui, app, 0);
         });
 
         return;
@@ -737,7 +648,7 @@ fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus, timelines: us
         .clip(true)
         .horizontal(|mut strip| {
             for timeline_ind in 0..timelines {
-                strip.cell(|ui| timeline_view(ui, app, timeline_ind));
+                strip.cell(|ui| timeline::timeline_view(ui, app, timeline_ind));
             }
         });
 }
