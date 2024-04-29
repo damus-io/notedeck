@@ -36,8 +36,14 @@ pub fn padding<R>(
         .show(ui, add_contents)
 }
 
-pub fn is_mobile(ctx: &egui::Context) -> bool {
-    //true
-    let screen_size = ctx.screen_rect().size();
-    screen_size.x < 550.0
+#[inline]
+pub fn is_mobile(_ctx: &egui::Context) -> bool {
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        true
+    }
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        false
+    }
 }
