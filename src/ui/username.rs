@@ -85,7 +85,7 @@ fn ui_abbreviate_name(ui: &mut egui::Ui, name: &str, len: usize, color: Option<C
     ui.label(colored_name(name, color));
 
     if should_abbrev {
-        ui.label(colored_name("...", color));
+        ui.label(colored_name("..", color));
     }
 }
 

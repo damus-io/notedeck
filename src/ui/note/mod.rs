@@ -169,7 +169,7 @@ impl<'a> Note<'a> {
             ui.put(rect, |ui: &mut egui::Ui| {
                 ui.add(
                     ui::Username::new(profile.as_ref().ok(), self.note.pubkey())
-                        .abbreviated(8)
+                        .abbreviated(6)
                         .pk_colored(true),
                 )
             });
