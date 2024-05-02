@@ -8,6 +8,8 @@ pub enum Error {
     Nostr(enostr::Error),
     Ndb(nostrdb::Error),
     Image(image::error::ImageError),
+    Anyhow(anyhow::Error),
+    //Eframe(eframe::Error),
     Generic(String),
 }
 
@@ -25,6 +27,7 @@ impl fmt::Display for Error {
             Self::Image(e) => write!(f, "{e}"),
             Self::Generic(e) => write!(f, "{e}"),
             Self::Io(e) => write!(f, "{e}"),
+            Self::Anyhow(e) => write!(f, "{e}"),
         }
     }
 }
@@ -47,11 +50,25 @@ impl From<image::error::ImageError> for Error {
     }
 }
 
+impl From<anyhow::Error> for Error {
+    fn from(err: anyhow::Error) -> Self {
+        Error::Anyhow(err)
+    }
+}
+
 impl From<enostr::Error> for Error {
     fn from(err: enostr::Error) -> Self {
         Error::Nostr(err)
     }
 }
+
+/*
+impl From<eframe::Error> for Error {
+    fn from(err: eframe::Error) -> Self {
+        Error::Eframe(err)
+    }
+}
+*/
 
 impl From<io::Error> for Error {
     fn from(err: io::Error) -> Self {

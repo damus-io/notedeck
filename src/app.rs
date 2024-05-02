@@ -8,12 +8,19 @@ use crate::timeline;
 use crate::timeline::{NoteRef, Timeline};
 use crate::ui::is_mobile;
 use crate::Result;
+use tokio::task::spawn_blocking;
+
+use std::str::FromStr;
+
+use multimint::fedimint_core::api::InviteCode;
+use multimint::fedimint_core::config::FederationId;
+use multimint::MultiMint;
 
 use egui::{Context, Frame, Margin, Style};
 use egui_extras::{Size, StripBuilder};
 
 use enostr::{ClientMessage, Filter, Pubkey, RelayEvent, RelayMessage};
-use nostrdb::{BlockType, Config, Mention, Ndb, Note, NoteKey, Transaction};
+use nostrdb::{BlockType, Config, Mention, Ndb, Note, NoteKey, ProfileKey, Transaction};
 
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
@@ -41,6 +48,9 @@ pub struct Damus {
 
     pub img_cache: ImageCache,
     pub ndb: Ndb,
+
+    mint: MultiMint,
+    mint_recs: HashMap<FederationId, HashSet<[u8; 32]>>,
 
     frame_history: crate::frame_history::FrameHistory,
 }
@@ -298,6 +308,35 @@ fn setup_initial_nostrdb_subs(damus: &mut Damus) -> Result<()> {
             filters,
             timeline.filter[0].limit.unwrap_or(200) as i32,
         )?;
+
+        for result in &res {
+            if result.note.kind() == 38000 {
+                for tag in result.note.tags() {
+                    if tag.count() < 2 {
+                        continue;
+                    }
+                    if tag.get_unchecked(0).variant().str() == Some("u") {
+                        let inv_str = if let Some(s) = tag.get_unchecked(1).variant().str() {
+                            s
+                        } else {
+                            continue;
+                        };
+
+                        if let Ok(code) = InviteCode::from_str(inv_str) {
+                            let fed_id = code.federation_id();
+                            damus
+                                .mint_recs
+                                .entry(fed_id)
+                                .or_insert_with(|| HashSet::new())
+                                .insert(result.note.pubkey().to_owned());
+                        }
+                    }
+                }
+            }
+        }
+
+        println!("{:?}", damus.mint_recs);
+
         timeline.notes = res
             .iter()
             .map(|qr| NoteRef {
@@ -430,6 +469,7 @@ impl Damus {
     pub fn new<P: AsRef<Path>>(
         cc: &eframe::CreationContext<'_>,
         data_path: P,
+        mint: MultiMint,
         args: Vec<String>,
     ) -> Self {
         // This is also where you can customized the look at feel of egui using
@@ -461,6 +501,8 @@ impl Damus {
 
         let mut config = Config::new();
         config.set_ingester_threads(2);
+        let mint_recs = HashMap::new();
+
         Self {
             state: DamusState::Initializing,
             pool: RelayPool::new(),
@@ -468,6 +510,8 @@ impl Damus {
             note_cache: HashMap::new(),
             timelines,
             textmode: false,
+            mint,
+            mint_recs,
             ndb: Ndb::new(data_path.as_ref().to_str().expect("db path ok"), &config).expect("ndb"),
             //compose: "".to_string(),
             frame_history: FrameHistory::default(),

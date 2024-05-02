@@ -13,3 +13,4 @@ src/camera.rs
 *.txt
 /tags
 *.mdb
+multimint

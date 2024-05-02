@@ -22,7 +22,8 @@ let
 
 in
 mkShell ({
-  buildInputs = [] ++ pkgs.lib.optional use_android [
+  buildInputs = [rustPlatform.bindgenHook rocksdb] ++ pkgs.lib.optional use_android [
+    
     android-sdk
   ];
   nativeBuildInputs = [
@@ -33,6 +34,7 @@ mkShell ({
     rustfmt
     libiconv
     pkg-config
+    gdb
     #cmake
     fontconfig
     openssl
@@ -52,6 +54,7 @@ mkShell ({
     darwin.apple_sdk.frameworks.AppKit
   ];
 
+  LIBCLANG_PATH="${pkgs.llvmPackages.libclang.lib}/lib";
   ANDROID_NDK_ROOT = android-ndk-path;
 } // (if !stdenv.isDarwin then {
   LD_LIBRARY_PATH="${x11libs}";

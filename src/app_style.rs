@@ -184,7 +184,7 @@ pub fn create_themed_visuals(theme: ColorTheme, default: Visuals) -> Visuals {
         },
         extreme_bg_color: theme.extreme_bg_color,
         error_fg_color: theme.err_fg_color,
-        window_rounding: Rounding::same(32.0),
+        window_rounding: Rounding::same(8.0),
         window_fill: theme.window_fill,
         window_shadow: Shadow {
             offset: [0.0, 8.0].into(),
