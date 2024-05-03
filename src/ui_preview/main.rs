@@ -54,14 +54,17 @@ macro_rules! previews {
 #[tokio::main]
 async fn main() {
     let mut name: Option<String> = None;
+
+    #[allow(unused_assignments)]
+    #[allow(unused_mut)]
     let mut is_mobile = false;
+    #[cfg(feature = "emulate_mobile")]
+    {
+        is_mobile = true
+    }
 
     for arg in env::args() {
-        if arg == "--mobile" {
-            is_mobile = true;
-        } else {
-            name = Some(arg);
-        }
+        name = Some(arg);
     }
 
     let name = if let Some(name) = name {

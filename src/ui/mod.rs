@@ -38,7 +38,13 @@ pub fn padding<R>(
 }
 
 #[inline]
+#[allow(unreachable_code)]
 pub fn is_mobile(_ctx: &egui::Context) -> bool {
+    #[cfg(feature = "emulate_mobile")]
+    {
+        return true;
+    }
+
     #[cfg(any(target_os = "android", target_os = "ios"))]
     {
         true
