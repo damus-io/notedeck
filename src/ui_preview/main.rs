@@ -1,7 +1,7 @@
-use notedeck::account_login_view::AccountLoginView;
 use notedeck::app_creation::{
     generate_mobile_emulator_native_options, generate_native_options, setup_cc,
 };
+use notedeck::ui::account_login_view::AccountLoginView;
 use notedeck::ui::{Preview, PreviewApp, ProfilePic, ProfilePreview, RelayView};
 use std::env;
 

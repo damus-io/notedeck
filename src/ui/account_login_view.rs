@@ -20,11 +20,13 @@ impl<'a> View for AccountLoginView<'a> {
         if let Some(key) = self.manager.check_for_successful_login() {
             // TODO: route to "home"
             println!("successful login with key: {:?}", key);
+            /*
             return if is_mobile {
                 // route to "home" on mobile
             } else {
                 // route to "home" on desktop
             };
+            */
         }
         if is_mobile {
             self.show_mobile(ui);
@@ -206,7 +208,7 @@ impl<'a> AccountLoginView<'a> {
 
             ui.add_space(48.0);
 
-            let welcome_data = egui::include_image!("../assets/Welcome to Nostrdeck 2x.png");
+            let welcome_data = egui::include_image!("../../assets/Welcome to Nostrdeck 2x.png");
             ui.add(egui::Image::new(welcome_data).max_width(528.0));
 
             ui.add_space(12.0);
@@ -323,7 +325,7 @@ fn login_textedit_info_text() -> RichText {
 }
 
 fn logo_unformatted() -> Image<'static> {
-    let logo_gradient_data = egui::include_image!("../assets/Logo-Gradient-2x.png");
+    let logo_gradient_data = egui::include_image!("../../assets/Logo-Gradient-2x.png");
     return egui::Image::new(logo_gradient_data);
 }
 

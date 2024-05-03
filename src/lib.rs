@@ -4,7 +4,6 @@ mod error;
 //mod note;
 //mod block;
 mod abbrev;
-pub mod account_login_view;
 pub mod app_creation;
 mod app_style;
 mod colors;
