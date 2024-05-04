@@ -1,6 +1,8 @@
 { pkgs ? import <nixpkgs> { }
 , android ? fetchTarball "https://github.com/tadfisher/android-nixpkgs/archive/refs/tags/2024-04-02.tar.gz"
-, use_android ? true }:
+, use_android ? true
+, android_emulator ? false
+}:
 with pkgs;
 
 let
@@ -13,9 +15,8 @@ let
     build-tools-34-0-0
     platform-tools
     platforms-android-30
-    emulator
     ndk-24-0-8215888
-  ]);
+  ] ++ lib.optional android_emulator [emulator]);
 
   android-sdk-path = "${android-sdk.out}/share/android-sdk";
   android-ndk-path = "${android-sdk-path}/ndk/${ndk-version}";
