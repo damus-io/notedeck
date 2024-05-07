@@ -1,14 +1,14 @@
 use crate::key_parsing::perform_key_retrieval;
 use crate::key_parsing::LoginError;
 use egui::{TextBuffer, TextEdit};
-use nostr_sdk::Keys;
+use enostr::Keypair;
 use poll_promise::Promise;
 
 /// The UI view interface to log in to a nostr account.
 #[derive(Default)]
 pub struct LoginManager {
     login_key: String,
-    promise_query: Option<(String, Promise<Result<Keys, LoginError>>)>,
+    promise_query: Option<(String, Promise<Result<Keypair, LoginError>>)>,
     error: Option<LoginError>,
     key_on_error: Option<String>,
 }
@@ -67,7 +67,7 @@ impl<'a> LoginManager {
     }
 
     /// Whether to indicate to the user that a successful login occured
-    pub fn check_for_successful_login(&mut self) -> Option<Keys> {
+    pub fn check_for_successful_login(&mut self) -> Option<Keypair> {
         if let Some((_, promise)) = &mut self.promise_query {
             if promise.ready().is_some() {
                 if let Some((_, promise)) = self.promise_query.take() {
@@ -89,15 +89,16 @@ impl<'a> LoginManager {
 
 #[cfg(test)]
 mod tests {
+    use enostr::Pubkey;
+
     use super::*;
-    use nostr_sdk::PublicKey;
     use std::time::{Duration, Instant};
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_retrieve_key() {
         let mut manager = LoginManager::new();
         let expected_str = "3efdaebb1d8923ebd99c9e7ace3b4194ab45512e2be79c1b7d68d9243e0d2681";
-        let expected_key = Keys::from_public_key(PublicKey::from_hex(expected_str).unwrap());
+        let expected_key = Keypair::only_pubkey(Pubkey::from_hex(expected_str).unwrap());
 
         let start_time = Instant::now();
 
