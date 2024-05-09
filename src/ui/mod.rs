@@ -8,7 +8,7 @@ pub mod profile;
 pub mod relay;
 pub mod username;
 
-pub use account_management::AccountManagementView;
+pub use account_management::{AccountManagementView, AccountSelectionWidget};
 pub use mention::Mention;
 pub use note::Note;
 pub use preview::{Preview, PreviewApp};

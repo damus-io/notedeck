@@ -1,7 +1,9 @@
-use egui::{Align, Align2, Button, Frame, Layout, Margin, RichText, ScrollArea, Vec2, Window};
+use egui::{
+    Align, Align2, Button, Frame, Id, Layout, Margin, RichText, ScrollArea, Sense, Vec2, Window,
+};
 
 use crate::{
-    account_manager::{AccountManager, SimpleProfilePreviewController},
+    account_manager::{AccountManager, SimpleProfilePreviewController, UserAccount},
     app_style::NotedeckTextStyle,
     ui::{self, Preview, View},
 };
@@ -237,6 +239,56 @@ fn delete_button(_dark_mode: bool) -> egui::Button<'static> {
     egui::Button::image(egui::Image::new(img_data).max_width(30.0)).frame(true)
 }
 
+pub struct AccountSelectionWidget<'a> {
+    account_manager: AccountManager<'a>,
+    simple_preview_controller: SimpleProfilePreviewController<'a>,
+}
+
+impl<'a> AccountSelectionWidget<'a> {
+    fn ui(&'a mut self, ui: &mut egui::Ui) -> Option<&'a UserAccount> {
+        let mut result: Option<&'a UserAccount> = None;
+        scroll_area().show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                let clicked_at = self.simple_preview_controller.view_profile_previews(
+                    &self.account_manager,
+                    ui,
+                    |ui, preview, index| {
+                        let resp = ui.add_sized(preview.dimensions(), |ui: &mut egui::Ui| {
+                            simple_preview_frame(ui)
+                                .show(ui, |ui| {
+                                    ui.vertical_centered(|ui| {
+                                        ui.add(preview);
+                                    });
+                                })
+                                .response
+                        });
+
+                        ui.interact(resp.rect, Id::new(index), Sense::click())
+                            .clicked()
+                    },
+                );
+
+                if let Some(index) = clicked_at {
+                    result = self.account_manager.get_account(index);
+                };
+            });
+        });
+        result
+    }
+}
+
+impl<'a> AccountSelectionWidget<'a> {
+    pub fn new(
+        account_manager: AccountManager<'a>,
+        simple_preview_controller: SimpleProfilePreviewController<'a>,
+    ) -> Self {
+        AccountSelectionWidget {
+            account_manager,
+            simple_preview_controller,
+        }
+    }
+}
+
 // PREVIEWS
 
 mod preview {
@@ -246,8 +298,21 @@ mod preview {
     use super::*;
     use crate::key_storage::KeyStorage;
     use crate::relay_generation::RelayGenerator;
-    use crate::{account_manager::UserAccount, imgcache::ImageCache, test_data};
+    use crate::{imgcache::ImageCache, test_data};
     use std::path::Path;
+
+    const ACCOUNT_HEXES: [&str; 10] = [
+        "3efdaebb1d8923ebd99c9e7ace3b4194ab45512e2be79c1b7d68d9243e0d2681",
+        "32e1827635450ebb3c5a7d12c1f8e7b2b514439ac10a67eef3d9fd9c5c68e245",
+        "bd1e19980e2c91e6dc657e92c25762ca882eb9272d2579e221f037f93788de91",
+        "5c10ed0678805156d39ef1ef6d46110fe1e7e590ae04986ccf48ba1299cb53e2",
+        "4c96d763eb2fe01910f7e7220b7c7ecdbe1a70057f344b9f79c28af080c3ee30",
+        "edf16b1dd61eab353a83af470cc13557029bff6827b4cb9b7fc9bdb632a2b8e6",
+        "3efdaebb1d8923ebd99c9e7ace3b4194ab45512e2be79c1b7d68d9243e0d2681",
+        "32e1827635450ebb3c5a7d12c1f8e7b2b514439ac10a67eef3d9fd9c5c68e245",
+        "32e1827635450ebb3c5a7d12c1f8e7b2b514439ac10a67eef3d9fd9c5c68e245",
+        "32e1827635450ebb3c5a7d12c1f8e7b2b514439ac10a67eef3d9fd9c5c68e245",
+    ];
 
     pub struct AccountManagementPreview {
         accounts: Vec<UserAccount>,
@@ -256,41 +321,36 @@ mod preview {
         edit_mode: bool,
     }
 
+    fn get_accounts() -> Vec<UserAccount> {
+        ACCOUNT_HEXES
+            .iter()
+            .map(|account_hex| {
+                let key = Keys::from_public_key(PublicKey::from_hex(account_hex).unwrap());
+
+                UserAccount {
+                    key,
+                    relays: test_data::sample_pool(),
+                }
+            })
+            .collect()
+    }
+
+    fn get_ndb_and_img_cache() -> (Ndb, ImageCache) {
+        let mut config = Config::new();
+        config.set_ingester_threads(2);
+
+        let db_dir = Path::new(".");
+        let path = db_dir.to_str().unwrap();
+        let ndb = Ndb::new(path, &config).expect("ndb");
+        let imgcache_dir = db_dir.join("cache/img");
+        let img_cache = ImageCache::new(imgcache_dir);
+        (ndb, img_cache)
+    }
+
     impl AccountManagementPreview {
         fn new() -> Self {
-            let account_hexes = [
-                "3efdaebb1d8923ebd99c9e7ace3b4194ab45512e2be79c1b7d68d9243e0d2681",
-                "32e1827635450ebb3c5a7d12c1f8e7b2b514439ac10a67eef3d9fd9c5c68e245",
-                "bd1e19980e2c91e6dc657e92c25762ca882eb9272d2579e221f037f93788de91",
-                "5c10ed0678805156d39ef1ef6d46110fe1e7e590ae04986ccf48ba1299cb53e2",
-                "4c96d763eb2fe01910f7e7220b7c7ecdbe1a70057f344b9f79c28af080c3ee30",
-                "edf16b1dd61eab353a83af470cc13557029bff6827b4cb9b7fc9bdb632a2b8e6",
-                "3efdaebb1d8923ebd99c9e7ace3b4194ab45512e2be79c1b7d68d9243e0d2681",
-                "32e1827635450ebb3c5a7d12c1f8e7b2b514439ac10a67eef3d9fd9c5c68e245",
-                "32e1827635450ebb3c5a7d12c1f8e7b2b514439ac10a67eef3d9fd9c5c68e245",
-                "32e1827635450ebb3c5a7d12c1f8e7b2b514439ac10a67eef3d9fd9c5c68e245",
-            ];
-
-            let accounts: Vec<UserAccount> = account_hexes
-                .iter()
-                .map(|account_hex| {
-                    let key = Keys::from_public_key(PublicKey::from_hex(account_hex).unwrap());
-
-                    UserAccount {
-                        key,
-                        relays: test_data::sample_pool(),
-                    }
-                })
-                .collect();
-
-            let mut config = Config::new();
-            config.set_ingester_threads(2);
-
-            let db_dir = Path::new(".");
-            let path = db_dir.to_str().unwrap();
-            let ndb = Ndb::new(path, &config).expect("ndb");
-            let imgcache_dir = db_dir.join("cache/img");
-            let img_cache = ImageCache::new(imgcache_dir);
+            let accounts = get_accounts();
+            let (ndb, img_cache) = get_ndb_and_img_cache();
 
             AccountManagementPreview {
                 accounts,
@@ -323,6 +383,51 @@ mod preview {
 
         fn preview() -> Self::Prev {
             AccountManagementPreview::new()
+        }
+    }
+
+    pub struct AccountSelectionPreview {
+        accounts: Vec<UserAccount>,
+        ndb: Ndb,
+        img_cache: ImageCache,
+    }
+
+    impl AccountSelectionPreview {
+        fn new() -> Self {
+            let accounts = get_accounts();
+            let (ndb, img_cache) = get_ndb_and_img_cache();
+            AccountSelectionPreview {
+                accounts,
+                ndb,
+                img_cache,
+            }
+        }
+    }
+
+    impl View for AccountSelectionPreview {
+        fn ui(&mut self, ui: &mut egui::Ui) {
+            let account_manager = AccountManager::new(
+                &mut self.accounts,
+                KeyStorage::None,
+                RelayGenerator::Constant,
+            );
+
+            let mut widget = AccountSelectionWidget::new(
+                account_manager,
+                SimpleProfilePreviewController::new(&self.ndb, &mut self.img_cache),
+            );
+
+            if let Some(account) = widget.ui(ui) {
+                println!("User made selection: {:?}", account.key);
+            }
+        }
+    }
+
+    impl<'a> Preview for AccountSelectionWidget<'a> {
+        type Prev = AccountSelectionPreview;
+
+        fn preview() -> Self::Prev {
+            AccountSelectionPreview::new()
         }
     }
 }

@@ -53,6 +53,35 @@ impl<'a> SimpleProfilePreviewController<'a> {
 
         to_remove
     }
+
+    pub fn view_profile_previews(
+        &mut self,
+        account_manager: &'a AccountManager<'a>,
+        ui: &mut egui::Ui,
+        add_preview_ui: fn(ui: &mut egui::Ui, preview: SimpleProfilePreview, index: usize) -> bool,
+    ) -> Option<usize> {
+        let mut clicked_at: Option<usize> = None;
+
+        for i in 0..account_manager.num_accounts() {
+            if let Some(account) = account_manager.get_account(i) {
+                if let Ok(txn) = Transaction::new(self.ndb) {
+                    let profile = self
+                        .ndb
+                        .get_profile_by_pubkey(&txn, &account.key.public_key().to_bytes());
+
+                    if let Ok(profile) = profile {
+                        let preview = SimpleProfilePreview::new(&profile, self.img_cache);
+
+                        if add_preview_ui(ui, preview, i) {
+                            clicked_at = Some(i)
+                        }
+                    }
+                }
+            }
+        }
+
+        clicked_at
+    }
 }
 
 /// The interface for managing the user's accounts.
