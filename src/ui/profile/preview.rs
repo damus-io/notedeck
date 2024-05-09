@@ -3,7 +3,7 @@ use crate::imgcache::ImageCache;
 use crate::ui::ProfilePic;
 use crate::{colors, images, DisplayName};
 use egui::load::TexturePoll;
-use egui::{RichText, Sense};
+use egui::{Frame, Layout, RichText, Sense, Vec2, Widget};
 use egui_extras::Size;
 use nostrdb::ProfileRecord;
 
@@ -63,46 +63,10 @@ impl<'a, 'cache> ProfilePreview<'a, 'cache> {
     }
 
     fn body(self, ui: &mut egui::Ui) {
-        let name = if let Some(name) = crate::profile::get_profile_name(self.profile) {
-            name
-        } else {
-            DisplayName::One("??")
-        };
-
         crate::ui::padding(12.0, ui, |ui| {
-            let url = if let Some(url) = self.profile.record().profile().and_then(|p| p.picture()) {
-                url
-            } else {
-                ProfilePic::no_pfp_url()
-            };
-
-            ui.add(ProfilePic::new(self.cache, url).size(80.0));
-
-            match name {
-                DisplayName::One(n) => {
-                    ui.label(RichText::new(n).text_style(NotedeckTextStyle::Heading3.text_style()));
-                }
-
-                DisplayName::Both {
-                    display_name,
-                    username,
-                } => {
-                    ui.label(
-                        RichText::new(display_name)
-                            .text_style(NotedeckTextStyle::Heading3.text_style()),
-                    );
-
-                    ui.label(
-                        RichText::new(format!("@{}", username))
-                            .size(12.0)
-                            .color(colors::MID_GRAY),
-                    );
-                }
-            }
-
-            if let Some(about) = self.profile.record().profile().and_then(|p| p.about()) {
-                ui.label(about);
-            }
+            ui.add(ProfilePic::new(self.cache, get_profile_url(self.profile)).size(80.0));
+            ui.add(display_name_widget(get_display_name(self.profile), false));
+            ui.add(about_section_widget(self.profile));
         });
     }
 }
@@ -120,11 +84,38 @@ impl<'a, 'cache> egui::Widget for ProfilePreview<'a, 'cache> {
     }
 }
 
+pub struct SimpleProfilePreview<'a, 'cache> {
+    profile: &'a ProfileRecord<'a>,
+    cache: &'cache mut ImageCache,
+}
+
+impl<'a, 'cache> SimpleProfilePreview<'a, 'cache> {
+    pub fn new(profile: &'a ProfileRecord<'a>, cache: &'cache mut ImageCache) -> Self {
+        SimpleProfilePreview { profile, cache }
+    }
+
+    pub fn dimensions(&self) -> Vec2 {
+        Vec2::new(120.0, 150.0)
+    }
+}
+
+impl<'a, 'cache> egui::Widget for SimpleProfilePreview<'a, 'cache> {
+    fn ui(self, ui: &mut egui::Ui) -> egui::Response {
+        Frame::none()
+            .show(ui, |ui| {
+                ui.add(ProfilePic::new(self.cache, get_profile_url(self.profile)).size(48.0));
+                ui.vertical(|ui| {
+                    ui.add(display_name_widget(get_display_name(self.profile), true));
+                });
+            })
+            .response
+    }
+}
+
 mod previews {
     use super::*;
     use crate::test_data::test_profile_record;
     use crate::ui::{Preview, View};
-    use egui::Widget;
 
     pub struct ProfilePreviewPreview<'a> {
         profile: ProfileRecord<'a>,
@@ -157,6 +148,64 @@ mod previews {
 
         fn preview() -> Self::Prev {
             ProfilePreviewPreview::new()
+        }
+    }
+}
+
+fn get_display_name<'a>(profile: &'a ProfileRecord<'a>) -> DisplayName<'a> {
+    if let Some(name) = crate::profile::get_profile_name(profile) {
+        name
+    } else {
+        DisplayName::One("??")
+    }
+}
+
+fn get_profile_url<'a>(profile: &'a ProfileRecord<'a>) -> &'a str {
+    if let Some(url) = profile.record().profile().and_then(|p| p.picture()) {
+        url
+    } else {
+        ProfilePic::no_pfp_url()
+    }
+}
+
+fn display_name_widget(
+    display_name: DisplayName<'_>,
+    add_placeholder_space: bool,
+) -> impl egui::Widget + '_ {
+    move |ui: &mut egui::Ui| match display_name {
+        DisplayName::One(n) => {
+            let name_response =
+                ui.label(RichText::new(n).text_style(NotedeckTextStyle::Heading3.text_style()));
+            if add_placeholder_space {
+                ui.add_space(16.0);
+            }
+            name_response
+        }
+
+        DisplayName::Both {
+            display_name,
+            username,
+        } => {
+            ui.label(
+                RichText::new(display_name).text_style(NotedeckTextStyle::Heading3.text_style()),
+            );
+
+            ui.label(
+                RichText::new(format!("@{}", username))
+                    .size(12.0)
+                    .color(colors::MID_GRAY),
+            )
+        }
+    }
+}
+
+fn about_section_widget<'a>(profile: &'a ProfileRecord<'a>) -> impl egui::Widget + 'a {
+    |ui: &mut egui::Ui| {
+        if let Some(about) = profile.record().profile().and_then(|p| p.about()) {
+            ui.label(about)
+        } else {
+            // need any Response so we dont need an Option
+            ui.allocate_response(egui::Vec2::ZERO, egui::Sense::hover())
         }
     }
 }
