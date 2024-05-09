@@ -1,4 +1,5 @@
 pub mod account_login_view;
+pub mod account_management;
 pub mod anim;
 pub mod mention;
 pub mod note;
@@ -7,6 +8,7 @@ pub mod profile;
 pub mod relay;
 pub mod username;
 
+pub use account_management::AccountManagementView;
 pub use mention::Mention;
 pub use note::Note;
 pub use preview::{Preview, PreviewApp};

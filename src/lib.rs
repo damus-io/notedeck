@@ -4,6 +4,7 @@ mod error;
 //mod note;
 //mod block;
 mod abbrev;
+pub mod account_manager;
 pub mod app_creation;
 mod app_style;
 mod colors;
@@ -13,9 +14,11 @@ mod frame_history;
 mod images;
 mod imgcache;
 mod key_parsing;
+mod key_storage;
 pub mod login_manager;
 mod notecache;
 mod profile;
+mod relay_generation;
 pub mod relay_pool_manager;
 mod result;
 mod test_data;
@@ -23,6 +26,7 @@ mod time;
 mod timecache;
 mod timeline;
 pub mod ui;
+mod user_account;
 
 #[cfg(test)]
 #[macro_use]

@@ -46,7 +46,7 @@ impl<'a> RelayPoolManager<'a> {
     }
 }
 
-fn create_wakeup(ctx: &egui::Context) -> impl Fn() + Send + Sync + Clone + 'static {
+pub fn create_wakeup(ctx: &egui::Context) -> impl Fn() + Send + Sync + Clone + 'static {
     let ctx = ctx.clone();
     move || {
         ctx.request_repaint();
