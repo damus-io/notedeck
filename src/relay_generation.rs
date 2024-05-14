@@ -1,6 +1,5 @@
 use crate::relay_pool_manager::create_wakeup;
-use enostr::RelayPool;
-use nostr_sdk::Keys;
+use enostr::{Pubkey, RelayPool};
 use tracing::error;
 
 pub enum RelayGenerator {
@@ -10,7 +9,7 @@ pub enum RelayGenerator {
 }
 
 impl RelayGenerator {
-    pub fn generate_relays_for(&self, key: &Keys, ctx: &egui::Context) -> RelayPool {
+    pub fn generate_relays_for(&self, key: &Pubkey, ctx: &egui::Context) -> RelayPool {
         match self {
             Self::GossipModel => generate_relays_gossip(key, ctx),
             Self::Nip65 => generate_relays_nip65(key, ctx),
@@ -19,11 +18,15 @@ impl RelayGenerator {
     }
 }
 
-fn generate_relays_gossip(key: &Keys, ctx: &egui::Context) -> RelayPool {
+fn generate_relays_gossip(key: &Pubkey, ctx: &egui::Context) -> RelayPool {
+    let _ = ctx;
+    let _ = key;
     todo!()
 }
 
-fn generate_relays_nip65(key: &Keys, ctx: &egui::Context) -> RelayPool {
+fn generate_relays_nip65(key: &Pubkey, ctx: &egui::Context) -> RelayPool {
+    let _ = ctx;
+    let _ = key;
     todo!()
 }
 

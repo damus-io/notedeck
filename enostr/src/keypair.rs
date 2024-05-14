@@ -46,6 +46,24 @@ impl FullKeypair {
     pub fn new(pubkey: Pubkey, secret_key: SecretKey) -> Self {
         FullKeypair { pubkey, secret_key }
     }
+
+    pub fn generate() -> Self {
+        let mut rng = nostr::secp256k1::rand::rngs::OsRng;
+        let (secret_key, _) = &nostr::SECP256K1.generate_keypair(&mut rng);
+        let (xopk, _) = secret_key.x_only_public_key(&nostr::SECP256K1);
+        let secret_key = nostr::SecretKey::from(*secret_key);
+        FullKeypair {
+            pubkey: Pubkey::new(&xopk.serialize()),
+            secret_key: SecretKey::from(secret_key),
+        }
+    }
+
+    pub fn to_keypair(self) -> Keypair {
+        Keypair {
+            pubkey: self.pubkey,
+            secret_key: Some(self.secret_key),
+        }
+    }
 }
 
 impl std::fmt::Display for Keypair {

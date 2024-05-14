@@ -3,7 +3,7 @@ use crate::imgcache::ImageCache;
 use crate::ui::ProfilePic;
 use crate::{colors, images, DisplayName};
 use egui::load::TexturePoll;
-use egui::{Frame, Layout, RichText, Sense, Vec2, Widget};
+use egui::{Frame, RichText, Sense, Vec2, Widget};
 use egui_extras::Size;
 use nostrdb::ProfileRecord;
 

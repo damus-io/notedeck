@@ -1,4 +1,4 @@
-use nostr_sdk::Keys;
+use enostr::FullKeypair;
 use nostrdb::{Ndb, Transaction};
 
 pub use crate::user_account::UserAccount;
@@ -35,7 +35,7 @@ impl<'a> SimpleProfilePreviewController<'a> {
                 if let Ok(txn) = Transaction::new(self.ndb) {
                     let profile = self
                         .ndb
-                        .get_profile_by_pubkey(&txn, &account.key.public_key().to_bytes());
+                        .get_profile_by_pubkey(&txn, account.key.pubkey.bytes());
 
                     if let Ok(profile) = profile {
                         let preview = SimpleProfilePreview::new(&profile, self.img_cache);
@@ -67,7 +67,7 @@ impl<'a> SimpleProfilePreviewController<'a> {
                 if let Ok(txn) = Transaction::new(self.ndb) {
                     let profile = self
                         .ndb
-                        .get_profile_by_pubkey(&txn, &account.key.public_key().to_bytes());
+                        .get_profile_by_pubkey(&txn, account.key.pubkey.bytes());
 
                     if let Ok(profile) = profile {
                         let preview = SimpleProfilePreview::new(&profile, self.img_cache);
@@ -115,16 +115,16 @@ impl<'a> AccountManager<'a> {
 
     pub fn remove_account(&mut self, index: usize) {
         if let Some(account) = self.accounts.get(index) {
-            self.key_store.remove_key(&account.key);
+            let _ = self.key_store.remove_key(&account.key);
         }
         if index < self.accounts.len() {
             self.accounts.remove(index);
         }
     }
 
-    pub fn add_account(&'a mut self, key: Keys, ctx: &egui::Context) {
-        self.key_store.add_key(&key);
-        let relays = self.relay_generator.generate_relays_for(&key, ctx);
+    pub fn add_account(&'a mut self, key: FullKeypair, ctx: &egui::Context) {
+        let _ = self.key_store.add_key(&key);
+        let relays = self.relay_generator.generate_relays_for(&key.pubkey, ctx);
         let account = UserAccount { key, relays };
 
         self.accounts.push(account)

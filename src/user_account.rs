@@ -1,6 +1,6 @@
-use enostr::RelayPool;
+use enostr::{FullKeypair, RelayPool};
 
 pub struct UserAccount {
-    pub key: nostr_sdk::Keys,
+    pub key: FullKeypair,
     pub relays: RelayPool,
 }

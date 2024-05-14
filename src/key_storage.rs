@@ -1,4 +1,4 @@
-use nostr_sdk::Keys;
+use enostr::FullKeypair;
 
 pub enum KeyStorage {
     None,
@@ -9,19 +9,21 @@ pub enum KeyStorage {
 }
 
 impl KeyStorage {
-    pub fn get_keys(&self) -> Result<Vec<Keys>, KeyStorageError> {
+    pub fn get_keys(&self) -> Result<Vec<FullKeypair>, KeyStorageError> {
         match self {
             Self::None => Ok(Vec::new()),
         }
     }
 
-    pub fn add_key(&self, key: &Keys) -> Result<(), KeyStorageError> {
+    pub fn add_key(&self, key: &FullKeypair) -> Result<(), KeyStorageError> {
+        let _ = key;
         match self {
             Self::None => Ok(()),
         }
     }
 
-    pub fn remove_key(&self, key: &Keys) -> Result<(), KeyStorageError> {
+    pub fn remove_key(&self, key: &FullKeypair) -> Result<(), KeyStorageError> {
+        let _ = key;
         match self {
             Self::None => Ok(()),
         }
@@ -31,16 +33,16 @@ impl KeyStorage {
 #[derive(Debug, PartialEq)]
 pub enum KeyStorageError<'a> {
     Retrieval,
-    Addition(&'a Keys),
-    Removal(&'a Keys),
+    Addition(&'a FullKeypair),
+    Removal(&'a FullKeypair),
 }
 
 impl std::fmt::Display for KeyStorageError<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             Self::Retrieval => write!(f, "Failed to retrieve keys."),
-            Self::Addition(key) => write!(f, "Failed to add key: {:?}", key.public_key()),
-            Self::Removal(key) => write!(f, "Failed to remove key: {:?}", key.public_key()),
+            Self::Addition(key) => write!(f, "Failed to add key: {:?}", key.pubkey),
+            Self::Removal(key) => write!(f, "Failed to remove key: {:?}", key.pubkey),
         }
     }
 }

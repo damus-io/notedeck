@@ -292,7 +292,7 @@ impl<'a> AccountSelectionWidget<'a> {
 // PREVIEWS
 
 mod preview {
-    use nostr_sdk::{Keys, PublicKey};
+    use enostr::{FullKeypair, Pubkey};
     use nostrdb::{Config, Ndb};
 
     use super::*;
@@ -325,7 +325,10 @@ mod preview {
         ACCOUNT_HEXES
             .iter()
             .map(|account_hex| {
-                let key = Keys::from_public_key(PublicKey::from_hex(account_hex).unwrap());
+                let key = FullKeypair::new(
+                    Pubkey::from_hex(account_hex).unwrap(),
+                    FullKeypair::generate().secret_key,
+                );
 
                 UserAccount {
                     key,
