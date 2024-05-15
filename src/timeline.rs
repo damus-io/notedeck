@@ -99,7 +99,8 @@ pub fn timeline_view(ui: &mut egui::Ui, app: &mut Damus, timeline: usize) {
                     let textmode = app.textmode;
                     let note_ui = ui::Note::new(app, &note).note_previews(!textmode);
                     ui.add(note_ui);
-                    ui.add(egui::Separator::default().spacing(0.0));
+                    ui::hline(ui);
+                    //ui.add(egui::Separator::default().spacing(0.0));
 
                     1
                 });

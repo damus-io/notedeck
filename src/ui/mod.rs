@@ -39,6 +39,14 @@ pub fn padding<R>(
         .show(ui, add_contents)
 }
 
+pub fn hline(ui: &egui::Ui) {
+    // pixel perfect horizontal line
+    let rect = ui.available_rect_before_wrap();
+    let resize_y = ui.painter().round_to_pixel(rect.top()) - 0.5;
+    let stroke = ui.style().visuals.widgets.noninteractive.bg_stroke;
+    ui.painter().hline(rect.x_range(), resize_y, stroke);
+}
+
 #[inline]
 #[allow(unreachable_code)]
 pub fn is_mobile(_ctx: &egui::Context) -> bool {
