@@ -1,5 +1,5 @@
 { pkgs ? import <nixpkgs> { }
-, android ? fetchTarball "https://github.com/tadfisher/android-nixpkgs/archive/refs/tags/2024-04-02.tar.gz"
+, android ? "https://github.com/tadfisher/android-nixpkgs/archive/refs/tags/2024-04-02.tar.gz"
 , use_android ? true
 , android_emulator ? false
 }:
@@ -7,25 +7,8 @@ with pkgs;
 
 let
   x11libs = lib.makeLibraryPath [ xorg.libX11 xorg.libXcursor xorg.libXrandr xorg.libXi libglvnd vulkan-loader vulkan-validation-layers libxkbcommon ];
-  android-nixpkgs = callPackage android { };
-  ndk-version = "24.0.8215888";
-
-  android-sdk = android-nixpkgs.sdk (sdkPkgs: with sdkPkgs; [
-    cmdline-tools-latest
-    build-tools-34-0-0
-    platform-tools
-    platforms-android-30
-    ndk-24-0-8215888
-  ] ++ lib.optional android_emulator [emulator]);
-
-  android-sdk-path = "${android-sdk.out}/share/android-sdk";
-  android-ndk-path = "${android-sdk-path}/ndk/${ndk-version}";
-
 in
 mkShell ({
-  buildInputs = [] ++ pkgs.lib.optional use_android [
-    android-sdk
-  ];
   nativeBuildInputs = [
     #cargo-udeps
     #cargo-edit
@@ -40,7 +23,7 @@ mkShell ({
     #wabt
     #gdb
     #heaptrack
-  ] ++ lib.optional use_android [
+  ] ++ lib.optionals use_android [
     jre
     openssl
     libiconv
@@ -52,7 +35,31 @@ mkShell ({
     darwin.apple_sdk.frameworks.AppKit
   ];
 
-  ANDROID_NDK_ROOT = android-ndk-path;
-} // (if !stdenv.isDarwin then {
-  LD_LIBRARY_PATH="${x11libs}";
-} else {}))
+} // (
+  lib.optionalAttrs (!stdenv.isDarwin) {
+    LD_LIBRARY_PATH = "${x11libs}";
+  }
+) // (
+  lib.optionalAttrs use_android (
+    let
+      android-nixpkgs = callPackage (fetchTarball android) { };
+      ndk-version = "24.0.8215888";
+
+      android-sdk = android-nixpkgs.sdk (sdkPkgs: with sdkPkgs; [
+        cmdline-tools-latest
+        build-tools-34-0-0
+        platform-tools
+        platforms-android-30
+        ndk-24-0-8215888
+      ] ++ lib.optional android_emulator [ emulator ]);
+
+      android-sdk-path = "${android-sdk.out}/share/android-sdk";
+      android-ndk-path = "${android-sdk-path}/ndk/${ndk-version}";
+
+    in
+    {
+      buildInputs = [ android-sdk ];
+      ANDROID_NDK_ROOT = android-ndk-path;
+    }
+  )
+))
