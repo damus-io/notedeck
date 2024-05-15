@@ -36,7 +36,6 @@ mkShell ({
     pkg-config
     #cmake
     fontconfig
-    openssl
     #brotli
     #wabt
     #gdb
