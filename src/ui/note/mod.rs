@@ -207,7 +207,7 @@ impl<'a> Note<'a> {
                         let profile_key = profile.as_ref().unwrap().record().note_key();
                         let note_key = note_key.as_u64();
 
-                        if is_mobile(ui.ctx()) {
+                        if is_mobile() {
                             ui.add(ui::ProfilePic::new(&mut self.app.img_cache, pic));
                         } else {
                             let (rect, size) = ui::anim::hover_expand(

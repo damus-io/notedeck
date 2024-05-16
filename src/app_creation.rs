@@ -48,9 +48,9 @@ pub fn setup_cc(cc: &eframe::CreationContext<'_>) {
 
     egui_extras::install_image_loaders(ctx);
 
-    ctx.set_visuals(dark_mode(is_mobile(ctx)));
+    ctx.set_visuals(dark_mode(is_mobile()));
 
-    ctx.set_style(if is_mobile(ctx) {
+    ctx.set_style(if is_mobile() {
         create_custom_style(ctx, mobile_font_size)
     } else {
         create_custom_style(ctx, desktop_font_size)

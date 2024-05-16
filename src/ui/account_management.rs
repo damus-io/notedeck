@@ -16,7 +16,7 @@ pub struct AccountManagementView<'a> {
 
 impl<'a> View for AccountManagementView<'a> {
     fn ui(&mut self, ui: &mut egui::Ui) {
-        if ui::is_mobile(ui.ctx()) {
+        if ui::is_mobile() {
             self.show_mobile(ui);
         } else {
             self.show(ui);

@@ -48,8 +48,7 @@ pub fn hline(ui: &egui::Ui) {
 }
 
 #[inline]
-#[allow(unreachable_code)]
-pub fn is_mobile(_ctx: &egui::Context) -> bool {
+pub fn is_mobile() -> bool {
     #[cfg(feature = "emulate_mobile")]
     {
         return true;

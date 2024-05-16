@@ -16,7 +16,7 @@ pub struct AccountLoginView<'a> {
 
 impl<'a> View for AccountLoginView<'a> {
     fn ui(&mut self, ui: &mut egui::Ui) {
-        let is_mobile = ui::is_mobile(ui.ctx());
+        let is_mobile = ui::is_mobile();
         if let Some(key) = self.manager.check_for_successful_login() {
             // TODO: route to "home"
             println!("successful login with key: {:?}", key);

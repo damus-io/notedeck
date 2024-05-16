@@ -413,7 +413,7 @@ fn process_message(damus: &mut Damus, relay: &str, msg: &RelayMessage) {
 }
 
 fn render_damus(damus: &mut Damus, ctx: &Context) {
-    if is_mobile(ctx) {
+    if is_mobile() {
         render_damus_mobile(ctx, damus);
     } else {
         render_damus_desktop(ctx, damus);
@@ -557,7 +557,7 @@ fn render_panel(ctx: &egui::Context, app: &mut Damus, timeline_ind: usize) {
             ui.visuals_mut().button_frame = false;
 
             if let Some(new_visuals) =
-                user_requested_visuals_change(is_mobile(ctx), ctx.style().visuals.dark_mode, ui)
+                user_requested_visuals_change(is_mobile(), ctx.style().visuals.dark_mode, ui)
             {
                 ctx.set_visuals(new_visuals)
             }
