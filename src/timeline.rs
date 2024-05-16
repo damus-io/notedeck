@@ -138,8 +138,6 @@ fn tabs_ui(ui: &mut egui::Ui) {
 
         ui.painter().hline(underline, underline_y, stroke);
     }
-
-    ui.add_space(3.0);
 }
 
 pub fn timeline_view(ui: &mut egui::Ui, app: &mut Damus, timeline: usize) {
@@ -150,6 +148,9 @@ pub fn timeline_view(ui: &mut egui::Ui, app: &mut Damus, timeline: usize) {
     */
 
     tabs_ui(ui);
+
+    // need this for some reason??
+    ui.add_space(3.0);
 
     egui::ScrollArea::vertical()
         .scroll_bar_visibility(ScrollBarVisibility::AlwaysVisible)
