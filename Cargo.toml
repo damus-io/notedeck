@@ -19,6 +19,7 @@ eframe = { version = "0.27.2", default-features = false, features = [ "glow", "w
 #eframe = "0.22.0"
 egui_extras = { version = "0.27.2", features = ["all_loaders"] }
 ehttp = "0.2.0"
+egui-tabs = { git = "https://github.com/damus-io/egui-tabs", rev = "ed97a57fc66b3781bc10ab644f9e1ed125d7377a" }
 reqwest = { version = "0.12.4", default-features = false, features = [ "rustls-tls-native-roots" ] }
 image = { version = "0.24", features = ["jpeg", "png", "webp"] }
 log = "0.4.17"

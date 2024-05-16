@@ -1,5 +1,7 @@
 use crate::{ui, Damus};
 use egui::containers::scroll_area::ScrollBarVisibility;
+use egui::{Direction, Layout};
+use egui_tabs::TabColor;
 use egui_virtual_list::VirtualList;
 use enostr::Filter;
 use nostrdb::{NoteKey, Subscription, Transaction};
@@ -56,6 +58,90 @@ impl Timeline {
     }
 }
 
+fn get_label_width(ui: &mut egui::Ui, text: &str) -> f32 {
+    let font_id = egui::FontId::default();
+    let galley = ui.fonts(|r| r.layout_no_wrap(text.to_string(), font_id, egui::Color32::WHITE));
+    galley.rect.width()
+}
+
+fn shrink_range_to_width(range: egui::Rangef, width: f32) -> egui::Rangef {
+    let midpoint = (range.min + range.max) / 2.0;
+    let half_width = width / 2.0;
+
+    let min = midpoint - half_width;
+    let max = midpoint + half_width;
+
+    egui::Rangef::new(min, max)
+}
+
+fn tabs_ui(ui: &mut egui::Ui) {
+    ui.spacing_mut().item_spacing.y = 0.0;
+
+    let tab_res = egui_tabs::Tabs::new(2)
+        .hover_bg(TabColor::none())
+        .selected_fg(TabColor::none())
+        .selected_bg(TabColor::none())
+        .hover_bg(TabColor::none())
+        //.hover_bg(TabColor::custom(egui::Color32::RED))
+        .height(32.0)
+        .layout(Layout::centered_and_justified(Direction::TopDown))
+        .show(ui, |ui, state| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+
+            let ind = state.index();
+
+            let txt = if ind == 0 { "Notes" } else { "Notes & Replies" };
+
+            let res = ui.add(egui::Label::new(txt).selectable(false));
+
+            // underline
+            if state.is_selected() {
+                let rect = res.rect;
+                let underline = rect.x_range().shrink(rect.width() / 4.0);
+                let underline = shrink_range_to_width(underline, get_label_width(ui, txt) * 1.15);
+                let underline_y = ui.painter().round_to_pixel(rect.bottom()) - 1.5;
+                return (underline, underline_y);
+            }
+
+            (egui::Rangef::new(0.0, 0.0), 0.0)
+        });
+
+    //ui.add_space(0.5);
+    ui::hline(ui);
+
+    // fun animation
+    if let Some(sel) = tab_res.selected() {
+        let (underline, underline_y) = tab_res.inner()[sel as usize].inner;
+        let underline_width = underline.span();
+
+        let tab_anim_id = ui.id().with("tab_anim");
+        let tab_anim_size = tab_anim_id.with("size");
+
+        let stroke = egui::Stroke {
+            color: ui.visuals().hyperlink_color,
+            width: 3.0,
+        };
+
+        let speed = 0.1f32;
+
+        // animate underline position
+        let x = ui
+            .ctx()
+            .animate_value_with_time(tab_anim_id, underline.min, speed);
+
+        // animate underline width
+        let w = ui
+            .ctx()
+            .animate_value_with_time(tab_anim_size, underline_width, speed);
+
+        let underline = egui::Rangef::new(x, x + w);
+
+        ui.painter().hline(underline, underline_y, stroke);
+    }
+
+    ui.add_space(3.0);
+}
+
 pub fn timeline_view(ui: &mut egui::Ui, app: &mut Damus, timeline: usize) {
     //padding(4.0, ui, |ui| ui.heading("Notifications"));
     /*
@@ -63,14 +149,10 @@ pub fn timeline_view(ui: &mut egui::Ui, app: &mut Damus, timeline: usize) {
     let row_height = ui.fonts(|f| f.row_height(&font_id)) + ui.spacing().item_spacing.y;
     */
 
+    tabs_ui(ui);
+
     egui::ScrollArea::vertical()
         .scroll_bar_visibility(ScrollBarVisibility::AlwaysVisible)
-        //.auto_shrink([false; 2])
-        /*
-        .show_viewport(ui, |ui, viewport| {
-            render_notes_in_viewport(ui, app, viewport, row_height, font_id);
-        });
-        */
         .show(ui, |ui| {
             let len = app.timelines[timeline].notes.len();
             let list = app.timelines[timeline].list.clone();

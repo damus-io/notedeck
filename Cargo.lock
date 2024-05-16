@@ -1036,6 +1036,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "egui-tabs"
+version = "0.1.0"
+source = "git+https://github.com/damus-io/egui-tabs?rev=ed97a57fc66b3781bc10ab644f9e1ed125d7377a#ed97a57fc66b3781bc10ab644f9e1ed125d7377a"
+dependencies = [
+ "egui",
+ "egui_extras",
+]
+
+[[package]]
 name = "egui-wgpu"
 version = "0.27.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2445,6 +2454,7 @@ dependencies = [
  "console_error_panic_hook",
  "eframe",
  "egui",
+ "egui-tabs",
  "egui_extras",
  "egui_virtual_list",
  "ehttp 0.2.0",

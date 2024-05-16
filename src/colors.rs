@@ -15,6 +15,7 @@ const DARK_BG: Color32 = Color32::from_rgb(0x2C, 0x2C, 0x2C);
 const DARK_ISH_BG: Color32 = Color32::from_rgb(0x22, 0x22, 0x22);
 const SEMI_DARK_BG: Color32 = Color32::from_rgb(0x44, 0x44, 0x44);
 
+const LIGHTER_GRAY: Color32 = Color32::from_rgb(0xe8, 0xe8, 0xe8);
 const LIGHT_GRAY: Color32 = Color32::from_rgb(0xc8, 0xc8, 0xc8); // 78%
 pub const MID_GRAY: Color32 = Color32::from_rgb(0xbd, 0xbd, 0xbd);
 const DARKER_GRAY: Color32 = Color32::from_rgb(0xa5, 0xa5, 0xa5); // 65%
@@ -99,7 +100,7 @@ pub fn light_color_theme() -> ColorTheme {
         // NONINTERACTIVE WIDGET
         noninteractive_bg_fill: Color32::WHITE,
         noninteractive_weak_bg_fill: EVEN_DARKER_GRAY,
-        noninteractive_bg_stroke_color: DARKER_GRAY,
+        noninteractive_bg_stroke_color: LIGHTER_GRAY,
         noninteractive_fg_stroke_color: GRAY_SECONDARY,
 
         // INACTIVE WIDGET

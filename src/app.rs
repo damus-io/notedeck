@@ -56,9 +56,9 @@ fn relay_setup(pool: &mut RelayPool, ctx: &egui::Context) {
     if let Err(e) = pool.add_url("wss://relay.damus.io".to_string(), wakeup.clone()) {
         error!("{:?}", e)
     }
-    if let Err(e) = pool.add_url("wss://pyramid.fiatjaf.com".to_string(), wakeup.clone()) {
-        error!("{:?}", e)
-    }
+    //if let Err(e) = pool.add_url("wss://pyramid.fiatjaf.com".to_string(), wakeup.clone()) {
+    //error!("{:?}", e)
+    //}
     if let Err(e) = pool.add_url("wss://nos.lol".to_string(), wakeup.clone()) {
         error!("{:?}", e)
     }

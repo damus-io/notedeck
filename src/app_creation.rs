@@ -41,6 +41,10 @@ pub fn setup_cc(cc: &eframe::CreationContext<'_>) {
     setup_fonts(ctx);
 
     //ctx.set_pixels_per_point(ctx.pixels_per_point() + UI_SCALE_FACTOR);
+    //ctx.set_pixels_per_point(1.0);
+    //
+    //
+    //ctx.tessellation_options_mut(|to| to.feathering = false);
 
     egui_extras::install_image_loaders(ctx);
 
