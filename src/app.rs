@@ -9,7 +9,7 @@ use crate::timeline::{NoteRef, Timeline};
 use crate::ui::is_mobile;
 use crate::Result;
 
-use egui::{Context, Frame, Margin, Style};
+use egui::{Context, Frame, Style};
 use egui_extras::{Size, StripBuilder};
 
 use enostr::{ClientMessage, Filter, Pubkey, RelayEvent, RelayMessage};
