@@ -135,7 +135,7 @@ fn try_process_event(damus: &mut Damus, ctx: &egui::Context) -> Result<()> {
     let txn = Transaction::new(&damus.ndb)?;
     let mut unknown_ids: HashSet<UnknownId> = HashSet::new();
     for timeline in 0..damus.timelines.len() {
-        if let Err(err) = poll_notes_for_timeline(damus, &txn, timeline, &mut unknown_ids) {
+        if let Err(err) = poll_notes_for_timeline(ctx, damus, &txn, timeline, &mut unknown_ids) {
             error!("{}", err);
         }
     }
@@ -238,6 +238,7 @@ fn get_unknown_note_ids<'a>(
 }
 
 fn poll_notes_for_timeline<'a>(
+    ctx: &egui::Context,
     damus: &mut Damus,
     txn: &'a Transaction,
     timeline: usize,
@@ -268,8 +269,20 @@ fn poll_notes_for_timeline<'a>(
         })
         .collect();
 
-    damus.timelines[timeline].notes =
-        timeline::merge_sorted_vecs(&damus.timelines[timeline].notes, &new_refs);
+    let timeline = &mut damus.timelines[timeline];
+    let prev_items = timeline.notes.len();
+    timeline.notes = timeline::merge_sorted_vecs(&timeline.notes, &new_refs);
+    let new_items = timeline.notes.len() - prev_items;
+
+    // TODO: technically items could have been added inbetween
+    timeline
+        .list
+        .clone()
+        .lock()
+        .unwrap()
+        .items_inserted_at_start(new_items);
+
+    ctx.request_repaint();
 
     Ok(())
 }

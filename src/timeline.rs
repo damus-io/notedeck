@@ -153,6 +153,7 @@ pub fn timeline_view(ui: &mut egui::Ui, app: &mut Damus, timeline: usize) {
     ui.add_space(3.0);
 
     egui::ScrollArea::vertical()
+        .animated(false)
         .scroll_bar_visibility(ScrollBarVisibility::AlwaysVisible)
         .show(ui, |ui| {
             let len = app.timelines[timeline].notes.len();
