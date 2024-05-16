@@ -97,8 +97,8 @@ fn tabs_ui(ui: &mut egui::Ui) {
             // underline
             if state.is_selected() {
                 let rect = res.rect;
-                let underline = rect.x_range().shrink(rect.width() / 4.0);
-                let underline = shrink_range_to_width(underline, get_label_width(ui, txt) * 1.15);
+                let underline =
+                    shrink_range_to_width(rect.x_range(), get_label_width(ui, txt) * 1.15);
                 let underline_y = ui.painter().round_to_pixel(rect.bottom()) - 1.5;
                 return (underline, underline_y);
             }
