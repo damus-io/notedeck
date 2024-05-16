@@ -607,7 +607,7 @@ fn render_panel(ctx: &egui::Context, app: &mut Damus, timeline_ind: usize) {
 }
 
 fn render_damus_mobile(ctx: &egui::Context, app: &mut Damus) {
-    render_panel(ctx, app, 0);
+    //render_panel(ctx, app, 0);
 
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
@@ -618,8 +618,14 @@ fn render_damus_mobile(ctx: &egui::Context, app: &mut Damus) {
 }
 
 fn main_panel(style: &Style) -> egui::CentralPanel {
+    let inner_margin = egui::Margin {
+        top: if crate::ui::is_mobile() { 40.0 } else { 0.0 },
+        left: 0.0,
+        right: 0.0,
+        bottom: 0.0,
+    };
     egui::CentralPanel::default().frame(Frame {
-        inner_margin: Margin::same(0.0),
+        inner_margin,
         fill: style.visuals.panel_fill,
         ..Default::default()
     })
