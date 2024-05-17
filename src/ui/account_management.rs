@@ -1,17 +1,16 @@
-use egui::{
-    Align, Align2, Button, Frame, Id, Layout, Margin, RichText, ScrollArea, Sense, Vec2, Window,
-};
-
+use crate::ui::global_popup::FromApp;
 use crate::{
     account_manager::{AccountManager, SimpleProfilePreviewController, UserAccount},
     app_style::NotedeckTextStyle,
     ui::{self, Preview, View},
 };
+use egui::{Align, Button, Frame, Id, Layout, Margin, RichText, ScrollArea, Sense, Vec2};
+
+use super::persist_state::PERSISTED_ACCOUNT_MANAGEMENT;
 
 pub struct AccountManagementView<'a> {
     account_manager: AccountManager<'a>,
     simple_preview_controller: SimpleProfilePreviewController<'a>,
-    edit_mode: &'a mut bool,
 }
 
 impl<'a> View for AccountManagementView<'a> {
@@ -28,37 +27,17 @@ impl<'a> AccountManagementView<'a> {
     pub fn new(
         account_manager: AccountManager<'a>,
         simple_preview_controller: SimpleProfilePreviewController<'a>,
-        edit_mode: &'a mut bool,
     ) -> Self {
         AccountManagementView {
             account_manager,
             simple_preview_controller,
-            edit_mode,
         }
     }
 
     fn show(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(24.0);
-        let screen_size = ui.ctx().screen_rect();
-        let margin_amt = 128.0;
-        let window_size = Vec2::new(
-            screen_size.width() - margin_amt,
-            screen_size.height() - margin_amt,
-        );
-
-        Window::new("Account Management")
-            .frame(Frame::window(ui.style()))
-            .collapsible(false)
-            .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
-            .resizable(false)
-            .title_bar(false)
-            .default_size(window_size)
-            .show(ui.ctx(), |ui| {
-                ui.add(title());
-                ui.add(self.buttons_widget());
-                ui.add_space(8.0);
-                self.show_accounts(ui);
-            });
+        ui.add(self.buttons_widget());
+        ui.add_space(8.0);
+        self.show_accounts(ui);
     }
 
     fn show_accounts(&mut self, ui: &mut egui::Ui) {
@@ -67,7 +46,7 @@ impl<'a> AccountManagementView<'a> {
                 let maybe_remove = self.simple_preview_controller.set_profile_previews(
                     &self.account_manager,
                     ui,
-                    *self.edit_mode,
+                    PERSISTED_ACCOUNT_MANAGEMENT.get_state(ui.ctx()),
                     |ui, preview, edit_mode| {
                         let mut should_remove = false;
 
@@ -103,7 +82,7 @@ impl<'a> AccountManagementView<'a> {
                     let maybe_remove = self.simple_preview_controller.set_profile_previews(
                         &self.account_manager,
                         ui,
-                        *self.edit_mode,
+                        PERSISTED_ACCOUNT_MANAGEMENT.get_state(ui.ctx()),
                         |ui, preview, edit_mode| {
                             let mut should_remove = false;
 
@@ -168,12 +147,12 @@ impl<'a> AccountManagementView<'a> {
                     Vec2::new(ui.available_size_before_wrap().x, 32.0),
                     Layout::left_to_right(egui::Align::Center),
                     |ui| {
-                        if *self.edit_mode {
+                        if PERSISTED_ACCOUNT_MANAGEMENT.get_state(ui.ctx()) {
                             if ui.add(done_account_button()).clicked() {
-                                *self.edit_mode = false;
+                                PERSISTED_ACCOUNT_MANAGEMENT.set_state(ui.ctx(), false);
                             }
                         } else if ui.add(edit_account_button()).clicked() {
-                            *self.edit_mode = true;
+                            PERSISTED_ACCOUNT_MANAGEMENT.set_state(ui.ctx(), true);
                         }
                     },
                 );
@@ -190,6 +169,20 @@ impl<'a> AccountManagementView<'a> {
             })
             .response
         }
+    }
+}
+
+impl<'a> FromApp<'a> for AccountManagementView<'a> {
+    fn from_app(app: &'a mut crate::Damus) -> Self {
+        // TODO: don't hard-code key store & relay generator
+        AccountManagementView::new(
+            AccountManager::new(
+                &mut app.accounts,
+                crate::key_storage::KeyStorage::None,
+                crate::relay_generation::RelayGenerator::Constant,
+            ),
+            SimpleProfilePreviewController::new(&app.ndb, &mut app.img_cache),
+        )
     }
 }
 
@@ -318,7 +311,6 @@ mod preview {
         accounts: Vec<UserAccount>,
         ndb: Ndb,
         img_cache: ImageCache,
-        edit_mode: bool,
     }
 
     fn get_accounts() -> Vec<UserAccount> {
@@ -359,7 +351,6 @@ mod preview {
                 accounts,
                 ndb,
                 img_cache,
-                edit_mode: false,
             }
         }
     }
@@ -372,10 +363,10 @@ mod preview {
                 RelayGenerator::Constant,
             );
 
+            ui.add_space(24.0);
             AccountManagementView::new(
                 account_manager,
                 SimpleProfilePreviewController::new(&self.ndb, &mut self.img_cache),
-                &mut self.edit_mode,
             )
             .ui(ui);
         }

@@ -3,8 +3,8 @@ use notedeck::app_creation::{
 };
 use notedeck::ui::account_login_view::AccountLoginView;
 use notedeck::ui::{
-    AccountManagementView, AccountSelectionWidget, Preview, PreviewApp, ProfilePic, ProfilePreview,
-    RelayView,
+    AccountManagementView, AccountSelectionWidget, DesktopGlobalPopup, DesktopSidePanel, Preview,
+    PreviewApp, ProfilePic, ProfilePreview, RelayView,
 };
 use std::env;
 
@@ -88,5 +88,7 @@ async fn main() {
         ProfilePic,
         AccountManagementView,
         AccountSelectionWidget,
+        DesktopSidePanel,
+        DesktopGlobalPopup,
     );
 }
