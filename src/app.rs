@@ -1,3 +1,4 @@
+use crate::account_manager::UserAccount;
 use crate::app_creation::setup_cc;
 use crate::app_style::user_requested_visuals_change;
 use crate::error::Error;
@@ -43,6 +44,7 @@ pub struct Damus {
 
     pub img_cache: ImageCache,
     pub ndb: Ndb,
+    pub accounts: Vec<UserAccount>,
 
     frame_history: crate::frame_history::FrameHistory,
 }
@@ -644,7 +646,33 @@ impl Damus {
             timelines,
             textmode: false,
             ndb: Ndb::new(data_path.as_ref().to_str().expect("db path ok"), &config).expect("ndb"),
+            accounts: Vec::new(),
             //compose: "".to_string(),
+            frame_history: FrameHistory::default(),
+        }
+    }
+
+    pub fn mock<P: AsRef<Path>>(data_path: P) -> Self {
+        let mut timelines: Vec<Timeline> = vec![];
+        let _initial_limit = 100;
+        let filter = serde_json::from_str(include_str!("../queries/global.json")).unwrap();
+        timelines.push(Timeline::new(filter));
+
+        let imgcache_dir = data_path.as_ref().join(ImageCache::rel_datadir());
+        let _ = std::fs::create_dir_all(imgcache_dir.clone());
+
+        let mut config = Config::new();
+        config.set_ingester_threads(2);
+        Self {
+            state: DamusState::Initializing,
+            pool: RelayPool::new(),
+            img_cache: ImageCache::new(imgcache_dir),
+            note_cache: NoteCache::default(),
+            selected_timeline: 0,
+            timelines,
+            textmode: false,
+            ndb: Ndb::new(data_path.as_ref().to_str().expect("db path ok"), &config).expect("ndb"),
+            accounts: Vec::new(),
             frame_history: FrameHistory::default(),
         }
     }
