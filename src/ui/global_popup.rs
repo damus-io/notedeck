@@ -91,6 +91,7 @@ impl<'a> DesktopGlobalPopup<'a> {
 
 mod preview {
     use crate::{
+        test_data::get_test_accounts,
         ui::{DesktopSidePanel, Preview, View},
         Damus,
     };
@@ -111,9 +112,9 @@ mod preview {
 
     impl GlobalPopupPreview {
         fn new() -> Self {
-            GlobalPopupPreview {
-                app: Damus::mock("."),
-            }
+            let mut app = Damus::mock(".");
+            app.accounts = get_test_accounts();
+            GlobalPopupPreview { app }
         }
     }
 

@@ -285,49 +285,19 @@ impl<'a> AccountSelectionWidget<'a> {
 // PREVIEWS
 
 mod preview {
-    use enostr::{FullKeypair, Pubkey};
     use nostrdb::{Config, Ndb};
 
     use super::*;
+    use crate::imgcache::ImageCache;
     use crate::key_storage::KeyStorage;
     use crate::relay_generation::RelayGenerator;
-    use crate::{imgcache::ImageCache, test_data};
+    use crate::test_data;
     use std::path::Path;
-
-    const ACCOUNT_HEXES: [&str; 10] = [
-        "3efdaebb1d8923ebd99c9e7ace3b4194ab45512e2be79c1b7d68d9243e0d2681",
-        "32e1827635450ebb3c5a7d12c1f8e7b2b514439ac10a67eef3d9fd9c5c68e245",
-        "bd1e19980e2c91e6dc657e92c25762ca882eb9272d2579e221f037f93788de91",
-        "5c10ed0678805156d39ef1ef6d46110fe1e7e590ae04986ccf48ba1299cb53e2",
-        "4c96d763eb2fe01910f7e7220b7c7ecdbe1a70057f344b9f79c28af080c3ee30",
-        "edf16b1dd61eab353a83af470cc13557029bff6827b4cb9b7fc9bdb632a2b8e6",
-        "3efdaebb1d8923ebd99c9e7ace3b4194ab45512e2be79c1b7d68d9243e0d2681",
-        "32e1827635450ebb3c5a7d12c1f8e7b2b514439ac10a67eef3d9fd9c5c68e245",
-        "32e1827635450ebb3c5a7d12c1f8e7b2b514439ac10a67eef3d9fd9c5c68e245",
-        "32e1827635450ebb3c5a7d12c1f8e7b2b514439ac10a67eef3d9fd9c5c68e245",
-    ];
 
     pub struct AccountManagementPreview {
         accounts: Vec<UserAccount>,
         ndb: Ndb,
         img_cache: ImageCache,
-    }
-
-    fn get_accounts() -> Vec<UserAccount> {
-        ACCOUNT_HEXES
-            .iter()
-            .map(|account_hex| {
-                let key = FullKeypair::new(
-                    Pubkey::from_hex(account_hex).unwrap(),
-                    FullKeypair::generate().secret_key,
-                );
-
-                UserAccount {
-                    key,
-                    relays: test_data::sample_pool(),
-                }
-            })
-            .collect()
     }
 
     fn get_ndb_and_img_cache() -> (Ndb, ImageCache) {
@@ -344,7 +314,7 @@ mod preview {
 
     impl AccountManagementPreview {
         fn new() -> Self {
-            let accounts = get_accounts();
+            let accounts = test_data::get_test_accounts();
             let (ndb, img_cache) = get_ndb_and_img_cache();
 
             AccountManagementPreview {
@@ -388,7 +358,7 @@ mod preview {
 
     impl AccountSelectionPreview {
         fn new() -> Self {
-            let accounts = get_accounts();
+            let accounts = test_data::get_test_accounts();
             let (ndb, img_cache) = get_ndb_and_img_cache();
             AccountSelectionPreview {
                 accounts,
