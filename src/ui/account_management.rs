@@ -6,7 +6,9 @@ use crate::{
 };
 use egui::{Align, Button, Frame, Id, Layout, Margin, RichText, ScrollArea, Sense, Vec2};
 
+use super::global_popup::GlobalPopupType;
 use super::persist_state::PERSISTED_ACCOUNT_MANAGEMENT;
+use super::profile::preview::SimpleProfilePreview;
 
 pub struct AccountManagementView<'a> {
     account_manager: AccountManager<'a>,
@@ -37,88 +39,41 @@ impl<'a> AccountManagementView<'a> {
     fn show(&mut self, ui: &mut egui::Ui) {
         ui.add(self.buttons_widget());
         ui.add_space(8.0);
-        self.show_accounts(ui);
+        scroll_area().show(ui, |ui| {
+            self.show_accounts(ui);
+        });
     }
 
     fn show_accounts(&mut self, ui: &mut egui::Ui) {
-        scroll_area().show(ui, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                let maybe_remove = self.simple_preview_controller.set_profile_previews(
-                    &self.account_manager,
-                    ui,
-                    PERSISTED_ACCOUNT_MANAGEMENT.get_state(ui.ctx()),
-                    |ui, preview, edit_mode| {
-                        let mut should_remove = false;
+        ui.horizontal_wrapped(|ui| {
+            let maybe_remove = self.simple_preview_controller.set_profile_previews(
+                &self.account_manager,
+                ui,
+                PERSISTED_ACCOUNT_MANAGEMENT.get_state(ui.ctx()),
+                desktop_account_card_ui(),
+            );
 
-                        ui.add_sized(preview.dimensions(), |ui: &mut egui::Ui| {
-                            simple_preview_frame(ui)
-                                .show(ui, |ui| {
-                                    ui.vertical_centered(|ui| {
-                                        ui.add(preview);
-                                        if edit_mode {
-                                            should_remove = ui
-                                                .add(delete_button(ui.visuals().dark_mode))
-                                                .clicked();
-                                        }
-                                    });
-                                })
-                                .response
-                        });
-                        should_remove
-                    },
-                );
-
-                self.maybe_remove_accounts(maybe_remove);
-            });
+            self.maybe_remove_accounts(maybe_remove);
         });
     }
 
     fn show_accounts_mobile(&mut self, ui: &mut egui::Ui) {
-        scroll_area().show(ui, |ui| {
-            ui.allocate_ui_with_layout(
-                Vec2::new(ui.available_size_before_wrap().x, 32.0),
-                Layout::top_down(egui::Align::Min),
-                |ui| {
-                    let maybe_remove = self.simple_preview_controller.set_profile_previews(
-                        &self.account_manager,
-                        ui,
-                        PERSISTED_ACCOUNT_MANAGEMENT.get_state(ui.ctx()),
-                        |ui, preview, edit_mode| {
-                            let mut should_remove = false;
+        ui.allocate_ui_with_layout(
+            Vec2::new(ui.available_size_before_wrap().x, 32.0),
+            Layout::top_down(egui::Align::Min),
+            |ui| {
+                // create all account 'cards' and get the indicies the user requested to remove
+                let maybe_remove = self.simple_preview_controller.set_profile_previews(
+                    &self.account_manager,
+                    ui,
+                    PERSISTED_ACCOUNT_MANAGEMENT.get_state(ui.ctx()),
+                    mobile_account_card_ui(), // closure for creating an account 'card'
+                );
 
-                            ui.add_sized(
-                                Vec2::new(ui.available_width(), 50.0),
-                                |ui: &mut egui::Ui| {
-                                    Frame::none()
-                                        .show(ui, |ui| {
-                                            ui.horizontal(|ui| {
-                                                ui.add(preview);
-                                                if edit_mode {
-                                                    ui.with_layout(
-                                                        Layout::right_to_left(Align::Center),
-                                                        |ui| {
-                                                            should_remove = ui
-                                                                .add(delete_button(
-                                                                    ui.visuals().dark_mode,
-                                                                ))
-                                                                .clicked();
-                                                        },
-                                                    );
-                                                }
-                                            });
-                                        })
-                                        .response
-                                },
-                            );
-                            ui.add_space(16.0);
-                            should_remove
-                        },
-                    );
-
-                    self.maybe_remove_accounts(maybe_remove);
-                },
-            );
-        });
+                // remove all account indicies user requested
+                self.maybe_remove_accounts(maybe_remove);
+            },
+        );
     }
 
     fn maybe_remove_accounts(&mut self, account_indices: Option<Vec<usize>>) {
@@ -132,10 +87,12 @@ impl<'a> AccountManagementView<'a> {
     fn show_mobile(&mut self, ui: &mut egui::Ui) -> egui::Response {
         egui::CentralPanel::default()
             .show(ui.ctx(), |ui| {
-                ui.add(title());
+                ui.add(mobile_title());
                 ui.add(self.buttons_widget());
                 ui.add_space(8.0);
-                self.show_accounts_mobile(ui);
+                scroll_area().show(ui, |ui| {
+                    self.show_accounts_mobile(ui);
+                });
             })
             .response
     }
@@ -172,6 +129,55 @@ impl<'a> AccountManagementView<'a> {
     }
 }
 
+fn mobile_account_card_ui(
+) -> fn(ui: &mut egui::Ui, preview: SimpleProfilePreview, edit_mode: bool) -> bool {
+    |ui, preview, edit_mode| {
+        let mut should_remove = false;
+
+        ui.add_sized(
+            Vec2::new(ui.available_width(), 50.0),
+            |ui: &mut egui::Ui| {
+                Frame::none()
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.add(preview);
+                            if edit_mode {
+                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                    should_remove =
+                                        ui.add(delete_button(ui.visuals().dark_mode)).clicked();
+                                });
+                            }
+                        });
+                    })
+                    .response
+            },
+        );
+        ui.add_space(16.0);
+        should_remove
+    }
+}
+
+fn desktop_account_card_ui(
+) -> fn(ui: &mut egui::Ui, preview: SimpleProfilePreview, edit_mode: bool) -> bool {
+    |ui: &mut egui::Ui, preview, edit_mode| {
+        let mut should_remove = false;
+
+        ui.add_sized(preview.dimensions(), |ui: &mut egui::Ui| {
+            simple_preview_frame(ui)
+                .show(ui, |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.add(preview);
+                        if edit_mode {
+                            should_remove = ui.add(delete_button(ui.visuals().dark_mode)).clicked();
+                        }
+                    });
+                })
+                .response
+        });
+        should_remove
+    }
+}
+
 impl<'a> FromApp<'a> for AccountManagementView<'a> {
     fn from_app(app: &'a mut crate::Damus) -> Self {
         // TODO: don't hard-code key store & relay generator
@@ -195,11 +201,11 @@ fn simple_preview_frame(ui: &mut egui::Ui) -> Frame {
         .inner_margin(12.0)
 }
 
-fn title() -> impl egui::Widget {
+fn mobile_title() -> impl egui::Widget {
     |ui: &mut egui::Ui| {
         ui.vertical_centered(|ui| {
             ui.label(
-                RichText::new("Accounts")
+                RichText::new(GlobalPopupType::AccountManagement.title())
                     .text_style(NotedeckTextStyle::Heading2.text_style())
                     .strong(),
             );
