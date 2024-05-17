@@ -16,7 +16,18 @@ with import <nixpkgs>
 };
 
 let
-  x11libs = lib.makeLibraryPath [ xorg.libX11 xorg.libXcursor xorg.libXrandr xorg.libXi libglvnd vulkan-loader vulkan-validation-layers libxkbcommon ];
+  graphicLibs = lib.makeLibraryPath [
+    xorg.libX11
+    xorg.libXcursor
+    xorg.libXrandr
+    xorg.libXi
+    libglvnd
+    vulkan-loader
+    vulkan-validation-layers
+    libxkbcommon
+
+    wayland
+  ];
   rustc = (rust-bin.fromRustupToolchainFile ./rust-toolchain).override {
     targets = [ ] ++
       (lib.optionals (stdenv.isLinux && use_android) [
@@ -70,7 +81,7 @@ mkShell ({
 
 } // (
   lib.optionalAttrs (!stdenv.isDarwin) {
-    LD_LIBRARY_PATH = "${x11libs}";
+    LD_LIBRARY_PATH = "${graphicLibs}";
   }
 ) // (
   lib.optionalAttrs use_android (
