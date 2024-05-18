@@ -859,9 +859,12 @@ fn render_damus_desktop(ctx: &egui::Context, app: &mut Damus) {
 
 fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus, timelines: usize) {
     StripBuilder::new(ui)
+        .size(Size::exact(40.0))
         .sizes(sizes, timelines)
         .clip(true)
         .horizontal(|mut strip| {
+            strip.cell(crate::ui::DesktopSidePanel::inner);
+
             for timeline_ind in 0..timelines {
                 strip.cell(|ui| timeline::timeline_view(ui, app, timeline_ind));
             }
