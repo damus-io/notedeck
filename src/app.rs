@@ -5,7 +5,7 @@ use crate::frame_history::FrameHistory;
 use crate::imgcache::ImageCache;
 use crate::notecache::{CachedNote, NoteCache};
 use crate::timeline;
-use crate::timeline::{NoteRef, Timeline};
+use crate::timeline::{NoteRef, Timeline, ViewFilter};
 use crate::ui::is_mobile;
 use crate::Result;
 
@@ -96,7 +96,7 @@ fn send_initial_filters(damus: &mut Damus, relay_url: &str) {
             for timeline in &damus.timelines {
                 let mut filter = timeline.filter.clone();
                 for f in &mut filter {
-                    since_optimize_filter(f, timeline.notes());
+                    since_optimize_filter(f, timeline.notes(ViewFilter::NotesAndReplies));
                 }
                 relay.subscribe(format!("initial{}", c), filter);
                 c += 1;
@@ -165,7 +165,7 @@ fn try_process_event(damus: &mut Damus, ctx: &egui::Context) -> Result<()> {
     let txn = Transaction::new(&damus.ndb)?;
     let mut unknown_ids: HashSet<UnknownId> = HashSet::new();
     for timeline in 0..damus.timelines.len() {
-        if let Err(err) = poll_notes_for_timeline(ctx, damus, &txn, timeline, &mut unknown_ids) {
+        if let Err(err) = poll_notes_for_timeline(damus, &txn, timeline, &mut unknown_ids) {
             error!("{}", err);
         }
     }
@@ -268,13 +268,12 @@ fn get_unknown_note_ids<'a>(
 }
 
 fn poll_notes_for_timeline<'a>(
-    ctx: &egui::Context,
     damus: &mut Damus,
     txn: &'a Transaction,
-    timeline: usize,
+    timeline_ind: usize,
     ids: &mut HashSet<UnknownId<'a>>,
 ) -> Result<()> {
-    let sub = if let Some(sub) = &damus.timelines[timeline].subscription {
+    let sub = if let Some(sub) = &damus.timelines[timeline_ind].subscription {
         sub
     } else {
         return Err(Error::NoActiveSubscription);
@@ -285,32 +284,78 @@ fn poll_notes_for_timeline<'a>(
         debug!("{} new notes! {:?}", new_note_ids.len(), new_note_ids);
     }
 
-    let new_refs: Vec<NoteRef> = new_note_ids
+    let new_refs: Vec<(Note, NoteRef)> = new_note_ids
         .iter()
         .map(|key| {
             let note = damus.ndb.get_note_by_key(txn, *key).expect("no note??");
 
             let _ = get_unknown_note_ids(&damus.ndb, txn, &note, *key, ids);
 
-            NoteRef {
-                key: *key,
-                created_at: note.created_at(),
-            }
+            let created_at = note.created_at();
+            (
+                note,
+                NoteRef {
+                    key: *key,
+                    created_at,
+                },
+            )
         })
         .collect();
 
-    let timeline = &mut damus.timelines[timeline];
-    let prev_items = timeline.notes().len();
-    timeline.current_view_mut().notes = timeline::merge_sorted_vecs(&timeline.notes(), &new_refs);
-    let new_items = timeline.notes().len() - prev_items;
+    // ViewFilter::NotesAndReplies
+    {
+        let timeline = &mut damus.timelines[timeline_ind];
 
-    // TODO: technically items could have been added inbetween
-    if new_items > 0 {
-        timeline
-            .current_view()
-            .list
-            .borrow_mut()
-            .items_inserted_at_start(new_items);
+        let prev_items = timeline.notes(ViewFilter::NotesAndReplies).len();
+
+        let refs: Vec<NoteRef> = new_refs.iter().map(|(_note, nr)| *nr).collect();
+        timeline.view_mut(ViewFilter::NotesAndReplies).notes =
+            timeline::merge_sorted_vecs(timeline.notes(ViewFilter::NotesAndReplies), &refs);
+
+        let new_items = timeline.notes(ViewFilter::NotesAndReplies).len() - prev_items;
+
+        // TODO: technically items could have been added inbetween
+        if new_items > 0 {
+            damus.timelines[timeline_ind]
+                .view(ViewFilter::NotesAndReplies)
+                .list
+                .borrow_mut()
+                .items_inserted_at_start(new_items);
+        }
+    }
+
+    //
+    // handle the filtered case (ViewFilter::Notes, no replies)
+    //
+    // TODO(jb55): this is mostly just copied from above, let's just use a loop
+    //             I initially tried this but ran into borrow checker issues
+    {
+        let mut filtered_refs = Vec::with_capacity(new_refs.len());
+        for (note, nr) in &new_refs {
+            let cached_note = damus.note_cache_mut().cached_note_or_insert(nr.key, note);
+
+            if ViewFilter::filter_notes(cached_note, note) {
+                filtered_refs.push(*nr);
+            }
+        }
+
+        let timeline = &mut damus.timelines[timeline_ind];
+
+        let prev_items = timeline.notes(ViewFilter::Notes).len();
+
+        timeline.view_mut(ViewFilter::Notes).notes =
+            timeline::merge_sorted_vecs(timeline.notes(ViewFilter::Notes), &filtered_refs);
+
+        let new_items = timeline.notes(ViewFilter::Notes).len() - prev_items;
+
+        // TODO: technically items could have been added inbetween
+        if new_items > 0 {
+            damus.timelines[timeline_ind]
+                .view(ViewFilter::Notes)
+                .list
+                .borrow_mut()
+                .items_inserted_at_start(new_items);
+        }
     }
 
     Ok(())
@@ -322,31 +367,48 @@ fn setup_profiling() {
 }
 
 fn setup_initial_nostrdb_subs(damus: &mut Damus) -> Result<()> {
-    for timeline in &mut damus.timelines {
-        let filters: Vec<nostrdb::Filter> = timeline
+    let timelines = damus.timelines.len();
+    for i in 0..timelines {
+        let filters: Vec<nostrdb::Filter> = damus.timelines[i]
             .filter
             .iter()
             .map(crate::filter::convert_enostr_filter)
             .collect();
-        timeline.subscription = Some(damus.ndb.subscribe(filters.clone())?);
+        damus.timelines[i].subscription = Some(damus.ndb.subscribe(filters.clone())?);
         let txn = Transaction::new(&damus.ndb)?;
         debug!(
             "querying sub {} {:?}",
-            timeline.subscription.as_ref().unwrap().id,
-            timeline.filter
+            damus.timelines[i].subscription.as_ref().unwrap().id,
+            damus.timelines[i].filter
         );
-        let res = damus.ndb.query(
+        let results = damus.ndb.query(
             &txn,
             filters,
-            timeline.filter[0].limit.unwrap_or(200) as i32,
+            damus.timelines[i].filter[0].limit.unwrap_or(200) as i32,
         )?;
-        timeline.notes_view_mut().notes = res
-            .iter()
-            .map(|qr| NoteRef {
-                key: qr.note_key,
-                created_at: qr.note.created_at(),
-            })
-            .collect();
+
+        let filters = {
+            let views = &damus.timelines[i].views;
+            let filters: Vec<fn(&CachedNote, &Note) -> bool> =
+                views.iter().map(|v| v.filter.filter()).collect();
+            filters
+        };
+
+        for result in results {
+            for (j, filter) in filters.iter().enumerate() {
+                if filter(
+                    damus
+                        .note_cache_mut()
+                        .cached_note_or_insert_mut(result.note_key, &result.note),
+                    &result.note,
+                ) {
+                    damus.timelines[i].views[j].notes.push(NoteRef {
+                        key: result.note_key,
+                        created_at: result.note.created_at(),
+                    })
+                }
+            }
+        }
     }
 
     Ok(())
@@ -385,7 +447,7 @@ fn get_unknown_ids<'a>(txn: &'a Transaction, damus: &Damus) -> Result<Vec<Unknow
     let mut ids: HashSet<UnknownId> = HashSet::new();
 
     for timeline in &damus.timelines {
-        for noteref in timeline.notes() {
+        for noteref in timeline.notes(ViewFilter::NotesAndReplies) {
             let note = damus.ndb.get_note_by_key(txn, noteref.key)?;
             let _ = get_unknown_note_ids(&damus.ndb, txn, &note, note.key().unwrap(), &mut ids);
         }
@@ -517,11 +579,8 @@ impl Damus {
         }
     }
 
-    pub fn get_note_cache_mut(&mut self, note_key: NoteKey, note: &Note<'_>) -> &mut CachedNote {
-        self.note_cache
-            .cache
-            .entry(note_key)
-            .or_insert_with(|| CachedNote::new(note))
+    pub fn note_cache_mut(&mut self) -> &mut NoteCache {
+        &mut self.note_cache
     }
 
     pub fn selected_timeline(&mut self) -> &mut Timeline {
@@ -627,7 +686,9 @@ fn render_panel(ctx: &egui::Context, app: &mut Damus, timeline_ind: usize) {
 
                 ui.weak(format!(
                     "{} notes",
-                    &app.timelines[timeline_ind].notes().len()
+                    &app.timelines[timeline_ind]
+                        .notes(ViewFilter::NotesAndReplies)
+                        .len()
                 ));
             }
         });

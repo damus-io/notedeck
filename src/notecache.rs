@@ -9,6 +9,20 @@ pub struct NoteCache {
     pub cache: HashMap<NoteKey, CachedNote>,
 }
 
+impl NoteCache {
+    pub fn cached_note_or_insert_mut(&mut self, note_key: NoteKey, note: &Note) -> &mut CachedNote {
+        self.cache
+            .entry(note_key)
+            .or_insert_with(|| CachedNote::new(note))
+    }
+
+    pub fn cached_note_or_insert(&mut self, note_key: NoteKey, note: &Note) -> &CachedNote {
+        self.cache
+            .entry(note_key)
+            .or_insert_with(|| CachedNote::new(note))
+    }
+}
+
 pub struct CachedNote {
     reltime: TimeCached<String>,
     pub reply: NoteReplyBuf,

@@ -50,7 +50,8 @@ fn reply_desc(
     puffin::profile_function!();
 
     let note_reply = app
-        .get_note_cache_mut(note_key, note)
+        .note_cache_mut()
+        .cached_note_or_insert_mut(note_key, note)
         .reply
         .borrow(note.tags());
 
@@ -157,12 +158,15 @@ impl<'a> Note<'a> {
             //ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
 
-            let note_cache = self.app.get_note_cache_mut(note_key, self.note);
+            let cached_note = self
+                .app
+                .note_cache_mut()
+                .cached_note_or_insert_mut(note_key, self.note);
 
             let (_id, rect) = ui.allocate_space(egui::vec2(50.0, 20.0));
             ui.allocate_rect(rect, Sense::hover());
             ui.put(rect, |ui: &mut egui::Ui| {
-                render_reltime(ui, note_cache, false).response
+                render_reltime(ui, cached_note, false).response
             });
             let (_id, rect) = ui.allocate_space(egui::vec2(150.0, 20.0));
             ui.allocate_rect(rect, Sense::hover());
@@ -250,8 +254,11 @@ impl<'a> Note<'a> {
                                 .abbreviated(20),
                         );
 
-                        let note_cache = self.app.get_note_cache_mut(note_key, self.note);
-                        render_reltime(ui, note_cache, true);
+                        let cached_note = self
+                            .app
+                            .note_cache_mut()
+                            .cached_note_or_insert_mut(note_key, self.note);
+                        render_reltime(ui, cached_note, true);
                     });
 
                     ui.horizontal(|ui| {

@@ -48,17 +48,25 @@ impl ViewFilter {
         }
     }
 
-    fn index(&self) -> usize {
+    pub fn index(&self) -> usize {
         match self {
             ViewFilter::Notes => 0,
             ViewFilter::NotesAndReplies => 1,
         }
     }
 
-    fn filter(&self, cache: &CachedNote, note: &Note) -> bool {
+    pub fn filter_notes(cache: &CachedNote, note: &Note) -> bool {
+        !cache.reply.borrow(note.tags()).is_reply()
+    }
+
+    fn identity(_cache: &CachedNote, _note: &Note) -> bool {
+        true
+    }
+
+    pub fn filter(&self) -> fn(&CachedNote, &Note) -> bool {
         match self {
-            ViewFilter::Notes => !cache.reply.borrow(note.tags()).is_reply(),
-            ViewFilter::NotesAndReplies => true,
+            ViewFilter::Notes => ViewFilter::filter_notes,
+            ViewFilter::NotesAndReplies => ViewFilter::identity,
         }
     }
 }
@@ -138,12 +146,16 @@ impl Timeline {
         &mut self.views[self.selected_view as usize]
     }
 
-    pub fn notes(&self) -> &[NoteRef] {
-        &self.views[ViewFilter::NotesAndReplies.index()].notes
+    pub fn notes(&self, view: ViewFilter) -> &[NoteRef] {
+        &self.views[view.index()].notes
     }
 
-    pub fn notes_view_mut(&mut self) -> &mut TimelineView {
-        &mut self.views[ViewFilter::NotesAndReplies.index()]
+    pub fn view(&self, view: ViewFilter) -> &TimelineView {
+        &self.views[view.index()]
+    }
+
+    pub fn view_mut(&mut self, view: ViewFilter) -> &mut TimelineView {
+        &mut self.views[view.index()]
     }
 }
 
@@ -163,7 +175,7 @@ fn shrink_range_to_width(range: egui::Rangef, width: f32) -> egui::Rangef {
     egui::Rangef::new(min, max)
 }
 
-fn tabs_ui(ui: &mut egui::Ui) {
+fn tabs_ui(timeline: &mut Timeline, ui: &mut egui::Ui) {
     ui.spacing_mut().item_spacing.y = 0.0;
 
     let tab_res = egui_tabs::Tabs::new(2)
@@ -200,6 +212,8 @@ fn tabs_ui(ui: &mut egui::Ui) {
 
     // fun animation
     if let Some(sel) = tab_res.selected() {
+        timeline.selected_view = sel;
+
         let (underline, underline_y) = tab_res.inner()[sel as usize].inner;
         let underline_width = underline.span();
 
@@ -236,19 +250,22 @@ pub fn timeline_view(ui: &mut egui::Ui, app: &mut Damus, timeline: usize) {
     let row_height = ui.fonts(|f| f.row_height(&font_id)) + ui.spacing().item_spacing.y;
     */
 
-    tabs_ui(ui);
+    tabs_ui(&mut app.timelines[timeline], ui);
 
     // need this for some reason??
     ui.add_space(3.0);
 
+    let scroll_id = ui.id().with(app.timelines[timeline].selected_view);
     egui::ScrollArea::vertical()
+        .id_source(scroll_id)
         .animated(false)
         .scroll_bar_visibility(ScrollBarVisibility::AlwaysVisible)
         .show(ui, |ui| {
             let view = app.timelines[timeline].current_view();
             let len = view.notes.len();
-            let list = view.list.clone();
-            list.borrow_mut()
+            view.list
+                .clone()
+                .borrow_mut()
                 .ui_custom_layout(ui, len, |ui, start_index| {
                     ui.spacing_mut().item_spacing.y = 0.0;
                     ui.spacing_mut().item_spacing.x = 4.0;
