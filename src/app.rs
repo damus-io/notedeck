@@ -104,30 +104,41 @@ fn send_initial_filters(damus: &mut Damus, relay_url: &str) {
     }
 }
 
-fn try_process_event(damus: &mut Damus, ctx: &egui::Context) -> Result<()> {
-    ctx.input(|i| {
-        let amount = 0.2;
+fn handle_key_events(input: &egui::InputState, damus: &mut Damus, ctx: &egui::Context) {
+    let amount = 0.2;
 
-        for event in &i.raw.events {
-            match event {
-                egui::Event::Key {
-                    key, pressed: true, ..
-                } => match key {
-                    egui::Key::Equals => {
-                        ctx.set_pixels_per_point(ctx.pixels_per_point() + amount);
-                    }
-
-                    egui::Key::Minus => {
-                        ctx.set_pixels_per_point(ctx.pixels_per_point() - amount);
-                    }
-
-                    _ => {}
-                },
-
+    for event in &input.raw.events {
+        if let egui::Event::Key {
+            key, pressed: true, ..
+        } = event
+        {
+            match key {
+                egui::Key::Equals => {
+                    ctx.set_pixels_per_point(ctx.pixels_per_point() + amount);
+                }
+                egui::Key::Minus => {
+                    ctx.set_pixels_per_point(ctx.pixels_per_point() - amount);
+                }
+                egui::Key::J => {
+                    damus.select_down();
+                }
+                egui::Key::K => {
+                    damus.select_up();
+                }
+                egui::Key::H => {
+                    damus.select_left();
+                }
+                egui::Key::L => {
+                    damus.select_left();
+                }
                 _ => {}
             }
         }
-    });
+    }
+}
+
+fn try_process_event(damus: &mut Damus, ctx: &egui::Context) -> Result<()> {
+    ctx.input(|i| handle_key_events(i, damus, ctx));
 
     let ctx2 = ctx.clone();
     let wakeup = move || {
