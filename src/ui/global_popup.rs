@@ -120,7 +120,7 @@ mod preview {
 
     impl View for GlobalPopupPreview {
         fn ui(&mut self, ui: &mut egui::Ui) {
-            let mut panel = DesktopSidePanel::new(ui.ctx());
+            let mut panel = DesktopSidePanel::new();
             DesktopSidePanel::panel().show(ui.ctx(), |ui| panel.ui(ui));
             DesktopGlobalPopup::new(&mut self.app).ui(ui);
         }

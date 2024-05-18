@@ -7,24 +7,23 @@ use super::{
     View,
 };
 
-pub struct DesktopSidePanel<'a> {
-    ctx: &'a egui::Context,
-}
+#[derive(Default)]
+pub struct DesktopSidePanel {}
 
 static ID: &str = "left panel";
 
-impl<'a> View for DesktopSidePanel<'a> {
+impl View for DesktopSidePanel {
     fn ui(&mut self, ui: &mut egui::Ui) {
-        DesktopSidePanel::inner(self.ctx, ui);
+        DesktopSidePanel::inner(ui);
     }
 }
 
-impl<'a> DesktopSidePanel<'a> {
-    pub fn new(ctx: &'a egui::Context) -> Self {
-        DesktopSidePanel { ctx }
+impl DesktopSidePanel {
+    pub fn new() -> Self {
+        DesktopSidePanel::default()
     }
 
-    pub fn inner(ctx: &egui::Context, ui: &mut egui::Ui) {
+    pub fn inner(ui: &mut egui::Ui) {
         let dark_mode = ui.ctx().style().visuals.dark_mode;
         let spacing_amt = 16.0;
         ui.with_layout(Layout::bottom_up(egui::Align::Center), |ui| {
@@ -33,8 +32,8 @@ impl<'a> DesktopSidePanel<'a> {
                 .add_sized(Vec2::new(32.0, 32.0), Button::new("A"))
                 .clicked()
             {
-                PERSISTED_SIDE_PANEL.set_state(ctx, Some(GlobalPopupType::AccountManagement));
-                PERSISTED_GLOBAL_POPUP.set_state(ctx, true);
+                PERSISTED_SIDE_PANEL.set_state(ui.ctx(), Some(GlobalPopupType::AccountManagement));
+                PERSISTED_GLOBAL_POPUP.set_state(ui.ctx(), true);
             }
             ui.add_space(spacing_amt);
             ui.add(settings_button(dark_mode));
@@ -78,12 +77,12 @@ mod preview {
 
     impl View for DesktopSidePanelPreview {
         fn ui(&mut self, ui: &mut egui::Ui) {
-            let mut panel = DesktopSidePanel::new(ui.ctx());
+            let mut panel = DesktopSidePanel::new();
             DesktopSidePanel::panel().show(ui.ctx(), |ui| panel.ui(ui));
         }
     }
 
-    impl Preview for DesktopSidePanel<'_> {
+    impl Preview for DesktopSidePanel {
         type Prev = DesktopSidePanelPreview;
 
         fn preview() -> Self::Prev {
