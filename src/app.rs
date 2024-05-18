@@ -107,10 +107,25 @@ fn send_initial_filters(damus: &mut Damus, relay_url: &str) {
 fn try_process_event(damus: &mut Damus, ctx: &egui::Context) -> Result<()> {
     ctx.input(|i| {
         let amount = 0.2;
-        if i.key_pressed(egui::Key::Equals) {
-            ctx.set_pixels_per_point(ctx.pixels_per_point() + amount);
-        } else if i.key_pressed(egui::Key::Minus) {
-            ctx.set_pixels_per_point(ctx.pixels_per_point() - amount);
+
+        for event in &i.raw.events {
+            match event {
+                egui::Event::Key {
+                    key, pressed: true, ..
+                } => match key {
+                    egui::Key::Equals => {
+                        ctx.set_pixels_per_point(ctx.pixels_per_point() + amount);
+                    }
+
+                    egui::Key::Minus => {
+                        ctx.set_pixels_per_point(ctx.pixels_per_point() - amount);
+                    }
+
+                    _ => {}
+                },
+
+                _ => {}
+            }
         }
     });
 
