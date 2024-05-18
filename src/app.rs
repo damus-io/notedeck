@@ -105,12 +105,14 @@ fn send_initial_filters(damus: &mut Damus, relay_url: &str) {
 }
 
 fn try_process_event(damus: &mut Damus, ctx: &egui::Context) -> Result<()> {
-    let amount = 0.2;
-    if ctx.input(|i| i.key_pressed(egui::Key::Equals)) {
-        ctx.set_pixels_per_point(ctx.pixels_per_point() + amount);
-    } else if ctx.input(|i| i.key_pressed(egui::Key::Minus)) {
-        ctx.set_pixels_per_point(ctx.pixels_per_point() - amount);
-    }
+    ctx.input(|i| {
+        let amount = 0.2;
+        if i.key_pressed(egui::Key::Equals) {
+            ctx.set_pixels_per_point(ctx.pixels_per_point() + amount);
+        } else if i.key_pressed(egui::Key::Minus) {
+            ctx.set_pixels_per_point(ctx.pixels_per_point() - amount);
+        }
+    });
 
     let ctx2 = ctx.clone();
     let wakeup = move || {
