@@ -3,7 +3,7 @@ use crate::app_style::user_requested_visuals_change;
 use crate::error::Error;
 use crate::frame_history::FrameHistory;
 use crate::imgcache::ImageCache;
-use crate::notecache::NoteCache;
+use crate::notecache::{CachedNote, NoteCache};
 use crate::timeline;
 use crate::timeline::{NoteRef, Timeline};
 use crate::ui::is_mobile;
@@ -15,7 +15,7 @@ use egui_extras::{Size, StripBuilder};
 use enostr::{ClientMessage, Filter, Pubkey, RelayEvent, RelayMessage};
 use nostrdb::{BlockType, Config, Mention, Ndb, Note, NoteKey, Transaction};
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::hash::Hash;
 use std::path::Path;
 use std::time::Duration;
@@ -33,11 +33,13 @@ pub enum DamusState {
 pub struct Damus {
     state: DamusState,
     //compose: String,
-    note_cache: HashMap<NoteKey, NoteCache>,
+    note_cache: NoteCache,
     pool: RelayPool,
+
     pub textmode: bool,
 
     pub timelines: Vec<Timeline>,
+    pub selected_timeline: i32,
 
     pub img_cache: ImageCache,
     pub ndb: Ndb,
@@ -94,7 +96,7 @@ fn send_initial_filters(damus: &mut Damus, relay_url: &str) {
             for timeline in &damus.timelines {
                 let mut filter = timeline.filter.clone();
                 for f in &mut filter {
-                    since_optimize_filter(f, &timeline.notes);
+                    since_optimize_filter(f, timeline.notes());
                 }
                 relay.subscribe(format!("initial{}", c), filter);
                 c += 1;
@@ -298,13 +300,14 @@ fn poll_notes_for_timeline<'a>(
         .collect();
 
     let timeline = &mut damus.timelines[timeline];
-    let prev_items = timeline.notes.len();
-    timeline.notes = timeline::merge_sorted_vecs(&timeline.notes, &new_refs);
-    let new_items = timeline.notes.len() - prev_items;
+    let prev_items = timeline.notes().len();
+    timeline.current_view_mut().notes = timeline::merge_sorted_vecs(&timeline.notes(), &new_refs);
+    let new_items = timeline.notes().len() - prev_items;
 
     // TODO: technically items could have been added inbetween
     if new_items > 0 {
         timeline
+            .current_view()
             .list
             .clone()
             .lock()
@@ -339,7 +342,7 @@ fn setup_initial_nostrdb_subs(damus: &mut Damus) -> Result<()> {
             filters,
             timeline.filter[0].limit.unwrap_or(200) as i32,
         )?;
-        timeline.notes = res
+        timeline.notes_view_mut().notes = res
             .iter()
             .map(|qr| NoteRef {
                 key: qr.note_key,
@@ -384,7 +387,7 @@ fn get_unknown_ids<'a>(txn: &'a Transaction, damus: &Damus) -> Result<Vec<Unknow
     let mut ids: HashSet<UnknownId> = HashSet::new();
 
     for timeline in &damus.timelines {
-        for noteref in &timeline.notes {
+        for noteref in timeline.notes() {
             let note = damus.ndb.get_note_by_key(txn, noteref.key)?;
             let _ = get_unknown_note_ids(&damus.ndb, txn, &note, note.key().unwrap(), &mut ids);
         }
@@ -506,7 +509,8 @@ impl Damus {
             state: DamusState::Initializing,
             pool: RelayPool::new(),
             img_cache: ImageCache::new(imgcache_dir),
-            note_cache: HashMap::new(),
+            note_cache: NoteCache::default(),
+            selected_timeline: 0,
             timelines,
             textmode: false,
             ndb: Ndb::new(data_path.as_ref().to_str().expect("db path ok"), &config).expect("ndb"),
@@ -515,10 +519,37 @@ impl Damus {
         }
     }
 
-    pub fn get_note_cache_mut(&mut self, note_key: NoteKey, note: &Note<'_>) -> &mut NoteCache {
+    pub fn get_note_cache_mut(&mut self, note_key: NoteKey, note: &Note<'_>) -> &mut CachedNote {
         self.note_cache
+            .cache
             .entry(note_key)
-            .or_insert_with(|| NoteCache::new(note))
+            .or_insert_with(|| CachedNote::new(note))
+    }
+
+    pub fn selected_timeline(&mut self) -> &mut Timeline {
+        &mut self.timelines[self.selected_timeline as usize]
+    }
+
+    pub fn select_down(&mut self) {
+        self.selected_timeline().current_view_mut().select_down();
+    }
+
+    pub fn select_up(&mut self) {
+        self.selected_timeline().current_view_mut().select_up();
+    }
+
+    pub fn select_left(&mut self) {
+        if self.selected_timeline - 1 < 0 {
+            return;
+        }
+        self.selected_timeline -= 1;
+    }
+
+    pub fn select_right(&mut self) {
+        if self.selected_timeline + 1 >= self.timelines.len() as i32 {
+            return;
+        }
+        self.selected_timeline += 1;
     }
 }
 
@@ -598,7 +629,7 @@ fn render_panel(ctx: &egui::Context, app: &mut Damus, timeline_ind: usize) {
 
                 ui.weak(format!(
                     "{} notes",
-                    &app.timelines[timeline_ind].notes.len()
+                    &app.timelines[timeline_ind].notes().len()
                 ));
             }
         });

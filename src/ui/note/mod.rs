@@ -4,7 +4,7 @@ pub mod options;
 pub use contents::NoteContents;
 pub use options::NoteOptions;
 
-use crate::{colors, ui, ui::is_mobile, Damus};
+use crate::{colors, notecache::CachedNote, ui, ui::is_mobile, Damus};
 use egui::{Label, RichText, Sense};
 use nostrdb::{NoteKey, Transaction};
 use std::hash::{Hash, Hasher};
@@ -308,7 +308,7 @@ fn secondary_label(ui: &mut egui::Ui, s: impl Into<String>) {
 
 fn render_reltime(
     ui: &mut egui::Ui,
-    note_cache: &mut crate::notecache::NoteCache,
+    note_cache: &mut CachedNote,
     before: bool,
 ) -> egui::InnerResponse<()> {
     #[cfg(feature = "profiling")]

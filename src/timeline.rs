@@ -1,10 +1,12 @@
+use crate::notecache::CachedNote;
 use crate::{ui, Damus};
+
 use egui::containers::scroll_area::ScrollBarVisibility;
 use egui::{Direction, Layout};
 use egui_tabs::TabColor;
 use egui_virtual_list::VirtualList;
 use enostr::Filter;
-use nostrdb::{NoteKey, Subscription, Transaction};
+use nostrdb::{Note, NoteKey, Subscription, Transaction};
 use std::cmp::Ordering;
 use std::sync::{Arc, Mutex};
 
@@ -32,29 +34,115 @@ impl PartialOrd for NoteRef {
     }
 }
 
+pub enum ViewFilter {
+    Notes,
+    NotesAndReplies,
+}
+
+impl ViewFilter {
+    pub fn name(&self) -> &'static str {
+        match self {
+            ViewFilter::Notes => "Notes",
+            ViewFilter::NotesAndReplies => "Notes & Replies",
+        }
+    }
+
+    fn index(&self) -> usize {
+        match self {
+            ViewFilter::Notes => 0,
+            ViewFilter::NotesAndReplies => 1,
+        }
+    }
+
+    fn filter(&self, cache: &CachedNote, note: &Note) -> bool {
+        match self {
+            ViewFilter::Notes => !cache.reply.borrow(note.tags()).is_reply(),
+            ViewFilter::NotesAndReplies => true,
+        }
+    }
+}
+
+/// A timeline view is a filtered view of notes in a timeline. Two standard views
+/// are "Notes" and "Notes & Replies". A timeline is associated with a Filter,
+/// but a TimelineView is a further filtered view of this Filter that can't
+/// be captured by a Filter itself.
+pub struct TimelineView {
+    pub notes: Vec<NoteRef>,
+    pub selection: i32,
+    pub filter: ViewFilter,
+    pub list: Arc<Mutex<VirtualList>>,
+}
+
+impl TimelineView {
+    pub fn new(filter: ViewFilter) -> Self {
+        let selection = 0i32;
+        let list = Arc::new(Mutex::new(VirtualList::new()));
+        let notes: Vec<NoteRef> = Vec::with_capacity(1000);
+
+        TimelineView {
+            notes,
+            selection,
+            filter,
+            list,
+        }
+    }
+
+    pub fn select_down(&mut self) {
+        if self.selection + 1 > self.notes.len() as i32 {
+            return;
+        }
+
+        self.selection += 1;
+    }
+
+    pub fn select_up(&mut self) {
+        if self.selection - 1 < 0 {
+            return;
+        }
+
+        self.selection -= 1;
+    }
+}
+
 pub struct Timeline {
     pub filter: Vec<Filter>,
-    pub notes: Vec<NoteRef>,
+    pub views: Vec<TimelineView>,
+    pub selected_view: i32,
 
     /// Our nostrdb subscription
     pub subscription: Option<Subscription>,
-
-    /// State for our virtual list egui widget
-    pub list: Arc<Mutex<VirtualList>>,
 }
 
 impl Timeline {
     pub fn new(filter: Vec<Filter>) -> Self {
-        let notes: Vec<NoteRef> = Vec::with_capacity(1000);
         let subscription: Option<Subscription> = None;
-        let list = Arc::new(Mutex::new(VirtualList::new()));
+        let notes = TimelineView::new(ViewFilter::Notes);
+        let replies = TimelineView::new(ViewFilter::NotesAndReplies);
+        let views = vec![notes, replies];
+        let selected_view = 0;
 
         Timeline {
             filter,
-            notes,
+            views,
             subscription,
-            list,
+            selected_view,
         }
+    }
+
+    pub fn current_view(&self) -> &TimelineView {
+        &self.views[self.selected_view as usize]
+    }
+
+    pub fn current_view_mut(&mut self) -> &mut TimelineView {
+        &mut self.views[self.selected_view as usize]
+    }
+
+    pub fn notes(&self) -> &[NoteRef] {
+        &self.views[ViewFilter::NotesAndReplies.index()].notes
+    }
+
+    pub fn notes_view_mut(&mut self) -> &mut TimelineView {
+        &mut self.views[ViewFilter::NotesAndReplies.index()]
     }
 }
 
@@ -156,15 +244,16 @@ pub fn timeline_view(ui: &mut egui::Ui, app: &mut Damus, timeline: usize) {
         .animated(false)
         .scroll_bar_visibility(ScrollBarVisibility::AlwaysVisible)
         .show(ui, |ui| {
-            let len = app.timelines[timeline].notes.len();
-            let list = app.timelines[timeline].list.clone();
+            let view = app.timelines[timeline].current_view();
+            let len = view.notes.len();
+            let list = view.list.clone();
             list.lock()
                 .unwrap()
                 .ui_custom_layout(ui, len, |ui, start_index| {
                     ui.spacing_mut().item_spacing.y = 0.0;
                     ui.spacing_mut().item_spacing.x = 4.0;
 
-                    let note_key = app.timelines[timeline].notes[start_index].key;
+                    let note_key = app.timelines[timeline].current_view().notes[start_index].key;
 
                     let txn = if let Ok(txn) = Transaction::new(&app.ndb) {
                         txn
