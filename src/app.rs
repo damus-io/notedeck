@@ -495,48 +495,6 @@ impl Damus {
 }
 
 /*
-fn render_notes_in_viewport(
-    ui: &mut egui::Ui,
-    _damus: &mut Damus,
-    viewport: egui::Rect,
-    row_height: f32,
-    font_id: egui::FontId,
-) {
-    let num_rows = 10_000;
-    ui.set_height(row_height * num_rows as f32);
-
-    let first_item = (viewport.min.y / row_height).floor().max(0.0) as usize;
-    let last_item = (viewport.max.y / row_height).ceil() as usize + 1;
-    let last_item = last_item.min(num_rows);
-
-    let mut used_rect = egui::Rect::NOTHING;
-
-    for i in first_item..last_item {
-        let _padding = (i % 100) as f32;
-        let indent = (((i as f32) / 10.0).sin() * 20.0) + 10.0;
-        let x = ui.min_rect().left() + indent;
-        let y = ui.min_rect().top() + i as f32 * row_height;
-        let text = format!(
-            "This is row {}/{}, indented by {} pixels",
-            i + 1,
-            num_rows,
-            indent
-        );
-        let text_rect = ui.painter().text(
-            egui::pos2(x, y),
-            egui::Align2::LEFT_TOP,
-            text,
-            font_id.clone(),
-            ui.visuals().text_color(),
-        );
-        used_rect = used_rect.union(text_rect);
-    }
-
-    ui.allocate_rect(used_rect, egui::Sense::hover()); // make sure it is visible!
-}
-*/
-
-/*
 fn circle_icon(ui: &mut egui::Ui, openness: f32, response: &egui::Response) {
     let stroke = ui.style().interact(&response).fg_stroke;
     let radius = egui::lerp(2.0..=3.0, openness);
