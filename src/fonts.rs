@@ -100,24 +100,26 @@ pub fn setup_fonts(ctx: &egui::Context) {
         ),
     );
 
-    let proportional = vec![
-        "Onest".to_owned(),
+    let base_fonts = vec![
         "DejaVuSans".to_owned(),
         "NotoEmoji".to_owned(),
         "NotoSansCJK".to_owned(),
     ];
 
+    let mut proportional = vec!["Onest".to_owned()];
+    proportional.extend(base_fonts.clone());
+
+    let mut medium = vec!["OnestMedium".to_owned()];
+    medium.extend(base_fonts.clone());
+
+    let mut mono = vec!["Inconsolata".to_owned()];
+    mono.extend(base_fonts);
+
     families.insert(egui::FontFamily::Proportional, proportional);
-
-    families.insert(
-        egui::FontFamily::Monospace,
-        vec!["Inconsolata".to_owned(), "NotoEmoji".to_owned()],
-    );
-
+    families.insert(egui::FontFamily::Monospace, mono);
     families.insert(
         egui::FontFamily::Name(NamedFontFamily::Medium.as_str().into()),
-        //egui::FontFamily::Name("bold".into()),
-        vec!["OnestMedium".to_owned(), "NotoEmoji".to_owned()],
+        medium,
     );
 
     debug!("fonts: {:?}", families);
