@@ -317,7 +317,7 @@ mod preview {
     impl AccountManagementPreview {
         fn new() -> Self {
             let mut account_manager =
-                AccountManager::new(KeyStorage::None, RelayGenerator::Constant, || {});
+                AccountManager::new(None, KeyStorage::None, RelayGenerator::Constant, || {});
             let accounts = test_data::get_test_accounts();
             accounts
                 .into_iter()
@@ -360,7 +360,7 @@ mod preview {
     impl AccountSelectionPreview {
         fn new() -> Self {
             let mut account_manager =
-                AccountManager::new(KeyStorage::None, RelayGenerator::Constant, || {});
+                AccountManager::new(None, KeyStorage::None, RelayGenerator::Constant, || {});
             let accounts = test_data::get_test_accounts();
             accounts
                 .into_iter()

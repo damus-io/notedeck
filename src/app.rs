@@ -648,6 +648,8 @@ impl Damus {
             textmode: false,
             ndb: Ndb::new(data_path.as_ref().to_str().expect("db path ok"), &config).expect("ndb"),
             account_manager: AccountManager::new(
+                // TODO: should pull this from settings
+                None,
                 // TODO: use correct KeyStorage mechanism for current OS arch
                 crate::key_storage::KeyStorage::None,
                 // TODO: setting for relay generator
@@ -680,6 +682,7 @@ impl Damus {
             textmode: false,
             ndb: Ndb::new(data_path.as_ref().to_str().expect("db path ok"), &config).expect("ndb"),
             account_manager: AccountManager::new(
+                None,
                 crate::key_storage::KeyStorage::None,
                 crate::relay_generation::RelayGenerator::Constant,
                 || {},

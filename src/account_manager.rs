@@ -6,6 +6,7 @@ use crate::{key_storage::KeyStorage, relay_generation::RelayGenerator};
 /// The interface for managing the user's accounts.
 /// Represents all user-facing operations related to account management.
 pub struct AccountManager {
+    currently_selected_account: Option<usize>,
     accounts: Vec<UserAccount>,
     key_store: KeyStorage,
     relay_generator: RelayGenerator,
@@ -13,6 +14,7 @@ pub struct AccountManager {
 
 impl AccountManager {
     pub fn new(
+        currently_selected_account: Option<usize>,
         key_store: KeyStorage,
         // TODO: right now, there is only one way of generating relays for all accounts. In the future
         // each account should have the option of generating relays differently
@@ -31,6 +33,7 @@ impl AccountManager {
         };
 
         AccountManager {
+            currently_selected_account,
             accounts,
             key_store,
             relay_generator,
@@ -70,5 +73,15 @@ impl AccountManager {
 
     pub fn num_accounts(&self) -> usize {
         self.accounts.len()
+    }
+
+    pub fn get_currently_selected_account(&self) -> Option<usize> {
+        self.currently_selected_account
+    }
+
+    pub fn select_account(&mut self, index: usize) {
+        if self.accounts.get(index).is_some() {
+            self.currently_selected_account = Some(index)
+        }
     }
 }
