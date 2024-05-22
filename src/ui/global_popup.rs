@@ -3,7 +3,7 @@ use egui::{Align2, CentralPanel, RichText, Vec2, Window};
 use crate::Damus;
 
 use super::{
-    persist_state::{PERSISTED_GLOBAL_POPUP, PERSISTED_SIDE_PANEL},
+    state_in_memory::{STATE_GLOBAL_POPUP, STATE_SIDE_PANEL},
     AccountManagementView, View,
 };
 
@@ -67,8 +67,8 @@ impl<'a> DesktopGlobalPopup<'a> {
             let available_size = ui.available_size();
             let window_size = available_size - MARGIN;
 
-            if let Some(popup) = PERSISTED_SIDE_PANEL.get_state(ctx) {
-                let mut show_global_popup = PERSISTED_GLOBAL_POPUP.get_state(ctx);
+            if let Some(popup) = STATE_SIDE_PANEL.get_state(ctx) {
+                let mut show_global_popup = STATE_GLOBAL_POPUP.get_state(ctx);
                 if show_global_popup {
                     overlay_window(&mut show_global_popup, window_size, popup.title()).show(
                         ctx,
@@ -82,7 +82,7 @@ impl<'a> DesktopGlobalPopup<'a> {
                     );
 
                     // user could have closed the window, set the new state in egui memory
-                    PERSISTED_GLOBAL_POPUP.set_state(ctx, show_global_popup);
+                    STATE_GLOBAL_POPUP.set_state(ctx, show_global_popup);
                 }
             }
         });

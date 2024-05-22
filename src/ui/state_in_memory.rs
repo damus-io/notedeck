@@ -1,39 +1,39 @@
-use egui::util::id_type_map::SerializableAny;
+use std::any::Any;
 
 use super::global_popup::GlobalPopupType;
 
-/// PersistState is a helper struct for interacting with egui memory persisted data
+/// StateInMemory is a helper struct for interacting with egui memory persisted data
 #[derive(Clone)]
-pub struct PersistState<T: SerializableAny> {
+pub struct StateInMemory<T: 'static + Clone + Send> {
     id: &'static str,
     default_state: T,
 }
 
-impl<T: SerializableAny> PersistState<T> {
+impl<T: 'static + Any + Clone + Send + Sync> StateInMemory<T> {
     pub fn get_state(&self, ctx: &egui::Context) -> T {
         ctx.data_mut(|d| {
-            d.get_persisted(egui::Id::new(self.id))
+            d.get_temp(egui::Id::new(self.id))
                 .unwrap_or(self.default_state.clone())
         })
     }
 
     pub fn set_state(&self, ctx: &egui::Context, new_val: T) {
-        ctx.data_mut(|d| d.insert_persisted(egui::Id::new(self.id), new_val));
+        ctx.data_mut(|d| d.insert_temp(egui::Id::new(self.id), new_val));
     }
 }
 
-pub static PERSISTED_ACCOUNT_MANAGEMENT: PersistState<bool> = PersistState::<bool> {
+pub static STATE_ACCOUNT_MANAGEMENT: StateInMemory<bool> = StateInMemory::<bool> {
     id: ACCOUNT_MANAGEMENT_VIEW_STATE_ID,
     default_state: false,
 };
 
-pub static PERSISTED_SIDE_PANEL: PersistState<Option<GlobalPopupType>> =
-    PersistState::<Option<GlobalPopupType>> {
+pub static STATE_SIDE_PANEL: StateInMemory<Option<GlobalPopupType>> =
+    StateInMemory::<Option<GlobalPopupType>> {
         id: SIDE_PANEL_VIEW_STATE_ID,
         default_state: None,
     };
 
-pub static PERSISTED_GLOBAL_POPUP: PersistState<bool> = PersistState::<bool> {
+pub static STATE_GLOBAL_POPUP: StateInMemory<bool> = StateInMemory::<bool> {
     id: GLOBAL_POPUP_VIEW_STATE_ID,
     default_state: false,
 };

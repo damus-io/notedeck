@@ -7,8 +7,8 @@ use crate::{
 use egui::{Align, Button, Frame, Id, Layout, Margin, RichText, ScrollArea, Sense, Vec2};
 
 use super::global_popup::GlobalPopupType;
-use super::persist_state::PERSISTED_ACCOUNT_MANAGEMENT;
 use super::profile::preview::SimpleProfilePreview;
+use super::state_in_memory::STATE_ACCOUNT_MANAGEMENT;
 
 pub struct AccountManagementView<'a> {
     account_manager: AccountManager<'a>,
@@ -49,7 +49,7 @@ impl<'a> AccountManagementView<'a> {
             let maybe_remove = self.simple_preview_controller.set_profile_previews(
                 &self.account_manager,
                 ui,
-                PERSISTED_ACCOUNT_MANAGEMENT.get_state(ui.ctx()),
+                STATE_ACCOUNT_MANAGEMENT.get_state(ui.ctx()),
                 desktop_account_card_ui(),
             );
 
@@ -66,7 +66,7 @@ impl<'a> AccountManagementView<'a> {
                 let maybe_remove = self.simple_preview_controller.set_profile_previews(
                     &self.account_manager,
                     ui,
-                    PERSISTED_ACCOUNT_MANAGEMENT.get_state(ui.ctx()),
+                    STATE_ACCOUNT_MANAGEMENT.get_state(ui.ctx()),
                     mobile_account_card_ui(), // closure for creating an account 'card'
                 );
 
@@ -104,12 +104,12 @@ impl<'a> AccountManagementView<'a> {
                     Vec2::new(ui.available_size_before_wrap().x, 32.0),
                     Layout::left_to_right(egui::Align::Center),
                     |ui| {
-                        if PERSISTED_ACCOUNT_MANAGEMENT.get_state(ui.ctx()) {
+                        if STATE_ACCOUNT_MANAGEMENT.get_state(ui.ctx()) {
                             if ui.add(done_account_button()).clicked() {
-                                PERSISTED_ACCOUNT_MANAGEMENT.set_state(ui.ctx(), false);
+                                STATE_ACCOUNT_MANAGEMENT.set_state(ui.ctx(), false);
                             }
                         } else if ui.add(edit_account_button()).clicked() {
-                            PERSISTED_ACCOUNT_MANAGEMENT.set_state(ui.ctx(), true);
+                            STATE_ACCOUNT_MANAGEMENT.set_state(ui.ctx(), true);
                         }
                     },
                 );

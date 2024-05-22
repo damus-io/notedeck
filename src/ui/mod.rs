@@ -4,11 +4,11 @@ pub mod anim;
 pub mod global_popup;
 pub mod mention;
 pub mod note;
-pub mod persist_state;
 pub mod preview;
 pub mod profile;
 pub mod relay;
 pub mod side_panel;
+pub mod state_in_memory;
 pub mod username;
 
 pub use account_management::{AccountManagementView, AccountSelectionWidget};
