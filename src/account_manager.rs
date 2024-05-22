@@ -19,7 +19,7 @@ impl<'a> SimpleProfilePreviewController<'a> {
 
     pub fn set_profile_previews(
         &mut self,
-        account_manager: &AccountManager<'a>,
+        account_manager: &AccountManager,
         ui: &mut egui::Ui,
         edit_mode: bool,
         add_preview_ui: fn(
@@ -56,7 +56,7 @@ impl<'a> SimpleProfilePreviewController<'a> {
 
     pub fn view_profile_previews(
         &mut self,
-        account_manager: &'a AccountManager<'a>,
+        account_manager: &'a AccountManager,
         ui: &mut egui::Ui,
         add_preview_ui: fn(ui: &mut egui::Ui, preview: SimpleProfilePreview, index: usize) -> bool,
     ) -> Option<usize> {
@@ -86,18 +86,31 @@ impl<'a> SimpleProfilePreviewController<'a> {
 
 /// The interface for managing the user's accounts.
 /// Represents all user-facing operations related to account management.
-pub struct AccountManager<'a> {
-    accounts: &'a mut Vec<UserAccount>,
+pub struct AccountManager {
+    accounts: Vec<UserAccount>,
     key_store: KeyStorage,
     relay_generator: RelayGenerator,
 }
 
-impl<'a> AccountManager<'a> {
+impl AccountManager {
     pub fn new(
-        accounts: &'a mut Vec<UserAccount>,
         key_store: KeyStorage,
+        // TODO: right now, there is only one way of generating relays for all accounts. In the future
+        // each account should have the option of generating relays differently
         relay_generator: RelayGenerator,
+        wakeup: impl Fn() + Send + Sync + Clone + 'static,
     ) -> Self {
+        let accounts = if let Ok(keys) = key_store.get_keys() {
+            keys.into_iter()
+                .map(|key| {
+                    let relays = relay_generator.generate_relays_for(&key.pubkey, wakeup.clone());
+                    UserAccount { key, relays }
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+
         AccountManager {
             accounts,
             key_store,
@@ -105,11 +118,11 @@ impl<'a> AccountManager<'a> {
         }
     }
 
-    pub fn get_accounts(&'a self) -> &'a Vec<UserAccount> {
-        self.accounts
+    pub fn get_accounts(&self) -> &Vec<UserAccount> {
+        &self.accounts
     }
 
-    pub fn get_account(&'a self, index: usize) -> Option<&'a UserAccount> {
+    pub fn get_account(&self, index: usize) -> Option<&UserAccount> {
         self.accounts.get(index)
     }
 
@@ -122,9 +135,15 @@ impl<'a> AccountManager<'a> {
         }
     }
 
-    pub fn add_account(&'a mut self, key: FullKeypair, ctx: &egui::Context) {
+    pub fn add_account(
+        &mut self,
+        key: FullKeypair,
+        wakeup: impl Fn() + Send + Sync + Clone + 'static,
+    ) {
         let _ = self.key_store.add_key(&key);
-        let relays = self.relay_generator.generate_relays_for(&key.pubkey, ctx);
+        let relays = self
+            .relay_generator
+            .generate_relays_for(&key.pubkey, wakeup);
         let account = UserAccount { key, relays };
 
         self.accounts.push(account)

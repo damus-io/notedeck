@@ -1,10 +1,11 @@
-use crate::account_manager::UserAccount;
+use crate::account_manager::AccountManager;
 use crate::app_creation::setup_cc;
 use crate::app_style::user_requested_visuals_change;
 use crate::error::Error;
 use crate::frame_history::FrameHistory;
 use crate::imgcache::ImageCache;
 use crate::notecache::{CachedNote, NoteCache};
+use crate::relay_pool_manager::create_wakeup;
 use crate::timeline;
 use crate::timeline::{NoteRef, Timeline, ViewFilter};
 use crate::ui::{is_mobile, DesktopGlobalPopup, DesktopSidePanel, View};
@@ -44,7 +45,7 @@ pub struct Damus {
 
     pub img_cache: ImageCache,
     pub ndb: Ndb,
-    pub accounts: Vec<UserAccount>,
+    pub account_manager: AccountManager,
 
     frame_history: crate::frame_history::FrameHistory,
 }
@@ -646,7 +647,13 @@ impl Damus {
             timelines,
             textmode: false,
             ndb: Ndb::new(data_path.as_ref().to_str().expect("db path ok"), &config).expect("ndb"),
-            accounts: Vec::new(),
+            account_manager: AccountManager::new(
+                // TODO: use correct KeyStorage mechanism for current OS arch
+                crate::key_storage::KeyStorage::None,
+                // TODO: setting for relay generator
+                crate::relay_generation::RelayGenerator::Constant,
+                create_wakeup(&cc.egui_ctx),
+            ),
             //compose: "".to_string(),
             frame_history: FrameHistory::default(),
         }
@@ -672,7 +679,11 @@ impl Damus {
             timelines,
             textmode: false,
             ndb: Ndb::new(data_path.as_ref().to_str().expect("db path ok"), &config).expect("ndb"),
-            accounts: Vec::new(),
+            account_manager: AccountManager::new(
+                crate::key_storage::KeyStorage::None,
+                crate::relay_generation::RelayGenerator::Constant,
+                || {},
+            ),
             frame_history: FrameHistory::default(),
         }
     }

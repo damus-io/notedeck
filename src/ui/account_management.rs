@@ -11,7 +11,7 @@ use super::profile::preview::SimpleProfilePreview;
 use super::state_in_memory::STATE_ACCOUNT_MANAGEMENT;
 
 pub struct AccountManagementView<'a> {
-    account_manager: AccountManager<'a>,
+    account_manager: &'a mut AccountManager,
     simple_preview_controller: SimpleProfilePreviewController<'a>,
 }
 
@@ -27,7 +27,7 @@ impl<'a> View for AccountManagementView<'a> {
 
 impl<'a> AccountManagementView<'a> {
     pub fn new(
-        account_manager: AccountManager<'a>,
+        account_manager: &'a mut AccountManager,
         simple_preview_controller: SimpleProfilePreviewController<'a>,
     ) -> Self {
         AccountManagementView {
@@ -47,7 +47,7 @@ impl<'a> AccountManagementView<'a> {
     fn show_accounts(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
             let maybe_remove = self.simple_preview_controller.set_profile_previews(
-                &self.account_manager,
+                self.account_manager,
                 ui,
                 STATE_ACCOUNT_MANAGEMENT.get_state(ui.ctx()),
                 desktop_account_card_ui(),
@@ -64,7 +64,7 @@ impl<'a> AccountManagementView<'a> {
             |ui| {
                 // create all account 'cards' and get the indicies the user requested to remove
                 let maybe_remove = self.simple_preview_controller.set_profile_previews(
-                    &self.account_manager,
+                    self.account_manager,
                     ui,
                     STATE_ACCOUNT_MANAGEMENT.get_state(ui.ctx()),
                     mobile_account_card_ui(), // closure for creating an account 'card'
@@ -180,13 +180,8 @@ fn desktop_account_card_ui(
 
 impl<'a> FromApp<'a> for AccountManagementView<'a> {
     fn from_app(app: &'a mut crate::Damus) -> Self {
-        // TODO: don't hard-code key store & relay generator
         AccountManagementView::new(
-            AccountManager::new(
-                &mut app.accounts,
-                crate::key_storage::KeyStorage::None,
-                crate::relay_generation::RelayGenerator::Constant,
-            ),
+            &mut app.account_manager,
             SimpleProfilePreviewController::new(&app.ndb, &mut app.img_cache),
         )
     }
@@ -239,7 +234,7 @@ fn delete_button(_dark_mode: bool) -> egui::Button<'static> {
 }
 
 pub struct AccountSelectionWidget<'a> {
-    account_manager: AccountManager<'a>,
+    account_manager: &'a mut AccountManager,
     simple_preview_controller: SimpleProfilePreviewController<'a>,
 }
 
@@ -249,7 +244,7 @@ impl<'a> AccountSelectionWidget<'a> {
         scroll_area().show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
                 let clicked_at = self.simple_preview_controller.view_profile_previews(
-                    &self.account_manager,
+                    self.account_manager,
                     ui,
                     |ui, preview, index| {
                         let resp = ui.add_sized(preview.dimensions(), |ui: &mut egui::Ui| {
@@ -278,7 +273,7 @@ impl<'a> AccountSelectionWidget<'a> {
 
 impl<'a> AccountSelectionWidget<'a> {
     pub fn new(
-        account_manager: AccountManager<'a>,
+        account_manager: &'a mut AccountManager,
         simple_preview_controller: SimpleProfilePreviewController<'a>,
     ) -> Self {
         AccountSelectionWidget {
@@ -301,7 +296,7 @@ mod preview {
     use std::path::Path;
 
     pub struct AccountManagementPreview {
-        accounts: Vec<UserAccount>,
+        account_manager: AccountManager,
         ndb: Ndb,
         img_cache: ImageCache,
     }
@@ -320,11 +315,16 @@ mod preview {
 
     impl AccountManagementPreview {
         fn new() -> Self {
+            let mut account_manager =
+                AccountManager::new(KeyStorage::None, RelayGenerator::Constant, || {});
             let accounts = test_data::get_test_accounts();
+            accounts
+                .into_iter()
+                .for_each(|acc| account_manager.add_account(acc.key, || {}));
             let (ndb, img_cache) = get_ndb_and_img_cache();
 
             AccountManagementPreview {
-                accounts,
+                account_manager,
                 ndb,
                 img_cache,
             }
@@ -333,15 +333,9 @@ mod preview {
 
     impl View for AccountManagementPreview {
         fn ui(&mut self, ui: &mut egui::Ui) {
-            let account_manager = AccountManager::new(
-                &mut self.accounts,
-                KeyStorage::None,
-                RelayGenerator::Constant,
-            );
-
             ui.add_space(24.0);
             AccountManagementView::new(
-                account_manager,
+                &mut self.account_manager,
                 SimpleProfilePreviewController::new(&self.ndb, &mut self.img_cache),
             )
             .ui(ui);
@@ -357,17 +351,22 @@ mod preview {
     }
 
     pub struct AccountSelectionPreview {
-        accounts: Vec<UserAccount>,
+        account_manager: AccountManager,
         ndb: Ndb,
         img_cache: ImageCache,
     }
 
     impl AccountSelectionPreview {
         fn new() -> Self {
+            let mut account_manager =
+                AccountManager::new(KeyStorage::None, RelayGenerator::Constant, || {});
             let accounts = test_data::get_test_accounts();
+            accounts
+                .into_iter()
+                .for_each(|acc| account_manager.add_account(acc.key, || {}));
             let (ndb, img_cache) = get_ndb_and_img_cache();
             AccountSelectionPreview {
-                accounts,
+                account_manager,
                 ndb,
                 img_cache,
             }
@@ -376,14 +375,8 @@ mod preview {
 
     impl View for AccountSelectionPreview {
         fn ui(&mut self, ui: &mut egui::Ui) {
-            let account_manager = AccountManager::new(
-                &mut self.accounts,
-                KeyStorage::None,
-                RelayGenerator::Constant,
-            );
-
             let mut widget = AccountSelectionWidget::new(
-                account_manager,
+                &mut self.account_manager,
                 SimpleProfilePreviewController::new(&self.ndb, &mut self.img_cache),
             );
 

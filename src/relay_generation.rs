@@ -1,4 +1,3 @@
-use crate::relay_pool_manager::create_wakeup;
 use enostr::{Pubkey, RelayPool};
 use tracing::error;
 
@@ -9,30 +8,39 @@ pub enum RelayGenerator {
 }
 
 impl RelayGenerator {
-    pub fn generate_relays_for(&self, key: &Pubkey, ctx: &egui::Context) -> RelayPool {
+    pub fn generate_relays_for(
+        &self,
+        key: &Pubkey,
+        wakeup: impl Fn() + Send + Sync + Clone + 'static,
+    ) -> RelayPool {
         match self {
-            Self::GossipModel => generate_relays_gossip(key, ctx),
-            Self::Nip65 => generate_relays_nip65(key, ctx),
-            Self::Constant => generate_constant_relays(ctx),
+            Self::GossipModel => generate_relays_gossip(key, wakeup),
+            Self::Nip65 => generate_relays_nip65(key, wakeup),
+            Self::Constant => generate_constant_relays(wakeup),
         }
     }
 }
 
-fn generate_relays_gossip(key: &Pubkey, ctx: &egui::Context) -> RelayPool {
-    let _ = ctx;
+fn generate_relays_gossip(
+    key: &Pubkey,
+    wakeup: impl Fn() + Send + Sync + Clone + 'static,
+) -> RelayPool {
+    let _ = wakeup;
     let _ = key;
     todo!()
 }
 
-fn generate_relays_nip65(key: &Pubkey, ctx: &egui::Context) -> RelayPool {
-    let _ = ctx;
+fn generate_relays_nip65(
+    key: &Pubkey,
+    wakeup: impl Fn() + Send + Sync + Clone + 'static,
+) -> RelayPool {
+    let _ = wakeup;
     let _ = key;
     todo!()
 }
 
-fn generate_constant_relays(ctx: &egui::Context) -> RelayPool {
+fn generate_constant_relays(wakeup: impl Fn() + Send + Sync + Clone + 'static) -> RelayPool {
     let mut pool = RelayPool::new();
-    let wakeup = create_wakeup(ctx);
 
     if let Err(e) = pool.add_url("ws://localhost:8080".to_string(), wakeup.clone()) {
         error!("{:?}", e)
