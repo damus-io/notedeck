@@ -1,3 +1,5 @@
+use std::cmp::Ordering;
+
 use enostr::FullKeypair;
 
 pub use crate::user_account::UserAccount;
@@ -51,9 +53,19 @@ impl AccountManager {
     pub fn remove_account(&mut self, index: usize) {
         if let Some(account) = self.accounts.get(index) {
             let _ = self.key_store.remove_key(&account.key);
-        }
-        if index < self.accounts.len() {
             self.accounts.remove(index);
+
+            if let Some(selected_index) = self.currently_selected_account {
+                match selected_index.cmp(&index) {
+                    Ordering::Greater => {
+                        self.select_account(selected_index - 1);
+                    }
+                    Ordering::Equal => {
+                        self.clear_selected_account();
+                    }
+                    Ordering::Less => {}
+                }
+            }
         }
     }
 
@@ -83,5 +95,9 @@ impl AccountManager {
         if self.accounts.get(index).is_some() {
             self.currently_selected_account = Some(index)
         }
+    }
+
+    pub fn clear_selected_account(&mut self) {
+        self.currently_selected_account = None
     }
 }

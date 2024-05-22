@@ -4,12 +4,13 @@ use crate::{
     app_style::NotedeckTextStyle,
     ui::{self, Preview, View},
 };
-use egui::{Align, Button, Frame, Id, Layout, Margin, RichText, ScrollArea, Sense, Vec2};
+use egui::{
+    Align, Button, Color32, Frame, Id, Image, Layout, Margin, RichText, ScrollArea, Sense, Vec2,
+};
 
 use super::global_popup::GlobalPopupType;
 use super::profile::preview::SimpleProfilePreview;
-use super::profile::SimpleProfilePreviewController;
-use super::state_in_memory::STATE_ACCOUNT_MANAGEMENT;
+use super::profile::{ProfilePreviewOp, SimpleProfilePreviewController};
 
 pub struct AccountManagementView<'a> {
     account_manager: &'a mut AccountManager,
@@ -38,24 +39,23 @@ impl<'a> AccountManagementView<'a> {
     }
 
     fn show(&mut self, ui: &mut egui::Ui) {
-        ui.add(self.buttons_widget());
-        ui.add_space(8.0);
-        scroll_area().show(ui, |ui| {
-            self.show_accounts(ui);
+        Frame::none().outer_margin(24.0).show(ui, |ui| {
+            ui.add(self.top_section_buttons_widget());
+            ui.add_space(8.0);
+            scroll_area().show(ui, |ui| {
+                self.show_accounts(ui);
+            });
         });
     }
 
     fn show_accounts(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal_wrapped(|ui| {
-            let maybe_remove = self.simple_preview_controller.set_profile_previews(
-                self.account_manager,
-                ui,
-                STATE_ACCOUNT_MANAGEMENT.get_state(ui.ctx()),
-                desktop_account_card_ui(),
-            );
+        let maybe_remove = self.simple_preview_controller.set_profile_previews(
+            self.account_manager,
+            ui,
+            account_card_ui(),
+        );
 
-            self.maybe_remove_accounts(maybe_remove);
-        });
+        self.maybe_remove_accounts(maybe_remove);
     }
 
     fn show_accounts_mobile(&mut self, ui: &mut egui::Ui) {
@@ -67,8 +67,7 @@ impl<'a> AccountManagementView<'a> {
                 let maybe_remove = self.simple_preview_controller.set_profile_previews(
                     self.account_manager,
                     ui,
-                    STATE_ACCOUNT_MANAGEMENT.get_state(ui.ctx()),
-                    mobile_account_card_ui(), // closure for creating an account 'card'
+                    account_card_ui(), // closure for creating an account 'card'
                 );
 
                 // remove all account indicies user requested
@@ -89,7 +88,7 @@ impl<'a> AccountManagementView<'a> {
         egui::CentralPanel::default()
             .show(ui.ctx(), |ui| {
                 ui.add(mobile_title());
-                ui.add(self.buttons_widget());
+                ui.add(self.top_section_buttons_widget());
                 ui.add_space(8.0);
                 scroll_area().show(ui, |ui| {
                     self.show_accounts_mobile(ui);
@@ -98,84 +97,73 @@ impl<'a> AccountManagementView<'a> {
             .response
     }
 
-    fn buttons_widget(&mut self) -> impl egui::Widget + '_ {
+    fn top_section_buttons_widget(&mut self) -> impl egui::Widget + '_ {
         |ui: &mut egui::Ui| {
             ui.horizontal(|ui| {
                 ui.allocate_ui_with_layout(
                     Vec2::new(ui.available_size_before_wrap().x, 32.0),
                     Layout::left_to_right(egui::Align::Center),
                     |ui| {
-                        if STATE_ACCOUNT_MANAGEMENT.get_state(ui.ctx()) {
-                            if ui.add(done_account_button()).clicked() {
-                                STATE_ACCOUNT_MANAGEMENT.set_state(ui.ctx(), false);
-                            }
-                        } else if ui.add(edit_account_button()).clicked() {
-                            STATE_ACCOUNT_MANAGEMENT.set_state(ui.ctx(), true);
-                        }
-                    },
-                );
-
-                ui.allocate_ui_with_layout(
-                    Vec2::new(ui.available_size_before_wrap().x, 32.0),
-                    Layout::right_to_left(egui::Align::Center),
-                    |ui| {
                         if ui.add(add_account_button()).clicked() {
                             // TODO: route to AccountLoginView
                         }
                     },
                 );
+
+                // UNCOMMENT FOR LOGOUTALL BUTTON
+                // ui.allocate_ui_with_layout(
+                //     Vec2::new(ui.available_size_before_wrap().x, 32.0),
+                //     Layout::right_to_left(egui::Align::Center),
+                //     |ui| {
+                //         if ui.add(logout_all_button()).clicked() {
+                //             for index in (0..self.account_manager.num_accounts()).rev() {
+                //                 self.account_manager.remove_account(index);
+                //             }
+                //         }
+                //     },
+                // );
             })
             .response
         }
     }
 }
 
-fn mobile_account_card_ui(
-) -> fn(ui: &mut egui::Ui, preview: SimpleProfilePreview, edit_mode: bool) -> bool {
-    |ui, preview, edit_mode| {
-        let mut should_remove = false;
+fn account_card_ui() -> fn(
+    ui: &mut egui::Ui,
+    preview: SimpleProfilePreview,
+    width: f32,
+    is_selected: bool,
+) -> Option<ProfilePreviewOp> {
+    |ui, preview, width, is_selected| {
+        let mut op: Option<ProfilePreviewOp> = None;
 
-        ui.add_sized(
-            Vec2::new(ui.available_width(), 50.0),
-            |ui: &mut egui::Ui| {
-                Frame::none()
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.add(preview);
-                            if edit_mode {
-                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                    should_remove =
-                                        ui.add(delete_button(ui.visuals().dark_mode)).clicked();
-                                });
+        ui.add_sized(Vec2::new(width, 50.0), |ui: &mut egui::Ui| {
+            Frame::none()
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.add(preview);
+
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if is_selected {
+                                ui.add(selected_widget());
+                            } else {
+                                if ui
+                                    .add(switch_button(ui.style().visuals.dark_mode))
+                                    .clicked()
+                                {
+                                    op = Some(ProfilePreviewOp::SwitchTo);
+                                }
+                                if ui.add(sign_out_button(ui)).clicked() {
+                                    op = Some(ProfilePreviewOp::RemoveAccount)
+                                }
                             }
                         });
-                    })
-                    .response
-            },
-        );
-        ui.add_space(16.0);
-        should_remove
-    }
-}
-
-fn desktop_account_card_ui(
-) -> fn(ui: &mut egui::Ui, preview: SimpleProfilePreview, edit_mode: bool) -> bool {
-    |ui: &mut egui::Ui, preview, edit_mode| {
-        let mut should_remove = false;
-
-        ui.add_sized(preview.dimensions(), |ui: &mut egui::Ui| {
-            simple_preview_frame(ui)
-                .show(ui, |ui| {
-                    ui.vertical_centered(|ui| {
-                        ui.add(preview);
-                        if edit_mode {
-                            should_remove = ui.add(delete_button(ui.visuals().dark_mode)).clicked();
-                        }
                     });
                 })
                 .response
         });
-        should_remove
+        ui.add_space(16.0);
+        op
     }
 }
 
@@ -216,23 +204,54 @@ fn scroll_area() -> ScrollArea {
         .auto_shrink([false; 2])
 }
 
+static PINK: Color32 = Color32::from_rgb(0xE4, 0x5A, 0xC9);
+
 fn add_account_button() -> Button<'static> {
-    Button::new("Add Account").min_size(Vec2::new(0.0, 32.0))
+    let img_data = egui::include_image!("../../assets/icons/add_account_icon_4x.png");
+    let img = Image::new(img_data).fit_to_exact_size(Vec2::new(48.0, 48.0));
+    Button::image_and_text(
+        img,
+        RichText::new(" Add account")
+            .size(16.0)
+            // TODO: this color should not be hard coded. Find some way to add it to the visuals
+            .color(PINK),
+    )
+    .frame(false)
 }
 
-fn edit_account_button() -> Button<'static> {
-    Button::new("Edit").min_size(Vec2::new(0.0, 32.0))
+fn sign_out_button(ui: &egui::Ui) -> egui::Button<'static> {
+    let img_data = egui::include_image!("../../assets/icons/signout_icon_4x.png");
+    let img = Image::new(img_data).fit_to_exact_size(Vec2::new(16.0, 16.0));
+
+    egui::Button::image_and_text(
+        img,
+        RichText::new("Sign out").color(ui.visuals().noninteractive().fg_stroke.color),
+    )
+    .frame(false)
 }
 
-fn done_account_button() -> Button<'static> {
-    Button::new("Done").min_size(Vec2::new(0.0, 32.0))
+fn switch_button(dark_mode: bool) -> egui::Button<'static> {
+    let _ = dark_mode;
+
+    egui::Button::new("Switch").min_size(Vec2::new(76.0, 32.0))
 }
 
-fn delete_button(_dark_mode: bool) -> egui::Button<'static> {
-    let img_data = egui::include_image!("../../assets/icons/delete_icon_4x.png");
-
-    egui::Button::image(egui::Image::new(img_data).max_width(30.0)).frame(true)
+fn selected_widget() -> impl egui::Widget {
+    |ui: &mut egui::Ui| {
+        Frame::none()
+            .show(ui, |ui| {
+                ui.label(RichText::new("Selected").size(13.0).color(PINK));
+                let img_data = egui::include_image!("../../assets/icons/select_icon_3x.png");
+                let img = Image::new(img_data).max_size(Vec2::new(16.0, 16.0));
+                ui.add(img);
+            })
+            .response
+    }
 }
+
+// fn logout_all_button() -> egui::Button<'static> {
+//     egui::Button::new("Logout all")
+// }
 
 pub struct AccountSelectionWidget<'a> {
     account_manager: &'a mut AccountManager,

@@ -12,7 +12,7 @@ pub enum GlobalPopupType {
     AccountManagement,
 }
 
-static ACCOUNT_MANAGEMENT_TITLE: &str = "Account Management";
+static ACCOUNT_MANAGEMENT_TITLE: &str = "Manage accounts";
 
 impl GlobalPopupType {
     pub fn title(&self) -> &'static str {

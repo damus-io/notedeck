@@ -9,6 +9,12 @@ pub struct SimpleProfilePreviewController<'a> {
     img_cache: &'a mut ImageCache,
 }
 
+#[derive(Debug)]
+pub enum ProfilePreviewOp {
+    RemoveAccount,
+    SwitchTo,
+}
+
 impl<'a> SimpleProfilePreviewController<'a> {
     pub fn new(ndb: &'a Ndb, img_cache: &'a mut ImageCache) -> Self {
         SimpleProfilePreviewController { ndb, img_cache }
@@ -16,16 +22,18 @@ impl<'a> SimpleProfilePreviewController<'a> {
 
     pub fn set_profile_previews(
         &mut self,
-        account_manager: &AccountManager,
+        account_manager: &mut AccountManager,
         ui: &mut egui::Ui,
-        edit_mode: bool,
         add_preview_ui: fn(
             ui: &mut egui::Ui,
             preview: SimpleProfilePreview,
-            edit_mode: bool,
-        ) -> bool,
+            width: f32,
+            is_selected: bool,
+        ) -> Option<ProfilePreviewOp>,
     ) -> Option<Vec<usize>> {
         let mut to_remove: Option<Vec<usize>> = None;
+
+        let width = ui.available_width();
 
         for i in 0..account_manager.num_accounts() {
             if let Some(account) = account_manager.get_account(i) {
@@ -37,11 +45,24 @@ impl<'a> SimpleProfilePreviewController<'a> {
                     if let Ok(profile) = profile {
                         let preview = SimpleProfilePreview::new(&profile, self.img_cache);
 
-                        if add_preview_ui(ui, preview, edit_mode) {
-                            if to_remove.is_none() {
-                                to_remove = Some(Vec::new());
+                        let is_selected = if let Some(selected) =
+                            account_manager.get_currently_selected_account()
+                        {
+                            i == selected
+                        } else {
+                            false
+                        };
+
+                        if let Some(op) = add_preview_ui(ui, preview, width, is_selected) {
+                            match op {
+                                ProfilePreviewOp::RemoveAccount => {
+                                    if to_remove.is_none() {
+                                        to_remove = Some(Vec::new());
+                                    }
+                                    to_remove.as_mut().unwrap().push(i);
+                                }
+                                ProfilePreviewOp::SwitchTo => account_manager.select_account(i),
                             }
-                            to_remove.as_mut().unwrap().push(i);
                         }
                     };
                 }
