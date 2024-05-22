@@ -1,6 +1,6 @@
 use crate::ui::global_popup::FromApp;
 use crate::{
-    account_manager::{AccountManager, SimpleProfilePreviewController, UserAccount},
+    account_manager::{AccountManager, UserAccount},
     app_style::NotedeckTextStyle,
     ui::{self, Preview, View},
 };
@@ -8,6 +8,7 @@ use egui::{Align, Button, Frame, Id, Layout, Margin, RichText, ScrollArea, Sense
 
 use super::global_popup::GlobalPopupType;
 use super::profile::preview::SimpleProfilePreview;
+use super::profile::SimpleProfilePreviewController;
 use super::state_in_memory::STATE_ACCOUNT_MANAGEMENT;
 
 pub struct AccountManagementView<'a> {
