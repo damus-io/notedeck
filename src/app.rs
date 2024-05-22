@@ -7,7 +7,7 @@ use crate::imgcache::ImageCache;
 use crate::notecache::{CachedNote, NoteCache};
 use crate::timeline;
 use crate::timeline::{NoteRef, Timeline, ViewFilter};
-use crate::ui::is_mobile;
+use crate::ui::{is_mobile, DesktopGlobalPopup, DesktopSidePanel, View};
 use crate::Result;
 
 use egui::{Context, Frame, Style};
@@ -838,7 +838,11 @@ fn render_damus_desktop(ctx: &egui::Context, app: &mut Damus) {
     };
 
     if app.timelines.len() == 1 {
+        DesktopSidePanel::panel().show(ctx, |ui| {
+            DesktopSidePanel::inner(ui);
+        });
         main_panel(&ctx.style()).show(ctx, |ui| {
+            DesktopGlobalPopup::new(app).ui(ui);
             timeline::timeline_view(ui, app, 0);
         });
 
@@ -847,6 +851,7 @@ fn render_damus_desktop(ctx: &egui::Context, app: &mut Damus) {
 
     main_panel(&ctx.style()).show(ctx, |ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
+        DesktopGlobalPopup::new(app).ui(ui);
         if need_scroll {
             egui::ScrollArea::horizontal().show(ui, |ui| {
                 timelines_view(ui, panel_sizes, app, app.timelines.len());
