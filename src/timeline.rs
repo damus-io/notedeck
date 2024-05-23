@@ -8,7 +8,7 @@ use nostrdb::{NoteKey, Subscription, Transaction};
 use std::cmp::Ordering;
 use std::sync::{Arc, Mutex};
 
-use log::warn;
+use tracing::warn;
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
 pub struct NoteRef {

@@ -22,7 +22,6 @@ ehttp = "0.2.0"
 egui-tabs = { git = "https://github.com/damus-io/egui-tabs", rev = "ed97a57fc66b3781bc10ab644f9e1ed125d7377a" }
 reqwest = { version = "0.12.4", default-features = false, features = [ "rustls-tls-native-roots" ] }
 image = { version = "0.24", features = ["jpeg", "png", "webp"] }
-log = "0.4.17"
 poll-promise = { version = "0.3.0", features = ["tokio"] }
 serde_derive = "1"
 serde = { version = "1", features = ["derive"] } # You only need this if you want app persistence
@@ -41,6 +40,7 @@ strum = "0.26"
 strum_macros = "0.26"
 bitflags = "2.5.0"
 egui_virtual_list = "0.3.0"
+#egui_virtual_list = { path = "/home/jb55/dev/github/lucasmerlin/hello_egui/crates/egui_virtual_list" }
 
 
 [features]
