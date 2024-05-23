@@ -179,6 +179,7 @@ fn tabs_ui(timeline: &mut Timeline, ui: &mut egui::Ui) {
     ui.spacing_mut().item_spacing.y = 0.0;
 
     let tab_res = egui_tabs::Tabs::new(2)
+        .selected(1)
         .hover_bg(TabColor::none())
         .selected_fg(TabColor::none())
         .selected_bg(TabColor::none())
@@ -210,37 +211,41 @@ fn tabs_ui(timeline: &mut Timeline, ui: &mut egui::Ui) {
     //ui.add_space(0.5);
     ui::hline(ui);
 
+    let sel = if let Some(sel) = tab_res.selected() {
+        sel
+    } else {
+        0
+    };
+
     // fun animation
-    if let Some(sel) = tab_res.selected() {
-        timeline.selected_view = sel;
+    timeline.selected_view = sel;
 
-        let (underline, underline_y) = tab_res.inner()[sel as usize].inner;
-        let underline_width = underline.span();
+    let (underline, underline_y) = tab_res.inner()[sel as usize].inner;
+    let underline_width = underline.span();
 
-        let tab_anim_id = ui.id().with("tab_anim");
-        let tab_anim_size = tab_anim_id.with("size");
+    let tab_anim_id = ui.id().with("tab_anim");
+    let tab_anim_size = tab_anim_id.with("size");
 
-        let stroke = egui::Stroke {
-            color: ui.visuals().hyperlink_color,
-            width: 3.0,
-        };
+    let stroke = egui::Stroke {
+        color: ui.visuals().hyperlink_color,
+        width: 3.0,
+    };
 
-        let speed = 0.1f32;
+    let speed = 0.1f32;
 
-        // animate underline position
-        let x = ui
-            .ctx()
-            .animate_value_with_time(tab_anim_id, underline.min, speed);
+    // animate underline position
+    let x = ui
+        .ctx()
+        .animate_value_with_time(tab_anim_id, underline.min, speed);
 
-        // animate underline width
-        let w = ui
-            .ctx()
-            .animate_value_with_time(tab_anim_size, underline_width, speed);
+    // animate underline width
+    let w = ui
+        .ctx()
+        .animate_value_with_time(tab_anim_size, underline_width, speed);
 
-        let underline = egui::Rangef::new(x, x + w);
+    let underline = egui::Rangef::new(x, x + w);
 
-        ui.painter().hline(underline, underline_y, stroke);
-    }
+    ui.painter().hline(underline, underline_y, stroke);
 }
 
 pub fn timeline_view(ui: &mut egui::Ui, app: &mut Damus, timeline: usize) {

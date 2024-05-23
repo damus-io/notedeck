@@ -1023,7 +1023,7 @@ dependencies = [
 [[package]]
 name = "egui-tabs"
 version = "0.1.0"
-source = "git+https://github.com/damus-io/egui-tabs?rev=ed97a57fc66b3781bc10ab644f9e1ed125d7377a#ed97a57fc66b3781bc10ab644f9e1ed125d7377a"
+source = "git+https://github.com/damus-io/egui-tabs?rev=75f47141aebcf876986fad00dd83a69a7bb04840#75f47141aebcf876986fad00dd83a69a7bb04840"
 dependencies = [
  "egui",
  "egui_extras",
