@@ -1,9 +1,9 @@
 use ewebsock::{WsMessage, WsReceiver, WsSender};
 
 use crate::{ClientMessage, Filter, Result};
+use log::info;
 use std::fmt;
 use std::hash::{Hash, Hasher};
-use tracing::info;
 
 pub mod message;
 pub mod pool;

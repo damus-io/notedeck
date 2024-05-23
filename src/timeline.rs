@@ -11,7 +11,7 @@ use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::rc::Rc;
 
-use tracing::warn;
+use log::warn;
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
 pub struct NoteRef {
