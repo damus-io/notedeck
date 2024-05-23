@@ -42,6 +42,9 @@ bitflags = "2.5.0"
 egui_virtual_list = "0.3.0"
 #egui_virtual_list = { path = "/home/jb55/dev/github/lucasmerlin/hello_egui/crates/egui_virtual_list" }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "2.11.0"
+
 
 [features]
 default = []
