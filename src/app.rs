@@ -309,9 +309,7 @@ fn poll_notes_for_timeline<'a>(
         timeline
             .current_view()
             .list
-            .clone()
-            .lock()
-            .unwrap()
+            .borrow_mut()
             .items_inserted_at_start(new_items);
     }
 

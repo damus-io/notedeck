@@ -7,8 +7,9 @@ use egui_tabs::TabColor;
 use egui_virtual_list::VirtualList;
 use enostr::Filter;
 use nostrdb::{Note, NoteKey, Subscription, Transaction};
+use std::cell::RefCell;
 use std::cmp::Ordering;
-use std::sync::{Arc, Mutex};
+use std::rc::Rc;
 
 use tracing::warn;
 
@@ -70,13 +71,13 @@ pub struct TimelineView {
     pub notes: Vec<NoteRef>,
     pub selection: i32,
     pub filter: ViewFilter,
-    pub list: Arc<Mutex<VirtualList>>,
+    pub list: Rc<RefCell<VirtualList>>,
 }
 
 impl TimelineView {
     pub fn new(filter: ViewFilter) -> Self {
         let selection = 0i32;
-        let list = Arc::new(Mutex::new(VirtualList::new()));
+        let list = Rc::new(RefCell::new(VirtualList::new()));
         let notes: Vec<NoteRef> = Vec::with_capacity(1000);
 
         TimelineView {
@@ -247,8 +248,7 @@ pub fn timeline_view(ui: &mut egui::Ui, app: &mut Damus, timeline: usize) {
             let view = app.timelines[timeline].current_view();
             let len = view.notes.len();
             let list = view.list.clone();
-            list.lock()
-                .unwrap()
+            list.borrow_mut()
                 .ui_custom_layout(ui, len, |ui, start_index| {
                     ui.spacing_mut().item_spacing.y = 0.0;
                     ui.spacing_mut().item_spacing.x = 4.0;
