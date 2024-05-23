@@ -275,14 +275,14 @@ fn poll_notes_for_timeline<'a>(
     let new_items = timeline.notes.len() - prev_items;
 
     // TODO: technically items could have been added inbetween
-    timeline
-        .list
-        .clone()
-        .lock()
-        .unwrap()
-        .items_inserted_at_start(new_items);
-
-    ctx.request_repaint();
+    if new_items > 0 {
+        timeline
+            .list
+            .clone()
+            .lock()
+            .unwrap()
+            .items_inserted_at_start(new_items);
+    }
 
     Ok(())
 }
