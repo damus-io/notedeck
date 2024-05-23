@@ -41,6 +41,8 @@ strum = "0.26"
 strum_macros = "0.26"
 bitflags = "2.5.0"
 egui_virtual_list = "0.3.0"
+
+[target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "2.11.0"
 
 

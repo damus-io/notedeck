@@ -1,4 +1,7 @@
+#![cfg(target_os = "macos")]
+
 use enostr::{FullKeypair, Pubkey, SecretKey};
+
 use security_framework::item::{ItemClass, ItemSearchOptions, Limit, SearchResult};
 use security_framework::passwords::{delete_generic_password, set_generic_password};
 
