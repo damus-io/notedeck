@@ -87,8 +87,20 @@ impl AccountManager {
         self.accounts.len()
     }
 
-    pub fn get_currently_selected_account(&self) -> Option<usize> {
+    pub fn get_selected_account_index(&self) -> Option<usize> {
         self.currently_selected_account
+    }
+
+    pub fn get_selected_account(&self) -> Option<&UserAccount> {
+        if let Some(account_index) = self.currently_selected_account {
+            if let Some(account) = self.get_account(account_index) {
+                Some(account)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
     }
 
     pub fn select_account(&mut self, index: usize) {

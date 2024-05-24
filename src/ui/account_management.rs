@@ -1,12 +1,11 @@
+use crate::colors::PINK;
 use crate::ui::global_popup::FromApp;
 use crate::{
-    account_manager::{AccountManager, UserAccount},
+    account_manager::AccountManager,
     app_style::NotedeckTextStyle,
     ui::{self, Preview, View},
 };
-use egui::{
-    Align, Button, Color32, Frame, Id, Image, Layout, Margin, RichText, ScrollArea, Sense, Vec2,
-};
+use egui::{Align, Button, Frame, Image, Layout, RichText, ScrollArea, Vec2};
 
 use super::global_popup::GlobalPopupType;
 use super::profile::preview::SimpleProfilePreview;
@@ -176,15 +175,6 @@ impl<'a> FromApp<'a> for AccountManagementView<'a> {
     }
 }
 
-fn simple_preview_frame(ui: &mut egui::Ui) -> Frame {
-    Frame::none()
-        .rounding(ui.visuals().window_rounding)
-        .fill(ui.visuals().window_fill)
-        .stroke(ui.visuals().window_stroke)
-        .outer_margin(Margin::same(2.0))
-        .inner_margin(12.0)
-}
-
 fn mobile_title() -> impl egui::Widget {
     |ui: &mut egui::Ui| {
         ui.vertical_centered(|ui| {
@@ -203,8 +193,6 @@ fn scroll_area() -> ScrollArea {
         .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
         .auto_shrink([false; 2])
 }
-
-static PINK: Color32 = Color32::from_rgb(0xE4, 0x5A, 0xC9);
 
 fn add_account_button() -> Button<'static> {
     let img_data = egui::include_image!("../../assets/icons/add_account_icon_4x.png");
@@ -253,60 +241,11 @@ fn selected_widget() -> impl egui::Widget {
 //     egui::Button::new("Logout all")
 // }
 
-pub struct AccountSelectionWidget<'a> {
-    account_manager: &'a mut AccountManager,
-    simple_preview_controller: SimpleProfilePreviewController<'a>,
-}
-
-impl<'a> AccountSelectionWidget<'a> {
-    fn ui(&'a mut self, ui: &mut egui::Ui) -> Option<&'a UserAccount> {
-        let mut result: Option<&'a UserAccount> = None;
-        scroll_area().show(ui, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                let clicked_at = self.simple_preview_controller.view_profile_previews(
-                    self.account_manager,
-                    ui,
-                    |ui, preview, index| {
-                        let resp = ui.add_sized(preview.dimensions(), |ui: &mut egui::Ui| {
-                            simple_preview_frame(ui)
-                                .show(ui, |ui| {
-                                    ui.vertical_centered(|ui| {
-                                        ui.add(preview);
-                                    });
-                                })
-                                .response
-                        });
-
-                        ui.interact(resp.rect, Id::new(index), Sense::click())
-                            .clicked()
-                    },
-                );
-
-                if let Some(index) = clicked_at {
-                    result = self.account_manager.get_account(index);
-                };
-            });
-        });
-        result
-    }
-}
-
-impl<'a> AccountSelectionWidget<'a> {
-    pub fn new(
-        account_manager: &'a mut AccountManager,
-        simple_preview_controller: SimpleProfilePreviewController<'a>,
-    ) -> Self {
-        AccountSelectionWidget {
-            account_manager,
-            simple_preview_controller,
-        }
-    }
-}
-
 // PREVIEWS
 
 mod preview {
     use nostrdb::{Config, Ndb};
+    use ui::account_switcher::AccountSelectionWidget;
 
     use super::*;
     use crate::imgcache::ImageCache;
@@ -395,14 +334,11 @@ mod preview {
 
     impl View for AccountSelectionPreview {
         fn ui(&mut self, ui: &mut egui::Ui) {
-            let mut widget = AccountSelectionWidget::new(
+            AccountSelectionWidget::new(
                 &mut self.account_manager,
                 SimpleProfilePreviewController::new(&self.ndb, &mut self.img_cache),
-            );
-
-            if let Some(account) = widget.ui(ui) {
-                println!("User made selection: {:?}", account.key);
-            }
+            )
+            .ui(ui);
         }
     }
 

@@ -1,5 +1,6 @@
 pub mod account_login_view;
 pub mod account_management;
+pub mod account_switcher;
 pub mod anim;
 pub mod global_popup;
 pub mod mention;
@@ -11,7 +12,8 @@ pub mod side_panel;
 pub mod state_in_memory;
 pub mod username;
 
-pub use account_management::{AccountManagementView, AccountSelectionWidget};
+pub use account_management::AccountManagementView;
+pub use account_switcher::AccountSelectionWidget;
 pub use global_popup::DesktopGlobalPopup;
 pub use mention::Mention;
 pub use note::Note;

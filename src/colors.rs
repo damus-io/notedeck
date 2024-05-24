@@ -1,6 +1,8 @@
 use egui::Color32;
 
 pub const PURPLE: Color32 = Color32::from_rgb(0xCC, 0x43, 0xC5);
+// TODO: This should not be exposed publicly
+pub const PINK: Color32 = Color32::from_rgb(0xE4, 0x5A, 0xC9);
 //pub const DARK_BG: Color32 = egui::Color32::from_rgb(40, 44, 52);
 pub const GRAY_SECONDARY: Color32 = Color32::from_rgb(0x8A, 0x8A, 0x8A);
 const BLACK: Color32 = Color32::from_rgb(0x00, 0x00, 0x00);
