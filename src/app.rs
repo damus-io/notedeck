@@ -602,7 +602,7 @@ impl Damus {
                 timelines.push(Timeline::new(filter));
             }
         } else {
-            let filter = serde_json::from_str(include_str!("../queries/global.json")).unwrap();
+            let filter = serde_json::from_str(include_str!("../queries/timeline.json")).unwrap();
             timelines.push(Timeline::new(filter));
         };
 
