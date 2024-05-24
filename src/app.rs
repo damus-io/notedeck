@@ -207,6 +207,7 @@ impl<'a> UnknownId<'a> {
 
 fn get_unknown_note_ids<'a>(
     ndb: &Ndb,
+    cached_note: &CachedNote,
     txn: &'a Transaction,
     note: &Note<'a>,
     note_key: NoteKey,
@@ -216,6 +217,24 @@ fn get_unknown_note_ids<'a>(
 
     if ndb.get_profile_by_pubkey(txn, note.pubkey()).is_err() {
         ids.insert(UnknownId::Pubkey(note.pubkey()));
+    }
+
+    // pull notes that notes are replying to
+    if cached_note.reply.root.is_some() {
+        let note_reply = cached_note.reply.borrow(note.tags());
+        if let Some(root) = note_reply.root() {
+            if ndb.get_note_by_id(txn, root.id).is_err() {
+                ids.insert(UnknownId::Id(root.id));
+            }
+        }
+
+        if !note_reply.is_reply_to_root() {
+            if let Some(reply) = note_reply.reply() {
+                if ndb.get_note_by_id(txn, reply.id).is_err() {
+                    ids.insert(UnknownId::Id(reply.id));
+                }
+            }
+        }
     }
 
     let blocks = ndb.get_blocks_by_key(txn, note_key)?;
@@ -288,8 +307,11 @@ fn poll_notes_for_timeline<'a>(
         .iter()
         .map(|key| {
             let note = damus.ndb.get_note_by_key(txn, *key).expect("no note??");
-
-            let _ = get_unknown_note_ids(&damus.ndb, txn, &note, *key, ids);
+            let cached_note = damus
+                .note_cache_mut()
+                .cached_note_or_insert(*key, &note)
+                .clone();
+            let _ = get_unknown_note_ids(&damus.ndb, &cached_note, txn, &note, *key, ids);
 
             let created_at = note.created_at();
             (
@@ -440,17 +462,41 @@ fn process_event(damus: &mut Damus, _subid: &str, event: &str) {
     }
 }
 
-fn get_unknown_ids<'a>(txn: &'a Transaction, damus: &Damus) -> Result<Vec<UnknownId<'a>>> {
+fn get_unknown_ids<'a>(txn: &'a Transaction, damus: &mut Damus) -> Result<Vec<UnknownId<'a>>> {
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
 
     let mut ids: HashSet<UnknownId> = HashSet::new();
+    let mut new_cached_notes: Vec<(NoteKey, CachedNote)> = vec![];
 
     for timeline in &damus.timelines {
         for noteref in timeline.notes(ViewFilter::NotesAndReplies) {
             let note = damus.ndb.get_note_by_key(txn, noteref.key)?;
-            let _ = get_unknown_note_ids(&damus.ndb, txn, &note, note.key().unwrap(), &mut ids);
+            let note_key = note.key().unwrap();
+            let cached_note = damus.note_cache().cached_note(noteref.key);
+            let cached_note = if let Some(cn) = cached_note {
+                cn.clone()
+            } else {
+                let new_cached_note = CachedNote::new(&note);
+                new_cached_notes.push((note_key, new_cached_note.clone()));
+                new_cached_note
+            };
+
+            let _ = get_unknown_note_ids(
+                &damus.ndb,
+                &cached_note,
+                txn,
+                &note,
+                note.key().unwrap(),
+                &mut ids,
+            );
         }
+    }
+
+    // This is mainly done to avoid the double mutable borrow that would happen
+    // if we tried to update the note_cache mutably in the loop above
+    for (note_key, note) in new_cached_notes {
+        damus.note_cache_mut().cache_mut().insert(note_key, note);
     }
 
     Ok(ids.into_iter().collect())
@@ -581,6 +627,10 @@ impl Damus {
 
     pub fn note_cache_mut(&mut self) -> &mut NoteCache {
         &mut self.note_cache
+    }
+
+    pub fn note_cache(&self) -> &NoteCache {
+        &self.note_cache
     }
 
     pub fn selected_timeline(&mut self) -> &mut Timeline {

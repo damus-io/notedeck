@@ -16,6 +16,14 @@ impl NoteCache {
             .or_insert_with(|| CachedNote::new(note))
     }
 
+    pub fn cached_note(&self, note_key: NoteKey) -> Option<&CachedNote> {
+        self.cache.get(&note_key)
+    }
+
+    pub fn cache_mut(&mut self) -> &mut HashMap<NoteKey, CachedNote> {
+        &mut self.cache
+    }
+
     pub fn cached_note_or_insert(&mut self, note_key: NoteKey, note: &Note) -> &CachedNote {
         self.cache
             .entry(note_key)
@@ -23,6 +31,7 @@ impl NoteCache {
     }
 }
 
+#[derive(Clone)]
 pub struct CachedNote {
     reltime: TimeCached<String>,
     pub reply: NoteReplyBuf,
@@ -45,7 +54,11 @@ impl CachedNote {
         }
     }
 
-    pub fn reltime_str(&mut self) -> &str {
-        return self.reltime.get();
+    pub fn reltime_str_mut(&mut self) -> &str {
+        self.reltime.get_mut()
+    }
+
+    pub fn reltime_str(&self) -> Option<&str> {
+        self.reltime.get().map(|x| x.as_str())
     }
 }

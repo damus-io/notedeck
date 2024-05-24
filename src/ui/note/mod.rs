@@ -326,7 +326,7 @@ fn render_reltime(
             secondary_label(ui, "⋅");
         }
 
-        secondary_label(ui, note_cache.reltime_str());
+        secondary_label(ui, note_cache.reltime_str_mut());
 
         if !before {
             secondary_label(ui, "⋅");
