@@ -11,7 +11,7 @@ use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::rc::Rc;
 
-use log::warn;
+use log::{debug, warn};
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
 pub struct NoteRef {
@@ -97,6 +97,7 @@ impl TimelineView {
     }
 
     pub fn select_down(&mut self) {
+        debug!("select_down {}", self.selection + 1);
         if self.selection + 1 > self.notes.len() as i32 {
             return;
         }
@@ -105,6 +106,7 @@ impl TimelineView {
     }
 
     pub fn select_up(&mut self) {
+        debug!("select_up {}", self.selection - 1);
         if self.selection - 1 < 0 {
             return;
         }
