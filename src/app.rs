@@ -758,7 +758,7 @@ fn render_damus_mobile(ctx: &egui::Context, app: &mut Damus) {
 
 fn main_panel(style: &Style) -> egui::CentralPanel {
     let inner_margin = egui::Margin {
-        top: if crate::ui::is_mobile() { 40.0 } else { 0.0 },
+        top: if crate::ui::is_mobile() { 50.0 } else { 0.0 },
         left: 0.0,
         right: 0.0,
         bottom: 0.0,
