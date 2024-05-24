@@ -33,11 +33,11 @@ pub static STATE_SIDE_PANEL: StateInMemory<Option<GlobalPopupType>> =
         default_state: None,
     };
 
-pub static STATE_GLOBAL_POPUP: StateInMemory<bool> = StateInMemory::<bool> {
-    id: GLOBAL_POPUP_VIEW_STATE_ID,
+pub static STATE_ACCOUNT_SWITCHER: StateInMemory<bool> = StateInMemory::<bool> {
+    id: ACCOUNT_SWITCHER_VIEW_STATE_ID,
     default_state: false,
 };
 
 static ACCOUNT_MANAGEMENT_VIEW_STATE_ID: &str = "account management view state";
 static SIDE_PANEL_VIEW_STATE_ID: &str = "side panel view state";
-static GLOBAL_POPUP_VIEW_STATE_ID: &str = "global popup view state";
+static ACCOUNT_SWITCHER_VIEW_STATE_ID: &str = "account switcher view state";

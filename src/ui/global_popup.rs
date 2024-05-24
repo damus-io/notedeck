@@ -3,21 +3,25 @@ use egui::{Align2, CentralPanel, RichText, Vec2, Window};
 use crate::Damus;
 
 use super::{
-    state_in_memory::{STATE_GLOBAL_POPUP, STATE_SIDE_PANEL},
-    AccountManagementView, View,
+    profile::SimpleProfilePreviewController,
+    state_in_memory::{STATE_ACCOUNT_MANAGEMENT, STATE_ACCOUNT_SWITCHER, STATE_SIDE_PANEL},
+    AccountManagementView, AccountSelectionWidget, View,
 };
 
 #[derive(Clone, Copy, Debug)]
 pub enum GlobalPopupType {
     AccountManagement,
+    AccountSwitcher,
 }
 
 static ACCOUNT_MANAGEMENT_TITLE: &str = "Manage accounts";
+static ACCOUNT_SWITCHER_TITLE: &str = "Account switcher";
 
 impl GlobalPopupType {
     pub fn title(&self) -> &'static str {
         match self {
             Self::AccountManagement => ACCOUNT_MANAGEMENT_TITLE,
+            Self::AccountSwitcher => ACCOUNT_SWITCHER_TITLE,
         }
     }
 }
@@ -46,6 +50,16 @@ fn overlay_window<'a>(
         .default_size(window_size)
 }
 
+fn account_switcher_window(open: &'_ mut bool) -> Window<'_> {
+    egui::Window::new("account switcher")
+        .title_bar(false)
+        .collapsible(false)
+        .anchor(Align2::LEFT_BOTTOM, Vec2::new(0.0, -52.0))
+        .fixed_size(Vec2::new(360.0, 406.0))
+        .open(open)
+        .movable(false)
+}
+
 static MARGIN: Vec2 = Vec2 { x: 100.0, y: 100.0 };
 
 pub struct DesktopGlobalPopup<'a> {
@@ -64,28 +78,48 @@ impl<'a> DesktopGlobalPopup<'a> {
     }
     pub fn global_popup(app: &mut Damus, ctx: &egui::Context) {
         CentralPanel::default().show(ctx, |ui| {
-            let available_size = ui.available_size();
-            let window_size = available_size - MARGIN;
-
             if let Some(popup) = STATE_SIDE_PANEL.get_state(ctx) {
-                let mut show_global_popup = STATE_GLOBAL_POPUP.get_state(ctx);
-                if show_global_popup {
-                    overlay_window(&mut show_global_popup, window_size, popup.title()).show(
-                        ctx,
-                        |ui| {
-                            match popup {
-                                GlobalPopupType::AccountManagement => {
-                                    AccountManagementView::from_app(app).ui(ui)
-                                }
-                            };
-                        },
-                    );
-
-                    // user could have closed the window, set the new state in egui memory
-                    STATE_GLOBAL_POPUP.set_state(ctx, show_global_popup);
+                match popup {
+                    GlobalPopupType::AccountManagement => {
+                        Self::account_management(app, ctx, ui, popup.title());
+                    }
+                    GlobalPopupType::AccountSwitcher => {
+                        let mut show_account_switcher = STATE_ACCOUNT_SWITCHER.get_state(ctx);
+                        if show_account_switcher {
+                            STATE_ACCOUNT_MANAGEMENT.set_state(ctx, false);
+                            account_switcher_window(&mut show_account_switcher).show(ctx, |ui| {
+                                AccountSelectionWidget::new(
+                                    &mut app.account_manager,
+                                    SimpleProfilePreviewController::new(
+                                        &app.ndb,
+                                        &mut app.img_cache,
+                                    ),
+                                )
+                                .ui(ui);
+                            });
+                        }
+                    }
                 }
             }
         });
+    }
+
+    fn account_management(
+        app: &mut Damus,
+        ctx: &egui::Context,
+        ui: &mut egui::Ui,
+        title: &'static str,
+    ) {
+        let available_size = ui.available_size();
+        let window_size = available_size - MARGIN;
+        let mut show_account_management = STATE_ACCOUNT_MANAGEMENT.get_state(ctx);
+        if show_account_management {
+            overlay_window(&mut show_account_management, window_size, title).show(ctx, |ui| {
+                AccountManagementView::from_app(app).ui(ui);
+            });
+            // user could have closed the window, set the new state in egui memory
+            STATE_ACCOUNT_MANAGEMENT.set_state(ctx, show_account_management);
+        }
     }
 }
 

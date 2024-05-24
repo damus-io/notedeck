@@ -6,7 +6,10 @@ use egui::{
 
 use crate::account_manager::AccountManager;
 
-use super::profile::{preview::SimpleProfilePreview, SimpleProfilePreviewController};
+use super::{
+    profile::{preview::SimpleProfilePreview, SimpleProfilePreviewController},
+    state_in_memory::{STATE_ACCOUNT_MANAGEMENT, STATE_ACCOUNT_SWITCHER, STATE_SIDE_PANEL},
+};
 
 pub struct AccountSelectionWidget<'a> {
     account_manager: &'a mut AccountManager,
@@ -157,7 +160,12 @@ fn top_section_widget() -> impl egui::Widget {
                 Layout::right_to_left(egui::Align::Center),
                 |ui| {
                     if ui.add(manage_accounts_button()).clicked() {
-                        // TODO: route to AccountLoginView
+                        STATE_ACCOUNT_SWITCHER.set_state(ui.ctx(), false);
+                        STATE_SIDE_PANEL.set_state(
+                            ui.ctx(),
+                            Some(ui::global_popup::GlobalPopupType::AccountManagement),
+                        );
+                        STATE_ACCOUNT_MANAGEMENT.set_state(ui.ctx(), true);
                     }
                 },
             );

@@ -3,7 +3,7 @@ use egui::{Button, Layout, SidePanel, Vec2};
 use crate::ui::global_popup::GlobalPopupType;
 
 use super::{
-    state_in_memory::{STATE_GLOBAL_POPUP, STATE_SIDE_PANEL},
+    state_in_memory::{STATE_ACCOUNT_SWITCHER, STATE_SIDE_PANEL},
     View,
 };
 
@@ -32,8 +32,9 @@ impl DesktopSidePanel {
                 .add_sized(Vec2::new(32.0, 32.0), Button::new("A"))
                 .clicked()
             {
-                STATE_SIDE_PANEL.set_state(ui.ctx(), Some(GlobalPopupType::AccountManagement));
-                STATE_GLOBAL_POPUP.set_state(ui.ctx(), true);
+                STATE_SIDE_PANEL.set_state(ui.ctx(), Some(GlobalPopupType::AccountSwitcher));
+                let previous_val = STATE_ACCOUNT_SWITCHER.get_state(ui.ctx());
+                STATE_ACCOUNT_SWITCHER.set_state(ui.ctx(), !previous_val);
             }
             ui.add_space(spacing_amt);
             ui.add(settings_button(dark_mode));

@@ -1,7 +1,10 @@
 use enostr::Pubkey;
 use nostrdb::{Ndb, Transaction};
 
-use crate::{account_manager::AccountManager, imgcache::ImageCache, DisplayName};
+use crate::{
+    account_manager::AccountManager, imgcache::ImageCache,
+    ui::state_in_memory::STATE_ACCOUNT_SWITCHER, DisplayName,
+};
 
 use super::preview::{get_display_name, SimpleProfilePreview};
 
@@ -105,6 +108,7 @@ impl<'a> SimpleProfilePreviewController<'a> {
 
                         if add_preview_ui(ui, preview, width, is_selected, i) {
                             account_manager.select_account(i);
+                            STATE_ACCOUNT_SWITCHER.set_state(ui.ctx(), false);
                         }
                     }
                 }
