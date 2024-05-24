@@ -106,8 +106,20 @@ fn send_initial_filters(damus: &mut Damus, relay_url: &str) {
     }
 }
 
-fn handle_key_events(input: &egui::InputState, damus: &mut Damus, ctx: &egui::Context) {
+enum ContextAction {
+    SetPixelsPerPoint(f32),
+}
+
+fn handle_key_events(
+    input: &egui::InputState,
+    pixels_per_point: f32,
+    damus: &mut Damus,
+) -> Option<ContextAction> {
     let amount = 0.2;
+
+    // We can't do things like setting the pixels_per_point when we are holding
+    // on to an locked InputState context, so we need to pass actions externally
+    let mut context_action: Option<ContextAction> = None;
 
     for event in &input.raw.events {
         if let egui::Event::Key {
@@ -116,10 +128,12 @@ fn handle_key_events(input: &egui::InputState, damus: &mut Damus, ctx: &egui::Co
         {
             match key {
                 egui::Key::Equals => {
-                    ctx.set_pixels_per_point(ctx.pixels_per_point() + amount);
+                    context_action =
+                        Some(ContextAction::SetPixelsPerPoint(pixels_per_point + amount));
                 }
                 egui::Key::Minus => {
-                    ctx.set_pixels_per_point(ctx.pixels_per_point() - amount);
+                    context_action =
+                        Some(ContextAction::SetPixelsPerPoint(pixels_per_point - amount));
                 }
                 egui::Key::J => {
                     damus.select_down();
@@ -137,10 +151,20 @@ fn handle_key_events(input: &egui::InputState, damus: &mut Damus, ctx: &egui::Co
             }
         }
     }
+
+    context_action
 }
 
 fn try_process_event(damus: &mut Damus, ctx: &egui::Context) -> Result<()> {
-    ctx.input(|i| handle_key_events(i, damus, ctx));
+    let ppp = ctx.pixels_per_point();
+    let res = ctx.input(|i| handle_key_events(i, ppp, damus));
+    if let Some(action) = res {
+        match action {
+            ContextAction::SetPixelsPerPoint(amt) => {
+                ctx.set_pixels_per_point(amt);
+            }
+        }
+    }
 
     let ctx2 = ctx.clone();
     let wakeup = move || {
