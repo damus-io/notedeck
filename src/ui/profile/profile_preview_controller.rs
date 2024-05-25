@@ -131,4 +131,12 @@ impl<'a> SimpleProfilePreviewController<'a> {
         }
         None
     }
+
+    pub fn show_with_pfp(
+        &'a self,
+        ui: &mut egui::Ui,
+        key: &Pubkey,
+        ui_element: fn(ui: &mut egui::Ui, preview: SimpleProfilePreview) -> egui::Response,
+    ) {
+    }
 }

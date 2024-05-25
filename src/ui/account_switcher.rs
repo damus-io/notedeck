@@ -66,6 +66,7 @@ impl<'a> AccountSelectionWidget<'a> {
             account_switcher_card_ui(),
         );
     }
+
     fn sign_out_button(&self, ui: &mut egui::Ui, account: &UserAccount) -> Option<egui::Response> {
         self.simple_preview_controller.show_with_nickname(
             ui,
@@ -192,4 +193,52 @@ fn add_account_button() -> egui::Button<'static> {
     let img_data = egui::include_image!("../../assets/icons/plus_icon_4x.png");
     let img = Image::new(img_data).fit_to_exact_size(Vec2::new(16.0, 16.0));
     Button::image_and_text(img, RichText::new(" Add account").size(16.0).color(PINK)).frame(false)
+}
+
+mod previews {
+    use nostrdb::Ndb;
+
+    use crate::{
+        account_manager::AccountManager,
+        imgcache::ImageCache,
+        test_data,
+        ui::{profile::SimpleProfilePreviewController, Preview, View},
+    };
+
+    use super::AccountSelectionWidget;
+
+    pub struct AccountSelectionPreview {
+        account_manager: AccountManager,
+        ndb: Ndb,
+        img_cache: ImageCache,
+    }
+
+    impl AccountSelectionPreview {
+        fn new() -> Self {
+            let (account_manager, ndb, img_cache) = test_data::get_accmgr_and_ndb_and_imgcache();
+            AccountSelectionPreview {
+                account_manager,
+                ndb,
+                img_cache,
+            }
+        }
+    }
+
+    impl View for AccountSelectionPreview {
+        fn ui(&mut self, ui: &mut egui::Ui) {
+            AccountSelectionWidget::new(
+                &mut self.account_manager,
+                SimpleProfilePreviewController::new(&self.ndb, &mut self.img_cache),
+            )
+            .ui(ui);
+        }
+    }
+
+    impl<'a> Preview for AccountSelectionWidget<'a> {
+        type Prev = AccountSelectionPreview;
+
+        fn preview() -> Self::Prev {
+            AccountSelectionPreview::new()
+        }
+    }
 }

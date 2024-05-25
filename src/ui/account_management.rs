@@ -244,15 +244,10 @@ fn selected_widget() -> impl egui::Widget {
 // PREVIEWS
 
 mod preview {
-    use nostrdb::{Config, Ndb};
-    use ui::account_switcher::AccountSelectionWidget;
+    use nostrdb::Ndb;
 
     use super::*;
-    use crate::imgcache::ImageCache;
-    use crate::key_storage::KeyStorage;
-    use crate::relay_generation::RelayGenerator;
-    use crate::test_data;
-    use std::path::Path;
+    use crate::{imgcache::ImageCache, test_data::get_accmgr_and_ndb_and_imgcache};
 
     pub struct AccountManagementPreview {
         account_manager: AccountManager,
@@ -260,27 +255,9 @@ mod preview {
         img_cache: ImageCache,
     }
 
-    fn get_ndb_and_img_cache() -> (Ndb, ImageCache) {
-        let mut config = Config::new();
-        config.set_ingester_threads(2);
-
-        let db_dir = Path::new(".");
-        let path = db_dir.to_str().unwrap();
-        let ndb = Ndb::new(path, &config).expect("ndb");
-        let imgcache_dir = db_dir.join("cache/img");
-        let img_cache = ImageCache::new(imgcache_dir);
-        (ndb, img_cache)
-    }
-
     impl AccountManagementPreview {
         fn new() -> Self {
-            let mut account_manager =
-                AccountManager::new(None, KeyStorage::None, RelayGenerator::Constant, || {});
-            let accounts = test_data::get_test_accounts();
-            accounts
-                .into_iter()
-                .for_each(|acc| account_manager.add_account(acc.key, || {}));
-            let (ndb, img_cache) = get_ndb_and_img_cache();
+            let (account_manager, ndb, img_cache) = get_accmgr_and_ndb_and_imgcache();
 
             AccountManagementPreview {
                 account_manager,
@@ -306,47 +283,6 @@ mod preview {
 
         fn preview() -> Self::Prev {
             AccountManagementPreview::new()
-        }
-    }
-
-    pub struct AccountSelectionPreview {
-        account_manager: AccountManager,
-        ndb: Ndb,
-        img_cache: ImageCache,
-    }
-
-    impl AccountSelectionPreview {
-        fn new() -> Self {
-            let mut account_manager =
-                AccountManager::new(None, KeyStorage::None, RelayGenerator::Constant, || {});
-            let accounts = test_data::get_test_accounts();
-            accounts
-                .into_iter()
-                .for_each(|acc| account_manager.add_account(acc.key, || {}));
-            let (ndb, img_cache) = get_ndb_and_img_cache();
-            AccountSelectionPreview {
-                account_manager,
-                ndb,
-                img_cache,
-            }
-        }
-    }
-
-    impl View for AccountSelectionPreview {
-        fn ui(&mut self, ui: &mut egui::Ui) {
-            AccountSelectionWidget::new(
-                &mut self.account_manager,
-                SimpleProfilePreviewController::new(&self.ndb, &mut self.img_cache),
-            )
-            .ui(ui);
-        }
-    }
-
-    impl<'a> Preview for AccountSelectionWidget<'a> {
-        type Prev = AccountSelectionPreview;
-
-        fn preview() -> Self::Prev {
-            AccountSelectionPreview::new()
         }
     }
 }
