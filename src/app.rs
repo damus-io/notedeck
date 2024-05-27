@@ -97,6 +97,12 @@ fn send_initial_filters(damus: &mut Damus, relay_url: &str) {
                 let mut filter = timeline.filter.clone();
                 for f in &mut filter {
                     since_optimize_filter(f, timeline.notes(ViewFilter::NotesAndReplies));
+
+                    // limit the size of remote filters
+                    let lim = f.limit.unwrap_or(100);
+                    if lim > 150 {
+                        f.limit = Some(150);
+                    }
                 }
                 relay.subscribe(format!("initial{}", c), filter);
                 c += 1;
