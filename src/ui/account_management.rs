@@ -1,5 +1,4 @@
 use crate::colors::PINK;
-use crate::ui::global_popup::FromApp;
 use crate::{
     account_manager::AccountManager,
     app_style::NotedeckTextStyle,
@@ -7,7 +6,6 @@ use crate::{
 };
 use egui::{Align, Button, Frame, Image, Layout, RichText, ScrollArea, Vec2};
 
-use super::global_popup::GlobalPopupType;
 use super::profile::preview::SimpleProfilePreview;
 use super::profile::{ProfilePreviewOp, SimpleProfilePreviewController};
 
@@ -39,7 +37,7 @@ impl<'a> AccountManagementView<'a> {
 
     fn show(&mut self, ui: &mut egui::Ui) {
         Frame::none().outer_margin(24.0).show(ui, |ui| {
-            ui.add(self.top_section_buttons_widget());
+            self.top_section_buttons_widget(ui);
             ui.add_space(8.0);
             scroll_area().show(ui, |ui| {
                 self.show_accounts(ui);
@@ -86,8 +84,9 @@ impl<'a> AccountManagementView<'a> {
     fn show_mobile(&mut self, ui: &mut egui::Ui) -> egui::Response {
         egui::CentralPanel::default()
             .show(ui.ctx(), |ui| {
-                ui.add(mobile_title());
-                ui.add(self.top_section_buttons_widget());
+                mobile_title(ui);
+                self.top_section_buttons_widget(ui);
+
                 ui.add_space(8.0);
                 scroll_area().show(ui, |ui| {
                     self.show_accounts_mobile(ui);
@@ -96,34 +95,32 @@ impl<'a> AccountManagementView<'a> {
             .response
     }
 
-    fn top_section_buttons_widget(&mut self) -> impl egui::Widget + '_ {
-        |ui: &mut egui::Ui| {
-            ui.horizontal(|ui| {
-                ui.allocate_ui_with_layout(
-                    Vec2::new(ui.available_size_before_wrap().x, 32.0),
-                    Layout::left_to_right(egui::Align::Center),
-                    |ui| {
-                        if ui.add(add_account_button()).clicked() {
-                            // TODO: route to AccountLoginView
-                        }
-                    },
-                );
+    fn top_section_buttons_widget(&mut self, ui: &mut egui::Ui) -> egui::Response {
+        ui.horizontal(|ui| {
+            ui.allocate_ui_with_layout(
+                Vec2::new(ui.available_size_before_wrap().x, 32.0),
+                Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    if ui.add(add_account_button()).clicked() {
+                        // TODO: route to AccountLoginView
+                    }
+                },
+            );
 
-                // UNCOMMENT FOR LOGOUTALL BUTTON
-                // ui.allocate_ui_with_layout(
-                //     Vec2::new(ui.available_size_before_wrap().x, 32.0),
-                //     Layout::right_to_left(egui::Align::Center),
-                //     |ui| {
-                //         if ui.add(logout_all_button()).clicked() {
-                //             for index in (0..self.account_manager.num_accounts()).rev() {
-                //                 self.account_manager.remove_account(index);
-                //             }
-                //         }
-                //     },
-                // );
-            })
-            .response
-        }
+            // UNCOMMENT FOR LOGOUTALL BUTTON
+            // ui.allocate_ui_with_layout(
+            //     Vec2::new(ui.available_size_before_wrap().x, 32.0),
+            //     Layout::right_to_left(egui::Align::Center),
+            //     |ui| {
+            //         if ui.add(logout_all_button()).clicked() {
+            //             for index in (0..self.account_manager.num_accounts()).rev() {
+            //                 self.account_manager.remove_account(index);
+            //             }
+            //         }
+            //     },
+            // );
+        })
+        .response
     }
 }
 
@@ -166,26 +163,15 @@ fn account_card_ui() -> fn(
     }
 }
 
-impl<'a> FromApp<'a> for AccountManagementView<'a> {
-    fn from_app(app: &'a mut crate::Damus) -> Self {
-        AccountManagementView::new(
-            &mut app.account_manager,
-            SimpleProfilePreviewController::new(&app.ndb, &mut app.img_cache),
-        )
-    }
-}
-
-fn mobile_title() -> impl egui::Widget {
-    |ui: &mut egui::Ui| {
-        ui.vertical_centered(|ui| {
-            ui.label(
-                RichText::new(GlobalPopupType::AccountManagement.title())
-                    .text_style(NotedeckTextStyle::Heading2.text_style())
-                    .strong(),
-            );
-        })
-        .response
-    }
+fn mobile_title(ui: &mut egui::Ui) -> egui::Response {
+    ui.vertical_centered(|ui| {
+        ui.label(
+            RichText::new("Account Management")
+                .text_style(NotedeckTextStyle::Heading2.text_style())
+                .strong(),
+        );
+    })
+    .response
 }
 
 fn scroll_area() -> ScrollArea {

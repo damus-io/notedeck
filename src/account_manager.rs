@@ -1,9 +1,9 @@
 use std::cmp::Ordering;
 
-use enostr::FullKeypair;
+use enostr::Keypair;
 
+use crate::key_storage::KeyStorage;
 pub use crate::user_account::UserAccount;
-use crate::{key_storage::KeyStorage, relay_generation::RelayGenerator};
 
 /// The interface for managing the user's accounts.
 /// Represents all user-facing operations related to account management.
@@ -11,34 +11,16 @@ pub struct AccountManager {
     currently_selected_account: Option<usize>,
     accounts: Vec<UserAccount>,
     key_store: KeyStorage,
-    relay_generator: RelayGenerator,
 }
 
 impl AccountManager {
-    pub fn new(
-        currently_selected_account: Option<usize>,
-        key_store: KeyStorage,
-        // TODO: right now, there is only one way of generating relays for all accounts. In the future
-        // each account should have the option of generating relays differently
-        relay_generator: RelayGenerator,
-        wakeup: impl Fn() + Send + Sync + Clone + 'static,
-    ) -> Self {
-        let accounts = if let Ok(keys) = key_store.get_keys() {
-            keys.into_iter()
-                .map(|key| {
-                    let relays = relay_generator.generate_relays_for(&key.pubkey, wakeup.clone());
-                    UserAccount { key, relays }
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
+    pub fn new(currently_selected_account: Option<usize>, key_store: KeyStorage) -> Self {
+        let accounts = key_store.get_keys().unwrap_or_default();
 
         AccountManager {
             currently_selected_account,
             accounts,
             key_store,
-            relay_generator,
         }
     }
 
@@ -46,13 +28,17 @@ impl AccountManager {
         &self.accounts
     }
 
-    pub fn get_account(&self, index: usize) -> Option<&UserAccount> {
-        self.accounts.get(index)
+    pub fn get_account(&self, ind: usize) -> Option<&UserAccount> {
+        self.accounts.get(ind)
+    }
+
+    pub fn find_account(&self, pk: &[u8; 32]) -> Option<&UserAccount> {
+        self.accounts.iter().find(|acc| acc.pubkey.bytes() == pk)
     }
 
     pub fn remove_account(&mut self, index: usize) {
         if let Some(account) = self.accounts.get(index) {
-            let _ = self.key_store.remove_key(&account.key);
+            let _ = self.key_store.remove_key(account);
             self.accounts.remove(index);
 
             if let Some(selected_index) = self.currently_selected_account {
@@ -69,17 +55,8 @@ impl AccountManager {
         }
     }
 
-    pub fn add_account(
-        &mut self,
-        key: FullKeypair,
-        wakeup: impl Fn() + Send + Sync + Clone + 'static,
-    ) {
-        let _ = self.key_store.add_key(&key);
-        let relays = self
-            .relay_generator
-            .generate_relays_for(&key.pubkey, wakeup);
-        let account = UserAccount { key, relays };
-
+    pub fn add_account(&mut self, account: Keypair) {
+        let _ = self.key_store.add_key(&account);
         self.accounts.push(account)
     }
 

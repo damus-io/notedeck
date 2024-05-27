@@ -125,7 +125,7 @@ pub async fn get_login_key(key: &str) -> Result<Keypair, LoginError> {
     } else if let Ok(pubkey) = Pubkey::try_from_hex_str_with_verify(tmp_key) {
         Ok(Keypair::only_pubkey(pubkey))
     } else if let Ok(secret_key) = SecretKey::from_str(tmp_key) {
-        Ok(Keypair::new(secret_key))
+        Ok(Keypair::from_secret(secret_key))
     } else {
         Err(LoginError::InvalidKey)
     }
@@ -181,7 +181,7 @@ mod tests {
 
         promise_assert!(
             assert_eq,
-            Ok(Keypair::new(expected_privkey)),
+            Ok(Keypair::from_secret(expected_privkey)),
             &login_key_result
         );
     }
@@ -194,7 +194,7 @@ mod tests {
 
         promise_assert!(
             assert_eq,
-            Ok(Keypair::new(expected_privkey)),
+            Ok(Keypair::from_secret(expected_privkey)),
             &login_key_result
         );
     }

@@ -1,4 +1,4 @@
-use enostr::FullKeypair;
+use enostr::Keypair;
 
 #[cfg(target_os = "macos")]
 use crate::macos_key_storage::MacOSKeyStorage;
@@ -17,15 +17,15 @@ pub enum KeyStorage {
 }
 
 impl KeyStorage {
-    pub fn get_keys(&self) -> Result<Vec<FullKeypair>, KeyStorageError> {
+    pub fn get_keys(&self) -> Result<Vec<Keypair>, KeyStorageError> {
         match self {
             Self::None => Ok(Vec::new()),
             #[cfg(target_os = "macos")]
-            Self::MacOS => Ok(MacOSKeyStorage::new(SERVICE_NAME).get_all_fullkeypairs()),
+            Self::MacOS => Ok(MacOSKeyStorage::new(SERVICE_NAME).get_all_keypairs()),
         }
     }
 
-    pub fn add_key(&self, key: &FullKeypair) -> Result<(), KeyStorageError> {
+    pub fn add_key(&self, key: &Keypair) -> Result<(), KeyStorageError> {
         let _ = key;
         match self {
             Self::None => Ok(()),
@@ -34,7 +34,7 @@ impl KeyStorage {
         }
     }
 
-    pub fn remove_key(&self, key: &FullKeypair) -> Result<(), KeyStorageError> {
+    pub fn remove_key(&self, key: &Keypair) -> Result<(), KeyStorageError> {
         let _ = key;
         match self {
             Self::None => Ok(()),

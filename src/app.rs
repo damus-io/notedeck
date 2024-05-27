@@ -5,11 +5,11 @@ use crate::error::Error;
 use crate::frame_history::FrameHistory;
 use crate::imgcache::ImageCache;
 use crate::notecache::{CachedNote, NoteCache};
-use crate::relay_pool_manager::create_wakeup;
+use crate::route::Route;
 use crate::timeline;
 use crate::timeline::{NoteRef, Timeline, ViewFilter};
 use crate::ui::profile::SimpleProfilePreviewController;
-use crate::ui::{is_mobile, DesktopGlobalPopup, DesktopSidePanel, View};
+use crate::ui::{is_mobile, DesktopSidePanel};
 use crate::Result;
 
 use egui::{Context, Frame, Style};
@@ -39,6 +39,8 @@ pub struct Damus {
     note_cache: NoteCache,
     pool: RelayPool,
 
+    /// global navigation for account management popups, etc.
+    nav: Vec<Route>,
     pub textmode: bool,
 
     pub timelines: Vec<Timeline>,
@@ -645,6 +647,7 @@ impl Damus {
             img_cache: ImageCache::new(imgcache_dir),
             note_cache: NoteCache::default(),
             selected_timeline: 0,
+            nav: Vec::with_capacity(6),
             timelines,
             textmode: false,
             ndb: Ndb::new(data_path.as_ref().to_str().expect("db path ok"), &config).expect("ndb"),
@@ -653,9 +656,6 @@ impl Damus {
                 None,
                 // TODO: use correct KeyStorage mechanism for current OS arch
                 crate::key_storage::KeyStorage::None,
-                // TODO: setting for relay generator
-                crate::relay_generation::RelayGenerator::Constant,
-                create_wakeup(&cc.egui_ctx),
             ),
             //compose: "".to_string(),
             frame_history: FrameHistory::default(),
@@ -680,14 +680,10 @@ impl Damus {
             note_cache: NoteCache::default(),
             selected_timeline: 0,
             timelines,
+            nav: vec![],
             textmode: false,
             ndb: Ndb::new(data_path.as_ref().to_str().expect("db path ok"), &config).expect("ndb"),
-            account_manager: AccountManager::new(
-                None,
-                crate::key_storage::KeyStorage::None,
-                crate::relay_generation::RelayGenerator::Constant,
-                || {},
-            ),
+            account_manager: AccountManager::new(None, crate::key_storage::KeyStorage::None),
             frame_history: FrameHistory::default(),
         }
     }
@@ -852,25 +848,8 @@ fn render_damus_desktop(ctx: &egui::Context, app: &mut Damus) {
         Size::remainder()
     };
 
-    if app.timelines.len() == 1 {
-        DesktopSidePanel::panel().show(ctx, |ui| {
-            DesktopSidePanel::new(
-                &mut app.account_manager,
-                SimpleProfilePreviewController::new(&app.ndb, &mut app.img_cache),
-            )
-            .inner(ui);
-        });
-        main_panel(&ctx.style()).show(ctx, |ui| {
-            DesktopGlobalPopup::new(app).ui(ui);
-            timeline::timeline_view(ui, app, 0);
-        });
-
-        return;
-    }
-
     main_panel(&ctx.style()).show(ctx, |ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
-        DesktopGlobalPopup::new(app).ui(ui);
         if need_scroll {
             egui::ScrollArea::horizontal().show(ui, |ui| {
                 timelines_view(ui, panel_sizes, app, app.timelines.len());
@@ -888,11 +867,17 @@ fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus, timelines: us
         .clip(true)
         .horizontal(|mut strip| {
             strip.cell(|ui| {
-                DesktopSidePanel::new(
-                    &mut app.account_manager,
+                if DesktopSidePanel::new(
+                    app.account_manager
+                        .get_selected_account()
+                        .map(|a| a.pubkey.bytes()),
                     SimpleProfilePreviewController::new(&app.ndb, &mut app.img_cache),
                 )
-                .inner(ui)
+                .show(ui)
+                .clicked()
+                {
+                    // clicked pfp
+                }
             });
 
             for timeline_ind in 0..timelines {

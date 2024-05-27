@@ -7,7 +7,6 @@ use crate::{
     account_manager::{AccountManager, UserAccount},
     imgcache::ImageCache,
     key_storage::KeyStorage,
-    relay_generation::RelayGenerator,
 };
 
 #[allow(unused_must_use)]
@@ -81,26 +80,19 @@ pub fn get_test_accounts() -> Vec<UserAccount> {
     TEN_ACCOUNT_HEXES
         .iter()
         .map(|account_hex| {
-            let key = FullKeypair::new(
-                Pubkey::from_hex(account_hex).unwrap(),
-                FullKeypair::generate().secret_key,
-            );
-
-            UserAccount {
-                key,
-                relays: sample_pool(),
-            }
+            let mut kp = FullKeypair::generate().to_keypair();
+            kp.pubkey = Pubkey::from_hex(account_hex).unwrap();
+            kp
         })
         .collect()
 }
 
 pub fn get_accmgr_and_ndb_and_imgcache() -> (AccountManager, Ndb, ImageCache) {
-    let mut account_manager =
-        AccountManager::new(None, KeyStorage::None, RelayGenerator::Constant, || {});
+    let mut account_manager = AccountManager::new(None, KeyStorage::None);
     let accounts = get_test_accounts();
-    accounts
-        .into_iter()
-        .for_each(|acc| account_manager.add_account(acc.key, || {}));
+    for account in accounts {
+        account_manager.add_account(account);
+    }
 
     let mut config = Config::new();
     config.set_ingester_threads(2);

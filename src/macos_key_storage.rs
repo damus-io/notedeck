@@ -1,6 +1,6 @@
 #![cfg(target_os = "macos")]
 
-use enostr::{FullKeypair, Pubkey, SecretKey};
+use enostr::{Keypair, Pubkey, SecretKey};
 
 use security_framework::item::{ItemClass, ItemSearchOptions, Limit, SearchResult};
 use security_framework::passwords::{delete_generic_password, set_generic_password};
@@ -16,11 +16,13 @@ impl<'a> MacOSKeyStorage<'a> {
         MacOSKeyStorage { service_name }
     }
 
-    pub fn add_key(&self, key: &FullKeypair) -> Result<(), KeyStorageError> {
+    pub fn add_key(&self, key: &Keypair) -> Result<(), KeyStorageError> {
         match set_generic_password(
             self.service_name,
             key.pubkey.hex().as_str(),
-            key.secret_key.as_secret_bytes(),
+            key.secret_key
+                .as_ref()
+                .map_or_else(|| &[] as &[u8], |sc| sc.as_secret_bytes()),
         ) {
             Ok(_) => Ok(()),
             Err(_) => Err(KeyStorageError::Addition(key.pubkey.hex())),
@@ -82,12 +84,12 @@ impl<'a> MacOSKeyStorage<'a> {
         }
     }
 
-    pub fn get_all_fullkeypairs(&self) -> Vec<FullKeypair> {
+    pub fn get_all_keypairs(&self) -> Vec<Keypair> {
         self.get_pubkeys()
             .iter()
-            .filter_map(|pubkey| {
+            .map(|pubkey| {
                 let maybe_secret = self.get_secret_key_for_pubkey(pubkey);
-                maybe_secret.map(|secret| FullKeypair::new(pubkey.clone(), secret))
+                Keypair::new(pubkey.clone(), maybe_secret)
             })
             .collect()
     }
@@ -106,6 +108,8 @@ impl<'a> MacOSKeyStorage<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use enostr::FullKeypair;
+
     static TEST_SERVICE_NAME: &str = "NOTEDECKTEST";
     static STORAGE: MacOSKeyStorage = MacOSKeyStorage {
         service_name: TEST_SERVICE_NAME,
@@ -119,7 +123,7 @@ mod tests {
     fn add_and_remove_test_pubkey_only() {
         let num_keys_before_test = STORAGE.get_pubkeys().len();
 
-        let keypair = FullKeypair::generate();
+        let keypair = FullKeypair::generate().to_keypair();
         let add_result = STORAGE.add_key(&keypair);
         assert_eq!(add_result, Ok(()));
 
@@ -134,18 +138,20 @@ mod tests {
     }
 
     fn add_and_remove_full_n(n: usize) {
-        let num_keys_before_test = STORAGE.get_all_fullkeypairs().len();
+        let num_keys_before_test = STORAGE.get_all_keypairs().len();
         // there must be zero keys in storage for the test to work as intended
         assert_eq!(num_keys_before_test, 0);
 
-        let expected_keypairs: Vec<FullKeypair> = (0..n).map(|_| FullKeypair::generate()).collect();
+        let expected_keypairs: Vec<Keypair> = (0..n)
+            .map(|_| FullKeypair::generate().to_keypair())
+            .collect();
 
         expected_keypairs.iter().for_each(|keypair| {
             let add_result = STORAGE.add_key(keypair);
             assert_eq!(add_result, Ok(()));
         });
 
-        let asserted_keypairs = STORAGE.get_all_fullkeypairs();
+        let asserted_keypairs = STORAGE.get_all_keypairs();
         assert_eq!(expected_keypairs, asserted_keypairs);
 
         expected_keypairs.iter().for_each(|keypair| {
@@ -153,7 +159,7 @@ mod tests {
             assert_eq!(remove_result, Ok(()));
         });
 
-        let num_keys_after_test = STORAGE.get_all_fullkeypairs().len();
+        let num_keys_after_test = STORAGE.get_all_keypairs().len();
         assert_eq!(num_keys_after_test, 0);
     }
 

@@ -1,10 +1,6 @@
-use enostr::Pubkey;
 use nostrdb::{Ndb, Transaction};
 
-use crate::{
-    account_manager::AccountManager, imgcache::ImageCache,
-    ui::state_in_memory::STATE_ACCOUNT_SWITCHER, DisplayName,
-};
+use crate::{account_manager::AccountManager, imgcache::ImageCache, DisplayName, Result};
 
 use super::{
     preview::{get_display_name, get_profile_url, SimpleProfilePreview},
@@ -42,36 +38,48 @@ impl<'a> SimpleProfilePreviewController<'a> {
 
         let width = ui.available_width();
 
+        let txn = if let Ok(txn) = Transaction::new(self.ndb) {
+            txn
+        } else {
+            return None;
+        };
+
         for i in 0..account_manager.num_accounts() {
-            if let Some(account) = account_manager.get_account(i) {
-                if let Ok(txn) = Transaction::new(self.ndb) {
-                    let profile = self
-                        .ndb
-                        .get_profile_by_pubkey(&txn, account.key.pubkey.bytes());
+            let account = if let Some(account) = account_manager.get_account(i) {
+                account
+            } else {
+                continue;
+            };
 
-                    if let Ok(profile) = profile {
-                        let preview = SimpleProfilePreview::new(&profile, self.img_cache);
+            let profile =
+                if let Ok(profile) = self.ndb.get_profile_by_pubkey(&txn, account.pubkey.bytes()) {
+                    profile
+                } else {
+                    continue;
+                };
 
-                        let is_selected =
-                            if let Some(selected) = account_manager.get_selected_account_index() {
-                                i == selected
-                            } else {
-                                false
-                            };
+            let preview = SimpleProfilePreview::new(&profile, self.img_cache);
 
-                        if let Some(op) = add_preview_ui(ui, preview, width, is_selected) {
-                            match op {
-                                ProfilePreviewOp::RemoveAccount => {
-                                    if to_remove.is_none() {
-                                        to_remove = Some(Vec::new());
-                                    }
-                                    to_remove.as_mut().unwrap().push(i);
-                                }
-                                ProfilePreviewOp::SwitchTo => account_manager.select_account(i),
-                            }
-                        }
-                    };
+            let is_selected = if let Some(selected) = account_manager.get_selected_account_index() {
+                i == selected
+            } else {
+                false
+            };
+
+            let op = if let Some(op) = add_preview_ui(ui, preview, width, is_selected) {
+                op
+            } else {
+                continue;
+            };
+
+            match op {
+                ProfilePreviewOp::RemoveAccount => {
+                    if to_remove.is_none() {
+                        to_remove = Some(Vec::new());
+                    }
+                    to_remove.as_mut().unwrap().push(i);
                 }
+                ProfilePreviewOp::SwitchTo => account_manager.select_account(i),
             }
         }
 
@@ -80,7 +88,7 @@ impl<'a> SimpleProfilePreviewController<'a> {
 
     pub fn view_profile_previews(
         &mut self,
-        account_manager: &mut AccountManager,
+        account_manager: &AccountManager,
         ui: &mut egui::Ui,
         add_preview_ui: fn(
             ui: &mut egui::Ui,
@@ -89,60 +97,64 @@ impl<'a> SimpleProfilePreviewController<'a> {
             is_selected: bool,
             index: usize,
         ) -> bool,
-    ) {
+    ) -> Option<usize> {
         let width = ui.available_width();
 
+        let txn = if let Ok(txn) = Transaction::new(self.ndb) {
+            txn
+        } else {
+            return None;
+        };
+
         for i in 0..account_manager.num_accounts() {
-            if let Some(account) = account_manager.get_account(i) {
-                if let Ok(txn) = Transaction::new(self.ndb) {
-                    let profile = self
-                        .ndb
-                        .get_profile_by_pubkey(&txn, account.key.pubkey.bytes());
+            let account = if let Some(account) = account_manager.get_account(i) {
+                account
+            } else {
+                continue;
+            };
 
-                    if let Ok(profile) = profile {
-                        let preview = SimpleProfilePreview::new(&profile, self.img_cache);
+            let profile =
+                if let Ok(profile) = self.ndb.get_profile_by_pubkey(&txn, account.pubkey.bytes()) {
+                    profile
+                } else {
+                    continue;
+                };
 
-                        let is_selected =
-                            if let Some(selected) = account_manager.get_selected_account_index() {
-                                i == selected
-                            } else {
-                                false
-                            };
+            let preview = SimpleProfilePreview::new(&profile, self.img_cache);
 
-                        if add_preview_ui(ui, preview, width, is_selected, i) {
-                            account_manager.select_account(i);
-                            STATE_ACCOUNT_SWITCHER.set_state(ui.ctx(), false);
-                        }
-                    }
-                }
+            let is_selected = if let Some(selected) = account_manager.get_selected_account_index() {
+                i == selected
+            } else {
+                false
+            };
+
+            if add_preview_ui(ui, preview, width, is_selected, i) {
+                return Some(i);
             }
         }
+
+        None
     }
 
     pub fn show_with_nickname(
         &self,
         ui: &mut egui::Ui,
-        key: &Pubkey,
+        key: &[u8; 32],
         ui_element: fn(ui: &mut egui::Ui, username: &DisplayName) -> egui::Response,
-    ) -> Option<egui::Response> {
-        if let Ok(txn) = Transaction::new(self.ndb) {
-            let profile = self.ndb.get_profile_by_pubkey(&txn, key.bytes());
-
-            if let Ok(profile) = profile {
-                return Some(ui_element(ui, &get_display_name(&profile)));
-            }
-        }
-        None
+    ) -> Result<egui::Response> {
+        let txn = Transaction::new(self.ndb)?;
+        let profile = self.ndb.get_profile_by_pubkey(&txn, key)?;
+        Ok(ui_element(ui, &get_display_name(&profile)))
     }
 
     pub fn show_with_pfp(
-        &mut self,
+        self,
         ui: &mut egui::Ui,
-        key: &Pubkey,
+        key: &[u8; 32],
         ui_element: fn(ui: &mut egui::Ui, pfp: ProfilePic) -> egui::Response,
     ) -> Option<egui::Response> {
         if let Ok(txn) = Transaction::new(self.ndb) {
-            let profile = self.ndb.get_profile_by_pubkey(&txn, key.bytes());
+            let profile = self.ndb.get_profile_by_pubkey(&txn, key);
 
             if let Ok(profile) = profile {
                 return Some(ui_element(

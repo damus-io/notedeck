@@ -1,22 +1,43 @@
-use crate::{account_manager::UserAccount, colors::PINK, ui};
+use crate::{
+    account_manager::{AccountManager, UserAccount},
+    colors::PINK,
+    profile::DisplayName,
+    ui, Result,
+};
 use egui::{
     Align, Button, Color32, Frame, Id, Image, Layout, Margin, RichText, Rounding, ScrollArea,
     Sense, Vec2,
 };
 
-use crate::account_manager::AccountManager;
-
-use super::{
-    profile::{preview::SimpleProfilePreview, SimpleProfilePreviewController},
-    state_in_memory::{STATE_ACCOUNT_MANAGEMENT, STATE_ACCOUNT_SWITCHER, STATE_SIDE_PANEL},
-};
+use super::profile::{preview::SimpleProfilePreview, SimpleProfilePreviewController};
 
 pub struct AccountSelectionWidget<'a> {
-    account_manager: &'a mut AccountManager,
+    account_manager: &'a AccountManager,
     simple_preview_controller: SimpleProfilePreviewController<'a>,
 }
 
+enum AccountSelectAction {
+    RemoveAccount { index: usize },
+    SelectAccount { index: usize },
+    OpenAccountManagement,
+}
+
+#[derive(Default)]
+struct AccountSelectResponse {
+    action: Option<AccountSelectAction>,
+}
+
 impl<'a> AccountSelectionWidget<'a> {
+    pub fn new(
+        account_manager: &'a AccountManager,
+        simple_preview_controller: SimpleProfilePreviewController<'a>,
+    ) -> Self {
+        AccountSelectionWidget {
+            account_manager,
+            simple_preview_controller,
+        }
+    }
+
     pub fn ui(&'a mut self, ui: &mut egui::Ui) {
         if ui::is_mobile() {
             self.show_mobile(ui);
@@ -25,33 +46,43 @@ impl<'a> AccountSelectionWidget<'a> {
         }
     }
 
-    fn show(&mut self, ui: &mut egui::Ui) {
+    fn show(&mut self, ui: &mut egui::Ui) -> AccountSelectResponse {
+        let mut res = AccountSelectResponse::default();
+        let mut selected_index = self.account_manager.get_selected_account_index();
+
         Frame::none().outer_margin(8.0).show(ui, |ui| {
-            ui.add(top_section_widget());
+            res = top_section_widget(ui);
+
             scroll_area().show(ui, |ui| {
-                self.show_accounts(ui);
+                if let Some(index) = self.show_accounts(ui) {
+                    selected_index = Some(index);
+                    res.action = Some(AccountSelectAction::SelectAccount { index });
+                }
             });
             ui.add_space(8.0);
             ui.add(add_account_button());
 
-            if let Some(account_index) = self.account_manager.get_selected_account_index() {
-                ui.add_space(8.0);
-                if self.handle_sign_out(ui, account_index) {
-                    self.account_manager.remove_account(account_index);
+            if let Some(index) = selected_index {
+                if let Some(account) = self.account_manager.get_account(index) {
+                    ui.add_space(8.0);
+                    if self.handle_sign_out(ui, account) {
+                        res.action = Some(AccountSelectAction::RemoveAccount { index })
+                    }
                 }
             }
 
             ui.add_space(8.0);
         });
+
+        res
     }
 
-    fn handle_sign_out(&mut self, ui: &mut egui::Ui, account_index: usize) -> bool {
-        if let Some(account) = self.account_manager.get_account(account_index) {
-            if let Some(response) = self.sign_out_button(ui, account) {
-                return response.clicked();
-            }
+    fn handle_sign_out(&mut self, ui: &mut egui::Ui, account: &UserAccount) -> bool {
+        if let Ok(response) = self.sign_out_button(ui, account) {
+            response.clicked()
+        } else {
+            false
         }
-        false
     }
 
     fn show_mobile(&mut self, ui: &mut egui::Ui) -> egui::Response {
@@ -59,19 +90,19 @@ impl<'a> AccountSelectionWidget<'a> {
         todo!()
     }
 
-    fn show_accounts(&mut self, ui: &mut egui::Ui) {
+    fn show_accounts(&mut self, ui: &mut egui::Ui) -> Option<usize> {
         self.simple_preview_controller.view_profile_previews(
             self.account_manager,
             ui,
             account_switcher_card_ui(),
-        );
+        )
     }
 
-    fn sign_out_button(&self, ui: &mut egui::Ui, account: &UserAccount) -> Option<egui::Response> {
+    fn sign_out_button(&self, ui: &mut egui::Ui, account: &UserAccount) -> Result<egui::Response> {
         self.simple_preview_controller.show_with_nickname(
             ui,
-            &account.key.pubkey,
-            |ui, username| {
+            account.pubkey.bytes(),
+            |ui: &mut egui::Ui, username: &DisplayName| {
                 let img_data = egui::include_image!("../../assets/icons/signout_icon_4x.png");
                 let img = Image::new(img_data).fit_to_exact_size(Vec2::new(16.0, 16.0));
                 let button = egui::Button::image_and_text(
@@ -85,18 +116,6 @@ impl<'a> AccountSelectionWidget<'a> {
                 ui.add(button)
             },
         )
-    }
-}
-
-impl<'a> AccountSelectionWidget<'a> {
-    pub fn new(
-        account_manager: &'a mut AccountManager,
-        simple_preview_controller: SimpleProfilePreviewController<'a>,
-    ) -> Self {
-        AccountSelectionWidget {
-            account_manager,
-            simple_preview_controller,
-        }
     }
 }
 
@@ -147,32 +166,29 @@ fn selection_widget() -> impl egui::Widget {
     }
 }
 
-fn top_section_widget() -> impl egui::Widget {
-    |ui: &mut egui::Ui| {
-        ui.horizontal(|ui| {
-            ui.allocate_ui_with_layout(
-                Vec2::new(ui.available_size_before_wrap().x, 32.0),
-                Layout::left_to_right(egui::Align::Center),
-                |ui| ui.add(account_switcher_title()),
-            );
+fn top_section_widget(ui: &mut egui::Ui) -> AccountSelectResponse {
+    ui.horizontal(|ui| {
+        let mut resp = AccountSelectResponse::default();
 
-            ui.allocate_ui_with_layout(
-                Vec2::new(ui.available_size_before_wrap().x, 32.0),
-                Layout::right_to_left(egui::Align::Center),
-                |ui| {
-                    if ui.add(manage_accounts_button()).clicked() {
-                        STATE_ACCOUNT_SWITCHER.set_state(ui.ctx(), false);
-                        STATE_SIDE_PANEL.set_state(
-                            ui.ctx(),
-                            Some(ui::global_popup::GlobalPopupType::AccountManagement),
-                        );
-                        STATE_ACCOUNT_MANAGEMENT.set_state(ui.ctx(), true);
-                    }
-                },
-            );
-        })
-        .response
-    }
+        ui.allocate_ui_with_layout(
+            Vec2::new(ui.available_size_before_wrap().x, 32.0),
+            Layout::left_to_right(egui::Align::Center),
+            |ui| ui.add(account_switcher_title()),
+        );
+
+        ui.allocate_ui_with_layout(
+            Vec2::new(ui.available_size_before_wrap().x, 32.0),
+            Layout::right_to_left(egui::Align::Center),
+            |ui| {
+                if ui.add(manage_accounts_button()).clicked() {
+                    resp.action = Some(AccountSelectAction::OpenAccountManagement);
+                }
+            },
+        );
+
+        resp
+    })
+    .inner
 }
 
 fn manage_accounts_button() -> egui::Button<'static> {
@@ -227,7 +243,7 @@ mod previews {
     impl View for AccountSelectionPreview {
         fn ui(&mut self, ui: &mut egui::Ui) {
             AccountSelectionWidget::new(
-                &mut self.account_manager,
+                &self.account_manager,
                 SimpleProfilePreviewController::new(&self.ndb, &mut self.img_cache),
             )
             .ui(ui);

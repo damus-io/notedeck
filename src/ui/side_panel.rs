@@ -1,71 +1,74 @@
 use egui::{Button, Layout, SidePanel, Vec2, Widget};
 
-use crate::{account_manager::AccountManager, ui::global_popup::GlobalPopupType};
+use crate::account_manager::AccountManager;
 
-use super::{
-    profile::SimpleProfilePreviewController,
-    state_in_memory::{STATE_ACCOUNT_SWITCHER, STATE_SIDE_PANEL},
-    ProfilePic, View,
-};
+use super::{profile::SimpleProfilePreviewController, ProfilePic, View};
 
 pub struct DesktopSidePanel<'a> {
-    account_manager: &'a mut AccountManager,
+    selected_account: Option<&'a [u8; 32]>,
     simple_preview_controller: SimpleProfilePreviewController<'a>,
 }
 
-static ID: &str = "left panel";
-
-impl<'a> View for DesktopSidePanel<'a> {
-    fn ui(&mut self, ui: &mut egui::Ui) {
-        self.inner(ui);
+impl<'a> Widget for DesktopSidePanel<'a> {
+    fn ui(self, ui: &mut egui::Ui) -> egui::Response {
+        self.show(ui)
     }
 }
 
 impl<'a> DesktopSidePanel<'a> {
     pub fn new(
-        account_manager: &'a mut AccountManager,
+        selected_account: Option<&'a [u8; 32]>,
         simple_preview_controller: SimpleProfilePreviewController<'a>,
     ) -> Self {
         DesktopSidePanel {
-            account_manager,
+            selected_account,
             simple_preview_controller,
         }
     }
 
-    pub fn inner(&mut self, ui: &mut egui::Ui) {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
-        let spacing_amt = 16.0;
-        ui.with_layout(Layout::bottom_up(egui::Align::Center), |ui| {
-            ui.add_space(spacing_amt);
-            if self.pfp_button(ui).clicked() {
-                STATE_SIDE_PANEL.set_state(ui.ctx(), Some(GlobalPopupType::AccountSwitcher));
-                let previous_val = STATE_ACCOUNT_SWITCHER.get_state(ui.ctx());
-                STATE_ACCOUNT_SWITCHER.set_state(ui.ctx(), !previous_val);
-            }
-            ui.add_space(spacing_amt);
-            ui.add(settings_button(dark_mode));
-            ui.add_space(spacing_amt);
-            ui.add(add_column_button(dark_mode));
-            ui.add_space(spacing_amt);
-        });
+    pub fn panel() -> SidePanel {
+        egui::SidePanel::left("side_panel")
+            .resizable(false)
+            .exact_width(40.0)
     }
 
-    fn pfp_button(&mut self, ui: &mut egui::Ui) -> egui::Response {
-        if let Some(selected_account) = self.account_manager.get_selected_account() {
-            if let Some(response) = self.simple_preview_controller.show_with_pfp(
-                ui,
-                &selected_account.key.pubkey,
-                show_pfp(),
-            ) {
+    pub fn show(self, ui: &mut egui::Ui) -> egui::Response {
+        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let spacing_amt = 16.0;
+
+        let inner = ui
+            .with_layout(Layout::bottom_up(egui::Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.y = spacing_amt;
+                let pfp_resp = self.pfp_button(ui);
+                let settings_resp = ui.add(settings_button(dark_mode));
+                let column_resp = ui.add(add_column_button(dark_mode));
+
+                if pfp_resp.clicked() || pfp_resp.hovered() {
+                    egui::InnerResponse::new(SidePanelAction::Account, pfp_resp)
+                } else if settings_resp.clicked() || settings_resp.hovered() {
+                    egui::InnerResponse::new(SidePanelAction::Settings, settings_resp)
+                } else if column_resp.clicked() || column_resp.hovered() {
+                    egui::InnerResponse::new(SidePanelAction::Columns, column_resp)
+                } else {
+                    egui::InnerResponse::new(SidePanelAction::Panel, pfp_resp)
+                }
+            })
+            .inner;
+
+        SidePanelResponse::new(inner.inner, inner.response)
+    }
+
+    fn pfp_button(self, ui: &mut egui::Ui) -> egui::Response {
+        if let Some(selected_account) = self.selected_account {
+            if let Some(response) =
+                self.simple_preview_controller
+                    .show_with_pfp(ui, selected_account, show_pfp())
+            {
                 return response;
             }
         }
 
         add_button_to_ui(ui, no_account_pfp())
-    }
-
-    pub fn panel() -> SidePanel {
-        egui::SidePanel::left(ID).resizable(false).exact_width(40.0)
     }
 }
 
@@ -126,10 +129,16 @@ mod preview {
 
     impl View for DesktopSidePanelPreview {
         fn ui(&mut self, ui: &mut egui::Ui) {
-            let mut panel = DesktopSidePanel::new(
-                &mut self.account_manager,
+            let selected_account = self
+                .account_manager
+                .get_selected_account()
+                .map(|x| x.pubkey.bytes());
+
+            let panel = DesktopSidePanel::new(
+                selected_account,
                 SimpleProfilePreviewController::new(&self.ndb, &mut self.img_cache),
             );
+
             DesktopSidePanel::panel().show(ui.ctx(), |ui| panel.ui(ui));
         }
     }
