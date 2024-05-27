@@ -8,6 +8,7 @@ use crate::notecache::{CachedNote, NoteCache};
 use crate::relay_pool_manager::create_wakeup;
 use crate::timeline;
 use crate::timeline::{NoteRef, Timeline, ViewFilter};
+use crate::ui::profile::SimpleProfilePreviewController;
 use crate::ui::{is_mobile, DesktopGlobalPopup, DesktopSidePanel, View};
 use crate::Result;
 
@@ -853,7 +854,11 @@ fn render_damus_desktop(ctx: &egui::Context, app: &mut Damus) {
 
     if app.timelines.len() == 1 {
         DesktopSidePanel::panel().show(ctx, |ui| {
-            DesktopSidePanel::inner(ui);
+            DesktopSidePanel::new(
+                &mut app.account_manager,
+                SimpleProfilePreviewController::new(&app.ndb, &mut app.img_cache),
+            )
+            .inner(ui);
         });
         main_panel(&ctx.style()).show(ctx, |ui| {
             DesktopGlobalPopup::new(app).ui(ui);
@@ -882,7 +887,13 @@ fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus, timelines: us
         .sizes(sizes, timelines)
         .clip(true)
         .horizontal(|mut strip| {
-            strip.cell(crate::ui::DesktopSidePanel::inner);
+            strip.cell(|ui| {
+                DesktopSidePanel::new(
+                    &mut app.account_manager,
+                    SimpleProfilePreviewController::new(&app.ndb, &mut app.img_cache),
+                )
+                .inner(ui)
+            });
 
             for timeline_ind in 0..timelines {
                 strip.cell(|ui| timeline::timeline_view(ui, app, timeline_ind));

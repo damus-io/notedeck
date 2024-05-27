@@ -156,7 +156,7 @@ pub fn get_display_name<'a>(profile: &'a ProfileRecord<'a>) -> DisplayName<'a> {
     }
 }
 
-fn get_profile_url<'a>(profile: &'a ProfileRecord<'a>) -> &'a str {
+pub fn get_profile_url<'a>(profile: &'a ProfileRecord<'a>) -> &'a str {
     if let Some(url) = profile.record().profile().and_then(|p| p.picture()) {
         url
     } else {

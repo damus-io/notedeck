@@ -6,7 +6,10 @@ use crate::{
     ui::state_in_memory::STATE_ACCOUNT_SWITCHER, DisplayName,
 };
 
-use super::preview::{get_display_name, SimpleProfilePreview};
+use super::{
+    preview::{get_display_name, get_profile_url, SimpleProfilePreview},
+    ProfilePic,
+};
 
 pub struct SimpleProfilePreviewController<'a> {
     ndb: &'a Ndb,
@@ -117,7 +120,7 @@ impl<'a> SimpleProfilePreviewController<'a> {
     }
 
     pub fn show_with_nickname(
-        &'a self,
+        &self,
         ui: &mut egui::Ui,
         key: &Pubkey,
         ui_element: fn(ui: &mut egui::Ui, username: &DisplayName) -> egui::Response,
@@ -133,10 +136,21 @@ impl<'a> SimpleProfilePreviewController<'a> {
     }
 
     pub fn show_with_pfp(
-        &'a self,
+        &mut self,
         ui: &mut egui::Ui,
         key: &Pubkey,
-        ui_element: fn(ui: &mut egui::Ui, preview: SimpleProfilePreview) -> egui::Response,
-    ) {
+        ui_element: fn(ui: &mut egui::Ui, pfp: ProfilePic) -> egui::Response,
+    ) -> Option<egui::Response> {
+        if let Ok(txn) = Transaction::new(self.ndb) {
+            let profile = self.ndb.get_profile_by_pubkey(&txn, key.bytes());
+
+            if let Ok(profile) = profile {
+                return Some(ui_element(
+                    ui,
+                    ProfilePic::new(self.img_cache, get_profile_url(&profile)),
+                ));
+            }
+        }
+        None
     }
 }

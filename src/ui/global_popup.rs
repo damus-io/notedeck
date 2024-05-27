@@ -126,7 +126,7 @@ impl<'a> DesktopGlobalPopup<'a> {
 mod preview {
     use crate::{
         test_data,
-        ui::{DesktopSidePanel, Preview, View},
+        ui::{profile::SimpleProfilePreviewController, DesktopSidePanel, Preview, View},
         Damus,
     };
 
@@ -157,7 +157,10 @@ mod preview {
 
     impl View for GlobalPopupPreview {
         fn ui(&mut self, ui: &mut egui::Ui) {
-            let mut panel = DesktopSidePanel::new();
+            let mut panel = DesktopSidePanel::new(
+                &mut self.app.account_manager,
+                SimpleProfilePreviewController::new(&self.app.ndb, &mut self.app.img_cache),
+            );
             DesktopSidePanel::panel().show(ui.ctx(), |ui| panel.ui(ui));
             DesktopGlobalPopup::new(&mut self.app).ui(ui);
         }
