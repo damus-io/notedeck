@@ -9,9 +9,28 @@ pub struct DesktopSidePanel<'a> {
     simple_preview_controller: SimpleProfilePreviewController<'a>,
 }
 
+#[derive(Debug, Eq, PartialEq, Clone, Copy)]
+pub enum SidePanelAction {
+    Panel,
+    Account,
+    Settings,
+    Columns,
+}
+
+pub struct SidePanelResponse {
+    pub response: egui::Response,
+    pub action: SidePanelAction,
+}
+
+impl SidePanelResponse {
+    fn new(action: SidePanelAction, response: egui::Response) -> Self {
+        SidePanelResponse { action, response }
+    }
+}
+
 impl<'a> Widget for DesktopSidePanel<'a> {
     fn ui(self, ui: &mut egui::Ui) -> egui::Response {
-        self.show(ui)
+        self.show(ui).response
     }
 }
 
@@ -32,7 +51,7 @@ impl<'a> DesktopSidePanel<'a> {
             .exact_width(40.0)
     }
 
-    pub fn show(self, ui: &mut egui::Ui) -> egui::Response {
+    pub fn show(self, ui: &mut egui::Ui) -> SidePanelResponse {
         let dark_mode = ui.ctx().style().visuals.dark_mode;
         let spacing_amt = 16.0;
 

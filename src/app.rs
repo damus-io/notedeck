@@ -867,16 +867,16 @@ fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus, timelines: us
         .clip(true)
         .horizontal(|mut strip| {
             strip.cell(|ui| {
-                if DesktopSidePanel::new(
+                let side_panel = DesktopSidePanel::new(
                     app.account_manager
                         .get_selected_account()
                         .map(|a| a.pubkey.bytes()),
                     SimpleProfilePreviewController::new(&app.ndb, &mut app.img_cache),
                 )
-                .show(ui)
-                .clicked()
-                {
-                    // clicked pfp
+                .show(ui);
+
+                if side_panel.response.clicked() {
+                    info!("clicked {:?}", side_panel.action);
                 }
             });
 
