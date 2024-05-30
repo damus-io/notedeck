@@ -80,6 +80,17 @@ fn relay_setup(pool: &mut RelayPool, ctx: &egui::Context) {
     }
 }
 
+/// Should we since optimize? Not always. For examplem if we only have a few
+/// notes locally. One way to determine this is by looking at the current filter
+/// and seeing what its limit is. If we have less notes than the limit,
+/// we might want to backfill older notes
+fn should_since_optimize(limit: Option<u16>, num_notes: usize) -> bool {
+    let limit = limit.unwrap_or(enostr::Filter::default_limit()) as usize;
+
+    // rough heuristic for bailing since optimization if we don't have enough notes
+    limit <= num_notes
+}
+
 fn since_optimize_filter(filter: &mut enostr::Filter, notes: &[NoteRef]) {
     // Get the latest entry in the events
     if notes.is_empty() {
@@ -104,13 +115,18 @@ fn send_initial_filters(damus: &mut Damus, relay_url: &str) {
             for timeline in &damus.timelines {
                 let mut filter = timeline.filter.clone();
                 for f in &mut filter {
-                    since_optimize_filter(f, timeline.notes(ViewFilter::NotesAndReplies));
-
                     // limit the size of remote filters
                     let default_limit = enostr::Filter::default_remote_limit();
                     let lim = f.limit.unwrap_or(default_limit);
                     if lim > default_limit {
                         f.limit = Some(default_limit);
+                    }
+
+                    let notes = timeline.notes(ViewFilter::NotesAndReplies);
+                    if should_since_optimize(f.limit, notes.len()) {
+                        since_optimize_filter(f, notes);
+                    } else {
+                        warn!("Skipping since optimization for {:?}: number of local notes is less than limit, attempting to backfill.", f);
                     }
                 }
                 relay.subscribe(format!("initial{}", c), filter);
