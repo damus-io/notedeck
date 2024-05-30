@@ -444,7 +444,9 @@ fn setup_initial_nostrdb_subs(damus: &mut Damus) -> Result<()> {
         let results = damus.ndb.query(
             &txn,
             filters,
-            damus.timelines[i].filter[0].limit.unwrap_or(200) as i32,
+            damus.timelines[i].filter[0]
+                .limit
+                .unwrap_or(enostr::Filter::default_limit()) as i32,
         )?;
 
         let filters = {

@@ -41,6 +41,14 @@ impl Filter {
         }
     }
 
+    pub fn default_limit() -> u16 {
+        250
+    }
+
+    pub fn default_remote_limit() -> u16 {
+        150
+    }
+
     pub fn ids(mut self, ids: Vec<EventId>) -> Self {
         self.ids = Some(ids);
         self
