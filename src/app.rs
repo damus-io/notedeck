@@ -107,9 +107,10 @@ fn send_initial_filters(damus: &mut Damus, relay_url: &str) {
                     since_optimize_filter(f, timeline.notes(ViewFilter::NotesAndReplies));
 
                     // limit the size of remote filters
-                    let lim = f.limit.unwrap_or(100);
-                    if lim > 150 {
-                        f.limit = Some(150);
+                    let default_limit = enostr::Filter::default_remote_limit();
+                    let lim = f.limit.unwrap_or(default_limit);
+                    if lim > default_limit {
+                        f.limit = Some(default_limit);
                     }
                 }
                 relay.subscribe(format!("initial{}", c), filter);
