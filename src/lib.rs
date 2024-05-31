@@ -19,7 +19,6 @@ pub mod login_manager;
 mod macos_key_storage;
 mod notecache;
 mod profile;
-mod relay_generation;
 pub mod relay_pool_manager;
 mod result;
 mod route;

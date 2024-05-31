@@ -42,7 +42,7 @@ pub struct Damus {
     is_mobile: bool,
 
     /// global navigation for account management popups, etc.
-    nav: Vec<Route>,
+    _nav: Vec<Route>,
     pub textmode: bool,
 
     pub timelines: Vec<Timeline>,
@@ -651,7 +651,7 @@ impl Damus {
             img_cache: ImageCache::new(imgcache_dir),
             note_cache: NoteCache::default(),
             selected_timeline: 0,
-            nav: Vec::with_capacity(6),
+            _nav: Vec::with_capacity(6),
             timelines,
             textmode: false,
             ndb: Ndb::new(data_path.as_ref().to_str().expect("db path ok"), &config).expect("ndb"),
@@ -684,7 +684,7 @@ impl Damus {
             note_cache: NoteCache::default(),
             selected_timeline: 0,
             timelines,
-            nav: vec![],
+            _nav: vec![],
             textmode: false,
             ndb: Ndb::new(data_path.as_ref().to_str().expect("db path ok"), &config).expect("ndb"),
             account_manager: AccountManager::new(None, crate::key_storage::KeyStorage::None),

@@ -18,8 +18,8 @@ pub struct AccountSelectionWidget<'a> {
 }
 
 enum AccountSelectAction {
-    RemoveAccount { index: usize },
-    SelectAccount { index: usize },
+    RemoveAccount { _index: usize },
+    SelectAccount { _index: usize },
     OpenAccountManagement,
 }
 
@@ -57,19 +57,19 @@ impl<'a> AccountSelectionWidget<'a> {
             res = top_section_widget(ui);
 
             scroll_area().show(ui, |ui| {
-                if let Some(index) = self.show_accounts(ui) {
-                    selected_index = Some(index);
-                    res.action = Some(AccountSelectAction::SelectAccount { index });
+                if let Some(_index) = self.show_accounts(ui) {
+                    selected_index = Some(_index);
+                    res.action = Some(AccountSelectAction::SelectAccount { _index });
                 }
             });
             ui.add_space(8.0);
             ui.add(add_account_button());
 
-            if let Some(index) = selected_index {
-                if let Some(account) = self.account_manager.get_account(index) {
+            if let Some(_index) = selected_index {
+                if let Some(account) = self.account_manager.get_account(_index) {
                     ui.add_space(8.0);
                     if self.handle_sign_out(ui, account) {
-                        res.action = Some(AccountSelectAction::RemoveAccount { index })
+                        res.action = Some(AccountSelectAction::RemoveAccount { _index })
                     }
                 }
             }
