@@ -22,6 +22,7 @@ mod profile;
 mod relay_generation;
 pub mod relay_pool_manager;
 mod result;
+mod route;
 mod test_data;
 mod time;
 mod timecache;

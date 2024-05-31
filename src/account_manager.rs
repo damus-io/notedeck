@@ -1,136 +1,92 @@
-use enostr::FullKeypair;
-use nostrdb::{Ndb, Transaction};
+use std::cmp::Ordering;
 
+use enostr::Keypair;
+
+use crate::key_storage::KeyStorage;
 pub use crate::user_account::UserAccount;
-use crate::{
-    imgcache::ImageCache, key_storage::KeyStorage, relay_generation::RelayGenerator,
-    ui::profile::preview::SimpleProfilePreview,
-};
-
-pub struct SimpleProfilePreviewController<'a> {
-    ndb: &'a Ndb,
-    img_cache: &'a mut ImageCache,
-}
-
-impl<'a> SimpleProfilePreviewController<'a> {
-    pub fn new(ndb: &'a Ndb, img_cache: &'a mut ImageCache) -> Self {
-        SimpleProfilePreviewController { ndb, img_cache }
-    }
-
-    pub fn set_profile_previews(
-        &mut self,
-        account_manager: &AccountManager<'a>,
-        ui: &mut egui::Ui,
-        edit_mode: bool,
-        add_preview_ui: fn(
-            ui: &mut egui::Ui,
-            preview: SimpleProfilePreview,
-            edit_mode: bool,
-        ) -> bool,
-    ) -> Option<Vec<usize>> {
-        let mut to_remove: Option<Vec<usize>> = None;
-
-        for i in 0..account_manager.num_accounts() {
-            if let Some(account) = account_manager.get_account(i) {
-                if let Ok(txn) = Transaction::new(self.ndb) {
-                    let profile = self
-                        .ndb
-                        .get_profile_by_pubkey(&txn, account.key.pubkey.bytes());
-
-                    if let Ok(profile) = profile {
-                        let preview = SimpleProfilePreview::new(&profile, self.img_cache);
-
-                        if add_preview_ui(ui, preview, edit_mode) {
-                            if to_remove.is_none() {
-                                to_remove = Some(Vec::new());
-                            }
-                            to_remove.as_mut().unwrap().push(i);
-                        }
-                    };
-                }
-            }
-        }
-
-        to_remove
-    }
-
-    pub fn view_profile_previews(
-        &mut self,
-        account_manager: &'a AccountManager<'a>,
-        ui: &mut egui::Ui,
-        add_preview_ui: fn(ui: &mut egui::Ui, preview: SimpleProfilePreview, index: usize) -> bool,
-    ) -> Option<usize> {
-        let mut clicked_at: Option<usize> = None;
-
-        for i in 0..account_manager.num_accounts() {
-            if let Some(account) = account_manager.get_account(i) {
-                if let Ok(txn) = Transaction::new(self.ndb) {
-                    let profile = self
-                        .ndb
-                        .get_profile_by_pubkey(&txn, account.key.pubkey.bytes());
-
-                    if let Ok(profile) = profile {
-                        let preview = SimpleProfilePreview::new(&profile, self.img_cache);
-
-                        if add_preview_ui(ui, preview, i) {
-                            clicked_at = Some(i)
-                        }
-                    }
-                }
-            }
-        }
-
-        clicked_at
-    }
-}
 
 /// The interface for managing the user's accounts.
 /// Represents all user-facing operations related to account management.
-pub struct AccountManager<'a> {
-    accounts: &'a mut Vec<UserAccount>,
+pub struct AccountManager {
+    currently_selected_account: Option<usize>,
+    accounts: Vec<UserAccount>,
     key_store: KeyStorage,
-    relay_generator: RelayGenerator,
 }
 
-impl<'a> AccountManager<'a> {
-    pub fn new(
-        accounts: &'a mut Vec<UserAccount>,
-        key_store: KeyStorage,
-        relay_generator: RelayGenerator,
-    ) -> Self {
+impl AccountManager {
+    pub fn new(currently_selected_account: Option<usize>, key_store: KeyStorage) -> Self {
+        let accounts = key_store.get_keys().unwrap_or_default();
+
         AccountManager {
+            currently_selected_account,
             accounts,
             key_store,
-            relay_generator,
         }
     }
 
-    pub fn get_accounts(&'a self) -> &'a Vec<UserAccount> {
-        self.accounts
+    pub fn get_accounts(&self) -> &Vec<UserAccount> {
+        &self.accounts
     }
 
-    pub fn get_account(&'a self, index: usize) -> Option<&'a UserAccount> {
-        self.accounts.get(index)
+    pub fn get_account(&self, ind: usize) -> Option<&UserAccount> {
+        self.accounts.get(ind)
+    }
+
+    pub fn find_account(&self, pk: &[u8; 32]) -> Option<&UserAccount> {
+        self.accounts.iter().find(|acc| acc.pubkey.bytes() == pk)
     }
 
     pub fn remove_account(&mut self, index: usize) {
         if let Some(account) = self.accounts.get(index) {
-            let _ = self.key_store.remove_key(&account.key);
-        }
-        if index < self.accounts.len() {
+            let _ = self.key_store.remove_key(account);
             self.accounts.remove(index);
+
+            if let Some(selected_index) = self.currently_selected_account {
+                match selected_index.cmp(&index) {
+                    Ordering::Greater => {
+                        self.select_account(selected_index - 1);
+                    }
+                    Ordering::Equal => {
+                        self.clear_selected_account();
+                    }
+                    Ordering::Less => {}
+                }
+            }
         }
     }
 
-    pub fn add_account(&'a mut self, key: FullKeypair, ctx: &egui::Context) {
-        let _ = self.key_store.add_key(&key);
-        let relays = self.relay_generator.generate_relays_for(&key.pubkey, ctx);
-        let account = UserAccount { key, relays };
-
+    pub fn add_account(&mut self, account: Keypair) {
+        let _ = self.key_store.add_key(&account);
         self.accounts.push(account)
     }
 
     pub fn num_accounts(&self) -> usize {
         self.accounts.len()
+    }
+
+    pub fn get_selected_account_index(&self) -> Option<usize> {
+        self.currently_selected_account
+    }
+
+    pub fn get_selected_account(&self) -> Option<&UserAccount> {
+        if let Some(account_index) = self.currently_selected_account {
+            if let Some(account) = self.get_account(account_index) {
+                Some(account)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+
+    pub fn select_account(&mut self, index: usize) {
+        if self.accounts.get(index).is_some() {
+            self.currently_selected_account = Some(index)
+        }
+    }
+
+    pub fn clear_selected_account(&mut self) {
+        self.currently_selected_account = None
     }
 }

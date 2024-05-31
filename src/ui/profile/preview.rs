@@ -3,7 +3,7 @@ use crate::imgcache::ImageCache;
 use crate::ui::ProfilePic;
 use crate::{colors, images, DisplayName};
 use egui::load::TexturePoll;
-use egui::{Frame, RichText, Sense, Vec2, Widget};
+use egui::{Frame, RichText, Sense, Widget};
 use egui_extras::Size;
 use nostrdb::ProfileRecord;
 
@@ -93,10 +93,6 @@ impl<'a, 'cache> SimpleProfilePreview<'a, 'cache> {
     pub fn new(profile: &'a ProfileRecord<'a>, cache: &'cache mut ImageCache) -> Self {
         SimpleProfilePreview { profile, cache }
     }
-
-    pub fn dimensions(&self) -> Vec2 {
-        Vec2::new(120.0, 150.0)
-    }
 }
 
 impl<'a, 'cache> egui::Widget for SimpleProfilePreview<'a, 'cache> {
@@ -152,7 +148,7 @@ mod previews {
     }
 }
 
-fn get_display_name<'a>(profile: &'a ProfileRecord<'a>) -> DisplayName<'a> {
+pub fn get_display_name<'a>(profile: &'a ProfileRecord<'a>) -> DisplayName<'a> {
     if let Some(name) = crate::profile::get_profile_name(profile) {
         name
     } else {
@@ -160,7 +156,7 @@ fn get_display_name<'a>(profile: &'a ProfileRecord<'a>) -> DisplayName<'a> {
     }
 }
 
-fn get_profile_url<'a>(profile: &'a ProfileRecord<'a>) -> &'a str {
+pub fn get_profile_url<'a>(profile: &'a ProfileRecord<'a>) -> &'a str {
     if let Some(url) = profile.record().profile().and_then(|p| p.picture()) {
         url
     } else {

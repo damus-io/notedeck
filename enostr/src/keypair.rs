@@ -8,13 +8,17 @@ pub struct Keypair {
 }
 
 impl Keypair {
-    pub fn new(secret_key: SecretKey) -> Self {
+    pub fn from_secret(secret_key: SecretKey) -> Self {
         let cloned_secret_key = secret_key.clone();
         let nostr_keys = nostr::Keys::new(secret_key);
         Keypair {
             pubkey: Pubkey::new(&nostr_keys.public_key().to_bytes()),
             secret_key: Some(cloned_secret_key),
         }
+    }
+
+    pub fn new(pubkey: Pubkey, secret_key: Option<SecretKey>) -> Self {
+        Keypair { pubkey, secret_key }
     }
 
     pub fn only_pubkey(pubkey: Pubkey) -> Self {

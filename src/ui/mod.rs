@@ -1,19 +1,23 @@
 pub mod account_login_view;
 pub mod account_management;
+pub mod account_switcher;
 pub mod anim;
 pub mod mention;
 pub mod note;
 pub mod preview;
 pub mod profile;
 pub mod relay;
+pub mod side_panel;
 pub mod username;
 
-pub use account_management::{AccountManagementView, AccountSelectionWidget};
+pub use account_management::AccountManagementView;
+pub use account_switcher::AccountSelectionWidget;
 pub use mention::Mention;
 pub use note::Note;
 pub use preview::{Preview, PreviewApp};
 pub use profile::{ProfilePic, ProfilePreview};
 pub use relay::RelayView;
+pub use side_panel::DesktopSidePanel;
 pub use username::Username;
 
 use egui::Margin;
