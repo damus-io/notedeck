@@ -4,7 +4,7 @@ pub mod options;
 pub use contents::NoteContents;
 pub use options::NoteOptions;
 
-use crate::{colors, notecache::CachedNote, ui, ui::is_mobile, Damus};
+use crate::{colors, notecache::CachedNote, ui, Damus};
 use egui::{Label, RichText, Sense};
 use nostrdb::{NoteKey, Transaction};
 use std::hash::{Hash, Hasher};
@@ -211,7 +211,7 @@ impl<'a> Note<'a> {
                         let profile_key = profile.as_ref().unwrap().record().note_key();
                         let note_key = note_key.as_u64();
 
-                        if is_mobile() {
+                        if self.app.is_mobile() {
                             ui.add(ui::ProfilePic::new(&mut self.app.img_cache, pic));
                         } else {
                             let (rect, size) = ui::anim::hover_expand(

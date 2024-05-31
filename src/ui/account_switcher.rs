@@ -2,7 +2,7 @@ use crate::{
     account_manager::{AccountManager, UserAccount},
     colors::PINK,
     profile::DisplayName,
-    ui, Result,
+    Result,
 };
 use egui::{
     Align, Button, Color32, Frame, Id, Image, Layout, Margin, RichText, Rounding, ScrollArea,
@@ -12,6 +12,7 @@ use egui::{
 use super::profile::{preview::SimpleProfilePreview, SimpleProfilePreviewController};
 
 pub struct AccountSelectionWidget<'a> {
+    is_mobile: bool,
     account_manager: &'a AccountManager,
     simple_preview_controller: SimpleProfilePreviewController<'a>,
 }
@@ -29,17 +30,19 @@ struct AccountSelectResponse {
 
 impl<'a> AccountSelectionWidget<'a> {
     pub fn new(
+        is_mobile: bool,
         account_manager: &'a AccountManager,
         simple_preview_controller: SimpleProfilePreviewController<'a>,
     ) -> Self {
         AccountSelectionWidget {
+            is_mobile,
             account_manager,
             simple_preview_controller,
         }
     }
 
     pub fn ui(&'a mut self, ui: &mut egui::Ui) {
-        if ui::is_mobile() {
+        if self.is_mobile {
             self.show_mobile(ui);
         } else {
             self.show(ui);
@@ -218,21 +221,23 @@ mod previews {
         account_manager::AccountManager,
         imgcache::ImageCache,
         test_data,
-        ui::{profile::SimpleProfilePreviewController, Preview, View},
+        ui::{profile::SimpleProfilePreviewController, Preview, PreviewConfig, View},
     };
 
     use super::AccountSelectionWidget;
 
     pub struct AccountSelectionPreview {
+        is_mobile: bool,
         account_manager: AccountManager,
         ndb: Ndb,
         img_cache: ImageCache,
     }
 
     impl AccountSelectionPreview {
-        fn new() -> Self {
+        fn new(is_mobile: bool) -> Self {
             let (account_manager, ndb, img_cache) = test_data::get_accmgr_and_ndb_and_imgcache();
             AccountSelectionPreview {
+                is_mobile,
                 account_manager,
                 ndb,
                 img_cache,
@@ -243,6 +248,7 @@ mod previews {
     impl View for AccountSelectionPreview {
         fn ui(&mut self, ui: &mut egui::Ui) {
             AccountSelectionWidget::new(
+                self.is_mobile,
                 &self.account_manager,
                 SimpleProfilePreviewController::new(&self.ndb, &mut self.img_cache),
             )
@@ -253,8 +259,8 @@ mod previews {
     impl<'a> Preview for AccountSelectionWidget<'a> {
         type Prev = AccountSelectionPreview;
 
-        fn preview() -> Self::Prev {
-            AccountSelectionPreview::new()
+        fn preview(cfg: PreviewConfig) -> Self::Prev {
+            AccountSelectionPreview::new(cfg.is_mobile)
         }
     }
 }

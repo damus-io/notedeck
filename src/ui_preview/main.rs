@@ -4,7 +4,7 @@ use notedeck::app_creation::{
 use notedeck::ui::account_login_view::AccountLoginView;
 use notedeck::ui::{
     AccountManagementView, AccountSelectionWidget, DesktopSidePanel, Preview, PreviewApp,
-    ProfilePic, ProfilePreview, RelayView,
+    PreviewConfig, ProfilePic, ProfilePreview, RelayView,
 };
 use std::env;
 
@@ -29,11 +29,12 @@ impl PreviewRunner {
             generate_native_options()
         };
 
+        let is_mobile = self.force_mobile;
         let _ = eframe::run_native(
             "UI Preview Runner",
             native_options,
-            Box::new(|cc| {
-                setup_cc(cc);
+            Box::new(move |cc| {
+                setup_cc(cc, is_mobile);
                 Box::new(Into::<PreviewApp>::into(preview))
             }),
         );
@@ -42,11 +43,11 @@ impl PreviewRunner {
 
 macro_rules! previews {
     // Accept a runner and name variable, followed by one or more identifiers for the views
-    ($runner:expr, $name:expr, $($view:ident),* $(,)?) => {
+    ($runner:expr, $name:expr, $is_mobile:expr, $($view:ident),* $(,)?) => {
         match $name.as_ref() {
             $(
                 stringify!($view) => {
-                    $runner.run($view::preview()).await;
+                    $runner.run($view::preview(PreviewConfig { is_mobile: $is_mobile })).await;
                 }
             )*
             _ => println!("Component not found."),
@@ -57,17 +58,14 @@ macro_rules! previews {
 #[tokio::main]
 async fn main() {
     let mut name: Option<String> = None;
-
-    #[allow(unused_assignments)]
-    #[allow(unused_mut)]
-    let mut is_mobile = false;
-    #[cfg(feature = "emulate_mobile")]
-    {
-        is_mobile = true
-    }
+    let mut is_mobile: Option<bool> = None;
 
     for arg in env::args() {
-        name = Some(arg);
+        if arg == "--mobile" {
+            is_mobile = Some(true);
+        } else {
+            name = Some(arg);
+        }
     }
 
     let name = if let Some(name) = name {
@@ -77,11 +75,13 @@ async fn main() {
         return;
     };
 
+    let is_mobile = is_mobile.unwrap_or(notedeck::ui::is_compiled_as_mobile());
     let runner = PreviewRunner::new(is_mobile);
 
     previews!(
         runner,
         name,
+        is_mobile,
         RelayView,
         AccountLoginView,
         ProfilePreview,

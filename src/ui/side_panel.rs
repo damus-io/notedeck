@@ -125,7 +125,11 @@ fn add_column_button(dark_mode: bool) -> egui::Button<'static> {
 mod preview {
     use nostrdb::Ndb;
 
-    use crate::{imgcache::ImageCache, test_data, ui::Preview};
+    use crate::{
+        imgcache::ImageCache,
+        test_data,
+        ui::{Preview, PreviewConfig},
+    };
 
     use super::*;
 
@@ -165,7 +169,7 @@ mod preview {
     impl<'a> Preview for DesktopSidePanel<'a> {
         type Prev = DesktopSidePanelPreview;
 
-        fn preview() -> Self::Prev {
+        fn preview(_cfg: PreviewConfig) -> Self::Prev {
             DesktopSidePanelPreview::new()
         }
     }

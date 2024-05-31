@@ -1,9 +1,13 @@
 use crate::ui::View;
 
+pub struct PreviewConfig {
+    pub is_mobile: bool,
+}
+
 pub trait Preview {
     type Prev: View;
 
-    fn preview() -> Self::Prev;
+    fn preview(cfg: PreviewConfig) -> Self::Prev;
 }
 
 pub struct PreviewApp {

@@ -1,20 +1,4 @@
 #!/usr/bin/env bash
 
-MOBILE_FLAG=0
-FILTERED_ARGS=()
-
-# Loop through the command line arguments
-for arg in "$@"; do
-    if [[ "$arg" == "--mobile" ]]; then
-        MOBILE_FLAG=1
-    else
-        # Add non '--mobile' arguments to the filtered list
-        FILTERED_ARGS+=("$arg")
-    fi
-done
-
-if [[ "$MOBILE_FLAG" -eq 1 ]]; then
-    cargo run --bin ui_preview --features emulate_mobile --release -- "${FILTERED_ARGS[@]}"
-else
-    cargo run --bin ui_preview --release -- "$@"
-fi
+# pass --mobile for mobile previews
+cargo run --bin ui_preview --release -- "$@"

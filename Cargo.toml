@@ -48,7 +48,6 @@ security-framework = "2.11.0"
 
 [features]
 default = []
-emulate_mobile = []
 profiling = ["puffin", "puffin_egui", "eframe/puffin"]
 
 [profile.small]

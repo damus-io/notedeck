@@ -1,8 +1,7 @@
 use crate::app_style::NotedeckTextStyle;
 use crate::key_parsing::LoginError;
 use crate::login_manager::LoginManager;
-use crate::ui;
-use crate::ui::{Preview, View};
+use crate::ui::{Preview, PreviewConfig, View};
 use egui::{
     Align, Align2, Button, Color32, Frame, Id, LayerId, Margin, Pos2, Rect, RichText, Rounding, Ui,
     Vec2, Window,
@@ -10,25 +9,25 @@ use egui::{
 use egui::{Image, TextEdit};
 
 pub struct AccountLoginView<'a> {
+    is_mobile: bool,
     manager: &'a mut LoginManager,
     generate_y_intercept: Option<f32>,
 }
 
 impl<'a> View for AccountLoginView<'a> {
     fn ui(&mut self, ui: &mut egui::Ui) {
-        let is_mobile = ui::is_mobile();
         if let Some(key) = self.manager.check_for_successful_login() {
             // TODO: route to "home"
             println!("successful login with key: {:?}", key);
             /*
-            return if is_mobile {
+            return if self.mobile {
                 // route to "home" on mobile
             } else {
                 // route to "home" on desktop
             };
             */
         }
-        if is_mobile {
+        if self.is_mobile {
             self.show_mobile(ui);
         } else {
             self.show(ui);
@@ -37,8 +36,9 @@ impl<'a> View for AccountLoginView<'a> {
 }
 
 impl<'a> AccountLoginView<'a> {
-    pub fn new(manager: &'a mut LoginManager) -> Self {
+    pub fn new(manager: &'a mut LoginManager, is_mobile: bool) -> Self {
         AccountLoginView {
+            is_mobile,
             manager,
             generate_y_intercept: None,
         }
@@ -361,20 +361,22 @@ fn login_textedit(manager: &mut LoginManager) -> TextEdit {
 }
 
 pub struct AccountLoginPreview {
+    is_mobile: bool,
     manager: LoginManager,
 }
 
 impl View for AccountLoginPreview {
     fn ui(&mut self, ui: &mut egui::Ui) {
-        AccountLoginView::new(&mut self.manager).ui(ui);
+        AccountLoginView::new(&mut self.manager, self.is_mobile).ui(ui);
     }
 }
 
 impl<'a> Preview for AccountLoginView<'a> {
     type Prev = AccountLoginPreview;
 
-    fn preview() -> Self::Prev {
+    fn preview(cfg: PreviewConfig) -> Self::Prev {
         let manager = LoginManager::new();
-        AccountLoginPreview { manager }
+        let is_mobile = cfg.is_mobile;
+        AccountLoginPreview { is_mobile, manager }
     }
 }

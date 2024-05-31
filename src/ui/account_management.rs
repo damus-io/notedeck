@@ -2,7 +2,7 @@ use crate::colors::PINK;
 use crate::{
     account_manager::AccountManager,
     app_style::NotedeckTextStyle,
-    ui::{self, Preview, View},
+    ui::{Preview, PreviewConfig, View},
 };
 use egui::{Align, Button, Frame, Image, Layout, RichText, ScrollArea, Vec2};
 
@@ -10,13 +10,14 @@ use super::profile::preview::SimpleProfilePreview;
 use super::profile::{ProfilePreviewOp, SimpleProfilePreviewController};
 
 pub struct AccountManagementView<'a> {
+    mobile: bool,
     account_manager: &'a mut AccountManager,
     simple_preview_controller: SimpleProfilePreviewController<'a>,
 }
 
 impl<'a> View for AccountManagementView<'a> {
     fn ui(&mut self, ui: &mut egui::Ui) {
-        if ui::is_mobile() {
+        if self.mobile {
             self.show_mobile(ui);
         } else {
             self.show(ui);
@@ -26,10 +27,12 @@ impl<'a> View for AccountManagementView<'a> {
 
 impl<'a> AccountManagementView<'a> {
     pub fn new(
+        mobile: bool,
         account_manager: &'a mut AccountManager,
         simple_preview_controller: SimpleProfilePreviewController<'a>,
     ) -> Self {
         AccountManagementView {
+            mobile,
             account_manager,
             simple_preview_controller,
         }
@@ -236,16 +239,18 @@ mod preview {
     use crate::{imgcache::ImageCache, test_data::get_accmgr_and_ndb_and_imgcache};
 
     pub struct AccountManagementPreview {
+        is_mobile: bool,
         account_manager: AccountManager,
         ndb: Ndb,
         img_cache: ImageCache,
     }
 
     impl AccountManagementPreview {
-        fn new() -> Self {
+        fn new(is_mobile: bool) -> Self {
             let (account_manager, ndb, img_cache) = get_accmgr_and_ndb_and_imgcache();
 
             AccountManagementPreview {
+                is_mobile,
                 account_manager,
                 ndb,
                 img_cache,
@@ -257,6 +262,7 @@ mod preview {
         fn ui(&mut self, ui: &mut egui::Ui) {
             ui.add_space(24.0);
             AccountManagementView::new(
+                self.is_mobile,
                 &mut self.account_manager,
                 SimpleProfilePreviewController::new(&self.ndb, &mut self.img_cache),
             )
@@ -267,8 +273,8 @@ mod preview {
     impl<'a> Preview for AccountManagementView<'a> {
         type Prev = AccountManagementPreview;
 
-        fn preview() -> Self::Prev {
-            AccountManagementPreview::new()
+        fn preview(cfg: PreviewConfig) -> Self::Prev {
+            AccountManagementPreview::new(cfg.is_mobile)
         }
     }
 }

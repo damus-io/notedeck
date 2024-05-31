@@ -8,8 +8,9 @@ use crate::notecache::{CachedNote, NoteCache};
 use crate::route::Route;
 use crate::timeline;
 use crate::timeline::{NoteRef, Timeline, ViewFilter};
+use crate::ui;
 use crate::ui::profile::SimpleProfilePreviewController;
-use crate::ui::{is_mobile, DesktopSidePanel};
+use crate::ui::DesktopSidePanel;
 use crate::Result;
 
 use egui::{Context, Frame, Style};
@@ -38,6 +39,7 @@ pub struct Damus {
     //compose: String,
     note_cache: NoteCache,
     pool: RelayPool,
+    is_mobile: bool,
 
     /// global navigation for account management popups, etc.
     nav: Vec<Route>,
@@ -599,7 +601,7 @@ fn process_message(damus: &mut Damus, relay: &str, msg: &RelayMessage) {
 }
 
 fn render_damus(damus: &mut Damus, ctx: &Context) {
-    if is_mobile() {
+    if damus.is_mobile() {
         render_damus_mobile(ctx, damus);
     } else {
         render_damus_desktop(ctx, damus);
@@ -618,29 +620,24 @@ impl Damus {
         data_path: P,
         args: Vec<String>,
     ) -> Self {
-        // This is also where you can customized the look at feel of egui using
-        // `cc.egui_ctx.set_visuals` and `cc.egui_ctx.set_fonts`.
-
-        // Load previous app state (if any).
-        // Note that you must enable the `persistence` feature for this to work.
-        //if let Some(storage) = cc.storage {
-        //return eframe::get_value(storage, eframe::APP_KEY).unwrap_or_default();
-        //}
-        //
-
-        setup_cc(cc);
-
         let mut timelines: Vec<Timeline> = vec![];
-        let _initial_limit = 100;
+        let mut is_mobile: Option<bool> = None;
         if args.len() > 1 {
             for arg in &args[1..] {
-                let filter = serde_json::from_str(arg).unwrap();
-                timelines.push(Timeline::new(filter));
+                if arg == "--mobile" {
+                    is_mobile = Some(true);
+                } else if let Ok(filter) = serde_json::from_str(arg) {
+                    timelines.push(Timeline::new(filter));
+                }
             }
         } else {
             let filter = serde_json::from_str(include_str!("../queries/timeline.json")).unwrap();
             timelines.push(Timeline::new(filter));
         };
+
+        let is_mobile = is_mobile.unwrap_or(ui::is_compiled_as_mobile());
+
+        setup_cc(cc, is_mobile);
 
         let imgcache_dir = data_path.as_ref().join(ImageCache::rel_datadir());
         let _ = std::fs::create_dir_all(imgcache_dir.clone());
@@ -648,6 +645,7 @@ impl Damus {
         let mut config = Config::new();
         config.set_ingester_threads(2);
         Self {
+            is_mobile,
             state: DamusState::Initializing,
             pool: RelayPool::new(),
             img_cache: ImageCache::new(imgcache_dir),
@@ -668,9 +666,8 @@ impl Damus {
         }
     }
 
-    pub fn mock<P: AsRef<Path>>(data_path: P) -> Self {
+    pub fn mock<P: AsRef<Path>>(data_path: P, is_mobile: bool) -> Self {
         let mut timelines: Vec<Timeline> = vec![];
-        let _initial_limit = 100;
         let filter = serde_json::from_str(include_str!("../queries/global.json")).unwrap();
         timelines.push(Timeline::new(filter));
 
@@ -680,6 +677,7 @@ impl Damus {
         let mut config = Config::new();
         config.set_ingester_threads(2);
         Self {
+            is_mobile,
             state: DamusState::Initializing,
             pool: RelayPool::new(),
             img_cache: ImageCache::new(imgcache_dir),
@@ -727,6 +725,10 @@ impl Damus {
         }
         self.selected_timeline += 1;
     }
+
+    pub fn is_mobile(&self) -> bool {
+        self.is_mobile
+    }
 }
 
 /*
@@ -763,7 +765,7 @@ fn render_panel(ctx: &egui::Context, app: &mut Damus, timeline_ind: usize) {
             ui.visuals_mut().button_frame = false;
 
             if let Some(new_visuals) =
-                user_requested_visuals_change(is_mobile(), ctx.style().visuals.dark_mode, ui)
+                user_requested_visuals_change(app.is_mobile(), ctx.style().visuals.dark_mode, ui)
             {
                 ctx.set_visuals(new_visuals)
             }
@@ -820,14 +822,14 @@ fn render_damus_mobile(ctx: &egui::Context, app: &mut Damus) {
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
 
-    main_panel(&ctx.style()).show(ctx, |ui| {
+    main_panel(&ctx.style(), app.is_mobile()).show(ctx, |ui| {
         timeline::timeline_view(ui, app, 0);
     });
 }
 
-fn main_panel(style: &Style) -> egui::CentralPanel {
+fn main_panel(style: &Style, mobile: bool) -> egui::CentralPanel {
     let inner_margin = egui::Margin {
-        top: if crate::ui::is_mobile() { 50.0 } else { 0.0 },
+        top: if mobile { 50.0 } else { 0.0 },
         left: 0.0,
         right: 0.0,
         bottom: 0.0,
@@ -854,7 +856,7 @@ fn render_damus_desktop(ctx: &egui::Context, app: &mut Damus) {
         Size::remainder()
     };
 
-    main_panel(&ctx.style()).show(ctx, |ui| {
+    main_panel(&ctx.style(), app.is_mobile()).show(ctx, |ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
         if need_scroll {
             egui::ScrollArea::horizontal().show(ui, |ui| {

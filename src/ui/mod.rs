@@ -14,7 +14,7 @@ pub use account_management::AccountManagementView;
 pub use account_switcher::AccountSelectionWidget;
 pub use mention::Mention;
 pub use note::Note;
-pub use preview::{Preview, PreviewApp};
+pub use preview::{Preview, PreviewApp, PreviewConfig};
 pub use profile::{ProfilePic, ProfilePreview};
 pub use relay::RelayView;
 pub use side_panel::DesktopSidePanel;
@@ -53,16 +53,12 @@ pub fn hline(ui: &egui::Ui) {
 
 #[inline]
 #[allow(unreachable_code)]
-pub fn is_mobile() -> bool {
-    #[cfg(feature = "emulate_mobile")]
-    {
-        return true;
-    }
-
+pub fn is_compiled_as_mobile() -> bool {
     #[cfg(any(target_os = "android", target_os = "ios"))]
     {
         true
     }
+
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
         false

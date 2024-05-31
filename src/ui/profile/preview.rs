@@ -111,7 +111,7 @@ impl<'a, 'cache> egui::Widget for SimpleProfilePreview<'a, 'cache> {
 mod previews {
     use super::*;
     use crate::test_data::test_profile_record;
-    use crate::ui::{Preview, View};
+    use crate::ui::{Preview, PreviewConfig, View};
 
     pub struct ProfilePreviewPreview<'a> {
         profile: ProfileRecord<'a>,
@@ -142,7 +142,7 @@ mod previews {
         /// A preview of the profile preview :D
         type Prev = ProfilePreviewPreview<'a>;
 
-        fn preview() -> Self::Prev {
+        fn preview(_cfg: PreviewConfig) -> Self::Prev {
             ProfilePreviewPreview::new()
         }
     }

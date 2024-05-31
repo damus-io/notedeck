@@ -1,5 +1,5 @@
 use crate::relay_pool_manager::{RelayPoolManager, RelayStatus};
-use crate::ui::{Preview, View};
+use crate::ui::{Preview, PreviewConfig, View};
 use egui::{Align, Button, Frame, Layout, Margin, Rgba, RichText, Rounding, Ui, Vec2};
 
 use crate::app_style::NotedeckTextStyle;
@@ -203,7 +203,7 @@ mod preview {
     impl<'a> Preview for RelayView<'a> {
         type Prev = RelayViewPreview;
 
-        fn preview() -> Self::Prev {
+        fn preview(_cfg: PreviewConfig) -> Self::Prev {
             RelayViewPreview::new()
         }
     }

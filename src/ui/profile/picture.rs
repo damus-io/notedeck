@@ -1,5 +1,5 @@
 use crate::imgcache::ImageCache;
-use crate::ui::{Preview, View};
+use crate::ui::{Preview, PreviewConfig, View};
 use egui::{vec2, Sense, TextureHandle};
 
 pub struct ProfilePic<'cache, 'url> {
@@ -185,7 +185,7 @@ mod preview {
     impl<'cache, 'url> Preview for ProfilePic<'cache, 'url> {
         type Prev = ProfilePicPreview;
 
-        fn preview() -> Self::Prev {
+        fn preview(_cfg: PreviewConfig) -> Self::Prev {
             ProfilePicPreview::new()
         }
     }
