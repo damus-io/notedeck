@@ -5,13 +5,17 @@ use crate::error::Error;
 use crate::frame_history::FrameHistory;
 use crate::imgcache::ImageCache;
 use crate::notecache::{CachedNote, NoteCache};
+use crate::relay_pool_manager::RelayPoolManager;
 use crate::route::Route;
 use crate::timeline;
 use crate::timeline::{MergeKind, NoteRef, Timeline, ViewFilter};
 use crate::ui;
-use crate::ui::profile::SimpleProfilePreviewController;
-use crate::ui::DesktopSidePanel;
+use crate::ui::{DesktopSidePanel, RelayView, SidePanelAction, View};
 use crate::Result;
+use egui_nav::{Nav, NavAction};
+use enostr::RelayPool;
+use std::cell::RefCell;
+use std::rc::Rc;
 
 use egui::{Context, Frame, Style};
 use egui_extras::{Size, StripBuilder};
@@ -24,8 +28,6 @@ use std::hash::Hash;
 use std::path::Path;
 use std::time::Duration;
 use tracing::{debug, error, info, warn};
-
-use enostr::RelayPool;
 
 #[derive(Debug, Eq, PartialEq, Clone)]
 pub enum DamusState {
@@ -42,7 +44,7 @@ pub struct Damus {
     is_mobile: bool,
 
     /// global navigation for account management popups, etc.
-    _nav: Vec<Route>,
+    //nav: Vec<Route>,
     pub textmode: bool,
 
     pub timelines: Vec<Timeline>,
@@ -354,7 +356,9 @@ fn poll_notes_for_timeline<'a>(
     };
 
     let new_note_ids = damus.ndb.poll_for_notes(sub, 100);
-    if !new_note_ids.is_empty() {
+    if new_note_ids.is_empty() {
+        return Ok(());
+    } else {
         debug!("{} new notes! {:?}", new_note_ids.len(), new_note_ids);
     }
 
@@ -416,6 +420,10 @@ fn insert_notes_into_timeline(
     let timeline = &mut app.timelines[timeline_ind];
     let num_prev_items = timeline.notes(filter).len();
     let (notes, merge_kind) = timeline::merge_sorted_vecs(timeline.notes(filter), new_refs);
+    debug!(
+        "got merge kind {:?} for {:?} on timeline {}",
+        merge_kind, filter, timeline_ind
+    );
 
     timeline.view_mut(filter).notes = notes;
     let new_items = timeline.notes(filter).len() - num_prev_items;
@@ -697,7 +705,6 @@ impl Damus {
             img_cache: ImageCache::new(imgcache_dir),
             note_cache: NoteCache::default(),
             selected_timeline: 0,
-            _nav: Vec::with_capacity(6),
             timelines,
             textmode: false,
             ndb: Ndb::new(data_path.as_ref().to_str().expect("db path ok"), &config).expect("ndb"),
@@ -730,7 +737,6 @@ impl Damus {
             note_cache: NoteCache::default(),
             selected_timeline: 0,
             timelines,
-            _nav: vec![],
             textmode: false,
             ndb: Ndb::new(data_path.as_ref().to_str().expect("db path ok"), &config).expect("ndb"),
             account_manager: AccountManager::new(None, crate::key_storage::KeyStorage::None),
@@ -862,14 +868,71 @@ fn render_panel(ctx: &egui::Context, app: &mut Damus, timeline_ind: usize) {
     });
 }
 
+fn render_nav(routes: Vec<Route>, timeline_ind: usize, app: &mut Damus, ui: &mut egui::Ui) {
+    let app_ctx = Rc::new(RefCell::new(app));
+
+    let nav_response = Nav::new(routes).show(ui, |ui, nav| match nav.top() {
+        Route::Timeline(_n) => {
+            timeline::timeline_view(ui, &mut app_ctx.borrow_mut(), timeline_ind);
+        }
+
+        Route::ManageAccount => {
+            ui.label("account management view");
+        }
+
+        Route::Thread(_key) => {
+            ui.label("thread view");
+        }
+
+        Route::Relays => {
+            let pool = &mut app_ctx.borrow_mut().pool;
+            let manager = RelayPoolManager::new(pool);
+            RelayView::new(manager).ui(ui);
+        }
+
+        Route::Reply(id) => {
+            let app = app_ctx.borrow();
+            let txn = if let Ok(txn) = Transaction::new(&app.ndb) {
+                txn
+            } else {
+                ui.label("Reply to unknown note");
+                return;
+            };
+
+            let note = if let Ok(note) = app.ndb.get_note_by_id(&txn, id.bytes()) {
+                note
+            } else {
+                ui.label("Reply to unknown note");
+                return;
+            };
+
+            ui.label(format!(
+                "Replying to note by {}",
+                app.ndb
+                    .get_profile_by_pubkey(&txn, note.pubkey())
+                    .as_ref()
+                    .ok()
+                    .and_then(|pr| Some(crate::profile::get_profile_name(pr)?.username()))
+                    .unwrap_or("??")
+            ));
+        }
+    });
+
+    if let Some(NavAction::Returned) = nav_response.action {
+        app_ctx.borrow_mut().timelines[timeline_ind].routes.pop();
+    }
+}
+
 fn render_damus_mobile(ctx: &egui::Context, app: &mut Damus) {
     //render_panel(ctx, app, 0);
 
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
 
+    //let routes = app.timelines[0].routes.clone();
+
     main_panel(&ctx.style(), app.is_mobile()).show(ctx, |ui| {
-        timeline::timeline_view(ui, app, 0);
+        render_nav(app.timelines[0].routes.clone(), 0, app, ui);
     });
 }
 
@@ -921,21 +984,27 @@ fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus, timelines: us
         .clip(true)
         .horizontal(|mut strip| {
             strip.cell(|ui| {
-                let side_panel = DesktopSidePanel::new(
-                    app.account_manager
-                        .get_selected_account()
-                        .map(|a| a.pubkey.bytes()),
-                    SimpleProfilePreviewController::new(&app.ndb, &mut app.img_cache),
-                )
-                .show(ui);
+                let side_panel = DesktopSidePanel::new(app).show(ui);
 
                 if side_panel.response.clicked() {
                     info!("clicked {:?}", side_panel.action);
+                    if let SidePanelAction::Account = side_panel.action {
+                        app.timelines[0].routes.push(Route::ManageAccount);
+                    }
                 }
             });
 
             for timeline_ind in 0..timelines {
-                strip.cell(|ui| timeline::timeline_view(ui, app, timeline_ind));
+                strip.cell(|ui| {
+                    render_nav(
+                        app.timelines[timeline_ind].routes.clone(),
+                        timeline_ind,
+                        app,
+                        ui,
+                    );
+                });
+
+                //strip.cell(|ui| timeline::timeline_view(ui, app, timeline_ind));
             }
         });
 }

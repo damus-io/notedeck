@@ -2,103 +2,69 @@ use crate::colors::PINK;
 use crate::{
     account_manager::AccountManager,
     app_style::NotedeckTextStyle,
-    ui::{Preview, PreviewConfig, View},
+    ui::{profile_preview_controller, Preview, PreviewConfig, View},
+    Damus,
 };
 use egui::{Align, Button, Frame, Image, Layout, RichText, ScrollArea, Vec2};
 
 use super::profile::preview::SimpleProfilePreview;
-use super::profile::{ProfilePreviewOp, SimpleProfilePreviewController};
+use super::profile::ProfilePreviewOp;
 
-pub struct AccountManagementView<'a> {
-    mobile: bool,
-    account_manager: &'a mut AccountManager,
-    simple_preview_controller: SimpleProfilePreviewController<'a>,
-}
+pub struct AccountManagementView {}
 
-impl<'a> View for AccountManagementView<'a> {
-    fn ui(&mut self, ui: &mut egui::Ui) {
-        if self.mobile {
-            self.show_mobile(ui);
-        } else {
-            self.show(ui);
-        }
-    }
-}
-
-impl<'a> AccountManagementView<'a> {
-    pub fn new(
-        mobile: bool,
-        account_manager: &'a mut AccountManager,
-        simple_preview_controller: SimpleProfilePreviewController<'a>,
-    ) -> Self {
-        AccountManagementView {
-            mobile,
-            account_manager,
-            simple_preview_controller,
-        }
-    }
-
-    fn show(&mut self, ui: &mut egui::Ui) {
+impl AccountManagementView {
+    fn show(app: &mut Damus, ui: &mut egui::Ui) {
         Frame::none().outer_margin(24.0).show(ui, |ui| {
-            self.top_section_buttons_widget(ui);
+            Self::top_section_buttons_widget(ui);
             ui.add_space(8.0);
             scroll_area().show(ui, |ui| {
-                self.show_accounts(ui);
+                Self::show_accounts(app, ui);
             });
         });
     }
 
-    fn show_accounts(&mut self, ui: &mut egui::Ui) {
-        let maybe_remove = self.simple_preview_controller.set_profile_previews(
-            self.account_manager,
-            ui,
-            account_card_ui(),
-        );
+    fn show_accounts(app: &mut Damus, ui: &mut egui::Ui) {
+        let maybe_remove =
+            profile_preview_controller::set_profile_previews(app, ui, account_card_ui());
 
-        self.maybe_remove_accounts(maybe_remove);
+        Self::maybe_remove_accounts(&mut app.account_manager, maybe_remove);
     }
 
-    fn show_accounts_mobile(&mut self, ui: &mut egui::Ui) {
+    fn show_accounts_mobile(app: &mut Damus, ui: &mut egui::Ui) {
         ui.allocate_ui_with_layout(
             Vec2::new(ui.available_size_before_wrap().x, 32.0),
             Layout::top_down(egui::Align::Min),
             |ui| {
                 // create all account 'cards' and get the indicies the user requested to remove
-                let maybe_remove = self.simple_preview_controller.set_profile_previews(
-                    self.account_manager,
+                let maybe_remove = profile_preview_controller::set_profile_previews(
+                    app,
                     ui,
                     account_card_ui(), // closure for creating an account 'card'
                 );
 
                 // remove all account indicies user requested
-                self.maybe_remove_accounts(maybe_remove);
+                Self::maybe_remove_accounts(&mut app.account_manager, maybe_remove);
             },
         );
     }
 
-    fn maybe_remove_accounts(&mut self, account_indices: Option<Vec<usize>>) {
+    fn maybe_remove_accounts(manager: &mut AccountManager, account_indices: Option<Vec<usize>>) {
         if let Some(to_remove) = account_indices {
             to_remove
                 .iter()
-                .for_each(|index| self.account_manager.remove_account(*index));
+                .for_each(|index| manager.remove_account(*index));
         }
     }
 
-    fn show_mobile(&mut self, ui: &mut egui::Ui) -> egui::Response {
-        egui::CentralPanel::default()
-            .show(ui.ctx(), |ui| {
-                mobile_title(ui);
-                self.top_section_buttons_widget(ui);
+    fn show_mobile(app: &mut Damus, ui: &mut egui::Ui) {
+        mobile_title(ui);
+        Self::top_section_buttons_widget(ui);
 
-                ui.add_space(8.0);
-                scroll_area().show(ui, |ui| {
-                    self.show_accounts_mobile(ui);
-                });
-            })
-            .response
+        ui.add_space(8.0);
+        scroll_area().show(ui, |ui| Self::show_accounts_mobile(app, ui));
     }
 
-    fn top_section_buttons_widget(&mut self, ui: &mut egui::Ui) -> egui::Response {
+    fn top_section_buttons_widget(ui: &mut egui::Ui) -> egui::Response {
         ui.horizontal(|ui| {
             ui.allocate_ui_with_layout(
                 Vec2::new(ui.available_size_before_wrap().x, 32.0),
@@ -233,44 +199,36 @@ fn selected_widget() -> impl egui::Widget {
 // PREVIEWS
 
 mod preview {
-    use nostrdb::Ndb;
+    
 
     use super::*;
-    use crate::{imgcache::ImageCache, test_data::get_accmgr_and_ndb_and_imgcache};
+    use crate::test_data::get_account_manager_test_app;
 
     pub struct AccountManagementPreview {
         is_mobile: bool,
-        account_manager: AccountManager,
-        ndb: Ndb,
-        img_cache: ImageCache,
+        app: Damus,
     }
 
     impl AccountManagementPreview {
         fn new(is_mobile: bool) -> Self {
-            let (account_manager, ndb, img_cache) = get_accmgr_and_ndb_and_imgcache();
+            let app = get_account_manager_test_app(is_mobile);
 
-            AccountManagementPreview {
-                is_mobile,
-                account_manager,
-                ndb,
-                img_cache,
-            }
+            AccountManagementPreview { is_mobile, app }
         }
     }
 
     impl View for AccountManagementPreview {
         fn ui(&mut self, ui: &mut egui::Ui) {
             ui.add_space(24.0);
-            AccountManagementView::new(
-                self.is_mobile,
-                &mut self.account_manager,
-                SimpleProfilePreviewController::new(&self.ndb, &mut self.img_cache),
-            )
-            .ui(ui);
+            if self.is_mobile {
+                AccountManagementView::show_mobile(&mut self.app, ui);
+            } else {
+                AccountManagementView::show(&mut self.app, ui);
+            }
         }
     }
 
-    impl<'a> Preview for AccountManagementView<'a> {
+    impl Preview for AccountManagementView {
         type Prev = AccountManagementPreview;
 
         fn preview(cfg: PreviewConfig) -> Self::Prev {

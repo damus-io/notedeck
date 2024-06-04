@@ -1,21 +1,18 @@
 use crate::{
-    account_manager::{AccountManager, UserAccount},
-    colors::PINK,
-    profile::DisplayName,
-    Result,
+    account_manager::UserAccount, colors::PINK, profile::DisplayName,
+    ui::profile_preview_controller, Damus, Result,
 };
+
+use nostrdb::Ndb;
+
 use egui::{
     Align, Button, Color32, Frame, Id, Image, Layout, Margin, RichText, Rounding, ScrollArea,
     Sense, Vec2,
 };
 
-use super::profile::{preview::SimpleProfilePreview, SimpleProfilePreviewController};
+use super::profile::preview::SimpleProfilePreview;
 
-pub struct AccountSelectionWidget<'a> {
-    is_mobile: bool,
-    account_manager: &'a AccountManager,
-    simple_preview_controller: SimpleProfilePreviewController<'a>,
-}
+pub struct AccountSelectionWidget {}
 
 enum AccountSelectAction {
     RemoveAccount { _index: usize },
@@ -28,36 +25,24 @@ struct AccountSelectResponse {
     action: Option<AccountSelectAction>,
 }
 
-impl<'a> AccountSelectionWidget<'a> {
-    pub fn new(
-        is_mobile: bool,
-        account_manager: &'a AccountManager,
-        simple_preview_controller: SimpleProfilePreviewController<'a>,
-    ) -> Self {
-        AccountSelectionWidget {
-            is_mobile,
-            account_manager,
-            simple_preview_controller,
-        }
-    }
-
-    pub fn ui(&'a mut self, ui: &mut egui::Ui) {
-        if self.is_mobile {
-            self.show_mobile(ui);
+impl AccountSelectionWidget {
+    pub fn ui(app: &mut Damus, ui: &mut egui::Ui) {
+        if app.is_mobile() {
+            Self::show_mobile(ui);
         } else {
-            self.show(ui);
+            Self::show(app, ui);
         }
     }
 
-    fn show(&mut self, ui: &mut egui::Ui) -> AccountSelectResponse {
+    fn show(app: &mut Damus, ui: &mut egui::Ui) -> AccountSelectResponse {
         let mut res = AccountSelectResponse::default();
-        let mut selected_index = self.account_manager.get_selected_account_index();
+        let mut selected_index = app.account_manager.get_selected_account_index();
 
         Frame::none().outer_margin(8.0).show(ui, |ui| {
             res = top_section_widget(ui);
 
             scroll_area().show(ui, |ui| {
-                if let Some(_index) = self.show_accounts(ui) {
+                if let Some(_index) = Self::show_accounts(app, ui) {
                     selected_index = Some(_index);
                     res.action = Some(AccountSelectAction::SelectAccount { _index });
                 }
@@ -66,9 +51,9 @@ impl<'a> AccountSelectionWidget<'a> {
             ui.add(add_account_button());
 
             if let Some(_index) = selected_index {
-                if let Some(account) = self.account_manager.get_account(_index) {
+                if let Some(account) = app.account_manager.get_account(_index) {
                     ui.add_space(8.0);
-                    if self.handle_sign_out(ui, account) {
+                    if Self::handle_sign_out(&app.ndb, ui, account) {
                         res.action = Some(AccountSelectAction::RemoveAccount { _index })
                     }
                 }
@@ -80,29 +65,30 @@ impl<'a> AccountSelectionWidget<'a> {
         res
     }
 
-    fn handle_sign_out(&mut self, ui: &mut egui::Ui, account: &UserAccount) -> bool {
-        if let Ok(response) = self.sign_out_button(ui, account) {
+    fn handle_sign_out(ndb: &Ndb, ui: &mut egui::Ui, account: &UserAccount) -> bool {
+        if let Ok(response) = Self::sign_out_button(ndb, ui, account) {
             response.clicked()
         } else {
             false
         }
     }
 
-    fn show_mobile(&mut self, ui: &mut egui::Ui) -> egui::Response {
+    fn show_mobile(ui: &mut egui::Ui) -> egui::Response {
         let _ = ui;
         todo!()
     }
 
-    fn show_accounts(&mut self, ui: &mut egui::Ui) -> Option<usize> {
-        self.simple_preview_controller.view_profile_previews(
-            self.account_manager,
-            ui,
-            account_switcher_card_ui(),
-        )
+    fn show_accounts(app: &mut Damus, ui: &mut egui::Ui) -> Option<usize> {
+        profile_preview_controller::view_profile_previews(app, ui, account_switcher_card_ui)
     }
 
-    fn sign_out_button(&self, ui: &mut egui::Ui, account: &UserAccount) -> Result<egui::Response> {
-        self.simple_preview_controller.show_with_nickname(
+    fn sign_out_button(
+        ndb: &Ndb,
+        ui: &mut egui::Ui,
+        account: &UserAccount,
+    ) -> Result<egui::Response> {
+        profile_preview_controller::show_with_nickname(
+            ndb,
             ui,
             account.pubkey.bytes(),
             |ui: &mut egui::Ui, username: &DisplayName| {
@@ -122,42 +108,40 @@ impl<'a> AccountSelectionWidget<'a> {
     }
 }
 
-fn account_switcher_card_ui() -> fn(
+fn account_switcher_card_ui(
     ui: &mut egui::Ui,
     preview: SimpleProfilePreview,
     width: f32,
     is_selected: bool,
     index: usize,
 ) -> bool {
-    |ui, preview, width, is_selected, index| {
-        let resp = ui.add_sized(Vec2::new(width, 50.0), |ui: &mut egui::Ui| {
-            Frame::none()
-                .show(ui, |ui| {
-                    ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        if is_selected {
-                            Frame::none()
-                                .rounding(Rounding::same(8.0))
-                                .inner_margin(Margin::same(8.0))
-                                .fill(Color32::from_rgb(0x45, 0x1B, 0x59))
-                                .show(ui, |ui| {
-                                    ui.add(preview);
-                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                        ui.add(selection_widget());
-                                    });
+    let resp = ui.add_sized(Vec2::new(width, 50.0), |ui: &mut egui::Ui| {
+        Frame::none()
+            .show(ui, |ui| {
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if is_selected {
+                        Frame::none()
+                            .rounding(Rounding::same(8.0))
+                            .inner_margin(Margin::same(8.0))
+                            .fill(Color32::from_rgb(0x45, 0x1B, 0x59))
+                            .show(ui, |ui| {
+                                ui.add(preview);
+                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                    ui.add(selection_widget());
                                 });
-                        } else {
-                            ui.add_space(8.0);
-                            ui.add(preview);
-                        }
-                    });
-                })
-                .response
-        });
+                            });
+                    } else {
+                        ui.add_space(8.0);
+                        ui.add(preview);
+                    }
+                });
+            })
+            .response
+    });
 
-        ui.interact(resp.rect, Id::new(index), Sense::click())
-            .clicked()
-    }
+    ui.interact(resp.rect, Id::new(index), Sense::click())
+        .clicked()
 }
 
 fn selection_widget() -> impl egui::Widget {
@@ -215,48 +199,33 @@ fn add_account_button() -> egui::Button<'static> {
 }
 
 mod previews {
-    use nostrdb::Ndb;
 
     use crate::{
-        account_manager::AccountManager,
-        imgcache::ImageCache,
         test_data,
-        ui::{profile::SimpleProfilePreviewController, Preview, PreviewConfig, View},
+        ui::{Preview, PreviewConfig, View},
+        Damus,
     };
 
     use super::AccountSelectionWidget;
 
     pub struct AccountSelectionPreview {
-        is_mobile: bool,
-        account_manager: AccountManager,
-        ndb: Ndb,
-        img_cache: ImageCache,
+        app: Damus,
     }
 
     impl AccountSelectionPreview {
         fn new(is_mobile: bool) -> Self {
-            let (account_manager, ndb, img_cache) = test_data::get_accmgr_and_ndb_and_imgcache();
-            AccountSelectionPreview {
-                is_mobile,
-                account_manager,
-                ndb,
-                img_cache,
-            }
+            let app = test_data::get_account_manager_test_app(is_mobile);
+            AccountSelectionPreview { app }
         }
     }
 
     impl View for AccountSelectionPreview {
         fn ui(&mut self, ui: &mut egui::Ui) {
-            AccountSelectionWidget::new(
-                self.is_mobile,
-                &self.account_manager,
-                SimpleProfilePreviewController::new(&self.ndb, &mut self.img_cache),
-            )
-            .ui(ui);
+            AccountSelectionWidget::show(&mut self.app, ui);
         }
     }
 
-    impl<'a> Preview for AccountSelectionWidget<'a> {
+    impl Preview for AccountSelectionWidget {
         type Prev = AccountSelectionPreview;
 
         fn preview(cfg: PreviewConfig) -> Self::Prev {

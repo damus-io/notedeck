@@ -1,11 +1,14 @@
 use crate::notecache::CachedNote;
 use crate::{ui, Damus};
 
+use crate::route::Route;
 use egui::containers::scroll_area::ScrollBarVisibility;
 use egui::{Direction, Layout};
+
+use crate::ui::BarAction;
 use egui_tabs::TabColor;
 use egui_virtual_list::VirtualList;
-use enostr::Filter;
+use enostr::{Filter, NoteId};
 use nostrdb::{Note, NoteKey, Subscription, Transaction};
 use std::cell::RefCell;
 use std::cmp::Ordering;
@@ -35,7 +38,7 @@ impl PartialOrd for NoteRef {
     }
 }
 
-#[derive(Copy, Clone, Eq, PartialEq)]
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub enum ViewFilter {
     Notes,
     NotesAndReplies,
@@ -122,6 +125,7 @@ pub struct Timeline {
     pub filter: Vec<Filter>,
     pub views: Vec<TimelineView>,
     pub selected_view: i32,
+    pub routes: Vec<Route>,
 
     /// Our nostrdb subscription
     pub subscription: Option<Subscription>,
@@ -134,12 +138,14 @@ impl Timeline {
         let replies = TimelineView::new(ViewFilter::NotesAndReplies);
         let views = vec![notes, replies];
         let selected_view = 0;
+        let routes = vec![Route::Timeline("Timeline".to_string())];
 
         Timeline {
             filter,
             views,
             subscription,
             selected_view,
+            routes,
         }
     }
 
@@ -233,7 +239,7 @@ fn tabs_ui(timeline: &mut Timeline, ui: &mut egui::Ui) {
 
     let stroke = egui::Stroke {
         color: ui.visuals().hyperlink_color,
-        width: 3.0,
+        width: 2.0,
     };
 
     let speed = 0.1f32;
@@ -298,8 +304,19 @@ pub fn timeline_view(ui: &mut egui::Ui, app: &mut Damus, timeline: usize) {
 
                     ui::padding(8.0, ui, |ui| {
                         let textmode = app.textmode;
-                        ui.add(ui::Note::new(app, &note).note_previews(!textmode));
+                        let resp = ui::Note::new(app, &note).note_previews(!textmode).show(ui);
+                        if let Some(action) = resp.action {
+                            debug!("bar action: {:?}", action);
+                            match action {
+                                BarAction::Reply => {
+                                    app.timelines[timeline]
+                                        .routes
+                                        .push(Route::Reply(NoteId::new(note.id().to_owned())));
+                                }
+                            }
+                        }
                     });
+
                     ui::hline(ui);
                     //ui.add(egui::Separator::default().spacing(0.0));
 
@@ -308,6 +325,7 @@ pub fn timeline_view(ui: &mut egui::Ui, app: &mut Damus, timeline: usize) {
         });
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum MergeKind {
     FrontInsert,
     Spliced,

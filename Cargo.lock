@@ -1036,15 +1036,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "egui-tabs"
-version = "0.1.0"
-source = "git+https://github.com/damus-io/egui-tabs?rev=75f47141aebcf876986fad00dd83a69a7bb04840#75f47141aebcf876986fad00dd83a69a7bb04840"
-dependencies = [
- "egui",
- "egui_extras",
-]
-
-[[package]]
 name = "egui-wgpu"
 version = "0.27.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1111,6 +1102,25 @@ dependencies = [
  "puffin",
  "wasm-bindgen",
  "web-sys",
+ "winit",
+]
+
+[[package]]
+name = "egui_nav"
+version = "0.1.0"
+source = "git+https://github.com/damus-io/egui-nav?rev=9f640df83494a79cd7aa0b5983c83290d284d6ee#9f640df83494a79cd7aa0b5983c83290d284d6ee"
+dependencies = [
+ "egui",
+ "egui_extras",
+]
+
+[[package]]
+name = "egui_tabs"
+version = "0.1.0"
+source = "git+https://github.com/damus-io/egui-tabs?rev=120971fc43db6ba0b6f194f4bd4a66f7e00a4e22#120971fc43db6ba0b6f194f4bd4a66f7e00a4e22"
+dependencies = [
+ "egui",
+ "egui_extras",
 ]
 
 [[package]]
@@ -1178,7 +1188,6 @@ dependencies = [
  "serde",
  "serde_derive",
  "serde_json",
- "shatter",
  "tracing",
 ]
 
@@ -2454,8 +2463,9 @@ dependencies = [
  "console_error_panic_hook",
  "eframe",
  "egui",
- "egui-tabs",
  "egui_extras",
+ "egui_nav",
+ "egui_tabs",
  "egui_virtual_list",
  "ehttp 0.2.0",
  "enostr",
@@ -3522,16 +3532,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f40ca3c46823713e0d4209592e8d6e826aa57e928f09752619fc696c499637f6"
 dependencies = [
  "lazy_static",
-]
-
-[[package]]
-name = "shatter"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4c72d316f805789a3a026fd327dd854ece0fbdc5fb4f57ac9d1319f3670a4177"
-dependencies = [
- "env_logger 0.10.2",
- "log",
 ]
 
 [[package]]

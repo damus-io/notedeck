@@ -1,12 +1,17 @@
 use egui::{Button, Layout, SidePanel, Vec2, Widget};
 
-use crate::account_manager::AccountManager;
+use crate::{ui::profile_preview_controller, Damus};
 
-use super::{profile::SimpleProfilePreviewController, ProfilePic, View};
+use super::{ProfilePic, View};
 
 pub struct DesktopSidePanel<'a> {
-    selected_account: Option<&'a [u8; 32]>,
-    simple_preview_controller: SimpleProfilePreviewController<'a>,
+    app: &'a mut Damus,
+}
+
+impl<'a> View for DesktopSidePanel<'a> {
+    fn ui(&mut self, ui: &mut egui::Ui) {
+        self.show(ui);
+    }
 }
 
 #[derive(Debug, Eq, PartialEq, Clone, Copy)]
@@ -28,21 +33,9 @@ impl SidePanelResponse {
     }
 }
 
-impl<'a> Widget for DesktopSidePanel<'a> {
-    fn ui(self, ui: &mut egui::Ui) -> egui::Response {
-        self.show(ui).response
-    }
-}
-
 impl<'a> DesktopSidePanel<'a> {
-    pub fn new(
-        selected_account: Option<&'a [u8; 32]>,
-        simple_preview_controller: SimpleProfilePreviewController<'a>,
-    ) -> Self {
-        DesktopSidePanel {
-            selected_account,
-            simple_preview_controller,
-        }
+    pub fn new(app: &'a mut Damus) -> Self {
+        DesktopSidePanel { app }
     }
 
     pub fn panel() -> SidePanel {
@@ -51,7 +44,7 @@ impl<'a> DesktopSidePanel<'a> {
             .exact_width(40.0)
     }
 
-    pub fn show(self, ui: &mut egui::Ui) -> SidePanelResponse {
+    pub fn show(&mut self, ui: &mut egui::Ui) -> SidePanelResponse {
         let dark_mode = ui.ctx().style().visuals.dark_mode;
         let spacing_amt = 16.0;
 
@@ -77,12 +70,15 @@ impl<'a> DesktopSidePanel<'a> {
         SidePanelResponse::new(inner.inner, inner.response)
     }
 
-    fn pfp_button(self, ui: &mut egui::Ui) -> egui::Response {
-        if let Some(selected_account) = self.selected_account {
-            if let Some(response) =
-                self.simple_preview_controller
-                    .show_with_pfp(ui, selected_account, show_pfp())
-            {
+    fn pfp_button(&mut self, ui: &mut egui::Ui) -> egui::Response {
+        let selected_account = self.app.account_manager.get_selected_account();
+        if let Some(selected_account) = selected_account {
+            if let Some(response) = profile_preview_controller::show_with_pfp(
+                self.app,
+                ui,
+                &selected_account.pubkey.bytes().clone(),
+                show_pfp(),
+            ) {
                 return response;
             }
         }
@@ -123,10 +119,9 @@ fn add_column_button(dark_mode: bool) -> egui::Button<'static> {
 }
 
 mod preview {
-    use nostrdb::Ndb;
+    
 
     use crate::{
-        imgcache::ImageCache,
         test_data,
         ui::{Preview, PreviewConfig},
     };
@@ -134,33 +129,25 @@ mod preview {
     use super::*;
 
     pub struct DesktopSidePanelPreview {
-        account_manager: AccountManager,
-        ndb: Ndb,
-        img_cache: ImageCache,
+        app: Damus,
     }
 
     impl DesktopSidePanelPreview {
-        fn new() -> Self {
-            let (account_manager, ndb, img_cache) = test_data::get_accmgr_and_ndb_and_imgcache();
-            DesktopSidePanelPreview {
-                account_manager,
-                ndb,
-                img_cache,
-            }
+        fn new(is_mobile: bool) -> Self {
+            let app = test_data::get_account_manager_test_app(is_mobile);
+            DesktopSidePanelPreview { app }
         }
     }
 
     impl View for DesktopSidePanelPreview {
         fn ui(&mut self, ui: &mut egui::Ui) {
-            let selected_account = self
+            let _selected_account = self
+                .app
                 .account_manager
                 .get_selected_account()
                 .map(|x| x.pubkey.bytes());
 
-            let panel = DesktopSidePanel::new(
-                selected_account,
-                SimpleProfilePreviewController::new(&self.ndb, &mut self.img_cache),
-            );
+            let mut panel = DesktopSidePanel::new(&mut self.app);
 
             DesktopSidePanel::panel().show(ui.ctx(), |ui| panel.ui(ui));
         }
@@ -169,8 +156,8 @@ mod preview {
     impl<'a> Preview for DesktopSidePanel<'a> {
         type Prev = DesktopSidePanelPreview;
 
-        fn preview(_cfg: PreviewConfig) -> Self::Prev {
-            DesktopSidePanelPreview::new()
+        fn preview(cfg: PreviewConfig) -> Self::Prev {
+            DesktopSidePanelPreview::new(cfg.is_mobile)
         }
     }
 }

@@ -1,13 +1,9 @@
 use std::path::Path;
 
 use enostr::{FullKeypair, Pubkey, RelayPool};
-use nostrdb::{Config, Ndb, ProfileRecord};
+use nostrdb::ProfileRecord;
 
-use crate::{
-    account_manager::{AccountManager, UserAccount},
-    imgcache::ImageCache,
-    key_storage::KeyStorage,
-};
+use crate::{account_manager::UserAccount, Damus};
 
 #[allow(unused_must_use)]
 pub fn sample_pool() -> RelayPool {
@@ -87,20 +83,15 @@ pub fn get_test_accounts() -> Vec<UserAccount> {
         .collect()
 }
 
-pub fn get_accmgr_and_ndb_and_imgcache() -> (AccountManager, Ndb, ImageCache) {
-    let mut account_manager = AccountManager::new(None, KeyStorage::None);
-    let accounts = get_test_accounts();
-    for account in accounts {
-        account_manager.add_account(account);
-    }
-
-    let mut config = Config::new();
-    config.set_ingester_threads(2);
-
+pub fn get_account_manager_test_app(is_mobile: bool) -> Damus {
     let db_dir = Path::new(".");
     let path = db_dir.to_str().unwrap();
-    let ndb = Ndb::new(path, &config).expect("ndb");
-    let imgcache_dir = db_dir.join("cache/img");
-    let img_cache = ImageCache::new(imgcache_dir);
-    (account_manager, ndb, img_cache)
+    let mut app = Damus::mock(path, is_mobile);
+
+    let accounts = get_test_accounts();
+    for account in accounts {
+        app.account_manager.add_account(account);
+    }
+
+    app
 }

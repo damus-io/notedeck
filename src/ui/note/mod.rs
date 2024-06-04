@@ -15,12 +15,17 @@ pub struct Note<'a> {
     flags: NoteOptions,
 }
 
+pub struct NoteResponse {
+    pub response: egui::Response,
+    pub action: Option<BarAction>,
+}
+
 impl<'a> egui::Widget for Note<'a> {
     fn ui(self, ui: &mut egui::Ui) -> egui::Response {
         if self.app.textmode {
             self.textmode_ui(ui)
         } else {
-            self.standard_ui(ui)
+            self.show(ui).response
         }
     }
 }
@@ -186,103 +191,115 @@ impl<'a> Note<'a> {
         .response
     }
 
-    pub fn standard_ui(self, ui: &mut egui::Ui) -> egui::Response {
+    pub fn show(self, ui: &mut egui::Ui) -> NoteResponse {
         #[cfg(feature = "profiling")]
         puffin::profile_function!();
         let note_key = self.note.key().expect("todo: support non-db notes");
         let txn = self.note.txn().expect("todo: support non-db notes");
+        let mut note_action: Option<BarAction> = None;
 
-        ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
-            ui.spacing_mut().item_spacing.x = 16.0;
+        let response = ui
+            .with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
+                ui.spacing_mut().item_spacing.x = 16.0;
 
-            let profile = self.app.ndb.get_profile_by_pubkey(txn, self.note.pubkey());
+                let profile = self.app.ndb.get_profile_by_pubkey(txn, self.note.pubkey());
 
-            match profile
-                .as_ref()
-                .ok()
-                .and_then(|p| p.record().profile()?.picture())
-            {
-                // these have different lifetimes and types,
-                // so the calls must be separate
-                Some(pic) => {
-                    let expand_size = 5.0;
-                    let anim_speed = 0.05;
-                    let profile_key = profile.as_ref().unwrap().record().note_key();
-                    let note_key = note_key.as_u64();
+                match profile
+                    .as_ref()
+                    .ok()
+                    .and_then(|p| p.record().profile()?.picture())
+                {
+                    // these have different lifetimes and types,
+                    // so the calls must be separate
+                    Some(pic) => {
+                        let expand_size = 5.0;
+                        let anim_speed = 0.05;
+                        let profile_key = profile.as_ref().unwrap().record().note_key();
+                        let note_key = note_key.as_u64();
 
-                    if self.app.is_mobile() {
-                        ui.add(ui::ProfilePic::new(&mut self.app.img_cache, pic));
-                    } else {
-                        let (rect, size) = ui::anim::hover_expand(
-                            ui,
-                            egui::Id::new(ProfileAnimId {
-                                profile_key,
-                                note_key,
-                            }),
-                            ui::ProfilePic::default_size(),
-                            expand_size,
-                            anim_speed,
-                        );
+                        if self.app.is_mobile() {
+                            ui.add(ui::ProfilePic::new(&mut self.app.img_cache, pic));
+                        } else {
+                            let (rect, size) = ui::anim::hover_expand(
+                                ui,
+                                egui::Id::new(ProfileAnimId {
+                                    profile_key,
+                                    note_key,
+                                }),
+                                ui::ProfilePic::default_size(),
+                                expand_size,
+                                anim_speed,
+                            );
 
-                        ui.put(
-                            rect,
-                            ui::ProfilePic::new(&mut self.app.img_cache, pic).size(size),
-                        )
-                        .on_hover_ui_at_pointer(|ui| {
-                            ui.set_max_width(300.0);
-                            ui.add(ui::ProfilePreview::new(
-                                profile.as_ref().unwrap(),
-                                &mut self.app.img_cache,
-                            ));
-                        });
+                            ui.put(
+                                rect,
+                                ui::ProfilePic::new(&mut self.app.img_cache, pic).size(size),
+                            )
+                            .on_hover_ui_at_pointer(|ui| {
+                                ui.set_max_width(300.0);
+                                ui.add(ui::ProfilePreview::new(
+                                    profile.as_ref().unwrap(),
+                                    &mut self.app.img_cache,
+                                ));
+                            });
+                        }
+                    }
+                    None => {
+                        ui.add(ui::ProfilePic::new(
+                            &mut self.app.img_cache,
+                            ui::ProfilePic::no_pfp_url(),
+                        ));
                     }
                 }
-                None => {
-                    ui.add(ui::ProfilePic::new(
-                        &mut self.app.img_cache,
-                        ui::ProfilePic::no_pfp_url(),
+
+                ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 2.0;
+                        ui.add(
+                            ui::Username::new(profile.as_ref().ok(), self.note.pubkey())
+                                .abbreviated(20),
+                        );
+
+                        let cached_note = self
+                            .app
+                            .note_cache_mut()
+                            .cached_note_or_insert_mut(note_key, self.note);
+                        render_reltime(ui, cached_note, true);
+                    });
+
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 2.0;
+                        reply_desc(ui, txn, self.app, note_key, self.note);
+                    });
+
+                    ui.add(NoteContents::new(
+                        self.app,
+                        txn,
+                        self.note,
+                        note_key,
+                        self.options(),
                     ));
-                }
-            }
 
-            ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 2.0;
-                    ui.add(
-                        ui::Username::new(profile.as_ref().ok(), self.note.pubkey())
-                            .abbreviated(20),
-                    );
-
-                    let cached_note = self
-                        .app
-                        .note_cache_mut()
-                        .cached_note_or_insert_mut(note_key, self.note);
-                    render_reltime(ui, cached_note, true);
+                    if self.options().has_actionbar() {
+                        note_action = render_note_actionbar(ui).inner;
+                    }
                 });
+            })
+            .response;
 
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 2.0;
-                    reply_desc(ui, txn, self.app, note_key, self.note);
-                });
-
-                ui.add(NoteContents::new(
-                    self.app,
-                    txn,
-                    self.note,
-                    note_key,
-                    self.options(),
-                ));
-
-                if self.options().has_actionbar() {
-                    render_note_actionbar(ui);
-                }
-            });
-        })
-        .response
+        NoteResponse {
+            response,
+            action: note_action,
+        }
     }
 }
 
-fn render_note_actionbar(ui: &mut egui::Ui) -> egui::InnerResponse<()> {
+#[derive(Debug, Eq, PartialEq, Copy, Clone)]
+pub enum BarAction {
+    Reply,
+}
+
+fn render_note_actionbar(ui: &mut egui::Ui) -> egui::InnerResponse<Option<BarAction>> {
     ui.horizontal(|ui| {
         let img_data = if ui.style().visuals.dark_mode {
             egui::include_image!("../../../assets/icons/reply.png")
@@ -299,9 +316,11 @@ fn render_note_actionbar(ui: &mut egui::Ui) -> egui::InnerResponse<()> {
                     .fill(ui.style().visuals.panel_fill),
             )
             .clicked()
-        {}
-
-        //if ui.add(egui::Button::new("like")).clicked() {}
+        {
+            Some(BarAction::Reply)
+        } else {
+            None
+        }
     })
 }
 
