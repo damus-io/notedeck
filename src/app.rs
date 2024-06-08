@@ -7,7 +7,7 @@ use crate::imgcache::ImageCache;
 use crate::notecache::{CachedNote, NoteCache};
 use crate::route::Route;
 use crate::timeline;
-use crate::timeline::{NoteRef, Timeline, ViewFilter};
+use crate::timeline::{MergeKind, NoteRef, Timeline, ViewFilter};
 use crate::ui;
 use crate::ui::profile::SimpleProfilePreviewController;
 use crate::ui::DesktopSidePanel;
@@ -381,24 +381,9 @@ fn poll_notes_for_timeline<'a>(
 
     // ViewFilter::NotesAndReplies
     {
-        let timeline = &mut damus.timelines[timeline_ind];
-
-        let prev_items = timeline.notes(ViewFilter::NotesAndReplies).len();
-
         let refs: Vec<NoteRef> = new_refs.iter().map(|(_note, nr)| *nr).collect();
-        timeline.view_mut(ViewFilter::NotesAndReplies).notes =
-            timeline::merge_sorted_vecs(timeline.notes(ViewFilter::NotesAndReplies), &refs);
 
-        let new_items = timeline.notes(ViewFilter::NotesAndReplies).len() - prev_items;
-
-        // TODO: technically items could have been added inbetween
-        if new_items > 0 {
-            damus.timelines[timeline_ind]
-                .view(ViewFilter::NotesAndReplies)
-                .list
-                .borrow_mut()
-                .items_inserted_at_start(new_items);
-        }
+        insert_notes_into_timeline(damus, timeline_ind, ViewFilter::NotesAndReplies, &refs)
     }
 
     //
@@ -416,26 +401,35 @@ fn poll_notes_for_timeline<'a>(
             }
         }
 
-        let timeline = &mut damus.timelines[timeline_ind];
-
-        let prev_items = timeline.notes(ViewFilter::Notes).len();
-
-        timeline.view_mut(ViewFilter::Notes).notes =
-            timeline::merge_sorted_vecs(timeline.notes(ViewFilter::Notes), &filtered_refs);
-
-        let new_items = timeline.notes(ViewFilter::Notes).len() - prev_items;
-
-        // TODO: technically items could have been added inbetween
-        if new_items > 0 {
-            damus.timelines[timeline_ind]
-                .view(ViewFilter::Notes)
-                .list
-                .borrow_mut()
-                .items_inserted_at_start(new_items);
-        }
+        insert_notes_into_timeline(damus, timeline_ind, ViewFilter::Notes, &filtered_refs);
     }
 
     Ok(())
+}
+
+fn insert_notes_into_timeline(
+    app: &mut Damus,
+    timeline_ind: usize,
+    filter: ViewFilter,
+    new_refs: &[NoteRef],
+) {
+    let timeline = &mut app.timelines[timeline_ind];
+    let num_prev_items = timeline.notes(filter).len();
+    let (notes, merge_kind) = timeline::merge_sorted_vecs(timeline.notes(filter), new_refs);
+
+    timeline.view_mut(filter).notes = notes;
+    let new_items = timeline.notes(filter).len() - num_prev_items;
+
+    // TODO: technically items could have been added inbetween
+    if new_items > 0 {
+        let mut list = app.timelines[timeline_ind].view(filter).list.borrow_mut();
+
+        match merge_kind {
+            // TODO: update egui_virtual_list to support spliced inserts
+            MergeKind::Spliced => list.reset(),
+            MergeKind::FrontInsert => list.items_inserted_at_start(new_items),
+        }
+    }
 }
 
 #[cfg(feature = "profiling")]

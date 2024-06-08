@@ -35,6 +35,7 @@ impl PartialOrd for NoteRef {
     }
 }
 
+#[derive(Copy, Clone, Eq, PartialEq)]
 pub enum ViewFilter {
     Notes,
     NotesAndReplies,
@@ -306,13 +307,24 @@ pub fn timeline_view(ui: &mut egui::Ui, app: &mut Damus, timeline: usize) {
         });
 }
 
-pub fn merge_sorted_vecs<T: Ord + Copy>(vec1: &[T], vec2: &[T]) -> Vec<T> {
+pub enum MergeKind {
+    FrontInsert,
+    Spliced,
+}
+
+pub fn merge_sorted_vecs<T: Ord + Copy>(vec1: &[T], vec2: &[T]) -> (Vec<T>, MergeKind) {
     let mut merged = Vec::with_capacity(vec1.len() + vec2.len());
     let mut i = 0;
     let mut j = 0;
+    let mut result: Option<MergeKind> = None;
 
     while i < vec1.len() && j < vec2.len() {
         if vec1[i] <= vec2[j] {
+            if result.is_none() && j < vec2.len() {
+                // if we're pushing from our large list and still have
+                // some left in vec2, then this is a splice
+                result = Some(MergeKind::Spliced);
+            }
             merged.push(vec1[i]);
             i += 1;
         } else {
@@ -329,5 +341,5 @@ pub fn merge_sorted_vecs<T: Ord + Copy>(vec1: &[T], vec2: &[T]) -> Vec<T> {
         merged.extend_from_slice(&vec2[j..]);
     }
 
-    merged
+    (merged, result.unwrap_or(MergeKind::FrontInsert))
 }
