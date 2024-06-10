@@ -63,7 +63,7 @@ pub fn create_custom_style(ctx: &Context, font_size: fn(&NotedeckTextStyle) -> f
         .collect();
 
     style.interaction = Interaction {
-        tooltip_delay: 0.0,
+        tooltip_delay: 0.1,
         show_tooltips_only_when_still: false,
         ..Interaction::default()
     };
