@@ -635,13 +635,46 @@ impl Damus {
     ) -> Self {
         let mut timelines: Vec<Timeline> = vec![];
         let mut is_mobile: Option<bool> = None;
+        let mut i = 0;
+
         if args.len() > 1 {
             for arg in &args[1..] {
                 if arg == "--mobile" {
                     is_mobile = Some(true);
-                } else if let Ok(filter) = serde_json::from_str(arg) {
-                    timelines.push(Timeline::new(filter));
+                } else if arg == "--filter" {
+                    let next_args = &args[1 + i + 1..];
+                    if next_args.len() == 0 {
+                        continue;
+                    }
+                    let filter = &next_args[0];
+
+                    if let Ok(filter) = serde_json::from_str(filter) {
+                        timelines.push(Timeline::new(filter));
+                    } else {
+                        error!("failed to parse filter '{}'", filter);
+                    }
+                } else if arg == "--filter-file" || arg == "-f" {
+                    let next_args = &args[1 + i + 1..];
+                    if next_args.len() == 0 {
+                        continue;
+                    }
+                    let filter_file = &next_args[0];
+
+                    let data = if let Ok(data) = std::fs::read(filter_file) {
+                        data
+                    } else {
+                        error!("failed to read filter file '{}'", filter_file);
+                        continue;
+                    };
+
+                    if let Ok(filter) = serde_json::from_slice(&data) {
+                        timelines.push(Timeline::new(filter));
+                    } else {
+                        error!("failed to parse filter in '{}'", filter_file);
+                    }
                 }
+
+                i += 1;
             }
         } else {
             let filter = serde_json::from_str(include_str!("../queries/timeline.json")).unwrap();
