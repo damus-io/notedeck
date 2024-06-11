@@ -80,12 +80,13 @@ fn render_note_preview(
     };
 
     egui::Frame::none()
-        //.fill(egui::Color32::BLACK.gamma_multiply(0.2))
-        //
+        .fill(ui.visuals().noninteractive().bg_fill)
+        .inner_margin(egui::Margin::same(8.0))
+        .outer_margin(egui::Margin::symmetric(0.0, 8.0))
         .rounding(egui::Rounding::same(10.0))
         .stroke(egui::Stroke::new(
             1.0,
-            egui::Color32::from_rgb(0x2C, 0x2C, 0x2C),
+            ui.visuals().noninteractive().bg_stroke.color,
         ))
         .show(ui, |ui| {
             ui.add(

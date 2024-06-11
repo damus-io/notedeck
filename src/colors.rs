@@ -66,8 +66,8 @@ pub fn desktop_dark_color_theme() -> ColorTheme {
 
         // NONINTERACTIVE WIDGET
         noninteractive_bg_fill: DARK_ISH_BG,
-        noninteractive_weak_bg_fill: SEMI_DARKER_BG,
-        noninteractive_bg_stroke_color: DARK_BG,
+        noninteractive_weak_bg_fill: DARK_BG,
+        noninteractive_bg_stroke_color: SEMI_DARKER_BG,
         noninteractive_fg_stroke_color: GRAY_SECONDARY,
 
         // INACTIVE WIDGET

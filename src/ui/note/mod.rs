@@ -192,92 +192,90 @@ impl<'a> Note<'a> {
         let note_key = self.note.key().expect("todo: support non-db notes");
         let txn = self.note.txn().expect("todo: support non-db notes");
 
-        crate::ui::padding(12.0, ui, |ui| {
-            ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
-                ui.spacing_mut().item_spacing.x = 16.0;
+        ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
+            ui.spacing_mut().item_spacing.x = 16.0;
 
-                let profile = self.app.ndb.get_profile_by_pubkey(txn, self.note.pubkey());
+            let profile = self.app.ndb.get_profile_by_pubkey(txn, self.note.pubkey());
 
-                match profile
-                    .as_ref()
-                    .ok()
-                    .and_then(|p| p.record().profile()?.picture())
-                {
-                    // these have different lifetimes and types,
-                    // so the calls must be separate
-                    Some(pic) => {
-                        let expand_size = 5.0;
-                        let anim_speed = 0.05;
-                        let profile_key = profile.as_ref().unwrap().record().note_key();
-                        let note_key = note_key.as_u64();
+            match profile
+                .as_ref()
+                .ok()
+                .and_then(|p| p.record().profile()?.picture())
+            {
+                // these have different lifetimes and types,
+                // so the calls must be separate
+                Some(pic) => {
+                    let expand_size = 5.0;
+                    let anim_speed = 0.05;
+                    let profile_key = profile.as_ref().unwrap().record().note_key();
+                    let note_key = note_key.as_u64();
 
-                        if self.app.is_mobile() {
-                            ui.add(ui::ProfilePic::new(&mut self.app.img_cache, pic));
-                        } else {
-                            let (rect, size) = ui::anim::hover_expand(
-                                ui,
-                                egui::Id::new(ProfileAnimId {
-                                    profile_key,
-                                    note_key,
-                                }),
-                                ui::ProfilePic::default_size(),
-                                expand_size,
-                                anim_speed,
-                            );
-
-                            ui.put(
-                                rect,
-                                ui::ProfilePic::new(&mut self.app.img_cache, pic).size(size),
-                            )
-                            .on_hover_ui_at_pointer(|ui| {
-                                ui.set_max_width(300.0);
-                                ui.add(ui::ProfilePreview::new(
-                                    profile.as_ref().unwrap(),
-                                    &mut self.app.img_cache,
-                                ));
-                            });
-                        }
-                    }
-                    None => {
-                        ui.add(ui::ProfilePic::new(
-                            &mut self.app.img_cache,
-                            ui::ProfilePic::no_pfp_url(),
-                        ));
-                    }
-                }
-
-                ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 2.0;
-                        ui.add(
-                            ui::Username::new(profile.as_ref().ok(), self.note.pubkey())
-                                .abbreviated(20),
+                    if self.app.is_mobile() {
+                        ui.add(ui::ProfilePic::new(&mut self.app.img_cache, pic));
+                    } else {
+                        let (rect, size) = ui::anim::hover_expand(
+                            ui,
+                            egui::Id::new(ProfileAnimId {
+                                profile_key,
+                                note_key,
+                            }),
+                            ui::ProfilePic::default_size(),
+                            expand_size,
+                            anim_speed,
                         );
 
-                        let cached_note = self
-                            .app
-                            .note_cache_mut()
-                            .cached_note_or_insert_mut(note_key, self.note);
-                        render_reltime(ui, cached_note, true);
-                    });
-
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 2.0;
-                        reply_desc(ui, txn, self.app, note_key, self.note);
-                    });
-
-                    ui.add(NoteContents::new(
-                        self.app,
-                        txn,
-                        self.note,
-                        note_key,
-                        self.options(),
-                    ));
-
-                    if self.options().has_actionbar() {
-                        render_note_actionbar(ui);
+                        ui.put(
+                            rect,
+                            ui::ProfilePic::new(&mut self.app.img_cache, pic).size(size),
+                        )
+                        .on_hover_ui_at_pointer(|ui| {
+                            ui.set_max_width(300.0);
+                            ui.add(ui::ProfilePreview::new(
+                                profile.as_ref().unwrap(),
+                                &mut self.app.img_cache,
+                            ));
+                        });
                     }
+                }
+                None => {
+                    ui.add(ui::ProfilePic::new(
+                        &mut self.app.img_cache,
+                        ui::ProfilePic::no_pfp_url(),
+                    ));
+                }
+            }
+
+            ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 2.0;
+                    ui.add(
+                        ui::Username::new(profile.as_ref().ok(), self.note.pubkey())
+                            .abbreviated(20),
+                    );
+
+                    let cached_note = self
+                        .app
+                        .note_cache_mut()
+                        .cached_note_or_insert_mut(note_key, self.note);
+                    render_reltime(ui, cached_note, true);
                 });
+
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 2.0;
+                    reply_desc(ui, txn, self.app, note_key, self.note);
+                });
+
+                ui.add(NoteContents::new(
+                    self.app,
+                    txn,
+                    self.note,
+                    note_key,
+                    self.options(),
+                ));
+
+                if self.options().has_actionbar() {
+                    render_note_actionbar(ui);
+                }
             });
         })
         .response
