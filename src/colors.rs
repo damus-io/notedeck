@@ -102,7 +102,7 @@ pub fn light_color_theme() -> ColorTheme {
         // NONINTERACTIVE WIDGET
         noninteractive_bg_fill: Color32::WHITE,
         noninteractive_weak_bg_fill: LIGHTER_GRAY,
-        noninteractive_bg_stroke_color: LIGHTER_GRAY,
+        noninteractive_bg_stroke_color: LIGHT_GRAY,
         noninteractive_fg_stroke_color: GRAY_SECONDARY,
 
         // INACTIVE WIDGET
