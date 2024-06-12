@@ -199,7 +199,6 @@ fn selected_widget() -> impl egui::Widget {
 // PREVIEWS
 
 mod preview {
-    
 
     use super::*;
     use crate::test_data::get_account_manager_test_app;

@@ -89,11 +89,11 @@ fn render_note_preview(
             ui.visuals().noninteractive().bg_stroke.color,
         ))
         .show(ui, |ui| {
-            ui.add(
-                ui::Note::new(app, &note)
-                    .actionbar(false)
-                    .note_previews(false),
-            )
+            ui::Note::new(app, &note)
+                .actionbar(false)
+                .small_pfp(true)
+                .note_previews(false)
+                .show(ui);
         })
         .response
 }

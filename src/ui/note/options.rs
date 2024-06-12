@@ -7,6 +7,8 @@ bitflags! {
     pub struct NoteOptions: u32 {
         const actionbar     = 0b00000001;
         const note_previews = 0b00000010;
+        const small_pfp     = 0b00000100;
+        const wide          = 0b00001000;
     }
 }
 
@@ -21,6 +23,24 @@ impl NoteOptions {
         (self & NoteOptions::note_previews) == NoteOptions::note_previews
     }
 
+    #[inline]
+    pub fn has_small_pfp(self) -> bool {
+        (self & NoteOptions::small_pfp) == NoteOptions::small_pfp
+    }
+
+    #[inline]
+    pub fn has_wide(self) -> bool {
+        (self & NoteOptions::wide) == NoteOptions::wide
+    }
+
+    #[inline]
+    pub fn set_small_pfp(&mut self, enable: bool) {
+        if enable {
+            *self |= NoteOptions::small_pfp;
+        } else {
+            *self &= !NoteOptions::small_pfp;
+        }
+    }
     #[inline]
     pub fn set_note_previews(&mut self, enable: bool) {
         if enable {

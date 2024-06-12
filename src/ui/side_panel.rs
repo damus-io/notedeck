@@ -119,7 +119,6 @@ fn add_column_button(dark_mode: bool) -> egui::Button<'static> {
 }
 
 mod preview {
-    
 
     use crate::{
         test_data,

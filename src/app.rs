@@ -651,7 +651,7 @@ impl Damus {
                     is_mobile = Some(true);
                 } else if arg == "--filter" {
                     let next_args = &args[1 + i + 1..];
-                    if next_args.len() == 0 {
+                    if next_args.is_empty() {
                         continue;
                     }
                     let filter = &next_args[0];
@@ -663,7 +663,7 @@ impl Damus {
                     }
                 } else if arg == "--filter-file" || arg == "-f" {
                     let next_args = &args[1 + i + 1..];
-                    if next_args.len() == 0 {
+                    if next_args.is_empty() {
                         continue;
                     }
                     let filter_file = &next_args[0];

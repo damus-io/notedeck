@@ -4,7 +4,7 @@ pub mod options;
 pub use contents::NoteContents;
 pub use options::NoteOptions;
 
-use crate::{colors, notecache::CachedNote, ui, Damus};
+use crate::{colors, notecache::CachedNote, ui, ui::View, Damus};
 use egui::{Label, RichText, Sense};
 use nostrdb::{NoteKey, Transaction};
 use std::hash::{Hash, Hasher};
@@ -20,12 +20,12 @@ pub struct NoteResponse {
     pub action: Option<BarAction>,
 }
 
-impl<'a> egui::Widget for Note<'a> {
-    fn ui(self, ui: &mut egui::Ui) -> egui::Response {
+impl<'a> View for Note<'a> {
+    fn ui(&mut self, ui: &mut egui::Ui) {
         if self.app.textmode {
-            self.textmode_ui(ui)
+            self.textmode_ui(ui);
         } else {
-            self.show(ui).response
+            self.show(ui);
         }
     }
 }
@@ -140,6 +140,11 @@ impl<'a> Note<'a> {
         self
     }
 
+    pub fn small_pfp(mut self, enable: bool) -> Self {
+        self.options_mut().set_small_pfp(enable);
+        self
+    }
+
     pub fn note_previews(mut self, enable: bool) -> Self {
         self.options_mut().set_note_previews(enable);
         self
@@ -153,7 +158,7 @@ impl<'a> Note<'a> {
         &mut self.flags
     }
 
-    fn textmode_ui(self, ui: &mut egui::Ui) -> egui::Response {
+    fn textmode_ui(&mut self, ui: &mut egui::Ui) -> egui::Response {
         let note_key = self.note.key().expect("todo: implement non-db notes");
         let txn = self.note.txn().expect("todo: implement non-db notes");
 
@@ -191,66 +196,86 @@ impl<'a> Note<'a> {
         .response
     }
 
-    pub fn show(self, ui: &mut egui::Ui) -> NoteResponse {
+    fn pfp(
+        &mut self,
+        note_key: NoteKey,
+        profile: &Result<nostrdb::ProfileRecord<'_>, nostrdb::Error>,
+        ui: &mut egui::Ui,
+    ) {
+        ui.spacing_mut().item_spacing.x = 16.0;
+
+        let pfp_size = if self.options().has_small_pfp() {
+            24.0
+        } else {
+            ui::ProfilePic::default_size()
+        };
+
+        match profile
+            .as_ref()
+            .ok()
+            .and_then(|p| p.record().profile()?.picture())
+        {
+            // these have different lifetimes and types,
+            // so the calls must be separate
+            Some(pic) => {
+                let expand_size = 5.0;
+                let anim_speed = 0.05;
+                let profile_key = profile.as_ref().unwrap().record().note_key();
+                let note_key = note_key.as_u64();
+
+                if self.app.is_mobile() {
+                    ui.add(ui::ProfilePic::new(&mut self.app.img_cache, pic));
+                } else {
+                    let (rect, size) = ui::anim::hover_expand(
+                        ui,
+                        egui::Id::new(ProfileAnimId {
+                            profile_key,
+                            note_key,
+                        }),
+                        pfp_size,
+                        expand_size,
+                        anim_speed,
+                    );
+
+                    ui.put(
+                        rect,
+                        ui::ProfilePic::new(&mut self.app.img_cache, pic).size(size),
+                    )
+                    .on_hover_ui_at_pointer(|ui| {
+                        ui.set_max_width(300.0);
+                        ui.add(ui::ProfilePreview::new(
+                            profile.as_ref().unwrap(),
+                            &mut self.app.img_cache,
+                        ));
+                    });
+                }
+            }
+            None => {
+                ui.add(
+                    ui::ProfilePic::new(&mut self.app.img_cache, ui::ProfilePic::no_pfp_url())
+                        .size(pfp_size),
+                );
+            }
+        }
+    }
+
+    pub fn show(&mut self, ui: &mut egui::Ui) -> NoteResponse {
         #[cfg(feature = "profiling")]
         puffin::profile_function!();
         let note_key = self.note.key().expect("todo: support non-db notes");
         let txn = self.note.txn().expect("todo: support non-db notes");
         let mut note_action: Option<BarAction> = None;
+        let profile = self.app.ndb.get_profile_by_pubkey(txn, self.note.pubkey());
+
+        if self.options().has_wide() {
+            ui.horizontal_centered(|ui| {
+                self.pfp(note_key, &profile, ui);
+            });
+        }
 
         let response = ui
             .with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
-                ui.spacing_mut().item_spacing.x = 16.0;
-
-                let profile = self.app.ndb.get_profile_by_pubkey(txn, self.note.pubkey());
-
-                match profile
-                    .as_ref()
-                    .ok()
-                    .and_then(|p| p.record().profile()?.picture())
-                {
-                    // these have different lifetimes and types,
-                    // so the calls must be separate
-                    Some(pic) => {
-                        let expand_size = 5.0;
-                        let anim_speed = 0.05;
-                        let profile_key = profile.as_ref().unwrap().record().note_key();
-                        let note_key = note_key.as_u64();
-
-                        if self.app.is_mobile() {
-                            ui.add(ui::ProfilePic::new(&mut self.app.img_cache, pic));
-                        } else {
-                            let (rect, size) = ui::anim::hover_expand(
-                                ui,
-                                egui::Id::new(ProfileAnimId {
-                                    profile_key,
-                                    note_key,
-                                }),
-                                ui::ProfilePic::default_size(),
-                                expand_size,
-                                anim_speed,
-                            );
-
-                            ui.put(
-                                rect,
-                                ui::ProfilePic::new(&mut self.app.img_cache, pic).size(size),
-                            )
-                            .on_hover_ui_at_pointer(|ui| {
-                                ui.set_max_width(300.0);
-                                ui.add(ui::ProfilePreview::new(
-                                    profile.as_ref().unwrap(),
-                                    &mut self.app.img_cache,
-                                ));
-                            });
-                        }
-                    }
-                    None => {
-                        ui.add(ui::ProfilePic::new(
-                            &mut self.app.img_cache,
-                            ui::ProfilePic::no_pfp_url(),
-                        ));
-                    }
-                }
+                self.pfp(note_key, &profile, ui);
 
                 ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
                     ui.horizontal(|ui| {
