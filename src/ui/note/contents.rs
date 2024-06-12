@@ -80,7 +80,7 @@ fn render_note_preview(
     };
 
     egui::Frame::none()
-        .fill(ui.visuals().noninteractive().bg_fill)
+        .fill(ui.visuals().noninteractive().weak_bg_fill)
         .inner_margin(egui::Margin::same(8.0))
         .outer_margin(egui::Margin::symmetric(0.0, 8.0))
         .rounding(egui::Rounding::same(10.0))

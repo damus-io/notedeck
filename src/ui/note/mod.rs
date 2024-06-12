@@ -22,11 +22,7 @@ pub struct NoteResponse {
 
 impl<'a> View for Note<'a> {
     fn ui(&mut self, ui: &mut egui::Ui) {
-        if self.app.textmode {
-            self.textmode_ui(ui);
-        } else {
-            self.show(ui);
-        }
+        self.show(ui);
     }
 }
 
@@ -260,6 +256,17 @@ impl<'a> Note<'a> {
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui) -> NoteResponse {
+        if self.app.textmode {
+            NoteResponse {
+                response: self.textmode_ui(ui),
+                action: None,
+            }
+        } else {
+            self.show_standard(ui)
+        }
+    }
+
+    fn show_standard(&mut self, ui: &mut egui::Ui) -> NoteResponse {
         #[cfg(feature = "profiling")]
         puffin::profile_function!();
         let note_key = self.note.key().expect("todo: support non-db notes");
