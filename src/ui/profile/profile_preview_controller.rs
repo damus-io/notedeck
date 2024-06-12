@@ -135,6 +135,30 @@ pub fn show_with_nickname(
     Ok(ui_element(ui, &get_display_name(&profile)))
 }
 
+pub fn show_with_selected_pfp(
+    app: &mut Damus,
+    ui: &mut egui::Ui,
+    ui_element: fn(ui: &mut egui::Ui, pfp: ProfilePic) -> egui::Response,
+) -> Option<egui::Response> {
+    let selected_account = app.account_manager.get_selected_account();
+    if let Some(selected_account) = selected_account {
+        if let Ok(txn) = Transaction::new(&app.ndb) {
+            let profile = app
+                .ndb
+                .get_profile_by_pubkey(&txn, selected_account.pubkey.bytes());
+
+            if let Ok(profile) = profile {
+                return Some(ui_element(
+                    ui,
+                    ProfilePic::new(&mut app.img_cache, get_profile_url(&profile)),
+                ));
+            }
+        }
+    }
+
+    None
+}
+
 pub fn show_with_pfp(
     app: &mut Damus,
     ui: &mut egui::Ui,

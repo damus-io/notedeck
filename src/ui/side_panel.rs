@@ -71,18 +71,7 @@ impl<'a> DesktopSidePanel<'a> {
     }
 
     fn pfp_button(&mut self, ui: &mut egui::Ui) -> egui::Response {
-        let selected_account = self.app.account_manager.get_selected_account();
-        if let Some(selected_account) = selected_account {
-            if let Some(response) = profile_preview_controller::show_with_pfp(
-                self.app,
-                ui,
-                &selected_account.pubkey.bytes().clone(),
-                show_pfp(),
-            ) {
-                return response;
-            }
-        }
-
+        profile_preview_controller::show_with_selected_pfp(self.app, ui, show_pfp());
         add_button_to_ui(ui, no_account_pfp())
     }
 }
