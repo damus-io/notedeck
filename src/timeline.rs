@@ -271,7 +271,7 @@ pub fn timeline_view(ui: &mut egui::Ui, app: &mut Damus, timeline: usize) {
     // need this for some reason??
     ui.add_space(3.0);
 
-    let scroll_id = ui.id().with(app.timelines[timeline].selected_view);
+    let scroll_id = egui::Id::new(("tlscroll", app.timelines[timeline].selected_view, timeline));
     egui::ScrollArea::vertical()
         .id_source(scroll_id)
         .animated(false)

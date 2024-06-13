@@ -7,7 +7,6 @@ pub use options::NoteOptions;
 use crate::{colors, notecache::CachedNote, ui, ui::View, Damus};
 use egui::{Label, RichText, Sense};
 use nostrdb::{NoteKey, Transaction};
-use std::hash::{Hash, Hasher};
 
 pub struct Note<'a> {
     app: &'a mut Damus,
@@ -23,20 +22,6 @@ pub struct NoteResponse {
 impl<'a> View for Note<'a> {
     fn ui(&mut self, ui: &mut egui::Ui) {
         self.show(ui);
-    }
-}
-
-#[derive(Eq, PartialEq, Debug, Clone, Copy)]
-struct ProfileAnimId {
-    profile_key: u64,
-    note_key: u64,
-}
-
-impl Hash for ProfileAnimId {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        state.write_u8(0x12);
-        self.profile_key.hash(state);
-        self.note_key.hash(state);
     }
 }
 
@@ -224,10 +209,7 @@ impl<'a> Note<'a> {
                 } else {
                     let (rect, size) = ui::anim::hover_expand(
                         ui,
-                        egui::Id::new(ProfileAnimId {
-                            profile_key,
-                            note_key,
-                        }),
+                        egui::Id::new((profile_key, note_key)),
                         pfp_size,
                         expand_size,
                         anim_speed,
@@ -345,6 +327,7 @@ fn render_note_actionbar(ui: &mut egui::Ui) -> egui::InnerResponse<Option<BarAct
                 egui::Button::image(egui::Image::new(img_data).max_width(10.0))
                     //.stroke(egui::Stroke::NONE)
                     .frame(false)
+                    .stroke(egui::Stroke::NONE)
                     .fill(ui.style().visuals.panel_fill),
             )
             .clicked()
