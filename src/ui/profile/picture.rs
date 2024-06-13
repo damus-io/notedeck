@@ -164,7 +164,7 @@ mod preview {
                     let expand_size = 10.0;
                     let anim_speed = 0.05;
 
-                    let (rect, size) = ui::anim::hover_expand(
+                    let (rect, size, _resp) = ui::anim::hover_expand(
                         ui,
                         egui::Id::new(profile.key().unwrap()),
                         ui::ProfilePic::default_size(),

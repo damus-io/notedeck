@@ -207,7 +207,7 @@ impl<'a> Note<'a> {
                 if self.app.is_mobile() {
                     ui.add(ui::ProfilePic::new(&mut self.app.img_cache, pic));
                 } else {
-                    let (rect, size) = ui::anim::hover_expand(
+                    let (rect, size, _resp) = ui::anim::hover_expand(
                         ui,
                         egui::Id::new((profile_key, note_key)),
                         pfp_size,
@@ -295,7 +295,7 @@ impl<'a> Note<'a> {
                     ));
 
                     if self.options().has_actionbar() {
-                        note_action = render_note_actionbar(ui).inner;
+                        note_action = render_note_actionbar(ui, note_key).inner;
                     }
                 });
             })
@@ -313,7 +313,10 @@ pub enum BarAction {
     Reply,
 }
 
-fn render_note_actionbar(ui: &mut egui::Ui) -> egui::InnerResponse<Option<BarAction>> {
+fn render_note_actionbar(
+    ui: &mut egui::Ui,
+    note_key: NoteKey,
+) -> egui::InnerResponse<Option<BarAction>> {
     ui.horizontal(|ui| {
         let img_data = if ui.style().visuals.dark_mode {
             egui::include_image!("../../../assets/icons/reply.png")
@@ -322,16 +325,25 @@ fn render_note_actionbar(ui: &mut egui::Ui) -> egui::InnerResponse<Option<BarAct
         };
 
         ui.spacing_mut().button_padding = egui::vec2(0.0, 0.0);
-        if ui
-            .add(
-                egui::Button::image(egui::Image::new(img_data).max_width(10.0))
-                    //.stroke(egui::Stroke::NONE)
-                    .frame(false)
-                    .stroke(egui::Stroke::NONE)
-                    .fill(ui.style().visuals.panel_fill),
-            )
-            .clicked()
-        {
+
+        let button_size = 10.0;
+        let expand_size = 5.0;
+        let anim_speed = 0.05;
+
+        let (rect, size, resp) = ui::anim::hover_expand(
+            ui,
+            ui.id().with(("reply_anim", note_key)),
+            button_size,
+            expand_size,
+            anim_speed,
+        );
+
+        // align rect to note contents
+        let rect = rect.translate(egui::vec2(-(expand_size / 2.0), 0.0));
+
+        ui.put(rect, egui::Image::new(img_data).max_width(size));
+
+        if resp.clicked() {
             Some(BarAction::Reply)
         } else {
             None
