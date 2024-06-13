@@ -32,7 +32,7 @@ eframe = { version = "0.27.2", default-features = false, features = [ "glow", "w
 egui_extras = { version = "0.27.2", features = ["all_loaders"] }
 ehttp = "0.2.0"
 egui_tabs = { git = "https://github.com/damus-io/egui-tabs", rev = "120971fc43db6ba0b6f194f4bd4a66f7e00a4e22" }
-egui_nav = { git = "https://github.com/damus-io/egui-nav", rev = "9f640df83494a79cd7aa0b5983c83290d284d6ee" }
+egui_nav = { git = "https://github.com/damus-io/egui-nav", rev = "ac22dfccbaa3d2fee57a8b0250bde11ebf4c5563" }
 reqwest = { version = "0.12.4", default-features = false, features = [ "rustls-tls-native-roots" ] }
 image = { version = "0.24", features = ["jpeg", "png", "webp"] }
 log = "0.4.17"

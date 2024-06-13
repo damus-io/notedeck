@@ -869,57 +869,63 @@ fn render_panel(ctx: &egui::Context, app: &mut Damus, timeline_ind: usize) {
 }
 
 fn render_nav(routes: Vec<Route>, timeline_ind: usize, app: &mut Damus, ui: &mut egui::Ui) {
+    let navigating = app.timelines[timeline_ind].navigating;
     let app_ctx = Rc::new(RefCell::new(app));
 
-    let nav_response = Nav::new(routes).show(ui, |ui, nav| match nav.top() {
-        Route::Timeline(_n) => {
-            timeline::timeline_view(ui, &mut app_ctx.borrow_mut(), timeline_ind);
-        }
+    let nav_response =
+        Nav::new(routes)
+            .navigating(navigating)
+            .show(ui, |ui, nav| match nav.top() {
+                Route::Timeline(_n) => {
+                    timeline::timeline_view(ui, &mut app_ctx.borrow_mut(), timeline_ind);
+                }
 
-        Route::ManageAccount => {
-            ui.label("account management view");
-        }
+                Route::ManageAccount => {
+                    ui.label("account management view");
+                }
 
-        Route::Thread(_key) => {
-            ui.label("thread view");
-        }
+                Route::Thread(_key) => {
+                    ui.label("thread view");
+                }
 
-        Route::Relays => {
-            let pool = &mut app_ctx.borrow_mut().pool;
-            let manager = RelayPoolManager::new(pool);
-            RelayView::new(manager).ui(ui);
-        }
+                Route::Relays => {
+                    let pool = &mut app_ctx.borrow_mut().pool;
+                    let manager = RelayPoolManager::new(pool);
+                    RelayView::new(manager).ui(ui);
+                }
 
-        Route::Reply(id) => {
-            let app = app_ctx.borrow();
-            let txn = if let Ok(txn) = Transaction::new(&app.ndb) {
-                txn
-            } else {
-                ui.label("Reply to unknown note");
-                return;
-            };
+                Route::Reply(id) => {
+                    let app = app_ctx.borrow();
+                    let txn = if let Ok(txn) = Transaction::new(&app.ndb) {
+                        txn
+                    } else {
+                        ui.label("Reply to unknown note");
+                        return;
+                    };
 
-            let note = if let Ok(note) = app.ndb.get_note_by_id(&txn, id.bytes()) {
-                note
-            } else {
-                ui.label("Reply to unknown note");
-                return;
-            };
+                    let note = if let Ok(note) = app.ndb.get_note_by_id(&txn, id.bytes()) {
+                        note
+                    } else {
+                        ui.label("Reply to unknown note");
+                        return;
+                    };
 
-            ui.label(format!(
-                "Replying to note by {}",
-                app.ndb
-                    .get_profile_by_pubkey(&txn, note.pubkey())
-                    .as_ref()
-                    .ok()
-                    .and_then(|pr| Some(crate::profile::get_profile_name(pr)?.username()))
-                    .unwrap_or("??")
-            ));
-        }
-    });
+                    ui.label(format!(
+                        "Replying to note by {}",
+                        app.ndb
+                            .get_profile_by_pubkey(&txn, note.pubkey())
+                            .as_ref()
+                            .ok()
+                            .and_then(|pr| Some(crate::profile::get_profile_name(pr)?.username()))
+                            .unwrap_or("??")
+                    ));
+                }
+            });
 
     if let Some(NavAction::Returned) = nav_response.action {
         app_ctx.borrow_mut().timelines[timeline_ind].routes.pop();
+    } else if let Some(NavAction::Navigated) = nav_response.action {
+        app_ctx.borrow_mut().timelines[timeline_ind].navigating = false;
     }
 }
 

@@ -126,6 +126,7 @@ pub struct Timeline {
     pub views: Vec<TimelineView>,
     pub selected_view: i32,
     pub routes: Vec<Route>,
+    pub navigating: bool,
 
     /// Our nostrdb subscription
     pub subscription: Option<Subscription>,
@@ -139,8 +140,10 @@ impl Timeline {
         let views = vec![notes, replies];
         let selected_view = 0;
         let routes = vec![Route::Timeline("Timeline".to_string())];
+        let navigating = false;
 
         Timeline {
+            navigating,
             filter,
             views,
             subscription,
@@ -309,9 +312,11 @@ pub fn timeline_view(ui: &mut egui::Ui, app: &mut Damus, timeline: usize) {
                             debug!("bar action: {:?}", action);
                             match action {
                                 BarAction::Reply => {
-                                    app.timelines[timeline]
+                                    let timeline = &mut app.timelines[timeline];
+                                    timeline
                                         .routes
                                         .push(Route::Reply(NoteId::new(note.id().to_owned())));
+                                    timeline.navigating = true;
                                 }
                             }
                         }
