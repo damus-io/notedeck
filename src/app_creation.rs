@@ -1,4 +1,6 @@
-use crate::app_style::{create_custom_style, dark_mode, desktop_font_size, mobile_font_size};
+use crate::app_style::{
+    create_custom_style, dark_mode, desktop_font_size, light_mode, mobile_font_size,
+};
 use crate::fonts::setup_fonts;
 use eframe::NativeOptions;
 
@@ -35,7 +37,7 @@ pub fn generate_mobile_emulator_native_options() -> eframe::NativeOptions {
     })
 }
 
-pub fn setup_cc(cc: &eframe::CreationContext<'_>, is_mobile: bool) {
+pub fn setup_cc(cc: &eframe::CreationContext<'_>, is_mobile: bool, light: bool) {
     let ctx = &cc.egui_ctx;
     setup_fonts(ctx);
 
@@ -47,7 +49,11 @@ pub fn setup_cc(cc: &eframe::CreationContext<'_>, is_mobile: bool) {
 
     egui_extras::install_image_loaders(ctx);
 
-    ctx.set_visuals(dark_mode(is_mobile));
+    if light {
+        ctx.set_visuals(light_mode())
+    } else {
+        ctx.set_visuals(dark_mode(is_mobile));
+    }
 
     ctx.set_style(if is_mobile {
         create_custom_style(ctx, mobile_font_size)

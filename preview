@@ -1,4 +1,4 @@
 #!/usr/bin/env bash
 
 # pass --mobile for mobile previews
-cargo run --bin ui_preview --release -- "$@"
+RUST_LOG=info cargo run --bin ui_preview --release -- "$@"

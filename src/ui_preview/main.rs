@@ -7,14 +7,16 @@ use notedeck::ui::{
     PreviewConfig, ProfilePic, ProfilePreview, RelayView,
 };
 use std::env;
+use tracing::info;
 
 struct PreviewRunner {
     force_mobile: bool,
+    light_mode: bool,
 }
 
 impl PreviewRunner {
-    fn new(force_mobile: bool) -> Self {
-        PreviewRunner { force_mobile }
+    fn new(force_mobile: bool, light_mode: bool) -> Self {
+        PreviewRunner { force_mobile, light_mode }
     }
 
     async fn run<P>(self, preview: P)
@@ -30,12 +32,15 @@ impl PreviewRunner {
         };
 
         let is_mobile = self.force_mobile;
+        let light_mode = self.light_mode;
+
         let _ = eframe::run_native(
             "UI Preview Runner",
             native_options,
             Box::new(move |cc| {
-                setup_cc(cc, is_mobile);
-                Box::new(Into::<PreviewApp>::into(preview))
+                let app = Into::<PreviewApp>::into(preview);
+                setup_cc(cc, is_mobile, light_mode);
+                Box::new(app)
             }),
         );
     }
@@ -59,10 +64,13 @@ macro_rules! previews {
 async fn main() {
     let mut name: Option<String> = None;
     let mut is_mobile: Option<bool> = None;
+    let mut light_mode: bool = false;
 
     for arg in env::args() {
         if arg == "--mobile" {
             is_mobile = Some(true);
+        } else if arg == "--light" {
+            light_mode = true;
         } else {
             name = Some(arg);
         }
@@ -75,8 +83,9 @@ async fn main() {
         return;
     };
 
+    println!("light mode previews: {}", if light_mode { "enabled" } else { "disabled" });
     let is_mobile = is_mobile.unwrap_or(notedeck::ui::is_compiled_as_mobile());
-    let runner = PreviewRunner::new(is_mobile);
+    let runner = PreviewRunner::new(is_mobile, light_mode);
 
     previews!(
         runner,

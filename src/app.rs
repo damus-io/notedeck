@@ -644,11 +644,16 @@ impl Damus {
         let mut timelines: Vec<Timeline> = vec![];
         let mut is_mobile: Option<bool> = None;
         let mut i = 0;
+        let mut light: bool = false;
 
         if args.len() > 1 {
             for arg in &args[1..] {
                 if arg == "--mobile" {
                     is_mobile = Some(true);
+                } else if arg == "--light" {
+                    light = true;
+                } else if arg == "--dark" {
+                    light = false;
                 } else if arg == "--filter" {
                     let next_args = &args[1 + i + 1..];
                     if next_args.is_empty() {
@@ -691,13 +696,14 @@ impl Damus {
 
         let is_mobile = is_mobile.unwrap_or(ui::is_compiled_as_mobile());
 
-        setup_cc(cc, is_mobile);
+        setup_cc(cc, is_mobile, light);
 
         let imgcache_dir = data_path.as_ref().join(ImageCache::rel_datadir());
         let _ = std::fs::create_dir_all(imgcache_dir.clone());
 
         let mut config = Config::new();
         config.set_ingester_threads(2);
+
         Self {
             is_mobile,
             state: DamusState::Initializing,
