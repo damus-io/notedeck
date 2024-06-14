@@ -80,6 +80,7 @@ pub fn desktop_dark_color_theme() -> ColorTheme {
 pub fn mobile_dark_color_theme() -> ColorTheme {
     ColorTheme {
         panel_fill: Color32::BLACK,
+        noninteractive_weak_bg_fill: Color32::from_rgb(0x1F, 0x1F, 0x1F),
         ..desktop_dark_color_theme()
     }
 }
