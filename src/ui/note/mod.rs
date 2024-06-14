@@ -1,8 +1,10 @@
 pub mod contents;
 pub mod options;
+pub mod post;
 
 pub use contents::NoteContents;
 pub use options::NoteOptions;
+pub use post::PostView;
 
 use crate::{colors, notecache::CachedNote, ui, ui::View, Damus};
 use egui::{Label, RichText, Sense};

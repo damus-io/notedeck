@@ -201,7 +201,7 @@ fn selected_widget() -> impl egui::Widget {
 mod preview {
 
     use super::*;
-    use crate::test_data::get_account_manager_test_app;
+    use crate::test_data;
 
     pub struct AccountManagementPreview {
         is_mobile: bool,
@@ -210,7 +210,7 @@ mod preview {
 
     impl AccountManagementPreview {
         fn new(is_mobile: bool) -> Self {
-            let app = get_account_manager_test_app(is_mobile);
+            let app = test_data::test_app(is_mobile);
 
             AccountManagementPreview { is_mobile, app }
         }

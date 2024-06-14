@@ -122,7 +122,7 @@ mod preview {
 
     impl DesktopSidePanelPreview {
         fn new(is_mobile: bool) -> Self {
-            let app = test_data::get_account_manager_test_app(is_mobile);
+            let app = test_data::test_app(is_mobile);
             DesktopSidePanelPreview { app }
         }
     }

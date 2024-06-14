@@ -1,6 +1,7 @@
 use crate::account_manager::AccountManager;
 use crate::app_creation::setup_cc;
 use crate::app_style::user_requested_visuals_change;
+use crate::draft::Draft;
 use crate::error::Error;
 use crate::frame_history::FrameHistory;
 use crate::imgcache::ImageCache;
@@ -15,6 +16,7 @@ use crate::Result;
 use egui_nav::{Nav, NavAction};
 use enostr::RelayPool;
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use egui::{Context, Frame, Style};
@@ -46,6 +48,7 @@ pub struct Damus {
     /// global navigation for account management popups, etc.
     //nav: Vec<Route>,
     pub textmode: bool,
+    pub drafts: HashMap<enostr::NoteId, Draft>,
 
     pub timelines: Vec<Timeline>,
     pub selected_timeline: i32,
@@ -706,6 +709,7 @@ impl Damus {
 
         Self {
             is_mobile,
+            drafts: HashMap::new(),
             state: DamusState::Initializing,
             pool: RelayPool::new(),
             img_cache: ImageCache::new(imgcache_dir),
@@ -737,6 +741,7 @@ impl Damus {
         config.set_ingester_threads(2);
         Self {
             is_mobile,
+            drafts: HashMap::new(),
             state: DamusState::Initializing,
             pool: RelayPool::new(),
             img_cache: ImageCache::new(imgcache_dir),
@@ -901,7 +906,8 @@ fn render_nav(routes: Vec<Route>, timeline_ind: usize, app: &mut Damus, ui: &mut
                 }
 
                 Route::Reply(id) => {
-                    let app = app_ctx.borrow();
+                    let mut app = app_ctx.borrow_mut();
+
                     let txn = if let Ok(txn) = Transaction::new(&app.ndb) {
                         txn
                     } else {
@@ -916,15 +922,13 @@ fn render_nav(routes: Vec<Route>, timeline_ind: usize, app: &mut Damus, ui: &mut
                         return;
                     };
 
-                    ui.label(format!(
-                        "Replying to note by {}",
-                        app.ndb
-                            .get_profile_by_pubkey(&txn, note.pubkey())
-                            .as_ref()
-                            .ok()
-                            .and_then(|pr| Some(crate::profile::get_profile_name(pr)?.username()))
-                            .unwrap_or("??")
-                    ));
+                    let poster = app
+                        .account_manager
+                        .get_selected_account_index()
+                        .unwrap_or(0);
+
+                    let replying_to = note.pubkey();
+                    let _r = ui::PostView::new(&mut app, poster, replying_to).ui(&txn, ui);
                 }
             });
 

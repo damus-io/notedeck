@@ -14,7 +14,7 @@ const ORANGE_700: Color32 = Color32::from_rgb(0xF6, 0xB1, 0x4A);
 const SEMI_DARKER_BG: Color32 = Color32::from_rgb(0x39, 0x39, 0x39);
 const DARKER_BG: Color32 = Color32::from_rgb(0x1F, 0x1F, 0x1F);
 const DARK_BG: Color32 = Color32::from_rgb(0x2C, 0x2C, 0x2C);
-const DARK_ISH_BG: Color32 = Color32::from_rgb(0x22, 0x22, 0x22);
+const DARK_ISH_BG: Color32 = Color32::from_rgb(0x25, 0x25, 0x25);
 const SEMI_DARK_BG: Color32 = Color32::from_rgb(0x44, 0x44, 0x44);
 
 const LIGHTER_GRAY: Color32 = Color32::from_rgb(0xf8, 0xf8, 0xf8);
@@ -53,7 +53,7 @@ pub fn desktop_dark_color_theme() -> ColorTheme {
     ColorTheme {
         // VISUALS
         panel_fill: DARKER_BG,
-        extreme_bg_color: SEMI_DARKER_BG,
+        extreme_bg_color: DARK_ISH_BG,
         text_color: Color32::WHITE,
         err_fg_color: RED_700,
         warn_fg_color: ORANGE_700,

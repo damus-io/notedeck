@@ -1,4 +1,4 @@
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
 pub struct NoteId([u8; 32]);
 
 impl NoteId {

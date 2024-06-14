@@ -3,11 +3,10 @@ use notedeck::app_creation::{
 };
 use notedeck::ui::account_login_view::AccountLoginView;
 use notedeck::ui::{
-    AccountManagementView, AccountSelectionWidget, DesktopSidePanel, Preview, PreviewApp,
+    AccountManagementView, AccountSelectionWidget, DesktopSidePanel, PostView, Preview, PreviewApp,
     PreviewConfig, ProfilePic, ProfilePreview, RelayView,
 };
 use std::env;
-use tracing::info;
 
 struct PreviewRunner {
     force_mobile: bool,
@@ -16,7 +15,10 @@ struct PreviewRunner {
 
 impl PreviewRunner {
     fn new(force_mobile: bool, light_mode: bool) -> Self {
-        PreviewRunner { force_mobile, light_mode }
+        PreviewRunner {
+            force_mobile,
+            light_mode,
+        }
     }
 
     async fn run<P>(self, preview: P)
@@ -83,7 +85,10 @@ async fn main() {
         return;
     };
 
-    println!("light mode previews: {}", if light_mode { "enabled" } else { "disabled" });
+    println!(
+        "light mode previews: {}",
+        if light_mode { "enabled" } else { "disabled" }
+    );
     let is_mobile = is_mobile.unwrap_or(notedeck::ui::is_compiled_as_mobile());
     let runner = PreviewRunner::new(is_mobile, light_mode);
 
@@ -98,5 +103,6 @@ async fn main() {
         AccountManagementView,
         AccountSelectionWidget,
         DesktopSidePanel,
+        PostView,
     );
 }

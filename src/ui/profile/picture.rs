@@ -20,6 +20,17 @@ impl<'cache, 'url> ProfilePic<'cache, 'url> {
         ProfilePic { cache, url, size }
     }
 
+    pub fn from_profile(
+        cache: &'cache mut ImageCache,
+        profile: &nostrdb::ProfileRecord<'url>,
+    ) -> Option<Self> {
+        if let Some(url) = profile.record().profile().and_then(|p| p.picture()) {
+            Some(ProfilePic::new(cache, url))
+        } else {
+            None
+        }
+    }
+
     pub fn default_size() -> f32 {
         38.0
     }

@@ -8,6 +8,7 @@ pub mod account_manager;
 pub mod app_creation;
 mod app_style;
 mod colors;
+mod draft;
 mod filter;
 mod fonts;
 mod frame_history;
