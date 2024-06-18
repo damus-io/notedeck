@@ -10,8 +10,8 @@ use crate::relay_pool_manager::RelayPoolManager;
 use crate::route::Route;
 use crate::timeline;
 use crate::timeline::{MergeKind, NoteRef, Timeline, ViewFilter};
-use crate::ui;
-use crate::ui::{DesktopSidePanel, RelayView, SidePanelAction, View};
+use crate::ui::{self, AccountSelectionWidget};
+use crate::ui::{DesktopSidePanel, RelayView, View};
 use crate::Result;
 use egui_nav::{Nav, NavAction};
 use enostr::RelayPool;
@@ -58,6 +58,7 @@ pub struct Damus {
     pub account_manager: AccountManager,
 
     frame_history: crate::frame_history::FrameHistory,
+    pub show_account_switcher: bool,
 }
 
 fn relay_setup(pool: &mut RelayPool, ctx: &egui::Context) {
@@ -726,6 +727,7 @@ impl Damus {
             ),
             //compose: "".to_string(),
             frame_history: FrameHistory::default(),
+            show_account_switcher: false,
         }
     }
 
@@ -752,6 +754,7 @@ impl Damus {
             ndb: Ndb::new(data_path.as_ref().to_str().expect("db path ok"), &config).expect("ndb"),
             account_manager: AccountManager::new(None, crate::key_storage::KeyStorage::None),
             frame_history: FrameHistory::default(),
+            show_account_switcher: false,
         }
     }
 
@@ -983,6 +986,9 @@ fn render_damus_desktop(ctx: &egui::Context, app: &mut Damus) {
 
     main_panel(&ctx.style(), app.is_mobile()).show(ctx, |ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
+        if app.show_account_switcher {
+            AccountSelectionWidget::ui(app, ui);
+        }
         if need_scroll {
             egui::ScrollArea::horizontal().show(ui, |ui| {
                 timelines_view(ui, panel_sizes, app, app.timelines.len());
@@ -1004,10 +1010,8 @@ fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus, timelines: us
 
                 if side_panel.response.clicked() {
                     info!("clicked {:?}", side_panel.action);
-                    if let SidePanelAction::Account = side_panel.action {
-                        app.timelines[0].routes.push(Route::ManageAccount);
-                    }
                 }
+                DesktopSidePanel::perform_action(app, side_panel.action);
             });
 
             for timeline_ind in 0..timelines {

@@ -30,39 +30,67 @@ impl AccountSelectionWidget {
         if app.is_mobile() {
             Self::show_mobile(ui);
         } else {
-            Self::show(app, ui);
+            account_switcher_window(&mut app.show_account_switcher.clone()).show(
+                ui.ctx(),
+                |ui: &mut egui::Ui| {
+                    let (account_selection_response, response) = Self::show(app, ui);
+                    if let Some(action) = account_selection_response.action {
+                        Self::perform_action(app, action);
+                    }
+                    response
+                },
+            );
         }
     }
 
-    fn show(app: &mut Damus, ui: &mut egui::Ui) -> AccountSelectResponse {
+    fn perform_action(app: &mut Damus, action: AccountSelectAction) {
+        match action {
+            AccountSelectAction::RemoveAccount { _index } => {
+                app.account_manager.remove_account(_index)
+            }
+            AccountSelectAction::SelectAccount { _index } => {
+                app.show_account_switcher = false;
+                app.account_manager.select_account(_index);
+            }
+            AccountSelectAction::OpenAccountManagement => {
+                app.show_account_switcher = false;
+                // TODO: push account management to global popup router
+            }
+        }
+    }
+
+    fn show(app: &mut Damus, ui: &mut egui::Ui) -> (AccountSelectResponse, egui::Response) {
         let mut res = AccountSelectResponse::default();
         let mut selected_index = app.account_manager.get_selected_account_index();
 
-        Frame::none().outer_margin(8.0).show(ui, |ui| {
-            res = top_section_widget(ui);
+        let response = Frame::none()
+            .outer_margin(8.0)
+            .show(ui, |ui| {
+                res = top_section_widget(ui);
 
-            scroll_area().show(ui, |ui| {
-                if let Some(_index) = Self::show_accounts(app, ui) {
-                    selected_index = Some(_index);
-                    res.action = Some(AccountSelectAction::SelectAccount { _index });
-                }
-            });
-            ui.add_space(8.0);
-            ui.add(add_account_button());
+                scroll_area().show(ui, |ui| {
+                    if let Some(_index) = Self::show_accounts(app, ui) {
+                        selected_index = Some(_index);
+                        res.action = Some(AccountSelectAction::SelectAccount { _index });
+                    }
+                });
+                ui.add_space(8.0);
+                ui.add(add_account_button());
 
-            if let Some(_index) = selected_index {
-                if let Some(account) = app.account_manager.get_account(_index) {
-                    ui.add_space(8.0);
-                    if Self::handle_sign_out(&app.ndb, ui, account) {
-                        res.action = Some(AccountSelectAction::RemoveAccount { _index })
+                if let Some(_index) = selected_index {
+                    if let Some(account) = app.account_manager.get_account(_index) {
+                        ui.add_space(8.0);
+                        if Self::handle_sign_out(&app.ndb, ui, account) {
+                            res.action = Some(AccountSelectAction::RemoveAccount { _index })
+                        }
                     }
                 }
-            }
 
-            ui.add_space(8.0);
-        });
+                ui.add_space(8.0);
+            })
+            .response;
 
-        res
+        (res, response)
     }
 
     fn handle_sign_out(ndb: &Ndb, ui: &mut egui::Ui, account: &UserAccount) -> bool {
@@ -144,6 +172,16 @@ fn account_switcher_card_ui(
         .clicked()
 }
 
+fn account_switcher_window(open: &'_ mut bool) -> egui::Window<'_> {
+    egui::Window::new("account switcher")
+        .title_bar(false)
+        .collapsible(false)
+        .anchor(egui::Align2::LEFT_BOTTOM, Vec2::new(4.0, -44.0))
+        .fixed_size(Vec2::new(360.0, 406.0))
+        .open(open)
+        .movable(false)
+}
+
 fn selection_widget() -> impl egui::Widget {
     |ui: &mut egui::Ui| {
         let img_data: egui::ImageSource =
@@ -221,7 +259,7 @@ mod previews {
 
     impl View for AccountSelectionPreview {
         fn ui(&mut self, ui: &mut egui::Ui) {
-            AccountSelectionWidget::show(&mut self.app, ui);
+            AccountSelectionWidget::ui(&mut self.app, ui);
         }
     }
 

@@ -55,7 +55,7 @@ impl<'a> DesktopSidePanel<'a> {
                 let settings_resp = ui.add(settings_button(dark_mode));
                 let column_resp = ui.add(add_column_button(dark_mode));
 
-                if pfp_resp.clicked() || pfp_resp.hovered() {
+                if pfp_resp.clicked() {
                     egui::InnerResponse::new(SidePanelAction::Account, pfp_resp)
                 } else if settings_resp.clicked() || settings_resp.hovered() {
                     egui::InnerResponse::new(SidePanelAction::Settings, settings_resp)
@@ -71,8 +71,22 @@ impl<'a> DesktopSidePanel<'a> {
     }
 
     fn pfp_button(&mut self, ui: &mut egui::Ui) -> egui::Response {
-        profile_preview_controller::show_with_selected_pfp(self.app, ui, show_pfp());
-        add_button_to_ui(ui, no_account_pfp())
+        if let Some(resp) =
+            profile_preview_controller::show_with_selected_pfp(self.app, ui, show_pfp())
+        {
+            resp
+        } else {
+            add_button_to_ui(ui, no_account_pfp())
+        }
+    }
+
+    pub fn perform_action(app: &mut Damus, action: SidePanelAction) {
+        match action {
+            SidePanelAction::Panel => {} // TODO
+            SidePanelAction::Account => app.show_account_switcher = !app.show_account_switcher,
+            SidePanelAction::Settings => {} // TODO
+            SidePanelAction::Columns => (), // TODO
+        }
     }
 }
 
@@ -109,9 +123,11 @@ fn add_column_button(dark_mode: bool) -> egui::Button<'static> {
 
 mod preview {
 
+    use egui_extras::{Size, StripBuilder};
+
     use crate::{
         test_data,
-        ui::{Preview, PreviewConfig},
+        ui::{AccountSelectionWidget, Preview, PreviewConfig},
     };
 
     use super::*;
@@ -129,15 +145,21 @@ mod preview {
 
     impl View for DesktopSidePanelPreview {
         fn ui(&mut self, ui: &mut egui::Ui) {
-            let _selected_account = self
-                .app
-                .account_manager
-                .get_selected_account()
-                .map(|x| x.pubkey.bytes());
+            StripBuilder::new(ui)
+                .size(Size::exact(40.0))
+                .sizes(Size::remainder(), 0)
+                .clip(true)
+                .horizontal(|mut strip| {
+                    strip.cell(|ui| {
+                        let mut panel = DesktopSidePanel::new(&mut self.app);
+                        let response = panel.show(ui);
+                        DesktopSidePanel::perform_action(&mut self.app, response.action);
+                    });
+                });
 
-            let mut panel = DesktopSidePanel::new(&mut self.app);
-
-            DesktopSidePanel::panel().show(ui.ctx(), |ui| panel.ui(ui));
+            if self.app.show_account_switcher {
+                AccountSelectionWidget::ui(&mut self.app, ui);
+            }
         }
     }
 
