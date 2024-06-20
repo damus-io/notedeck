@@ -931,7 +931,7 @@ fn render_nav(routes: Vec<Route>, timeline_ind: usize, app: &mut Damus, ui: &mut
                         .unwrap_or(0);
 
                     let replying_to = note.pubkey();
-                    let _r = ui::PostView::new(&mut app, poster, replying_to).ui(&txn, ui);
+                    ui::PostView::new(&mut app, poster, replying_to).ui(&txn, ui);
                 }
             });
 

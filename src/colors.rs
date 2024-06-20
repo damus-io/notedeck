@@ -89,7 +89,7 @@ pub fn light_color_theme() -> ColorTheme {
     ColorTheme {
         // VISUALS
         panel_fill: Color32::WHITE,
-        extreme_bg_color: EVEN_DARKER_GRAY,
+        extreme_bg_color: LIGHTER_GRAY,
         text_color: BLACK,
         err_fg_color: RED_700,
         warn_fg_color: ORANGE_700,
