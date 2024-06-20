@@ -1006,21 +1006,38 @@ fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus, timelines: us
         .clip(true)
         .horizontal(|mut strip| {
             strip.cell(|ui| {
+                let rect = ui.available_rect_before_wrap();
                 let side_panel = DesktopSidePanel::new(app).show(ui);
 
                 if side_panel.response.clicked() {
                     info!("clicked {:?}", side_panel.action);
                 }
+
                 DesktopSidePanel::perform_action(app, side_panel.action);
+
+                // vertical sidebar line
+                ui.painter().vline(
+                    rect.right(),
+                    rect.y_range(),
+                    ui.visuals().widgets.noninteractive.bg_stroke,
+                );
             });
 
             for timeline_ind in 0..timelines {
                 strip.cell(|ui| {
+                    let rect = ui.available_rect_before_wrap();
                     render_nav(
                         app.timelines[timeline_ind].routes.clone(),
                         timeline_ind,
                         app,
                         ui,
+                    );
+
+                    // vertical line
+                    ui.painter().vline(
+                        rect.right(),
+                        rect.y_range(),
+                        ui.visuals().widgets.noninteractive.bg_stroke,
                     );
                 });
 

@@ -308,6 +308,7 @@ pub fn timeline_view(ui: &mut egui::Ui, app: &mut Damus, timeline: usize) {
                     ui::padding(8.0, ui, |ui| {
                         let textmode = app.textmode;
                         let resp = ui::Note::new(app, &note).note_previews(!textmode).show(ui);
+
                         if let Some(action) = resp.action {
                             debug!("bar action: {:?}", action);
                             match action {
