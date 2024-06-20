@@ -1,5 +1,4 @@
 use crate::app::Damus;
-use crate::draft::Draft;
 use crate::ui::{Preview, PreviewConfig, View};
 use crate::{ui, Error};
 use egui::widgets::text_edit::TextEdit;
@@ -45,7 +44,7 @@ impl<'app, 'p> PostView<'app, 'p> {
                     let poster_pfp = self
                         .app
                         .ndb
-                        .get_profile_by_pubkey(&txn, poster_pubkey)
+                        .get_profile_by_pubkey(txn, poster_pubkey)
                         .as_ref()
                         .ok()
                         .and_then(|p| ui::ProfilePic::from_profile(&mut self.app.img_cache, p));
@@ -66,7 +65,7 @@ impl<'app, 'p> PostView<'app, 'p> {
                         .app
                         .drafts
                         .entry(enostr::NoteId::new(*self.replying_to))
-                        .or_insert_with(|| Draft::new());
+                        .or_default();
 
                     ui.add(TextEdit::multiline(&mut draft.buffer).frame(false));
 
