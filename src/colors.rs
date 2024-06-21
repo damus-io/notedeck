@@ -1,13 +1,13 @@
 use egui::Color32;
 
 pub const PURPLE: Color32 = Color32::from_rgb(0xCC, 0x43, 0xC5);
+const PURPLE_ALT: Color32 = Color32::from_rgb(0x82, 0x56, 0xDD);
 // TODO: This should not be exposed publicly
 pub const PINK: Color32 = Color32::from_rgb(0xE4, 0x5A, 0xC9);
 //pub const DARK_BG: Color32 = egui::Color32::from_rgb(40, 44, 52);
 pub const GRAY_SECONDARY: Color32 = Color32::from_rgb(0x8A, 0x8A, 0x8A);
 const BLACK: Color32 = Color32::from_rgb(0x00, 0x00, 0x00);
 const RED_700: Color32 = Color32::from_rgb(0xC7, 0x37, 0x5A);
-const GREEN_700: Color32 = Color32::from_rgb(0x24, 0xEC, 0xC9);
 const ORANGE_700: Color32 = Color32::from_rgb(0xF6, 0xB1, 0x4A);
 
 // BACKGROUNDS
@@ -58,7 +58,7 @@ pub fn desktop_dark_color_theme() -> ColorTheme {
         err_fg_color: RED_700,
         warn_fg_color: ORANGE_700,
         hyperlink_color: PURPLE,
-        selection_color: GREEN_700,
+        selection_color: PURPLE_ALT,
 
         // WINDOW
         window_fill: DARK_ISH_BG,
@@ -94,7 +94,7 @@ pub fn light_color_theme() -> ColorTheme {
         err_fg_color: RED_700,
         warn_fg_color: ORANGE_700,
         hyperlink_color: PURPLE,
-        selection_color: GREEN_700,
+        selection_color: PURPLE_ALT,
 
         // WINDOW
         window_fill: Color32::WHITE,
