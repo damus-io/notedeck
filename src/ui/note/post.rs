@@ -9,16 +9,24 @@ pub struct PostView<'app, 'p> {
     app: &'app mut Damus,
     /// account index
     poster: usize,
+    id_source: Option<egui::Id>,
     replying_to: &'p [u8; 32],
 }
 
 impl<'app, 'p> PostView<'app, 'p> {
     pub fn new(app: &'app mut Damus, poster: usize, replying_to: &'p [u8; 32]) -> Self {
+        let id_source: Option<egui::Id> = None;
         PostView {
+            id_source,
             app,
             poster,
             replying_to,
         }
+    }
+
+    pub fn id_source(mut self, id_source: impl std::hash::Hash) -> Self {
+        self.id_source = Some(egui::Id::new(id_source));
+        self
     }
 
     fn editbox(&mut self, txn: &nostrdb::Transaction, ui: &mut egui::Ui) {
@@ -59,7 +67,20 @@ impl<'app, 'p> PostView<'app, 'p> {
             .entry(enostr::NoteId::new(*self.replying_to))
             .or_default();
 
-        ui.add(TextEdit::multiline(&mut draft.buffer).frame(false));
+        let focused = ui
+            .add(TextEdit::multiline(&mut draft.buffer).frame(false))
+            .has_focus();
+
+        ui.ctx().data_mut(|d| d.insert_temp(self.id(), focused));
+    }
+
+    fn focused(&self, ui: &egui::Ui) -> bool {
+        ui.ctx()
+            .data(|d| d.get_temp::<bool>(self.id()).unwrap_or(false))
+    }
+
+    fn id(&self) -> egui::Id {
+        self.id_source.unwrap_or_else(|| egui::Id::new("post"))
     }
 
     pub fn ui(&mut self, txn: &nostrdb::Transaction, ui: &mut egui::Ui) {
@@ -67,7 +88,12 @@ impl<'app, 'p> PostView<'app, 'p> {
             .inner_margin(egui::Margin::same(12.0))
             .outer_margin(egui::Margin::same(12.0))
             .fill(ui.visuals().extreme_bg_color)
-            .stroke(ui.visuals().noninteractive().bg_stroke)
+            .stroke(if self.focused(ui) {
+                ui.visuals().selection.stroke
+            } else {
+                //ui.visuals().selection.stroke
+                ui.visuals().noninteractive().bg_stroke
+            })
             .rounding(12.0)
             .show(ui, |ui| {
                 ui.vertical(|ui| {
