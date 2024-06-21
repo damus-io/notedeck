@@ -31,14 +31,27 @@ impl<'cache, 'url> ProfilePic<'cache, 'url> {
             .map(|url| ProfilePic::new(cache, url))
     }
 
+    #[inline]
     pub fn default_size() -> f32 {
         38.0
     }
 
+    #[inline]
+    pub fn medium_size() -> f32 {
+        32.0
+    }
+
+    #[inline]
+    pub fn small_size() -> f32 {
+        24.0
+    }
+
+    #[inline]
     pub fn no_pfp_url() -> &'static str {
         "https://damus.io/img/no-profile.svg"
     }
 
+    #[inline]
     pub fn size(mut self, size: f32) -> Self {
         self.size = size;
         self

@@ -925,17 +925,10 @@ fn render_nav(routes: Vec<Route>, timeline_ind: usize, app: &mut Damus, ui: &mut
                         return;
                     };
 
-                    let note_key = note.key().unwrap();
-
-                    let poster = app
-                        .account_manager
-                        .get_selected_account_index()
-                        .unwrap_or(0);
-
-                    let replying_to = note.pubkey();
-                    ui::PostView::new(&mut app, poster, replying_to)
-                        .id_source(("post", timeline_ind, note_key))
-                        .ui(&txn, ui);
+                    let id = egui::Id::new(("post", timeline_ind, note.key().unwrap()));
+                    ui::PostReplyView::new(&mut app, &note)
+                        .id_source(id)
+                        .show(ui);
                 }
             });
 

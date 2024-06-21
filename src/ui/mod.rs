@@ -13,7 +13,7 @@ pub mod username;
 pub use account_management::AccountManagementView;
 pub use account_switcher::AccountSelectionWidget;
 pub use mention::Mention;
-pub use note::{BarAction, Note, NoteResponse, PostView};
+pub use note::{BarAction, Note, NoteResponse, PostReplyView, PostView};
 pub use preview::{Preview, PreviewApp, PreviewConfig};
 pub use profile::{profile_preview_controller, ProfilePic, ProfilePreview};
 pub use relay::RelayView;
