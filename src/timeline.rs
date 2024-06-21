@@ -225,11 +225,7 @@ fn tabs_ui(timeline: &mut Timeline, ui: &mut egui::Ui) {
     //ui.add_space(0.5);
     ui::hline(ui);
 
-    let sel = if let Some(sel) = tab_res.selected() {
-        sel
-    } else {
-        0
-    };
+    let sel = tab_res.selected().unwrap_or_default();
 
     // fun animation
     timeline.selected_view = sel;
