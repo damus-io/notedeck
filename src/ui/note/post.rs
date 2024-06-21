@@ -84,33 +84,46 @@ impl<'app, 'p> PostView<'app, 'p> {
     }
 
     pub fn ui(&mut self, txn: &nostrdb::Transaction, ui: &mut egui::Ui) {
-        egui::Frame::default()
+        let focused = self.focused(ui);
+        let stroke = if focused {
+            ui.visuals().selection.stroke
+        } else {
+            //ui.visuals().selection.stroke
+            ui.visuals().noninteractive().bg_stroke
+        };
+
+        let mut frame = egui::Frame::default()
             .inner_margin(egui::Margin::same(12.0))
             .outer_margin(egui::Margin::same(12.0))
             .fill(ui.visuals().extreme_bg_color)
-            .stroke(if self.focused(ui) {
-                ui.visuals().selection.stroke
-            } else {
-                //ui.visuals().selection.stroke
-                ui.visuals().noninteractive().bg_stroke
-            })
-            .rounding(12.0)
-            .show(ui, |ui| {
-                ui.vertical(|ui| {
-                    ui.horizontal(|ui| {
-                        self.editbox(txn, ui);
-                    });
+            .stroke(stroke)
+            .rounding(12.0);
 
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
-                        if ui
-                            .add_sized([91.0, 32.0], egui::Button::new("Post now"))
-                            .clicked()
-                        {
-                            info!("Post clicked");
-                        }
-                    });
+        if focused {
+            frame = frame.shadow(egui::epaint::Shadow {
+                offset: egui::vec2(0.0, 0.0),
+                blur: 8.0,
+                spread: 0.0,
+                color: stroke.color,
+            });
+        }
+
+        frame.show(ui, |ui| {
+            ui.vertical(|ui| {
+                ui.horizontal(|ui| {
+                    self.editbox(txn, ui);
+                });
+
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
+                    if ui
+                        .add_sized([91.0, 32.0], egui::Button::new("Post now"))
+                        .clicked()
+                    {
+                        info!("Post clicked");
+                    }
                 });
             });
+        });
     }
 }
 
