@@ -1,5 +1,5 @@
 use crate::{
-    account_manager::UserAccount, colors::PINK, profile::DisplayName,
+    account_manager::UserAccount, colors::PINK, profile::DisplayName, route::Route,
     ui::profile_preview_controller, Damus, Result,
 };
 
@@ -27,6 +27,10 @@ struct AccountSelectResponse {
 
 impl AccountSelectionWidget {
     pub fn ui(app: &mut Damus, ui: &mut egui::Ui) {
+        if !app.show_account_switcher {
+            return;
+        }
+
         if app.is_mobile() {
             Self::show_mobile(ui);
         } else {
@@ -54,7 +58,8 @@ impl AccountSelectionWidget {
             }
             AccountSelectAction::OpenAccountManagement => {
                 app.show_account_switcher = false;
-                // TODO: push account management to global popup router
+                app.global_nav.push(Route::ManageAccount);
+                app.show_global_popup = true;
             }
         }
     }

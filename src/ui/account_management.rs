@@ -5,7 +5,7 @@ use crate::{
     ui::{profile_preview_controller, Preview, PreviewConfig, View},
     Damus,
 };
-use egui::{Align, Button, Frame, Image, Layout, RichText, ScrollArea, Vec2};
+use egui::{Align, Button, Frame, Image, Layout, Response, RichText, ScrollArea, Vec2};
 
 use super::profile::preview::SimpleProfilePreview;
 use super::profile::ProfilePreviewOp;
@@ -13,14 +13,26 @@ use super::profile::ProfilePreviewOp;
 pub struct AccountManagementView {}
 
 impl AccountManagementView {
-    fn show(app: &mut Damus, ui: &mut egui::Ui) {
-        Frame::none().outer_margin(24.0).show(ui, |ui| {
-            Self::top_section_buttons_widget(ui);
-            ui.add_space(8.0);
-            scroll_area().show(ui, |ui| {
-                Self::show_accounts(app, ui);
-            });
-        });
+    pub fn ui(app: &mut Damus, ui: &mut egui::Ui) -> Option<Response> {
+        if app.is_mobile() {
+            AccountManagementView::show_mobile(app, ui);
+            None
+        } else {
+            Some(AccountManagementView::show(app, ui))
+        }
+    }
+
+    fn show(app: &mut Damus, ui: &mut egui::Ui) -> Response {
+        Frame::none()
+            .outer_margin(24.0)
+            .show(ui, |ui| {
+                Self::top_section_buttons_widget(ui);
+                ui.add_space(8.0);
+                scroll_area().show(ui, |ui| {
+                    Self::show_accounts(app, ui);
+                });
+            })
+            .response
     }
 
     fn show_accounts(app: &mut Damus, ui: &mut egui::Ui) {

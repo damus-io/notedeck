@@ -1,5 +1,8 @@
+use egui::{Response, RichText};
 use enostr::NoteId;
-use std::fmt;
+use std::fmt::{self};
+
+use crate::{ui::AccountManagementView, Damus};
 
 /// App routing. These describe different places you can go inside Notedeck.
 #[derive(Clone, Debug)]
@@ -19,6 +22,25 @@ impl fmt::Display for Route {
             Route::Thread(_id) => write!(f, "Thread"),
             Route::Reply(_id) => write!(f, "Reply"),
             Route::Relays => write!(f, "Relays"),
+        }
+    }
+}
+
+impl Route {
+    pub fn show_global_popup(&self, app: &mut Damus, ui: &mut egui::Ui) -> Option<Response> {
+        match self {
+            Route::ManageAccount => AccountManagementView::ui(app, ui),
+            _ => None,
+        }
+    }
+
+    pub fn title(&self) -> RichText {
+        match self {
+            Route::ManageAccount => RichText::new("Manage Account").size(24.0),
+            Route::Thread(_) => RichText::new("Thread"),
+            Route::Reply(_) => RichText::new("Reply"),
+            Route::Relays => RichText::new("Relays"),
+            Route::Timeline(_) => RichText::new("Timeline"),
         }
     }
 }

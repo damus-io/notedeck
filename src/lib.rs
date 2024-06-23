@@ -10,6 +10,7 @@ mod app_style;
 mod colors;
 mod draft;
 mod filter;
+mod fixed_window;
 mod fonts;
 mod frame_history;
 mod images;
