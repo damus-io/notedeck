@@ -9,7 +9,7 @@ use crate::{
     Damus,
 };
 
-static MARGIN: f32 = 100.0;
+static MARGIN: f32 = 200.0;
 
 pub struct DesktopGlobalPopup {}
 
