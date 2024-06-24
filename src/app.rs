@@ -926,9 +926,11 @@ fn render_nav(routes: Vec<Route>, timeline_ind: usize, app: &mut Damus, ui: &mut
                     };
 
                     let id = egui::Id::new(("post", timeline_ind, note.key().unwrap()));
-                    ui::PostReplyView::new(&mut app, &note)
-                        .id_source(id)
-                        .show(ui);
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        ui::PostReplyView::new(&mut app, &note)
+                            .id_source(id)
+                            .show(ui);
+                    });
                 }
             });
 
