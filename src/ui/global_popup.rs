@@ -20,12 +20,8 @@ impl DesktopGlobalPopup {
         }
 
         let rect = ui.ctx().screen_rect().shrink(MARGIN);
-        let title = if let Some(first) = routes.first() {
-            // TODO(kernelkind): not a great way of getting the title of the routes 'grouping'
-            Some(first.title())
-        } else {
-            None
-        };
+
+        let title = routes.last().map(|r| r.title());
 
         let app_ctx = Rc::new(RefCell::new(app));
 
