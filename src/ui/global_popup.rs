@@ -26,13 +26,19 @@ impl DesktopGlobalPopup {
         let app_ctx = Rc::new(RefCell::new(app));
 
         let resp = FixedWindow::maybe_with_title(title).show(ui, rect, |ui| {
-            let nav_response = Nav::new(routes).navigating(false).show(ui, |ui, nav| {
-                if let Some(resp) = nav.top().show_global_popup(&mut app_ctx.borrow_mut(), ui) {
-                    ui.allocate_rect(resp.rect, Sense::hover())
-                } else {
-                    ui.label("") // TODO(kernelkind): not a great practice
-                }
-            });
+            let nav_response =
+                Nav::new(routes)
+                    .title(false)
+                    .navigating(false)
+                    .show(ui, |ui, nav| {
+                        if let Some(resp) =
+                            nav.top().show_global_popup(&mut app_ctx.borrow_mut(), ui)
+                        {
+                            ui.allocate_rect(resp.rect, Sense::hover())
+                        } else {
+                            ui.label("") // TODO(kernelkind): not a great practice
+                        }
+                    });
 
             if let Some(NavAction::Returned) = nav_response.action {
                 app_ctx.borrow_mut().global_nav.pop();
