@@ -30,7 +30,7 @@ impl<'a> View for AccountLoginView<'a> {
         if self.is_mobile {
             self.show_mobile(ui);
         } else {
-            self.show(ui);
+            self.ui(ui);
         }
     }
 }
@@ -44,7 +44,7 @@ impl<'a> AccountLoginView<'a> {
         }
     }
 
-    fn show(&mut self, ui: &mut egui::Ui) -> egui::Response {
+    fn ui(&mut self, ui: &mut egui::Ui) -> egui::Response {
         let screen_width = ui.ctx().screen_rect().max.x;
         let screen_height = ui.ctx().screen_rect().max.y;
 

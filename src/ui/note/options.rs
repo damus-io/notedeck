@@ -8,7 +8,8 @@ bitflags! {
         const actionbar     = 0b00000001;
         const note_previews = 0b00000010;
         const small_pfp     = 0b00000100;
-        const wide          = 0b00001000;
+        const medium_pfp    = 0b00001000;
+        const wide          = 0b00010000;
     }
 }
 
@@ -29,6 +30,11 @@ impl NoteOptions {
     }
 
     #[inline]
+    pub fn has_medium_pfp(self) -> bool {
+        (self & NoteOptions::medium_pfp) == NoteOptions::medium_pfp
+    }
+
+    #[inline]
     pub fn has_wide(self) -> bool {
         (self & NoteOptions::wide) == NoteOptions::wide
     }
@@ -41,6 +47,16 @@ impl NoteOptions {
             *self &= !NoteOptions::small_pfp;
         }
     }
+
+    #[inline]
+    pub fn set_medium_pfp(&mut self, enable: bool) {
+        if enable {
+            *self |= NoteOptions::medium_pfp;
+        } else {
+            *self &= !NoteOptions::medium_pfp;
+        }
+    }
+
     #[inline]
     pub fn set_note_previews(&mut self, enable: bool) {
         if enable {

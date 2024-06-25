@@ -1,9 +1,9 @@
 use crate::app::Damus;
+use crate::draft::Draft;
 use crate::ui;
 use crate::ui::{Preview, PreviewConfig, View};
 use egui::widgets::text_edit::TextEdit;
 use nostrdb::Transaction;
-use tracing::info;
 
 pub struct PostView<'app, 'p> {
     app: &'app mut Damus,
@@ -11,6 +11,20 @@ pub struct PostView<'app, 'p> {
     poster: usize,
     id_source: Option<egui::Id>,
     replying_to: &'p [u8; 32],
+}
+
+pub struct NewPost {
+    pub content: String,
+    pub account: usize,
+}
+
+pub enum PostAction {
+    Post(NewPost),
+}
+
+pub struct PostResponse {
+    pub action: Option<PostAction>,
+    pub edit_response: egui::Response,
 }
 
 impl<'app, 'p> PostView<'app, 'p> {
@@ -29,7 +43,14 @@ impl<'app, 'p> PostView<'app, 'p> {
         self
     }
 
-    fn editbox(&mut self, txn: &nostrdb::Transaction, ui: &mut egui::Ui) {
+    fn draft(&mut self) -> &mut Draft {
+        self.app
+            .drafts
+            .entry(enostr::NoteId::new(*self.replying_to))
+            .or_default()
+    }
+
+    fn editbox(&mut self, txn: &nostrdb::Transaction, ui: &mut egui::Ui) -> egui::Response {
         ui.spacing_mut().item_spacing.x = 12.0;
 
         let pfp_size = 24.0;
@@ -61,17 +82,13 @@ impl<'app, 'p> PostView<'app, 'p> {
             );
         }
 
-        let draft = self
-            .app
-            .drafts
-            .entry(enostr::NoteId::new(*self.replying_to))
-            .or_default();
+        let response = ui.add(TextEdit::multiline(&mut self.draft().buffer).frame(false));
 
-        let focused = ui
-            .add(TextEdit::multiline(&mut draft.buffer).frame(false))
-            .has_focus();
+        let focused = response.has_focus();
 
         ui.ctx().data_mut(|d| d.insert_temp(self.id(), focused));
+
+        response
     }
 
     fn focused(&self, ui: &egui::Ui) -> bool {
@@ -83,7 +100,15 @@ impl<'app, 'p> PostView<'app, 'p> {
         self.id_source.unwrap_or_else(|| egui::Id::new("post"))
     }
 
-    pub fn ui(&mut self, txn: &nostrdb::Transaction, ui: &mut egui::Ui) {
+    pub fn outer_margin() -> f32 {
+        16.0
+    }
+
+    pub fn inner_margin() -> f32 {
+        12.0
+    }
+
+    pub fn ui(&mut self, txn: &nostrdb::Transaction, ui: &mut egui::Ui) -> PostResponse {
         let focused = self.focused(ui);
         let stroke = if focused {
             ui.visuals().selection.stroke
@@ -93,8 +118,8 @@ impl<'app, 'p> PostView<'app, 'p> {
         };
 
         let mut frame = egui::Frame::default()
-            .inner_margin(egui::Margin::same(12.0))
-            .outer_margin(egui::Margin::same(12.0))
+            .inner_margin(egui::Margin::same(PostView::inner_margin()))
+            .outer_margin(egui::Margin::same(PostView::outer_margin()))
             .fill(ui.visuals().extreme_bg_color)
             .stroke(stroke)
             .rounding(12.0);
@@ -108,22 +133,35 @@ impl<'app, 'p> PostView<'app, 'p> {
             });
         }
 
-        frame.show(ui, |ui| {
-            ui.vertical(|ui| {
-                ui.horizontal(|ui| {
-                    self.editbox(txn, ui);
-                });
+        frame
+            .show(ui, |ui| {
+                ui.vertical(|ui| {
+                    let edit_response = ui.horizontal(|ui| self.editbox(txn, ui)).inner;
 
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
-                    if ui
-                        .add_sized([91.0, 32.0], egui::Button::new("Post now"))
-                        .clicked()
-                    {
-                        info!("Post clicked");
+                    let action = ui
+                        .with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
+                            if ui
+                                .add_sized([91.0, 32.0], egui::Button::new("Post now"))
+                                .clicked()
+                            {
+                                Some(PostAction::Post(NewPost {
+                                    content: self.draft().buffer.clone(),
+                                    account: self.poster,
+                                }))
+                            } else {
+                                None
+                            }
+                        })
+                        .inner;
+
+                    PostResponse {
+                        action,
+                        edit_response,
                     }
-                });
-            });
-        });
+                })
+                .inner
+            })
+            .inner
     }
 }
 

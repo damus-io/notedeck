@@ -1,10 +1,12 @@
 pub mod contents;
 pub mod options;
 pub mod post;
+pub mod reply;
 
 pub use contents::NoteContents;
 pub use options::NoteOptions;
 pub use post::PostView;
+pub use reply::PostReplyView;
 
 use crate::{colors, notecache::CachedNote, ui, ui::View, Damus};
 use egui::{Label, RichText, Sense};
@@ -128,6 +130,11 @@ impl<'a> Note<'a> {
         self
     }
 
+    pub fn medium_pfp(mut self, enable: bool) -> Self {
+        self.options_mut().set_medium_pfp(enable);
+        self
+    }
+
     pub fn note_previews(mut self, enable: bool) -> Self {
         self.options_mut().set_note_previews(enable);
         self
@@ -179,6 +186,10 @@ impl<'a> Note<'a> {
         .response
     }
 
+    pub fn expand_size() -> f32 {
+        5.0
+    }
+
     fn pfp(
         &mut self,
         note_key: NoteKey,
@@ -188,7 +199,9 @@ impl<'a> Note<'a> {
         ui.spacing_mut().item_spacing.x = 16.0;
 
         let pfp_size = if self.options().has_small_pfp() {
-            24.0
+            ui::ProfilePic::small_size()
+        } else if self.options().has_medium_pfp() {
+            ui::ProfilePic::medium_size()
         } else {
             ui::ProfilePic::default_size()
         };
@@ -201,7 +214,6 @@ impl<'a> Note<'a> {
             // these have different lifetimes and types,
             // so the calls must be separate
             Some(pic) => {
-                let expand_size = 5.0;
                 let anim_speed = 0.05;
                 let profile_key = profile.as_ref().unwrap().record().note_key();
                 let note_key = note_key.as_u64();
@@ -213,7 +225,7 @@ impl<'a> Note<'a> {
                         ui,
                         egui::Id::new((profile_key, note_key)),
                         pfp_size,
-                        expand_size,
+                        ui::Note::expand_size(),
                         anim_speed,
                     );
 
