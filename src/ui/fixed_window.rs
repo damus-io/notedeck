@@ -1,5 +1,6 @@
 use egui::{Rect, Response, RichText, Sense, Window};
 
+#[derive(Default)]
 pub struct FixedWindow {
     title: Option<RichText>,
 }
@@ -13,7 +14,7 @@ pub enum FixedWindowResponse {
 impl FixedWindow {
     #[allow(dead_code)]
     pub fn new() -> Self {
-        Self { title: None }
+        FixedWindow::default()
     }
 
     pub fn maybe_with_title(maybe_title: Option<RichText>) -> Self {
