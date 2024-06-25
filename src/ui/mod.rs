@@ -2,6 +2,7 @@ pub mod account_login_view;
 pub mod account_management;
 pub mod account_switcher;
 pub mod anim;
+pub mod fixed_window;
 pub mod global_popup;
 pub mod mention;
 pub mod note;
@@ -13,6 +14,7 @@ pub mod username;
 
 pub use account_management::AccountManagementView;
 pub use account_switcher::AccountSelectionWidget;
+pub use fixed_window::{FixedWindow, FixedWindowResponse};
 pub use global_popup::DesktopGlobalPopup;
 pub use mention::Mention;
 pub use note::{BarAction, Note, NoteResponse, PostView};

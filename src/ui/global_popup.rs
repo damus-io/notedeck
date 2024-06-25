@@ -3,11 +3,7 @@ use std::{cell::RefCell, rc::Rc};
 use egui::Sense;
 use egui_nav::{Nav, NavAction};
 
-use crate::{
-    fixed_window::{FixedWindow, FixedWindowResponse},
-    route::Route,
-    Damus,
-};
+use crate::{route::Route, ui, Damus};
 
 static MARGIN: f32 = 200.0;
 
@@ -25,7 +21,7 @@ impl DesktopGlobalPopup {
 
         let app_ctx = Rc::new(RefCell::new(app));
 
-        let resp = FixedWindow::maybe_with_title(title).show(ui, rect, |ui| {
+        let resp = ui::FixedWindow::maybe_with_title(title).show(ui, rect, |ui| {
             let nav_response =
                 Nav::new(routes)
                     .title(false)
@@ -49,7 +45,7 @@ impl DesktopGlobalPopup {
 
         let mut app = app_ctx.borrow_mut();
 
-        if resp == FixedWindowResponse::Closed {
+        if resp == ui::FixedWindowResponse::Closed {
             app.global_nav.pop();
             app.show_global_popup = false;
         }
