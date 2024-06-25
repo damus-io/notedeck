@@ -1,3 +1,4 @@
+use crate::draft::DraftSource;
 use crate::{ui, Damus};
 
 pub struct PostReplyView<'a> {
@@ -58,7 +59,8 @@ impl<'a> PostReplyView<'a> {
             let rect_before_post = ui.min_rect();
 
             let id = self.id();
-            let post_response = ui::PostView::new(self.app, poster, replying_to)
+            let draft_source = DraftSource::Reply(replying_to);
+            let post_response = ui::PostView::new(self.app, draft_source, poster)
                 .id_source(id)
                 .ui(self.note.txn().unwrap(), ui);
 

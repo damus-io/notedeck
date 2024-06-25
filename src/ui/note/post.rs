@@ -1,16 +1,16 @@
 use crate::app::Damus;
-use crate::draft::Draft;
+use crate::draft::{Draft, DraftSource};
 use crate::ui;
 use crate::ui::{Preview, PreviewConfig, View};
 use egui::widgets::text_edit::TextEdit;
 use nostrdb::Transaction;
 
-pub struct PostView<'app, 'p> {
+pub struct PostView<'app, 'd> {
     app: &'app mut Damus,
     /// account index
     poster: usize,
+    draft_source: DraftSource<'d>,
     id_source: Option<egui::Id>,
-    replying_to: &'p [u8; 32],
 }
 
 pub struct NewPost {
@@ -27,14 +27,14 @@ pub struct PostResponse {
     pub edit_response: egui::Response,
 }
 
-impl<'app, 'p> PostView<'app, 'p> {
-    pub fn new(app: &'app mut Damus, poster: usize, replying_to: &'p [u8; 32]) -> Self {
+impl<'app, 'd> PostView<'app, 'd> {
+    pub fn new(app: &'app mut Damus, draft_source: DraftSource<'d>, poster: usize) -> Self {
         let id_source: Option<egui::Id> = None;
         PostView {
             id_source,
             app,
             poster,
-            replying_to,
+            draft_source,
         }
     }
 
@@ -44,10 +44,7 @@ impl<'app, 'p> PostView<'app, 'p> {
     }
 
     fn draft(&mut self) -> &mut Draft {
-        self.app
-            .drafts
-            .entry(enostr::NoteId::new(*self.replying_to))
-            .or_default()
+        self.draft_source.draft(&mut self.app.drafts)
     }
 
     fn editbox(&mut self, txn: &nostrdb::Transaction, ui: &mut egui::Ui) -> egui::Response {
@@ -82,7 +79,12 @@ impl<'app, 'p> PostView<'app, 'p> {
             );
         }
 
-        let response = ui.add(TextEdit::multiline(&mut self.draft().buffer).frame(false));
+        let buffer = &mut self.draft_source.draft(&mut self.app.drafts).buffer;
+        let response = ui.add(
+            TextEdit::multiline(buffer)
+                .hint_text(egui::RichText::new("Write a banger note here...").weak())
+                .frame(false),
+        );
 
         let focused = response.has_focus();
 
@@ -183,9 +185,8 @@ mod preview {
 
     impl View for PostPreview {
         fn ui(&mut self, ui: &mut egui::Ui) {
-            let test_note_id = test_data::test_pubkey();
             let txn = Transaction::new(&self.app.ndb).unwrap();
-            PostView::new(&mut self.app, 0, test_note_id).ui(&txn, ui);
+            PostView::new(&mut self.app, DraftSource::Compose, 0).ui(&txn, ui);
         }
     }
 

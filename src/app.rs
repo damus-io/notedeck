@@ -1,7 +1,7 @@
 use crate::account_manager::AccountManager;
 use crate::app_creation::setup_cc;
 use crate::app_style::user_requested_visuals_change;
-use crate::draft::Draft;
+use crate::draft::{DraftSource, Drafts};
 use crate::error::Error;
 use crate::frame_history::FrameHistory;
 use crate::imgcache::ImageCache;
@@ -16,7 +16,6 @@ use crate::Result;
 use egui_nav::{Nav, NavAction};
 use enostr::RelayPool;
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use egui::{Context, Frame, Style};
@@ -48,10 +47,10 @@ pub struct Damus {
     /// global navigation for account management popups, etc.
     pub global_nav: Vec<Route>,
     pub textmode: bool,
-    pub drafts: HashMap<enostr::NoteId, Draft>,
 
     pub timelines: Vec<Timeline>,
     pub selected_timeline: i32,
+    pub drafts: Drafts,
 
     pub img_cache: ImageCache,
     pub ndb: Ndb,
@@ -711,7 +710,7 @@ impl Damus {
 
         Self {
             is_mobile,
-            drafts: HashMap::new(),
+            drafts: Drafts::default(),
             state: DamusState::Initializing,
             pool: RelayPool::new(),
             img_cache: ImageCache::new(imgcache_dir),
@@ -746,7 +745,7 @@ impl Damus {
         config.set_ingester_threads(2);
         Self {
             is_mobile,
-            drafts: HashMap::new(),
+            drafts: Drafts::default(),
             state: DamusState::Initializing,
             pool: RelayPool::new(),
             img_cache: ImageCache::new(imgcache_dir),
@@ -891,53 +890,68 @@ fn render_nav(routes: Vec<Route>, timeline_ind: usize, app: &mut Damus, ui: &mut
     let navigating = app.timelines[timeline_ind].navigating;
     let app_ctx = Rc::new(RefCell::new(app));
 
-    let nav_response =
-        Nav::new(routes)
-            .navigating(navigating)
-            .show(ui, |ui, nav| match nav.top() {
-                Route::Timeline(_n) => {
-                    timeline::timeline_view(ui, &mut app_ctx.borrow_mut(), timeline_ind);
+    let nav_response = Nav::new(routes)
+        .navigating(navigating)
+        .title(false)
+        .show(ui, |ui, nav| match nav.top() {
+            Route::Timeline(_n) => {
+                let app = &mut app_ctx.borrow_mut();
+
+                if timeline_ind == 0 {
+                    // show a postbox in the first timeline
+
+                    // TODO: don't show the post box if we have no accounts
+                    let poster = app
+                        .account_manager
+                        .get_selected_account_index()
+                        .unwrap_or(0);
+
+                    if let Ok(txn) = Transaction::new(&app.ndb) {
+                        ui::PostView::new(app, DraftSource::Compose, poster).ui(&txn, ui);
+                    }
                 }
+                timeline::timeline_view(ui, app, timeline_ind);
+            }
 
-                Route::ManageAccount => {
-                    ui.label("account management view");
-                }
+            Route::ManageAccount => {
+                ui.label("account management view");
+            }
 
-                Route::Thread(_key) => {
-                    ui.label("thread view");
-                }
+            Route::Thread(_key) => {
+                ui.label("thread view");
+            }
 
-                Route::Relays => {
-                    let pool = &mut app_ctx.borrow_mut().pool;
-                    let manager = RelayPoolManager::new(pool);
-                    RelayView::new(manager).ui(ui);
-                }
+            Route::Relays => {
+                let pool = &mut app_ctx.borrow_mut().pool;
+                let manager = RelayPoolManager::new(pool);
+                RelayView::new(manager).ui(ui);
+            }
 
-                Route::Reply(id) => {
-                    let mut app = app_ctx.borrow_mut();
+            Route::Reply(id) => {
+                let mut app = app_ctx.borrow_mut();
 
-                    let txn = if let Ok(txn) = Transaction::new(&app.ndb) {
-                        txn
-                    } else {
-                        ui.label("Reply to unknown note");
-                        return;
-                    };
+                let txn = if let Ok(txn) = Transaction::new(&app.ndb) {
+                    txn
+                } else {
+                    ui.label("Reply to unknown note");
+                    return;
+                };
 
-                    let note = if let Ok(note) = app.ndb.get_note_by_id(&txn, id.bytes()) {
-                        note
-                    } else {
-                        ui.label("Reply to unknown note");
-                        return;
-                    };
+                let note = if let Ok(note) = app.ndb.get_note_by_id(&txn, id.bytes()) {
+                    note
+                } else {
+                    ui.label("Reply to unknown note");
+                    return;
+                };
 
-                    let id = egui::Id::new(("post", timeline_ind, note.key().unwrap()));
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        ui::PostReplyView::new(&mut app, &note)
-                            .id_source(id)
-                            .show(ui);
-                    });
-                }
-            });
+                let id = egui::Id::new(("post", timeline_ind, note.key().unwrap()));
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    ui::PostReplyView::new(&mut app, &note)
+                        .id_source(id)
+                        .show(ui);
+                });
+            }
+        });
 
     if let Some(NavAction::Returned) = nav_response.action {
         app_ctx.borrow_mut().timelines[timeline_ind].routes.pop();
