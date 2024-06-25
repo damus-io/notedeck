@@ -47,9 +47,11 @@ impl DesktopGlobalPopup {
             nav_response.inner
         });
 
+        let mut app = app_ctx.borrow_mut();
+
         if resp == FixedWindowResponse::Closed {
-            app_ctx.borrow_mut().global_nav.pop();
-            app_ctx.borrow_mut().show_global_popup = false;
+            app.global_nav.pop();
+            app.show_global_popup = false;
         }
     }
 }
