@@ -13,7 +13,7 @@ pub use error::Error;
 pub use event::{Event, EventId};
 pub use ewebsock;
 pub use filter::Filter;
-pub use keypair::{FullKeypair, Keypair};
+pub use keypair::{FullKeypair, Keypair, SerializableKeypair};
 pub use nostr::SecretKey;
 pub use note::NoteId;
 pub use profile::Profile;

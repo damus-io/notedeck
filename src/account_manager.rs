@@ -2,7 +2,7 @@ use std::cmp::Ordering;
 
 use enostr::Keypair;
 
-use crate::key_storage::KeyStorage;
+use crate::key_storage::{KeyStorage, KeyStorageResponse, KeyStorageType};
 pub use crate::user_account::UserAccount;
 
 /// The interface for managing the user's accounts.
@@ -10,12 +10,16 @@ pub use crate::user_account::UserAccount;
 pub struct AccountManager {
     currently_selected_account: Option<usize>,
     accounts: Vec<UserAccount>,
-    key_store: KeyStorage,
+    key_store: KeyStorageType,
 }
 
 impl AccountManager {
-    pub fn new(currently_selected_account: Option<usize>, key_store: KeyStorage) -> Self {
-        let accounts = key_store.get_keys().unwrap_or_default();
+    pub fn new(currently_selected_account: Option<usize>, key_store: KeyStorageType) -> Self {
+        let accounts = if let KeyStorageResponse::ReceivedResult(res) = key_store.get_keys() {
+            res.unwrap_or_default()
+        } else {
+            Vec::new()
+        };
 
         AccountManager {
             currently_selected_account,

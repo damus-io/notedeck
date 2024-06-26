@@ -5,7 +5,7 @@ use enostr::{Keypair, Pubkey, SecretKey};
 use security_framework::item::{ItemClass, ItemSearchOptions, Limit, SearchResult};
 use security_framework::passwords::{delete_generic_password, set_generic_password};
 
-use crate::key_storage::KeyStorageError;
+use crate::key_storage::{KeyStorage, KeyStorageError, KeyStorageResponse};
 
 pub struct MacOSKeyStorage<'a> {
     pub service_name: &'a str,
@@ -16,7 +16,7 @@ impl<'a> MacOSKeyStorage<'a> {
         MacOSKeyStorage { service_name }
     }
 
-    pub fn add_key(&self, key: &Keypair) -> Result<(), KeyStorageError> {
+    fn add_key(&self, key: &Keypair) -> Result<(), KeyStorageError> {
         match set_generic_password(
             self.service_name,
             key.pubkey.hex().as_str(),
@@ -52,7 +52,7 @@ impl<'a> MacOSKeyStorage<'a> {
         accounts
     }
 
-    pub fn get_pubkeys(&self) -> Vec<Pubkey> {
+    fn get_pubkeys(&self) -> Vec<Pubkey> {
         self.get_pubkey_strings()
             .iter_mut()
             .filter_map(|pubkey_str| Pubkey::from_hex(pubkey_str.as_str()).ok())
@@ -84,7 +84,7 @@ impl<'a> MacOSKeyStorage<'a> {
         }
     }
 
-    pub fn get_all_keypairs(&self) -> Vec<Keypair> {
+    fn get_all_keypairs(&self) -> Vec<Keypair> {
         self.get_pubkeys()
             .iter()
             .map(|pubkey| {
@@ -94,7 +94,7 @@ impl<'a> MacOSKeyStorage<'a> {
             .collect()
     }
 
-    pub fn delete_key(&self, pubkey: &Pubkey) -> Result<(), KeyStorageError> {
+    fn delete_key(&self, pubkey: &Pubkey) -> Result<(), KeyStorageError> {
         match delete_generic_password(self.service_name, pubkey.hex().as_str()) {
             Ok(_) => Ok(()),
             Err(e) => {
@@ -102,6 +102,20 @@ impl<'a> MacOSKeyStorage<'a> {
                 Err(KeyStorageError::Removal(pubkey.hex()))
             }
         }
+    }
+}
+
+impl<'a> KeyStorage for MacOSKeyStorage<'a> {
+    fn add_key(&self, key: &Keypair) -> KeyStorageResponse<()> {
+        KeyStorageResponse::ReceivedResult(self.add_key(key))
+    }
+
+    fn get_keys(&self) -> KeyStorageResponse<Vec<Keypair>> {
+        KeyStorageResponse::ReceivedResult(Ok(self.get_all_keypairs()))
+    }
+
+    fn remove_key(&self, key: &Keypair) -> KeyStorageResponse<()> {
+        KeyStorageResponse::ReceivedResult(self.delete_key(&key.pubkey))
     }
 }
 
