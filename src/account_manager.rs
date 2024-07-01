@@ -4,6 +4,7 @@ use enostr::Keypair;
 
 use crate::key_storage::KeyStorage;
 pub use crate::user_account::UserAccount;
+use tracing::info;
 
 /// The interface for managing the user's accounts.
 /// Represents all user-facing operations related to account management.
@@ -55,9 +56,24 @@ impl AccountManager {
         }
     }
 
-    pub fn add_account(&mut self, account: Keypair) {
+    pub fn has_account_pubkey(&self, pubkey: &[u8; 32]) -> bool {
+        for account in &self.accounts {
+            if account.pubkey.bytes() == pubkey {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    pub fn add_account(&mut self, account: Keypair) -> bool {
+        if self.has_account_pubkey(account.pubkey.bytes()) {
+            info!("already have account, not adding {}", account.pubkey);
+            return false;
+        }
         let _ = self.key_store.add_key(&account);
-        self.accounts.push(account)
+        self.accounts.push(account);
+        true
     }
 
     pub fn num_accounts(&self) -> usize {
