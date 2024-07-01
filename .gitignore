@@ -2,6 +2,7 @@
 .buildcmd
 perf.data
 perf.data.old
+.privenv
 target
 queries/damus-notifs.json
 .git
