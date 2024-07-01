@@ -76,7 +76,8 @@ impl<'app, 'd> PostView<'app, 'd> {
         }
 
         let buffer = &mut self.draft_source.draft(&mut self.app.drafts).buffer;
-        let response = ui.add(
+        let response = ui.add_sized(
+            ui.available_size(),
             TextEdit::multiline(buffer)
                 .hint_text(egui::RichText::new("Write a banger note here...").weak())
                 .frame(false),
