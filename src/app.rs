@@ -1102,25 +1102,6 @@ fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus, timelines: us
         });
 }
 
-/*
-fn postbox(ui: &mut egui::Ui, app: &mut Damus) {
-    let _output = egui::TextEdit::multiline(&mut app.compose)
-        .hint_text("Type something!")
-        .show(ui);
-
-    let width = ui.available_width();
-    let height = 100.0;
-    let shapes = [Shape::Rect(RectShape {
-        rect: epaint::Rect::from_min_max(pos2(10.0, 10.0), pos2(width, height)),
-        rounding: epaint::Rounding::same(10.0),
-        fill: Color32::from_rgb(0x25, 0x25, 0x25),
-        stroke: Stroke::new(2.0, Color32::from_rgb(0x39, 0x39, 0x39)),
-    })];
-
-    ui.painter().extend(shapes);
-}
-    */
-
 impl eframe::App for Damus {
     /// Called by the frame work to save state before shutdown.
     fn save(&mut self, _storage: &mut dyn eframe::Storage) {
