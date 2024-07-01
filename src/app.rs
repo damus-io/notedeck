@@ -638,6 +638,95 @@ fn render_damus(damus: &mut Damus, ctx: &Context) {
     puffin_egui::profiler_window(ctx);
 }
 
+struct Args {
+    timelines: Vec<Timeline>,
+    is_mobile: Option<bool>,
+    secret_key: Option<SecretKey>,
+    light: bool,
+}
+
+fn parse_args(args: &[String]) -> Args {
+    let mut res = Args {
+        timelines: vec![],
+        is_mobile: None,
+        secret_key: None,
+        light: false,
+    };
+
+    if args.len() <= 1 {
+        let filter = serde_json::from_str(include_str!("../queries/timeline.json")).unwrap();
+        res.timelines.push(Timeline::new(filter));
+        return res;
+    }
+
+    let mut i = 0;
+    let len = args.len();
+    while i < len {
+        let arg = &args[i];
+
+        if arg == "--mobile" {
+            res.is_mobile = Some(true);
+        } else if arg == "--light" {
+            res.light = true;
+        } else if arg == "--dark" {
+            res.light = false;
+        } else if arg == "--sec" {
+            i += 1;
+            let secstr = if let Some(next_arg) = args.get(i) {
+                next_arg
+            } else {
+                error!("sec argument missing?");
+                continue;
+            };
+
+            res.secret_key = SecretKey::parse(secstr).ok();
+
+            if res.secret_key.is_none() {
+                error!("failed to parse --sec argument. Make sure to use hex or nsec.");
+            }
+        } else if arg == "--filter" {
+            i += 1;
+            let filter = if let Some(next_arg) = args.get(i) {
+                next_arg
+            } else {
+                error!("filter argument missing?");
+                continue;
+            };
+
+            if let Ok(filter) = serde_json::from_str(filter) {
+                res.timelines.push(Timeline::new(filter));
+            } else {
+                error!("failed to parse filter '{}'", filter);
+            }
+        } else if arg == "--filter-file" || arg == "-f" {
+            i += 1;
+            let filter_file = if let Some(next_arg) = args.get(i) {
+                next_arg
+            } else {
+                error!("filter file argument missing?");
+                continue;
+            };
+
+            let data = if let Ok(data) = std::fs::read(filter_file) {
+                data
+            } else {
+                error!("failed to read filter file '{}'", filter_file);
+                continue;
+            };
+
+            if let Ok(filter) = serde_json::from_slice(&data) {
+                res.timelines.push(Timeline::new(filter));
+            } else {
+                error!("failed to parse filter in '{}'", filter_file);
+            }
+        }
+
+        i += 1;
+    }
+
+    res
+}
+
 impl Damus {
     /// Called once before the first frame.
     pub fn new<P: AsRef<Path>>(
@@ -645,68 +734,31 @@ impl Damus {
         data_path: P,
         args: Vec<String>,
     ) -> Self {
-        let mut timelines: Vec<Timeline> = vec![];
-        let mut is_mobile: Option<bool> = None;
-        let mut i = 0;
-        let mut light: bool = false;
+        // arg parsing
+        let parsed_args = parse_args(&args);
 
-        if args.len() > 1 {
-            for arg in &args[1..] {
-                if arg == "--mobile" {
-                    is_mobile = Some(true);
-                } else if arg == "--light" {
-                    light = true;
-                } else if arg == "--dark" {
-                    light = false;
-                } else if arg == "--filter" {
-                    let next_args = &args[1 + i + 1..];
-                    if next_args.is_empty() {
-                        continue;
-                    }
-                    let filter = &next_args[0];
+        let is_mobile = parsed_args.is_mobile.unwrap_or(ui::is_compiled_as_mobile());
 
-                    if let Ok(filter) = serde_json::from_str(filter) {
-                        timelines.push(Timeline::new(filter));
-                    } else {
-                        error!("failed to parse filter '{}'", filter);
-                    }
-                } else if arg == "--filter-file" || arg == "-f" {
-                    let next_args = &args[1 + i + 1..];
-                    if next_args.is_empty() {
-                        continue;
-                    }
-                    let filter_file = &next_args[0];
-
-                    let data = if let Ok(data) = std::fs::read(filter_file) {
-                        data
-                    } else {
-                        error!("failed to read filter file '{}'", filter_file);
-                        continue;
-                    };
-
-                    if let Ok(filter) = serde_json::from_slice(&data) {
-                        timelines.push(Timeline::new(filter));
-                    } else {
-                        error!("failed to parse filter in '{}'", filter_file);
-                    }
-                }
-
-                i += 1;
-            }
-        } else {
-            let filter = serde_json::from_str(include_str!("../queries/timeline.json")).unwrap();
-            timelines.push(Timeline::new(filter));
-        };
-
-        let is_mobile = is_mobile.unwrap_or(ui::is_compiled_as_mobile());
-
-        setup_cc(cc, is_mobile, light);
+        setup_cc(cc, is_mobile, parsed_args.light);
 
         let imgcache_dir = data_path.as_ref().join(ImageCache::rel_datadir());
         let _ = std::fs::create_dir_all(imgcache_dir.clone());
 
         let mut config = Config::new();
         config.set_ingester_threads(2);
+
+        let mut account_manager = AccountManager::new(
+            // TODO: should pull this from settings
+            None,
+            // TODO: use correct KeyStorage mechanism for current OS arch
+            crate::key_storage::KeyStorage::None,
+        );
+
+        if let Some(secret) = parsed_args.secret_key {
+            let keypair = enostr::Keypair::from_secret(secret);
+            info!("adding account: {}", keypair.pubkey);
+            account_manager.add_account(keypair);
+        }
 
         Self {
             is_mobile,
@@ -716,15 +768,10 @@ impl Damus {
             img_cache: ImageCache::new(imgcache_dir),
             note_cache: NoteCache::default(),
             selected_timeline: 0,
-            timelines,
+            timelines: parsed_args.timelines,
             textmode: false,
             ndb: Ndb::new(data_path.as_ref().to_str().expect("db path ok"), &config).expect("ndb"),
-            account_manager: AccountManager::new(
-                // TODO: should pull this from settings
-                None,
-                // TODO: use correct KeyStorage mechanism for current OS arch
-                crate::key_storage::KeyStorage::None,
-            ),
+            account_manager,
             //compose: "".to_string(),
             frame_history: FrameHistory::default(),
             show_account_switcher: false,
