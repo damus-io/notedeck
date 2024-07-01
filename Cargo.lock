@@ -437,25 +437,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "bitcoin-private"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "73290177011694f38ec25e165d0387ab7ea749a4b81cd4c80dae5988229f7a57"
-
-[[package]]
 name = "bitcoin_hashes"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "90064b8dee6815a6470d60bad07bbbaee885c0e12d04177138fa3291a01b7bc4"
-
-[[package]]
-name = "bitcoin_hashes"
-version = "0.12.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5d7066118b13d4b20b23645932dfb3a81ce7e29f95726c2036fa33cd7b092501"
-dependencies = [
- "bitcoin-private",
-]
 
 [[package]]
 name = "bitcoin_hashes"
@@ -2440,8 +2425,8 @@ dependencies = [
 
 [[package]]
 name = "nostrdb"
-version = "0.3.3"
-source = "git+https://github.com/damus-io/nostrdb-rs?rev=5733ece62b8495db8624a21637bacd12ebb22b2c#5733ece62b8495db8624a21637bacd12ebb22b2c"
+version = "0.3.4"
+source = "git+https://github.com/damus-io/nostrdb-rs?rev=ee8afeeb0b6695fca6d27dd0b74a8dc159e37b95#ee8afeeb0b6695fca6d27dd0b74a8dc159e37b95"
 dependencies = [
  "bindgen",
  "cc",
@@ -3415,7 +3400,7 @@ version = "0.28.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d24b59d129cdadea20aea4fb2352fa053712e5d713eee47d700cd4b2bc002f10"
 dependencies = [
- "bitcoin_hashes 0.12.0",
+ "bitcoin_hashes 0.13.0",
  "rand",
  "secp256k1-sys",
  "serde",

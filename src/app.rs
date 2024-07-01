@@ -1,7 +1,7 @@
 use crate::account_manager::AccountManager;
 use crate::app_creation::setup_cc;
 use crate::app_style::user_requested_visuals_change;
-use crate::draft::{DraftSource, Drafts};
+use crate::draft::Drafts;
 use crate::error::Error;
 use crate::frame_history::FrameHistory;
 use crate::imgcache::ImageCache;
@@ -14,7 +14,7 @@ use crate::ui::{self, AccountSelectionWidget, DesktopGlobalPopup};
 use crate::ui::{DesktopSidePanel, RelayView, View};
 use crate::Result;
 use egui_nav::{Nav, NavAction};
-use enostr::RelayPool;
+use enostr::{RelayPool, SecretKey};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -268,7 +268,7 @@ impl<'a> UnknownId<'a> {
 
 fn get_unknown_note_ids<'a>(
     ndb: &Ndb,
-    cached_note: &CachedNote,
+    _cached_note: &CachedNote,
     txn: &'a Transaction,
     note: &Note<'a>,
     note_key: NoteKey,
@@ -281,6 +281,7 @@ fn get_unknown_note_ids<'a>(
     }
 
     // pull notes that notes are replying to
+    /* TODO: FIX tags lifetime
     if cached_note.reply.root.is_some() {
         let note_reply = cached_note.reply.borrow(note.tags());
         if let Some(root) = note_reply.root() {
@@ -297,6 +298,7 @@ fn get_unknown_note_ids<'a>(
             }
         }
     }
+    */
 
     let blocks = ndb.get_blocks_by_key(txn, note_key)?;
     for block in blocks.iter(note) {
@@ -943,20 +945,6 @@ fn render_nav(routes: Vec<Route>, timeline_ind: usize, app: &mut Damus, ui: &mut
         .show(ui, |ui, nav| match nav.top() {
             Route::Timeline(_n) => {
                 let app = &mut app_ctx.borrow_mut();
-
-                if timeline_ind == 0 {
-                    // show a postbox in the first timeline
-
-                    // TODO: don't show the post box if we have no accounts
-                    let poster = app
-                        .account_manager
-                        .get_selected_account_index()
-                        .unwrap_or(0);
-
-                    if let Ok(txn) = Transaction::new(&app.ndb) {
-                        ui::PostView::new(app, DraftSource::Compose, poster).ui(&txn, ui);
-                    }
-                }
                 timeline::timeline_view(ui, app, timeline_ind);
             }
 

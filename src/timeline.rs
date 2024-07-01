@@ -1,4 +1,6 @@
+use crate::draft::DraftSource;
 use crate::notecache::CachedNote;
+use crate::ui::note::PostAction;
 use crate::{ui, Damus};
 
 use crate::route::Route;
@@ -14,7 +16,7 @@ use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::rc::Rc;
 
-use log::{debug, warn};
+use tracing::{debug, info, warn};
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
 pub struct NoteRef {
@@ -264,6 +266,43 @@ pub fn timeline_view(ui: &mut egui::Ui, app: &mut Damus, timeline: usize) {
     let font_id = egui::TextStyle::Body.resolve(ui.style());
     let row_height = ui.fonts(|f| f.row_height(&font_id)) + ui.spacing().item_spacing.y;
     */
+
+    if timeline == 0 {
+        // show a postbox in the first timeline
+
+        if let Some(account) = app.account_manager.get_selected_account_index() {
+            if app
+                .account_manager
+                .get_selected_account()
+                .map_or(false, |a| a.secret_key.is_some())
+            {
+                if let Ok(txn) = Transaction::new(&app.ndb) {
+                    let response =
+                        ui::PostView::new(app, DraftSource::Compose, account).ui(&txn, ui);
+
+                    if let Some(action) = response.action {
+                        match action {
+                            PostAction::Post(np) => {
+                                let seckey = app
+                                    .account_manager
+                                    .get_account(account)
+                                    .unwrap()
+                                    .secret_key
+                                    .as_ref()
+                                    .unwrap()
+                                    .to_secret_bytes();
+
+                                let note = np.to_note(&seckey);
+                                let raw_msg = format!("[\"EVENT\",{}]", note.json().unwrap());
+                                info!("sending {}", raw_msg);
+                                app.pool.send(&enostr::ClientMessage::raw(raw_msg));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     tabs_ui(&mut app.timelines[timeline], ui);
 

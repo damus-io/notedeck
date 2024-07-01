@@ -1,6 +1,5 @@
 mod client;
 mod error;
-mod event;
 mod filter;
 mod keypair;
 mod note;

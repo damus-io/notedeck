@@ -19,6 +19,7 @@ mod key_storage;
 pub mod login_manager;
 mod macos_key_storage;
 mod notecache;
+mod post;
 mod profile;
 pub mod relay_pool_manager;
 mod result;

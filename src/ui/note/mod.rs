@@ -5,7 +5,7 @@ pub mod reply;
 
 pub use contents::NoteContents;
 pub use options::NoteOptions;
-pub use post::PostView;
+pub use post::{PostAction, PostResponse, PostView};
 pub use reply::PostReplyView;
 
 use crate::{colors, notecache::CachedNote, ui, ui::View, Damus};

@@ -1,5 +1,6 @@
 use crate::app::Damus;
 use crate::draft::{Draft, DraftSource};
+use crate::post::NewPost;
 use crate::ui;
 use crate::ui::{Preview, PreviewConfig, View};
 use egui::widgets::text_edit::TextEdit;
@@ -11,11 +12,6 @@ pub struct PostView<'app, 'd> {
     poster: usize,
     draft_source: DraftSource<'d>,
     id_source: Option<egui::Id>,
-}
-
-pub struct NewPost {
-    pub content: String,
-    pub account: usize,
 }
 
 pub enum PostAction {
