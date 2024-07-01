@@ -756,7 +756,7 @@ impl Damus {
             // TODO: should pull this from settings
             None,
             // TODO: use correct KeyStorage mechanism for current OS arch
-            crate::key_storage::KeyStorage::None,
+            crate::key_storage::KeyStorageType::None,
         );
 
         for key in parsed_args.keys {
@@ -805,7 +805,7 @@ impl Damus {
             timelines,
             textmode: false,
             ndb: Ndb::new(data_path.as_ref().to_str().expect("db path ok"), &config).expect("ndb"),
-            account_manager: AccountManager::new(None, crate::key_storage::KeyStorage::None),
+            account_manager: AccountManager::new(None, crate::key_storage::KeyStorageType::None),
             frame_history: FrameHistory::default(),
             show_account_switcher: false,
             show_global_popup: true,

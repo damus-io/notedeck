@@ -1,3 +1,7 @@
+use nostr::nips::nip49::EncryptedSecretKey;
+use serde::Deserialize;
+use serde::Serialize;
+
 use crate::Pubkey;
 use crate::SecretKey;
 
@@ -90,6 +94,37 @@ impl std::fmt::Display for FullKeypair {
             f,
             "Keypair:\n\tpublic: {}\n\tsecret: {}",
             self.pubkey, "<hidden>"
+        )
+    }
+}
+
+#[derive(Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SerializableKeypair {
+    pub pubkey: Pubkey,
+    pub encrypted_secret_key: Option<EncryptedSecretKey>,
+}
+
+impl SerializableKeypair {
+    pub fn from_keypair(kp: &Keypair, pass: &str, log_n: u8) -> Self {
+        Self {
+            pubkey: kp.pubkey.clone(),
+            encrypted_secret_key: kp
+                .secret_key
+                .clone()
+                .map(|s| {
+                    EncryptedSecretKey::new(&s, pass, log_n, nostr::nips::nip49::KeySecurity::Weak)
+                        .ok()
+                })
+                .flatten(),
+        }
+    }
+
+    pub fn to_keypair(&self, pass: &str) -> Keypair {
+        Keypair::new(
+            self.pubkey.clone(),
+            self.encrypted_secret_key
+                .map(|e| e.to_secret_key(pass).ok())
+                .flatten(),
         )
     }
 }

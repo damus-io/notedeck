@@ -34,6 +34,7 @@ mod user_account;
 #[cfg(test)]
 #[macro_use]
 mod test_utils;
+mod linux_key_storage;
 
 pub use app::Damus;
 pub use error::Error;
