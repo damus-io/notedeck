@@ -5,6 +5,7 @@ use crate::draft::Drafts;
 use crate::error::Error;
 use crate::frame_history::FrameHistory;
 use crate::imgcache::ImageCache;
+use crate::key_storage::KeyStorageType;
 use crate::notecache::{CachedNote, NoteCache};
 use crate::relay_pool_manager::RelayPoolManager;
 use crate::route::Route;
@@ -733,6 +734,23 @@ fn parse_args(args: &[String]) -> Args {
     res
 }
 
+fn determine_key_storage_type() -> KeyStorageType {
+    #[cfg(target_os = "macos")]
+    {
+        KeyStorageType::MacOS
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        KeyStorageType::Linux
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        KeyStorageType::None
+    }
+}
+
 impl Damus {
     /// Called once before the first frame.
     pub fn new<P: AsRef<Path>>(
@@ -756,7 +774,7 @@ impl Damus {
             // TODO: should pull this from settings
             None,
             // TODO: use correct KeyStorage mechanism for current OS arch
-            crate::key_storage::KeyStorageType::None,
+            determine_key_storage_type(),
         );
 
         for key in parsed_args.keys {
@@ -805,7 +823,7 @@ impl Damus {
             timelines,
             textmode: false,
             ndb: Ndb::new(data_path.as_ref().to_str().expect("db path ok"), &config).expect("ndb"),
-            account_manager: AccountManager::new(None, crate::key_storage::KeyStorageType::None),
+            account_manager: AccountManager::new(None, determine_key_storage_type()),
             frame_history: FrameHistory::default(),
             show_account_switcher: false,
             show_global_popup: true,
