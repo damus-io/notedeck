@@ -655,12 +655,6 @@ fn parse_args(args: &[String]) -> Args {
         light: false,
     };
 
-    if args.len() <= 1 {
-        let filter = serde_json::from_str(include_str!("../queries/timeline.json")).unwrap();
-        res.timelines.push(Timeline::new(filter));
-        return res;
-    }
-
     let mut i = 0;
     let len = args.len();
     while i < len {
@@ -731,6 +725,11 @@ fn parse_args(args: &[String]) -> Args {
         i += 1;
     }
 
+    if res.timelines.is_empty() {
+        let filter = serde_json::from_str(include_str!("../queries/timeline.json")).unwrap();
+        res.timelines.push(Timeline::new(filter));
+    }
+
     res
 }
 
@@ -743,7 +742,6 @@ impl Damus {
     ) -> Self {
         // arg parsing
         let parsed_args = parse_args(&args);
-
         let is_mobile = parsed_args.is_mobile.unwrap_or(ui::is_compiled_as_mobile());
 
         setup_cc(cc, is_mobile, parsed_args.light);
@@ -928,12 +926,14 @@ fn render_panel(ctx: &egui::Context, app: &mut Damus, timeline_ind: usize) {
                     app.frame_history.mean_frame_time() * 1e3
                 ));
 
-                ui.weak(format!(
-                    "{} notes",
-                    &app.timelines[timeline_ind]
-                        .notes(ViewFilter::NotesAndReplies)
-                        .len()
-                ));
+                if !app.timelines.is_empty() {
+                    ui.weak(format!(
+                        "{} notes",
+                        &app.timelines[timeline_ind]
+                            .notes(ViewFilter::NotesAndReplies)
+                            .len()
+                    ));
+                }
             }
         });
     });
