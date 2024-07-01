@@ -1,11 +1,11 @@
-use crate::{Event, Filter};
+use crate::{Filter, Note};
 use serde_json::json;
 
 /// Messages sent by clients, received by relays
 #[derive(Debug, Eq, PartialEq)]
 pub enum ClientMessage {
     Event {
-        event: Event,
+        note: Note,
     },
     Req {
         sub_id: String,
@@ -14,11 +14,16 @@ pub enum ClientMessage {
     Close {
         sub_id: String,
     },
+    Raw(String),
 }
 
 impl ClientMessage {
-    pub fn event(event: Event) -> Self {
-        ClientMessage::Event { event }
+    pub fn event(note: Note) -> Self {
+        ClientMessage::Event { note }
+    }
+
+    pub fn raw(raw: String) -> Self {
+        ClientMessage::Raw(raw)
     }
 
     pub fn req(sub_id: String, filters: Vec<Filter>) -> Self {
@@ -31,7 +36,8 @@ impl ClientMessage {
 
     pub fn to_json(&self) -> String {
         match self {
-            Self::Event { event } => json!(["EVENT", event]).to_string(),
+            Self::Event { note } => json!(["EVENT", note]).to_string(),
+            Self::Raw(raw) => raw.clone(),
             Self::Req { sub_id, filters } => {
                 let mut json = json!(["REQ", sub_id]);
                 let mut filters = json!(filters);

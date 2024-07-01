@@ -10,12 +10,11 @@ mod relay;
 
 pub use client::ClientMessage;
 pub use error::Error;
-pub use event::{Event, EventId};
 pub use ewebsock;
 pub use filter::Filter;
 pub use keypair::{FullKeypair, Keypair};
 pub use nostr::SecretKey;
-pub use note::NoteId;
+pub use note::{Note, NoteId};
 pub use profile::Profile;
 pub use pubkey::Pubkey;
 pub use relay::message::{RelayEvent, RelayMessage};

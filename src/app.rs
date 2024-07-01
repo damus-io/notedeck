@@ -582,9 +582,9 @@ fn get_unknown_ids_filter(ids: &[UnknownId<'_>]) -> Option<Vec<Filter>> {
         filters.push(pk_filter);
     }
 
-    let note_ids: Vec<enostr::EventId> = ids
+    let note_ids: Vec<enostr::NoteId> = ids
         .iter()
-        .flat_map(|id| id.is_id().map(|id| enostr::EventId::new(*id)))
+        .flat_map(|id| id.is_id().map(|id| enostr::NoteId::new(*id)))
         .collect();
     if !note_ids.is_empty() {
         filters.push(Filter::new().ids(note_ids));

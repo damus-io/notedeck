@@ -1,17 +1,17 @@
-use crate::{EventId, Pubkey};
+use crate::{NoteId, Pubkey};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Debug, Eq, PartialEq, Clone)]
 pub struct Filter {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub ids: Option<Vec<EventId>>,
+    pub ids: Option<Vec<NoteId>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub authors: Option<Vec<Pubkey>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kinds: Option<Vec<u64>>,
     #[serde(rename = "#e")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub events: Option<Vec<EventId>>,
+    pub events: Option<Vec<NoteId>>,
     #[serde(rename = "#p")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pubkeys: Option<Vec<Pubkey>>,
@@ -49,7 +49,7 @@ impl Filter {
         150
     }
 
-    pub fn ids(mut self, ids: Vec<EventId>) -> Self {
+    pub fn ids(mut self, ids: Vec<NoteId>) -> Self {
         self.ids = Some(ids);
         self
     }
@@ -64,7 +64,7 @@ impl Filter {
         self
     }
 
-    pub fn events(mut self, events: Vec<EventId>) -> Self {
+    pub fn events(mut self, events: Vec<NoteId>) -> Self {
         self.events = Some(events);
         self
     }
