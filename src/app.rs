@@ -14,7 +14,7 @@ use crate::ui::{self, AccountSelectionWidget, DesktopGlobalPopup};
 use crate::ui::{DesktopSidePanel, RelayView, View};
 use crate::Result;
 use egui_nav::{Nav, NavAction};
-use enostr::{RelayPool, SecretKey};
+use enostr::{Keypair, RelayPool, SecretKey};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -643,7 +643,7 @@ fn render_damus(damus: &mut Damus, ctx: &Context) {
 struct Args {
     timelines: Vec<Timeline>,
     is_mobile: Option<bool>,
-    secret_key: Option<SecretKey>,
+    keys: Vec<Keypair>,
     light: bool,
 }
 
@@ -651,7 +651,7 @@ fn parse_args(args: &[String]) -> Args {
     let mut res = Args {
         timelines: vec![],
         is_mobile: None,
-        secret_key: None,
+        keys: vec![],
         light: false,
     };
 
@@ -672,7 +672,9 @@ fn parse_args(args: &[String]) -> Args {
             res.light = true;
         } else if arg == "--dark" {
             res.light = false;
-        } else if arg == "--sec" {
+        } else if arg == "--pub" || arg == "npub" {
+            // TODO: npub watch-only accounts
+        } else if arg == "--sec" || arg == "--nsec" {
             i += 1;
             let secstr = if let Some(next_arg) = args.get(i) {
                 next_arg
@@ -681,10 +683,13 @@ fn parse_args(args: &[String]) -> Args {
                 continue;
             };
 
-            res.secret_key = SecretKey::parse(secstr).ok();
-
-            if res.secret_key.is_none() {
-                error!("failed to parse --sec argument. Make sure to use hex or nsec.");
+            if let Ok(sec) = SecretKey::parse(secstr) {
+                res.keys.push(Keypair::from_secret(sec));
+            } else {
+                error!(
+                    "failed to parse {} argument. Make sure to use hex or nsec.",
+                    arg
+                );
             }
         } else if arg == "--filter" {
             i += 1;
@@ -756,10 +761,9 @@ impl Damus {
             crate::key_storage::KeyStorage::None,
         );
 
-        if let Some(secret) = parsed_args.secret_key {
-            let keypair = enostr::Keypair::from_secret(secret);
-            info!("adding account: {}", keypair.pubkey);
-            account_manager.add_account(keypair);
+        for key in parsed_args.keys {
+            info!("adding account: {}", key.pubkey);
+            account_manager.add_account(key);
         }
 
         Self {
