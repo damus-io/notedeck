@@ -41,7 +41,7 @@ pub struct Damus {
     state: DamusState,
     //compose: String,
     note_cache: NoteCache,
-    pool: RelayPool,
+    pub pool: RelayPool,
     is_mobile: bool,
 
     /// global navigation for account management popups, etc.
