@@ -11,6 +11,12 @@ pub struct Drafts {
     pub compose: Draft,
 }
 
+impl Drafts {
+    pub fn clear(&mut self, source: DraftSource) {
+        source.draft(self).buffer = "".to_string();
+    }
+}
+
 pub enum DraftSource<'a> {
     Compose,
     Reply(&'a [u8; 32]), // note id

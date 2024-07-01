@@ -296,6 +296,7 @@ pub fn timeline_view(ui: &mut egui::Ui, app: &mut Damus, timeline: usize) {
                                 let raw_msg = format!("[\"EVENT\",{}]", note.json().unwrap());
                                 info!("sending {}", raw_msg);
                                 app.pool.send(&enostr::ClientMessage::raw(raw_msg));
+                                app.drafts.clear(DraftSource::Compose);
                             }
                         }
                     }
