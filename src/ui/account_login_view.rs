@@ -296,7 +296,7 @@ fn show_error(ui: &mut egui::Ui, err: &LoginError) {
                 egui::Label::new(RichText::new(e).color(ui.visuals().error_fg_color))
             }
         };
-        ui.add(error_label.truncate(true));
+        ui.add(error_label.truncate());
     });
 }
 

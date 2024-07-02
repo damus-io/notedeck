@@ -13,14 +13,13 @@ crate-type = ["lib", "cdylib"]
 
 [dependencies]
 #egui-android = { git = "https://github.com/jb55/egui-android.git" }
-egui = "0.27.2"
-eframe = { version = "0.27.2", default-features = false, features = [ "glow", "wayland", "x11", "android-native-activity" ] }
-#eframe = { version = "0.27.2", default-features = false, features = [ "glow", "android-native-activity" ] }
-#eframe = "0.22.0"
-egui_extras = { version = "0.27.2", features = ["all_loaders"] }
+egui = { git = "https://github.com/emilk/egui", rev = "fcb7764e48ce00f8f8e58da10f937410d65b0bfb" }
+eframe = { git = "https://github.com/emilk/egui", rev = "fcb7764e48ce00f8f8e58da10f937410d65b0bfb", package = "eframe", default-features = false, features = [ "wgpu", "wayland", "x11", "android-native-activity" ] }
+egui_extras = { git = "https://github.com/emilk/egui", rev = "fcb7764e48ce00f8f8e58da10f937410d65b0bfb", package = "egui_extras", features = ["all_loaders"] }
 ehttp = "0.2.0"
-egui_tabs = { git = "https://github.com/damus-io/egui-tabs", rev = "120971fc43db6ba0b6f194f4bd4a66f7e00a4e22" }
-egui_nav = { git = "https://github.com/damus-io/egui-nav", rev = "0498cbee12935448478823d855060dc749a0b8b6" }
+egui_tabs = { git = "https://github.com/damus-io/egui-tabs", branch = "egui-0.28" }
+egui_nav = { git = "https://github.com/damus-io/egui-nav", branch = "egui-0.28" }
+egui_virtual_list = { git = "https://github.com/jb55/hello_egui", branch = "egui-0.28", package = "egui_virtual_list" }
 reqwest = { version = "0.12.4", default-features = false, features = [ "rustls-tls-native-roots" ] }
 image = { version = "0.24", features = ["jpeg", "png", "webp"] }
 log = "0.4.17"
@@ -41,7 +40,6 @@ base32 = "0.4.0"
 strum = "0.26"
 strum_macros = "0.26"
 bitflags = "2.5.0"
-egui_virtual_list = "0.3.0"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "2.11.0"
@@ -113,3 +111,9 @@ path = "src/bin/notedeck.rs"
 [[bin]]
 name = "ui_preview"
 path = "src/ui_preview/main.rs"
+
+[patch.crates-io]
+egui = { git = "https://github.com/emilk/egui", rev = "fcb7764e48ce00f8f8e58da10f937410d65b0bfb" }
+eframe = { git = "https://github.com/emilk/egui", rev = "fcb7764e48ce00f8f8e58da10f937410d65b0bfb", package = "eframe"  }
+emath = { git = "https://github.com/emilk/egui", rev = "fcb7764e48ce00f8f8e58da10f937410d65b0bfb", package = "emath" }
+egui_extras = { git = "https://github.com/emilk/egui", rev = "fcb7764e48ce00f8f8e58da10f937410d65b0bfb", package = "egui_extras"  }

@@ -42,7 +42,7 @@ impl PreviewRunner {
             Box::new(move |cc| {
                 let app = Into::<PreviewApp>::into(preview);
                 setup_cc(cc, is_mobile, light_mode);
-                Box::new(app)
+                Ok(Box::new(app))
             }),
         );
     }
