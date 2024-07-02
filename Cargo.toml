@@ -14,19 +14,7 @@ crate-type = ["lib", "cdylib"]
 [dependencies]
 #egui-android = { git = "https://github.com/jb55/egui-android.git" }
 egui = "0.27.2"
-eframe = { version = "0.27.2", default-features = false, features = [ "glow", "wgpu", "x11", "wayland", "android-native-activity" ] }
-
-  #
-  # TODO default features:
-  #
-  #"accesskit",
-  #"default_fonts",
-  #"glow",
-  #"wayland",
-  #"web_screen_reader",
-  #"winit/default",
-  #"x11",
-
+eframe = { version = "0.27.2", default-features = false, features = [ "glow", "wayland", "x11", "android-native-activity" ] }
 #eframe = { version = "0.27.2", default-features = false, features = [ "glow", "android-native-activity" ] }
 #eframe = "0.22.0"
 egui_extras = { version = "0.27.2", features = ["all_loaders"] }
