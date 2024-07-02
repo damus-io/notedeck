@@ -64,8 +64,11 @@ impl<'a, 'cache> ProfilePreview<'a, 'cache> {
 
     fn body(self, ui: &mut egui::Ui) {
         crate::ui::padding(12.0, ui, |ui| {
-            ui.add(ProfilePic::new(self.cache, get_profile_url(self.profile)).size(80.0));
-            ui.add(display_name_widget(get_display_name(self.profile), false));
+            ui.add(ProfilePic::new(self.cache, get_profile_url(Some(self.profile))).size(80.0));
+            ui.add(display_name_widget(
+                get_display_name(Some(self.profile)),
+                false,
+            ));
             ui.add(about_section_widget(self.profile));
         });
     }
@@ -85,12 +88,12 @@ impl<'a, 'cache> egui::Widget for ProfilePreview<'a, 'cache> {
 }
 
 pub struct SimpleProfilePreview<'a, 'cache> {
-    profile: &'a ProfileRecord<'a>,
+    profile: Option<&'a ProfileRecord<'a>>,
     cache: &'cache mut ImageCache,
 }
 
 impl<'a, 'cache> SimpleProfilePreview<'a, 'cache> {
-    pub fn new(profile: &'a ProfileRecord<'a>, cache: &'cache mut ImageCache) -> Self {
+    pub fn new(profile: Option<&'a ProfileRecord<'a>>, cache: &'cache mut ImageCache) -> Self {
         SimpleProfilePreview { profile, cache }
     }
 }
@@ -148,16 +151,16 @@ mod previews {
     }
 }
 
-pub fn get_display_name<'a>(profile: &'a ProfileRecord<'a>) -> DisplayName<'a> {
-    if let Some(name) = crate::profile::get_profile_name(profile) {
+pub fn get_display_name<'a>(profile: Option<&'a ProfileRecord<'a>>) -> DisplayName<'a> {
+    if let Some(name) = profile.and_then(|p| crate::profile::get_profile_name(p)) {
         name
     } else {
         DisplayName::One("??")
     }
 }
 
-pub fn get_profile_url<'a>(profile: &'a ProfileRecord<'a>) -> &'a str {
-    if let Some(url) = profile.record().profile().and_then(|p| p.picture()) {
+pub fn get_profile_url<'a>(profile: Option<&'a ProfileRecord<'a>>) -> &'a str {
+    if let Some(url) = profile.and_then(|pr| pr.record().profile().and_then(|p| p.picture())) {
         url
     } else {
         ProfilePic::no_pfp_url()

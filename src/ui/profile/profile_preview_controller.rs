@@ -40,14 +40,12 @@ pub fn set_profile_previews(
             continue;
         };
 
-        let profile =
-            if let Ok(profile) = app.ndb.get_profile_by_pubkey(&txn, account.pubkey.bytes()) {
-                profile
-            } else {
-                continue;
-            };
+        let profile = app
+            .ndb
+            .get_profile_by_pubkey(&txn, account.pubkey.bytes())
+            .ok();
 
-        let preview = SimpleProfilePreview::new(&profile, &mut app.img_cache);
+        let preview = SimpleProfilePreview::new(profile.as_ref(), &mut app.img_cache);
 
         let is_selected = if let Some(selected) = app.account_manager.get_selected_account_index() {
             i == selected
@@ -101,14 +99,12 @@ pub fn view_profile_previews(
             continue;
         };
 
-        let profile =
-            if let Ok(profile) = app.ndb.get_profile_by_pubkey(&txn, account.pubkey.bytes()) {
-                profile
-            } else {
-                continue;
-            };
+        let profile = app
+            .ndb
+            .get_profile_by_pubkey(&txn, account.pubkey.bytes())
+            .ok();
 
-        let preview = SimpleProfilePreview::new(&profile, &mut app.img_cache);
+        let preview = SimpleProfilePreview::new(profile.as_ref(), &mut app.img_cache);
 
         let is_selected = if let Some(selected) = app.account_manager.get_selected_account_index() {
             i == selected
@@ -132,7 +128,7 @@ pub fn show_with_nickname(
 ) -> Result<egui::Response> {
     let txn = Transaction::new(ndb)?;
     let profile = ndb.get_profile_by_pubkey(&txn, key)?;
-    Ok(ui_element(ui, &get_display_name(&profile)))
+    Ok(ui_element(ui, &get_display_name(Some(&profile))))
 }
 
 pub fn show_with_selected_pfp(
@@ -147,12 +143,10 @@ pub fn show_with_selected_pfp(
                 .ndb
                 .get_profile_by_pubkey(&txn, selected_account.pubkey.bytes());
 
-            if let Ok(profile) = profile {
-                return Some(ui_element(
-                    ui,
-                    ProfilePic::new(&mut app.img_cache, get_profile_url(&profile)),
-                ));
-            }
+            return Some(ui_element(
+                ui,
+                ProfilePic::new(&mut app.img_cache, get_profile_url(profile.ok().as_ref())),
+            ));
         }
     }
 
@@ -168,12 +162,10 @@ pub fn show_with_pfp(
     if let Ok(txn) = Transaction::new(&app.ndb) {
         let profile = app.ndb.get_profile_by_pubkey(&txn, key);
 
-        if let Ok(profile) = profile {
-            return Some(ui_element(
-                ui,
-                ProfilePic::new(&mut app.img_cache, get_profile_url(&profile)),
-            ));
-        }
+        return Some(ui_element(
+            ui,
+            ProfilePic::new(&mut app.img_cache, get_profile_url(profile.ok().as_ref())),
+        ));
     }
     None
 }
