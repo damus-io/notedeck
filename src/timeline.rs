@@ -129,6 +129,7 @@ pub struct Timeline {
     pub selected_view: i32,
     pub routes: Vec<Route>,
     pub navigating: bool,
+    pub returning: bool,
 
     /// Our nostrdb subscription
     pub subscription: Option<Subscription>,
@@ -143,9 +144,11 @@ impl Timeline {
         let selected_view = 0;
         let routes = vec![Route::Timeline("Timeline".to_string())];
         let navigating = false;
+        let returning = false;
 
         Timeline {
             navigating,
+            returning,
             filter,
             views,
             subscription,

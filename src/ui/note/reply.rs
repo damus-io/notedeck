@@ -1,5 +1,7 @@
 use crate::draft::DraftSource;
+use crate::ui::note::{PostAction, PostResponse};
 use crate::{ui, Damus};
+use tracing::info;
 
 pub struct PostReplyView<'a> {
     app: &'a mut Damus,
@@ -27,7 +29,7 @@ impl<'a> PostReplyView<'a> {
             .unwrap_or_else(|| egui::Id::new("post-reply-view"))
     }
 
-    pub fn show(&mut self, ui: &mut egui::Ui) {
+    pub fn show(&mut self, ui: &mut egui::Ui) -> PostResponse {
         ui.vertical(|ui| {
             let avail_rect = ui.available_rect_before_wrap();
 
@@ -49,20 +51,48 @@ impl<'a> PostReplyView<'a> {
                         .show(ui);
                 });
 
+            let id = self.id();
+            let replying_to = self.note.id();
+            let draft_source = DraftSource::Reply(replying_to);
             let poster = self
                 .app
                 .account_manager
                 .get_selected_account_index()
                 .unwrap_or(0);
-
-            let replying_to = self.note.pubkey();
             let rect_before_post = ui.min_rect();
-
-            let id = self.id();
-            let draft_source = DraftSource::Reply(replying_to);
             let post_response = ui::PostView::new(self.app, draft_source, poster)
                 .id_source(id)
                 .ui(self.note.txn().unwrap(), ui);
+
+            if self
+                .app
+                .account_manager
+                .get_selected_account()
+                .map_or(false, |a| a.secret_key.is_some())
+            {
+                if let Some(action) = &post_response.action {
+                    match action {
+                        PostAction::Post(np) => {
+                            let seckey = self
+                                .app
+                                .account_manager
+                                .get_account(poster)
+                                .unwrap()
+                                .secret_key
+                                .as_ref()
+                                .unwrap()
+                                .to_secret_bytes();
+
+                            let note = np.to_reply(&seckey, self.note);
+
+                            let raw_msg = format!("[\"EVENT\",{}]", note.json().unwrap());
+                            info!("sending {}", raw_msg);
+                            self.app.pool.send(&enostr::ClientMessage::raw(raw_msg));
+                            self.app.drafts.clear(DraftSource::Reply(replying_to));
+                        }
+                    }
+                }
+            }
 
             //
             // reply line
@@ -103,6 +133,9 @@ impl<'a> PostReplyView<'a> {
                 rect.y_range(),
                 ui.visuals().widgets.noninteractive.bg_stroke,
             );
-        });
+
+            post_response
+        })
+        .inner
     }
 }

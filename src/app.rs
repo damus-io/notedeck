@@ -11,6 +11,7 @@ use crate::relay_pool_manager::RelayPoolManager;
 use crate::route::Route;
 use crate::timeline;
 use crate::timeline::{MergeKind, NoteRef, Timeline, ViewFilter};
+use crate::ui::note::PostAction;
 use crate::ui::{self, AccountSelectionWidget, DesktopGlobalPopup};
 use crate::ui::{DesktopSidePanel, RelayView, View};
 use crate::Result;
@@ -959,29 +960,35 @@ fn render_panel(ctx: &egui::Context, app: &mut Damus, timeline_ind: usize) {
 
 fn render_nav(routes: Vec<Route>, timeline_ind: usize, app: &mut Damus, ui: &mut egui::Ui) {
     let navigating = app.timelines[timeline_ind].navigating;
+    let returning = app.timelines[timeline_ind].returning;
     let app_ctx = Rc::new(RefCell::new(app));
 
     let nav_response = Nav::new(routes)
         .navigating(navigating)
+        .returning(returning)
         .title(false)
         .show(ui, |ui, nav| match nav.top() {
             Route::Timeline(_n) => {
                 let app = &mut app_ctx.borrow_mut();
                 timeline::timeline_view(ui, app, timeline_ind);
+                None
             }
 
             Route::ManageAccount => {
                 ui.label("account management view");
+                None
             }
 
             Route::Thread(_key) => {
                 ui.label("thread view");
+                None
             }
 
             Route::Relays => {
                 let pool = &mut app_ctx.borrow_mut().pool;
                 let manager = RelayPoolManager::new(pool);
                 RelayView::new(manager).ui(ui);
+                None
             }
 
             Route::Reply(id) => {
@@ -991,27 +998,37 @@ fn render_nav(routes: Vec<Route>, timeline_ind: usize, app: &mut Damus, ui: &mut
                     txn
                 } else {
                     ui.label("Reply to unknown note");
-                    return;
+                    return None;
                 };
 
                 let note = if let Ok(note) = app.ndb.get_note_by_id(&txn, id.bytes()) {
                     note
                 } else {
                     ui.label("Reply to unknown note");
-                    return;
+                    return None;
                 };
 
                 let id = egui::Id::new(("post", timeline_ind, note.key().unwrap()));
-                egui::ScrollArea::vertical().show(ui, |ui| {
+                let response = egui::ScrollArea::vertical().show(ui, |ui| {
                     ui::PostReplyView::new(&mut app, &note)
                         .id_source(id)
-                        .show(ui);
+                        .show(ui)
                 });
+
+                Some(response)
             }
         });
 
+    if let Some(reply_response) = nav_response.inner {
+        if let Some(PostAction::Post(_np)) = reply_response.inner.action {
+            app_ctx.borrow_mut().timelines[timeline_ind].returning = true;
+        }
+    }
+
     if let Some(NavAction::Returned) = nav_response.action {
-        app_ctx.borrow_mut().timelines[timeline_ind].routes.pop();
+        let mut app = app_ctx.borrow_mut();
+        app.timelines[timeline_ind].routes.pop();
+        app.timelines[timeline_ind].returning = false;
     } else if let Some(NavAction::Navigated) = nav_response.action {
         app_ctx.borrow_mut().timelines[timeline_ind].navigating = false;
     }
