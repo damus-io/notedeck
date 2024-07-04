@@ -6,6 +6,7 @@ use crate::error::Error;
 use crate::frame_history::FrameHistory;
 use crate::imgcache::ImageCache;
 use crate::key_storage::KeyStorageType;
+use crate::login_manager::LoginManager;
 use crate::notecache::{CachedNote, NoteCache};
 use crate::relay_pool_manager::RelayPoolManager;
 use crate::route::Route;
@@ -57,6 +58,7 @@ pub struct Damus {
     pub img_cache: ImageCache,
     pub ndb: Ndb,
     pub account_manager: AccountManager,
+    pub login_manager: LoginManager,
 
     frame_history: crate::frame_history::FrameHistory,
     pub show_account_switcher: bool,
@@ -788,6 +790,8 @@ impl Damus {
             account_manager.select_account(0);
         }
 
+        let login_manager = LoginManager::new();
+
         Self {
             is_mobile,
             drafts: Drafts::default(),
@@ -800,6 +804,7 @@ impl Damus {
             textmode: false,
             ndb: Ndb::new(data_path.as_ref().to_str().expect("db path ok"), &config).expect("ndb"),
             account_manager,
+            login_manager,
             //compose: "".to_string(),
             frame_history: FrameHistory::default(),
             show_account_switcher: false,
@@ -830,6 +835,7 @@ impl Damus {
             textmode: false,
             ndb: Ndb::new(data_path.as_ref().to_str().expect("db path ok"), &config).expect("ndb"),
             account_manager: AccountManager::new(None, determine_key_storage_type()),
+            login_manager: LoginManager::new(),
             frame_history: FrameHistory::default(),
             show_account_switcher: false,
             show_global_popup: true,
@@ -983,6 +989,8 @@ fn render_nav(routes: Vec<Route>, timeline_ind: usize, app: &mut Damus, ui: &mut
                 ui.label("account management view");
                 None
             }
+
+            Route::AddAccount => None,
 
             Route::Thread(_key) => {
                 ui.label("thread view");
