@@ -317,6 +317,7 @@ pub fn timeline_view(ui: &mut egui::Ui, app: &mut Damus, timeline: usize) {
     egui::ScrollArea::vertical()
         .id_source(scroll_id)
         .animated(false)
+        .auto_shrink([false, false])
         .scroll_bar_visibility(ScrollBarVisibility::AlwaysVisible)
         .show(ui, |ui| {
             let view = app.timelines[timeline].current_view();
