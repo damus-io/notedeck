@@ -1,114 +1,66 @@
 use crate::app_style::NotedeckTextStyle;
 use crate::key_parsing::LoginError;
 use crate::login_manager::LoginManager;
-use crate::ui::{Preview, PreviewConfig, View};
-use egui::{
-    Align, Align2, Button, Color32, Frame, Id, LayerId, Margin, Pos2, Rect, RichText, Rounding, Ui,
-    Vec2, Window,
-};
-use egui::{Image, TextEdit};
+use crate::Damus;
+use egui::TextEdit;
+use egui::{Align, Align2, Button, Color32, Frame, Margin, RichText, Ui, Vec2, Window};
 
-pub struct AccountLoginView<'a> {
-    is_mobile: bool,
-    manager: &'a mut LoginManager,
-    generate_y_intercept: Option<f32>,
-}
+pub struct AccountLoginView {}
 
-impl<'a> View for AccountLoginView<'a> {
-    fn ui(&mut self, ui: &mut egui::Ui) {
-        if let Some(_key) = self.manager.check_for_successful_login() {
-            // TODO: route to "home"
-            /*
-            return if self.mobile {
-                // route to "home" on mobile
-            } else {
-                // route to "home" on desktop
-            };
-            */
-        }
-        if self.is_mobile {
-            self.show_mobile(ui);
+const MIN_WIDTH: f32 = 442.0;
+
+impl AccountLoginView {
+    pub fn ui(app: &mut Damus, ui: &mut egui::Ui) -> egui::Response {
+        if app.is_mobile() {
+            AccountLoginView::mobile_ui(app, ui)
         } else {
-            self.ui(ui);
-        }
-    }
-}
-
-impl<'a> AccountLoginView<'a> {
-    pub fn new(manager: &'a mut LoginManager, is_mobile: bool) -> Self {
-        AccountLoginView {
-            is_mobile,
-            manager,
-            generate_y_intercept: None,
+            AccountLoginView::desktop_ui(app, ui)
         }
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui) -> egui::Response {
-        let screen_width = ui.ctx().screen_rect().max.x;
-        let screen_height = ui.ctx().screen_rect().max.y;
+    fn desktop_ui(app: &mut Damus, ui: &mut egui::Ui) -> egui::Response {
+        ui.vertical_centered(|ui| {
+            ui.add_space(16f32);
 
-        let title_layer = LayerId::new(egui::Order::Background, Id::new("Title layer"));
+            ui.label(login_window_info_text(ui));
 
-        let mut top_panel_height: Option<f32> = None;
-        ui.with_layer_id(title_layer, |ui| {
-            egui::TopBottomPanel::top("Top")
-                .resizable(false)
-                .default_height(340.0)
-                .frame(Frame::none())
-                .show_separator_line(false)
-                .show_inside(ui, |ui| {
-                    top_panel_height = Some(ui.available_rect_before_wrap().bottom());
-                    self.top_title_area(ui);
+            ui.add_space(24.0);
+
+            Frame::none()
+                .outer_margin(Margin::symmetric(48.0, 0.0))
+                .show(ui, |ui| {
+                    Self::login_form(app, ui);
                 });
-        });
 
-        egui::TopBottomPanel::bottom("Bottom")
-            .resizable(false)
-            .frame(Frame::none())
-            .show_separator_line(false)
-            .show_inside(ui, |ui| {
-                self.window(ui, top_panel_height.unwrap_or(0.0));
+            ui.add_space(32.0);
+
+            let y_margin: f32 = 24.0;
+            let generate_frame = egui::Frame::default()
+                .fill(ui.style().noninteractive().bg_fill) // TODO: gradient
+                .rounding(ui.style().visuals.window_rounding)
+                .stroke(ui.style().noninteractive().bg_stroke)
+                .inner_margin(Margin::symmetric(48.0, y_margin));
+
+            generate_frame.show(ui, |ui| {
+                Self::generate_group(app, ui);
             });
-
-        let top_rect = Rect {
-            min: Pos2::ZERO,
-            max: Pos2::new(
-                screen_width,
-                self.generate_y_intercept.unwrap_or(screen_height * 0.5),
-            ),
-        };
-
-        let top_background_color = ui.visuals().noninteractive().bg_fill;
-        ui.painter_at(top_rect)
-            .with_layer_id(LayerId::background())
-            .rect_filled(top_rect, Rounding::ZERO, top_background_color);
-
-        egui::CentralPanel::default()
-            .show(ui.ctx(), |_ui: &mut egui::Ui| {})
-            .response
+        })
+        .response
     }
 
-    fn mobile_ui(&mut self, ui: &mut egui::Ui) -> egui::Response {
+    fn mobile_ui(app: &mut Damus, ui: &mut egui::Ui) -> egui::Response {
         ui.vertical(|ui| {
-            ui.vertical_centered(|ui| {
-                ui.add(logo_unformatted().max_width(256.0));
-                ui.add_space(64.0);
-                ui.label(login_info_text());
-                ui.add_space(32.0);
-                ui.label(login_title_text());
-            });
-
             ui.horizontal(|ui| {
                 ui.label(login_textedit_info_text());
             });
 
             ui.vertical_centered_justified(|ui| {
-                ui.add(login_textedit(self.manager));
+                ui.add(login_textedit(&mut app.login_manager));
 
-                self.loading_and_error(ui);
+                Self::loading_and_error(&mut app.login_manager, ui);
 
                 if ui.add(login_button()).clicked() {
-                    self.manager.apply_login();
+                    app.login_manager.apply_login();
                 }
             });
 
@@ -130,7 +82,7 @@ impl<'a> AccountLoginView<'a> {
         .response
     }
 
-    pub fn show_mobile(&mut self, ui: &mut egui::Ui) -> egui::Response {
+    pub fn show_mobile(app: &mut Damus, ui: &mut egui::Ui) -> egui::Response {
         egui::CentralPanel::default()
             .show(ui.ctx(), |_| {
                 Window::new("Login")
@@ -143,86 +95,12 @@ impl<'a> AccountLoginView<'a> {
                     .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
                     .frame(Frame::central_panel(&ui.ctx().style()))
                     .max_width(ui.ctx().screen_rect().width() - 32.0) // margin
-                    .show(ui.ctx(), |ui| self.mobile_ui(ui));
+                    .show(ui.ctx(), |ui| Self::mobile_ui(app, ui));
             })
             .response
     }
 
-    fn window(&mut self, ui: &mut Ui, top_panel_height: f32) {
-        let needed_height_over_top = (ui.ctx().screen_rect().bottom() / 2.0) - 230.0;
-        let y_offset = if top_panel_height > needed_height_over_top {
-            top_panel_height - needed_height_over_top
-        } else {
-            0.0
-        };
-        Window::new("Account login")
-            .movable(false)
-            .constrain(true)
-            .collapsible(false)
-            .drag_to_scroll(false)
-            .title_bar(false)
-            .resizable(false)
-            .anchor(Align2::CENTER_CENTER, [0f32, y_offset])
-            .max_width(538.0)
-            .frame(egui::Frame::window(ui.style()).inner_margin(Margin::ZERO))
-            .show(ui.ctx(), |ui| {
-                ui.vertical_centered(|ui| {
-                    ui.add_space(40.0);
-
-                    ui.label(login_title_text());
-
-                    ui.add_space(16f32);
-
-                    ui.label(login_window_info_text(ui));
-
-                    ui.add_space(24.0);
-
-                    Frame::none()
-                        .outer_margin(Margin::symmetric(48.0, 0.0))
-                        .show(ui, |ui| {
-                            self.login_form(ui);
-                        });
-
-                    ui.add_space(32.0);
-
-                    let y_margin: f32 = 24.0;
-                    let generate_frame = egui::Frame::default()
-                        .fill(ui.style().noninteractive().bg_fill) // TODO: gradient
-                        .rounding(ui.style().visuals.window_rounding)
-                        .stroke(ui.style().noninteractive().bg_stroke)
-                        .inner_margin(Margin::symmetric(48.0, y_margin));
-
-                    generate_frame.show(ui, |ui| {
-                        self.generate_y_intercept =
-                            Some(ui.available_rect_before_wrap().top() - y_margin);
-                        self.generate_group(ui);
-                    });
-                });
-            });
-    }
-
-    fn top_title_area(&mut self, ui: &mut egui::Ui) {
-        ui.vertical_centered(|ui| {
-            ui.add(logo_unformatted().max_width(232.0));
-
-            ui.add_space(48.0);
-
-            let welcome_data = egui::include_image!("../../assets/Welcome to Nostrdeck 2x.png");
-            ui.add(egui::Image::new(welcome_data).max_width(528.0));
-
-            ui.add_space(12.0);
-
-            // ui.label(
-            //     RichText::new("Welcome to Nostrdeck")
-            //         .size(48.0)
-            //         .strong()
-            //         .line_height(Some(72.0)),
-            // );
-            ui.label(login_info_text());
-        });
-    }
-
-    fn login_form(&mut self, ui: &mut egui::Ui) {
+    fn login_form(app: &mut Damus, ui: &mut egui::Ui) {
         ui.vertical_centered_justified(|ui| {
             ui.horizontal(|ui| {
                 ui.label(login_textedit_info_text());
@@ -230,35 +108,43 @@ impl<'a> AccountLoginView<'a> {
 
             ui.add_space(8f32);
 
-            ui.add(login_textedit(self.manager).min_size(Vec2::new(440.0, 40.0)));
+            ui.add(login_textedit(&mut app.login_manager).min_size(Vec2::new(MIN_WIDTH, 40.0)));
 
-            self.loading_and_error(ui);
+            Self::loading_and_error(&mut app.login_manager, ui);
 
-            let login_button = login_button().min_size(Vec2::new(442.0, 40.0));
+            let login_button = login_button().min_size(Vec2::new(MIN_WIDTH, 40.0));
 
             if ui.add(login_button).clicked() {
-                self.manager.apply_login()
+                app.login_manager.apply_login()
+            }
+
+            if let Some(acc) = app.login_manager.check_for_successful_login() {
+                if app.account_manager.add_account(acc) {
+                    app.account_manager
+                        .select_account(app.account_manager.num_accounts() - 1)
+                }
+                app.global_nav.pop();
             }
         });
     }
 
-    fn loading_and_error(&mut self, ui: &mut egui::Ui) {
+    fn loading_and_error(manager: &mut LoginManager, ui: &mut egui::Ui) {
         ui.add_space(8.0);
 
         ui.vertical_centered(|ui| {
-            if self.manager.is_awaiting_network() {
+            if manager.is_awaiting_network() {
                 ui.add(egui::Spinner::new());
             }
         });
 
-        if let Some(err) = self.manager.check_for_error() {
+        if let Some(err) = manager.check_for_error() {
             show_error(ui, err);
         }
 
         ui.add_space(8.0);
     }
 
-    fn generate_group(&mut self, ui: &mut egui::Ui) {
+    fn generate_group(_app: &mut Damus, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.label(
                 RichText::new("New in nostr?").text_style(NotedeckTextStyle::Heading3.text_style()),
@@ -279,7 +165,7 @@ impl<'a> AccountLoginView<'a> {
 
         ui.add_space(16.0);
 
-        let generate_button = generate_keys_button().min_size(Vec2::new(442.0, 40.0));
+        let generate_button = generate_keys_button().min_size(Vec2::new(MIN_WIDTH, 40.0));
         if ui.add(generate_button).clicked() {
             // TODO: keygen
         }
@@ -300,17 +186,6 @@ fn show_error(ui: &mut egui::Ui, err: &LoginError) {
     });
 }
 
-fn login_title_text() -> RichText {
-    RichText::new("Login")
-        .text_style(NotedeckTextStyle::Heading2.text_style())
-        .strong()
-}
-
-fn login_info_text() -> RichText {
-    RichText::new("The best alternative to tweetDeck built in nostr protocol")
-        .text_style(NotedeckTextStyle::Heading3.text_style())
-}
-
 fn login_window_info_text(ui: &Ui) -> RichText {
     RichText::new("Enter your private key to start using Notedeck")
         .text_style(NotedeckTextStyle::Body.text_style())
@@ -321,11 +196,6 @@ fn login_textedit_info_text() -> RichText {
     RichText::new("Enter your key")
         .strong()
         .text_style(NotedeckTextStyle::Body.text_style())
-}
-
-fn logo_unformatted() -> Image<'static> {
-    let logo_gradient_data = egui::include_image!("../../assets/Logo-Gradient-2x.png");
-    return egui::Image::new(logo_gradient_data);
 }
 
 fn generate_info_text() -> RichText {
@@ -344,7 +214,7 @@ fn login_button() -> Button<'static> {
             .strong(),
     )
     .fill(Color32::from_rgb(0xF8, 0x69, 0xB6)) // TODO: gradient
-    .min_size(Vec2::new(0.0, 40.0))
+    .min_size(Vec2::new(MIN_WIDTH, 40.0))
 }
 
 fn login_textedit(manager: &mut LoginManager) -> TextEdit {
@@ -359,23 +229,40 @@ fn login_textedit(manager: &mut LoginManager) -> TextEdit {
     })
 }
 
-pub struct AccountLoginPreview {
-    is_mobile: bool,
-    manager: LoginManager,
-}
+mod preview {
+    use crate::{
+        test_data,
+        ui::{Preview, PreviewConfig, View},
+        Damus,
+    };
 
-impl View for AccountLoginPreview {
-    fn ui(&mut self, ui: &mut egui::Ui) {
-        AccountLoginView::new(&mut self.manager, self.is_mobile).ui(ui);
+    use super::AccountLoginView;
+
+    pub struct AccountLoginPreview {
+        #[allow(dead_code)]
+        is_mobile: bool,
+        app: Damus,
     }
-}
 
-impl<'a> Preview for AccountLoginView<'a> {
-    type Prev = AccountLoginPreview;
+    impl AccountLoginPreview {
+        fn new(is_mobile: bool) -> Self {
+            let app = test_data::test_app(is_mobile);
 
-    fn preview(cfg: PreviewConfig) -> Self::Prev {
-        let manager = LoginManager::new();
-        let is_mobile = cfg.is_mobile;
-        AccountLoginPreview { is_mobile, manager }
+            AccountLoginPreview { is_mobile, app }
+        }
+    }
+
+    impl View for AccountLoginPreview {
+        fn ui(&mut self, ui: &mut egui::Ui) {
+            AccountLoginView::ui(&mut self.app, ui);
+        }
+    }
+
+    impl Preview for AccountLoginView {
+        type Prev = AccountLoginPreview;
+
+        fn preview(cfg: PreviewConfig) -> Self::Prev {
+            AccountLoginPreview::new(cfg.is_mobile)
+        }
     }
 }

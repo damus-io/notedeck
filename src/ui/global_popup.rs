@@ -1,11 +1,8 @@
 use std::{cell::RefCell, rc::Rc};
 
-use egui::Sense;
 use egui_nav::{Nav, NavAction};
 
 use crate::{route::Route, ui, Damus};
-
-static MARGIN: f32 = 200.0;
 
 pub struct DesktopGlobalPopup {}
 
@@ -15,8 +12,10 @@ impl DesktopGlobalPopup {
             return;
         }
 
-        let rect = ui.ctx().screen_rect().shrink(MARGIN);
-
+        let rect = routes
+            .last()
+            .map(|r| r.preferred_rect(ui))
+            .unwrap_or_else(|| ui.ctx().screen_rect());
         let title = routes.last().map(|r| r.title());
 
         let app_ctx = Rc::new(RefCell::new(app));
@@ -27,13 +26,9 @@ impl DesktopGlobalPopup {
                     .title(false)
                     .navigating(false)
                     .show(ui, |ui, nav| {
-                        if let Some(resp) =
-                            nav.top().show_global_popup(&mut app_ctx.borrow_mut(), ui)
-                        {
-                            ui.allocate_rect(resp.rect, Sense::hover())
-                        } else {
-                            ui.label("") // TODO(kernelkind): not a great practice
-                        }
+                        nav.top()
+                            .show_global_popup(&mut app_ctx.borrow_mut(), ui)
+                            .unwrap_or_else(|| ui.label(""))
                     });
 
             if let Some(NavAction::Returned) = nav_response.action {
