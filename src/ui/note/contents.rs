@@ -1,6 +1,5 @@
 use crate::ui::note::NoteOptions;
 use crate::{colors, ui, Damus};
-use egui::scroll_area::ScrollBarVisibility;
 use egui::{Color32, Hyperlink, Image, RichText};
 use nostrdb::{BlockType, Mention, Note, NoteKey, Transaction};
 use tracing::warn;
@@ -189,14 +188,15 @@ fn render_note_contents(
 
     if !images.is_empty() && !damus.textmode {
         ui.add_space(2.0);
-        image_carousel(ui, images);
+        let carousel_id = egui::Id::new(("carousel", note.key().expect("expected tx note")));
+        image_carousel(ui, images, carousel_id);
         ui.add_space(2.0);
     }
 
     resp
 }
 
-fn image_carousel(ui: &mut egui::Ui, images: Vec<String>) {
+fn image_carousel(ui: &mut egui::Ui, images: Vec<String>, carousel_id: egui::Id) {
     // let's make sure everything is within our area
 
     let height = 360.0;
@@ -204,7 +204,7 @@ fn image_carousel(ui: &mut egui::Ui, images: Vec<String>) {
 
     ui.add_sized([width, height], |ui: &mut egui::Ui| {
         egui::ScrollArea::horizontal()
-            .scroll_bar_visibility(ScrollBarVisibility::AlwaysVisible)
+            .id_source(carousel_id)
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     for image in images {
