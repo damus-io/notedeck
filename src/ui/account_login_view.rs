@@ -124,6 +124,7 @@ impl AccountLoginView {
                         .select_account(app.account_manager.num_accounts() - 1)
                 }
                 app.global_nav.pop();
+                app.login_manager.clear();
             }
         });
     }

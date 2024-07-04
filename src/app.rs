@@ -785,7 +785,7 @@ impl Damus {
             account_manager.add_account(key);
         }
 
-        // TODO: pull currently selected account from settings
+        // TODO: remove when currently_selected_account is pulled from settings
         if account_manager.num_accounts() > 0 {
             account_manager.select_account(0);
         }
