@@ -1,5 +1,6 @@
 use crate::ui::note::NoteOptions;
 use crate::{colors, ui, Damus};
+use egui::scroll_area::ScrollBarVisibility;
 use egui::{Color32, Hyperlink, Image, RichText};
 use nostrdb::{BlockType, Mention, Note, NoteKey, Transaction};
 use tracing::warn;
@@ -111,7 +112,7 @@ fn render_note_contents(
     puffin::profile_function!();
 
     let selectable = options.has_selectable_text();
-    let images: Vec<String> = vec![];
+    let mut images: Vec<String> = vec![];
     let mut inline_note: Option<(&[u8; 32], &str)> = None;
 
     let resp = ui.horizontal_wrapped(|ui| {
@@ -156,19 +157,17 @@ fn render_note_contents(
                 }
 
                 BlockType::Url => {
-                    /*
-                    let url = block.as_str().to_lowercase();
-                    if url.ends_with("png") || url.ends_with("jpg") {
-                        images.push(url);
+                    let lower_url = block.as_str().to_lowercase();
+                    if lower_url.ends_with("png") || lower_url.ends_with("jpg") {
+                        images.push(block.as_str().to_string());
                     } else {
-                    */
-                    #[cfg(feature = "profiling")]
-                    puffin::profile_scope!("url contents");
-                    ui.add(Hyperlink::from_label_and_url(
-                        RichText::new(block.as_str()).color(colors::PURPLE),
-                        block.as_str(),
-                    ));
-                    //}
+                        #[cfg(feature = "profiling")]
+                        puffin::profile_scope!("url contents");
+                        ui.add(Hyperlink::from_label_and_url(
+                            RichText::new(block.as_str()).color(colors::PURPLE),
+                            block.as_str(),
+                        ));
+                    }
                 }
 
                 BlockType::Text => {
@@ -188,15 +187,43 @@ fn render_note_contents(
         render_note_preview(ui, damus, txn, id, block_str);
     }
 
-    for image in images {
-        let img_resp = ui.add(Image::new(image.clone()));
-        img_resp.context_menu(|ui| {
-            if ui.button("Copy Link").clicked() {
-                ui.ctx().copy_text(image);
-                ui.close_menu();
-            }
-        });
+    if !images.is_empty() && !damus.textmode {
+        ui.add_space(2.0);
+        image_carousel(ui, images);
+        ui.add_space(2.0);
     }
 
     resp
+}
+
+fn image_carousel(ui: &mut egui::Ui, images: Vec<String>) {
+    // let's make sure everything is within our area
+
+    let height = 360.0;
+    let width = ui.available_size().x;
+
+    ui.add_sized([width, height], |ui: &mut egui::Ui| {
+        egui::ScrollArea::horizontal()
+            .scroll_bar_visibility(ScrollBarVisibility::AlwaysVisible)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    for image in images {
+                        let img_resp = ui.add(
+                            Image::new(image.clone())
+                                .max_height(height)
+                                .rounding(5.0)
+                                .fit_to_original_size(1.0),
+                        );
+                        img_resp.context_menu(|ui| {
+                            if ui.button("Copy Link").clicked() {
+                                ui.ctx().copy_text(image);
+                                ui.close_menu();
+                            }
+                        });
+                    }
+                })
+                .response
+            })
+            .inner
+    });
 }
