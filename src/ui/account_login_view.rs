@@ -4,6 +4,7 @@ use crate::login_manager::LoginManager;
 use crate::Damus;
 use egui::TextEdit;
 use egui::{Align, Align2, Button, Color32, Frame, Margin, RichText, Ui, Vec2, Window};
+use enostr::FullKeypair;
 
 pub struct AccountLoginView {}
 
@@ -145,7 +146,7 @@ impl AccountLoginView {
         ui.add_space(8.0);
     }
 
-    fn generate_group(_app: &mut Damus, ui: &mut egui::Ui) {
+    fn generate_group(app: &mut Damus, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.label(
                 RichText::new("New in nostr?").text_style(NotedeckTextStyle::Heading3.text_style()),
@@ -168,7 +169,9 @@ impl AccountLoginView {
 
         let generate_button = generate_keys_button().min_size(Vec2::new(MIN_WIDTH, 40.0));
         if ui.add(generate_button).clicked() {
-            // TODO: keygen
+            app.account_manager
+                .add_account(FullKeypair::generate().to_keypair());
+            app.global_nav.pop();
         }
     }
 }
