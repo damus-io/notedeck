@@ -58,6 +58,7 @@ impl AccountManager {
                 }
             }
         }
+        self.select_if_singleton();
     }
 
     pub fn has_account_pubkey(&self, pubkey: &[u8; 32]) -> bool {
@@ -77,6 +78,7 @@ impl AccountManager {
         }
         let _ = self.key_store.add_key(&account);
         self.accounts.push(account);
+        self.select_if_singleton();
         true
     }
 
@@ -108,5 +110,11 @@ impl AccountManager {
 
     pub fn clear_selected_account(&mut self) {
         self.currently_selected_account = None
+    }
+
+    fn select_if_singleton(&mut self) {
+        if self.accounts.len() == 1 {
+            self.select_account(0);
+        }
     }
 }

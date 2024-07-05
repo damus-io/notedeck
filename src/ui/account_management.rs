@@ -26,7 +26,7 @@ impl AccountManagementView {
         Frame::none()
             .outer_margin(24.0)
             .show(ui, |ui| {
-                Self::top_section_buttons_widget(ui);
+                Self::top_section_buttons_widget(app, ui);
                 ui.add_space(8.0);
                 scroll_area().show(ui, |ui| {
                     Self::show_accounts(app, ui);
@@ -70,20 +70,20 @@ impl AccountManagementView {
 
     fn show_mobile(app: &mut Damus, ui: &mut egui::Ui) {
         mobile_title(ui);
-        Self::top_section_buttons_widget(ui);
+        Self::top_section_buttons_widget(app, ui);
 
         ui.add_space(8.0);
         scroll_area().show(ui, |ui| Self::show_accounts_mobile(app, ui));
     }
 
-    fn top_section_buttons_widget(ui: &mut egui::Ui) -> egui::Response {
+    fn top_section_buttons_widget(app: &mut Damus, ui: &mut egui::Ui) -> egui::Response {
         ui.horizontal(|ui| {
             ui.allocate_ui_with_layout(
                 Vec2::new(ui.available_size_before_wrap().x, 32.0),
                 Layout::left_to_right(egui::Align::Center),
                 |ui| {
                     if ui.add(add_account_button()).clicked() {
-                        // TODO: route to AccountLoginView
+                        app.global_nav.push(crate::route::Route::AddAccount);
                     }
                 },
             );

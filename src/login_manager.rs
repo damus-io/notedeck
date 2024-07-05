@@ -85,6 +85,10 @@ impl<'a> LoginManager {
         }
         None
     }
+
+    pub fn clear(&mut self) {
+        *self = Default::default();
+    }
 }
 
 #[cfg(test)]

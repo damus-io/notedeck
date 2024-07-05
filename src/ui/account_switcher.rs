@@ -80,7 +80,11 @@ impl AccountSelectionWidget {
                     }
                 });
                 ui.add_space(8.0);
-                ui.add(add_account_button());
+                if ui.add(add_account_button()).clicked() {
+                    app.global_nav.push(Route::AddAccount);
+                    app.show_account_switcher = false;
+                    app.show_global_popup = true;
+                }
 
                 if let Some(_index) = selected_index {
                     if let Some(account) = app.account_manager.get_account(_index) {
