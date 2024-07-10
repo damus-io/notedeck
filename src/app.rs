@@ -219,7 +219,7 @@ fn try_process_event(damus: &mut Damus, ctx: &egui::Context) -> Result<()> {
             RelayEvent::Opened => send_initial_filters(damus, &relay),
             // TODO: handle reconnects
             RelayEvent::Closed => warn!("{} connection closed", &relay),
-            RelayEvent::Error(e) => error!("wsev->relayev: {}", e),
+            RelayEvent::Error(e) => error!("{}: {}", &relay, e),
             RelayEvent::Other(msg) => debug!("other event {:?}", &msg),
             RelayEvent::Message(msg) => process_message(damus, &relay, &msg),
         }
