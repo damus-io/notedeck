@@ -1,3 +1,4 @@
+use crate::ui::ProfilePic;
 use bitflags::bitflags;
 
 bitflags! {
@@ -34,9 +35,28 @@ impl NoteOptions {
         (self & NoteOptions::medium_pfp) == NoteOptions::medium_pfp
     }
 
+    pub fn pfp_size(&self) -> f32 {
+        if self.has_small_pfp() {
+            ProfilePic::small_size()
+        } else if self.has_medium_pfp() {
+            ProfilePic::medium_size()
+        } else {
+            ProfilePic::default_size()
+        }
+    }
+
     #[inline]
     pub fn has_wide(self) -> bool {
         (self & NoteOptions::wide) == NoteOptions::wide
+    }
+
+    #[inline]
+    pub fn set_wide(&mut self, enable: bool) {
+        if enable {
+            *self |= NoteOptions::wide;
+        } else {
+            *self &= !NoteOptions::wide;
+        }
     }
 
     #[inline]

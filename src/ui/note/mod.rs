@@ -10,7 +10,7 @@ pub use reply::PostReplyView;
 
 use crate::{colors, notecache::CachedNote, ui, ui::View, Damus};
 use egui::{Label, RichText, Sense};
-use nostrdb::{NoteKey, Transaction};
+use nostrdb::{Note, NoteKey, NoteReply, Transaction};
 
 pub struct NoteView<'a> {
     app: &'a mut Damus,
@@ -29,34 +29,21 @@ impl<'a> View for NoteView<'a> {
     }
 }
 
-fn reply_desc(
-    ui: &mut egui::Ui,
-    txn: &Transaction,
-    app: &mut Damus,
-    note_key: NoteKey,
-    note: &nostrdb::Note<'_>,
-) {
+fn reply_desc(ui: &mut egui::Ui, txn: &Transaction, note_reply: &NoteReply, app: &mut Damus) {
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
-
-    let note_reply = app
-        .note_cache_mut()
-        .cached_note_or_insert_mut(note_key, note)
-        .reply
-        .borrow(note.tags());
-
-    let reply = if let Some(reply) = note_reply.reply() {
-        reply
-    } else {
-        // not a reply, nothing to do here
-        return;
-    };
 
     ui.add(Label::new(
         RichText::new("replying to")
             .size(10.0)
             .color(colors::GRAY_SECONDARY),
     ));
+
+    let reply = if let Some(reply) = note_reply.reply() {
+        reply
+    } else {
+        return;
+    };
 
     let reply_note = if let Ok(reply_note) = app.ndb.get_note_by_id(txn, reply.id) {
         reply_note
@@ -140,6 +127,11 @@ impl<'a> NoteView<'a> {
         self
     }
 
+    pub fn wide(mut self, enable: bool) -> Self {
+        self.options_mut().set_wide(enable);
+        self
+    }
+
     pub fn options(&self) -> NoteOptions {
         self.flags
     }
@@ -196,15 +188,13 @@ impl<'a> NoteView<'a> {
         profile: &Result<nostrdb::ProfileRecord<'_>, nostrdb::Error>,
         ui: &mut egui::Ui,
     ) {
-        ui.spacing_mut().item_spacing.x = 16.0;
-
-        let pfp_size = if self.options().has_small_pfp() {
-            ui::ProfilePic::small_size()
-        } else if self.options().has_medium_pfp() {
-            ui::ProfilePic::medium_size()
+        if !self.options().has_wide() {
+            ui.spacing_mut().item_spacing.x = 16.0;
         } else {
-            ui::ProfilePic::default_size()
-        };
+            ui.spacing_mut().item_spacing.x = 4.0;
+        }
+
+        let pfp_size = self.options().pfp_size();
 
         match profile
             .as_ref()
@@ -262,6 +252,26 @@ impl<'a> NoteView<'a> {
         }
     }
 
+    fn note_header(
+        ui: &mut egui::Ui,
+        app: &mut Damus,
+        note: &Note,
+        profile: &Result<nostrdb::ProfileRecord<'_>, nostrdb::Error>,
+    ) -> egui::Response {
+        let note_key = note.key().unwrap();
+
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            ui.add(ui::Username::new(profile.as_ref().ok(), note.pubkey()).abbreviated(20));
+
+            let cached_note = app
+                .note_cache_mut()
+                .cached_note_or_insert_mut(note_key, note);
+            render_reltime(ui, cached_note, true);
+        })
+        .response
+    }
+
     fn show_standard(&mut self, ui: &mut egui::Ui) -> NoteResponse {
         #[cfg(feature = "profiling")]
         puffin::profile_function!();
@@ -270,34 +280,69 @@ impl<'a> NoteView<'a> {
         let mut note_action: Option<BarAction> = None;
         let profile = self.app.ndb.get_profile_by_pubkey(txn, self.note.pubkey());
 
-        if self.options().has_wide() {
-            ui.horizontal_centered(|ui| {
+        // wide design
+        let response = if self.options().has_wide() {
+            ui.horizontal(|ui| {
                 self.pfp(note_key, &profile, ui);
-            });
-        }
 
-        let response = ui
-            .with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
+                let size = ui.available_size();
+                ui.vertical(|ui| {
+                    ui.add_sized([size.x, self.options().pfp_size()], |ui: &mut egui::Ui| {
+                        ui.horizontal_centered(|ui| {
+                            NoteView::note_header(ui, self.app, self.note, &profile);
+                        })
+                        .response
+                    });
+
+                    let note_reply = self
+                        .app
+                        .note_cache_mut()
+                        .cached_note_or_insert_mut(note_key, self.note)
+                        .reply
+                        .borrow(self.note.tags());
+
+                    if note_reply.reply().is_some() {
+                        ui.horizontal(|ui| {
+                            reply_desc(ui, txn, &note_reply, self.app);
+                        });
+                    }
+                });
+            });
+
+            let resp = ui.add(NoteContents::new(
+                self.app,
+                txn,
+                self.note,
+                note_key,
+                self.options(),
+            ));
+
+            if self.options().has_actionbar() {
+                note_action = render_note_actionbar(ui, note_key).inner;
+            }
+
+            resp
+        } else {
+            // main design
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
                 self.pfp(note_key, &profile, ui);
 
                 ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                    NoteView::note_header(ui, self.app, self.note, &profile);
+
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 2.0;
-                        ui.add(
-                            ui::Username::new(profile.as_ref().ok(), self.note.pubkey())
-                                .abbreviated(20),
-                        );
 
-                        let cached_note = self
+                        let note_reply = self
                             .app
                             .note_cache_mut()
-                            .cached_note_or_insert_mut(note_key, self.note);
-                        render_reltime(ui, cached_note, true);
-                    });
+                            .cached_note_or_insert_mut(note_key, self.note)
+                            .reply
+                            .borrow(self.note.tags());
 
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 2.0;
-                        reply_desc(ui, txn, self.app, note_key, self.note);
+                        if note_reply.reply().is_some() {
+                            reply_desc(ui, txn, &note_reply, self.app);
+                        }
                     });
 
                     ui.add(NoteContents::new(
@@ -313,7 +358,8 @@ impl<'a> NoteView<'a> {
                     }
                 });
             })
-            .response;
+            .response
+        };
 
         NoteResponse {
             response,

@@ -92,6 +92,7 @@ fn render_note_preview(
             ui::NoteView::new(app, &note)
                 .actionbar(false)
                 .small_pfp(true)
+                .wide(true)
                 .note_previews(false)
                 .show(ui);
         })
