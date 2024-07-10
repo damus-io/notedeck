@@ -28,6 +28,8 @@ $ ./target/release/notedeck "$(cat queries/timeline.json)" "$(cat queries/notifi
 
 ## Desktop (Linux/MacOS, Windows?)
 
+If you're running debian-based machine like Ubuntu or ElementaryOS, all you need is to install [rustup] and run `sudo apt install build-essential`.
+
 First, install [nix][nix] if you don't have it.
 
 The `shell.nix` provides a reproducible build environment, mainly for android but it also includes rust tools if you don't have those installed. It will likely work without nix if you are just looking to do non-android dev and have the rust toolchain already installed. If you decide to use nix, I recommend using [direnv][direnv] to load the nix shell environment when you `cd` into the directory.
@@ -107,3 +109,5 @@ Configure the developer environment:
 ```
 
 This will add the pre-commit hook to your local repository to suggest proper formatting before commits.
+
+[rustup]: https://rustup.rs/
