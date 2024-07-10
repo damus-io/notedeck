@@ -39,13 +39,14 @@ impl<'a> PostReplyView<'a> {
                 + ui::PostView::inner_margin()
                 + ui::ProfilePic::small_size() / 2.0;
 
-            let note_offset =
-                pfp_offset - ui::ProfilePic::medium_size() / 2.0 - ui::Note::expand_size() / 2.0;
+            let note_offset = pfp_offset
+                - ui::ProfilePic::medium_size() / 2.0
+                - ui::NoteView::expand_size() / 2.0;
 
             egui::Frame::none()
                 .outer_margin(egui::Margin::same(note_offset))
                 .show(ui, |ui| {
-                    ui::Note::new(self.app, self.note)
+                    ui::NoteView::new(self.app, self.note)
                         .actionbar(false)
                         .medium_pfp(true)
                         .show(ui);
@@ -111,7 +112,7 @@ impl<'a> PostReplyView<'a> {
             rect.min.y = avail_rect.min.y
                 + (ui::ProfilePic::medium_size() / 2.0
                     + ui::ProfilePic::medium_size()
-                    + ui::Note::expand_size() * 2.0)
+                    + ui::NoteView::expand_size() * 2.0)
                 + 1.0;
 
             // For some reason we need to nudge the reply line's height a

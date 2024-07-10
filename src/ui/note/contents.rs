@@ -89,7 +89,7 @@ fn render_note_preview(
             ui.visuals().noninteractive().bg_stroke.color,
         ))
         .show(ui, |ui| {
-            ui::Note::new(app, &note)
+            ui::NoteView::new(app, &note)
                 .actionbar(false)
                 .small_pfp(true)
                 .note_previews(false)

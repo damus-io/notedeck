@@ -12,7 +12,7 @@ use crate::{colors, notecache::CachedNote, ui, ui::View, Damus};
 use egui::{Label, RichText, Sense};
 use nostrdb::{NoteKey, Transaction};
 
-pub struct Note<'a> {
+pub struct NoteView<'a> {
     app: &'a mut Damus,
     note: &'a nostrdb::Note<'a>,
     flags: NoteOptions,
@@ -23,7 +23,7 @@ pub struct NoteResponse {
     pub action: Option<BarAction>,
 }
 
-impl<'a> View for Note<'a> {
+impl<'a> View for NoteView<'a> {
     fn ui(&mut self, ui: &mut egui::Ui) {
         self.show(ui);
     }
@@ -114,10 +114,10 @@ fn reply_desc(
     }
 }
 
-impl<'a> Note<'a> {
+impl<'a> NoteView<'a> {
     pub fn new(app: &'a mut Damus, note: &'a nostrdb::Note<'a>) -> Self {
         let flags = NoteOptions::actionbar | NoteOptions::note_previews;
-        Note { app, note, flags }
+        Self { app, note, flags }
     }
 
     pub fn actionbar(mut self, enable: bool) -> Self {
@@ -225,7 +225,7 @@ impl<'a> Note<'a> {
                         ui,
                         egui::Id::new((profile_key, note_key)),
                         pfp_size,
-                        ui::Note::expand_size(),
+                        ui::NoteView::expand_size(),
                         anim_speed,
                     );
 

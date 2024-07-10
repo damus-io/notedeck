@@ -18,6 +18,7 @@ mod key_parsing;
 mod key_storage;
 pub mod login_manager;
 mod macos_key_storage;
+mod note;
 mod notecache;
 mod post;
 mod profile;
