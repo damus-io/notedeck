@@ -33,7 +33,7 @@ impl PoolRelay {
     }
 
     pub fn initial_reconnect_duration() -> Duration {
-        Duration::from_secs(2)
+        Duration::from_secs(5)
     }
 }
 
