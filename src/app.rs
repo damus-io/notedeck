@@ -508,8 +508,6 @@ fn update_damus(damus: &mut Damus, ctx: &egui::Context) {
         #[cfg(feature = "profiling")]
         setup_profiling();
 
-        damus.pool = RelayPool::new();
-        relay_setup(&mut damus.pool, ctx);
         damus.state = DamusState::Initialized;
         setup_initial_nostrdb_subs(damus).expect("home subscription failed");
     }
@@ -644,6 +642,7 @@ fn render_damus(damus: &mut Damus, ctx: &Context) {
 
 struct Args {
     timelines: Vec<Timeline>,
+    relays: Vec<String>,
     is_mobile: Option<bool>,
     keys: Vec<Keypair>,
     light: bool,
@@ -652,6 +651,7 @@ struct Args {
 fn parse_args(args: &[String]) -> Args {
     let mut res = Args {
         timelines: vec![],
+        relays: vec![],
         is_mobile: None,
         keys: vec![],
         light: false,
@@ -701,6 +701,15 @@ fn parse_args(args: &[String]) -> Args {
             } else {
                 error!("failed to parse filter '{}'", filter);
             }
+        } else if arg == "-r" || arg == "--relay" {
+            i += 1;
+            let relay = if let Some(next_arg) = args.get(i) {
+                next_arg
+            } else {
+                error!("relay argument missing?");
+                continue;
+            };
+            res.relays.push(relay.clone());
         } else if arg == "--filter-file" || arg == "-f" {
             i += 1;
             let filter_file = if let Some(next_arg) = args.get(i) {
@@ -788,11 +797,30 @@ impl Damus {
             account_manager.select_account(0);
         }
 
+        // setup relays if we have them
+        let pool = if parsed_args.relays.is_empty() {
+            let mut pool = RelayPool::new();
+            relay_setup(&mut pool, &cc.egui_ctx);
+            pool
+        } else {
+            let ctx = cc.egui_ctx.clone();
+            let wakeup = move || {
+                ctx.request_repaint();
+            };
+            let mut pool = RelayPool::new();
+            for relay in parsed_args.relays {
+                if let Err(e) = pool.add_url(relay.clone(), wakeup.clone()) {
+                    error!("error adding relay {}: {}", relay, e);
+                }
+            }
+            pool
+        };
+
         Self {
+            pool,
             is_mobile,
             drafts: Drafts::default(),
             state: DamusState::Initializing,
-            pool: RelayPool::new(),
             img_cache: ImageCache::new(imgcache_dir),
             note_cache: NoteCache::default(),
             selected_timeline: 0,
