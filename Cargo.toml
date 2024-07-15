@@ -33,7 +33,7 @@ serde_json = "1.0.89"
 env_logger = "0.10.0"
 puffin_egui = { version = "0.27.0", optional = true }
 puffin = { version = "0.19.0", optional = true }
-nostrdb = { git = "https://github.com/damus-io/nostrdb-rs", rev = "ee8afeeb0b6695fca6d27dd0b74a8dc159e37b95" }
+nostrdb = { git = "https://github.com/damus-io/nostrdb-rs", rev = "c870c70e988fffbdd10f161d97add8bd919db25a" }
 #nostrdb = "0.3.4"
 hex = "0.4.3"
 base32 = "0.4.0"
