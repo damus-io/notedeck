@@ -10,6 +10,7 @@ use crate::note::NoteRef;
 use crate::notecache::{CachedNote, NoteCache};
 use crate::relay_pool_manager::RelayPoolManager;
 use crate::route::Route;
+use crate::thread::Threads;
 use crate::timeline;
 use crate::timeline::{MergeKind, Timeline, ViewFilter};
 use crate::ui::note::PostAction;
@@ -53,10 +54,11 @@ pub struct Damus {
 
     pub timelines: Vec<Timeline>,
     pub selected_timeline: i32,
-    pub drafts: Drafts,
 
-    pub img_cache: ImageCache,
     pub ndb: Ndb,
+    pub drafts: Drafts,
+    pub threads: Threads,
+    pub img_cache: ImageCache,
     pub account_manager: AccountManager,
 
     frame_history: crate::frame_history::FrameHistory,
@@ -820,6 +822,7 @@ impl Damus {
         Self {
             pool,
             is_mobile,
+            threads: Threads::default(),
             drafts: Drafts::default(),
             state: DamusState::Initializing,
             img_cache: ImageCache::new(imgcache_dir),
@@ -849,6 +852,7 @@ impl Damus {
         config.set_ingester_threads(2);
         Self {
             is_mobile,
+            threads: Threads::default(),
             drafts: Drafts::default(),
             state: DamusState::Initializing,
             pool: RelayPool::new(),
@@ -1013,15 +1017,21 @@ fn render_nav(routes: Vec<Route>, timeline_ind: usize, app: &mut Damus, ui: &mut
                 None
             }
 
-            Route::Thread(_key) => {
-                ui.label("thread view");
-                None
-            }
-
             Route::Relays => {
                 let pool = &mut app_ctx.borrow_mut().pool;
                 let manager = RelayPoolManager::new(pool);
                 RelayView::new(manager).ui(ui);
+                None
+            }
+
+            Route::Thread(id) => {
+                let app = &mut app_ctx.borrow_mut();
+                if let Ok(txn) = Transaction::new(&app.ndb) {
+                    if let Ok(note) = app.ndb.get_note_by_id(&txn, id.bytes()) {
+                        ui::ThreadView::new(app, timeline_ind, &note).ui(ui);
+                    }
+                }
+
                 None
             }
 
