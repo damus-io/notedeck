@@ -70,11 +70,15 @@ pub struct TimelineView {
 
 impl TimelineView {
     pub fn new(filter: ViewFilter) -> Self {
+        TimelineView::new_with_capacity(filter, 1000)
+    }
+
+    pub fn new_with_capacity(filter: ViewFilter, cap: usize) -> Self {
         let selection = 0i32;
         let mut list = VirtualList::new();
         list.hide_on_resize(None);
         let list = Rc::new(RefCell::new(list));
-        let notes: Vec<NoteRef> = Vec::with_capacity(1000);
+        let notes: Vec<NoteRef> = Vec::with_capacity(cap);
 
         TimelineView {
             notes,
