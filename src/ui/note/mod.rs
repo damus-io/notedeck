@@ -8,7 +8,7 @@ pub use options::NoteOptions;
 pub use post::{PostAction, PostResponse, PostView};
 pub use reply::PostReplyView;
 
-use crate::{colors, notecache::CachedNote, ui, ui::View, Damus};
+use crate::{actionbar::BarAction, colors, notecache::CachedNote, ui, ui::View, Damus};
 use egui::{Label, RichText, Sense};
 use nostrdb::{Note, NoteKey, NoteReply, Transaction};
 
@@ -366,11 +366,6 @@ impl<'a> NoteView<'a> {
             action: note_action,
         }
     }
-}
-
-#[derive(Debug, Eq, PartialEq, Copy, Clone)]
-pub enum BarAction {
-    Reply,
 }
 
 fn render_note_actionbar(

@@ -17,7 +17,7 @@ pub use account_switcher::AccountSelectionWidget;
 pub use fixed_window::{FixedWindow, FixedWindowResponse};
 pub use global_popup::DesktopGlobalPopup;
 pub use mention::Mention;
-pub use note::{BarAction, NoteResponse, NoteView, PostReplyView, PostView};
+pub use note::{NoteResponse, NoteView, PostReplyView, PostView};
 pub use preview::{Preview, PreviewApp, PreviewConfig};
 pub use profile::{profile_preview_controller, ProfilePic, ProfilePreview};
 pub use relay::RelayView;

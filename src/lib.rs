@@ -5,6 +5,7 @@ mod error;
 //mod block;
 mod abbrev;
 pub mod account_manager;
+mod actionbar;
 pub mod app_creation;
 mod app_style;
 mod colors;

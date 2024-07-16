@@ -8,10 +8,9 @@ use crate::route::Route;
 use egui::containers::scroll_area::ScrollBarVisibility;
 use egui::{Direction, Layout};
 
-use crate::ui::BarAction;
 use egui_tabs::TabColor;
 use egui_virtual_list::VirtualList;
-use enostr::{Filter, NoteId};
+use enostr::Filter;
 use nostrdb::{Note, Subscription, Transaction};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -332,16 +331,9 @@ pub fn timeline_view(ui: &mut egui::Ui, app: &mut Damus, timeline: usize) {
                             .show(ui);
 
                         if let Some(action) = resp.action {
-                            debug!("bar action: {:?}", action);
-                            match action {
-                                BarAction::Reply => {
-                                    let timeline = &mut app.timelines[timeline];
-                                    timeline
-                                        .routes
-                                        .push(Route::Reply(NoteId::new(note.id().to_owned())));
-                                    timeline.navigating = true;
-                                }
-                            }
+                            action.execute(app, timeline, note.id());
+                        } else if resp.response.clicked() {
+                            debug!("clicked note");
                         }
                     });
 
