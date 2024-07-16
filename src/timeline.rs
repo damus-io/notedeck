@@ -175,7 +175,7 @@ fn shrink_range_to_width(range: egui::Rangef, width: f32) -> egui::Rangef {
     egui::Rangef::new(min, max)
 }
 
-fn tabs_ui(timeline: &mut Timeline, ui: &mut egui::Ui) {
+fn tabs_ui(ui: &mut egui::Ui) -> i32 {
     ui.spacing_mut().item_spacing.y = 0.0;
 
     let tab_res = egui_tabs::Tabs::new(2)
@@ -213,9 +213,6 @@ fn tabs_ui(timeline: &mut Timeline, ui: &mut egui::Ui) {
 
     let sel = tab_res.selected().unwrap_or_default();
 
-    // fun animation
-    timeline.selected_view = sel;
-
     let (underline, underline_y) = tab_res.inner()[sel as usize].inner;
     let underline_width = underline.span();
 
@@ -242,6 +239,8 @@ fn tabs_ui(timeline: &mut Timeline, ui: &mut egui::Ui) {
     let underline = egui::Rangef::new(x, x + w);
 
     ui.painter().hline(underline, underline_y, stroke);
+
+    sel
 }
 
 pub fn timeline_view(ui: &mut egui::Ui, app: &mut Damus, timeline: usize) {
@@ -289,7 +288,7 @@ pub fn timeline_view(ui: &mut egui::Ui, app: &mut Damus, timeline: usize) {
         }
     }
 
-    tabs_ui(&mut app.timelines[timeline], ui);
+    app.timelines[timeline].selected_view = tabs_ui(ui);
 
     // need this for some reason??
     ui.add_space(3.0);
