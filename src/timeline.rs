@@ -18,9 +18,11 @@ use std::rc::Rc;
 
 use tracing::{debug, info, warn};
 
-#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+#[derive(Copy, Clone, Eq, PartialEq, Debug, Default)]
 pub enum ViewFilter {
     Notes,
+
+    #[default]
     NotesAndReplies,
 }
 
@@ -59,6 +61,7 @@ impl ViewFilter {
 /// are "Notes" and "Notes & Replies". A timeline is associated with a Filter,
 /// but a TimelineView is a further filtered view of this Filter that can't
 /// be captured by a Filter itself.
+#[derive(Default)]
 pub struct TimelineView {
     pub notes: Vec<NoteRef>,
     pub selection: i32,
