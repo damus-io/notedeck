@@ -1,4 +1,5 @@
 use crate::draft::DraftSource;
+use crate::note::NoteRef;
 use crate::notecache::CachedNote;
 use crate::ui::note::PostAction;
 use crate::{ui, Damus};
@@ -11,34 +12,11 @@ use crate::ui::BarAction;
 use egui_tabs::TabColor;
 use egui_virtual_list::VirtualList;
 use enostr::{Filter, NoteId};
-use nostrdb::{Note, NoteKey, Subscription, Transaction};
+use nostrdb::{Note, Subscription, Transaction};
 use std::cell::RefCell;
-use std::cmp::Ordering;
 use std::rc::Rc;
 
 use tracing::{debug, info, warn};
-
-#[derive(Debug, Eq, PartialEq, Copy, Clone)]
-pub struct NoteRef {
-    pub key: NoteKey,
-    pub created_at: u64,
-}
-
-impl Ord for NoteRef {
-    fn cmp(&self, other: &Self) -> Ordering {
-        match self.created_at.cmp(&other.created_at) {
-            Ordering::Equal => self.key.cmp(&other.key),
-            Ordering::Less => Ordering::Greater,
-            Ordering::Greater => Ordering::Less,
-        }
-    }
-}
-
-impl PartialOrd for NoteRef {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub enum ViewFilter {
