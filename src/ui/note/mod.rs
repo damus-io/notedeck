@@ -373,33 +373,13 @@ fn render_note_actionbar(
     note_key: NoteKey,
 ) -> egui::InnerResponse<Option<BarAction>> {
     ui.horizontal(|ui| {
-        let img_data = if ui.style().visuals.dark_mode {
-            egui::include_image!("../../../assets/icons/reply.png")
-        } else {
-            egui::include_image!("../../../assets/icons/reply-dark.png")
-        };
+        let reply_resp = reply_button(ui, note_key);
+        let thread_resp = thread_button(ui, note_key);
 
-        ui.spacing_mut().button_padding = egui::vec2(0.0, 0.0);
-
-        let button_size = 10.0;
-        let expand_size = 5.0;
-        let anim_speed = 0.05;
-
-        let (rect, size, resp) = ui::anim::hover_expand(
-            ui,
-            ui.id().with(("reply_anim", note_key)),
-            button_size,
-            expand_size,
-            anim_speed,
-        );
-
-        // align rect to note contents
-        let rect = rect.translate(egui::vec2(-(expand_size / 2.0), 0.0));
-
-        ui.put(rect, egui::Image::new(img_data).max_width(size));
-
-        if resp.clicked() {
+        if reply_resp.clicked() {
             Some(BarAction::Reply)
+        } else if thread_resp.clicked() {
+            Some(BarAction::OpenThread)
         } else {
             None
         }
@@ -431,4 +411,46 @@ fn render_reltime(
             secondary_label(ui, "⋅");
         }
     })
+}
+
+fn reply_button(ui: &mut egui::Ui, note_key: NoteKey) -> egui::Response {
+    let img_data = if ui.style().visuals.dark_mode {
+        egui::include_image!("../../../assets/icons/reply.png")
+    } else {
+        egui::include_image!("../../../assets/icons/reply-dark.png")
+    };
+
+    let (rect, size, resp) =
+        ui::anim::hover_expand_small(ui, ui.id().with(("reply_anim", note_key)));
+
+    // align rect to note contents
+    let expand_size = 5.0; // from hover_expand_small
+    let rect = rect.translate(egui::vec2(-(expand_size / 2.0), 0.0));
+
+    let put_resp = ui.put(rect, egui::Image::new(img_data).max_width(size));
+
+    resp.union(put_resp)
+}
+
+fn thread_button(ui: &mut egui::Ui, note_key: NoteKey) -> egui::Response {
+    let id = ui.id().with(("thread_anim", note_key));
+    let size = 8.0;
+    let expand_size = 5.0;
+    let anim_speed = 0.05;
+
+    let (rect, size, resp) = ui::anim::hover_expand(ui, id, size, expand_size, anim_speed);
+
+    let color = if ui.style().visuals.dark_mode {
+        egui::Color32::WHITE
+    } else {
+        egui::Color32::BLACK
+    };
+
+    ui.painter_at(rect).circle_stroke(
+        rect.center(),
+        (size - 1.0) / 2.0,
+        egui::Stroke::new(1.0, color),
+    );
+
+    resp
 }
