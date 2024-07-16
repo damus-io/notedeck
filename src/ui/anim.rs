@@ -17,3 +17,11 @@ pub fn hover_expand(
     let size = size + val * expand_size;
     (rect, size, response)
 }
+
+pub fn hover_expand_small(ui: &mut egui::Ui, id: egui::Id) -> (egui::Rect, f32, egui::Response) {
+    let size = 10.0;
+    let expand_size = 5.0;
+    let anim_speed = 0.05;
+
+    hover_expand(ui, id, size, expand_size, anim_speed)
+}
