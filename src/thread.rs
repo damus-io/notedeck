@@ -1,12 +1,21 @@
 use crate::note::NoteRef;
 use crate::timeline::{TimelineView, ViewFilter};
-use nostrdb::{Ndb, Transaction};
+use crate::Error;
+use nostrdb::{Filter, Ndb, Subscription, Transaction};
 use std::collections::HashMap;
 use tracing::debug;
 
 #[derive(Default)]
 pub struct Thread {
     pub view: TimelineView,
+    sub: Option<Subscription>,
+    pub subscribers: i32,
+}
+
+#[derive(Debug, Eq, PartialEq, Copy, Clone)]
+pub enum DecrementResult {
+    LastSubscriber(u64),
+    ActiveSubscribers,
 }
 
 impl Thread {
@@ -17,24 +26,79 @@ impl Thread {
         }
         let mut view = TimelineView::new_with_capacity(ViewFilter::NotesAndReplies, cap);
         view.notes = notes;
+        let sub: Option<Subscription> = None;
+        let subscribers: i32 = 0;
 
-        Thread { view }
+        Thread {
+            view,
+            sub,
+            subscribers,
+        }
+    }
+
+    pub fn decrement_sub(&mut self) -> Result<DecrementResult, Error> {
+        debug!("decrementing sub {:?}", self.subscription().map(|s| s.id));
+        self.subscribers -= 1;
+        if self.subscribers == 0 {
+            // unsub from thread
+            if let Some(sub) = self.subscription() {
+                Ok(DecrementResult::LastSubscriber(sub.id))
+            } else {
+                Err(Error::no_active_sub())
+            }
+        } else if self.subscribers < 0 {
+            Err(Error::unexpected_sub_count(self.subscribers))
+        } else {
+            Ok(DecrementResult::ActiveSubscribers)
+        }
+    }
+
+    pub fn subscription(&self) -> Option<&Subscription> {
+        self.sub.as_ref()
+    }
+
+    pub fn subscription_mut(&mut self) -> &mut Option<Subscription> {
+        &mut self.sub
+    }
+}
+
+impl Thread {
+    pub fn filters(root: &[u8; 32]) -> Vec<Filter> {
+        vec![
+            nostrdb::Filter::new().kinds(vec![1]).event(root).build(),
+            nostrdb::Filter::new()
+                .kinds(vec![1])
+                .ids(vec![*root])
+                .build(),
+        ]
     }
 }
 
 #[derive(Default)]
 pub struct Threads {
-    threads: HashMap<[u8; 32], Thread>,
+    /// root id to thread
+    pub root_id_to_thread: HashMap<[u8; 32], Thread>,
 }
 
 impl Threads {
-    pub fn thread_mut(&mut self, ndb: &Ndb, txn: &Transaction, root_id: &[u8; 32]) -> &mut Thread {
+    pub fn thread_expected_mut(&mut self, root_id: &[u8; 32]) -> &mut Thread {
+        self.root_id_to_thread
+            .get_mut(root_id)
+            .expect("thread_expected_mut used but there was no thread")
+    }
+
+    pub fn thread_mut<'a>(
+        &mut self,
+        ndb: &Ndb,
+        txn: &Transaction,
+        root_id: &[u8; 32],
+    ) -> &mut Thread {
         // we can't use the naive hashmap entry API here because lookups
         // require a copy, wait until we have a raw entry api. We could
         // also use hashbrown?
 
-        if self.threads.contains_key(root_id) {
-            return self.threads.get_mut(root_id).unwrap();
+        if self.root_id_to_thread.contains_key(root_id) {
+            return self.root_id_to_thread.get_mut(root_id).unwrap();
         }
 
         // looks like we don't have this thread yet, populate it
@@ -43,24 +107,16 @@ impl Threads {
             root
         } else {
             debug!("couldnt find root note for id {}", hex::encode(root_id));
-            self.threads.insert(root_id.to_owned(), Thread::new(vec![]));
-            return self.threads.get_mut(root_id).unwrap();
+            self.root_id_to_thread
+                .insert(root_id.to_owned(), Thread::new(vec![]));
+            return self.root_id_to_thread.get_mut(root_id).unwrap();
         };
 
         // we don't have the thread, query for it!
-        let filter = vec![
-            nostrdb::Filter::new()
-                .kinds(vec![1])
-                .event(root.id())
-                .build(),
-            nostrdb::Filter::new()
-                .kinds(vec![1])
-                .ids(vec![*root.id()])
-                .build(),
-        ];
+        let filters = Thread::filters(root_id);
 
         // TODO: what should be the max results ?
-        let notes = if let Ok(mut results) = ndb.query(txn, filter, 10000) {
+        let notes = if let Ok(mut results) = ndb.query(txn, filters, 10000) {
             results.reverse();
             results
                 .into_iter()
@@ -75,8 +131,9 @@ impl Threads {
         };
 
         debug!("found thread with {} notes", notes.len());
-        self.threads.insert(root_id.to_owned(), Thread::new(notes));
-        self.threads.get_mut(root_id).unwrap()
+        self.root_id_to_thread
+            .insert(root_id.to_owned(), Thread::new(notes));
+        self.root_id_to_thread.get_mut(root_id).unwrap()
     }
 
     //fn thread_by_id(&self, ndb: &Ndb, id: &[u8; 32]) -> &mut Thread {

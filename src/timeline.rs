@@ -1,8 +1,10 @@
+use crate::app::{get_unknown_note_ids, UnknownId};
 use crate::draft::DraftSource;
+use crate::error::Error;
 use crate::note::NoteRef;
 use crate::notecache::CachedNote;
 use crate::ui::note::PostAction;
-use crate::{ui, Damus};
+use crate::{ui, Damus, Result};
 
 use crate::route::Route;
 use egui::containers::scroll_area::ScrollBarVisibility;
@@ -13,9 +15,136 @@ use egui_virtual_list::VirtualList;
 use enostr::Filter;
 use nostrdb::{Note, Subscription, Transaction};
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::rc::Rc;
 
 use tracing::{debug, info, warn};
+
+#[derive(Debug, Copy, Clone)]
+pub enum TimelineSource<'a> {
+    Column { ind: usize },
+    Thread(&'a [u8; 32]),
+}
+
+impl<'a> TimelineSource<'a> {
+    pub fn column(ind: usize) -> Self {
+        TimelineSource::Column { ind }
+    }
+
+    pub fn view<'b>(
+        self,
+        app: &'b mut Damus,
+        txn: &Transaction,
+        filter: ViewFilter,
+    ) -> &'b mut TimelineView {
+        match self {
+            TimelineSource::Column { ind, .. } => app.timelines[ind].view_mut(filter),
+            TimelineSource::Thread(root_id) => {
+                // TODO: replace all this with the raw entry api eventually
+
+                let thread = if app.threads.root_id_to_thread.contains_key(root_id) {
+                    app.threads.thread_expected_mut(root_id)
+                } else {
+                    app.threads.thread_mut(&app.ndb, txn, root_id)
+                };
+
+                &mut thread.view
+            }
+        }
+    }
+
+    pub fn sub<'b>(self, app: &'b mut Damus, txn: &Transaction) -> Option<&'b Subscription> {
+        match self {
+            TimelineSource::Column { ind, .. } => app.timelines[ind].subscription.as_ref(),
+            TimelineSource::Thread(root_id) => {
+                // TODO: replace all this with the raw entry api eventually
+
+                let thread = if app.threads.root_id_to_thread.contains_key(root_id) {
+                    app.threads.thread_expected_mut(root_id)
+                } else {
+                    app.threads.thread_mut(&app.ndb, txn, root_id)
+                };
+
+                thread.subscription()
+            }
+        }
+    }
+
+    pub fn poll_notes_into_view(
+        &self,
+        app: &mut Damus,
+        txn: &'a Transaction,
+        ids: &mut HashSet<UnknownId<'a>>,
+    ) -> Result<()> {
+        let sub_id = if let Some(sub_id) = self.sub(app, txn).map(|s| s.id) {
+            sub_id
+        } else {
+            return Err(Error::no_active_sub());
+        };
+
+        //
+        // TODO(BUG!): poll for these before the txn, otherwise we can hit
+        // a race condition where we hit the "no note??" expect below. This may
+        // require some refactoring due to the missing ids logic
+        //
+        let new_note_ids = app.ndb.poll_for_notes(sub_id, 100);
+        if new_note_ids.is_empty() {
+            return Ok(());
+        } else {
+            debug!("{} new notes! {:?}", new_note_ids.len(), new_note_ids);
+        }
+
+        let new_refs: Vec<(Note, NoteRef)> = new_note_ids
+            .iter()
+            .map(|key| {
+                let note = app.ndb.get_note_by_key(txn, *key).expect("no note??");
+                let cached_note = app
+                    .note_cache_mut()
+                    .cached_note_or_insert(*key, &note)
+                    .clone();
+                let _ = get_unknown_note_ids(&app.ndb, &cached_note, txn, &note, *key, ids);
+
+                let created_at = note.created_at();
+                (
+                    note,
+                    NoteRef {
+                        key: *key,
+                        created_at,
+                    },
+                )
+            })
+            .collect();
+
+        // ViewFilter::NotesAndReplies
+        {
+            let refs: Vec<NoteRef> = new_refs.iter().map(|(_note, nr)| *nr).collect();
+
+            self.view(app, txn, ViewFilter::NotesAndReplies)
+                .insert(&refs);
+        }
+
+        //
+        // handle the filtered case (ViewFilter::Notes, no replies)
+        //
+        // TODO(jb55): this is mostly just copied from above, let's just use a loop
+        //             I initially tried this but ran into borrow checker issues
+        {
+            let mut filtered_refs = Vec::with_capacity(new_refs.len());
+            for (note, nr) in &new_refs {
+                let cached_note = app.note_cache_mut().cached_note_or_insert(nr.key, note);
+
+                if ViewFilter::filter_notes(cached_note, note) {
+                    filtered_refs.push(*nr);
+                }
+            }
+
+            self.view(app, txn, ViewFilter::Notes)
+                .insert(&filtered_refs);
+        }
+
+        Ok(())
+    }
+}
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Default)]
 pub enum ViewFilter {
@@ -85,6 +214,25 @@ impl TimelineView {
             selection,
             filter,
             list,
+        }
+    }
+
+    pub fn insert(&mut self, new_refs: &[NoteRef]) {
+        let num_prev_items = self.notes.len();
+        let (notes, merge_kind) = crate::timeline::merge_sorted_vecs(&self.notes, new_refs);
+
+        self.notes = notes;
+        let new_items = self.notes.len() - num_prev_items;
+
+        // TODO: technically items could have been added inbetween
+        if new_items > 0 {
+            let mut list = self.list.borrow_mut();
+
+            match merge_kind {
+                // TODO: update egui_virtual_list to support spliced inserts
+                MergeKind::Spliced => list.reset(),
+                MergeKind::FrontInsert => list.items_inserted_at_start(new_items),
+            }
         }
     }
 
@@ -335,7 +483,7 @@ pub fn timeline_view(ui: &mut egui::Ui, app: &mut Damus, timeline: usize) {
                             .show(ui);
 
                         if let Some(action) = resp.action {
-                            action.execute(app, timeline, note.id());
+                            action.execute(app, timeline, note.id(), &txn);
                         } else if resp.response.clicked() {
                             debug!("clicked note");
                         }

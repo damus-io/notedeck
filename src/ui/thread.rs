@@ -1,47 +1,86 @@
-use crate::{ui, Damus};
-use nostrdb::{Note, NoteReply};
+use crate::{timeline::TimelineSource, ui, Damus};
+use nostrdb::{NoteKey, Transaction};
+use std::collections::HashSet;
 use tracing::warn;
 
 pub struct ThreadView<'a> {
     app: &'a mut Damus,
     timeline: usize,
-    selected_note: &'a Note<'a>,
+    selected_note_id: &'a [u8; 32],
 }
 
 impl<'a> ThreadView<'a> {
-    pub fn new(app: &'a mut Damus, timeline: usize, selected_note: &'a Note<'a>) -> Self {
+    pub fn new(app: &'a mut Damus, timeline: usize, selected_note_id: &'a [u8; 32]) -> Self {
         ThreadView {
             app,
             timeline,
-            selected_note,
+            selected_note_id,
         }
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui) {
-        let txn = self.selected_note.txn().unwrap();
-        let key = self.selected_note.key().unwrap();
+        let txn = Transaction::new(&self.app.ndb).expect("txn");
+
+        let selected_note_key = if let Ok(key) = self
+            .app
+            .ndb
+            .get_notekey_by_id(&txn, self.selected_note_id)
+            .map(NoteKey::new)
+        {
+            key
+        } else {
+            // TODO: render 404 ?
+            return;
+        };
+
         let scroll_id = egui::Id::new((
             "threadscroll",
             self.app.timelines[self.timeline].selected_view,
             self.timeline,
-            key,
+            selected_note_key,
         ));
+
         ui.label(
             egui::RichText::new("Threads ALPHA! It's not done. Things will be broken.")
                 .color(egui::Color32::RED),
         );
+
         egui::ScrollArea::vertical()
             .id_source(scroll_id)
             .animated(false)
             .auto_shrink([false, false])
             .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
             .show(ui, |ui| {
-                let root_id = NoteReply::new(self.selected_note.tags())
-                    .root()
-                    .map_or_else(|| self.selected_note.id(), |nr| nr.id);
+                let note = if let Ok(note) = self.app.ndb.get_note_by_key(&txn, selected_note_key) {
+                    note
+                } else {
+                    return;
+                };
+
+                let root_id = {
+                    let cached_note = self
+                        .app
+                        .note_cache_mut()
+                        .cached_note_or_insert(selected_note_key, &note);
+
+                    cached_note
+                        .reply
+                        .borrow(note.tags())
+                        .root()
+                        .map_or_else(|| self.selected_note_id, |nr| nr.id)
+                };
+
+                // poll for new notes and insert them into our existing notes
+                {
+                    let mut ids = HashSet::new();
+                    let _ = TimelineSource::Thread(root_id)
+                        .poll_notes_into_view(self.app, &txn, &mut ids);
+                    // TODO: do something with unknown ids
+                }
 
                 let (len, list) = {
-                    let thread = self.app.threads.thread_mut(&self.app.ndb, txn, root_id);
+                    let thread = self.app.threads.thread_mut(&self.app.ndb, &txn, root_id);
+
                     let len = thread.view.notes.len();
                     (len, &mut thread.view.list)
                 };
@@ -53,11 +92,11 @@ impl<'a> ThreadView<'a> {
                         ui.spacing_mut().item_spacing.x = 4.0;
 
                         let note_key = {
-                            let thread = self.app.threads.thread_mut(&self.app.ndb, txn, root_id);
+                            let thread = self.app.threads.thread_mut(&self.app.ndb, &txn, root_id);
                             thread.view.notes[start_index].key
                         };
 
-                        let note = if let Ok(note) = self.app.ndb.get_note_by_key(txn, note_key) {
+                        let note = if let Ok(note) = self.app.ndb.get_note_by_key(&txn, note_key) {
                             note
                         } else {
                             warn!("failed to query note {:?}", note_key);
@@ -71,7 +110,7 @@ impl<'a> ThreadView<'a> {
                                 .show(ui);
 
                             if let Some(action) = resp.action {
-                                action.execute(self.app, self.timeline, note.id());
+                                action.execute(self.app, self.timeline, note.id(), &txn);
                             }
                         });
 
