@@ -31,7 +31,7 @@ use std::collections::HashSet;
 use std::hash::Hash;
 use std::path::Path;
 use std::time::Duration;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 #[derive(Debug, Eq, PartialEq, Clone)]
 pub enum DamusState {
@@ -221,7 +221,7 @@ fn try_process_event(damus: &mut Damus, ctx: &egui::Context) -> Result<()> {
             // TODO: handle reconnects
             RelayEvent::Closed => warn!("{} connection closed", &relay),
             RelayEvent::Error(e) => error!("{}: {}", &relay, e),
-            RelayEvent::Other(msg) => debug!("other event {:?}", &msg),
+            RelayEvent::Other(msg) => trace!("other event {:?}", &msg),
             RelayEvent::Message(msg) => process_message(damus, &relay, &msg),
         }
     }
