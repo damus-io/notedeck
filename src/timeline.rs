@@ -1,16 +1,11 @@
 use crate::app::{get_unknown_note_ids, UnknownId};
-use crate::draft::DraftSource;
 use crate::error::Error;
 use crate::note::NoteRef;
 use crate::notecache::CachedNote;
-use crate::ui::note::PostAction;
-use crate::{ui, Damus, Result};
+use crate::{Damus, Result};
 
 use crate::route::Route;
-use egui::containers::scroll_area::ScrollBarVisibility;
-use egui::{Direction, Layout};
 
-use egui_tabs::TabColor;
 use egui_virtual_list::VirtualList;
 use enostr::Filter;
 use nostrdb::{Note, Subscription, Transaction};
@@ -18,7 +13,7 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 use std::rc::Rc;
 
-use tracing::{debug, info, warn};
+use tracing::debug;
 
 #[derive(Debug, Copy, Clone)]
 pub enum TimelineSource<'a> {
@@ -36,7 +31,7 @@ impl<'a> TimelineSource<'a> {
         app: &'b mut Damus,
         txn: &Transaction,
         filter: ViewFilter,
-    ) -> &'b mut TimelineView {
+    ) -> &'b mut TimelineTab {
         match self {
             TimelineSource::Column { ind, .. } => app.timelines[ind].view_mut(filter),
             TimelineSource::Thread(root_id) => {
@@ -187,19 +182,19 @@ impl ViewFilter {
 
 /// A timeline view is a filtered view of notes in a timeline. Two standard views
 /// are "Notes" and "Notes & Replies". A timeline is associated with a Filter,
-/// but a TimelineView is a further filtered view of this Filter that can't
+/// but a TimelineTab is a further filtered view of this Filter that can't
 /// be captured by a Filter itself.
 #[derive(Default)]
-pub struct TimelineView {
+pub struct TimelineTab {
     pub notes: Vec<NoteRef>,
     pub selection: i32,
     pub filter: ViewFilter,
     pub list: Rc<RefCell<VirtualList>>,
 }
 
-impl TimelineView {
+impl TimelineTab {
     pub fn new(filter: ViewFilter) -> Self {
-        TimelineView::new_with_capacity(filter, 1000)
+        TimelineTab::new_with_capacity(filter, 1000)
     }
 
     pub fn new_with_capacity(filter: ViewFilter, cap: usize) -> Self {
@@ -209,7 +204,7 @@ impl TimelineView {
         let list = Rc::new(RefCell::new(list));
         let notes: Vec<NoteRef> = Vec::with_capacity(cap);
 
-        TimelineView {
+        TimelineTab {
             notes,
             selection,
             filter,
@@ -257,7 +252,7 @@ impl TimelineView {
 
 pub struct Timeline {
     pub filter: Vec<Filter>,
-    pub views: Vec<TimelineView>,
+    pub views: Vec<TimelineTab>,
     pub selected_view: i32,
     pub routes: Vec<Route>,
     pub navigating: bool,
@@ -270,8 +265,8 @@ pub struct Timeline {
 impl Timeline {
     pub fn new(filter: Vec<Filter>) -> Self {
         let subscription: Option<Subscription> = None;
-        let notes = TimelineView::new(ViewFilter::Notes);
-        let replies = TimelineView::new(ViewFilter::NotesAndReplies);
+        let notes = TimelineTab::new(ViewFilter::Notes);
+        let replies = TimelineTab::new(ViewFilter::NotesAndReplies);
         let views = vec![notes, replies];
         let selected_view = 0;
         let routes = vec![Route::Timeline("Timeline".to_string())];
@@ -289,11 +284,11 @@ impl Timeline {
         }
     }
 
-    pub fn current_view(&self) -> &TimelineView {
+    pub fn current_view(&self) -> &TimelineTab {
         &self.views[self.selected_view as usize]
     }
 
-    pub fn current_view_mut(&mut self) -> &mut TimelineView {
+    pub fn current_view_mut(&mut self) -> &mut TimelineTab {
         &mut self.views[self.selected_view as usize]
     }
 
@@ -301,200 +296,13 @@ impl Timeline {
         &self.views[view.index()].notes
     }
 
-    pub fn view(&self, view: ViewFilter) -> &TimelineView {
+    pub fn view(&self, view: ViewFilter) -> &TimelineTab {
         &self.views[view.index()]
     }
 
-    pub fn view_mut(&mut self, view: ViewFilter) -> &mut TimelineView {
+    pub fn view_mut(&mut self, view: ViewFilter) -> &mut TimelineTab {
         &mut self.views[view.index()]
     }
-}
-
-fn get_label_width(ui: &mut egui::Ui, text: &str) -> f32 {
-    let font_id = egui::FontId::default();
-    let galley = ui.fonts(|r| r.layout_no_wrap(text.to_string(), font_id, egui::Color32::WHITE));
-    galley.rect.width()
-}
-
-fn shrink_range_to_width(range: egui::Rangef, width: f32) -> egui::Rangef {
-    let midpoint = (range.min + range.max) / 2.0;
-    let half_width = width / 2.0;
-
-    let min = midpoint - half_width;
-    let max = midpoint + half_width;
-
-    egui::Rangef::new(min, max)
-}
-
-fn tabs_ui(ui: &mut egui::Ui) -> i32 {
-    ui.spacing_mut().item_spacing.y = 0.0;
-
-    let tab_res = egui_tabs::Tabs::new(2)
-        .selected(1)
-        .hover_bg(TabColor::none())
-        .selected_fg(TabColor::none())
-        .selected_bg(TabColor::none())
-        .hover_bg(TabColor::none())
-        //.hover_bg(TabColor::custom(egui::Color32::RED))
-        .height(32.0)
-        .layout(Layout::centered_and_justified(Direction::TopDown))
-        .show(ui, |ui, state| {
-            ui.spacing_mut().item_spacing.y = 0.0;
-
-            let ind = state.index();
-
-            let txt = if ind == 0 { "Notes" } else { "Notes & Replies" };
-
-            let res = ui.add(egui::Label::new(txt).selectable(false));
-
-            // underline
-            if state.is_selected() {
-                let rect = res.rect;
-                let underline =
-                    shrink_range_to_width(rect.x_range(), get_label_width(ui, txt) * 1.15);
-                let underline_y = ui.painter().round_to_pixel(rect.bottom()) - 1.5;
-                return (underline, underline_y);
-            }
-
-            (egui::Rangef::new(0.0, 0.0), 0.0)
-        });
-
-    //ui.add_space(0.5);
-    ui::hline(ui);
-
-    let sel = tab_res.selected().unwrap_or_default();
-
-    let (underline, underline_y) = tab_res.inner()[sel as usize].inner;
-    let underline_width = underline.span();
-
-    let tab_anim_id = ui.id().with("tab_anim");
-    let tab_anim_size = tab_anim_id.with("size");
-
-    let stroke = egui::Stroke {
-        color: ui.visuals().hyperlink_color,
-        width: 2.0,
-    };
-
-    let speed = 0.1f32;
-
-    // animate underline position
-    let x = ui
-        .ctx()
-        .animate_value_with_time(tab_anim_id, underline.min, speed);
-
-    // animate underline width
-    let w = ui
-        .ctx()
-        .animate_value_with_time(tab_anim_size, underline_width, speed);
-
-    let underline = egui::Rangef::new(x, x + w);
-
-    ui.painter().hline(underline, underline_y, stroke);
-
-    sel
-}
-
-pub fn timeline_view(ui: &mut egui::Ui, app: &mut Damus, timeline: usize) {
-    //padding(4.0, ui, |ui| ui.heading("Notifications"));
-    /*
-    let font_id = egui::TextStyle::Body.resolve(ui.style());
-    let row_height = ui.fonts(|f| f.row_height(&font_id)) + ui.spacing().item_spacing.y;
-    */
-
-    if timeline == 0 {
-        // show a postbox in the first timeline
-
-        if let Some(account) = app.account_manager.get_selected_account_index() {
-            if app
-                .account_manager
-                .get_selected_account()
-                .map_or(false, |a| a.secret_key.is_some())
-            {
-                if let Ok(txn) = Transaction::new(&app.ndb) {
-                    let response =
-                        ui::PostView::new(app, DraftSource::Compose, account).ui(&txn, ui);
-
-                    if let Some(action) = response.action {
-                        match action {
-                            PostAction::Post(np) => {
-                                let seckey = app
-                                    .account_manager
-                                    .get_account(account)
-                                    .unwrap()
-                                    .secret_key
-                                    .as_ref()
-                                    .unwrap()
-                                    .to_secret_bytes();
-
-                                let note = np.to_note(&seckey);
-                                let raw_msg = format!("[\"EVENT\",{}]", note.json().unwrap());
-                                info!("sending {}", raw_msg);
-                                app.pool.send(&enostr::ClientMessage::raw(raw_msg));
-                                app.drafts.clear(DraftSource::Compose);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    app.timelines[timeline].selected_view = tabs_ui(ui);
-
-    // need this for some reason??
-    ui.add_space(3.0);
-
-    let scroll_id = egui::Id::new(("tlscroll", app.timelines[timeline].selected_view, timeline));
-    egui::ScrollArea::vertical()
-        .id_source(scroll_id)
-        .animated(false)
-        .auto_shrink([false, false])
-        .scroll_bar_visibility(ScrollBarVisibility::AlwaysVisible)
-        .show(ui, |ui| {
-            let view = app.timelines[timeline].current_view();
-            let len = view.notes.len();
-            view.list
-                .clone()
-                .borrow_mut()
-                .ui_custom_layout(ui, len, |ui, start_index| {
-                    ui.spacing_mut().item_spacing.y = 0.0;
-                    ui.spacing_mut().item_spacing.x = 4.0;
-
-                    let note_key = app.timelines[timeline].current_view().notes[start_index].key;
-
-                    let txn = if let Ok(txn) = Transaction::new(&app.ndb) {
-                        txn
-                    } else {
-                        warn!("failed to create transaction for {:?}", note_key);
-                        return 0;
-                    };
-
-                    let note = if let Ok(note) = app.ndb.get_note_by_key(&txn, note_key) {
-                        note
-                    } else {
-                        warn!("failed to query note {:?}", note_key);
-                        return 0;
-                    };
-
-                    ui::padding(8.0, ui, |ui| {
-                        let textmode = app.textmode;
-                        let resp = ui::NoteView::new(app, &note)
-                            .note_previews(!textmode)
-                            .show(ui);
-
-                        if let Some(action) = resp.action {
-                            action.execute(app, timeline, note.id(), &txn);
-                        } else if resp.response.clicked() {
-                            debug!("clicked note");
-                        }
-                    });
-
-                    ui::hline(ui);
-                    //ui.add(egui::Separator::default().spacing(0.0));
-
-                    1
-                });
-        });
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]

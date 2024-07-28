@@ -10,7 +10,6 @@ use crate::notecache::{CachedNote, NoteCache};
 use crate::relay_pool_manager::RelayPoolManager;
 use crate::route::Route;
 use crate::thread::{DecrementResult, Threads};
-use crate::timeline;
 use crate::timeline::{Timeline, TimelineSource, ViewFilter};
 use crate::ui::note::PostAction;
 use crate::ui::{self, AccountSelectionWidget, DesktopGlobalPopup};
@@ -94,27 +93,6 @@ fn relay_setup(pool: &mut RelayPool, ctx: &egui::Context) {
 /// notes locally. One way to determine this is by looking at the current filter
 /// and seeing what its limit is. If we have less notes than the limit,
 /// we might want to backfill older notes
-fn should_since_optimize(limit: Option<u16>, num_notes: usize) -> bool {
-    let limit = limit.unwrap_or(enostr::Filter::default_limit()) as usize;
-
-    // rough heuristic for bailing since optimization if we don't have enough notes
-    limit <= num_notes
-}
-
-fn since_optimize_filter(filter: &mut enostr::Filter, notes: &[NoteRef]) {
-    // Get the latest entry in the events
-    if notes.is_empty() {
-        return;
-    }
-
-    // get the latest note
-    let latest = notes[0];
-    let since = latest.created_at - 60;
-
-    // update the filters
-    filter.since = Some(since);
-}
-
 fn send_initial_filters(damus: &mut Damus, relay_url: &str) {
     info!("Sending initial filters to {}", relay_url);
     let mut c: u32 = 1;
@@ -133,8 +111,8 @@ fn send_initial_filters(damus: &mut Damus, relay_url: &str) {
                     }
 
                     let notes = timeline.notes(ViewFilter::NotesAndReplies);
-                    if should_since_optimize(f.limit, notes.len()) {
-                        since_optimize_filter(f, notes);
+                    if crate::filter::should_since_optimize(f.limit, notes.len()) {
+                        crate::filter::since_optimize_filter(f, notes);
                     } else {
                         warn!("Skipping since optimization for {:?}: number of local notes is less than limit, attempting to backfill.", f);
                     }
@@ -650,6 +628,7 @@ fn parse_args(args: &[String]) -> Args {
     res
 }
 
+/*
 fn determine_key_storage_type() -> KeyStorageType {
     #[cfg(target_os = "macos")]
     {
@@ -666,6 +645,7 @@ fn determine_key_storage_type() -> KeyStorageType {
         KeyStorageType::None
     }
 }
+*/
 
 impl Damus {
     /// Called once before the first frame.
@@ -955,7 +935,7 @@ fn render_nav(routes: Vec<Route>, timeline_ind: usize, app: &mut Damus, ui: &mut
         .show(ui, |ui, nav| match nav.top() {
             Route::Timeline(_n) => {
                 let app = &mut app_ctx.borrow_mut();
-                timeline::timeline_view(ui, app, timeline_ind);
+                ui::TimelineView::new(app, timeline_ind).ui(ui);
                 None
             }
 

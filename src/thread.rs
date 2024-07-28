@@ -1,5 +1,5 @@
 use crate::note::NoteRef;
-use crate::timeline::{TimelineView, ViewFilter};
+use crate::timeline::{TimelineTab, ViewFilter};
 use crate::Error;
 use nostrdb::{Filter, Ndb, Subscription, Transaction};
 use std::collections::HashMap;
@@ -7,7 +7,7 @@ use tracing::debug;
 
 #[derive(Default)]
 pub struct Thread {
-    pub view: TimelineView,
+    pub view: TimelineTab,
     sub: Option<Subscription>,
     pub subscribers: i32,
 }
@@ -24,7 +24,7 @@ impl Thread {
         if cap == 0 {
             cap = 25;
         }
-        let mut view = TimelineView::new_with_capacity(ViewFilter::NotesAndReplies, cap);
+        let mut view = TimelineTab::new_with_capacity(ViewFilter::NotesAndReplies, cap);
         view.notes = notes;
         let sub: Option<Subscription> = None;
         let subscribers: i32 = 0;
@@ -33,6 +33,34 @@ impl Thread {
             view,
             sub,
             subscribers,
+        }
+    }
+
+    /// Look for new thread notes since our last fetch
+    pub fn new_notes(
+        notes: &[NoteRef],
+        root_id: &[u8; 32],
+        txn: &Transaction,
+        ndb: &Ndb,
+    ) -> Vec<NoteRef> {
+        if notes.is_empty() {
+            return vec![];
+        }
+
+        let last_note = notes[0];
+        let filters = Thread::filters_since(root_id, last_note.created_at - 60);
+
+        if let Ok(results) = ndb.query(txn, filters, 1000) {
+            results
+                .into_iter()
+                .map(NoteRef::from_query_result)
+                .collect()
+        } else {
+            debug!(
+                "got no results from thread update for {}",
+                hex::encode(root_id)
+            );
+            vec![]
         }
     }
 
@@ -60,9 +88,22 @@ impl Thread {
     pub fn subscription_mut(&mut self) -> &mut Option<Subscription> {
         &mut self.sub
     }
-}
 
-impl Thread {
+    pub fn filters_since(root: &[u8; 32], since: u64) -> Vec<Filter> {
+        vec![
+            nostrdb::Filter::new()
+                .since(since)
+                .kinds(vec![1])
+                .event(root)
+                .build(),
+            nostrdb::Filter::new()
+                .kinds(vec![1])
+                .ids(vec![*root])
+                .since(since)
+                .build(),
+        ]
+    }
+
     pub fn filters(root: &[u8; 32]) -> Vec<Filter> {
         vec![
             nostrdb::Filter::new().kinds(vec![1]).event(root).build(),
@@ -106,7 +147,7 @@ impl Threads {
         let root = if let Ok(root) = ndb.get_note_by_id(txn, root_id) {
             root
         } else {
-            debug!("couldnt find root note for id {}", hex::encode(root_id));
+            debug!("couldnt find root note root_id:{}", hex::encode(root_id));
             self.root_id_to_thread
                 .insert(root_id.to_owned(), Thread::new(vec![]));
             return self.root_id_to_thread.get_mut(root_id).unwrap();
@@ -115,9 +156,7 @@ impl Threads {
         // we don't have the thread, query for it!
         let filters = Thread::filters(root_id);
 
-        // TODO: what should be the max results ?
-        let notes = if let Ok(mut results) = ndb.query(txn, filters, 10000) {
-            results.reverse();
+        let notes = if let Ok(results) = ndb.query(txn, filters, 1000) {
             results
                 .into_iter()
                 .map(NoteRef::from_query_result)
