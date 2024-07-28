@@ -174,34 +174,36 @@ mod preview {
 
     impl View for ProfilePicPreview {
         fn ui(&mut self, ui: &mut egui::Ui) {
-            ui.horizontal_wrapped(|ui| {
-                let txn = Transaction::new(&self.ndb).unwrap();
-                for key in &self.keys {
-                    let profile = self.ndb.get_profile_by_key(&txn, *key).unwrap();
-                    let url = profile
-                        .record()
-                        .profile()
-                        .expect("should have profile")
-                        .picture()
-                        .expect("should have picture");
+            egui::ScrollArea::both().show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    let txn = Transaction::new(&self.ndb).unwrap();
+                    for key in &self.keys {
+                        let profile = self.ndb.get_profile_by_key(&txn, *key).unwrap();
+                        let url = profile
+                            .record()
+                            .profile()
+                            .expect("should have profile")
+                            .picture()
+                            .expect("should have picture");
 
-                    let expand_size = 10.0;
-                    let anim_speed = 0.05;
+                        let expand_size = 10.0;
+                        let anim_speed = 0.05;
 
-                    let (rect, size, _resp) = ui::anim::hover_expand(
-                        ui,
-                        egui::Id::new(profile.key().unwrap()),
-                        ui::ProfilePic::default_size(),
-                        expand_size,
-                        anim_speed,
-                    );
+                        let (rect, size, _resp) = ui::anim::hover_expand(
+                            ui,
+                            egui::Id::new(profile.key().unwrap()),
+                            ui::ProfilePic::default_size(),
+                            expand_size,
+                            anim_speed,
+                        );
 
-                    ui.put(rect, ui::ProfilePic::new(&mut self.cache, url).size(size))
-                        .on_hover_ui_at_pointer(|ui| {
-                            ui.set_max_width(300.0);
-                            ui.add(ui::ProfilePreview::new(&profile, &mut self.cache));
-                        });
-                }
+                        ui.put(rect, ui::ProfilePic::new(&mut self.cache, url).size(size))
+                            .on_hover_ui_at_pointer(|ui| {
+                                ui.set_max_width(300.0);
+                                ui.add(ui::ProfilePreview::new(&profile, &mut self.cache));
+                            });
+                    }
+                });
             });
         }
     }
