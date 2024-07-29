@@ -887,9 +887,14 @@ fn thread_unsubscribe(app: &mut Damus, id: &[u8; 32]) {
 
         debug!("thread unsubbing from root_id {}", hex::encode(root_id));
 
-        app.threads
-            .thread_mut(&app.ndb, &txn, root_id)
-            .decrement_sub()
+        let thread = app.threads.thread_mut(&app.ndb, &txn, root_id).get_ptr();
+        let unsub = thread.decrement_sub();
+
+        if let Ok(DecrementResult::LastSubscriber(_subid)) = unsub {
+            *thread.subscription_mut() = None;
+        }
+
+        unsub
     };
 
     match unsubscribe {

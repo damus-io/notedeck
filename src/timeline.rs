@@ -40,7 +40,7 @@ impl<'a> TimelineSource<'a> {
                 let thread = if app.threads.root_id_to_thread.contains_key(root_id) {
                     app.threads.thread_expected_mut(root_id)
                 } else {
-                    app.threads.thread_mut(&app.ndb, txn, root_id)
+                    app.threads.thread_mut(&app.ndb, txn, root_id).get_ptr()
                 };
 
                 &mut thread.view
@@ -57,7 +57,7 @@ impl<'a> TimelineSource<'a> {
                 let thread = if app.threads.root_id_to_thread.contains_key(root_id) {
                     app.threads.thread_expected_mut(root_id)
                 } else {
-                    app.threads.thread_mut(&app.ndb, txn, root_id)
+                    app.threads.thread_mut(&app.ndb, txn, root_id).get_ptr()
                 };
 
                 thread.subscription()
@@ -213,6 +213,9 @@ impl TimelineTab {
     }
 
     pub fn insert(&mut self, new_refs: &[NoteRef]) {
+        if new_refs.is_empty() {
+            return;
+        }
         let num_prev_items = self.notes.len();
         let (notes, merge_kind) = crate::timeline::merge_sorted_vecs(&self.notes, new_refs);
 

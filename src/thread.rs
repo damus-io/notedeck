@@ -2,6 +2,7 @@ use crate::note::NoteRef;
 use crate::timeline::{TimelineTab, ViewFilter};
 use crate::Error;
 use nostrdb::{Filter, Ndb, Subscription, Transaction};
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use tracing::debug;
 
@@ -51,15 +52,13 @@ impl Thread {
         let filters = Thread::filters_since(root_id, last_note.created_at - 60);
 
         if let Ok(results) = ndb.query(txn, filters, 1000) {
+            debug!("got {} results from thread update", results.len());
             results
                 .into_iter()
                 .map(NoteRef::from_query_result)
                 .collect()
         } else {
-            debug!(
-                "got no results from thread update for {}",
-                hex::encode(root_id)
-            );
+            debug!("got no results from thread update",);
             vec![]
         }
     }
@@ -67,17 +66,17 @@ impl Thread {
     pub fn decrement_sub(&mut self) -> Result<DecrementResult, Error> {
         debug!("decrementing sub {:?}", self.subscription().map(|s| s.id));
         self.subscribers -= 1;
-        if self.subscribers == 0 {
-            // unsub from thread
-            if let Some(sub) = self.subscription() {
-                Ok(DecrementResult::LastSubscriber(sub.id))
-            } else {
-                Err(Error::no_active_sub())
+
+        match self.subscribers.cmp(&0) {
+            Ordering::Equal => {
+                if let Some(sub) = self.subscription() {
+                    Ok(DecrementResult::LastSubscriber(sub.id))
+                } else {
+                    Err(Error::no_active_sub())
+                }
             }
-        } else if self.subscribers < 0 {
-            Err(Error::unexpected_sub_count(self.subscribers))
-        } else {
-            Ok(DecrementResult::ActiveSubscribers)
+            Ordering::Less => Err(Error::unexpected_sub_count(self.subscribers)),
+            Ordering::Greater => Ok(DecrementResult::ActiveSubscribers),
         }
     }
 
@@ -121,6 +120,27 @@ pub struct Threads {
     pub root_id_to_thread: HashMap<[u8; 32], Thread>,
 }
 
+pub enum ThreadResult<'a> {
+    Fresh(&'a mut Thread),
+    Stale(&'a mut Thread),
+}
+
+impl<'a> ThreadResult<'a> {
+    pub fn get_ptr(self) -> &'a mut Thread {
+        match self {
+            Self::Fresh(ptr) => ptr,
+            Self::Stale(ptr) => ptr,
+        }
+    }
+
+    pub fn is_stale(&self) -> bool {
+        match self {
+            Self::Fresh(_ptr) => false,
+            Self::Stale(_ptr) => true,
+        }
+    }
+}
+
 impl Threads {
     pub fn thread_expected_mut(&mut self, root_id: &[u8; 32]) -> &mut Thread {
         self.root_id_to_thread
@@ -129,17 +149,17 @@ impl Threads {
     }
 
     pub fn thread_mut<'a>(
-        &mut self,
+        &'a mut self,
         ndb: &Ndb,
         txn: &Transaction,
         root_id: &[u8; 32],
-    ) -> &mut Thread {
+    ) -> ThreadResult<'a> {
         // we can't use the naive hashmap entry API here because lookups
         // require a copy, wait until we have a raw entry api. We could
         // also use hashbrown?
 
         if self.root_id_to_thread.contains_key(root_id) {
-            return self.root_id_to_thread.get_mut(root_id).unwrap();
+            return ThreadResult::Stale(self.root_id_to_thread.get_mut(root_id).unwrap());
         }
 
         // looks like we don't have this thread yet, populate it
@@ -150,7 +170,7 @@ impl Threads {
             debug!("couldnt find root note root_id:{}", hex::encode(root_id));
             self.root_id_to_thread
                 .insert(root_id.to_owned(), Thread::new(vec![]));
-            return self.root_id_to_thread.get_mut(root_id).unwrap();
+            return ThreadResult::Fresh(self.root_id_to_thread.get_mut(root_id).unwrap());
         };
 
         // we don't have the thread, query for it!
@@ -172,7 +192,7 @@ impl Threads {
         debug!("found thread with {} notes", notes.len());
         self.root_id_to_thread
             .insert(root_id.to_owned(), Thread::new(notes));
-        self.root_id_to_thread.get_mut(root_id).unwrap()
+        ThreadResult::Fresh(self.root_id_to_thread.get_mut(root_id).unwrap())
     }
 
     //fn thread_by_id(&self, ndb: &Ndb, id: &[u8; 32]) -> &mut Thread {

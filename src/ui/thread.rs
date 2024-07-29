@@ -79,7 +79,11 @@ impl<'a> ThreadView<'a> {
                 }
 
                 let (len, list) = {
-                    let thread = self.app.threads.thread_mut(&self.app.ndb, &txn, root_id);
+                    let thread = self
+                        .app
+                        .threads
+                        .thread_mut(&self.app.ndb, &txn, root_id)
+                        .get_ptr();
 
                     let len = thread.view.notes.len();
                     (len, &mut thread.view.list)
@@ -92,7 +96,11 @@ impl<'a> ThreadView<'a> {
                         ui.spacing_mut().item_spacing.x = 4.0;
 
                         let note_key = {
-                            let thread = self.app.threads.thread_mut(&self.app.ndb, &txn, root_id);
+                            let thread = self
+                                .app
+                                .threads
+                                .thread_mut(&self.app.ndb, &txn, root_id)
+                                .get_ptr();
                             thread.view.notes[start_index].key
                         };
 

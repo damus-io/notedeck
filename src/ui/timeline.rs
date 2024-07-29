@@ -1,4 +1,4 @@
-use crate::{draft::DraftSource, ui, ui::note::PostAction, Damus};
+use crate::{actionbar::BarResult, draft::DraftSource, ui, ui::note::PostAction, Damus};
 use egui::containers::scroll_area::ScrollBarVisibility;
 use egui::{Direction, Layout};
 use egui_tabs::TabColor;
@@ -56,6 +56,7 @@ fn timeline_ui(ui: &mut egui::Ui, app: &mut Damus, timeline: usize, reversed: bo
         .show(ui, |ui| {
             let view = app.timelines[timeline].current_view();
             let len = view.notes.len();
+            let mut bar_result: Option<BarResult> = None;
             view.list
                 .clone()
                 .borrow_mut()
@@ -92,7 +93,10 @@ fn timeline_ui(ui: &mut egui::Ui, app: &mut Damus, timeline: usize, reversed: bo
                             .show(ui);
 
                         if let Some(action) = resp.action {
-                            action.execute(app, timeline, note.id(), &txn);
+                            let br = action.execute(app, timeline, note.id(), &txn);
+                            if br.is_some() {
+                                bar_result = br;
+                            }
                         } else if resp.response.clicked() {
                             debug!("clicked note");
                         }
@@ -103,6 +107,16 @@ fn timeline_ui(ui: &mut egui::Ui, app: &mut Damus, timeline: usize, reversed: bo
 
                     1
                 });
+
+            if let Some(br) = bar_result {
+                match br {
+                    // update the thread for next render if we have new notes
+                    BarResult::NewThreadNotes(notes) => {
+                        let view = app.timelines[timeline].current_view_mut();
+                        view.insert(&notes);
+                    }
+                }
+            }
         });
 }
 
