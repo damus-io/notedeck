@@ -1,4 +1,4 @@
-use crate::{timeline::TimelineSource, ui, Damus};
+use crate::{actionbar::BarResult, timeline::TimelineSource, ui, Damus};
 use nostrdb::{NoteKey, Transaction};
 use std::collections::HashSet;
 use tracing::warn;
@@ -18,8 +18,9 @@ impl<'a> ThreadView<'a> {
         }
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui) {
+    pub fn ui(&mut self, ui: &mut egui::Ui) -> Option<BarResult> {
         let txn = Transaction::new(&self.app.ndb).expect("txn");
+        let mut result: Option<BarResult> = None;
 
         let selected_note_key = if let Ok(key) = self
             .app
@@ -30,7 +31,7 @@ impl<'a> ThreadView<'a> {
             key
         } else {
             // TODO: render 404 ?
-            return;
+            return None;
         };
 
         let scroll_id = egui::Id::new((
@@ -118,7 +119,10 @@ impl<'a> ThreadView<'a> {
                                 .show(ui);
 
                             if let Some(action) = resp.action {
-                                action.execute(self.app, self.timeline, note.id(), &txn);
+                                let br = action.execute(self.app, self.timeline, note.id(), &txn);
+                                if br.is_some() {
+                                    result = br;
+                                }
                             }
                         });
 
@@ -128,5 +132,7 @@ impl<'a> ThreadView<'a> {
                         1
                     });
             });
+
+        result
     }
 }

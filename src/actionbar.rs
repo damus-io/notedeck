@@ -14,8 +14,13 @@ pub enum BarAction {
     OpenThread,
 }
 
+pub struct NewThreadNotes {
+    pub root_id: NoteId,
+    pub notes: Vec<NoteRef>,
+}
+
 pub enum BarResult {
-    NewThreadNotes(Vec<NoteRef>),
+    NewThreadNotes(NewThreadNotes),
 }
 
 /// open_thread is called when a note is selected and we need to navigate
@@ -44,13 +49,22 @@ fn open_thread(
     let (thread, result) = match thread_res {
         ThreadResult::Stale(thread) => {
             let notes = Thread::new_notes(&thread.view.notes, root_id, txn, &app.ndb);
+            let br = if notes.is_empty() {
+                None
+            } else {
+                Some(BarResult::new_thread_notes(
+                    notes,
+                    NoteId::new(root_id.to_owned()),
+                ))
+            };
+
             //
             // we can't insert and update the VirtualList now, because we
             // are already borrowing it mutably. Let's pass it as a
             // result instead
             //
             // thread.view.insert(&notes);
-            (thread, Some(BarResult::NewThreadNotes(notes)))
+            (thread, br)
         }
 
         ThreadResult::Fresh(thread) => (thread, None),
@@ -107,5 +121,23 @@ impl BarAction {
 
             BarAction::OpenThread => open_thread(app, txn, timeline, replying_to),
         }
+    }
+}
+
+impl BarResult {
+    pub fn new_thread_notes(notes: Vec<NoteRef>, root_id: NoteId) -> Self {
+        BarResult::NewThreadNotes(NewThreadNotes::new(notes, root_id))
+    }
+}
+
+impl NewThreadNotes {
+    pub fn new(notes: Vec<NoteRef>, root_id: NoteId) -> Self {
+        NewThreadNotes { notes, root_id }
+    }
+
+    /// Simple helper for processing a NewThreadNotes result. It simply
+    /// inserts/merges the notes into the thread cache
+    pub fn process(&self, thread: &mut Thread) {
+        thread.view.insert(&self.notes);
     }
 }

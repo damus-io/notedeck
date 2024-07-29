@@ -57,6 +57,13 @@ fn timeline_ui(ui: &mut egui::Ui, app: &mut Damus, timeline: usize, reversed: bo
             let view = app.timelines[timeline].current_view();
             let len = view.notes.len();
             let mut bar_result: Option<BarResult> = None;
+            let txn = if let Ok(txn) = Transaction::new(&app.ndb) {
+                txn
+            } else {
+                warn!("failed to create transaction");
+                return 0;
+            };
+
             view.list
                 .clone()
                 .borrow_mut()
@@ -71,13 +78,6 @@ fn timeline_ui(ui: &mut egui::Ui, app: &mut Damus, timeline: usize, reversed: bo
                     };
 
                     let note_key = app.timelines[timeline].current_view().notes[ind].key;
-
-                    let txn = if let Ok(txn) = Transaction::new(&app.ndb) {
-                        txn
-                    } else {
-                        warn!("failed to create transaction for {:?}", note_key);
-                        return 0;
-                    };
 
                     let note = if let Ok(note) = app.ndb.get_note_by_key(&txn, note_key) {
                         note
@@ -111,12 +111,17 @@ fn timeline_ui(ui: &mut egui::Ui, app: &mut Damus, timeline: usize, reversed: bo
             if let Some(br) = bar_result {
                 match br {
                     // update the thread for next render if we have new notes
-                    BarResult::NewThreadNotes(notes) => {
-                        let view = app.timelines[timeline].current_view_mut();
-                        view.insert(&notes);
+                    BarResult::NewThreadNotes(new_notes) => {
+                        let thread = app
+                            .threads
+                            .thread_mut(&app.ndb, &txn, new_notes.root_id.bytes())
+                            .get_ptr();
+                        new_notes.process(thread);
                     }
                 }
             }
+
+            1
         });
 }
 

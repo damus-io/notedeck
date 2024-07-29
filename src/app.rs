@@ -1,4 +1,5 @@
 use crate::account_manager::AccountManager;
+use crate::actionbar::BarResult;
 use crate::app_creation::setup_cc;
 use crate::app_style::user_requested_visuals_change;
 use crate::draft::Drafts;
@@ -885,8 +886,6 @@ fn thread_unsubscribe(app: &mut Damus, id: &[u8; 32]) {
         let txn = Transaction::new(&app.ndb).expect("txn");
         let root_id = crate::note::root_note_id_from_selected_id(app, &txn, id);
 
-        debug!("thread unsubbing from root_id {}", hex::encode(root_id));
-
         let thread = app.threads.thread_mut(&app.ndb, &txn, root_id).get_ptr();
         let unsub = thread.decrement_sub();
 
@@ -958,7 +957,17 @@ fn render_nav(routes: Vec<Route>, timeline_ind: usize, app: &mut Damus, ui: &mut
 
             Route::Thread(id) => {
                 let app = &mut app_ctx.borrow_mut();
-                ui::ThreadView::new(app, timeline_ind, id.bytes()).ui(ui);
+                let result = ui::ThreadView::new(app, timeline_ind, id.bytes()).ui(ui);
+
+                if let Some(bar_result) = result {
+                    match bar_result {
+                        BarResult::NewThreadNotes(new_notes) => {
+                            let thread = app.threads.thread_expected_mut(new_notes.root_id.bytes());
+                            new_notes.process(thread);
+                        }
+                    }
+                }
+
                 None
             }
 
