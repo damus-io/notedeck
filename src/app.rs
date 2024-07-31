@@ -465,7 +465,7 @@ fn setup_initial_nostrdb_subs(damus: &mut Damus) -> Result<()> {
         damus.timelines[i].subscription = Some(damus.ndb.subscribe(filters.clone())?);
         let txn = Transaction::new(&damus.ndb)?;
         debug!(
-            "querying sub {} {:?}",
+            "querying nostrdb sub {} {:?}",
             damus.timelines[i].subscription.as_ref().unwrap().id,
             damus.timelines[i].filter
         );
