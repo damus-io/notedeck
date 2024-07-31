@@ -96,13 +96,14 @@ impl<'a> ThreadView<'a> {
                         ui.spacing_mut().item_spacing.y = 0.0;
                         ui.spacing_mut().item_spacing.x = 4.0;
 
+                        let ind = len - 1 - start_index;
                         let note_key = {
                             let thread = self
                                 .app
                                 .threads
                                 .thread_mut(&self.app.ndb, &txn, root_id)
                                 .get_ptr();
-                            thread.view.notes[start_index].key
+                            thread.view.notes[ind].key
                         };
 
                         let note = if let Ok(note) = self.app.ndb.get_note_by_key(&txn, note_key) {

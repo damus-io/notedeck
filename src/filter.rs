@@ -29,43 +29,43 @@ pub fn convert_enostr_filter(filter: &enostr::Filter) -> nostrdb::Filter {
     let mut nfilter = nostrdb::Filter::new();
 
     if let Some(ref ids) = filter.ids {
-        nfilter.ids(ids.iter().map(|a| *a.bytes()).collect());
+        nfilter = nfilter.ids(ids.iter().map(|a| *a.bytes()).collect());
     }
 
     if let Some(ref authors) = filter.authors {
         let authors: Vec<[u8; 32]> = authors.iter().map(|a| *a.bytes()).collect();
-        nfilter.authors(authors);
+        nfilter = nfilter.authors(authors);
     }
 
     if let Some(ref kinds) = filter.kinds {
-        nfilter.kinds(kinds.clone());
+        nfilter = nfilter.kinds(kinds.clone());
     }
 
     // #e
     if let Some(ref events) = filter.events {
-        nfilter.events(events.iter().map(|a| *a.bytes()).collect());
+        nfilter = nfilter.events(events.iter().map(|a| *a.bytes()).collect());
     }
 
     // #p
     if let Some(ref pubkeys) = filter.pubkeys {
-        nfilter.pubkeys(pubkeys.iter().map(|a| *a.bytes()).collect());
+        nfilter = nfilter.pubkeys(pubkeys.iter().map(|a| *a.bytes()).collect());
     }
 
     // #t
     if let Some(ref hashtags) = filter.hashtags {
-        nfilter.tags(hashtags.clone(), 't');
+        nfilter = nfilter.tags(hashtags.clone(), 't');
     }
 
     if let Some(since) = filter.since {
-        nfilter.since(since);
+        nfilter = nfilter.since(since);
     }
 
     if let Some(until) = filter.until {
-        nfilter.until(until);
+        nfilter = nfilter.until(until);
     }
 
     if let Some(limit) = filter.limit {
-        nfilter.limit(limit.into());
+        nfilter = nfilter.limit(limit.into());
     }
 
     nfilter.build()

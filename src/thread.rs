@@ -1,7 +1,7 @@
 use crate::note::NoteRef;
 use crate::timeline::{TimelineTab, ViewFilter};
 use crate::Error;
-use nostrdb::{Filter, Ndb, Subscription, Transaction};
+use nostrdb::{Filter, FilterBuilder, Ndb, Subscription, Transaction};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use tracing::debug;
@@ -49,7 +49,7 @@ impl Thread {
         }
 
         let last_note = notes[0];
-        let filters = Thread::filters_since(root_id, last_note.created_at - 60);
+        let filters = Thread::filters_since(root_id, last_note.created_at + 1);
 
         if let Ok(results) = ndb.query(txn, filters, 1000) {
             debug!("got {} results from thread update", results.len());
@@ -64,7 +64,6 @@ impl Thread {
     }
 
     pub fn decrement_sub(&mut self) -> Result<DecrementResult, Error> {
-        debug!("decrementing sub {:?}", self.subscription().map(|s| s.id));
         self.subscribers -= 1;
 
         match self.subscribers.cmp(&0) {
@@ -88,29 +87,25 @@ impl Thread {
         &mut self.sub
     }
 
-    pub fn filters_since(root: &[u8; 32], since: u64) -> Vec<Filter> {
+    fn filters_raw(root: &[u8; 32]) -> Vec<FilterBuilder> {
         vec![
-            nostrdb::Filter::new()
-                .since(since)
-                .kinds(vec![1])
-                .event(root)
-                .build(),
-            nostrdb::Filter::new()
-                .kinds(vec![1])
-                .ids(vec![*root])
-                .since(since)
-                .build(),
+            nostrdb::Filter::new().kinds(vec![1]).event(root),
+            nostrdb::Filter::new().ids(vec![*root]).limit(1),
         ]
     }
 
+    pub fn filters_since(root: &[u8; 32], since: u64) -> Vec<Filter> {
+        Self::filters_raw(root)
+            .into_iter()
+            .map(|fb| fb.since(since).build())
+            .collect()
+    }
+
     pub fn filters(root: &[u8; 32]) -> Vec<Filter> {
-        vec![
-            nostrdb::Filter::new().kinds(vec![1]).event(root).build(),
-            nostrdb::Filter::new()
-                .kinds(vec![1])
-                .ids(vec![*root])
-                .build(),
-        ]
+        Self::filters_raw(root)
+            .into_iter()
+            .map(|mut fb| fb.build())
+            .collect()
     }
 }
 
@@ -162,17 +157,6 @@ impl Threads {
             return ThreadResult::Stale(self.root_id_to_thread.get_mut(root_id).unwrap());
         }
 
-        // looks like we don't have this thread yet, populate it
-        // TODO: should we do this in the caller?
-        let root = if let Ok(root) = ndb.get_note_by_id(txn, root_id) {
-            root
-        } else {
-            debug!("couldnt find root note root_id:{}", hex::encode(root_id));
-            self.root_id_to_thread
-                .insert(root_id.to_owned(), Thread::new(vec![]));
-            return ThreadResult::Fresh(self.root_id_to_thread.get_mut(root_id).unwrap());
-        };
-
         // we don't have the thread, query for it!
         let filters = Thread::filters(root_id);
 
@@ -184,7 +168,7 @@ impl Threads {
         } else {
             debug!(
                 "got no results from thread lookup for {}",
-                hex::encode(root.id())
+                hex::encode(root_id)
             );
             vec![]
         };
