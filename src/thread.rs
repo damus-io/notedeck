@@ -4,7 +4,7 @@ use crate::Error;
 use nostrdb::{Filter, FilterBuilder, Ndb, Subscription, Transaction};
 use std::cmp::Ordering;
 use std::collections::HashMap;
-use tracing::debug;
+use tracing::{debug, warn};
 
 #[derive(Default)]
 pub struct Thread {
@@ -173,7 +173,12 @@ impl Threads {
             vec![]
         };
 
-        debug!("found thread with {} notes", notes.len());
+        if notes.is_empty() {
+            warn!("thread query returned 0 notes? ")
+        } else {
+            debug!("found thread with {} notes", notes.len());
+        }
+
         self.root_id_to_thread
             .insert(root_id.to_owned(), Thread::new(notes));
         ThreadResult::Fresh(self.root_id_to_thread.get_mut(root_id).unwrap())
