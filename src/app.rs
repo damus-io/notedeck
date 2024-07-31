@@ -269,6 +269,14 @@ impl<'a> UnknownId<'a> {
     }
 }
 
+/// Look for missing notes in various parts of notes that we see:
+///
+/// - pubkeys and notes mentioned inside the note
+/// - notes being replied to
+///
+/// We return all of this in a HashSet so that we can fetch these from
+/// remote relays.
+///
 fn get_unknown_note_ids<'a>(
     ndb: &Ndb,
     _cached_note: &CachedNote,
