@@ -252,7 +252,7 @@ impl<'a> UnknownId<'a> {
 
 pub fn get_unknown_note_ids<'a>(
     ndb: &Ndb,
-    _cached_note: &CachedNote,
+    cached_note: &CachedNote,
     txn: &'a Transaction,
     note: &Note<'a>,
     note_key: NoteKey,
@@ -265,7 +265,6 @@ pub fn get_unknown_note_ids<'a>(
     }
 
     // pull notes that notes are replying to
-    /* TODO: FIX tags lifetime
     if cached_note.reply.root.is_some() {
         let note_reply = cached_note.reply.borrow(note.tags());
         if let Some(root) = note_reply.root() {
@@ -282,7 +281,6 @@ pub fn get_unknown_note_ids<'a>(
             }
         }
     }
-    */
 
     let blocks = ndb.get_blocks_by_key(txn, note_key)?;
     for block in blocks.iter(note) {
