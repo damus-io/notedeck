@@ -77,6 +77,7 @@ impl TimelineView {
         let selection = 0i32;
         let mut list = VirtualList::new();
         list.hide_on_resize(None);
+        list.over_scan(1000.0);
         let list = Rc::new(RefCell::new(list));
         let notes: Vec<NoteRef> = Vec::with_capacity(cap);
 
@@ -247,6 +248,7 @@ fn tabs_ui(ui: &mut egui::Ui) -> i32 {
 }
 
 pub fn timeline_view(ui: &mut egui::Ui, app: &mut Damus, timeline: usize) {
+    //
     //padding(4.0, ui, |ui| ui.heading("Notifications"));
     /*
     let font_id = egui::TextStyle::Body.resolve(ui.style());

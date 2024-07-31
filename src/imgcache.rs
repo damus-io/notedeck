@@ -42,7 +42,7 @@ impl ImageCache {
             data.as_raw(),
             data.size[0] as u32,
             data.size[1] as u32,
-            image::ColorType::Rgba8,
+            image::ColorType::Rgba8.into(),
         )?;
 
         Ok(())
