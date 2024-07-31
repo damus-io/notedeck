@@ -1,4 +1,5 @@
-use nostrdb::{NoteKey, QueryResult};
+use crate::Damus;
+use nostrdb::{NoteKey, QueryResult, Transaction};
 use std::cmp::Ordering;
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
@@ -34,4 +35,33 @@ impl PartialOrd for NoteRef {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
+}
+
+pub fn root_note_id_from_selected_id<'a>(
+    app: &mut Damus,
+    txn: &'a Transaction,
+    selected_note_id: &'a [u8; 32],
+) -> &'a [u8; 32] {
+    let selected_note_key = if let Ok(key) = app
+        .ndb
+        .get_notekey_by_id(txn, selected_note_id)
+        .map(NoteKey::new)
+    {
+        key
+    } else {
+        return selected_note_id;
+    };
+
+    let note = if let Ok(note) = app.ndb.get_note_by_key(txn, selected_note_key) {
+        note
+    } else {
+        return selected_note_id;
+    };
+
+    app.note_cache_mut()
+        .cached_note_or_insert(selected_note_key, &note)
+        .reply
+        .borrow(note.tags())
+        .root()
+        .map_or_else(|| selected_note_id, |nr| nr.id)
 }

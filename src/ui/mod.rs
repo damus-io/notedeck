@@ -10,6 +10,8 @@ pub mod preview;
 pub mod profile;
 pub mod relay;
 pub mod side_panel;
+pub mod thread;
+pub mod timeline;
 pub mod username;
 
 pub use account_management::AccountManagementView;
@@ -22,6 +24,8 @@ pub use preview::{Preview, PreviewApp, PreviewConfig};
 pub use profile::{profile_preview_controller, ProfilePic, ProfilePreview};
 pub use relay::RelayView;
 pub use side_panel::{DesktopSidePanel, SidePanelAction};
+pub use thread::ThreadView;
+pub use timeline::TimelineView;
 pub use username::Username;
 
 use egui::Margin;
