@@ -107,7 +107,7 @@ impl<'a> RelayMessage<'a> {
 
         // OK (NIP-20)
         // Relay response format: ["OK",<event_id>, <true|false>, <message>]
-        if &msg[0..=4] == "[\"OK\"," {
+        if &msg[0..=5] == "[\"OK\"," {
             // TODO: fix this
             let event_id = &msg[7..71];
             let booly = &msg[73..77];
