@@ -372,7 +372,7 @@ fn poll_notes_for_timeline<'a>(
         return Err(Error::NoActiveSubscription);
     };
 
-    let new_note_ids = damus.ndb.poll_for_notes(sub, 100);
+    let new_note_ids = damus.ndb.poll_for_notes(sub.id, 100);
     if new_note_ids.is_empty() {
         return Ok(());
     } else {
