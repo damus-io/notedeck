@@ -13,7 +13,7 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 use std::rc::Rc;
 
-use tracing::debug;
+use tracing::{debug, error};
 
 #[derive(Debug, Copy, Clone)]
 pub enum TimelineSource<'a> {
@@ -89,26 +89,25 @@ impl<'a> TimelineSource<'a> {
             debug!("{} new notes! {:?}", new_note_ids.len(), new_note_ids);
         }
 
-        let new_refs: Vec<(Note, NoteRef)> = new_note_ids
-            .iter()
-            .map(|key| {
-                let note = app.ndb.get_note_by_key(txn, *key).expect("no note??");
-                let cached_note = app
-                    .note_cache_mut()
-                    .cached_note_or_insert(*key, &note)
-                    .clone();
-                let _ = get_unknown_note_ids(&app.ndb, &cached_note, txn, &note, *key, ids);
+        let mut new_refs: Vec<(Note, NoteRef)> = Vec::with_capacity(new_note_ids.len());
 
-                let created_at = note.created_at();
-                (
-                    note,
-                    NoteRef {
-                        key: *key,
-                        created_at,
-                    },
-                )
-            })
-            .collect();
+        for key in new_note_ids {
+            let note = if let Ok(note) = app.ndb.get_note_by_key(txn, key) {
+                note
+            } else {
+                error!("hit race condition in poll_notes_into_view: https://github.com/damus-io/nostrdb/issues/35 note {:?} was not added to timeline", key);
+                continue;
+            };
+
+            let cached_note = app
+                .note_cache_mut()
+                .cached_note_or_insert(key, &note)
+                .clone();
+            let _ = get_unknown_note_ids(&app.ndb, &cached_note, txn, &note, key, ids);
+
+            let created_at = note.created_at();
+            new_refs.push((note, NoteRef { key, created_at }));
+        }
 
         // ViewFilter::NotesAndReplies
         {
