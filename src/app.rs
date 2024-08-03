@@ -804,7 +804,7 @@ impl Damus {
         let _ = std::fs::create_dir_all(imgcache_dir.clone());
 
         let mut config = Config::new();
-        config.set_ingester_threads(2);
+        config.set_ingester_threads(4);
 
         let mut account_manager = AccountManager::new(
             // TODO: should pull this from settings
