@@ -529,6 +529,7 @@ struct Args {
     is_mobile: Option<bool>,
     keys: Vec<Keypair>,
     light: bool,
+    dbpath: Option<String>,
 }
 
 fn parse_args(args: &[String]) -> Args {
@@ -538,6 +539,7 @@ fn parse_args(args: &[String]) -> Args {
         is_mobile: None,
         keys: vec![],
         light: false,
+        dbpath: None,
     };
 
     let mut i = 0;
@@ -584,6 +586,15 @@ fn parse_args(args: &[String]) -> Args {
             } else {
                 error!("failed to parse filter '{}'", filter);
             }
+        } else if arg == "--dbpath" {
+            i += 1;
+            let path = if let Some(next_arg) = args.get(i) {
+                next_arg
+            } else {
+                error!("dbpath argument missing?");
+                continue;
+            };
+            res.dbpath = Some(path.clone());
         } else if arg == "-r" || arg == "--relay" {
             i += 1;
             let relay = if let Some(next_arg) = args.get(i) {
@@ -659,6 +670,12 @@ impl Damus {
 
         setup_cc(cc, is_mobile, parsed_args.light);
 
+        let dbpath = parsed_args
+            .dbpath
+            .unwrap_or(data_path.as_ref().to_str().expect("db path ok").to_string());
+
+        let _ = std::fs::create_dir_all(dbpath.clone());
+
         let imgcache_dir = data_path.as_ref().join(ImageCache::rel_datadir());
         let _ = std::fs::create_dir_all(imgcache_dir.clone());
 
@@ -712,7 +729,7 @@ impl Damus {
             selected_timeline: 0,
             timelines: parsed_args.timelines,
             textmode: false,
-            ndb: Ndb::new(data_path.as_ref().to_str().expect("db path ok"), &config).expect("ndb"),
+            ndb: Ndb::new(&dbpath, &config).expect("ndb"),
             account_manager,
             //compose: "".to_string(),
             frame_history: FrameHistory::default(),
