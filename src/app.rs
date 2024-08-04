@@ -17,15 +17,14 @@ use crate::ui::{self, AccountSelectionWidget, DesktopGlobalPopup};
 use crate::ui::{DesktopSidePanel, RelayView, View};
 use crate::Result;
 use egui_nav::{Nav, NavAction};
-use enostr::{Keypair, RelayPool, SecretKey};
+use enostr::{ClientMessage, Keypair, RelayEvent, RelayMessage, RelayPool, SecretKey};
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use egui::{Context, Frame, Style};
 use egui_extras::{Size, StripBuilder};
 
-use enostr::{ClientMessage, Filter, Pubkey, RelayEvent, RelayMessage};
-use nostrdb::{BlockType, Config, Mention, Ndb, Note, NoteKey, Transaction};
+use nostrdb::{BlockType, Config, Filter, Mention, Ndb, Note, NoteKey, Transaction};
 
 use std::collections::HashSet;
 use std::hash::Hash;
@@ -102,23 +101,27 @@ fn send_initial_filters(damus: &mut Damus, relay_url: &str) {
         let relay = &mut relay.relay;
         if relay.url == relay_url {
             for timeline in &damus.timelines {
-                let mut filter = timeline.filter.clone();
-                for f in &mut filter {
+                let filter = timeline.filter.clone();
+                let new_filters = filter.into_iter().map(|f| {
                     // limit the size of remote filters
-                    let default_limit = enostr::Filter::default_remote_limit();
-                    let lim = f.limit.unwrap_or(default_limit);
+                    let default_limit = crate::filter::default_remote_limit();
+                    let mut lim = f.limit().unwrap_or(default_limit);
+                    let mut filter = f;
                     if lim > default_limit {
-                        f.limit = Some(default_limit);
+                        lim = default_limit;
+                        filter = filter.limit_mut(lim);
                     }
 
                     let notes = timeline.notes(ViewFilter::NotesAndReplies);
-                    if crate::filter::should_since_optimize(f.limit, notes.len()) {
-                        crate::filter::since_optimize_filter(f, notes);
+                    if crate::filter::should_since_optimize(lim, notes.len()) {
+                        filter = crate::filter::since_optimize_filter(filter, notes);
                     } else {
-                        warn!("Skipping since optimization for {:?}: number of local notes is less than limit, attempting to backfill.", f);
+                        warn!("Skipping since optimization for {:?}: number of local notes is less than limit, attempting to backfill.", filter);
                     }
-                }
-                relay.subscribe(format!("initial{}", c), filter);
+
+                    filter
+                }).collect();
+                relay.subscribe(format!("initial{}", c), new_filters);
                 c += 1;
             }
             return;
@@ -347,11 +350,7 @@ fn setup_profiling() {
 fn setup_initial_nostrdb_subs(damus: &mut Damus) -> Result<()> {
     let timelines = damus.timelines.len();
     for i in 0..timelines {
-        let filters: Vec<nostrdb::Filter> = damus.timelines[i]
-            .filter
-            .iter()
-            .map(crate::filter::convert_enostr_filter)
-            .collect();
+        let filters = damus.timelines[i].filter.clone();
         damus.timelines[i].subscription = Some(damus.ndb.subscribe(filters.clone())?);
         let txn = Transaction::new(&damus.ndb)?;
         debug!(
@@ -363,8 +362,8 @@ fn setup_initial_nostrdb_subs(damus: &mut Damus) -> Result<()> {
             &txn,
             filters,
             damus.timelines[i].filter[0]
-                .limit
-                .unwrap_or(enostr::Filter::default_limit()) as i32,
+                .limit()
+                .unwrap_or(crate::filter::default_limit()) as i32,
         )?;
 
         let filters = {
@@ -465,22 +464,16 @@ fn get_unknown_ids_filter(ids: &[UnknownId<'_>]) -> Option<Vec<Filter>> {
 
     let mut filters: Vec<Filter> = vec![];
 
-    let pks: Vec<Pubkey> = ids
-        .iter()
-        .flat_map(|id| id.is_pubkey().map(Pubkey::new))
-        .collect();
+    let pks: Vec<&[u8; 32]> = ids.iter().flat_map(|id| id.is_pubkey()).collect();
     if !pks.is_empty() {
-        let pk_filter = Filter::new().authors(pks).kinds(vec![0]);
+        let pk_filter = Filter::new().authors(pks).kinds([0]).build();
 
         filters.push(pk_filter);
     }
 
-    let note_ids: Vec<enostr::NoteId> = ids
-        .iter()
-        .flat_map(|id| id.is_id().map(|id| enostr::NoteId::new(*id)))
-        .collect();
+    let note_ids: Vec<&[u8; 32]> = ids.iter().flat_map(|id| id.is_id()).collect();
     if !note_ids.is_empty() {
-        filters.push(Filter::new().ids(note_ids));
+        filters.push(Filter::new().ids(note_ids).build());
     }
 
     Some(filters)
@@ -589,8 +582,8 @@ fn parse_args(args: &[String]) -> Args {
                 continue;
             };
 
-            if let Ok(filter) = serde_json::from_str(filter) {
-                res.timelines.push(Timeline::new(filter));
+            if let Ok(filter) = Filter::from_json(filter) {
+                res.timelines.push(Timeline::new(vec![filter]));
             } else {
                 error!("failed to parse filter '{}'", filter);
             }
@@ -628,8 +621,11 @@ fn parse_args(args: &[String]) -> Args {
                 continue;
             };
 
-            if let Ok(filter) = serde_json::from_slice(&data) {
-                res.timelines.push(Timeline::new(filter));
+            if let Some(filter) = std::str::from_utf8(&data)
+                .ok()
+                .and_then(|s| Filter::from_json(s).ok())
+            {
+                res.timelines.push(Timeline::new(vec![filter]));
             } else {
                 error!("failed to parse filter in '{}'", filter_file);
             }
@@ -639,8 +635,8 @@ fn parse_args(args: &[String]) -> Args {
     }
 
     if res.timelines.is_empty() {
-        let filter = serde_json::from_str(include_str!("../queries/timeline.json")).unwrap();
-        res.timelines.push(Timeline::new(filter));
+        let filter = Filter::from_json(include_str!("../queries/timeline.json")).unwrap();
+        res.timelines.push(Timeline::new(vec![filter]));
     }
 
     res
@@ -749,8 +745,8 @@ impl Damus {
 
     pub fn mock<P: AsRef<Path>>(data_path: P, is_mobile: bool) -> Self {
         let mut timelines: Vec<Timeline> = vec![];
-        let filter = serde_json::from_str(include_str!("../queries/global.json")).unwrap();
-        timelines.push(Timeline::new(filter));
+        let filter = Filter::from_json(include_str!("../queries/global.json")).unwrap();
+        timelines.push(Timeline::new(vec![filter]));
 
         let imgcache_dir = data_path.as_ref().join(ImageCache::rel_datadir());
         let _ = std::fs::create_dir_all(imgcache_dir.clone());

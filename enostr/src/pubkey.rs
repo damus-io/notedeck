@@ -1,9 +1,9 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::Error;
-use log::debug;
 use nostr::bech32::Hrp;
 use std::fmt;
+use tracing::debug;
 
 #[derive(Debug, Eq, PartialEq, Clone, Hash)]
 pub struct Pubkey([u8; 32]);

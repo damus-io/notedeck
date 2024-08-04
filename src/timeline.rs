@@ -7,8 +7,7 @@ use crate::{Damus, Result};
 use crate::route::Route;
 
 use egui_virtual_list::VirtualList;
-use enostr::Filter;
-use nostrdb::{Note, Subscription, Transaction};
+use nostrdb::{Filter, Note, Subscription, Transaction};
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::rc::Rc;

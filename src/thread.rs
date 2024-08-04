@@ -10,6 +10,7 @@ use tracing::{debug, warn};
 pub struct Thread {
     pub view: TimelineTab,
     sub: Option<Subscription>,
+    remote_sub: Option<String>,
     pub subscribers: i32,
 }
 
@@ -28,11 +29,13 @@ impl Thread {
         let mut view = TimelineTab::new_with_capacity(ViewFilter::NotesAndReplies, cap);
         view.notes = notes;
         let sub: Option<Subscription> = None;
+        let remote_sub: Option<String> = None;
         let subscribers: i32 = 0;
 
         Thread {
             view,
             sub,
+            remote_sub,
             subscribers,
         }
     }
@@ -83,14 +86,22 @@ impl Thread {
         self.sub.as_ref()
     }
 
+    pub fn remote_subscription(&self) -> Option<&String> {
+        self.remote_sub.as_ref()
+    }
+
+    pub fn remote_subscription_mut(&mut self) -> &mut Option<String> {
+        &mut self.remote_sub
+    }
+
     pub fn subscription_mut(&mut self) -> &mut Option<Subscription> {
         &mut self.sub
     }
 
     fn filters_raw(root: &[u8; 32]) -> Vec<FilterBuilder> {
         vec![
-            nostrdb::Filter::new().kinds(vec![1]).event(root),
-            nostrdb::Filter::new().ids(vec![*root]).limit(1),
+            nostrdb::Filter::new().kinds([1]).event(root),
+            nostrdb::Filter::new().ids([root]).limit(1),
         ]
     }
 

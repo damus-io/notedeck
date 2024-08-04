@@ -14,6 +14,7 @@ pub enum Error {
     InvalidPublicKey,
     // Secp(secp256k1::Error),
     Json(serde_json::Error),
+    Nostrdb(nostrdb::Error),
     Generic(String),
 }
 
@@ -29,6 +30,7 @@ impl std::cmp::PartialEq for Error {
             // This is slightly wrong but whatevs
             (Error::Json(..), Error::Json(..)) => true,
             (Error::Generic(left), Error::Generic(right)) => left == right,
+            (Error::Nostrdb(left), Error::Nostrdb(right)) => left == right,
             //(Error::Secp(left), Error::Secp(right)) => left == right,
             _ => false,
         }
@@ -47,6 +49,7 @@ impl fmt::Display for Error {
             Self::InvalidPublicKey => write!(f, "invalid public key"),
             //Self::Secp(e) => write!(f, "{e}"),
             Self::Json(e) => write!(f, "{e}"),
+            Self::Nostrdb(e) => write!(f, "{e}"),
             Self::Generic(e) => write!(f, "{e}"),
         }
     }
@@ -83,5 +86,11 @@ impl From<secp256k1::Error> for Error {
 impl From<serde_json::Error> for Error {
     fn from(e: serde_json::Error) -> Self {
         Error::Json(e)
+    }
+}
+
+impl From<nostrdb::Error> for Error {
+    fn from(e: nostrdb::Error) -> Self {
+        Error::Nostrdb(e)
     }
 }
