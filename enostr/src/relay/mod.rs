@@ -1,7 +1,8 @@
 use ewebsock::{WsMessage, WsReceiver, WsSender};
 
-use crate::{ClientMessage, Filter, Result};
-use log::info;
+use crate::{ClientMessage, Result};
+use log::{error, info};
+use nostrdb::Filter;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 
@@ -60,7 +61,15 @@ impl Relay {
     }
 
     pub fn send(&mut self, msg: &ClientMessage) {
-        let txt = WsMessage::Text(msg.to_json());
+        let json = match msg.to_json() {
+            Ok(json) => json,
+            Err(e) => {
+                error!("error serializing json for filter: {e}");
+                return;
+            }
+        };
+
+        let txt = WsMessage::Text(json);
         self.sender.send(txt);
     }
 

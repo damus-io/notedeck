@@ -24,8 +24,8 @@ use std::rc::Rc;
 use egui::{Context, Frame, Style};
 use egui_extras::{Size, StripBuilder};
 
-use enostr::{ClientMessage, Filter, Pubkey, RelayEvent, RelayMessage};
-use nostrdb::{BlockType, Config, Mention, Ndb, Note, NoteKey, Transaction};
+use enostr::{ClientMessage, Pubkey, RelayEvent, RelayMessage};
+use nostrdb::{BlockType, Config, Filter, Mention, Ndb, Note, NoteKey, Transaction};
 
 use std::collections::HashSet;
 use std::hash::Hash;
@@ -339,11 +339,7 @@ fn setup_profiling() {
 fn setup_initial_nostrdb_subs(damus: &mut Damus) -> Result<()> {
     let timelines = damus.timelines.len();
     for i in 0..timelines {
-        let filters: Vec<nostrdb::Filter> = damus.timelines[i]
-            .filter
-            .iter()
-            .map(crate::filter::convert_enostr_filter)
-            .collect();
+        let filters = damus.timelines[i].filter;
         damus.timelines[i].subscription = Some(damus.ndb.subscribe(filters.clone())?);
         let txn = Transaction::new(&damus.ndb)?;
         debug!(

@@ -1,5 +1,6 @@
 use crate::relay::{Relay, RelayStatus};
 use crate::{ClientMessage, Result};
+use nostrdb::Filter;
 
 use std::time::{Duration, Instant};
 
@@ -68,6 +69,12 @@ impl RelayPool {
     pub fn send(&mut self, cmd: &ClientMessage) {
         for relay in &mut self.relays {
             relay.relay.send(cmd);
+        }
+    }
+
+    pub fn subscribe(&mut self, subid: String, filter: Vec<Filter>) {
+        for relay in &mut self.relays {
+            relay.relay.subscribe(subid.clone(), filter.clone());
         }
     }
 
