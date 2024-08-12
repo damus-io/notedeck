@@ -109,12 +109,20 @@ impl<'a> TimelineSource<'a> {
             new_refs.push((note, NoteRef { key, created_at }));
         }
 
+        // We're assuming reverse-chronological here (timelines). This
+        // flag ensures we trigger the items_inserted_at_start
+        // optimization in VirtualList. We need this flag because we can
+        // insert notes into chronological order sometimes, and this
+        // optimization doesn't make sense in those situations.
+        let reversed = false;
+
         // ViewFilter::NotesAndReplies
         {
             let refs: Vec<NoteRef> = new_refs.iter().map(|(_note, nr)| *nr).collect();
 
+            let reversed = false;
             self.view(app, txn, ViewFilter::NotesAndReplies)
-                .insert(&refs);
+                .insert(&refs, reversed);
         }
 
         //
@@ -133,7 +141,7 @@ impl<'a> TimelineSource<'a> {
             }
 
             self.view(app, txn, ViewFilter::Notes)
-                .insert(&filtered_refs);
+                .insert(&filtered_refs, reversed);
         }
 
         Ok(())
@@ -211,7 +219,7 @@ impl TimelineTab {
         }
     }
 
-    pub fn insert(&mut self, new_refs: &[NoteRef]) {
+    pub fn insert(&mut self, new_refs: &[NoteRef], reversed: bool) {
         if new_refs.is_empty() {
             return;
         }
@@ -228,7 +236,14 @@ impl TimelineTab {
             match merge_kind {
                 // TODO: update egui_virtual_list to support spliced inserts
                 MergeKind::Spliced => list.reset(),
-                MergeKind::FrontInsert => list.items_inserted_at_start(new_items),
+                MergeKind::FrontInsert => {
+                    // only run this logic if we're reverse-chronological
+                    // reversed in this case means chronological, since the
+                    // default is reverse-chronological. yeah it's confusing.
+                    if !reversed {
+                        list.items_inserted_at_start(new_items);
+                    }
+                }
             }
         }
     }

@@ -138,6 +138,8 @@ impl NewThreadNotes {
     /// Simple helper for processing a NewThreadNotes result. It simply
     /// inserts/merges the notes into the thread cache
     pub fn process(&self, thread: &mut Thread) {
-        thread.view.insert(&self.notes);
+        // threads are chronological, ie reversed from reverse-chronological, the default.
+        let reversed = true;
+        thread.view.insert(&self.notes, reversed);
     }
 }

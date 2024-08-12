@@ -33,11 +33,17 @@ fn reply_desc(ui: &mut egui::Ui, txn: &Transaction, note_reply: &NoteReply, app:
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
 
-    ui.add(Label::new(
-        RichText::new("replying to")
-            .size(10.0)
-            .color(colors::GRAY_SECONDARY),
-    ));
+    let size = 10.0;
+    let selectable = false;
+
+    ui.add(
+        Label::new(
+            RichText::new("replying to")
+                .size(size)
+                .color(colors::GRAY_SECONDARY),
+        )
+        .selectable(selectable),
+    );
 
     let reply = if let Some(reply) = note_reply.reply() {
         reply
@@ -48,55 +54,91 @@ fn reply_desc(ui: &mut egui::Ui, txn: &Transaction, note_reply: &NoteReply, app:
     let reply_note = if let Ok(reply_note) = app.ndb.get_note_by_id(txn, reply.id) {
         reply_note
     } else {
-        ui.add(Label::new(
-            RichText::new("a note")
-                .size(10.0)
-                .color(colors::GRAY_SECONDARY),
-        ));
+        ui.add(
+            Label::new(
+                RichText::new("a note")
+                    .size(size)
+                    .color(colors::GRAY_SECONDARY),
+            )
+            .selectable(selectable),
+        );
         return;
     };
 
     if note_reply.is_reply_to_root() {
         // We're replying to the root, let's show this
-        ui.add(ui::Mention::new(app, txn, reply_note.pubkey()).size(10.0));
-        ui.add(Label::new(
-            RichText::new("'s note")
-                .size(10.0)
-                .color(colors::GRAY_SECONDARY),
-        ));
+        ui.add(
+            ui::Mention::new(app, txn, reply_note.pubkey())
+                .size(size)
+                .selectable(selectable),
+        );
+        ui.add(
+            Label::new(
+                RichText::new("'s note")
+                    .size(size)
+                    .color(colors::GRAY_SECONDARY),
+            )
+            .selectable(selectable),
+        );
     } else if let Some(root) = note_reply.root() {
         // replying to another post in a thread, not the root
 
         if let Ok(root_note) = app.ndb.get_note_by_id(txn, root.id) {
             if root_note.pubkey() == reply_note.pubkey() {
                 // simply "replying to bob's note" when replying to bob in his thread
-                ui.add(ui::Mention::new(app, txn, reply_note.pubkey()).size(10.0));
-                ui.add(Label::new(
-                    RichText::new("'s note")
-                        .size(10.0)
-                        .color(colors::GRAY_SECONDARY),
-                ));
+                ui.add(
+                    ui::Mention::new(app, txn, reply_note.pubkey())
+                        .size(size)
+                        .selectable(selectable),
+                );
+                ui.add(
+                    Label::new(
+                        RichText::new("'s note")
+                            .size(size)
+                            .color(colors::GRAY_SECONDARY),
+                    )
+                    .selectable(selectable),
+                );
             } else {
                 // replying to bob in alice's thread
 
-                ui.add(ui::Mention::new(app, txn, reply_note.pubkey()).size(10.0));
-                ui.add(Label::new(
-                    RichText::new("in").size(10.0).color(colors::GRAY_SECONDARY),
-                ));
-                ui.add(ui::Mention::new(app, txn, root_note.pubkey()).size(10.0));
-                ui.add(Label::new(
-                    RichText::new("'s thread")
-                        .size(10.0)
-                        .color(colors::GRAY_SECONDARY),
-                ));
+                ui.add(
+                    ui::Mention::new(app, txn, reply_note.pubkey())
+                        .size(size)
+                        .selectable(selectable),
+                );
+                ui.add(
+                    Label::new(RichText::new("in").size(size).color(colors::GRAY_SECONDARY))
+                        .selectable(selectable),
+                );
+                ui.add(
+                    ui::Mention::new(app, txn, root_note.pubkey())
+                        .size(size)
+                        .selectable(selectable),
+                );
+                ui.add(
+                    Label::new(
+                        RichText::new("'s thread")
+                            .size(size)
+                            .color(colors::GRAY_SECONDARY),
+                    )
+                    .selectable(selectable),
+                );
             }
         } else {
-            ui.add(ui::Mention::new(app, txn, reply_note.pubkey()).size(10.0));
-            ui.add(Label::new(
-                RichText::new("in someone's thread")
-                    .size(10.0)
-                    .color(colors::GRAY_SECONDARY),
-            ));
+            ui.add(
+                ui::Mention::new(app, txn, reply_note.pubkey())
+                    .size(size)
+                    .selectable(selectable),
+            );
+            ui.add(
+                Label::new(
+                    RichText::new("in someone's thread")
+                        .size(size)
+                        .color(colors::GRAY_SECONDARY),
+                )
+                .selectable(selectable),
+            );
         }
     }
 }
@@ -124,6 +166,11 @@ impl<'a> NoteView<'a> {
 
     pub fn note_previews(mut self, enable: bool) -> Self {
         self.options_mut().set_note_previews(enable);
+        self
+    }
+
+    pub fn selectable_text(mut self, enable: bool) -> Self {
+        self.options_mut().set_selectable_text(enable);
         self
     }
 

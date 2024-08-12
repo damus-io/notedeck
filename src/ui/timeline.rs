@@ -90,6 +90,7 @@ fn timeline_ui(ui: &mut egui::Ui, app: &mut Damus, timeline: usize, reversed: bo
                         let textmode = app.textmode;
                         let resp = ui::NoteView::new(app, &note)
                             .note_previews(!textmode)
+                            .selectable_text(false)
                             .show(ui);
 
                         if let Some(action) = resp.action {
