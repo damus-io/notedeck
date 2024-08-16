@@ -110,6 +110,7 @@ fn render_note_contents(
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
 
+    let selectable = options.has_selectable_text();
     let images: Vec<String> = vec![];
     let mut inline_note: Option<(&[u8; 32], &str)> = None;
 
@@ -173,7 +174,7 @@ fn render_note_contents(
                 BlockType::Text => {
                     #[cfg(feature = "profiling")]
                     puffin::profile_scope!("text contents");
-                    ui.label(block.as_str());
+                    ui.add(egui::Label::new(block.as_str()).selectable(selectable));
                 }
 
                 _ => {

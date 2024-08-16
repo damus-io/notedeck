@@ -1,8 +1,41 @@
 use std::{fmt, io};
 
+#[derive(Debug, Eq, PartialEq, Copy, Clone)]
+pub enum SubscriptionError {
+    //#[error("No active subscriptions")]
+    NoActive,
+
+    /// When a timeline has an unexpected number
+    /// of active subscriptions. Should only happen if there
+    /// is a bug in notedeck
+    //#[error("Unexpected subscription count")]
+    UnexpectedSubscriptionCount(i32),
+}
+
+impl Error {
+    pub fn unexpected_sub_count(c: i32) -> Self {
+        Error::SubscriptionError(SubscriptionError::UnexpectedSubscriptionCount(c))
+    }
+
+    pub fn no_active_sub() -> Self {
+        Error::SubscriptionError(SubscriptionError::NoActive)
+    }
+}
+
+impl fmt::Display for SubscriptionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoActive => write!(f, "No active subscriptions"),
+            Self::UnexpectedSubscriptionCount(c) => {
+                write!(f, "Unexpected subscription count: {}", c)
+            }
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum Error {
-    NoActiveSubscription,
+    SubscriptionError(SubscriptionError),
     LoadFailed,
     Io(io::Error),
     Nostr(enostr::Error),
@@ -14,8 +47,8 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::NoActiveSubscription => {
-                write!(f, "subscription not active in timeline")
+            Self::SubscriptionError(sub_err) => {
+                write!(f, "{sub_err}")
             }
             Self::LoadFailed => {
                 write!(f, "load failed")

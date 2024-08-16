@@ -27,6 +27,7 @@ pub mod relay_pool_manager;
 mod result;
 mod route;
 mod test_data;
+mod thread;
 mod time;
 mod timecache;
 mod timeline;

@@ -5,13 +5,26 @@ pub struct Mention<'a> {
     app: &'a mut Damus,
     txn: &'a Transaction,
     pk: &'a [u8; 32],
+    selectable: bool,
     size: f32,
 }
 
 impl<'a> Mention<'a> {
     pub fn new(app: &'a mut Damus, txn: &'a Transaction, pk: &'a [u8; 32]) -> Self {
         let size = 16.0;
-        Mention { app, txn, pk, size }
+        let selectable = true;
+        Mention {
+            app,
+            txn,
+            pk,
+            selectable,
+            size,
+        }
+    }
+
+    pub fn selectable(mut self, selectable: bool) -> Self {
+        self.selectable = selectable;
+        self
     }
 
     pub fn size(mut self, size: f32) -> Self {
@@ -22,7 +35,7 @@ impl<'a> Mention<'a> {
 
 impl<'a> egui::Widget for Mention<'a> {
     fn ui(self, ui: &mut egui::Ui) -> egui::Response {
-        mention_ui(self.app, self.txn, self.pk, ui, self.size)
+        mention_ui(self.app, self.txn, self.pk, ui, self.size, self.selectable)
     }
 }
 
@@ -32,6 +45,7 @@ fn mention_ui(
     pk: &[u8; 32],
     ui: &mut egui::Ui,
     size: f32,
+    selectable: bool
 ) -> egui::Response {
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
@@ -46,9 +60,10 @@ fn mention_ui(
                 "??".to_string()
             };
 
-        let resp = ui.add(egui::Label::new(
-            egui::RichText::new(name).color(colors::PURPLE).size(size),
-        ));
+        let resp = ui.add(
+            egui::Label::new(egui::RichText::new(name).color(colors::PURPLE).size(size))
+                .selectable(selectable),
+        );
 
         if let Some(rec) = profile.as_ref() {
             resp.on_hover_ui_at_pointer(|ui| {
