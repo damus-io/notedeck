@@ -86,8 +86,8 @@ impl Thread {
         self.sub.as_ref()
     }
 
-    pub fn remote_subscription(&self) -> Option<&String> {
-        self.remote_sub.as_ref()
+    pub fn remote_subscription(&self) -> &Option<String> {
+        &self.remote_sub
     }
 
     pub fn remote_subscription_mut(&mut self) -> &mut Option<String> {

@@ -901,18 +901,21 @@ fn render_panel(ctx: &egui::Context, app: &mut Damus, timeline_ind: usize) {
 
 /// Local thread unsubscribe
 fn thread_unsubscribe(app: &mut Damus, id: &[u8; 32]) {
-    let unsubscribe = {
+    let (unsubscribe, remote_subid) = {
         let txn = Transaction::new(&app.ndb).expect("txn");
         let root_id = crate::note::root_note_id_from_selected_id(app, &txn, id);
 
         let thread = app.threads.thread_mut(&app.ndb, &txn, root_id).get_ptr();
         let unsub = thread.decrement_sub();
 
+        let mut remote_subid: Option<String> = None;
         if let Ok(DecrementResult::LastSubscriber(_subid)) = unsub {
             *thread.subscription_mut() = None;
+            remote_subid = thread.remote_subscription().to_owned();
+            *thread.remote_subscription_mut() = None;
         }
 
-        unsub
+        (unsub, remote_subid)
     };
 
     match unsubscribe {
@@ -925,6 +928,11 @@ fn thread_unsubscribe(app: &mut Damus, id: &[u8; 32]) {
                     sub_id,
                     app.ndb.subscription_count()
                 );
+            }
+
+            // unsub from remote
+            if let Some(subid) = remote_subid {
+                app.pool.unsubscribe(subid);
             }
         }
 

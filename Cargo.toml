@@ -12,8 +12,8 @@ default-run = "notedeck"
 crate-type = ["lib", "cdylib"]
 
 [workspace.dependencies]
-#nostrdb = { git = "https://github.com/damus-io/nostrdb-rs", rev = "04e5917b44b0112ecfd0eb93e8a1e2c81fce1d75" }
-nostrdb = { path = "/Users/jb55/dev/github/damus-io/nostrdb-rs" }
+nostrdb = { git = "https://github.com/damus-io/nostrdb-rs", rev = "385a1af481ff8c08949a885248544483a52acbeb" }
+#nostrdb = { path = "/Users/jb55/dev/github/damus-io/nostrdb-rs" }
 #nostrdb = "0.3.4"
 
 [dependencies]
