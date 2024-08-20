@@ -47,7 +47,7 @@ impl ClientMessage {
                     format!("[\"REQ\",\"{}\",{}]", sub_id, filters_json_str)
                 } else {
                     let filters_json_str: Result<Vec<String>, Error> = filters
-                        .into_iter()
+                        .iter()
                         .map(|f| f.json().map_err(Into::<Error>::into))
                         .collect();
                     format!("[\"REQ\",\"{}\",{}]", sub_id, filters_json_str?.join(","))

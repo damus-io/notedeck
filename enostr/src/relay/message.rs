@@ -39,7 +39,7 @@ impl<'a> From<&'a WsEvent> for RelayEvent<'a> {
 impl<'a> From<&'a WsMessage> for RelayEvent<'a> {
     fn from(wsmsg: &'a WsMessage) -> RelayEvent<'a> {
         match wsmsg {
-            WsMessage::Text(ref s) => match RelayMessage::from_json(&s).map(RelayEvent::Message) {
+            WsMessage::Text(s) => match RelayMessage::from_json(s).map(RelayEvent::Message) {
                 Ok(msg) => msg,
                 Err(err) => RelayEvent::Error(err),
             },
@@ -59,9 +59,9 @@ impl<'a> RelayMessage<'a> {
 
     pub fn ok(event_id: &'a str, status: bool, message: &'a str) -> Self {
         RelayMessage::OK(CommandResult {
-            event_id: event_id,
+            event_id,
             status,
-            message: message,
+            message,
         })
     }
 
@@ -78,7 +78,7 @@ impl<'a> RelayMessage<'a> {
         // Relay response format: ["NOTICE", <message>]
         if &msg[0..=9] == "[\"NOTICE\"," {
             // TODO: there could be more than one space, whatever
-            let start = if msg.bytes().nth(10) == Some(b' ') {
+            let start = if msg.as_bytes().get(10).copied() == Some(b' ') {
                 12
             } else {
                 11
@@ -96,7 +96,7 @@ impl<'a> RelayMessage<'a> {
         // EOSE (NIP-15)
         // Relay response format: ["EOSE", <subscription_id>]
         if &msg[0..=7] == "[\"EOSE\"," {
-            let start = if msg.bytes().nth(8) == Some(b' ') {
+            let start = if msg.as_bytes().get(8).copied() == Some(b' ') {
                 10
             } else {
                 9

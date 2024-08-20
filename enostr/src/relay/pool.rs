@@ -26,7 +26,7 @@ pub struct PoolRelay {
 impl PoolRelay {
     pub fn new(relay: Relay) -> PoolRelay {
         PoolRelay {
-            relay: relay,
+            relay,
             last_ping: Instant::now(),
             last_connect_attempt: Instant::now(),
             retry_connect_after: Self::initial_reconnect_duration(),
@@ -41,6 +41,12 @@ impl PoolRelay {
 pub struct RelayPool {
     pub relays: Vec<PoolRelay>,
     pub ping_rate: Duration,
+}
+
+impl Default for RelayPool {
+    fn default() -> Self {
+        RelayPool::new()
+    }
 }
 
 impl RelayPool {
@@ -59,11 +65,12 @@ impl RelayPool {
 
     pub fn has(&self, url: &str) -> bool {
         for relay in &self.relays {
-            if &relay.relay.url == url {
+            if relay.relay.url == url {
                 return true;
             }
         }
-        return false;
+
+        false
     }
 
     pub fn send(&mut self, cmd: &ClientMessage) {
@@ -157,7 +164,7 @@ impl RelayPool {
     /// function searches each relay in the list in order, attempting to
     /// receive a message from each. If a message is received, return it.
     /// If no message is received from any relays, None is returned.
-    pub fn try_recv<'a>(&'a mut self) -> Option<PoolEvent<'a>> {
+    pub fn try_recv(&mut self) -> Option<PoolEvent<'_>> {
         for relay in &mut self.relays {
             let relay = &mut relay.relay;
             if let Some(event) = relay.receiver.try_recv() {
@@ -176,12 +183,9 @@ impl RelayPool {
                         // let's just handle pongs here.
                         // We only need to do this natively.
                         #[cfg(not(target_arch = "wasm32"))]
-                        match &ev {
-                            WsMessage::Ping(ref bs) => {
-                                debug!("pong {}", &relay.url);
-                                relay.sender.send(WsMessage::Pong(bs.to_owned()));
-                            }
-                            _ => {}
+                        if let WsMessage::Ping(ref bs) = ev {
+                            debug!("pong {}", &relay.url);
+                            relay.sender.send(WsMessage::Pong(bs.to_owned()));
                         }
                     }
                 }

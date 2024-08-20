@@ -62,7 +62,7 @@ impl FullKeypair {
         let secret_key = nostr::SecretKey::from(*secret_key);
         FullKeypair {
             pubkey: Pubkey::new(&xopk.serialize()),
-            secret_key: SecretKey::from(secret_key),
+            secret_key,
         }
     }
 
@@ -90,11 +90,7 @@ impl std::fmt::Display for Keypair {
 
 impl std::fmt::Display for FullKeypair {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "Keypair:\n\tpublic: {}\n\tsecret: {}",
-            self.pubkey, "<hidden>"
-        )
+        write!(f, "Keypair:\n\tpublic: {}\n\tsecret: <hidden>", self.pubkey)
     }
 }
 
@@ -108,14 +104,9 @@ impl SerializableKeypair {
     pub fn from_keypair(kp: &Keypair, pass: &str, log_n: u8) -> Self {
         Self {
             pubkey: kp.pubkey.clone(),
-            encrypted_secret_key: kp
-                .secret_key
-                .clone()
-                .map(|s| {
-                    EncryptedSecretKey::new(&s, pass, log_n, nostr::nips::nip49::KeySecurity::Weak)
-                        .ok()
-                })
-                .flatten(),
+            encrypted_secret_key: kp.secret_key.clone().and_then(|s| {
+                EncryptedSecretKey::new(&s, pass, log_n, nostr::nips::nip49::KeySecurity::Weak).ok()
+            }),
         }
     }
 
@@ -123,8 +114,7 @@ impl SerializableKeypair {
         Keypair::new(
             self.pubkey.clone(),
             self.encrypted_secret_key
-                .map(|e| e.to_secret_key(pass).ok())
-                .flatten(),
+                .and_then(|e| e.to_secret_key(pass).ok()),
         )
     }
 }

@@ -45,7 +45,7 @@ fn mention_ui(
     pk: &[u8; 32],
     ui: &mut egui::Ui,
     size: f32,
-    selectable: bool
+    selectable: bool,
 ) -> egui::Response {
     #[cfg(feature = "profiling")]
     puffin::profile_function!();

@@ -1,5 +1,4 @@
 //use nostr::prelude::secp256k1;
-use serde_json;
 use std::array::TryFromSliceError;
 use std::fmt;
 

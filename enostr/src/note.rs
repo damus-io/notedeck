@@ -66,7 +66,7 @@ impl Note {
     }
 
     pub fn verify(&self) -> Result<Self, Error> {
-        return Err(Error::InvalidSignature);
+        Err(Error::InvalidSignature)
     }
 
     /// This is just for serde sanity checking
