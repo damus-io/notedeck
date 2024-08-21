@@ -45,6 +45,7 @@ pub struct Damus {
     note_cache: NoteCache,
     pub pool: RelayPool,
     is_mobile: bool,
+    pub since_optimize: bool,
 
     /// global navigation for account management popups, etc.
     pub global_nav: Vec<Route>,
@@ -97,6 +98,7 @@ fn send_initial_filters(damus: &mut Damus, relay_url: &str) {
     info!("Sending initial filters to {}", relay_url);
     let mut c: u32 = 1;
 
+    let can_since_optimize = damus.since_optimize;
     for relay in &mut damus.pool.relays {
         let relay = &mut relay.relay;
         if relay.url == relay_url {
@@ -113,7 +115,7 @@ fn send_initial_filters(damus: &mut Damus, relay_url: &str) {
                     }
 
                     let notes = timeline.notes(ViewFilter::NotesAndReplies);
-                    if crate::filter::should_since_optimize(lim, notes.len()) {
+                    if can_since_optimize && crate::filter::should_since_optimize(lim, notes.len()) {
                         filter = crate::filter::since_optimize_filter(filter, notes);
                     } else {
                         warn!("Skipping since optimization for {:?}: number of local notes is less than limit, attempting to backfill.", filter);
@@ -529,6 +531,7 @@ struct Args {
     relays: Vec<String>,
     is_mobile: Option<bool>,
     keys: Vec<Keypair>,
+    since_optimize: bool,
     light: bool,
     dbpath: Option<String>,
 }
@@ -540,6 +543,7 @@ fn parse_args(args: &[String]) -> Args {
         is_mobile: None,
         keys: vec![],
         light: false,
+        since_optimize: true,
         dbpath: None,
     };
 
@@ -573,6 +577,8 @@ fn parse_args(args: &[String]) -> Args {
                     arg
                 );
             }
+        } else if arg == "--no-since-optimize" {
+            res.since_optimize = false;
         } else if arg == "--filter" {
             i += 1;
             let filter = if let Some(next_arg) = args.get(i) {
@@ -725,6 +731,7 @@ impl Damus {
         Self {
             pool,
             is_mobile,
+            since_optimize: parsed_args.since_optimize,
             threads: Threads::default(),
             drafts: Drafts::default(),
             state: DamusState::Initializing,
@@ -755,6 +762,7 @@ impl Damus {
         config.set_ingester_threads(2);
         Self {
             is_mobile,
+            since_optimize: true,
             threads: Threads::default(),
             drafts: Drafts::default(),
             state: DamusState::Initializing,
