@@ -11,11 +11,6 @@ default-run = "notedeck"
 [lib]
 crate-type = ["lib", "cdylib"]
 
-[workspace.dependencies]
-nostrdb = { git = "https://github.com/damus-io/nostrdb-rs", rev = "4c89dcbca13168758eb41752225b4e486dbc9d20" }
-#nostrdb = { path = "/Users/jb55/dev/github/damus-io/nostrdb-rs" }
-#nostrdb = "0.3.4"
-
 [dependencies]
 #egui-android = { git = "https://github.com/jb55/egui-android.git" }
 egui = { git = "https://github.com/emilk/egui", rev = "fcb7764e48ce00f8f8e58da10f937410d65b0bfb" }
@@ -33,6 +28,9 @@ serde_derive = "1"
 serde = { version = "1", features = ["derive"] } # You only need this if you want app persistence
 tracing = "0.1.40"
 #wasm-bindgen = "0.2.83"
+nostrdb = { git = "https://github.com/damus-io/nostrdb-rs", rev = "4c89dcbca13168758eb41752225b4e486dbc9d20" }
+#nostrdb = { path = "/Users/jb55/dev/github/damus-io/nostrdb-rs" }
+#nostrdb = "0.3.4"
 enostr = { path = "enostr" } 
 serde_json = "1.0.89"
 env_logger = "0.10.0"
@@ -44,7 +42,7 @@ strum = "0.26"
 strum_macros = "0.26"
 bitflags = "2.5.0"
 uuid = { version = "1.10.0", features = ["v4"] }
-nostrdb = { workspace = true }
+
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "2.11.0"
