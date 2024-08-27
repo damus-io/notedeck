@@ -234,7 +234,13 @@ impl TimelineTab {
 
             match merge_kind {
                 // TODO: update egui_virtual_list to support spliced inserts
-                MergeKind::Spliced => list.reset(),
+                MergeKind::Spliced => {
+                    debug!(
+                        "spliced when inserting {} new notes, resetting virtual list",
+                        new_refs.len()
+                    );
+                    list.reset();
+                }
                 MergeKind::FrontInsert => {
                     // only run this logic if we're reverse-chronological
                     // reversed in this case means chronological, since the
