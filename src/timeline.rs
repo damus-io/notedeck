@@ -8,12 +8,57 @@ use crate::{Damus, Result};
 use crate::route::Route;
 
 use egui_virtual_list::VirtualList;
+use enostr::Pubkey;
 use nostrdb::{Filter, Note, Subscription, Transaction};
 use std::cell::RefCell;
 use std::collections::HashSet;
+use std::fmt::Display;
 use std::rc::Rc;
 
 use tracing::{debug, error};
+
+#[derive(Clone, Debug)]
+pub enum PubkeySource {
+    Explicit(Pubkey),
+    DeckAuthor,
+}
+
+#[derive(Debug)]
+pub enum ListKind {
+    Contact(PubkeySource),
+}
+
+///
+/// What kind of column is it?
+///   - Follow List
+///   - Notifications
+///   - DM
+///   - filter
+///   - ... etc
+#[derive(Debug)]
+pub enum ColumnKind {
+    List(ListKind),
+    Universe,
+
+    /// Generic filter
+    Generic,
+}
+
+impl Display for ColumnKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ColumnKind::List(ListKind::Contact(_src)) => f.write_str("Contacts"),
+            ColumnKind::Generic => f.write_str("Timeline"),
+            ColumnKind::Universe => f.write_str("Universe"),
+        }
+    }
+}
+
+impl ColumnKind {
+    pub fn contact_list(pk: PubkeySource) -> Self {
+        ColumnKind::List(ListKind::Contact(pk))
+    }
+}
 
 #[derive(Debug, Copy, Clone)]
 pub enum TimelineSource<'a> {
@@ -273,8 +318,12 @@ impl TimelineTab {
     }
 }
 
+/// A column in a deck. Holds navigation state, loaded notes, column kind, etc.
 pub struct Timeline {
-    pub filter: Vec<Filter>,
+    pub kind: ColumnKind,
+    // We may not have the filter loaded yet, so let's make it an option so
+    // that codepaths have to explicitly handle it
+    pub filter: Option<Vec<Filter>>,
     pub views: Vec<TimelineTab>,
     pub selected_view: i32,
     pub routes: Vec<Route>,
@@ -287,23 +336,28 @@ pub struct Timeline {
 
 impl Timeline {
     /// Create a timeline from a contact list
-    pub fn follows(contact_list: &Note) -> Result<Self> {
-        Ok(Timeline::new(vec![filter::filter_from_tags(contact_list)?
-            .kinds([1])
-            .build()]))
+    pub fn contact_list(contact_list: &Note) -> Result<Self> {
+        let filter = vec![filter::filter_from_tags(contact_list)?.kinds([1]).build()];
+        let pk_src = PubkeySource::Explicit(Pubkey::new(contact_list.pubkey()));
+
+        Ok(Timeline::new(
+            ColumnKind::contact_list(pk_src),
+            Some(filter),
+        ))
     }
 
-    pub fn new(filter: Vec<Filter>) -> Self {
+    pub fn new(kind: ColumnKind, filter: Option<Vec<Filter>>) -> Self {
         let subscription: Option<Subscription> = None;
         let notes = TimelineTab::new(ViewFilter::Notes);
         let replies = TimelineTab::new(ViewFilter::NotesAndReplies);
         let views = vec![notes, replies];
         let selected_view = 0;
-        let routes = vec![Route::Timeline("Timeline".to_string())];
+        let routes = vec![Route::Timeline(format!("{}", kind))];
         let navigating = false;
         let returning = false;
 
         Timeline {
+            kind,
             navigating,
             returning,
             filter,

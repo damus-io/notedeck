@@ -23,6 +23,13 @@ impl Pubkey {
         &self.0
     }
 
+    pub fn parse(s: &str) -> Result<Self, Error> {
+        match Pubkey::from_hex(s) {
+            Ok(pk) => Ok(pk),
+            Err(_) => Pubkey::try_from_bech32_string(s, false),
+        }
+    }
+
     pub fn from_hex(hex_str: &str) -> Result<Self, Error> {
         Ok(Pubkey(hex::decode(hex_str)?.as_slice().try_into()?))
     }

@@ -11,13 +11,13 @@ use crate::notecache::{CachedNote, NoteCache};
 use crate::relay_pool_manager::RelayPoolManager;
 use crate::route::Route;
 use crate::thread::{DecrementResult, Threads};
-use crate::timeline::{Timeline, TimelineSource, ViewFilter};
+use crate::timeline::{ColumnKind, ListKind, PubkeySource, Timeline, TimelineSource, ViewFilter};
 use crate::ui::note::PostAction;
 use crate::ui::{self, AccountSelectionWidget, DesktopGlobalPopup};
 use crate::ui::{DesktopSidePanel, RelayView, View};
-use crate::Result;
+use crate::{Error, Result};
 use egui_nav::{Nav, NavAction};
-use enostr::{ClientMessage, Keypair, RelayEvent, RelayMessage, RelayPool, SecretKey};
+use enostr::{ClientMessage, Keypair, Pubkey, RelayEvent, RelayMessage, RelayPool, SecretKey};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -104,7 +104,13 @@ fn send_initial_filters(damus: &mut Damus, relay_url: &str) {
         let relay = &mut relay.relay;
         if relay.url == relay_url {
             for timeline in &damus.timelines {
-                let filter = timeline.filter.clone();
+                let filter = if let Some(filter) = &timeline.filter {
+                    filter.clone()
+                } else {
+                    // TODO: handle unloaded filters
+                    continue;
+                };
+
                 let new_filters = filter.into_iter().map(|f| {
                     // limit the size of remote filters
                     let default_limit = crate::filter::default_remote_limit();
@@ -353,7 +359,14 @@ fn setup_profiling() {
 fn setup_initial_nostrdb_subs(damus: &mut Damus) -> Result<()> {
     let timelines = damus.timelines.len();
     for i in 0..timelines {
-        let filters = damus.timelines[i].filter.clone();
+        let filters = if let Some(filters) = &damus.timelines[i].filter {
+            filters.clone()
+        } else {
+            // TODO: for unloaded filters, we will need to fetch things like
+            // the contact and relay list from remote relays.
+            continue;
+        };
+
         damus.timelines[i].subscription = Some(damus.ndb.subscribe(filters.clone())?);
         let txn = Transaction::new(&damus.ndb)?;
         debug!(
@@ -361,13 +374,8 @@ fn setup_initial_nostrdb_subs(damus: &mut Damus) -> Result<()> {
             damus.timelines[i].subscription.as_ref().unwrap().id,
             damus.timelines[i].filter
         );
-        let results = damus.ndb.query(
-            &txn,
-            filters,
-            damus.timelines[i].filter[0]
-                .limit()
-                .unwrap_or(crate::filter::default_limit()) as i32,
-        )?;
+        let lim = filters[0].limit().unwrap_or(crate::filter::default_limit()) as i32;
+        let results = damus.ndb.query(&txn, filters.clone(), lim)?;
 
         let filters = {
             let views = &damus.timelines[i].views;
@@ -527,8 +535,65 @@ fn render_damus(damus: &mut Damus, ctx: &Context) {
     puffin_egui::profiler_window(ctx);
 }
 
+enum ArgColumn {
+    Column(ColumnKind),
+    Generic(Vec<Filter>),
+}
+
+impl ArgColumn {
+    pub fn into_timeline(self, ndb: &Ndb, user: Option<&[u8; 32]>) -> Timeline {
+        match self {
+            ArgColumn::Generic(filters) => Timeline::new(ColumnKind::Generic, Some(filters)),
+
+            ArgColumn::Column(ColumnKind::Universe) => {
+                Timeline::new(ColumnKind::Universe, Some(vec![]))
+            }
+
+            ArgColumn::Column(ColumnKind::Generic) => {
+                panic!("Not a valid ArgColumn")
+            }
+
+            ArgColumn::Column(ColumnKind::List(ListKind::Contact(ref pk_src))) => {
+                let pk = match pk_src {
+                    PubkeySource::DeckAuthor => {
+                        if let Some(user_pk) = user {
+                            user_pk
+                        } else {
+                            // No user loaded, so we have to return an unloaded
+                            // contact list columns
+                            return Timeline::new(
+                                ColumnKind::contact_list(PubkeySource::DeckAuthor),
+                                None,
+                            );
+                        }
+                    }
+                    PubkeySource::Explicit(pk) => pk.bytes(),
+                };
+
+                let contact_filter = Filter::new().authors([pk]).kinds([3]).limit(1).build();
+                let txn = Transaction::new(ndb).expect("txn");
+                let results = ndb
+                    .query(&txn, vec![contact_filter], 1)
+                    .expect("contact query failed?");
+
+                if results.is_empty() {
+                    return Timeline::new(ColumnKind::contact_list(pk_src.to_owned()), None);
+                }
+
+                match Timeline::contact_list(&results[0].note) {
+                    Err(Error::EmptyContactList) => {
+                        Timeline::new(ColumnKind::contact_list(pk_src.to_owned()), None)
+                    }
+                    Err(e) => panic!("Unexpected error: {e}"),
+                    Ok(tl) => tl,
+                }
+            }
+        }
+    }
+}
+
 struct Args {
-    timelines: Vec<Timeline>,
+    columns: Vec<ArgColumn>,
     relays: Vec<String>,
     is_mobile: Option<bool>,
     keys: Vec<Keypair>,
@@ -540,7 +605,7 @@ struct Args {
 impl Args {
     fn parse(args: &[String]) -> Self {
         let mut res = Args {
-            timelines: vec![],
+            columns: vec![],
             relays: vec![],
             is_mobile: None,
             keys: vec![],
@@ -606,7 +671,7 @@ impl Args {
                 };
 
                 if let Ok(filter) = Filter::from_json(filter) {
-                    res.timelines.push(Timeline::new(vec![filter]));
+                    res.columns.push(ArgColumn::Generic(vec![filter]));
                 } else {
                     error!("failed to parse filter '{}'", filter);
                 }
@@ -628,6 +693,30 @@ impl Args {
                     continue;
                 };
                 res.relays.push(relay.clone());
+            } else if arg == "--column" || arg == "-c" {
+                i += 1;
+                let column_name = if let Some(next_arg) = args.get(i) {
+                    next_arg
+                } else {
+                    error!("column argument missing");
+                    continue;
+                };
+
+                if column_name.starts_with("contacts:") {
+                    if let Ok(pubkey) = Pubkey::parse(&column_name[9..]) {
+                        info!("got contact column for user {}", pubkey.hex());
+                        res.columns.push(ArgColumn::Column(ColumnKind::contact_list(
+                            PubkeySource::Explicit(pubkey),
+                        )))
+                    } else {
+                        error!("error parsing contacts pubkey {}", &column_name[9..]);
+                        continue;
+                    }
+                } else if column_name == "contacts" {
+                    res.columns.push(ArgColumn::Column(ColumnKind::contact_list(
+                        PubkeySource::DeckAuthor,
+                    )))
+                }
             } else if arg == "--filter-file" || arg == "-f" {
                 i += 1;
                 let filter_file = if let Some(next_arg) = args.get(i) {
@@ -648,7 +737,7 @@ impl Args {
                     .ok()
                     .and_then(|s| Filter::from_json(s).ok())
                 {
-                    res.timelines.push(Timeline::new(vec![filter]));
+                    res.columns.push(ArgColumn::Generic(vec![filter]));
                 } else {
                     error!("failed to parse filter in '{}'", filter_file);
                 }
@@ -657,9 +746,10 @@ impl Args {
             i += 1;
         }
 
-        if res.timelines.is_empty() {
-            let filter = Filter::from_json(include_str!("../queries/timeline.json")).unwrap();
-            res.timelines.push(Timeline::new(vec![filter]));
+        if res.columns.is_empty() {
+            let ck = ColumnKind::contact_list(PubkeySource::DeckAuthor);
+            info!("No columns set, setting up defaults: {:?}", ck);
+            res.columns.push(ArgColumn::Column(ck));
         }
 
         res
@@ -746,6 +836,17 @@ impl Damus {
             pool
         };
 
+        let account = account_manager
+            .get_selected_account()
+            .as_ref()
+            .map(|a| a.pubkey.bytes());
+        let ndb = Ndb::new(&dbpath, &config).expect("ndb");
+        let timelines = parsed_args
+            .columns
+            .into_iter()
+            .map(|c| c.into_timeline(&ndb, account))
+            .collect();
+
         Self {
             pool,
             is_mobile,
@@ -756,11 +857,10 @@ impl Damus {
             img_cache: ImageCache::new(imgcache_dir),
             note_cache: NoteCache::default(),
             selected_timeline: 0,
-            timelines: parsed_args.timelines,
+            timelines,
             textmode: false,
-            ndb: Ndb::new(&dbpath, &config).expect("ndb"),
+            ndb,
             account_manager,
-            //compose: "".to_string(),
             frame_history: FrameHistory::default(),
             show_account_switcher: false,
             show_global_popup: false,
@@ -771,7 +871,7 @@ impl Damus {
     pub fn mock<P: AsRef<Path>>(data_path: P, is_mobile: bool) -> Self {
         let mut timelines: Vec<Timeline> = vec![];
         let filter = Filter::from_json(include_str!("../queries/global.json")).unwrap();
-        timelines.push(Timeline::new(vec![filter]));
+        timelines.push(Timeline::new(ColumnKind::Universe, Some(vec![filter])));
 
         let imgcache_dir = data_path.as_ref().join(ImageCache::rel_datadir());
         let _ = std::fs::create_dir_all(imgcache_dir.clone());
