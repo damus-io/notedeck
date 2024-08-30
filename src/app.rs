@@ -41,15 +41,11 @@ pub enum DamusState {
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
 pub struct Damus {
     state: DamusState,
-    //compose: String,
     note_cache: NoteCache,
     pub pool: RelayPool,
-    is_mobile: bool,
-    pub since_optimize: bool,
 
     /// global navigation for account management popups, etc.
     pub global_nav: Vec<Route>,
-    pub textmode: bool,
 
     pub timelines: Vec<Timeline>,
     pub selected_timeline: i32,
@@ -61,6 +57,11 @@ pub struct Damus {
     pub account_manager: AccountManager,
 
     frame_history: crate::frame_history::FrameHistory,
+
+    // TODO: make these flags
+    is_mobile: bool,
+    pub since_optimize: bool,
+    pub textmode: bool,
     pub show_account_switcher: bool,
     pub show_global_popup: bool,
 }
