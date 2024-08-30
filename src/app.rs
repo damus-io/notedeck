@@ -537,116 +537,118 @@ struct Args {
     dbpath: Option<String>,
 }
 
-fn parse_args(args: &[String]) -> Args {
-    let mut res = Args {
-        timelines: vec![],
-        relays: vec![],
-        is_mobile: None,
-        keys: vec![],
-        light: false,
-        since_optimize: true,
-        dbpath: None,
-    };
+impl Args {
+    fn parse(args: &[String]) -> Self {
+        let mut res = Args {
+            timelines: vec![],
+            relays: vec![],
+            is_mobile: None,
+            keys: vec![],
+            light: false,
+            since_optimize: true,
+            dbpath: None,
+        };
 
-    let mut i = 0;
-    let len = args.len();
-    while i < len {
-        let arg = &args[i];
+        let mut i = 0;
+        let len = args.len();
+        while i < len {
+            let arg = &args[i];
 
-        if arg == "--mobile" {
-            res.is_mobile = Some(true);
-        } else if arg == "--light" {
-            res.light = true;
-        } else if arg == "--dark" {
-            res.light = false;
-        } else if arg == "--pub" || arg == "npub" {
-            // TODO: npub watch-only accounts
-        } else if arg == "--sec" || arg == "--nsec" {
-            i += 1;
-            let secstr = if let Some(next_arg) = args.get(i) {
-                next_arg
-            } else {
-                error!("sec argument missing?");
-                continue;
-            };
+            if arg == "--mobile" {
+                res.is_mobile = Some(true);
+            } else if arg == "--light" {
+                res.light = true;
+            } else if arg == "--dark" {
+                res.light = false;
+            } else if arg == "--pub" || arg == "npub" {
+                // TODO: npub watch-only accounts
+            } else if arg == "--sec" || arg == "--nsec" {
+                i += 1;
+                let secstr = if let Some(next_arg) = args.get(i) {
+                    next_arg
+                } else {
+                    error!("sec argument missing?");
+                    continue;
+                };
 
-            if let Ok(sec) = SecretKey::parse(secstr) {
-                res.keys.push(Keypair::from_secret(sec));
-            } else {
-                error!(
-                    "failed to parse {} argument. Make sure to use hex or nsec.",
-                    arg
-                );
+                if let Ok(sec) = SecretKey::parse(secstr) {
+                    res.keys.push(Keypair::from_secret(sec));
+                } else {
+                    error!(
+                        "failed to parse {} argument. Make sure to use hex or nsec.",
+                        arg
+                    );
+                }
+            } else if arg == "--no-since-optimize" {
+                res.since_optimize = false;
+            } else if arg == "--filter" {
+                i += 1;
+                let filter = if let Some(next_arg) = args.get(i) {
+                    next_arg
+                } else {
+                    error!("filter argument missing?");
+                    continue;
+                };
+
+                if let Ok(filter) = Filter::from_json(filter) {
+                    res.timelines.push(Timeline::new(vec![filter]));
+                } else {
+                    error!("failed to parse filter '{}'", filter);
+                }
+            } else if arg == "--dbpath" {
+                i += 1;
+                let path = if let Some(next_arg) = args.get(i) {
+                    next_arg
+                } else {
+                    error!("dbpath argument missing?");
+                    continue;
+                };
+                res.dbpath = Some(path.clone());
+            } else if arg == "-r" || arg == "--relay" {
+                i += 1;
+                let relay = if let Some(next_arg) = args.get(i) {
+                    next_arg
+                } else {
+                    error!("relay argument missing?");
+                    continue;
+                };
+                res.relays.push(relay.clone());
+            } else if arg == "--filter-file" || arg == "-f" {
+                i += 1;
+                let filter_file = if let Some(next_arg) = args.get(i) {
+                    next_arg
+                } else {
+                    error!("filter file argument missing?");
+                    continue;
+                };
+
+                let data = if let Ok(data) = std::fs::read(filter_file) {
+                    data
+                } else {
+                    error!("failed to read filter file '{}'", filter_file);
+                    continue;
+                };
+
+                if let Some(filter) = std::str::from_utf8(&data)
+                    .ok()
+                    .and_then(|s| Filter::from_json(s).ok())
+                {
+                    res.timelines.push(Timeline::new(vec![filter]));
+                } else {
+                    error!("failed to parse filter in '{}'", filter_file);
+                }
             }
-        } else if arg == "--no-since-optimize" {
-            res.since_optimize = false;
-        } else if arg == "--filter" {
-            i += 1;
-            let filter = if let Some(next_arg) = args.get(i) {
-                next_arg
-            } else {
-                error!("filter argument missing?");
-                continue;
-            };
 
-            if let Ok(filter) = Filter::from_json(filter) {
-                res.timelines.push(Timeline::new(vec![filter]));
-            } else {
-                error!("failed to parse filter '{}'", filter);
-            }
-        } else if arg == "--dbpath" {
             i += 1;
-            let path = if let Some(next_arg) = args.get(i) {
-                next_arg
-            } else {
-                error!("dbpath argument missing?");
-                continue;
-            };
-            res.dbpath = Some(path.clone());
-        } else if arg == "-r" || arg == "--relay" {
-            i += 1;
-            let relay = if let Some(next_arg) = args.get(i) {
-                next_arg
-            } else {
-                error!("relay argument missing?");
-                continue;
-            };
-            res.relays.push(relay.clone());
-        } else if arg == "--filter-file" || arg == "-f" {
-            i += 1;
-            let filter_file = if let Some(next_arg) = args.get(i) {
-                next_arg
-            } else {
-                error!("filter file argument missing?");
-                continue;
-            };
-
-            let data = if let Ok(data) = std::fs::read(filter_file) {
-                data
-            } else {
-                error!("failed to read filter file '{}'", filter_file);
-                continue;
-            };
-
-            if let Some(filter) = std::str::from_utf8(&data)
-                .ok()
-                .and_then(|s| Filter::from_json(s).ok())
-            {
-                res.timelines.push(Timeline::new(vec![filter]));
-            } else {
-                error!("failed to parse filter in '{}'", filter_file);
-            }
         }
 
-        i += 1;
-    }
+        if res.timelines.is_empty() {
+            let filter = Filter::from_json(include_str!("../queries/timeline.json")).unwrap();
+            res.timelines.push(Timeline::new(vec![filter]));
+        }
 
-    if res.timelines.is_empty() {
-        let filter = Filter::from_json(include_str!("../queries/timeline.json")).unwrap();
-        res.timelines.push(Timeline::new(vec![filter]));
+        res
     }
-
-    res
 }
 
 /*
@@ -676,7 +678,7 @@ impl Damus {
         args: Vec<String>,
     ) -> Self {
         // arg parsing
-        let parsed_args = parse_args(&args);
+        let parsed_args = Args::parse(&args);
         let is_mobile = parsed_args.is_mobile.unwrap_or(ui::is_compiled_as_mobile());
 
         setup_cc(cc, is_mobile, parsed_args.light);
