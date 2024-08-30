@@ -1,5 +1,6 @@
 use crate::app::{get_unknown_note_ids, UnknownId};
 use crate::error::Error;
+use crate::filter;
 use crate::note::NoteRef;
 use crate::notecache::CachedNote;
 use crate::{Damus, Result};
@@ -285,6 +286,13 @@ pub struct Timeline {
 }
 
 impl Timeline {
+    /// Create a timeline from a contact list
+    pub fn follows(contact_list: &Note) -> Result<Self> {
+        Ok(Timeline::new(vec![filter::filter_from_tags(contact_list)?
+            .kinds([1])
+            .build()]))
+    }
+
     pub fn new(filter: Vec<Filter>) -> Self {
         let subscription: Option<Subscription> = None;
         let notes = TimelineTab::new(ViewFilter::Notes);

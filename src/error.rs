@@ -37,6 +37,7 @@ impl fmt::Display for SubscriptionError {
 pub enum Error {
     SubscriptionError(SubscriptionError),
     LoadFailed,
+    EmptyContactList,
     Io(io::Error),
     Nostr(enostr::Error),
     Ndb(nostrdb::Error),
@@ -52,6 +53,9 @@ impl fmt::Display for Error {
             }
             Self::LoadFailed => {
                 write!(f, "load failed")
+            }
+            Self::EmptyContactList => {
+                write!(f, "empty contact list")
             }
             Self::Nostr(e) => write!(f, "{e}"),
             Self::Ndb(e) => write!(f, "{e}"),
