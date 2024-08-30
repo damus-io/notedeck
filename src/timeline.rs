@@ -337,7 +337,7 @@ pub struct Timeline {
 impl Timeline {
     /// Create a timeline from a contact list
     pub fn contact_list(contact_list: &Note) -> Result<Self> {
-        let filter = vec![filter::filter_from_tags(contact_list)?.kinds([1]).build()];
+        let filter = filter::filter_from_tags(contact_list)?.into_filter([1]);
         let pk_src = PubkeySource::Explicit(Pubkey::new(contact_list.pubkey()));
 
         Ok(Timeline::new(
