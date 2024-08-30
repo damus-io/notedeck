@@ -8,6 +8,7 @@ pub mod account_manager;
 mod actionbar;
 pub mod app_creation;
 mod app_style;
+mod args;
 mod colors;
 mod draft;
 mod filter;
