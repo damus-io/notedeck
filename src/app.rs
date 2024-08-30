@@ -92,15 +92,11 @@ fn relay_setup(pool: &mut RelayPool, ctx: &egui::Context) {
     }
 }
 
-/// Should we since optimize? Not always. For examplem if we only have a few
-/// notes locally. One way to determine this is by looking at the current filter
-/// and seeing what its limit is. If we have less notes than the limit,
-/// we might want to backfill older notes
 fn send_initial_filters(damus: &mut Damus, relay_url: &str) {
     info!("Sending initial filters to {}", relay_url);
     let mut c: u32 = 1;
-
     let can_since_optimize = damus.since_optimize;
+
     for relay in &mut damus.pool.relays {
         let relay = &mut relay.relay;
         if relay.url == relay_url {
@@ -124,6 +120,13 @@ fn send_initial_filters(damus: &mut Damus, relay_url: &str) {
                     }
 
                     let notes = timeline.notes(ViewFilter::NotesAndReplies);
+
+                    // Should we since optimize? Not always. For example
+                    // if we only have a few notes locally. One way to
+                    // determine this is by looking at the current filter
+                    // and seeing what its limit is. If we have less
+                    // notes than the limit, we might want to backfill
+                    // older notes
                     if can_since_optimize && crate::filter::should_since_optimize(lim, notes.len()) {
                         filter = crate::filter::since_optimize_filter(filter, notes);
                     } else {
