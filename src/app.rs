@@ -560,8 +560,23 @@ impl Args {
                 res.light = true;
             } else if arg == "--dark" {
                 res.light = false;
-            } else if arg == "--pub" || arg == "npub" {
-                // TODO: npub watch-only accounts
+            } else if arg == "--pub" || arg == "--npub" {
+                i += 1;
+                let pubstr = if let Some(next_arg) = args.get(i) {
+                    next_arg
+                } else {
+                    error!("sec argument missing?");
+                    continue;
+                };
+
+                if let Ok(pk) = Pubkey::parse(pubstr) {
+                    res.keys.push(Keypair::only_pubkey(pk));
+                } else {
+                    error!(
+                        "failed to parse {} argument. Make sure to use hex or npub.",
+                        arg
+                    );
+                }
             } else if arg == "--sec" || arg == "--nsec" {
                 i += 1;
                 let secstr = if let Some(next_arg) = args.get(i) {
