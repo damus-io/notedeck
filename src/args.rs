@@ -1,4 +1,5 @@
-use crate::timeline::{ColumnKind, ListKind, PubkeySource, Timeline};
+use crate::column::{ColumnKind, ListKind, PubkeySource};
+use crate::timeline::Timeline;
 use crate::Error;
 use enostr::{Filter, Keypair, Pubkey, SecretKey};
 use nostrdb::{Ndb, Transaction};

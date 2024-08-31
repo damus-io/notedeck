@@ -10,6 +10,7 @@ pub mod app_creation;
 mod app_style;
 mod args;
 mod colors;
+mod column;
 mod draft;
 mod filter;
 mod fonts;
