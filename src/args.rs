@@ -1,8 +1,7 @@
-use crate::column::{ColumnKind, ListKind, PubkeySource};
+use crate::column::{ColumnKind, PubkeySource};
 use crate::timeline::Timeline;
-use crate::Error;
 use enostr::{Filter, Keypair, Pubkey, SecretKey};
-use nostrdb::{Ndb, Transaction};
+use nostrdb::Ndb;
 use tracing::{error, info};
 
 pub struct Args {
@@ -180,50 +179,7 @@ impl ArgColumn {
     pub fn into_timeline(self, ndb: &Ndb, user: Option<&[u8; 32]>) -> Timeline {
         match self {
             ArgColumn::Generic(filters) => Timeline::new(ColumnKind::Generic, Some(filters)),
-
-            ArgColumn::Column(ColumnKind::Universe) => {
-                Timeline::new(ColumnKind::Universe, Some(vec![]))
-            }
-
-            ArgColumn::Column(ColumnKind::Generic) => {
-                panic!("Not a valid ArgColumn")
-            }
-
-            ArgColumn::Column(ColumnKind::List(ListKind::Contact(ref pk_src))) => {
-                let pk = match pk_src {
-                    PubkeySource::DeckAuthor => {
-                        if let Some(user_pk) = user {
-                            user_pk
-                        } else {
-                            // No user loaded, so we have to return an unloaded
-                            // contact list columns
-                            return Timeline::new(
-                                ColumnKind::contact_list(PubkeySource::DeckAuthor),
-                                None,
-                            );
-                        }
-                    }
-                    PubkeySource::Explicit(pk) => pk.bytes(),
-                };
-
-                let contact_filter = Filter::new().authors([pk]).kinds([3]).limit(1).build();
-                let txn = Transaction::new(ndb).expect("txn");
-                let results = ndb
-                    .query(&txn, vec![contact_filter], 1)
-                    .expect("contact query failed?");
-
-                if results.is_empty() {
-                    return Timeline::new(ColumnKind::contact_list(pk_src.to_owned()), None);
-                }
-
-                match Timeline::contact_list(&results[0].note) {
-                    Err(Error::EmptyContactList) => {
-                        Timeline::new(ColumnKind::contact_list(pk_src.to_owned()), None)
-                    }
-                    Err(e) => panic!("Unexpected error: {e}"),
-                    Ok(tl) => tl,
-                }
-            }
+            ArgColumn::Column(ck) => ck.into_timeline(ndb, user),
         }
     }
 }
