@@ -16,7 +16,7 @@ use crate::timeline::{ColumnKind, Timeline, TimelineSource, ViewFilter};
 use crate::ui::note::PostAction;
 use crate::ui::{self, AccountSelectionWidget, DesktopGlobalPopup};
 use crate::ui::{DesktopSidePanel, RelayView, View};
-use crate::Result;
+use crate::{Result, filter};
 use egui_nav::{Nav, NavAction};
 use enostr::{ClientMessage, RelayEvent, RelayMessage, RelayPool};
 use std::cell::RefCell;
@@ -111,7 +111,7 @@ fn send_initial_filters(damus: &mut Damus, relay_url: &str) {
 
                 let new_filters = filter.into_iter().map(|f| {
                     // limit the size of remote filters
-                    let default_limit = crate::filter::default_remote_limit();
+                    let default_limit = filter::default_remote_limit();
                     let mut lim = f.limit().unwrap_or(default_limit);
                     let mut filter = f;
                     if lim > default_limit {
@@ -127,8 +127,8 @@ fn send_initial_filters(damus: &mut Damus, relay_url: &str) {
                     // and seeing what its limit is. If we have less
                     // notes than the limit, we might want to backfill
                     // older notes
-                    if can_since_optimize && crate::filter::should_since_optimize(lim, notes.len()) {
-                        filter = crate::filter::since_optimize_filter(filter, notes);
+                    if can_since_optimize && filter::should_since_optimize(lim, notes.len()) {
+                        filter = filter::since_optimize_filter(filter, notes);
                     } else {
                         warn!("Skipping since optimization for {:?}: number of local notes is less than limit, attempting to backfill.", filter);
                     }
