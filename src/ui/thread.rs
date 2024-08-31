@@ -75,7 +75,7 @@ impl<'a> ThreadView<'a> {
                 {
                     let mut ids = HashSet::new();
                     let _ = TimelineSource::Thread(root_id)
-                        .poll_notes_into_view(self.app, &txn, &mut ids);
+                        .poll_notes_into_view(self.app, &mut ids);
                     // TODO: do something with unknown ids
                 }
 

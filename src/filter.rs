@@ -1,7 +1,66 @@
+use crate::error::{Error, FilterError};
 use crate::note::NoteRef;
-use crate::{Error, Result};
-use nostrdb::{Filter, FilterBuilder, Note};
+use crate::Result;
+use nostrdb::{Filter, FilterBuilder, Note, Subscription};
 use tracing::{debug, warn};
+
+/// A unified subscription has a local and remote component. The remote subid
+/// tracks data received remotely, and local
+#[derive(Debug, Clone)]
+pub struct UnifiedSubscription {
+    pub local: Subscription,
+    pub remote: String,
+}
+
+/// We may need to fetch some data from relays before our filter is ready.
+/// [`FilterState`] tracks this.
+#[derive(Debug, Clone)]
+pub enum FilterState {
+    NeedsRemote(Vec<Filter>),
+    FetchingRemote(UnifiedSubscription),
+    GotRemote(Subscription),
+    Ready(Vec<Filter>),
+    Broken(FilterError),
+}
+
+impl FilterState {
+    /// We tried to fetch a filter but we wither got no data or the data
+    /// was corrupted, preventing us from getting to the Ready state.
+    /// Just mark the timeline as broken so that we can signal to the
+    /// user that something went wrong
+    pub fn broken(reason: FilterError) -> Self {
+        Self::Broken(reason)
+    }
+
+    /// The filter is ready
+    pub fn ready(filter: Vec<Filter>) -> Self {
+        Self::Ready(filter)
+    }
+
+    /// We need some data from relays before we can continue. Example:
+    /// for home timelines where we don't have a contact list yet. We
+    /// need to fetch the contact list before we have the right timeline
+    /// filter.
+    pub fn needs_remote(filter: Vec<Filter>) -> Self {
+        Self::NeedsRemote(filter)
+    }
+
+    /// We got the remote data. Local data should be available to build
+    /// the filter for the [`FilterState::Ready`] state
+    pub fn got_remote(local_sub: Subscription) -> Self {
+        Self::GotRemote(local_sub)
+    }
+
+    /// We have sent off a remote subscription to get data needed for the
+    /// filter. The string is the subscription id
+    pub fn fetching_remote(sub_id: String, local_sub: Subscription) -> Self {
+        let unified_sub = UnifiedSubscription {
+            local: local_sub,
+            remote: sub_id,
+        };
+        Self::FetchingRemote(unified_sub)
+    }
+}
 
 pub fn should_since_optimize(limit: u64, num_notes: usize) -> bool {
     // rough heuristic for bailing since optimization if we don't have enough notes
@@ -39,6 +98,10 @@ pub struct FilteredTags {
 }
 
 impl FilteredTags {
+    pub fn into_follow_filter(self) -> Vec<Filter> {
+        self.into_filter([1])
+    }
+
     // TODO: make this more general
     pub fn into_filter<I>(self, kinds: I) -> Vec<Filter>
     where
@@ -110,7 +173,7 @@ pub fn filter_from_tags(note: &Note) -> Result<FilteredTags> {
 
     if author_count == 0 && hashtag_count == 0 {
         warn!("no authors or hashtags found in contact list");
-        return Err(Error::EmptyContactList);
+        return Err(Error::empty_contact_list());
     }
 
     debug!(

@@ -1,16 +1,17 @@
 use crate::app::{get_unknown_note_ids, UnknownId};
 use crate::column::{ColumnKind, PubkeySource};
 use crate::error::Error;
-use crate::filter;
 use crate::note::NoteRef;
 use crate::notecache::CachedNote;
+use crate::{filter, filter::FilterState};
 use crate::{Damus, Result};
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::route::Route;
 
 use egui_virtual_list::VirtualList;
 use enostr::Pubkey;
-use nostrdb::{Filter, Note, Subscription, Transaction};
+use nostrdb::{Note, Subscription, Transaction};
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::rc::Rc;
@@ -50,9 +51,9 @@ impl<'a> TimelineSource<'a> {
         }
     }
 
-    pub fn sub<'b>(self, app: &'b mut Damus, txn: &Transaction) -> Option<&'b Subscription> {
+    pub fn sub(self, app: &mut Damus, txn: &Transaction) -> Option<Subscription> {
         match self {
-            TimelineSource::Column { ind, .. } => app.timelines[ind].subscription.as_ref(),
+            TimelineSource::Column { ind, .. } => app.timelines[ind].subscription,
             TimelineSource::Thread(root_id) => {
                 // TODO: replace all this with the raw entry api eventually
 
@@ -67,34 +68,34 @@ impl<'a> TimelineSource<'a> {
         }
     }
 
+    /// Check local subscriptions for new notes and insert them into
+    /// timelines (threads, columns)
     pub fn poll_notes_into_view(
         &self,
         app: &mut Damus,
-        txn: &'a Transaction,
-        ids: &mut HashSet<UnknownId<'a>>,
+        ids: &mut HashSet<UnknownId>,
     ) -> Result<()> {
-        let sub_id = if let Some(sub_id) = self.sub(app, txn).map(|s| s.id) {
-            sub_id
-        } else {
-            return Err(Error::no_active_sub());
+        let sub = {
+            let txn = Transaction::new(&app.ndb).expect("txn");
+            if let Some(sub) = self.sub(app, &txn) {
+                sub
+            } else {
+                return Err(Error::no_active_sub());
+            }
         };
 
-        //
-        // TODO(BUG!): poll for these before the txn, otherwise we can hit
-        // a race condition where we hit the "no note??" expect below. This may
-        // require some refactoring due to the missing ids logic
-        //
-        let new_note_ids = app.ndb.poll_for_notes(sub_id, 100);
+        let new_note_ids = app.ndb.poll_for_notes(sub, 100);
         if new_note_ids.is_empty() {
             return Ok(());
         } else {
             debug!("{} new notes! {:?}", new_note_ids.len(), new_note_ids);
         }
 
+        let txn = Transaction::new(&app.ndb).expect("txn");
         let mut new_refs: Vec<(Note, NoteRef)> = Vec::with_capacity(new_note_ids.len());
 
         for key in new_note_ids {
-            let note = if let Ok(note) = app.ndb.get_note_by_key(txn, key) {
+            let note = if let Ok(note) = app.ndb.get_note_by_key(&txn, key) {
                 note
             } else {
                 error!("hit race condition in poll_notes_into_view: https://github.com/damus-io/nostrdb/issues/35 note {:?} was not added to timeline", key);
@@ -105,7 +106,7 @@ impl<'a> TimelineSource<'a> {
                 .note_cache_mut()
                 .cached_note_or_insert(key, &note)
                 .clone();
-            let _ = get_unknown_note_ids(&app.ndb, &cached_note, txn, &note, key, ids);
+            let _ = get_unknown_note_ids(&app.ndb, &cached_note, &txn, &note, key, ids);
 
             let created_at = note.created_at();
             new_refs.push((note, NoteRef { key, created_at }));
@@ -123,7 +124,7 @@ impl<'a> TimelineSource<'a> {
             let refs: Vec<NoteRef> = new_refs.iter().map(|(_note, nr)| *nr).collect();
 
             let reversed = false;
-            self.view(app, txn, ViewFilter::NotesAndReplies)
+            self.view(app, &txn, ViewFilter::NotesAndReplies)
                 .insert(&refs, reversed);
         }
 
@@ -142,7 +143,7 @@ impl<'a> TimelineSource<'a> {
                 }
             }
 
-            self.view(app, txn, ViewFilter::Notes)
+            self.view(app, &txn, ViewFilter::Notes)
                 .insert(&filtered_refs, reversed);
         }
 
@@ -277,10 +278,11 @@ impl TimelineTab {
 
 /// A column in a deck. Holds navigation state, loaded notes, column kind, etc.
 pub struct Timeline {
+    pub uid: u32,
     pub kind: ColumnKind,
     // We may not have the filter loaded yet, so let's make it an option so
     // that codepaths have to explicitly handle it
-    pub filter: Option<Vec<Filter>>,
+    pub filter: FilterState,
     pub views: Vec<TimelineTab>,
     pub selected_view: i32,
     pub routes: Vec<Route>,
@@ -294,16 +296,19 @@ pub struct Timeline {
 impl Timeline {
     /// Create a timeline from a contact list
     pub fn contact_list(contact_list: &Note) -> Result<Self> {
-        let filter = filter::filter_from_tags(contact_list)?.into_filter([1]);
+        let filter = filter::filter_from_tags(contact_list)?.into_follow_filter();
         let pk_src = PubkeySource::Explicit(Pubkey::new(contact_list.pubkey()));
 
         Ok(Timeline::new(
             ColumnKind::contact_list(pk_src),
-            Some(filter),
+            FilterState::ready(filter),
         ))
     }
 
-    pub fn new(kind: ColumnKind, filter: Option<Vec<Filter>>) -> Self {
+    pub fn new(kind: ColumnKind, filter: FilterState) -> Self {
+        // global unique id for all new timelines
+        static UIDS: AtomicU32 = AtomicU32::new(0);
+
         let subscription: Option<Subscription> = None;
         let notes = TimelineTab::new(ViewFilter::Notes);
         let replies = TimelineTab::new(ViewFilter::NotesAndReplies);
@@ -312,8 +317,10 @@ impl Timeline {
         let routes = vec![Route::Timeline(format!("{}", kind))];
         let navigating = false;
         let returning = false;
+        let uid = UIDS.fetch_add(1, Ordering::Relaxed);
 
         Timeline {
+            uid,
             kind,
             navigating,
             returning,

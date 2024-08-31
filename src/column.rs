@@ -1,7 +1,10 @@
+use crate::error::FilterError;
+use crate::filter::FilterState;
 use crate::{timeline::Timeline, Error};
 use enostr::Pubkey;
 use nostrdb::{Filter, Ndb, Transaction};
 use std::fmt::Display;
+use tracing::{error, warn};
 
 #[derive(Clone, Debug)]
 pub enum PubkeySource {
@@ -45,47 +48,48 @@ impl ColumnKind {
         ColumnKind::List(ListKind::Contact(pk))
     }
 
-    pub fn into_timeline(self, ndb: &Ndb, default_user: Option<&[u8; 32]>) -> Timeline {
+    pub fn into_timeline(self, ndb: &Ndb, default_user: Option<&[u8; 32]>) -> Option<Timeline> {
         match self {
-            ColumnKind::Universe => Timeline::new(ColumnKind::Universe, Some(vec![])),
+            ColumnKind::Universe => Some(Timeline::new(
+                ColumnKind::Universe,
+                FilterState::ready(vec![]),
+            )),
 
             ColumnKind::Generic => {
-                panic!("you can't convert a ColumnKind::Generic to a Timeline")
+                warn!("you can't convert a ColumnKind::Generic to a Timeline");
+                None
             }
 
             ColumnKind::List(ListKind::Contact(ref pk_src)) => {
                 let pk = match pk_src {
-                    PubkeySource::DeckAuthor => {
-                        if let Some(user_pk) = default_user {
-                            user_pk
-                        } else {
-                            // No user loaded, so we have to return an unloaded
-                            // contact list columns
-                            return Timeline::new(
-                                ColumnKind::contact_list(PubkeySource::DeckAuthor),
-                                None,
-                            );
-                        }
-                    }
+                    PubkeySource::DeckAuthor => default_user?,
                     PubkeySource::Explicit(pk) => pk.bytes(),
                 };
 
                 let contact_filter = Filter::new().authors([pk]).kinds([3]).limit(1).build();
+
                 let txn = Transaction::new(ndb).expect("txn");
                 let results = ndb
-                    .query(&txn, vec![contact_filter], 1)
+                    .query(&txn, &[contact_filter.clone()], 1)
                     .expect("contact query failed?");
 
                 if results.is_empty() {
-                    return Timeline::new(ColumnKind::contact_list(pk_src.to_owned()), None);
+                    return Some(Timeline::new(
+                        ColumnKind::contact_list(pk_src.to_owned()),
+                        FilterState::needs_remote(vec![contact_filter.clone()]),
+                    ));
                 }
 
                 match Timeline::contact_list(&results[0].note) {
-                    Err(Error::EmptyContactList) => {
-                        Timeline::new(ColumnKind::contact_list(pk_src.to_owned()), None)
+                    Err(Error::Filter(FilterError::EmptyContactList)) => Some(Timeline::new(
+                        ColumnKind::contact_list(pk_src.to_owned()),
+                        FilterState::needs_remote(vec![contact_filter]),
+                    )),
+                    Err(e) => {
+                        error!("Unexpected error: {e}");
+                        None
                     }
-                    Err(e) => panic!("Unexpected error: {e}"),
-                    Ok(tl) => tl,
+                    Ok(tl) => Some(tl),
                 }
             }
         }

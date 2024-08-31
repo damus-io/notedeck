@@ -16,7 +16,7 @@ pub struct Thread {
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
 pub enum DecrementResult {
-    LastSubscriber(u64),
+    LastSubscriber(Subscription),
     ActiveSubscribers,
 }
 
@@ -54,7 +54,7 @@ impl Thread {
         let last_note = notes[0];
         let filters = Thread::filters_since(root_id, last_note.created_at + 1);
 
-        if let Ok(results) = ndb.query(txn, filters, 1000) {
+        if let Ok(results) = ndb.query(txn, &filters, 1000) {
             debug!("got {} results from thread update", results.len());
             results
                 .into_iter()
@@ -72,7 +72,7 @@ impl Thread {
         match self.subscribers.cmp(&0) {
             Ordering::Equal => {
                 if let Some(sub) = self.subscription() {
-                    Ok(DecrementResult::LastSubscriber(sub.id))
+                    Ok(DecrementResult::LastSubscriber(sub))
                 } else {
                     Err(Error::no_active_sub())
                 }
@@ -82,8 +82,8 @@ impl Thread {
         }
     }
 
-    pub fn subscription(&self) -> Option<&Subscription> {
-        self.sub.as_ref()
+    pub fn subscription(&self) -> Option<Subscription> {
+        self.sub
     }
 
     pub fn remote_subscription(&self) -> &Option<String> {
@@ -171,7 +171,7 @@ impl Threads {
         // we don't have the thread, query for it!
         let filters = Thread::filters(root_id);
 
-        let notes = if let Ok(results) = ndb.query(txn, filters, 1000) {
+        let notes = if let Ok(results) = ndb.query(txn, &filters, 1000) {
             results
                 .into_iter()
                 .map(NoteRef::from_query_result)

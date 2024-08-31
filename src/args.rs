@@ -1,4 +1,5 @@
 use crate::column::{ColumnKind, PubkeySource};
+use crate::filter::FilterState;
 use crate::timeline::Timeline;
 use enostr::{Filter, Keypair, Pubkey, SecretKey};
 use nostrdb::Ndb;
@@ -176,9 +177,12 @@ pub enum ArgColumn {
 }
 
 impl ArgColumn {
-    pub fn into_timeline(self, ndb: &Ndb, user: Option<&[u8; 32]>) -> Timeline {
+    pub fn into_timeline(self, ndb: &Ndb, user: Option<&[u8; 32]>) -> Option<Timeline> {
         match self {
-            ArgColumn::Generic(filters) => Timeline::new(ColumnKind::Generic, Some(filters)),
+            ArgColumn::Generic(filters) => Some(Timeline::new(
+                ColumnKind::Generic,
+                FilterState::ready(filters),
+            )),
             ArgColumn::Column(ck) => ck.into_timeline(ndb, user),
         }
     }

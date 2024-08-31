@@ -144,7 +144,7 @@ mod preview {
             let mut pks = HashSet::new();
             let mut keys = HashSet::new();
 
-            for query_result in ndb.query(&txn, filters, 2000).unwrap() {
+            for query_result in ndb.query(&txn, &filters, 2000).unwrap() {
                 pks.insert(query_result.note.pubkey());
             }
 
