@@ -1,4 +1,7 @@
+use crate::images::ImageType;
+use crate::imgcache::ImageCache;
 use crate::ui::note::NoteOptions;
+use crate::ui::ProfilePic;
 use crate::{colors, ui, Damus};
 use egui::{Color32, Hyperlink, Image, RichText};
 use nostrdb::{BlockType, Mention, Note, NoteKey, Transaction};
@@ -189,18 +192,24 @@ fn render_note_contents(
     if !images.is_empty() && !damus.textmode {
         ui.add_space(2.0);
         let carousel_id = egui::Id::new(("carousel", note.key().expect("expected tx note")));
-        image_carousel(ui, images, carousel_id);
+        image_carousel(ui, &mut damus.img_cache, images, carousel_id);
         ui.add_space(2.0);
     }
 
     resp
 }
 
-fn image_carousel(ui: &mut egui::Ui, images: Vec<String>, carousel_id: egui::Id) {
+fn image_carousel(
+    ui: &mut egui::Ui,
+    img_cache: &mut ImageCache,
+    images: Vec<String>,
+    carousel_id: egui::Id,
+) {
     // let's make sure everything is within our area
 
     let height = 360.0;
     let width = ui.available_size().x;
+    let spinsz = if height > width { width } else { height };
 
     ui.add_sized([width, height], |ui: &mut egui::Ui| {
         egui::ScrollArea::horizontal()
@@ -208,18 +217,53 @@ fn image_carousel(ui: &mut egui::Ui, images: Vec<String>, carousel_id: egui::Id)
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     for image in images {
-                        let img_resp = ui.add(
-                            Image::new(image.clone())
-                                .max_height(height)
-                                .rounding(5.0)
-                                .fit_to_original_size(1.0),
-                        );
-                        img_resp.context_menu(|ui| {
-                            if ui.button("Copy Link").clicked() {
-                                ui.ctx().copy_text(image);
-                                ui.close_menu();
+                        // If the cache is empty, initiate the fetch
+                        let m_cached_promise = img_cache.map().get(&image);
+                        if m_cached_promise.is_none() {
+                            let res = crate::images::fetch_img(
+                                img_cache,
+                                ui.ctx(),
+                                &image,
+                                ImageType::Content(width.round() as u32, height.round() as u32),
+                            );
+                            img_cache.map_mut().insert(image.to_owned(), res);
+                        }
+
+                        // What is the state of the fetch?
+                        match img_cache.map()[&image].ready() {
+                            // Still waiting
+                            None => {
+                                ui.add(egui::Spinner::new().size(spinsz));
                             }
-                        });
+                            // Failed to fetch image!
+                            Some(Err(_err)) => {
+                                // FIXME - use content-specific error instead
+                                let no_pfp = crate::images::fetch_img(
+                                    img_cache,
+                                    ui.ctx(),
+                                    ProfilePic::no_pfp_url(),
+                                    ImageType::Profile(128),
+                                );
+                                img_cache.map_mut().insert(image.to_owned(), no_pfp);
+                                // spin until next pass
+                                ui.add(egui::Spinner::new().size(spinsz));
+                            }
+                            // Use the previously resolved image
+                            Some(Ok(img)) => {
+                                let img_resp = ui.add(
+                                    Image::new(img)
+                                        .max_height(height)
+                                        .rounding(5.0)
+                                        .fit_to_original_size(1.0),
+                                );
+                                img_resp.context_menu(|ui| {
+                                    if ui.button("Copy Link").clicked() {
+                                        ui.ctx().copy_text(image);
+                                        ui.close_menu();
+                                    }
+                                });
+                            }
+                        }
                     }
                 })
                 .response
