@@ -1,3 +1,4 @@
+use crate::images::ImageType;
 use crate::imgcache::ImageCache;
 use crate::ui::{Preview, PreviewConfig, View};
 use egui::{vec2, Sense, TextureHandle};
@@ -72,7 +73,7 @@ fn render_pfp(
 
     let m_cached_promise = img_cache.map().get(url);
     if m_cached_promise.is_none() {
-        let res = crate::images::fetch_img(img_cache, ui.ctx(), url, img_size);
+        let res = crate::images::fetch_img(img_cache, ui.ctx(), url, ImageType::Profile(img_size));
         img_cache.map_mut().insert(url.to_owned(), res);
     }
 
@@ -87,7 +88,7 @@ fn render_pfp(
                     img_cache,
                     ui.ctx(),
                     ProfilePic::no_pfp_url(),
-                    img_size,
+                    ImageType::Profile(img_size),
                 );
                 img_cache.map_mut().insert(url.to_owned(), no_pfp);
             }

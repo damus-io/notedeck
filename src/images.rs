@@ -102,54 +102,72 @@ pub fn round_image(image: &mut ColorImage) {
     }
 }
 
-fn process_pfp_bitmap(size: u32, image: &mut image::DynamicImage) -> ColorImage {
+fn process_pfp_bitmap(imgtyp: ImageType, image: &mut image::DynamicImage) -> ColorImage {
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
 
-    // Crop square
-    let smaller = image.width().min(image.height());
+    match imgtyp {
+        ImageType::Content(w, h) => {
+            let image = image.resize(w, h, FilterType::CatmullRom); // DynamicImage
+            let image_buffer = image.into_rgba8(); // RgbaImage (ImageBuffer)
+            let color_image = ColorImage::from_rgba_unmultiplied(
+                [
+                    image_buffer.width() as usize,
+                    image_buffer.height() as usize,
+                ],
+                image_buffer.as_flat_samples().as_slice(),
+            );
+            color_image
+        }
+        ImageType::Profile(size) => {
+            // Crop square
+            let smaller = image.width().min(image.height());
 
-    if image.width() > smaller {
-        let excess = image.width() - smaller;
-        *image = image.crop_imm(excess / 2, 0, image.width() - excess, image.height());
-    } else if image.height() > smaller {
-        let excess = image.height() - smaller;
-        *image = image.crop_imm(0, excess / 2, image.width(), image.height() - excess);
+            if image.width() > smaller {
+                let excess = image.width() - smaller;
+                *image = image.crop_imm(excess / 2, 0, image.width() - excess, image.height());
+            } else if image.height() > smaller {
+                let excess = image.height() - smaller;
+                *image = image.crop_imm(0, excess / 2, image.width(), image.height() - excess);
+            }
+            let image = image.resize(size, size, FilterType::CatmullRom); // DynamicImage
+            let image_buffer = image.into_rgba8(); // RgbaImage (ImageBuffer)
+            let mut color_image = ColorImage::from_rgba_unmultiplied(
+                [
+                    image_buffer.width() as usize,
+                    image_buffer.height() as usize,
+                ],
+                image_buffer.as_flat_samples().as_slice(),
+            );
+            round_image(&mut color_image);
+            color_image
+        }
     }
-    let image = image.resize(size, size, FilterType::CatmullRom); // DynamicImage
-    let image_buffer = image.into_rgba8(); // RgbaImage (ImageBuffer)
-    let mut color_image = ColorImage::from_rgba_unmultiplied(
-        [
-            image_buffer.width() as usize,
-            image_buffer.height() as usize,
-        ],
-        image_buffer.as_flat_samples().as_slice(),
-    );
-    round_image(&mut color_image);
-    color_image
 }
 
-fn parse_img_response(response: ehttp::Response, size: u32) -> Result<ColorImage> {
+fn parse_img_response(response: ehttp::Response, imgtyp: ImageType) -> Result<ColorImage> {
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
 
     let content_type = response.content_type().unwrap_or_default();
+    let size_hint = match imgtyp {
+        ImageType::Profile(size) => SizeHint::Size(size, size),
+        ImageType::Content(w, h) => SizeHint::Size(w, h),
+    };
 
     if content_type.starts_with("image/svg") {
         #[cfg(feature = "profiling")]
         puffin::profile_scope!("load_svg");
 
-        let mut color_image = egui_extras::image::load_svg_bytes_with_size(
-            &response.bytes,
-            Some(SizeHint::Size(size, size)),
-        )?;
+        let mut color_image =
+            egui_extras::image::load_svg_bytes_with_size(&response.bytes, Some(size_hint))?;
         round_image(&mut color_image);
         Ok(color_image)
     } else if content_type.starts_with("image/") {
         #[cfg(feature = "profiling")]
         puffin::profile_scope!("load_from_memory");
         let mut dyn_image = image::load_from_memory(&response.bytes)?;
-        Ok(process_pfp_bitmap(size, &mut dyn_image))
+        Ok(process_pfp_bitmap(imgtyp, &mut dyn_image))
     } else {
         Err(format!("Expected image, found content-type {:?}", content_type).into())
     }
@@ -181,11 +199,20 @@ fn fetch_img_from_disk(
     })
 }
 
+/// Controls type-specific handling
+#[derive(Debug, Clone, Copy)]
+pub enum ImageType {
+    /// Profile Image (size)
+    Profile(u32),
+    /// Content Image (width, height)
+    Content(u32, u32),
+}
+
 pub fn fetch_img(
     img_cache: &ImageCache,
     ctx: &egui::Context,
     url: &str,
-    size: u32,
+    imgtyp: ImageType,
 ) -> Promise<Result<TextureHandle>> {
     let key = ImageCache::key(url);
     let path = img_cache.cache_dir.join(key);
@@ -193,7 +220,7 @@ pub fn fetch_img(
     if path.exists() {
         fetch_img_from_disk(ctx, url, &path)
     } else {
-        fetch_img_from_net(&img_cache.cache_dir, ctx, url, size)
+        fetch_img_from_net(&img_cache.cache_dir, ctx, url, imgtyp)
     }
 
     // TODO: fetch image from local cache
@@ -203,7 +230,7 @@ fn fetch_img_from_net(
     cache_path: &path::Path,
     ctx: &egui::Context,
     url: &str,
-    size: u32,
+    imgtyp: ImageType,
 ) -> Promise<Result<TextureHandle>> {
     let (sender, promise) = Promise::new();
     let request = ehttp::Request::get(url);
@@ -213,7 +240,7 @@ fn fetch_img_from_net(
     ehttp::fetch(request, move |response| {
         let handle = response
             .map_err(Error::Generic)
-            .and_then(|resp| parse_img_response(resp, size))
+            .and_then(|resp| parse_img_response(resp, imgtyp))
             .map(|img| {
                 let texture_handle = ctx.load_texture(&cloned_url, img.clone(), Default::default());
 
