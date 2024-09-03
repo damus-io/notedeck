@@ -25,11 +25,13 @@ pub enum ListKind {
 ///   - DM
 ///   - filter
 ///   - ... etc
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ColumnKind {
     List(ListKind),
 
     Notifications(PubkeySource),
+
+    Profile(PubkeySource),
 
     Universe,
 
@@ -43,6 +45,7 @@ impl Display for ColumnKind {
             ColumnKind::List(ListKind::Contact(_src)) => f.write_str("Contacts"),
             ColumnKind::Generic => f.write_str("Timeline"),
             ColumnKind::Notifications(_) => f.write_str("Notifications"),
+            ColumnKind::Profile(_) => f.write_str("Profile"),
             ColumnKind::Universe => f.write_str("Universe"),
         }
     }
@@ -51,6 +54,10 @@ impl Display for ColumnKind {
 impl ColumnKind {
     pub fn contact_list(pk: PubkeySource) -> Self {
         ColumnKind::List(ListKind::Contact(pk))
+    }
+
+    pub fn profile(pk: PubkeySource) -> Self {
+        ColumnKind::Profile(pk)
     }
 
     pub fn notifications(pk: PubkeySource) -> Self {
@@ -67,6 +74,24 @@ impl ColumnKind {
             ColumnKind::Generic => {
                 warn!("you can't convert a ColumnKind::Generic to a Timeline");
                 None
+            }
+
+            ColumnKind::Profile(pk_src) => {
+                let pk = match &pk_src {
+                    PubkeySource::DeckAuthor => default_user?,
+                    PubkeySource::Explicit(pk) => pk.bytes(),
+                };
+
+                let filter = Filter::new()
+                    .authors([pk])
+                    .kinds([1])
+                    .limit(filter::default_limit())
+                    .build();
+
+                Some(Timeline::new(
+                    ColumnKind::profile(pk_src),
+                    FilterState::ready(vec![filter]),
+                ))
             }
 
             ColumnKind::Notifications(pk_src) => {

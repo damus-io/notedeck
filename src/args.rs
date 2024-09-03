@@ -150,6 +150,21 @@ impl Args {
                         .push(ArgColumn::Column(ColumnKind::notifications(
                             PubkeySource::DeckAuthor,
                         )))
+                } else if column_name == "profile" {
+                    debug!("got profile column for default user");
+                    res.columns.push(ArgColumn::Column(ColumnKind::profile(
+                        PubkeySource::DeckAuthor,
+                    )))
+                } else if let Some(profile_pk_str) = column_name.strip_prefix("profile:") {
+                    if let Ok(pubkey) = Pubkey::parse(profile_pk_str) {
+                        info!("got profile column for user {}", pubkey.hex());
+                        res.columns.push(ArgColumn::Column(ColumnKind::profile(
+                            PubkeySource::Explicit(pubkey),
+                        )))
+                    } else {
+                        error!("error parsing profile pubkey {}", profile_pk_str);
+                        continue;
+                    }
                 }
             } else if arg == "--filter-file" || arg == "-f" {
                 i += 1;
