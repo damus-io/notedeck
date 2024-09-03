@@ -155,6 +155,9 @@ impl Args {
                     res.columns.push(ArgColumn::Column(ColumnKind::profile(
                         PubkeySource::DeckAuthor,
                     )))
+                } else if column_name == "universe" {
+                    debug!("got universe column");
+                    res.columns.push(ArgColumn::Column(ColumnKind::Universe))
                 } else if let Some(profile_pk_str) = column_name.strip_prefix("profile:") {
                     if let Ok(pubkey) = Pubkey::parse(profile_pk_str) {
                         info!("got profile column for user {}", pubkey.hex());

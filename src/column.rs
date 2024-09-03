@@ -68,7 +68,10 @@ impl ColumnKind {
         match self {
             ColumnKind::Universe => Some(Timeline::new(
                 ColumnKind::Universe,
-                FilterState::ready(vec![]),
+                FilterState::ready(vec![Filter::new()
+                    .kinds([1])
+                    .limit(filter::default_limit())
+                    .build()]),
             )),
 
             ColumnKind::Generic => {
