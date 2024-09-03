@@ -69,15 +69,13 @@ impl<'a> TimelineSource<'a> {
 
     /// Check local subscriptions for new notes and insert them into
     /// timelines (threads, columns)
-    pub fn poll_notes_into_view(&self, app: &mut Damus) -> Result<()> {
-        let sub = {
-            let txn = Transaction::new(&app.ndb).expect("txn");
-            if let Some(sub) = self.sub(app, &txn) {
+    pub fn poll_notes_into_view(&self, txn: &Transaction, app: &mut Damus) -> Result<()> {
+        let sub = 
+            if let Some(sub) = self.sub(app, txn) {
                 sub
             } else {
                 return Err(Error::no_active_sub());
-            }
-        };
+            };
 
         let new_note_ids = app.ndb.poll_for_notes(sub, 100);
         if new_note_ids.is_empty() {
@@ -86,18 +84,17 @@ impl<'a> TimelineSource<'a> {
             debug!("{} new notes! {:?}", new_note_ids.len(), new_note_ids);
         }
 
-        let txn = Transaction::new(&app.ndb).expect("txn");
         let mut new_refs: Vec<(Note, NoteRef)> = Vec::with_capacity(new_note_ids.len());
 
         for key in new_note_ids {
-            let note = if let Ok(note) = app.ndb.get_note_by_key(&txn, key) {
+            let note = if let Ok(note) = app.ndb.get_note_by_key(txn, key) {
                 note
             } else {
                 error!("hit race condition in poll_notes_into_view: https://github.com/damus-io/nostrdb/issues/35 note {:?} was not added to timeline", key);
                 continue;
             };
 
-            UnknownIds::update_from_note(&txn, app, &note);
+            UnknownIds::update_from_note(txn, app, &note);
 
             let created_at = note.created_at();
             new_refs.push((note, NoteRef { key, created_at }));
@@ -115,7 +112,7 @@ impl<'a> TimelineSource<'a> {
             let refs: Vec<NoteRef> = new_refs.iter().map(|(_note, nr)| *nr).collect();
 
             let reversed = false;
-            self.view(app, &txn, ViewFilter::NotesAndReplies)
+            self.view(app, txn, ViewFilter::NotesAndReplies)
                 .insert(&refs, reversed);
         }
 
@@ -134,7 +131,7 @@ impl<'a> TimelineSource<'a> {
                 }
             }
 
-            self.view(app, &txn, ViewFilter::Notes)
+            self.view(app, txn, ViewFilter::Notes)
                 .insert(&filtered_refs, reversed);
         }
 
