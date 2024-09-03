@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use crate::column::ColumnKind;
+use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub enum SubKind {
