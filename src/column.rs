@@ -1,5 +1,6 @@
 use crate::error::FilterError;
 use crate::filter::FilterState;
+use crate::filter;
 use crate::{timeline::Timeline, Error};
 use enostr::Pubkey;
 use nostrdb::{Filter, Ndb, Transaction};
@@ -27,6 +28,9 @@ pub enum ListKind {
 #[derive(Debug)]
 pub enum ColumnKind {
     List(ListKind),
+
+    Notifications(PubkeySource),
+
     Universe,
 
     /// Generic filter
@@ -38,6 +42,7 @@ impl Display for ColumnKind {
         match self {
             ColumnKind::List(ListKind::Contact(_src)) => f.write_str("Contacts"),
             ColumnKind::Generic => f.write_str("Timeline"),
+            ColumnKind::Notifications(_) => f.write_str("Notifications"),
             ColumnKind::Universe => f.write_str("Universe"),
         }
     }
@@ -46,6 +51,10 @@ impl Display for ColumnKind {
 impl ColumnKind {
     pub fn contact_list(pk: PubkeySource) -> Self {
         ColumnKind::List(ListKind::Contact(pk))
+    }
+
+    pub fn notifications(pk: PubkeySource) -> Self {
+        ColumnKind::Notifications(pk)
     }
 
     pub fn into_timeline(self, ndb: &Ndb, default_user: Option<&[u8; 32]>) -> Option<Timeline> {
@@ -60,8 +69,26 @@ impl ColumnKind {
                 None
             }
 
-            ColumnKind::List(ListKind::Contact(ref pk_src)) => {
-                let pk = match pk_src {
+            ColumnKind::Notifications(pk_src) => {
+                let pk = match &pk_src {
+                    PubkeySource::DeckAuthor => default_user?,
+                    PubkeySource::Explicit(pk) => pk.bytes(),
+                };
+
+                let notifications_filter = Filter::new()
+                    .pubkeys([pk])
+                    .kinds([1])
+                    .limit(filter::default_limit())
+                    .build();
+
+                Some(Timeline::new(
+                    ColumnKind::notifications(pk_src),
+                    FilterState::ready(vec![notifications_filter]),
+                ))
+            }
+
+            ColumnKind::List(ListKind::Contact(pk_src)) => {
+                let pk = match &pk_src {
                     PubkeySource::DeckAuthor => default_user?,
                     PubkeySource::Explicit(pk) => pk.bytes(),
                 };
@@ -75,14 +102,14 @@ impl ColumnKind {
 
                 if results.is_empty() {
                     return Some(Timeline::new(
-                        ColumnKind::contact_list(pk_src.to_owned()),
+                        ColumnKind::contact_list(pk_src),
                         FilterState::needs_remote(vec![contact_filter.clone()]),
                     ));
                 }
 
                 match Timeline::contact_list(&results[0].note) {
                     Err(Error::Filter(FilterError::EmptyContactList)) => Some(Timeline::new(
-                        ColumnKind::contact_list(pk_src.to_owned()),
+                        ColumnKind::contact_list(pk_src),
                         FilterState::needs_remote(vec![contact_filter]),
                     )),
                     Err(e) => {

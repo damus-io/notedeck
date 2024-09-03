@@ -3,7 +3,7 @@ use crate::filter::FilterState;
 use crate::timeline::Timeline;
 use enostr::{Filter, Keypair, Pubkey, SecretKey};
 use nostrdb::Ndb;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 pub struct Args {
     pub columns: Vec<ArgColumn>,
@@ -117,18 +117,35 @@ impl Args {
 
                 if let Some(rest) = column_name.strip_prefix("contacts:") {
                     if let Ok(pubkey) = Pubkey::parse(rest) {
-                        info!("got contact column for user {}", pubkey.hex());
+                        info!("contact column for user {}", pubkey.hex());
                         res.columns.push(ArgColumn::Column(ColumnKind::contact_list(
                             PubkeySource::Explicit(pubkey),
                         )))
                     } else {
-                        error!("error parsing contacts pubkey {}", &column_name[9..]);
+                        error!("error parsing contacts pubkey {}", rest);
                         continue;
                     }
                 } else if column_name == "contacts" {
                     res.columns.push(ArgColumn::Column(ColumnKind::contact_list(
                         PubkeySource::DeckAuthor,
                     )))
+                } else if let Some(notif_pk_str) = column_name.strip_prefix("notifications:") {
+                    if let Ok(pubkey) = Pubkey::parse(notif_pk_str) {
+                        info!("got notifications column for user {}", pubkey.hex());
+                        res.columns
+                            .push(ArgColumn::Column(ColumnKind::notifications(
+                                PubkeySource::Explicit(pubkey),
+                            )))
+                    } else {
+                        error!("error parsing notifications pubkey {}", notif_pk_str);
+                        continue;
+                    }
+                } else if column_name == "notifications" {
+                    debug!("got notification column for default user");
+                    res.columns
+                        .push(ArgColumn::Column(ColumnKind::notifications(
+                            PubkeySource::DeckAuthor,
+                        )))
                 }
             } else if arg == "--filter-file" || arg == "-f" {
                 i += 1;
