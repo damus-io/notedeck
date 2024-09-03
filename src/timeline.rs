@@ -1,8 +1,8 @@
-use crate::app::{get_unknown_note_ids, UnknownId};
 use crate::column::{ColumnKind, PubkeySource};
 use crate::error::Error;
 use crate::note::NoteRef;
 use crate::notecache::CachedNote;
+use crate::unknowns::UnknownIds;
 use crate::{filter, filter::FilterState};
 use crate::{Damus, Result};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -13,7 +13,6 @@ use egui_virtual_list::VirtualList;
 use enostr::Pubkey;
 use nostrdb::{Note, Subscription, Transaction};
 use std::cell::RefCell;
-use std::collections::HashSet;
 use std::rc::Rc;
 
 use tracing::{debug, error};
@@ -70,11 +69,7 @@ impl<'a> TimelineSource<'a> {
 
     /// Check local subscriptions for new notes and insert them into
     /// timelines (threads, columns)
-    pub fn poll_notes_into_view(
-        &self,
-        app: &mut Damus,
-        ids: &mut HashSet<UnknownId>,
-    ) -> Result<()> {
+    pub fn poll_notes_into_view(&self, app: &mut Damus) -> Result<()> {
         let sub = {
             let txn = Transaction::new(&app.ndb).expect("txn");
             if let Some(sub) = self.sub(app, &txn) {
@@ -102,11 +97,7 @@ impl<'a> TimelineSource<'a> {
                 continue;
             };
 
-            let cached_note = app
-                .note_cache_mut()
-                .cached_note_or_insert(key, &note)
-                .clone();
-            let _ = get_unknown_note_ids(&app.ndb, &cached_note, &txn, &note, key, ids);
+            UnknownIds::update_from_note(&txn, app, &note);
 
             let created_at = note.created_at();
             new_refs.push((note, NoteRef { key, created_at }));
@@ -297,7 +288,7 @@ impl Timeline {
     /// Create a timeline from a contact list
     pub fn contact_list(contact_list: &Note) -> Result<Self> {
         let filter = filter::filter_from_tags(contact_list)?.into_follow_filter();
-        let pk_src = PubkeySource::Explicit(Pubkey::new(contact_list.pubkey()));
+        let pk_src = PubkeySource::Explicit(Pubkey::new(*contact_list.pubkey()));
 
         Ok(Timeline::new(
             ColumnKind::contact_list(pk_src),
