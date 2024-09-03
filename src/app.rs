@@ -637,6 +637,14 @@ impl Damus {
             }
         }
 
+        if timelines.is_empty() {
+            let filter = Filter::from_json(include_str!("../queries/timeline.json")).unwrap();
+            timelines.push(Timeline::new(
+                ColumnKind::Generic,
+                FilterState::ready(vec![filter]),
+            ));
+        }
+
         Self {
             pool,
             is_mobile,
