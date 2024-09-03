@@ -1,5 +1,7 @@
 use std::collections::HashMap;
+use crate::column::ColumnKind;
 
+#[derive(Debug, Clone)]
 pub enum SubKind {
     /// Initial subscription. This is the first time we do a remote subscription
     /// for a timeline
@@ -7,6 +9,8 @@ pub enum SubKind {
 
     /// One shot requests, we can just close after we receive EOSE
     OneShot,
+
+    Column(ColumnKind),
 
     /// We are fetching a contact list so that we can use it for our follows
     /// Filter.

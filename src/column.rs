@@ -13,7 +13,7 @@ pub enum PubkeySource {
     DeckAuthor,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ListKind {
     Contact(PubkeySource),
 }

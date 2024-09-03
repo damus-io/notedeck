@@ -68,6 +68,7 @@ pub struct Damus {
 
     // TODO: make these flags
     is_mobile: bool,
+    pub debug: bool,
     pub since_optimize: bool,
     pub textmode: bool,
     pub show_account_switcher: bool,
@@ -148,7 +149,7 @@ fn send_initial_timeline_filter(damus: &mut Damus, timeline: usize) {
                 filter
             }).collect();
 
-            let sub_id = Uuid::new_v4().to_string();
+            let sub_id = damus.gen_subid(&SubKind::Initial);
             damus
                 .subscriptions()
                 .insert(sub_id.clone(), SubKind::Initial);
@@ -158,16 +159,15 @@ fn send_initial_timeline_filter(damus: &mut Damus, timeline: usize) {
 
         // we need some data first
         FilterState::NeedsRemote(filter) => {
-            let sub_id = Uuid::new_v4().to_string();
             let uid = damus.timelines[timeline].uid;
+            let sub_kind = SubKind::FetchingContactList(uid);
+            let sub_id = damus.gen_subid(&sub_kind);
             let local_sub = damus.ndb.subscribe(&filter).expect("sub");
 
             damus.timelines[timeline].filter =
                 FilterState::fetching_remote(sub_id.clone(), local_sub);
 
-            damus
-                .subscriptions()
-                .insert(sub_id.clone(), SubKind::FetchingContactList(uid));
+            damus.subscriptions().insert(sub_id.clone(), sub_kind);
 
             damus.pool.subscribe(sub_id, filter.to_owned());
         }
@@ -341,7 +341,8 @@ fn is_timeline_ready(damus: &mut Damus, timeline: usize) -> Result<bool> {
             setup_initial_timeline(damus, timeline, &filter).expect("setup init");
             damus.timelines[timeline].filter = FilterState::ready(filter.clone());
 
-            let subid = Uuid::new_v4().to_string();
+            let ck = &damus.timelines[timeline].kind;
+            let subid = damus.gen_subid(&SubKind::Column(ck.clone()));
             damus.pool.subscribe(subid, filter)
         }
     }
@@ -457,6 +458,9 @@ fn handle_eose(damus: &mut Damus, subid: &str, relay_url: &str) -> Result<()> {
     };
 
     match *sub_kind {
+        SubKind::Column(_) => {
+            // eose on column? whatevs
+        }
         SubKind::Initial => {
             let txn = Transaction::new(&damus.ndb)?;
             UnknownIds::update(&txn, damus);
@@ -637,8 +641,11 @@ impl Damus {
             }
         }
 
+        let debug = parsed_args.debug;
+
         Self {
             pool,
+            debug,
             is_mobile,
             unknown_ids: UnknownIds::default(),
             subscriptions: Subscriptions::default(),
@@ -660,6 +667,14 @@ impl Damus {
         }
     }
 
+    pub fn gen_subid(&self, kind: &SubKind) -> String {
+        if self.debug {
+            format!("{:?}", kind)
+        } else {
+            Uuid::new_v4().to_string()
+        }
+    }
+
     pub fn mock<P: AsRef<Path>>(data_path: P, is_mobile: bool) -> Self {
         let mut timelines: Vec<Timeline> = vec![];
         let filter = Filter::from_json(include_str!("../queries/global.json")).unwrap();
@@ -670,11 +685,13 @@ impl Damus {
 
         let imgcache_dir = data_path.as_ref().join(ImageCache::rel_datadir());
         let _ = std::fs::create_dir_all(imgcache_dir.clone());
+        let debug = true;
 
         let mut config = Config::new();
         config.set_ingester_threads(2);
         Self {
             is_mobile,
+            debug,
             unknown_ids: UnknownIds::default(),
             subscriptions: Subscriptions::default(),
             since_optimize: true,

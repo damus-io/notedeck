@@ -12,6 +12,7 @@ pub struct Args {
     pub keys: Vec<Keypair>,
     pub since_optimize: bool,
     pub light: bool,
+    pub debug: bool,
     pub dbpath: Option<String>,
 }
 
@@ -24,6 +25,7 @@ impl Args {
             keys: vec![],
             light: false,
             since_optimize: true,
+            debug: false,
             dbpath: None,
         };
 
@@ -38,6 +40,8 @@ impl Args {
                 res.light = true;
             } else if arg == "--dark" {
                 res.light = false;
+            } else if arg == "--debug" {
+                res.debug = true;
             } else if arg == "--pub" || arg == "--npub" {
                 i += 1;
                 let pubstr = if let Some(next_arg) = args.get(i) {
