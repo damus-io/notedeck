@@ -100,7 +100,7 @@ fn relay_setup(pool: &mut RelayPool, ctx: &egui::Context) {
     }
 }
 
-fn send_initial_timeline_filter(damus: &mut Damus, timeline: usize) {
+fn send_initial_timeline_filter(damus: &mut Damus, timeline: usize, to: &str) {
     let can_since_optimize = damus.since_optimize;
 
     let filter_state = damus.timelines[timeline].filter.clone();
@@ -154,7 +154,8 @@ fn send_initial_timeline_filter(damus: &mut Damus, timeline: usize) {
                 .subscriptions()
                 .insert(sub_id.clone(), SubKind::Initial);
 
-            damus.pool.subscribe(sub_id, new_filters);
+            let cmd = ClientMessage::req(sub_id, new_filters);
+            damus.pool.send_to(&cmd, to);
         }
 
         // we need some data first
@@ -179,7 +180,7 @@ fn send_initial_filters(damus: &mut Damus, relay_url: &str) {
     let timelines = damus.timelines.len();
 
     for i in 0..timelines {
-        send_initial_timeline_filter(damus, i);
+        send_initial_timeline_filter(damus, i, relay_url);
     }
 }
 
