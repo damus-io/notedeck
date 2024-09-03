@@ -1,6 +1,6 @@
 use crate::error::FilterError;
-use crate::filter::FilterState;
 use crate::filter;
+use crate::filter::FilterState;
 use crate::{timeline::Timeline, Error};
 use enostr::Pubkey;
 use nostrdb::{Filter, Ndb, Transaction};

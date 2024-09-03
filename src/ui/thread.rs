@@ -71,7 +71,8 @@ impl<'a> ThreadView<'a> {
                 };
 
                 // poll for new notes and insert them into our existing notes
-                if let Err(e) = TimelineSource::Thread(root_id).poll_notes_into_view(&txn, self.app) {
+                if let Err(e) = TimelineSource::Thread(root_id).poll_notes_into_view(&txn, self.app)
+                {
                     error!("Thread::poll_notes_into_view: {e}");
                 }
 

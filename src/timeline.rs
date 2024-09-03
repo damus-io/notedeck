@@ -70,12 +70,11 @@ impl<'a> TimelineSource<'a> {
     /// Check local subscriptions for new notes and insert them into
     /// timelines (threads, columns)
     pub fn poll_notes_into_view(&self, txn: &Transaction, app: &mut Damus) -> Result<()> {
-        let sub = 
-            if let Some(sub) = self.sub(app, txn) {
-                sub
-            } else {
-                return Err(Error::no_active_sub());
-            };
+        let sub = if let Some(sub) = self.sub(app, txn) {
+            sub
+        } else {
+            return Err(Error::no_active_sub());
+        };
 
         let new_note_ids = app.ndb.poll_for_notes(sub, 100);
         if new_note_ids.is_empty() {
