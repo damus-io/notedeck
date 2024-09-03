@@ -8,7 +8,9 @@ pub mod account_manager;
 mod actionbar;
 pub mod app_creation;
 mod app_style;
+mod args;
 mod colors;
+mod column;
 mod draft;
 mod filter;
 mod fonts;
@@ -26,12 +28,14 @@ mod profile;
 pub mod relay_pool_manager;
 mod result;
 mod route;
+mod subscriptions;
 mod test_data;
 mod thread;
 mod time;
 mod timecache;
 mod timeline;
 pub mod ui;
+mod unknowns;
 mod user_account;
 
 #[cfg(test)]

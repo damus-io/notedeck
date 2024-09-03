@@ -16,7 +16,7 @@ impl Keypair {
         let cloned_secret_key = secret_key.clone();
         let nostr_keys = nostr::Keys::new(secret_key);
         Keypair {
-            pubkey: Pubkey::new(&nostr_keys.public_key().to_bytes()),
+            pubkey: Pubkey::new(nostr_keys.public_key().to_bytes()),
             secret_key: Some(cloned_secret_key),
         }
     }
@@ -61,7 +61,7 @@ impl FullKeypair {
         let (xopk, _) = secret_key.x_only_public_key(&nostr::SECP256K1);
         let secret_key = nostr::SecretKey::from(*secret_key);
         FullKeypair {
-            pubkey: Pubkey::new(&xopk.serialize()),
+            pubkey: Pubkey::new(xopk.serialize()),
             secret_key,
         }
     }

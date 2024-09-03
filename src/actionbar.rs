@@ -76,7 +76,7 @@ fn open_thread(
     // an active subscription for this thread.
     if thread.subscription().is_none() {
         let filters = Thread::filters(root_id);
-        *thread.subscription_mut() = app.ndb.subscribe(filters.clone()).ok();
+        *thread.subscription_mut() = app.ndb.subscribe(&filters).ok();
 
         if thread.remote_subscription().is_some() {
             error!("Found active remote subscription when it was not expected");

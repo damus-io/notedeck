@@ -1,5 +1,10 @@
 use std::{fmt, io};
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum FilterError {
+    EmptyContactList,
+}
+
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
 pub enum SubscriptionError {
     //#[error("No active subscriptions")]
@@ -36,6 +41,7 @@ impl fmt::Display for SubscriptionError {
 #[derive(Debug)]
 pub enum Error {
     SubscriptionError(SubscriptionError),
+    Filter(FilterError),
     LoadFailed,
     Io(io::Error),
     Nostr(enostr::Error),
@@ -44,14 +50,33 @@ pub enum Error {
     Generic(String),
 }
 
+impl Error {
+    pub fn empty_contact_list() -> Self {
+        Error::Filter(FilterError::EmptyContactList)
+    }
+}
+
+impl fmt::Display for FilterError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptyContactList => {
+                write!(f, "empty contact list")
+            }
+        }
+    }
+}
+
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::SubscriptionError(sub_err) => {
-                write!(f, "{sub_err}")
+            Self::SubscriptionError(e) => {
+                write!(f, "{e}")
             }
             Self::LoadFailed => {
                 write!(f, "load failed")
+            }
+            Self::Filter(e) => {
+                write!(f, "{e}")
             }
             Self::Nostr(e) => write!(f, "{e}"),
             Self::Ndb(e) => write!(f, "{e}"),
@@ -89,5 +114,11 @@ impl From<enostr::Error> for Error {
 impl From<io::Error> for Error {
     fn from(err: io::Error) -> Self {
         Error::Io(err)
+    }
+}
+
+impl From<FilterError> for Error {
+    fn from(err: FilterError) -> Self {
+        Error::Filter(err)
     }
 }

@@ -1,7 +1,6 @@
 use crate::{actionbar::BarResult, timeline::TimelineSource, ui, Damus};
 use nostrdb::{NoteKey, Transaction};
-use std::collections::HashSet;
-use tracing::warn;
+use tracing::{error, warn};
 
 pub struct ThreadView<'a> {
     app: &'a mut Damus,
@@ -72,11 +71,8 @@ impl<'a> ThreadView<'a> {
                 };
 
                 // poll for new notes and insert them into our existing notes
-                {
-                    let mut ids = HashSet::new();
-                    let _ = TimelineSource::Thread(root_id)
-                        .poll_notes_into_view(self.app, &txn, &mut ids);
-                    // TODO: do something with unknown ids
+                if let Err(e) = TimelineSource::Thread(root_id).poll_notes_into_view(self.app) {
+                    error!("Thread::poll_notes_into_view: {e}");
                 }
 
                 let (len, list) = {

@@ -2,7 +2,11 @@ use crate::account_manager::AccountManager;
 use crate::actionbar::BarResult;
 use crate::app_creation::setup_cc;
 use crate::app_style::user_requested_visuals_change;
+use crate::args::Args;
+use crate::column::ColumnKind;
 use crate::draft::Drafts;
+use crate::error::{Error, FilterError};
+use crate::filter::FilterState;
 use crate::frame_history::FrameHistory;
 use crate::imgcache::ImageCache;
 use crate::key_storage::KeyStorageType;
@@ -10,24 +14,26 @@ use crate::note::NoteRef;
 use crate::notecache::{CachedNote, NoteCache};
 use crate::relay_pool_manager::RelayPoolManager;
 use crate::route::Route;
+use crate::subscriptions::{SubKind, Subscriptions};
 use crate::thread::{DecrementResult, Threads};
 use crate::timeline::{Timeline, TimelineSource, ViewFilter};
 use crate::ui::note::PostAction;
 use crate::ui::{self, AccountSelectionWidget, DesktopGlobalPopup};
 use crate::ui::{DesktopSidePanel, RelayView, View};
-use crate::Result;
+use crate::unknowns::UnknownIds;
+use crate::{filter, Result};
 use egui_nav::{Nav, NavAction};
-use enostr::{ClientMessage, Keypair, RelayEvent, RelayMessage, RelayPool, SecretKey};
+use enostr::{ClientMessage, RelayEvent, RelayMessage, RelayPool};
 use std::cell::RefCell;
 use std::rc::Rc;
+use uuid::Uuid;
 
 use egui::{Context, Frame, Style};
 use egui_extras::{Size, StripBuilder};
 
-use nostrdb::{BlockType, Config, Filter, Mention, Ndb, Note, NoteKey, Transaction};
+use nostrdb::{Config, Filter, Ndb, Note, Transaction};
 
-use std::collections::HashSet;
-use std::hash::Hash;
+use std::collections::HashMap;
 use std::path::Path;
 use std::time::Duration;
 use tracing::{debug, error, info, trace, warn};
@@ -41,26 +47,29 @@ pub enum DamusState {
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
 pub struct Damus {
     state: DamusState,
-    //compose: String,
     note_cache: NoteCache,
     pub pool: RelayPool,
-    is_mobile: bool,
-    pub since_optimize: bool,
 
     /// global navigation for account management popups, etc.
     pub global_nav: Vec<Route>,
-    pub textmode: bool,
 
     pub timelines: Vec<Timeline>,
     pub selected_timeline: i32,
 
     pub ndb: Ndb,
+    pub unknown_ids: UnknownIds,
     pub drafts: Drafts,
     pub threads: Threads,
     pub img_cache: ImageCache,
     pub account_manager: AccountManager,
+    pub subscriptions: Subscriptions,
 
     frame_history: crate::frame_history::FrameHistory,
+
+    // TODO: make these flags
+    is_mobile: bool,
+    pub since_optimize: bool,
+    pub textmode: bool,
     pub show_account_switcher: bool,
     pub show_global_popup: bool,
 }
@@ -90,44 +99,87 @@ fn relay_setup(pool: &mut RelayPool, ctx: &egui::Context) {
     }
 }
 
-/// Should we since optimize? Not always. For examplem if we only have a few
-/// notes locally. One way to determine this is by looking at the current filter
-/// and seeing what its limit is. If we have less notes than the limit,
-/// we might want to backfill older notes
+fn send_initial_timeline_filter(damus: &mut Damus, timeline: usize) {
+    let can_since_optimize = damus.since_optimize;
+
+    let filter_state = damus.timelines[timeline].filter.clone();
+
+    match filter_state {
+        FilterState::Broken(err) => {
+            error!(
+                "FetchingRemote state in broken state when sending initial timeline filter? {err}"
+            );
+        }
+
+        FilterState::FetchingRemote(_unisub) => {
+            error!("FetchingRemote state when sending initial timeline filter?");
+        }
+
+        FilterState::GotRemote(_sub) => {
+            error!("GotRemote state when sending initial timeline filter?");
+        }
+
+        FilterState::Ready(filter) => {
+            let filter = filter.to_owned();
+            let new_filters = filter.into_iter().map(|f| {
+                // limit the size of remote filters
+                let default_limit = filter::default_remote_limit();
+                let mut lim = f.limit().unwrap_or(default_limit);
+                let mut filter = f;
+                if lim > default_limit {
+                    lim = default_limit;
+                    filter = filter.limit_mut(lim);
+                }
+
+                let notes = damus.timelines[timeline].notes(ViewFilter::NotesAndReplies);
+
+                // Should we since optimize? Not always. For example
+                // if we only have a few notes locally. One way to
+                // determine this is by looking at the current filter
+                // and seeing what its limit is. If we have less
+                // notes than the limit, we might want to backfill
+                // older notes
+                if can_since_optimize && filter::should_since_optimize(lim, notes.len()) {
+                    filter = filter::since_optimize_filter(filter, notes);
+                } else {
+                    warn!("Skipping since optimization for {:?}: number of local notes is less than limit, attempting to backfill.", filter);
+                }
+
+                filter
+            }).collect();
+
+            let sub_id = Uuid::new_v4().to_string();
+            damus
+                .subscriptions()
+                .insert(sub_id.clone(), SubKind::Initial);
+
+            damus.pool.subscribe(sub_id, new_filters);
+        }
+
+        // we need some data first
+        FilterState::NeedsRemote(filter) => {
+            let sub_id = Uuid::new_v4().to_string();
+            let uid = damus.timelines[timeline].uid;
+            let local_sub = damus.ndb.subscribe(&filter).expect("sub");
+
+            damus.timelines[timeline].filter =
+                FilterState::fetching_remote(sub_id.clone(), local_sub);
+
+            damus
+                .subscriptions()
+                .insert(sub_id.clone(), SubKind::FetchingContactList(uid));
+
+            damus.pool.subscribe(sub_id, filter.to_owned());
+        }
+    }
+}
+
 fn send_initial_filters(damus: &mut Damus, relay_url: &str) {
     info!("Sending initial filters to {}", relay_url);
-    let mut c: u32 = 1;
+    let timelines = damus.timelines.len();
 
-    let can_since_optimize = damus.since_optimize;
-    for relay in &mut damus.pool.relays {
-        let relay = &mut relay.relay;
-        if relay.url == relay_url {
-            for timeline in &damus.timelines {
-                let filter = timeline.filter.clone();
-                let new_filters = filter.into_iter().map(|f| {
-                    // limit the size of remote filters
-                    let default_limit = crate::filter::default_remote_limit();
-                    let mut lim = f.limit().unwrap_or(default_limit);
-                    let mut filter = f;
-                    if lim > default_limit {
-                        lim = default_limit;
-                        filter = filter.limit_mut(lim);
-                    }
-
-                    let notes = timeline.notes(ViewFilter::NotesAndReplies);
-                    if can_since_optimize && crate::filter::should_since_optimize(lim, notes.len()) {
-                        filter = crate::filter::since_optimize_filter(filter, notes);
-                    } else {
-                        warn!("Skipping since optimization for {:?}: number of local notes is less than limit, attempting to backfill.", filter);
-                    }
-
-                    filter
-                }).collect();
-                relay.subscribe(format!("initial{}", c), new_filters);
-                c += 1;
-            }
-            return;
-        }
+    for i in 0..timelines {
+        send_initial_timeline_filter(damus, i);
     }
 }
 
@@ -211,137 +263,89 @@ fn try_process_event(damus: &mut Damus, ctx: &egui::Context) -> Result<()> {
         }
     }
 
-    let txn = Transaction::new(&damus.ndb)?;
-    let mut unknown_ids: HashSet<UnknownId> = HashSet::new();
     for timeline in 0..damus.timelines.len() {
         let src = TimelineSource::column(timeline);
-        if let Err(err) = src.poll_notes_into_view(damus, &txn, &mut unknown_ids) {
-            error!("{}", err);
+
+        if let Ok(true) = is_timeline_ready(damus, timeline) {
+            if let Err(err) = src.poll_notes_into_view(damus) {
+                error!("poll_notes_into_view: {err}");
+            }
+        } else {
+            // TODO: show loading?
         }
     }
 
-    let unknown_ids: Vec<UnknownId> = unknown_ids.into_iter().collect();
-    if let Some(filters) = get_unknown_ids_filter(&unknown_ids) {
-        info!(
-            "Getting {} unknown author profiles from relays",
-            unknown_ids.len()
-        );
-        let msg = ClientMessage::req("unknown_ids".to_string(), filters);
-        damus.pool.send(&msg);
+    if damus.unknown_ids.ready_to_send() {
+        unknown_id_send(damus);
     }
 
     Ok(())
 }
 
-#[derive(Hash, Clone, Copy, PartialEq, Eq)]
-pub enum UnknownId<'a> {
-    Pubkey(&'a [u8; 32]),
-    Id(&'a [u8; 32]),
+fn unknown_id_send(damus: &mut Damus) {
+    let filter = damus.unknown_ids.filter().expect("filter");
+    info!(
+        "Getting {} unknown ids from relays",
+        damus.unknown_ids.ids().len()
+    );
+    let msg = ClientMessage::req("unknownids".to_string(), filter);
+    damus.unknown_ids.clear();
+    damus.pool.send(&msg);
 }
 
-impl<'a> UnknownId<'a> {
-    pub fn is_pubkey(&self) -> Option<&'a [u8; 32]> {
-        match self {
-            UnknownId::Pubkey(pk) => Some(pk),
-            _ => None,
+/// Check our timeline filter and see if we have any filter data ready.
+/// Our timelines may require additional data before it is functional. For
+/// example, when we have to fetch a contact list before we do the actual
+/// following list query.
+fn is_timeline_ready(damus: &mut Damus, timeline: usize) -> Result<bool> {
+    let sub = match &damus.timelines[timeline].filter {
+        FilterState::GotRemote(sub) => *sub,
+        FilterState::Ready(_f) => return Ok(true),
+        _ => return Ok(false),
+    };
+
+    // We got at least one eose for our filter request. Let's see
+    // if nostrdb is done processing it yet.
+    let res = damus.ndb.poll_for_notes(sub, 1);
+    if res.is_empty() {
+        debug!("check_timeline_filter_state: no notes found (yet?) for timeline {timeline}");
+        return Ok(false);
+    }
+
+    info!("notes found for contact timeline after GotRemote!");
+
+    let note_key = res[0];
+
+    let filter = {
+        let txn = Transaction::new(&damus.ndb).expect("txn");
+        let note = damus.ndb.get_note_by_key(&txn, note_key).expect("note");
+        filter::filter_from_tags(&note).map(|f| f.into_follow_filter())
+    };
+
+    // TODO: into_follow_filter is hardcoded to contact lists, let's generalize
+    match filter {
+        Err(Error::Filter(e)) => {
+            error!("got broken when building filter {e}");
+            damus.timelines[timeline].filter = FilterState::broken(e);
+        }
+        Err(err) => {
+            error!("got broken when building filter {err}");
+            damus.timelines[timeline].filter = FilterState::broken(FilterError::EmptyContactList);
+            return Err(err);
+        }
+        Ok(filter) => {
+            // we just switched to the ready state, we should send initial
+            // queries and setup the local subscription
+            info!("Found contact list! Setting up local and remote contact list query");
+            setup_initial_timeline(damus, timeline, &filter).expect("setup init");
+            damus.timelines[timeline].filter = FilterState::ready(filter.clone());
+
+            let subid = Uuid::new_v4().to_string();
+            damus.pool.subscribe(subid, filter)
         }
     }
 
-    pub fn is_id(&self) -> Option<&'a [u8; 32]> {
-        match self {
-            UnknownId::Id(id) => Some(id),
-            _ => None,
-        }
-    }
-}
-
-/// Look for missing notes in various parts of notes that we see:
-///
-/// - pubkeys and notes mentioned inside the note
-/// - notes being replied to
-///
-/// We return all of this in a HashSet so that we can fetch these from
-/// remote relays.
-///
-pub fn get_unknown_note_ids<'a>(
-    ndb: &Ndb,
-    cached_note: &CachedNote,
-    txn: &'a Transaction,
-    note: &Note<'a>,
-    note_key: NoteKey,
-    ids: &mut HashSet<UnknownId<'a>>,
-) -> Result<()> {
-    // the author pubkey
-
-    if ndb.get_profile_by_pubkey(txn, note.pubkey()).is_err() {
-        ids.insert(UnknownId::Pubkey(note.pubkey()));
-    }
-
-    // pull notes that notes are replying to
-    if cached_note.reply.root.is_some() {
-        let note_reply = cached_note.reply.borrow(note.tags());
-        if let Some(root) = note_reply.root() {
-            if ndb.get_note_by_id(txn, root.id).is_err() {
-                ids.insert(UnknownId::Id(root.id));
-            }
-        }
-
-        if !note_reply.is_reply_to_root() {
-            if let Some(reply) = note_reply.reply() {
-                if ndb.get_note_by_id(txn, reply.id).is_err() {
-                    ids.insert(UnknownId::Id(reply.id));
-                }
-            }
-        }
-    }
-
-    let blocks = ndb.get_blocks_by_key(txn, note_key)?;
-    for block in blocks.iter(note) {
-        if block.blocktype() != BlockType::MentionBech32 {
-            continue;
-        }
-
-        match block.as_mention().unwrap() {
-            Mention::Pubkey(npub) => {
-                if ndb.get_profile_by_pubkey(txn, npub.pubkey()).is_err() {
-                    ids.insert(UnknownId::Pubkey(npub.pubkey()));
-                }
-            }
-            Mention::Profile(nprofile) => {
-                if ndb.get_profile_by_pubkey(txn, nprofile.pubkey()).is_err() {
-                    ids.insert(UnknownId::Pubkey(nprofile.pubkey()));
-                }
-            }
-            Mention::Event(ev) => match ndb.get_note_by_id(txn, ev.id()) {
-                Err(_) => {
-                    ids.insert(UnknownId::Id(ev.id()));
-                    if let Some(pk) = ev.pubkey() {
-                        if ndb.get_profile_by_pubkey(txn, pk).is_err() {
-                            ids.insert(UnknownId::Pubkey(pk));
-                        }
-                    }
-                }
-                Ok(note) => {
-                    if ndb.get_profile_by_pubkey(txn, note.pubkey()).is_err() {
-                        ids.insert(UnknownId::Pubkey(note.pubkey()));
-                    }
-                }
-            },
-            Mention::Note(note) => match ndb.get_note_by_id(txn, note.id()) {
-                Err(_) => {
-                    ids.insert(UnknownId::Id(note.id()));
-                }
-                Ok(note) => {
-                    if ndb.get_profile_by_pubkey(txn, note.pubkey()).is_err() {
-                        ids.insert(UnknownId::Pubkey(note.pubkey()));
-                    }
-                }
-            },
-            _ => {}
-        }
-    }
-
-    Ok(())
+    Ok(true)
 }
 
 #[cfg(feature = "profiling")]
@@ -349,45 +353,61 @@ fn setup_profiling() {
     puffin::set_scopes_on(true); // tell puffin to collect data
 }
 
+fn setup_initial_timeline(damus: &mut Damus, timeline: usize, filters: &[Filter]) -> Result<()> {
+    damus.timelines[timeline].subscription = Some(damus.ndb.subscribe(filters)?);
+    let txn = Transaction::new(&damus.ndb)?;
+    debug!(
+        "querying nostrdb sub {:?} {:?}",
+        damus.timelines[timeline].subscription, damus.timelines[timeline].filter
+    );
+    let lim = filters[0].limit().unwrap_or(crate::filter::default_limit()) as i32;
+    let results = damus.ndb.query(&txn, filters, lim)?;
+
+    let filters = {
+        let views = &damus.timelines[timeline].views;
+        let filters: Vec<fn(&CachedNote, &Note) -> bool> =
+            views.iter().map(|v| v.filter.filter()).collect();
+        filters
+    };
+
+    for result in results {
+        for (view, filter) in filters.iter().enumerate() {
+            if filter(
+                damus
+                    .note_cache_mut()
+                    .cached_note_or_insert_mut(result.note_key, &result.note),
+                &result.note,
+            ) {
+                damus.timelines[timeline].views[view].notes.push(NoteRef {
+                    key: result.note_key,
+                    created_at: result.note.created_at(),
+                })
+            }
+        }
+    }
+
+    Ok(())
+}
+
 fn setup_initial_nostrdb_subs(damus: &mut Damus) -> Result<()> {
     let timelines = damus.timelines.len();
     for i in 0..timelines {
-        let filters = damus.timelines[i].filter.clone();
-        damus.timelines[i].subscription = Some(damus.ndb.subscribe(filters.clone())?);
-        let txn = Transaction::new(&damus.ndb)?;
-        debug!(
-            "querying nostrdb sub {} {:?}",
-            damus.timelines[i].subscription.as_ref().unwrap().id,
-            damus.timelines[i].filter
-        );
-        let results = damus.ndb.query(
-            &txn,
-            filters,
-            damus.timelines[i].filter[0]
-                .limit()
-                .unwrap_or(crate::filter::default_limit()) as i32,
-        )?;
+        let filter = damus.timelines[i].filter.clone();
+        match filter {
+            FilterState::Ready(filters) => setup_initial_timeline(damus, i, &filters)?,
 
-        let filters = {
-            let views = &damus.timelines[i].views;
-            let filters: Vec<fn(&CachedNote, &Note) -> bool> =
-                views.iter().map(|v| v.filter.filter()).collect();
-            filters
-        };
-
-        for result in results {
-            for (j, filter) in filters.iter().enumerate() {
-                if filter(
-                    damus
-                        .note_cache_mut()
-                        .cached_note_or_insert_mut(result.note_key, &result.note),
-                    &result.note,
-                ) {
-                    damus.timelines[i].views[j].notes.push(NoteRef {
-                        key: result.note_key,
-                        created_at: result.note.created_at(),
-                    })
-                }
+            FilterState::Broken(err) => {
+                error!("FetchingRemote state broken in setup_initial_nostr_subs: {err}")
+            }
+            FilterState::FetchingRemote(_) => {
+                error!("FetchingRemote state in setup_initial_nostr_subs")
+            }
+            FilterState::GotRemote(_) => {
+                error!("GotRemote state in setup_initial_nostr_subs")
+            }
+            FilterState::NeedsRemote(_filters) => {
+                // can't do anything yet, we defer to first connect to send
+                // remote filters
             }
         }
     }
@@ -401,6 +421,10 @@ fn update_damus(damus: &mut Damus, ctx: &egui::Context) {
         setup_profiling();
 
         damus.state = DamusState::Initialized;
+        // this lets our eose handler know to close unknownids right away
+        damus
+            .subscriptions()
+            .insert("unknownids".to_string(), SubKind::OneShot);
         setup_initial_nostrdb_subs(damus).expect("home subscription failed");
     }
 
@@ -419,82 +443,75 @@ fn process_event(damus: &mut Damus, _subid: &str, event: &str) {
     }
 }
 
-fn get_unknown_ids<'a>(txn: &'a Transaction, damus: &mut Damus) -> Result<Vec<UnknownId<'a>>> {
-    #[cfg(feature = "profiling")]
-    puffin::profile_function!();
-
-    let mut ids: HashSet<UnknownId> = HashSet::new();
-    let mut new_cached_notes: Vec<(NoteKey, CachedNote)> = vec![];
-
-    for timeline in &damus.timelines {
-        for noteref in timeline.notes(ViewFilter::NotesAndReplies) {
-            let note = damus.ndb.get_note_by_key(txn, noteref.key)?;
-            let note_key = note.key().unwrap();
-            let cached_note = damus.note_cache().cached_note(noteref.key);
-            let cached_note = if let Some(cn) = cached_note {
-                cn.clone()
-            } else {
-                let new_cached_note = CachedNote::new(&note);
-                new_cached_notes.push((note_key, new_cached_note.clone()));
-                new_cached_note
-            };
-
-            let _ = get_unknown_note_ids(
-                &damus.ndb,
-                &cached_note,
-                txn,
-                &note,
-                note.key().unwrap(),
-                &mut ids,
-            );
-        }
-    }
-
-    // This is mainly done to avoid the double mutable borrow that would happen
-    // if we tried to update the note_cache mutably in the loop above
-    for (note_key, note) in new_cached_notes {
-        damus.note_cache_mut().cache_mut().insert(note_key, note);
-    }
-
-    Ok(ids.into_iter().collect())
-}
-
-fn get_unknown_ids_filter(ids: &[UnknownId<'_>]) -> Option<Vec<Filter>> {
-    if ids.is_empty() {
-        return None;
-    }
-
-    let mut filters: Vec<Filter> = vec![];
-
-    let pks: Vec<&[u8; 32]> = ids.iter().flat_map(|id| id.is_pubkey()).collect();
-    if !pks.is_empty() {
-        let pk_filter = Filter::new().authors(pks).kinds([0]).build();
-
-        filters.push(pk_filter);
-    }
-
-    let note_ids: Vec<&[u8; 32]> = ids.iter().flat_map(|id| id.is_id()).collect();
-    if !note_ids.is_empty() {
-        filters.push(Filter::new().ids(note_ids).build());
-    }
-
-    Some(filters)
-}
-
 fn handle_eose(damus: &mut Damus, subid: &str, relay_url: &str) -> Result<()> {
-    if subid.starts_with("initial") {
-        let txn = Transaction::new(&damus.ndb)?;
-        let ids = get_unknown_ids(&txn, damus)?;
-        if let Some(filters) = get_unknown_ids_filter(&ids) {
-            info!("Getting {} unknown ids from {}", ids.len(), relay_url);
-            let msg = ClientMessage::req("unknown_ids".to_string(), filters);
+    let sub_kind = if let Some(sub_kind) = damus.subscriptions().get(subid) {
+        sub_kind
+    } else {
+        let n_subids = damus.subscriptions().len();
+        warn!(
+            "got unknown eose subid {}, {} tracked subscriptions",
+            subid, n_subids
+        );
+        return Ok(());
+    };
+
+    match *sub_kind {
+        SubKind::Initial => {
+            let txn = Transaction::new(&damus.ndb)?;
+            UnknownIds::update(&txn, damus);
+            // this is possible if this is the first time
+            if damus.unknown_ids.ready_to_send() {
+                unknown_id_send(damus);
+            }
+        }
+
+        // oneshot subs just close when they're done
+        SubKind::OneShot => {
+            let msg = ClientMessage::close(subid.to_string());
             damus.pool.send_to(&msg, relay_url);
         }
-    } else if subid == "unknown_ids" {
-        let msg = ClientMessage::close("unknown_ids".to_string());
-        damus.pool.send_to(&msg, relay_url);
-    } else {
-        warn!("got unknown eose subid {}", subid);
+
+        SubKind::FetchingContactList(timeline_uid) => {
+            let timeline_ind = if let Some(i) = damus.find_timeline(timeline_uid) {
+                i
+            } else {
+                error!(
+                    "timeline uid:{} not found for FetchingContactList",
+                    timeline_uid
+                );
+                return Ok(());
+            };
+
+            let local_sub = if let FilterState::FetchingRemote(unisub) =
+                &damus.timelines[timeline_ind].filter
+            {
+                unisub.local
+            } else {
+                // TODO: we could have multiple contact list results, we need
+                // to check to see if this one is newer and use that instead
+                warn!(
+                    "Expected timeline to have FetchingRemote state but was {:?}",
+                    damus.timelines[timeline_ind].filter
+                );
+                return Ok(());
+            };
+
+            damus.timelines[timeline_ind].filter = FilterState::got_remote(local_sub);
+
+            /*
+            // see if we're fast enough to catch a processed contact list
+            let note_keys = damus.ndb.poll_for_notes(local_sub, 1);
+            if !note_keys.is_empty() {
+                debug!("fast! caught contact list from {relay_url} right away");
+                let txn = Transaction::new(&damus.ndb)?;
+                let note_key = note_keys[0];
+                let nr = damus.ndb.get_note_by_key(&txn, note_key)?;
+                let filter = filter::filter_from_tags(&nr)?.into_follow_filter();
+                setup_initial_timeline(damus, timeline, &filter)
+                damus.timelines[timeline_ind].filter = FilterState::ready(filter);
+            }
+            */
+        }
     }
 
     Ok(())
@@ -526,128 +543,6 @@ fn render_damus(damus: &mut Damus, ctx: &Context) {
     puffin_egui::profiler_window(ctx);
 }
 
-struct Args {
-    timelines: Vec<Timeline>,
-    relays: Vec<String>,
-    is_mobile: Option<bool>,
-    keys: Vec<Keypair>,
-    since_optimize: bool,
-    light: bool,
-    dbpath: Option<String>,
-}
-
-fn parse_args(args: &[String]) -> Args {
-    let mut res = Args {
-        timelines: vec![],
-        relays: vec![],
-        is_mobile: None,
-        keys: vec![],
-        light: false,
-        since_optimize: true,
-        dbpath: None,
-    };
-
-    let mut i = 0;
-    let len = args.len();
-    while i < len {
-        let arg = &args[i];
-
-        if arg == "--mobile" {
-            res.is_mobile = Some(true);
-        } else if arg == "--light" {
-            res.light = true;
-        } else if arg == "--dark" {
-            res.light = false;
-        } else if arg == "--pub" || arg == "npub" {
-            // TODO: npub watch-only accounts
-        } else if arg == "--sec" || arg == "--nsec" {
-            i += 1;
-            let secstr = if let Some(next_arg) = args.get(i) {
-                next_arg
-            } else {
-                error!("sec argument missing?");
-                continue;
-            };
-
-            if let Ok(sec) = SecretKey::parse(secstr) {
-                res.keys.push(Keypair::from_secret(sec));
-            } else {
-                error!(
-                    "failed to parse {} argument. Make sure to use hex or nsec.",
-                    arg
-                );
-            }
-        } else if arg == "--no-since-optimize" {
-            res.since_optimize = false;
-        } else if arg == "--filter" {
-            i += 1;
-            let filter = if let Some(next_arg) = args.get(i) {
-                next_arg
-            } else {
-                error!("filter argument missing?");
-                continue;
-            };
-
-            if let Ok(filter) = Filter::from_json(filter) {
-                res.timelines.push(Timeline::new(vec![filter]));
-            } else {
-                error!("failed to parse filter '{}'", filter);
-            }
-        } else if arg == "--dbpath" {
-            i += 1;
-            let path = if let Some(next_arg) = args.get(i) {
-                next_arg
-            } else {
-                error!("dbpath argument missing?");
-                continue;
-            };
-            res.dbpath = Some(path.clone());
-        } else if arg == "-r" || arg == "--relay" {
-            i += 1;
-            let relay = if let Some(next_arg) = args.get(i) {
-                next_arg
-            } else {
-                error!("relay argument missing?");
-                continue;
-            };
-            res.relays.push(relay.clone());
-        } else if arg == "--filter-file" || arg == "-f" {
-            i += 1;
-            let filter_file = if let Some(next_arg) = args.get(i) {
-                next_arg
-            } else {
-                error!("filter file argument missing?");
-                continue;
-            };
-
-            let data = if let Ok(data) = std::fs::read(filter_file) {
-                data
-            } else {
-                error!("failed to read filter file '{}'", filter_file);
-                continue;
-            };
-
-            if let Some(filter) = std::str::from_utf8(&data)
-                .ok()
-                .and_then(|s| Filter::from_json(s).ok())
-            {
-                res.timelines.push(Timeline::new(vec![filter]));
-            } else {
-                error!("failed to parse filter in '{}'", filter_file);
-            }
-        }
-
-        i += 1;
-    }
-
-    if res.timelines.is_empty() {
-        let filter = Filter::from_json(include_str!("../queries/timeline.json")).unwrap();
-        res.timelines.push(Timeline::new(vec![filter]));
-    }
-
-    res
-}
-
 /*
 fn determine_key_storage_type() -> KeyStorageType {
     #[cfg(target_os = "macos")]
@@ -675,7 +570,7 @@ impl Damus {
         args: Vec<String>,
     ) -> Self {
         // arg parsing
-        let parsed_args = parse_args(&args);
+        let parsed_args = Args::parse(&args);
         let is_mobile = parsed_args.is_mobile.unwrap_or(ui::is_compiled_as_mobile());
 
         setup_cc(cc, is_mobile, parsed_args.light);
@@ -728,9 +623,24 @@ impl Damus {
             pool
         };
 
+        let account = account_manager
+            .get_selected_account()
+            .as_ref()
+            .map(|a| a.pubkey.bytes());
+        let ndb = Ndb::new(&dbpath, &config).expect("ndb");
+
+        let mut timelines: Vec<Timeline> = Vec::with_capacity(parsed_args.columns.len());
+        for col in parsed_args.columns {
+            if let Some(timeline) = col.into_timeline(&ndb, account) {
+                timelines.push(timeline);
+            }
+        }
+
         Self {
             pool,
             is_mobile,
+            unknown_ids: UnknownIds::default(),
+            subscriptions: Subscriptions::default(),
             since_optimize: parsed_args.since_optimize,
             threads: Threads::default(),
             drafts: Drafts::default(),
@@ -738,11 +648,10 @@ impl Damus {
             img_cache: ImageCache::new(imgcache_dir),
             note_cache: NoteCache::default(),
             selected_timeline: 0,
-            timelines: parsed_args.timelines,
+            timelines,
             textmode: false,
-            ndb: Ndb::new(&dbpath, &config).expect("ndb"),
+            ndb,
             account_manager,
-            //compose: "".to_string(),
             frame_history: FrameHistory::default(),
             show_account_switcher: false,
             show_global_popup: false,
@@ -753,7 +662,10 @@ impl Damus {
     pub fn mock<P: AsRef<Path>>(data_path: P, is_mobile: bool) -> Self {
         let mut timelines: Vec<Timeline> = vec![];
         let filter = Filter::from_json(include_str!("../queries/global.json")).unwrap();
-        timelines.push(Timeline::new(vec![filter]));
+        timelines.push(Timeline::new(
+            ColumnKind::Universe,
+            FilterState::ready(vec![filter]),
+        ));
 
         let imgcache_dir = data_path.as_ref().join(ImageCache::rel_datadir());
         let _ = std::fs::create_dir_all(imgcache_dir.clone());
@@ -762,6 +674,8 @@ impl Damus {
         config.set_ingester_threads(2);
         Self {
             is_mobile,
+            unknown_ids: UnknownIds::default(),
+            subscriptions: Subscriptions::default(),
             since_optimize: true,
             threads: Threads::default(),
             drafts: Drafts::default(),
@@ -779,6 +693,20 @@ impl Damus {
             show_global_popup: true,
             global_nav: Vec::new(),
         }
+    }
+
+    pub fn find_timeline(&self, uid: u32) -> Option<usize> {
+        for (i, timeline) in self.timelines.iter().enumerate() {
+            if timeline.uid == uid {
+                return Some(i);
+            }
+        }
+
+        None
+    }
+
+    pub fn subscriptions(&mut self) -> &mut HashMap<String, SubKind> {
+        &mut self.subscriptions.subs
     }
 
     pub fn note_cache_mut(&mut self) -> &mut NoteCache {
@@ -927,13 +855,17 @@ fn thread_unsubscribe(app: &mut Damus, id: &[u8; 32]) {
     };
 
     match unsubscribe {
-        Ok(DecrementResult::LastSubscriber(sub_id)) => {
-            if let Err(e) = app.ndb.unsubscribe(sub_id) {
-                error!("failed to unsubscribe from thread: {e}, subid:{sub_id}, {} active subscriptions", app.ndb.subscription_count());
+        Ok(DecrementResult::LastSubscriber(sub)) => {
+            if let Err(e) = app.ndb.unsubscribe(sub) {
+                error!(
+                    "failed to unsubscribe from thread: {e}, subid:{}, {} active subscriptions",
+                    sub.id(),
+                    app.ndb.subscription_count()
+                );
             } else {
                 info!(
                     "Unsubscribed from thread subid:{}. {} active subscriptions",
-                    sub_id,
+                    sub.id(),
                     app.ndb.subscription_count()
                 );
             }

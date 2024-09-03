@@ -5,14 +5,14 @@ use nostr::bech32::Hrp;
 use std::fmt;
 use tracing::debug;
 
-#[derive(Debug, Eq, PartialEq, Clone, Hash)]
+#[derive(Debug, Eq, PartialEq, Clone, Copy, Hash)]
 pub struct Pubkey([u8; 32]);
 
 static HRP_NPUB: Hrp = Hrp::parse_unchecked("npub");
 
 impl Pubkey {
-    pub fn new(data: &[u8; 32]) -> Self {
-        Self(*data)
+    pub fn new(data: [u8; 32]) -> Self {
+        Self(data)
     }
 
     pub fn hex(&self) -> String {
@@ -21,6 +21,13 @@ impl Pubkey {
 
     pub fn bytes(&self) -> &[u8; 32] {
         &self.0
+    }
+
+    pub fn parse(s: &str) -> Result<Self, Error> {
+        match Pubkey::from_hex(s) {
+            Ok(pk) => Ok(pk),
+            Err(_) => Pubkey::try_from_bech32_string(s, false),
+        }
     }
 
     pub fn from_hex(hex_str: &str) -> Result<Self, Error> {
