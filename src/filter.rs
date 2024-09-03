@@ -85,11 +85,11 @@ pub fn since_optimize_filter(filter: Filter, notes: &[NoteRef]) -> Filter {
 }
 
 pub fn default_limit() -> u64 {
-    250
+    500
 }
 
 pub fn default_remote_limit() -> u64 {
-    150
+    250
 }
 
 pub struct FilteredTags {
@@ -99,22 +99,22 @@ pub struct FilteredTags {
 
 impl FilteredTags {
     pub fn into_follow_filter(self) -> Vec<Filter> {
-        self.into_filter([1])
+        self.into_filter([1], default_limit())
     }
 
     // TODO: make this more general
-    pub fn into_filter<I>(self, kinds: I) -> Vec<Filter>
+    pub fn into_filter<I>(self, kinds: I, limit: u64) -> Vec<Filter>
     where
         I: IntoIterator<Item = u64> + Copy,
     {
         let mut filters: Vec<Filter> = Vec::with_capacity(2);
 
         if let Some(authors) = self.authors {
-            filters.push(authors.kinds(kinds).build())
+            filters.push(authors.kinds(kinds).limit(limit).build())
         }
 
         if let Some(hashtags) = self.hashtags {
-            filters.push(hashtags.kinds(kinds).build())
+            filters.push(hashtags.kinds(kinds).limit(limit).build())
         }
 
         filters
