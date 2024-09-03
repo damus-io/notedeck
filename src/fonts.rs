@@ -87,6 +87,11 @@ pub fn setup_fonts(ctx: &egui::Context) {
         FontData::from_static(include_bytes!("../assets/fonts/NotoSansCJK-Regular.ttc")),
     );
 
+    font_data.insert(
+        "NotoSansThai".to_owned(),
+        FontData::from_static(include_bytes!("../assets/fonts/NotoSansThai-Regular.ttf")),
+    );
+
     // Some good looking emojis. Use as first priority:
     font_data.insert(
         "NotoEmoji".to_owned(),
@@ -104,6 +109,7 @@ pub fn setup_fonts(ctx: &egui::Context) {
         "DejaVuSans".to_owned(),
         "NotoEmoji".to_owned(),
         "NotoSansCJK".to_owned(),
+        "NotoSansThai".to_owned(),
     ];
 
     let mut proportional = vec!["Onest".to_owned()];
