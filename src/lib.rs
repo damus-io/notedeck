@@ -27,6 +27,7 @@ mod post;
 mod profile;
 pub mod relay_pool_manager;
 mod result;
+mod routable_widget_state;
 mod route;
 mod subscriptions;
 mod test_data;

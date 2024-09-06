@@ -13,7 +13,8 @@ use crate::key_storage::KeyStorageType;
 use crate::note::NoteRef;
 use crate::notecache::{CachedNote, NoteCache};
 use crate::relay_pool_manager::RelayPoolManager;
-use crate::route::Route;
+use crate::routable_widget_state::RoutableWidgetState;
+use crate::route::{ManageAccountRoute, Route};
 use crate::subscriptions::{SubKind, Subscriptions};
 use crate::thread::{DecrementResult, Threads};
 use crate::timeline::{Timeline, TimelineKind, TimelineSource, ViewFilter};
@@ -49,6 +50,7 @@ pub struct Damus {
     pub pool: RelayPool,
 
     pub columns: Columns,
+    pub account_management_view_state: RoutableWidgetState<ManageAccountRoute>,
     pub ndb: Ndb,
     pub unknown_ids: UnknownIds,
     pub drafts: Drafts,
@@ -697,6 +699,7 @@ impl Damus {
             accounts,
             frame_history: FrameHistory::default(),
             show_account_switcher: false,
+            account_management_view_state: RoutableWidgetState::default(),
         }
     }
 
@@ -739,6 +742,7 @@ impl Damus {
             accounts: AccountManager::new(None, KeyStorageType::None),
             frame_history: FrameHistory::default(),
             show_account_switcher: false,
+            account_management_view_state: RoutableWidgetState::default(),
         }
     }
 
@@ -946,11 +950,6 @@ fn render_nav(show_postbox: bool, col: usize, app: &mut Damus, ui: &mut egui::Ui
                 } else {
                     ui.label("no timeline for this column?");
                 }
-                None
-            }
-
-            Route::ManageAccount => {
-                ui.label("account management view");
                 None
             }
 
