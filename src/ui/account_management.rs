@@ -14,36 +14,19 @@ use super::profile::ProfilePreviewOp;
 pub struct AccountManagementView {}
 
 impl AccountManagementView {
-    pub fn ui(app: &mut Damus, ui: &mut egui::Ui) -> Option<Response> {
-        if ui::is_narrow(ui.ctx()) {
-            AccountManagementView::show_mobile(app, ui);
-            None
-        } else {
-            Some(AccountManagementView::show(app, ui))
-        }
-    }
-
-    fn show(app: &mut Damus, ui: &mut egui::Ui) -> Response {
+    pub fn ui(app: &mut Damus, ui: &mut egui::Ui) -> Response {
         Frame::none()
-            .outer_margin(24.0)
+            .outer_margin(12.0)
             .show(ui, |ui| {
                 Self::top_section_buttons_widget(ui);
+
                 ui.add_space(8.0);
-                scroll_area().show(ui, |ui| {
-                    Self::show_accounts(app, ui);
-                });
+                scroll_area().show(ui, |ui| Self::show_accounts(app, ui));
             })
             .response
     }
 
     fn show_accounts(app: &mut Damus, ui: &mut egui::Ui) {
-        let maybe_remove =
-            profile_preview_controller::set_profile_previews(app, ui, account_card_ui());
-
-        Self::maybe_remove_accounts(&mut app.accounts, maybe_remove);
-    }
-
-    fn show_accounts_mobile(app: &mut Damus, ui: &mut egui::Ui) {
         ui.allocate_ui_with_layout(
             Vec2::new(ui.available_size_before_wrap().x, 32.0),
             Layout::top_down(egui::Align::Min),
@@ -56,25 +39,17 @@ impl AccountManagementView {
                 );
 
                 // remove all account indicies user requested
-                Self::maybe_remove_accounts(&mut app.accounts, maybe_remove);
+                if let Some(indicies_to_remove) = maybe_remove {
+                    Self::remove_accounts(&mut app.account_manager, indicies_to_remove);
+                }
             },
         );
     }
 
-    fn maybe_remove_accounts(manager: &mut AccountManager, account_indices: Option<Vec<usize>>) {
-        if let Some(to_remove) = account_indices {
-            to_remove
-                .iter()
-                .for_each(|index| manager.remove_account(*index));
-        }
-    }
-
-    fn show_mobile(app: &mut Damus, ui: &mut egui::Ui) {
-        mobile_title(ui);
-        Self::top_section_buttons_widget(ui);
-
-        ui.add_space(8.0);
-        scroll_area().show(ui, |ui| Self::show_accounts_mobile(app, ui));
+    fn remove_accounts(manager: &mut AccountManager, account_indices: Vec<usize>) {
+        account_indices
+            .iter()
+            .for_each(|index| manager.remove_account(*index));
     }
 
     fn top_section_buttons_widget(ui: &mut egui::Ui) -> egui::Response {
@@ -88,19 +63,6 @@ impl AccountManagementView {
                     }
                 },
             );
-
-            // UNCOMMENT FOR LOGOUTALL BUTTON
-            // ui.allocate_ui_with_layout(
-            //     Vec2::new(ui.available_size_before_wrap().x, 32.0),
-            //     Layout::right_to_left(egui::Align::Center),
-            //     |ui| {
-            //         if ui.add(logout_all_button()).clicked() {
-            //             for index in (0..self.accounts.num_accounts()).rev() {
-            //                 self.accounts.remove_account(index);
-            //             }
-            //         }
-            //     },
-            // );
         })
         .response
     }
@@ -143,17 +105,6 @@ fn account_card_ui() -> fn(
         ui.add_space(16.0);
         op
     }
-}
-
-fn mobile_title(ui: &mut egui::Ui) -> egui::Response {
-    ui.vertical_centered(|ui| {
-        ui.label(
-            RichText::new("Account Management")
-                .text_style(NotedeckTextStyle::Heading2.text_style())
-                .strong(),
-        );
-    })
-    .response
 }
 
 fn scroll_area() -> ScrollArea {
@@ -205,12 +156,7 @@ fn selected_widget() -> impl egui::Widget {
     }
 }
 
-// fn logout_all_button() -> egui::Button<'static> {
-//     egui::Button::new("Logout all")
-// }
-
 // PREVIEWS
-
 mod preview {
 
     use super::*;
@@ -231,11 +177,7 @@ mod preview {
     impl View for AccountManagementPreview {
         fn ui(&mut self, ui: &mut egui::Ui) {
             ui.add_space(24.0);
-            if ui::is_narrow(ui.ctx()) {
-                AccountManagementView::show_mobile(&mut self.app, ui);
-            } else {
-                AccountManagementView::show(&mut self.app, ui);
-            }
+            AccountManagementView::ui(&mut self.app, ui);
         }
     }
 
