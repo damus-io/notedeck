@@ -666,7 +666,7 @@ impl Damus {
             note_cache: NoteCache::default(),
             selected_timeline: 0,
             timelines,
-            textmode: false,
+            textmode: parsed_args.textmode,
             ndb,
             account_manager,
             frame_history: FrameHistory::default(),

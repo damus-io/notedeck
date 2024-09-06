@@ -13,6 +13,7 @@ pub struct Args {
     pub since_optimize: bool,
     pub light: bool,
     pub debug: bool,
+    pub textmode: bool,
     pub dbpath: Option<String>,
 }
 
@@ -26,6 +27,7 @@ impl Args {
             light: false,
             since_optimize: true,
             debug: false,
+            textmode: false,
             dbpath: None,
         };
 
@@ -42,6 +44,8 @@ impl Args {
                 res.light = false;
             } else if arg == "--debug" {
                 res.debug = true;
+            } else if arg == "--textmode" {
+                res.textmode = true;
             } else if arg == "--pub" || arg == "--npub" {
                 i += 1;
                 let pubstr = if let Some(next_arg) = args.get(i) {
