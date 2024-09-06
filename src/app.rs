@@ -13,7 +13,8 @@ use crate::key_storage::KeyStorageType;
 use crate::note::NoteRef;
 use crate::notecache::{CachedNote, NoteCache};
 use crate::relay_pool_manager::RelayPoolManager;
-use crate::route::Route;
+use crate::routable_widget_state::RoutableWidgetState;
+use crate::route::{ManageAccountRoute, Route};
 use crate::subscriptions::{SubKind, Subscriptions};
 use crate::thread::{DecrementResult, Threads};
 use crate::timeline::{Timeline, TimelineSource, ViewFilter};
@@ -49,6 +50,8 @@ pub struct Damus {
     state: DamusState,
     note_cache: NoteCache,
     pub pool: RelayPool,
+
+    pub account_management_view_state: RoutableWidgetState<ManageAccountRoute>,
 
     pub timelines: Vec<Timeline>,
     pub selected_timeline: i32,
@@ -666,6 +669,7 @@ impl Damus {
             account_manager,
             frame_history: FrameHistory::default(),
             show_account_switcher: false,
+            account_management_view_state: RoutableWidgetState::default(),
         }
     }
 
@@ -709,6 +713,7 @@ impl Damus {
             account_manager: AccountManager::new(None, KeyStorageType::None),
             frame_history: FrameHistory::default(),
             show_account_switcher: false,
+            account_management_view_state: RoutableWidgetState::default(),
         }
     }
 
@@ -920,11 +925,6 @@ fn render_nav(routes: Vec<Route>, timeline_ind: usize, app: &mut Damus, ui: &mut
             Route::Timeline(_n) => {
                 let app = &mut app_ctx.borrow_mut();
                 ui::TimelineView::new(app, timeline_ind).ui(ui);
-                None
-            }
-
-            Route::ManageAccount => {
-                ui.label("account management view");
                 None
             }
 
