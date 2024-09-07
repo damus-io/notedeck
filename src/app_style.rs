@@ -196,6 +196,7 @@ pub fn create_themed_visuals(theme: ColorTheme, default: Visuals) -> Visuals {
             width: 1.0,
             color: theme.window_stroke_color,
         },
+        image_loading_spinners: false,
         ..default
     }
 }

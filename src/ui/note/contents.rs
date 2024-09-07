@@ -233,7 +233,8 @@ fn image_carousel(
                         match img_cache.map()[&image].ready() {
                             // Still waiting
                             None => {
-                                ui.add(egui::Spinner::new().size(spinsz));
+                                ui.allocate_space(egui::vec2(spinsz, spinsz));
+                                //ui.add(egui::Spinner::new().size(spinsz));
                             }
                             // Failed to fetch image!
                             Some(Err(_err)) => {
@@ -246,7 +247,8 @@ fn image_carousel(
                                 );
                                 img_cache.map_mut().insert(image.to_owned(), no_pfp);
                                 // spin until next pass
-                                ui.add(egui::Spinner::new().size(spinsz));
+                                ui.allocate_space(egui::vec2(spinsz, spinsz));
+                                //ui.add(egui::Spinner::new().size(spinsz));
                             }
                             // Use the previously resolved image
                             Some(Ok(img)) => {

@@ -78,7 +78,7 @@ fn render_pfp(
     }
 
     match img_cache.map()[url].ready() {
-        None => ui.add(egui::Spinner::new().size(ui_size)),
+        None => paint_circle(ui, ui_size),
 
         // Failed to fetch profile!
         Some(Err(_err)) => {
