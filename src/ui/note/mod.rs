@@ -255,7 +255,7 @@ impl<'a> NoteView<'a> {
                 let profile_key = profile.as_ref().unwrap().record().note_key();
                 let note_key = note_key.as_u64();
 
-                if self.app.is_mobile() {
+                if ui::is_narrow(ui.ctx()) {
                     ui.add(ui::ProfilePic::new(&mut self.app.img_cache, pic));
                 } else {
                     let (rect, size, _resp) = ui::anim::hover_expand(

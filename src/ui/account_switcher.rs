@@ -1,5 +1,5 @@
 use crate::{
-    account_manager::UserAccount, colors::PINK, profile::DisplayName, route::Route,
+    account_manager::UserAccount, colors::PINK, profile::DisplayName, route::Route, ui,
     ui::profile_preview_controller, Damus, Result,
 };
 
@@ -31,7 +31,7 @@ impl AccountSelectionWidget {
             return;
         }
 
-        if app.is_mobile() {
+        if ui::is_narrow(ui.ctx()) {
             Self::show_mobile(ui);
         } else {
             account_switcher_window(&mut app.show_account_switcher.clone()).show(
@@ -256,8 +256,8 @@ mod previews {
     }
 
     impl AccountSelectionPreview {
-        fn new(is_mobile: bool) -> Self {
-            let app = test_data::test_app(is_mobile);
+        fn new() -> Self {
+            let app = test_data::test_app();
             AccountSelectionPreview { app }
         }
     }
@@ -271,8 +271,8 @@ mod previews {
     impl Preview for AccountSelectionWidget {
         type Prev = AccountSelectionPreview;
 
-        fn preview(cfg: PreviewConfig) -> Self::Prev {
-            AccountSelectionPreview::new(cfg.is_mobile)
+        fn preview(_cfg: PreviewConfig) -> Self::Prev {
+            AccountSelectionPreview::new()
         }
     }
 }

@@ -92,10 +92,10 @@ pub fn get_test_accounts() -> Vec<UserAccount> {
         .collect()
 }
 
-pub fn test_app(is_mobile: bool) -> Damus {
+pub fn test_app() -> Damus {
     let db_dir = Path::new(".");
     let path = db_dir.to_str().unwrap();
-    let mut app = Damus::mock(path, is_mobile);
+    let mut app = Damus::mock(path);
 
     let accounts = get_test_accounts();
     for account in accounts {

@@ -137,8 +137,8 @@ mod preview {
     }
 
     impl DesktopSidePanelPreview {
-        fn new(is_mobile: bool) -> Self {
-            let app = test_data::test_app(is_mobile);
+        fn new() -> Self {
+            let app = test_data::test_app();
             DesktopSidePanelPreview { app }
         }
     }
@@ -165,8 +165,8 @@ mod preview {
     impl<'a> Preview for DesktopSidePanel<'a> {
         type Prev = DesktopSidePanelPreview;
 
-        fn preview(cfg: PreviewConfig) -> Self::Prev {
-            DesktopSidePanelPreview::new(cfg.is_mobile)
+        fn preview(_cfg: PreviewConfig) -> Self::Prev {
+            DesktopSidePanelPreview::new()
         }
     }
 }

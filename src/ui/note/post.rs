@@ -174,9 +174,9 @@ mod preview {
     }
 
     impl PostPreview {
-        fn new(is_mobile: bool) -> Self {
+        fn new() -> Self {
             PostPreview {
-                app: test_data::test_app(is_mobile),
+                app: test_data::test_app(),
             }
         }
     }
@@ -191,8 +191,8 @@ mod preview {
     impl<'app, 'p> Preview for PostView<'app, 'p> {
         type Prev = PostPreview;
 
-        fn preview(cfg: PreviewConfig) -> Self::Prev {
-            PostPreview::new(cfg.is_mobile)
+        fn preview(_cfg: PreviewConfig) -> Self::Prev {
+            PostPreview::new()
         }
     }
 }

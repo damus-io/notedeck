@@ -27,7 +27,7 @@ pub fn dark_mode(mobile: bool) -> Visuals {
 }
 
 pub fn user_requested_visuals_change(
-    mobile: bool,
+    oled: bool,
     cur_darkmode: bool,
     ui: &mut Ui,
 ) -> Option<Visuals> {
@@ -44,7 +44,7 @@ pub fn user_requested_visuals_change(
         .on_hover_text("Switch to dark mode")
         .clicked()
     {
-        return Some(dark_mode(mobile));
+        return Some(dark_mode(oled));
     }
     None
 }

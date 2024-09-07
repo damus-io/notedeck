@@ -2,6 +2,7 @@ use crate::colors::PINK;
 use crate::{
     account_manager::AccountManager,
     app_style::NotedeckTextStyle,
+    ui,
     ui::{profile_preview_controller, Preview, PreviewConfig, View},
     Damus,
 };
@@ -14,7 +15,7 @@ pub struct AccountManagementView {}
 
 impl AccountManagementView {
     pub fn ui(app: &mut Damus, ui: &mut egui::Ui) -> Option<Response> {
-        if app.is_mobile() {
+        if ui::is_narrow(ui.ctx()) {
             AccountManagementView::show_mobile(app, ui);
             None
         } else {
@@ -216,22 +217,21 @@ mod preview {
     use crate::test_data;
 
     pub struct AccountManagementPreview {
-        is_mobile: bool,
         app: Damus,
     }
 
     impl AccountManagementPreview {
-        fn new(is_mobile: bool) -> Self {
-            let app = test_data::test_app(is_mobile);
+        fn new() -> Self {
+            let app = test_data::test_app();
 
-            AccountManagementPreview { is_mobile, app }
+            AccountManagementPreview { app }
         }
     }
 
     impl View for AccountManagementPreview {
         fn ui(&mut self, ui: &mut egui::Ui) {
             ui.add_space(24.0);
-            if self.is_mobile {
+            if ui::is_narrow(ui.ctx()) {
                 AccountManagementView::show_mobile(&mut self.app, ui);
             } else {
                 AccountManagementView::show(&mut self.app, ui);
@@ -242,8 +242,8 @@ mod preview {
     impl Preview for AccountManagementView {
         type Prev = AccountManagementPreview;
 
-        fn preview(cfg: PreviewConfig) -> Self::Prev {
-            AccountManagementPreview::new(cfg.is_mobile)
+        fn preview(_cfg: PreviewConfig) -> Self::Prev {
+            AccountManagementPreview::new()
         }
     }
 }

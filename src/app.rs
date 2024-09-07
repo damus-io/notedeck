@@ -66,8 +66,7 @@ pub struct Damus {
 
     frame_history: crate::frame_history::FrameHistory,
 
-    // TODO: make these flags
-    is_mobile: bool,
+    // TODO: make these bitflags
     pub debug: bool,
     pub since_optimize: bool,
     pub textmode: bool,
@@ -537,7 +536,7 @@ fn process_message(damus: &mut Damus, relay: &str, msg: &RelayMessage) {
 }
 
 fn render_damus(damus: &mut Damus, ctx: &Context) {
-    if damus.is_mobile() {
+    if ui::is_narrow(ctx) {
         render_damus_mobile(ctx, damus);
     } else {
         render_damus_desktop(ctx, damus);
@@ -656,7 +655,6 @@ impl Damus {
         Self {
             pool,
             debug,
-            is_mobile,
             unknown_ids: UnknownIds::default(),
             subscriptions: Subscriptions::default(),
             since_optimize: parsed_args.since_optimize,
@@ -685,7 +683,7 @@ impl Damus {
         }
     }
 
-    pub fn mock<P: AsRef<Path>>(data_path: P, is_mobile: bool) -> Self {
+    pub fn mock<P: AsRef<Path>>(data_path: P) -> Self {
         let mut timelines: Vec<Timeline> = vec![];
         let filter = Filter::from_json(include_str!("../queries/global.json")).unwrap();
         timelines.push(Timeline::new(
@@ -700,7 +698,6 @@ impl Damus {
         let mut config = Config::new();
         config.set_ingester_threads(2);
         Self {
-            is_mobile,
             debug,
             unknown_ids: UnknownIds::default(),
             subscriptions: Subscriptions::default(),
@@ -770,10 +767,6 @@ impl Damus {
         }
         self.selected_timeline += 1;
     }
-
-    pub fn is_mobile(&self) -> bool {
-        self.is_mobile
-    }
 }
 
 /*
@@ -810,7 +803,7 @@ fn render_panel(ctx: &egui::Context, app: &mut Damus, timeline_ind: usize) {
             ui.visuals_mut().button_frame = false;
 
             if let Some(new_visuals) =
-                user_requested_visuals_change(app.is_mobile(), ctx.style().visuals.dark_mode, ui)
+                user_requested_visuals_change(ui::is_oled(), ctx.style().visuals.dark_mode, ui)
             {
                 ctx.set_visuals(new_visuals)
             }
@@ -1020,14 +1013,14 @@ fn render_damus_mobile(ctx: &egui::Context, app: &mut Damus) {
 
     //let routes = app.timelines[0].routes.clone();
 
-    main_panel(&ctx.style(), app.is_mobile()).show(ctx, |ui| {
+    main_panel(&ctx.style(), ui::is_narrow(ctx)).show(ctx, |ui| {
         render_nav(app.timelines[0].routes.clone(), 0, app, ui);
     });
 }
 
-fn main_panel(style: &Style, mobile: bool) -> egui::CentralPanel {
+fn main_panel(style: &Style, narrow: bool) -> egui::CentralPanel {
     let inner_margin = egui::Margin {
-        top: if mobile { 50.0 } else { 0.0 },
+        top: if narrow { 50.0 } else { 0.0 },
         left: 0.0,
         right: 0.0,
         bottom: 0.0,
@@ -1054,7 +1047,7 @@ fn render_damus_desktop(ctx: &egui::Context, app: &mut Damus) {
         Size::remainder()
     };
 
-    main_panel(&ctx.style(), app.is_mobile()).show(ctx, |ui| {
+    main_panel(&ctx.style(), ui::is_narrow(ctx)).show(ctx, |ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
         AccountSelectionWidget::ui(app, ui);
         DesktopGlobalPopup::show(app.global_nav.clone(), app, ui);
