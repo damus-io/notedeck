@@ -581,13 +581,14 @@ impl Damus {
 
         setup_cc(cc, is_mobile, parsed_args.light);
 
-        let dbpath = parsed_args
-            .dbpath
+        let data_path = parsed_args
+            .datapath
             .unwrap_or(data_path.as_ref().to_str().expect("db path ok").to_string());
+        let dbpath = parsed_args.dbpath.unwrap_or(data_path.clone());
 
         let _ = std::fs::create_dir_all(dbpath.clone());
 
-        let imgcache_dir = data_path.as_ref().join(ImageCache::rel_datadir());
+        let imgcache_dir = format!("{}/{}", data_path, ImageCache::rel_datadir());
         let _ = std::fs::create_dir_all(imgcache_dir.clone());
 
         let mut config = Config::new();
@@ -662,7 +663,7 @@ impl Damus {
             threads: Threads::default(),
             drafts: Drafts::default(),
             state: DamusState::Initializing,
-            img_cache: ImageCache::new(imgcache_dir),
+            img_cache: ImageCache::new(imgcache_dir.into()),
             note_cache: NoteCache::default(),
             selected_timeline: 0,
             timelines,

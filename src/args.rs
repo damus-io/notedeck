@@ -15,6 +15,7 @@ pub struct Args {
     pub debug: bool,
     pub textmode: bool,
     pub dbpath: Option<String>,
+    pub datapath: Option<String>,
 }
 
 impl Args {
@@ -29,6 +30,7 @@ impl Args {
             debug: false,
             textmode: false,
             dbpath: None,
+            datapath: None,
         };
 
         let mut i = 0;
@@ -105,6 +107,15 @@ impl Args {
                     continue;
                 };
                 res.dbpath = Some(path.clone());
+            } else if arg == "--datapath" {
+                i += 1;
+                let path = if let Some(next_arg) = args.get(i) {
+                    next_arg
+                } else {
+                    error!("datapath argument missing?");
+                    continue;
+                };
+                res.datapath = Some(path.clone());
             } else if arg == "-r" || arg == "--relay" {
                 i += 1;
                 let relay = if let Some(next_arg) = args.get(i) {
