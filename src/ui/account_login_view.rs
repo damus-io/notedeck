@@ -1,29 +1,32 @@
 use crate::app_style::NotedeckTextStyle;
 use crate::key_parsing::LoginError;
-use crate::login_manager::LoginManager;
+use crate::login_manager::LoginState;
 use crate::ui::{Preview, PreviewConfig, View};
-use egui::{Align, Button, Color32, Frame, Margin, Response, RichText, Ui, Vec2};
-use egui::{Image, TextEdit};
+use egui::TextEdit;
+use egui::{Align, Button, Color32, Frame, InnerResponse, Margin, RichText, Vec2};
+use enostr::Keypair;
 
 pub struct AccountLoginView<'a> {
-    manager: &'a mut LoginManager,
+    manager: &'a mut LoginState,
+}
+
+pub enum AccountLoginResponse {
+    CreateNew,
+    LoginWith(Keypair),
 }
 
 impl<'a> AccountLoginView<'a> {
-    pub fn new(manager: &'a mut LoginManager) -> Self {
-        AccountLoginView { manager }
+    pub fn new(state: &'a mut LoginState) -> Self {
+        AccountLoginView { manager: state }
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui) -> Response {
+    pub fn ui(&mut self, ui: &mut egui::Ui) -> InnerResponse<Option<AccountLoginResponse>> {
         Frame::none()
             .outer_margin(12.0)
-            .show(ui, |ui| {
-                self.show(ui);
-            })
-            .response
+            .show(ui, |ui| self.show(ui))
     }
 
-    fn show(&mut self, ui: &mut egui::Ui) -> egui::Response {
+    fn show(&mut self, ui: &mut egui::Ui) -> Option<AccountLoginResponse> {
         ui.vertical(|ui| {
             ui.vertical_centered(|ui| {
                 ui.add_space(32.0);
@@ -55,11 +58,19 @@ impl<'a> AccountLoginView<'a> {
                     .add(Button::new(RichText::new("Create Account")).frame(false))
                     .clicked()
                 {
-                    // TODO: navigate to 'create account' screen
+                    self.manager.should_create_new();
                 }
             });
-        })
-        .response
+        });
+
+        if self.manager.check_for_create_new() {
+            return Some(AccountLoginResponse::CreateNew);
+        }
+
+        if let Some(keypair) = self.manager.check_for_successful_login() {
+            return Some(AccountLoginResponse::LoginWith(keypair));
+        }
+        None
     }
 
     fn loading_and_error(&mut self, ui: &mut egui::Ui) {
@@ -99,35 +110,10 @@ fn login_title_text() -> RichText {
         .strong()
 }
 
-fn login_info_text() -> RichText {
-    RichText::new("The best alternative to tweetDeck built in nostr protocol")
-        .text_style(NotedeckTextStyle::Heading3.text_style())
-}
-
-fn login_window_info_text(ui: &Ui) -> RichText {
-    RichText::new("Enter your private key to start using Notedeck")
-        .text_style(NotedeckTextStyle::Body.text_style())
-        .color(ui.visuals().noninteractive().fg_stroke.color)
-}
-
 fn login_textedit_info_text() -> RichText {
     RichText::new("Enter your key")
         .strong()
         .text_style(NotedeckTextStyle::Body.text_style())
-}
-
-fn logo_unformatted() -> Image<'static> {
-    let logo_gradient_data = egui::include_image!("../../assets/Logo-Gradient-2x.png");
-    return egui::Image::new(logo_gradient_data);
-}
-
-fn generate_info_text() -> RichText {
-    RichText::new("Quickly generate your keys. Make sure you save them safely.")
-        .text_style(NotedeckTextStyle::Body.text_style())
-}
-
-fn generate_keys_button() -> Button<'static> {
-    Button::new(RichText::new("Generate keys").text_style(NotedeckTextStyle::Body.text_style()))
 }
 
 fn login_button() -> Button<'static> {
@@ -140,7 +126,7 @@ fn login_button() -> Button<'static> {
     .min_size(Vec2::new(0.0, 40.0))
 }
 
-fn login_textedit(manager: &mut LoginManager) -> TextEdit {
+fn login_textedit(manager: &mut LoginState) -> TextEdit {
     manager.get_login_textedit(|text| {
         egui::TextEdit::singleline(text)
             .hint_text(
@@ -156,7 +142,7 @@ mod preview {
     use super::*;
 
     pub struct AccountLoginPreview {
-        manager: LoginManager,
+        manager: LoginState,
     }
 
     impl View for AccountLoginPreview {
@@ -169,7 +155,8 @@ mod preview {
         type Prev = AccountLoginPreview;
 
         fn preview(cfg: PreviewConfig) -> Self::Prev {
-            let manager = LoginManager::new();
+            let _ = cfg;
+            let manager = LoginState::new();
             AccountLoginPreview { manager }
         }
     }
