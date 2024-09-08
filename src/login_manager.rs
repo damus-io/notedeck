@@ -6,20 +6,22 @@ use poll_promise::Promise;
 
 /// The UI view interface to log in to a nostr account.
 #[derive(Default)]
-pub struct LoginManager {
+pub struct LoginState {
     login_key: String,
     promise_query: Option<(String, Promise<Result<Keypair, LoginError>>)>,
     error: Option<LoginError>,
     key_on_error: Option<String>,
+    should_create_new: bool,
 }
 
-impl<'a> LoginManager {
+impl<'a> LoginState {
     pub fn new() -> Self {
-        LoginManager {
+        LoginState {
             login_key: String::new(),
             promise_query: None,
             error: None,
             key_on_error: None,
+            should_create_new: false,
         }
     }
 
@@ -85,6 +87,14 @@ impl<'a> LoginManager {
         }
         None
     }
+
+    pub fn should_create_new(&mut self) {
+        self.should_create_new = true;
+    }
+
+    pub fn check_for_create_new(&self) -> bool {
+        self.should_create_new
+    }
 }
 
 #[cfg(test)]
@@ -96,7 +106,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_retrieve_key() {
-        let mut manager = LoginManager::new();
+        let mut manager = LoginState::new();
         let expected_str = "3efdaebb1d8923ebd99c9e7ace3b4194ab45512e2be79c1b7d68d9243e0d2681";
         let expected_key = Keypair::only_pubkey(Pubkey::from_hex(expected_str).unwrap());
 

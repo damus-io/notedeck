@@ -10,6 +10,7 @@ use crate::filter::FilterState;
 use crate::frame_history::FrameHistory;
 use crate::imgcache::ImageCache;
 use crate::key_storage::KeyStorageType;
+use crate::login_manager::LoginState;
 use crate::note::NoteRef;
 use crate::notecache::{CachedNote, NoteCache};
 use crate::relay_pool_manager::RelayPoolManager;
@@ -62,6 +63,7 @@ pub struct Damus {
     pub threads: Threads,
     pub img_cache: ImageCache,
     pub account_manager: AccountManager,
+    pub login_state: LoginState,
     pub subscriptions: Subscriptions,
 
     frame_history: crate::frame_history::FrameHistory,
@@ -670,6 +672,7 @@ impl Damus {
             frame_history: FrameHistory::default(),
             show_account_switcher: false,
             account_management_view_state: RoutableWidgetState::default(),
+            login_state: LoginState::default(),
         }
     }
 
@@ -714,6 +717,7 @@ impl Damus {
             frame_history: FrameHistory::default(),
             show_account_switcher: false,
             account_management_view_state: RoutableWidgetState::default(),
+            login_state: LoginState::default(),
         }
     }
 
