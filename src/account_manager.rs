@@ -1,11 +1,13 @@
 use std::cmp::Ordering;
 
-use enostr::Keypair;
+use enostr::{FullKeypair, Keypair};
 
 pub use crate::user_account::UserAccount;
 use crate::{
     key_storage::{KeyStorage, KeyStorageResponse, KeyStorageType},
-    ui::account_management::AccountManagementViewResponse,
+    ui::{
+        account_login_view::AccountLoginResponse, account_management::AccountManagementViewResponse,
+    },
 };
 use tracing::info;
 
@@ -114,7 +116,7 @@ impl AccountManager {
     }
 }
 
-pub fn process_view_response(
+pub fn process_management_view_response_stateless(
     manager: &mut AccountManager,
     response: AccountManagementViewResponse,
 ) {
@@ -124,6 +126,18 @@ pub fn process_view_response(
         }
         AccountManagementViewResponse::SelectAccount(index) => {
             manager.select_account(index);
+        }
+        AccountManagementViewResponse::RouteToLogin => {}
+    }
+}
+
+pub fn process_login_view_response(manager: &mut AccountManager, response: AccountLoginResponse) {
+    match response {
+        AccountLoginResponse::CreateNew => {
+            manager.add_account(FullKeypair::generate().to_keypair());
+        }
+        AccountLoginResponse::LoginWith(keypair) => {
+            manager.add_account(keypair);
         }
     }
 }
