@@ -91,7 +91,7 @@ impl<'a> MacOSKeyStorage<'a> {
             .iter()
             .map(|pubkey| {
                 let maybe_secret = self.get_secret_key_for_pubkey(pubkey);
-                Keypair::new(pubkey.clone(), maybe_secret)
+                Keypair::new(*pubkey, maybe_secret)
             })
             .collect()
     }

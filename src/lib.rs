@@ -72,9 +72,23 @@ pub async fn android_main(app: AndroidApp) {
         builder.with_android_app(app);
     }));
 
+    let args = vec![
+        "--pub",
+        "32e1827635450ebb3c5a7d12c1f8e7b2b514439ac10a67eef3d9fd9c5c68e245",
+        "-c",
+        "contacts",
+        "-c",
+        "notifications",
+        "-c",
+        "notifications:3efdaebb1d8923ebd99c9e7ace3b4194ab45512e2be79c1b7d68d9243e0d2681",
+    ]
+    .into_iter()
+    .map(|s| s.to_string())
+    .collect();
+
     let _res = eframe::run_native(
         "Damus NoteDeck",
         options,
-        Box::new(|cc| Ok(Box::new(Damus::new(cc, path, vec![])))),
+        Box::new(move |cc| Ok(Box::new(Damus::new(cc, path, args)))),
     );
 }
