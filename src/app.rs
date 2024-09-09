@@ -18,7 +18,7 @@ use crate::subscriptions::{SubKind, Subscriptions};
 use crate::thread::{DecrementResult, Threads};
 use crate::timeline::{Timeline, TimelineKind, TimelineSource, ViewFilter};
 use crate::ui::note::PostAction;
-use crate::ui::{self, AccountSelectionWidget, DesktopGlobalPopup};
+use crate::ui::{self, AccountSelectionWidget};
 use crate::ui::{DesktopSidePanel, RelayView, View};
 use crate::unknowns::UnknownIds;
 use crate::{filter, Result};
@@ -48,9 +48,6 @@ pub struct Damus {
     note_cache: NoteCache,
     pub pool: RelayPool,
 
-    /// global navigation for account management popups, etc.
-    pub global_nav: Vec<Route>,
-
     pub columns: Columns,
     pub ndb: Ndb,
     pub unknown_ids: UnknownIds,
@@ -67,7 +64,6 @@ pub struct Damus {
     pub since_optimize: bool,
     pub textmode: bool,
     pub show_account_switcher: bool,
-    pub show_global_popup: bool,
 }
 
 fn relay_setup(pool: &mut RelayPool, ctx: &egui::Context) {
@@ -701,8 +697,6 @@ impl Damus {
             accounts,
             frame_history: FrameHistory::default(),
             show_account_switcher: false,
-            show_global_popup: false,
-            global_nav: Vec::new(),
         }
     }
 
@@ -745,8 +739,6 @@ impl Damus {
             accounts: AccountManager::new(None, KeyStorageType::None),
             frame_history: FrameHistory::default(),
             show_account_switcher: false,
-            show_global_popup: true,
-            global_nav: Vec::new(),
         }
     }
 
@@ -1109,7 +1101,6 @@ fn render_damus_desktop(ctx: &egui::Context, app: &mut Damus) {
     main_panel(&ctx.style(), ui::is_narrow(ctx)).show(ctx, |ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
         AccountSelectionWidget::ui(app, ui);
-        DesktopGlobalPopup::show(app.global_nav.clone(), app, ui);
         if need_scroll {
             egui::ScrollArea::horizontal().show(ui, |ui| {
                 timelines_view(ui, panel_sizes, app, app.columns.columns().len());

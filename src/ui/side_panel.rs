@@ -127,7 +127,7 @@ mod preview {
 
     use crate::{
         test_data,
-        ui::{AccountSelectionWidget, DesktopGlobalPopup, Preview, PreviewConfig},
+        ui::{AccountSelectionWidget, Preview, PreviewConfig},
     };
 
     use super::*;
@@ -158,7 +158,6 @@ mod preview {
                 });
 
             AccountSelectionWidget::ui(&mut self.app, ui);
-            DesktopGlobalPopup::show(self.app.global_nav.clone(), &mut self.app, ui);
         }
     }
 
