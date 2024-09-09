@@ -1,6 +1,9 @@
-use nostrdb::{Ndb, Transaction};
+use egui::Ui;
+use nostrdb::{Ndb, ProfileRecord, Transaction};
 
-use crate::{Damus, DisplayName, Result};
+use crate::{
+    imgcache::ImageCache, ui::account_management::show_profile_card, Damus, DisplayName, Result,
+};
 
 use super::{
     preview::{get_display_name, get_profile_url, SimpleProfilePreview},
@@ -13,64 +16,16 @@ pub enum ProfilePreviewOp {
     SwitchTo,
 }
 
-pub fn set_profile_previews(
-    app: &mut Damus,
-    ui: &mut egui::Ui,
-    add_preview_ui: fn(
-        ui: &mut egui::Ui,
-        preview: SimpleProfilePreview,
-        width: f32,
-        is_selected: bool,
-    ) -> Option<ProfilePreviewOp>,
-) -> Option<Vec<usize>> {
-    let mut to_remove: Option<Vec<usize>> = None;
-
+pub fn profile_preview_view(
+    ui: &mut Ui,
+    profile: Option<&'_ ProfileRecord<'_>>,
+    img_cache: &mut ImageCache,
+    is_selected: bool,
+) -> Option<ProfilePreviewOp> {
     let width = ui.available_width();
 
-    let txn = if let Ok(txn) = Transaction::new(&app.ndb) {
-        txn
-    } else {
-        return None;
-    };
-
-    for i in 0..app.account_manager.num_accounts() {
-        let account = if let Some(account) = app.account_manager.get_account(i) {
-            account
-        } else {
-            continue;
-        };
-
-        let profile = app
-            .ndb
-            .get_profile_by_pubkey(&txn, account.pubkey.bytes())
-            .ok();
-
-        let preview = SimpleProfilePreview::new(profile.as_ref(), &mut app.img_cache);
-
-        let is_selected = if let Some(selected) = app.account_manager.get_selected_account_index() {
-            i == selected
-        } else {
-            false
-        };
-
-        let op = if let Some(op) = add_preview_ui(ui, preview, width, is_selected) {
-            op
-        } else {
-            continue;
-        };
-
-        match op {
-            ProfilePreviewOp::RemoveAccount => {
-                if to_remove.is_none() {
-                    to_remove = Some(Vec::new());
-                }
-                to_remove.as_mut().unwrap().push(i);
-            }
-            ProfilePreviewOp::SwitchTo => app.account_manager.select_account(i),
-        }
-    }
-
-    to_remove
+    let preview = SimpleProfilePreview::new(profile, img_cache);
+    show_profile_card(ui, preview, width, is_selected)
 }
 
 pub fn view_profile_previews(
