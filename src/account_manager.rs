@@ -2,8 +2,11 @@ use std::cmp::Ordering;
 
 use enostr::{FilledKeypair, Keypair};
 
-use crate::key_storage::{KeyStorage, KeyStorageResponse, KeyStorageType};
 pub use crate::user_account::UserAccount;
+use crate::{
+    key_storage::{KeyStorage, KeyStorageResponse, KeyStorageType},
+    ui::account_management::AccountManagementViewResponse,
+};
 use tracing::info;
 
 /// The interface for managing the user's accounts.
@@ -114,5 +117,19 @@ impl AccountManager {
 
     pub fn clear_selected_account(&mut self) {
         self.currently_selected_account = None
+    }
+}
+
+pub fn process_view_response(
+    manager: &mut AccountManager,
+    response: AccountManagementViewResponse,
+) {
+    match response {
+        AccountManagementViewResponse::RemoveAccount(index) => {
+            manager.remove_account(index);
+        }
+        AccountManagementViewResponse::SelectAccount(index) => {
+            manager.select_account(index);
+        }
     }
 }

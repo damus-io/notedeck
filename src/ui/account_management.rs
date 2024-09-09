@@ -1,55 +1,91 @@
 use crate::colors::PINK;
+use crate::imgcache::ImageCache;
 use crate::{
     account_manager::AccountManager,
-    app_style::NotedeckTextStyle,
-    ui,
-    ui::{profile_preview_controller, Preview, PreviewConfig, View},
+    ui::{Preview, PreviewConfig, View},
     Damus,
 };
-use egui::{Align, Button, Frame, Image, Layout, Response, RichText, ScrollArea, Vec2};
+use egui::{Align, Button, Frame, Image, InnerResponse, Layout, RichText, ScrollArea, Ui, Vec2};
+use nostrdb::{Ndb, Transaction};
 
 use super::profile::preview::SimpleProfilePreview;
 use super::profile::ProfilePreviewOp;
+use super::profile_preview_controller::profile_preview_view;
 
 pub struct AccountManagementView {}
 
-impl AccountManagementView {
-    pub fn ui(app: &mut Damus, ui: &mut egui::Ui) -> Response {
-        Frame::none()
-            .outer_margin(12.0)
-            .show(ui, |ui| {
-                Self::top_section_buttons_widget(ui);
+pub enum AccountManagementViewResponse {
+    SelectAccount(usize),
+    RemoveAccount(usize),
+}
 
-                ui.add_space(8.0);
-                scroll_area().show(ui, |ui| Self::show_accounts(app, ui));
-            })
-            .response
+impl AccountManagementView {
+    pub fn ui(
+        ui: &mut Ui,
+        account_manager: &AccountManager,
+        ndb: &Ndb,
+        img_cache: &mut ImageCache,
+    ) -> InnerResponse<Option<AccountManagementViewResponse>> {
+        Frame::none().outer_margin(12.0).show(ui, |ui| {
+            Self::top_section_buttons_widget(ui);
+
+            ui.add_space(8.0);
+            scroll_area()
+                .show(ui, |ui| {
+                    Self::show_accounts(ui, account_manager, ndb, img_cache)
+                })
+                .inner
+        })
     }
 
-    fn show_accounts(app: &mut Damus, ui: &mut egui::Ui) {
+    fn show_accounts(
+        ui: &mut Ui,
+        account_manager: &AccountManager,
+        ndb: &Ndb,
+        img_cache: &mut ImageCache,
+    ) -> Option<AccountManagementViewResponse> {
         ui.allocate_ui_with_layout(
             Vec2::new(ui.available_size_before_wrap().x, 32.0),
             Layout::top_down(egui::Align::Min),
             |ui| {
-                // create all account 'cards' and get the indicies the user requested to remove
-                let maybe_remove = profile_preview_controller::set_profile_previews(
-                    app,
-                    ui,
-                    account_card_ui(), // closure for creating an account 'card'
-                );
+                let txn = Transaction::new(ndb).ok()?;
 
-                // remove all account indicies user requested
-                if let Some(indicies_to_remove) = maybe_remove {
-                    Self::remove_accounts(&mut app.account_manager, indicies_to_remove);
+                for i in 0..account_manager.num_accounts() {
+                    let account_pubkey = account_manager
+                        .get_account(i)
+                        .map(|account| account.pubkey.bytes());
+
+                    let account_pubkey = if let Some(pubkey) = account_pubkey {
+                        pubkey
+                    } else {
+                        continue;
+                    };
+
+                    let profile = ndb.get_profile_by_pubkey(&txn, account_pubkey).ok();
+                    let is_selected =
+                        if let Some(selected) = account_manager.get_selected_account_index() {
+                            i == selected
+                        } else {
+                            false
+                        };
+
+                    if let Some(op) =
+                        profile_preview_view(ui, profile.as_ref(), img_cache, is_selected)
+                    {
+                        return Some(match op {
+                            ProfilePreviewOp::SwitchTo => {
+                                AccountManagementViewResponse::SelectAccount(i)
+                            }
+                            ProfilePreviewOp::RemoveAccount => {
+                                AccountManagementViewResponse::RemoveAccount(i)
+                            }
+                        });
+                    }
                 }
+                None
             },
-        );
-    }
-
-    fn remove_accounts(manager: &mut AccountManager, account_indices: Vec<usize>) {
-        account_indices
-            .iter()
-            .for_each(|index| manager.remove_account(*index));
+        )
+        .inner
     }
 
     fn top_section_buttons_widget(ui: &mut egui::Ui) -> egui::Response {
@@ -68,43 +104,41 @@ impl AccountManagementView {
     }
 }
 
-fn account_card_ui() -> fn(
+pub fn show_profile_card(
     ui: &mut egui::Ui,
     preview: SimpleProfilePreview,
     width: f32,
     is_selected: bool,
 ) -> Option<ProfilePreviewOp> {
-    |ui, preview, width, is_selected| {
-        let mut op: Option<ProfilePreviewOp> = None;
+    let mut op: Option<ProfilePreviewOp> = None;
 
-        ui.add_sized(Vec2::new(width, 50.0), |ui: &mut egui::Ui| {
-            Frame::none()
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.add(preview);
+    ui.add_sized(Vec2::new(width, 50.0), |ui: &mut egui::Ui| {
+        Frame::none()
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.add(preview);
 
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if is_selected {
-                                ui.add(selected_widget());
-                            } else {
-                                if ui
-                                    .add(switch_button(ui.style().visuals.dark_mode))
-                                    .clicked()
-                                {
-                                    op = Some(ProfilePreviewOp::SwitchTo);
-                                }
-                                if ui.add(sign_out_button(ui)).clicked() {
-                                    op = Some(ProfilePreviewOp::RemoveAccount)
-                                }
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if is_selected {
+                            ui.add(selected_widget());
+                        } else {
+                            if ui
+                                .add(switch_button(ui.style().visuals.dark_mode))
+                                .clicked()
+                            {
+                                op = Some(ProfilePreviewOp::SwitchTo);
                             }
-                        });
+                            if ui.add(sign_out_button(ui)).clicked() {
+                                op = Some(ProfilePreviewOp::RemoveAccount)
+                            }
+                        }
                     });
-                })
-                .response
-        });
-        ui.add_space(16.0);
-        op
-    }
+                });
+            })
+            .response
+    });
+    ui.add_space(16.0);
+    op
 }
 
 fn scroll_area() -> ScrollArea {
@@ -160,7 +194,7 @@ fn selected_widget() -> impl egui::Widget {
 mod preview {
 
     use super::*;
-    use crate::test_data;
+    use crate::{account_manager::process_view_response, test_data};
 
     pub struct AccountManagementPreview {
         app: Damus,
@@ -177,7 +211,16 @@ mod preview {
     impl View for AccountManagementPreview {
         fn ui(&mut self, ui: &mut egui::Ui) {
             ui.add_space(24.0);
-            AccountManagementView::ui(&mut self.app, ui);
+            if let Some(response) = AccountManagementView::ui(
+                ui,
+                &self.app.account_manager,
+                &self.app.ndb,
+                &mut self.app.img_cache,
+            )
+            .inner
+            {
+                process_view_response(&mut self.app.account_manager, response)
+            }
         }
     }
 
