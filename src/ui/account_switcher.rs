@@ -1,5 +1,5 @@
 use crate::{
-    account_manager::UserAccount, colors::PINK, profile::DisplayName, route::Route, ui,
+    account_manager::UserAccount, colors::PINK, profile::DisplayName, ui,
     ui::profile_preview_controller, Damus, Result,
 };
 
@@ -17,7 +17,6 @@ pub struct AccountSelectionWidget {}
 enum AccountSelectAction {
     RemoveAccount { _index: usize },
     SelectAccount { _index: usize },
-    OpenAccountManagement,
 }
 
 #[derive(Default)]
@@ -55,11 +54,6 @@ impl AccountSelectionWidget {
             AccountSelectAction::SelectAccount { _index } => {
                 app.show_account_switcher = false;
                 app.account_manager.select_account(_index);
-            }
-            AccountSelectAction::OpenAccountManagement => {
-                app.show_account_switcher = false;
-                app.global_nav.push(Route::ManageAccount);
-                app.show_global_popup = true;
             }
         }
     }
@@ -198,7 +192,7 @@ fn selection_widget() -> impl egui::Widget {
 
 fn top_section_widget(ui: &mut egui::Ui) -> AccountSelectResponse {
     ui.horizontal(|ui| {
-        let mut resp = AccountSelectResponse::default();
+        let resp = AccountSelectResponse::default();
 
         ui.allocate_ui_with_layout(
             Vec2::new(ui.available_size_before_wrap().x, 32.0),
@@ -211,7 +205,7 @@ fn top_section_widget(ui: &mut egui::Ui) -> AccountSelectResponse {
             Layout::right_to_left(egui::Align::Center),
             |ui| {
                 if ui.add(manage_accounts_button()).clicked() {
-                    resp.action = Some(AccountSelectAction::OpenAccountManagement);
+                    // resp.action = Some(AccountSelectAction::OpenAccountManagement); TODO implement after temporary column impl is finished
                 }
             },
         );
