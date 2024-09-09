@@ -14,9 +14,11 @@ use super::profile_preview_controller::profile_preview_view;
 
 pub struct AccountManagementView {}
 
+#[derive(Clone, Debug)]
 pub enum AccountManagementViewResponse {
     SelectAccount(usize),
     RemoveAccount(usize),
+    RouteToLogin,
 }
 
 impl AccountManagementView {
@@ -27,7 +29,9 @@ impl AccountManagementView {
         img_cache: &mut ImageCache,
     ) -> InnerResponse<Option<AccountManagementViewResponse>> {
         Frame::none().outer_margin(12.0).show(ui, |ui| {
-            Self::top_section_buttons_widget(ui);
+            if let Some(resp) = Self::top_section_buttons_widget(ui).inner {
+                return Some(resp);
+            }
 
             ui.add_space(8.0);
             scroll_area()
@@ -88,19 +92,23 @@ impl AccountManagementView {
         .inner
     }
 
-    fn top_section_buttons_widget(ui: &mut egui::Ui) -> egui::Response {
+    fn top_section_buttons_widget(
+        ui: &mut egui::Ui,
+    ) -> InnerResponse<Option<AccountManagementViewResponse>> {
         ui.horizontal(|ui| {
             ui.allocate_ui_with_layout(
                 Vec2::new(ui.available_size_before_wrap().x, 32.0),
                 Layout::left_to_right(egui::Align::Center),
                 |ui| {
                     if ui.add(add_account_button()).clicked() {
-                        // TODO: route to AccountLoginView
+                        Some(AccountManagementViewResponse::RouteToLogin)
+                    } else {
+                        None
                     }
                 },
-            );
+            )
+            .inner
         })
-        .response
     }
 }
 
@@ -194,7 +202,7 @@ fn selected_widget() -> impl egui::Widget {
 mod preview {
 
     use super::*;
-    use crate::{account_manager::process_view_response, test_data};
+    use crate::{account_manager::process_management_view_response_stateless, test_data};
 
     pub struct AccountManagementPreview {
         app: Damus,
@@ -219,7 +227,7 @@ mod preview {
             )
             .inner
             {
-                process_view_response(&mut self.app.account_manager, response)
+                process_management_view_response_stateless(&mut self.app.account_manager, response)
             }
         }
     }
