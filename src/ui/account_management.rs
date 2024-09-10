@@ -48,11 +48,16 @@ impl AccountManagementView {
         ndb: &Ndb,
         img_cache: &mut ImageCache,
     ) -> Option<AccountManagementViewResponse> {
+        let mut return_op: Option<AccountManagementViewResponse> = None;
         ui.allocate_ui_with_layout(
             Vec2::new(ui.available_size_before_wrap().x, 32.0),
             Layout::top_down(egui::Align::Min),
             |ui| {
-                let txn = Transaction::new(ndb).ok()?;
+                let txn = if let Ok(txn) = Transaction::new(ndb) {
+                    txn
+                } else {
+                    return;
+                };
 
                 for i in 0..account_manager.num_accounts() {
                     let account_pubkey = account_manager
@@ -76,7 +81,7 @@ impl AccountManagementView {
                     if let Some(op) =
                         profile_preview_view(ui, profile.as_ref(), img_cache, is_selected)
                     {
-                        return Some(match op {
+                        return_op = Some(match op {
                             ProfilePreviewOp::SwitchTo => {
                                 AccountManagementViewResponse::SelectAccount(i)
                             }
@@ -86,10 +91,9 @@ impl AccountManagementView {
                         });
                     }
                 }
-                None
             },
-        )
-        .inner
+        );
+        return_op
     }
 
     fn top_section_buttons_widget(
