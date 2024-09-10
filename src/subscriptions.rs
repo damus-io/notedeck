@@ -1,4 +1,4 @@
-use crate::column::ColumnKind;
+use crate::timeline::{TimelineId, TimelineKind};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
@@ -10,12 +10,12 @@ pub enum SubKind {
     /// One shot requests, we can just close after we receive EOSE
     OneShot,
 
-    Column(ColumnKind),
+    Timeline(TimelineKind),
 
     /// We are fetching a contact list so that we can use it for our follows
     /// Filter.
     // TODO: generalize this to any list?
-    FetchingContactList(u32),
+    FetchingContactList(TimelineId),
 }
 
 /// Subscriptions that need to be tracked at various stages. Sometimes we

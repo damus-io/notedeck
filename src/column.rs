@@ -1,152 +1,170 @@
-use crate::error::FilterError;
-use crate::filter;
-use crate::filter::FilterState;
-use crate::{timeline::Timeline, Error};
-use enostr::Pubkey;
-use nostrdb::{Filter, Ndb, Transaction};
-use std::fmt::Display;
-use tracing::{error, warn};
+use crate::route::Route;
+use crate::timeline::{Timeline, TimelineId};
+use std::iter::Iterator;
+use tracing::warn;
 
-#[derive(Clone, Debug)]
-pub enum PubkeySource {
-    Explicit(Pubkey),
-    DeckAuthor,
+pub struct Column {
+    kind: ColumnKind,
+    routes: Vec<Route>,
+
+    pub navigating: bool,
+    pub returning: bool,
 }
 
-#[derive(Debug, Clone)]
-pub enum ListKind {
-    Contact(PubkeySource),
-}
+impl Column {
+    pub fn timeline(timeline: Timeline) -> Self {
+        let routes = vec![Route::Timeline(format!("{}", &timeline.kind))];
+        let kind = ColumnKind::Timeline(timeline);
+        Column::new(kind, routes)
+    }
 
-///
-/// What kind of column is it?
-///   - Follow List
-///   - Notifications
-///   - DM
-///   - filter
-///   - ... etc
-#[derive(Debug, Clone)]
-pub enum ColumnKind {
-    List(ListKind),
+    pub fn kind(&self) -> &ColumnKind {
+        &self.kind
+    }
 
-    Notifications(PubkeySource),
+    pub fn kind_mut(&mut self) -> &mut ColumnKind {
+        &mut self.kind
+    }
 
-    Profile(PubkeySource),
+    pub fn view_id(&self) -> egui::Id {
+        self.kind.view_id()
+    }
 
-    Universe,
+    pub fn routes(&self) -> &[Route] {
+        &self.routes
+    }
 
-    /// Generic filter
-    Generic,
-}
+    pub fn routes_mut(&mut self) -> &mut Vec<Route> {
+        &mut self.routes
+    }
 
-impl Display for ColumnKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ColumnKind::List(ListKind::Contact(_src)) => f.write_str("Contacts"),
-            ColumnKind::Generic => f.write_str("Timeline"),
-            ColumnKind::Notifications(_) => f.write_str("Notifications"),
-            ColumnKind::Profile(_) => f.write_str("Profile"),
-            ColumnKind::Universe => f.write_str("Universe"),
+    pub fn new(kind: ColumnKind, routes: Vec<Route>) -> Self {
+        let navigating = false;
+        let returning = false;
+        Column {
+            kind,
+            routes,
+            navigating,
+            returning,
         }
     }
 }
 
+pub struct Columns {
+    columns: Vec<Column>,
+
+    /// The selected column for key navigation
+    selected: i32,
+}
+
+impl Columns {
+    pub fn columns_mut(&mut self) -> &mut Vec<Column> {
+        &mut self.columns
+    }
+
+    pub fn column(&self, ind: usize) -> &Column {
+        &self.columns()[ind]
+    }
+
+    pub fn columns(&self) -> &[Column] {
+        &self.columns
+    }
+
+    pub fn new(columns: Vec<Column>) -> Self {
+        let selected = -1;
+        Columns { columns, selected }
+    }
+
+    pub fn selected(&mut self) -> &mut Column {
+        &mut self.columns[self.selected as usize]
+    }
+
+    pub fn timelines_mut(&mut self) -> impl Iterator<Item = &mut Timeline> {
+        self.columns
+            .iter_mut()
+            .filter_map(|c| c.kind_mut().timeline_mut())
+    }
+
+    pub fn timelines(&self) -> impl Iterator<Item = &Timeline> {
+        self.columns.iter().filter_map(|c| c.kind().timeline())
+    }
+
+    pub fn find_timeline_mut(&mut self, id: TimelineId) -> Option<&mut Timeline> {
+        self.timelines_mut().find(|tl| tl.id == id)
+    }
+
+    pub fn find_timeline(&self, id: TimelineId) -> Option<&Timeline> {
+        self.timelines().find(|tl| tl.id == id)
+    }
+
+    pub fn column_mut(&mut self, ind: usize) -> &mut Column {
+        &mut self.columns[ind]
+    }
+
+    pub fn select_down(&mut self) {
+        self.selected().kind_mut().select_down();
+    }
+
+    pub fn select_up(&mut self) {
+        self.selected().kind_mut().select_up();
+    }
+
+    pub fn select_left(&mut self) {
+        if self.selected - 1 < 0 {
+            return;
+        }
+        self.selected -= 1;
+    }
+
+    pub fn select_right(&mut self) {
+        if self.selected + 1 >= self.columns.len() as i32 {
+            return;
+        }
+        self.selected += 1;
+    }
+}
+
+/// What type of column is it?
+#[derive(Debug)]
+pub enum ColumnKind {
+    Timeline(Timeline),
+
+    ManageAccount,
+}
+
 impl ColumnKind {
-    pub fn contact_list(pk: PubkeySource) -> Self {
-        ColumnKind::List(ListKind::Contact(pk))
-    }
-
-    pub fn profile(pk: PubkeySource) -> Self {
-        ColumnKind::Profile(pk)
-    }
-
-    pub fn notifications(pk: PubkeySource) -> Self {
-        ColumnKind::Notifications(pk)
-    }
-
-    pub fn into_timeline(self, ndb: &Ndb, default_user: Option<&[u8; 32]>) -> Option<Timeline> {
+    pub fn timeline_mut(&mut self) -> Option<&mut Timeline> {
         match self {
-            ColumnKind::Universe => Some(Timeline::new(
-                ColumnKind::Universe,
-                FilterState::ready(vec![Filter::new()
-                    .kinds([1])
-                    .limit(filter::default_limit())
-                    .build()]),
-            )),
+            ColumnKind::Timeline(tl) => Some(tl),
+            _ => None,
+        }
+    }
 
-            ColumnKind::Generic => {
-                warn!("you can't convert a ColumnKind::Generic to a Timeline");
-                None
-            }
+    pub fn timeline(&self) -> Option<&Timeline> {
+        match self {
+            ColumnKind::Timeline(tl) => Some(tl),
+            _ => None,
+        }
+    }
 
-            ColumnKind::Profile(pk_src) => {
-                let pk = match &pk_src {
-                    PubkeySource::DeckAuthor => default_user?,
-                    PubkeySource::Explicit(pk) => pk.bytes(),
-                };
+    pub fn view_id(&self) -> egui::Id {
+        match self {
+            ColumnKind::Timeline(timeline) => timeline.view_id(),
+            ColumnKind::ManageAccount => egui::Id::new("manage_account"),
+        }
+    }
 
-                let filter = Filter::new()
-                    .authors([pk])
-                    .kinds([1])
-                    .limit(filter::default_limit())
-                    .build();
+    pub fn select_down(&mut self) {
+        match self {
+            ColumnKind::Timeline(tl) => tl.current_view_mut().select_down(),
+            ColumnKind::ManageAccount => warn!("todo: manage account select_down"),
+        }
+    }
 
-                Some(Timeline::new(
-                    ColumnKind::profile(pk_src),
-                    FilterState::ready(vec![filter]),
-                ))
-            }
-
-            ColumnKind::Notifications(pk_src) => {
-                let pk = match &pk_src {
-                    PubkeySource::DeckAuthor => default_user?,
-                    PubkeySource::Explicit(pk) => pk.bytes(),
-                };
-
-                let notifications_filter = Filter::new()
-                    .pubkeys([pk])
-                    .kinds([1])
-                    .limit(filter::default_limit())
-                    .build();
-
-                Some(Timeline::new(
-                    ColumnKind::notifications(pk_src),
-                    FilterState::ready(vec![notifications_filter]),
-                ))
-            }
-
-            ColumnKind::List(ListKind::Contact(pk_src)) => {
-                let pk = match &pk_src {
-                    PubkeySource::DeckAuthor => default_user?,
-                    PubkeySource::Explicit(pk) => pk.bytes(),
-                };
-
-                let contact_filter = Filter::new().authors([pk]).kinds([3]).limit(1).build();
-
-                let txn = Transaction::new(ndb).expect("txn");
-                let results = ndb
-                    .query(&txn, &[contact_filter.clone()], 1)
-                    .expect("contact query failed?");
-
-                if results.is_empty() {
-                    return Some(Timeline::new(
-                        ColumnKind::contact_list(pk_src),
-                        FilterState::needs_remote(vec![contact_filter.clone()]),
-                    ));
-                }
-
-                match Timeline::contact_list(&results[0].note) {
-                    Err(Error::Filter(FilterError::EmptyContactList)) => Some(Timeline::new(
-                        ColumnKind::contact_list(pk_src),
-                        FilterState::needs_remote(vec![contact_filter]),
-                    )),
-                    Err(e) => {
-                        error!("Unexpected error: {e}");
-                        None
-                    }
-                    Ok(tl) => Some(tl),
-                }
-            }
+    pub fn select_up(&mut self) {
+        match self {
+            ColumnKind::Timeline(tl) => tl.current_view_mut().select_down(),
+            ColumnKind::ManageAccount => warn!("todo: manage account select_down"),
         }
     }
 }

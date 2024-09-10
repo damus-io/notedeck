@@ -40,7 +40,7 @@ impl AccountManagementView {
         let maybe_remove =
             profile_preview_controller::set_profile_previews(app, ui, account_card_ui());
 
-        Self::maybe_remove_accounts(&mut app.account_manager, maybe_remove);
+        Self::maybe_remove_accounts(&mut app.accounts, maybe_remove);
     }
 
     fn show_accounts_mobile(app: &mut Damus, ui: &mut egui::Ui) {
@@ -56,7 +56,7 @@ impl AccountManagementView {
                 );
 
                 // remove all account indicies user requested
-                Self::maybe_remove_accounts(&mut app.account_manager, maybe_remove);
+                Self::maybe_remove_accounts(&mut app.accounts, maybe_remove);
             },
         );
     }
@@ -95,8 +95,8 @@ impl AccountManagementView {
             //     Layout::right_to_left(egui::Align::Center),
             //     |ui| {
             //         if ui.add(logout_all_button()).clicked() {
-            //             for index in (0..self.account_manager.num_accounts()).rev() {
-            //                 self.account_manager.remove_account(index);
+            //             for index in (0..self.accounts.num_accounts()).rev() {
+            //                 self.accounts.remove_account(index);
             //             }
             //         }
             //     },

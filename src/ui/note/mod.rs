@@ -8,12 +8,21 @@ pub use options::NoteOptions;
 pub use post::{PostAction, PostResponse, PostView};
 pub use reply::PostReplyView;
 
-use crate::{actionbar::BarAction, colors, notecache::CachedNote, ui, ui::View, Damus};
+use crate::{
+    actionbar::BarAction,
+    colors,
+    imgcache::ImageCache,
+    notecache::{CachedNote, NoteCache},
+    ui,
+    ui::View,
+};
 use egui::{Label, RichText, Sense};
-use nostrdb::{Note, NoteKey, NoteReply, Transaction};
+use nostrdb::{Ndb, Note, NoteKey, NoteReply, Transaction};
 
 pub struct NoteView<'a> {
-    app: &'a mut Damus,
+    ndb: &'a Ndb,
+    note_cache: &'a mut NoteCache,
+    img_cache: &'a mut ImageCache,
     note: &'a nostrdb::Note<'a>,
     flags: NoteOptions,
 }
@@ -29,7 +38,13 @@ impl<'a> View for NoteView<'a> {
     }
 }
 
-fn reply_desc(ui: &mut egui::Ui, txn: &Transaction, note_reply: &NoteReply, app: &mut Damus) {
+fn reply_desc(
+    ui: &mut egui::Ui,
+    txn: &Transaction,
+    note_reply: &NoteReply,
+    ndb: &Ndb,
+    img_cache: &mut ImageCache,
+) {
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
 
@@ -51,7 +66,7 @@ fn reply_desc(ui: &mut egui::Ui, txn: &Transaction, note_reply: &NoteReply, app:
         return;
     };
 
-    let reply_note = if let Ok(reply_note) = app.ndb.get_note_by_id(txn, reply.id) {
+    let reply_note = if let Ok(reply_note) = ndb.get_note_by_id(txn, reply.id) {
         reply_note
     } else {
         ui.add(
@@ -68,7 +83,7 @@ fn reply_desc(ui: &mut egui::Ui, txn: &Transaction, note_reply: &NoteReply, app:
     if note_reply.is_reply_to_root() {
         // We're replying to the root, let's show this
         ui.add(
-            ui::Mention::new(app, txn, reply_note.pubkey())
+            ui::Mention::new(ndb, img_cache, txn, reply_note.pubkey())
                 .size(size)
                 .selectable(selectable),
         );
@@ -83,11 +98,11 @@ fn reply_desc(ui: &mut egui::Ui, txn: &Transaction, note_reply: &NoteReply, app:
     } else if let Some(root) = note_reply.root() {
         // replying to another post in a thread, not the root
 
-        if let Ok(root_note) = app.ndb.get_note_by_id(txn, root.id) {
+        if let Ok(root_note) = ndb.get_note_by_id(txn, root.id) {
             if root_note.pubkey() == reply_note.pubkey() {
                 // simply "replying to bob's note" when replying to bob in his thread
                 ui.add(
-                    ui::Mention::new(app, txn, reply_note.pubkey())
+                    ui::Mention::new(ndb, img_cache, txn, reply_note.pubkey())
                         .size(size)
                         .selectable(selectable),
                 );
@@ -103,7 +118,7 @@ fn reply_desc(ui: &mut egui::Ui, txn: &Transaction, note_reply: &NoteReply, app:
                 // replying to bob in alice's thread
 
                 ui.add(
-                    ui::Mention::new(app, txn, reply_note.pubkey())
+                    ui::Mention::new(ndb, img_cache, txn, reply_note.pubkey())
                         .size(size)
                         .selectable(selectable),
                 );
@@ -112,7 +127,7 @@ fn reply_desc(ui: &mut egui::Ui, txn: &Transaction, note_reply: &NoteReply, app:
                         .selectable(selectable),
                 );
                 ui.add(
-                    ui::Mention::new(app, txn, root_note.pubkey())
+                    ui::Mention::new(ndb, img_cache, txn, root_note.pubkey())
                         .size(size)
                         .selectable(selectable),
                 );
@@ -127,7 +142,7 @@ fn reply_desc(ui: &mut egui::Ui, txn: &Transaction, note_reply: &NoteReply, app:
             }
         } else {
             ui.add(
-                ui::Mention::new(app, txn, reply_note.pubkey())
+                ui::Mention::new(ndb, img_cache, txn, reply_note.pubkey())
                     .size(size)
                     .selectable(selectable),
             );
@@ -144,9 +159,25 @@ fn reply_desc(ui: &mut egui::Ui, txn: &Transaction, note_reply: &NoteReply, app:
 }
 
 impl<'a> NoteView<'a> {
-    pub fn new(app: &'a mut Damus, note: &'a nostrdb::Note<'a>) -> Self {
+    pub fn new(
+        ndb: &'a Ndb,
+        note_cache: &'a mut NoteCache,
+        img_cache: &'a mut ImageCache,
+        note: &'a nostrdb::Note<'a>,
+    ) -> Self {
         let flags = NoteOptions::actionbar | NoteOptions::note_previews;
-        Self { app, note, flags }
+        Self {
+            ndb,
+            note_cache,
+            img_cache,
+            note,
+            flags,
+        }
+    }
+
+    pub fn textmode(mut self, enable: bool) -> Self {
+        self.options_mut().set_textmode(enable);
+        self
     }
 
     pub fn actionbar(mut self, enable: bool) -> Self {
@@ -192,14 +223,13 @@ impl<'a> NoteView<'a> {
         let txn = self.note.txn().expect("todo: implement non-db notes");
 
         ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
-            let profile = self.app.ndb.get_profile_by_pubkey(txn, self.note.pubkey());
+            let profile = self.ndb.get_profile_by_pubkey(txn, self.note.pubkey());
 
             //ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
 
             let cached_note = self
-                .app
-                .note_cache_mut()
+                .note_cache
                 .cached_note_or_insert_mut(note_key, self.note);
 
             let (_id, rect) = ui.allocate_space(egui::vec2(50.0, 20.0));
@@ -218,7 +248,13 @@ impl<'a> NoteView<'a> {
             });
 
             ui.add(NoteContents::new(
-                self.app, txn, self.note, note_key, self.flags,
+                self.ndb,
+                self.img_cache,
+                self.note_cache,
+                txn,
+                self.note,
+                note_key,
+                self.flags,
             ));
             //});
         })
@@ -255,33 +291,26 @@ impl<'a> NoteView<'a> {
                 let profile_key = profile.as_ref().unwrap().record().note_key();
                 let note_key = note_key.as_u64();
 
-                if ui::is_narrow(ui.ctx()) {
-                    ui.add(ui::ProfilePic::new(&mut self.app.img_cache, pic));
-                } else {
-                    let (rect, size, _resp) = ui::anim::hover_expand(
-                        ui,
-                        egui::Id::new((profile_key, note_key)),
-                        pfp_size,
-                        ui::NoteView::expand_size(),
-                        anim_speed,
-                    );
+                let (rect, size, _resp) = ui::anim::hover_expand(
+                    ui,
+                    egui::Id::new((profile_key, note_key)),
+                    pfp_size,
+                    ui::NoteView::expand_size(),
+                    anim_speed,
+                );
 
-                    ui.put(
-                        rect,
-                        ui::ProfilePic::new(&mut self.app.img_cache, pic).size(size),
-                    )
+                ui.put(rect, ui::ProfilePic::new(self.img_cache, pic).size(size))
                     .on_hover_ui_at_pointer(|ui| {
                         ui.set_max_width(300.0);
                         ui.add(ui::ProfilePreview::new(
                             profile.as_ref().unwrap(),
-                            &mut self.app.img_cache,
+                            self.img_cache,
                         ));
                     });
-                }
             }
             None => {
                 ui.add(
-                    ui::ProfilePic::new(&mut self.app.img_cache, ui::ProfilePic::no_pfp_url())
+                    ui::ProfilePic::new(self.img_cache, ui::ProfilePic::no_pfp_url())
                         .size(pfp_size),
                 );
             }
@@ -289,7 +318,7 @@ impl<'a> NoteView<'a> {
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui) -> NoteResponse {
-        if self.app.textmode {
+        if self.options().has_textmode() {
             NoteResponse {
                 response: self.textmode_ui(ui),
                 action: None,
@@ -301,7 +330,7 @@ impl<'a> NoteView<'a> {
 
     fn note_header(
         ui: &mut egui::Ui,
-        app: &mut Damus,
+        note_cache: &mut NoteCache,
         note: &Note,
         profile: &Result<nostrdb::ProfileRecord<'_>, nostrdb::Error>,
     ) -> egui::Response {
@@ -311,9 +340,7 @@ impl<'a> NoteView<'a> {
             ui.spacing_mut().item_spacing.x = 2.0;
             ui.add(ui::Username::new(profile.as_ref().ok(), note.pubkey()).abbreviated(20));
 
-            let cached_note = app
-                .note_cache_mut()
-                .cached_note_or_insert_mut(note_key, note);
+            let cached_note = note_cache.cached_note_or_insert_mut(note_key, note);
             render_reltime(ui, cached_note, true);
         })
         .response
@@ -325,7 +352,7 @@ impl<'a> NoteView<'a> {
         let note_key = self.note.key().expect("todo: support non-db notes");
         let txn = self.note.txn().expect("todo: support non-db notes");
         let mut note_action: Option<BarAction> = None;
-        let profile = self.app.ndb.get_profile_by_pubkey(txn, self.note.pubkey());
+        let profile = self.ndb.get_profile_by_pubkey(txn, self.note.pubkey());
 
         // wide design
         let response = if self.options().has_wide() {
@@ -336,28 +363,29 @@ impl<'a> NoteView<'a> {
                 ui.vertical(|ui| {
                     ui.add_sized([size.x, self.options().pfp_size()], |ui: &mut egui::Ui| {
                         ui.horizontal_centered(|ui| {
-                            NoteView::note_header(ui, self.app, self.note, &profile);
+                            NoteView::note_header(ui, self.note_cache, self.note, &profile);
                         })
                         .response
                     });
 
                     let note_reply = self
-                        .app
-                        .note_cache_mut()
+                        .note_cache
                         .cached_note_or_insert_mut(note_key, self.note)
                         .reply
                         .borrow(self.note.tags());
 
                     if note_reply.reply().is_some() {
                         ui.horizontal(|ui| {
-                            reply_desc(ui, txn, &note_reply, self.app);
+                            reply_desc(ui, txn, &note_reply, self.ndb, self.img_cache);
                         });
                     }
                 });
             });
 
             let resp = ui.add(NoteContents::new(
-                self.app,
+                self.ndb,
+                self.img_cache,
+                self.note_cache,
                 txn,
                 self.note,
                 note_key,
@@ -375,25 +403,26 @@ impl<'a> NoteView<'a> {
                 self.pfp(note_key, &profile, ui);
 
                 ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
-                    NoteView::note_header(ui, self.app, self.note, &profile);
+                    NoteView::note_header(ui, self.note_cache, self.note, &profile);
 
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 2.0;
 
                         let note_reply = self
-                            .app
-                            .note_cache_mut()
+                            .note_cache
                             .cached_note_or_insert_mut(note_key, self.note)
                             .reply
                             .borrow(self.note.tags());
 
                         if note_reply.reply().is_some() {
-                            reply_desc(ui, txn, &note_reply, self.app);
+                            reply_desc(ui, txn, &note_reply, self.ndb, self.img_cache);
                         }
                     });
 
                     ui.add(NoteContents::new(
-                        self.app,
+                        self.ndb,
+                        self.img_cache,
+                        self.note_cache,
                         txn,
                         self.note,
                         note_key,

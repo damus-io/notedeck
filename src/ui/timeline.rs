@@ -1,28 +1,67 @@
-use crate::{actionbar::BarResult, draft::DraftSource, ui, ui::note::PostAction, Damus};
+use crate::{
+    actionbar::BarAction,
+    actionbar::BarResult,
+    column::{Column, ColumnKind},
+    draft::Drafts,
+    imgcache::ImageCache,
+    notecache::NoteCache,
+    thread::Threads,
+    ui,
+    ui::note::PostAction,
+};
 use egui::containers::scroll_area::ScrollBarVisibility;
 use egui::{Direction, Layout};
 use egui_tabs::TabColor;
-use nostrdb::Transaction;
+use enostr::{FilledKeypair, RelayPool};
+use nostrdb::{Ndb, Note, Transaction};
 use tracing::{debug, info, warn};
 
 pub struct TimelineView<'a> {
-    app: &'a mut Damus,
+    ndb: &'a Ndb,
+    column: &'a mut Column,
+    note_cache: &'a mut NoteCache,
+    img_cache: &'a mut ImageCache,
+    threads: &'a mut Threads,
+    pool: &'a mut RelayPool,
+    textmode: bool,
     reverse: bool,
-    timeline: usize,
 }
 
 impl<'a> TimelineView<'a> {
-    pub fn new(app: &'a mut Damus, timeline: usize) -> TimelineView<'a> {
+    pub fn new(
+        ndb: &'a Ndb,
+        column: &'a mut Column,
+        note_cache: &'a mut NoteCache,
+        img_cache: &'a mut ImageCache,
+        threads: &'a mut Threads,
+        pool: &'a mut RelayPool,
+        textmode: bool,
+    ) -> TimelineView<'a> {
         let reverse = false;
         TimelineView {
-            app,
-            timeline,
+            ndb,
+            column,
+            note_cache,
+            img_cache,
+            threads,
+            pool,
             reverse,
+            textmode,
         }
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui) {
-        timeline_ui(ui, self.app, self.timeline, self.reverse);
+        timeline_ui(
+            ui,
+            self.ndb,
+            self.column,
+            self.note_cache,
+            self.img_cache,
+            self.threads,
+            self.pool,
+            self.reverse,
+            self.textmode,
+        );
     }
 
     pub fn reversed(mut self) -> Self {
@@ -31,39 +70,61 @@ impl<'a> TimelineView<'a> {
     }
 }
 
-fn timeline_ui(ui: &mut egui::Ui, app: &mut Damus, timeline: usize, reversed: bool) {
+#[allow(clippy::too_many_arguments)]
+fn timeline_ui(
+    ui: &mut egui::Ui,
+    ndb: &Ndb,
+    column: &mut Column,
+    note_cache: &mut NoteCache,
+    img_cache: &mut ImageCache,
+    threads: &mut Threads,
+    pool: &mut RelayPool,
+    reversed: bool,
+    textmode: bool,
+) {
     //padding(4.0, ui, |ui| ui.heading("Notifications"));
     /*
     let font_id = egui::TextStyle::Body.resolve(ui.style());
     let row_height = ui.fonts(|f| f.row_height(&font_id)) + ui.spacing().item_spacing.y;
+
     */
 
-    if timeline == 0 {
-        postbox_view(app, ui);
+    {
+        let timeline = if let ColumnKind::Timeline(timeline) = column.kind_mut() {
+            timeline
+        } else {
+            return;
+        };
+
+        timeline.selected_view = tabs_ui(ui);
+
+        // need this for some reason??
+        ui.add_space(3.0);
     }
 
-    app.timelines[timeline].selected_view = tabs_ui(ui);
-
-    // need this for some reason??
-    ui.add_space(3.0);
-
-    let scroll_id = egui::Id::new(("tlscroll", app.timelines[timeline].selected_view, timeline));
+    let scroll_id = egui::Id::new(("tlscroll", column.view_id()));
     egui::ScrollArea::vertical()
         .id_source(scroll_id)
         .animated(false)
         .auto_shrink([false, false])
         .scroll_bar_visibility(ScrollBarVisibility::AlwaysVisible)
         .show(ui, |ui| {
-            let view = app.timelines[timeline].current_view();
+            let timeline = if let ColumnKind::Timeline(timeline) = column.kind_mut() {
+                timeline
+            } else {
+                return 0;
+            };
+
+            let view = timeline.current_view();
             let len = view.notes.len();
-            let mut bar_result: Option<BarResult> = None;
-            let txn = if let Ok(txn) = Transaction::new(&app.ndb) {
+            let txn = if let Ok(txn) = Transaction::new(ndb) {
                 txn
             } else {
                 warn!("failed to create transaction");
                 return 0;
             };
 
+            let mut bar_action: Option<(BarAction, Note)> = None;
             view.list
                 .clone()
                 .borrow_mut()
@@ -77,9 +138,9 @@ fn timeline_ui(ui: &mut egui::Ui, app: &mut Damus, timeline: usize, reversed: bo
                         start_index
                     };
 
-                    let note_key = app.timelines[timeline].current_view().notes[ind].key;
+                    let note_key = timeline.current_view().notes[ind].key;
 
-                    let note = if let Ok(note) = app.ndb.get_note_by_key(&txn, note_key) {
+                    let note = if let Ok(note) = ndb.get_note_by_key(&txn, note_key) {
                         note
                     } else {
                         warn!("failed to query note {:?}", note_key);
@@ -87,17 +148,13 @@ fn timeline_ui(ui: &mut egui::Ui, app: &mut Damus, timeline: usize, reversed: bo
                     };
 
                     ui::padding(8.0, ui, |ui| {
-                        let textmode = app.textmode;
-                        let resp = ui::NoteView::new(app, &note)
+                        let resp = ui::NoteView::new(ndb, note_cache, img_cache, &note)
                             .note_previews(!textmode)
                             .selectable_text(false)
                             .show(ui);
 
-                        if let Some(action) = resp.action {
-                            let br = action.execute(app, timeline, note.id(), &txn);
-                            if br.is_some() {
-                                bar_result = br;
-                            }
+                        if let Some(ba) = resp.action {
+                            bar_action = Some((ba, note));
                         } else if resp.response.clicked() {
                             debug!("clicked note");
                         }
@@ -109,15 +166,19 @@ fn timeline_ui(ui: &mut egui::Ui, app: &mut Damus, timeline: usize, reversed: bo
                     1
                 });
 
-            if let Some(br) = bar_result {
-                match br {
-                    // update the thread for next render if we have new notes
-                    BarResult::NewThreadNotes(new_notes) => {
-                        let thread = app
-                            .threads
-                            .thread_mut(&app.ndb, &txn, new_notes.root_id.bytes())
-                            .get_ptr();
-                        new_notes.process(thread);
+            // handle any actions from the virtual list
+            if let Some((action, note)) = bar_action {
+                if let Some(br) =
+                    action.execute(ndb, column, threads, note_cache, pool, note.id(), &txn)
+                {
+                    match br {
+                        // update the thread for next render if we have new notes
+                        BarResult::NewThreadNotes(new_notes) => {
+                            let thread = threads
+                                .thread_mut(ndb, &txn, new_notes.root_id.bytes())
+                                .get_ptr();
+                            new_notes.process(thread);
+                        }
                     }
                 }
             }
@@ -126,38 +187,27 @@ fn timeline_ui(ui: &mut egui::Ui, app: &mut Damus, timeline: usize, reversed: bo
         });
 }
 
-fn postbox_view(app: &mut Damus, ui: &mut egui::Ui) {
+pub fn postbox_view<'a>(
+    ndb: &'a Ndb,
+    key: FilledKeypair<'a>,
+    pool: &'a mut RelayPool,
+    drafts: &'a mut Drafts,
+    img_cache: &'a mut ImageCache,
+    ui: &'a mut egui::Ui,
+) {
     // show a postbox in the first timeline
+    let txn = Transaction::new(ndb).expect("txn");
+    let response = ui::PostView::new(ndb, drafts.compose_mut(), img_cache, key).ui(&txn, ui);
 
-    if let Some(account) = app.account_manager.get_selected_account_index() {
-        if app
-            .account_manager
-            .get_selected_account()
-            .map_or(false, |a| a.secret_key.is_some())
-        {
-            if let Ok(txn) = Transaction::new(&app.ndb) {
-                let response = ui::PostView::new(app, DraftSource::Compose, account).ui(&txn, ui);
-
-                if let Some(action) = response.action {
-                    match action {
-                        PostAction::Post(np) => {
-                            let seckey = app
-                                .account_manager
-                                .get_account(account)
-                                .unwrap()
-                                .secret_key
-                                .as_ref()
-                                .unwrap()
-                                .to_secret_bytes();
-
-                            let note = np.to_note(&seckey);
-                            let raw_msg = format!("[\"EVENT\",{}]", note.json().unwrap());
-                            info!("sending {}", raw_msg);
-                            app.pool.send(&enostr::ClientMessage::raw(raw_msg));
-                            app.drafts.clear(DraftSource::Compose);
-                        }
-                    }
-                }
+    if let Some(action) = response.action {
+        match action {
+            PostAction::Post(np) => {
+                let seckey = key.secret_key.to_secret_bytes();
+                let note = np.to_note(&seckey);
+                let raw_msg = format!("[\"EVENT\",{}]", note.json().unwrap());
+                info!("sending {}", raw_msg);
+                pool.send(&enostr::ClientMessage::raw(raw_msg));
+                drafts.compose_mut().clear();
             }
         }
     }

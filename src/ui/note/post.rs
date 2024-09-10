@@ -1,16 +1,17 @@
-use crate::app::Damus;
-use crate::draft::{Draft, DraftSource};
+use crate::draft::Draft;
+use crate::imgcache::ImageCache;
 use crate::post::NewPost;
 use crate::ui;
 use crate::ui::{Preview, PreviewConfig, View};
 use egui::widgets::text_edit::TextEdit;
-use nostrdb::Transaction;
+use enostr::{FilledKeypair, FullKeypair};
+use nostrdb::{Config, Ndb, Transaction};
 
-pub struct PostView<'app, 'd> {
-    app: &'app mut Damus,
-    /// account index
-    poster: usize,
-    draft_source: DraftSource<'d>,
+pub struct PostView<'a> {
+    ndb: &'a Ndb,
+    draft: &'a mut Draft,
+    img_cache: &'a mut ImageCache,
+    poster: FilledKeypair<'a>,
     id_source: Option<egui::Id>,
 }
 
@@ -23,14 +24,20 @@ pub struct PostResponse {
     pub edit_response: egui::Response,
 }
 
-impl<'app, 'd> PostView<'app, 'd> {
-    pub fn new(app: &'app mut Damus, draft_source: DraftSource<'d>, poster: usize) -> Self {
+impl<'a> PostView<'a> {
+    pub fn new(
+        ndb: &'a Ndb,
+        draft: &'a mut Draft,
+        img_cache: &'a mut ImageCache,
+        poster: FilledKeypair<'a>,
+    ) -> Self {
         let id_source: Option<egui::Id> = None;
         PostView {
-            id_source,
-            app,
+            ndb,
+            draft,
+            img_cache,
             poster,
-            draft_source,
+            id_source,
         }
     }
 
@@ -39,47 +46,30 @@ impl<'app, 'd> PostView<'app, 'd> {
         self
     }
 
-    fn draft(&mut self) -> &mut Draft {
-        self.draft_source.draft(&mut self.app.drafts)
-    }
-
     fn editbox(&mut self, txn: &nostrdb::Transaction, ui: &mut egui::Ui) -> egui::Response {
         ui.spacing_mut().item_spacing.x = 12.0;
 
         let pfp_size = 24.0;
 
-        let poster_pubkey = self
-            .app
-            .account_manager
-            .get_account(self.poster)
-            .map(|acc| acc.pubkey.bytes())
-            .unwrap_or(crate::test_data::test_pubkey());
-
         // TODO: refactor pfp control to do all of this for us
         let poster_pfp = self
-            .app
             .ndb
-            .get_profile_by_pubkey(txn, poster_pubkey)
+            .get_profile_by_pubkey(txn, self.poster.pubkey.bytes())
             .as_ref()
             .ok()
-            .and_then(|p| {
-                Some(ui::ProfilePic::from_profile(&mut self.app.img_cache, p)?.size(pfp_size))
-            });
+            .and_then(|p| Some(ui::ProfilePic::from_profile(self.img_cache, p)?.size(pfp_size)));
 
         if let Some(pfp) = poster_pfp {
             ui.add(pfp);
         } else {
             ui.add(
-                ui::ProfilePic::new(&mut self.app.img_cache, ui::ProfilePic::no_pfp_url())
-                    .size(pfp_size),
+                ui::ProfilePic::new(self.img_cache, ui::ProfilePic::no_pfp_url()).size(pfp_size),
             );
         }
 
-        let buffer = &mut self.draft_source.draft(&mut self.app.drafts).buffer;
-
         let response = ui.add_sized(
             ui.available_size(),
-            TextEdit::multiline(buffer)
+            TextEdit::multiline(&mut self.draft.buffer)
                 .hint_text(egui::RichText::new("Write a banger note here...").weak())
                 .frame(false),
         );
@@ -144,10 +134,10 @@ impl<'app, 'd> PostView<'app, 'd> {
                                 .add_sized([91.0, 32.0], egui::Button::new("Post now"))
                                 .clicked()
                             {
-                                Some(PostAction::Post(NewPost {
-                                    content: self.draft().buffer.clone(),
-                                    account: self.poster,
-                                }))
+                                Some(PostAction::Post(NewPost::new(
+                                    self.draft.buffer.clone(),
+                                    self.poster.to_full(),
+                                )))
                             } else {
                                 None
                             }
@@ -167,28 +157,41 @@ impl<'app, 'd> PostView<'app, 'd> {
 
 mod preview {
     use super::*;
-    use crate::test_data;
 
     pub struct PostPreview {
-        app: Damus,
+        ndb: Ndb,
+        img_cache: ImageCache,
+        draft: Draft,
+        poster: FullKeypair,
     }
 
     impl PostPreview {
         fn new() -> Self {
+            let ndb = Ndb::new(".", &Config::new()).expect("ndb");
+
             PostPreview {
-                app: test_data::test_app(),
+                ndb,
+                img_cache: ImageCache::new(".".into()),
+                draft: Draft::new(),
+                poster: FullKeypair::generate(),
             }
         }
     }
 
     impl View for PostPreview {
         fn ui(&mut self, ui: &mut egui::Ui) {
-            let txn = Transaction::new(&self.app.ndb).unwrap();
-            PostView::new(&mut self.app, DraftSource::Compose, 0).ui(&txn, ui);
+            let txn = Transaction::new(&self.ndb).expect("txn");
+            PostView::new(
+                &self.ndb,
+                &mut self.draft,
+                &mut self.img_cache,
+                self.poster.to_filled(),
+            )
+            .ui(&txn, ui);
         }
     }
 
-    impl<'app, 'p> Preview for PostView<'app, 'p> {
+    impl<'a> Preview for PostView<'a> {
         type Prev = PostPreview;
 
         fn preview(_cfg: PreviewConfig) -> Self::Prev {

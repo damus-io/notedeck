@@ -1,8 +1,9 @@
-use crate::{colors, ui, Damus};
-use nostrdb::Transaction;
+use crate::{colors, imgcache::ImageCache, ui};
+use nostrdb::{Ndb, Transaction};
 
 pub struct Mention<'a> {
-    app: &'a mut Damus,
+    ndb: &'a Ndb,
+    img_cache: &'a mut ImageCache,
     txn: &'a Transaction,
     pk: &'a [u8; 32],
     selectable: bool,
@@ -10,11 +11,17 @@ pub struct Mention<'a> {
 }
 
 impl<'a> Mention<'a> {
-    pub fn new(app: &'a mut Damus, txn: &'a Transaction, pk: &'a [u8; 32]) -> Self {
+    pub fn new(
+        ndb: &'a Ndb,
+        img_cache: &'a mut ImageCache,
+        txn: &'a Transaction,
+        pk: &'a [u8; 32],
+    ) -> Self {
         let size = 16.0;
         let selectable = true;
         Mention {
-            app,
+            ndb,
+            img_cache,
             txn,
             pk,
             selectable,
@@ -35,12 +42,21 @@ impl<'a> Mention<'a> {
 
 impl<'a> egui::Widget for Mention<'a> {
     fn ui(self, ui: &mut egui::Ui) -> egui::Response {
-        mention_ui(self.app, self.txn, self.pk, ui, self.size, self.selectable)
+        mention_ui(
+            self.ndb,
+            self.img_cache,
+            self.txn,
+            self.pk,
+            ui,
+            self.size,
+            self.selectable,
+        )
     }
 }
 
 fn mention_ui(
-    app: &mut Damus,
+    ndb: &Ndb,
+    img_cache: &mut ImageCache,
     txn: &Transaction,
     pk: &[u8; 32],
     ui: &mut egui::Ui,
@@ -51,7 +67,7 @@ fn mention_ui(
     puffin::profile_function!();
 
     ui.horizontal(|ui| {
-        let profile = app.ndb.get_profile_by_pubkey(txn, pk).ok();
+        let profile = ndb.get_profile_by_pubkey(txn, pk).ok();
 
         let name: String =
             if let Some(name) = profile.as_ref().and_then(crate::profile::get_profile_name) {
@@ -68,7 +84,7 @@ fn mention_ui(
         if let Some(rec) = profile.as_ref() {
             resp.on_hover_ui_at_pointer(|ui| {
                 ui.set_max_width(300.0);
-                ui.add(ui::ProfilePreview::new(rec, &mut app.img_cache));
+                ui.add(ui::ProfilePreview::new(rec, img_cache));
             });
         }
     })

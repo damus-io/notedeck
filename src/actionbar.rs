@@ -1,11 +1,12 @@
 use crate::{
+    column::Column,
     note::NoteRef,
+    notecache::NoteCache,
     route::Route,
-    thread::{Thread, ThreadResult},
-    Damus,
+    thread::{Thread, ThreadResult, Threads},
 };
-use enostr::NoteId;
-use nostrdb::Transaction;
+use enostr::{NoteId, RelayPool};
+use nostrdb::{Ndb, Transaction};
 use tracing::{error, info};
 use uuid::Uuid;
 
@@ -30,26 +31,28 @@ pub enum BarResult {
 /// the thread view. We don't have a concept of model/view/controller etc
 /// in egui, but this is the closest thing to that.
 fn open_thread(
-    app: &mut Damus,
+    ndb: &Ndb,
     txn: &Transaction,
-    timeline: usize,
+    column: &mut Column,
+    note_cache: &mut NoteCache,
+    pool: &mut RelayPool,
+    threads: &mut Threads,
     selected_note: &[u8; 32],
 ) -> Option<BarResult> {
     {
-        let timeline = &mut app.timelines[timeline];
-        timeline
-            .routes
+        column
+            .routes_mut()
             .push(Route::Thread(NoteId::new(selected_note.to_owned())));
-        timeline.navigating = true;
+        column.navigating = true;
     }
 
-    let root_id = crate::note::root_note_id_from_selected_id(app, txn, selected_note);
-    let thread_res = app.threads.thread_mut(&app.ndb, txn, root_id);
+    let root_id = crate::note::root_note_id_from_selected_id(ndb, note_cache, txn, selected_note);
+    let thread_res = threads.thread_mut(ndb, txn, root_id);
 
     let (thread, result) = match thread_res {
         ThreadResult::Stale(thread) => {
             // The thread is stale, let's update it
-            let notes = Thread::new_notes(&thread.view.notes, root_id, txn, &app.ndb);
+            let notes = Thread::new_notes(&thread.view.notes, root_id, txn, ndb);
             let bar_result = if notes.is_empty() {
                 None
             } else {
@@ -76,14 +79,14 @@ fn open_thread(
     // an active subscription for this thread.
     if thread.subscription().is_none() {
         let filters = Thread::filters(root_id);
-        *thread.subscription_mut() = app.ndb.subscribe(&filters).ok();
+        *thread.subscription_mut() = ndb.subscribe(&filters).ok();
 
         if thread.remote_subscription().is_some() {
             error!("Found active remote subscription when it was not expected");
         } else {
             let subid = Uuid::new_v4().to_string();
             *thread.remote_subscription_mut() = Some(subid.clone());
-            app.pool.subscribe(subid, filters);
+            pool.subscribe(subid, filters);
         }
 
         match thread.subscription() {
@@ -91,7 +94,7 @@ fn open_thread(
                 thread.subscribers += 1;
                 info!(
                     "Locally/remotely subscribing to thread. {} total active subscriptions, {} on this thread",
-                    app.ndb.subscription_count(),
+                    ndb.subscription_count(),
                     thread.subscribers,
                 );
             }
@@ -104,7 +107,7 @@ fn open_thread(
         thread.subscribers += 1;
         info!(
             "Re-using existing thread subscription. {} total active subscriptions, {} on this thread",
-            app.ndb.subscription_count(),
+            ndb.subscription_count(),
             thread.subscribers,
         )
     }
@@ -113,24 +116,29 @@ fn open_thread(
 }
 
 impl BarAction {
+    #[allow(clippy::too_many_arguments)]
     pub fn execute(
         self,
-        app: &mut Damus,
-        timeline: usize,
+        ndb: &Ndb,
+        column: &mut Column,
+        threads: &mut Threads,
+        note_cache: &mut NoteCache,
+        pool: &mut RelayPool,
         replying_to: &[u8; 32],
         txn: &Transaction,
     ) -> Option<BarResult> {
         match self {
             BarAction::Reply => {
-                let timeline = &mut app.timelines[timeline];
-                timeline
-                    .routes
+                column
+                    .routes_mut()
                     .push(Route::Reply(NoteId::new(replying_to.to_owned())));
-                timeline.navigating = true;
+                column.navigating = true;
                 None
             }
 
-            BarAction::OpenThread => open_thread(app, txn, timeline, replying_to),
+            BarAction::OpenThread => {
+                open_thread(ndb, txn, column, note_cache, pool, threads, replying_to)
+            }
         }
     }
 }

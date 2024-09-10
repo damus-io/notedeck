@@ -1,14 +1,17 @@
 use crate::images::ImageType;
 use crate::imgcache::ImageCache;
+use crate::notecache::NoteCache;
 use crate::ui::note::NoteOptions;
 use crate::ui::ProfilePic;
-use crate::{colors, ui, Damus};
+use crate::{colors, ui};
 use egui::{Color32, Hyperlink, Image, RichText};
-use nostrdb::{BlockType, Mention, Note, NoteKey, Transaction};
+use nostrdb::{BlockType, Mention, Ndb, Note, NoteKey, Transaction};
 use tracing::warn;
 
 pub struct NoteContents<'a> {
-    damus: &'a mut Damus,
+    ndb: &'a Ndb,
+    img_cache: &'a mut ImageCache,
+    note_cache: &'a mut NoteCache,
     txn: &'a Transaction,
     note: &'a Note<'a>,
     note_key: NoteKey,
@@ -17,14 +20,18 @@ pub struct NoteContents<'a> {
 
 impl<'a> NoteContents<'a> {
     pub fn new(
-        damus: &'a mut Damus,
+        ndb: &'a Ndb,
+        img_cache: &'a mut ImageCache,
+        note_cache: &'a mut NoteCache,
         txn: &'a Transaction,
         note: &'a Note,
         note_key: NoteKey,
         options: ui::note::NoteOptions,
     ) -> Self {
         NoteContents {
-            damus,
+            ndb,
+            img_cache,
+            note_cache,
             txn,
             note,
             note_key,
@@ -37,7 +44,9 @@ impl egui::Widget for NoteContents<'_> {
     fn ui(self, ui: &mut egui::Ui) -> egui::Response {
         render_note_contents(
             ui,
-            self.damus,
+            self.ndb,
+            self.img_cache,
+            self.note_cache,
             self.txn,
             self.note,
             self.note_key,
@@ -51,7 +60,9 @@ impl egui::Widget for NoteContents<'_> {
 /// notes are references within a note
 fn render_note_preview(
     ui: &mut egui::Ui,
-    app: &mut Damus,
+    ndb: &Ndb,
+    note_cache: &mut NoteCache,
+    img_cache: &mut ImageCache,
     txn: &Transaction,
     id: &[u8; 32],
     _id_str: &str,
@@ -59,7 +70,7 @@ fn render_note_preview(
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
 
-    let note = if let Ok(note) = app.ndb.get_note_by_id(txn, id) {
+    let note = if let Ok(note) = ndb.get_note_by_id(txn, id) {
         // TODO: support other preview kinds
         if note.kind() == 1 {
             note
@@ -92,7 +103,7 @@ fn render_note_preview(
             ui.visuals().noninteractive().bg_stroke.color,
         ))
         .show(ui, |ui| {
-            ui::NoteView::new(app, &note)
+            ui::NoteView::new(ndb, note_cache, img_cache, &note)
                 .actionbar(false)
                 .small_pfp(true)
                 .wide(true)
@@ -102,9 +113,12 @@ fn render_note_preview(
         .response
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_note_contents(
     ui: &mut egui::Ui,
-    damus: &mut Damus,
+    ndb: &Ndb,
+    img_cache: &mut ImageCache,
+    note_cache: &mut NoteCache,
     txn: &Transaction,
     note: &Note,
     note_key: NoteKey,
@@ -118,7 +132,7 @@ fn render_note_contents(
     let mut inline_note: Option<(&[u8; 32], &str)> = None;
 
     let resp = ui.horizontal_wrapped(|ui| {
-        let blocks = if let Ok(blocks) = damus.ndb.get_blocks_by_key(txn, note_key) {
+        let blocks = if let Ok(blocks) = ndb.get_blocks_by_key(txn, note_key) {
             blocks
         } else {
             warn!("missing note content blocks? '{}'", note.content());
@@ -132,11 +146,11 @@ fn render_note_contents(
             match block.blocktype() {
                 BlockType::MentionBech32 => match block.as_mention().unwrap() {
                     Mention::Profile(profile) => {
-                        ui.add(ui::Mention::new(damus, txn, profile.pubkey()));
+                        ui.add(ui::Mention::new(ndb, img_cache, txn, profile.pubkey()));
                     }
 
                     Mention::Pubkey(npub) => {
-                        ui.add(ui::Mention::new(damus, txn, npub.pubkey()));
+                        ui.add(ui::Mention::new(ndb, img_cache, txn, npub.pubkey()));
                     }
 
                     Mention::Note(note) if options.has_note_previews() => {
@@ -186,13 +200,13 @@ fn render_note_contents(
     });
 
     if let Some((id, block_str)) = inline_note {
-        render_note_preview(ui, damus, txn, id, block_str);
+        render_note_preview(ui, ndb, note_cache, img_cache, txn, id, block_str);
     }
 
-    if !images.is_empty() && !damus.textmode {
+    if !images.is_empty() && !options.has_textmode() {
         ui.add_space(2.0);
         let carousel_id = egui::Id::new(("carousel", note.key().expect("expected tx note")));
-        image_carousel(ui, &mut damus.img_cache, images, carousel_id);
+        image_carousel(ui, img_cache, images, carousel_id);
         ui.add_space(2.0);
     }
 

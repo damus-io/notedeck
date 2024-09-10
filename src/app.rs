@@ -3,7 +3,7 @@ use crate::actionbar::BarResult;
 use crate::app_creation::setup_cc;
 use crate::app_style::user_requested_visuals_change;
 use crate::args::Args;
-use crate::column::ColumnKind;
+use crate::column::{Column, ColumnKind, Columns};
 use crate::draft::Drafts;
 use crate::error::{Error, FilterError};
 use crate::filter::FilterState;
@@ -16,7 +16,7 @@ use crate::relay_pool_manager::RelayPoolManager;
 use crate::route::Route;
 use crate::subscriptions::{SubKind, Subscriptions};
 use crate::thread::{DecrementResult, Threads};
-use crate::timeline::{Timeline, TimelineSource, ViewFilter};
+use crate::timeline::{Timeline, TimelineKind, TimelineSource, ViewFilter};
 use crate::ui::note::PostAction;
 use crate::ui::{self, AccountSelectionWidget, DesktopGlobalPopup};
 use crate::ui::{DesktopSidePanel, RelayView, View};
@@ -24,8 +24,6 @@ use crate::unknowns::UnknownIds;
 use crate::{filter, Result};
 use egui_nav::{Nav, NavAction};
 use enostr::{ClientMessage, RelayEvent, RelayMessage, RelayPool};
-use std::cell::RefCell;
-use std::rc::Rc;
 use uuid::Uuid;
 
 use egui::{Context, Frame, Style};
@@ -53,15 +51,13 @@ pub struct Damus {
     /// global navigation for account management popups, etc.
     pub global_nav: Vec<Route>,
 
-    pub timelines: Vec<Timeline>,
-    pub selected_timeline: i32,
-
+    pub columns: Columns,
     pub ndb: Ndb,
     pub unknown_ids: UnknownIds,
     pub drafts: Drafts,
     pub threads: Threads,
     pub img_cache: ImageCache,
-    pub account_manager: AccountManager,
+    pub accounts: AccountManager,
     pub subscriptions: Subscriptions,
 
     frame_history: crate::frame_history::FrameHistory,
@@ -99,10 +95,15 @@ fn relay_setup(pool: &mut RelayPool, ctx: &egui::Context) {
     }
 }
 
-fn send_initial_timeline_filter(damus: &mut Damus, timeline: usize, to: &str) {
-    let can_since_optimize = damus.since_optimize;
-
-    let filter_state = damus.timelines[timeline].filter.clone();
+fn send_initial_timeline_filter(
+    ndb: &Ndb,
+    can_since_optimize: bool,
+    subs: &mut Subscriptions,
+    pool: &mut RelayPool,
+    timeline: &mut Timeline,
+    to: &str,
+) {
+    let filter_state = timeline.filter.clone();
 
     match filter_state {
         FilterState::Broken(err) => {
@@ -131,7 +132,7 @@ fn send_initial_timeline_filter(damus: &mut Damus, timeline: usize, to: &str) {
                     filter = filter.limit_mut(lim);
                 }
 
-                let notes = damus.timelines[timeline].notes(ViewFilter::NotesAndReplies);
+                let notes = timeline.notes(ViewFilter::NotesAndReplies);
 
                 // Should we since optimize? Not always. For example
                 // if we only have a few notes locally. One way to
@@ -148,38 +149,41 @@ fn send_initial_timeline_filter(damus: &mut Damus, timeline: usize, to: &str) {
                 filter
             }).collect();
 
-            let sub_id = damus.gen_subid(&SubKind::Initial);
-            damus
-                .subscriptions()
-                .insert(sub_id.clone(), SubKind::Initial);
+            //let sub_id = damus.gen_subid(&SubKind::Initial);
+            let sub_id = Uuid::new_v4().to_string();
+            subs.subs.insert(sub_id.clone(), SubKind::Initial);
 
             let cmd = ClientMessage::req(sub_id, new_filters);
-            damus.pool.send_to(&cmd, to);
+            pool.send_to(&cmd, to);
         }
 
         // we need some data first
         FilterState::NeedsRemote(filter) => {
-            let uid = damus.timelines[timeline].uid;
-            let sub_kind = SubKind::FetchingContactList(uid);
-            let sub_id = damus.gen_subid(&sub_kind);
-            let local_sub = damus.ndb.subscribe(&filter).expect("sub");
+            let sub_kind = SubKind::FetchingContactList(timeline.id);
+            //let sub_id = damus.gen_subid(&sub_kind);
+            let sub_id = Uuid::new_v4().to_string();
+            let local_sub = ndb.subscribe(&filter).expect("sub");
 
-            damus.timelines[timeline].filter =
-                FilterState::fetching_remote(sub_id.clone(), local_sub);
+            timeline.filter = FilterState::fetching_remote(sub_id.clone(), local_sub);
 
-            damus.subscriptions().insert(sub_id.clone(), sub_kind);
+            subs.subs.insert(sub_id.clone(), sub_kind);
 
-            damus.pool.subscribe(sub_id, filter.to_owned());
+            pool.subscribe(sub_id, filter.to_owned());
         }
     }
 }
 
 fn send_initial_filters(damus: &mut Damus, relay_url: &str) {
     info!("Sending initial filters to {}", relay_url);
-    let timelines = damus.timelines.len();
-
-    for i in 0..timelines {
-        send_initial_timeline_filter(damus, i, relay_url);
+    for timeline in damus.columns.timelines_mut() {
+        send_initial_timeline_filter(
+            &damus.ndb,
+            damus.since_optimize,
+            &mut damus.subscriptions,
+            &mut damus.pool,
+            timeline,
+            relay_url,
+        );
     }
 }
 
@@ -190,7 +194,7 @@ enum ContextAction {
 fn handle_key_events(
     input: &egui::InputState,
     pixels_per_point: f32,
-    damus: &mut Damus,
+    columns: &mut Columns,
 ) -> Option<ContextAction> {
     let amount = 0.2;
 
@@ -213,16 +217,16 @@ fn handle_key_events(
                         Some(ContextAction::SetPixelsPerPoint(pixels_per_point - amount));
                 }
                 egui::Key::J => {
-                    damus.select_down();
+                    columns.select_down();
                 }
                 egui::Key::K => {
-                    damus.select_up();
+                    columns.select_up();
                 }
                 egui::Key::H => {
-                    damus.select_left();
+                    columns.select_left();
                 }
                 egui::Key::L => {
-                    damus.select_left();
+                    columns.select_left();
                 }
                 _ => {}
             }
@@ -234,7 +238,7 @@ fn handle_key_events(
 
 fn try_process_event(damus: &mut Damus, ctx: &egui::Context) -> Result<()> {
     let ppp = ctx.pixels_per_point();
-    let res = ctx.input(|i| handle_key_events(i, ppp, damus));
+    let res = ctx.input(|i| handle_key_events(i, ppp, &mut damus.columns));
     if let Some(action) = res {
         match action {
             ContextAction::SetPixelsPerPoint(amt) => {
@@ -263,12 +267,27 @@ fn try_process_event(damus: &mut Damus, ctx: &egui::Context) -> Result<()> {
         }
     }
 
-    for timeline in 0..damus.timelines.len() {
-        let src = TimelineSource::column(timeline);
+    let n_cols = damus.columns.columns().len();
+    for col_ind in 0..n_cols {
+        let timeline =
+            if let ColumnKind::Timeline(timeline) = damus.columns.column_mut(col_ind).kind_mut() {
+                timeline
+            } else {
+                continue;
+            };
 
-        if let Ok(true) = is_timeline_ready(damus, timeline) {
+        if let Ok(true) =
+            is_timeline_ready(&damus.ndb, &mut damus.pool, &mut damus.note_cache, timeline)
+        {
             let txn = Transaction::new(&damus.ndb).expect("txn");
-            if let Err(err) = src.poll_notes_into_view(&txn, damus) {
+            if let Err(err) = TimelineSource::column(timeline.id).poll_notes_into_view(
+                &txn,
+                &damus.ndb,
+                &mut damus.columns,
+                &mut damus.threads,
+                &mut damus.unknown_ids,
+                &mut damus.note_cache,
+            ) {
                 error!("poll_notes_into_view: {err}");
             }
         } else {
@@ -298,8 +317,13 @@ fn unknown_id_send(damus: &mut Damus) {
 /// Our timelines may require additional data before it is functional. For
 /// example, when we have to fetch a contact list before we do the actual
 /// following list query.
-fn is_timeline_ready(damus: &mut Damus, timeline: usize) -> Result<bool> {
-    let sub = match &damus.timelines[timeline].filter {
+fn is_timeline_ready(
+    ndb: &Ndb,
+    pool: &mut RelayPool,
+    note_cache: &mut NoteCache,
+    timeline: &mut Timeline,
+) -> Result<bool> {
+    let sub = match &timeline.filter {
         FilterState::GotRemote(sub) => *sub,
         FilterState::Ready(_f) => return Ok(true),
         _ => return Ok(false),
@@ -307,9 +331,12 @@ fn is_timeline_ready(damus: &mut Damus, timeline: usize) -> Result<bool> {
 
     // We got at least one eose for our filter request. Let's see
     // if nostrdb is done processing it yet.
-    let res = damus.ndb.poll_for_notes(sub, 1);
+    let res = ndb.poll_for_notes(sub, 1);
     if res.is_empty() {
-        debug!("check_timeline_filter_state: no notes found (yet?) for timeline {timeline}");
+        debug!(
+            "check_timeline_filter_state: no notes found (yet?) for timeline {:?}",
+            timeline
+        );
         return Ok(false);
     }
 
@@ -318,8 +345,8 @@ fn is_timeline_ready(damus: &mut Damus, timeline: usize) -> Result<bool> {
     let note_key = res[0];
 
     let filter = {
-        let txn = Transaction::new(&damus.ndb).expect("txn");
-        let note = damus.ndb.get_note_by_key(&txn, note_key).expect("note");
+        let txn = Transaction::new(ndb).expect("txn");
+        let note = ndb.get_note_by_key(&txn, note_key).expect("note");
         filter::filter_from_tags(&note).map(|f| f.into_follow_filter())
     };
 
@@ -327,23 +354,24 @@ fn is_timeline_ready(damus: &mut Damus, timeline: usize) -> Result<bool> {
     match filter {
         Err(Error::Filter(e)) => {
             error!("got broken when building filter {e}");
-            damus.timelines[timeline].filter = FilterState::broken(e);
+            timeline.filter = FilterState::broken(e);
         }
         Err(err) => {
             error!("got broken when building filter {err}");
-            damus.timelines[timeline].filter = FilterState::broken(FilterError::EmptyContactList);
+            timeline.filter = FilterState::broken(FilterError::EmptyContactList);
             return Err(err);
         }
         Ok(filter) => {
             // we just switched to the ready state, we should send initial
             // queries and setup the local subscription
             info!("Found contact list! Setting up local and remote contact list query");
-            setup_initial_timeline(damus, timeline, &filter).expect("setup init");
-            damus.timelines[timeline].filter = FilterState::ready(filter.clone());
+            setup_initial_timeline(ndb, timeline, note_cache, &filter).expect("setup init");
+            timeline.filter = FilterState::ready(filter.clone());
 
-            let ck = &damus.timelines[timeline].kind;
-            let subid = damus.gen_subid(&SubKind::Column(ck.clone()));
-            damus.pool.subscribe(subid, filter)
+            //let ck = &timeline.kind;
+            //let subid = damus.gen_subid(&SubKind::Column(ck.clone()));
+            let subid = Uuid::new_v4().to_string();
+            pool.subscribe(subid, filter)
         }
     }
 
@@ -355,18 +383,23 @@ fn setup_profiling() {
     puffin::set_scopes_on(true); // tell puffin to collect data
 }
 
-fn setup_initial_timeline(damus: &mut Damus, timeline: usize, filters: &[Filter]) -> Result<()> {
-    damus.timelines[timeline].subscription = Some(damus.ndb.subscribe(filters)?);
-    let txn = Transaction::new(&damus.ndb)?;
+fn setup_initial_timeline(
+    ndb: &Ndb,
+    timeline: &mut Timeline,
+    note_cache: &mut NoteCache,
+    filters: &[Filter],
+) -> Result<()> {
+    timeline.subscription = Some(ndb.subscribe(filters)?);
+    let txn = Transaction::new(ndb)?;
     debug!(
         "querying nostrdb sub {:?} {:?}",
-        damus.timelines[timeline].subscription, damus.timelines[timeline].filter
+        timeline.subscription, timeline.filter
     );
     let lim = filters[0].limit().unwrap_or(crate::filter::default_limit()) as i32;
-    let results = damus.ndb.query(&txn, filters, lim)?;
+    let results = ndb.query(&txn, filters, lim)?;
 
     let filters = {
-        let views = &damus.timelines[timeline].views;
+        let views = &timeline.views;
         let filters: Vec<fn(&CachedNote, &Note) -> bool> =
             views.iter().map(|v| v.filter.filter()).collect();
         filters
@@ -375,12 +408,10 @@ fn setup_initial_timeline(damus: &mut Damus, timeline: usize, filters: &[Filter]
     for result in results {
         for (view, filter) in filters.iter().enumerate() {
             if filter(
-                damus
-                    .note_cache_mut()
-                    .cached_note_or_insert_mut(result.note_key, &result.note),
+                note_cache.cached_note_or_insert_mut(result.note_key, &result.note),
                 &result.note,
             ) {
-                damus.timelines[timeline].views[view].notes.push(NoteRef {
+                timeline.views[view].notes.push(NoteRef {
                     key: result.note_key,
                     created_at: result.note.created_at(),
                 })
@@ -391,12 +422,16 @@ fn setup_initial_timeline(damus: &mut Damus, timeline: usize, filters: &[Filter]
     Ok(())
 }
 
-fn setup_initial_nostrdb_subs(damus: &mut Damus) -> Result<()> {
-    let timelines = damus.timelines.len();
-    for i in 0..timelines {
-        let filter = damus.timelines[i].filter.clone();
-        match filter {
-            FilterState::Ready(filters) => setup_initial_timeline(damus, i, &filters)?,
+fn setup_initial_nostrdb_subs(
+    ndb: &Ndb,
+    note_cache: &mut NoteCache,
+    columns: &mut Columns,
+) -> Result<()> {
+    for timeline in columns.timelines_mut() {
+        match &timeline.filter {
+            FilterState::Ready(filters) => {
+                { setup_initial_timeline(ndb, timeline, note_cache, &filters.clone()) }?
+            }
 
             FilterState::Broken(err) => {
                 error!("FetchingRemote state broken in setup_initial_nostr_subs: {err}")
@@ -427,7 +462,8 @@ fn update_damus(damus: &mut Damus, ctx: &egui::Context) {
         damus
             .subscriptions()
             .insert("unknownids".to_string(), SubKind::OneShot);
-        setup_initial_nostrdb_subs(damus).expect("home subscription failed");
+        setup_initial_nostrdb_subs(&damus.ndb, &mut damus.note_cache, &mut damus.columns)
+            .expect("home subscription failed");
     }
 
     if let Err(err) = try_process_event(damus, ctx) {
@@ -458,12 +494,18 @@ fn handle_eose(damus: &mut Damus, subid: &str, relay_url: &str) -> Result<()> {
     };
 
     match *sub_kind {
-        SubKind::Column(_) => {
-            // eose on column? whatevs
+        SubKind::Timeline(_) => {
+            // eose on timeline? whatevs
         }
         SubKind::Initial => {
             let txn = Transaction::new(&damus.ndb)?;
-            UnknownIds::update(&txn, damus);
+            UnknownIds::update(
+                &txn,
+                &mut damus.unknown_ids,
+                &damus.columns,
+                &damus.ndb,
+                &mut damus.note_cache,
+            );
             // this is possible if this is the first time
             if damus.unknown_ids.ready_to_send() {
                 unknown_id_send(damus);
@@ -477,8 +519,8 @@ fn handle_eose(damus: &mut Damus, subid: &str, relay_url: &str) -> Result<()> {
         }
 
         SubKind::FetchingContactList(timeline_uid) => {
-            let timeline_ind = if let Some(i) = damus.find_timeline(timeline_uid) {
-                i
+            let timeline = if let Some(tl) = damus.columns.find_timeline_mut(timeline_uid) {
+                tl
             } else {
                 error!(
                     "timeline uid:{} not found for FetchingContactList",
@@ -487,35 +529,25 @@ fn handle_eose(damus: &mut Damus, subid: &str, relay_url: &str) -> Result<()> {
                 return Ok(());
             };
 
-            let local_sub = if let FilterState::FetchingRemote(unisub) =
-                &damus.timelines[timeline_ind].filter
-            {
+            // If this request was fetching a contact list, our filter
+            // state should be "FetchingRemote". We look at the local
+            // subscription for that filter state and get the subscription id
+            let local_sub = if let FilterState::FetchingRemote(unisub) = &timeline.filter {
                 unisub.local
             } else {
                 // TODO: we could have multiple contact list results, we need
                 // to check to see if this one is newer and use that instead
                 warn!(
                     "Expected timeline to have FetchingRemote state but was {:?}",
-                    damus.timelines[timeline_ind].filter
+                    timeline.filter
                 );
                 return Ok(());
             };
 
-            damus.timelines[timeline_ind].filter = FilterState::got_remote(local_sub);
-
-            /*
-            // see if we're fast enough to catch a processed contact list
-            let note_keys = damus.ndb.poll_for_notes(local_sub, 1);
-            if !note_keys.is_empty() {
-                debug!("fast! caught contact list from {relay_url} right away");
-                let txn = Transaction::new(&damus.ndb)?;
-                let note_key = note_keys[0];
-                let nr = damus.ndb.get_note_by_key(&txn, note_key)?;
-                let filter = filter::filter_from_tags(&nr)?.into_follow_filter();
-                setup_initial_timeline(damus, timeline, &filter)
-                damus.timelines[timeline_ind].filter = FilterState::ready(filter);
-            }
-            */
+            // We take the subscription id and pass it to the new state of
+            // "GotRemote". This will let future frames know that it can try
+            // to look for the contact list in nostrdb.
+            timeline.filter = FilterState::got_remote(local_sub);
         }
     }
 
@@ -593,7 +625,7 @@ impl Damus {
         let mut config = Config::new();
         config.set_ingester_threads(4);
 
-        let mut account_manager = AccountManager::new(
+        let mut accounts = AccountManager::new(
             // TODO: should pull this from settings
             None,
             // TODO: use correct KeyStorage mechanism for current OS arch
@@ -602,12 +634,12 @@ impl Damus {
 
         for key in parsed_args.keys {
             info!("adding account: {}", key.pubkey);
-            account_manager.add_account(key);
+            accounts.add_account(key);
         }
 
         // TODO: pull currently selected account from settings
-        if account_manager.num_accounts() > 0 {
-            account_manager.select_account(0);
+        if accounts.num_accounts() > 0 {
+            accounts.select_account(0);
         }
 
         // setup relays if we have them
@@ -629,27 +661,27 @@ impl Damus {
             pool
         };
 
-        let account = account_manager
+        let account = accounts
             .get_selected_account()
             .as_ref()
             .map(|a| a.pubkey.bytes());
         let ndb = Ndb::new(&dbpath, &config).expect("ndb");
 
-        let mut timelines: Vec<Timeline> = Vec::with_capacity(parsed_args.columns.len());
+        let mut columns: Vec<Column> = Vec::with_capacity(parsed_args.columns.len());
         for col in parsed_args.columns {
             if let Some(timeline) = col.into_timeline(&ndb, account) {
-                timelines.push(timeline);
+                columns.push(Column::timeline(timeline));
             }
         }
 
         let debug = parsed_args.debug;
 
-        if timelines.is_empty() {
+        if columns.is_empty() {
             let filter = Filter::from_json(include_str!("../queries/timeline.json")).unwrap();
-            timelines.push(Timeline::new(
-                ColumnKind::Generic,
+            columns.push(Column::timeline(Timeline::new(
+                TimelineKind::Generic,
                 FilterState::ready(vec![filter]),
-            ));
+            )));
         }
 
         Self {
@@ -663,11 +695,10 @@ impl Damus {
             state: DamusState::Initializing,
             img_cache: ImageCache::new(imgcache_dir.into()),
             note_cache: NoteCache::default(),
-            selected_timeline: 0,
-            timelines,
+            columns: Columns::new(columns),
             textmode: parsed_args.textmode,
             ndb,
-            account_manager,
+            accounts,
             frame_history: FrameHistory::default(),
             show_account_switcher: false,
             show_global_popup: false,
@@ -684,12 +715,12 @@ impl Damus {
     }
 
     pub fn mock<P: AsRef<Path>>(data_path: P) -> Self {
-        let mut timelines: Vec<Timeline> = vec![];
+        let mut columns: Vec<Column> = vec![];
         let filter = Filter::from_json(include_str!("../queries/global.json")).unwrap();
-        timelines.push(Timeline::new(
-            ColumnKind::Universe,
+        columns.push(Column::timeline(Timeline::new(
+            TimelineKind::Universe,
             FilterState::ready(vec![filter]),
-        ));
+        )));
 
         let imgcache_dir = data_path.as_ref().join(ImageCache::rel_datadir());
         let _ = std::fs::create_dir_all(imgcache_dir.clone());
@@ -708,26 +739,15 @@ impl Damus {
             pool: RelayPool::new(),
             img_cache: ImageCache::new(imgcache_dir),
             note_cache: NoteCache::default(),
-            selected_timeline: 0,
-            timelines,
+            columns: Columns::new(columns),
             textmode: false,
             ndb: Ndb::new(data_path.as_ref().to_str().expect("db path ok"), &config).expect("ndb"),
-            account_manager: AccountManager::new(None, KeyStorageType::None),
+            accounts: AccountManager::new(None, KeyStorageType::None),
             frame_history: FrameHistory::default(),
             show_account_switcher: false,
             show_global_popup: true,
             global_nav: Vec::new(),
         }
-    }
-
-    pub fn find_timeline(&self, uid: u32) -> Option<usize> {
-        for (i, timeline) in self.timelines.iter().enumerate() {
-            if timeline.uid == uid {
-                return Some(i);
-            }
-        }
-
-        None
     }
 
     pub fn subscriptions(&mut self) -> &mut HashMap<String, SubKind> {
@@ -740,32 +760,6 @@ impl Damus {
 
     pub fn note_cache(&self) -> &NoteCache {
         &self.note_cache
-    }
-
-    pub fn selected_timeline(&mut self) -> &mut Timeline {
-        &mut self.timelines[self.selected_timeline as usize]
-    }
-
-    pub fn select_down(&mut self) {
-        self.selected_timeline().current_view_mut().select_down();
-    }
-
-    pub fn select_up(&mut self) {
-        self.selected_timeline().current_view_mut().select_up();
-    }
-
-    pub fn select_left(&mut self) {
-        if self.selected_timeline - 1 < 0 {
-            return;
-        }
-        self.selected_timeline -= 1;
-    }
-
-    pub fn select_right(&mut self) {
-        if self.selected_timeline + 1 >= self.timelines.len() as i32 {
-            return;
-        }
-        self.selected_timeline += 1;
     }
 }
 
@@ -797,7 +791,7 @@ fn top_panel(ctx: &egui::Context) -> egui::TopBottomPanel {
         .show_separator_line(false)
 }
 
-fn render_panel(ctx: &egui::Context, app: &mut Damus, timeline_ind: usize) {
+fn render_panel(ctx: &egui::Context, app: &mut Damus) {
     top_panel(ctx).show(ctx, |ui| {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
             ui.visuals_mut().button_frame = false;
@@ -843,26 +837,34 @@ fn render_panel(ctx: &egui::Context, app: &mut Damus, timeline_ind: usize) {
                     app.frame_history.mean_frame_time() * 1e3
                 ));
 
-                if !app.timelines.is_empty() {
+                /*
+                if !app.timelines().count().is_empty() {
                     ui.weak(format!(
                         "{} notes",
-                        &app.timelines[timeline_ind]
+                        &app.timelines()
                             .notes(ViewFilter::NotesAndReplies)
                             .len()
                     ));
                 }
+                */
             }
         });
     });
 }
 
 /// Local thread unsubscribe
-fn thread_unsubscribe(app: &mut Damus, id: &[u8; 32]) {
+fn thread_unsubscribe(
+    ndb: &Ndb,
+    threads: &mut Threads,
+    pool: &mut RelayPool,
+    note_cache: &mut NoteCache,
+    id: &[u8; 32],
+) {
     let (unsubscribe, remote_subid) = {
-        let txn = Transaction::new(&app.ndb).expect("txn");
-        let root_id = crate::note::root_note_id_from_selected_id(app, &txn, id);
+        let txn = Transaction::new(ndb).expect("txn");
+        let root_id = crate::note::root_note_id_from_selected_id(ndb, note_cache, &txn, id);
 
-        let thread = app.threads.thread_mut(&app.ndb, &txn, root_id).get_ptr();
+        let thread = threads.thread_mut(ndb, &txn, root_id).get_ptr();
         let unsub = thread.decrement_sub();
 
         let mut remote_subid: Option<String> = None;
@@ -877,30 +879,30 @@ fn thread_unsubscribe(app: &mut Damus, id: &[u8; 32]) {
 
     match unsubscribe {
         Ok(DecrementResult::LastSubscriber(sub)) => {
-            if let Err(e) = app.ndb.unsubscribe(sub) {
+            if let Err(e) = ndb.unsubscribe(sub) {
                 error!(
                     "failed to unsubscribe from thread: {e}, subid:{}, {} active subscriptions",
                     sub.id(),
-                    app.ndb.subscription_count()
+                    ndb.subscription_count()
                 );
             } else {
                 info!(
                     "Unsubscribed from thread subid:{}. {} active subscriptions",
                     sub.id(),
-                    app.ndb.subscription_count()
+                    ndb.subscription_count()
                 );
             }
 
             // unsub from remote
             if let Some(subid) = remote_subid {
-                app.pool.unsubscribe(subid);
+                pool.unsubscribe(subid);
             }
         }
 
         Ok(DecrementResult::ActiveSubscribers) => {
             info!(
                 "Keeping thread subscription. {} active subscriptions.",
-                app.ndb.subscription_count()
+                ndb.subscription_count()
             );
             // do nothing
         }
@@ -909,25 +911,49 @@ fn thread_unsubscribe(app: &mut Damus, id: &[u8; 32]) {
             // something is wrong!
             error!(
                 "Thread unsubscribe error: {e}. {} active subsciptions.",
-                app.ndb.subscription_count()
+                ndb.subscription_count()
             );
         }
     }
 }
 
-fn render_nav(routes: Vec<Route>, timeline_ind: usize, app: &mut Damus, ui: &mut egui::Ui) {
-    let navigating = app.timelines[timeline_ind].navigating;
-    let returning = app.timelines[timeline_ind].returning;
-    let app_ctx = Rc::new(RefCell::new(app));
+fn render_nav(show_postbox: bool, col: usize, app: &mut Damus, ui: &mut egui::Ui) {
+    let navigating = app.columns.column(col).navigating;
+    let returning = app.columns.column(col).returning;
 
-    let nav_response = Nav::new(routes)
+    let nav_response = Nav::new(app.columns.column(col).routes().to_vec())
         .navigating(navigating)
         .returning(returning)
         .title(false)
-        .show(ui, |ui, nav| match nav.top() {
+        .show_mut(ui, |ui, nav| match nav.top() {
             Route::Timeline(_n) => {
-                let app = &mut app_ctx.borrow_mut();
-                ui::TimelineView::new(app, timeline_ind).ui(ui);
+                let column = app.columns.column_mut(col);
+                if column.kind().timeline().is_some() {
+                    if show_postbox {
+                        if let Some(kp) = app.accounts.selected_or_first_nsec() {
+                            ui::timeline::postbox_view(
+                                &app.ndb,
+                                kp,
+                                &mut app.pool,
+                                &mut app.drafts,
+                                &mut app.img_cache,
+                                ui,
+                            );
+                        }
+                    }
+                    ui::TimelineView::new(
+                        &app.ndb,
+                        column,
+                        &mut app.note_cache,
+                        &mut app.img_cache,
+                        &mut app.threads,
+                        &mut app.pool,
+                        app.textmode,
+                    )
+                    .ui(ui);
+                } else {
+                    ui.label("no timeline for this column?");
+                }
                 None
             }
 
@@ -937,15 +963,25 @@ fn render_nav(routes: Vec<Route>, timeline_ind: usize, app: &mut Damus, ui: &mut
             }
 
             Route::Relays => {
-                let pool = &mut app_ctx.borrow_mut().pool;
-                let manager = RelayPoolManager::new(pool);
+                let manager = RelayPoolManager::new(&mut app.pool);
                 RelayView::new(manager).ui(ui);
                 None
             }
 
             Route::Thread(id) => {
-                let app = &mut app_ctx.borrow_mut();
-                let result = ui::ThreadView::new(app, timeline_ind, id.bytes()).ui(ui);
+                let result = ui::ThreadView::new(
+                    col,
+                    &mut app.columns,
+                    &mut app.threads,
+                    &app.ndb,
+                    &mut app.note_cache,
+                    &mut app.img_cache,
+                    &mut app.unknown_ids,
+                    &mut app.pool,
+                    app.textmode,
+                    id.bytes(),
+                )
+                .ui(ui);
 
                 if let Some(bar_result) = result {
                     match bar_result {
@@ -960,8 +996,6 @@ fn render_nav(routes: Vec<Route>, timeline_ind: usize, app: &mut Damus, ui: &mut
             }
 
             Route::Reply(id) => {
-                let mut app = app_ctx.borrow_mut();
-
                 let txn = if let Ok(txn) = Transaction::new(&app.ndb) {
                     txn
                 } else {
@@ -976,32 +1010,55 @@ fn render_nav(routes: Vec<Route>, timeline_ind: usize, app: &mut Damus, ui: &mut
                     return None;
                 };
 
-                let id = egui::Id::new(("post", timeline_ind, note.key().unwrap()));
-                let response = egui::ScrollArea::vertical().show(ui, |ui| {
-                    ui::PostReplyView::new(&mut app, &note)
+                let id = egui::Id::new((
+                    "post",
+                    app.columns.column(col).view_id(),
+                    note.key().unwrap(),
+                ));
+
+                if let Some(poster) = app.accounts.selected_or_first_nsec() {
+                    let response = egui::ScrollArea::vertical().show(ui, |ui| {
+                        ui::PostReplyView::new(
+                            &app.ndb,
+                            poster,
+                            &mut app.pool,
+                            &mut app.drafts,
+                            &mut app.note_cache,
+                            &mut app.img_cache,
+                            &note,
+                        )
                         .id_source(id)
                         .show(ui)
-                });
+                    });
 
-                Some(response)
+                    Some(response)
+                } else {
+                    None
+                }
             }
         });
 
-    let mut app = app_ctx.borrow_mut();
+    let column = app.columns.column_mut(col);
     if let Some(reply_response) = nav_response.inner {
         if let Some(PostAction::Post(_np)) = reply_response.inner.action {
-            app.timelines[timeline_ind].returning = true;
+            column.returning = true;
         }
     }
 
     if let Some(NavAction::Returned) = nav_response.action {
-        let popped = app.timelines[timeline_ind].routes.pop();
+        let popped = column.routes_mut().pop();
         if let Some(Route::Thread(id)) = popped {
-            thread_unsubscribe(&mut app, id.bytes());
+            thread_unsubscribe(
+                &app.ndb,
+                &mut app.threads,
+                &mut app.pool,
+                &mut app.note_cache,
+                id.bytes(),
+            );
         }
-        app.timelines[timeline_ind].returning = false;
+        column.returning = false;
     } else if let Some(NavAction::Navigated) = nav_response.action {
-        app.timelines[timeline_ind].navigating = false;
+        column.navigating = false;
     }
 }
 
@@ -1014,7 +1071,9 @@ fn render_damus_mobile(ctx: &egui::Context, app: &mut Damus) {
     //let routes = app.timelines[0].routes.clone();
 
     main_panel(&ctx.style(), ui::is_narrow(ctx)).show(ctx, |ui| {
-        render_nav(app.timelines[0].routes.clone(), 0, app, ui);
+        if !app.columns.columns().is_empty() {
+            render_nav(false, 0, app, ui);
+        }
     });
 }
 
@@ -1033,12 +1092,12 @@ fn main_panel(style: &Style, narrow: bool) -> egui::CentralPanel {
 }
 
 fn render_damus_desktop(ctx: &egui::Context, app: &mut Damus) {
-    render_panel(ctx, app, 0);
+    render_panel(ctx, app);
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
 
     let screen_size = ctx.screen_rect().width();
-    let calc_panel_width = (screen_size / app.timelines.len() as f32) - 30.0;
+    let calc_panel_width = (screen_size / app.columns.columns().len() as f32) - 30.0;
     let min_width = 320.0;
     let need_scroll = calc_panel_width < min_width;
     let panel_sizes = if need_scroll {
@@ -1053,18 +1112,18 @@ fn render_damus_desktop(ctx: &egui::Context, app: &mut Damus) {
         DesktopGlobalPopup::show(app.global_nav.clone(), app, ui);
         if need_scroll {
             egui::ScrollArea::horizontal().show(ui, |ui| {
-                timelines_view(ui, panel_sizes, app, app.timelines.len());
+                timelines_view(ui, panel_sizes, app, app.columns.columns().len());
             });
         } else {
-            timelines_view(ui, panel_sizes, app, app.timelines.len());
+            timelines_view(ui, panel_sizes, app, app.columns.columns().len());
         }
     });
 }
 
-fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus, timelines: usize) {
+fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus, columns: usize) {
     StripBuilder::new(ui)
         .size(Size::exact(40.0))
-        .sizes(sizes, timelines)
+        .sizes(sizes, columns)
         .clip(true)
         .horizontal(|mut strip| {
             strip.cell(|ui| {
@@ -1085,15 +1144,17 @@ fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus, timelines: us
                 );
             });
 
-            for timeline_ind in 0..timelines {
+            let n_cols = app.columns.columns().len();
+            let mut first = true;
+            for column_ind in 0..n_cols {
                 strip.cell(|ui| {
                     let rect = ui.available_rect_before_wrap();
-                    render_nav(
-                        app.timelines[timeline_ind].routes.clone(),
-                        timeline_ind,
-                        app,
-                        ui,
-                    );
+                    let show_postbox =
+                        first && app.columns.column(column_ind).kind().timeline().is_some();
+                    if show_postbox {
+                        first = false
+                    }
+                    render_nav(show_postbox, column_ind, app, ui);
 
                     // vertical line
                     ui.painter().vline(

@@ -1,6 +1,7 @@
-use crate::notecache::CachedNote;
+use crate::column::Columns;
+use crate::notecache::{CachedNote, NoteCache};
 use crate::timeline::ViewFilter;
-use crate::{Damus, Result};
+use crate::Result;
 use enostr::{Filter, NoteId, Pubkey};
 use nostrdb::{BlockType, Mention, Ndb, Note, NoteKey, Transaction};
 use std::collections::HashSet;
@@ -63,37 +64,45 @@ impl UnknownIds {
         self.last_updated = Some(now);
     }
 
-    pub fn update_from_note(txn: &Transaction, app: &mut Damus, note: &Note) -> bool {
-        let before = app.unknown_ids.ids().len();
+    pub fn update_from_note(
+        txn: &Transaction,
+        ndb: &Ndb,
+        unknown_ids: &mut UnknownIds,
+        note_cache: &mut NoteCache,
+        note: &Note,
+    ) -> bool {
+        let before = unknown_ids.ids().len();
         let key = note.key().expect("note key");
-        let cached_note = app
-            .note_cache_mut()
-            .cached_note_or_insert(key, note)
-            .clone();
-        if let Err(e) =
-            get_unknown_note_ids(&app.ndb, &cached_note, txn, note, app.unknown_ids.ids_mut())
-        {
+        //let cached_note = note_cache.cached_note_or_insert(key, note).clone();
+        let cached_note = note_cache.cached_note_or_insert(key, note);
+        if let Err(e) = get_unknown_note_ids(ndb, cached_note, txn, note, unknown_ids.ids_mut()) {
             error!("UnknownIds::update_from_note {e}");
         }
-        let after = app.unknown_ids.ids().len();
+        let after = unknown_ids.ids().len();
 
         if before != after {
-            app.unknown_ids.mark_updated();
+            unknown_ids.mark_updated();
             true
         } else {
             false
         }
     }
 
-    pub fn update(txn: &Transaction, app: &mut Damus) -> bool {
-        let before = app.unknown_ids.ids().len();
-        if let Err(e) = get_unknown_ids(txn, app) {
+    pub fn update(
+        txn: &Transaction,
+        unknown_ids: &mut UnknownIds,
+        columns: &Columns,
+        ndb: &Ndb,
+        note_cache: &mut NoteCache,
+    ) -> bool {
+        let before = unknown_ids.ids().len();
+        if let Err(e) = get_unknown_ids(txn, unknown_ids, columns, ndb, note_cache) {
             error!("UnknownIds::update {e}");
         }
-        let after = app.unknown_ids.ids().len();
+        let after = unknown_ids.ids().len();
 
         if before != after {
-            app.unknown_ids.mark_updated();
+            unknown_ids.mark_updated();
             true
         } else {
             false
@@ -211,17 +220,23 @@ pub fn get_unknown_note_ids<'a>(
     Ok(())
 }
 
-fn get_unknown_ids(txn: &Transaction, damus: &mut Damus) -> Result<()> {
+fn get_unknown_ids(
+    txn: &Transaction,
+    unknown_ids: &mut UnknownIds,
+    columns: &Columns,
+    ndb: &Ndb,
+    note_cache: &mut NoteCache,
+) -> Result<()> {
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
 
     let mut new_cached_notes: Vec<(NoteKey, CachedNote)> = vec![];
 
-    for timeline in &damus.timelines {
+    for timeline in columns.timelines() {
         for noteref in timeline.notes(ViewFilter::NotesAndReplies) {
-            let note = damus.ndb.get_note_by_key(txn, noteref.key)?;
+            let note = ndb.get_note_by_key(txn, noteref.key)?;
             let note_key = note.key().unwrap();
-            let cached_note = damus.note_cache().cached_note(noteref.key);
+            let cached_note = note_cache.cached_note(noteref.key);
             let cached_note = if let Some(cn) = cached_note {
                 cn.clone()
             } else {
@@ -230,20 +245,14 @@ fn get_unknown_ids(txn: &Transaction, damus: &mut Damus) -> Result<()> {
                 new_cached_note
             };
 
-            let _ = get_unknown_note_ids(
-                &damus.ndb,
-                &cached_note,
-                txn,
-                &note,
-                damus.unknown_ids.ids_mut(),
-            );
+            let _ = get_unknown_note_ids(ndb, &cached_note, txn, &note, unknown_ids.ids_mut());
         }
     }
 
     // This is mainly done to avoid the double mutable borrow that would happen
     // if we tried to update the note_cache mutably in the loop above
     for (note_key, note) in new_cached_notes {
-        damus.note_cache_mut().cache_mut().insert(note_key, note);
+        note_cache.cache_mut().insert(note_key, note);
     }
 
     Ok(())

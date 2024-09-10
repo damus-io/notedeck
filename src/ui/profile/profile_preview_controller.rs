@@ -33,8 +33,8 @@ pub fn set_profile_previews(
         return None;
     };
 
-    for i in 0..app.account_manager.num_accounts() {
-        let account = if let Some(account) = app.account_manager.get_account(i) {
+    for i in 0..app.accounts.num_accounts() {
+        let account = if let Some(account) = app.accounts.get_account(i) {
             account
         } else {
             continue;
@@ -47,7 +47,7 @@ pub fn set_profile_previews(
 
         let preview = SimpleProfilePreview::new(profile.as_ref(), &mut app.img_cache);
 
-        let is_selected = if let Some(selected) = app.account_manager.get_selected_account_index() {
+        let is_selected = if let Some(selected) = app.accounts.get_selected_account_index() {
             i == selected
         } else {
             false
@@ -66,7 +66,7 @@ pub fn set_profile_previews(
                 }
                 to_remove.as_mut().unwrap().push(i);
             }
-            ProfilePreviewOp::SwitchTo => app.account_manager.select_account(i),
+            ProfilePreviewOp::SwitchTo => app.accounts.select_account(i),
         }
     }
 
@@ -92,8 +92,8 @@ pub fn view_profile_previews(
         return None;
     };
 
-    for i in 0..app.account_manager.num_accounts() {
-        let account = if let Some(account) = app.account_manager.get_account(i) {
+    for i in 0..app.accounts.num_accounts() {
+        let account = if let Some(account) = app.accounts.get_account(i) {
             account
         } else {
             continue;
@@ -106,7 +106,7 @@ pub fn view_profile_previews(
 
         let preview = SimpleProfilePreview::new(profile.as_ref(), &mut app.img_cache);
 
-        let is_selected = if let Some(selected) = app.account_manager.get_selected_account_index() {
+        let is_selected = if let Some(selected) = app.accounts.get_selected_account_index() {
             i == selected
         } else {
             false
@@ -136,7 +136,7 @@ pub fn show_with_selected_pfp(
     ui: &mut egui::Ui,
     ui_element: fn(ui: &mut egui::Ui, pfp: ProfilePic) -> egui::Response,
 ) -> Option<egui::Response> {
-    let selected_account = app.account_manager.get_selected_account();
+    let selected_account = app.accounts.get_selected_account();
     if let Some(selected_account) = selected_account {
         if let Ok(txn) = Transaction::new(&app.ndb) {
             let profile = app

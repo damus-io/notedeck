@@ -1,12 +1,17 @@
+use enostr::FullKeypair;
 use nostrdb::{Note, NoteBuilder, NoteReply};
 use std::collections::HashSet;
 
 pub struct NewPost {
     pub content: String,
-    pub account: usize,
+    pub account: FullKeypair,
 }
 
 impl NewPost {
+    pub fn new(content: String, account: FullKeypair) -> Self {
+        NewPost { content, account }
+    }
+
     pub fn to_note(&self, seckey: &[u8; 32]) -> Note {
         NoteBuilder::new()
             .kind(1)

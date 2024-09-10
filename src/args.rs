@@ -1,6 +1,5 @@
-use crate::column::{ColumnKind, PubkeySource};
 use crate::filter::FilterState;
-use crate::timeline::Timeline;
+use crate::timeline::{PubkeySource, Timeline, TimelineKind};
 use enostr::{Filter, Keypair, Pubkey, SecretKey};
 use nostrdb::Ndb;
 use tracing::{debug, error, info};
@@ -137,22 +136,24 @@ impl Args {
                 if let Some(rest) = column_name.strip_prefix("contacts:") {
                     if let Ok(pubkey) = Pubkey::parse(rest) {
                         info!("contact column for user {}", pubkey.hex());
-                        res.columns.push(ArgColumn::Column(ColumnKind::contact_list(
-                            PubkeySource::Explicit(pubkey),
-                        )))
+                        res.columns
+                            .push(ArgColumn::Timeline(TimelineKind::contact_list(
+                                PubkeySource::Explicit(pubkey),
+                            )))
                     } else {
                         error!("error parsing contacts pubkey {}", rest);
                         continue;
                     }
                 } else if column_name == "contacts" {
-                    res.columns.push(ArgColumn::Column(ColumnKind::contact_list(
-                        PubkeySource::DeckAuthor,
-                    )))
+                    res.columns
+                        .push(ArgColumn::Timeline(TimelineKind::contact_list(
+                            PubkeySource::DeckAuthor,
+                        )))
                 } else if let Some(notif_pk_str) = column_name.strip_prefix("notifications:") {
                     if let Ok(pubkey) = Pubkey::parse(notif_pk_str) {
                         info!("got notifications column for user {}", pubkey.hex());
                         res.columns
-                            .push(ArgColumn::Column(ColumnKind::notifications(
+                            .push(ArgColumn::Timeline(TimelineKind::notifications(
                                 PubkeySource::Explicit(pubkey),
                             )))
                     } else {
@@ -162,21 +163,22 @@ impl Args {
                 } else if column_name == "notifications" {
                     debug!("got notification column for default user");
                     res.columns
-                        .push(ArgColumn::Column(ColumnKind::notifications(
+                        .push(ArgColumn::Timeline(TimelineKind::notifications(
                             PubkeySource::DeckAuthor,
                         )))
                 } else if column_name == "profile" {
                     debug!("got profile column for default user");
-                    res.columns.push(ArgColumn::Column(ColumnKind::profile(
+                    res.columns.push(ArgColumn::Timeline(TimelineKind::profile(
                         PubkeySource::DeckAuthor,
                     )))
                 } else if column_name == "universe" {
                     debug!("got universe column");
-                    res.columns.push(ArgColumn::Column(ColumnKind::Universe))
+                    res.columns
+                        .push(ArgColumn::Timeline(TimelineKind::Universe))
                 } else if let Some(profile_pk_str) = column_name.strip_prefix("profile:") {
                     if let Ok(pubkey) = Pubkey::parse(profile_pk_str) {
                         info!("got profile column for user {}", pubkey.hex());
-                        res.columns.push(ArgColumn::Column(ColumnKind::profile(
+                        res.columns.push(ArgColumn::Timeline(TimelineKind::profile(
                             PubkeySource::Explicit(pubkey),
                         )))
                     } else {
@@ -214,9 +216,9 @@ impl Args {
         }
 
         if res.columns.is_empty() {
-            let ck = ColumnKind::contact_list(PubkeySource::DeckAuthor);
+            let ck = TimelineKind::contact_list(PubkeySource::DeckAuthor);
             info!("No columns set, setting up defaults: {:?}", ck);
-            res.columns.push(ArgColumn::Column(ck));
+            res.columns.push(ArgColumn::Timeline(ck));
         }
 
         res
@@ -226,7 +228,7 @@ impl Args {
 /// A way to define columns from the commandline. Can be column kinds or
 /// generic queries
 pub enum ArgColumn {
-    Column(ColumnKind),
+    Timeline(TimelineKind),
     Generic(Vec<Filter>),
 }
 
@@ -234,10 +236,10 @@ impl ArgColumn {
     pub fn into_timeline(self, ndb: &Ndb, user: Option<&[u8; 32]>) -> Option<Timeline> {
         match self {
             ArgColumn::Generic(filters) => Some(Timeline::new(
-                ColumnKind::Generic,
+                TimelineKind::Generic,
                 FilterState::ready(filters),
             )),
-            ArgColumn::Column(ck) => ck.into_timeline(ndb, user),
+            ArgColumn::Timeline(tk) => tk.into_timeline(ndb, user),
         }
     }
 }

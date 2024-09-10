@@ -1,6 +1,6 @@
 use std::cmp::Ordering;
 
-use enostr::Keypair;
+use enostr::{FilledKeypair, Keypair};
 
 use crate::key_storage::{KeyStorage, KeyStorageResponse, KeyStorageType};
 pub use crate::user_account::UserAccount;
@@ -86,6 +86,12 @@ impl AccountManager {
 
     pub fn get_selected_account_index(&self) -> Option<usize> {
         self.currently_selected_account
+    }
+
+    pub fn selected_or_first_nsec(&self) -> Option<FilledKeypair<'_>> {
+        self.get_selected_account()
+            .and_then(|kp| kp.to_full())
+            .or_else(|| self.accounts.iter().find_map(|a| a.to_full()))
     }
 
     pub fn get_selected_account(&self) -> Option<&UserAccount> {

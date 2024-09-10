@@ -49,12 +49,10 @@ impl AccountSelectionWidget {
 
     fn perform_action(app: &mut Damus, action: AccountSelectAction) {
         match action {
-            AccountSelectAction::RemoveAccount { _index } => {
-                app.account_manager.remove_account(_index)
-            }
+            AccountSelectAction::RemoveAccount { _index } => app.accounts.remove_account(_index),
             AccountSelectAction::SelectAccount { _index } => {
                 app.show_account_switcher = false;
-                app.account_manager.select_account(_index);
+                app.accounts.select_account(_index);
             }
             AccountSelectAction::OpenAccountManagement => {
                 app.show_account_switcher = false;
@@ -66,7 +64,7 @@ impl AccountSelectionWidget {
 
     fn show(app: &mut Damus, ui: &mut egui::Ui) -> (AccountSelectResponse, egui::Response) {
         let mut res = AccountSelectResponse::default();
-        let mut selected_index = app.account_manager.get_selected_account_index();
+        let mut selected_index = app.accounts.get_selected_account_index();
 
         let response = Frame::none()
             .outer_margin(8.0)
@@ -83,7 +81,7 @@ impl AccountSelectionWidget {
                 ui.add(add_account_button());
 
                 if let Some(_index) = selected_index {
-                    if let Some(account) = app.account_manager.get_account(_index) {
+                    if let Some(account) = app.accounts.get_account(_index) {
                         ui.add_space(8.0);
                         if Self::handle_sign_out(&app.ndb, ui, account) {
                             res.action = Some(AccountSelectAction::RemoveAccount { _index })

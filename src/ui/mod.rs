@@ -31,7 +31,9 @@ pub use username::Username;
 use egui::Margin;
 
 /// This is kind of like the Widget trait but is meant for larger top-level
-/// views that are typically stateful. The Widget trait forces us to add mutable
+/// views that are typically stateful.
+///
+/// The Widget trait forces us to add mutable
 /// implementations at the type level, which screws us when generating Previews
 /// for a Widget. I would have just Widget instead of making this Trait otherwise.
 ///

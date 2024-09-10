@@ -12,6 +12,7 @@ bitflags! {
         const medium_pfp      = 0b00001000;
         const wide            = 0b00010000;
         const selectable_text = 0b00100000;
+        const textmode        = 0b01000000;
     }
 }
 
@@ -33,6 +34,7 @@ impl NoteOptions {
     create_setter!(set_medium_pfp, medium_pfp);
     create_setter!(set_note_previews, note_previews);
     create_setter!(set_selectable_text, selectable_text);
+    create_setter!(set_textmode, textmode);
     create_setter!(set_actionbar, actionbar);
 
     #[inline]
@@ -43,6 +45,11 @@ impl NoteOptions {
     #[inline]
     pub fn has_selectable_text(self) -> bool {
         (self & NoteOptions::selectable_text) == NoteOptions::selectable_text
+    }
+
+    #[inline]
+    pub fn has_textmode(self) -> bool {
+        (self & NoteOptions::textmode) == NoteOptions::textmode
     }
 
     #[inline]

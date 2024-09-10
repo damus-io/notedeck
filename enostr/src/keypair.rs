@@ -32,11 +32,11 @@ impl Keypair {
         }
     }
 
-    pub fn to_full(self) -> Option<FullKeypair> {
-        if let Some(secret_key) = self.secret_key {
-            Some(FullKeypair {
-                pubkey: self.pubkey,
-                secret_key,
+    pub fn to_full<'a>(&'a self) -> Option<FilledKeypair<'a>> {
+        if let Some(secret_key) = &self.secret_key {
+            Some(FilledKeypair {
+                pubkey: &self.pubkey,
+                secret_key: secret_key,
             })
         } else {
             None
@@ -44,15 +44,38 @@ impl Keypair {
     }
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq, Clone)]
 pub struct FullKeypair {
     pub pubkey: Pubkey,
     pub secret_key: SecretKey,
 }
 
+#[derive(Debug, Eq, PartialEq, Clone, Copy)]
+pub struct FilledKeypair<'a> {
+    pub pubkey: &'a Pubkey,
+    pub secret_key: &'a SecretKey,
+}
+
+impl<'a> FilledKeypair<'a> {
+    pub fn new(pubkey: &'a Pubkey, secret_key: &'a SecretKey) -> Self {
+        FilledKeypair { pubkey, secret_key }
+    }
+
+    pub fn to_full(&self) -> FullKeypair {
+        FullKeypair {
+            pubkey: self.pubkey.to_owned(),
+            secret_key: self.secret_key.to_owned(),
+        }
+    }
+}
+
 impl FullKeypair {
     pub fn new(pubkey: Pubkey, secret_key: SecretKey) -> Self {
         FullKeypair { pubkey, secret_key }
+    }
+
+    pub fn to_filled<'a>(&'a self) -> FilledKeypair<'a> {
+        FilledKeypair::new(&self.pubkey, &self.secret_key)
     }
 
     pub fn generate() -> Self {
