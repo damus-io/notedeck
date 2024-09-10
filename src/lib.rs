@@ -18,9 +18,7 @@ mod frame_history;
 mod images;
 mod imgcache;
 mod key_parsing;
-mod key_storage;
 pub mod login_manager;
-mod macos_key_storage;
 mod multi_subscriber;
 mod nav;
 mod note;
@@ -45,11 +43,13 @@ mod view_state;
 #[cfg(test)]
 #[macro_use]
 mod test_utils;
-mod linux_key_storage;
+
+mod storage;
 
 pub use app::Damus;
 pub use error::Error;
 pub use profile::DisplayName;
+pub use storage::DataPaths;
 
 #[cfg(target_os = "android")]
 use winit::platform::android::EventLoopBuilderExtAndroid;

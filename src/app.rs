@@ -9,19 +9,19 @@ use crate::{
     filter::{self, FilterState},
     frame_history::FrameHistory,
     imgcache::ImageCache,
-    key_storage::KeyStorageType,
     nav,
     note::NoteRef,
     notecache::{CachedNote, NoteCache},
     notes_holder::NotesHolderStorage,
     profile::Profile,
+    storage::{Directory, FileKeyStorage, KeyStorageType},
     subscriptions::{SubKind, Subscriptions},
     thread::Thread,
     timeline::{Timeline, TimelineId, TimelineKind, ViewFilter},
     ui::{self, DesktopSidePanel},
     unknowns::UnknownIds,
     view_state::ViewState,
-    Result,
+    DataPaths, Result,
 };
 
 use enostr::{ClientMessage, RelayEvent, RelayMessage, RelayPool};
@@ -664,21 +664,30 @@ impl Damus {
         let mut config = Config::new();
         config.set_ingester_threads(4);
 
-        let mut accounts = AccountManager::new(
-            // TODO: should pull this from settings
-            None,
-            // TODO: use correct KeyStorage mechanism for current OS arch
-            KeyStorageType::None,
-        );
+        let keystore = if parsed_args.use_keystore {
+            if let Ok(keys_path) = DataPaths::Keys.get_path() {
+                if let Ok(selected_key_path) = DataPaths::SelectedKey.get_path() {
+                    KeyStorageType::FileSystem(FileKeyStorage::new(
+                        Directory::new(keys_path),
+                        Directory::new(selected_key_path),
+                    ))
+                } else {
+                    error!("Could not find path for selected key");
+                    KeyStorageType::None
+                }
+            } else {
+                error!("Could not find data path for keys");
+                KeyStorageType::None
+            }
+        } else {
+            KeyStorageType::None
+        };
+
+        let mut accounts = AccountManager::new(keystore);
 
         for key in parsed_args.keys {
             info!("adding account: {}", key.pubkey);
             accounts.add_account(key);
-        }
-
-        // TODO: pull currently selected account from settings
-        if accounts.num_accounts() > 0 {
-            accounts.select_account(0);
         }
 
         // setup relays if we have them
@@ -817,7 +826,7 @@ impl Damus {
             columns,
             textmode: false,
             ndb: Ndb::new(data_path.as_ref().to_str().expect("db path ok"), &config).expect("ndb"),
-            accounts: AccountManager::new(None, KeyStorageType::None),
+            accounts: AccountManager::new(KeyStorageType::None),
             frame_history: FrameHistory::default(),
             view_state: ViewState::default(),
         }

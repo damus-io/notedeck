@@ -6,15 +6,15 @@ use nostrdb::Ndb;
 use crate::{
     column::Columns,
     imgcache::ImageCache,
-    key_storage::{KeyStorage, KeyStorageResponse, KeyStorageType},
     login_manager::LoginState,
     route::{Route, Router},
+    storage::{KeyStorageResponse, KeyStorageType},
     ui::{
         account_login_view::{AccountLoginResponse, AccountLoginView},
         account_management::{AccountsView, AccountsViewResponse},
     },
 };
-use tracing::info;
+use tracing::{error, info};
 
 pub use crate::user_account::UserAccount;
 
@@ -96,13 +96,14 @@ pub fn process_accounts_view_response(
 }
 
 impl AccountManager {
-    pub fn new(currently_selected_account: Option<usize>, key_store: KeyStorageType) -> Self {
+    pub fn new(key_store: KeyStorageType) -> Self {
         let accounts = if let KeyStorageResponse::ReceivedResult(res) = key_store.get_keys() {
             res.unwrap_or_default()
         } else {
             Vec::new()
         };
 
+        let currently_selected_account = get_selected_index(&accounts, &key_store);
         AccountManager {
             currently_selected_account,
             accounts,
@@ -188,14 +189,29 @@ impl AccountManager {
     }
 
     pub fn select_account(&mut self, index: usize) {
-        if self.accounts.get(index).is_some() {
-            self.currently_selected_account = Some(index)
+        if let Some(account) = self.accounts.get(index) {
+            self.currently_selected_account = Some(index);
+            self.key_store.select_key(Some(account.pubkey));
         }
     }
 
     pub fn clear_selected_account(&mut self) {
-        self.currently_selected_account = None
+        self.currently_selected_account = None;
+        self.key_store.select_key(None);
     }
+}
+
+fn get_selected_index(accounts: &[UserAccount], keystore: &KeyStorageType) -> Option<usize> {
+    match keystore.get_selected_key() {
+        KeyStorageResponse::ReceivedResult(Ok(Some(pubkey))) => {
+            return accounts.iter().position(|account| account.pubkey == pubkey);
+        }
+
+        KeyStorageResponse::ReceivedResult(Err(e)) => error!("Error getting selected key: {}", e),
+        _ => (),
+    };
+
+    None
 }
 
 pub fn process_login_view_response(manager: &mut AccountManager, response: AccountLoginResponse) {
@@ -207,4 +223,5 @@ pub fn process_login_view_response(manager: &mut AccountManager, response: Accou
             manager.add_account(keypair);
         }
     }
+    manager.select_account(manager.num_accounts() - 1);
 }
