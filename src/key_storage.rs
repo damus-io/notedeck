@@ -4,17 +4,15 @@ use enostr::Keypair;
 use crate::linux_key_storage::LinuxKeyStorage;
 #[cfg(target_os = "macos")]
 use crate::macos_key_storage::MacOSKeyStorage;
-
-#[cfg(target_os = "macos")]
-pub const SERVICE_NAME: &str = "Notedeck";
+use crate::settings::StorageSettings;
 
 #[derive(Debug, PartialEq)]
 pub enum KeyStorageType {
     None,
     #[cfg(target_os = "macos")]
-    MacOS,
+    MacOS(StorageSettings),
     #[cfg(target_os = "linux")]
-    Linux,
+    Linux(StorageSettings),
     // TODO:
     // Windows,
     // Android,
@@ -38,9 +36,9 @@ impl KeyStorage for KeyStorageType {
         match self {
             Self::None => KeyStorageResponse::ReceivedResult(Ok(Vec::new())),
             #[cfg(target_os = "macos")]
-            Self::MacOS => MacOSKeyStorage::new(SERVICE_NAME).get_keys(),
+            Self::MacOS(settings) => MacOSKeyStorage::new(settings).get_keys(),
             #[cfg(target_os = "linux")]
-            Self::Linux => LinuxKeyStorage::new().get_keys(),
+            Self::Linux(settings) => LinuxKeyStorage::new(settings).get_keys(),
         }
     }
 
@@ -49,9 +47,9 @@ impl KeyStorage for KeyStorageType {
         match self {
             Self::None => KeyStorageResponse::ReceivedResult(Ok(())),
             #[cfg(target_os = "macos")]
-            Self::MacOS => MacOSKeyStorage::new(SERVICE_NAME).add_key(key),
+            Self::MacOS(settings) => MacOSKeyStorage::new(settings).add_key(key),
             #[cfg(target_os = "linux")]
-            Self::Linux => LinuxKeyStorage::new().add_key(key),
+            Self::Linux(settings) => LinuxKeyStorage::new(settings).add_key(key),
         }
     }
 
@@ -60,9 +58,9 @@ impl KeyStorage for KeyStorageType {
         match self {
             Self::None => KeyStorageResponse::ReceivedResult(Ok(())),
             #[cfg(target_os = "macos")]
-            Self::MacOS => MacOSKeyStorage::new(SERVICE_NAME).remove_key(key),
+            Self::MacOS(settings) => MacOSKeyStorage::new(settings).remove_key(key),
             #[cfg(target_os = "linux")]
-            Self::Linux => LinuxKeyStorage::new().remove_key(key),
+            Self::Linux(settings) => LinuxKeyStorage::new(settings).remove_key(key),
         }
     }
 }
@@ -88,3 +86,16 @@ impl std::fmt::Display for KeyStorageError {
 }
 
 impl std::error::Error for KeyStorageError {}
+
+pub fn get_key_storage(storage_settings: StorageSettings) -> KeyStorageType {
+    if cfg!(target_os = "macos") {
+        return KeyStorageType::MacOS(storage_settings);
+    }
+
+    if cfg!(target_os = "linux") {
+        #[cfg(target_os = "linux")]
+        return KeyStorageType::Linux(storage_settings);
+    }
+
+    KeyStorageType::None
+}
