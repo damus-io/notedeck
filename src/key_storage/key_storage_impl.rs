@@ -1,10 +1,11 @@
 use enostr::Keypair;
 
 #[cfg(target_os = "linux")]
-use crate::linux_key_storage::LinuxKeyStorage;
-#[cfg(target_os = "macos")]
-use crate::macos_key_storage::MacOSKeyStorage;
+use super::linux_key_storage::LinuxKeyStorage;
 use crate::settings::StorageSettings;
+
+#[cfg(target_os = "macos")]
+use super::macos_key_storage::MacOSKeyStorage;
 
 #[derive(Debug, PartialEq)]
 pub enum KeyStorageType {
