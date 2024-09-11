@@ -71,7 +71,7 @@ impl Columns {
     }
 
     pub fn new(columns: Vec<Column>) -> Self {
-        let selected = -1;
+        let selected = 0;
         Columns { columns, selected }
     }
 
