@@ -1,5 +1,3 @@
-#![cfg(target_os = "linux")]
-
 use serde::{Deserialize, Serialize};
 
 use crate::file_key_storage::BasicFileStorage;
@@ -24,19 +22,19 @@ impl<'a> LinuxKeyStorage<'a> {
 
 impl KeyStorage for LinuxKeyStorage<'_> {
     fn get_keys(&self) -> KeyStorageResponse<Vec<enostr::Keypair>> {
-        match self.settings.LINUX_KEY_STORAGE_TYPE {
+        match self.settings.linux_key_storage_type {
             LinuxKeyStorageType::BasicFileStorage => BasicFileStorage::new().get_keys(),
         }
     }
 
     fn add_key(&self, key: &enostr::Keypair) -> KeyStorageResponse<()> {
-        match self.settings.LINUX_KEY_STORAGE_TYPE {
+        match self.settings.linux_key_storage_type {
             LinuxKeyStorageType::BasicFileStorage => BasicFileStorage::new().add_key(key),
         }
     }
 
     fn remove_key(&self, key: &enostr::Keypair) -> KeyStorageResponse<()> {
-        match self.settings.LINUX_KEY_STORAGE_TYPE {
+        match self.settings.linux_key_storage_type {
             LinuxKeyStorageType::BasicFileStorage => BasicFileStorage::new().remove_key(key),
         }
     }

@@ -1,5 +1,3 @@
-#![cfg(target_os = "macos")]
-
 use enostr::{Keypair, Pubkey, SecretKey};
 use security_framework::{
     item::{ItemClass, ItemSearchOptions, Limit, SearchResult},
@@ -7,7 +5,7 @@ use security_framework::{
 };
 use tracing::error;
 
-use crate::key_storage::{KeyStorage, KeyStorageError, KeyStorageResponse};
+use super::key_storage_impl::{KeyStorage, KeyStorageError, KeyStorageResponse};
 
 pub struct SecurityFrameworkKeyStorage<'a> {
     pub service_name: &'a str,

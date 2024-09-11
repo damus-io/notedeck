@@ -1,5 +1,3 @@
-#![cfg(any(target_os = "linux", target_os = "macos"))]
-
 use std::{
     env,
     fs::{self, File},
@@ -10,7 +8,7 @@ use std::{
 use enostr::{Keypair, SerializableKeypair};
 use tracing::debug;
 
-use crate::key_storage::{KeyStorage, KeyStorageError, KeyStorageResponse};
+use super::key_storage_impl::{KeyStorage, KeyStorageError, KeyStorageResponse};
 
 pub struct BasicFileStorage {
     credential_dir_name: String,
@@ -133,21 +131,21 @@ impl BasicFileStorage {
 }
 
 impl KeyStorage for BasicFileStorage {
-    fn get_keys(&self) -> crate::key_storage::KeyStorageResponse<Vec<enostr::Keypair>> {
+    fn get_keys(&self) -> KeyStorageResponse<Vec<enostr::Keypair>> {
         KeyStorageResponse::ReceivedResult(self.get_keys_internal())
     }
 
-    fn add_key(&self, key: &enostr::Keypair) -> crate::key_storage::KeyStorageResponse<()> {
+    fn add_key(&self, key: &enostr::Keypair) -> KeyStorageResponse<()> {
         KeyStorageResponse::ReceivedResult(self.add_key_internal(key))
     }
 
-    fn remove_key(&self, key: &enostr::Keypair) -> crate::key_storage::KeyStorageResponse<()> {
+    fn remove_key(&self, key: &enostr::Keypair) -> KeyStorageResponse<()> {
         KeyStorageResponse::ReceivedResult(self.remove_key_internal(key))
     }
 }
 
 mod tests {
-    use crate::key_storage::{KeyStorage, KeyStorageResponse};
+    use crate::key_storage::key_storage_impl::{KeyStorage, KeyStorageResponse};
 
     use super::BasicFileStorage;
 
