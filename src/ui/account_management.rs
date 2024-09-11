@@ -225,13 +225,13 @@ mod preview {
             ui.add_space(24.0);
             if let Some(response) = AccountManagementView::ui(
                 ui,
-                &self.app.account_manager,
+                &self.app.accounts,
                 &self.app.ndb,
                 &mut self.app.img_cache,
             )
             .inner
             {
-                process_management_view_response_stateless(&mut self.app.account_manager, response)
+                process_management_view_response_stateless(&mut self.app.accounts, response)
             }
         }
     }

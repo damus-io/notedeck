@@ -112,7 +112,7 @@ mod preview {
             StatefulAccountManagementView::show(
                 ui,
                 &mut self.app.account_management_view_state,
-                &mut self.app.account_manager,
+                &mut self.app.accounts,
                 &mut self.app.img_cache,
                 &mut self.app.login_state,
                 &self.app.ndb,
