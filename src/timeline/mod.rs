@@ -1,8 +1,6 @@
-use crate::column::Columns;
 use crate::error::Error;
 use crate::note::NoteRef;
 use crate::notecache::{CachedNote, NoteCache};
-use crate::thread::Threads;
 use crate::unknowns::UnknownIds;
 use crate::Result;
 use crate::{filter, filter::FilterState};
@@ -18,9 +16,11 @@ use std::rc::Rc;
 
 use tracing::{debug, error};
 
-mod kind;
+pub mod kind;
+pub mod route;
 
 pub use kind::{PubkeySource, TimelineKind};
+pub use route::TimelineRoute;
 
 #[derive(Debug, Hash, Copy, Clone, Eq, PartialEq)]
 pub struct TimelineId(u32);
@@ -34,147 +34,6 @@ impl TimelineId {
 impl fmt::Display for TimelineId {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "TimelineId({})", self.0)
-    }
-}
-
-#[derive(Debug, Copy, Clone)]
-pub enum TimelineSource<'a> {
-    Column(TimelineId),
-    Thread(&'a [u8; 32]),
-}
-
-impl<'a> TimelineSource<'a> {
-    pub fn column(id: TimelineId) -> Self {
-        TimelineSource::Column(id)
-    }
-
-    pub fn view<'b>(
-        self,
-        ndb: &Ndb,
-        columns: &'b mut Columns,
-        threads: &'b mut Threads,
-        txn: &Transaction,
-        filter: ViewFilter,
-    ) -> &'b mut TimelineTab {
-        match self {
-            TimelineSource::Column(tid) => columns
-                .find_timeline_mut(tid)
-                .expect("timeline")
-                .view_mut(filter),
-
-            TimelineSource::Thread(root_id) => {
-                // TODO: replace all this with the raw entry api eventually
-
-                let thread = if threads.root_id_to_thread.contains_key(root_id) {
-                    threads.thread_expected_mut(root_id)
-                } else {
-                    threads.thread_mut(ndb, txn, root_id).get_ptr()
-                };
-
-                &mut thread.view
-            }
-        }
-    }
-
-    fn sub(
-        self,
-        ndb: &Ndb,
-        columns: &Columns,
-        txn: &Transaction,
-        threads: &mut Threads,
-    ) -> Option<Subscription> {
-        match self {
-            TimelineSource::Column(tid) => columns.find_timeline(tid).expect("thread").subscription,
-            TimelineSource::Thread(root_id) => {
-                // TODO: replace all this with the raw entry api eventually
-
-                let thread = if threads.root_id_to_thread.contains_key(root_id) {
-                    threads.thread_expected_mut(root_id)
-                } else {
-                    threads.thread_mut(ndb, txn, root_id).get_ptr()
-                };
-
-                thread.subscription()
-            }
-        }
-    }
-
-    /// Check local subscriptions for new notes and insert them into
-    /// timelines (threads, columns)
-    pub fn poll_notes_into_view(
-        &self,
-        txn: &Transaction,
-        ndb: &Ndb,
-        columns: &mut Columns,
-        threads: &mut Threads,
-        unknown_ids: &mut UnknownIds,
-        note_cache: &mut NoteCache,
-    ) -> Result<()> {
-        let sub = if let Some(sub) = self.sub(ndb, columns, txn, threads) {
-            sub
-        } else {
-            return Err(Error::no_active_sub());
-        };
-
-        let new_note_ids = ndb.poll_for_notes(sub, 100);
-        if new_note_ids.is_empty() {
-            return Ok(());
-        } else {
-            debug!("{} new notes! {:?}", new_note_ids.len(), new_note_ids);
-        }
-
-        let mut new_refs: Vec<(Note, NoteRef)> = Vec::with_capacity(new_note_ids.len());
-
-        for key in new_note_ids {
-            let note = if let Ok(note) = ndb.get_note_by_key(txn, key) {
-                note
-            } else {
-                error!("hit race condition in poll_notes_into_view: https://github.com/damus-io/nostrdb/issues/35 note {:?} was not added to timeline", key);
-                continue;
-            };
-
-            UnknownIds::update_from_note(txn, ndb, unknown_ids, note_cache, &note);
-
-            let created_at = note.created_at();
-            new_refs.push((note, NoteRef { key, created_at }));
-        }
-
-        // We're assuming reverse-chronological here (timelines). This
-        // flag ensures we trigger the items_inserted_at_start
-        // optimization in VirtualList. We need this flag because we can
-        // insert notes into chronological order sometimes, and this
-        // optimization doesn't make sense in those situations.
-        let reversed = false;
-
-        // ViewFilter::NotesAndReplies
-        {
-            let refs: Vec<NoteRef> = new_refs.iter().map(|(_note, nr)| *nr).collect();
-
-            let reversed = false;
-            self.view(ndb, columns, threads, txn, ViewFilter::NotesAndReplies)
-                .insert(&refs, reversed);
-        }
-
-        //
-        // handle the filtered case (ViewFilter::Notes, no replies)
-        //
-        // TODO(jb55): this is mostly just copied from above, let's just use a loop
-        //             I initially tried this but ran into borrow checker issues
-        {
-            let mut filtered_refs = Vec::with_capacity(new_refs.len());
-            for (note, nr) in &new_refs {
-                let cached_note = note_cache.cached_note_or_insert(nr.key, note);
-
-                if ViewFilter::filter_notes(cached_note, note) {
-                    filtered_refs.push(*nr);
-                }
-            }
-
-            self.view(ndb, columns, threads, txn, ViewFilter::Notes)
-                .insert(&filtered_refs, reversed);
-        }
-
-        Ok(())
     }
 }
 
@@ -378,6 +237,80 @@ impl Timeline {
 
     pub fn view_mut(&mut self, view: ViewFilter) -> &mut TimelineTab {
         &mut self.views[view.index()]
+    }
+
+    pub fn poll_notes_into_view(
+        timeline_idx: usize,
+        timelines: &mut [Timeline],
+        ndb: &Ndb,
+        txn: &Transaction,
+        unknown_ids: &mut UnknownIds,
+        note_cache: &mut NoteCache,
+    ) -> Result<()> {
+        let timeline = &mut timelines[timeline_idx];
+        let sub = timeline.subscription.ok_or(Error::no_active_sub())?;
+
+        let new_note_ids = ndb.poll_for_notes(sub, 500);
+        if new_note_ids.is_empty() {
+            return Ok(());
+        } else {
+            debug!("{} new notes! {:?}", new_note_ids.len(), new_note_ids);
+        }
+
+        let mut new_refs: Vec<(Note, NoteRef)> = Vec::with_capacity(new_note_ids.len());
+
+        for key in new_note_ids {
+            let note = if let Ok(note) = ndb.get_note_by_key(txn, key) {
+                note
+            } else {
+                error!("hit race condition in poll_notes_into_view: https://github.com/damus-io/nostrdb/issues/35 note {:?} was not added to timeline", key);
+                continue;
+            };
+
+            UnknownIds::update_from_note(txn, ndb, unknown_ids, note_cache, &note);
+
+            let created_at = note.created_at();
+            new_refs.push((note, NoteRef { key, created_at }));
+        }
+
+        // We're assuming reverse-chronological here (timelines). This
+        // flag ensures we trigger the items_inserted_at_start
+        // optimization in VirtualList. We need this flag because we can
+        // insert notes into chronological order sometimes, and this
+        // optimization doesn't make sense in those situations.
+        let reversed = false;
+
+        // ViewFilter::NotesAndReplies
+        {
+            let refs: Vec<NoteRef> = new_refs.iter().map(|(_note, nr)| *nr).collect();
+
+            let reversed = false;
+            timeline
+                .view_mut(ViewFilter::NotesAndReplies)
+                .insert(&refs, reversed);
+        }
+
+        //
+        // handle the filtered case (ViewFilter::Notes, no replies)
+        //
+        // TODO(jb55): this is mostly just copied from above, let's just use a loop
+        //             I initially tried this but ran into borrow checker issues
+        {
+            let mut filtered_refs = Vec::with_capacity(new_refs.len());
+            for (note, nr) in &new_refs {
+                let cached_note = note_cache.cached_note_or_insert(nr.key, note);
+
+                if ViewFilter::filter_notes(cached_note, note) {
+                    filtered_refs.push(*nr);
+                }
+            }
+
+            timeline
+                .view_mut(ViewFilter::Notes)
+                .insert(&filtered_refs, reversed);
+        }
+
+        Ok(())
     }
 }
 

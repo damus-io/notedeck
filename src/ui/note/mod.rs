@@ -17,6 +17,7 @@ use crate::{
     ui::View,
 };
 use egui::{Label, RichText, Sense};
+use enostr::NoteId;
 use nostrdb::{Ndb, Note, NoteKey, NoteReply, Transaction};
 
 pub struct NoteView<'a> {
@@ -393,7 +394,7 @@ impl<'a> NoteView<'a> {
             ));
 
             if self.options().has_actionbar() {
-                note_action = render_note_actionbar(ui, note_key).inner;
+                note_action = render_note_actionbar(ui, self.note.id(), note_key).inner;
             }
 
             resp
@@ -430,7 +431,7 @@ impl<'a> NoteView<'a> {
                     ));
 
                     if self.options().has_actionbar() {
-                        note_action = render_note_actionbar(ui, note_key).inner;
+                        note_action = render_note_actionbar(ui, self.note.id(), note_key).inner;
                     }
                 });
             })
@@ -446,6 +447,7 @@ impl<'a> NoteView<'a> {
 
 fn render_note_actionbar(
     ui: &mut egui::Ui,
+    note_id: &[u8; 32],
     note_key: NoteKey,
 ) -> egui::InnerResponse<Option<BarAction>> {
     ui.horizontal(|ui| {
@@ -453,9 +455,9 @@ fn render_note_actionbar(
         let thread_resp = thread_button(ui, note_key);
 
         if reply_resp.clicked() {
-            Some(BarAction::Reply)
+            Some(BarAction::Reply(NoteId::new(*note_id)))
         } else if thread_resp.clicked() {
-            Some(BarAction::OpenThread)
+            Some(BarAction::OpenThread(NoteId::new(*note_id)))
         } else {
             None
         }

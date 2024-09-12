@@ -1,30 +1,28 @@
-use crate::account_manager::AccountManager;
-use crate::actionbar::BarResult;
-use crate::app_creation::setup_cc;
-use crate::app_style::user_requested_visuals_change;
-use crate::args::Args;
-use crate::column::{Column, ColumnKind, Columns};
-use crate::draft::Drafts;
-use crate::error::{Error, FilterError};
-use crate::filter::FilterState;
-use crate::frame_history::FrameHistory;
-use crate::imgcache::ImageCache;
-use crate::key_storage::KeyStorageType;
-use crate::login_manager::LoginState;
-use crate::note::NoteRef;
-use crate::notecache::{CachedNote, NoteCache};
-use crate::relay_pool_manager::RelayPoolManager;
-use crate::routable_widget_state::RoutableWidgetState;
-use crate::route::{ManageAccountRoute, Route};
-use crate::subscriptions::{SubKind, Subscriptions};
-use crate::thread::{DecrementResult, Threads};
-use crate::timeline::{Timeline, TimelineKind, TimelineSource, ViewFilter};
-use crate::ui::note::PostAction;
-use crate::ui::{self, AccountSelectionWidget};
-use crate::ui::{DesktopSidePanel, RelayView, View};
-use crate::unknowns::UnknownIds;
-use crate::{filter, Result};
-use egui_nav::{Nav, NavAction};
+use crate::{
+    account_manager::AccountManager,
+    app_creation::setup_cc,
+    app_style::user_requested_visuals_change,
+    args::Args,
+    column::Columns,
+    draft::Drafts,
+    error::{Error, FilterError},
+    filter,
+    filter::FilterState,
+    frame_history::FrameHistory,
+    imgcache::ImageCache,
+    key_storage::KeyStorageType,
+    nav,
+    note::NoteRef,
+    notecache::{CachedNote, NoteCache},
+    subscriptions::{SubKind, Subscriptions},
+    thread::Threads,
+    timeline::{Timeline, TimelineKind, ViewFilter},
+    ui::{self, AccountSelectionWidget, DesktopSidePanel},
+    unknowns::UnknownIds,
+    view_state::ViewState,
+    Result,
+};
+
 use enostr::{ClientMessage, RelayEvent, RelayMessage, RelayPool};
 use uuid::Uuid;
 
@@ -47,18 +45,17 @@ pub enum DamusState {
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
 pub struct Damus {
     state: DamusState,
-    note_cache: NoteCache,
+    pub note_cache: NoteCache,
     pub pool: RelayPool,
 
     pub columns: Columns,
-    pub account_management_view_state: RoutableWidgetState<ManageAccountRoute>,
     pub ndb: Ndb,
+    pub view_state: ViewState,
     pub unknown_ids: UnknownIds,
     pub drafts: Drafts,
     pub threads: Threads,
     pub img_cache: ImageCache,
     pub accounts: AccountManager,
-    pub login_state: LoginState,
     pub subscriptions: Subscriptions,
 
     frame_history: crate::frame_history::FrameHistory,
@@ -267,24 +264,24 @@ fn try_process_event(damus: &mut Damus, ctx: &egui::Context) -> Result<()> {
         }
     }
 
-    let n_cols = damus.columns.columns().len();
-    for col_ind in 0..n_cols {
-        let timeline =
-            if let ColumnKind::Timeline(timeline) = damus.columns.column_mut(col_ind).kind_mut() {
-                timeline
-            } else {
-                continue;
-            };
+    let n_timelines = damus.columns.timelines().len();
+    for timeline_ind in 0..n_timelines {
+        let is_ready = {
+            let timeline = &mut damus.columns.timelines[timeline_ind];
+            matches!(
+                is_timeline_ready(&damus.ndb, &mut damus.pool, &mut damus.note_cache, timeline),
+                Ok(true)
+            )
+        };
 
-        if let Ok(true) =
-            is_timeline_ready(&damus.ndb, &mut damus.pool, &mut damus.note_cache, timeline)
-        {
+        if is_ready {
             let txn = Transaction::new(&damus.ndb).expect("txn");
-            if let Err(err) = TimelineSource::column(timeline.id).poll_notes_into_view(
-                &txn,
+
+            if let Err(err) = Timeline::poll_notes_into_view(
+                timeline_ind,
+                &mut damus.columns.timelines,
                 &damus.ndb,
-                &mut damus.columns,
-                &mut damus.threads,
+                &txn,
                 &mut damus.unknown_ids,
                 &mut damus.note_cache,
             ) {
@@ -667,21 +664,21 @@ impl Damus {
             .map(|a| a.pubkey.bytes());
         let ndb = Ndb::new(&dbpath, &config).expect("ndb");
 
-        let mut columns: Vec<Column> = Vec::with_capacity(parsed_args.columns.len());
+        let mut columns: Columns = Columns::new();
         for col in parsed_args.columns {
             if let Some(timeline) = col.into_timeline(&ndb, account) {
-                columns.push(Column::timeline(timeline));
+                columns.add_timeline(timeline);
             }
         }
 
         let debug = parsed_args.debug;
 
-        if columns.is_empty() {
+        if columns.columns().is_empty() {
             let filter = Filter::from_json(include_str!("../queries/timeline.json")).unwrap();
-            columns.push(Column::timeline(Timeline::new(
+            columns.add_timeline(Timeline::new(
                 TimelineKind::Generic,
                 FilterState::ready(vec![filter]),
-            )));
+            ))
         }
 
         Self {
@@ -695,15 +692,50 @@ impl Damus {
             state: DamusState::Initializing,
             img_cache: ImageCache::new(imgcache_dir.into()),
             note_cache: NoteCache::default(),
-            columns: Columns::new(columns),
+            columns,
             textmode: parsed_args.textmode,
             ndb,
             accounts,
             frame_history: FrameHistory::default(),
             show_account_switcher: false,
-            account_management_view_state: RoutableWidgetState::default(),
-            login_state: LoginState::default(),
+            view_state: ViewState::default(),
         }
+    }
+
+    pub fn pool_mut(&mut self) -> &mut RelayPool {
+        &mut self.pool
+    }
+
+    pub fn ndb(&self) -> &Ndb {
+        &self.ndb
+    }
+
+    pub fn drafts_mut(&mut self) -> &mut Drafts {
+        &mut self.drafts
+    }
+
+    pub fn img_cache_mut(&mut self) -> &mut ImageCache {
+        &mut self.img_cache
+    }
+
+    pub fn accounts(&self) -> &AccountManager {
+        &self.accounts
+    }
+
+    pub fn accounts_mut(&mut self) -> &mut AccountManager {
+        &mut self.accounts
+    }
+
+    pub fn view_state_mut(&mut self) -> &mut ViewState {
+        &mut self.view_state
+    }
+
+    pub fn columns_mut(&mut self) -> &mut Columns {
+        &mut self.columns
+    }
+
+    pub fn columns(&self) -> &Columns {
+        &self.columns
     }
 
     pub fn gen_subid(&self, kind: &SubKind) -> String {
@@ -715,12 +747,12 @@ impl Damus {
     }
 
     pub fn mock<P: AsRef<Path>>(data_path: P) -> Self {
-        let mut columns: Vec<Column> = vec![];
+        let mut columns = Columns::new();
         let filter = Filter::from_json(include_str!("../queries/global.json")).unwrap();
-        columns.push(Column::timeline(Timeline::new(
-            TimelineKind::Universe,
-            FilterState::ready(vec![filter]),
-        )));
+
+        let timeline = Timeline::new(TimelineKind::Universe, FilterState::ready(vec![filter]));
+
+        columns.add_timeline(timeline);
 
         let imgcache_dir = data_path.as_ref().join(ImageCache::rel_datadir());
         let _ = std::fs::create_dir_all(imgcache_dir.clone());
@@ -739,14 +771,13 @@ impl Damus {
             pool: RelayPool::new(),
             img_cache: ImageCache::new(imgcache_dir),
             note_cache: NoteCache::default(),
-            columns: Columns::new(columns),
+            columns,
             textmode: false,
             ndb: Ndb::new(data_path.as_ref().to_str().expect("db path ok"), &config).expect("ndb"),
             accounts: AccountManager::new(None, KeyStorageType::None),
             frame_history: FrameHistory::default(),
             show_account_switcher: false,
-            account_management_view_state: RoutableWidgetState::default(),
-            login_state: LoginState::default(),
+            view_state: ViewState::default(),
         }
     }
 
@@ -756,6 +787,18 @@ impl Damus {
 
     pub fn note_cache_mut(&mut self) -> &mut NoteCache {
         &mut self.note_cache
+    }
+
+    pub fn unknown_ids_mut(&mut self) -> &mut UnknownIds {
+        &mut self.unknown_ids
+    }
+
+    pub fn threads(&self) -> &Threads {
+        &self.threads
+    }
+
+    pub fn threads_mut(&mut self) -> &mut Threads {
+        &mut self.threads
     }
 
     pub fn note_cache(&self) -> &NoteCache {
@@ -852,211 +895,6 @@ fn render_panel(ctx: &egui::Context, app: &mut Damus) {
     });
 }
 
-/// Local thread unsubscribe
-fn thread_unsubscribe(
-    ndb: &Ndb,
-    threads: &mut Threads,
-    pool: &mut RelayPool,
-    note_cache: &mut NoteCache,
-    id: &[u8; 32],
-) {
-    let (unsubscribe, remote_subid) = {
-        let txn = Transaction::new(ndb).expect("txn");
-        let root_id = crate::note::root_note_id_from_selected_id(ndb, note_cache, &txn, id);
-
-        let thread = threads.thread_mut(ndb, &txn, root_id).get_ptr();
-        let unsub = thread.decrement_sub();
-
-        let mut remote_subid: Option<String> = None;
-        if let Ok(DecrementResult::LastSubscriber(_subid)) = unsub {
-            *thread.subscription_mut() = None;
-            remote_subid = thread.remote_subscription().to_owned();
-            *thread.remote_subscription_mut() = None;
-        }
-
-        (unsub, remote_subid)
-    };
-
-    match unsubscribe {
-        Ok(DecrementResult::LastSubscriber(sub)) => {
-            if let Err(e) = ndb.unsubscribe(sub) {
-                error!(
-                    "failed to unsubscribe from thread: {e}, subid:{}, {} active subscriptions",
-                    sub.id(),
-                    ndb.subscription_count()
-                );
-            } else {
-                info!(
-                    "Unsubscribed from thread subid:{}. {} active subscriptions",
-                    sub.id(),
-                    ndb.subscription_count()
-                );
-            }
-
-            // unsub from remote
-            if let Some(subid) = remote_subid {
-                pool.unsubscribe(subid);
-            }
-        }
-
-        Ok(DecrementResult::ActiveSubscribers) => {
-            info!(
-                "Keeping thread subscription. {} active subscriptions.",
-                ndb.subscription_count()
-            );
-            // do nothing
-        }
-
-        Err(e) => {
-            // something is wrong!
-            error!(
-                "Thread unsubscribe error: {e}. {} active subsciptions.",
-                ndb.subscription_count()
-            );
-        }
-    }
-}
-
-fn render_nav(show_postbox: bool, col: usize, app: &mut Damus, ui: &mut egui::Ui) {
-    let navigating = app.columns.column(col).navigating;
-    let returning = app.columns.column(col).returning;
-
-    let nav_response = Nav::new(app.columns.column(col).routes().to_vec())
-        .navigating(navigating)
-        .returning(returning)
-        .title(false)
-        .show_mut(ui, |ui, nav| match nav.top() {
-            Route::Timeline(_n) => {
-                let column = app.columns.column_mut(col);
-                if column.kind().timeline().is_some() {
-                    if show_postbox {
-                        if let Some(kp) = app.accounts.selected_or_first_nsec() {
-                            ui::timeline::postbox_view(
-                                &app.ndb,
-                                kp,
-                                &mut app.pool,
-                                &mut app.drafts,
-                                &mut app.img_cache,
-                                ui,
-                            );
-                        }
-                    }
-                    ui::TimelineView::new(
-                        &app.ndb,
-                        column,
-                        &mut app.note_cache,
-                        &mut app.img_cache,
-                        &mut app.threads,
-                        &mut app.pool,
-                        app.textmode,
-                    )
-                    .ui(ui);
-                } else {
-                    ui.label("no timeline for this column?");
-                }
-                None
-            }
-
-            Route::Relays => {
-                let manager = RelayPoolManager::new(&mut app.pool);
-                RelayView::new(manager).ui(ui);
-                None
-            }
-
-            Route::Thread(id) => {
-                let result = ui::ThreadView::new(
-                    col,
-                    &mut app.columns,
-                    &mut app.threads,
-                    &app.ndb,
-                    &mut app.note_cache,
-                    &mut app.img_cache,
-                    &mut app.unknown_ids,
-                    &mut app.pool,
-                    app.textmode,
-                    id.bytes(),
-                )
-                .ui(ui);
-
-                if let Some(bar_result) = result {
-                    match bar_result {
-                        BarResult::NewThreadNotes(new_notes) => {
-                            let thread = app.threads.thread_expected_mut(new_notes.root_id.bytes());
-                            new_notes.process(thread);
-                        }
-                    }
-                }
-
-                None
-            }
-
-            Route::Reply(id) => {
-                let txn = if let Ok(txn) = Transaction::new(&app.ndb) {
-                    txn
-                } else {
-                    ui.label("Reply to unknown note");
-                    return None;
-                };
-
-                let note = if let Ok(note) = app.ndb.get_note_by_id(&txn, id.bytes()) {
-                    note
-                } else {
-                    ui.label("Reply to unknown note");
-                    return None;
-                };
-
-                let id = egui::Id::new((
-                    "post",
-                    app.columns.column(col).view_id(),
-                    note.key().unwrap(),
-                ));
-
-                if let Some(poster) = app.accounts.selected_or_first_nsec() {
-                    let response = egui::ScrollArea::vertical().show(ui, |ui| {
-                        ui::PostReplyView::new(
-                            &app.ndb,
-                            poster,
-                            &mut app.pool,
-                            &mut app.drafts,
-                            &mut app.note_cache,
-                            &mut app.img_cache,
-                            &note,
-                        )
-                        .id_source(id)
-                        .show(ui)
-                    });
-
-                    Some(response)
-                } else {
-                    None
-                }
-            }
-        });
-
-    let column = app.columns.column_mut(col);
-    if let Some(reply_response) = nav_response.inner {
-        if let Some(PostAction::Post(_np)) = reply_response.inner.action {
-            column.returning = true;
-        }
-    }
-
-    if let Some(NavAction::Returned) = nav_response.action {
-        let popped = column.routes_mut().pop();
-        if let Some(Route::Thread(id)) = popped {
-            thread_unsubscribe(
-                &app.ndb,
-                &mut app.threads,
-                &mut app.pool,
-                &mut app.note_cache,
-                id.bytes(),
-            );
-        }
-        column.returning = false;
-    } else if let Some(NavAction::Navigated) = nav_response.action {
-        column.navigating = false;
-    }
-}
-
 fn render_damus_mobile(ctx: &egui::Context, app: &mut Damus) {
     //render_panel(ctx, app, 0);
 
@@ -1067,7 +905,7 @@ fn render_damus_mobile(ctx: &egui::Context, app: &mut Damus) {
 
     main_panel(&ctx.style(), ui::is_narrow(ctx)).show(ctx, |ui| {
         if !app.columns.columns().is_empty() {
-            render_nav(false, 0, app, ui);
+            nav::render_nav(false, 0, app, ui);
         }
     });
 }
@@ -1143,12 +981,20 @@ fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus, columns: usiz
             for column_ind in 0..n_cols {
                 strip.cell(|ui| {
                     let rect = ui.available_rect_before_wrap();
-                    let show_postbox =
-                        first && app.columns.column(column_ind).kind().timeline().is_some();
+                    let show_postbox = first
+                        && app
+                            .columns
+                            .column(column_ind)
+                            .router()
+                            .routes()
+                            .iter()
+                            .find_map(|r| r.timeline_id())
+                            .is_some();
                     if show_postbox {
                         first = false
                     }
-                    render_nav(show_postbox, column_ind, app, ui);
+
+                    nav::render_nav(show_postbox, column_ind, app, ui);
 
                     // vertical line
                     ui.painter().vline(

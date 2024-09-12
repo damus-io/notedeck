@@ -1,6 +1,6 @@
 use crate::{
-    account_manager::UserAccount, colors::PINK, profile::DisplayName, ui,
-    ui::profile_preview_controller, Damus, Result,
+    colors::PINK, profile::DisplayName, ui, ui::profile_preview_controller,
+    user_account::UserAccount, Damus, Result,
 };
 
 use nostrdb::Ndb;
@@ -48,17 +48,19 @@ impl AccountSelectionWidget {
 
     fn perform_action(app: &mut Damus, action: AccountSelectAction) {
         match action {
-            AccountSelectAction::RemoveAccount { _index } => app.accounts.remove_account(_index),
+            AccountSelectAction::RemoveAccount { _index } => {
+                app.accounts_mut().remove_account(_index)
+            }
             AccountSelectAction::SelectAccount { _index } => {
                 app.show_account_switcher = false;
-                app.accounts.select_account(_index);
+                app.accounts_mut().select_account(_index);
             }
         }
     }
 
     fn show(app: &mut Damus, ui: &mut egui::Ui) -> (AccountSelectResponse, egui::Response) {
         let mut res = AccountSelectResponse::default();
-        let mut selected_index = app.accounts.get_selected_account_index();
+        let mut selected_index = app.accounts().get_selected_account_index();
 
         let response = Frame::none()
             .outer_margin(8.0)
@@ -75,9 +77,9 @@ impl AccountSelectionWidget {
                 ui.add(add_account_button());
 
                 if let Some(_index) = selected_index {
-                    if let Some(account) = app.accounts.get_account(_index) {
+                    if let Some(account) = app.accounts().get_account(_index) {
                         ui.add_space(8.0);
-                        if Self::handle_sign_out(&app.ndb, ui, account) {
+                        if Self::handle_sign_out(app.ndb(), ui, account) {
                             res.action = Some(AccountSelectAction::RemoveAccount { _index })
                         }
                     }

@@ -1,5 +1,5 @@
 use crate::notecache::NoteCache;
-use nostrdb::{Ndb, NoteKey, QueryResult, Transaction};
+use nostrdb::{Ndb, Note, NoteKey, QueryResult, Transaction};
 use std::cmp::Ordering;
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
@@ -11,6 +11,12 @@ pub struct NoteRef {
 impl NoteRef {
     pub fn new(key: NoteKey, created_at: u64) -> Self {
         NoteRef { key, created_at }
+    }
+
+    pub fn from_note(note: &Note<'_>) -> Self {
+        let created_at = note.created_at();
+        let key = note.key().expect("todo: implement NoteBuf");
+        NoteRef::new(key, created_at)
     }
 
     pub fn from_query_result(qr: QueryResult<'_>) -> Self {

@@ -1,8 +1,7 @@
 use crate::{
-    column::Column,
     note::NoteRef,
     notecache::NoteCache,
-    route::Route,
+    route::{Route, Router},
     thread::{Thread, ThreadResult, Threads},
 };
 use enostr::{NoteId, RelayPool};
@@ -12,8 +11,8 @@ use uuid::Uuid;
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
 pub enum BarAction {
-    Reply,
-    OpenThread,
+    Reply(NoteId),
+    OpenThread(NoteId),
 }
 
 pub struct NewThreadNotes {
@@ -33,17 +32,15 @@ pub enum BarResult {
 fn open_thread(
     ndb: &Ndb,
     txn: &Transaction,
-    column: &mut Column,
+    router: &mut Router<Route>,
     note_cache: &mut NoteCache,
     pool: &mut RelayPool,
     threads: &mut Threads,
     selected_note: &[u8; 32],
 ) -> Option<BarResult> {
     {
-        column
-            .routes_mut()
-            .push(Route::Thread(NoteId::new(selected_note.to_owned())));
-        column.navigating = true;
+        router.route_to(Route::thread(NoteId::new(selected_note.to_owned())));
+        router.navigating = true;
     }
 
     let root_id = crate::note::root_note_id_from_selected_id(ndb, note_cache, txn, selected_note);
@@ -52,7 +49,7 @@ fn open_thread(
     let (thread, result) = match thread_res {
         ThreadResult::Stale(thread) => {
             // The thread is stale, let's update it
-            let notes = Thread::new_notes(&thread.view.notes, root_id, txn, ndb);
+            let notes = Thread::new_notes(&thread.view().notes, root_id, txn, ndb);
             let bar_result = if notes.is_empty() {
                 None
             } else {
@@ -120,25 +117,37 @@ impl BarAction {
     pub fn execute(
         self,
         ndb: &Ndb,
-        column: &mut Column,
+        router: &mut Router<Route>,
         threads: &mut Threads,
         note_cache: &mut NoteCache,
         pool: &mut RelayPool,
-        replying_to: &[u8; 32],
         txn: &Transaction,
     ) -> Option<BarResult> {
         match self {
-            BarAction::Reply => {
-                column
-                    .routes_mut()
-                    .push(Route::Reply(NoteId::new(replying_to.to_owned())));
-                column.navigating = true;
+            BarAction::Reply(note_id) => {
+                router.route_to(Route::reply(note_id));
+                router.navigating = true;
                 None
             }
 
-            BarAction::OpenThread => {
-                open_thread(ndb, txn, column, note_cache, pool, threads, replying_to)
+            BarAction::OpenThread(note_id) => {
+                open_thread(ndb, txn, router, note_cache, pool, threads, note_id.bytes())
             }
+        }
+    }
+
+    /// Execute the BarAction and process the BarResult
+    pub fn execute_and_process_result(
+        self,
+        ndb: &Ndb,
+        router: &mut Router<Route>,
+        threads: &mut Threads,
+        note_cache: &mut NoteCache,
+        pool: &mut RelayPool,
+        txn: &Transaction,
+    ) {
+        if let Some(br) = self.execute(ndb, router, threads, note_cache, pool, txn) {
+            br.process(ndb, txn, threads);
         }
     }
 }
@@ -146,6 +155,18 @@ impl BarAction {
 impl BarResult {
     pub fn new_thread_notes(notes: Vec<NoteRef>, root_id: NoteId) -> Self {
         BarResult::NewThreadNotes(NewThreadNotes::new(notes, root_id))
+    }
+
+    pub fn process(&self, ndb: &Ndb, txn: &Transaction, threads: &mut Threads) {
+        match self {
+            // update the thread for next render if we have new notes
+            BarResult::NewThreadNotes(new_notes) => {
+                let thread = threads
+                    .thread_mut(ndb, txn, new_notes.root_id.bytes())
+                    .get_ptr();
+                new_notes.process(thread);
+            }
+        }
     }
 }
 
@@ -159,6 +180,6 @@ impl NewThreadNotes {
     pub fn process(&self, thread: &mut Thread) {
         // threads are chronological, ie reversed from reverse-chronological, the default.
         let reversed = true;
-        thread.view.insert(&self.notes, reversed);
+        thread.view_mut().insert(&self.notes, reversed);
     }
 }

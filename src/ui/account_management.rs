@@ -2,6 +2,7 @@ use crate::colors::PINK;
 use crate::imgcache::ImageCache;
 use crate::{
     account_manager::AccountManager,
+    route::{Route, Router},
     ui::{Preview, PreviewConfig, View},
     Damus,
 };
@@ -12,22 +13,29 @@ use super::profile::preview::SimpleProfilePreview;
 use super::profile::ProfilePreviewOp;
 use super::profile_preview_controller::profile_preview_view;
 
-pub struct AccountManagementView {}
+pub struct AccountsView<'a> {
+    ndb: &'a Ndb,
+    accounts: &'a AccountManager,
+    img_cache: &'a mut ImageCache,
+}
 
 #[derive(Clone, Debug)]
-pub enum AccountManagementViewResponse {
+pub enum AccountsViewResponse {
     SelectAccount(usize),
     RemoveAccount(usize),
     RouteToLogin,
 }
 
-impl AccountManagementView {
-    pub fn ui(
-        ui: &mut Ui,
-        account_manager: &AccountManager,
-        ndb: &Ndb,
-        img_cache: &mut ImageCache,
-    ) -> InnerResponse<Option<AccountManagementViewResponse>> {
+impl<'a> AccountsView<'a> {
+    pub fn new(ndb: &'a Ndb, accounts: &'a AccountManager, img_cache: &'a mut ImageCache) -> Self {
+        AccountsView {
+            ndb,
+            accounts,
+            img_cache,
+        }
+    }
+
+    pub fn ui(&mut self, ui: &mut Ui) -> InnerResponse<Option<AccountsViewResponse>> {
         Frame::none().outer_margin(12.0).show(ui, |ui| {
             if let Some(resp) = Self::top_section_buttons_widget(ui).inner {
                 return Some(resp);
@@ -36,7 +44,7 @@ impl AccountManagementView {
             ui.add_space(8.0);
             scroll_area()
                 .show(ui, |ui| {
-                    Self::show_accounts(ui, account_manager, ndb, img_cache)
+                    Self::show_accounts(ui, self.accounts, self.ndb, self.img_cache)
                 })
                 .inner
         })
@@ -47,8 +55,8 @@ impl AccountManagementView {
         account_manager: &AccountManager,
         ndb: &Ndb,
         img_cache: &mut ImageCache,
-    ) -> Option<AccountManagementViewResponse> {
-        let mut return_op: Option<AccountManagementViewResponse> = None;
+    ) -> Option<AccountsViewResponse> {
+        let mut return_op: Option<AccountsViewResponse> = None;
         ui.allocate_ui_with_layout(
             Vec2::new(ui.available_size_before_wrap().x, 32.0),
             Layout::top_down(egui::Align::Min),
@@ -82,11 +90,9 @@ impl AccountManagementView {
                         profile_preview_view(ui, profile.as_ref(), img_cache, is_selected)
                     {
                         return_op = Some(match op {
-                            ProfilePreviewOp::SwitchTo => {
-                                AccountManagementViewResponse::SelectAccount(i)
-                            }
+                            ProfilePreviewOp::SwitchTo => AccountsViewResponse::SelectAccount(i),
                             ProfilePreviewOp::RemoveAccount => {
-                                AccountManagementViewResponse::RemoveAccount(i)
+                                AccountsViewResponse::RemoveAccount(i)
                             }
                         });
                     }
@@ -98,21 +104,18 @@ impl AccountManagementView {
 
     fn top_section_buttons_widget(
         ui: &mut egui::Ui,
-    ) -> InnerResponse<Option<AccountManagementViewResponse>> {
-        ui.horizontal(|ui| {
-            ui.allocate_ui_with_layout(
-                Vec2::new(ui.available_size_before_wrap().x, 32.0),
-                Layout::left_to_right(egui::Align::Center),
-                |ui| {
-                    if ui.add(add_account_button()).clicked() {
-                        Some(AccountManagementViewResponse::RouteToLogin)
-                    } else {
-                        None
-                    }
-                },
-            )
-            .inner
-        })
+    ) -> InnerResponse<Option<AccountsViewResponse>> {
+        ui.allocate_ui_with_layout(
+            Vec2::new(ui.available_size_before_wrap().x, 32.0),
+            Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                if ui.add(add_account_button()).clicked() {
+                    Some(AccountsViewResponse::RouteToLogin)
+                } else {
+                    None
+                }
+            },
+        )
     }
 }
 
@@ -206,41 +209,41 @@ fn selected_widget() -> impl egui::Widget {
 mod preview {
 
     use super::*;
-    use crate::{account_manager::process_management_view_response_stateless, test_data};
+    use crate::{account_manager::process_accounts_view_response, test_data};
 
-    pub struct AccountManagementPreview {
+    pub struct AccountsPreview {
         app: Damus,
+        router: Router<Route>,
     }
 
-    impl AccountManagementPreview {
+    impl AccountsPreview {
         fn new() -> Self {
             let app = test_data::test_app();
+            let router = Router::new(vec![Route::accounts()]);
 
-            AccountManagementPreview { app }
+            AccountsPreview { app, router }
         }
     }
 
-    impl View for AccountManagementPreview {
+    impl View for AccountsPreview {
         fn ui(&mut self, ui: &mut egui::Ui) {
             ui.add_space(24.0);
-            if let Some(response) = AccountManagementView::ui(
-                ui,
-                &self.app.accounts,
-                &self.app.ndb,
-                &mut self.app.img_cache,
-            )
-            .inner
+            // TODO(jb55): maybe just use render_nav here so we can step through routes
+            if let Some(response) =
+                AccountsView::new(&self.app.ndb, &self.app.accounts, &mut self.app.img_cache)
+                    .ui(ui)
+                    .inner
             {
-                process_management_view_response_stateless(&mut self.app.accounts, response)
+                process_accounts_view_response(self.app.accounts_mut(), response, &mut self.router);
             }
         }
     }
 
-    impl Preview for AccountManagementView {
-        type Prev = AccountManagementPreview;
+    impl<'a> Preview for AccountsView<'a> {
+        type Prev = AccountsPreview;
 
         fn preview(_cfg: PreviewConfig) -> Self::Prev {
-            AccountManagementPreview::new()
+            AccountsPreview::new()
         }
     }
 }

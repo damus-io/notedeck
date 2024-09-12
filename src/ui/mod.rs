@@ -8,12 +8,11 @@ pub mod preview;
 pub mod profile;
 pub mod relay;
 pub mod side_panel;
-pub mod stateful_account_management;
 pub mod thread;
 pub mod timeline;
 pub mod username;
 
-pub use account_management::AccountManagementView;
+pub use account_management::AccountsView;
 pub use account_switcher::AccountSelectionWidget;
 pub use mention::Mention;
 pub use note::{NoteResponse, NoteView, PostReplyView, PostView};

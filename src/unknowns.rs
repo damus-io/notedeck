@@ -1,7 +1,11 @@
-use crate::column::Columns;
-use crate::notecache::{CachedNote, NoteCache};
-use crate::timeline::ViewFilter;
-use crate::Result;
+use crate::{
+    column::Columns,
+    note::NoteRef,
+    notecache::{CachedNote, NoteCache},
+    timeline::ViewFilter,
+    Result,
+};
+
 use enostr::{Filter, NoteId, Pubkey};
 use nostrdb::{BlockType, Mention, Ndb, Note, NoteKey, Transaction};
 use std::collections::HashSet;
@@ -62,6 +66,35 @@ impl UnknownIds {
             self.first_updated = Some(now);
         }
         self.last_updated = Some(now);
+    }
+
+    pub fn update_from_note_key(
+        txn: &Transaction,
+        ndb: &Ndb,
+        unknown_ids: &mut UnknownIds,
+        note_cache: &mut NoteCache,
+        key: NoteKey,
+    ) -> bool {
+        let note = if let Ok(note) = ndb.get_note_by_key(txn, key) {
+            note
+        } else {
+            return false;
+        };
+
+        UnknownIds::update_from_note(txn, ndb, unknown_ids, note_cache, &note)
+    }
+
+    /// Should be called on freshly polled notes from subscriptions
+    pub fn update_from_note_refs(
+        txn: &Transaction,
+        ndb: &Ndb,
+        unknown_ids: &mut UnknownIds,
+        note_cache: &mut NoteCache,
+        note_refs: &[NoteRef],
+    ) {
+        for note_ref in note_refs {
+            Self::update_from_note_key(txn, ndb, unknown_ids, note_cache, note_ref.key);
+        }
     }
 
     pub fn update_from_note(

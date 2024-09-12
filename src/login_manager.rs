@@ -16,13 +16,7 @@ pub struct LoginState {
 
 impl<'a> LoginState {
     pub fn new() -> Self {
-        LoginState {
-            login_key: String::new(),
-            promise_query: None,
-            error: None,
-            key_on_error: None,
-            should_create_new: false,
-        }
+        LoginState::default()
     }
 
     /// Get the textedit for the login UI without exposing the key variable

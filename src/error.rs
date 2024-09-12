@@ -40,9 +40,10 @@ impl fmt::Display for SubscriptionError {
 
 #[derive(Debug)]
 pub enum Error {
+    TimelineNotFound,
+    LoadFailed,
     SubscriptionError(SubscriptionError),
     Filter(FilterError),
-    LoadFailed,
     Io(io::Error),
     Nostr(enostr::Error),
     Ndb(nostrdb::Error),
@@ -72,6 +73,7 @@ impl fmt::Display for Error {
             Self::SubscriptionError(e) => {
                 write!(f, "{e}")
             }
+            Self::TimelineNotFound => write!(f, "Timeline not found"),
             Self::LoadFailed => {
                 write!(f, "load failed")
             }

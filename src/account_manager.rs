@@ -1,15 +1,22 @@
 use std::cmp::Ordering;
 
 use enostr::{FilledKeypair, FullKeypair, Keypair};
+use nostrdb::Ndb;
 
-pub use crate::user_account::UserAccount;
 use crate::{
+    column::Columns,
+    imgcache::ImageCache,
     key_storage::{KeyStorage, KeyStorageResponse, KeyStorageType},
+    login_manager::LoginState,
+    route::{Route, Router},
     ui::{
-        account_login_view::AccountLoginResponse, account_management::AccountManagementViewResponse,
+        account_login_view::{AccountLoginResponse, AccountLoginView},
+        account_management::{AccountsView, AccountsViewResponse},
     },
 };
 use tracing::info;
+
+pub use crate::user_account::UserAccount;
 
 /// The interface for managing the user's accounts.
 /// Represents all user-facing operations related to account management.
@@ -17,6 +24,75 @@ pub struct AccountManager {
     currently_selected_account: Option<usize>,
     accounts: Vec<UserAccount>,
     key_store: KeyStorageType,
+}
+
+// TODO(jb55): move to accounts/route.rs
+pub enum AccountsRouteResponse {
+    Accounts(AccountsViewResponse),
+    AddAccount(AccountLoginResponse),
+}
+
+#[derive(Debug, Eq, PartialEq, Clone, Copy)]
+pub enum AccountsRoute {
+    Accounts,
+    AddAccount,
+}
+
+/// Render account management views from a route
+#[allow(clippy::too_many_arguments)]
+pub fn render_accounts_route(
+    ui: &mut egui::Ui,
+    ndb: &Ndb,
+    col: usize,
+    columns: &mut Columns,
+    img_cache: &mut ImageCache,
+    accounts: &mut AccountManager,
+    login_state: &mut LoginState,
+    route: AccountsRoute,
+) {
+    let router = columns.column_mut(col).router_mut();
+    let resp = match route {
+        AccountsRoute::Accounts => AccountsView::new(ndb, accounts, img_cache)
+            .ui(ui)
+            .inner
+            .map(AccountsRouteResponse::Accounts),
+
+        AccountsRoute::AddAccount => AccountLoginView::new(login_state)
+            .ui(ui)
+            .inner
+            .map(AccountsRouteResponse::AddAccount),
+    };
+
+    if let Some(resp) = resp {
+        match resp {
+            AccountsRouteResponse::Accounts(response) => {
+                process_accounts_view_response(accounts, response, router);
+            }
+            AccountsRouteResponse::AddAccount(response) => {
+                process_login_view_response(accounts, response);
+                *login_state = Default::default();
+                router.go_back();
+            }
+        }
+    }
+}
+
+pub fn process_accounts_view_response(
+    manager: &mut AccountManager,
+    response: AccountsViewResponse,
+    router: &mut Router<Route>,
+) {
+    match response {
+        AccountsViewResponse::RemoveAccount(index) => {
+            manager.remove_account(index);
+        }
+        AccountsViewResponse::SelectAccount(index) => {
+            manager.select_account(index);
+        }
+        AccountsViewResponse::RouteToLogin => {
+            router.route_to(Route::add_account());
+        }
+    }
 }
 
 impl AccountManager {
@@ -119,21 +195,6 @@ impl AccountManager {
 
     pub fn clear_selected_account(&mut self) {
         self.currently_selected_account = None
-    }
-}
-
-pub fn process_management_view_response_stateless(
-    manager: &mut AccountManager,
-    response: AccountManagementViewResponse,
-) {
-    match response {
-        AccountManagementViewResponse::RemoveAccount(index) => {
-            manager.remove_account(index);
-        }
-        AccountManagementViewResponse::SelectAccount(index) => {
-            manager.select_account(index);
-        }
-        AccountManagementViewResponse::RouteToLogin => {}
     }
 }
 

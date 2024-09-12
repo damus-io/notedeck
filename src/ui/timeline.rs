@@ -1,67 +1,56 @@
 use crate::{
-    actionbar::BarAction,
-    actionbar::BarResult,
-    column::{Column, ColumnKind},
-    draft::Drafts,
-    imgcache::ImageCache,
-    notecache::NoteCache,
-    thread::Threads,
-    ui,
-    ui::note::PostAction,
+    actionbar::BarAction, column::Columns, draft::Drafts, imgcache::ImageCache,
+    notecache::NoteCache, timeline::TimelineId, ui, ui::note::PostAction,
 };
 use egui::containers::scroll_area::ScrollBarVisibility;
 use egui::{Direction, Layout};
 use egui_tabs::TabColor;
 use enostr::{FilledKeypair, RelayPool};
-use nostrdb::{Ndb, Note, Transaction};
-use tracing::{debug, info, warn};
+use nostrdb::{Ndb, Transaction};
+use tracing::{debug, error, info, warn};
 
 pub struct TimelineView<'a> {
+    timeline_id: TimelineId,
+    columns: &'a mut Columns,
     ndb: &'a Ndb,
-    column: &'a mut Column,
     note_cache: &'a mut NoteCache,
     img_cache: &'a mut ImageCache,
-    threads: &'a mut Threads,
-    pool: &'a mut RelayPool,
     textmode: bool,
     reverse: bool,
 }
 
 impl<'a> TimelineView<'a> {
     pub fn new(
+        timeline_id: TimelineId,
+        columns: &'a mut Columns,
         ndb: &'a Ndb,
-        column: &'a mut Column,
         note_cache: &'a mut NoteCache,
         img_cache: &'a mut ImageCache,
-        threads: &'a mut Threads,
-        pool: &'a mut RelayPool,
         textmode: bool,
     ) -> TimelineView<'a> {
         let reverse = false;
         TimelineView {
             ndb,
-            column,
+            timeline_id,
+            columns,
             note_cache,
             img_cache,
-            threads,
-            pool,
             reverse,
             textmode,
         }
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui) {
+    pub fn ui(&mut self, ui: &mut egui::Ui) -> Option<BarAction> {
         timeline_ui(
             ui,
             self.ndb,
-            self.column,
+            self.timeline_id,
+            self.columns,
             self.note_cache,
             self.img_cache,
-            self.threads,
-            self.pool,
             self.reverse,
             self.textmode,
-        );
+        )
     }
 
     pub fn reversed(mut self) -> Self {
@@ -74,14 +63,13 @@ impl<'a> TimelineView<'a> {
 fn timeline_ui(
     ui: &mut egui::Ui,
     ndb: &Ndb,
-    column: &mut Column,
+    timeline_id: TimelineId,
+    columns: &mut Columns,
     note_cache: &mut NoteCache,
     img_cache: &mut ImageCache,
-    threads: &mut Threads,
-    pool: &mut RelayPool,
     reversed: bool,
     textmode: bool,
-) {
+) -> Option<BarAction> {
     //padding(4.0, ui, |ui| ui.heading("Notifications"));
     /*
     let font_id = egui::TextStyle::Body.resolve(ui.style());
@@ -89,29 +77,37 @@ fn timeline_ui(
 
     */
 
-    {
-        let timeline = if let ColumnKind::Timeline(timeline) = column.kind_mut() {
+    let scroll_id = {
+        let timeline = if let Some(timeline) = columns.find_timeline_mut(timeline_id) {
             timeline
         } else {
-            return;
+            error!("tried to render timeline in column, but timeline was missing");
+            // TODO (jb55): render error when timeline is missing?
+            // this shouldn't happen...
+            return None;
         };
 
         timeline.selected_view = tabs_ui(ui);
 
         // need this for some reason??
         ui.add_space(3.0);
-    }
 
-    let scroll_id = egui::Id::new(("tlscroll", column.view_id()));
+        egui::Id::new(("tlscroll", timeline.view_id()))
+    };
+
+    let mut bar_action: Option<BarAction> = None;
     egui::ScrollArea::vertical()
         .id_source(scroll_id)
         .animated(false)
         .auto_shrink([false, false])
         .scroll_bar_visibility(ScrollBarVisibility::AlwaysVisible)
         .show(ui, |ui| {
-            let timeline = if let ColumnKind::Timeline(timeline) = column.kind_mut() {
+            let timeline = if let Some(timeline) = columns.find_timeline_mut(timeline_id) {
                 timeline
             } else {
+                error!("tried to render timeline in column, but timeline was missing");
+                // TODO (jb55): render error when timeline is missing?
+                // this shouldn't happen...
                 return 0;
             };
 
@@ -124,7 +120,6 @@ fn timeline_ui(
                 return 0;
             };
 
-            let mut bar_action: Option<(BarAction, Note)> = None;
             view.list
                 .clone()
                 .borrow_mut()
@@ -154,7 +149,7 @@ fn timeline_ui(
                             .show(ui);
 
                         if let Some(ba) = resp.action {
-                            bar_action = Some((ba, note));
+                            bar_action = Some(ba);
                         } else if resp.response.clicked() {
                             debug!("clicked note");
                         }
@@ -166,25 +161,10 @@ fn timeline_ui(
                     1
                 });
 
-            // handle any actions from the virtual list
-            if let Some((action, note)) = bar_action {
-                if let Some(br) =
-                    action.execute(ndb, column, threads, note_cache, pool, note.id(), &txn)
-                {
-                    match br {
-                        // update the thread for next render if we have new notes
-                        BarResult::NewThreadNotes(new_notes) => {
-                            let thread = threads
-                                .thread_mut(ndb, &txn, new_notes.root_id.bytes())
-                                .get_ptr();
-                            new_notes.process(thread);
-                        }
-                    }
-                }
-            }
-
             1
         });
+
+    bar_action
 }
 
 pub fn postbox_view<'a>(

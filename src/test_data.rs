@@ -3,7 +3,7 @@ use std::path::Path;
 use enostr::{FullKeypair, Pubkey, RelayPool};
 use nostrdb::ProfileRecord;
 
-use crate::{account_manager::UserAccount, Damus};
+use crate::{user_account::UserAccount, Damus};
 
 #[allow(unused_must_use)]
 pub fn sample_pool() -> RelayPool {
@@ -101,7 +101,7 @@ pub fn test_app() -> Damus {
 
     let accounts = get_test_accounts();
     for account in accounts {
-        app.accounts.add_account(account);
+        app.accounts_mut().add_account(account);
     }
 
     app

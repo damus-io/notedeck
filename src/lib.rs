@@ -21,13 +21,13 @@ mod key_parsing;
 mod key_storage;
 pub mod login_manager;
 mod macos_key_storage;
+mod nav;
 mod note;
 mod notecache;
 mod post;
 mod profile;
 pub mod relay_pool_manager;
 mod result;
-mod routable_widget_state;
 mod route;
 mod subscriptions;
 mod test_data;
@@ -38,6 +38,7 @@ mod timeline;
 pub mod ui;
 mod unknowns;
 mod user_account;
+mod view_state;
 
 #[cfg(test)]
 #[macro_use]
