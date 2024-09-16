@@ -40,7 +40,6 @@ fn open_thread(
 ) -> Option<BarResult> {
     {
         router.route_to(Route::thread(NoteId::new(selected_note.to_owned())));
-        router.navigating = true;
     }
 
     let root_id = crate::note::root_note_id_from_selected_id(ndb, note_cache, txn, selected_note);

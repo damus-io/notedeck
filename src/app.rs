@@ -3,7 +3,7 @@ use crate::{
     app_creation::setup_cc,
     app_style::user_requested_visuals_change,
     args::Args,
-    column::Columns,
+    column::{Column, Columns},
     draft::Drafts,
     error::{Error, FilterError},
     filter,
@@ -14,6 +14,7 @@ use crate::{
     nav,
     note::NoteRef,
     notecache::{CachedNote, NoteCache},
+    route::Route,
     subscriptions::{SubKind, Subscriptions},
     thread::Threads,
     timeline::{Timeline, TimelineKind, ViewFilter},
@@ -962,11 +963,18 @@ fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus, columns: usiz
                 let rect = ui.available_rect_before_wrap();
                 let side_panel = DesktopSidePanel::new(app).show(ui);
 
-                if side_panel.response.clicked() {
-                    info!("clicked {:?}", side_panel.action);
-                }
+                let router = if let Some(router) =
+                    app.columns.columns_mut().get_mut(0).map(|c: &mut Column| c.router_mut())
+                {
+                    router
+                } else {
+                    // TODO(jb55): Maybe we should have an empty column route?
+                    let columns = app.columns.columns_mut();
+                    columns.push(Column::new(vec![Route::accounts()]));
+                    columns[0].router_mut()
+                };
 
-                DesktopSidePanel::perform_action(app, side_panel.action);
+                DesktopSidePanel::perform_action(router, side_panel.action);
 
                 // vertical sidebar line
                 ui.painter().vline(

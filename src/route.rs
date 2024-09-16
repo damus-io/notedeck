@@ -68,6 +68,7 @@ impl<R: Clone> Router<R> {
     }
 
     pub fn route_to(&mut self, route: R) {
+        self.navigating = true;
         self.routes.push(route);
     }
 

@@ -1,6 +1,11 @@
 use egui::{Button, Layout, SidePanel, Vec2, Widget};
 
-use crate::{ui::profile_preview_controller, Damus};
+use crate::{
+    column::Column,
+    route::{Route, Router},
+    ui::profile_preview_controller,
+    Damus,
+};
 
 use super::{ProfilePic, View};
 
@@ -80,10 +85,13 @@ impl<'a> DesktopSidePanel<'a> {
         }
     }
 
-    pub fn perform_action(app: &mut Damus, action: SidePanelAction) {
+    pub fn perform_action(router: &mut Router<Route>, action: SidePanelAction) {
         match action {
             SidePanelAction::Panel => {} // TODO
-            SidePanelAction::Account => app.show_account_switcher = !app.show_account_switcher,
+            SidePanelAction::Account => {
+                router.route_to(Route::accounts());
+                //app.show_account_switcher = !app.show_account_switcher,
+            }
             SidePanelAction::Settings => {} // TODO
             SidePanelAction::Columns => (), // TODO
         }
@@ -138,7 +146,10 @@ mod preview {
 
     impl DesktopSidePanelPreview {
         fn new() -> Self {
-            let app = test_data::test_app();
+            let mut app = test_data::test_app();
+            app.columns
+                .columns_mut()
+                .push(Column::new(vec![Route::accounts()]));
             DesktopSidePanelPreview { app }
         }
     }
@@ -153,7 +164,11 @@ mod preview {
                     strip.cell(|ui| {
                         let mut panel = DesktopSidePanel::new(&mut self.app);
                         let response = panel.show(ui);
-                        DesktopSidePanel::perform_action(&mut self.app, response.action);
+
+                        DesktopSidePanel::perform_action(
+                            self.app.columns.columns_mut()[0].router_mut(),
+                            response.action,
+                        );
                     });
                 });
 
