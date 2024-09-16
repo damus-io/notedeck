@@ -1,6 +1,7 @@
 use egui::{Button, Layout, SidePanel, Vec2, Widget};
 
 use crate::{
+    account_manager::AccountsRoute,
     column::Column,
     route::{Route, Router},
     ui::profile_preview_controller,
@@ -89,8 +90,16 @@ impl<'a> DesktopSidePanel<'a> {
         match action {
             SidePanelAction::Panel => {} // TODO
             SidePanelAction::Account => {
-                router.route_to(Route::accounts());
-                //app.show_account_switcher = !app.show_account_switcher,
+                if router
+                    .routes()
+                    .iter()
+                    .any(|&r| r == Route::Accounts(AccountsRoute::Accounts))
+                {
+                    // return if we are already routing to accounts
+                    router.go_back();
+                } else {
+                    router.route_to(Route::accounts());
+                }
             }
             SidePanelAction::Settings => {} // TODO
             SidePanelAction::Columns => (), // TODO

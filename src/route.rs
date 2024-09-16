@@ -72,10 +72,21 @@ impl<R: Clone> Router<R> {
         self.routes.push(route);
     }
 
+    /// Go back, start the returning process
     pub fn go_back(&mut self) -> Option<R> {
+        if self.returning || self.routes.len() == 1 {
+            return None;
+        }
+        self.returning = true;
+        self.routes.get(self.routes.len() - 2).cloned()
+    }
+
+    /// Pop a route, should only be called on a NavRespose::Returned reseponse
+    pub fn pop(&mut self) -> Option<R> {
         if self.routes.len() == 1 {
             return None;
         }
+        self.returning = false;
         self.routes.pop()
     }
 
