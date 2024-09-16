@@ -18,7 +18,7 @@ use crate::{
     subscriptions::{SubKind, Subscriptions},
     thread::Threads,
     timeline::{Timeline, TimelineKind, ViewFilter},
-    ui::{self, AccountSelectionWidget, DesktopSidePanel},
+    ui::{self, DesktopSidePanel},
     unknowns::UnknownIds,
     view_state::ViewState,
     Result,
@@ -65,7 +65,6 @@ pub struct Damus {
     pub debug: bool,
     pub since_optimize: bool,
     pub textmode: bool,
-    pub show_account_switcher: bool,
 }
 
 fn relay_setup(pool: &mut RelayPool, ctx: &egui::Context) {
@@ -698,7 +697,6 @@ impl Damus {
             ndb,
             accounts,
             frame_history: FrameHistory::default(),
-            show_account_switcher: false,
             view_state: ViewState::default(),
         }
     }
@@ -777,7 +775,6 @@ impl Damus {
             ndb: Ndb::new(data_path.as_ref().to_str().expect("db path ok"), &config).expect("ndb"),
             accounts: AccountManager::new(None, KeyStorageType::None),
             frame_history: FrameHistory::default(),
-            show_account_switcher: false,
             view_state: ViewState::default(),
         }
     }
@@ -942,7 +939,6 @@ fn render_damus_desktop(ctx: &egui::Context, app: &mut Damus) {
 
     main_panel(&ctx.style(), ui::is_narrow(ctx)).show(ctx, |ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
-        AccountSelectionWidget::ui(app, ui);
         if need_scroll {
             egui::ScrollArea::horizontal().show(ui, |ui| {
                 timelines_view(ui, panel_sizes, app, app.columns.columns().len());
@@ -963,8 +959,11 @@ fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus, columns: usiz
                 let rect = ui.available_rect_before_wrap();
                 let side_panel = DesktopSidePanel::new(app).show(ui);
 
-                let router = if let Some(router) =
-                    app.columns.columns_mut().get_mut(0).map(|c: &mut Column| c.router_mut())
+                let router = if let Some(router) = app
+                    .columns
+                    .columns_mut()
+                    .get_mut(0)
+                    .map(|c: &mut Column| c.router_mut())
                 {
                     router
                 } else {

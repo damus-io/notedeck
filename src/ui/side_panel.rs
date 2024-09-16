@@ -135,7 +135,7 @@ mod preview {
 
     use crate::{
         test_data,
-        ui::{AccountSelectionWidget, Preview, PreviewConfig},
+        ui::{Preview, PreviewConfig},
     };
 
     use super::*;
@@ -171,8 +171,6 @@ mod preview {
                         );
                     });
                 });
-
-            AccountSelectionWidget::ui(&mut self.app, ui);
         }
     }
 

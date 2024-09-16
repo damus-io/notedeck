@@ -38,9 +38,7 @@ fn open_thread(
     threads: &mut Threads,
     selected_note: &[u8; 32],
 ) -> Option<BarResult> {
-    {
-        router.route_to(Route::thread(NoteId::new(selected_note.to_owned())));
-    }
+    router.route_to(Route::thread(NoteId::new(selected_note.to_owned())));
 
     let root_id = crate::note::root_note_id_from_selected_id(ndb, note_cache, txn, selected_note);
     let thread_res = threads.thread_mut(ndb, txn, root_id);
