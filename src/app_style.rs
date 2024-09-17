@@ -96,7 +96,7 @@ pub fn mobile_font_size(text_style: &NotedeckTextStyle) -> f32 {
     }
 }
 
-#[derive(EnumIter)]
+#[derive(Copy, Clone, Eq, PartialEq, Debug, EnumIter)]
 pub enum NotedeckTextStyle {
     Heading,
     Heading2,
