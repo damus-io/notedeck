@@ -9,7 +9,12 @@ pub use post::{PostAction, PostResponse, PostView};
 pub use reply::PostReplyView;
 
 use crate::{
-    actionbar::BarAction, app_style::NotedeckTextStyle, colors, imgcache::ImageCache, notecache::{CachedNote, NoteCache}, ui::{self, View}
+    actionbar::BarAction,
+    app_style::NotedeckTextStyle,
+    colors,
+    imgcache::ImageCache,
+    notecache::{CachedNote, NoteCache},
+    ui::{self, View},
 };
 use egui::{Label, RichText, Sense};
 use enostr::NoteId;
@@ -323,8 +328,7 @@ impl<'a> NoteView<'a> {
             }
         } else {
             let txn = self.note.txn().expect("todo: support non-db notes");
-            if let Some(note_key) = get_reposted_note_key(self.ndb, txn, self.note) {
-                let note = self.ndb.get_note_by_key(txn, note_key).unwrap();
+            if let Some(note_to_repost) = get_reposted_note(self.ndb, txn, self.note) {
                 let profile = self.ndb.get_profile_by_pubkey(txn, self.note.pubkey());
 
                 ui.horizontal(|ui| {
@@ -348,7 +352,7 @@ impl<'a> NoteView<'a> {
                             .text_style(NotedeckTextStyle::Heading3.text_style()),
                     );
                 });
-                NoteView::new(self.ndb, self.note_cache, self.img_cache, &note).show(ui)
+                NoteView::new(self.ndb, self.note_cache, self.img_cache, &note_to_repost).show(ui)
             } else {
                 self.show_standard(ui)
             }
@@ -471,16 +475,18 @@ impl<'a> NoteView<'a> {
     }
 }
 
-fn get_reposted_note_key(ndb: &Ndb, txn: &Transaction, note: &Note) -> Option<NoteKey> {
+fn get_reposted_note<'a>(ndb: &Ndb, txn: &'a Transaction, note: &Note) -> Option<Note<'a>> {
     let new_note_id: &[u8; 32] = if note.kind() == 6 {
         let mut res = None;
         for tag in note.tags().iter() {
-            if let Some(tag_str) = tag.get(0).unwrap().variant().str() {
-                if tag_str == "e" {
-                    if let Some(note_id) = tag.get(1).and_then(|f| f.variant().id()) {
-                        res = Some(note_id);
-                        break;
-                    }
+            if tag.count() == 0 {
+                continue;
+            }
+
+            if let Some("e") = tag.get(0).and_then(|t| t.variant().str()) {
+                if let Some(note_id) = tag.get(1).and_then(|f| f.variant().id()) {
+                    res = Some(note_id);
+                    break;
                 }
             }
         }
@@ -490,15 +496,7 @@ fn get_reposted_note_key(ndb: &Ndb, txn: &Transaction, note: &Note) -> Option<No
     };
 
     let note = ndb.get_note_by_id(txn, new_note_id).ok();
-    if let Some(note) = note {
-        if note.kind() == 1 {
-            note.key()
-        } else {
-            None
-        }
-    } else {
-        None
-    }
+    note.filter(|note| note.kind() == 1)
 }
 
 fn render_note_actionbar(
