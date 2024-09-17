@@ -27,6 +27,10 @@ impl Route {
         }
     }
 
+    pub fn relays() -> Self {
+        Route::Relays
+    }
+
     pub fn thread(thread_root: NoteId) -> Self {
         Route::Timeline(TimelineRoute::Thread(thread_root))
     }

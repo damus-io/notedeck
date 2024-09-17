@@ -101,7 +101,14 @@ impl<'a> DesktopSidePanel<'a> {
                     router.route_to(Route::accounts());
                 }
             }
-            SidePanelAction::Settings => {} // TODO
+            SidePanelAction::Settings => {
+                if router.routes().iter().any(|&r| r == Route::Relays) {
+                    // return if we are already routing to accounts
+                    router.go_back();
+                } else {
+                    router.route_to(Route::relays());
+                }
+            }
             SidePanelAction::Columns => (), // TODO
         }
     }

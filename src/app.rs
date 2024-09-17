@@ -973,7 +973,9 @@ fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus, columns: usiz
                     columns[0].router_mut()
                 };
 
-                DesktopSidePanel::perform_action(router, side_panel.action);
+                if side_panel.response.clicked() {
+                    DesktopSidePanel::perform_action(router, side_panel.action);
+                }
 
                 // vertical sidebar line
                 ui.painter().vline(
