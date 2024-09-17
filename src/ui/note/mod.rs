@@ -16,7 +16,7 @@ use crate::{
     notecache::{CachedNote, NoteCache},
     ui::{self, View},
 };
-use egui::{Label, RichText, Sense};
+use egui::{Id, Label, Response, RichText, Sense};
 use enostr::NoteId;
 use nostrdb::{Ndb, Note, NoteKey, NoteReply, Transaction};
 
@@ -384,6 +384,7 @@ impl<'a> NoteView<'a> {
         let txn = self.note.txn().expect("todo: support non-db notes");
         let mut note_action: Option<BarAction> = None;
         let profile = self.ndb.get_profile_by_pubkey(txn, self.note.pubkey());
+        let maybe_hitbox = maybe_note_hitbox(ui, note_key);
 
         // wide design
         let response = if self.options().has_wide() {
@@ -468,6 +469,15 @@ impl<'a> NoteView<'a> {
             .response
         };
 
+        note_action = check_note_hitbox(
+            ui,
+            self.note.id(),
+            note_key,
+            &response,
+            maybe_hitbox,
+            note_action,
+        );
+
         NoteResponse {
             response,
             action: note_action,
@@ -499,6 +509,42 @@ fn get_reposted_note<'a>(ndb: &Ndb, txn: &'a Transaction, note: &Note) -> Option
     note.filter(|note| note.kind() == 1)
 }
 
+fn note_hitbox_id(note_key: NoteKey) -> egui::Id {
+    Id::new(("note_rect", note_key))
+}
+
+fn maybe_note_hitbox(ui: &mut egui::Ui, note_key: NoteKey) -> Option<Response> {
+    ui.ctx()
+        .data_mut(|d| d.get_persisted(note_hitbox_id(note_key)))
+        .map(|rect| {
+            let id = ui.make_persistent_id(("under_button_interact", note_key));
+            ui.interact(rect, id, egui::Sense::click())
+        })
+}
+
+fn check_note_hitbox(
+    ui: &mut egui::Ui,
+    note_id: &[u8; 32],
+    note_key: NoteKey,
+    note_response: &Response,
+    maybe_hitbox: Option<Response>,
+    prior_action: Option<BarAction>,
+) -> Option<BarAction> {
+    // Stash the dimensions of the note content so we can render the
+    // underbutton in the next frame
+    ui.ctx().data_mut(|d| {
+        d.insert_persisted(note_hitbox_id(note_key), note_response.rect);
+    });
+
+    // If there was an underbutton and it was clicked open the thread
+    match maybe_hitbox {
+        Some(underbutt) if underbutt.clicked() => {
+            Some(BarAction::OpenThread(NoteId::new(*note_id)))
+        }
+        _ => prior_action,
+    }
+}
+
 fn render_note_actionbar(
     ui: &mut egui::Ui,
     note_id: &[u8; 32],
@@ -506,12 +552,9 @@ fn render_note_actionbar(
 ) -> egui::InnerResponse<Option<BarAction>> {
     ui.horizontal(|ui| {
         let reply_resp = reply_button(ui, note_key);
-        let thread_resp = thread_button(ui, note_key);
 
         if reply_resp.clicked() {
             Some(BarAction::Reply(NoteId::new(*note_id)))
-        } else if thread_resp.clicked() {
-            Some(BarAction::OpenThread(NoteId::new(*note_id)))
         } else {
             None
         }
@@ -562,29 +605,6 @@ fn reply_button(ui: &mut egui::Ui, note_key: NoteKey) -> egui::Response {
     let put_resp = ui.put(rect, egui::Image::new(img_data).max_width(size));
 
     resp.union(put_resp)
-}
-
-fn thread_button(ui: &mut egui::Ui, note_key: NoteKey) -> egui::Response {
-    let id = ui.id().with(("thread_anim", note_key));
-    let size = 8.0;
-    let expand_size = 5.0;
-    let anim_speed = 0.05;
-
-    let (rect, size, resp) = ui::anim::hover_expand(ui, id, size, expand_size, anim_speed);
-
-    let color = if ui.style().visuals.dark_mode {
-        egui::Color32::WHITE
-    } else {
-        egui::Color32::BLACK
-    };
-
-    ui.painter_at(rect).circle_stroke(
-        rect.center(),
-        (size - 1.0) / 2.0,
-        egui::Stroke::new(1.0, color),
-    );
-
-    resp
 }
 
 fn repost_icon() -> egui::Image<'static> {
