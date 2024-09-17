@@ -621,26 +621,13 @@ fn repost_icon() -> egui::Image<'static> {
 }
 
 fn quote_repost_button(ui: &mut egui::Ui, note_key: NoteKey) -> egui::Response {
-    let id = ui.id().with(("quote-anim", note_key));
-    let size = 8.0;
+    let (rect, size, resp) =
+        ui::anim::hover_expand_small(ui, ui.id().with(("repost_anim", note_key)));
+
     let expand_size = 5.0;
-    let anim_speed = 0.05;
+    let rect = rect.translate(egui::vec2(-(expand_size / 2.0), 0.0));
 
-    let (rect, size, resp) = ui::anim::hover_expand(ui, id, size, expand_size, anim_speed);
+    let put_resp = ui.put(rect, repost_icon().max_width(size));
 
-    let color = if ui.style().visuals.dark_mode {
-        egui::Color32::WHITE
-    } else {
-        egui::Color32::BLACK
-    };
-
-    ui.painter_at(rect).text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        "Q",
-        egui::FontId::proportional(size + 2.0),
-        color,
-    );
-
-    resp
+    resp.union(put_resp)
 }
