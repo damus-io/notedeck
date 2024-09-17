@@ -1,6 +1,12 @@
 use egui::{Button, Layout, SidePanel, Vec2, Widget};
 
-use crate::{ui::profile_preview_controller, Damus};
+use crate::{
+    account_manager::AccountsRoute,
+    column::Column,
+    route::{Route, Router},
+    ui::profile_preview_controller,
+    Damus,
+};
 
 use super::{ProfilePic, View};
 
@@ -80,11 +86,29 @@ impl<'a> DesktopSidePanel<'a> {
         }
     }
 
-    pub fn perform_action(app: &mut Damus, action: SidePanelAction) {
+    pub fn perform_action(router: &mut Router<Route>, action: SidePanelAction) {
         match action {
             SidePanelAction::Panel => {} // TODO
-            SidePanelAction::Account => app.show_account_switcher = !app.show_account_switcher,
-            SidePanelAction::Settings => {} // TODO
+            SidePanelAction::Account => {
+                if router
+                    .routes()
+                    .iter()
+                    .any(|&r| r == Route::Accounts(AccountsRoute::Accounts))
+                {
+                    // return if we are already routing to accounts
+                    router.go_back();
+                } else {
+                    router.route_to(Route::accounts());
+                }
+            }
+            SidePanelAction::Settings => {
+                if router.routes().iter().any(|&r| r == Route::Relays) {
+                    // return if we are already routing to accounts
+                    router.go_back();
+                } else {
+                    router.route_to(Route::relays());
+                }
+            }
             SidePanelAction::Columns => (), // TODO
         }
     }
@@ -127,7 +151,7 @@ mod preview {
 
     use crate::{
         test_data,
-        ui::{AccountSelectionWidget, Preview, PreviewConfig},
+        ui::{Preview, PreviewConfig},
     };
 
     use super::*;
@@ -138,7 +162,10 @@ mod preview {
 
     impl DesktopSidePanelPreview {
         fn new() -> Self {
-            let app = test_data::test_app();
+            let mut app = test_data::test_app();
+            app.columns
+                .columns_mut()
+                .push(Column::new(vec![Route::accounts()]));
             DesktopSidePanelPreview { app }
         }
     }
@@ -153,11 +180,13 @@ mod preview {
                     strip.cell(|ui| {
                         let mut panel = DesktopSidePanel::new(&mut self.app);
                         let response = panel.show(ui);
-                        DesktopSidePanel::perform_action(&mut self.app, response.action);
+
+                        DesktopSidePanel::perform_action(
+                            self.app.columns.columns_mut()[0].router_mut(),
+                            response.action,
+                        );
                     });
                 });
-
-            AccountSelectionWidget::ui(&mut self.app, ui);
         }
     }
 

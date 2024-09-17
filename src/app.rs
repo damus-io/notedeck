@@ -3,7 +3,7 @@ use crate::{
     app_creation::setup_cc,
     app_style::user_requested_visuals_change,
     args::Args,
-    column::Columns,
+    column::{Column, Columns},
     draft::Drafts,
     error::{Error, FilterError},
     filter,
@@ -14,10 +14,11 @@ use crate::{
     nav,
     note::NoteRef,
     notecache::{CachedNote, NoteCache},
+    route::Route,
     subscriptions::{SubKind, Subscriptions},
     thread::Threads,
     timeline::{Timeline, TimelineKind, ViewFilter},
-    ui::{self, AccountSelectionWidget, DesktopSidePanel},
+    ui::{self, DesktopSidePanel},
     unknowns::UnknownIds,
     view_state::ViewState,
     Result,
@@ -64,7 +65,6 @@ pub struct Damus {
     pub debug: bool,
     pub since_optimize: bool,
     pub textmode: bool,
-    pub show_account_switcher: bool,
 }
 
 fn relay_setup(pool: &mut RelayPool, ctx: &egui::Context) {
@@ -697,7 +697,6 @@ impl Damus {
             ndb,
             accounts,
             frame_history: FrameHistory::default(),
-            show_account_switcher: false,
             view_state: ViewState::default(),
         }
     }
@@ -776,7 +775,6 @@ impl Damus {
             ndb: Ndb::new(data_path.as_ref().to_str().expect("db path ok"), &config).expect("ndb"),
             accounts: AccountManager::new(None, KeyStorageType::None),
             frame_history: FrameHistory::default(),
-            show_account_switcher: false,
             view_state: ViewState::default(),
         }
     }
@@ -941,7 +939,6 @@ fn render_damus_desktop(ctx: &egui::Context, app: &mut Damus) {
 
     main_panel(&ctx.style(), ui::is_narrow(ctx)).show(ctx, |ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
-        AccountSelectionWidget::ui(app, ui);
         if need_scroll {
             egui::ScrollArea::horizontal().show(ui, |ui| {
                 timelines_view(ui, panel_sizes, app, app.columns.columns().len());
@@ -962,11 +959,23 @@ fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus, columns: usiz
                 let rect = ui.available_rect_before_wrap();
                 let side_panel = DesktopSidePanel::new(app).show(ui);
 
-                if side_panel.response.clicked() {
-                    info!("clicked {:?}", side_panel.action);
-                }
+                let router = if let Some(router) = app
+                    .columns
+                    .columns_mut()
+                    .get_mut(0)
+                    .map(|c: &mut Column| c.router_mut())
+                {
+                    router
+                } else {
+                    // TODO(jb55): Maybe we should have an empty column route?
+                    let columns = app.columns.columns_mut();
+                    columns.push(Column::new(vec![Route::accounts()]));
+                    columns[0].router_mut()
+                };
 
-                DesktopSidePanel::perform_action(app, side_panel.action);
+                if side_panel.response.clicked() {
+                    DesktopSidePanel::perform_action(router, side_panel.action);
+                }
 
                 // vertical sidebar line
                 ui.painter().vline(

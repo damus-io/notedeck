@@ -1,6 +1,5 @@
 pub mod account_login_view;
 pub mod account_management;
-pub mod account_switcher;
 pub mod anim;
 pub mod mention;
 pub mod note;
@@ -13,7 +12,6 @@ pub mod timeline;
 pub mod username;
 
 pub use account_management::AccountsView;
-pub use account_switcher::AccountSelectionWidget;
 pub use mention::Mention;
 pub use note::{NoteResponse, NoteView, PostReplyView, PostView};
 pub use preview::{Preview, PreviewApp, PreviewConfig};

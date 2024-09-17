@@ -2,9 +2,8 @@ use notedeck::app_creation::{
     generate_mobile_emulator_native_options, generate_native_options, setup_cc,
 };
 use notedeck::ui::{
-    account_login_view::AccountLoginView, account_management::AccountsView, AccountSelectionWidget,
-    DesktopSidePanel, PostView, Preview, PreviewApp, PreviewConfig, ProfilePic, ProfilePreview,
-    RelayView,
+    account_login_view::AccountLoginView, account_management::AccountsView, DesktopSidePanel,
+    PostView, Preview, PreviewApp, PreviewConfig, ProfilePic, ProfilePreview, RelayView,
 };
 use std::env;
 
@@ -101,7 +100,6 @@ async fn main() {
         ProfilePreview,
         ProfilePic,
         AccountsView,
-        AccountSelectionWidget,
         DesktopSidePanel,
         PostView,
     );

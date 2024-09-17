@@ -11,6 +11,7 @@ use crate::{
 use egui_nav::{Nav, NavAction};
 
 pub fn render_nav(show_postbox: bool, col: usize, app: &mut Damus, ui: &mut egui::Ui) {
+    // TODO(jb55): clean up this router_mut mess by using Router<R> in egui-nav directly
     let nav_response = Nav::new(app.columns().column(col).router().routes().clone())
         .navigating(app.columns_mut().column_mut(col).router_mut().navigating)
         .returning(app.columns_mut().column_mut(col).router_mut().returning)
@@ -67,7 +68,7 @@ pub fn render_nav(show_postbox: bool, col: usize, app: &mut Damus, ui: &mut egui
     }
 
     if let Some(NavAction::Returned) = nav_response.action {
-        let r = app.columns_mut().column_mut(col).router_mut().go_back();
+        let r = app.columns_mut().column_mut(col).router_mut().pop();
         if let Some(Route::Timeline(TimelineRoute::Thread(id))) = r {
             thread_unsubscribe(
                 &app.ndb,
@@ -77,7 +78,6 @@ pub fn render_nav(show_postbox: bool, col: usize, app: &mut Damus, ui: &mut egui
                 id.bytes(),
             );
         }
-        app.columns_mut().column_mut(col).router_mut().returning = false;
     } else if let Some(NavAction::Navigated) = nav_response.action {
         app.columns_mut().column_mut(col).router_mut().navigating = false;
     }
