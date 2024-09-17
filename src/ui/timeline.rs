@@ -1,13 +1,14 @@
+use crate::post_action_executor::PostActionExecutor;
 use crate::{
     actionbar::BarAction, column::Columns, draft::Drafts, imgcache::ImageCache,
-    notecache::NoteCache, timeline::TimelineId, ui, ui::note::PostAction,
+    notecache::NoteCache, timeline::TimelineId, ui,
 };
 use egui::containers::scroll_area::ScrollBarVisibility;
 use egui::{Direction, Layout};
 use egui_tabs::TabColor;
 use enostr::{FilledKeypair, RelayPool};
 use nostrdb::{Ndb, Transaction};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, warn};
 
 pub struct TimelineView<'a> {
     timeline_id: TimelineId,
@@ -189,16 +190,16 @@ pub fn postbox_view<'a>(
     .ui(&txn, ui);
 
     if let Some(action) = response.action {
-        match action {
-            PostAction::Post(np) => {
-                let seckey = key.secret_key.to_secret_bytes();
-                let note = np.to_note(&seckey);
-                let raw_msg = format!("[\"EVENT\",{}]", note.json().unwrap());
-                info!("sending {}", raw_msg);
-                pool.send(&enostr::ClientMessage::raw(raw_msg));
+        PostActionExecutor::execute(
+            &key,
+            &action,
+            pool,
+            drafts,
+            |np, seckey| np.to_note(seckey),
+            |drafts| {
                 drafts.compose_mut().clear();
-            }
-        }
+            },
+        );
     }
 }
 

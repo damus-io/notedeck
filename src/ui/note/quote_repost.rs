@@ -1,10 +1,12 @@
 use enostr::{FilledKeypair, RelayPool};
 use nostrdb::Ndb;
-use tracing::info;
 
-use crate::{draft::Drafts, imgcache::ImageCache, notecache::NoteCache, ui};
+use crate::{
+    draft::Drafts, imgcache::ImageCache, notecache::NoteCache,
+    post_action_executor::PostActionExecutor, ui,
+};
 
-use super::{PostAction, PostResponse};
+use super::PostResponse;
 
 pub struct QuoteRepostView<'a> {
     ndb: &'a Ndb,
@@ -59,18 +61,16 @@ impl<'a> QuoteRepostView<'a> {
         };
 
         if let Some(action) = &post_response.action {
-            match action {
-                PostAction::Post(np) => {
-                    let seckey = self.poster.secret_key.to_secret_bytes();
-
-                    let note = np.to_quote(&seckey, self.quoting_note);
-
-                    let raw_msg = format!("[\"EVENT\",{}]", note.json().unwrap());
-                    info!("sending {}", raw_msg);
-                    self.pool.send(&enostr::ClientMessage::raw(raw_msg));
-                    self.drafts.quote_mut(quoting_note_id).clear();
-                }
-            }
+            PostActionExecutor::execute(
+                &self.poster,
+                action,
+                self.pool,
+                self.drafts,
+                |np, seckey| np.to_quote(seckey, self.quoting_note),
+                |drafts| {
+                    drafts.quote_mut(quoting_note_id).clear();
+                },
+            );
         }
 
         post_response

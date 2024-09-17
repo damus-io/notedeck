@@ -1,11 +1,11 @@
 use crate::draft::Drafts;
 use crate::imgcache::ImageCache;
 use crate::notecache::NoteCache;
+use crate::post_action_executor::PostActionExecutor;
 use crate::ui;
-use crate::ui::note::{PostAction, PostResponse};
+use crate::ui::note::PostResponse;
 use enostr::{FilledKeypair, RelayPool};
 use nostrdb::Ndb;
-use tracing::info;
 
 pub struct PostReplyView<'a> {
     ndb: &'a Ndb,
@@ -93,18 +93,16 @@ impl<'a> PostReplyView<'a> {
             };
 
             if let Some(action) = &post_response.action {
-                match action {
-                    PostAction::Post(np) => {
-                        let seckey = self.poster.secret_key.to_secret_bytes();
-
-                        let note = np.to_reply(&seckey, self.note);
-
-                        let raw_msg = format!("[\"EVENT\",{}]", note.json().unwrap());
-                        info!("sending {}", raw_msg);
-                        self.pool.send(&enostr::ClientMessage::raw(raw_msg));
-                        self.drafts.reply_mut(replying_to).clear();
-                    }
-                }
+                PostActionExecutor::execute(
+                    &self.poster,
+                    action,
+                    self.pool,
+                    self.drafts,
+                    |np, seckey| np.to_reply(seckey, self.note),
+                    |drafts| {
+                        drafts.reply_mut(replying_to).clear();
+                    },
+                );
             }
 
             //
