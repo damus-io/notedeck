@@ -10,15 +10,17 @@ pub use reply::PostReplyView;
 
 use crate::{
     actionbar::BarAction,
+    app_style::NotedeckTextStyle,
     colors,
     imgcache::ImageCache,
     notecache::{CachedNote, NoteCache},
-    ui,
-    ui::View,
+    ui::{self, View},
 };
 use egui::{Label, RichText, Sense};
 use enostr::NoteId;
 use nostrdb::{Ndb, Note, NoteKey, NoteReply, Transaction};
+
+use super::profile::preview::{get_display_name, one_line_display_name_widget};
 
 pub struct NoteView<'a> {
     ndb: &'a Ndb,
@@ -325,7 +327,35 @@ impl<'a> NoteView<'a> {
                 action: None,
             }
         } else {
-            self.show_standard(ui)
+            let txn = self.note.txn().expect("todo: support non-db notes");
+            if let Some(note_to_repost) = get_reposted_note(self.ndb, txn, self.note) {
+                let profile = self.ndb.get_profile_by_pubkey(txn, self.note.pubkey());
+
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        ui.add_space(2.0);
+                        ui.add_sized([20.0, 20.0], repost_icon());
+                    });
+                    ui.add_space(6.0);
+                    let resp = ui.add(one_line_display_name_widget(get_display_name(
+                        profile.as_ref().ok(),
+                    )));
+                    if let Ok(rec) = &profile {
+                        resp.on_hover_ui_at_pointer(|ui| {
+                            ui.set_max_width(300.0);
+                            ui.add(ui::ProfilePreview::new(rec, self.img_cache));
+                        });
+                    }
+                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new("Reposted")
+                            .text_style(NotedeckTextStyle::Heading3.text_style()),
+                    );
+                });
+                NoteView::new(self.ndb, self.note_cache, self.img_cache, &note_to_repost).show(ui)
+            } else {
+                self.show_standard(ui)
+            }
         }
     }
 
@@ -445,6 +475,30 @@ impl<'a> NoteView<'a> {
     }
 }
 
+fn get_reposted_note<'a>(ndb: &Ndb, txn: &'a Transaction, note: &Note) -> Option<Note<'a>> {
+    let new_note_id: &[u8; 32] = if note.kind() == 6 {
+        let mut res = None;
+        for tag in note.tags().iter() {
+            if tag.count() == 0 {
+                continue;
+            }
+
+            if let Some("e") = tag.get(0).and_then(|t| t.variant().str()) {
+                if let Some(note_id) = tag.get(1).and_then(|f| f.variant().id()) {
+                    res = Some(note_id);
+                    break;
+                }
+            }
+        }
+        res?
+    } else {
+        return None;
+    };
+
+    let note = ndb.get_note_by_id(txn, new_note_id).ok();
+    note.filter(|note| note.kind() == 1)
+}
+
 fn render_note_actionbar(
     ui: &mut egui::Ui,
     note_id: &[u8; 32],
@@ -531,4 +585,9 @@ fn thread_button(ui: &mut egui::Ui, note_key: NoteKey) -> egui::Response {
     );
 
     resp
+}
+
+fn repost_icon() -> egui::Image<'static> {
+    let img_data = egui::include_image!("../../../assets/icons/repost_icon_4x.png");
+    egui::Image::new(img_data)
 }

@@ -198,6 +198,21 @@ fn display_name_widget(
     }
 }
 
+pub fn one_line_display_name_widget(display_name: DisplayName<'_>) -> impl egui::Widget + '_ {
+    move |ui: &mut egui::Ui| match display_name {
+        DisplayName::One(n) => {
+            ui.label(RichText::new(n).text_style(NotedeckTextStyle::Heading3.text_style()))
+        }
+
+        DisplayName::Both {
+            display_name,
+            username: _,
+        } => ui.label(
+            RichText::new(display_name).text_style(NotedeckTextStyle::Heading3.text_style()),
+        ),
+    }
+}
+
 fn about_section_widget<'a>(profile: &'a ProfileRecord<'a>) -> impl egui::Widget + 'a {
     |ui: &mut egui::Ui| {
         if let Some(about) = profile.record().profile().and_then(|p| p.about()) {
