@@ -327,19 +327,21 @@ impl<'a> NoteView<'a> {
                 action: None,
             }
         } else {
-            let txn = self.note.txn().expect("todo: support non-db notes");
+            let txn = self.note.txn().expect("txn");
             if let Some(note_to_repost) = get_reposted_note(self.ndb, txn, self.note) {
                 let profile = self.ndb.get_profile_by_pubkey(txn, self.note.pubkey());
 
+                let style = NotedeckTextStyle::Small;
                 ui.horizontal(|ui| {
                     ui.vertical(|ui| {
                         ui.add_space(2.0);
                         ui.add_sized([20.0, 20.0], repost_icon());
                     });
                     ui.add_space(6.0);
-                    let resp = ui.add(one_line_display_name_widget(get_display_name(
-                        profile.as_ref().ok(),
-                    )));
+                    let resp = ui.add(one_line_display_name_widget(
+                        get_display_name(profile.as_ref().ok()),
+                        style,
+                    ));
                     if let Ok(rec) = &profile {
                         resp.on_hover_ui_at_pointer(|ui| {
                             ui.set_max_width(300.0);
@@ -349,7 +351,8 @@ impl<'a> NoteView<'a> {
                     ui.add_space(4.0);
                     ui.label(
                         RichText::new("Reposted")
-                            .text_style(NotedeckTextStyle::Heading3.text_style()),
+                            .color(colors::GRAY_SECONDARY)
+                            .text_style(style.text_style()),
                     );
                 });
                 NoteView::new(self.ndb, self.note_cache, self.img_cache, &note_to_repost).show(ui)

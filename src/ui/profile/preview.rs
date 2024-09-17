@@ -198,17 +198,25 @@ fn display_name_widget(
     }
 }
 
-pub fn one_line_display_name_widget(display_name: DisplayName<'_>) -> impl egui::Widget + '_ {
+pub fn one_line_display_name_widget(
+    display_name: DisplayName<'_>,
+    style: NotedeckTextStyle,
+) -> impl egui::Widget + '_ {
+    let text_style = style.text_style();
     move |ui: &mut egui::Ui| match display_name {
-        DisplayName::One(n) => {
-            ui.label(RichText::new(n).text_style(NotedeckTextStyle::Heading3.text_style()))
-        }
+        DisplayName::One(n) => ui.label(
+            RichText::new(n)
+                .text_style(text_style)
+                .color(colors::GRAY_SECONDARY),
+        ),
 
         DisplayName::Both {
             display_name,
             username: _,
         } => ui.label(
-            RichText::new(display_name).text_style(NotedeckTextStyle::Heading3.text_style()),
+            RichText::new(display_name)
+                .text_style(text_style)
+                .color(colors::GRAY_SECONDARY),
         ),
     }
 }
