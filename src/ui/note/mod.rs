@@ -384,8 +384,7 @@ impl<'a> NoteView<'a> {
         let txn = self.note.txn().expect("todo: support non-db notes");
         let mut note_action: Option<BarAction> = None;
         let profile = self.ndb.get_profile_by_pubkey(txn, self.note.pubkey());
-
-        let maybe_underbutt = maybe_note_underbutton(ui, note_key);
+        let maybe_hitbox = maybe_note_hitbox(ui, note_key);
 
         // wide design
         let response = if self.options().has_wide() {
@@ -470,12 +469,12 @@ impl<'a> NoteView<'a> {
             .response
         };
 
-        note_action = check_note_underbutton(
+        note_action = check_note_hitbox(
             ui,
             self.note.id(),
             note_key,
             &response,
-            maybe_underbutt,
+            maybe_hitbox,
             note_action,
         );
 
@@ -510,35 +509,35 @@ fn get_reposted_note<'a>(ndb: &Ndb, txn: &'a Transaction, note: &Note) -> Option
     note.filter(|note| note.kind() == 1)
 }
 
-fn maybe_note_underbutton(ui: &mut egui::Ui, note_key: NoteKey) -> Option<Response> {
-    let underbuttid = Id::new(("note_rect", note_key));
-    let maybe_underbutt = ui
-        .ctx()
-        .data_mut(|d| d.get_persisted(underbuttid))
+fn note_hitbox_id(note_key: NoteKey) -> egui::Id {
+    Id::new(("note_rect", note_key))
+}
+
+fn maybe_note_hitbox(ui: &mut egui::Ui, note_key: NoteKey) -> Option<Response> {
+    ui.ctx()
+        .data_mut(|d| d.get_persisted(note_hitbox_id(note_key)))
         .map(|rect| {
             let id = ui.make_persistent_id(("under_button_interact", note_key));
             ui.interact(rect, id, egui::Sense::click())
-        });
-    maybe_underbutt
+        })
 }
 
-fn check_note_underbutton(
+fn check_note_hitbox(
     ui: &mut egui::Ui,
     note_id: &[u8; 32],
     note_key: NoteKey,
     note_response: &Response,
-    maybe_underbutt: Option<Response>,
+    maybe_hitbox: Option<Response>,
     prior_action: Option<BarAction>,
 ) -> Option<BarAction> {
     // Stash the dimensions of the note content so we can render the
     // underbutton in the next frame
-    let underbuttid = Id::new(("note_rect", note_key));
     ui.ctx().data_mut(|d| {
-        d.insert_persisted(underbuttid, note_response.rect);
+        d.insert_persisted(note_hitbox_id(note_key), note_response.rect);
     });
 
     // If there was an underbutton and it was clicked open the thread
-    match maybe_underbutt {
+    match maybe_hitbox {
         Some(underbutt) if underbutt.clicked() => {
             Some(BarAction::OpenThread(NoteId::new(*note_id)))
         }
