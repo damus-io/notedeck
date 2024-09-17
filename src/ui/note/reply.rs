@@ -80,9 +80,16 @@ impl<'a> PostReplyView<'a> {
 
             let post_response = {
                 let draft = self.drafts.reply_mut(replying_to);
-                ui::PostView::new(self.ndb, draft, self.img_cache, self.poster)
-                    .id_source(id)
-                    .ui(self.note.txn().unwrap(), ui)
+                ui::PostView::new(
+                    self.ndb,
+                    draft,
+                    crate::draft::DraftSource::Reply(replying_to),
+                    self.img_cache,
+                    self.note_cache,
+                    self.poster,
+                )
+                .id_source(id)
+                .ui(self.note.txn().unwrap(), ui)
             };
 
             if let Some(action) = &post_response.action {

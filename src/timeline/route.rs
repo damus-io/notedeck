@@ -6,7 +6,10 @@ use crate::{
     notecache::NoteCache,
     thread::Threads,
     timeline::TimelineId,
-    ui::{self, note::post::PostResponse},
+    ui::{
+        self,
+        note::{post::PostResponse, QuoteRepostView},
+    },
 };
 
 use enostr::{NoteId, RelayPool};
@@ -17,6 +20,7 @@ pub enum TimelineRoute {
     Timeline(TimelineId),
     Thread(NoteId),
     Reply(NoteId),
+    Quote(NoteId),
 }
 
 pub enum TimelineRouteResponse {
@@ -49,7 +53,7 @@ pub fn render_timeline_route(
         TimelineRoute::Timeline(timeline_id) => {
             if show_postbox {
                 if let Some(kp) = accounts.selected_or_first_nsec() {
-                    ui::timeline::postbox_view(ndb, kp, pool, drafts, img_cache, ui);
+                    ui::timeline::postbox_view(ndb, kp, pool, drafts, img_cache, note_cache, ui);
                 }
             }
 
@@ -100,6 +104,35 @@ pub fn render_timeline_route(
             if let Some(poster) = accounts.selected_or_first_nsec() {
                 let response = egui::ScrollArea::vertical().show(ui, |ui| {
                     ui::PostReplyView::new(ndb, poster, pool, drafts, note_cache, img_cache, &note)
+                        .id_source(id)
+                        .show(ui)
+                });
+
+                Some(TimelineRouteResponse::post(response.inner))
+            } else {
+                None
+            }
+        }
+
+        TimelineRoute::Quote(id) => {
+            let txn = if let Ok(txn) = Transaction::new(ndb) {
+                txn
+            } else {
+                ui.label("Quote of unknown note");
+                return None;
+            };
+
+            let note = if let Ok(note) = ndb.get_note_by_id(&txn, id.bytes()) {
+                note
+            } else {
+                ui.label("Quote of unknown note");
+                return None;
+            };
+
+            let id = egui::Id::new(("post", col, note.key().unwrap()));
+            if let Some(poster) = accounts.selected_or_first_nsec() {
+                let response = egui::ScrollArea::vertical().show(ui, |ui| {
+                    QuoteRepostView::new(ndb, poster, pool, note_cache, img_cache, drafts, &note)
                         .id_source(id)
                         .show(ui)
                 });

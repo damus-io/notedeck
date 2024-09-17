@@ -58,7 +58,7 @@ impl egui::Widget for NoteContents<'_> {
 
 /// Render an inline note preview with a border. These are used when
 /// notes are references within a note
-fn render_note_preview(
+pub fn render_note_preview(
     ui: &mut egui::Ui,
     ndb: &Ndb,
     note_cache: &mut NoteCache,

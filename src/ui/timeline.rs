@@ -173,11 +173,20 @@ pub fn postbox_view<'a>(
     pool: &'a mut RelayPool,
     drafts: &'a mut Drafts,
     img_cache: &'a mut ImageCache,
+    note_cache: &'a mut NoteCache,
     ui: &'a mut egui::Ui,
 ) {
     // show a postbox in the first timeline
     let txn = Transaction::new(ndb).expect("txn");
-    let response = ui::PostView::new(ndb, drafts.compose_mut(), img_cache, key).ui(&txn, ui);
+    let response = ui::PostView::new(
+        ndb,
+        drafts.compose_mut(),
+        crate::draft::DraftSource::Compose,
+        img_cache,
+        note_cache,
+        key,
+    )
+    .ui(&txn, ui);
 
     if let Some(action) = response.action {
         match action {

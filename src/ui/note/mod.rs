@@ -1,11 +1,13 @@
 pub mod contents;
 pub mod options;
 pub mod post;
+pub mod quote_repost;
 pub mod reply;
 
 pub use contents::NoteContents;
 pub use options::NoteOptions;
 pub use post::{PostAction, PostResponse, PostView};
+pub use quote_repost::QuoteRepostView;
 pub use reply::PostReplyView;
 
 use crate::{
@@ -555,9 +557,12 @@ fn render_note_actionbar(
 ) -> egui::InnerResponse<Option<BarAction>> {
     ui.horizontal(|ui| {
         let reply_resp = reply_button(ui, note_key);
+        let quote_resp = quote_repost_button(ui, note_key);
 
         if reply_resp.clicked() {
             Some(BarAction::Reply(NoteId::new(*note_id)))
+        } else if quote_resp.clicked() {
+            Some(BarAction::Quote(NoteId::new(*note_id)))
         } else {
             None
         }
@@ -613,4 +618,29 @@ fn reply_button(ui: &mut egui::Ui, note_key: NoteKey) -> egui::Response {
 fn repost_icon() -> egui::Image<'static> {
     let img_data = egui::include_image!("../../../assets/icons/repost_icon_4x.png");
     egui::Image::new(img_data)
+}
+
+fn quote_repost_button(ui: &mut egui::Ui, note_key: NoteKey) -> egui::Response {
+    let id = ui.id().with(("quote-anim", note_key));
+    let size = 8.0;
+    let expand_size = 5.0;
+    let anim_speed = 0.05;
+
+    let (rect, size, resp) = ui::anim::hover_expand(ui, id, size, expand_size, anim_speed);
+
+    let color = if ui.style().visuals.dark_mode {
+        egui::Color32::WHITE
+    } else {
+        egui::Color32::BLACK
+    };
+
+    ui.painter_at(rect).text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        "Q",
+        egui::FontId::proportional(size + 2.0),
+        color,
+    );
+
+    resp
 }
