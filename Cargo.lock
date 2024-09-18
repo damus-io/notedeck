@@ -1069,6 +1069,7 @@ version = "0.27.2"
 source = "git+https://github.com/emilk/egui?rev=fcb7764e48ce00f8f8e58da10f937410d65b0bfb#fcb7764e48ce00f8f8e58da10f937410d65b0bfb"
 dependencies = [
  "ahash",
+ "backtrace",
  "emath",
  "epaint",
  "log",
