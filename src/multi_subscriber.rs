@@ -1,9 +1,9 @@
 use enostr::{Filter, RelayPool};
-use nostrdb::Ndb;
-use tracing::{error, info};
+use nostrdb::{Ndb, Note, Transaction};
+use tracing::{debug, error, info};
 use uuid::Uuid;
 
-use crate::filter::UnifiedSubscription;
+use crate::{filter::UnifiedSubscription, note::NoteRef, Error};
 
 pub struct MultiSubscriber {
     filters: Vec<Filter>,
@@ -103,5 +103,31 @@ impl MultiSubscriber {
                 self.subscribers,
             )
         }
+    }
+
+    pub fn poll_for_notes(&mut self, ndb: &Ndb, txn: &Transaction) -> Result<Vec<NoteRef>, Error> {
+        let sub = self.sub.as_ref().ok_or(Error::no_active_sub())?;
+        let new_note_keys = ndb.poll_for_notes(sub.local, 500);
+
+        if new_note_keys.is_empty() {
+            return Ok(vec![]);
+        } else {
+            debug!("{} new notes! {:?}", new_note_keys.len(), new_note_keys);
+        }
+
+        let mut notes: Vec<Note<'_>> = Vec::with_capacity(new_note_keys.len());
+        for key in new_note_keys {
+            let note = if let Ok(note) = ndb.get_note_by_key(txn, key) {
+                note
+            } else {
+                continue;
+            };
+
+            notes.push(note);
+        }
+
+        let note_refs: Vec<NoteRef> = notes.iter().map(|n| NoteRef::from_note(n)).collect();
+
+        Ok(note_refs)
     }
 }
