@@ -585,7 +585,7 @@ fn maybe_note_hitbox(ui: &mut egui::Ui, note_key: NoteKey) -> Option<Response> {
     ui.ctx()
         .data_mut(|d| d.get_persisted(note_hitbox_id(note_key)))
         .map(|rect| {
-            let id = ui.make_persistent_id(("under_button_interact", note_key));
+            let id = ui.make_persistent_id(("hitbox_interact", note_key));
             ui.interact(rect, id, egui::Sense::click())
         })
 }
@@ -599,16 +599,14 @@ fn check_note_hitbox(
     prior_action: Option<BarAction>,
 ) -> Option<BarAction> {
     // Stash the dimensions of the note content so we can render the
-    // underbutton in the next frame
+    // hitbox in the next frame
     ui.ctx().data_mut(|d| {
         d.insert_persisted(note_hitbox_id(note_key), note_response.rect);
     });
 
-    // If there was an underbutton and it was clicked open the thread
+    // If there was an hitbox and it was clicked open the thread
     match maybe_hitbox {
-        Some(underbutt) if underbutt.clicked() => {
-            Some(BarAction::OpenThread(NoteId::new(*note_id)))
-        }
+        Some(hitbox) if hitbox.clicked() => Some(BarAction::OpenThread(NoteId::new(*note_id))),
         _ => prior_action,
     }
 }
