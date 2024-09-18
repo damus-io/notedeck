@@ -40,20 +40,16 @@ impl<'a> QuoteRepostView<'a> {
         let id = self.id();
         let quoting_note_id = self.quoting_note.id();
 
-        let post_response = {
-            ui::PostView::new(
-                self.ndb,
-                self.draft,
-                crate::draft::DraftSource::Quote(quoting_note_id),
-                self.img_cache,
-                self.note_cache,
-                self.poster,
-            )
-            .id_source(id)
-            .ui(self.quoting_note.txn().unwrap(), ui)
-        };
-
-        post_response
+        ui::PostView::new(
+            self.ndb,
+            self.draft,
+            crate::draft::DraftSource::Quote(quoting_note_id),
+            self.img_cache,
+            self.note_cache,
+            self.poster,
+        )
+        .id_source(id)
+        .ui(self.quoting_note.txn().unwrap(), ui)
     }
 
     pub fn id_source(mut self, id: egui::Id) -> Self {
