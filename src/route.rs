@@ -39,6 +39,10 @@ impl Route {
         Route::Timeline(TimelineRoute::Reply(replying_to))
     }
 
+    pub fn quote(quoting: NoteId) -> Self {
+        Route::Timeline(TimelineRoute::Quote(quoting))
+    }
+
     pub fn accounts() -> Self {
         Route::Accounts(AccountsRoute::Accounts)
     }
@@ -110,6 +114,7 @@ impl fmt::Display for Route {
                 TimelineRoute::Timeline(name) => write!(f, "{}", name),
                 TimelineRoute::Thread(_id) => write!(f, "Thread"),
                 TimelineRoute::Reply(_id) => write!(f, "Reply"),
+                TimelineRoute::Quote(_id) => write!(f, "Quote"),
             },
 
             Route::Relays => write!(f, "Relays"),

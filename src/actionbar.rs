@@ -12,6 +12,7 @@ use uuid::Uuid;
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
 pub enum BarAction {
     Reply(NoteId),
+    Quote(NoteId),
     OpenThread(NoteId),
 }
 
@@ -129,6 +130,12 @@ impl BarAction {
 
             BarAction::OpenThread(note_id) => {
                 open_thread(ndb, txn, router, note_cache, pool, threads, note_id.bytes())
+            }
+
+            BarAction::Quote(note_id) => {
+                router.route_to(Route::quote(note_id));
+                router.navigating = true;
+                None
             }
         }
     }

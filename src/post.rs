@@ -89,4 +89,25 @@ impl NewPost {
             .build()
             .expect("expected build to work")
     }
+
+    pub fn to_quote(&self, seckey: &[u8; 32], quoting: &Note) -> Note {
+        let new_content = format!(
+            "{}\nnostr:{}",
+            self.content,
+            enostr::NoteId::new(*quoting.id()).to_bech().unwrap()
+        );
+
+        NoteBuilder::new()
+            .kind(1)
+            .content(&new_content)
+            .start_tag()
+            .tag_str("q")
+            .tag_str(&hex::encode(quoting.id()))
+            .start_tag()
+            .tag_str("p")
+            .tag_str(&hex::encode(quoting.pubkey()))
+            .sign(seckey)
+            .build()
+            .expect("expected build to work")
+    }
 }

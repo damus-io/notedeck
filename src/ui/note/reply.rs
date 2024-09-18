@@ -1,19 +1,17 @@
-use crate::draft::Drafts;
+use crate::draft::Draft;
 use crate::imgcache::ImageCache;
 use crate::notecache::NoteCache;
 use crate::ui;
-use crate::ui::note::{PostAction, PostResponse};
-use enostr::{FilledKeypair, RelayPool};
+use crate::ui::note::PostResponse;
+use enostr::FilledKeypair;
 use nostrdb::Ndb;
-use tracing::info;
 
 pub struct PostReplyView<'a> {
     ndb: &'a Ndb,
     poster: FilledKeypair<'a>,
-    pool: &'a mut RelayPool,
     note_cache: &'a mut NoteCache,
     img_cache: &'a mut ImageCache,
-    drafts: &'a mut Drafts,
+    draft: &'a mut Draft,
     note: &'a nostrdb::Note<'a>,
     id_source: Option<egui::Id>,
 }
@@ -22,8 +20,7 @@ impl<'a> PostReplyView<'a> {
     pub fn new(
         ndb: &'a Ndb,
         poster: FilledKeypair<'a>,
-        pool: &'a mut RelayPool,
-        drafts: &'a mut Drafts,
+        draft: &'a mut Draft,
         note_cache: &'a mut NoteCache,
         img_cache: &'a mut ImageCache,
         note: &'a nostrdb::Note<'a>,
@@ -32,8 +29,7 @@ impl<'a> PostReplyView<'a> {
         PostReplyView {
             ndb,
             poster,
-            pool,
-            drafts,
+            draft,
             note,
             note_cache,
             img_cache,
@@ -79,26 +75,17 @@ impl<'a> PostReplyView<'a> {
             let rect_before_post = ui.min_rect();
 
             let post_response = {
-                let draft = self.drafts.reply_mut(replying_to);
-                ui::PostView::new(self.ndb, draft, self.img_cache, self.poster)
-                    .id_source(id)
-                    .ui(self.note.txn().unwrap(), ui)
+                ui::PostView::new(
+                    self.ndb,
+                    self.draft,
+                    crate::draft::DraftSource::Reply(replying_to),
+                    self.img_cache,
+                    self.note_cache,
+                    self.poster,
+                )
+                .id_source(id)
+                .ui(self.note.txn().unwrap(), ui)
             };
-
-            if let Some(action) = &post_response.action {
-                match action {
-                    PostAction::Post(np) => {
-                        let seckey = self.poster.secret_key.to_secret_bytes();
-
-                        let note = np.to_reply(&seckey, self.note);
-
-                        let raw_msg = format!("[\"EVENT\",{}]", note.json().unwrap());
-                        info!("sending {}", raw_msg);
-                        self.pool.send(&enostr::ClientMessage::raw(raw_msg));
-                        self.drafts.reply_mut(replying_to).clear();
-                    }
-                }
-            }
 
             //
             // reply line

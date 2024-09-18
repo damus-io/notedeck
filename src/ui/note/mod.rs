@@ -1,11 +1,13 @@
 pub mod contents;
 pub mod options;
 pub mod post;
+pub mod quote_repost;
 pub mod reply;
 
 pub use contents::NoteContents;
 pub use options::NoteOptions;
 pub use post::{PostAction, PostResponse, PostView};
+pub use quote_repost::QuoteRepostView;
 pub use reply::PostReplyView;
 
 use crate::{
@@ -555,9 +557,12 @@ fn render_note_actionbar(
 ) -> egui::InnerResponse<Option<BarAction>> {
     ui.horizontal(|ui| {
         let reply_resp = reply_button(ui, note_key);
+        let quote_resp = quote_repost_button(ui, note_key);
 
         if reply_resp.clicked() {
             Some(BarAction::Reply(NoteId::new(*note_id)))
+        } else if quote_resp.clicked() {
+            Some(BarAction::Quote(NoteId::new(*note_id)))
         } else {
             None
         }
@@ -613,4 +618,16 @@ fn reply_button(ui: &mut egui::Ui, note_key: NoteKey) -> egui::Response {
 fn repost_icon() -> egui::Image<'static> {
     let img_data = egui::include_image!("../../../assets/icons/repost_icon_4x.png");
     egui::Image::new(img_data)
+}
+
+fn quote_repost_button(ui: &mut egui::Ui, note_key: NoteKey) -> egui::Response {
+    let (rect, size, resp) =
+        ui::anim::hover_expand_small(ui, ui.id().with(("repost_anim", note_key)));
+
+    let expand_size = 5.0;
+    let rect = rect.translate(egui::vec2(-(expand_size / 2.0), 0.0));
+
+    let put_resp = ui.put(rect, repost_icon().max_width(size));
+
+    resp.union(put_resp)
 }

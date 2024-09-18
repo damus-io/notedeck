@@ -1,16 +1,22 @@
-use crate::draft::Draft;
+use crate::draft::{Draft, DraftSource};
 use crate::imgcache::ImageCache;
+use crate::notecache::NoteCache;
 use crate::post::NewPost;
 use crate::ui;
 use crate::ui::{Preview, PreviewConfig, View};
 use egui::widgets::text_edit::TextEdit;
+use egui::{Frame, Layout};
 use enostr::{FilledKeypair, FullKeypair};
 use nostrdb::{Config, Ndb, Transaction};
+
+use super::contents::render_note_preview;
 
 pub struct PostView<'a> {
     ndb: &'a Ndb,
     draft: &'a mut Draft,
+    draft_source: DraftSource<'a>,
     img_cache: &'a mut ImageCache,
+    note_cache: &'a mut NoteCache,
     poster: FilledKeypair<'a>,
     id_source: Option<egui::Id>,
 }
@@ -28,7 +34,9 @@ impl<'a> PostView<'a> {
     pub fn new(
         ndb: &'a Ndb,
         draft: &'a mut Draft,
+        draft_source: DraftSource<'a>,
         img_cache: &'a mut ImageCache,
+        note_cache: &'a mut NoteCache,
         poster: FilledKeypair<'a>,
     ) -> Self {
         let id_source: Option<egui::Id> = None;
@@ -36,8 +44,10 @@ impl<'a> PostView<'a> {
             ndb,
             draft,
             img_cache,
+            note_cache,
             poster,
             id_source,
+            draft_source,
         }
     }
 
@@ -129,18 +139,41 @@ impl<'a> PostView<'a> {
                     let edit_response = ui.horizontal(|ui| self.editbox(txn, ui)).inner;
 
                     let action = ui
-                        .with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
-                            if ui
-                                .add_sized([91.0, 32.0], egui::Button::new("Post now"))
-                                .clicked()
-                            {
-                                Some(PostAction::Post(NewPost::new(
-                                    self.draft.buffer.clone(),
-                                    self.poster.to_full(),
-                                )))
-                            } else {
-                                None
+                        .horizontal(|ui| {
+                            if let DraftSource::Quote(id) = self.draft_source {
+                                let avail_size = ui.available_size_before_wrap();
+                                ui.with_layout(Layout::left_to_right(egui::Align::TOP), |ui| {
+                                    Frame::none().show(ui, |ui| {
+                                        ui.vertical(|ui| {
+                                            ui.set_max_width(avail_size.x * 0.8);
+                                            render_note_preview(
+                                                ui,
+                                                self.ndb,
+                                                self.note_cache,
+                                                self.img_cache,
+                                                txn,
+                                                id,
+                                                "",
+                                            );
+                                        });
+                                    });
+                                });
                             }
+
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::BOTTOM), |ui| {
+                                if ui
+                                    .add_sized([91.0, 32.0], egui::Button::new("Post now"))
+                                    .clicked()
+                                {
+                                    Some(PostAction::Post(NewPost::new(
+                                        self.draft.buffer.clone(),
+                                        self.poster.to_full(),
+                                    )))
+                                } else {
+                                    None
+                                }
+                            })
+                            .inner
                         })
                         .inner;
 
@@ -161,6 +194,7 @@ mod preview {
     pub struct PostPreview {
         ndb: Ndb,
         img_cache: ImageCache,
+        note_cache: NoteCache,
         draft: Draft,
         poster: FullKeypair,
     }
@@ -172,6 +206,7 @@ mod preview {
             PostPreview {
                 ndb,
                 img_cache: ImageCache::new(".".into()),
+                note_cache: NoteCache::default(),
                 draft: Draft::new(),
                 poster: FullKeypair::generate(),
             }
@@ -184,7 +219,9 @@ mod preview {
             PostView::new(
                 &self.ndb,
                 &mut self.draft,
+                DraftSource::Compose,
                 &mut self.img_cache,
+                &mut self.note_cache,
                 self.poster.to_filled(),
             )
             .ui(&txn, ui);

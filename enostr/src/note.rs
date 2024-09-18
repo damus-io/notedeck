@@ -6,6 +6,8 @@ use std::hash::{Hash, Hasher};
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
 pub struct NoteId([u8; 32]);
 
+static HRP_NOTE: nostr::bech32::Hrp = nostr::bech32::Hrp::parse_unchecked("note");
+
 impl NoteId {
     pub fn new(bytes: [u8; 32]) -> Self {
         NoteId(bytes)
@@ -22,6 +24,10 @@ impl NoteId {
     pub fn from_hex(hex_str: &str) -> Result<Self, Error> {
         let evid = NoteId(hex::decode(hex_str)?.as_slice().try_into().unwrap());
         Ok(evid)
+    }
+
+    pub fn to_bech(&self) -> Option<String> {
+        nostr::bech32::encode::<nostr::bech32::Bech32>(HRP_NOTE, &self.0).ok()
     }
 }
 
