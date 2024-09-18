@@ -190,16 +190,9 @@ pub fn postbox_view<'a>(
     .ui(&txn, ui);
 
     if let Some(action) = response.action {
-        PostActionExecutor::execute(
-            &key,
-            &action,
-            pool,
-            drafts,
-            |np, seckey| np.to_note(seckey),
-            |drafts| {
-                drafts.compose_mut().clear();
-            },
-        );
+        PostActionExecutor::execute(key, &action, pool, drafts.compose_mut(), |np, seckey| {
+            np.to_note(seckey)
+        });
     }
 }
 

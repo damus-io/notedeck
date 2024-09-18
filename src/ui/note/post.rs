@@ -206,9 +206,7 @@ mod preview {
             PostPreview {
                 ndb,
                 img_cache: ImageCache::new(".".into()),
-                note_cache: NoteCache {
-                    cache: Default::default(),
-                },
+                note_cache: NoteCache::default(),
                 draft: Draft::new(),
                 poster: FullKeypair::generate(),
             }

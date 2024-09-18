@@ -96,20 +96,16 @@ impl NewPost {
             self.content,
             enostr::NoteId::new(*quoting.id()).to_bech().unwrap()
         );
-        let builder = NoteBuilder::new().kind(1).content(&new_content);
 
-        let builder = builder
+        NoteBuilder::new()
+            .kind(1)
+            .content(&new_content)
             .start_tag()
             .tag_str("q")
             .tag_str(&hex::encode(quoting.id()))
-            .sign(seckey);
-
-        let builder = builder
             .start_tag()
             .tag_str("p")
-            .tag_str(&hex::encode(quoting.pubkey()));
-
-        builder
+            .tag_str(&hex::encode(quoting.pubkey()))
             .sign(seckey)
             .build()
             .expect("expected build to work")

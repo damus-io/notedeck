@@ -94,14 +94,11 @@ impl<'a> PostReplyView<'a> {
 
             if let Some(action) = &post_response.action {
                 PostActionExecutor::execute(
-                    &self.poster,
+                    self.poster,
                     action,
                     self.pool,
-                    self.drafts,
+                    self.drafts.reply_mut(replying_to),
                     |np, seckey| np.to_reply(seckey, self.note),
-                    |drafts| {
-                        drafts.reply_mut(replying_to).clear();
-                    },
                 );
             }
 

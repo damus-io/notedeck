@@ -4,6 +4,7 @@ use crate::{
     draft::Drafts,
     imgcache::ImageCache,
     notecache::NoteCache,
+    post_action_executor::PostActionExecutor,
     thread::Threads,
     timeline::TimelineId,
     ui::{
@@ -115,12 +116,7 @@ pub fn render_timeline_route(
         }
 
         TimelineRoute::Quote(id) => {
-            let txn = if let Ok(txn) = Transaction::new(ndb) {
-                txn
-            } else {
-                ui.label("Quote of unknown note");
-                return None;
-            };
+            let txn = Transaction::new(ndb).expect("txn");
 
             let note = if let Ok(note) = ndb.get_note_by_id(&txn, id.bytes()) {
                 note
@@ -130,17 +126,22 @@ pub fn render_timeline_route(
             };
 
             let id = egui::Id::new(("post", col, note.key().unwrap()));
-            if let Some(poster) = accounts.selected_or_first_nsec() {
-                let response = egui::ScrollArea::vertical().show(ui, |ui| {
-                    QuoteRepostView::new(ndb, poster, pool, note_cache, img_cache, drafts, &note)
-                        .id_source(id)
-                        .show(ui)
-                });
 
-                Some(TimelineRouteResponse::post(response.inner))
-            } else {
-                None
+            let poster = accounts.selected_or_first_nsec()?;
+            let draft = drafts.quote_mut(note.id());
+
+            let response = egui::ScrollArea::vertical().show(ui, |ui| {
+                QuoteRepostView::new(ndb, poster, note_cache, img_cache, draft, &note)
+                    .id_source(id)
+                    .show(ui)
+            });
+
+            if let Some(action) = &response.inner.action {
+                PostActionExecutor::execute(poster, action, pool, draft, |np, seckey| {
+                    np.to_quote(seckey, &note)
+                });
             }
+            Some(TimelineRouteResponse::post(response.inner))
         }
     }
 }
