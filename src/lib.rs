@@ -21,6 +21,7 @@ mod key_parsing;
 mod key_storage;
 pub mod login_manager;
 mod macos_key_storage;
+mod multi_subscriber;
 mod nav;
 mod note;
 mod notecache;
