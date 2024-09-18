@@ -1112,6 +1112,7 @@ source = "git+https://github.com/emilk/egui?rev=fcb7764e48ce00f8f8e58da10f937410
 dependencies = [
  "accesskit",
  "ahash",
+ "backtrace",
  "emath",
  "epaint",
  "log",

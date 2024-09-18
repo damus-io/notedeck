@@ -69,6 +69,37 @@ pub fn create_custom_style(ctx: &Context, font_size: fn(&NotedeckTextStyle) -> f
         ..Interaction::default()
     };
 
+    // debug: show callstack for the current widget on hover if all
+    // modifier keys are pressed down.
+    #[cfg(feature = "debug-widget-callstack")]
+    {
+        #[cfg(not(debug_assertions))]
+        compile_error!(
+            "The `debug-widget-callstack` feature requires a debug build, \
+             release builds are unsupported."
+        );
+
+        #[cfg(debug_assertions)]
+        {
+            style.debug.debug_on_hover_with_all_modifiers = true;
+        }
+    }
+
+    // debug: show an overlay on all interactive widgets
+    #[cfg(feature = "debug-interactive-widgets")]
+    {
+        #[cfg(not(debug_assertions))]
+        compile_error!(
+            "The `debug-interactive-widgets` feature requires a debug build, \
+             release builds are unsupported."
+        );
+
+        #[cfg(debug_assertions)]
+        {
+            style.debug.show_interactive_widgets = true;
+        }
+    }
+
     style
 }
 
