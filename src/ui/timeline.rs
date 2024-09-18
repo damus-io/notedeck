@@ -1,14 +1,16 @@
-use crate::post_action_executor::PostActionExecutor;
+use crate::draft::Draft;
 use crate::{
-    actionbar::BarAction, column::Columns, draft::Drafts, imgcache::ImageCache,
-    notecache::NoteCache, timeline::TimelineId, ui,
+    actionbar::BarAction, column::Columns, imgcache::ImageCache, notecache::NoteCache,
+    timeline::TimelineId, ui,
 };
 use egui::containers::scroll_area::ScrollBarVisibility;
 use egui::{Direction, Layout};
 use egui_tabs::TabColor;
-use enostr::{FilledKeypair, RelayPool};
+use enostr::FilledKeypair;
 use nostrdb::{Ndb, Transaction};
 use tracing::{debug, error, warn};
+
+use super::note::PostResponse;
 
 pub struct TimelineView<'a> {
     timeline_id: TimelineId,
@@ -171,29 +173,22 @@ fn timeline_ui(
 pub fn postbox_view<'a>(
     ndb: &'a Ndb,
     key: FilledKeypair<'a>,
-    pool: &'a mut RelayPool,
-    drafts: &'a mut Drafts,
+    draft: &'a mut Draft,
     img_cache: &'a mut ImageCache,
     note_cache: &'a mut NoteCache,
     ui: &'a mut egui::Ui,
-) {
+) -> PostResponse {
     // show a postbox in the first timeline
     let txn = Transaction::new(ndb).expect("txn");
-    let response = ui::PostView::new(
+    ui::PostView::new(
         ndb,
-        drafts.compose_mut(),
+        draft,
         crate::draft::DraftSource::Compose,
         img_cache,
         note_cache,
         key,
     )
-    .ui(&txn, ui);
-
-    if let Some(action) = response.action {
-        PostActionExecutor::execute(key, &action, pool, drafts.compose_mut(), |np, seckey| {
-            np.to_note(seckey)
-        });
-    }
+    .ui(&txn, ui)
 }
 
 fn tabs_ui(ui: &mut egui::Ui) -> i32 {

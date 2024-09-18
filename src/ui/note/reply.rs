@@ -1,19 +1,17 @@
-use crate::draft::Drafts;
+use crate::draft::Draft;
 use crate::imgcache::ImageCache;
 use crate::notecache::NoteCache;
-use crate::post_action_executor::PostActionExecutor;
 use crate::ui;
 use crate::ui::note::PostResponse;
-use enostr::{FilledKeypair, RelayPool};
+use enostr::FilledKeypair;
 use nostrdb::Ndb;
 
 pub struct PostReplyView<'a> {
     ndb: &'a Ndb,
     poster: FilledKeypair<'a>,
-    pool: &'a mut RelayPool,
     note_cache: &'a mut NoteCache,
     img_cache: &'a mut ImageCache,
-    drafts: &'a mut Drafts,
+    draft: &'a mut Draft,
     note: &'a nostrdb::Note<'a>,
     id_source: Option<egui::Id>,
 }
@@ -22,8 +20,7 @@ impl<'a> PostReplyView<'a> {
     pub fn new(
         ndb: &'a Ndb,
         poster: FilledKeypair<'a>,
-        pool: &'a mut RelayPool,
-        drafts: &'a mut Drafts,
+        draft: &'a mut Draft,
         note_cache: &'a mut NoteCache,
         img_cache: &'a mut ImageCache,
         note: &'a nostrdb::Note<'a>,
@@ -32,8 +29,7 @@ impl<'a> PostReplyView<'a> {
         PostReplyView {
             ndb,
             poster,
-            pool,
-            drafts,
+            draft,
             note,
             note_cache,
             img_cache,
@@ -79,10 +75,9 @@ impl<'a> PostReplyView<'a> {
             let rect_before_post = ui.min_rect();
 
             let post_response = {
-                let draft = self.drafts.reply_mut(replying_to);
                 ui::PostView::new(
                     self.ndb,
-                    draft,
+                    self.draft,
                     crate::draft::DraftSource::Reply(replying_to),
                     self.img_cache,
                     self.note_cache,
@@ -91,16 +86,6 @@ impl<'a> PostReplyView<'a> {
                 .id_source(id)
                 .ui(self.note.txn().unwrap(), ui)
             };
-
-            if let Some(action) = &post_response.action {
-                PostActionExecutor::execute(
-                    self.poster,
-                    action,
-                    self.pool,
-                    self.drafts.reply_mut(replying_to),
-                    |np, seckey| np.to_reply(seckey, self.note),
-                );
-            }
 
             //
             // reply line

@@ -53,8 +53,15 @@ pub fn render_timeline_route(
     match route {
         TimelineRoute::Timeline(timeline_id) => {
             if show_postbox {
-                if let Some(kp) = accounts.selected_or_first_nsec() {
-                    ui::timeline::postbox_view(ndb, kp, pool, drafts, img_cache, note_cache, ui);
+                let kp = accounts.selected_or_first_nsec()?;
+                let draft = drafts.compose_mut();
+                let response =
+                    ui::timeline::postbox_view(ndb, kp, draft, img_cache, note_cache, ui);
+
+                if let Some(action) = response.action {
+                    PostActionExecutor::execute(kp, &action, pool, draft, |np, seckey| {
+                        np.to_note(seckey)
+                    });
                 }
             }
 
@@ -101,18 +108,22 @@ pub fn render_timeline_route(
             };
 
             let id = egui::Id::new(("post", col, note.key().unwrap()));
+            let poster = accounts.selected_or_first_nsec()?;
+            let draft = drafts.reply_mut(note.id());
 
-            if let Some(poster) = accounts.selected_or_first_nsec() {
-                let response = egui::ScrollArea::vertical().show(ui, |ui| {
-                    ui::PostReplyView::new(ndb, poster, pool, drafts, note_cache, img_cache, &note)
-                        .id_source(id)
-                        .show(ui)
+            let response = egui::ScrollArea::vertical().show(ui, |ui| {
+                ui::PostReplyView::new(ndb, poster, draft, note_cache, img_cache, &note)
+                    .id_source(id)
+                    .show(ui)
+            });
+
+            if let Some(action) = &response.inner.action {
+                PostActionExecutor::execute(poster, action, pool, draft, |np, seckey| {
+                    np.to_reply(seckey, &note)
                 });
-
-                Some(TimelineRouteResponse::post(response.inner))
-            } else {
-                None
             }
+
+            Some(TimelineRouteResponse::post(response.inner))
         }
 
         TimelineRoute::Quote(id) => {
