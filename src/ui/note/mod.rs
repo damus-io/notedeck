@@ -584,8 +584,14 @@ fn note_hitbox_id(note_key: NoteKey) -> egui::Id {
 fn maybe_note_hitbox(ui: &mut egui::Ui, note_key: NoteKey) -> Option<Response> {
     ui.ctx()
         .data_mut(|d| d.get_persisted(note_hitbox_id(note_key)))
-        .map(|rect| {
+        .map(|mut rect: Rect| {
             let id = ui.make_persistent_id(("hitbox_interact", note_key));
+
+            // Extend the hitbox to the full width of the container
+            let container_rect = ui.max_rect();
+            rect.min.x = container_rect.min.x;
+            rect.max.x = container_rect.max.x;
+
             ui.interact(rect, id, egui::Sense::click())
         })
 }
