@@ -67,6 +67,8 @@ security-framework = "2.11.0"
 [features]
 default = []
 profiling = ["puffin", "puffin_egui", "eframe/puffin"]
+debug-widget-callstack = ["egui/callstack"]
+debug-interactive-widgets = []
 
 [profile.small]
 inherits = 'release'
