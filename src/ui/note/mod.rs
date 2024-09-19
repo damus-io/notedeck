@@ -15,10 +15,11 @@ use crate::{
     app_style::NotedeckTextStyle,
     colors,
     imgcache::ImageCache,
+    note_options::NoteOptionSelection,
     notecache::{CachedNote, NoteCache},
     ui::{self, View},
 };
-use egui::{Id, Label, Response, RichText, Sense};
+use egui::{Align, Id, Label, Layout, Response, RichText, Sense};
 use enostr::NoteId;
 use nostrdb::{Ndb, Note, NoteKey, NoteReply, Transaction};
 
@@ -30,11 +31,34 @@ pub struct NoteView<'a> {
     img_cache: &'a mut ImageCache,
     note: &'a nostrdb::Note<'a>,
     flags: NoteOptions,
+    use_options: bool,
 }
 
 pub struct NoteResponse {
     pub response: egui::Response,
     pub action: Option<BarAction>,
+    pub option_selection: Option<NoteOptionSelection>,
+}
+
+impl NoteResponse {
+    pub fn new(response: egui::Response) -> Self {
+        Self {
+            response,
+            action: None,
+            option_selection: None,
+        }
+    }
+
+    pub fn with_action(self, action: Option<BarAction>) -> Self {
+        Self { action, ..self }
+    }
+
+    pub fn select_option(self, option_selection: Option<NoteOptionSelection>) -> Self {
+        Self {
+            option_selection,
+            ..self
+        }
+    }
 }
 
 impl<'a> View for NoteView<'a> {
@@ -177,6 +201,7 @@ impl<'a> NoteView<'a> {
             img_cache,
             note,
             flags,
+            use_options: false,
         }
     }
 
@@ -213,6 +238,13 @@ impl<'a> NoteView<'a> {
     pub fn wide(mut self, enable: bool) -> Self {
         self.options_mut().set_wide(enable);
         self
+    }
+
+    pub fn use_more_options_button(self, enable: bool) -> Self {
+        Self {
+            use_options: enable,
+            ..self
+        }
     }
 
     pub fn options(&self) -> NoteOptions {
@@ -324,10 +356,7 @@ impl<'a> NoteView<'a> {
 
     pub fn show(&mut self, ui: &mut egui::Ui) -> NoteResponse {
         if self.options().has_textmode() {
-            NoteResponse {
-                response: self.textmode_ui(ui),
-                action: None,
-            }
+            NoteResponse::new(self.textmode_ui(ui))
         } else {
             let txn = self.note.txn().expect("txn");
             if let Some(note_to_repost) = get_reposted_note(self.ndb, txn, self.note) {
@@ -369,17 +398,29 @@ impl<'a> NoteView<'a> {
         note_cache: &mut NoteCache,
         note: &Note,
         profile: &Result<nostrdb::ProfileRecord<'_>, nostrdb::Error>,
-    ) -> egui::Response {
+        use_options_button: bool,
+    ) -> NoteResponse {
         let note_key = note.key().unwrap();
 
-        ui.horizontal(|ui| {
+        let inner_response = ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
             ui.add(ui::Username::new(profile.as_ref().ok(), note.pubkey()).abbreviated(20));
 
             let cached_note = note_cache.cached_note_or_insert_mut(note_key, note);
             render_reltime(ui, cached_note, true);
-        })
-        .response
+
+            if use_options_button {
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let more_options_resp = more_options_button(ui, note_key, 8.0);
+                    options_context_menu(more_options_resp)
+                })
+                .inner
+            } else {
+                None
+            }
+        });
+
+        NoteResponse::new(inner_response.response).select_option(inner_response.inner)
     }
 
     fn show_standard(&mut self, ui: &mut egui::Ui) -> NoteResponse {
@@ -388,6 +429,7 @@ impl<'a> NoteView<'a> {
         let note_key = self.note.key().expect("todo: support non-db notes");
         let txn = self.note.txn().expect("todo: support non-db notes");
         let mut note_action: Option<BarAction> = None;
+        let mut selected_option: Option<NoteOptionSelection> = None;
         let profile = self.ndb.get_profile_by_pubkey(txn, self.note.pubkey());
         let maybe_hitbox = maybe_note_hitbox(ui, note_key);
 
@@ -400,7 +442,14 @@ impl<'a> NoteView<'a> {
                 ui.vertical(|ui| {
                     ui.add_sized([size.x, self.options().pfp_size()], |ui: &mut egui::Ui| {
                         ui.horizontal_centered(|ui| {
-                            NoteView::note_header(ui, self.note_cache, self.note, &profile);
+                            selected_option = NoteView::note_header(
+                                ui,
+                                self.note_cache,
+                                self.note,
+                                &profile,
+                                self.use_options,
+                            )
+                            .option_selection;
                         })
                         .response
                     });
@@ -440,8 +489,14 @@ impl<'a> NoteView<'a> {
                 self.pfp(note_key, &profile, ui);
 
                 ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
-                    NoteView::note_header(ui, self.note_cache, self.note, &profile);
-
+                    selected_option = NoteView::note_header(
+                        ui,
+                        self.note_cache,
+                        self.note,
+                        &profile,
+                        self.use_options,
+                    )
+                    .option_selection;
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 2.0;
 
@@ -483,10 +538,9 @@ impl<'a> NoteView<'a> {
             note_action,
         );
 
-        NoteResponse {
-            response,
-            action: note_action,
-        }
+        NoteResponse::new(response)
+            .with_action(note_action)
+            .select_option(selected_option)
     }
 }
 
@@ -630,4 +684,67 @@ fn quote_repost_button(ui: &mut egui::Ui, note_key: NoteKey) -> egui::Response {
     let put_resp = ui.put(rect, repost_icon().max_width(size));
 
     resp.union(put_resp)
+}
+
+fn more_options_button(ui: &mut egui::Ui, note_key: NoteKey, max_height: f32) -> egui::Response {
+    let id = ui.id().with(("more_options_anim", note_key));
+
+    let expansion_multiple = 2.0;
+    let max_radius = max_height;
+    let min_radius = max_radius / expansion_multiple;
+    let max_distance_between_circles = 2.0;
+    let min_distance_between_circles = max_distance_between_circles / expansion_multiple;
+    let max_width = max_radius * 3.0 + max_distance_between_circles * 2.0;
+
+    let anim_speed = 0.05;
+    let expanded_size = egui::vec2(max_width, max_height);
+    let (rect, response) = ui.allocate_exact_size(expanded_size, egui::Sense::click());
+
+    let animation_progress = ui
+        .ctx()
+        .animate_bool_with_time(id, response.hovered(), anim_speed);
+    let cur_distance = min_distance_between_circles
+        + (max_distance_between_circles - min_distance_between_circles) * animation_progress;
+    let cur_radius = min_radius + (max_radius - min_radius) * animation_progress;
+
+    let center = rect.center();
+    let left_circle_center = center - egui::vec2(cur_distance + cur_radius, 0.0);
+    let right_circle_center = center + egui::vec2(cur_distance + cur_radius, 0.0);
+
+    let translated_radius = (cur_radius - 1.0) / 2.0;
+
+    let color = if ui.style().visuals.dark_mode {
+        egui::Color32::WHITE
+    } else {
+        egui::Color32::BLACK
+    };
+
+    // Draw circles
+    let painter = ui.painter_at(rect);
+    painter.circle_filled(left_circle_center, translated_radius, color);
+    painter.circle_filled(center, translated_radius, color);
+    painter.circle_filled(right_circle_center, translated_radius, color);
+
+    response
+}
+
+fn options_context_menu(more_options_button_resp: egui::Response) -> Option<NoteOptionSelection> {
+    let mut selected_option: Option<NoteOptionSelection> = None;
+
+    more_options_button_resp.context_menu(|ui| {
+        ui.set_max_width(200.0);
+        if ui.button("Copy text").clicked() {
+            selected_option = Some(NoteOptionSelection::CopyText);
+            ui.close_menu();
+        }
+        if ui.button("Copy user public key").clicked() {
+            selected_option = Some(NoteOptionSelection::CopyPubkey);
+            ui.close_menu();
+        }
+        if ui.button("Copy note id").clicked() {
+            selected_option = Some(NoteOptionSelection::CopyNoteId);
+            ui.close_menu();
+        }
+    });
+    selected_option
 }

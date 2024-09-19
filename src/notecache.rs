@@ -35,7 +35,6 @@ impl NoteCache {
 pub struct CachedNote {
     reltime: TimeCached<String>,
     pub reply: NoteReplyBuf,
-    pub bar_open: bool,
 }
 
 impl CachedNote {
@@ -46,12 +45,7 @@ impl CachedNote {
             Box::new(move || time_ago_since(created_at)),
         );
         let reply = NoteReply::new(note.tags()).to_owned();
-        let bar_open = false;
-        CachedNote {
-            reltime,
-            reply,
-            bar_open,
-        }
+        CachedNote { reltime, reply }
     }
 
     pub fn reltime_str_mut(&mut self) -> &str {

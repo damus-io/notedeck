@@ -108,6 +108,7 @@ pub fn render_note_preview(
                 .small_pfp(true)
                 .wide(true)
                 .note_previews(false)
+                .use_more_options_button(true)
                 .show(ui);
         })
         .response
