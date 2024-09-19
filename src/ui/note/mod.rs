@@ -19,7 +19,7 @@ use crate::{
     notecache::{CachedNote, NoteCache},
     ui::{self, View},
 };
-use egui::{Align, Id, Label, Layout, Response, RichText, Sense};
+use egui::{menu::BarState, Align, Id, InnerResponse, Label, Layout, Response, RichText, Sense};
 use enostr::NoteId;
 use nostrdb::{Ndb, Note, NoteKey, NoteReply, Transaction};
 
@@ -412,7 +412,7 @@ impl<'a> NoteView<'a> {
             if use_options_button {
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let more_options_resp = more_options_button(ui, note_key, 8.0);
-                    options_context_menu(more_options_resp)
+                    options_context_menu(ui, more_options_resp)
                 })
                 .inner
             } else {
@@ -728,10 +728,13 @@ fn more_options_button(ui: &mut egui::Ui, note_key: NoteKey, max_height: f32) ->
     response
 }
 
-fn options_context_menu(more_options_button_resp: egui::Response) -> Option<NoteOptionSelection> {
+fn options_context_menu(
+    ui: &mut egui::Ui,
+    more_options_button_resp: egui::Response,
+) -> Option<NoteOptionSelection> {
     let mut selected_option: Option<NoteOptionSelection> = None;
 
-    more_options_button_resp.context_menu(|ui| {
+    stationary_arbitrary_menu_button(ui, more_options_button_resp, |ui| {
         ui.set_max_width(200.0);
         if ui.button("Copy text").clicked() {
             selected_option = Some(NoteOptionSelection::CopyText);
@@ -746,5 +749,20 @@ fn options_context_menu(more_options_button_resp: egui::Response) -> Option<Note
             ui.close_menu();
         }
     });
+
     selected_option
+}
+
+fn stationary_arbitrary_menu_button<R>(
+    ui: &mut egui::Ui,
+    button_response: egui::Response,
+    add_contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> InnerResponse<Option<R>> {
+    let bar_id = ui.id();
+    let mut bar_state = BarState::load(ui.ctx(), bar_id);
+
+    let inner = bar_state.bar_menu(&button_response, add_contents);
+
+    bar_state.store(ui.ctx(), bar_id);
+    InnerResponse::new(inner.map(|r| r.inner), button_response)
 }
