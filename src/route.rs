@@ -12,6 +12,7 @@ pub enum Route {
     Timeline(TimelineRoute),
     Accounts(AccountsRoute),
     Relays,
+    ComposeNote,
 }
 
 impl Route {
@@ -123,6 +124,7 @@ impl fmt::Display for Route {
                 AccountsRoute::Accounts => write!(f, "Accounts"),
                 AccountsRoute::AddAccount => write!(f, "Add Account"),
             },
+            Route::ComposeNote => write!(f, "Compose Note"),
         }
     }
 }

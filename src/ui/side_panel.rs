@@ -1,4 +1,4 @@
-use egui::{Button, Layout, SidePanel, Vec2, Widget};
+use egui::{Button, InnerResponse, Layout, RichText, SidePanel, Vec2, Widget};
 
 use crate::{
     account_manager::AccountsRoute,
@@ -26,6 +26,7 @@ pub enum SidePanelAction {
     Account,
     Settings,
     Columns,
+    ComposeNote,
 }
 
 pub struct SidePanelResponse {
@@ -55,18 +56,56 @@ impl<'a> DesktopSidePanel<'a> {
         let spacing_amt = 16.0;
 
         let inner = ui
-            .with_layout(Layout::bottom_up(egui::Align::Center), |ui| {
-                ui.spacing_mut().item_spacing.y = spacing_amt;
-                let pfp_resp = self.pfp_button(ui);
-                let settings_resp = ui.add(settings_button(dark_mode));
-                let column_resp = ui.add(add_column_button(dark_mode));
+            .vertical(|ui| {
+                let top_resp = ui
+                    .with_layout(Layout::top_down(egui::Align::Center), |ui| {
+                        let compose_resp = ui.add(compose_note_button());
 
-                if pfp_resp.clicked() {
-                    egui::InnerResponse::new(SidePanelAction::Account, pfp_resp)
-                } else if settings_resp.clicked() || settings_resp.hovered() {
-                    egui::InnerResponse::new(SidePanelAction::Settings, settings_resp)
-                } else if column_resp.clicked() || column_resp.hovered() {
-                    egui::InnerResponse::new(SidePanelAction::Columns, column_resp)
+                        if compose_resp.clicked() {
+                            Some(InnerResponse::new(
+                                SidePanelAction::ComposeNote,
+                                compose_resp,
+                            ))
+                        } else {
+                            None
+                        }
+                    })
+                    .inner;
+
+                let (pfp_resp, bottom_resp) = ui
+                    .with_layout(Layout::bottom_up(egui::Align::Center), |ui| {
+                        ui.spacing_mut().item_spacing.y = spacing_amt;
+                        let pfp_resp = self.pfp_button(ui);
+                        let settings_resp = ui.add(settings_button(dark_mode));
+                        let column_resp = ui.add(add_column_button(dark_mode));
+
+                        let optional_inner = if pfp_resp.clicked() {
+                            Some(egui::InnerResponse::new(
+                                SidePanelAction::Account,
+                                pfp_resp.clone(),
+                            ))
+                        } else if settings_resp.clicked() || settings_resp.hovered() {
+                            Some(egui::InnerResponse::new(
+                                SidePanelAction::Settings,
+                                settings_resp,
+                            ))
+                        } else if column_resp.clicked() || column_resp.hovered() {
+                            Some(egui::InnerResponse::new(
+                                SidePanelAction::Columns,
+                                column_resp,
+                            ))
+                        } else {
+                            None
+                        };
+
+                        (pfp_resp, optional_inner)
+                    })
+                    .inner;
+
+                if let Some(bottom_inner) = bottom_resp {
+                    bottom_inner
+                } else if let Some(top_inner) = top_resp {
+                    top_inner
                 } else {
                     egui::InnerResponse::new(SidePanelAction::Panel, pfp_resp)
                 }
@@ -110,6 +149,13 @@ impl<'a> DesktopSidePanel<'a> {
                 }
             }
             SidePanelAction::Columns => (), // TODO
+            SidePanelAction::ComposeNote => {
+                if router.routes().iter().any(|&r| r == Route::ComposeNote) {
+                    router.go_back();
+                } else {
+                    router.route_to(Route::ComposeNote);
+                }
+            }
         }
     }
 }
@@ -143,6 +189,10 @@ fn add_column_button(dark_mode: bool) -> egui::Button<'static> {
     let img_data = egui::include_image!("../../assets/icons/add_column_dark_4x.png");
 
     egui::Button::image(egui::Image::new(img_data).max_width(32.0)).frame(false)
+}
+
+fn compose_note_button() -> Button<'static> {
+    Button::new(RichText::new("+").size(32.0)).frame(false)
 }
 
 mod preview {
