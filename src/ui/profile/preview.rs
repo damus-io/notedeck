@@ -167,6 +167,14 @@ pub fn get_profile_url<'a>(profile: Option<&'a ProfileRecord<'a>>) -> &'a str {
     }
 }
 
+pub fn get_profile_url_owned(profile: Option<ProfileRecord<'_>>) -> &str {
+    if let Some(url) = profile.and_then(|pr| pr.record().profile().and_then(|p| p.picture())) {
+        url
+    } else {
+        ProfilePic::no_pfp_url()
+    }
+}
+
 fn display_name_widget(
     display_name: DisplayName<'_>,
     add_placeholder_space: bool,
