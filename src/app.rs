@@ -951,7 +951,7 @@ fn render_damus_desktop(ctx: &egui::Context, app: &mut Damus) {
 
 fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus, columns: usize) {
     StripBuilder::new(ui)
-        .size(Size::exact(40.0))
+        .size(Size::exact(ui::side_panel::SIDE_PANEL_WIDTH))
         .sizes(sizes, columns)
         .clip(true)
         .horizontal(|mut strip| {

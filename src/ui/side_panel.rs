@@ -10,6 +10,8 @@ use crate::{
 
 use super::{ProfilePic, View};
 
+pub static SIDE_PANEL_WIDTH: f32 = 64.0;
+
 pub struct DesktopSidePanel<'a> {
     app: &'a mut Damus,
 }
