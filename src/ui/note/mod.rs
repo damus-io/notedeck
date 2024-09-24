@@ -281,7 +281,7 @@ impl<'a> NoteView<'a> {
                 )
             });
 
-            ui.add(NoteContents::new(
+            ui.add(&mut NoteContents::new(
                 self.ndb,
                 self.img_cache,
                 self.note_cache,
@@ -476,7 +476,7 @@ impl<'a> NoteView<'a> {
                 });
             });
 
-            let resp = ui.add(NoteContents::new(
+            let mut contents = NoteContents::new(
                 self.ndb,
                 self.img_cache,
                 self.note_cache,
@@ -484,10 +484,13 @@ impl<'a> NoteView<'a> {
                 self.note,
                 note_key,
                 self.options(),
-            ));
+            );
+            let resp = ui.add(&mut contents);
+            note_action = note_action.or(contents.action());
 
             if self.options().has_actionbar() {
-                note_action = render_note_actionbar(ui, self.note.id(), note_key).inner;
+                let ab = render_note_actionbar(ui, self.note.id(), note_key);
+                note_action = note_action.or(ab.inner);
             }
 
             resp
@@ -520,7 +523,7 @@ impl<'a> NoteView<'a> {
                         }
                     });
 
-                    ui.add(NoteContents::new(
+                    let mut contents = NoteContents::new(
                         self.ndb,
                         self.img_cache,
                         self.note_cache,
@@ -528,10 +531,13 @@ impl<'a> NoteView<'a> {
                         self.note,
                         note_key,
                         self.options(),
-                    ));
+                    );
+                    ui.add(&mut contents);
+                    note_action = note_action.or(contents.action());
 
                     if self.options().has_actionbar() {
-                        note_action = render_note_actionbar(ui, self.note.id(), note_key).inner;
+                        let ab = render_note_actionbar(ui, self.note.id(), note_key);
+                        note_action = note_action.or(ab.inner);
                     }
                 });
             })
