@@ -5,13 +5,15 @@ use crate::{
     account_manager::AccountsRoute,
     colors,
     column::Column,
+    imgcache::ImageCache,
     route::{Route, Router},
+    user_account::UserAccount,
     Damus,
 };
 
 use super::{
     anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},
-    profile::preview::{get_profile_url, get_profile_url_tmp},
+    profile::preview::get_account_url,
     ProfilePic, View,
 };
 
@@ -19,7 +21,9 @@ pub static SIDE_PANEL_WIDTH: f32 = 64.0;
 static ICON_WIDTH: f32 = 40.0;
 
 pub struct DesktopSidePanel<'a> {
-    app: &'a mut Damus,
+    ndb: &'a nostrdb::Ndb,
+    img_cache: &'a mut ImageCache,
+    selected_account: Option<&'a UserAccount>,
 }
 
 impl<'a> View for DesktopSidePanel<'a> {
@@ -50,8 +54,16 @@ impl SidePanelResponse {
 }
 
 impl<'a> DesktopSidePanel<'a> {
-    pub fn new(app: &'a mut Damus) -> Self {
-        DesktopSidePanel { app }
+    pub fn new(
+        ndb: &'a nostrdb::Ndb,
+        img_cache: &'a mut ImageCache,
+        selected_account: Option<&'a UserAccount>,
+    ) -> Self {
+        Self {
+            ndb,
+            img_cache,
+            selected_account,
+        }
     }
 
     pub fn panel() -> SidePanel {
@@ -138,23 +150,10 @@ impl<'a> DesktopSidePanel<'a> {
         let min_pfp_size = ICON_WIDTH;
         let cur_pfp_size = helper.scale_1d_pos(min_pfp_size);
 
-        let selected_account = self.app.accounts().get_selected_account();
-        let txn = nostrdb::Transaction::new(&self.app.ndb).expect("should be able to create txn");
-        let profile_url = if let Some(selected_account) = selected_account {
-            if let Ok(profile) = self
-                .app
-                .ndb()
-                .get_profile_by_pubkey(&txn, selected_account.pubkey.bytes())
-            {
-                get_profile_url_tmp(Some(profile))
-            } else {
-                get_profile_url_tmp(None)
-            }
-        } else {
-            get_profile_url(None)
-        };
+        let txn = nostrdb::Transaction::new(self.ndb).expect("should be able to create txn");
+        let profile_url = get_account_url(&txn, self.ndb, self.selected_account);
 
-        let widget = ProfilePic::new(self.app.img_cache_mut(), profile_url).size(cur_pfp_size);
+        let widget = ProfilePic::new(self.img_cache, profile_url).size(cur_pfp_size);
 
         ui.put(helper.get_animation_rect(), widget);
 
@@ -365,7 +364,11 @@ mod preview {
                 .clip(true)
                 .horizontal(|mut strip| {
                     strip.cell(|ui| {
-                        let mut panel = DesktopSidePanel::new(&mut self.app);
+                        let mut panel = DesktopSidePanel::new(
+                            &self.app.ndb,
+                            &mut self.app.img_cache,
+                            self.app.accounts.get_selected_account(),
+                        );
                         let response = panel.show(ui);
 
                         DesktopSidePanel::perform_action(

@@ -1,6 +1,7 @@
 use crate::app_style::NotedeckTextStyle;
 use crate::imgcache::ImageCache;
 use crate::ui::ProfilePic;
+use crate::user_account::UserAccount;
 use crate::{colors, images, DisplayName};
 use egui::load::TexturePoll;
 use egui::{Frame, RichText, Sense, Widget};
@@ -172,6 +173,22 @@ pub fn get_profile_url_owned(profile: Option<ProfileRecord<'_>>) -> &str {
         url
     } else {
         ProfilePic::no_pfp_url()
+    }
+}
+
+pub fn get_account_url<'a>(
+    txn: &'a nostrdb::Transaction,
+    ndb: &nostrdb::Ndb,
+    account: Option<&UserAccount>,
+) -> &'a str {
+    if let Some(selected_account) = account {
+        if let Ok(profile) = ndb.get_profile_by_pubkey(txn, selected_account.pubkey.bytes()) {
+            get_profile_url_owned(Some(profile))
+        } else {
+            get_profile_url_owned(None)
+        }
+    } else {
+        get_profile_url(None)
     }
 }
 

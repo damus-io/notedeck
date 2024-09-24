@@ -957,7 +957,12 @@ fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus, columns: usiz
         .horizontal(|mut strip| {
             strip.cell(|ui| {
                 let rect = ui.available_rect_before_wrap();
-                let side_panel = DesktopSidePanel::new(app).show(ui);
+                let side_panel = DesktopSidePanel::new(
+                    &app.ndb,
+                    &mut app.img_cache,
+                    app.accounts.get_selected_account(),
+                )
+                .show(ui);
 
                 let router = if let Some(router) = app
                     .columns
