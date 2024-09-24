@@ -1,12 +1,13 @@
+use crate::actionbar::BarAction;
 use crate::images::ImageType;
 use crate::imgcache::ImageCache;
 use crate::notecache::NoteCache;
-use crate::ui::note::NoteOptions;
+use crate::ui::note::{NoteOptions, NoteResponse};
 use crate::ui::ProfilePic;
 use crate::{colors, ui};
 use egui::{Color32, Hyperlink, Image, RichText};
 use nostrdb::{BlockType, Mention, Ndb, Note, NoteKey, Transaction};
-use tracing::warn;
+use tracing::{debug, warn};
 
 pub struct NoteContents<'a> {
     ndb: &'a Ndb,
@@ -16,6 +17,7 @@ pub struct NoteContents<'a> {
     note: &'a Note<'a>,
     note_key: NoteKey,
     options: NoteOptions,
+    action: Option<BarAction>,
 }
 
 impl<'a> NoteContents<'a> {
@@ -36,13 +38,18 @@ impl<'a> NoteContents<'a> {
             note,
             note_key,
             options,
+            action: None,
         }
+    }
+
+    pub fn action(&self) -> Option<BarAction> {
+        self.action
     }
 }
 
-impl egui::Widget for NoteContents<'_> {
+impl egui::Widget for &mut NoteContents<'_> {
     fn ui(self, ui: &mut egui::Ui) -> egui::Response {
-        render_note_contents(
+        let result = render_note_contents(
             ui,
             self.ndb,
             self.img_cache,
@@ -51,8 +58,9 @@ impl egui::Widget for NoteContents<'_> {
             self.note,
             self.note_key,
             self.options,
-        )
-        .response
+        );
+        self.action = result.inner;
+        result.response
     }
 }
 
@@ -66,7 +74,7 @@ pub fn render_note_preview(
     txn: &Transaction,
     id: &[u8; 32],
     _id_str: &str,
-) -> egui::Response {
+) -> NoteResponse {
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
 
@@ -75,13 +83,19 @@ pub fn render_note_preview(
         if note.kind() == 1 {
             note
         } else {
-            return ui.colored_label(
-                Color32::RED,
-                format!("TODO: can't preview kind {}", note.kind()),
-            );
+            return NoteResponse {
+                inner: None,
+                response: ui.colored_label(
+                    Color32::RED,
+                    format!("TODO: can't preview kind {}", note.kind()),
+                ),
+            };
         }
     } else {
-        return ui.colored_label(Color32::RED, "TODO: COULD NOT LOAD");
+        return NoteResponse {
+            inner: None,
+            response: ui.colored_label(Color32::RED, "TODO: COULD NOT LOAD"),
+        };
         /*
         return ui
             .horizontal(|ui| {
@@ -108,9 +122,9 @@ pub fn render_note_preview(
                 .small_pfp(true)
                 .wide(true)
                 .note_previews(false)
-                .show(ui);
+                .show(ui)
         })
-        .response
+        .inner
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -123,7 +137,7 @@ fn render_note_contents(
     note: &Note,
     note_key: NoteKey,
     options: NoteOptions,
-) -> egui::InnerResponse<()> {
+) -> NoteResponse {
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
 
@@ -131,7 +145,8 @@ fn render_note_contents(
     let mut images: Vec<String> = vec![];
     let mut inline_note: Option<(&[u8; 32], &str)> = None;
 
-    let resp = ui.horizontal_wrapped(|ui| {
+    let mut note_action = None;
+    let response = ui.horizontal_wrapped(|ui| {
         let blocks = if let Ok(blocks) = ndb.get_blocks_by_key(txn, note_key) {
             blocks
         } else {
@@ -200,7 +215,7 @@ fn render_note_contents(
     });
 
     if let Some((id, block_str)) = inline_note {
-        render_note_preview(ui, ndb, note_cache, img_cache, txn, id, block_str);
+        note_action = render_note_preview(ui, ndb, note_cache, img_cache, txn, id, block_str).inner;
     }
 
     if !images.is_empty() && !options.has_textmode() {
@@ -210,7 +225,14 @@ fn render_note_contents(
         ui.add_space(2.0);
     }
 
-    resp
+    if note_action.is_some() {
+        debug!("render_note_contents: note_action: {:?}", note_action);
+    }
+
+    NoteResponse {
+        inner: note_action,
+        response: response.response,
+    }
 }
 
 fn image_carousel(

@@ -24,6 +24,8 @@ use nostrdb::{Ndb, Note, NoteKey, NoteReply, Transaction};
 
 use super::profile::preview::{get_display_name, one_line_display_name_widget};
 
+use tracing::debug;
+
 pub struct NoteView<'a> {
     ndb: &'a Ndb,
     note_cache: &'a mut NoteCache,
@@ -249,7 +251,7 @@ impl<'a> NoteView<'a> {
                 )
             });
 
-            ui.add(NoteContents::new(
+            ui.add(&mut NoteContents::new(
                 self.ndb,
                 self.img_cache,
                 self.note_cache,
@@ -320,7 +322,7 @@ impl<'a> NoteView<'a> {
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui) -> NoteResponse {
-        if self.options().has_textmode() {
+        let rsp = if self.options().has_textmode() {
             NoteResponse {
                 response: self.textmode_ui(ui),
                 inner: None,
@@ -358,7 +360,11 @@ impl<'a> NoteView<'a> {
             } else {
                 self.show_standard(ui)
             }
+        };
+        if rsp.inner.is_some() {
+            debug!("show: rsp.inner: {:?}", rsp.inner);
         }
+        rsp
     }
 
     fn note_header(
@@ -416,7 +422,7 @@ impl<'a> NoteView<'a> {
                 });
             });
 
-            let resp = ui.add(NoteContents::new(
+            let mut contents = NoteContents::new(
                 self.ndb,
                 self.img_cache,
                 self.note_cache,
@@ -424,10 +430,13 @@ impl<'a> NoteView<'a> {
                 self.note,
                 note_key,
                 self.options(),
-            ));
+            );
+            let resp = ui.add(&mut contents);
+            note_action = note_action.or(contents.action());
 
             if self.options().has_actionbar() {
-                note_action = render_note_actionbar(ui, self.note.id(), note_key).inner;
+                let ab = render_note_actionbar(ui, self.note.id(), note_key);
+                note_action = note_action.or(ab.inner);
             }
 
             resp
@@ -453,7 +462,7 @@ impl<'a> NoteView<'a> {
                         }
                     });
 
-                    ui.add(NoteContents::new(
+                    let mut contents = NoteContents::new(
                         self.ndb,
                         self.img_cache,
                         self.note_cache,
@@ -461,10 +470,13 @@ impl<'a> NoteView<'a> {
                         self.note,
                         note_key,
                         self.options(),
-                    ));
+                    );
+                    ui.add(&mut contents);
+                    note_action = note_action.or(contents.action());
 
                     if self.options().has_actionbar() {
-                        note_action = render_note_actionbar(ui, self.note.id(), note_key).inner;
+                        let ab = render_note_actionbar(ui, self.note.id(), note_key);
+                        note_action = note_action.or(ab.inner);
                     }
                 });
             })
@@ -479,6 +491,10 @@ impl<'a> NoteView<'a> {
             maybe_hitbox,
             note_action,
         );
+
+        if note_action.is_some() {
+            debug!("show_standard: note_action: {:?}", note_action);
+        }
 
         NoteResponse {
             response,
