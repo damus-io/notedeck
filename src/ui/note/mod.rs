@@ -18,7 +18,7 @@ use crate::{
     notecache::{CachedNote, NoteCache},
     ui::{self, View},
 };
-use egui::{Id, Label, Rect, Response, RichText, Sense};
+use egui::{Id, InnerResponse, Label, Rect, Response, RichText, Sense};
 use enostr::NoteId;
 use nostrdb::{Ndb, Note, NoteKey, NoteReply, Transaction};
 
@@ -32,10 +32,7 @@ pub struct NoteView<'a> {
     flags: NoteOptions,
 }
 
-pub struct NoteResponse {
-    pub response: egui::Response,
-    pub action: Option<BarAction>,
-}
+pub type NoteResponse = InnerResponse<Option<BarAction>>;
 
 impl<'a> View for NoteView<'a> {
     fn ui(&mut self, ui: &mut egui::Ui) {
@@ -326,7 +323,7 @@ impl<'a> NoteView<'a> {
         if self.options().has_textmode() {
             NoteResponse {
                 response: self.textmode_ui(ui),
-                action: None,
+                inner: None,
             }
         } else {
             let txn = self.note.txn().expect("txn");
@@ -485,7 +482,7 @@ impl<'a> NoteView<'a> {
 
         NoteResponse {
             response,
-            action: note_action,
+            inner: note_action,
         }
     }
 }
@@ -554,11 +551,7 @@ fn check_note_hitbox(
     }
 }
 
-fn render_note_actionbar(
-    ui: &mut egui::Ui,
-    note_id: &[u8; 32],
-    note_key: NoteKey,
-) -> egui::InnerResponse<Option<BarAction>> {
+fn render_note_actionbar(ui: &mut egui::Ui, note_id: &[u8; 32], note_key: NoteKey) -> NoteResponse {
     ui.horizontal(|ui| {
         let reply_resp = reply_button(ui, note_key);
         let quote_resp = quote_repost_button(ui, note_key);

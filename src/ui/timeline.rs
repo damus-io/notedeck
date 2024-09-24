@@ -151,7 +151,7 @@ fn timeline_ui(
                             .selectable_text(false)
                             .show(ui);
 
-                        if let Some(ba) = resp.action {
+                        if let Some(ba) = resp.inner {
                             bar_action = Some(ba);
                         } else if resp.response.clicked() {
                             debug!("clicked note");

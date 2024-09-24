@@ -120,7 +120,7 @@ impl<'a> ThreadView<'a> {
                                     .note_previews(!self.textmode)
                                     .textmode(self.textmode)
                                     .show(ui)
-                                    .action
+                                    .inner
                             {
                                 action = Some(bar_action);
                             }
