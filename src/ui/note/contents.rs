@@ -1,5 +1,6 @@
 use crate::images::ImageType;
 use crate::imgcache::ImageCache;
+use crate::note_options::process_note_selection;
 use crate::notecache::NoteCache;
 use crate::ui::note::NoteOptions;
 use crate::ui::ProfilePic;
@@ -103,13 +104,15 @@ pub fn render_note_preview(
             ui.visuals().noninteractive().bg_stroke.color,
         ))
         .show(ui, |ui| {
-            ui::NoteView::new(ndb, note_cache, img_cache, &note)
+            let resp = ui::NoteView::new(ndb, note_cache, img_cache, &note)
                 .actionbar(false)
                 .small_pfp(true)
                 .wide(true)
                 .note_previews(false)
                 .use_more_options_button(true)
                 .show(ui);
+
+            process_note_selection(ui, resp.option_selection, &note);
         })
         .response
 }
