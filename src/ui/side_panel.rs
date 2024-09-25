@@ -40,6 +40,7 @@ pub enum SidePanelAction {
     Columns,
     ComposeNote,
     Search,
+    ExpandSidePanel,
 }
 
 pub struct SidePanelResponse {
@@ -86,13 +87,20 @@ impl<'a> DesktopSidePanel<'a> {
             .vertical(|ui| {
                 let top_resp = ui
                     .with_layout(Layout::top_down(egui::Align::Center), |ui| {
+                        let expand_resp = ui.add(expand_side_panel_button());
+                        ui.add_space(28.0);
                         let compose_resp = ui.add(compose_note_button());
                         let search_resp = ui.add(search_button());
                         let column_resp = ui.add(add_column_button(dark_mode));
 
                         ui.add(Separator::default().horizontal().spacing(8.0).shrink(4.0));
 
-                        if compose_resp.clicked() {
+                        if expand_resp.clicked() {
+                            Some(InnerResponse::new(
+                                SidePanelAction::ExpandSidePanel,
+                                expand_resp,
+                            ))
+                        } else if compose_resp.clicked() {
                             Some(InnerResponse::new(
                                 SidePanelAction::ComposeNote,
                                 compose_resp,
@@ -197,6 +205,10 @@ impl<'a> DesktopSidePanel<'a> {
             SidePanelAction::Search => {
                 // TODO
                 info!("Clicked search button");
+            }
+            SidePanelAction::ExpandSidePanel => {
+                // TODO
+                info!("Clicked expand side panel button");
             }
         }
     }
@@ -328,6 +340,17 @@ fn search_button() -> impl Widget {
         );
 
         helper.take_animation_response()
+    }
+}
+
+// TODO: convert to responsive button when expanded side panel impl is finished
+fn expand_side_panel_button() -> impl Widget {
+    |ui: &mut egui::Ui| -> egui::Response {
+        let img_size = 40.0;
+        let img_data = egui::include_image!("../../assets/icons/damus_logo_4x.png");
+        let img = egui::Image::new(img_data).max_width(img_size);
+
+        ui.add(img)
     }
 }
 
