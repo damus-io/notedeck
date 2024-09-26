@@ -15,7 +15,7 @@ pub use account_management::AccountsView;
 pub use mention::Mention;
 pub use note::{NoteResponse, NoteView, PostReplyView, PostView};
 pub use preview::{Preview, PreviewApp, PreviewConfig};
-pub use profile::{profile_preview_controller, ProfilePic, ProfilePreview};
+pub use profile::{ProfilePic, ProfilePreview};
 pub use relay::RelayView;
 pub use side_panel::{DesktopSidePanel, SidePanelAction};
 pub use thread::ThreadView;

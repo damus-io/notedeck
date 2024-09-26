@@ -903,7 +903,7 @@ fn render_damus_mobile(ctx: &egui::Context, app: &mut Damus) {
 
     main_panel(&ctx.style(), ui::is_narrow(ctx)).show(ctx, |ui| {
         if !app.columns.columns().is_empty() {
-            nav::render_nav(false, 0, app, ui);
+            nav::render_nav(0, app, ui);
         }
     });
 }
@@ -951,13 +951,18 @@ fn render_damus_desktop(ctx: &egui::Context, app: &mut Damus) {
 
 fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus, columns: usize) {
     StripBuilder::new(ui)
-        .size(Size::exact(40.0))
+        .size(Size::exact(ui::side_panel::SIDE_PANEL_WIDTH))
         .sizes(sizes, columns)
         .clip(true)
         .horizontal(|mut strip| {
             strip.cell(|ui| {
                 let rect = ui.available_rect_before_wrap();
-                let side_panel = DesktopSidePanel::new(app).show(ui);
+                let side_panel = DesktopSidePanel::new(
+                    &app.ndb,
+                    &mut app.img_cache,
+                    app.accounts.get_selected_account(),
+                )
+                .show(ui);
 
                 let router = if let Some(router) = app
                     .columns
@@ -986,24 +991,10 @@ fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus, columns: usiz
             });
 
             let n_cols = app.columns.columns().len();
-            let mut first = true;
             for column_ind in 0..n_cols {
                 strip.cell(|ui| {
                     let rect = ui.available_rect_before_wrap();
-                    let show_postbox = first
-                        && app
-                            .columns
-                            .column(column_ind)
-                            .router()
-                            .routes()
-                            .iter()
-                            .find_map(|r| r.timeline_id())
-                            .is_some();
-                    if show_postbox {
-                        first = false
-                    }
-
-                    nav::render_nav(show_postbox, column_ind, app, ui);
+                    nav::render_nav(column_ind, app, ui);
 
                     // vertical line
                     ui.painter().vline(

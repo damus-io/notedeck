@@ -4,13 +4,13 @@ use crate::{
     route::Route,
     thread::thread_unsubscribe,
     timeline::route::{render_timeline_route, TimelineRoute, TimelineRouteResponse},
-    ui::{note::PostAction, RelayView, View},
+    ui::{self, note::PostAction, RelayView, View},
     Damus,
 };
 
 use egui_nav::{Nav, NavAction};
 
-pub fn render_nav(show_postbox: bool, col: usize, app: &mut Damus, ui: &mut egui::Ui) {
+pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) {
     // TODO(jb55): clean up this router_mut mess by using Router<R> in egui-nav directly
     let nav_response = Nav::new(app.columns().column(col).router().routes().clone())
         .navigating(app.columns_mut().column_mut(col).router_mut().navigating)
@@ -28,7 +28,6 @@ pub fn render_nav(show_postbox: bool, col: usize, app: &mut Damus, ui: &mut egui
                 &mut app.accounts,
                 *tlr,
                 col,
-                show_postbox,
                 app.textmode,
                 ui,
             ),
@@ -48,6 +47,29 @@ pub fn render_nav(show_postbox: bool, col: usize, app: &mut Damus, ui: &mut egui
             Route::Relays => {
                 let manager = RelayPoolManager::new(app.pool_mut());
                 RelayView::new(manager).ui(ui);
+                None
+            }
+            Route::ComposeNote => {
+                let kp = app.accounts.selected_or_first_nsec()?;
+                let draft = app.drafts.compose_mut();
+
+                let txn = nostrdb::Transaction::new(&app.ndb).expect("txn");
+                let post_response = ui::PostView::new(
+                    &app.ndb,
+                    draft,
+                    crate::draft::DraftSource::Compose,
+                    &mut app.img_cache,
+                    &mut app.note_cache,
+                    kp,
+                )
+                .ui(&txn, ui);
+
+                if let Some(action) = post_response.action {
+                    PostAction::execute(kp, &action, &mut app.pool, draft, |np, seckey| {
+                        np.to_note(seckey)
+                    });
+                }
+
                 None
             }
         });

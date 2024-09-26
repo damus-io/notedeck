@@ -48,23 +48,11 @@ pub fn render_timeline_route(
     accounts: &mut AccountManager,
     route: TimelineRoute,
     col: usize,
-    show_postbox: bool,
     textmode: bool,
     ui: &mut egui::Ui,
 ) -> Option<TimelineRouteResponse> {
     match route {
         TimelineRoute::Timeline(timeline_id) => {
-            if show_postbox {
-                let kp = accounts.selected_or_first_nsec()?;
-                let draft = drafts.compose_mut();
-                let response =
-                    ui::timeline::postbox_view(ndb, kp, draft, img_cache, note_cache, ui);
-
-                if let Some(action) = response.action {
-                    PostAction::execute(kp, &action, pool, draft, |np, seckey| np.to_note(seckey));
-                }
-            }
-
             if let Some(bar_action) =
                 ui::TimelineView::new(timeline_id, columns, ndb, note_cache, img_cache, textmode)
                     .ui(ui)

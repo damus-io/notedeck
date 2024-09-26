@@ -10,8 +10,6 @@ use egui::{Align, Button, Frame, Image, InnerResponse, Layout, RichText, ScrollA
 use nostrdb::{Ndb, Transaction};
 
 use super::profile::preview::SimpleProfilePreview;
-use super::profile::ProfilePreviewOp;
-use super::profile_preview_controller::profile_preview_view;
 
 pub struct AccountsView<'a> {
     ndb: &'a Ndb,
@@ -24,6 +22,12 @@ pub enum AccountsViewResponse {
     SelectAccount(usize),
     RemoveAccount(usize),
     RouteToLogin,
+}
+
+#[derive(Debug)]
+enum ProfilePreviewOp {
+    RemoveAccount,
+    SwitchTo,
 }
 
 impl<'a> AccountsView<'a> {
@@ -86,9 +90,13 @@ impl<'a> AccountsView<'a> {
                             false
                         };
 
-                    if let Some(op) =
-                        profile_preview_view(ui, profile.as_ref(), img_cache, is_selected)
-                    {
+                    let profile_peview_view = {
+                        let width = ui.available_width();
+                        let preview = SimpleProfilePreview::new(profile.as_ref(), img_cache);
+                        show_profile_card(ui, preview, width, is_selected)
+                    };
+
+                    if let Some(op) = profile_peview_view {
                         return_op = Some(match op {
                             ProfilePreviewOp::SwitchTo => AccountsViewResponse::SelectAccount(i),
                             ProfilePreviewOp::RemoveAccount => {
@@ -119,7 +127,7 @@ impl<'a> AccountsView<'a> {
     }
 }
 
-pub fn show_profile_card(
+fn show_profile_card(
     ui: &mut egui::Ui,
     preview: SimpleProfilePreview,
     width: f32,
