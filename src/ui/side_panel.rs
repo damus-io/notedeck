@@ -347,7 +347,7 @@ fn search_button() -> impl Widget {
 fn expand_side_panel_button() -> impl Widget {
     |ui: &mut egui::Ui| -> egui::Response {
         let img_size = 40.0;
-        let img_data = egui::include_image!("../../assets/damus_rounded.svg");
+        let img_data = egui::include_image!("../../assets/damus_rounded_80.png");
         let img = egui::Image::new(img_data).max_width(img_size);
 
         ui.add(img)
