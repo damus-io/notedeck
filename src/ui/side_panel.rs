@@ -1,4 +1,4 @@
-use egui::{vec2, Color32, InnerResponse, Layout, Margin, Separator, SidePanel, Stroke, Widget};
+use egui::{vec2, Color32, InnerResponse, Layout, Margin, Separator, Stroke, Widget};
 use tracing::info;
 
 use crate::{
@@ -65,12 +65,6 @@ impl<'a> DesktopSidePanel<'a> {
             img_cache,
             selected_account,
         }
-    }
-
-    pub fn panel() -> SidePanel {
-        egui::SidePanel::left("side_panel")
-            .resizable(false)
-            .exact_width(SIDE_PANEL_WIDTH)
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui) -> SidePanelResponse {
