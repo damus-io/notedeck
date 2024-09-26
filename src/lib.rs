@@ -25,7 +25,6 @@ mod nav;
 mod note;
 mod notecache;
 mod post;
-mod post_action_executor;
 mod profile;
 pub mod relay_pool_manager;
 mod result;

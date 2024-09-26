@@ -4,12 +4,14 @@ use crate::{
     draft::Drafts,
     imgcache::ImageCache,
     notecache::NoteCache,
-    post_action_executor::PostActionExecutor,
     thread::Threads,
     timeline::TimelineId,
     ui::{
         self,
-        note::{post::PostResponse, QuoteRepostView},
+        note::{
+            post::{PostAction, PostResponse},
+            QuoteRepostView,
+        },
     },
 };
 
@@ -59,9 +61,7 @@ pub fn render_timeline_route(
                     ui::timeline::postbox_view(ndb, kp, draft, img_cache, note_cache, ui);
 
                 if let Some(action) = response.action {
-                    PostActionExecutor::execute(kp, &action, pool, draft, |np, seckey| {
-                        np.to_note(seckey)
-                    });
+                    PostAction::execute(kp, &action, pool, draft, |np, seckey| np.to_note(seckey));
                 }
             }
 
@@ -118,7 +118,7 @@ pub fn render_timeline_route(
             });
 
             if let Some(action) = &response.inner.action {
-                PostActionExecutor::execute(poster, action, pool, draft, |np, seckey| {
+                PostAction::execute(poster, action, pool, draft, |np, seckey| {
                     np.to_reply(seckey, &note)
                 });
             }
@@ -148,7 +148,7 @@ pub fn render_timeline_route(
             });
 
             if let Some(action) = &response.inner.action {
-                PostActionExecutor::execute(poster, action, pool, draft, |np, seckey| {
+                PostAction::execute(poster, action, pool, draft, |np, seckey| {
                     np.to_quote(seckey, &note)
                 });
             }
