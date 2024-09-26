@@ -1,5 +1,5 @@
 use crate::colors;
-use egui::Vec2;
+use egui::{Rect, Vec2};
 use enostr::{NoteId, Pubkey};
 use nostrdb::{Note, NoteKey};
 
@@ -38,18 +38,35 @@ impl NoteContextSelection {
 }
 
 pub struct NoteContextButton {
+    put_at: Option<Rect>,
     note_key: NoteKey,
 }
 
 impl egui::Widget for NoteContextButton {
     fn ui(self, ui: &mut egui::Ui) -> egui::Response {
-        Self::show(ui, self.note_key)
+        let r = if let Some(r) = self.put_at {
+            r
+        } else {
+            let mut place = ui.available_rect_before_wrap();
+            let size = Self::max_width();
+            place.set_width(size);
+            place.set_height(size);
+            place
+        };
+
+        Self::show(ui, self.note_key, r)
     }
 }
 
 impl NoteContextButton {
     pub fn new(note_key: NoteKey) -> Self {
-        NoteContextButton { note_key }
+        let put_at: Option<Rect> = None;
+        NoteContextButton { note_key, put_at }
+    }
+
+    pub fn place_at(mut self, rect: Rect) -> Self {
+        self.put_at = Some(rect);
+        self
     }
 
     pub fn max_width() -> f32 {
@@ -81,13 +98,12 @@ impl NoteContextButton {
         Self::max_distance_between_circles() / Self::expansion_multiple()
     }
 
-    pub fn show(ui: &mut egui::Ui, note_key: NoteKey) -> egui::Response {
+    pub fn show(ui: &mut egui::Ui, note_key: NoteKey, put_at: Rect) -> egui::Response {
         let id = ui.id().with(("more_options_anim", note_key));
 
         let min_radius = Self::min_radius();
         let anim_speed = 0.05;
-        let size = Self::size();
-        let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+        let response = ui.interact(put_at, id, egui::Sense::click());
 
         let animation_progress =
             ui.ctx()
@@ -99,7 +115,7 @@ impl NoteContextButton {
 
         let cur_radius = min_radius + (Self::max_radius() - min_radius) * animation_progress;
 
-        let center = rect.center();
+        let center = put_at.center();
         let left_circle_center = center - egui::vec2(cur_distance + cur_radius, 0.0);
         let right_circle_center = center + egui::vec2(cur_distance + cur_radius, 0.0);
 
@@ -109,7 +125,7 @@ impl NoteContextButton {
         let color = colors::GRAY_SECONDARY;
 
         // Draw circles
-        let painter = ui.painter_at(rect);
+        let painter = ui.painter_at(put_at);
         painter.circle_filled(left_circle_center, translated_radius, color);
         painter.circle_filled(center, translated_radius, color);
         painter.circle_filled(right_circle_center, translated_radius, color);
