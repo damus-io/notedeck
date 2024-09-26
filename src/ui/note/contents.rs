@@ -111,8 +111,8 @@ pub fn render_note_preview(
                 .options_button(true)
                 .show(ui);
 
-            if let Some(selection) = resp.option_selection {
-                selection.process(ui, &note);
+            if let Some(context) = resp.context_selection {
+                context.process(ui, &note);
             }
         })
         .response

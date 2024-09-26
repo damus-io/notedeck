@@ -23,7 +23,6 @@ pub mod login_manager;
 mod macos_key_storage;
 mod nav;
 mod note;
-mod note_options;
 mod notecache;
 mod post;
 mod post_action_executor;

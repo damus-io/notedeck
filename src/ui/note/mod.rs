@@ -1,10 +1,12 @@
 pub mod contents;
+pub mod context;
 pub mod options;
 pub mod post;
 pub mod quote_repost;
 pub mod reply;
 
 pub use contents::NoteContents;
+pub use context::{NoteContextButton, NoteContextSelection};
 pub use options::NoteOptions;
 pub use post::{PostAction, PostResponse, PostView};
 pub use quote_repost::QuoteRepostView;
@@ -15,11 +17,10 @@ use crate::{
     app_style::NotedeckTextStyle,
     colors,
     imgcache::ImageCache,
-    note_options::NoteOptionSelection,
     notecache::{CachedNote, NoteCache},
     ui::{self, View},
 };
-use egui::{menu::BarState, Align, Id, InnerResponse, Label, Layout, Response, RichText, Sense};
+use egui::{Id, Label, Response, RichText, Sense};
 use enostr::NoteId;
 use nostrdb::{Ndb, Note, NoteKey, NoteReply, Transaction};
 
@@ -36,7 +37,7 @@ pub struct NoteView<'a> {
 pub struct NoteResponse {
     pub response: egui::Response,
     pub action: Option<BarAction>,
-    pub option_selection: Option<NoteOptionSelection>,
+    pub context_selection: Option<NoteContextSelection>,
 }
 
 impl NoteResponse {
@@ -44,7 +45,7 @@ impl NoteResponse {
         Self {
             response,
             action: None,
-            option_selection: None,
+            context_selection: None,
         }
     }
 
@@ -52,9 +53,9 @@ impl NoteResponse {
         Self { action, ..self }
     }
 
-    pub fn select_option(self, option_selection: Option<NoteOptionSelection>) -> Self {
+    pub fn select_option(self, context_selection: Option<NoteContextSelection>) -> Self {
         Self {
-            option_selection,
+            context_selection,
             ..self
         }
     }
@@ -406,9 +407,9 @@ impl<'a> NoteView<'a> {
             render_reltime(ui, cached_note, true);
 
             if options.has_options_button() {
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    let more_options_resp = more_options_button(ui, note_key, 8.0);
-                    options_context_menu(ui, more_options_resp)
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let resp = ui.add(NoteContextButton::new(note_key));
+                    NoteContextButton::menu(ui, resp)
                 })
                 .inner
             } else {
@@ -425,7 +426,7 @@ impl<'a> NoteView<'a> {
         let note_key = self.note.key().expect("todo: support non-db notes");
         let txn = self.note.txn().expect("todo: support non-db notes");
         let mut note_action: Option<BarAction> = None;
-        let mut selected_option: Option<NoteOptionSelection> = None;
+        let mut selected_option: Option<NoteContextSelection> = None;
         let profile = self.ndb.get_profile_by_pubkey(txn, self.note.pubkey());
         let maybe_hitbox = maybe_note_hitbox(ui, note_key);
 
@@ -445,7 +446,7 @@ impl<'a> NoteView<'a> {
                                 &profile,
                                 self.options(),
                             )
-                            .option_selection;
+                            .context_selection;
                         })
                         .response
                     });
@@ -492,7 +493,7 @@ impl<'a> NoteView<'a> {
                         &profile,
                         self.options(),
                     )
-                    .option_selection;
+                    .context_selection;
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 2.0;
 
@@ -680,82 +681,4 @@ fn quote_repost_button(ui: &mut egui::Ui, note_key: NoteKey) -> egui::Response {
     let put_resp = ui.put(rect, repost_icon().max_width(size));
 
     resp.union(put_resp)
-}
-
-fn more_options_button(ui: &mut egui::Ui, note_key: NoteKey, max_height: f32) -> egui::Response {
-    let id = ui.id().with(("more_options_anim", note_key));
-
-    let expansion_multiple = 2.0;
-    let max_radius = max_height;
-    let min_radius = max_radius / expansion_multiple;
-    let max_distance_between_circles = 2.0;
-    let min_distance_between_circles = max_distance_between_circles / expansion_multiple;
-    let max_width = max_radius * 3.0 + max_distance_between_circles * 2.0;
-
-    let anim_speed = 0.05;
-    let expanded_size = egui::vec2(max_width, max_height);
-    let (rect, response) = ui.allocate_exact_size(expanded_size, egui::Sense::click());
-
-    let animation_progress = ui
-        .ctx()
-        .animate_bool_with_time(id, response.hovered(), anim_speed);
-    let cur_distance = min_distance_between_circles
-        + (max_distance_between_circles - min_distance_between_circles) * animation_progress;
-    let cur_radius = min_radius + (max_radius - min_radius) * animation_progress;
-
-    let center = rect.center();
-    let left_circle_center = center - egui::vec2(cur_distance + cur_radius, 0.0);
-    let right_circle_center = center + egui::vec2(cur_distance + cur_radius, 0.0);
-
-    let translated_radius = (cur_radius - 1.0) / 2.0;
-
-    // This works in both themes
-    let color = colors::GRAY_SECONDARY;
-
-    // Draw circles
-    let painter = ui.painter_at(rect);
-    painter.circle_filled(left_circle_center, translated_radius, color);
-    painter.circle_filled(center, translated_radius, color);
-    painter.circle_filled(right_circle_center, translated_radius, color);
-
-    response
-}
-
-fn options_context_menu(
-    ui: &mut egui::Ui,
-    more_options_button_resp: egui::Response,
-) -> Option<NoteOptionSelection> {
-    let mut selected_option: Option<NoteOptionSelection> = None;
-
-    stationary_arbitrary_menu_button(ui, more_options_button_resp, |ui| {
-        ui.set_max_width(200.0);
-        if ui.button("Copy text").clicked() {
-            selected_option = Some(NoteOptionSelection::CopyText);
-            ui.close_menu();
-        }
-        if ui.button("Copy user public key").clicked() {
-            selected_option = Some(NoteOptionSelection::CopyPubkey);
-            ui.close_menu();
-        }
-        if ui.button("Copy note id").clicked() {
-            selected_option = Some(NoteOptionSelection::CopyNoteId);
-            ui.close_menu();
-        }
-    });
-
-    selected_option
-}
-
-fn stationary_arbitrary_menu_button<R>(
-    ui: &mut egui::Ui,
-    button_response: egui::Response,
-    add_contents: impl FnOnce(&mut egui::Ui) -> R,
-) -> InnerResponse<Option<R>> {
-    let bar_id = ui.id();
-    let mut bar_state = BarState::load(ui.ctx(), bar_id);
-
-    let inner = bar_state.bar_menu(&button_response, add_contents);
-
-    bar_state.store(ui.ctx(), bar_id);
-    InnerResponse::new(inner.map(|r| r.inner), button_response)
 }

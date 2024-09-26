@@ -125,7 +125,7 @@ impl<'a> ThreadView<'a> {
                                 action = Some(bar_action);
                             }
 
-                            if let Some(selection) = note_response.option_selection {
+                            if let Some(selection) = note_response.context_selection {
                                 selection.process(ui, &note);
                             }
                         });

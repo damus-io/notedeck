@@ -158,8 +158,8 @@ fn timeline_ui(
                             debug!("clicked note");
                         }
 
-                        if let Some(selection) = resp.option_selection {
-                            selection.process(ui, &note);
+                        if let Some(context) = resp.context_selection {
+                            context.process(ui, &note);
                         }
                     });
 
