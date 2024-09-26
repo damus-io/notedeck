@@ -1,6 +1,7 @@
 use notedeck::app_creation::{
     generate_mobile_emulator_native_options, generate_native_options, setup_cc,
 };
+use notedeck::ui::add_column::AddColumnView;
 use notedeck::ui::{
     account_login_view::AccountLoginView, account_management::AccountsView, DesktopSidePanel,
     PostView, Preview, PreviewApp, PreviewConfig, ProfilePic, ProfilePreview, RelayView,
@@ -102,5 +103,6 @@ async fn main() {
         AccountsView,
         DesktopSidePanel,
         PostView,
+        AddColumnView,
     );
 }
