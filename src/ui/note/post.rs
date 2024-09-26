@@ -6,8 +6,9 @@ use crate::ui;
 use crate::ui::{Preview, PreviewConfig, View};
 use egui::widgets::text_edit::TextEdit;
 use egui::{Frame, Layout};
-use enostr::{FilledKeypair, FullKeypair};
-use nostrdb::{Config, Ndb, Transaction};
+use enostr::{FilledKeypair, FullKeypair, RelayPool};
+use nostrdb::{Config, Ndb, Note, Transaction};
+use tracing::info;
 
 use super::contents::render_note_preview;
 
@@ -23,6 +24,27 @@ pub struct PostView<'a> {
 
 pub enum PostAction {
     Post(NewPost),
+}
+
+impl PostAction {
+    pub fn execute<'b>(
+        poster: FilledKeypair<'_>,
+        action: &'b PostAction,
+        pool: &mut RelayPool,
+        draft: &mut Draft,
+        get_note: impl Fn(&'b NewPost, &[u8; 32]) -> Note<'b>,
+    ) {
+        match action {
+            PostAction::Post(np) => {
+                let note = get_note(np, &poster.secret_key.to_secret_bytes());
+
+                let raw_msg = format!("[\"EVENT\",{}]", note.json().unwrap());
+                info!("sending {}", raw_msg);
+                pool.send(&enostr::ClientMessage::raw(raw_msg));
+                draft.clear();
+            }
+        }
+    }
 }
 
 pub struct PostResponse {

@@ -1,6 +1,5 @@
 use crate::{
     account_manager::render_accounts_route,
-    post_action_executor::PostActionExecutor,
     relay_pool_manager::RelayPoolManager,
     route::Route,
     thread::thread_unsubscribe,
@@ -66,7 +65,7 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) {
                 .ui(&txn, ui);
 
                 if let Some(action) = post_response.action {
-                    PostActionExecutor::execute(kp, &action, &mut app.pool, draft, |np, seckey| {
+                    PostAction::execute(kp, &action, &mut app.pool, draft, |np, seckey| {
                         np.to_note(seckey)
                     });
                 }
