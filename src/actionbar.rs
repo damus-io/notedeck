@@ -1,4 +1,5 @@
 use crate::{
+    multi_subscriber::MultiSubscriber,
     note::NoteRef,
     notecache::NoteCache,
     route::{Route, Router},
@@ -6,8 +7,6 @@ use crate::{
 };
 use enostr::{NoteId, RelayPool};
 use nostrdb::{Ndb, Transaction};
-use tracing::{error, info};
-use uuid::Uuid;
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
 pub enum BarAction {
@@ -70,42 +69,15 @@ fn open_thread(
         ThreadResult::Fresh(thread) => (thread, None),
     };
 
-    // only start a subscription on nav and if we don't have
-    // an active subscription for this thread.
-    if thread.subscription().is_none() {
-        let filters = Thread::filters(root_id);
-        *thread.subscription_mut() = ndb.subscribe(&filters).ok();
-
-        if thread.remote_subscription().is_some() {
-            error!("Found active remote subscription when it was not expected");
-        } else {
-            let subid = Uuid::new_v4().to_string();
-            *thread.remote_subscription_mut() = Some(subid.clone());
-            pool.subscribe(subid, filters);
-        }
-
-        match thread.subscription() {
-            Some(_sub) => {
-                thread.subscribers += 1;
-                info!(
-                    "Locally/remotely subscribing to thread. {} total active subscriptions, {} on this thread",
-                    ndb.subscription_count(),
-                    thread.subscribers,
-                );
-            }
-            None => error!(
-                "Error subscribing locally to selected note '{}''s thread",
-                hex::encode(selected_note)
-            ),
-        }
+    let multi_subscriber = if let Some(multi_subscriber) = &mut thread.multi_subscriber {
+        multi_subscriber
     } else {
-        thread.subscribers += 1;
-        info!(
-            "Re-using existing thread subscription. {} total active subscriptions, {} on this thread",
-            ndb.subscription_count(),
-            thread.subscribers,
-        )
-    }
+        let filters = Thread::filters(root_id);
+        thread.multi_subscriber = Some(MultiSubscriber::new(filters));
+        thread.multi_subscriber.as_mut().unwrap()
+    };
+
+    multi_subscriber.subscribe(ndb, pool);
 
     result
 }
