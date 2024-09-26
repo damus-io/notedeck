@@ -20,6 +20,7 @@ use crate::{
     notecache::{CachedNote, NoteCache},
     ui::{self, View},
 };
+use egui::emath::{pos2, Vec2};
 use egui::{Id, Label, Pos2, Rect, Response, RichText, Sense};
 use enostr::NoteId;
 use nostrdb::{Ndb, Note, NoteKey, NoteReply, Transaction};
@@ -281,7 +282,7 @@ impl<'a> NoteView<'a> {
                 )
             });
 
-            ui.add(NoteContents::new(
+            ui.add(&mut NoteContents::new(
                 self.ndb,
                 self.img_cache,
                 self.note_cache,
@@ -476,7 +477,7 @@ impl<'a> NoteView<'a> {
                 });
             });
 
-            let resp = ui.add(NoteContents::new(
+            let mut contents = NoteContents::new(
                 self.ndb,
                 self.img_cache,
                 self.note_cache,
@@ -484,10 +485,13 @@ impl<'a> NoteView<'a> {
                 self.note,
                 note_key,
                 self.options(),
-            ));
+            );
+            let resp = ui.add(&mut contents);
+            note_action = note_action.or(contents.action());
 
             if self.options().has_actionbar() {
-                note_action = render_note_actionbar(ui, self.note.id(), note_key).inner;
+                let ab = render_note_actionbar(ui, self.note.id(), note_key);
+                note_action = note_action.or(ab.inner);
             }
 
             resp
@@ -520,7 +524,7 @@ impl<'a> NoteView<'a> {
                         }
                     });
 
-                    ui.add(NoteContents::new(
+                    let mut contents = NoteContents::new(
                         self.ndb,
                         self.img_cache,
                         self.note_cache,
@@ -528,10 +532,13 @@ impl<'a> NoteView<'a> {
                         self.note,
                         note_key,
                         self.options(),
-                    ));
+                    );
+                    ui.add(&mut contents);
+                    note_action = note_action.or(contents.action());
 
                     if self.options().has_actionbar() {
-                        note_action = render_note_actionbar(ui, self.note.id(), note_key).inner;
+                        let ab = render_note_actionbar(ui, self.note.id(), note_key);
+                        note_action = note_action.or(ab.inner);
                     }
                 });
             })
@@ -578,14 +585,23 @@ fn get_reposted_note<'a>(ndb: &Ndb, txn: &'a Transaction, note: &Note) -> Option
 }
 
 fn note_hitbox_id(note_key: NoteKey) -> egui::Id {
-    Id::new(("note_rect", note_key))
+    Id::new(("note_size", note_key))
 }
 
 fn maybe_note_hitbox(ui: &mut egui::Ui, note_key: NoteKey) -> Option<Response> {
     ui.ctx()
         .data_mut(|d| d.get_persisted(note_hitbox_id(note_key)))
-        .map(|rect| {
-            let id = ui.make_persistent_id(("under_button_interact", note_key));
+        .map(|note_size: Vec2| {
+            let id = ui.make_persistent_id(("hitbox_interact", note_key));
+
+            // The hitbox should extend the entire width of the
+            // container.  The hitbox height was cached last layout.
+            let container_rect = ui.max_rect();
+            let rect = Rect {
+                min: pos2(container_rect.min.x, container_rect.min.y),
+                max: pos2(container_rect.max.x, container_rect.min.y + note_size.y),
+            };
+
             ui.interact(rect, id, egui::Sense::click())
         })
 }
@@ -599,16 +615,14 @@ fn check_note_hitbox(
     prior_action: Option<BarAction>,
 ) -> Option<BarAction> {
     // Stash the dimensions of the note content so we can render the
-    // underbutton in the next frame
+    // hitbox in the next frame
     ui.ctx().data_mut(|d| {
-        d.insert_persisted(note_hitbox_id(note_key), note_response.rect);
+        d.insert_persisted(note_hitbox_id(note_key), note_response.rect.size());
     });
 
-    // If there was an underbutton and it was clicked open the thread
+    // If there was an hitbox and it was clicked open the thread
     match maybe_hitbox {
-        Some(underbutt) if underbutt.clicked() => {
-            Some(BarAction::OpenThread(NoteId::new(*note_id)))
-        }
+        Some(hitbox) if hitbox.clicked() => Some(BarAction::OpenThread(NoteId::new(*note_id))),
         _ => prior_action,
     }
 }

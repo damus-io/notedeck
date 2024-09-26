@@ -5,7 +5,7 @@ use nostr::bech32::Hrp;
 use std::fmt;
 use tracing::debug;
 
-#[derive(Debug, Eq, PartialEq, Clone, Copy, Hash)]
+#[derive(Eq, PartialEq, Clone, Copy, Hash)]
 pub struct Pubkey([u8; 32]);
 
 static HRP_NPUB: Hrp = Hrp::parse_unchecked("npub");
@@ -75,6 +75,12 @@ impl Pubkey {
 }
 
 impl fmt::Display for Pubkey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.hex())
+    }
+}
+
+impl fmt::Debug for Pubkey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.hex())
     }

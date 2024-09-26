@@ -1,10 +1,17 @@
 use crate::{Error, Pubkey};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use std::fmt;
 use std::hash::{Hash, Hasher};
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
+#[derive(Clone, Copy, Eq, PartialEq, Hash)]
 pub struct NoteId([u8; 32]);
+
+impl fmt::Debug for NoteId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.hex())
+    }
+}
 
 static HRP_NOTE: nostr::bech32::Hrp = nostr::bech32::Hrp::parse_unchecked("note");
 
