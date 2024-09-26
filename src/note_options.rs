@@ -9,13 +9,9 @@ pub enum NoteOptionSelection {
     CopyNoteId,
 }
 
-pub fn process_note_selection(
-    ui: &mut egui::Ui,
-    selection: Option<NoteOptionSelection>,
-    note: &Note<'_>,
-) {
-    if let Some(option) = selection {
-        match option {
+impl NoteOptionSelection {
+    pub fn process(&self, ui: &mut egui::Ui, note: &Note<'_>) {
+        match self {
             NoteOptionSelection::CopyText => {
                 ui.output_mut(|w| {
                     w.copied_text = note.content().to_string();

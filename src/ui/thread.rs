@@ -1,6 +1,5 @@
 use crate::{
-    actionbar::BarAction, imgcache::ImageCache, note_options::process_note_selection,
-    notecache::NoteCache, thread::Threads, ui,
+    actionbar::BarAction, imgcache::ImageCache, notecache::NoteCache, thread::Threads, ui,
 };
 use nostrdb::{Ndb, NoteKey, Transaction};
 use tracing::{error, warn};
@@ -126,7 +125,9 @@ impl<'a> ThreadView<'a> {
                                 action = Some(bar_action);
                             }
 
-                            process_note_selection(ui, note_response.option_selection, &note);
+                            if let Some(selection) = note_response.option_selection {
+                                selection.process(ui, &note);
+                            }
                         });
 
                         ui::hline(ui);

@@ -1,6 +1,5 @@
 use crate::images::ImageType;
 use crate::imgcache::ImageCache;
-use crate::note_options::process_note_selection;
 use crate::notecache::NoteCache;
 use crate::ui::note::NoteOptions;
 use crate::ui::ProfilePic;
@@ -112,7 +111,9 @@ pub fn render_note_preview(
                 .use_more_options_button(true)
                 .show(ui);
 
-            process_note_selection(ui, resp.option_selection, &note);
+            if let Some(selection) = resp.option_selection {
+                selection.process(ui, &note);
+            }
         })
         .response
 }

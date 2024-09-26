@@ -1,5 +1,4 @@
 use crate::draft::Draft;
-use crate::note_options::process_note_selection;
 use crate::{
     actionbar::BarAction, column::Columns, imgcache::ImageCache, notecache::NoteCache,
     timeline::TimelineId, ui,
@@ -159,7 +158,9 @@ fn timeline_ui(
                             debug!("clicked note");
                         }
 
-                        process_note_selection(ui, resp.option_selection, &note);
+                        if let Some(selection) = resp.option_selection {
+                            selection.process(ui, &note);
+                        }
                     });
 
                     ui::hline(ui);
