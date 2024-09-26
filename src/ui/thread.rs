@@ -119,7 +119,7 @@ impl<'a> ThreadView<'a> {
                                 ui::NoteView::new(self.ndb, self.note_cache, self.img_cache, &note)
                                     .note_previews(!self.textmode)
                                     .textmode(self.textmode)
-                                    .use_more_options_button(!self.textmode)
+                                    .options_button(!self.textmode)
                                     .show(ui);
                             if let Some(bar_action) = note_response.action {
                                 action = Some(bar_action);

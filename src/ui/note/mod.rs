@@ -31,7 +31,6 @@ pub struct NoteView<'a> {
     img_cache: &'a mut ImageCache,
     note: &'a nostrdb::Note<'a>,
     flags: NoteOptions,
-    use_options: bool,
 }
 
 pub struct NoteResponse {
@@ -201,7 +200,6 @@ impl<'a> NoteView<'a> {
             img_cache,
             note,
             flags,
-            use_options: false,
         }
     }
 
@@ -240,11 +238,9 @@ impl<'a> NoteView<'a> {
         self
     }
 
-    pub fn use_more_options_button(self, enable: bool) -> Self {
-        Self {
-            use_options: enable,
-            ..self
-        }
+    pub fn options_button(mut self, enable: bool) -> Self {
+        self.options_mut().set_options_button(enable);
+        self
     }
 
     pub fn options(&self) -> NoteOptions {
@@ -398,7 +394,7 @@ impl<'a> NoteView<'a> {
         note_cache: &mut NoteCache,
         note: &Note,
         profile: &Result<nostrdb::ProfileRecord<'_>, nostrdb::Error>,
-        use_options_button: bool,
+        options: NoteOptions,
     ) -> NoteResponse {
         let note_key = note.key().unwrap();
 
@@ -409,7 +405,7 @@ impl<'a> NoteView<'a> {
             let cached_note = note_cache.cached_note_or_insert_mut(note_key, note);
             render_reltime(ui, cached_note, true);
 
-            if use_options_button {
+            if options.has_options_button() {
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let more_options_resp = more_options_button(ui, note_key, 8.0);
                     options_context_menu(ui, more_options_resp)
@@ -447,7 +443,7 @@ impl<'a> NoteView<'a> {
                                 self.note_cache,
                                 self.note,
                                 &profile,
-                                self.use_options,
+                                self.options(),
                             )
                             .option_selection;
                         })
@@ -494,7 +490,7 @@ impl<'a> NoteView<'a> {
                         self.note_cache,
                         self.note,
                         &profile,
-                        self.use_options,
+                        self.options(),
                     )
                     .option_selection;
                     ui.horizontal(|ui| {

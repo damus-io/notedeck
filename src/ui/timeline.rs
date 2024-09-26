@@ -149,7 +149,7 @@ fn timeline_ui(
                         let resp = ui::NoteView::new(ndb, note_cache, img_cache, &note)
                             .note_previews(!textmode)
                             .selectable_text(false)
-                            .use_more_options_button(true)
+                            .options_button(true)
                             .show(ui);
 
                         if let Some(ba) = resp.action {

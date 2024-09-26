@@ -5,14 +5,15 @@ bitflags! {
     // Attributes can be applied to flags types
     #[repr(transparent)]
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct NoteOptions: u32 {
-        const actionbar       = 0b00000001;
-        const note_previews   = 0b00000010;
-        const small_pfp       = 0b00000100;
-        const medium_pfp      = 0b00001000;
-        const wide            = 0b00010000;
-        const selectable_text = 0b00100000;
-        const textmode        = 0b01000000;
+    pub struct NoteOptions: u64 {
+        const actionbar       = 0b0000000000000001;
+        const note_previews   = 0b0000000000000010;
+        const small_pfp       = 0b0000000000000100;
+        const medium_pfp      = 0b0000000000001000;
+        const wide            = 0b0000000000010000;
+        const selectable_text = 0b0000000000100000;
+        const textmode        = 0b0000000001000000;
+        const options_button  = 0b0000000010000000;
     }
 }
 
@@ -36,6 +37,8 @@ impl NoteOptions {
     create_setter!(set_selectable_text, selectable_text);
     create_setter!(set_textmode, textmode);
     create_setter!(set_actionbar, actionbar);
+    create_setter!(set_wide, wide);
+    create_setter!(set_options_button, options_button);
 
     #[inline]
     pub fn has_actionbar(self) -> bool {
@@ -67,6 +70,16 @@ impl NoteOptions {
         (self & NoteOptions::medium_pfp) == NoteOptions::medium_pfp
     }
 
+    #[inline]
+    pub fn has_wide(self) -> bool {
+        (self & NoteOptions::wide) == NoteOptions::wide
+    }
+
+    #[inline]
+    pub fn has_options_button(self) -> bool {
+        (self & NoteOptions::options_button) == NoteOptions::options_button
+    }
+
     pub fn pfp_size(&self) -> f32 {
         if self.has_small_pfp() {
             ProfilePic::small_size()
@@ -74,20 +87,6 @@ impl NoteOptions {
             ProfilePic::medium_size()
         } else {
             ProfilePic::default_size()
-        }
-    }
-
-    #[inline]
-    pub fn has_wide(self) -> bool {
-        (self & NoteOptions::wide) == NoteOptions::wide
-    }
-
-    #[inline]
-    pub fn set_wide(&mut self, enable: bool) {
-        if enable {
-            *self |= NoteOptions::wide;
-        } else {
-            *self &= !NoteOptions::wide;
         }
     }
 }

@@ -67,7 +67,7 @@ impl<'a> PostReplyView<'a> {
                     ui::NoteView::new(self.ndb, self.note_cache, self.img_cache, self.note)
                         .actionbar(false)
                         .medium_pfp(true)
-                        .use_more_options_button(true)
+                        .options_button(true)
                         .show(ui);
                 });
 
