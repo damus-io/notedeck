@@ -68,6 +68,7 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) {
                     PostAction::execute(kp, &action, &mut app.pool, draft, |np, seckey| {
                         np.to_note(seckey)
                     });
+                    app.columns_mut().column_mut(col).router_mut().go_back();
                 }
 
                 None
