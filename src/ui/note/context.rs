@@ -105,9 +105,12 @@ impl NoteContextButton {
         let anim_speed = 0.05;
         let response = ui.interact(put_at, id, egui::Sense::click());
 
-        let animation_progress =
-            ui.ctx()
-                .animate_bool_with_time(id, response.hovered(), anim_speed);
+        let hovered = response.hovered();
+        let animation_progress = ui.ctx().animate_bool_with_time(id, hovered, anim_speed);
+
+        if hovered {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
 
         let min_distance = Self::min_distance_between_circles();
         let cur_distance = min_distance
