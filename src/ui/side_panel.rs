@@ -186,8 +186,11 @@ impl<'a> DesktopSidePanel<'a> {
                 }
             }
             SidePanelAction::Columns => {
-                // TODO
-                info!("Clicked columns button");
+                if router.routes().iter().any(|&r| r == Route::AddColumn) {
+                    router.go_back();
+                } else {
+                    router.route_to(Route::AddColumn);
+                }
             }
             SidePanelAction::ComposeNote => {
                 if router.routes().iter().any(|&r| r == Route::ComposeNote) {

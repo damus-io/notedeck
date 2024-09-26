@@ -13,6 +13,7 @@ pub enum Route {
     Accounts(AccountsRoute),
     Relays,
     ComposeNote,
+    AddColumn,
 }
 
 impl Route {
@@ -125,6 +126,8 @@ impl fmt::Display for Route {
                 AccountsRoute::AddAccount => write!(f, "Add Account"),
             },
             Route::ComposeNote => write!(f, "Compose Note"),
+
+            Route::AddColumn => write!(f, "Add Column"),
         }
     }
 }

@@ -3,8 +3,10 @@ use crate::{
     relay_pool_manager::RelayPoolManager,
     route::Route,
     thread::thread_unsubscribe,
-    timeline::route::{render_timeline_route, TimelineRoute, TimelineRouteResponse},
-    ui::{self, note::PostAction, RelayView, View},
+    timeline::route::{render_timeline_route, AfterRouteExecution, TimelineRoute},
+    ui::{
+        self, add_column::{AddColumnResponse, AddColumnView}, note::PostAction, RelayView, View
+    },
     Damus,
 };
 
@@ -73,12 +75,15 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) {
 
                 None
             }
+            Route::AddColumn => AddColumnView::new(app.accounts.get_selected_account())
+                .ui(ui)
+                .map(AfterRouteExecution::AddColumn),
         });
 
-    if let Some(reply_response) = nav_response.inner {
+    if let Some(after_route_execution) = nav_response.inner {
         // start returning when we're finished posting
-        match reply_response {
-            TimelineRouteResponse::Post(resp) => {
+        match after_route_execution {
+            AfterRouteExecution::Post(resp) => {
                 if let Some(action) = resp.action {
                     match action {
                         PostAction::Post(_) => {
@@ -86,6 +91,15 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) {
                         }
                     }
                 }
+            }
+
+            AfterRouteExecution::AddColumn(add_column_resp) => {
+                match add_column_resp {
+                    AddColumnResponse::Timeline(timeline) => {
+                        app.columns_mut().add_timeline(timeline);
+                    }
+                };
+                app.columns_mut().column_mut(col).router_mut().go_back();
             }
         }
     }
