@@ -709,11 +709,8 @@ fn more_options_button(ui: &mut egui::Ui, note_key: NoteKey, max_height: f32) ->
 
     let translated_radius = (cur_radius - 1.0) / 2.0;
 
-    let color = if ui.style().visuals.dark_mode {
-        egui::Color32::WHITE
-    } else {
-        egui::Color32::BLACK
-    };
+    // This works in both themes
+    let color = colors::GRAY_SECONDARY;
 
     // Draw circles
     let painter = ui.painter_at(rect);
