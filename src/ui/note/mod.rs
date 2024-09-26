@@ -1,10 +1,12 @@
 pub mod contents;
+pub mod context;
 pub mod options;
 pub mod post;
 pub mod quote_repost;
 pub mod reply;
 
 pub use contents::NoteContents;
+pub use context::{NoteContextButton, NoteContextSelection};
 pub use options::NoteOptions;
 pub use post::{PostAction, PostResponse, PostView};
 pub use quote_repost::QuoteRepostView;
@@ -18,7 +20,7 @@ use crate::{
     notecache::{CachedNote, NoteCache},
     ui::{self, View},
 };
-use egui::{Id, Label, Response, RichText, Sense};
+use egui::{Id, Label, Pos2, Rect, Response, RichText, Sense};
 use enostr::NoteId;
 use nostrdb::{Ndb, Note, NoteKey, NoteReply, Transaction};
 
@@ -35,6 +37,28 @@ pub struct NoteView<'a> {
 pub struct NoteResponse {
     pub response: egui::Response,
     pub action: Option<BarAction>,
+    pub context_selection: Option<NoteContextSelection>,
+}
+
+impl NoteResponse {
+    pub fn new(response: egui::Response) -> Self {
+        Self {
+            response,
+            action: None,
+            context_selection: None,
+        }
+    }
+
+    pub fn with_action(self, action: Option<BarAction>) -> Self {
+        Self { action, ..self }
+    }
+
+    pub fn select_option(self, context_selection: Option<NoteContextSelection>) -> Self {
+        Self {
+            context_selection,
+            ..self
+        }
+    }
 }
 
 impl<'a> View for NoteView<'a> {
@@ -215,6 +239,11 @@ impl<'a> NoteView<'a> {
         self
     }
 
+    pub fn options_button(mut self, enable: bool) -> Self {
+        self.options_mut().set_options_button(enable);
+        self
+    }
+
     pub fn options(&self) -> NoteOptions {
         self.flags
     }
@@ -324,10 +353,7 @@ impl<'a> NoteView<'a> {
 
     pub fn show(&mut self, ui: &mut egui::Ui) -> NoteResponse {
         if self.options().has_textmode() {
-            NoteResponse {
-                response: self.textmode_ui(ui),
-                action: None,
-            }
+            NoteResponse::new(self.textmode_ui(ui))
         } else {
             let txn = self.note.txn().expect("txn");
             if let Some(note_to_repost) = get_reposted_note(self.ndb, txn, self.note) {
@@ -369,17 +395,33 @@ impl<'a> NoteView<'a> {
         note_cache: &mut NoteCache,
         note: &Note,
         profile: &Result<nostrdb::ProfileRecord<'_>, nostrdb::Error>,
-    ) -> egui::Response {
+        options: NoteOptions,
+        container_right: Pos2,
+    ) -> NoteResponse {
         let note_key = note.key().unwrap();
 
-        ui.horizontal(|ui| {
+        let inner_response = ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
             ui.add(ui::Username::new(profile.as_ref().ok(), note.pubkey()).abbreviated(20));
 
             let cached_note = note_cache.cached_note_or_insert_mut(note_key, note);
             render_reltime(ui, cached_note, true);
-        })
-        .response
+
+            if options.has_options_button() {
+                let context_pos = {
+                    let size = NoteContextButton::max_width();
+                    let min = Pos2::new(container_right.x - size, container_right.y);
+                    Rect::from_min_size(min, egui::vec2(size, size))
+                };
+
+                let resp = ui.add(NoteContextButton::new(note_key).place_at(context_pos));
+                NoteContextButton::menu(ui, resp.clone())
+            } else {
+                None
+            }
+        });
+
+        NoteResponse::new(inner_response.response).select_option(inner_response.inner)
     }
 
     fn show_standard(&mut self, ui: &mut egui::Ui) -> NoteResponse {
@@ -388,8 +430,15 @@ impl<'a> NoteView<'a> {
         let note_key = self.note.key().expect("todo: support non-db notes");
         let txn = self.note.txn().expect("todo: support non-db notes");
         let mut note_action: Option<BarAction> = None;
+        let mut selected_option: Option<NoteContextSelection> = None;
         let profile = self.ndb.get_profile_by_pubkey(txn, self.note.pubkey());
         let maybe_hitbox = maybe_note_hitbox(ui, note_key);
+        let container_right = {
+            let r = ui.available_rect_before_wrap();
+            let x = r.max.x;
+            let y = r.min.y;
+            Pos2::new(x, y)
+        };
 
         // wide design
         let response = if self.options().has_wide() {
@@ -400,7 +449,15 @@ impl<'a> NoteView<'a> {
                 ui.vertical(|ui| {
                     ui.add_sized([size.x, self.options().pfp_size()], |ui: &mut egui::Ui| {
                         ui.horizontal_centered(|ui| {
-                            NoteView::note_header(ui, self.note_cache, self.note, &profile);
+                            selected_option = NoteView::note_header(
+                                ui,
+                                self.note_cache,
+                                self.note,
+                                &profile,
+                                self.options(),
+                                container_right,
+                            )
+                            .context_selection;
                         })
                         .response
                     });
@@ -440,8 +497,15 @@ impl<'a> NoteView<'a> {
                 self.pfp(note_key, &profile, ui);
 
                 ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
-                    NoteView::note_header(ui, self.note_cache, self.note, &profile);
-
+                    selected_option = NoteView::note_header(
+                        ui,
+                        self.note_cache,
+                        self.note,
+                        &profile,
+                        self.options(),
+                        container_right,
+                    )
+                    .context_selection;
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 2.0;
 
@@ -483,10 +547,9 @@ impl<'a> NoteView<'a> {
             note_action,
         );
 
-        NoteResponse {
-            response,
-            action: note_action,
-        }
+        NoteResponse::new(response)
+            .with_action(note_action)
+            .select_option(selected_option)
     }
 }
 

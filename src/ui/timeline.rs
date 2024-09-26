@@ -149,12 +149,17 @@ fn timeline_ui(
                         let resp = ui::NoteView::new(ndb, note_cache, img_cache, &note)
                             .note_previews(!textmode)
                             .selectable_text(false)
+                            .options_button(true)
                             .show(ui);
 
                         if let Some(ba) = resp.action {
                             bar_action = Some(ba);
                         } else if resp.response.clicked() {
                             debug!("clicked note");
+                        }
+
+                        if let Some(context) = resp.context_selection {
+                            context.process(ui, &note);
                         }
                     });
 

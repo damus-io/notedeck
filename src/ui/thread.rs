@@ -115,14 +115,18 @@ impl<'a> ThreadView<'a> {
                         };
 
                         ui::padding(8.0, ui, |ui| {
-                            if let Some(bar_action) =
+                            let note_response =
                                 ui::NoteView::new(self.ndb, self.note_cache, self.img_cache, &note)
                                     .note_previews(!self.textmode)
                                     .textmode(self.textmode)
-                                    .show(ui)
-                                    .action
-                            {
+                                    .options_button(!self.textmode)
+                                    .show(ui);
+                            if let Some(bar_action) = note_response.action {
                                 action = Some(bar_action);
+                            }
+
+                            if let Some(selection) = note_response.context_selection {
+                                selection.process(ui, &note);
                             }
                         });
 

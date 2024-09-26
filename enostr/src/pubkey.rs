@@ -68,6 +68,10 @@ impl Pubkey {
             Ok(Pubkey(data.1.try_into().unwrap()))
         }
     }
+
+    pub fn to_bech(&self) -> Option<String> {
+        nostr::bech32::encode::<nostr::bech32::Bech32>(HRP_NPUB, &self.0).ok()
+    }
 }
 
 impl fmt::Display for Pubkey {

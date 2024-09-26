@@ -103,12 +103,17 @@ pub fn render_note_preview(
             ui.visuals().noninteractive().bg_stroke.color,
         ))
         .show(ui, |ui| {
-            ui::NoteView::new(ndb, note_cache, img_cache, &note)
+            let resp = ui::NoteView::new(ndb, note_cache, img_cache, &note)
                 .actionbar(false)
                 .small_pfp(true)
                 .wide(true)
                 .note_previews(false)
+                .options_button(true)
                 .show(ui);
+
+            if let Some(context) = resp.context_selection {
+                context.process(ui, &note);
+            }
         })
         .response
 }
