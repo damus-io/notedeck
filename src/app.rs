@@ -6,8 +6,7 @@ use crate::{
     column::{Column, Columns},
     draft::Drafts,
     error::{Error, FilterError},
-    filter,
-    filter::FilterState,
+    filter::{self, FilterState},
     frame_history::FrameHistory,
     imgcache::ImageCache,
     key_storage::KeyStorageType,
@@ -17,7 +16,7 @@ use crate::{
     route::Route,
     subscriptions::{SubKind, Subscriptions},
     thread::Threads,
-    timeline::{Timeline, TimelineKind, ViewFilter},
+    timeline::{Timeline, TimelineId, TimelineKind, ViewFilter},
     ui::{self, DesktopSidePanel},
     unknowns::UnknownIds,
     view_state::ViewState,
@@ -41,6 +40,7 @@ use tracing::{debug, error, info, trace, warn};
 pub enum DamusState {
     Initializing,
     Initialized,
+    NewTimelineSub(TimelineId),
 }
 
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
@@ -394,43 +394,99 @@ fn setup_initial_nostrdb_subs(
     columns: &mut Columns,
 ) -> Result<()> {
     for timeline in columns.timelines_mut() {
-        match &timeline.filter {
-            FilterState::Ready(filters) => {
-                { setup_initial_timeline(ndb, timeline, note_cache, &filters.clone()) }?
-            }
+        setup_nostrdb_sub(ndb, note_cache, timeline)?
+    }
 
-            FilterState::Broken(err) => {
-                error!("FetchingRemote state broken in setup_initial_nostr_subs: {err}")
-            }
-            FilterState::FetchingRemote(_) => {
-                error!("FetchingRemote state in setup_initial_nostr_subs")
-            }
-            FilterState::GotRemote(_) => {
-                error!("GotRemote state in setup_initial_nostr_subs")
-            }
-            FilterState::NeedsRemote(_filters) => {
-                // can't do anything yet, we defer to first connect to send
-                // remote filters
-            }
+    Ok(())
+}
+
+fn setup_nostrdb_sub(ndb: &Ndb, note_cache: &mut NoteCache, timeline: &mut Timeline) -> Result<()> {
+    match &timeline.filter {
+        FilterState::Ready(filters) => {
+            { setup_initial_timeline(ndb, timeline, note_cache, &filters.clone()) }?
+        }
+
+        FilterState::Broken(err) => {
+            error!("FetchingRemote state broken in setup_initial_nostr_subs: {err}")
+        }
+        FilterState::FetchingRemote(_) => {
+            error!("FetchingRemote state in setup_initial_nostr_subs")
+        }
+        FilterState::GotRemote(_) => {
+            error!("GotRemote state in setup_initial_nostr_subs")
+        }
+        FilterState::NeedsRemote(_filters) => {
+            // can't do anything yet, we defer to first connect to send
+            // remote filters
         }
     }
 
     Ok(())
 }
 
-fn update_damus(damus: &mut Damus, ctx: &egui::Context) {
-    if damus.state == DamusState::Initializing {
-        #[cfg(feature = "profiling")]
-        setup_profiling();
-
-        damus.state = DamusState::Initialized;
-        // this lets our eose handler know to close unknownids right away
-        damus
-            .subscriptions()
-            .insert("unknownids".to_string(), SubKind::OneShot);
-        setup_initial_nostrdb_subs(&damus.ndb, &mut damus.note_cache, &mut damus.columns)
-            .expect("home subscription failed");
+fn setup_new_nostrdb_sub(
+    ndb: &Ndb,
+    note_cache: &mut NoteCache,
+    columns: &mut Columns,
+    new_timeline_id: TimelineId,
+) -> Result<()> {
+    if let Some(timeline) = columns.find_timeline_mut(new_timeline_id) {
+        info!("Setting up timeline sub for {}", timeline.id);
+        if let FilterState::Ready(filters) = &timeline.filter {
+            for filter in filters {
+                info!("Setting up filter {:?}", filter.json());
+            }
+        }
+        setup_nostrdb_sub(ndb, note_cache, timeline)?
     }
+
+    Ok(())
+}
+
+fn update_damus(damus: &mut Damus, ctx: &egui::Context) {
+    match damus.state {
+        DamusState::Initializing => {
+            #[cfg(feature = "profiling")]
+            setup_profiling();
+
+            damus.state = DamusState::Initialized;
+            // this lets our eose handler know to close unknownids right away
+            damus
+                .subscriptions()
+                .insert("unknownids".to_string(), SubKind::OneShot);
+            setup_initial_nostrdb_subs(&damus.ndb, &mut damus.note_cache, &mut damus.columns)
+                .expect("home subscription failed");
+        }
+
+        DamusState::NewTimelineSub(new_timeline_id) => {
+            info!("adding new timeline {}", new_timeline_id);
+            setup_new_nostrdb_sub(
+                &damus.ndb,
+                &mut damus.note_cache,
+                &mut damus.columns,
+                new_timeline_id,
+            )
+            .expect("new timeline subscription failed");
+
+            if let Some(filter) = {
+                let timeline = damus
+                    .columns
+                    .find_timeline(new_timeline_id)
+                    .expect("timeline");
+                match &timeline.filter {
+                    FilterState::Ready(filters) => Some(filters.clone()),
+                    _ => None,
+                }
+            } {
+                let subid = Uuid::new_v4().to_string();
+                damus.pool.subscribe(subid, filter);
+
+                damus.state = DamusState::Initialized;
+            }
+        }
+
+        DamusState::Initialized => (),
+    };
 
     if let Err(err) = try_process_event(damus, ctx) {
         error!("error processing event: {}", err);
@@ -712,6 +768,10 @@ impl Damus {
         } else {
             Uuid::new_v4().to_string()
         }
+    }
+
+    pub fn add_new_timeline(&mut self, timeline_id: TimelineId) {
+        self.state = DamusState::NewTimelineSub(timeline_id);
     }
 
     pub fn mock<P: AsRef<Path>>(data_path: P) -> Self {

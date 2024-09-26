@@ -1,38 +1,39 @@
 use egui::{RichText, Ui};
-use nostrdb::FilterBuilder;
+use nostrdb::Ndb;
 
-use crate::{app_style::NotedeckTextStyle, timeline::Timeline, user_account::UserAccount};
+use crate::{
+    app_style::NotedeckTextStyle,
+    timeline::{Timeline, TimelineKind},
+    user_account::UserAccount,
+};
 
 pub enum AddColumnResponse {
     Timeline(Timeline),
 }
 
 pub struct AddColumnView<'a> {
+    ndb: &'a Ndb,
     cur_account: Option<&'a UserAccount>,
 }
 
 impl<'a> AddColumnView<'a> {
-    pub fn new(cur_account: Option<&'a UserAccount>) -> Self {
-        Self { cur_account }
+    pub fn new(ndb: &'a Ndb, cur_account: Option<&'a UserAccount>) -> Self {
+        Self { ndb, cur_account }
     }
 
     pub fn ui(&mut self, ui: &mut Ui) -> Option<AddColumnResponse> {
         ui.label(RichText::new("Add column").text_style(NotedeckTextStyle::Heading.text_style()));
 
         if ui.button("create global timeline").clicked() {
-            Some(AddColumnResponse::Timeline(create_global_timeline()))
+            Some(AddColumnResponse::Timeline(
+                TimelineKind::Universe
+                    .into_timeline(self.ndb, None)
+                    .expect("universe timeline"),
+            ))
         } else {
             None
         }
     }
-}
-
-fn create_global_timeline() -> Timeline {
-    let filter = FilterBuilder::new().kinds([1]).build();
-    Timeline::new(
-        crate::timeline::TimelineKind::Generic,
-        crate::filter::FilterState::Ready(vec![filter]),
-    )
 }
 
 // struct ColumnOption {

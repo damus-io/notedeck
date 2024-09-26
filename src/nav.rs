@@ -5,7 +5,10 @@ use crate::{
     thread::thread_unsubscribe,
     timeline::route::{render_timeline_route, AfterRouteExecution, TimelineRoute},
     ui::{
-        self, add_column::{AddColumnResponse, AddColumnView}, note::PostAction, RelayView, View
+        self,
+        add_column::{AddColumnResponse, AddColumnView},
+        note::PostAction,
+        RelayView, View,
     },
     Damus,
 };
@@ -75,7 +78,7 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) {
 
                 None
             }
-            Route::AddColumn => AddColumnView::new(app.accounts.get_selected_account())
+            Route::AddColumn => AddColumnView::new(&app.ndb, app.accounts.get_selected_account())
                 .ui(ui)
                 .map(AfterRouteExecution::AddColumn),
         });
@@ -96,6 +99,7 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) {
             AfterRouteExecution::AddColumn(add_column_resp) => {
                 match add_column_resp {
                     AddColumnResponse::Timeline(timeline) => {
+                        app.add_new_timeline(timeline.id);
                         app.columns_mut().add_timeline(timeline);
                     }
                 };
