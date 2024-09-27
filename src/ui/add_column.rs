@@ -1,18 +1,20 @@
-use egui::{vec2, ImageSource, Label, Layout, Margin, RichText, Sense, Ui};
+use egui::{pos2, vec2, Color32, FontId, ImageSource, Pos2, Rect, Separator, Ui};
 use nostrdb::Ndb;
 
 use crate::{
-    app_style::NotedeckTextStyle,
+    app_style::{get_font_size, NotedeckTextStyle},
     timeline::{PubkeySource, Timeline, TimelineKind},
+    ui::anim::ICON_EXPANSION_MULTIPLE,
     user_account::UserAccount,
 };
 
-use super::padding;
+use super::anim::AnimationHelper;
 
 pub enum AddColumnResponse {
     Timeline(Timeline),
 }
 
+#[derive(Clone)]
 enum AddColumnOption {
     Universe,
     Notification(PubkeySource),
@@ -46,76 +48,118 @@ impl<'a> AddColumnView<'a> {
     }
 
     pub fn ui(&mut self, ui: &mut Ui) -> Option<AddColumnResponse> {
-        egui::Frame::none()
-            .outer_margin(Margin::symmetric(16.0, 20.0))
-            .show(ui, |ui| {
-                ui.label(
-                    RichText::new("Add column").text_style(NotedeckTextStyle::Body.text_style()),
-                );
-            });
-        ui.separator();
-
-        let width_padding = 8.0;
-        let button_height = 69.0;
-        let icon_width = 32.0;
         let mut selected_option: Option<AddColumnResponse> = None;
         for column_option_data in self.get_column_options() {
-            let width = ui.available_width() - 2.0 * width_padding;
-            let (rect, resp) = ui.allocate_exact_size(vec2(width, button_height), Sense::click());
-            ui.allocate_ui_at_rect(rect, |ui| {
-                padding(Margin::symmetric(width_padding, 0.0), ui, |ui| {
-                    ui.allocate_ui_with_layout(
-                        vec2(width, button_height),
-                        Layout::left_to_right(egui::Align::Center),
-                        |ui| {
-                            self.column_option_ui(
-                                ui,
-                                icon_width,
-                                column_option_data.icon,
-                                column_option_data.title,
-                                column_option_data.description,
-                            );
-                        },
-                    )
-                    .response
-                })
-            });
-            ui.separator();
-
-            if resp.clicked() {
-                if let Some(resp) = column_option_data.option.take_as_response(self.ndb) {
-                    selected_option = Some(resp);
-                }
+            let option = column_option_data.option.clone();
+            if self.column_option_ui(ui, column_option_data).clicked() {
+                selected_option = option.take_as_response(self.ndb);
             }
+
+            ui.add(Separator::default().spacing(0.0));
         }
 
         selected_option
     }
 
-    fn column_option_ui(
-        &mut self,
-        ui: &mut Ui,
-        icon_width: f32,
-        icon: ImageSource<'_>,
-        title: &str,
-        description: &str,
-    ) {
-        ui.add(egui::Image::new(icon).fit_to_exact_size(vec2(icon_width, icon_width)));
+    fn column_option_ui(&mut self, ui: &mut Ui, data: ColumnOptionData) -> egui::Response {
+        let icon_padding = 8.0;
+        let min_icon_width = 32.0;
+        let height_padding = 12.0;
+        let max_width = ui.available_width();
+        let title_style = NotedeckTextStyle::Body;
+        let desc_style = NotedeckTextStyle::Button;
+        let title_min_font_size = get_font_size(ui.ctx(), &title_style);
+        let desc_min_font_size = get_font_size(ui.ctx(), &desc_style);
 
-        ui.vertical(|ui| {
-            ui.add_space(16.0);
-            ui.add(
-                Label::new(RichText::new(title).text_style(NotedeckTextStyle::Body.text_style()))
-                    .selectable(false),
+        let max_height = {
+            let max_wrap_width =
+                max_width - ((icon_padding * 2.0) + (min_icon_width * ICON_EXPANSION_MULTIPLE));
+            let title_max_font = FontId::new(
+                title_min_font_size * ICON_EXPANSION_MULTIPLE,
+                title_style.font_family(),
             );
-
-            ui.add(
-                Label::new(
-                    RichText::new(description).text_style(NotedeckTextStyle::Button.text_style()),
+            let desc_max_font = FontId::new(
+                desc_min_font_size * ICON_EXPANSION_MULTIPLE,
+                desc_style.font_family(),
+            );
+            let max_desc_galley = ui.fonts(|f| {
+                f.layout(
+                    data.description.to_string(),
+                    desc_max_font,
+                    Color32::WHITE,
+                    max_wrap_width,
                 )
-                .selectable(false),
-            );
-        });
+            });
+
+            let max_title_galley = ui.fonts(|f| {
+                f.layout(
+                    data.title.to_string(),
+                    title_max_font,
+                    Color32::WHITE,
+                    max_wrap_width,
+                )
+            });
+
+            let desc_font_max_size = max_desc_galley.rect.height();
+            let title_font_max_size = max_title_galley.rect.height();
+            title_font_max_size + desc_font_max_size + (2.0 * height_padding)
+        };
+
+        let helper = AnimationHelper::new(ui, data.title, vec2(max_width, max_height));
+        let animation_rect = helper.get_animation_rect();
+
+        let cur_icon_width = helper.scale_1d_pos(min_icon_width);
+        let painter = ui.painter_at(animation_rect);
+
+        let cur_icon_size = vec2(cur_icon_width, cur_icon_width);
+        let cur_icon_x_pos = animation_rect.left() + (icon_padding) + (cur_icon_width / 2.0);
+
+        let title_cur_font = FontId::new(
+            helper.scale_1d_pos(title_min_font_size),
+            title_style.font_family(),
+        );
+
+        let desc_cur_font = FontId::new(
+            helper.scale_1d_pos(desc_min_font_size),
+            desc_style.font_family(),
+        );
+
+        let wrap_width = max_width - (cur_icon_width + (icon_padding * 2.0));
+        let text_color = ui.ctx().style().visuals.text_color();
+        let fallback_color = ui.ctx().style().visuals.weak_text_color();
+
+        let title_galley = painter.layout(
+            data.title.to_string(),
+            title_cur_font,
+            text_color,
+            wrap_width,
+        );
+        let desc_galley = painter.layout(
+            data.description.to_string(),
+            desc_cur_font,
+            text_color,
+            wrap_width,
+        );
+
+        let galley_heights = title_galley.rect.height() + desc_galley.rect.height();
+
+        let cur_height_padding = (animation_rect.height() - galley_heights) / 2.0;
+        let corner_x_pos = cur_icon_x_pos + (cur_icon_width / 2.0) + icon_padding;
+        let title_corner_pos = Pos2::new(corner_x_pos, animation_rect.top() + cur_height_padding);
+        let desc_corner_pos = Pos2::new(
+            corner_x_pos,
+            title_corner_pos.y + title_galley.rect.height(),
+        );
+
+        let icon_cur_y = animation_rect.top() + cur_height_padding + (galley_heights / 2.0);
+        let icon_img = egui::Image::new(data.icon).fit_to_exact_size(cur_icon_size);
+        let icon_rect = Rect::from_center_size(pos2(cur_icon_x_pos, icon_cur_y), cur_icon_size);
+
+        icon_img.paint_at(ui, icon_rect);
+        painter.galley(title_corner_pos, title_galley, fallback_color);
+        painter.galley(desc_corner_pos, desc_galley, fallback_color);
+
+        helper.take_animation_response()
     }
 
     fn get_column_options(&self) -> Vec<ColumnOptionData> {
