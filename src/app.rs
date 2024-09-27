@@ -184,35 +184,13 @@ fn send_initial_filters(damus: &mut Damus, relay_url: &str) {
     }
 }
 
-enum ContextAction {
-    SetPixelsPerPoint(f32),
-}
-
-fn handle_key_events(
-    input: &egui::InputState,
-    pixels_per_point: f32,
-    columns: &mut Columns,
-) -> Option<ContextAction> {
-    let amount = 0.2;
-
-    // We can't do things like setting the pixels_per_point when we are holding
-    // on to an locked InputState context, so we need to pass actions externally
-    let mut context_action: Option<ContextAction> = None;
-
+fn handle_key_events(input: &egui::InputState, _pixels_per_point: f32, columns: &mut Columns) {
     for event in &input.raw.events {
         if let egui::Event::Key {
             key, pressed: true, ..
         } = event
         {
             match key {
-                egui::Key::Equals => {
-                    context_action =
-                        Some(ContextAction::SetPixelsPerPoint(pixels_per_point + amount));
-                }
-                egui::Key::Minus => {
-                    context_action =
-                        Some(ContextAction::SetPixelsPerPoint(pixels_per_point - amount));
-                }
                 egui::Key::J => {
                     columns.select_down();
                 }
@@ -229,20 +207,11 @@ fn handle_key_events(
             }
         }
     }
-
-    context_action
 }
 
 fn try_process_event(damus: &mut Damus, ctx: &egui::Context) -> Result<()> {
     let ppp = ctx.pixels_per_point();
-    let res = ctx.input(|i| handle_key_events(i, ppp, &mut damus.columns));
-    if let Some(action) = res {
-        match action {
-            ContextAction::SetPixelsPerPoint(amt) => {
-                ctx.set_pixels_per_point(amt);
-            }
-        }
-    }
+    ctx.input(|i| handle_key_events(i, ppp, &mut damus.columns));
 
     let ctx2 = ctx.clone();
     let wakeup = move || {
