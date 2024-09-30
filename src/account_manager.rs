@@ -207,4 +207,5 @@ pub fn process_login_view_response(manager: &mut AccountManager, response: Accou
             manager.add_account(keypair);
         }
     }
+    manager.select_account(manager.num_accounts() - 1);
 }
