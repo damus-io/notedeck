@@ -593,10 +593,15 @@ impl Damus {
 
         let settings = NotedeckSettings::default();
 
+        let keystore = if parsed_args.use_keystore {
+            get_key_storage(settings.storage_settings)
+        } else {
+            KeyStorageType::None
+        };
+
         let mut accounts = AccountManager::new(
             // TODO: should pull this from settings
-            None,
-            get_key_storage(settings.storage_settings),
+            None, keystore,
         );
 
         for key in parsed_args.keys {
