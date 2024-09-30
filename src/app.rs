@@ -9,12 +9,13 @@ use crate::{
     filter::{self, FilterState},
     frame_history::FrameHistory,
     imgcache::ImageCache,
-    key_storage::KeyStorageType,
+    key_storage::{key_storage_impl::get_key_storage, KeyStorageType},
     nav,
     note::NoteRef,
     notecache::{CachedNote, NoteCache},
     notes_holder::NotesHolderStorage,
     profile::Profile,
+    settings::NotedeckSettings,
     subscriptions::{SubKind, Subscriptions},
     thread::Thread,
     timeline::{Timeline, TimelineId, TimelineKind, ViewFilter},
@@ -664,11 +665,12 @@ impl Damus {
         let mut config = Config::new();
         config.set_ingester_threads(4);
 
+        let settings = NotedeckSettings::default();
+
         let mut accounts = AccountManager::new(
             // TODO: should pull this from settings
             None,
-            // TODO: use correct KeyStorage mechanism for current OS arch
-            KeyStorageType::None,
+            get_key_storage(settings.storage_settings),
         );
 
         for key in parsed_args.keys {
