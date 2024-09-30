@@ -117,6 +117,14 @@ impl<'a> KeyStorage for SecurityFrameworkKeyStorage<'a> {
     fn remove_key(&self, key: &Keypair) -> KeyStorageResponse<()> {
         KeyStorageResponse::ReceivedResult(self.delete_key(&key.pubkey))
     }
+
+    fn get_selected_key(&self) -> KeyStorageResponse<Option<Pubkey>> {
+        unimplemented!()
+    }
+
+    fn select_key(&self, key: Option<Pubkey>) -> KeyStorageResponse<()> {
+        unimplemented!()
+    }
 }
 
 #[cfg(test)]

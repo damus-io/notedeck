@@ -38,4 +38,10 @@ impl KeyStorage for LinuxKeyStorage<'_> {
             LinuxKeyStorageType::BasicFileStorage => BasicFileStorage::new().remove_key(key),
         }
     }
+
+    fn get_selected_key(&self) -> KeyStorageResponse<Option<Pubkey>> {
+        match self.settings.linux_key_storage_type {
+            LinuxKeyStorageType::BasicFileStorage => BasicFileStorage::new().get_selected_key(),
+        }
+    }
 }
