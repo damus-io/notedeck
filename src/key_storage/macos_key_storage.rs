@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-use enostr::Keypair;
+use enostr::{Keypair, Pubkey};
 use serde::{Deserialize, Serialize};
 
 use super::file_key_storage::BasicFileStorage;
@@ -43,6 +43,20 @@ impl<'a> KeyStorage for MacOSKeyStorage<'a> {
             MacOSKeyStorageType::SecurityFramework(service_name) => {
                 SecurityFrameworkKeyStorage::new(service_name).remove_key(key)
             }
+        }
+    }
+
+    fn get_selected_key(&self) -> KeyStorageResponse<Option<Pubkey>> {
+        match &self.settings.macos_key_storage_type {
+            MacOSKeyStorageType::BasicFileStorage => BasicFileStorage::new().get_selected_key(),
+            MacOSKeyStorageType::SecurityFramework(_) => unimplemented!(),
+        }
+    }
+
+    fn select_key(&self, key: Option<Pubkey>) -> KeyStorageResponse<()> {
+        match &self.settings.macos_key_storage_type {
+            MacOSKeyStorageType::BasicFileStorage => BasicFileStorage::new().select_key(key),
+            MacOSKeyStorageType::SecurityFramework(_) => unimplemented!(),
         }
     }
 }
