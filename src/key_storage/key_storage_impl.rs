@@ -114,6 +114,7 @@ impl std::error::Error for KeyStorageError {}
 
 pub fn get_key_storage(storage_settings: StorageSettings) -> KeyStorageType {
     if cfg!(target_os = "macos") {
+        #[cfg(target_os = "macos")]
         return KeyStorageType::MacOS(storage_settings);
     }
 
