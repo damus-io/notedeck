@@ -63,6 +63,18 @@ impl Columns {
         self.columns.push(Column::new(vec![Route::AddColumn]));
     }
 
+    // Get the first router in the columns if there are columns present.
+    // Otherwise, create a new column picker and return the router
+    pub fn get_first_router(&mut self) -> &mut Router<Route> {
+        if self.columns.is_empty() {
+            self.new_column_picker();
+        }
+        self.columns
+            .get_mut(0)
+            .expect("There should be at least one column")
+            .router_mut()
+    }
+
     pub fn columns_mut(&mut self) -> &mut Vec<Column> {
         &mut self.columns
     }

@@ -6,7 +6,7 @@ use crate::{
     colors,
     column::{Column, Columns},
     imgcache::ImageCache,
-    route::{Route, Router},
+    route::Route,
     user_account::UserAccount,
     Damus,
 };
@@ -163,7 +163,7 @@ impl<'a> DesktopSidePanel<'a> {
     }
 
     pub fn perform_action(columns: &mut Columns, action: SidePanelAction) {
-        let router = get_first_router(columns);
+        let router = columns.get_first_router();
         match action {
             SidePanelAction::Panel => {} // TODO
             SidePanelAction::Account => {
@@ -232,17 +232,6 @@ fn settings_button(dark_mode: bool) -> impl Widget {
 
         helper.take_animation_response()
     }
-}
-
-fn get_first_router(columns: &mut Columns) -> &mut Router<Route> {
-    if columns.columns().is_empty() {
-        columns.new_column_picker();
-    }
-    columns
-        .columns_mut()
-        .get_mut(0)
-        .expect("There should be at least one column")
-        .router_mut()
 }
 
 fn add_column_button(dark_mode: bool) -> impl Widget {
