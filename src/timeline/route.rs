@@ -26,13 +26,13 @@ pub enum TimelineRoute {
     Quote(NoteId),
 }
 
-pub enum TimelineRouteResponse {
+pub enum AfterRouteExecution {
     Post(PostResponse),
 }
 
-impl TimelineRouteResponse {
+impl AfterRouteExecution {
     pub fn post(post: PostResponse) -> Self {
-        TimelineRouteResponse::Post(post)
+        AfterRouteExecution::Post(post)
     }
 }
 
@@ -50,7 +50,7 @@ pub fn render_timeline_route(
     col: usize,
     textmode: bool,
     ui: &mut egui::Ui,
-) -> Option<TimelineRouteResponse> {
+) -> Option<AfterRouteExecution> {
     match route {
         TimelineRoute::Timeline(timeline_id) => {
             if let Some(bar_action) =
@@ -111,7 +111,7 @@ pub fn render_timeline_route(
                 });
             }
 
-            Some(TimelineRouteResponse::post(response.inner))
+            Some(AfterRouteExecution::post(response.inner))
         }
 
         TimelineRoute::Quote(id) => {
@@ -140,7 +140,7 @@ pub fn render_timeline_route(
                     np.to_quote(seckey, &note)
                 });
             }
-            Some(TimelineRouteResponse::post(response.inner))
+            Some(AfterRouteExecution::post(response.inner))
         }
     }
 }

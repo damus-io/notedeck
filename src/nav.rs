@@ -3,8 +3,13 @@ use crate::{
     relay_pool_manager::RelayPoolManager,
     route::Route,
     thread::thread_unsubscribe,
-    timeline::route::{render_timeline_route, TimelineRoute, TimelineRouteResponse},
-    ui::{self, note::PostAction, RelayView, View},
+    timeline::route::{render_timeline_route, AfterRouteExecution, TimelineRoute},
+    ui::{
+        self,
+        add_column::{AddColumnResponse, AddColumnView},
+        note::PostAction,
+        RelayView, View,
+    },
     Damus,
 };
 
@@ -73,12 +78,27 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) {
 
                 None
             }
+            Route::AddColumn => {
+                let resp = AddColumnView::new(&app.ndb, app.accounts.get_selected_account()).ui(ui);
+
+                if let Some(resp) = resp {
+                    match resp {
+                        AddColumnResponse::Timeline(timeline) => {
+                            let id = timeline.id;
+                            if app.columns_mut().add_timeline_to_column(col, timeline) {
+                                app.subscribe_new_timeline(id);
+                            }
+                        }
+                    };
+                }
+                None
+            }
         });
 
-    if let Some(reply_response) = nav_response.inner {
+    if let Some(after_route_execution) = nav_response.inner {
         // start returning when we're finished posting
-        match reply_response {
-            TimelineRouteResponse::Post(resp) => {
+        match after_route_execution {
+            AfterRouteExecution::Post(resp) => {
                 if let Some(action) = resp.action {
                     match action {
                         PostAction::Post(_) => {
@@ -102,6 +122,10 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) {
             );
         }
     } else if let Some(NavAction::Navigated) = nav_response.action {
-        app.columns_mut().column_mut(col).router_mut().navigating = false;
+        let cur_router = app.columns_mut().column_mut(col).router_mut();
+        cur_router.navigating = false;
+        if cur_router.is_replacing() {
+            cur_router.remove_previous_route();
+        }
     }
 }

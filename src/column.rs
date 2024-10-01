@@ -47,6 +47,34 @@ impl Columns {
         self.columns.push(Column::new(routes))
     }
 
+    pub fn add_timeline_to_column(&mut self, col: usize, timeline: Timeline) -> bool {
+        if let Some(column) = self.columns.get_mut(col) {
+            column
+                .router_mut()
+                .route_to_replaced(Route::timeline(timeline.id));
+            self.timelines.push(timeline);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn new_column_picker(&mut self) {
+        self.columns.push(Column::new(vec![Route::AddColumn]));
+    }
+
+    // Get the first router in the columns if there are columns present.
+    // Otherwise, create a new column picker and return the router
+    pub fn get_first_router(&mut self) -> &mut Router<Route> {
+        if self.columns.is_empty() {
+            self.new_column_picker();
+        }
+        self.columns
+            .get_mut(0)
+            .expect("There should be at least one column")
+            .router_mut()
+    }
+
     pub fn columns_mut(&mut self) -> &mut Vec<Column> {
         &mut self.columns
     }
