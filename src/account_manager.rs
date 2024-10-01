@@ -96,13 +96,14 @@ pub fn process_accounts_view_response(
 }
 
 impl AccountManager {
-    pub fn new(currently_selected_account: Option<usize>, key_store: KeyStorageType) -> Self {
+    pub fn new(key_store: KeyStorageType) -> Self {
         let accounts = if let KeyStorageResponse::ReceivedResult(res) = key_store.get_keys() {
             res.unwrap_or_default()
         } else {
             Vec::new()
         };
 
+        let currently_selected_account = get_selected_index(&accounts, &key_store);
         AccountManager {
             currently_selected_account,
             accounts,
@@ -188,13 +189,23 @@ impl AccountManager {
     }
 
     pub fn select_account(&mut self, index: usize) {
-        if self.accounts.get(index).is_some() {
-            self.currently_selected_account = Some(index)
+        if let Some(account) = self.accounts.get(index) {
+            self.currently_selected_account = Some(index);
+            self.key_store.select_key(Some(account.pubkey));
         }
     }
 
     pub fn clear_selected_account(&mut self) {
-        self.currently_selected_account = None
+        self.currently_selected_account = None;
+        self.key_store.select_key(None);
+    }
+}
+
+fn get_selected_index(accounts: &[UserAccount], keystore: &KeyStorageType) -> Option<usize> {
+    if let KeyStorageResponse::ReceivedResult(Ok(Some(pubkey))) = keystore.get_selected_key() {
+        accounts.iter().position(|account| account.pubkey == pubkey)
+    } else {
+        None
     }
 }
 

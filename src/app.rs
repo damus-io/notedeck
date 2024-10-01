@@ -601,7 +601,7 @@ impl Damus {
 
         let mut accounts = AccountManager::new(
             // TODO: should pull this from settings
-            None, keystore,
+            keystore,
         );
 
         for key in parsed_args.keys {
@@ -748,7 +748,7 @@ impl Damus {
             columns,
             textmode: false,
             ndb: Ndb::new(data_path.as_ref().to_str().expect("db path ok"), &config).expect("ndb"),
-            accounts: AccountManager::new(None, KeyStorageType::None),
+            accounts: AccountManager::new(KeyStorageType::None),
             frame_history: FrameHistory::default(),
             view_state: ViewState::default(),
         }
