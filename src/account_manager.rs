@@ -14,7 +14,7 @@ use crate::{
         account_management::{AccountsView, AccountsViewResponse},
     },
 };
-use tracing::info;
+use tracing::{error, info};
 
 pub use crate::user_account::UserAccount;
 
@@ -202,11 +202,16 @@ impl AccountManager {
 }
 
 fn get_selected_index(accounts: &[UserAccount], keystore: &KeyStorageType) -> Option<usize> {
-    if let KeyStorageResponse::ReceivedResult(Ok(Some(pubkey))) = keystore.get_selected_key() {
-        accounts.iter().position(|account| account.pubkey == pubkey)
-    } else {
-        None
-    }
+    match keystore.get_selected_key() {
+        KeyStorageResponse::ReceivedResult(Ok(Some(pubkey))) => {
+            return accounts.iter().position(|account| account.pubkey == pubkey);
+        }
+
+        KeyStorageResponse::ReceivedResult(Err(e)) => error!("Error getting selected key: {}", e),
+        _ => (),
+    };
+
+    None
 }
 
 pub fn process_login_view_response(manager: &mut AccountManager, response: AccountLoginResponse) {

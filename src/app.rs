@@ -599,19 +599,11 @@ impl Damus {
             KeyStorageType::None
         };
 
-        let mut accounts = AccountManager::new(
-            // TODO: should pull this from settings
-            keystore,
-        );
+        let mut accounts = AccountManager::new(keystore);
 
         for key in parsed_args.keys {
             info!("adding account: {}", key.pubkey);
             accounts.add_account(key);
-        }
-
-        // TODO: pull currently selected account from settings
-        if accounts.num_accounts() > 0 {
-            accounts.select_account(0);
         }
 
         // setup relays if we have them
