@@ -8,7 +8,6 @@ use crate::{
     timeline::TimelineId,
     ui::{
         self,
-        add_column::AddColumnResponse,
         note::{
             post::{PostAction, PostResponse},
             QuoteRepostView,
@@ -29,7 +28,6 @@ pub enum TimelineRoute {
 
 pub enum AfterRouteExecution {
     Post(PostResponse),
-    AddColumn(AddColumnResponse),
 }
 
 impl AfterRouteExecution {

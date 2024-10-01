@@ -61,6 +61,7 @@ pub struct Router<R: Clone> {
     routes: Vec<R>,
     pub returning: bool,
     pub navigating: bool,
+    replacing: bool,
 }
 
 impl<R: Clone> Router<R> {
@@ -70,15 +71,24 @@ impl<R: Clone> Router<R> {
         }
         let returning = false;
         let navigating = false;
+        let replacing = false;
         Router {
             routes,
             returning,
             navigating,
+            replacing,
         }
     }
 
     pub fn route_to(&mut self, route: R) {
         self.navigating = true;
+        self.routes.push(route);
+    }
+
+    // Route to R. Then when it is successfully placed, should call `remove_previous_route`
+    pub fn route_to_replaced(&mut self, route: R) {
+        self.navigating = true;
+        self.replacing = true;
         self.routes.push(route);
     }
 
@@ -98,6 +108,20 @@ impl<R: Clone> Router<R> {
         }
         self.returning = false;
         self.routes.pop()
+    }
+
+    pub fn remove_previous_route(&mut self) -> Option<R> {
+        let num_routes = self.routes.len();
+        if num_routes <= 1 {
+            return None;
+        }
+        self.returning = false;
+        self.replacing = false;
+        Some(self.routes.remove(num_routes - 2))
+    }
+
+    pub fn is_replacing(&self) -> bool {
+        self.replacing
     }
 
     pub fn top(&self) -> &R {

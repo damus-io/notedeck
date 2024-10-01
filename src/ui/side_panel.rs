@@ -4,7 +4,7 @@ use tracing::info;
 use crate::{
     account_manager::AccountsRoute,
     colors,
-    column::Column,
+    column::{Column, Columns},
     imgcache::ImageCache,
     route::{Route, Router},
     user_account::UserAccount,
@@ -162,7 +162,8 @@ impl<'a> DesktopSidePanel<'a> {
         helper.take_animation_response()
     }
 
-    pub fn perform_action(router: &mut Router<Route>, action: SidePanelAction) {
+    pub fn perform_action(columns: &mut Columns, action: SidePanelAction) {
+        let router = get_first_router(columns);
         match action {
             SidePanelAction::Panel => {} // TODO
             SidePanelAction::Account => {
@@ -189,7 +190,7 @@ impl<'a> DesktopSidePanel<'a> {
                 if router.routes().iter().any(|&r| r == Route::AddColumn) {
                     router.go_back();
                 } else {
-                    router.route_to(Route::AddColumn);
+                    columns.new_column_picker();
                 }
             }
             SidePanelAction::ComposeNote => {
@@ -231,6 +232,17 @@ fn settings_button(dark_mode: bool) -> impl Widget {
 
         helper.take_animation_response()
     }
+}
+
+fn get_first_router(columns: &mut Columns) -> &mut Router<Route> {
+    if columns.columns().is_empty() {
+        columns.new_column_picker();
+    }
+    columns
+        .columns_mut()
+        .get_mut(0)
+        .expect("There should be at least one column")
+        .router_mut()
 }
 
 fn add_column_button(dark_mode: bool) -> impl Widget {
@@ -391,10 +403,7 @@ mod preview {
                         );
                         let response = panel.show(ui);
 
-                        DesktopSidePanel::perform_action(
-                            self.app.columns.columns_mut()[0].router_mut(),
-                            response.action,
-                        );
+                        DesktopSidePanel::perform_action(&mut self.app.columns, response.action);
                     });
                 });
         }

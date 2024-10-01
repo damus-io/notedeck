@@ -78,9 +78,21 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) {
 
                 None
             }
-            Route::AddColumn => AddColumnView::new(&app.ndb, app.accounts.get_selected_account())
-                .ui(ui)
-                .map(AfterRouteExecution::AddColumn),
+            Route::AddColumn => {
+                let resp = AddColumnView::new(&app.ndb, app.accounts.get_selected_account()).ui(ui);
+
+                if let Some(resp) = resp {
+                    match resp {
+                        AddColumnResponse::Timeline(timeline) => {
+                            let id = timeline.id;
+                            if app.columns_mut().add_timeline_to_column(col, timeline) {
+                                app.subscribe_new_timeline(id);
+                            }
+                        }
+                    };
+                }
+                None
+            }
         });
 
     if let Some(after_route_execution) = nav_response.inner {
@@ -94,16 +106,6 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) {
                         }
                     }
                 }
-            }
-
-            AfterRouteExecution::AddColumn(add_column_resp) => {
-                match add_column_resp {
-                    AddColumnResponse::Timeline(timeline) => {
-                        app.add_new_timeline(timeline.id);
-                        app.columns_mut().add_timeline(timeline);
-                    }
-                };
-                app.columns_mut().column_mut(col).router_mut().go_back();
             }
         }
     }
@@ -120,6 +122,10 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) {
             );
         }
     } else if let Some(NavAction::Navigated) = nav_response.action {
-        app.columns_mut().column_mut(col).router_mut().navigating = false;
+        let cur_router = app.columns_mut().column_mut(col).router_mut();
+        cur_router.navigating = false;
+        if cur_router.is_replacing() {
+            cur_router.remove_previous_route();
+        }
     }
 }

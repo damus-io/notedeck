@@ -47,6 +47,22 @@ impl Columns {
         self.columns.push(Column::new(routes))
     }
 
+    pub fn add_timeline_to_column(&mut self, col: usize, timeline: Timeline) -> bool {
+        if let Some(column) = self.columns.get_mut(col) {
+            column
+                .router_mut()
+                .route_to_replaced(Route::timeline(timeline.id));
+            self.timelines.push(timeline);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn new_column_picker(&mut self) {
+        self.columns.push(Column::new(vec![Route::AddColumn]));
+    }
+
     pub fn columns_mut(&mut self) -> &mut Vec<Column> {
         &mut self.columns
     }

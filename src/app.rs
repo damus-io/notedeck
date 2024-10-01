@@ -3,7 +3,7 @@ use crate::{
     app_creation::setup_cc,
     app_style::user_requested_visuals_change,
     args::Args,
-    column::{Column, Columns},
+    column::Columns,
     draft::Drafts,
     error::{Error, FilterError},
     filter::{self, FilterState},
@@ -13,7 +13,6 @@ use crate::{
     nav,
     note::NoteRef,
     notecache::{CachedNote, NoteCache},
-    route::Route,
     subscriptions::{SubKind, Subscriptions},
     thread::Threads,
     timeline::{Timeline, TimelineId, TimelineKind, ViewFilter},
@@ -699,11 +698,7 @@ impl Damus {
         let debug = parsed_args.debug;
 
         if columns.columns().is_empty() {
-            let filter = Filter::from_json(include_str!("../queries/timeline.json")).unwrap();
-            columns.add_timeline(Timeline::new(
-                TimelineKind::Generic,
-                FilterState::ready(vec![filter]),
-            ))
+            columns.new_column_picker();
         }
 
         Self {
@@ -770,7 +765,7 @@ impl Damus {
         }
     }
 
-    pub fn add_new_timeline(&mut self, timeline_id: TimelineId) {
+    pub fn subscribe_new_timeline(&mut self, timeline_id: TimelineId) {
         self.state = DamusState::NewTimelineSub(timeline_id);
     }
 
@@ -993,22 +988,8 @@ fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus, columns: usiz
                 )
                 .show(ui);
 
-                let router = if let Some(router) = app
-                    .columns
-                    .columns_mut()
-                    .get_mut(0)
-                    .map(|c: &mut Column| c.router_mut())
-                {
-                    router
-                } else {
-                    // TODO(jb55): Maybe we should have an empty column route?
-                    let columns = app.columns.columns_mut();
-                    columns.push(Column::new(vec![Route::accounts()]));
-                    columns[0].router_mut()
-                };
-
                 if side_panel.response.clicked() {
-                    DesktopSidePanel::perform_action(router, side_panel.action);
+                    DesktopSidePanel::perform_action(app.columns_mut(), side_panel.action);
                 }
 
                 // vertical sidebar line
