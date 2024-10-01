@@ -6,15 +6,15 @@ use crate::{
     column::{Column, Columns},
     draft::Drafts,
     error::{Error, FilterError},
-    filter,
-    filter::FilterState,
+    filter::{self, FilterState},
     frame_history::FrameHistory,
     imgcache::ImageCache,
-    key_storage::KeyStorageType,
+    key_storage::{key_storage_impl::get_key_storage, KeyStorageType},
     nav,
     note::NoteRef,
     notecache::{CachedNote, NoteCache},
     route::Route,
+    settings::NotedeckSettings,
     subscriptions::{SubKind, Subscriptions},
     thread::Threads,
     timeline::{Timeline, TimelineKind, ViewFilter},
@@ -591,21 +591,19 @@ impl Damus {
         let mut config = Config::new();
         config.set_ingester_threads(4);
 
-        let mut accounts = AccountManager::new(
-            // TODO: should pull this from settings
-            None,
-            // TODO: use correct KeyStorage mechanism for current OS arch
-            KeyStorageType::None,
-        );
+        let settings = NotedeckSettings::default();
+
+        let keystore = if parsed_args.use_keystore {
+            get_key_storage(settings.storage_settings)
+        } else {
+            KeyStorageType::None
+        };
+
+        let mut accounts = AccountManager::new(keystore);
 
         for key in parsed_args.keys {
             info!("adding account: {}", key.pubkey);
             accounts.add_account(key);
-        }
-
-        // TODO: pull currently selected account from settings
-        if accounts.num_accounts() > 0 {
-            accounts.select_account(0);
         }
 
         // setup relays if we have them
@@ -742,7 +740,7 @@ impl Damus {
             columns,
             textmode: false,
             ndb: Ndb::new(data_path.as_ref().to_str().expect("db path ok"), &config).expect("ndb"),
-            accounts: AccountManager::new(None, KeyStorageType::None),
+            accounts: AccountManager::new(KeyStorageType::None),
             frame_history: FrameHistory::default(),
             view_state: ViewState::default(),
         }

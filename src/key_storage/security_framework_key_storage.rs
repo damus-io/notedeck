@@ -1,21 +1,19 @@
-#![cfg(target_os = "macos")]
-
 use enostr::{Keypair, Pubkey, SecretKey};
-
-use security_framework::item::{ItemClass, ItemSearchOptions, Limit, SearchResult};
-use security_framework::passwords::{delete_generic_password, set_generic_password};
-
-use crate::key_storage::{KeyStorage, KeyStorageError, KeyStorageResponse};
-
+use security_framework::{
+    item::{ItemClass, ItemSearchOptions, Limit, SearchResult},
+    passwords::{delete_generic_password, set_generic_password},
+};
 use tracing::error;
 
-pub struct MacOSKeyStorage<'a> {
+use super::key_storage_impl::{KeyStorage, KeyStorageError, KeyStorageResponse};
+
+pub struct SecurityFrameworkKeyStorage<'a> {
     pub service_name: &'a str,
 }
 
-impl<'a> MacOSKeyStorage<'a> {
+impl<'a> SecurityFrameworkKeyStorage<'a> {
     pub fn new(service_name: &'a str) -> Self {
-        MacOSKeyStorage { service_name }
+        SecurityFrameworkKeyStorage { service_name }
     }
 
     fn add_key(&self, key: &Keypair) -> Result<(), KeyStorageError> {
@@ -107,7 +105,7 @@ impl<'a> MacOSKeyStorage<'a> {
     }
 }
 
-impl<'a> KeyStorage for MacOSKeyStorage<'a> {
+impl<'a> KeyStorage for SecurityFrameworkKeyStorage<'a> {
     fn add_key(&self, key: &Keypair) -> KeyStorageResponse<()> {
         KeyStorageResponse::ReceivedResult(self.add_key(key))
     }
@@ -119,6 +117,15 @@ impl<'a> KeyStorage for MacOSKeyStorage<'a> {
     fn remove_key(&self, key: &Keypair) -> KeyStorageResponse<()> {
         KeyStorageResponse::ReceivedResult(self.delete_key(&key.pubkey))
     }
+
+    fn get_selected_key(&self) -> KeyStorageResponse<Option<Pubkey>> {
+        unimplemented!()
+    }
+
+    fn select_key(&self, key: Option<Pubkey>) -> KeyStorageResponse<()> {
+        let _ = key;
+        unimplemented!()
+    }
 }
 
 #[cfg(test)]
@@ -127,7 +134,7 @@ mod tests {
     use enostr::FullKeypair;
 
     static TEST_SERVICE_NAME: &str = "NOTEDECKTEST";
-    static STORAGE: MacOSKeyStorage = MacOSKeyStorage {
+    static STORAGE: SecurityFrameworkKeyStorage = SecurityFrameworkKeyStorage {
         service_name: TEST_SERVICE_NAME,
     };
 
