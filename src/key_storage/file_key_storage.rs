@@ -7,7 +7,6 @@ use std::{
 
 use eframe::Result;
 use enostr::{Keypair, Pubkey, SerializableKeypair};
-use image::EncodableLayout;
 use tracing::debug;
 
 use super::key_storage_impl::{KeyStorage, KeyStorageError, KeyStorageResponse};

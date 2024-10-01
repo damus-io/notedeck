@@ -123,6 +123,7 @@ impl<'a> KeyStorage for SecurityFrameworkKeyStorage<'a> {
     }
 
     fn select_key(&self, key: Option<Pubkey>) -> KeyStorageResponse<()> {
+        let _ = key;
         unimplemented!()
     }
 }
