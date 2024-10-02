@@ -58,7 +58,8 @@ pub fn render_timeline_route(
                     .ui(ui)
             {
                 let txn = Transaction::new(ndb).expect("txn");
-                let router = columns.columns_mut()[col].router_mut();
+                let mut cur_column = columns.columns_mut();
+                let router = cur_column[col].router_mut();
 
                 bar_action.execute_and_process_result(ndb, router, threads, note_cache, pool, &txn);
             }
@@ -73,7 +74,8 @@ pub fn render_timeline_route(
                     .ui(ui)
             {
                 let txn = Transaction::new(ndb).expect("txn");
-                let router = columns.columns_mut()[col].router_mut();
+                let mut cur_column = columns.columns_mut();
+                let router = cur_column[col].router_mut();
                 bar_action.execute_and_process_result(ndb, router, threads, note_cache, pool, &txn);
             }
 

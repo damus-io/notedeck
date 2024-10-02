@@ -60,6 +60,27 @@ impl AnimationHelper {
         }
     }
 
+    pub fn new_from_rect(
+        ui: &mut egui::Ui,
+        animation_name: impl std::hash::Hash,
+        animation_rect: egui::Rect,
+    ) -> Self {
+        let id = ui.id().with(animation_name);
+        let response = ui.allocate_rect(animation_rect, Sense::click());
+
+        let animation_progress =
+            ui.ctx()
+                .animate_bool_with_time(id, response.hovered(), ANIM_SPEED);
+
+        Self {
+            rect: animation_rect,
+            center: animation_rect.center(),
+            response,
+            animation_progress,
+            expansion_multiple: ICON_EXPANSION_MULTIPLE,
+        }
+    }
+
     pub fn scale_1d_pos(&self, min_object_size: f32) -> f32 {
         let max_object_size = min_object_size * self.expansion_multiple;
 

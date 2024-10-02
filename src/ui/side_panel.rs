@@ -370,9 +370,7 @@ mod preview {
     impl DesktopSidePanelPreview {
         fn new() -> Self {
             let mut app = test_data::test_app();
-            app.columns
-                .columns_mut()
-                .push(Column::new(vec![Route::accounts()]));
+            app.columns.add_column(Column::new(vec![Route::accounts()]));
             DesktopSidePanelPreview { app }
         }
     }

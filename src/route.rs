@@ -1,9 +1,12 @@
 use enostr::NoteId;
+use nostrdb::Ndb;
 use std::fmt::{self};
 
 use crate::{
     account_manager::AccountsRoute,
+    column::Columns,
     timeline::{TimelineId, TimelineRoute},
+    ui::profile::preview::get_note_users_displayname_string,
 };
 
 /// App routing. These describe different places you can go inside Notedeck.
@@ -14,6 +17,18 @@ pub enum Route {
     Relays,
     ComposeNote,
     AddColumn,
+}
+
+#[derive(Clone)]
+pub struct TitledRoute {
+    pub route: Route,
+    pub title: String,
+}
+
+impl fmt::Display for TitledRoute {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.title)
+    }
 }
 
 impl Route {
@@ -51,6 +66,42 @@ impl Route {
 
     pub fn add_account() -> Self {
         Route::Accounts(AccountsRoute::AddAccount)
+    }
+
+    pub fn get_titled_route(&self, columns: &Columns, ndb: &Ndb) -> TitledRoute {
+        let title = match self {
+            Route::Timeline(tlr) => match tlr {
+                TimelineRoute::Timeline(id) => {
+                    let timeline = columns
+                        .find_timeline(*id)
+                        .expect("expected to find timeline");
+                    timeline.kind.to_title(ndb)
+                }
+                TimelineRoute::Thread(id) => {
+                    format!("{}'s Thread", get_note_users_displayname_string(ndb, id))
+                }
+                TimelineRoute::Reply(id) => {
+                    format!("{}'s Reply", get_note_users_displayname_string(ndb, id))
+                }
+                TimelineRoute::Quote(id) => {
+                    format!("{}'s Quote", get_note_users_displayname_string(ndb, id))
+                }
+            },
+
+            Route::Relays => "Relays".to_owned(),
+
+            Route::Accounts(amr) => match amr {
+                AccountsRoute::Accounts => "Accounts".to_owned(),
+                AccountsRoute::AddAccount => "Add Account".to_owned(),
+            },
+            Route::ComposeNote => "Compose Note".to_owned(),
+            Route::AddColumn => "Add Column".to_owned(),
+        };
+
+        TitledRoute {
+            title,
+            route: *self,
+        }
     }
 }
 

@@ -247,7 +247,7 @@ fn try_process_event(damus: &mut Damus, ctx: &egui::Context) -> Result<()> {
 
             if let Err(err) = Timeline::poll_notes_into_view(
                 timeline_ind,
-                &mut damus.columns.timelines,
+                damus.columns.timelines_mut(),
                 &damus.ndb,
                 &txn,
                 &mut damus.unknown_ids,
@@ -490,6 +490,8 @@ fn update_damus(damus: &mut Damus, ctx: &egui::Context) {
     if let Err(err) = try_process_event(damus, ctx) {
         error!("error processing event: {}", err);
     }
+
+    damus.columns.attempt_perform_deletion_request();
 }
 
 fn process_event(damus: &mut Damus, _subid: &str, event: &str) {
@@ -952,7 +954,7 @@ fn render_damus_desktop(ctx: &egui::Context, app: &mut Damus) {
     puffin::profile_function!();
 
     let screen_size = ctx.screen_rect().width();
-    let calc_panel_width = (screen_size / app.columns.columns().len() as f32) - 30.0;
+    let calc_panel_width = (screen_size / app.columns.num_columns() as f32) - 30.0;
     let min_width = 320.0;
     let need_scroll = calc_panel_width < min_width;
     let panel_sizes = if need_scroll {
@@ -965,18 +967,18 @@ fn render_damus_desktop(ctx: &egui::Context, app: &mut Damus) {
         ui.spacing_mut().item_spacing.x = 0.0;
         if need_scroll {
             egui::ScrollArea::horizontal().show(ui, |ui| {
-                timelines_view(ui, panel_sizes, app, app.columns.columns().len());
+                timelines_view(ui, panel_sizes, app);
             });
         } else {
-            timelines_view(ui, panel_sizes, app, app.columns.columns().len());
+            timelines_view(ui, panel_sizes, app);
         }
     });
 }
 
-fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus, columns: usize) {
+fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus) {
     StripBuilder::new(ui)
         .size(Size::exact(ui::side_panel::SIDE_PANEL_WIDTH))
-        .sizes(sizes, columns)
+        .sizes(sizes, app.columns.num_columns())
         .clip(true)
         .horizontal(|mut strip| {
             strip.cell(|ui| {
@@ -1000,11 +1002,10 @@ fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus, columns: usiz
                 );
             });
 
-            let n_cols = app.columns.columns().len();
-            for column_ind in 0..n_cols {
+            for col_index in 0..app.columns.num_columns() {
                 strip.cell(|ui| {
                     let rect = ui.available_rect_before_wrap();
-                    nav::render_nav(column_ind, app, ui);
+                    nav::render_nav(col_index, app, ui);
 
                     // vertical line
                     ui.painter().vline(

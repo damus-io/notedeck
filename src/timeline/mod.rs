@@ -241,13 +241,15 @@ impl Timeline {
 
     pub fn poll_notes_into_view(
         timeline_idx: usize,
-        timelines: &mut [Timeline],
+        mut timelines: Vec<&mut Timeline>,
         ndb: &Ndb,
         txn: &Transaction,
         unknown_ids: &mut UnknownIds,
         note_cache: &mut NoteCache,
     ) -> Result<()> {
-        let timeline = &mut timelines[timeline_idx];
+        let timeline = timelines
+            .get_mut(timeline_idx)
+            .ok_or(Error::TimelineNotFound)?;
         let sub = timeline.subscription.ok_or(Error::no_active_sub())?;
 
         let new_note_ids = ndb.poll_for_notes(sub, 500);
