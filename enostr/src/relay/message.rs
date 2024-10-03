@@ -74,7 +74,9 @@ impl<'a> RelayMessage<'a> {
             return Err(Error::Empty);
         }
 
-        // Notice
+        // The following message types are defined in NIP-01
+
+        // NOTICE
         // Relay response format: ["NOTICE", <message>]
         if &msg[0..=9] == "[\"NOTICE\"," {
             // TODO: there could be more than one space, whatever
@@ -87,13 +89,13 @@ impl<'a> RelayMessage<'a> {
             return Ok(Self::notice(&msg[start..end]));
         }
 
-        // Event
+        // EVENT
         // Relay response format: ["EVENT", <subscription id>, <event JSON>]
         if &msg[0..=7] == "[\"EVENT\"" {
             return Ok(Self::event(msg, "fixme"));
         }
 
-        // EOSE (NIP-15)
+        // EOSE
         // Relay response format: ["EOSE", <subscription_id>]
         if &msg[0..=7] == "[\"EOSE\"," {
             let start = if msg.as_bytes().get(8).copied() == Some(b' ') {
@@ -105,7 +107,7 @@ impl<'a> RelayMessage<'a> {
             return Ok(Self::eose(&msg[start..end]));
         }
 
-        // OK (NIP-20)
+        // OK
         // Relay response format: ["OK",<event_id>, <true|false>, <message>]
         if &msg[0..=5] == "[\"OK\"," {
             // TODO: fix this
