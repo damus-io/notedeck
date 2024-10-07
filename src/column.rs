@@ -149,6 +149,11 @@ impl Columns {
             .1
     }
 
+    pub fn find_timeline_for_column_index(&self, ind: usize) -> Option<&Timeline> {
+        let col_id = self.get_column_id_at_index(ind);
+        self.timelines.get(&col_id)
+    }
+
     pub fn select_down(&mut self) {
         warn!("todo: implement select_down");
     }

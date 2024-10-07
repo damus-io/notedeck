@@ -18,6 +18,7 @@ use crate::{
 
 use egui::{pos2, Color32, InnerResponse};
 use egui_nav::{Nav, NavAction};
+use tracing::{error, info};
 
 pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) {
     let col_id = app.columns.get_column_id_at_index(col);
@@ -149,6 +150,20 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) {
         match title_response {
             TitleResponse::RemoveColumn => {
                 app.columns_mut().request_deletion_at_index(col);
+                let tl = app.columns().find_timeline_for_column_index(col);
+                if let Some(timeline) = tl {
+                    if let Some(sub_id) = timeline.subscription {
+                        if let Err(e) = app.ndb.unsubscribe(sub_id) {
+                            error!("unsubscribe error: {}", e);
+                        } else {
+                            info!(
+                                "successfully unsubscribed from timeline {} with sub id {}",
+                                timeline.id,
+                                sub_id.id()
+                            );
+                        }
+                    }
+                }
             }
         }
     }
