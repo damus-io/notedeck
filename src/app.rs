@@ -210,65 +210,6 @@ fn handle_key_events(input: &egui::InputState, _pixels_per_point: f32, columns: 
     }
 }
 
-fn try_process_event(damus: &mut Damus, ctx: &egui::Context) -> Result<()> {
-    let ppp = ctx.pixels_per_point();
-    ctx.input(|i| handle_key_events(i, ppp, &mut damus.columns));
-
-    let ctx2 = ctx.clone();
-    let wakeup = move || {
-        ctx2.request_repaint();
-    };
-    damus.pool.keepalive_ping(wakeup);
-
-    // pool stuff
-    while let Some(ev) = damus.pool.try_recv() {
-        let relay = ev.relay.to_owned();
-
-        match (&ev.event).into() {
-            RelayEvent::Opened => send_initial_filters(damus, &relay),
-            // TODO: handle reconnects
-            RelayEvent::Closed => warn!("{} connection closed", &relay),
-            RelayEvent::Error(e) => error!("{}: {}", &relay, e),
-            RelayEvent::Other(msg) => trace!("other event {:?}", &msg),
-            RelayEvent::Message(msg) => process_message(damus, &relay, &msg),
-        }
-    }
-
-    let n_timelines = damus.columns.timelines().len();
-    for timeline_ind in 0..n_timelines {
-        let is_ready = {
-            let timeline = &mut damus.columns.timelines[timeline_ind];
-            matches!(
-                is_timeline_ready(&damus.ndb, &mut damus.pool, &mut damus.note_cache, timeline),
-                Ok(true)
-            )
-        };
-
-        if is_ready {
-            let txn = Transaction::new(&damus.ndb).expect("txn");
-
-            if let Err(err) = Timeline::poll_notes_into_view(
-                timeline_ind,
-                &mut damus.columns.timelines,
-                &damus.ndb,
-                &txn,
-                &mut damus.unknown_ids,
-                &mut damus.note_cache,
-            ) {
-                error!("poll_notes_into_view: {err}");
-            }
-        } else {
-            // TODO: show loading?
-        }
-    }
-
-    if damus.unknown_ids.ready_to_send() {
-        unknown_id_send(damus);
-    }
-
-    Ok(())
-}
-
 fn unknown_id_send(damus: &mut Damus) {
     let filter = damus.unknown_ids.filter().expect("filter");
     info!(
@@ -438,6 +379,78 @@ fn update_damus(damus: &mut Damus, ctx: &egui::Context) {
     }
 }
 
+fn try_process_event(damus: &mut Damus, ctx: &egui::Context) -> Result<()> {
+    let ppp = ctx.pixels_per_point();
+    ctx.input(|i| handle_key_events(i, ppp, &mut damus.columns));
+
+    let ctx2 = ctx.clone();
+    let wakeup = move || {
+        ctx2.request_repaint();
+    };
+    damus.pool.keepalive_ping(wakeup);
+
+    // pool stuff
+    while let Some(ev) = damus.pool.try_recv() {
+        let relay = ev.relay.to_owned();
+
+        match (&ev.event).into() {
+            RelayEvent::Opened => send_initial_filters(damus, &relay),
+            // TODO: handle reconnects
+            RelayEvent::Closed => warn!("{} connection closed", &relay),
+            RelayEvent::Error(e) => error!("{}: {}", &relay, e),
+            RelayEvent::Other(msg) => trace!("other event {:?}", &msg),
+            RelayEvent::Message(msg) => process_message(damus, &relay, &msg),
+        }
+    }
+
+    let n_timelines = damus.columns.timelines().len();
+    for timeline_ind in 0..n_timelines {
+        let is_ready = {
+            let timeline = &mut damus.columns.timelines[timeline_ind];
+            matches!(
+                is_timeline_ready(&damus.ndb, &mut damus.pool, &mut damus.note_cache, timeline),
+                Ok(true)
+            )
+        };
+
+        if is_ready {
+            let txn = Transaction::new(&damus.ndb).expect("txn");
+
+            if let Err(err) = Timeline::poll_notes_into_view(
+                timeline_ind,
+                &mut damus.columns.timelines,
+                &damus.ndb,
+                &txn,
+                &mut damus.unknown_ids,
+                &mut damus.note_cache,
+            ) {
+                error!("poll_notes_into_view: {err}");
+            }
+        } else {
+            // TODO: show loading?
+        }
+    }
+
+    if damus.unknown_ids.ready_to_send() {
+        unknown_id_send(damus);
+    }
+
+    Ok(())
+}
+
+fn process_message(damus: &mut Damus, relay: &str, msg: &RelayMessage) {
+    match msg {
+        RelayMessage::Event(subid, ev) => process_event(damus, subid, ev),
+        RelayMessage::Notice(msg) => warn!("Notice from {}: {}", relay, msg),
+        RelayMessage::OK(cr) => info!("OK {:?}", cr),
+        RelayMessage::Eose(sid) => {
+            if let Err(err) = handle_eose(damus, sid, relay) {
+                error!("error handling eose: {}", err);
+            }
+        }
+    }
+}
+
 fn process_event(damus: &mut Damus, _subid: &str, event: &str) {
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
@@ -519,19 +532,6 @@ fn handle_eose(damus: &mut Damus, subid: &str, relay_url: &str) -> Result<()> {
     }
 
     Ok(())
-}
-
-fn process_message(damus: &mut Damus, relay: &str, msg: &RelayMessage) {
-    match msg {
-        RelayMessage::Event(subid, ev) => process_event(damus, subid, ev),
-        RelayMessage::Notice(msg) => warn!("Notice from {}: {}", relay, msg),
-        RelayMessage::OK(cr) => info!("OK {:?}", cr),
-        RelayMessage::Eose(sid) => {
-            if let Err(err) = handle_eose(damus, sid, relay) {
-                error!("error handling eose: {}", err);
-            }
-        }
-    }
 }
 
 fn render_damus(damus: &mut Damus, ctx: &Context) {
