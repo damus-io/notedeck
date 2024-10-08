@@ -47,7 +47,7 @@ mod view_state;
 mod test_utils;
 mod linux_key_storage;
 
-pub use app::Damus;
+pub use app::{with_mut_damus, Damus, DamusApp, DamusRef};
 pub use error::Error;
 pub use profile::DisplayName;
 

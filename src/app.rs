@@ -46,6 +46,7 @@ pub enum DamusState {
 
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
 pub struct Damus {
+    reference: Option<Weak<Mutex<Damus>>>,
     state: DamusState,
     pub note_cache: NoteCache,
     pub pool: RelayPool,
@@ -720,6 +721,7 @@ impl Damus {
         }
 
         Self {
+            reference: None,
             pool,
             debug,
             unknown_ids: UnknownIds::default(),
@@ -738,6 +740,19 @@ impl Damus {
             frame_history: FrameHistory::default(),
             view_state: ViewState::default(),
         }
+    }
+
+    pub fn set_reference(&mut self, reference: Weak<Mutex<Damus>>) {
+        self.reference = Some(reference);
+    }
+
+    pub fn reference(&self) -> DamusRef {
+        self.reference
+            .as_ref()
+            .expect("weak damus reference")
+            .upgrade()
+            .expect("strong damus reference")
+            .clone()
     }
 
     pub fn pool_mut(&mut self) -> &mut RelayPool {
@@ -803,6 +818,7 @@ impl Damus {
         let mut config = Config::new();
         config.set_ingester_threads(2);
         Self {
+            reference: None,
             debug,
             unknown_ids: UnknownIds::default(),
             subscriptions: Subscriptions::default(),
@@ -1054,5 +1070,47 @@ impl eframe::App for Damus {
         puffin::GlobalProfiler::lock().new_frame();
         update_damus(self, ctx);
         render_damus(self, ctx);
+    }
+}
+
+use std::sync::{Arc, Mutex, Weak};
+
+pub type DamusRef = Arc<Mutex<Damus>>;
+
+pub fn with_mut_damus<F, T>(damusref: &DamusRef, mut f: F) -> T
+where
+    F: FnMut(&mut Damus) -> T,
+{
+    let mut damus = damusref.as_ref().lock().unwrap();
+    f(&mut damus)
+}
+
+/// A wrapper so access to Damus can be synchronized
+pub struct DamusApp {
+    damus: DamusRef,
+}
+
+impl DamusApp {
+    pub fn new(damus: DamusRef) -> Self {
+        let weak_damus = Arc::downgrade(&damus);
+        damus.lock().unwrap().set_reference(weak_damus);
+        Self { damus }
+    }
+
+    pub fn with_mut_damus<F, T>(&mut self, f: F) -> T
+    where
+        F: FnMut(&mut Damus) -> T,
+    {
+        with_mut_damus(&self.damus, f)
+    }
+}
+
+impl eframe::App for DamusApp {
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        self.with_mut_damus(|damus| damus.save(storage))
+    }
+
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        self.with_mut_damus(|damus| damus.update(ctx, frame));
     }
 }
