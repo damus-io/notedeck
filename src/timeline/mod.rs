@@ -8,7 +8,6 @@ use std::fmt;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use egui_virtual_list::VirtualList;
-use enostr::Pubkey;
 use nostrdb::{Ndb, Note, Subscription, Transaction};
 use std::cell::RefCell;
 use std::hash::Hash;
@@ -180,9 +179,8 @@ pub struct Timeline {
 
 impl Timeline {
     /// Create a timeline from a contact list
-    pub fn contact_list(contact_list: &Note) -> Result<Self> {
+    pub fn contact_list(contact_list: &Note, pk_src: PubkeySource) -> Result<Self> {
         let filter = filter::filter_from_tags(contact_list)?.into_follow_filter();
-        let pk_src = PubkeySource::Explicit(Pubkey::new(*contact_list.pubkey()));
 
         Ok(Timeline::new(
             TimelineKind::contact_list(pk_src),

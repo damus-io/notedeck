@@ -14,7 +14,7 @@ pub enum AddColumnResponse {
     Timeline(Timeline),
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 enum AddColumnOption {
     Universe,
     Notification(PubkeySource),
@@ -22,17 +22,23 @@ enum AddColumnOption {
 }
 
 impl AddColumnOption {
-    pub fn take_as_response(self, ndb: &Ndb) -> Option<AddColumnResponse> {
+    pub fn take_as_response(
+        self,
+        ndb: &Ndb,
+        cur_account: Option<&UserAccount>,
+    ) -> Option<AddColumnResponse> {
         match self {
             AddColumnOption::Universe => TimelineKind::Universe
                 .into_timeline(ndb, None)
                 .map(AddColumnResponse::Timeline),
             AddColumnOption::Notification(pubkey) => TimelineKind::Notifications(pubkey)
-                .into_timeline(ndb, None)
+                .into_timeline(ndb, cur_account.map(|a| a.pubkey.bytes()))
                 .map(AddColumnResponse::Timeline),
-            AddColumnOption::Home(pubkey) => TimelineKind::contact_list(pubkey)
-                .into_timeline(ndb, None)
-                .map(AddColumnResponse::Timeline),
+            AddColumnOption::Home(pubkey) => {
+                let tlk = TimelineKind::contact_list(pubkey);
+                tlk.into_timeline(ndb, cur_account.map(|a| a.pubkey.bytes()))
+                    .map(AddColumnResponse::Timeline)
+            }
         }
     }
 }
@@ -52,7 +58,7 @@ impl<'a> AddColumnView<'a> {
         for column_option_data in self.get_column_options() {
             let option = column_option_data.option.clone();
             if self.column_option_ui(ui, column_option_data).clicked() {
-                selected_option = option.take_as_response(self.ndb);
+                selected_option = option.take_as_response(self.ndb, self.cur_account);
             }
 
             ui.add(Separator::default().spacing(0.0));
@@ -172,7 +178,11 @@ impl<'a> AddColumnView<'a> {
         });
 
         if let Some(acc) = self.cur_account {
-            let source = PubkeySource::Explicit(acc.pubkey);
+            let source = if acc.secret_key.is_some() {
+                PubkeySource::DeckAuthor
+            } else {
+                PubkeySource::Explicit(acc.pubkey)
+            };
 
             vec.push(ColumnOptionData {
                 title: "Home timeline",

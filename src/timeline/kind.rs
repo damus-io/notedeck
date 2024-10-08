@@ -137,7 +137,7 @@ impl TimelineKind {
                     ));
                 }
 
-                match Timeline::contact_list(&results[0].note) {
+                match Timeline::contact_list(&results[0].note, pk_src.clone()) {
                     Err(Error::Filter(FilterError::EmptyContactList)) => Some(Timeline::new(
                         TimelineKind::contact_list(pk_src),
                         FilterState::needs_remote(vec![contact_filter]),
@@ -156,22 +156,21 @@ impl TimelineKind {
         match self {
             TimelineKind::List(list_kind) => match list_kind {
                 ListKind::Contact(pubkey_source) => match pubkey_source {
-                    PubkeySource::Explicit(pubkey) => format!(
-                        "{}'s Home Timeline",
-                        get_profile_displayname_string(ndb, pubkey)
-                    ),
-                    PubkeySource::DeckAuthor => "Your Home Timeline".to_owned(),
+                    PubkeySource::Explicit(pubkey) => {
+                        format!("{}'s Contacts", get_profile_displayname_string(ndb, pubkey))
+                    }
+                    PubkeySource::DeckAuthor => "Contacts".to_owned(),
                 },
             },
             TimelineKind::Notifications(pubkey_source) => match pubkey_source {
-                PubkeySource::DeckAuthor => "Your Notifications".to_owned(),
+                PubkeySource::DeckAuthor => "Notifications".to_owned(),
                 PubkeySource::Explicit(pk) => format!(
                     "{}'s Notifications",
                     get_profile_displayname_string(ndb, pk)
                 ),
             },
             TimelineKind::Profile(pubkey_source) => match pubkey_source {
-                PubkeySource::DeckAuthor => "Your Profile".to_owned(),
+                PubkeySource::DeckAuthor => "Profile".to_owned(),
                 PubkeySource::Explicit(pk) => {
                     format!("{}'s Profile", get_profile_displayname_string(ndb, pk))
                 }
