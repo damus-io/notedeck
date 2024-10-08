@@ -11,8 +11,8 @@ use ewebsock::{WsEvent, WsMessage};
 use tracing::{debug, error};
 
 #[derive(Debug)]
-pub struct PoolEvent<'a> {
-    pub relay: &'a str,
+pub struct PoolEvent {
+    pub relay: String,
     pub event: ewebsock::WsEvent,
 }
 
@@ -164,7 +164,7 @@ impl RelayPool {
     /// function searches each relay in the list in order, attempting to
     /// receive a message from each. If a message is received, return it.
     /// If no message is received from any relays, None is returned.
-    pub fn try_recv(&mut self) -> Option<PoolEvent<'_>> {
+    pub fn try_recv(&mut self) -> Option<PoolEvent> {
         for relay in &mut self.relays {
             let relay = &mut relay.relay;
             if let Some(event) = relay.receiver.try_recv() {
@@ -191,7 +191,7 @@ impl RelayPool {
                 }
                 return Some(PoolEvent {
                     event,
-                    relay: &relay.url,
+                    relay: relay.url.clone(),
                 });
             }
         }
