@@ -199,3 +199,26 @@ impl RelayPool {
         None
     }
 }
+
+use futures::stream::Stream;
+use std::pin::Pin;
+use std::task::{Context, Poll};
+
+impl Stream for RelayPool {
+    type Item = PoolEvent;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut_self = self.get_mut();
+
+        // Try to receive a new event from the pool
+        match mut_self.try_recv() {
+            Some(event) => Poll::Ready(Some(event)),
+            None => {
+                // No events are available currently.
+                // Register the waker to be notified when new events are available.
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            }
+        }
+    }
+}
