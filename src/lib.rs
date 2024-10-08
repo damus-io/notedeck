@@ -11,6 +11,7 @@ mod app_style;
 mod args;
 mod colors;
 mod column;
+mod dispatcher;
 mod draft;
 mod filter;
 mod fonts;
@@ -32,6 +33,7 @@ pub mod relay_pool_manager;
 mod result;
 mod route;
 mod subscriptions;
+mod task;
 mod test_data;
 mod thread;
 mod time;
@@ -47,12 +49,15 @@ mod view_state;
 mod test_utils;
 mod linux_key_storage;
 
-pub use app::Damus;
+pub use app::{with_mut_damus, Damus, DamusApp, DamusRef};
 pub use error::Error;
 pub use profile::DisplayName;
 
 #[cfg(target_os = "android")]
 use winit::platform::android::EventLoopBuilderExtAndroid;
+
+#[cfg(target_os = "android")]
+use std::sync::{Arc, Mutex};
 
 pub type Result<T> = std::result::Result<T, error::Error>;
 
@@ -83,7 +88,11 @@ pub async fn android_main(app: AndroidApp) {
     let _res = eframe::run_native(
         "Damus NoteDeck",
         options,
-        Box::new(move |cc| Ok(Box::new(Damus::new(cc, path, app_args)))),
+        Box::new(|cc| {
+            Ok(Box::new(DamusApp::new(Arc::new(Mutex::new(Damus::new(
+                cc, path, app_args,
+            ))))))
+        }),
     );
 }
 
