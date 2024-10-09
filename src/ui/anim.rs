@@ -114,4 +114,8 @@ impl AnimationHelper {
             self.center.y + self.scale_1d_pos(y_min),
         )
     }
+
+    pub fn scale_pos_from_center(&self, min_pos: Pos2) -> Pos2 {
+        self.scale_from_center(min_pos.x, min_pos.y)
+    }
 }

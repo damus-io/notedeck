@@ -16,8 +16,8 @@ use crate::{
     Damus,
 };
 
-use egui::{pos2, Color32, InnerResponse};
-use egui_nav::{Nav, NavAction};
+use egui::{pos2, Color32, InnerResponse, Stroke};
+use egui_nav::{Nav, NavAction, TitleBarResponse};
 use tracing::{error, info};
 
 pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) {
@@ -171,25 +171,100 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) {
 
 fn title_bar(
     ui: &mut egui::Ui,
-    title_name: String,
     allocated_response: egui::Response,
-) -> egui::InnerResponse<Option<TitleResponse>> {
+    title_name: String,
+    back_name: Option<String>,
+) -> egui::InnerResponse<TitleBarResponse<TitleResponse>> {
     let icon_width = 32.0;
-    let padding = 16.0;
-    title(ui, title_name, allocated_response.rect, icon_width, padding);
-    let button_resp = delete_column_button(ui, allocated_response, icon_width, padding);
-    let title_response = if button_resp.clicked() {
+    let padding_external = 16.0;
+    let padding_internal = 8.0;
+    let has_back = back_name.is_some();
+
+    let (spacing_rect, titlebar_rect) = allocated_response
+        .rect
+        .split_left_right_at_x(allocated_response.rect.left() + padding_external);
+    ui.advance_cursor_after_rect(spacing_rect);
+
+    let (titlebar_resp, maybe_button_resp) = if has_back {
+        let (button_rect, titlebar_rect) = titlebar_rect
+            .split_left_right_at_x(allocated_response.rect.left() + icon_width + padding_external);
+        (
+            allocated_response.with_new_rect(titlebar_rect),
+            Some(back_button(ui, button_rect)),
+        )
+    } else {
+        (allocated_response, None)
+    };
+
+    title(
+        ui,
+        title_name,
+        titlebar_resp.rect,
+        icon_width,
+        if has_back {
+            padding_internal
+        } else {
+            padding_external
+        },
+    );
+
+    let delete_button_resp = delete_column_button(ui, titlebar_resp, icon_width, padding_external);
+    let title_response = if delete_button_resp.clicked() {
         Some(TitleResponse::RemoveColumn)
     } else {
         None
     };
 
-    InnerResponse::new(title_response, button_resp)
+    let titlebar_resp = TitleBarResponse {
+        title_response,
+        go_back: maybe_button_resp.map_or(false, |r| r.clicked()),
+    };
+
+    InnerResponse::new(titlebar_resp, delete_button_resp)
+}
+
+fn back_button(ui: &mut egui::Ui, button_rect: egui::Rect) -> egui::Response {
+    let horizontal_length = 10.0;
+    let arrow_length = 5.0;
+
+    let helper = AnimationHelper::new_from_rect(ui, "note-compose-button", button_rect);
+    let painter = ui.painter_at(helper.get_animation_rect());
+    let stroke = Stroke::new(1.5, ui.visuals().text_color());
+
+    // Horizontal segment
+    let left_horizontal_point = pos2(-horizontal_length / 2., 0.);
+    let right_horizontal_point = pos2(horizontal_length / 2., 0.);
+    let scaled_left_horizontal_point = helper.scale_pos_from_center(left_horizontal_point);
+    let scaled_right_horizontal_point = helper.scale_pos_from_center(right_horizontal_point);
+
+    painter.line_segment(
+        [scaled_left_horizontal_point, scaled_right_horizontal_point],
+        stroke,
+    );
+
+    // Top Arrow
+    let sqrt_2_over_2 = std::f32::consts::SQRT_2 / 2.;
+    let right_top_arrow_point = helper.scale_pos_from_center(pos2(
+        left_horizontal_point.x + (sqrt_2_over_2 * arrow_length),
+        right_horizontal_point.y + sqrt_2_over_2 * arrow_length,
+    ));
+
+    let scaled_left_arrow_point = scaled_left_horizontal_point;
+    painter.line_segment([scaled_left_arrow_point, right_top_arrow_point], stroke);
+
+    let right_bottom_arrow_point = helper.scale_pos_from_center(pos2(
+        left_horizontal_point.x + (sqrt_2_over_2 * arrow_length),
+        right_horizontal_point.y - sqrt_2_over_2 * arrow_length,
+    ));
+
+    painter.line_segment([scaled_left_arrow_point, right_bottom_arrow_point], stroke);
+
+    helper.take_animation_response()
 }
 
 fn delete_column_button(
     ui: &mut egui::Ui,
-    title_bar_resp: egui::Response,
+    allocation_response: egui::Response,
     icon_width: f32,
     padding: f32,
 ) -> egui::Response {
@@ -200,7 +275,7 @@ fn delete_column_button(
     let img = egui::Image::new(img_data).max_width(img_size);
 
     let button_rect = {
-        let titlebar_rect = title_bar_resp.rect;
+        let titlebar_rect = allocation_response.rect;
         let titlebar_width = titlebar_rect.width();
         let titlebar_center = titlebar_rect.center();
         let button_center_y = titlebar_center.y;
@@ -218,7 +293,7 @@ fn delete_column_button(
 
     let animation_rect = helper.get_animation_rect();
     let animation_resp = helper.take_animation_response();
-    if title_bar_resp.union(animation_resp.clone()).hovered() {
+    if allocation_response.union(animation_resp.clone()).hovered() {
         img.paint_at(ui, animation_rect.shrink((max_size - cur_img_size) / 2.0));
     }
 
@@ -245,10 +320,9 @@ fn title(
 
     let pos = {
         let titlebar_center = titlebar_rect.center();
-        let titlebar_width = titlebar_rect.width();
         let text_height = title_galley.rect.height();
 
-        let galley_pos_x = titlebar_center.x - (titlebar_width / 2.) + padding;
+        let galley_pos_x = titlebar_rect.left() + padding;
         let galley_pos_y = titlebar_center.y - (text_height / 2.);
         pos2(galley_pos_x, galley_pos_y)
     };
