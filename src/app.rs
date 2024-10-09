@@ -4,6 +4,7 @@ use crate::{
     app_style::user_requested_visuals_change,
     args::Args,
     column::{Column, Columns},
+    dispatcher::HandlerTable,
     draft::Drafts,
     error::{Error, FilterError},
     filter,
@@ -16,6 +17,7 @@ use crate::{
     notecache::{CachedNote, NoteCache},
     route::Route,
     subscriptions::{SubKind, Subscriptions},
+    task,
     thread::Threads,
     timeline::{Timeline, TimelineKind, ViewFilter},
     ui::{self, DesktopSidePanel},
@@ -45,6 +47,7 @@ pub enum DamusState {
 
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
 pub struct Damus {
+    reference: Option<Weak<Mutex<Damus>>>,
     state: DamusState,
     pub note_cache: NoteCache,
     pub pool: RelayPool,
@@ -58,6 +61,7 @@ pub struct Damus {
     pub img_cache: ImageCache,
     pub accounts: AccountManager,
     pub subscriptions: Subscriptions,
+    pub dispatch_table: HandlerTable,
 
     frame_history: crate::frame_history::FrameHistory,
 
@@ -207,65 +211,6 @@ fn handle_key_events(input: &egui::InputState, _pixels_per_point: f32, columns: 
             }
         }
     }
-}
-
-fn try_process_event(damus: &mut Damus, ctx: &egui::Context) -> Result<()> {
-    let ppp = ctx.pixels_per_point();
-    ctx.input(|i| handle_key_events(i, ppp, &mut damus.columns));
-
-    let ctx2 = ctx.clone();
-    let wakeup = move || {
-        ctx2.request_repaint();
-    };
-    damus.pool.keepalive_ping(wakeup);
-
-    // pool stuff
-    while let Some(ev) = damus.pool.try_recv() {
-        let relay = ev.relay.to_owned();
-
-        match (&ev.event).into() {
-            RelayEvent::Opened => send_initial_filters(damus, &relay),
-            // TODO: handle reconnects
-            RelayEvent::Closed => warn!("{} connection closed", &relay),
-            RelayEvent::Error(e) => error!("{}: {}", &relay, e),
-            RelayEvent::Other(msg) => trace!("other event {:?}", &msg),
-            RelayEvent::Message(msg) => process_message(damus, &relay, &msg),
-        }
-    }
-
-    let n_timelines = damus.columns.timelines().len();
-    for timeline_ind in 0..n_timelines {
-        let is_ready = {
-            let timeline = &mut damus.columns.timelines[timeline_ind];
-            matches!(
-                is_timeline_ready(&damus.ndb, &mut damus.pool, &mut damus.note_cache, timeline),
-                Ok(true)
-            )
-        };
-
-        if is_ready {
-            let txn = Transaction::new(&damus.ndb).expect("txn");
-
-            if let Err(err) = Timeline::poll_notes_into_view(
-                timeline_ind,
-                &mut damus.columns.timelines,
-                &damus.ndb,
-                &txn,
-                &mut damus.unknown_ids,
-                &mut damus.note_cache,
-            ) {
-                error!("poll_notes_into_view: {err}");
-            }
-        } else {
-            // TODO: show loading?
-        }
-    }
-
-    if damus.unknown_ids.ready_to_send() {
-        unknown_id_send(damus);
-    }
-
-    Ok(())
 }
 
 fn unknown_id_send(damus: &mut Damus) {
@@ -430,10 +375,84 @@ fn update_damus(damus: &mut Damus, ctx: &egui::Context) {
             .insert("unknownids".to_string(), SubKind::OneShot);
         setup_initial_nostrdb_subs(&damus.ndb, &mut damus.note_cache, &mut damus.columns)
             .expect("home subscription failed");
+
+        task::setup_user_relays(damus.reference());
     }
 
     if let Err(err) = try_process_event(damus, ctx) {
         error!("error processing event: {}", err);
+    }
+}
+
+fn try_process_event(damus: &mut Damus, ctx: &egui::Context) -> Result<()> {
+    let ppp = ctx.pixels_per_point();
+    ctx.input(|i| handle_key_events(i, ppp, &mut damus.columns));
+
+    let ctx2 = ctx.clone();
+    let wakeup = move || {
+        ctx2.request_repaint();
+    };
+    damus.pool.keepalive_ping(wakeup);
+
+    // pool stuff
+    while let Some(ev) = damus.pool.try_recv() {
+        let relay = ev.relay.to_owned();
+
+        match (&ev.event).into() {
+            RelayEvent::Opened => send_initial_filters(damus, &relay),
+            // TODO: handle reconnects
+            RelayEvent::Closed => warn!("{} connection closed", &relay),
+            RelayEvent::Error(e) => error!("{}: {}", &relay, e),
+            RelayEvent::Other(msg) => trace!("other event {:?}", &msg),
+            RelayEvent::Message(msg) => process_message(damus, &relay, &msg),
+        }
+    }
+
+    let n_timelines = damus.columns.timelines().len();
+    for timeline_ind in 0..n_timelines {
+        let is_ready = {
+            let timeline = &mut damus.columns.timelines[timeline_ind];
+            matches!(
+                is_timeline_ready(&damus.ndb, &mut damus.pool, &mut damus.note_cache, timeline),
+                Ok(true)
+            )
+        };
+
+        if is_ready {
+            let txn = Transaction::new(&damus.ndb).expect("txn");
+
+            if let Err(err) = Timeline::poll_notes_into_view(
+                timeline_ind,
+                &mut damus.columns.timelines,
+                &damus.ndb,
+                &txn,
+                &mut damus.unknown_ids,
+                &mut damus.note_cache,
+            ) {
+                error!("poll_notes_into_view: {err}");
+            }
+        } else {
+            // TODO: show loading?
+        }
+    }
+
+    if damus.unknown_ids.ready_to_send() {
+        unknown_id_send(damus);
+    }
+
+    Ok(())
+}
+
+fn process_message(damus: &mut Damus, relay: &str, msg: &RelayMessage) {
+    match msg {
+        RelayMessage::Event(subid, ev) => process_event(damus, subid, ev),
+        RelayMessage::Notice(msg) => warn!("Notice from {}: {}", relay, msg),
+        RelayMessage::OK(cr) => info!("OK {:?}", cr),
+        RelayMessage::Eose(sid) => {
+            if let Err(err) = handle_eose(damus, sid, relay) {
+                error!("error handling eose: {}", err);
+            }
+        }
     }
 }
 
@@ -518,19 +537,6 @@ fn handle_eose(damus: &mut Damus, subid: &str, relay_url: &str) -> Result<()> {
     }
 
     Ok(())
-}
-
-fn process_message(damus: &mut Damus, relay: &str, msg: &RelayMessage) {
-    match msg {
-        RelayMessage::Event(subid, ev) => process_event(damus, subid, ev),
-        RelayMessage::Notice(msg) => warn!("Notice from {}: {}", relay, msg),
-        RelayMessage::OK(cr) => info!("OK {:?}", cr),
-        RelayMessage::Eose(sid) => {
-            if let Err(err) = handle_eose(damus, sid, relay) {
-                error!("error handling eose: {}", err);
-            }
-        }
-    }
 }
 
 fn render_damus(damus: &mut Damus, ctx: &Context) {
@@ -651,10 +657,12 @@ impl Damus {
         }
 
         Self {
+            reference: None,
             pool,
             debug,
             unknown_ids: UnknownIds::default(),
             subscriptions: Subscriptions::default(),
+            dispatch_table: HandlerTable::default(),
             since_optimize: parsed_args.since_optimize,
             threads: Threads::default(),
             drafts: Drafts::default(),
@@ -668,6 +676,19 @@ impl Damus {
             frame_history: FrameHistory::default(),
             view_state: ViewState::default(),
         }
+    }
+
+    pub fn set_reference(&mut self, reference: Weak<Mutex<Damus>>) {
+        self.reference = Some(reference);
+    }
+
+    pub fn reference(&self) -> DamusRef {
+        self.reference
+            .as_ref()
+            .expect("weak damus reference")
+            .upgrade()
+            .expect("strong damus reference")
+            .clone()
     }
 
     pub fn pool_mut(&mut self) -> &mut RelayPool {
@@ -729,9 +750,11 @@ impl Damus {
         let mut config = Config::new();
         config.set_ingester_threads(2);
         Self {
+            reference: None,
             debug,
             unknown_ids: UnknownIds::default(),
             subscriptions: Subscriptions::default(),
+            dispatch_table: HandlerTable::default(),
             since_optimize: true,
             threads: Threads::default(),
             drafts: Drafts::default(),
@@ -994,5 +1017,35 @@ impl eframe::App for Damus {
         puffin::GlobalProfiler::lock().new_frame();
         update_damus(self, ctx);
         render_damus(self, ctx);
+    }
+}
+
+use std::sync::{Arc, Weak};
+use tokio::sync::Mutex;
+
+pub type DamusRef = Arc<Mutex<Damus>>;
+
+/// A wrapper so access to Damus can be synchronized
+pub struct DamusApp {
+    damus: DamusRef,
+}
+
+impl DamusApp {
+    pub fn new(damus: DamusRef) -> Self {
+        let weak_self = Arc::downgrade(&damus);
+        futures::executor::block_on(damus.lock()).set_reference(weak_self);
+        Self { damus }
+    }
+}
+
+impl eframe::App for DamusApp {
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        let mut damus = futures::executor::block_on(self.damus.lock());
+        damus.save(storage)
+    }
+
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        let mut damus = futures::executor::block_on(self.damus.lock());
+        damus.update(ctx, frame)
     }
 }

@@ -11,6 +11,7 @@ mod app_style;
 mod args;
 mod colors;
 mod column;
+mod dispatcher;
 mod draft;
 mod filter;
 mod fonts;
@@ -31,6 +32,7 @@ pub mod relay_pool_manager;
 mod result;
 mod route;
 mod subscriptions;
+mod task;
 mod test_data;
 mod thread;
 mod time;
@@ -46,7 +48,7 @@ mod view_state;
 mod test_utils;
 mod linux_key_storage;
 
-pub use app::Damus;
+pub use app::{Damus, DamusApp, DamusRef};
 pub use error::Error;
 pub use profile::DisplayName;
 

@@ -113,7 +113,7 @@ impl std::str::FromStr for Note {
     }
 }
 
-// Custom serialize function for Pubkey
+// Custom serialize function for NoteId
 impl Serialize for NoteId {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -123,7 +123,7 @@ impl Serialize for NoteId {
     }
 }
 
-// Custom deserialize function for Pubkey
+// Custom deserialize function for NoteId
 impl<'de> Deserialize<'de> for NoteId {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
