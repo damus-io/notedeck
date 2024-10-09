@@ -4,6 +4,7 @@ use crate::{
     app_style::user_requested_visuals_change,
     args::Args,
     column::Columns,
+    dispatcher::{self, HandlerTable},
     draft::Drafts,
     error::{Error, FilterError},
     filter::{self, FilterState},
@@ -16,6 +17,7 @@ use crate::{
     notes_holder::NotesHolderStorage,
     profile::Profile,
     subscriptions::{SubKind, Subscriptions},
+    task,
     thread::Thread,
     timeline::{Timeline, TimelineId, TimelineKind, ViewFilter},
     ui::{self, DesktopSidePanel},
@@ -32,6 +34,7 @@ use egui_extras::{Size, StripBuilder};
 
 use nostrdb::{Config, Filter, Ndb, Note, Transaction};
 
+use futures::SinkExt;
 use std::collections::HashMap;
 use std::path::Path;
 use std::time::Duration;
@@ -61,6 +64,7 @@ pub struct Damus {
     pub img_cache: ImageCache,
     pub accounts: AccountManager,
     pub subscriptions: Subscriptions,
+    pub dispatch: HandlerTable,
 
     frame_history: crate::frame_history::FrameHistory,
 
@@ -472,6 +476,11 @@ fn update_damus(damus: &mut Damus, ctx: &egui::Context) {
                 .insert("unknownids".to_string(), SubKind::OneShot);
             setup_initial_nostrdb_subs(&damus.ndb, &mut damus.note_cache, &mut damus.columns)
                 .expect("home subscription failed");
+
+            let damusref = damus.reference();
+            tokio::spawn(async move {
+                task::setup_user_relays(damusref).await;
+            });
         }
 
         DamusState::NewTimelineSub(new_timeline_id) => {
@@ -511,13 +520,25 @@ fn update_damus(damus: &mut Damus, ctx: &egui::Context) {
     damus.columns.attempt_perform_deletion_request();
 }
 
-fn process_event(damus: &mut Damus, _subid: &str, event: &str) {
+fn process_event(damus: &mut Damus, subid: &str, event: &str) {
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
 
     //info!("processing event {}", event);
     if let Err(_err) = damus.ndb.process_event(event) {
         error!("error processing event {}", event);
+    }
+
+    // Notify waiting subscribers that a pool event has happened
+    if let Some(handler) = damus.dispatch.get(subid) {
+        let mut handler_clone = handler.clone();
+        tokio::spawn(async move {
+            handler_clone
+                .sender
+                .send(dispatcher::Event::Pool)
+                .await
+                .ok();
+        });
     }
 }
 
@@ -726,6 +747,7 @@ impl Damus {
             debug,
             unknown_ids: UnknownIds::default(),
             subscriptions: Subscriptions::default(),
+            dispatch: HandlerTable::default(),
             since_optimize: parsed_args.since_optimize,
             threads: NotesHolderStorage::default(),
             profiles: NotesHolderStorage::default(),
@@ -822,6 +844,7 @@ impl Damus {
             debug,
             unknown_ids: UnknownIds::default(),
             subscriptions: Subscriptions::default(),
+            dispatch: HandlerTable::default(),
             since_optimize: true,
             threads: NotesHolderStorage::default(),
             profiles: NotesHolderStorage::default(),
