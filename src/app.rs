@@ -17,6 +17,7 @@ use crate::{
     notecache::{CachedNote, NoteCache},
     route::Route,
     subscriptions::{SubKind, Subscriptions},
+    task,
     thread::Threads,
     timeline::{Timeline, TimelineKind, ViewFilter},
     ui::{self, DesktopSidePanel},
@@ -374,6 +375,8 @@ fn update_damus(damus: &mut Damus, ctx: &egui::Context) {
             .insert("unknownids".to_string(), SubKind::OneShot);
         setup_initial_nostrdb_subs(&damus.ndb, &mut damus.note_cache, &mut damus.columns)
             .expect("home subscription failed");
+
+        task::setup_user_relays(damus.reference());
     }
 
     if let Err(err) = try_process_event(damus, ctx) {
@@ -1017,8 +1020,8 @@ impl eframe::App for Damus {
     }
 }
 
-use futures::lock::Mutex;
 use std::sync::{Arc, Weak};
+use tokio::sync::Mutex;
 
 pub type DamusRef = Arc<Mutex<Damus>>;
 

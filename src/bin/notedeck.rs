@@ -3,8 +3,8 @@
 use notedeck::app_creation::generate_native_options;
 use notedeck::{Damus, DamusApp};
 
-use futures::lock::Mutex;
 use std::sync::Arc;
+use tokio::sync::Mutex;
 
 // Entry point for wasm
 //#[cfg(target_arch = "wasm32")]
