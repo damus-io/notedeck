@@ -1,5 +1,6 @@
 use crate::{
-    actionbar::TimelineResponse, imgcache::ImageCache, notecache::NoteCache, thread::Threads,
+    actionbar::TimelineResponse, imgcache::ImageCache, notecache::NoteCache,
+    notes_holder::{NotesHolder, NotesHolderStorage}, thread::Thread,
 };
 use nostrdb::{Ndb, NoteKey, Transaction};
 use tracing::error;
@@ -7,7 +8,7 @@ use tracing::error;
 use super::timeline::TimelineTabView;
 
 pub struct ThreadView<'a> {
-    threads: &'a mut Threads,
+    threads: &'a mut NotesHolderStorage<Thread>,
     ndb: &'a Ndb,
     note_cache: &'a mut NoteCache,
     img_cache: &'a mut ImageCache,
@@ -19,7 +20,7 @@ pub struct ThreadView<'a> {
 impl<'a> ThreadView<'a> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        threads: &'a mut Threads,
+        threads: &'a mut NotesHolderStorage<Thread>,
         ndb: &'a Ndb,
         note_cache: &'a mut NoteCache,
         img_cache: &'a mut ImageCache,
@@ -86,7 +87,10 @@ impl<'a> ThreadView<'a> {
                         .map_or_else(|| self.selected_note_id, |nr| nr.id)
                 };
 
-                let thread = self.threads.thread_mut(self.ndb, &txn, root_id).get_ptr();
+                let thread = self
+                    .threads
+                    .notes_holder_mutated(self.ndb, &txn, root_id)
+                    .get_ptr();
 
                 // TODO(jb55): skip poll if ThreadResult is fresh?
 

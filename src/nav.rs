@@ -2,9 +2,10 @@ use crate::{
     account_manager::render_accounts_route,
     app_style::{get_font_size, NotedeckTextStyle},
     fonts::NamedFontFamily,
+    notes_holder::NotesHolder,
     relay_pool_manager::RelayPoolManager,
     route::Route,
-    thread::thread_unsubscribe,
+    thread::Thread,
     timeline::{
         route::{render_profile_route, render_timeline_route, AfterRouteExecution, TimelineRoute},
         PubkeySource, Timeline, TimelineKind,
@@ -21,7 +22,7 @@ use crate::{
 
 use egui::{pos2, Color32, InnerResponse, Stroke};
 use egui_nav::{Nav, NavAction, TitleBarResponse};
-use nostrdb::Ndb;
+use nostrdb::{Ndb, Transaction};
 use tracing::{error, info};
 
 pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) {
@@ -163,13 +164,16 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) {
     if let Some(NavAction::Returned) = nav_response.action {
         let r = app.columns_mut().column_mut(col).router_mut().pop();
         if let Some(Route::Timeline(TimelineRoute::Thread(id))) = r {
-            thread_unsubscribe(
-                &app.ndb,
-                &mut app.threads,
-                &mut app.pool,
-                &mut app.note_cache,
-                id.bytes(),
-            );
+            let txn = Transaction::new(&app.ndb).expect("txn");
+            let root_id = {
+                crate::note::root_note_id_from_selected_id(
+                    &app.ndb,
+                    &mut app.note_cache,
+                    &txn,
+                    id.bytes(),
+                )
+            };
+            Thread::unsubscribe_locally(&txn, &app.ndb, &mut app.threads, &mut app.pool, root_id);
         }
 
         if let Some(Route::Profile(_, id)) = r {

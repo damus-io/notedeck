@@ -4,7 +4,8 @@ use crate::{
     draft::Drafts,
     imgcache::ImageCache,
     notecache::NoteCache,
-    thread::Threads,
+    notes_holder::NotesHolderStorage,
+    thread::Thread,
     timeline::TimelineId,
     ui::{
         self,
@@ -46,7 +47,7 @@ pub fn render_timeline_route(
     drafts: &mut Drafts,
     img_cache: &mut ImageCache,
     note_cache: &mut NoteCache,
-    threads: &mut Threads,
+    threads: &mut NotesHolderStorage<Thread>,
     accounts: &mut AccountManager,
     route: TimelineRoute,
     col: usize,
@@ -162,7 +163,7 @@ pub fn render_profile_route(
     pool: &mut RelayPool,
     img_cache: &mut ImageCache,
     note_cache: &mut NoteCache,
-    threads: &mut Threads,
+    threads: &mut NotesHolderStorage<Thread>,
     col: usize,
     ui: &mut egui::Ui,
 ) -> Option<AfterRouteExecution> {

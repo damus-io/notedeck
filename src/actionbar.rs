@@ -1,9 +1,9 @@
 use crate::{
-    multi_subscriber::MultiSubscriber,
     note::NoteRef,
     notecache::NoteCache,
+    notes_holder::{NotesHolder, NotesHolderStorage},
     route::{Route, Router},
-    thread::{Thread, ThreadResult, Threads},
+    thread::Thread,
 };
 use enostr::{NoteId, Pubkey, RelayPool};
 use nostrdb::{Ndb, Transaction};
@@ -21,13 +21,13 @@ pub struct TimelineResponse {
     pub open_profile: Option<Pubkey>,
 }
 
-pub struct NewThreadNotes {
-    pub root_id: NoteId,
+pub struct NewNotes {
+    pub id: [u8; 32],
     pub notes: Vec<NoteRef>,
 }
 
-pub enum BarResult {
-    NewThreadNotes(NewThreadNotes),
+pub enum NotesHolderResult {
+    NewNotes(NewNotes),
 }
 
 /// open_thread is called when a note is selected and we need to navigate
@@ -41,51 +41,13 @@ fn open_thread(
     router: &mut Router<Route>,
     note_cache: &mut NoteCache,
     pool: &mut RelayPool,
-    threads: &mut Threads,
+    threads: &mut NotesHolderStorage<Thread>,
     selected_note: &[u8; 32],
-) -> Option<BarResult> {
+) -> Option<NotesHolderResult> {
     router.route_to(Route::thread(NoteId::new(selected_note.to_owned())));
 
     let root_id = crate::note::root_note_id_from_selected_id(ndb, note_cache, txn, selected_note);
-    let thread_res = threads.thread_mut(ndb, txn, root_id);
-
-    let (thread, result) = match thread_res {
-        ThreadResult::Stale(thread) => {
-            // The thread is stale, let's update it
-            let notes = Thread::new_notes(&thread.view().notes, root_id, txn, ndb);
-            let bar_result = if notes.is_empty() {
-                None
-            } else {
-                Some(BarResult::new_thread_notes(
-                    notes,
-                    NoteId::new(root_id.to_owned()),
-                ))
-            };
-
-            //
-            // we can't insert and update the VirtualList now, because we
-            // are already borrowing it mutably. Let's pass it as a
-            // result instead
-            //
-            // thread.view.insert(&notes); <-- no
-            //
-            (thread, bar_result)
-        }
-
-        ThreadResult::Fresh(thread) => (thread, None),
-    };
-
-    let multi_subscriber = if let Some(multi_subscriber) = &mut thread.multi_subscriber {
-        multi_subscriber
-    } else {
-        let filters = Thread::filters(root_id);
-        thread.multi_subscriber = Some(MultiSubscriber::new(filters));
-        thread.multi_subscriber.as_mut().unwrap()
-    };
-
-    multi_subscriber.subscribe(ndb, pool);
-
-    result
+    Thread::open(ndb, txn, pool, threads, root_id)
 }
 
 impl BarAction {
@@ -94,11 +56,11 @@ impl BarAction {
         self,
         ndb: &Ndb,
         router: &mut Router<Route>,
-        threads: &mut Threads,
+        threads: &mut NotesHolderStorage<Thread>,
         note_cache: &mut NoteCache,
         pool: &mut RelayPool,
         txn: &Transaction,
-    ) -> Option<BarResult> {
+    ) -> Option<NotesHolderResult> {
         match self {
             BarAction::Reply(note_id) => {
                 router.route_to(Route::reply(note_id));
@@ -123,7 +85,7 @@ impl BarAction {
         self,
         ndb: &Ndb,
         router: &mut Router<Route>,
-        threads: &mut Threads,
+        threads: &mut NotesHolderStorage<Thread>,
         note_cache: &mut NoteCache,
         pool: &mut RelayPool,
         txn: &Transaction,
@@ -134,34 +96,39 @@ impl BarAction {
     }
 }
 
-impl BarResult {
-    pub fn new_thread_notes(notes: Vec<NoteRef>, root_id: NoteId) -> Self {
-        BarResult::NewThreadNotes(NewThreadNotes::new(notes, root_id))
+impl NotesHolderResult {
+    pub fn new_notes(notes: Vec<NoteRef>, id: [u8; 32]) -> Self {
+        NotesHolderResult::NewNotes(NewNotes::new(notes, id))
     }
 
-    pub fn process(&self, ndb: &Ndb, txn: &Transaction, threads: &mut Threads) {
+    pub fn process<N: NotesHolder>(
+        &self,
+        ndb: &Ndb,
+        txn: &Transaction,
+        storage: &mut NotesHolderStorage<N>,
+    ) {
         match self {
             // update the thread for next render if we have new notes
-            BarResult::NewThreadNotes(new_notes) => {
-                let thread = threads
-                    .thread_mut(ndb, txn, new_notes.root_id.bytes())
+            NotesHolderResult::NewNotes(new_notes) => {
+                let holder = storage
+                    .notes_holder_mutated(ndb, txn, &new_notes.id)
                     .get_ptr();
-                new_notes.process(thread);
+                new_notes.process(holder);
             }
         }
     }
 }
 
-impl NewThreadNotes {
-    pub fn new(notes: Vec<NoteRef>, root_id: NoteId) -> Self {
-        NewThreadNotes { notes, root_id }
+impl NewNotes {
+    pub fn new(notes: Vec<NoteRef>, id: [u8; 32]) -> Self {
+        NewNotes { notes, id }
     }
 
     /// Simple helper for processing a NewThreadNotes result. It simply
     /// inserts/merges the notes into the thread cache
-    pub fn process(&self, thread: &mut Thread) {
+    pub fn process<N: NotesHolder>(&self, thread: &mut N) {
         // threads are chronological, ie reversed from reverse-chronological, the default.
         let reversed = true;
-        thread.view_mut().insert(&self.notes, reversed);
+        thread.get_view().insert(&self.notes, reversed);
     }
 }

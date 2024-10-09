@@ -13,8 +13,9 @@ use crate::{
     nav,
     note::NoteRef,
     notecache::{CachedNote, NoteCache},
+    notes_holder::NotesHolderStorage,
     subscriptions::{SubKind, Subscriptions},
-    thread::Threads,
+    thread::Thread,
     timeline::{Timeline, TimelineId, TimelineKind, ViewFilter},
     ui::{self, DesktopSidePanel},
     unknowns::UnknownIds,
@@ -53,7 +54,7 @@ pub struct Damus {
     pub view_state: ViewState,
     pub unknown_ids: UnknownIds,
     pub drafts: Drafts,
-    pub threads: Threads,
+    pub threads: NotesHolderStorage<Thread>,
     pub img_cache: ImageCache,
     pub accounts: AccountManager,
     pub subscriptions: Subscriptions,
@@ -709,7 +710,7 @@ impl Damus {
             unknown_ids: UnknownIds::default(),
             subscriptions: Subscriptions::default(),
             since_optimize: parsed_args.since_optimize,
-            threads: Threads::default(),
+            threads: NotesHolderStorage::default(),
             drafts: Drafts::default(),
             state: DamusState::Initializing,
             img_cache: ImageCache::new(imgcache_dir.into()),
@@ -790,7 +791,7 @@ impl Damus {
             unknown_ids: UnknownIds::default(),
             subscriptions: Subscriptions::default(),
             since_optimize: true,
-            threads: Threads::default(),
+            threads: NotesHolderStorage::default(),
             drafts: Drafts::default(),
             state: DamusState::Initializing,
             pool: RelayPool::new(),
@@ -817,11 +818,11 @@ impl Damus {
         &mut self.unknown_ids
     }
 
-    pub fn threads(&self) -> &Threads {
+    pub fn threads(&self) -> &NotesHolderStorage<Thread> {
         &self.threads
     }
 
-    pub fn threads_mut(&mut self) -> &mut Threads {
+    pub fn threads_mut(&mut self) -> &mut NotesHolderStorage<Thread> {
         &mut self.threads
     }
 

@@ -40,6 +40,7 @@ pub mod ui;
 mod unknowns;
 mod user_account;
 mod view_state;
+mod notes_holder;
 
 #[cfg(test)]
 #[macro_use]
