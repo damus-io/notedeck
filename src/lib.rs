@@ -11,6 +11,7 @@ mod app_style;
 mod args;
 mod colors;
 mod column;
+mod dispatcher;
 mod draft;
 mod filter;
 mod fonts;

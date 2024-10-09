@@ -4,6 +4,7 @@ use crate::{
     app_style::user_requested_visuals_change,
     args::Args,
     column::{Column, Columns},
+    dispatcher::HandlerTable,
     draft::Drafts,
     error::{Error, FilterError},
     filter,
@@ -59,6 +60,7 @@ pub struct Damus {
     pub img_cache: ImageCache,
     pub accounts: AccountManager,
     pub subscriptions: Subscriptions,
+    pub dispatch_table: HandlerTable,
 
     frame_history: crate::frame_history::FrameHistory,
 
@@ -657,6 +659,7 @@ impl Damus {
             debug,
             unknown_ids: UnknownIds::default(),
             subscriptions: Subscriptions::default(),
+            dispatch_table: HandlerTable::default(),
             since_optimize: parsed_args.since_optimize,
             threads: Threads::default(),
             drafts: Drafts::default(),
@@ -748,6 +751,7 @@ impl Damus {
             debug,
             unknown_ids: UnknownIds::default(),
             subscriptions: Subscriptions::default(),
+            dispatch_table: HandlerTable::default(),
             since_optimize: true,
             threads: Threads::default(),
             drafts: Drafts::default(),
