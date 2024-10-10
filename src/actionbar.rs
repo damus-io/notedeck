@@ -5,7 +5,7 @@ use crate::{
     route::{Route, Router},
     thread::{Thread, ThreadResult, Threads},
 };
-use enostr::{NoteId, RelayPool};
+use enostr::{NoteId, Pubkey, RelayPool};
 use nostrdb::{Ndb, Transaction};
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
@@ -13,6 +13,12 @@ pub enum BarAction {
     Reply(NoteId),
     Quote(NoteId),
     OpenThread(NoteId),
+}
+
+#[derive(Default)]
+pub struct TimelineResponse {
+    pub bar_action: Option<BarAction>,
+    pub open_profile: Option<Pubkey>,
 }
 
 pub struct NewThreadNotes {

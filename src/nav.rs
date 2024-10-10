@@ -5,7 +5,10 @@ use crate::{
     relay_pool_manager::RelayPoolManager,
     route::Route,
     thread::thread_unsubscribe,
-    timeline::route::{render_timeline_route, AfterRouteExecution, TimelineRoute},
+    timeline::{
+        route::{render_profile_route, render_timeline_route, AfterRouteExecution, TimelineRoute},
+        PubkeySource, TimelineKind,
+    },
     ui::{
         self,
         add_column::{AddColumnResponse, AddColumnView},
@@ -109,6 +112,18 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) {
                     }
                     None
                 }
+
+                Route::Profile(id) => render_profile_route(
+                    *id,
+                    &app.ndb,
+                    &mut app.columns,
+                    &mut app.pool,
+                    &mut app.img_cache,
+                    &mut app.note_cache,
+                    &mut app.threads,
+                    col,
+                    ui,
+                ),
             }
         });
 
@@ -122,6 +137,21 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) {
                             app.columns_mut().column_mut(col).router_mut().returning = true;
                         }
                     }
+                }
+            }
+
+            AfterRouteExecution::OpenProfile(pubkey) => {
+                let pubkey_source = match app.accounts.get_selected_account() {
+                    Some(account) if account.pubkey == pubkey => PubkeySource::DeckAuthor,
+                    _ => PubkeySource::Explicit(pubkey),
+                };
+
+                if let Some(timeline) =
+                    TimelineKind::profile(pubkey_source).into_timeline(&app.ndb, None)
+                {
+                    let timeline_id = timeline.id;
+                    app.columns_mut().route_profile_timeline(col, timeline);
+                    app.subscribe_new_timeline(timeline_id);
                 }
             }
         }

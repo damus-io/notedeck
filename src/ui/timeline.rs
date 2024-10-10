@@ -1,3 +1,4 @@
+use crate::actionbar::TimelineResponse;
 use crate::{
     actionbar::BarAction, column::Columns, imgcache::ImageCache, notecache::NoteCache,
     timeline::TimelineId, ui,
@@ -5,8 +6,9 @@ use crate::{
 use egui::containers::scroll_area::ScrollBarVisibility;
 use egui::{Direction, Layout};
 use egui_tabs::TabColor;
+use enostr::Pubkey;
 use nostrdb::{Ndb, Transaction};
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 
 pub struct TimelineView<'a> {
     timeline_id: TimelineId,
@@ -39,7 +41,7 @@ impl<'a> TimelineView<'a> {
         }
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui) -> Option<BarAction> {
+    pub fn ui(&mut self, ui: &mut egui::Ui) -> TimelineResponse {
         timeline_ui(
             ui,
             self.ndb,
@@ -68,7 +70,7 @@ fn timeline_ui(
     img_cache: &mut ImageCache,
     reversed: bool,
     textmode: bool,
-) -> Option<BarAction> {
+) -> TimelineResponse {
     //padding(4.0, ui, |ui| ui.heading("Notifications"));
     /*
     let font_id = egui::TextStyle::Body.resolve(ui.style());
@@ -83,7 +85,7 @@ fn timeline_ui(
             error!("tried to render timeline in column, but timeline was missing");
             // TODO (jb55): render error when timeline is missing?
             // this shouldn't happen...
-            return None;
+            return TimelineResponse::default();
         };
 
         timeline.selected_view = tabs_ui(ui);
@@ -94,6 +96,7 @@ fn timeline_ui(
         egui::Id::new(("tlscroll", timeline.view_id()))
     };
 
+    let mut open_profile: Option<Pubkey> = None;
     let mut bar_action: Option<BarAction> = None;
     egui::ScrollArea::vertical()
         .id_source(scroll_id)
@@ -157,6 +160,11 @@ fn timeline_ui(
                         if let Some(context) = resp.context_selection {
                             context.process(ui, &note);
                         }
+
+                        if resp.clicked_profile {
+                            info!("clicked profile");
+                            open_profile = Some(Pubkey::new(*note.pubkey()))
+                        }
                     });
 
                     ui::hline(ui);
@@ -168,7 +176,10 @@ fn timeline_ui(
             1
         });
 
-    bar_action
+    TimelineResponse {
+        open_profile,
+        bar_action,
+    }
 }
 
 fn tabs_ui(ui: &mut egui::Ui) -> i32 {

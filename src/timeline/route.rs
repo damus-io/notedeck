@@ -12,10 +12,11 @@ use crate::{
             post::{PostAction, PostResponse},
             QuoteRepostView,
         },
+        profile::ProfileView,
     },
 };
 
-use enostr::{NoteId, RelayPool};
+use enostr::{NoteId, Pubkey, RelayPool};
 use nostrdb::{Ndb, Transaction};
 
 #[derive(Debug, Eq, PartialEq, Clone, Copy)]
@@ -28,6 +29,7 @@ pub enum TimelineRoute {
 
 pub enum AfterRouteExecution {
     Post(PostResponse),
+    OpenProfile(Pubkey),
 }
 
 impl AfterRouteExecution {
@@ -53,10 +55,10 @@ pub fn render_timeline_route(
 ) -> Option<AfterRouteExecution> {
     match route {
         TimelineRoute::Timeline(timeline_id) => {
-            if let Some(bar_action) =
+            let timeline_response =
                 ui::TimelineView::new(timeline_id, columns, ndb, note_cache, img_cache, textmode)
-                    .ui(ui)
-            {
+                    .ui(ui);
+            if let Some(bar_action) = timeline_response.bar_action {
                 let txn = Transaction::new(ndb).expect("txn");
                 let mut cur_column = columns.columns_mut();
                 let router = cur_column[col].router_mut();
@@ -64,7 +66,9 @@ pub fn render_timeline_route(
                 bar_action.execute_and_process_result(ndb, router, threads, note_cache, pool, &txn);
             }
 
-            None
+            timeline_response
+                .open_profile
+                .map(AfterRouteExecution::OpenProfile)
         }
 
         TimelineRoute::Thread(id) => {
@@ -145,4 +149,30 @@ pub fn render_timeline_route(
             Some(AfterRouteExecution::post(response.inner))
         }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn render_profile_route(
+    id: TimelineId,
+    ndb: &Ndb,
+    columns: &mut Columns,
+    pool: &mut RelayPool,
+    img_cache: &mut ImageCache,
+    note_cache: &mut NoteCache,
+    threads: &mut Threads,
+    col: usize,
+    ui: &mut egui::Ui,
+) -> Option<AfterRouteExecution> {
+    let timeline_response = ProfileView::new(id, columns, ndb, note_cache, img_cache).ui(ui);
+    if let Some(bar_action) = timeline_response.bar_action {
+        let txn = nostrdb::Transaction::new(ndb).expect("txn");
+        let mut cur_column = columns.columns_mut();
+        let router = cur_column[col].router_mut();
+
+        bar_action.execute_and_process_result(ndb, router, threads, note_cache, pool, &txn);
+    }
+
+    timeline_response
+        .open_profile
+        .map(AfterRouteExecution::OpenProfile)
 }

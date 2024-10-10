@@ -693,7 +693,7 @@ impl Damus {
         let mut columns: Columns = Columns::new();
         for col in parsed_args.columns {
             if let Some(timeline) = col.into_timeline(&ndb, account) {
-                columns.add_timeline(timeline);
+                columns.add_new_timeline_column(timeline);
             }
         }
 
@@ -777,7 +777,7 @@ impl Damus {
 
         let timeline = Timeline::new(TimelineKind::Universe, FilterState::ready(vec![filter]));
 
-        columns.add_timeline(timeline);
+        columns.add_new_timeline_column(timeline);
 
         let imgcache_dir = data_path.as_ref().join(ImageCache::rel_datadir());
         let _ = std::fs::create_dir_all(imgcache_dir.clone());

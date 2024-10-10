@@ -45,7 +45,7 @@ impl Columns {
         Columns::default()
     }
 
-    pub fn add_timeline(&mut self, timeline: Timeline) {
+    pub fn add_new_timeline_column(&mut self, timeline: Timeline) {
         let id = Self::get_new_id();
         let routes = vec![Route::timeline(timeline.id)];
         self.timelines.insert(id, timeline);
@@ -58,6 +58,14 @@ impl Columns {
             .router_mut()
             .route_to_replaced(Route::timeline(timeline.id));
         self.timelines.insert(col_id, timeline);
+    }
+
+    pub fn route_profile_timeline(&mut self, col: usize, timeline: Timeline) {
+        self.column_mut(col)
+            .router_mut()
+            .route_to(Route::Profile(timeline.id));
+
+        self.timelines.insert(Self::get_new_id(), timeline);
     }
 
     pub fn new_column_picker(&mut self) {
