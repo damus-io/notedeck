@@ -42,8 +42,9 @@ impl CachedNote {
         let created_at = note.created_at();
         let reltime = TimeCached::new(
             Duration::from_secs(1),
-            Box::new(move || time_ago_since(created_at)),
+            Box::new(move || time_ago_since(created_at)) as Box<dyn Fn() -> String + Send>,
         );
+
         let reply = NoteReply::new(note.tags()).to_owned();
         CachedNote { reltime, reply }
     }
