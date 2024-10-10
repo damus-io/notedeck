@@ -1,5 +1,6 @@
-use crate::colors::{
-    desktop_dark_color_theme, light_color_theme, mobile_dark_color_theme, ColorTheme,
+use crate::{
+    colors::{desktop_dark_color_theme, light_color_theme, mobile_dark_color_theme, ColorTheme},
+    ui::is_narrow,
 };
 use egui::{
     epaint::Shadow,
@@ -93,6 +94,14 @@ pub fn mobile_font_size(text_style: &NotedeckTextStyle) -> f32 {
         NotedeckTextStyle::Monospace => 13.0,
         NotedeckTextStyle::Button => 13.0,
         NotedeckTextStyle::Small => 12.0,
+    }
+}
+
+pub fn get_font_size(ctx: &egui::Context, text_style: &NotedeckTextStyle) -> f32 {
+    if is_narrow(ctx) {
+        mobile_font_size(text_style)
+    } else {
+        desktop_font_size(text_style)
     }
 }
 

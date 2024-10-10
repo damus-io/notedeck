@@ -1,5 +1,6 @@
 pub mod account_login_view;
 pub mod account_management;
+pub mod add_column;
 pub mod anim;
 pub mod mention;
 pub mod note;

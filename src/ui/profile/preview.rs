@@ -6,6 +6,7 @@ use crate::{colors, images, DisplayName};
 use egui::load::TexturePoll;
 use egui::{Frame, RichText, Sense, Widget};
 use egui_extras::Size;
+use enostr::NoteId;
 use nostrdb::ProfileRecord;
 
 pub struct ProfilePreview<'a, 'cache> {
@@ -255,4 +256,29 @@ fn about_section_widget<'a>(profile: &'a ProfileRecord<'a>) -> impl egui::Widget
             ui.allocate_response(egui::Vec2::ZERO, egui::Sense::hover())
         }
     }
+}
+
+fn get_display_name_as_string(profile: Option<&'_ ProfileRecord<'_>>) -> String {
+    let display_name = get_display_name(profile);
+    match display_name {
+        DisplayName::One(n) => n.to_string(),
+        DisplayName::Both { display_name, .. } => display_name.to_string(),
+    }
+}
+
+pub fn get_profile_displayname_string(ndb: &nostrdb::Ndb, pk: &enostr::Pubkey) -> String {
+    let txn = nostrdb::Transaction::new(ndb).expect("Transaction should have worked");
+    let profile = ndb.get_profile_by_pubkey(&txn, pk.bytes()).ok();
+    get_display_name_as_string(profile.as_ref())
+}
+
+pub fn get_note_users_displayname_string(ndb: &nostrdb::Ndb, id: &NoteId) -> String {
+    let txn = nostrdb::Transaction::new(ndb).expect("Transaction should have worked");
+    let note = ndb.get_note_by_id(&txn, id.bytes());
+    let profile = if let Ok(note) = note {
+        ndb.get_profile_by_pubkey(&txn, note.pubkey()).ok()
+    } else {
+        None
+    };
+    get_display_name_as_string(profile.as_ref())
 }

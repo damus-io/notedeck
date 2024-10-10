@@ -4,12 +4,13 @@ use tracing::debug;
 
 pub enum NamedFontFamily {
     Medium,
+    Bold,
 }
 
 impl NamedFontFamily {
     pub fn as_str(&mut self) -> &'static str {
         match self {
-            //Self::Bold => "bold",
+            Self::Bold => "bold",
             Self::Medium => "medium",
         }
     }
@@ -43,7 +44,7 @@ pub fn setup_fonts(ctx: &egui::Context) {
         "DejaVuSans".to_owned(),
         FontData::from_static(include_bytes!("../assets/fonts/DejaVuSansSansEmoji.ttf")),
     );
-    /*
+
     font_data.insert(
         "OnestBold".to_owned(),
         FontData::from_static(include_bytes!(
@@ -51,6 +52,7 @@ pub fn setup_fonts(ctx: &egui::Context) {
         )),
     );
 
+    /*
     font_data.insert(
         "DejaVuSansBold".to_owned(),
         FontData::from_static(include_bytes!(
@@ -119,13 +121,20 @@ pub fn setup_fonts(ctx: &egui::Context) {
     medium.extend(base_fonts.clone());
 
     let mut mono = vec!["Inconsolata".to_owned()];
-    mono.extend(base_fonts);
+    mono.extend(base_fonts.clone());
+
+    let mut bold = vec!["OnestBold".to_owned()];
+    bold.extend(base_fonts);
 
     families.insert(egui::FontFamily::Proportional, proportional);
     families.insert(egui::FontFamily::Monospace, mono);
     families.insert(
         egui::FontFamily::Name(NamedFontFamily::Medium.as_str().into()),
         medium,
+    );
+    families.insert(
+        egui::FontFamily::Name(NamedFontFamily::Bold.as_str().into()),
+        bold,
     );
 
     debug!("fonts: {:?}", families);
