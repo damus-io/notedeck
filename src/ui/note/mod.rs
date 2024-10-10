@@ -39,6 +39,7 @@ pub struct NoteResponse {
     pub response: egui::Response,
     pub action: Option<BarAction>,
     pub context_selection: Option<NoteContextSelection>,
+    pub clicked_profile: bool,
 }
 
 impl NoteResponse {
@@ -47,6 +48,7 @@ impl NoteResponse {
             response,
             action: None,
             context_selection: None,
+            clicked_profile: false,
         }
     }
 
@@ -57,6 +59,13 @@ impl NoteResponse {
     pub fn select_option(self, context_selection: Option<NoteContextSelection>) -> Self {
         Self {
             context_selection,
+            ..self
+        }
+    }
+
+    pub fn click_profile(self, clicked_profile: bool) -> Self {
+        Self {
+            clicked_profile,
             ..self
         }
     }
@@ -305,7 +314,7 @@ impl<'a> NoteView<'a> {
         note_key: NoteKey,
         profile: &Result<nostrdb::ProfileRecord<'_>, nostrdb::Error>,
         ui: &mut egui::Ui,
-    ) {
+    ) -> egui::Response {
         if !self.options().has_wide() {
             ui.spacing_mut().item_spacing.x = 16.0;
         } else {
@@ -314,6 +323,7 @@ impl<'a> NoteView<'a> {
 
         let pfp_size = self.options().pfp_size();
 
+        let sense = Sense::click();
         match profile
             .as_ref()
             .ok()
@@ -326,7 +336,7 @@ impl<'a> NoteView<'a> {
                 let profile_key = profile.as_ref().unwrap().record().note_key();
                 let note_key = note_key.as_u64();
 
-                let (rect, size, _resp) = ui::anim::hover_expand(
+                let (rect, size, resp) = ui::anim::hover_expand(
                     ui,
                     egui::Id::new((profile_key, note_key)),
                     pfp_size,
@@ -342,13 +352,14 @@ impl<'a> NoteView<'a> {
                             self.img_cache,
                         ));
                     });
+                resp
             }
-            None => {
-                ui.add(
+            None => ui
+                .add(
                     ui::ProfilePic::new(self.img_cache, ui::ProfilePic::no_pfp_url())
                         .size(pfp_size),
-                );
-            }
+                )
+                .interact(sense),
         }
     }
 
@@ -441,10 +452,12 @@ impl<'a> NoteView<'a> {
             Pos2::new(x, y)
         };
 
+        let mut clicked_profile = false;
+
         // wide design
         let response = if self.options().has_wide() {
             ui.horizontal(|ui| {
-                self.pfp(note_key, &profile, ui);
+                clicked_profile = self.pfp(note_key, &profile, ui).clicked();
 
                 let size = ui.available_size();
                 ui.vertical(|ui| {
@@ -498,7 +511,7 @@ impl<'a> NoteView<'a> {
         } else {
             // main design
             ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
-                self.pfp(note_key, &profile, ui);
+                clicked_profile = self.pfp(note_key, &profile, ui).clicked();
 
                 ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
                     selected_option = NoteView::note_header(
@@ -557,6 +570,7 @@ impl<'a> NoteView<'a> {
         NoteResponse::new(response)
             .with_action(note_action)
             .select_option(selected_option)
+            .click_profile(clicked_profile)
     }
 }
 

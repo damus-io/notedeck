@@ -17,6 +17,7 @@ pub enum Route {
     Relays,
     ComposeNote,
     AddColumn,
+    Profile(TimelineId),
 }
 
 #[derive(Clone)]
@@ -96,6 +97,12 @@ impl Route {
             },
             Route::ComposeNote => "Compose Note".to_owned(),
             Route::AddColumn => "Add Column".to_owned(),
+            Route::Profile(id) => {
+                let timeline = columns
+                    .find_timeline(*id)
+                    .expect("expected to find timeline");
+                timeline.kind.to_title(ndb)
+            }
         };
 
         TitledRoute {
@@ -203,6 +210,7 @@ impl fmt::Display for Route {
             Route::ComposeNote => write!(f, "Compose Note"),
 
             Route::AddColumn => write!(f, "Add Column"),
+            Route::Profile(_) => write!(f, "Profile"),
         }
     }
 }
