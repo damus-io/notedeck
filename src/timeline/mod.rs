@@ -8,7 +8,6 @@ use std::fmt;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use egui_virtual_list::VirtualList;
-use enostr::Pubkey;
 use nostrdb::{Ndb, Note, Subscription, Transaction};
 use std::cell::RefCell;
 use std::hash::Hash;
@@ -180,9 +179,8 @@ pub struct Timeline {
 
 impl Timeline {
     /// Create a timeline from a contact list
-    pub fn contact_list(contact_list: &Note) -> Result<Self> {
+    pub fn contact_list(contact_list: &Note, pk_src: PubkeySource) -> Result<Self> {
         let filter = filter::filter_from_tags(contact_list)?.into_follow_filter();
-        let pk_src = PubkeySource::Explicit(Pubkey::new(*contact_list.pubkey()));
 
         Ok(Timeline::new(
             TimelineKind::contact_list(pk_src),
@@ -241,13 +239,15 @@ impl Timeline {
 
     pub fn poll_notes_into_view(
         timeline_idx: usize,
-        timelines: &mut [Timeline],
+        mut timelines: Vec<&mut Timeline>,
         ndb: &Ndb,
         txn: &Transaction,
         unknown_ids: &mut UnknownIds,
         note_cache: &mut NoteCache,
     ) -> Result<()> {
-        let timeline = &mut timelines[timeline_idx];
+        let timeline = timelines
+            .get_mut(timeline_idx)
+            .ok_or(Error::TimelineNotFound)?;
         let sub = timeline.subscription.ok_or(Error::no_active_sub())?;
 
         let new_note_ids = ndb.poll_for_notes(sub, 500);

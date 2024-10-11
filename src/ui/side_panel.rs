@@ -4,9 +4,9 @@ use tracing::info;
 use crate::{
     account_manager::AccountsRoute,
     colors,
-    column::Column,
+    column::{Column, Columns},
     imgcache::ImageCache,
-    route::{Route, Router},
+    route::Route,
     user_account::UserAccount,
     Damus,
 };
@@ -162,7 +162,8 @@ impl<'a> DesktopSidePanel<'a> {
         helper.take_animation_response()
     }
 
-    pub fn perform_action(router: &mut Router<Route>, action: SidePanelAction) {
+    pub fn perform_action(columns: &mut Columns, action: SidePanelAction) {
+        let router = columns.get_first_router();
         match action {
             SidePanelAction::Panel => {} // TODO
             SidePanelAction::Account => {
@@ -186,8 +187,11 @@ impl<'a> DesktopSidePanel<'a> {
                 }
             }
             SidePanelAction::Columns => {
-                // TODO
-                info!("Clicked columns button");
+                if router.routes().iter().any(|&r| r == Route::AddColumn) {
+                    router.go_back();
+                } else {
+                    columns.new_column_picker();
+                }
             }
             SidePanelAction::ComposeNote => {
                 if router.routes().iter().any(|&r| r == Route::ComposeNote) {
@@ -366,9 +370,7 @@ mod preview {
     impl DesktopSidePanelPreview {
         fn new() -> Self {
             let mut app = test_data::test_app();
-            app.columns
-                .columns_mut()
-                .push(Column::new(vec![Route::accounts()]));
+            app.columns.add_column(Column::new(vec![Route::accounts()]));
             DesktopSidePanelPreview { app }
         }
     }
@@ -388,10 +390,7 @@ mod preview {
                         );
                         let response = panel.show(ui);
 
-                        DesktopSidePanel::perform_action(
-                            self.app.columns.columns_mut()[0].router_mut(),
-                            response.action,
-                        );
+                        DesktopSidePanel::perform_action(&mut self.app.columns, response.action);
                     });
                 });
         }

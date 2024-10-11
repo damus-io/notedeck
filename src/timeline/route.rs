@@ -26,13 +26,13 @@ pub enum TimelineRoute {
     Quote(NoteId),
 }
 
-pub enum TimelineRouteResponse {
+pub enum AfterRouteExecution {
     Post(PostResponse),
 }
 
-impl TimelineRouteResponse {
+impl AfterRouteExecution {
     pub fn post(post: PostResponse) -> Self {
-        TimelineRouteResponse::Post(post)
+        AfterRouteExecution::Post(post)
     }
 }
 
@@ -50,7 +50,7 @@ pub fn render_timeline_route(
     col: usize,
     textmode: bool,
     ui: &mut egui::Ui,
-) -> Option<TimelineRouteResponse> {
+) -> Option<AfterRouteExecution> {
     match route {
         TimelineRoute::Timeline(timeline_id) => {
             if let Some(bar_action) =
@@ -58,7 +58,8 @@ pub fn render_timeline_route(
                     .ui(ui)
             {
                 let txn = Transaction::new(ndb).expect("txn");
-                let router = columns.columns_mut()[col].router_mut();
+                let mut cur_column = columns.columns_mut();
+                let router = cur_column[col].router_mut();
 
                 bar_action.execute_and_process_result(ndb, router, threads, note_cache, pool, &txn);
             }
@@ -73,7 +74,8 @@ pub fn render_timeline_route(
                     .ui(ui)
             {
                 let txn = Transaction::new(ndb).expect("txn");
-                let router = columns.columns_mut()[col].router_mut();
+                let mut cur_column = columns.columns_mut();
+                let router = cur_column[col].router_mut();
                 bar_action.execute_and_process_result(ndb, router, threads, note_cache, pool, &txn);
             }
 
@@ -111,7 +113,7 @@ pub fn render_timeline_route(
                 });
             }
 
-            Some(TimelineRouteResponse::post(response.inner))
+            Some(AfterRouteExecution::post(response.inner))
         }
 
         TimelineRoute::Quote(id) => {
@@ -140,7 +142,7 @@ pub fn render_timeline_route(
                     np.to_quote(seckey, &note)
                 });
             }
-            Some(TimelineRouteResponse::post(response.inner))
+            Some(AfterRouteExecution::post(response.inner))
         }
     }
 }

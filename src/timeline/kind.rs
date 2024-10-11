@@ -2,6 +2,7 @@ use crate::error::{Error, FilterError};
 use crate::filter;
 use crate::filter::FilterState;
 use crate::timeline::Timeline;
+use crate::ui::profile::preview::get_profile_displayname_string;
 use enostr::{Filter, Pubkey};
 use nostrdb::{Ndb, Transaction};
 use std::fmt::Display;
@@ -136,7 +137,7 @@ impl TimelineKind {
                     ));
                 }
 
-                match Timeline::contact_list(&results[0].note) {
+                match Timeline::contact_list(&results[0].note, pk_src.clone()) {
                     Err(Error::Filter(FilterError::EmptyContactList)) => Some(Timeline::new(
                         TimelineKind::contact_list(pk_src),
                         FilterState::needs_remote(vec![contact_filter]),
@@ -148,6 +149,34 @@ impl TimelineKind {
                     Ok(tl) => Some(tl),
                 }
             }
+        }
+    }
+
+    pub fn to_title(&self, ndb: &Ndb) -> String {
+        match self {
+            TimelineKind::List(list_kind) => match list_kind {
+                ListKind::Contact(pubkey_source) => match pubkey_source {
+                    PubkeySource::Explicit(pubkey) => {
+                        format!("{}'s Contacts", get_profile_displayname_string(ndb, pubkey))
+                    }
+                    PubkeySource::DeckAuthor => "Contacts".to_owned(),
+                },
+            },
+            TimelineKind::Notifications(pubkey_source) => match pubkey_source {
+                PubkeySource::DeckAuthor => "Notifications".to_owned(),
+                PubkeySource::Explicit(pk) => format!(
+                    "{}'s Notifications",
+                    get_profile_displayname_string(ndb, pk)
+                ),
+            },
+            TimelineKind::Profile(pubkey_source) => match pubkey_source {
+                PubkeySource::DeckAuthor => "Profile".to_owned(),
+                PubkeySource::Explicit(pk) => {
+                    format!("{}'s Profile", get_profile_displayname_string(ndb, pk))
+                }
+            },
+            TimelineKind::Universe => "Universe".to_owned(),
+            TimelineKind::Generic => "Custom Filter".to_owned(),
         }
     }
 }

@@ -3,21 +3,19 @@ use crate::{
     app_creation::setup_cc,
     app_style::user_requested_visuals_change,
     args::Args,
-    column::{Column, Columns},
+    column::Columns,
     draft::Drafts,
     error::{Error, FilterError},
-    filter,
-    filter::FilterState,
+    filter::{self, FilterState},
     frame_history::FrameHistory,
     imgcache::ImageCache,
     key_storage::KeyStorageType,
     nav,
     note::NoteRef,
     notecache::{CachedNote, NoteCache},
-    route::Route,
     subscriptions::{SubKind, Subscriptions},
     thread::Threads,
-    timeline::{Timeline, TimelineKind, ViewFilter},
+    timeline::{Timeline, TimelineId, TimelineKind, ViewFilter},
     ui::{self, DesktopSidePanel},
     unknowns::UnknownIds,
     view_state::ViewState,
@@ -41,6 +39,7 @@ use tracing::{debug, error, info, trace, warn};
 pub enum DamusState {
     Initializing,
     Initialized,
+    NewTimelineSub(TimelineId),
 }
 
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
@@ -248,7 +247,7 @@ fn try_process_event(damus: &mut Damus, ctx: &egui::Context) -> Result<()> {
 
             if let Err(err) = Timeline::poll_notes_into_view(
                 timeline_ind,
-                &mut damus.columns.timelines,
+                damus.columns.timelines_mut(),
                 &damus.ndb,
                 &txn,
                 &mut damus.unknown_ids,
@@ -394,47 +393,105 @@ fn setup_initial_nostrdb_subs(
     columns: &mut Columns,
 ) -> Result<()> {
     for timeline in columns.timelines_mut() {
-        match &timeline.filter {
-            FilterState::Ready(filters) => {
-                { setup_initial_timeline(ndb, timeline, note_cache, &filters.clone()) }?
-            }
+        setup_nostrdb_sub(ndb, note_cache, timeline)?
+    }
 
-            FilterState::Broken(err) => {
-                error!("FetchingRemote state broken in setup_initial_nostr_subs: {err}")
-            }
-            FilterState::FetchingRemote(_) => {
-                error!("FetchingRemote state in setup_initial_nostr_subs")
-            }
-            FilterState::GotRemote(_) => {
-                error!("GotRemote state in setup_initial_nostr_subs")
-            }
-            FilterState::NeedsRemote(_filters) => {
-                // can't do anything yet, we defer to first connect to send
-                // remote filters
-            }
+    Ok(())
+}
+
+fn setup_nostrdb_sub(ndb: &Ndb, note_cache: &mut NoteCache, timeline: &mut Timeline) -> Result<()> {
+    match &timeline.filter {
+        FilterState::Ready(filters) => {
+            { setup_initial_timeline(ndb, timeline, note_cache, &filters.clone()) }?
+        }
+
+        FilterState::Broken(err) => {
+            error!("FetchingRemote state broken in setup_initial_nostr_subs: {err}")
+        }
+        FilterState::FetchingRemote(_) => {
+            error!("FetchingRemote state in setup_initial_nostr_subs")
+        }
+        FilterState::GotRemote(_) => {
+            error!("GotRemote state in setup_initial_nostr_subs")
+        }
+        FilterState::NeedsRemote(_filters) => {
+            // can't do anything yet, we defer to first connect to send
+            // remote filters
         }
     }
 
     Ok(())
 }
 
-fn update_damus(damus: &mut Damus, ctx: &egui::Context) {
-    if damus.state == DamusState::Initializing {
-        #[cfg(feature = "profiling")]
-        setup_profiling();
-
-        damus.state = DamusState::Initialized;
-        // this lets our eose handler know to close unknownids right away
-        damus
-            .subscriptions()
-            .insert("unknownids".to_string(), SubKind::OneShot);
-        setup_initial_nostrdb_subs(&damus.ndb, &mut damus.note_cache, &mut damus.columns)
-            .expect("home subscription failed");
+fn setup_new_nostrdb_sub(
+    ndb: &Ndb,
+    note_cache: &mut NoteCache,
+    columns: &mut Columns,
+    new_timeline_id: TimelineId,
+) -> Result<()> {
+    if let Some(timeline) = columns.find_timeline_mut(new_timeline_id) {
+        info!("Setting up timeline sub for {}", timeline.id);
+        if let FilterState::Ready(filters) = &timeline.filter {
+            for filter in filters {
+                info!("Setting up filter {:?}", filter.json());
+            }
+        }
+        setup_nostrdb_sub(ndb, note_cache, timeline)?
     }
+
+    Ok(())
+}
+
+fn update_damus(damus: &mut Damus, ctx: &egui::Context) {
+    match damus.state {
+        DamusState::Initializing => {
+            #[cfg(feature = "profiling")]
+            setup_profiling();
+
+            damus.state = DamusState::Initialized;
+            // this lets our eose handler know to close unknownids right away
+            damus
+                .subscriptions()
+                .insert("unknownids".to_string(), SubKind::OneShot);
+            setup_initial_nostrdb_subs(&damus.ndb, &mut damus.note_cache, &mut damus.columns)
+                .expect("home subscription failed");
+        }
+
+        DamusState::NewTimelineSub(new_timeline_id) => {
+            info!("adding new timeline {}", new_timeline_id);
+            setup_new_nostrdb_sub(
+                &damus.ndb,
+                &mut damus.note_cache,
+                &mut damus.columns,
+                new_timeline_id,
+            )
+            .expect("new timeline subscription failed");
+
+            if let Some(filter) = {
+                let timeline = damus
+                    .columns
+                    .find_timeline(new_timeline_id)
+                    .expect("timeline");
+                match &timeline.filter {
+                    FilterState::Ready(filters) => Some(filters.clone()),
+                    _ => None,
+                }
+            } {
+                let subid = Uuid::new_v4().to_string();
+                damus.pool.subscribe(subid, filter);
+
+                damus.state = DamusState::Initialized;
+            }
+        }
+
+        DamusState::Initialized => (),
+    };
 
     if let Err(err) = try_process_event(damus, ctx) {
         error!("error processing event: {}", err);
     }
+
+    damus.columns.attempt_perform_deletion_request();
 }
 
 fn process_event(damus: &mut Damus, _subid: &str, event: &str) {
@@ -643,11 +700,7 @@ impl Damus {
         let debug = parsed_args.debug;
 
         if columns.columns().is_empty() {
-            let filter = Filter::from_json(include_str!("../queries/timeline.json")).unwrap();
-            columns.add_timeline(Timeline::new(
-                TimelineKind::Generic,
-                FilterState::ready(vec![filter]),
-            ))
+            columns.new_column_picker();
         }
 
         Self {
@@ -712,6 +765,10 @@ impl Damus {
         } else {
             Uuid::new_v4().to_string()
         }
+    }
+
+    pub fn subscribe_new_timeline(&mut self, timeline_id: TimelineId) {
+        self.state = DamusState::NewTimelineSub(timeline_id);
     }
 
     pub fn mock<P: AsRef<Path>>(data_path: P) -> Self {
@@ -897,7 +954,7 @@ fn render_damus_desktop(ctx: &egui::Context, app: &mut Damus) {
     puffin::profile_function!();
 
     let screen_size = ctx.screen_rect().width();
-    let calc_panel_width = (screen_size / app.columns.columns().len() as f32) - 30.0;
+    let calc_panel_width = (screen_size / app.columns.num_columns() as f32) - 30.0;
     let min_width = 320.0;
     let need_scroll = calc_panel_width < min_width;
     let panel_sizes = if need_scroll {
@@ -910,18 +967,18 @@ fn render_damus_desktop(ctx: &egui::Context, app: &mut Damus) {
         ui.spacing_mut().item_spacing.x = 0.0;
         if need_scroll {
             egui::ScrollArea::horizontal().show(ui, |ui| {
-                timelines_view(ui, panel_sizes, app, app.columns.columns().len());
+                timelines_view(ui, panel_sizes, app);
             });
         } else {
-            timelines_view(ui, panel_sizes, app, app.columns.columns().len());
+            timelines_view(ui, panel_sizes, app);
         }
     });
 }
 
-fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus, columns: usize) {
+fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus) {
     StripBuilder::new(ui)
         .size(Size::exact(ui::side_panel::SIDE_PANEL_WIDTH))
-        .sizes(sizes, columns)
+        .sizes(sizes, app.columns.num_columns())
         .clip(true)
         .horizontal(|mut strip| {
             strip.cell(|ui| {
@@ -933,22 +990,8 @@ fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus, columns: usiz
                 )
                 .show(ui);
 
-                let router = if let Some(router) = app
-                    .columns
-                    .columns_mut()
-                    .get_mut(0)
-                    .map(|c: &mut Column| c.router_mut())
-                {
-                    router
-                } else {
-                    // TODO(jb55): Maybe we should have an empty column route?
-                    let columns = app.columns.columns_mut();
-                    columns.push(Column::new(vec![Route::accounts()]));
-                    columns[0].router_mut()
-                };
-
                 if side_panel.response.clicked() {
-                    DesktopSidePanel::perform_action(router, side_panel.action);
+                    DesktopSidePanel::perform_action(app.columns_mut(), side_panel.action);
                 }
 
                 // vertical sidebar line
@@ -959,11 +1002,10 @@ fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus, columns: usiz
                 );
             });
 
-            let n_cols = app.columns.columns().len();
-            for column_ind in 0..n_cols {
+            for col_index in 0..app.columns.num_columns() {
                 strip.cell(|ui| {
                     let rect = ui.available_rect_before_wrap();
-                    nav::render_nav(column_ind, app, ui);
+                    nav::render_nav(col_index, app, ui);
 
                     // vertical line
                     ui.painter().vline(
