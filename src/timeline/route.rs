@@ -72,18 +72,20 @@ pub fn render_timeline_route(
         }
 
         TimelineRoute::Thread(id) => {
-            if let Some(bar_action) =
+            let timeline_response =
                 ui::ThreadView::new(threads, ndb, note_cache, img_cache, id.bytes(), textmode)
                     .id_source(egui::Id::new(("threadscroll", col)))
-                    .ui(ui)
-            {
+                    .ui(ui);
+            if let Some(bar_action) = timeline_response.bar_action {
                 let txn = Transaction::new(ndb).expect("txn");
                 let mut cur_column = columns.columns_mut();
                 let router = cur_column[col].router_mut();
                 bar_action.execute_and_process_result(ndb, router, threads, note_cache, pool, &txn);
             }
 
-            None
+            timeline_response
+                .open_profile
+                .map(AfterRouteExecution::OpenProfile)
         }
 
         TimelineRoute::Reply(id) => {
@@ -164,7 +166,8 @@ pub fn render_profile_route(
     col: usize,
     ui: &mut egui::Ui,
 ) -> Option<AfterRouteExecution> {
-    let timeline_response = ProfileView::new(pubkey, id, columns, ndb, note_cache, img_cache).ui(ui);
+    let timeline_response =
+        ProfileView::new(pubkey, id, columns, ndb, note_cache, img_cache).ui(ui);
     if let Some(bar_action) = timeline_response.bar_action {
         let txn = nostrdb::Transaction::new(ndb).expect("txn");
         let mut cur_column = columns.columns_mut();

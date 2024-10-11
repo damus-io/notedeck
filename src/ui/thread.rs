@@ -1,6 +1,7 @@
 use crate::{
-    actionbar::BarAction, imgcache::ImageCache, notecache::NoteCache, thread::Threads, ui,
+    actionbar::{BarAction, TimelineResponse}, imgcache::ImageCache, notecache::NoteCache, thread::Threads, ui,
 };
+use enostr::Pubkey;
 use nostrdb::{Ndb, NoteKey, Transaction};
 use tracing::{error, warn};
 
@@ -41,9 +42,10 @@ impl<'a> ThreadView<'a> {
         self
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui) -> Option<BarAction> {
+    pub fn ui(&mut self, ui: &mut egui::Ui) -> TimelineResponse {
         let txn = Transaction::new(self.ndb).expect("txn");
         let mut action: Option<BarAction> = None;
+        let mut open_profile = None;
 
         let selected_note_key = if let Ok(key) = self
             .ndb
@@ -53,7 +55,7 @@ impl<'a> ThreadView<'a> {
             key
         } else {
             // TODO: render 404 ?
-            return None;
+            return TimelineResponse::default();
         };
 
         ui.label(
@@ -124,6 +126,9 @@ impl<'a> ThreadView<'a> {
                             if let Some(bar_action) = note_response.action {
                                 action = Some(bar_action);
                             }
+                            if note_response.clicked_profile {
+                                open_profile = Some(Pubkey::new(*note.pubkey()))
+                            }
 
                             if let Some(selection) = note_response.context_selection {
                                 selection.process(ui, &note);
@@ -138,6 +143,9 @@ impl<'a> ThreadView<'a> {
                 );
             });
 
-        action
+            TimelineResponse {
+                bar_action: action,
+                open_profile,
+            }
     }
 }
