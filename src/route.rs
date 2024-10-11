@@ -1,4 +1,4 @@
-use enostr::NoteId;
+use enostr::{NoteId, Pubkey};
 use nostrdb::Ndb;
 use std::fmt::{self};
 
@@ -17,7 +17,7 @@ pub enum Route {
     Relays,
     ComposeNote,
     AddColumn,
-    Profile(TimelineId),
+    Profile(Pubkey, TimelineId),
 }
 
 #[derive(Clone)]
@@ -97,7 +97,7 @@ impl Route {
             },
             Route::ComposeNote => "Compose Note".to_owned(),
             Route::AddColumn => "Add Column".to_owned(),
-            Route::Profile(id) => {
+            Route::Profile(_, id) => {
                 let timeline = columns
                     .find_timeline(*id)
                     .expect("expected to find timeline");
@@ -210,7 +210,7 @@ impl fmt::Display for Route {
             Route::ComposeNote => write!(f, "Compose Note"),
 
             Route::AddColumn => write!(f, "Add Column"),
-            Route::Profile(_) => write!(f, "Profile"),
+            Route::Profile(_, _) => write!(f, "Profile"),
         }
     }
 }

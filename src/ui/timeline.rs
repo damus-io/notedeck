@@ -54,6 +54,23 @@ impl<'a> TimelineView<'a> {
         )
     }
 
+    pub fn ui_no_scroll(&mut self, ui: &mut egui::Ui) -> TimelineResponse {
+        if let Some(timeline) = self.columns.find_timeline_mut(self.timeline_id) {
+            timeline.selected_view = tabs_ui(ui);
+        };
+
+        timeline_ui_no_scroll(
+            ui,
+            self.ndb,
+            self.timeline_id,
+            self.columns,
+            self.note_cache,
+            self.img_cache,
+            self.reverse,
+            self.textmode,
+        )
+    }
+
     pub fn reversed(mut self) -> Self {
         self.reverse = true;
         self
@@ -96,82 +113,105 @@ fn timeline_ui(
         egui::Id::new(("tlscroll", timeline.view_id()))
     };
 
-    let mut open_profile: Option<Pubkey> = None;
-    let mut bar_action: Option<BarAction> = None;
     egui::ScrollArea::vertical()
         .id_source(scroll_id)
         .animated(false)
         .auto_shrink([false, false])
         .scroll_bar_visibility(ScrollBarVisibility::AlwaysVisible)
         .show(ui, |ui| {
-            let timeline = if let Some(timeline) = columns.find_timeline_mut(timeline_id) {
-                timeline
+            timeline_ui_no_scroll(
+                ui,
+                ndb,
+                timeline_id,
+                columns,
+                note_cache,
+                img_cache,
+                reversed,
+                textmode,
+            )
+        })
+        .inner
+}
+
+#[allow(clippy::too_many_arguments)]
+fn timeline_ui_no_scroll(
+    ui: &mut egui::Ui,
+    ndb: &Ndb,
+    timeline_id: TimelineId,
+    columns: &mut Columns,
+    note_cache: &mut NoteCache,
+    img_cache: &mut ImageCache,
+    reversed: bool,
+    textmode: bool,
+) -> TimelineResponse {
+    let mut open_profile: Option<Pubkey> = None;
+    let mut bar_action: Option<BarAction> = None;
+
+    let timeline = if let Some(timeline) = columns.find_timeline_mut(timeline_id) {
+        timeline
+    } else {
+        error!("tried to render timeline in column, but timeline was missing");
+        // TODO (jb55): render error when timeline is missing?
+        // this shouldn't happen...
+        return TimelineResponse::default();
+    };
+
+    let view = timeline.current_view();
+    let len = view.notes.len();
+    let txn = if let Ok(txn) = Transaction::new(ndb) {
+        txn
+    } else {
+        warn!("failed to create transaction");
+        return TimelineResponse::default();
+    };
+
+    view.list
+        .clone()
+        .borrow_mut()
+        .ui_custom_layout(ui, len, |ui, start_index| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            ui.spacing_mut().item_spacing.x = 4.0;
+
+            let ind = if reversed {
+                len - start_index - 1
             } else {
-                error!("tried to render timeline in column, but timeline was missing");
-                // TODO (jb55): render error when timeline is missing?
-                // this shouldn't happen...
+                start_index
+            };
+
+            let note_key = timeline.current_view().notes[ind].key;
+
+            let note = if let Ok(note) = ndb.get_note_by_key(&txn, note_key) {
+                note
+            } else {
+                warn!("failed to query note {:?}", note_key);
                 return 0;
             };
 
-            let view = timeline.current_view();
-            let len = view.notes.len();
-            let txn = if let Ok(txn) = Transaction::new(ndb) {
-                txn
-            } else {
-                warn!("failed to create transaction");
-                return 0;
-            };
+            ui::padding(8.0, ui, |ui| {
+                let resp = ui::NoteView::new(ndb, note_cache, img_cache, &note)
+                    .note_previews(!textmode)
+                    .selectable_text(false)
+                    .options_button(true)
+                    .show(ui);
 
-            view.list
-                .clone()
-                .borrow_mut()
-                .ui_custom_layout(ui, len, |ui, start_index| {
-                    ui.spacing_mut().item_spacing.y = 0.0;
-                    ui.spacing_mut().item_spacing.x = 4.0;
+                if let Some(ba) = resp.action {
+                    bar_action = Some(ba);
+                } else if resp.response.clicked() {
+                    debug!("clicked note");
+                }
 
-                    let ind = if reversed {
-                        len - start_index - 1
-                    } else {
-                        start_index
-                    };
+                if let Some(context) = resp.context_selection {
+                    context.process(ui, &note);
+                }
 
-                    let note_key = timeline.current_view().notes[ind].key;
+                if resp.clicked_profile {
+                    info!("clicked profile");
+                    open_profile = Some(Pubkey::new(*note.pubkey()))
+                }
+            });
 
-                    let note = if let Ok(note) = ndb.get_note_by_key(&txn, note_key) {
-                        note
-                    } else {
-                        warn!("failed to query note {:?}", note_key);
-                        return 0;
-                    };
-
-                    ui::padding(8.0, ui, |ui| {
-                        let resp = ui::NoteView::new(ndb, note_cache, img_cache, &note)
-                            .note_previews(!textmode)
-                            .selectable_text(false)
-                            .options_button(true)
-                            .show(ui);
-
-                        if let Some(ba) = resp.action {
-                            bar_action = Some(ba);
-                        } else if resp.response.clicked() {
-                            debug!("clicked note");
-                        }
-
-                        if let Some(context) = resp.context_selection {
-                            context.process(ui, &note);
-                        }
-
-                        if resp.clicked_profile {
-                            info!("clicked profile");
-                            open_profile = Some(Pubkey::new(*note.pubkey()))
-                        }
-                    });
-
-                    ui::hline(ui);
-                    //ui.add(egui::Separator::default().spacing(0.0));
-
-                    1
-                });
+            ui::hline(ui);
+            //ui.add(egui::Separator::default().spacing(0.0));
 
             1
         });

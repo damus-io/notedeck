@@ -1,5 +1,6 @@
 use crate::route::{Route, Router};
 use crate::timeline::{Timeline, TimelineId};
+use enostr::Pubkey;
 use indexmap::IndexMap;
 use std::iter::Iterator;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -60,10 +61,10 @@ impl Columns {
         self.timelines.insert(col_id, timeline);
     }
 
-    pub fn route_profile_timeline(&mut self, col: usize, timeline: Timeline) {
+    pub fn route_profile_timeline(&mut self, col: usize, pubkey: Pubkey, timeline: Timeline) {
         self.column_mut(col)
             .router_mut()
-            .route_to(Route::Profile(timeline.id));
+            .route_to(Route::Profile(pubkey, timeline.id));
 
         self.timelines.insert(Self::get_new_id(), timeline);
     }

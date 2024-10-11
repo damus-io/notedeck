@@ -113,8 +113,9 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) {
                     None
                 }
 
-                Route::Profile(id) => render_profile_route(
+                Route::Profile(pubkey, id) => render_profile_route(
                     *id,
+                    *pubkey,
                     &app.ndb,
                     &mut app.columns,
                     &mut app.pool,
@@ -150,7 +151,8 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) {
                     TimelineKind::profile(pubkey_source).into_timeline(&app.ndb, None)
                 {
                     let timeline_id = timeline.id;
-                    app.columns_mut().route_profile_timeline(col, timeline);
+                    app.columns_mut()
+                        .route_profile_timeline(col, pubkey, timeline);
                     app.subscribe_new_timeline(timeline_id);
                 }
             }
