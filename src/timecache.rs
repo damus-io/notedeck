@@ -6,16 +6,16 @@ pub struct TimeCached<T> {
     last_update: Instant,
     expires_in: Duration,
     value: Option<T>,
-    refresh: Arc<dyn Fn() -> T + Send + 'static>,
+    refresh: Arc<dyn Fn() -> T + Send + Sync + 'static>, // Use Send + Sync
 }
 
 impl<T> TimeCached<T> {
-    pub fn new(expires_in: Duration, refresh: impl Fn() -> T + Send + 'static) -> Self {
+    pub fn new(expires_in: Duration, refresh: Arc<dyn Fn() -> T + Send + Sync>) -> Self {
         TimeCached {
             last_update: Instant::now(),
             expires_in,
             value: None,
-            refresh: Arc::new(refresh),
+            refresh,
         }
     }
 

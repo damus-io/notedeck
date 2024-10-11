@@ -248,7 +248,8 @@ impl<'a> TimelineTabView<'a> {
         self.tab
             .list
             .clone()
-            .borrow_mut()
+            .lock()
+            .unwrap()
             .ui_custom_layout(ui, len, |ui, start_index| {
                 ui.spacing_mut().item_spacing.y = 0.0;
                 ui.spacing_mut().item_spacing.x = 4.0;
