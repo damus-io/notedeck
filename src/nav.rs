@@ -7,7 +7,7 @@ use crate::{
     thread::thread_unsubscribe,
     timeline::{
         route::{render_profile_route, render_timeline_route, AfterRouteExecution, TimelineRoute},
-        PubkeySource, TimelineKind,
+        PubkeySource, Timeline, TimelineKind,
     },
     ui::{
         self,
@@ -21,6 +21,7 @@ use crate::{
 
 use egui::{pos2, Color32, InnerResponse, Stroke};
 use egui_nav::{Nav, NavAction, TitleBarResponse};
+use nostrdb::Ndb;
 use tracing::{error, info};
 
 pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) {
@@ -170,6 +171,12 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) {
                 id.bytes(),
             );
         }
+
+        if let Some(Route::Profile(_, id)) = r {
+            if let Some(timeline) = app.columns.find_timeline(id) {
+                unsubscribe_timeline(&app.ndb, timeline);
+            }
+        }
     } else if let Some(NavAction::Navigated) = nav_response.action {
         let cur_router = app.columns_mut().column_mut(col).router_mut();
         cur_router.navigating = false;
@@ -184,19 +191,23 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) {
                 app.columns_mut().request_deletion_at_index(col);
                 let tl = app.columns().find_timeline_for_column_index(col);
                 if let Some(timeline) = tl {
-                    if let Some(sub_id) = timeline.subscription {
-                        if let Err(e) = app.ndb.unsubscribe(sub_id) {
-                            error!("unsubscribe error: {}", e);
-                        } else {
-                            info!(
-                                "successfully unsubscribed from timeline {} with sub id {}",
-                                timeline.id,
-                                sub_id.id()
-                            );
-                        }
-                    }
+                    unsubscribe_timeline(app.ndb(), timeline);
                 }
             }
+        }
+    }
+}
+
+fn unsubscribe_timeline(ndb: &Ndb, timeline: &Timeline) {
+    if let Some(sub_id) = timeline.subscription {
+        if let Err(e) = ndb.unsubscribe(sub_id) {
+            error!("unsubscribe error: {}", e);
+        } else {
+            info!(
+                "successfully unsubscribed from timeline {} with sub id {}",
+                timeline.id,
+                sub_id.id()
+            );
         }
     }
 }
