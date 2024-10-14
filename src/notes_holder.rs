@@ -9,9 +9,16 @@ use crate::{
     timeline::TimelineTab, Error, Result,
 };
 
-#[derive(Default)]
 pub struct NotesHolderStorage<M: NotesHolder> {
     pub id_to_object: HashMap<[u8; 32], M>,
+}
+
+impl<M: NotesHolder> Default for NotesHolderStorage<M> {
+    fn default() -> Self {
+        NotesHolderStorage {
+            id_to_object: HashMap::new(),
+        }
+    }
 }
 
 pub enum Vitality<'a, M> {
@@ -75,8 +82,10 @@ impl<M: NotesHolder> NotesHolderStorage<M> {
             debug!("found thread with {} notes", notes.len());
         }
 
-        self.id_to_object
-            .insert(id.to_owned(), M::new_notes_holder(notes));
+        self.id_to_object.insert(
+            id.to_owned(),
+            M::new_notes_holder(id, M::filters(id), notes),
+        );
         Vitality::Fresh(self.id_to_object.get_mut(id).unwrap())
     }
 }
@@ -87,7 +96,7 @@ pub trait NotesHolder {
     fn get_view(&mut self) -> &mut TimelineTab;
     fn filters(for_id: &[u8; 32]) -> Vec<Filter>;
     fn filters_since(for_id: &[u8; 32], since: u64) -> Vec<Filter>;
-    fn new_notes_holder(notes: Vec<NoteRef>) -> Self;
+    fn new_notes_holder(id: &[u8; 32], filters: Vec<Filter>, notes: Vec<NoteRef>) -> Self;
 
     #[must_use = "UnknownIds::update_from_note_refs should be used on this result"]
     fn poll_notes_into_view(&mut self, txn: &Transaction, ndb: &Ndb) -> Result<()> {

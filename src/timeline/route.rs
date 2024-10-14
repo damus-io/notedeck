@@ -5,6 +5,7 @@ use crate::{
     imgcache::ImageCache,
     notecache::NoteCache,
     notes_holder::NotesHolderStorage,
+    profile::Profile,
     thread::Thread,
     timeline::TimelineId,
     ui::{
@@ -156,10 +157,10 @@ pub fn render_timeline_route(
 
 #[allow(clippy::too_many_arguments)]
 pub fn render_profile_route(
-    id: TimelineId,
     pubkey: Pubkey,
     ndb: &Ndb,
     columns: &mut Columns,
+    profiles: &mut NotesHolderStorage<Profile>,
     pool: &mut RelayPool,
     img_cache: &mut ImageCache,
     note_cache: &mut NoteCache,
@@ -168,7 +169,7 @@ pub fn render_profile_route(
     ui: &mut egui::Ui,
 ) -> Option<AfterRouteExecution> {
     let timeline_response =
-        ProfileView::new(pubkey, id, columns, ndb, note_cache, img_cache).ui(ui);
+        ProfileView::new(pubkey, col, profiles, ndb, note_cache, img_cache).ui(ui);
     if let Some(bar_action) = timeline_response.bar_action {
         let txn = nostrdb::Transaction::new(ndb).expect("txn");
         let mut cur_column = columns.columns_mut();

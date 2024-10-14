@@ -3,12 +3,13 @@ use crate::{
     app_style::{get_font_size, NotedeckTextStyle},
     fonts::NamedFontFamily,
     notes_holder::NotesHolder,
+    profile::Profile,
     relay_pool_manager::RelayPoolManager,
     route::Route,
     thread::Thread,
     timeline::{
         route::{render_profile_route, render_timeline_route, AfterRouteExecution, TimelineRoute},
-        PubkeySource, Timeline, TimelineKind,
+        Timeline,
     },
     ui::{
         self,
@@ -115,11 +116,11 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) {
                     None
                 }
 
-                Route::Profile(pubkey, id) => render_profile_route(
-                    *id,
+                Route::Profile(pubkey) => render_profile_route(
                     *pubkey,
                     &app.ndb,
                     &mut app.columns,
+                    &mut app.profiles,
                     &mut app.pool,
                     &mut app.img_cache,
                     &mut app.note_cache,
@@ -144,18 +145,19 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) {
             }
 
             AfterRouteExecution::OpenProfile(pubkey) => {
-                let pubkey_source = match app.accounts.get_selected_account() {
-                    Some(account) if account.pubkey == pubkey => PubkeySource::DeckAuthor,
-                    _ => PubkeySource::Explicit(pubkey),
-                };
-
-                if let Some(timeline) =
-                    TimelineKind::profile(pubkey_source).into_timeline(&app.ndb, None)
-                {
-                    let timeline_id = timeline.id;
-                    app.columns_mut()
-                        .route_profile_timeline(col, pubkey, timeline);
-                    app.subscribe_new_timeline(timeline_id);
+                app.columns
+                    .column_mut(col)
+                    .router_mut()
+                    .route_to(Route::Profile(pubkey));
+                let txn = Transaction::new(&app.ndb).expect("txn");
+                if let Some(res) = Profile::open(
+                    &app.ndb,
+                    &txn,
+                    &mut app.pool,
+                    &mut app.profiles,
+                    pubkey.bytes(),
+                ) {
+                    res.process(&app.ndb, &txn, &mut app.profiles);
                 }
             }
         }
@@ -163,8 +165,8 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) {
 
     if let Some(NavAction::Returned) = nav_response.action {
         let r = app.columns_mut().column_mut(col).router_mut().pop();
+        let txn = Transaction::new(&app.ndb).expect("txn");
         if let Some(Route::Timeline(TimelineRoute::Thread(id))) = r {
-            let txn = Transaction::new(&app.ndb).expect("txn");
             let root_id = {
                 crate::note::root_note_id_from_selected_id(
                     &app.ndb,
@@ -176,10 +178,14 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) {
             Thread::unsubscribe_locally(&txn, &app.ndb, &mut app.threads, &mut app.pool, root_id);
         }
 
-        if let Some(Route::Profile(_, id)) = r {
-            if let Some(timeline) = app.columns.find_timeline(id) {
-                unsubscribe_timeline(&app.ndb, timeline);
-            }
+        if let Some(Route::Profile(pubkey)) = r {
+            Profile::unsubscribe_locally(
+                &txn,
+                &app.ndb,
+                &mut app.profiles,
+                &mut app.pool,
+                pubkey.bytes(),
+            );
         }
     } else if let Some(NavAction::Navigated) = nav_response.action {
         let cur_router = app.columns_mut().column_mut(col).router_mut();

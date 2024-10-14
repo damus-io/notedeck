@@ -66,7 +66,7 @@ impl NotesHolder for Thread {
         Thread::filters(for_id)
     }
 
-    fn new_notes_holder(notes: Vec<NoteRef>) -> Self {
+    fn new_notes_holder(_: &[u8; 32], _: Vec<Filter>, notes: Vec<NoteRef>) -> Self {
         Thread::new(notes)
     }
 

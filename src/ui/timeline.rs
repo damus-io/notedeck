@@ -167,7 +167,7 @@ fn timeline_ui_no_scroll(
     .show(ui)
 }
 
-fn tabs_ui(ui: &mut egui::Ui) -> i32 {
+pub fn tabs_ui(ui: &mut egui::Ui) -> i32 {
     ui.spacing_mut().item_spacing.y = 0.0;
 
     let tab_res = egui_tabs::Tabs::new(2)

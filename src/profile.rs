@@ -1,12 +1,12 @@
-use enostr::Filter;
+use enostr::{Filter, Pubkey};
 use nostrdb::{FilterBuilder, ProfileRecord};
 
 use crate::{
-    filter,
+    filter::{self, FilterState},
     multi_subscriber::MultiSubscriber,
     note::NoteRef,
     notes_holder::NotesHolder,
-    timeline::{Timeline, TimelineTab, ViewFilter},
+    timeline::{PubkeySource, Timeline, TimelineKind},
 };
 
 pub enum DisplayName<'a> {
@@ -48,21 +48,18 @@ pub fn get_profile_name<'a>(record: &'a ProfileRecord) -> Option<DisplayName<'a>
 }
 
 pub struct Profile {
-    view: TimelineTab,
+    pub timeline: Timeline,
     pub multi_subscriber: Option<MultiSubscriber>,
 }
 
 impl Profile {
-    pub fn new(notes: Vec<NoteRef>) -> Self {
-        let mut cap = ((notes.len() as f32) * 1.5) as usize;
-        if cap == 0 {
-            cap = 25;
-        }
-        let mut view = TimelineTab::new_with_capacity(ViewFilter::NotesAndReplies, cap);
-        view.notes = notes;
+    pub fn new(source: PubkeySource, filters: Vec<Filter>, notes: Vec<NoteRef>) -> Self {
+        let mut timeline =
+            Timeline::new(TimelineKind::profile(source), FilterState::ready(filters));
+        timeline.current_view_mut().notes = notes;
 
         Profile {
-            view,
+            timeline,
             multi_subscriber: None,
         }
     }
@@ -81,7 +78,7 @@ impl NotesHolder for Profile {
     }
 
     fn get_view(&mut self) -> &mut crate::timeline::TimelineTab {
-        &mut self.view
+        self.timeline.current_view_mut()
     }
 
     fn filters(for_id: &[u8; 32]) -> Vec<enostr::Filter> {
@@ -98,7 +95,11 @@ impl NotesHolder for Profile {
             .collect()
     }
 
-    fn new_notes_holder(notes: Vec<NoteRef>) -> Self {
-        Profile::new(notes)
+    fn new_notes_holder(id: &[u8; 32], filters: Vec<Filter>, notes: Vec<NoteRef>) -> Self {
+        Profile::new(PubkeySource::Explicit(Pubkey::new(*id)), filters, notes)
+    }
+
+    fn set_multi_subscriber(&mut self, subscriber: MultiSubscriber) {
+        self.multi_subscriber = Some(subscriber);
     }
 }
