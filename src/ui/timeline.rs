@@ -1,4 +1,5 @@
 use crate::actionbar::TimelineResponse;
+use crate::timeline::TimelineTab;
 use crate::{
     actionbar::BarAction, column::Columns, imgcache::ImageCache, notecache::NoteCache,
     timeline::TimelineId, ui,
@@ -144,9 +145,6 @@ fn timeline_ui_no_scroll(
     reversed: bool,
     textmode: bool,
 ) -> TimelineResponse {
-    let mut open_profile: Option<Pubkey> = None;
-    let mut bar_action: Option<BarAction> = None;
-
     let timeline = if let Some(timeline) = columns.find_timeline_mut(timeline_id) {
         timeline
     } else {
@@ -156,70 +154,17 @@ fn timeline_ui_no_scroll(
         return TimelineResponse::default();
     };
 
-    let view = timeline.current_view();
-    let len = view.notes.len();
-    let txn = if let Ok(txn) = Transaction::new(ndb) {
-        txn
-    } else {
-        warn!("failed to create transaction");
-        return TimelineResponse::default();
-    };
-
-    view.list
-        .clone()
-        .borrow_mut()
-        .ui_custom_layout(ui, len, |ui, start_index| {
-            ui.spacing_mut().item_spacing.y = 0.0;
-            ui.spacing_mut().item_spacing.x = 4.0;
-
-            let ind = if reversed {
-                len - start_index - 1
-            } else {
-                start_index
-            };
-
-            let note_key = timeline.current_view().notes[ind].key;
-
-            let note = if let Ok(note) = ndb.get_note_by_key(&txn, note_key) {
-                note
-            } else {
-                warn!("failed to query note {:?}", note_key);
-                return 0;
-            };
-
-            ui::padding(8.0, ui, |ui| {
-                let resp = ui::NoteView::new(ndb, note_cache, img_cache, &note)
-                    .note_previews(!textmode)
-                    .selectable_text(false)
-                    .options_button(true)
-                    .show(ui);
-
-                if let Some(ba) = resp.action {
-                    bar_action = Some(ba);
-                } else if resp.response.clicked() {
-                    debug!("clicked note");
-                }
-
-                if let Some(context) = resp.context_selection {
-                    context.process(ui, &note);
-                }
-
-                if resp.clicked_profile {
-                    info!("clicked profile");
-                    open_profile = Some(Pubkey::new(*note.pubkey()))
-                }
-            });
-
-            ui::hline(ui);
-            //ui.add(egui::Separator::default().spacing(0.0));
-
-            1
-        });
-
-    TimelineResponse {
-        open_profile,
-        bar_action,
-    }
+    let txn = Transaction::new(ndb).expect("failed to create txn");
+    TimelineTabView::new(
+        timeline.current_view(),
+        reversed,
+        textmode,
+        &txn,
+        ndb,
+        note_cache,
+        img_cache,
+    )
+    .show(ui)
 }
 
 fn tabs_ui(ui: &mut egui::Ui) -> i32 {
@@ -304,4 +249,99 @@ fn shrink_range_to_width(range: egui::Rangef, width: f32) -> egui::Rangef {
     let max = midpoint + half_width;
 
     egui::Rangef::new(min, max)
+}
+
+pub struct TimelineTabView<'a> {
+    tab: &'a TimelineTab,
+    reversed: bool,
+    textmode: bool,
+    txn: &'a Transaction,
+    ndb: &'a Ndb,
+    note_cache: &'a mut NoteCache,
+    img_cache: &'a mut ImageCache,
+}
+
+impl<'a> TimelineTabView<'a> {
+    pub fn new(
+        tab: &'a TimelineTab,
+        reversed: bool,
+        textmode: bool,
+        txn: &'a Transaction,
+        ndb: &'a Ndb,
+        note_cache: &'a mut NoteCache,
+        img_cache: &'a mut ImageCache,
+    ) -> Self {
+        Self {
+            tab,
+            reversed,
+            txn,
+            textmode,
+            ndb,
+            note_cache,
+            img_cache,
+        }
+    }
+
+    pub fn show(&mut self, ui: &mut egui::Ui) -> TimelineResponse {
+        let mut open_profile = None;
+        let mut bar_action: Option<BarAction> = None;
+        let len = self.tab.notes.len();
+
+        self.tab
+            .list
+            .clone()
+            .borrow_mut()
+            .ui_custom_layout(ui, len, |ui, start_index| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                ui.spacing_mut().item_spacing.x = 4.0;
+
+                let ind = if self.reversed {
+                    len - start_index - 1
+                } else {
+                    start_index
+                };
+
+                let note_key = self.tab.notes[ind].key;
+
+                let note = if let Ok(note) = self.ndb.get_note_by_key(self.txn, note_key) {
+                    note
+                } else {
+                    warn!("failed to query note {:?}", note_key);
+                    return 0;
+                };
+
+                ui::padding(8.0, ui, |ui| {
+                    let resp = ui::NoteView::new(self.ndb, self.note_cache, self.img_cache, &note)
+                        .note_previews(!self.textmode)
+                        .selectable_text(false)
+                        .options_button(true)
+                        .show(ui);
+
+                    if let Some(ba) = resp.action {
+                        bar_action = Some(ba);
+                    } else if resp.response.clicked() {
+                        debug!("clicked note");
+                    }
+
+                    if let Some(context) = resp.context_selection {
+                        context.process(ui, &note);
+                    }
+
+                    if resp.clicked_profile {
+                        info!("clicked profile");
+                        open_profile = Some(Pubkey::new(*note.pubkey()))
+                    }
+                });
+
+                ui::hline(ui);
+                //ui.add(egui::Separator::default().spacing(0.0));
+
+                1
+            });
+
+        TimelineResponse {
+            open_profile,
+            bar_action,
+        }
+    }
 }
