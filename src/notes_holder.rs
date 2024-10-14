@@ -2,11 +2,11 @@ use std::collections::HashMap;
 
 use enostr::{Filter, RelayPool};
 use nostrdb::{Ndb, Transaction};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::{
     actionbar::NotesHolderResult, multi_subscriber::MultiSubscriber, note::NoteRef,
-    timeline::TimelineTab, Error, Result,
+    notecache::NoteCache, timeline::TimelineTab, Error, Result,
 };
 
 pub struct NotesHolderStorage<M: NotesHolder> {
@@ -52,6 +52,7 @@ impl<M: NotesHolder> NotesHolderStorage<M> {
     pub fn notes_holder_mutated<'a>(
         &'a mut self,
         ndb: &Ndb,
+        note_cache: &mut NoteCache,
         txn: &Transaction,
         id: &[u8; 32],
     ) -> Vitality<'a, M> {
@@ -79,12 +80,12 @@ impl<M: NotesHolder> NotesHolderStorage<M> {
         if notes.is_empty() {
             warn!("thread query returned 0 notes? ")
         } else {
-            debug!("found thread with {} notes", notes.len());
+            info!("found thread with {} notes", notes.len());
         }
 
         self.id_to_object.insert(
             id.to_owned(),
-            M::new_notes_holder(id, M::filters(id), notes),
+            M::new_notes_holder(txn, ndb, note_cache, id, M::filters(id), notes),
         );
         Vitality::Fresh(self.id_to_object.get_mut(id).unwrap())
     }
@@ -96,7 +97,14 @@ pub trait NotesHolder {
     fn get_view(&mut self) -> &mut TimelineTab;
     fn filters(for_id: &[u8; 32]) -> Vec<Filter>;
     fn filters_since(for_id: &[u8; 32], since: u64) -> Vec<Filter>;
-    fn new_notes_holder(id: &[u8; 32], filters: Vec<Filter>, notes: Vec<NoteRef>) -> Self;
+    fn new_notes_holder(
+        txn: &Transaction,
+        ndb: &Ndb,
+        note_cache: &mut NoteCache,
+        id: &[u8; 32],
+        filters: Vec<Filter>,
+        notes: Vec<NoteRef>,
+    ) -> Self;
 
     #[must_use = "UnknownIds::update_from_note_refs should be used on this result"]
     fn poll_notes_into_view(&mut self, txn: &Transaction, ndb: &Ndb) -> Result<()> {
@@ -138,12 +146,13 @@ pub trait NotesHolder {
     fn unsubscribe_locally<M: NotesHolder>(
         txn: &Transaction,
         ndb: &Ndb,
+        note_cache: &mut NoteCache,
         notes_holder_storage: &mut NotesHolderStorage<M>,
         pool: &mut RelayPool,
         id: &[u8; 32],
     ) {
         let notes_holder = notes_holder_storage
-            .notes_holder_mutated(ndb, txn, id)
+            .notes_holder_mutated(ndb, note_cache, txn, id)
             .get_ptr();
 
         if let Some(multi_subscriber) = notes_holder.get_multi_subscriber() {
@@ -153,12 +162,13 @@ pub trait NotesHolder {
 
     fn open<M: NotesHolder>(
         ndb: &Ndb,
+        note_cache: &mut NoteCache,
         txn: &Transaction,
         pool: &mut RelayPool,
         storage: &mut NotesHolderStorage<M>,
         id: &[u8; 32],
     ) -> Option<NotesHolderResult> {
-        let vitality = storage.notes_holder_mutated(ndb, txn, id);
+        let vitality = storage.notes_holder_mutated(ndb, note_cache, txn, id);
 
         let (holder, result) = match vitality {
             Vitality::Stale(holder) => {

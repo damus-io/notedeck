@@ -1,12 +1,8 @@
 use enostr::{Filter, Pubkey};
-use nostrdb::{FilterBuilder, ProfileRecord};
+use nostrdb::{FilterBuilder, Ndb, ProfileRecord, Transaction};
 
 use crate::{
-    filter::{self, FilterState},
-    multi_subscriber::MultiSubscriber,
-    note::NoteRef,
-    notes_holder::NotesHolder,
-    timeline::{PubkeySource, Timeline, TimelineKind},
+    app::copy_notes_into_timeline, filter::{self, FilterState}, multi_subscriber::MultiSubscriber, note::NoteRef, notecache::NoteCache, notes_holder::NotesHolder, timeline::{PubkeySource, Timeline, TimelineKind}
 };
 
 pub enum DisplayName<'a> {
@@ -53,10 +49,18 @@ pub struct Profile {
 }
 
 impl Profile {
-    pub fn new(source: PubkeySource, filters: Vec<Filter>, notes: Vec<NoteRef>) -> Self {
+    pub fn new(
+        txn: &Transaction,
+        ndb: &Ndb,
+        note_cache: &mut NoteCache,
+        source: PubkeySource,
+        filters: Vec<Filter>,
+        notes: Vec<NoteRef>,
+    ) -> Self {
         let mut timeline =
             Timeline::new(TimelineKind::profile(source), FilterState::ready(filters));
-        timeline.current_view_mut().notes = notes;
+
+            copy_notes_into_timeline(&mut timeline, txn, ndb, note_cache, notes);
 
         Profile {
             timeline,
@@ -95,8 +99,22 @@ impl NotesHolder for Profile {
             .collect()
     }
 
-    fn new_notes_holder(id: &[u8; 32], filters: Vec<Filter>, notes: Vec<NoteRef>) -> Self {
-        Profile::new(PubkeySource::Explicit(Pubkey::new(*id)), filters, notes)
+    fn new_notes_holder(
+        txn: &Transaction,
+        ndb: &Ndb,
+        note_cache: &mut NoteCache,
+        id: &[u8; 32],
+        filters: Vec<Filter>,
+        notes: Vec<NoteRef>,
+    ) -> Self {
+        Profile::new(
+            txn,
+            ndb,
+            note_cache,
+            PubkeySource::Explicit(Pubkey::new(*id)),
+            filters,
+            notes,
+        )
     }
 
     fn set_multi_subscriber(&mut self, subscriber: MultiSubscriber) {

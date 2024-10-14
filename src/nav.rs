@@ -152,12 +152,13 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) {
                 let txn = Transaction::new(&app.ndb).expect("txn");
                 if let Some(res) = Profile::open(
                     &app.ndb,
+                    &mut app.note_cache,
                     &txn,
                     &mut app.pool,
                     &mut app.profiles,
                     pubkey.bytes(),
                 ) {
-                    res.process(&app.ndb, &txn, &mut app.profiles);
+                    res.process(&app.ndb, &mut app.note_cache, &txn, &mut app.profiles);
                 }
             }
         }
@@ -175,13 +176,21 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) {
                     id.bytes(),
                 )
             };
-            Thread::unsubscribe_locally(&txn, &app.ndb, &mut app.threads, &mut app.pool, root_id);
+            Thread::unsubscribe_locally(
+                &txn,
+                &app.ndb,
+                &mut app.note_cache,
+                &mut app.threads,
+                &mut app.pool,
+                root_id,
+            );
         }
 
         if let Some(Route::Profile(pubkey)) = r {
             Profile::unsubscribe_locally(
                 &txn,
                 &app.ndb,
+                &mut app.note_cache,
                 &mut app.profiles,
                 &mut app.pool,
                 pubkey.bytes(),

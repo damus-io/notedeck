@@ -54,7 +54,7 @@ impl<'a> ProfileView<'a> {
                 }
                 let profile = self
                     .profiles
-                    .notes_holder_mutated(self.ndb, &txn, self.pubkey.bytes())
+                    .notes_holder_mutated(self.ndb, self.note_cache, &txn, self.pubkey.bytes())
                     .get_ptr();
 
                 profile.timeline.selected_view = tabs_ui(ui);

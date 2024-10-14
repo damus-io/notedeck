@@ -47,7 +47,7 @@ fn open_thread(
     router.route_to(Route::thread(NoteId::new(selected_note.to_owned())));
 
     let root_id = crate::note::root_note_id_from_selected_id(ndb, note_cache, txn, selected_note);
-    Thread::open(ndb, txn, pool, threads, root_id)
+    Thread::open(ndb, note_cache, txn, pool, threads, root_id)
 }
 
 impl BarAction {
@@ -91,7 +91,7 @@ impl BarAction {
         txn: &Transaction,
     ) {
         if let Some(br) = self.execute(ndb, router, threads, note_cache, pool, txn) {
-            br.process(ndb, txn, threads);
+            br.process(ndb, note_cache, txn, threads);
         }
     }
 }
@@ -104,6 +104,7 @@ impl NotesHolderResult {
     pub fn process<N: NotesHolder>(
         &self,
         ndb: &Ndb,
+        note_cache: &mut NoteCache,
         txn: &Transaction,
         storage: &mut NotesHolderStorage<N>,
     ) {
@@ -111,7 +112,7 @@ impl NotesHolderResult {
             // update the thread for next render if we have new notes
             NotesHolderResult::NewNotes(new_notes) => {
                 let holder = storage
-                    .notes_holder_mutated(ndb, txn, &new_notes.id)
+                    .notes_holder_mutated(ndb, note_cache, txn, &new_notes.id)
                     .get_ptr();
                 new_notes.process(holder);
             }

@@ -1,10 +1,11 @@
 use crate::{
     multi_subscriber::MultiSubscriber,
     note::NoteRef,
+    notecache::NoteCache,
     notes_holder::NotesHolder,
     timeline::{TimelineTab, ViewFilter},
 };
-use nostrdb::{Filter, FilterBuilder};
+use nostrdb::{Filter, FilterBuilder, Ndb, Transaction};
 
 #[derive(Default)]
 pub struct Thread {
@@ -66,7 +67,14 @@ impl NotesHolder for Thread {
         Thread::filters(for_id)
     }
 
-    fn new_notes_holder(_: &[u8; 32], _: Vec<Filter>, notes: Vec<NoteRef>) -> Self {
+    fn new_notes_holder(
+        _: &Transaction,
+        _: &Ndb,
+        _: &mut NoteCache,
+        _: &[u8; 32],
+        _: Vec<Filter>,
+        notes: Vec<NoteRef>,
+    ) -> Self {
         Thread::new(notes)
     }
 

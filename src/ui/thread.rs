@@ -89,7 +89,7 @@ impl<'a> ThreadView<'a> {
 
                 let thread = self
                     .threads
-                    .notes_holder_mutated(self.ndb, &txn, root_id)
+                    .notes_holder_mutated(self.ndb, self.note_cache, &txn, root_id)
                     .get_ptr();
 
                 // TODO(jb55): skip poll if ThreadResult is fresh?

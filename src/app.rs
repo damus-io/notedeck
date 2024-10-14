@@ -364,8 +364,24 @@ fn setup_initial_timeline(
         timeline.subscription, timeline.filter
     );
     let lim = filters[0].limit().unwrap_or(crate::filter::default_limit()) as i32;
-    let results = ndb.query(&txn, filters, lim)?;
+    let notes = ndb
+        .query(&txn, filters, lim)?
+        .into_iter()
+        .map(NoteRef::from_query_result)
+        .collect();
 
+    copy_notes_into_timeline(timeline, &txn, ndb, note_cache, notes);
+
+    Ok(())
+}
+
+pub fn copy_notes_into_timeline(
+    timeline: &mut Timeline,
+    txn: &Transaction,
+    ndb: &Ndb,
+    note_cache: &mut NoteCache,
+    notes: Vec<NoteRef>,
+) {
     let filters = {
         let views = &timeline.views;
         let filters: Vec<fn(&CachedNote, &Note) -> bool> =
@@ -373,21 +389,18 @@ fn setup_initial_timeline(
         filters
     };
 
-    for result in results {
+    for note_ref in notes {
         for (view, filter) in filters.iter().enumerate() {
-            if filter(
-                note_cache.cached_note_or_insert_mut(result.note_key, &result.note),
-                &result.note,
-            ) {
-                timeline.views[view].notes.push(NoteRef {
-                    key: result.note_key,
-                    created_at: result.note.created_at(),
-                })
+            if let Ok(note) = ndb.get_note_by_key(txn, note_ref.key) {
+                if filter(
+                    note_cache.cached_note_or_insert_mut(note_ref.key, &note),
+                    &note,
+                ) {
+                    timeline.views[view].notes.push(note_ref)
+                }
             }
         }
     }
-
-    Ok(())
 }
 
 fn setup_initial_nostrdb_subs(
