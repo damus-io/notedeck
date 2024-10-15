@@ -157,7 +157,7 @@ pub fn render_timeline_route(
 
 #[allow(clippy::too_many_arguments)]
 pub fn render_profile_route(
-    pubkey: Pubkey,
+    pubkey: &Pubkey,
     ndb: &Ndb,
     columns: &mut Columns,
     profiles: &mut NotesHolderStorage<Profile>,

@@ -1,6 +1,9 @@
 use crate::{
-    actionbar::TimelineResponse, imgcache::ImageCache, notecache::NoteCache,
-    notes_holder::{NotesHolder, NotesHolderStorage}, thread::Thread,
+    actionbar::TimelineResponse,
+    imgcache::ImageCache,
+    notecache::NoteCache,
+    notes_holder::{NotesHolder, NotesHolderStorage},
+    thread::Thread,
 };
 use nostrdb::{Ndb, NoteKey, Transaction};
 use tracing::error;

@@ -15,7 +15,7 @@ use crate::{
 use super::timeline::{tabs_ui, TimelineTabView};
 
 pub struct ProfileView<'a> {
-    pubkey: Pubkey,
+    pubkey: &'a Pubkey,
     col_id: usize,
     profiles: &'a mut NotesHolderStorage<Profile>,
     ndb: &'a Ndb,
@@ -25,7 +25,7 @@ pub struct ProfileView<'a> {
 
 impl<'a> ProfileView<'a> {
     pub fn new(
-        pubkey: Pubkey,
+        pubkey: &'a Pubkey,
         col_id: usize,
         profiles: &'a mut NotesHolderStorage<Profile>,
         ndb: &'a Ndb,

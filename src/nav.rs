@@ -117,7 +117,7 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) {
                 }
 
                 Route::Profile(pubkey) => render_profile_route(
-                    *pubkey,
+                    pubkey,
                     &app.ndb,
                     &mut app.columns,
                     &mut app.profiles,
