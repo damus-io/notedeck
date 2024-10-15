@@ -16,7 +16,7 @@ pub enum BarAction {
 }
 
 #[derive(Default)]
-pub struct TimelineResponse {
+pub struct NoteActionResponse {
     pub bar_action: Option<BarAction>,
     pub open_profile: Option<Pubkey>,
 }

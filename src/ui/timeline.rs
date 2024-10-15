@@ -1,4 +1,4 @@
-use crate::actionbar::TimelineResponse;
+use crate::actionbar::NoteActionResponse;
 use crate::timeline::TimelineTab;
 use crate::{
     actionbar::BarAction, column::Columns, imgcache::ImageCache, notecache::NoteCache,
@@ -42,7 +42,7 @@ impl<'a> TimelineView<'a> {
         }
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui) -> TimelineResponse {
+    pub fn ui(&mut self, ui: &mut egui::Ui) -> NoteActionResponse {
         timeline_ui(
             ui,
             self.ndb,
@@ -71,7 +71,7 @@ fn timeline_ui(
     img_cache: &mut ImageCache,
     reversed: bool,
     textmode: bool,
-) -> TimelineResponse {
+) -> NoteActionResponse {
     //padding(4.0, ui, |ui| ui.heading("Notifications"));
     /*
     let font_id = egui::TextStyle::Body.resolve(ui.style());
@@ -86,7 +86,7 @@ fn timeline_ui(
             error!("tried to render timeline in column, but timeline was missing");
             // TODO (jb55): render error when timeline is missing?
             // this shouldn't happen...
-            return TimelineResponse::default();
+            return NoteActionResponse::default();
         };
 
         timeline.selected_view = tabs_ui(ui);
@@ -109,7 +109,7 @@ fn timeline_ui(
                 error!("tried to render timeline in column, but timeline was missing");
                 // TODO (jb55): render error when timeline is missing?
                 // this shouldn't happen...
-                return TimelineResponse::default();
+                return NoteActionResponse::default();
             };
 
             let txn = Transaction::new(ndb).expect("failed to create txn");
@@ -242,7 +242,7 @@ impl<'a> TimelineTabView<'a> {
         }
     }
 
-    pub fn show(&mut self, ui: &mut egui::Ui) -> TimelineResponse {
+    pub fn show(&mut self, ui: &mut egui::Ui) -> NoteActionResponse {
         let mut open_profile = None;
         let mut bar_action: Option<BarAction> = None;
         let len = self.tab.notes.len();
@@ -299,7 +299,7 @@ impl<'a> TimelineTabView<'a> {
                 1
             });
 
-        TimelineResponse {
+        NoteActionResponse {
             open_profile,
             bar_action,
         }

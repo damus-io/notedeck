@@ -8,7 +8,7 @@ pub use picture::ProfilePic;
 pub use preview::ProfilePreview;
 
 use crate::{
-    actionbar::TimelineResponse, imgcache::ImageCache, notecache::NoteCache,
+    actionbar::NoteActionResponse, imgcache::ImageCache, notecache::NoteCache,
     notes_holder::NotesHolderStorage, profile::Profile,
 };
 
@@ -42,7 +42,7 @@ impl<'a> ProfileView<'a> {
         }
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui) -> TimelineResponse {
+    pub fn ui(&mut self, ui: &mut egui::Ui) -> NoteActionResponse {
         let scroll_id = egui::Id::new(("profile_scroll", self.col_id, self.pubkey));
 
         ScrollArea::vertical()
