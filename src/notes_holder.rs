@@ -46,7 +46,7 @@ impl<M: NotesHolder> NotesHolderStorage<M> {
     pub fn notes_holder_expected_mut(&mut self, id: &[u8; 32]) -> &mut M {
         self.id_to_object
             .get_mut(id)
-            .expect("thread_expected_mut used but there was no thread")
+            .expect("notes_holder_expected_mut used but there was no NotesHolder")
     }
 
     pub fn notes_holder_mutated<'a>(
@@ -73,14 +73,14 @@ impl<M: NotesHolder> NotesHolderStorage<M> {
                 .map(NoteRef::from_query_result)
                 .collect()
         } else {
-            debug!("got no results from thread lookup for {}", hex::encode(id));
+            debug!("got no results from NotesHolder lookup for {}", hex::encode(id));
             vec![]
         };
 
         if notes.is_empty() {
-            warn!("thread query returned 0 notes? ")
+            warn!("NotesHolder query returned 0 notes? ")
         } else {
-            info!("found thread with {} notes", notes.len());
+            info!("found NotesHolder with {} notes", notes.len());
         }
 
         self.id_to_object.insert(
@@ -114,7 +114,7 @@ pub trait NotesHolder {
             self.get_view().insert(&note_refs, reversed);
         } else {
             return Err(Error::Generic(
-                "Thread unexpectedly has no MultiSubscriber".to_owned(),
+                "NotesHolder unexpectedly has no MultiSubscriber".to_owned(),
             ));
         }
 
@@ -131,18 +131,18 @@ pub trait NotesHolder {
         let filters = Self::filters_since(id, last_note.created_at + 1);
 
         if let Ok(results) = ndb.query(txn, &filters, 1000) {
-            debug!("got {} results from thread update", results.len());
+            debug!("got {} results from NotesHolder update", results.len());
             results
                 .into_iter()
                 .map(NoteRef::from_query_result)
                 .collect()
         } else {
-            debug!("got no results from thread update",);
+            debug!("got no results from NotesHolder update",);
             vec![]
         }
     }
 
-    /// Local thread unsubscribe
+    /// Local NotesHolder unsubscribe
     fn unsubscribe_locally<M: NotesHolder>(
         txn: &Transaction,
         ndb: &Ndb,
@@ -172,7 +172,7 @@ pub trait NotesHolder {
 
         let (holder, result) = match vitality {
             Vitality::Stale(holder) => {
-                // The thread is stale, let's update it
+                // The NotesHolder is stale, let's update it
                 let notes = M::new_notes(&holder.get_view().notes, id, txn, ndb);
                 let holder_result = if notes.is_empty() {
                     None
@@ -185,7 +185,7 @@ pub trait NotesHolder {
                 // are already borrowing it mutably. Let's pass it as a
                 // result instead
                 //
-                // thread.view.insert(&notes); <-- no
+                // holder.get_view().insert(&notes); <-- no
                 //
                 (holder, holder_result)
             }
