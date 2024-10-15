@@ -55,23 +55,6 @@ impl<'a> TimelineView<'a> {
         )
     }
 
-    pub fn ui_no_scroll(&mut self, ui: &mut egui::Ui) -> TimelineResponse {
-        if let Some(timeline) = self.columns.find_timeline_mut(self.timeline_id) {
-            timeline.selected_view = tabs_ui(ui);
-        };
-
-        timeline_ui_no_scroll(
-            ui,
-            self.ndb,
-            self.timeline_id,
-            self.columns,
-            self.note_cache,
-            self.img_cache,
-            self.reverse,
-            self.textmode,
-        )
-    }
-
     pub fn reversed(mut self) -> Self {
         self.reverse = true;
         self
@@ -120,51 +103,28 @@ fn timeline_ui(
         .auto_shrink([false, false])
         .scroll_bar_visibility(ScrollBarVisibility::AlwaysVisible)
         .show(ui, |ui| {
-            timeline_ui_no_scroll(
-                ui,
-                ndb,
-                timeline_id,
-                columns,
-                note_cache,
-                img_cache,
+            let timeline = if let Some(timeline) = columns.find_timeline_mut(timeline_id) {
+                timeline
+            } else {
+                error!("tried to render timeline in column, but timeline was missing");
+                // TODO (jb55): render error when timeline is missing?
+                // this shouldn't happen...
+                return TimelineResponse::default();
+            };
+
+            let txn = Transaction::new(ndb).expect("failed to create txn");
+            TimelineTabView::new(
+                timeline.current_view(),
                 reversed,
                 textmode,
+                &txn,
+                ndb,
+                note_cache,
+                img_cache,
             )
+            .show(ui)
         })
         .inner
-}
-
-#[allow(clippy::too_many_arguments)]
-fn timeline_ui_no_scroll(
-    ui: &mut egui::Ui,
-    ndb: &Ndb,
-    timeline_id: TimelineId,
-    columns: &mut Columns,
-    note_cache: &mut NoteCache,
-    img_cache: &mut ImageCache,
-    reversed: bool,
-    textmode: bool,
-) -> TimelineResponse {
-    let timeline = if let Some(timeline) = columns.find_timeline_mut(timeline_id) {
-        timeline
-    } else {
-        error!("tried to render timeline in column, but timeline was missing");
-        // TODO (jb55): render error when timeline is missing?
-        // this shouldn't happen...
-        return TimelineResponse::default();
-    };
-
-    let txn = Transaction::new(ndb).expect("failed to create txn");
-    TimelineTabView::new(
-        timeline.current_view(),
-        reversed,
-        textmode,
-        &txn,
-        ndb,
-        note_cache,
-        img_cache,
-    )
-    .show(ui)
 }
 
 pub fn tabs_ui(ui: &mut egui::Ui) -> i32 {
