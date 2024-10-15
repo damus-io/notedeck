@@ -13,7 +13,7 @@ pub use quote_repost::QuoteRepostView;
 pub use reply::PostReplyView;
 
 use crate::{
-    actionbar::BarAction,
+    actionbar::{BarAction, NoteActionResponse},
     app_style::NotedeckTextStyle,
     colors,
     imgcache::ImageCache,
@@ -22,7 +22,7 @@ use crate::{
 };
 use egui::emath::{pos2, Vec2};
 use egui::{Id, Label, Pos2, Rect, Response, RichText, Sense};
-use enostr::NoteId;
+use enostr::{NoteId, Pubkey};
 use nostrdb::{Ndb, Note, NoteKey, NoteReply, Transaction};
 
 use super::profile::preview::{get_display_name, one_line_display_name_widget};
@@ -37,37 +37,27 @@ pub struct NoteView<'a> {
 
 pub struct NoteResponse {
     pub response: egui::Response,
-    pub action: Option<BarAction>,
     pub context_selection: Option<NoteContextSelection>,
-    pub clicked_profile: bool,
+    pub action: NoteActionResponse,
 }
 
 impl NoteResponse {
     pub fn new(response: egui::Response) -> Self {
         Self {
             response,
-            action: None,
             context_selection: None,
-            clicked_profile: false,
+            action: NoteActionResponse::default(),
         }
     }
 
-    pub fn with_action(self, action: Option<BarAction>) -> Self {
-        Self { action, ..self }
+    pub fn with_action(mut self, action: NoteActionResponse) -> Self {
+        self.action = action;
+        self
     }
 
-    pub fn select_option(self, context_selection: Option<NoteContextSelection>) -> Self {
-        Self {
-            context_selection,
-            ..self
-        }
-    }
-
-    pub fn click_profile(self, clicked_profile: bool) -> Self {
-        Self {
-            clicked_profile,
-            ..self
-        }
+    pub fn select_option(mut self, context_selection: Option<NoteContextSelection>) -> Self {
+        self.context_selection = context_selection;
+        self
     }
 }
 
@@ -441,8 +431,11 @@ impl<'a> NoteView<'a> {
         puffin::profile_function!();
         let note_key = self.note.key().expect("todo: support non-db notes");
         let txn = self.note.txn().expect("todo: support non-db notes");
-        let mut note_action: Option<BarAction> = None;
+
+        let mut open_profile: Option<Pubkey> = None;
+        let mut bar_action: Option<BarAction> = None;
         let mut selected_option: Option<NoteContextSelection> = None;
+
         let profile = self.ndb.get_profile_by_pubkey(txn, self.note.pubkey());
         let maybe_hitbox = maybe_note_hitbox(ui, note_key);
         let container_right = {
@@ -452,12 +445,12 @@ impl<'a> NoteView<'a> {
             Pos2::new(x, y)
         };
 
-        let mut clicked_profile = false;
-
         // wide design
         let response = if self.options().has_wide() {
             ui.horizontal(|ui| {
-                clicked_profile = self.pfp(note_key, &profile, ui).clicked();
+                if self.pfp(note_key, &profile, ui).clicked() {
+                    open_profile = Some(Pubkey::new(*self.note.pubkey()));
+                };
 
                 let size = ui.available_size();
                 ui.vertical(|ui| {
@@ -500,18 +493,21 @@ impl<'a> NoteView<'a> {
                 self.options(),
             );
             let resp = ui.add(&mut contents);
-            note_action = note_action.or(contents.action());
+            bar_action = bar_action.or(contents.action().bar_action);
+            open_profile = open_profile.or(contents.action().open_profile);
 
             if self.options().has_actionbar() {
                 let ab = render_note_actionbar(ui, self.note.id(), note_key);
-                note_action = note_action.or(ab.inner);
+                bar_action = bar_action.or(ab.inner);
             }
 
             resp
         } else {
             // main design
             ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
-                clicked_profile = self.pfp(note_key, &profile, ui).clicked();
+                if self.pfp(note_key, &profile, ui).clicked() {
+                    open_profile = Some(Pubkey::new(*self.note.pubkey()));
+                };
 
                 ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
                     selected_option = NoteView::note_header(
@@ -547,30 +543,33 @@ impl<'a> NoteView<'a> {
                         self.options(),
                     );
                     ui.add(&mut contents);
-                    note_action = note_action.or(contents.action());
+                    bar_action = bar_action.or(contents.action().bar_action);
+                    open_profile = open_profile.or(contents.action().open_profile);
 
                     if self.options().has_actionbar() {
                         let ab = render_note_actionbar(ui, self.note.id(), note_key);
-                        note_action = note_action.or(ab.inner);
+                        bar_action = bar_action.or(ab.inner);
                     }
                 });
             })
             .response
         };
 
-        note_action = check_note_hitbox(
+        bar_action = check_note_hitbox(
             ui,
             self.note.id(),
             note_key,
             &response,
             maybe_hitbox,
-            note_action,
+            bar_action,
         );
 
         NoteResponse::new(response)
-            .with_action(note_action)
+            .with_action(NoteActionResponse {
+                bar_action,
+                open_profile,
+            })
             .select_option(selected_option)
-            .click_profile(clicked_profile)
     }
 }
 

@@ -1,15 +1,13 @@
-use crate::actionbar::NoteActionResponse;
+use crate::actionbar::{BarAction, NoteActionResponse};
 use crate::timeline::TimelineTab;
 use crate::{
-    actionbar::BarAction, column::Columns, imgcache::ImageCache, notecache::NoteCache,
-    timeline::TimelineId, ui,
+    column::Columns, imgcache::ImageCache, notecache::NoteCache, timeline::TimelineId, ui,
 };
 use egui::containers::scroll_area::ScrollBarVisibility;
 use egui::{Direction, Layout};
 use egui_tabs::TabColor;
-use enostr::Pubkey;
 use nostrdb::{Ndb, Transaction};
-use tracing::{debug, error, info, warn};
+use tracing::{error, warn};
 
 pub struct TimelineView<'a> {
     timeline_id: TimelineId,
@@ -277,19 +275,11 @@ impl<'a> TimelineTabView<'a> {
                         .options_button(true)
                         .show(ui);
 
-                    if let Some(ba) = resp.action {
-                        bar_action = Some(ba);
-                    } else if resp.response.clicked() {
-                        debug!("clicked note");
-                    }
+                    bar_action = bar_action.or(resp.action.bar_action);
+                    open_profile = open_profile.or(resp.action.open_profile);
 
                     if let Some(context) = resp.context_selection {
                         context.process(ui, &note);
-                    }
-
-                    if resp.clicked_profile {
-                        info!("clicked profile");
-                        open_profile = Some(Pubkey::new(*note.pubkey()))
                     }
                 });
 
