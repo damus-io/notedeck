@@ -222,7 +222,7 @@ impl KeyStorage for BasicFileStorage {
 }
 
 mod tests {
-    use crate::key_storage::key_storage_impl::{KeyStorage, KeyStorageResponse};
+    use crate::storage::key_storage_impl::{KeyStorage, KeyStorageResponse};
 
     use super::BasicFileStorage;
 

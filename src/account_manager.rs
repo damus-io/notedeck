@@ -6,7 +6,7 @@ use nostrdb::Ndb;
 use crate::{
     column::Columns,
     imgcache::ImageCache,
-    key_storage::{KeyStorage, KeyStorageResponse, KeyStorageType},
+    storage::{KeyStorage, KeyStorageResponse, KeyStorageType},
     login_manager::LoginState,
     route::{Route, Router},
     ui::{

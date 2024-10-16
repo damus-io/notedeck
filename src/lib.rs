@@ -46,7 +46,7 @@ mod test_utils;
 
 mod settings;
 
-mod key_storage;
+mod storage;
 
 pub use app::Damus;
 pub use error::Error;

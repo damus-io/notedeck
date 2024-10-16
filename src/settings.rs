@@ -1,10 +1,10 @@
 use serde::{Deserialize, Serialize};
 
 #[cfg(target_os = "macos")]
-use crate::key_storage::MacOSKeyStorageType;
+use crate::storage::MacOSKeyStorageType;
 
 #[cfg(target_os = "linux")]
-use crate::key_storage::LinuxKeyStorageType;
+use crate::storage::LinuxKeyStorageType;
 
 #[derive(Serialize, Deserialize, Default)]
 pub struct NotedeckSettings {

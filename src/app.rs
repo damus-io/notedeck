@@ -9,7 +9,7 @@ use crate::{
     filter::{self, FilterState},
     frame_history::FrameHistory,
     imgcache::ImageCache,
-    key_storage::{key_storage_impl::get_key_storage, KeyStorageType},
+    storage::{key_storage_impl::get_key_storage, KeyStorageType},
     nav,
     note::NoteRef,
     notecache::{CachedNote, NoteCache},
