@@ -2,7 +2,13 @@ use enostr::{Filter, Pubkey};
 use nostrdb::{FilterBuilder, Ndb, ProfileRecord, Transaction};
 
 use crate::{
-    app::copy_notes_into_timeline, filter::{self, FilterState}, multi_subscriber::MultiSubscriber, note::NoteRef, notecache::NoteCache, notes_holder::NotesHolder, timeline::{PubkeySource, Timeline, TimelineKind}
+    app::copy_notes_into_timeline,
+    filter::{self, FilterState},
+    multi_subscriber::MultiSubscriber,
+    note::NoteRef,
+    notecache::NoteCache,
+    notes_holder::NotesHolder,
+    timeline::{PubkeySource, Timeline, TimelineKind},
 };
 
 pub enum DisplayName<'a> {
@@ -60,7 +66,7 @@ impl Profile {
         let mut timeline =
             Timeline::new(TimelineKind::profile(source), FilterState::ready(filters));
 
-            copy_notes_into_timeline(&mut timeline, txn, ndb, note_cache, notes);
+        copy_notes_into_timeline(&mut timeline, txn, ndb, note_cache, notes);
 
         Profile {
             timeline,

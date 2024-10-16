@@ -73,7 +73,10 @@ impl<M: NotesHolder> NotesHolderStorage<M> {
                 .map(NoteRef::from_query_result)
                 .collect()
         } else {
-            debug!("got no results from NotesHolder lookup for {}", hex::encode(id));
+            debug!(
+                "got no results from NotesHolder lookup for {}",
+                hex::encode(id)
+            );
             vec![]
         };
 

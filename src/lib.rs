@@ -25,6 +25,7 @@ mod multi_subscriber;
 mod nav;
 mod note;
 mod notecache;
+mod notes_holder;
 mod post;
 mod profile;
 pub mod relay_pool_manager;
@@ -40,7 +41,6 @@ pub mod ui;
 mod unknowns;
 mod user_account;
 mod view_state;
-mod notes_holder;
 
 #[cfg(test)]
 #[macro_use]
