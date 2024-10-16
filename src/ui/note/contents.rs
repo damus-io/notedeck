@@ -1,4 +1,4 @@
-use crate::actionbar::BarAction;
+use crate::actionbar::NoteActionResponse;
 use crate::images::ImageType;
 use crate::imgcache::ImageCache;
 use crate::notecache::NoteCache;
@@ -17,7 +17,7 @@ pub struct NoteContents<'a> {
     note: &'a Note<'a>,
     note_key: NoteKey,
     options: NoteOptions,
-    action: Option<BarAction>,
+    action: NoteActionResponse,
 }
 
 impl<'a> NoteContents<'a> {
@@ -38,12 +38,12 @@ impl<'a> NoteContents<'a> {
             note,
             note_key,
             options,
-            action: None,
+            action: NoteActionResponse::default(),
         }
     }
 
-    pub fn action(&self) -> Option<BarAction> {
-        self.action
+    pub fn action(&self) -> &NoteActionResponse {
+        &self.action
     }
 }
 
@@ -211,7 +211,7 @@ fn render_note_contents(
     let note_action = if let Some((id, block_str)) = inline_note {
         render_note_preview(ui, ndb, note_cache, img_cache, txn, id, block_str).action
     } else {
-        None
+        NoteActionResponse::default()
     };
 
     if !images.is_empty() && !options.has_textmode() {

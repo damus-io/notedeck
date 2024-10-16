@@ -1,4 +1,4 @@
-use enostr::NoteId;
+use enostr::{NoteId, Pubkey};
 use nostrdb::Ndb;
 use std::fmt::{self};
 
@@ -6,7 +6,7 @@ use crate::{
     account_manager::AccountsRoute,
     column::Columns,
     timeline::{TimelineId, TimelineRoute},
-    ui::profile::preview::get_note_users_displayname_string,
+    ui::profile::preview::{get_note_users_displayname_string, get_profile_displayname_string},
 };
 
 /// App routing. These describe different places you can go inside Notedeck.
@@ -17,6 +17,7 @@ pub enum Route {
     Relays,
     ComposeNote,
     AddColumn,
+    Profile(Pubkey),
 }
 
 #[derive(Clone)]
@@ -96,6 +97,9 @@ impl Route {
             },
             Route::ComposeNote => "Compose Note".to_owned(),
             Route::AddColumn => "Add Column".to_owned(),
+            Route::Profile(pubkey) => {
+                format!("{}'s Profile", get_profile_displayname_string(ndb, pubkey))
+            }
         };
 
         TitledRoute {
@@ -203,6 +207,7 @@ impl fmt::Display for Route {
             Route::ComposeNote => write!(f, "Compose Note"),
 
             Route::AddColumn => write!(f, "Add Column"),
+            Route::Profile(_) => write!(f, "Profile"),
         }
     }
 }

@@ -45,7 +45,7 @@ impl Columns {
         Columns::default()
     }
 
-    pub fn add_timeline(&mut self, timeline: Timeline) {
+    pub fn add_new_timeline_column(&mut self, timeline: Timeline) {
         let id = Self::get_new_id();
         let routes = vec![Route::timeline(timeline.id)];
         self.timelines.insert(id, timeline);

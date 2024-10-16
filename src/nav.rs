@@ -2,10 +2,15 @@ use crate::{
     account_manager::render_accounts_route,
     app_style::{get_font_size, NotedeckTextStyle},
     fonts::NamedFontFamily,
+    notes_holder::NotesHolder,
+    profile::Profile,
     relay_pool_manager::RelayPoolManager,
     route::Route,
-    thread::thread_unsubscribe,
-    timeline::route::{render_timeline_route, AfterRouteExecution, TimelineRoute},
+    thread::Thread,
+    timeline::{
+        route::{render_profile_route, render_timeline_route, AfterRouteExecution, TimelineRoute},
+        Timeline,
+    },
     ui::{
         self,
         add_column::{AddColumnResponse, AddColumnView},
@@ -18,6 +23,7 @@ use crate::{
 
 use egui::{pos2, Color32, InnerResponse, Stroke};
 use egui_nav::{Nav, NavAction, TitleBarResponse};
+use nostrdb::{Ndb, Transaction};
 use tracing::{error, info};
 
 pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) {
@@ -109,6 +115,19 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) {
                     }
                     None
                 }
+
+                Route::Profile(pubkey) => render_profile_route(
+                    pubkey,
+                    &app.ndb,
+                    &mut app.columns,
+                    &mut app.profiles,
+                    &mut app.pool,
+                    &mut app.img_cache,
+                    &mut app.note_cache,
+                    &mut app.threads,
+                    col,
+                    ui,
+                ),
             }
         });
 
@@ -124,18 +143,57 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) {
                     }
                 }
             }
+
+            AfterRouteExecution::OpenProfile(pubkey) => {
+                app.columns
+                    .column_mut(col)
+                    .router_mut()
+                    .route_to(Route::Profile(pubkey));
+                let txn = Transaction::new(&app.ndb).expect("txn");
+                if let Some(res) = Profile::open(
+                    &app.ndb,
+                    &mut app.note_cache,
+                    &txn,
+                    &mut app.pool,
+                    &mut app.profiles,
+                    pubkey.bytes(),
+                ) {
+                    res.process(&app.ndb, &mut app.note_cache, &txn, &mut app.profiles);
+                }
+            }
         }
     }
 
     if let Some(NavAction::Returned) = nav_response.action {
         let r = app.columns_mut().column_mut(col).router_mut().pop();
+        let txn = Transaction::new(&app.ndb).expect("txn");
         if let Some(Route::Timeline(TimelineRoute::Thread(id))) = r {
-            thread_unsubscribe(
+            let root_id = {
+                crate::note::root_note_id_from_selected_id(
+                    &app.ndb,
+                    &mut app.note_cache,
+                    &txn,
+                    id.bytes(),
+                )
+            };
+            Thread::unsubscribe_locally(
+                &txn,
                 &app.ndb,
+                &mut app.note_cache,
                 &mut app.threads,
                 &mut app.pool,
+                root_id,
+            );
+        }
+
+        if let Some(Route::Profile(pubkey)) = r {
+            Profile::unsubscribe_locally(
+                &txn,
+                &app.ndb,
                 &mut app.note_cache,
-                id.bytes(),
+                &mut app.profiles,
+                &mut app.pool,
+                pubkey.bytes(),
             );
         }
     } else if let Some(NavAction::Navigated) = nav_response.action {
@@ -152,19 +210,23 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) {
                 app.columns_mut().request_deletion_at_index(col);
                 let tl = app.columns().find_timeline_for_column_index(col);
                 if let Some(timeline) = tl {
-                    if let Some(sub_id) = timeline.subscription {
-                        if let Err(e) = app.ndb.unsubscribe(sub_id) {
-                            error!("unsubscribe error: {}", e);
-                        } else {
-                            info!(
-                                "successfully unsubscribed from timeline {} with sub id {}",
-                                timeline.id,
-                                sub_id.id()
-                            );
-                        }
-                    }
+                    unsubscribe_timeline(app.ndb(), timeline);
                 }
             }
+        }
+    }
+}
+
+fn unsubscribe_timeline(ndb: &Ndb, timeline: &Timeline) {
+    if let Some(sub_id) = timeline.subscription {
+        if let Err(e) = ndb.unsubscribe(sub_id) {
+            error!("unsubscribe error: {}", e);
+        } else {
+            info!(
+                "successfully unsubscribed from timeline {} with sub id {}",
+                timeline.id,
+                sub_id.id()
+            );
         }
     }
 }

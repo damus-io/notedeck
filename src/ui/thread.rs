@@ -1,11 +1,17 @@
 use crate::{
-    actionbar::BarAction, imgcache::ImageCache, notecache::NoteCache, thread::Threads, ui,
+    actionbar::NoteActionResponse,
+    imgcache::ImageCache,
+    notecache::NoteCache,
+    notes_holder::{NotesHolder, NotesHolderStorage},
+    thread::Thread,
 };
 use nostrdb::{Ndb, NoteKey, Transaction};
-use tracing::{error, warn};
+use tracing::error;
+
+use super::timeline::TimelineTabView;
 
 pub struct ThreadView<'a> {
-    threads: &'a mut Threads,
+    threads: &'a mut NotesHolderStorage<Thread>,
     ndb: &'a Ndb,
     note_cache: &'a mut NoteCache,
     img_cache: &'a mut ImageCache,
@@ -17,7 +23,7 @@ pub struct ThreadView<'a> {
 impl<'a> ThreadView<'a> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        threads: &'a mut Threads,
+        threads: &'a mut NotesHolderStorage<Thread>,
         ndb: &'a Ndb,
         note_cache: &'a mut NoteCache,
         img_cache: &'a mut ImageCache,
@@ -41,9 +47,8 @@ impl<'a> ThreadView<'a> {
         self
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui) -> Option<BarAction> {
+    pub fn ui(&mut self, ui: &mut egui::Ui) -> NoteActionResponse {
         let txn = Transaction::new(self.ndb).expect("txn");
-        let mut action: Option<BarAction> = None;
 
         let selected_note_key = if let Ok(key) = self
             .ndb
@@ -53,7 +58,7 @@ impl<'a> ThreadView<'a> {
             key
         } else {
             // TODO: render 404 ?
-            return None;
+            return NoteActionResponse::default();
         };
 
         ui.label(
@@ -70,7 +75,7 @@ impl<'a> ThreadView<'a> {
                 let note = if let Ok(note) = self.ndb.get_note_by_key(&txn, selected_note_key) {
                     note
                 } else {
-                    return;
+                    return NoteActionResponse::default();
                 };
 
                 let root_id = {
@@ -85,7 +90,10 @@ impl<'a> ThreadView<'a> {
                         .map_or_else(|| self.selected_note_id, |nr| nr.id)
                 };
 
-                let thread = self.threads.thread_mut(self.ndb, &txn, root_id).get_ptr();
+                let thread = self
+                    .threads
+                    .notes_holder_mutated(self.ndb, self.note_cache, &txn, root_id)
+                    .get_ptr();
 
                 // TODO(jb55): skip poll if ThreadResult is fresh?
 
@@ -94,50 +102,17 @@ impl<'a> ThreadView<'a> {
                     error!("Thread::poll_notes_into_view: {e}");
                 }
 
-                let len = thread.view().notes.len();
-
-                thread.view().list.clone().borrow_mut().ui_custom_layout(
-                    ui,
-                    len,
-                    |ui, start_index| {
-                        ui.spacing_mut().item_spacing.y = 0.0;
-                        ui.spacing_mut().item_spacing.x = 4.0;
-
-                        let ind = len - 1 - start_index;
-
-                        let note_key = thread.view().notes[ind].key;
-
-                        let note = if let Ok(note) = self.ndb.get_note_by_key(&txn, note_key) {
-                            note
-                        } else {
-                            warn!("failed to query note {:?}", note_key);
-                            return 0;
-                        };
-
-                        ui::padding(8.0, ui, |ui| {
-                            let note_response =
-                                ui::NoteView::new(self.ndb, self.note_cache, self.img_cache, &note)
-                                    .note_previews(!self.textmode)
-                                    .textmode(self.textmode)
-                                    .options_button(!self.textmode)
-                                    .show(ui);
-                            if let Some(bar_action) = note_response.action {
-                                action = Some(bar_action);
-                            }
-
-                            if let Some(selection) = note_response.context_selection {
-                                selection.process(ui, &note);
-                            }
-                        });
-
-                        ui::hline(ui);
-                        //ui.add(egui::Separator::default().spacing(0.0));
-
-                        1
-                    },
-                );
-            });
-
-        action
+                TimelineTabView::new(
+                    thread.view(),
+                    true,
+                    self.textmode,
+                    &txn,
+                    self.ndb,
+                    self.note_cache,
+                    self.img_cache,
+                )
+                .show(ui)
+            })
+            .inner
     }
 }

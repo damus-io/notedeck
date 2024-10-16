@@ -1,12 +1,13 @@
+use crate::actionbar::{BarAction, NoteActionResponse};
+use crate::timeline::TimelineTab;
 use crate::{
-    actionbar::BarAction, column::Columns, imgcache::ImageCache, notecache::NoteCache,
-    timeline::TimelineId, ui,
+    column::Columns, imgcache::ImageCache, notecache::NoteCache, timeline::TimelineId, ui,
 };
 use egui::containers::scroll_area::ScrollBarVisibility;
 use egui::{Direction, Layout};
 use egui_tabs::TabColor;
 use nostrdb::{Ndb, Transaction};
-use tracing::{debug, error, warn};
+use tracing::{error, warn};
 
 pub struct TimelineView<'a> {
     timeline_id: TimelineId,
@@ -39,7 +40,7 @@ impl<'a> TimelineView<'a> {
         }
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui) -> Option<BarAction> {
+    pub fn ui(&mut self, ui: &mut egui::Ui) -> NoteActionResponse {
         timeline_ui(
             ui,
             self.ndb,
@@ -68,7 +69,7 @@ fn timeline_ui(
     img_cache: &mut ImageCache,
     reversed: bool,
     textmode: bool,
-) -> Option<BarAction> {
+) -> NoteActionResponse {
     //padding(4.0, ui, |ui| ui.heading("Notifications"));
     /*
     let font_id = egui::TextStyle::Body.resolve(ui.style());
@@ -83,7 +84,7 @@ fn timeline_ui(
             error!("tried to render timeline in column, but timeline was missing");
             // TODO (jb55): render error when timeline is missing?
             // this shouldn't happen...
-            return None;
+            return NoteActionResponse::default();
         };
 
         timeline.selected_view = tabs_ui(ui);
@@ -94,7 +95,6 @@ fn timeline_ui(
         egui::Id::new(("tlscroll", timeline.view_id()))
     };
 
-    let mut bar_action: Option<BarAction> = None;
     egui::ScrollArea::vertical()
         .id_source(scroll_id)
         .animated(false)
@@ -107,71 +107,25 @@ fn timeline_ui(
                 error!("tried to render timeline in column, but timeline was missing");
                 // TODO (jb55): render error when timeline is missing?
                 // this shouldn't happen...
-                return 0;
+                return NoteActionResponse::default();
             };
 
-            let view = timeline.current_view();
-            let len = view.notes.len();
-            let txn = if let Ok(txn) = Transaction::new(ndb) {
-                txn
-            } else {
-                warn!("failed to create transaction");
-                return 0;
-            };
-
-            view.list
-                .clone()
-                .borrow_mut()
-                .ui_custom_layout(ui, len, |ui, start_index| {
-                    ui.spacing_mut().item_spacing.y = 0.0;
-                    ui.spacing_mut().item_spacing.x = 4.0;
-
-                    let ind = if reversed {
-                        len - start_index - 1
-                    } else {
-                        start_index
-                    };
-
-                    let note_key = timeline.current_view().notes[ind].key;
-
-                    let note = if let Ok(note) = ndb.get_note_by_key(&txn, note_key) {
-                        note
-                    } else {
-                        warn!("failed to query note {:?}", note_key);
-                        return 0;
-                    };
-
-                    ui::padding(8.0, ui, |ui| {
-                        let resp = ui::NoteView::new(ndb, note_cache, img_cache, &note)
-                            .note_previews(!textmode)
-                            .selectable_text(false)
-                            .options_button(true)
-                            .show(ui);
-
-                        if let Some(ba) = resp.action {
-                            bar_action = Some(ba);
-                        } else if resp.response.clicked() {
-                            debug!("clicked note");
-                        }
-
-                        if let Some(context) = resp.context_selection {
-                            context.process(ui, &note);
-                        }
-                    });
-
-                    ui::hline(ui);
-                    //ui.add(egui::Separator::default().spacing(0.0));
-
-                    1
-                });
-
-            1
-        });
-
-    bar_action
+            let txn = Transaction::new(ndb).expect("failed to create txn");
+            TimelineTabView::new(
+                timeline.current_view(),
+                reversed,
+                textmode,
+                &txn,
+                ndb,
+                note_cache,
+                img_cache,
+            )
+            .show(ui)
+        })
+        .inner
 }
 
-fn tabs_ui(ui: &mut egui::Ui) -> i32 {
+pub fn tabs_ui(ui: &mut egui::Ui) -> i32 {
     ui.spacing_mut().item_spacing.y = 0.0;
 
     let tab_res = egui_tabs::Tabs::new(2)
@@ -253,4 +207,91 @@ fn shrink_range_to_width(range: egui::Rangef, width: f32) -> egui::Rangef {
     let max = midpoint + half_width;
 
     egui::Rangef::new(min, max)
+}
+
+pub struct TimelineTabView<'a> {
+    tab: &'a TimelineTab,
+    reversed: bool,
+    textmode: bool,
+    txn: &'a Transaction,
+    ndb: &'a Ndb,
+    note_cache: &'a mut NoteCache,
+    img_cache: &'a mut ImageCache,
+}
+
+impl<'a> TimelineTabView<'a> {
+    pub fn new(
+        tab: &'a TimelineTab,
+        reversed: bool,
+        textmode: bool,
+        txn: &'a Transaction,
+        ndb: &'a Ndb,
+        note_cache: &'a mut NoteCache,
+        img_cache: &'a mut ImageCache,
+    ) -> Self {
+        Self {
+            tab,
+            reversed,
+            txn,
+            textmode,
+            ndb,
+            note_cache,
+            img_cache,
+        }
+    }
+
+    pub fn show(&mut self, ui: &mut egui::Ui) -> NoteActionResponse {
+        let mut open_profile = None;
+        let mut bar_action: Option<BarAction> = None;
+        let len = self.tab.notes.len();
+
+        self.tab
+            .list
+            .clone()
+            .borrow_mut()
+            .ui_custom_layout(ui, len, |ui, start_index| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                ui.spacing_mut().item_spacing.x = 4.0;
+
+                let ind = if self.reversed {
+                    len - start_index - 1
+                } else {
+                    start_index
+                };
+
+                let note_key = self.tab.notes[ind].key;
+
+                let note = if let Ok(note) = self.ndb.get_note_by_key(self.txn, note_key) {
+                    note
+                } else {
+                    warn!("failed to query note {:?}", note_key);
+                    return 0;
+                };
+
+                ui::padding(8.0, ui, |ui| {
+                    let resp = ui::NoteView::new(self.ndb, self.note_cache, self.img_cache, &note)
+                        .note_previews(!self.textmode)
+                        .selectable_text(false)
+                        .options_button(true)
+                        .show(ui);
+
+                    bar_action = bar_action.or(resp.action.bar_action);
+                    open_profile = open_profile.or(resp.action.open_profile);
+
+                    if let Some(context) = resp.context_selection {
+                        context.process(ui, &note);
+                    }
+                });
+
+                ui::hline(ui);
+                //ui.add(egui::Separator::default().spacing(0.0));
+
+                1
+            });
+
+        NoteActionResponse {
+            open_profile,
+            bar_action,
+        }
+    }
 }

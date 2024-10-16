@@ -13,7 +13,7 @@ pub use quote_repost::QuoteRepostView;
 pub use reply::PostReplyView;
 
 use crate::{
-    actionbar::BarAction,
+    actionbar::{BarAction, NoteActionResponse},
     app_style::NotedeckTextStyle,
     colors,
     imgcache::ImageCache,
@@ -22,7 +22,7 @@ use crate::{
 };
 use egui::emath::{pos2, Vec2};
 use egui::{Id, Label, Pos2, Rect, Response, RichText, Sense};
-use enostr::NoteId;
+use enostr::{NoteId, Pubkey};
 use nostrdb::{Ndb, Note, NoteKey, NoteReply, Transaction};
 
 use super::profile::preview::{get_display_name, one_line_display_name_widget};
@@ -37,28 +37,27 @@ pub struct NoteView<'a> {
 
 pub struct NoteResponse {
     pub response: egui::Response,
-    pub action: Option<BarAction>,
     pub context_selection: Option<NoteContextSelection>,
+    pub action: NoteActionResponse,
 }
 
 impl NoteResponse {
     pub fn new(response: egui::Response) -> Self {
         Self {
             response,
-            action: None,
             context_selection: None,
+            action: NoteActionResponse::default(),
         }
     }
 
-    pub fn with_action(self, action: Option<BarAction>) -> Self {
-        Self { action, ..self }
+    pub fn with_action(mut self, action: NoteActionResponse) -> Self {
+        self.action = action;
+        self
     }
 
-    pub fn select_option(self, context_selection: Option<NoteContextSelection>) -> Self {
-        Self {
-            context_selection,
-            ..self
-        }
+    pub fn select_option(mut self, context_selection: Option<NoteContextSelection>) -> Self {
+        self.context_selection = context_selection;
+        self
     }
 }
 
@@ -305,7 +304,7 @@ impl<'a> NoteView<'a> {
         note_key: NoteKey,
         profile: &Result<nostrdb::ProfileRecord<'_>, nostrdb::Error>,
         ui: &mut egui::Ui,
-    ) {
+    ) -> egui::Response {
         if !self.options().has_wide() {
             ui.spacing_mut().item_spacing.x = 16.0;
         } else {
@@ -314,6 +313,7 @@ impl<'a> NoteView<'a> {
 
         let pfp_size = self.options().pfp_size();
 
+        let sense = Sense::click();
         match profile
             .as_ref()
             .ok()
@@ -326,7 +326,7 @@ impl<'a> NoteView<'a> {
                 let profile_key = profile.as_ref().unwrap().record().note_key();
                 let note_key = note_key.as_u64();
 
-                let (rect, size, _resp) = ui::anim::hover_expand(
+                let (rect, size, resp) = ui::anim::hover_expand(
                     ui,
                     egui::Id::new((profile_key, note_key)),
                     pfp_size,
@@ -342,13 +342,14 @@ impl<'a> NoteView<'a> {
                             self.img_cache,
                         ));
                     });
+                resp
             }
-            None => {
-                ui.add(
+            None => ui
+                .add(
                     ui::ProfilePic::new(self.img_cache, ui::ProfilePic::no_pfp_url())
                         .size(pfp_size),
-                );
-            }
+                )
+                .interact(sense),
         }
     }
 
@@ -430,8 +431,11 @@ impl<'a> NoteView<'a> {
         puffin::profile_function!();
         let note_key = self.note.key().expect("todo: support non-db notes");
         let txn = self.note.txn().expect("todo: support non-db notes");
-        let mut note_action: Option<BarAction> = None;
+
+        let mut open_profile: Option<Pubkey> = None;
+        let mut bar_action: Option<BarAction> = None;
         let mut selected_option: Option<NoteContextSelection> = None;
+
         let profile = self.ndb.get_profile_by_pubkey(txn, self.note.pubkey());
         let maybe_hitbox = maybe_note_hitbox(ui, note_key);
         let container_right = {
@@ -444,7 +448,9 @@ impl<'a> NoteView<'a> {
         // wide design
         let response = if self.options().has_wide() {
             ui.horizontal(|ui| {
-                self.pfp(note_key, &profile, ui);
+                if self.pfp(note_key, &profile, ui).clicked() {
+                    open_profile = Some(Pubkey::new(*self.note.pubkey()));
+                };
 
                 let size = ui.available_size();
                 ui.vertical(|ui| {
@@ -487,18 +493,21 @@ impl<'a> NoteView<'a> {
                 self.options(),
             );
             let resp = ui.add(&mut contents);
-            note_action = note_action.or(contents.action());
+            bar_action = bar_action.or(contents.action().bar_action);
+            open_profile = open_profile.or(contents.action().open_profile);
 
             if self.options().has_actionbar() {
                 let ab = render_note_actionbar(ui, self.note.id(), note_key);
-                note_action = note_action.or(ab.inner);
+                bar_action = bar_action.or(ab.inner);
             }
 
             resp
         } else {
             // main design
             ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
-                self.pfp(note_key, &profile, ui);
+                if self.pfp(note_key, &profile, ui).clicked() {
+                    open_profile = Some(Pubkey::new(*self.note.pubkey()));
+                };
 
                 ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
                     selected_option = NoteView::note_header(
@@ -534,28 +543,32 @@ impl<'a> NoteView<'a> {
                         self.options(),
                     );
                     ui.add(&mut contents);
-                    note_action = note_action.or(contents.action());
+                    bar_action = bar_action.or(contents.action().bar_action);
+                    open_profile = open_profile.or(contents.action().open_profile);
 
                     if self.options().has_actionbar() {
                         let ab = render_note_actionbar(ui, self.note.id(), note_key);
-                        note_action = note_action.or(ab.inner);
+                        bar_action = bar_action.or(ab.inner);
                     }
                 });
             })
             .response
         };
 
-        note_action = check_note_hitbox(
+        bar_action = check_note_hitbox(
             ui,
             self.note.id(),
             note_key,
             &response,
             maybe_hitbox,
-            note_action,
+            bar_action,
         );
 
         NoteResponse::new(response)
-            .with_action(note_action)
+            .with_action(NoteActionResponse {
+                bar_action,
+                open_profile,
+            })
             .select_option(selected_option)
     }
 }

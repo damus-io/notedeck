@@ -13,8 +13,10 @@ use crate::{
     nav,
     note::NoteRef,
     notecache::{CachedNote, NoteCache},
+    notes_holder::NotesHolderStorage,
+    profile::Profile,
     subscriptions::{SubKind, Subscriptions},
-    thread::Threads,
+    thread::Thread,
     timeline::{Timeline, TimelineId, TimelineKind, ViewFilter},
     ui::{self, DesktopSidePanel},
     unknowns::UnknownIds,
@@ -53,7 +55,8 @@ pub struct Damus {
     pub view_state: ViewState,
     pub unknown_ids: UnknownIds,
     pub drafts: Drafts,
-    pub threads: Threads,
+    pub threads: NotesHolderStorage<Thread>,
+    pub profiles: NotesHolderStorage<Profile>,
     pub img_cache: ImageCache,
     pub accounts: AccountManager,
     pub subscriptions: Subscriptions,
@@ -361,8 +364,24 @@ fn setup_initial_timeline(
         timeline.subscription, timeline.filter
     );
     let lim = filters[0].limit().unwrap_or(crate::filter::default_limit()) as i32;
-    let results = ndb.query(&txn, filters, lim)?;
+    let notes = ndb
+        .query(&txn, filters, lim)?
+        .into_iter()
+        .map(NoteRef::from_query_result)
+        .collect();
 
+    copy_notes_into_timeline(timeline, &txn, ndb, note_cache, notes);
+
+    Ok(())
+}
+
+pub fn copy_notes_into_timeline(
+    timeline: &mut Timeline,
+    txn: &Transaction,
+    ndb: &Ndb,
+    note_cache: &mut NoteCache,
+    notes: Vec<NoteRef>,
+) {
     let filters = {
         let views = &timeline.views;
         let filters: Vec<fn(&CachedNote, &Note) -> bool> =
@@ -370,21 +389,18 @@ fn setup_initial_timeline(
         filters
     };
 
-    for result in results {
+    for note_ref in notes {
         for (view, filter) in filters.iter().enumerate() {
-            if filter(
-                note_cache.cached_note_or_insert_mut(result.note_key, &result.note),
-                &result.note,
-            ) {
-                timeline.views[view].notes.push(NoteRef {
-                    key: result.note_key,
-                    created_at: result.note.created_at(),
-                })
+            if let Ok(note) = ndb.get_note_by_key(txn, note_ref.key) {
+                if filter(
+                    note_cache.cached_note_or_insert_mut(note_ref.key, &note),
+                    &note,
+                ) {
+                    timeline.views[view].notes.push(note_ref)
+                }
             }
         }
     }
-
-    Ok(())
 }
 
 fn setup_initial_nostrdb_subs(
@@ -693,7 +709,7 @@ impl Damus {
         let mut columns: Columns = Columns::new();
         for col in parsed_args.columns {
             if let Some(timeline) = col.into_timeline(&ndb, account) {
-                columns.add_timeline(timeline);
+                columns.add_new_timeline_column(timeline);
             }
         }
 
@@ -709,7 +725,8 @@ impl Damus {
             unknown_ids: UnknownIds::default(),
             subscriptions: Subscriptions::default(),
             since_optimize: parsed_args.since_optimize,
-            threads: Threads::default(),
+            threads: NotesHolderStorage::default(),
+            profiles: NotesHolderStorage::default(),
             drafts: Drafts::default(),
             state: DamusState::Initializing,
             img_cache: ImageCache::new(imgcache_dir.into()),
@@ -777,7 +794,7 @@ impl Damus {
 
         let timeline = Timeline::new(TimelineKind::Universe, FilterState::ready(vec![filter]));
 
-        columns.add_timeline(timeline);
+        columns.add_new_timeline_column(timeline);
 
         let imgcache_dir = data_path.as_ref().join(ImageCache::rel_datadir());
         let _ = std::fs::create_dir_all(imgcache_dir.clone());
@@ -790,7 +807,8 @@ impl Damus {
             unknown_ids: UnknownIds::default(),
             subscriptions: Subscriptions::default(),
             since_optimize: true,
-            threads: Threads::default(),
+            threads: NotesHolderStorage::default(),
+            profiles: NotesHolderStorage::default(),
             drafts: Drafts::default(),
             state: DamusState::Initializing,
             pool: RelayPool::new(),
@@ -817,11 +835,11 @@ impl Damus {
         &mut self.unknown_ids
     }
 
-    pub fn threads(&self) -> &Threads {
+    pub fn threads(&self) -> &NotesHolderStorage<Thread> {
         &self.threads
     }
 
-    pub fn threads_mut(&mut self) -> &mut Threads {
+    pub fn threads_mut(&mut self) -> &mut NotesHolderStorage<Thread> {
         &mut self.threads
     }
 
