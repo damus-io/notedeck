@@ -90,7 +90,17 @@ impl<'a> RelayMessage<'a> {
         // Event
         // Relay response format: ["EVENT", <subscription id>, <event JSON>]
         if &msg[0..=7] == "[\"EVENT\"" {
-            return Ok(Self::event(msg, "fixme"));
+            let mut start = 9;
+            while let Some(&b' ') = msg.as_bytes().get(start) {
+                start += 1; // Move past optional spaces
+            }
+            if let Some(comma_index) = msg[start..].find(',') {
+                let subid_end = start + comma_index;
+                let subid = &msg[start..subid_end].trim().trim_matches('"');
+                return Ok(Self::event(msg, subid));
+            } else {
+                return Ok(Self::event(msg, "fixme"));
+            }
         }
 
         // EOSE (NIP-15)
