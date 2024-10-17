@@ -16,12 +16,12 @@ static CREDENTIALS_DIR_NAME: &str = ".credentials";
 static STORAGE_DIR_NAME: &str = ".storage";
 static TEST_STORAGE_DIR_NAME: &str = ".storage_test";
 
-pub struct BasicFileStorage {
+pub struct FileKeyStorage {
     credentials_path: Result<PathBuf, KeyStorageError>,
     storage_path: Result<PathBuf, KeyStorageError>,
 }
 
-impl BasicFileStorage {
+impl FileKeyStorage {
     pub fn new() -> Self {
         let storage_path = get_storage_dirpath(STORAGE_DIR_NAME);
         let credentials_path = if let Ok(storage_path) = storage_path.clone() {
@@ -199,7 +199,7 @@ fn get_cred_dirpath(storage_dir_path: PathBuf) -> PathBuf {
     storage_dir_path.join(CREDENTIALS_DIR_NAME)
 }
 
-impl KeyStorage for BasicFileStorage {
+impl KeyStorage for FileKeyStorage {
     fn get_keys(&self) -> KeyStorageResponse<Vec<enostr::Keypair>> {
         KeyStorageResponse::ReceivedResult(self.get_keys_internal())
     }
@@ -224,14 +224,14 @@ impl KeyStorage for BasicFileStorage {
 mod tests {
     use crate::storage::key_storage_impl::{KeyStorage, KeyStorageResponse};
 
-    use super::BasicFileStorage;
+    use super::FileKeyStorage;
 
     #[allow(unused)]
     fn remove_all() {
-        match BasicFileStorage::mock().get_keys() {
+        match FileKeyStorage::mock().get_keys() {
             KeyStorageResponse::ReceivedResult(Ok(keys)) => {
                 for key in keys {
-                    BasicFileStorage::mock().remove_key(&key);
+                    FileKeyStorage::mock().remove_key(&key);
                 }
             }
             KeyStorageResponse::ReceivedResult(Err(e)) => {
@@ -245,12 +245,12 @@ mod tests {
     fn test_basic() {
         remove_all();
         let kp = enostr::FullKeypair::generate().to_keypair();
-        let resp = BasicFileStorage::mock().add_key(&kp);
+        let resp = FileKeyStorage::mock().add_key(&kp);
 
         assert_eq!(resp, KeyStorageResponse::ReceivedResult(Ok(())));
         assert_num_storage(1);
 
-        let resp = BasicFileStorage::mock().remove_key(&kp);
+        let resp = FileKeyStorage::mock().remove_key(&kp);
         assert_eq!(resp, KeyStorageResponse::ReceivedResult(Ok(())));
         assert_num_storage(0);
         remove_all();
@@ -258,7 +258,7 @@ mod tests {
 
     #[allow(dead_code)]
     fn assert_num_storage(n: usize) {
-        let resp = BasicFileStorage::mock().get_keys();
+        let resp = FileKeyStorage::mock().get_keys();
 
         if let KeyStorageResponse::ReceivedResult(Ok(vec)) = resp {
             assert_eq!(vec.len(), n);
@@ -272,13 +272,13 @@ mod tests {
         remove_all();
         let kp = enostr::FullKeypair::generate().to_keypair();
 
-        let _ = BasicFileStorage::mock().add_key(&kp);
+        let _ = FileKeyStorage::mock().add_key(&kp);
         assert_num_storage(1);
 
-        let resp = BasicFileStorage::mock().select_pubkey(Some(kp.pubkey));
+        let resp = FileKeyStorage::mock().select_pubkey(Some(kp.pubkey));
         assert_eq!(resp, Ok(()));
 
-        let resp = BasicFileStorage::mock().get_selected_pubkey();
+        let resp = FileKeyStorage::mock().get_selected_pubkey();
 
         assert_eq!(resp, Ok(Some(kp.pubkey)));
 
