@@ -5,7 +5,8 @@ use std::fmt::{self};
 use crate::{
     account_manager::AccountsRoute,
     column::Columns,
-    timeline::{TimelineId, TimelineRoute},
+    subscriptions::Subscriptions,
+    timeline::{TimelineCache, TimelineId, TimelineRoute},
     ui::profile::preview::{get_note_users_displayname_string, get_profile_displayname_string},
 };
 
@@ -17,7 +18,6 @@ pub enum Route {
     Relays,
     ComposeNote,
     AddColumn,
-    Profile(Pubkey),
 }
 
 #[derive(Clone)]
@@ -37,6 +37,20 @@ impl Route {
         Route::Timeline(TimelineRoute::Timeline(timeline_id))
     }
 
+    pub fn subscriptions<'a>(
+        &self,
+        columns: &'a Columns,
+        timeline_cache: &'a TimelineCache,
+    ) -> Option<Subscriptions<'a>> {
+        match self {
+            Route::Timeline(tlr) => tlr.subscriptions(),
+            Route::Accounts(_) => None,
+            Route::Relays => None,
+            Route::ComposeNote => None,
+            Route::AddColumn => None,
+        }
+    }
+
     pub fn timeline_id(&self) -> Option<&TimelineId> {
         if let Route::Timeline(TimelineRoute::Timeline(tid)) = self {
             Some(tid)
@@ -49,7 +63,7 @@ impl Route {
         Route::Relays
     }
 
-    pub fn thread(thread_root: NoteId) -> Self {
+    pub fn thread(thread_root: RootNoteId) -> Self {
         Route::Timeline(TimelineRoute::Thread(thread_root))
     }
 
@@ -79,7 +93,7 @@ impl Route {
                     timeline.kind.to_title(ndb)
                 }
                 TimelineRoute::Thread(id) => {
-                    format!("{}'s Thread", get_note_users_displayname_string(ndb, id))
+                    format!("{}'s Thread", get_note_users_displayname_string(ndb, &id.to_note_id()))
                 }
                 TimelineRoute::Reply(id) => {
                     format!("{}'s Reply", get_note_users_displayname_string(ndb, id))
@@ -196,6 +210,7 @@ impl fmt::Display for Route {
                 TimelineRoute::Thread(_id) => write!(f, "Thread"),
                 TimelineRoute::Reply(_id) => write!(f, "Reply"),
                 TimelineRoute::Quote(_id) => write!(f, "Quote"),
+                TimelineRoute::Profile(_) => write!(f, "Profile"),
             },
 
             Route::Relays => write!(f, "Relays"),
@@ -207,7 +222,6 @@ impl fmt::Display for Route {
             Route::ComposeNote => write!(f, "Compose Note"),
 
             Route::AddColumn => write!(f, "Add Column"),
-            Route::Profile(_) => write!(f, "Profile"),
         }
     }
 }

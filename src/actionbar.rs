@@ -1,9 +1,8 @@
 use crate::{
     note::NoteRef,
     notecache::NoteCache,
-    notes_holder::{NotesHolder, NotesHolderStorage},
     route::{Route, Router},
-    thread::Thread,
+    timeline::{TimelineCache, CachedTimeline},
 };
 use enostr::{NoteId, Pubkey, RelayPool};
 use nostrdb::{Ndb, Transaction};
@@ -26,7 +25,7 @@ pub struct NewNotes {
     pub notes: Vec<NoteRef>,
 }
 
-pub enum NotesHolderResult {
+pub enum BarResult {
     NewNotes(NewNotes),
 }
 
@@ -41,13 +40,13 @@ fn open_thread(
     router: &mut Router<Route>,
     note_cache: &mut NoteCache,
     pool: &mut RelayPool,
-    threads: &mut NotesHolderStorage<Thread>,
+    timeline_cache: &mut TimelineCache,
     selected_note: &[u8; 32],
-) -> Option<NotesHolderResult> {
+) -> Option<BarResult> {
     router.route_to(Route::thread(NoteId::new(selected_note.to_owned())));
 
     let root_id = crate::note::root_note_id_from_selected_id(ndb, note_cache, txn, selected_note);
-    Thread::open(ndb, note_cache, txn, pool, threads, root_id)
+    timeline_cache.open(ndb, note_cache, txn, pool, timeline_cache, root_id)
 }
 
 impl BarAction {
@@ -56,11 +55,11 @@ impl BarAction {
         self,
         ndb: &Ndb,
         router: &mut Router<Route>,
-        threads: &mut NotesHolderStorage<Thread>,
+        timeline_cache: &mut TimelineCache,
         note_cache: &mut NoteCache,
         pool: &mut RelayPool,
         txn: &Transaction,
-    ) -> Option<NotesHolderResult> {
+    ) -> Option<BarResult> {
         match self {
             BarAction::Reply(note_id) => {
                 router.route_to(Route::reply(note_id));
@@ -68,9 +67,15 @@ impl BarAction {
                 None
             }
 
-            BarAction::OpenThread(note_id) => {
-                open_thread(ndb, txn, router, note_cache, pool, threads, note_id.bytes())
-            }
+            BarAction::OpenThread(note_id) => open_thread(
+                ndb,
+                txn,
+                router,
+                note_cache,
+                pool,
+                timeline_cache,
+                note_id.bytes(),
+            ),
 
             BarAction::Quote(note_id) => {
                 router.route_to(Route::quote(note_id));
@@ -85,36 +90,36 @@ impl BarAction {
         self,
         ndb: &Ndb,
         router: &mut Router<Route>,
-        threads: &mut NotesHolderStorage<Thread>,
+        timeline_cache: &mut TimelineCache,
         note_cache: &mut NoteCache,
         pool: &mut RelayPool,
         txn: &Transaction,
     ) {
-        if let Some(br) = self.execute(ndb, router, threads, note_cache, pool, txn) {
-            br.process(ndb, note_cache, txn, threads);
+        if let Some(br) = self.execute(ndb, router, timeline_cache, note_cache, pool, txn) {
+            br.process(ndb, note_cache, txn, timeline_cache);
         }
     }
 }
 
-impl NotesHolderResult {
+impl BarResult {
     pub fn new_notes(notes: Vec<NoteRef>, id: [u8; 32]) -> Self {
-        NotesHolderResult::NewNotes(NewNotes::new(notes, id))
+        Self::NewNotes(NewNotes::new(notes, id))
     }
 
-    pub fn process<N: NotesHolder>(
+    pub fn process(
         &self,
         ndb: &Ndb,
         note_cache: &mut NoteCache,
         txn: &Transaction,
-        storage: &mut NotesHolderStorage<N>,
+        timeline_cache: &mut TimelineCache,
     ) {
         match self {
             // update the thread for next render if we have new notes
-            NotesHolderResult::NewNotes(new_notes) => {
-                let holder = storage
-                    .notes_holder_mutated(ndb, note_cache, txn, &new_notes.id)
+            Self::NewNotes(new_notes) => {
+                let notes = timeline_cache
+                    .notes(ndb, note_cache, txn, &new_notes.id)
                     .get_ptr();
-                new_notes.process(holder);
+                new_notes.process(notes);
             }
         }
     }
@@ -127,7 +132,7 @@ impl NewNotes {
 
     /// Simple helper for processing a NewThreadNotes result. It simply
     /// inserts/merges the notes into the thread cache
-    pub fn process<N: NotesHolder>(&self, thread: &mut N) {
+    pub fn process(&self, thread: &mut CachedTimeline) {
         // threads are chronological, ie reversed from reverse-chronological, the default.
         let reversed = true;
         thread.get_view().insert(&self.notes, reversed);

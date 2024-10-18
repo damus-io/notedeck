@@ -33,7 +33,6 @@ mod result;
 mod route;
 mod subscriptions;
 mod test_data;
-mod thread;
 mod time;
 mod timecache;
 mod timeline;

@@ -3,7 +3,7 @@ use nostrdb::{Ndb, Note, Transaction};
 use tracing::{debug, error, info};
 use uuid::Uuid;
 
-use crate::{filter::UnifiedSubscription, note::NoteRef, Error};
+use crate::{filter::UnifiedSubscription, note::NoteRef, Error, subscriptions::Subscriptions};
 
 pub struct MultiSubscriber {
     filters: Vec<Filter>,
@@ -18,6 +18,10 @@ impl MultiSubscriber {
             sub: None,
             subscribers: 0,
         }
+    }
+
+    pub fn to_subscriptions<'a>(&'a self) -> Option<Subscriptions<'a>> {
+        self.sub.as_ref().map(|x| Subscriptions::new(x.local, &x.remote))
     }
 
     fn real_subscribe(
