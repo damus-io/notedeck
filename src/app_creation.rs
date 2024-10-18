@@ -4,7 +4,6 @@ use crate::app_style::{
 };
 use crate::fonts::setup_fonts;
 use eframe::NativeOptions;
-use tracing::info;
 
 //pub const UI_SCALE_FACTOR: f32 = 0.2;
 
@@ -18,7 +17,6 @@ pub fn generate_native_options() -> NativeOptions {
         if let Some(window_size) = AppSizeHandler::default().get_app_size() {
             builder.with_inner_size(window_size)
         } else {
-            info!("Could not read app window size from file");
             builder
         }
     })

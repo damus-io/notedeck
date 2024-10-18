@@ -6,9 +6,9 @@ use nostrdb::Ndb;
 use crate::{
     column::Columns,
     imgcache::ImageCache,
-    storage::{KeyStorage, KeyStorageResponse, KeyStorageType},
     login_manager::LoginState,
     route::{Route, Router},
+    storage::{KeyStorage, KeyStorageResponse, KeyStorageType},
     ui::{
         account_login_view::{AccountLoginResponse, AccountLoginView},
         account_management::{AccountsView, AccountsViewResponse},
@@ -208,7 +208,7 @@ fn get_selected_index(accounts: &[UserAccount], keystore: &KeyStorageType) -> Op
         }
 
         KeyStorageResponse::ReceivedResult(Err(e)) => error!("Error getting selected key: {}", e),
-        _ => (),
+        KeyStorageResponse::Waiting | KeyStorageResponse::ReceivedResult(Ok(None)) => {}
     };
 
     None
