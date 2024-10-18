@@ -1,6 +1,7 @@
 use crate::{
     account_manager::AccountManager,
     app_creation::setup_cc,
+    app_size_handler::AppSizeHandler,
     app_style::user_requested_visuals_change,
     args::Args,
     column::Columns,
@@ -60,6 +61,7 @@ pub struct Damus {
     pub img_cache: ImageCache,
     pub accounts: AccountManager,
     pub subscriptions: Subscriptions,
+    pub app_rect_handler: AppSizeHandler,
 
     frame_history: crate::frame_history::FrameHistory,
 
@@ -507,6 +509,8 @@ fn update_damus(damus: &mut Damus, ctx: &egui::Context) {
         error!("error processing event: {}", err);
     }
 
+    damus.app_rect_handler.try_save_app_size(ctx);
+
     damus.columns.attempt_perform_deletion_request();
 }
 
@@ -739,6 +743,7 @@ impl Damus {
             accounts,
             frame_history: FrameHistory::default(),
             view_state: ViewState::default(),
+            app_rect_handler: AppSizeHandler::default(),
         }
     }
 
@@ -822,6 +827,7 @@ impl Damus {
             accounts: AccountManager::new(KeyStorageType::None),
             frame_history: FrameHistory::default(),
             view_state: ViewState::default(),
+            app_rect_handler: AppSizeHandler::default(),
         }
     }
 

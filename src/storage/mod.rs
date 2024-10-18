@@ -5,6 +5,7 @@ mod file_storage;
 pub use file_key_storage::FileKeyStorage;
 pub use file_storage::FileWriterFactory;
 pub use file_storage::FileWriterType;
+pub use file_storage::FileDirectoryInteractor;
 
 #[cfg(target_os = "macos")]
 mod security_framework_key_storage;

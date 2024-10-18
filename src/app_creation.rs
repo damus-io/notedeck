@@ -1,17 +1,26 @@
+use crate::app_size_handler::AppSizeHandler;
 use crate::app_style::{
     create_custom_style, dark_mode, desktop_font_size, light_mode, mobile_font_size,
 };
 use crate::fonts::setup_fonts;
 use eframe::NativeOptions;
+use tracing::info;
 
 //pub const UI_SCALE_FACTOR: f32 = 0.2;
 
 pub fn generate_native_options() -> NativeOptions {
     generate_native_options_with_builder_modifiers(|builder| {
-        builder
+        let builder = builder
             .with_fullsize_content_view(true)
             .with_titlebar_shown(false)
-            .with_title_shown(false)
+            .with_title_shown(false);
+
+        if let Some(window_size) = AppSizeHandler::default().get_app_size() {
+            builder.with_inner_size(window_size)
+        } else {
+            info!("Could not read app window size from file");
+            builder
+        }
     })
 }
 
