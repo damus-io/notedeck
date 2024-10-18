@@ -19,6 +19,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c71b1793ee61086797f5c80b6efa2b8ffa6d5dd703f118545808a7f2e27f7046"
 
 [[package]]
+name = "accesskit"
+version = "0.12.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "74a4b14f3d99c1255dcba8f45621ab1a2e7540a0009652d33989005a4d0bfc6b"
+dependencies = [
+ "enumn",
+ "serde",
+]
+
+[[package]]
 name = "addr2line"
 version = "0.24.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -69,6 +79,7 @@ dependencies = [
  "cfg-if",
  "getrandom",
  "once_cell",
+ "serde",
  "version_check",
  "zerocopy",
 ]
@@ -1058,6 +1069,7 @@ source = "git+https://github.com/emilk/egui?rev=fcb7764e48ce00f8f8e58da10f937410
 dependencies = [
  "bytemuck",
  "emath",
+ "serde",
 ]
 
 [[package]]
@@ -1098,12 +1110,14 @@ name = "egui"
 version = "0.27.2"
 source = "git+https://github.com/emilk/egui?rev=fcb7764e48ce00f8f8e58da10f937410d65b0bfb#fcb7764e48ce00f8f8e58da10f937410d65b0bfb"
 dependencies = [
+ "accesskit",
  "ahash",
  "emath",
  "epaint",
  "log",
  "nohash-hasher",
  "puffin",
+ "serde",
 ]
 
 [[package]]
@@ -1241,6 +1255,7 @@ version = "0.27.2"
 source = "git+https://github.com/emilk/egui?rev=fcb7764e48ce00f8f8e58da10f937410d65b0bfb#fcb7764e48ce00f8f8e58da10f937410d65b0bfb"
 dependencies = [
  "bytemuck",
+ "serde",
 ]
 
 [[package]]
@@ -1273,6 +1288,17 @@ name = "enum-map-derive"
 version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f282cfdfe92516eb26c2af8589c274c7c17681f5ecc03c18255fe741c6aa64eb"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.77",
+]
+
+[[package]]
+name = "enumn"
+version = "0.1.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2f9ed6b3789237c8a0c1c505af1c7eb2c560df6186f01b098c3a1064ea532f38"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1329,6 +1355,7 @@ dependencies = [
  "nohash-hasher",
  "parking_lot",
  "puffin",
+ "serde",
 ]
 
 [[package]]

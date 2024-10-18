@@ -208,7 +208,7 @@ fn get_selected_index(accounts: &[UserAccount], keystore: &KeyStorageType) -> Op
         }
 
         KeyStorageResponse::ReceivedResult(Err(e)) => error!("Error getting selected key: {}", e),
-        _ => (),
+        KeyStorageResponse::Waiting | KeyStorageResponse::ReceivedResult(Ok(None)) => {}
     };
 
     None
