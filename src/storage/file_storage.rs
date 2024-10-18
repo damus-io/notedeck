@@ -52,7 +52,7 @@ impl FileWriterType {
         ))?;
 
         let specific_path = match self {
-            FileWriterType::Log => PathBuf::new(),
+            FileWriterType::Log => PathBuf::from("logs"),
             FileWriterType::Setting => PathBuf::from("settings"),
             FileWriterType::Keys => PathBuf::from("storage").join("accounts"),
             FileWriterType::SelectedKey => PathBuf::from("storage").join("selected_account"),
@@ -131,6 +131,10 @@ impl FileDirectoryInteractor {
                 file_name
             )))
         }
+    }
+
+    pub fn get_directory(&self) -> &PathBuf {
+        &self.file_path
     }
 }
 
