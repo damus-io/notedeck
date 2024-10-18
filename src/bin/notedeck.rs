@@ -1,7 +1,9 @@
 #![warn(clippy::all, rust_2018_idioms)]
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
 use notedeck::app_creation::generate_native_options;
-use notedeck::Damus;
+use notedeck::{Damus, DamusApp};
+
+use std::sync::{Arc, Mutex};
 
 // Entry point for wasm
 //#[cfg(target_arch = "wasm32")]
@@ -17,7 +19,13 @@ async fn main() {
     let _res = eframe::run_native(
         "Damus NoteDeck",
         generate_native_options(),
-        Box::new(|cc| Ok(Box::new(Damus::new(cc, ".", std::env::args().collect())))),
+        Box::new(|cc| {
+            Ok(Box::new(DamusApp::new(Arc::new(Mutex::new(Damus::new(
+                cc,
+                ".",
+                std::env::args().collect(),
+            ))))))
+        }),
     );
 }
 
