@@ -9,9 +9,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use egui_virtual_list::VirtualList;
 use nostrdb::{Ndb, Note, Subscription, Transaction};
-use std::cell::RefCell;
 use std::hash::Hash;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 use tracing::{debug, error};
 
@@ -84,7 +83,7 @@ pub struct TimelineTab {
     pub notes: Vec<NoteRef>,
     pub selection: i32,
     pub filter: ViewFilter,
-    pub list: Rc<RefCell<VirtualList>>,
+    pub list: Arc<Mutex<VirtualList>>,
 }
 
 impl TimelineTab {
@@ -97,7 +96,7 @@ impl TimelineTab {
         let mut list = VirtualList::new();
         list.hide_on_resize(None);
         list.over_scan(1000.0);
-        let list = Rc::new(RefCell::new(list));
+        let list = Arc::new(Mutex::new(list));
         let notes: Vec<NoteRef> = Vec::with_capacity(cap);
 
         TimelineTab {
@@ -120,7 +119,7 @@ impl TimelineTab {
 
         // TODO: technically items could have been added inbetween
         if new_items > 0 {
-            let mut list = self.list.borrow_mut();
+            let mut list = self.list.lock().unwrap();
 
             match merge_kind {
                 // TODO: update egui_virtual_list to support spliced inserts

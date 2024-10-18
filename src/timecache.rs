@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 #[derive(Clone)]
@@ -6,16 +6,16 @@ pub struct TimeCached<T> {
     last_update: Instant,
     expires_in: Duration,
     value: Option<T>,
-    refresh: Rc<dyn Fn() -> T + 'static>,
+    refresh: Arc<dyn Fn() -> T + Send + Sync + 'static>, // Use Send + Sync
 }
 
 impl<T> TimeCached<T> {
-    pub fn new(expires_in: Duration, refresh: impl Fn() -> T + 'static) -> Self {
+    pub fn new(expires_in: Duration, refresh: Arc<dyn Fn() -> T + Send + Sync>) -> Self {
         TimeCached {
             last_update: Instant::now(),
             expires_in,
             value: None,
-            refresh: Rc::new(refresh),
+            refresh,
         }
     }
 
