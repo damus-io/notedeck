@@ -7,6 +7,7 @@ mod abbrev;
 pub mod account_manager;
 mod actionbar;
 pub mod app_creation;
+mod app_size_handler;
 mod app_style;
 mod args;
 mod colors;
@@ -43,8 +44,6 @@ mod view_state;
 #[cfg(test)]
 #[macro_use]
 mod test_utils;
-
-mod settings;
 
 mod storage;
 

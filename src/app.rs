@@ -14,7 +14,6 @@ use crate::{
     notecache::{CachedNote, NoteCache},
     notes_holder::NotesHolderStorage,
     profile::Profile,
-    settings::NotedeckSettings,
     storage::{FileKeyStorage, KeyStorageType},
     subscriptions::{SubKind, Subscriptions},
     thread::Thread,
@@ -664,8 +663,6 @@ impl Damus {
 
         let mut config = Config::new();
         config.set_ingester_threads(4);
-
-        let settings = NotedeckSettings::default();
 
         let keystore = if parsed_args.use_keystore {
             match FileKeyStorage::new() {
