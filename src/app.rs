@@ -514,7 +514,7 @@ fn process_event(damus: &mut Damus, _subid: &str, event: &str) {
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
 
-    //info!("processing event {}", event);
+    debug!("processing event {}", event);
     if let Err(_err) = damus.ndb.process_event(event) {
         error!("error processing event {}", event);
     }
