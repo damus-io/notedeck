@@ -19,7 +19,7 @@ use crate::{
     subscriptions::{SubKind, Subscriptions},
     support::Support,
     thread::Thread,
-    timeline::{Timeline, TimelineId, TimelineKind, ViewFilter},
+    timeline::{Timeline, TimelineCache, TimelineId, TimelineKind, ViewFilter},
     ui::{self, DesktopSidePanel},
     unknowns::UnknownIds,
     view_state::ViewState,
@@ -43,7 +43,6 @@ use tracing::{debug, error, info, trace, warn};
 pub enum DamusState {
     Initializing,
     Initialized,
-    NewTimelineSub(TimelineId),
 }
 
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
@@ -57,13 +56,12 @@ pub struct Damus {
     pub view_state: ViewState,
     pub unknown_ids: UnknownIds,
     pub drafts: Drafts,
-    pub threads: NotesHolderStorage<Thread>,
-    pub profiles: NotesHolderStorage<Profile>,
+    pub timeline_cache: TimelineCache,
     pub img_cache: ImageCache,
     pub accounts: AccountManager,
-    pub subscriptions: Subscriptions,
     pub app_rect_handler: AppSizeHandler,
     pub support: Support,
+    pub subscriptions: Subscriptions,
 
     frame_history: crate::frame_history::FrameHistory,
 
@@ -102,7 +100,7 @@ fn relay_setup(pool: &mut RelayPool, ctx: &egui::Context) {
 fn send_initial_timeline_filter(
     ndb: &Ndb,
     can_since_optimize: bool,
-    subs: &mut Subscriptions,
+    subs: &mut RemoteSubscriptions,
     pool: &mut RelayPool,
     timeline: &mut Timeline,
     to: &str,
@@ -156,6 +154,7 @@ fn send_initial_timeline_filter(
             //let sub_id = damus.gen_subid(&SubKind::Initial);
             let sub_id = Uuid::new_v4().to_string();
             subs.subs.insert(sub_id.clone(), SubKind::Initial);
+            timeline.subscription.set_remote_subid(sub_id.clone());
 
             let cmd = ClientMessage::req(sub_id, new_filters);
             pool.send_to(&cmd, to);
@@ -362,7 +361,7 @@ fn setup_initial_timeline(
     note_cache: &mut NoteCache,
     filters: &[Filter],
 ) -> Result<()> {
-    timeline.subscription = Some(ndb.subscribe(filters)?);
+    timeline.subscription.subscribe_local();
     let txn = Transaction::new(ndb)?;
     debug!(
         "querying nostrdb sub {:?} {:?}",
@@ -476,33 +475,6 @@ fn update_damus(damus: &mut Damus, ctx: &egui::Context) {
                 .insert("unknownids".to_string(), SubKind::OneShot);
             setup_initial_nostrdb_subs(&damus.ndb, &mut damus.note_cache, &mut damus.columns)
                 .expect("home subscription failed");
-        }
-
-        DamusState::NewTimelineSub(new_timeline_id) => {
-            info!("adding new timeline {}", new_timeline_id);
-            setup_new_nostrdb_sub(
-                &damus.ndb,
-                &mut damus.note_cache,
-                &mut damus.columns,
-                new_timeline_id,
-            )
-            .expect("new timeline subscription failed");
-
-            if let Some(filter) = {
-                let timeline = damus
-                    .columns
-                    .find_timeline(new_timeline_id)
-                    .expect("timeline");
-                match &timeline.filter {
-                    FilterState::Ready(filters) => Some(filters.clone()),
-                    _ => None,
-                }
-            } {
-                let subid = Uuid::new_v4().to_string();
-                damus.pool.subscribe(subid, filter);
-
-                damus.state = DamusState::Initialized;
-            }
         }
 
         DamusState::Initialized => (),
@@ -755,10 +727,9 @@ impl Damus {
             pool,
             debug,
             unknown_ids: UnknownIds::default(),
-            subscriptions: Subscriptions::default(),
+            subscriptions: RemoteSubscriptions::default(),
             since_optimize: parsed_args.since_optimize,
-            threads: NotesHolderStorage::default(),
-            profiles: NotesHolderStorage::default(),
+            timeline_cache: TimelineCache::default(),
             drafts: Drafts::default(),
             state: DamusState::Initializing,
             img_cache: ImageCache::new(imgcache_dir),
@@ -819,10 +790,6 @@ impl Damus {
         }
     }
 
-    pub fn subscribe_new_timeline(&mut self, timeline_id: TimelineId) {
-        self.state = DamusState::NewTimelineSub(timeline_id);
-    }
-
     pub fn mock<P: AsRef<Path>>(data_path: P) -> Self {
         let mut columns = Columns::new();
         let filter = Filter::from_json(include_str!("../queries/global.json")).unwrap();
@@ -845,10 +812,9 @@ impl Damus {
         Self {
             debug,
             unknown_ids: UnknownIds::default(),
-            subscriptions: Subscriptions::default(),
+            subscriptions: RemoteSubscriptions::default(),
             since_optimize: true,
-            threads: NotesHolderStorage::default(),
-            profiles: NotesHolderStorage::default(),
+            timeline_cache: TimelineCache::default(),
             drafts: Drafts::default(),
             state: DamusState::Initializing,
             pool: RelayPool::new(),
@@ -877,6 +843,7 @@ impl Damus {
         &mut self.subscriptions.subs
     }
 
+    /*
     pub fn note_cache_mut(&mut self) -> &mut NoteCache {
         &mut self.note_cache
     }
@@ -889,13 +856,14 @@ impl Damus {
         &self.threads
     }
 
-    pub fn threads_mut(&mut self) -> &mut NotesHolderStorage<Thread> {
+    pub fn timeline_cache_mut(&mut self) -> &mut TimelineCache {
         &mut self.threads
     }
 
     pub fn note_cache(&self) -> &NoteCache {
         &self.note_cache
     }
+    */
 }
 
 /*

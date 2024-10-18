@@ -4,10 +4,8 @@ use nostrdb::{FilterBuilder, Ndb, ProfileRecord, Transaction};
 use crate::{
     app::copy_notes_into_timeline,
     filter::{self, FilterState},
-    multi_subscriber::MultiSubscriber,
     note::NoteRef,
     notecache::NoteCache,
-    notes_holder::NotesHolder,
     timeline::{PubkeySource, Timeline, TimelineKind},
 };
 
@@ -49,11 +47,7 @@ pub fn get_profile_name<'a>(record: &'a ProfileRecord) -> Option<DisplayName<'a>
     }
 }
 
-pub struct Profile {
-    pub timeline: Timeline,
-    pub multi_subscriber: Option<MultiSubscriber>,
-}
-
+/*
 impl Profile {
     pub fn new(
         txn: &Transaction,
@@ -82,48 +76,4 @@ impl Profile {
     }
 }
 
-impl NotesHolder for Profile {
-    fn get_multi_subscriber(&mut self) -> Option<&mut MultiSubscriber> {
-        self.multi_subscriber.as_mut()
-    }
-
-    fn get_view(&mut self) -> &mut crate::timeline::TimelineTab {
-        self.timeline.current_view_mut()
-    }
-
-    fn filters(for_id: &[u8; 32]) -> Vec<enostr::Filter> {
-        Profile::filters_raw(for_id)
-            .into_iter()
-            .map(|mut f| f.build())
-            .collect()
-    }
-
-    fn filters_since(for_id: &[u8; 32], since: u64) -> Vec<enostr::Filter> {
-        Profile::filters_raw(for_id)
-            .into_iter()
-            .map(|f| f.since(since).build())
-            .collect()
-    }
-
-    fn new_notes_holder(
-        txn: &Transaction,
-        ndb: &Ndb,
-        note_cache: &mut NoteCache,
-        id: &[u8; 32],
-        filters: Vec<Filter>,
-        notes: Vec<NoteRef>,
-    ) -> Self {
-        Profile::new(
-            txn,
-            ndb,
-            note_cache,
-            PubkeySource::Explicit(Pubkey::new(*id)),
-            filters,
-            notes,
-        )
-    }
-
-    fn set_multi_subscriber(&mut self, subscriber: MultiSubscriber) {
-        self.multi_subscriber = Some(subscriber);
-    }
-}
+*/

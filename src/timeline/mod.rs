@@ -1,24 +1,31 @@
-use crate::error::Error;
-use crate::note::NoteRef;
-use crate::notecache::{CachedNote, NoteCache};
-use crate::unknowns::UnknownIds;
-use crate::Result;
-use crate::{filter, filter::FilterState};
+use crate::{
+    error::Error,
+    filter::{self, FilterState},
+    note::NoteRef,
+    notecache::{CachedNote, NoteCache},
+    unknowns::UnknownIds,
+    subscriptions::Subscriptions,
+    Result,
+};
+
 use std::fmt;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use egui_virtual_list::VirtualList;
+use enostr::RelayPool;
 use nostrdb::{Ndb, Note, Subscription, Transaction};
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::hash::Hash;
 use std::rc::Rc;
 
-use tracing::{debug, error};
+use tracing::{debug, error, info, warn};
 
+pub mod cache;
 pub mod kind;
 pub mod route;
 
+pub use cache::{CachedTimeline, TimelineCache, TimelineCacheKey};
 pub use kind::{PubkeySource, TimelineKind};
 pub use route::TimelineRoute;
 
@@ -175,7 +182,7 @@ pub struct Timeline {
     pub selected_view: i32,
 
     /// Our nostrdb subscription
-    pub subscription: Option<Subscription>,
+    pub subscription: Option<Subscription>
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -191,6 +198,18 @@ impl SerializableTimeline {
 }
 
 impl Timeline {
+    pub fn unsubscribe(&mut self, subscriptions: &Subscriptions) {
+        let sub_id = if let Some(sub_id) = self.subscription {
+            sub_id
+        } else {
+            warn!("could not unsubscribe from timeline, no subscription id");
+            return;
+        };
+
+        subscriptions.unsubscribe(sub_id);
+        self.subscription = None;
+    }
+
     /// Create a timeline from a contact list
     pub fn contact_list(contact_list: &Note, pk_src: PubkeySource) -> Result<Self> {
         let filter = filter::filter_from_tags(contact_list)?.into_follow_filter();
@@ -251,15 +270,15 @@ impl Timeline {
     }
 
     pub fn poll_notes_into_view(
-        timeline_idx: usize,
-        mut timelines: Vec<&mut Timeline>,
+        timeline_ind: usize,
+        timelines: &mut Vec<Timeline>,
         ndb: &Ndb,
         txn: &Transaction,
         unknown_ids: &mut UnknownIds,
         note_cache: &mut NoteCache,
     ) -> Result<()> {
         let timeline = timelines
-            .get_mut(timeline_idx)
+            .get_mut(timeline_ind)
             .ok_or(Error::TimelineNotFound)?;
         let sub = timeline.subscription.ok_or(Error::no_active_sub())?;
 

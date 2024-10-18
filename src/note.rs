@@ -1,11 +1,33 @@
 use crate::notecache::NoteCache;
 use nostrdb::{Ndb, Note, NoteKey, QueryResult, Transaction};
+use enostr::NoteId;
 use std::cmp::Ordering;
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
 pub struct NoteRef {
     pub key: NoteKey,
     pub created_at: u64,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq, Debug, Hash)]
+pub struct RootNoteId([u8; 32]);
+
+impl RootNoteId {
+    pub fn to_note_id(self) -> NoteId {
+        NoteId::new(self.0)
+    }
+
+    pub fn bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+
+    pub fn new(ndb: &Ndb, note_cache: &mut NoteCache, txn: &Transaction, id: &[u8; 32]) -> Self {
+        RootNoteId(*root_note_id_from_selected_id(ndb, note_cache, txn, id))
+    }
+
+    pub fn new_unsafe(id: &[u8; 32]) -> Self {
+        RootNoteId(*id)
+    }
 }
 
 impl NoteRef {
