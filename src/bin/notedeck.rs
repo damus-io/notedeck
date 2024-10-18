@@ -11,8 +11,57 @@ use notedeck::Damus;
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::main]
 async fn main() {
+    #[allow(unused_variables)] // need guard to live for lifetime of program
+    let (maybe_non_blocking, maybe_guard) =
+        if let Ok(log_path) = notedeck::DataPaths::Log.get_path() {
+            // Setup logging to file
+            use std::panic;
+
+            use tracing::error;
+            use tracing_appender::{
+                non_blocking,
+                rolling::{RollingFileAppender, Rotation},
+            };
+
+            let file_appender = RollingFileAppender::new(
+                Rotation::DAILY,
+                log_path,
+                format!("notedeck-{}.log", env!("CARGO_PKG_VERSION")),
+            );
+            panic::set_hook(Box::new(|panic_info| {
+                error!("Notedeck panicked: {:?}", panic_info);
+            }));
+
+            let (non_blocking, _guard) = non_blocking(file_appender);
+
+            (Some(non_blocking), Some(_guard))
+        } else {
+            (None, None)
+        };
+
     // Log to stdout (if you run with `RUST_LOG=debug`).
-    tracing_subscriber::fmt::init();
+    if let Some(non_blocking_writer) = maybe_non_blocking {
+        use tracing::Level;
+        use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt};
+
+        let console_layer = fmt::layer().with_target(true).with_writer(std::io::stdout);
+
+        // Create the file layer (writes to the file)
+        let file_layer = fmt::layer()
+            .with_ansi(false)
+            .with_writer(non_blocking_writer);
+
+        // Set up the subscriber to combine both layers
+        tracing_subscriber::registry()
+            .with(console_layer)
+            .with(file_layer)
+            .with(tracing_subscriber::filter::LevelFilter::from_level(
+                Level::INFO,
+            )) // Set log level
+            .init();
+    } else {
+        tracing_subscriber::fmt::init();
+    }
 
     let _res = eframe::run_native(
         "Damus NoteDeck",

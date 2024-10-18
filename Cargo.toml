@@ -44,6 +44,7 @@ bitflags = "2.5.0"
 uuid = { version = "1.10.0", features = ["v4"] }
 indexmap = "2.6.0"
 dirs = "5.0.1"
+tracing-appender = "0.2.3"
 
 [dev-dependencies]
 tempfile = "3.13.0"
