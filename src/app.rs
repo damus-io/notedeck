@@ -1,6 +1,7 @@
 use crate::{
     account_manager::AccountManager,
     app_creation::setup_cc,
+    app_size_handler::AppSizeHandler,
     app_style::user_requested_visuals_change,
     args::Args,
     column::Columns,
@@ -9,12 +10,12 @@ use crate::{
     filter::{self, FilterState},
     frame_history::FrameHistory,
     imgcache::ImageCache,
-    key_storage::KeyStorageType,
     nav,
     note::NoteRef,
     notecache::{CachedNote, NoteCache},
     notes_holder::NotesHolderStorage,
     profile::Profile,
+    storage::{FileKeyStorage, KeyStorageType},
     subscriptions::{SubKind, Subscriptions},
     thread::Thread,
     timeline::{Timeline, TimelineId, TimelineKind, ViewFilter},
@@ -60,6 +61,7 @@ pub struct Damus {
     pub img_cache: ImageCache,
     pub accounts: AccountManager,
     pub subscriptions: Subscriptions,
+    pub app_rect_handler: AppSizeHandler,
 
     frame_history: crate::frame_history::FrameHistory,
 
@@ -507,6 +509,8 @@ fn update_damus(damus: &mut Damus, ctx: &egui::Context) {
         error!("error processing event: {}", err);
     }
 
+    damus.app_rect_handler.try_save_app_size(ctx);
+
     damus.columns.attempt_perform_deletion_request();
 }
 
@@ -664,21 +668,23 @@ impl Damus {
         let mut config = Config::new();
         config.set_ingester_threads(4);
 
-        let mut accounts = AccountManager::new(
-            // TODO: should pull this from settings
-            None,
-            // TODO: use correct KeyStorage mechanism for current OS arch
-            KeyStorageType::None,
-        );
+        let keystore = if parsed_args.use_keystore {
+            match FileKeyStorage::new() {
+                Ok(ks) => KeyStorageType::FileSystem(ks),
+                Err(e) => {
+                    error!("failed to load the FileKeyStorage: {}", e.to_string());
+                    KeyStorageType::None
+                }
+            }
+        } else {
+            KeyStorageType::None
+        };
+
+        let mut accounts = AccountManager::new(keystore);
 
         for key in parsed_args.keys {
             info!("adding account: {}", key.pubkey);
             accounts.add_account(key);
-        }
-
-        // TODO: pull currently selected account from settings
-        if accounts.num_accounts() > 0 {
-            accounts.select_account(0);
         }
 
         // setup relays if we have them
@@ -737,6 +743,7 @@ impl Damus {
             accounts,
             frame_history: FrameHistory::default(),
             view_state: ViewState::default(),
+            app_rect_handler: AppSizeHandler::default(),
         }
     }
 
@@ -817,9 +824,10 @@ impl Damus {
             columns,
             textmode: false,
             ndb: Ndb::new(data_path.as_ref().to_str().expect("db path ok"), &config).expect("ndb"),
-            accounts: AccountManager::new(None, KeyStorageType::None),
+            accounts: AccountManager::new(KeyStorageType::None),
             frame_history: FrameHistory::default(),
             view_state: ViewState::default(),
+            app_rect_handler: AppSizeHandler::default(),
         }
     }
 
