@@ -42,8 +42,9 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) -> bool {
     let nav_response = Nav::new(routes)
         .navigating(app.columns_mut().column_mut(col).router_mut().navigating)
         .returning(app.columns_mut().column_mut(col).router_mut().returning)
+        .id_source(egui::Id::new(col_id))
         .title(48.0, title_bar)
-        .show_mut(col_id, ui, |ui, nav| {
+        .show_mut(ui, |ui, nav| {
             let column = app.columns.column_mut(col);
             match &nav.top().route {
                 Route::Timeline(tlr) => render_timeline_route(
