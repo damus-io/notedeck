@@ -152,6 +152,10 @@ impl RelayPool {
         url: String,
         wakeup: impl Fn() + Send + Sync + Clone + 'static,
     ) -> Result<()> {
+        // Check if the URL already exists in the pool.
+        if self.has(&url) {
+            return Ok(());
+        }
         let relay = Relay::new(url, wakeup)?;
         let pool_relay = PoolRelay::new(relay);
 
