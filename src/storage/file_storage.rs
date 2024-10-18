@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fs, io, path::PathBuf};
+use std::{collections::HashMap, fs, path::PathBuf};
 
 use crate::Error;
 
@@ -32,23 +32,6 @@ impl FileWriterFactory {
     }
 }
 
-pub enum SupportedTargets {
-    MacOS,
-    Linux,
-}
-
-impl SupportedTargets {
-    pub fn current() -> Option<SupportedTargets> {
-        if cfg!(target_os = "macos") {
-            Some(SupportedTargets::MacOS)
-        } else if cfg!(target_os = "linux") {
-            Some(SupportedTargets::Linux)
-        } else {
-            None
-        }
-    }
-}
-
 pub enum FileWriterType {
     Log,
     Setting,
@@ -57,7 +40,7 @@ pub enum FileWriterType {
 }
 
 impl FileWriterType {
-    pub fn get_path(&self, app_name: &str) -> Result<PathBuf, crate::Error> {
+    pub fn get_path(&self, app_name: &str) -> Result<PathBuf, Error> {
         let base_path = match self {
             FileWriterType::Log => dirs::data_local_dir(),
             FileWriterType::Setting | FileWriterType::Keys | FileWriterType::SelectedKey => {
@@ -86,7 +69,7 @@ pub struct FileDirectoryInteractor {
 
 impl FileDirectoryInteractor {
     /// Write the file to the `file_path` directory
-    pub fn write(&self, file_name: String, data: &str) -> Result<(), io::Error> {
+    pub fn write(&self, file_name: String, data: &str) -> Result<(), Error> {
         if !self.file_path.exists() {
             fs::create_dir_all(self.file_path.clone())?
         }
@@ -96,7 +79,7 @@ impl FileDirectoryInteractor {
     }
 
     /// Get the files in the current directory where the key is the file name and the value is the file contents
-    pub fn get_files(&self) -> Result<HashMap<String, String>, io::Error> {
+    pub fn get_files(&self) -> Result<HashMap<String, String>, Error> {
         let dir = fs::read_dir(self.file_path.clone())?;
         let map = dir
             .filter_map(|f| f.ok())
@@ -111,7 +94,7 @@ impl FileDirectoryInteractor {
         Ok(map)
     }
 
-    pub fn get_file_names(&self) -> Result<Vec<String>, io::Error> {
+    pub fn get_file_names(&self) -> Result<Vec<String>, Error> {
         let dir = fs::read_dir(self.file_path.clone())?;
         let names = dir
             .filter_map(|f| f.ok())
@@ -141,7 +124,7 @@ impl FileDirectoryInteractor {
     pub fn delete_file(&self, file_name: String) -> Result<(), Error> {
         let file_to_delete = self.file_path.join(file_name.clone());
         if file_to_delete.exists() && file_to_delete.is_file() {
-            fs::remove_file(file_to_delete).map_err(|e| Error::Io(e))
+            fs::remove_file(file_to_delete).map_err(Error::Io)
         } else {
             Err(Error::Generic(format!(
                 "Requested file to delete was not found: {}",
@@ -152,9 +135,8 @@ impl FileDirectoryInteractor {
 }
 
 mod tests {
-    use core::panic;
-
-    use crate::storage::file_storage::FileWriterFactory;
+    #[allow(unused_imports)]
+    use super::FileWriterFactory;
 
     #[test]
     fn test_add_get_delete() {

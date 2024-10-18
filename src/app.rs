@@ -9,13 +9,13 @@ use crate::{
     filter::{self, FilterState},
     frame_history::FrameHistory,
     imgcache::ImageCache,
-    storage::{key_storage_impl::get_key_storage, KeyStorageType},
     nav,
     note::NoteRef,
     notecache::{CachedNote, NoteCache},
     notes_holder::NotesHolderStorage,
     profile::Profile,
     settings::NotedeckSettings,
+    storage::{FileKeyStorage, KeyStorageType},
     subscriptions::{SubKind, Subscriptions},
     thread::Thread,
     timeline::{Timeline, TimelineId, TimelineKind, ViewFilter},
@@ -668,7 +668,13 @@ impl Damus {
         let settings = NotedeckSettings::default();
 
         let keystore = if parsed_args.use_keystore {
-            get_key_storage(settings.storage_settings)
+            match FileKeyStorage::new() {
+                Ok(ks) => KeyStorageType::FileSystem(ks),
+                Err(e) => {
+                    error!("failed to load the FileKeyStorage: {}", e.to_string());
+                    KeyStorageType::None
+                }
+            }
         } else {
             KeyStorageType::None
         };

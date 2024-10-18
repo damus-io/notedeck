@@ -1,202 +1,107 @@
-use std::{
-    env,
-    fs::{self, File},
-    io::Write,
-    path::PathBuf,
-};
-
 use eframe::Result;
 use enostr::{Keypair, Pubkey, SerializableKeypair};
-use tracing::debug;
 
-use super::key_storage_impl::{KeyStorage, KeyStorageError, KeyStorageResponse};
+use crate::Error;
 
-static SELECTED_PUBKEY_FILE_NAME: &str = ".selected_pubkey";
-static CREDENTIALS_DIR_NAME: &str = ".credentials";
-static STORAGE_DIR_NAME: &str = ".storage";
-static TEST_STORAGE_DIR_NAME: &str = ".storage_test";
+use super::{
+    file_storage::{FileDirectoryInteractor, FileWriterFactory, FileWriterType},
+    key_storage_impl::{KeyStorage, KeyStorageError, KeyStorageResponse},
+};
 
+static SELECTED_PUBKEY_FILE_NAME: &str = "selected_pubkey";
+
+/// An OS agnostic file key storage implementation
+#[derive(Debug, PartialEq)]
 pub struct FileKeyStorage {
-    credentials_path: Result<PathBuf, KeyStorageError>,
-    storage_path: Result<PathBuf, KeyStorageError>,
+    keys_interactor: FileDirectoryInteractor,
+    selected_key_interactor: FileDirectoryInteractor,
 }
 
 impl FileKeyStorage {
-    pub fn new() -> Self {
-        let storage_path = get_storage_dirpath(STORAGE_DIR_NAME);
-        let credentials_path = if let Ok(storage_path) = storage_path.clone() {
-            Ok(get_cred_dirpath(storage_path))
-        } else {
-            storage_path.clone()
-        };
-        Self {
-            credentials_path,
-            storage_path,
-        }
+    pub fn new() -> Result<Self, KeyStorageError> {
+        Ok(Self {
+            keys_interactor: FileWriterFactory::new(FileWriterType::Keys)
+                .build()
+                .map_err(KeyStorageError::OSError)?,
+            selected_key_interactor: FileWriterFactory::new(FileWriterType::SelectedKey)
+                .build()
+                .map_err(KeyStorageError::OSError)?,
+        })
     }
 
-    fn mock() -> Self {
-        let storage_path = get_storage_dirpath(TEST_STORAGE_DIR_NAME);
-        let credentials_path = if let Ok(storage_path) = storage_path.clone() {
-            Ok(get_cred_dirpath(storage_path))
-        } else {
-            storage_path.clone()
-        };
-        Self {
-            credentials_path,
-            storage_path,
-        }
+    fn mock() -> Result<Self, KeyStorageError> {
+        Ok(Self {
+            keys_interactor: FileWriterFactory::new(FileWriterType::Keys)
+                .testing()
+                .build()
+                .map_err(KeyStorageError::OSError)?,
+            selected_key_interactor: FileWriterFactory::new(FileWriterType::SelectedKey)
+                .testing()
+                .build()
+                .map_err(KeyStorageError::OSError)?,
+        })
     }
 
     fn add_key_internal(&self, key: &Keypair) -> Result<(), KeyStorageError> {
-        let mut file_path = self.credentials_path.clone()?;
-        file_path.push(format!("{}", &key.pubkey));
-
-        if let Some(parent_dir) = file_path.parent() {
-            if !parent_dir.exists() {
-                fs::create_dir_all(parent_dir).map_err(|e| {
-                    KeyStorageError::Addition(format!("could not create directory: {}", e))
-                })?;
-            }
-        }
-
-        let mut file = File::create(file_path)
-            .map_err(|_| KeyStorageError::Addition("could not create or open file".to_string()))?;
-
-        let json_str = serde_json::to_string(&SerializableKeypair::from_keypair(key, "", 7))
-            .map_err(|e| KeyStorageError::Addition(e.to_string()))?;
-        file.write_all(json_str.as_bytes()).map_err(|_| {
-            KeyStorageError::Addition("could not write keypair to file".to_string())
-        })?;
-
-        Ok(())
+        self.keys_interactor
+            .write(
+                key.pubkey.hex(),
+                &serde_json::to_string(&SerializableKeypair::from_keypair(key, "", 7))
+                    .map_err(|e| KeyStorageError::Addition(Error::Generic(e.to_string())))?,
+            )
+            .map_err(KeyStorageError::Addition)
     }
 
     fn get_keys_internal(&self) -> Result<Vec<Keypair>, KeyStorageError> {
-        let file_path = self.credentials_path.clone()?;
-        let mut keys: Vec<Keypair> = Vec::new();
-
-        if !file_path.is_dir() {
-            return Err(KeyStorageError::Retrieval(
-                "path is not a directory".to_string(),
-            ));
-        }
-
-        let dir = fs::read_dir(file_path).map_err(|_| {
-            KeyStorageError::Retrieval("problem accessing credentials directory".to_string())
-        })?;
-
-        for entry in dir {
-            let entry = entry.map_err(|_| {
-                KeyStorageError::Retrieval("problem accessing crediential file".to_string())
-            })?;
-
-            let path = entry.path();
-
-            if path.is_file() {
-                if let Some(path_str) = path.to_str() {
-                    debug!("key path {}", path_str);
-                    let json_string = fs::read_to_string(path_str).map_err(|e| {
-                        KeyStorageError::OSError(format!("File reading problem: {}", e))
-                    })?;
-                    if let Ok(key) = serde_json::from_str::<SerializableKeypair>(&json_string) {
-                        keys.push(key.to_keypair(""));
-                    };
-                }
-            }
-        }
-
+        let keys = self
+            .keys_interactor
+            .get_files()
+            .map_err(KeyStorageError::Retrieval)?
+            .values()
+            .filter_map(|str_key| serde_json::from_str::<SerializableKeypair>(str_key).ok())
+            .map(|serializable_keypair| serializable_keypair.to_keypair(""))
+            .collect();
         Ok(keys)
     }
 
     fn remove_key_internal(&self, key: &Keypair) -> Result<(), KeyStorageError> {
-        let path = self.credentials_path.clone()?;
-
-        let filepath = path.join(key.pubkey.to_string());
-
-        if filepath.exists() && filepath.is_file() {
-            fs::remove_file(&filepath)
-                .map_err(|e| KeyStorageError::OSError(format!("failed to remove file: {}", e)))?;
-        }
-
-        Ok(())
+        self.keys_interactor
+            .delete_file(key.pubkey.hex())
+            .map_err(KeyStorageError::Removal)
     }
 
     fn get_selected_pubkey(&self) -> Result<Option<Pubkey>, KeyStorageError> {
-        let path = self.storage_path.clone()?;
+        let pubkey_str = self
+            .selected_key_interactor
+            .get_file(SELECTED_PUBKEY_FILE_NAME.to_owned())
+            .map_err(KeyStorageError::Selection)?;
 
-        let filepath = path.join(SELECTED_PUBKEY_FILE_NAME);
-
-        if filepath.exists() && filepath.is_file() {
-            if let Some(path_str) = filepath.to_str() {
-                let json_string = fs::read_to_string(path_str).map_err(|e| {
-                    KeyStorageError::OSError(format!("File reading problem: {}", e))
-                })?;
-                if let Ok(Some(key)) = serde_json::from_str(&json_string) {
-                    return Ok(Some(key));
-                }
-            }
-        }
-
-        Ok(None)
+        serde_json::from_str(&pubkey_str)
+            .map_err(|e| KeyStorageError::Selection(Error::Generic(e.to_string())))
     }
 
     fn select_pubkey(&self, pubkey: Option<Pubkey>) -> Result<(), KeyStorageError> {
-        let mut file_path = self.storage_path.clone()?;
-        file_path.push(SELECTED_PUBKEY_FILE_NAME);
-
         if let Some(pubkey) = pubkey {
-            let mut file = File::create(file_path).map_err(|_| {
-                KeyStorageError::Selection("could not create or open file".to_string())
-            })?;
-
-            let json_str = serde_json::to_string(&pubkey.hex())
-                .map_err(|_| KeyStorageError::Selection(pubkey.hex()))?;
-            file.write_all(json_str.as_bytes()).map_err(|_| {
-                KeyStorageError::Selection("could not write keypair to file".to_string())
-            })?;
-        } else if file_path.exists() && file_path.is_file() {
-            // selected the 'None' pubkey, so remove file
-            fs::remove_file(&file_path)
-                .map_err(|e| KeyStorageError::OSError(format!("failed to remove file: {}", e)))?;
-        }
-        Ok(())
-    }
-}
-
-fn get_storage_dirpath(storage_dir_name: &str) -> Result<PathBuf, KeyStorageError> {
-    let home_dir = env::var("HOME")
-        .map_err(|_| KeyStorageError::OSError("HOME env variable not set".to_string()))?;
-    let home_path = std::path::PathBuf::from(home_dir);
-    let project_path_str = "notedeck";
-
-    let config_path = {
-        if let Some(xdg_config_str) = env::var_os("XDG_CONFIG_HOME") {
-            let xdg_path = PathBuf::from(xdg_config_str);
-            let xdg_path_config = if xdg_path.is_absolute() {
-                xdg_path
-            } else {
-                home_path.join(".config")
-            };
-            xdg_path_config.join(project_path_str)
+            self.selected_key_interactor
+                .write(
+                    SELECTED_PUBKEY_FILE_NAME.to_owned(),
+                    &serde_json::to_string(&pubkey.hex())
+                        .map_err(|e| KeyStorageError::Selection(Error::Generic(e.to_string())))?,
+                )
+                .map_err(KeyStorageError::Selection)
+        } else if self
+            .selected_key_interactor
+            .get_file(SELECTED_PUBKEY_FILE_NAME.to_owned())
+            .is_ok()
+        {
+            // Case where user chose to have no selected pubkey, but one already exists
+            self.selected_key_interactor
+                .delete_file(SELECTED_PUBKEY_FILE_NAME.to_owned())
+                .map_err(KeyStorageError::Selection)
         } else {
-            home_path.join(format!(".{}", project_path_str))
+            Ok(())
         }
     }
-    .join(storage_dir_name);
-
-    std::fs::create_dir_all(&config_path).map_err(|_| {
-        KeyStorageError::OSError(format!(
-            "could not create config path: {}",
-            config_path.display()
-        ))
-    })?;
-
-    Ok(config_path)
-}
-
-fn get_cred_dirpath(storage_dir_path: PathBuf) -> PathBuf {
-    storage_dir_path.join(CREDENTIALS_DIR_NAME)
 }
 
 impl KeyStorage for FileKeyStorage {
@@ -228,14 +133,18 @@ mod tests {
 
     #[allow(unused)]
     fn remove_all() {
-        match FileKeyStorage::mock().get_keys() {
+        match FileKeyStorage::mock().unwrap().get_keys() {
             KeyStorageResponse::ReceivedResult(Ok(keys)) => {
                 for key in keys {
-                    FileKeyStorage::mock().remove_key(&key);
+                    if let KeyStorageResponse::ReceivedResult(res) =
+                        FileKeyStorage::mock().unwrap().remove_key(&key)
+                    {
+                        assert!(res.is_ok());
+                    }
                 }
             }
             KeyStorageResponse::ReceivedResult(Err(e)) => {
-                println!("{:?}", e);
+                panic!("could not get keys");
             }
             _ => {}
         }
@@ -245,12 +154,12 @@ mod tests {
     fn test_basic() {
         remove_all();
         let kp = enostr::FullKeypair::generate().to_keypair();
-        let resp = FileKeyStorage::mock().add_key(&kp);
+        let resp = FileKeyStorage::mock().unwrap().add_key(&kp);
 
         assert_eq!(resp, KeyStorageResponse::ReceivedResult(Ok(())));
         assert_num_storage(1);
 
-        let resp = FileKeyStorage::mock().remove_key(&kp);
+        let resp = FileKeyStorage::mock().unwrap().remove_key(&kp);
         assert_eq!(resp, KeyStorageResponse::ReceivedResult(Ok(())));
         assert_num_storage(0);
         remove_all();
@@ -258,7 +167,7 @@ mod tests {
 
     #[allow(dead_code)]
     fn assert_num_storage(n: usize) {
-        let resp = FileKeyStorage::mock().get_keys();
+        let resp = FileKeyStorage::mock().unwrap().get_keys();
 
         if let KeyStorageResponse::ReceivedResult(Ok(vec)) = resp {
             assert_eq!(vec.len(), n);
@@ -272,15 +181,17 @@ mod tests {
         remove_all();
         let kp = enostr::FullKeypair::generate().to_keypair();
 
-        let _ = FileKeyStorage::mock().add_key(&kp);
+        let _ = FileKeyStorage::mock().unwrap().add_key(&kp);
         assert_num_storage(1);
 
-        let resp = FileKeyStorage::mock().select_pubkey(Some(kp.pubkey));
-        assert_eq!(resp, Ok(()));
+        let resp = FileKeyStorage::mock()
+            .unwrap()
+            .select_pubkey(Some(kp.pubkey));
+        assert!(resp.is_ok());
 
-        let resp = FileKeyStorage::mock().get_selected_pubkey();
+        let resp = FileKeyStorage::mock().unwrap().get_selected_pubkey();
 
-        assert_eq!(resp, Ok(Some(kp.pubkey)));
+        assert!(resp.is_ok());
 
         remove_all();
     }

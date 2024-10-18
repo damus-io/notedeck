@@ -1,29 +1,41 @@
 use enostr::{Keypair, Pubkey};
 
-#[cfg(target_os = "linux")]
-use super::linux_key_storage::LinuxKeyStorage;
-use crate::settings::StorageSettings;
+use super::file_key_storage::FileKeyStorage;
+use crate::Error;
 
 #[cfg(target_os = "macos")]
-use super::macos_key_storage::MacOSKeyStorage;
+use super::security_framework_key_storage::SecurityFrameworkKeyStorage;
 
 #[derive(Debug, PartialEq)]
 pub enum KeyStorageType {
     None,
+    FileSystem(FileKeyStorage),
     #[cfg(target_os = "macos")]
-    MacOS(StorageSettings),
-    #[cfg(target_os = "linux")]
-    Linux(StorageSettings),
-    // TODO:
-    // Windows,
-    // Android,
+    SecurityFramework(SecurityFrameworkKeyStorage),
 }
 
 #[allow(dead_code)]
-#[derive(Debug, PartialEq)]
+#[derive(Debug)]
 pub enum KeyStorageResponse<R> {
     Waiting,
     ReceivedResult(Result<R, KeyStorageError>),
+}
+
+impl<R: PartialEq> PartialEq for KeyStorageResponse<R> {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (KeyStorageResponse::Waiting, KeyStorageResponse::Waiting) => true,
+            (
+                KeyStorageResponse::ReceivedResult(Ok(r1)),
+                KeyStorageResponse::ReceivedResult(Ok(r2)),
+            ) => r1 == r2,
+            (
+                KeyStorageResponse::ReceivedResult(Err(_)),
+                KeyStorageResponse::ReceivedResult(Err(_)),
+            ) => true,
+            _ => false,
+        }
+    }
 }
 
 pub trait KeyStorage {
@@ -38,10 +50,9 @@ impl KeyStorage for KeyStorageType {
     fn get_keys(&self) -> KeyStorageResponse<Vec<Keypair>> {
         match self {
             Self::None => KeyStorageResponse::ReceivedResult(Ok(Vec::new())),
+            Self::FileSystem(f) => f.get_keys(),
             #[cfg(target_os = "macos")]
-            Self::MacOS(settings) => MacOSKeyStorage::new(settings).get_keys(),
-            #[cfg(target_os = "linux")]
-            Self::Linux(settings) => LinuxKeyStorage::new(settings).get_keys(),
+            Self::SecurityFramework(f) => f.get_keys(),
         }
     }
 
@@ -49,10 +60,9 @@ impl KeyStorage for KeyStorageType {
         let _ = key;
         match self {
             Self::None => KeyStorageResponse::ReceivedResult(Ok(())),
+            Self::FileSystem(f) => f.add_key(key),
             #[cfg(target_os = "macos")]
-            Self::MacOS(settings) => MacOSKeyStorage::new(settings).add_key(key),
-            #[cfg(target_os = "linux")]
-            Self::Linux(settings) => LinuxKeyStorage::new(settings).add_key(key),
+            Self::SecurityFramework(f) => f.add_key(key),
         }
     }
 
@@ -60,42 +70,39 @@ impl KeyStorage for KeyStorageType {
         let _ = key;
         match self {
             Self::None => KeyStorageResponse::ReceivedResult(Ok(())),
+            Self::FileSystem(f) => f.remove_key(key),
             #[cfg(target_os = "macos")]
-            Self::MacOS(settings) => MacOSKeyStorage::new(settings).remove_key(key),
-            #[cfg(target_os = "linux")]
-            Self::Linux(settings) => LinuxKeyStorage::new(settings).remove_key(key),
+            Self::SecurityFramework(f) => f.remove_key(key),
         }
     }
 
     fn get_selected_key(&self) -> KeyStorageResponse<Option<Pubkey>> {
         match self {
             Self::None => KeyStorageResponse::ReceivedResult(Ok(None)),
+            Self::FileSystem(f) => f.get_selected_key(),
             #[cfg(target_os = "macos")]
-            Self::MacOS(settings) => MacOSKeyStorage::new(settings).get_selected_key(),
-            #[cfg(target_os = "linux")]
-            Self::Linux(settings) => LinuxKeyStorage::new(settings).get_selected_key(),
+            Self::SecurityFramework(f) => f.get_selected_key(),
         }
     }
 
     fn select_key(&self, key: Option<Pubkey>) -> KeyStorageResponse<()> {
         match self {
             Self::None => KeyStorageResponse::ReceivedResult(Ok(())),
+            Self::FileSystem(f) => f.select_key(key),
             #[cfg(target_os = "macos")]
-            Self::MacOS(settings) => MacOSKeyStorage::new(settings).select_key(key),
-            #[cfg(target_os = "linux")]
-            Self::Linux(settings) => LinuxKeyStorage::new(settings).select_key(key),
+            Self::SecurityFramework(f) => f.select_key(key),
         }
     }
 }
 
 #[allow(dead_code)]
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug)]
 pub enum KeyStorageError {
-    Retrieval(String),
-    Addition(String),
-    Selection(String),
-    Removal(String),
-    OSError(String),
+    Retrieval(Error),
+    Addition(Error),
+    Selection(Error),
+    Removal(Error),
+    OSError(Error),
 }
 
 impl std::fmt::Display for KeyStorageError {
@@ -111,17 +118,3 @@ impl std::fmt::Display for KeyStorageError {
 }
 
 impl std::error::Error for KeyStorageError {}
-
-pub fn get_key_storage(storage_settings: StorageSettings) -> KeyStorageType {
-    if cfg!(target_os = "macos") {
-        #[cfg(target_os = "macos")]
-        return KeyStorageType::MacOS(storage_settings);
-    }
-
-    if cfg!(target_os = "linux") {
-        #[cfg(target_os = "linux")]
-        return KeyStorageType::Linux(storage_settings);
-    }
-
-    KeyStorageType::None
-}
