@@ -4,6 +4,8 @@ use nostrdb::Filter;
 
 use std::time::{Duration, Instant};
 
+use url::Url;
+
 #[cfg(not(target_arch = "wasm32"))]
 use ewebsock::{WsEvent, WsMessage};
 
@@ -152,6 +154,7 @@ impl RelayPool {
         url: String,
         wakeup: impl Fn() + Send + Sync + Clone + 'static,
     ) -> Result<()> {
+        let url = Self::canonicalize_url(url);
         // Check if the URL already exists in the pool.
         if self.has(&url) {
             return Ok(());
@@ -162,6 +165,14 @@ impl RelayPool {
         self.relays.push(pool_relay);
 
         Ok(())
+    }
+
+    // standardize the format (ie, trailing slashes)
+    fn canonicalize_url(url: String) -> String {
+        match Url::parse(&url) {
+            Ok(parsed_url) => parsed_url.to_string(),
+            Err(_) => url, // If parsing fails, return the original URL.
+        }
     }
 
     /// Attempts to receive a pool event from a list of relays. The
