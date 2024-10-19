@@ -15,3 +15,4 @@ nostrdb = { git = "https://github.com/damus-io/nostrdb-rs", rev = "9bbafd8a2e904
 hex = "0.4.3"
 tracing = "0.1.40"
 env_logger = "0.11.1"
+url = "2.5.2"
