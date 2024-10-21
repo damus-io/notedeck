@@ -31,6 +31,7 @@ pub mod relay_pool_manager;
 mod result;
 mod route;
 mod subscriptions;
+mod support;
 mod test_data;
 mod thread;
 mod time;

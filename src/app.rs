@@ -17,6 +17,7 @@ use crate::{
     profile::Profile,
     storage::{Directory, FileKeyStorage, KeyStorageType},
     subscriptions::{SubKind, Subscriptions},
+    support::Support,
     thread::Thread,
     timeline::{Timeline, TimelineId, TimelineKind, ViewFilter},
     ui::{self, DesktopSidePanel},
@@ -62,6 +63,7 @@ pub struct Damus {
     pub accounts: AccountManager,
     pub subscriptions: Subscriptions,
     pub app_rect_handler: AppSizeHandler,
+    pub support: Support,
 
     frame_history: crate::frame_history::FrameHistory,
 
@@ -751,6 +753,7 @@ impl Damus {
             frame_history: FrameHistory::default(),
             view_state: ViewState::default(),
             app_rect_handler: AppSizeHandler::default(),
+            support: Support::default(),
         }
     }
 
@@ -835,6 +838,7 @@ impl Damus {
             frame_history: FrameHistory::default(),
             view_state: ViewState::default(),
             app_rect_handler: AppSizeHandler::default(),
+            support: Support::default(),
         }
     }
 
@@ -1024,7 +1028,11 @@ fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus) {
                 .show(ui);
 
                 if side_panel.response.clicked() {
-                    DesktopSidePanel::perform_action(app.columns_mut(), side_panel.action);
+                    DesktopSidePanel::perform_action(
+                        &mut app.columns,
+                        &mut app.support,
+                        side_panel.action,
+                    );
                 }
 
                 // vertical sidebar line
