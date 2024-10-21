@@ -2,6 +2,7 @@ use crate::relay::{Relay, RelayStatus};
 use crate::{ClientMessage, Result};
 use nostrdb::Filter;
 
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use url::Url;
@@ -42,6 +43,7 @@ impl PoolRelay {
 
 pub struct RelayPool {
     pub relays: Vec<PoolRelay>,
+    pub subs: HashMap<String, Vec<Filter>>,
     pub ping_rate: Duration,
 }
 
@@ -56,6 +58,7 @@ impl RelayPool {
     pub fn new() -> RelayPool {
         RelayPool {
             relays: vec![],
+            subs: HashMap::new(),
             ping_rate: Duration::from_secs(25),
         }
     }
@@ -85,9 +88,11 @@ impl RelayPool {
         for relay in &mut self.relays {
             relay.relay.send(&ClientMessage::close(subid.clone()));
         }
+        self.subs.remove(&subid);
     }
 
     pub fn subscribe(&mut self, subid: String, filter: Vec<Filter>) {
+        self.subs.insert(subid.clone(), filter.clone());
         for relay in &mut self.relays {
             relay.relay.subscribe(subid.clone(), filter.clone());
         }
@@ -160,7 +165,12 @@ impl RelayPool {
             return Ok(());
         }
         let relay = Relay::new(url, wakeup)?;
-        let pool_relay = PoolRelay::new(relay);
+        let mut pool_relay = PoolRelay::new(relay);
+
+        // Add all of the existing subscriptions to the new relay
+        for (subid, filters) in &self.subs {
+            pool_relay.relay.subscribe(subid.clone(), filters.clone());
+        }
 
         self.relays.push(pool_relay);
 
