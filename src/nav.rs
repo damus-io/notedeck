@@ -16,6 +16,7 @@ use crate::{
         add_column::{AddColumnResponse, AddColumnView},
         anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},
         note::PostAction,
+        support::SupportView,
         RelayView, View,
     },
     Damus,
@@ -128,6 +129,10 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) {
                     col,
                     ui,
                 ),
+                Route::Support => {
+                    SupportView::default().show(ui);
+                    None
+                }
             }
         });
 

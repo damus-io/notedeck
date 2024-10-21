@@ -18,6 +18,7 @@ pub enum Route {
     ComposeNote,
     AddColumn,
     Profile(Pubkey),
+    Support,
 }
 
 #[derive(Clone)]
@@ -100,6 +101,7 @@ impl Route {
             Route::Profile(pubkey) => {
                 format!("{}'s Profile", get_profile_displayname_string(ndb, pubkey))
             }
+            Route::Support => "Damus Support".to_owned(),
         };
 
         TitledRoute {
@@ -208,6 +210,7 @@ impl fmt::Display for Route {
 
             Route::AddColumn => write!(f, "Add Column"),
             Route::Profile(_) => write!(f, "Profile"),
+            Route::Support => write!(f, "Support"),
         }
     }
 }

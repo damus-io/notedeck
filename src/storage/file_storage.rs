@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fs, path::PathBuf};
+use std::{collections::HashMap, fs, path::PathBuf, time::SystemTime};
 
 use crate::Error;
 
@@ -134,6 +134,32 @@ impl FileDirectoryInteractor {
 
     pub fn get_directory(&self) -> &PathBuf {
         &self.file_path
+    }
+
+    /// Get the file name which is most recently modified in the directory
+    pub fn get_most_recent(&self) -> Result<Option<String>, Error> {
+        let mut most_recent: Option<(SystemTime, String)> = None;
+
+        for entry in fs::read_dir(&self.file_path)? {
+            let entry = entry?;
+            let metadata = entry.metadata()?;
+            if metadata.is_file() {
+                let modified = metadata.modified()?;
+                let file_name = entry.file_name().to_string_lossy().to_string();
+
+                match most_recent {
+                    Some((last_modified, _)) if modified > last_modified => {
+                        most_recent = Some((modified, file_name));
+                    }
+                    None => {
+                        most_recent = Some((modified, file_name));
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        Ok(most_recent.map(|(_, file_name)| file_name))
     }
 }
 

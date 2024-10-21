@@ -8,6 +8,7 @@ pub mod preview;
 pub mod profile;
 pub mod relay;
 pub mod side_panel;
+pub mod support;
 pub mod thread;
 pub mod timeline;
 pub mod username;
