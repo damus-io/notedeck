@@ -4,6 +4,7 @@ use crate::{
     app_style::user_requested_visuals_change,
     args::Args,
     column::Columns,
+    dispatcher::{self, HandlerTable},
     draft::Drafts,
     error::{Error, FilterError},
     filter::{self, FilterState},
@@ -16,6 +17,7 @@ use crate::{
     notes_holder::NotesHolderStorage,
     profile::Profile,
     subscriptions::{SubKind, Subscriptions},
+    task,
     thread::Thread,
     timeline::{Timeline, TimelineId, TimelineKind, ViewFilter},
     ui::{self, DesktopSidePanel},
@@ -46,6 +48,7 @@ pub enum DamusState {
 
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
 pub struct Damus {
+    reference: Option<Weak<Mutex<Damus>>>,
     state: DamusState,
     pub note_cache: NoteCache,
     pub pool: RelayPool,
@@ -60,6 +63,7 @@ pub struct Damus {
     pub img_cache: ImageCache,
     pub accounts: AccountManager,
     pub subscriptions: Subscriptions,
+    pub dispatch: HandlerTable,
 
     frame_history: crate::frame_history::FrameHistory,
 
@@ -471,6 +475,11 @@ fn update_damus(damus: &mut Damus, ctx: &egui::Context) {
                 .insert("unknownids".to_string(), SubKind::OneShot);
             setup_initial_nostrdb_subs(&damus.ndb, &mut damus.note_cache, &mut damus.columns)
                 .expect("home subscription failed");
+
+            let damusref = damus.reference();
+            tokio::spawn(async move {
+                task::track_user_relays(damusref).await;
+            });
         }
 
         DamusState::NewTimelineSub(new_timeline_id) => {
@@ -514,7 +523,7 @@ fn process_event(damus: &mut Damus, _subid: &str, event: &str) {
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
 
-    //info!("processing event {}", event);
+    debug!("processing event {}", event);
     if let Err(_err) = damus.ndb.process_event(event) {
         error!("error processing event {}", event);
     }
@@ -663,6 +672,7 @@ impl Damus {
 
         let mut config = Config::new();
         config.set_ingester_threads(4);
+        config.set_sub_cb(ndb_sub_updated);
 
         let mut accounts = AccountManager::new(
             // TODO: should pull this from settings
@@ -720,10 +730,12 @@ impl Damus {
         }
 
         Self {
+            reference: None,
             pool,
             debug,
             unknown_ids: UnknownIds::default(),
             subscriptions: Subscriptions::default(),
+            dispatch: HandlerTable::default(),
             since_optimize: parsed_args.since_optimize,
             threads: NotesHolderStorage::default(),
             profiles: NotesHolderStorage::default(),
@@ -738,6 +750,19 @@ impl Damus {
             frame_history: FrameHistory::default(),
             view_state: ViewState::default(),
         }
+    }
+
+    pub fn set_reference(&mut self, reference: Weak<Mutex<Damus>>) {
+        self.reference = Some(reference);
+    }
+
+    pub fn reference(&self) -> DamusRef {
+        self.reference
+            .as_ref()
+            .expect("weak damus reference")
+            .upgrade()
+            .expect("strong damus reference")
+            .clone()
     }
 
     pub fn pool_mut(&mut self) -> &mut RelayPool {
@@ -803,9 +828,11 @@ impl Damus {
         let mut config = Config::new();
         config.set_ingester_threads(2);
         Self {
+            reference: None,
             debug,
             unknown_ids: UnknownIds::default(),
             subscriptions: Subscriptions::default(),
+            dispatch: HandlerTable::default(),
             since_optimize: true,
             threads: NotesHolderStorage::default(),
             profiles: NotesHolderStorage::default(),
@@ -1054,5 +1081,86 @@ impl eframe::App for Damus {
         puffin::GlobalProfiler::lock().new_frame();
         update_damus(self, ctx);
         render_damus(self, ctx);
+    }
+}
+
+use futures::SinkExt;
+use std::sync::{Arc, Mutex, Weak};
+use tokio::runtime::Handle;
+
+pub type DamusRef = Arc<Mutex<Damus>>;
+
+pub fn with_mut_damus<F, T>(damusref: &DamusRef, mut f: F) -> T
+where
+    F: FnMut(&mut Damus) -> T,
+{
+    let mut damus = damusref.as_ref().lock().unwrap();
+    f(&mut damus)
+}
+
+/// A wrapper so access to Damus can be synchronized
+pub struct DamusApp {
+    damus: DamusRef,
+}
+
+impl DamusApp {
+    pub fn new(damus: DamusRef) -> Self {
+        if ONCEDAMUSREF.set(Arc::clone(&damus)).is_err() {
+            panic!("ONCEDAMUSREF was already initialized.");
+        }
+
+        let handle = tokio::runtime::Handle::try_current().expect("current tokio runtime");
+        if TOKIORUNTIME.set(handle.clone()).is_err() {
+            panic!("Failed to set Tokio runtime handle");
+        }
+
+        let weak_damus = Arc::downgrade(&damus);
+        damus.lock().unwrap().set_reference(weak_damus);
+        Self { damus }
+    }
+
+    pub fn with_mut_damus<F, T>(&mut self, f: F) -> T
+    where
+        F: FnMut(&mut Damus) -> T,
+    {
+        with_mut_damus(&self.damus, f)
+    }
+}
+
+impl eframe::App for DamusApp {
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        self.with_mut_damus(|damus| damus.save(storage))
+    }
+
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        self.with_mut_damus(|damus| damus.update(ctx, frame));
+    }
+}
+
+use once_cell::sync::OnceCell;
+
+static ONCEDAMUSREF: OnceCell<Arc<Mutex<Damus>>> = OnceCell::new();
+static TOKIORUNTIME: OnceCell<Handle> = OnceCell::new();
+
+extern "C" fn ndb_sub_updated(_ctx: *mut std::ffi::c_void, subid: u64) {
+    let damus = ONCEDAMUSREF
+        .get()
+        .expect("ONCEDAMUSREF is not initialized.")
+        .lock()
+        .unwrap();
+
+    if let Some(sink) = damus.dispatch.get(&subid) {
+        let mut sink_clone = sink.clone();
+        if let Some(handler) = TOKIORUNTIME.get() {
+            handler.spawn(async move {
+                sink_clone
+                    .sender
+                    .send(dispatcher::Event::NdbSubUpdate)
+                    .await
+                    .ok();
+            });
+        } else {
+            eprintln!("Tokio runtime handle is not set.");
+        }
     }
 }

@@ -2,6 +2,7 @@ use crate::time::time_ago_since;
 use crate::timecache::TimeCached;
 use nostrdb::{Note, NoteKey, NoteReply, NoteReplyBuf};
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 #[derive(Default)]
@@ -42,8 +43,9 @@ impl CachedNote {
         let created_at = note.created_at();
         let reltime = TimeCached::new(
             Duration::from_secs(1),
-            Box::new(move || time_ago_since(created_at)),
+            Arc::new(move || time_ago_since(created_at)) as Arc<dyn Fn() -> String + Send + Sync>,
         );
+
         let reply = NoteReply::new(note.tags()).to_owned();
         CachedNote { reltime, reply }
     }
