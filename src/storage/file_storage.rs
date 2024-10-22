@@ -4,29 +4,28 @@ use crate::Error;
 
 pub struct FileWriterFactory {
     writer_type: FileWriterType,
-    is_test: bool,
+    use_test_dir: Option<fn() -> Result<PathBuf, Error>>,
 }
 
 impl FileWriterFactory {
     pub fn new(writer_type: FileWriterType) -> Self {
         Self {
             writer_type,
-            is_test: false,
+            use_test_dir: None,
         }
     }
 
-    pub fn testing(mut self) -> Self {
-        self.is_test = true;
+    pub fn testing_with(mut self, test_dir: fn() -> Result<PathBuf, Error>) -> Self {
+        self.use_test_dir = Some(test_dir);
         self
     }
 
     pub fn build(self) -> Result<FileDirectoryInteractor, Error> {
-        let app_name = if self.is_test {
-            "notedeck_test"
+        let file_path = if let Some(create_dir) = self.use_test_dir {
+            create_dir()?
         } else {
-            "notedeck"
+            self.writer_type.get_path("notedeck")?
         };
-        let file_path = self.writer_type.get_path(app_name)?;
 
         Ok(FileDirectoryInteractor { file_path })
     }
@@ -138,14 +137,21 @@ impl FileDirectoryInteractor {
     }
 }
 
+#[cfg(test)]
 mod tests {
-    #[allow(unused_imports)]
+    use std::path::PathBuf;
+
+    use crate::Error;
+
     use super::FileWriterFactory;
+
+    static CREATE_TMP_DIR: fn() -> Result<PathBuf, Error> =
+        || Ok(tempfile::TempDir::new()?.path().to_path_buf());
 
     #[test]
     fn test_add_get_delete() {
         if let Ok(interactor) = FileWriterFactory::new(super::FileWriterType::Keys)
-            .testing()
+            .testing_with(CREATE_TMP_DIR)
             .build()
         {
             let file_name = "file_test_name.txt".to_string();
@@ -169,7 +175,7 @@ mod tests {
     #[test]
     fn test_get_multiple() {
         if let Ok(interactor) = FileWriterFactory::new(super::FileWriterType::Keys)
-            .testing()
+            .testing_with(CREATE_TMP_DIR)
             .build()
         {
             for i in 0..10 {

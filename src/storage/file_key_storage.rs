@@ -29,19 +29,6 @@ impl FileKeyStorage {
         })
     }
 
-    fn mock() -> Result<Self, KeyStorageError> {
-        Ok(Self {
-            keys_interactor: FileWriterFactory::new(FileWriterType::Keys)
-                .testing()
-                .build()
-                .map_err(KeyStorageError::OSError)?,
-            selected_key_interactor: FileWriterFactory::new(FileWriterType::SelectedKey)
-                .testing()
-                .build()
-                .map_err(KeyStorageError::OSError)?,
-        })
-    }
-
     fn add_key_internal(&self, key: &Keypair) -> Result<(), KeyStorageError> {
         self.keys_interactor
             .write(
@@ -126,73 +113,73 @@ impl KeyStorage for FileKeyStorage {
     }
 }
 
+#[cfg(test)]
 mod tests {
-    use crate::storage::key_storage_impl::{KeyStorage, KeyStorageResponse};
+    use std::path::PathBuf;
 
-    use super::FileKeyStorage;
+    use super::*;
+    use enostr::Keypair;
+    static CREATE_TMP_DIR: fn() -> Result<PathBuf, Error> =
+        || Ok(tempfile::TempDir::new()?.path().to_path_buf());
 
-    #[allow(unused)]
-    fn remove_all() {
-        match FileKeyStorage::mock().unwrap().get_keys() {
-            KeyStorageResponse::ReceivedResult(Ok(keys)) => {
-                for key in keys {
-                    if let KeyStorageResponse::ReceivedResult(res) =
-                        FileKeyStorage::mock().unwrap().remove_key(&key)
-                    {
-                        assert!(res.is_ok());
-                    }
-                }
-            }
-            KeyStorageResponse::ReceivedResult(Err(e)) => {
-                panic!("could not get keys");
-            }
-            _ => {}
+    impl FileKeyStorage {
+        fn mock() -> Result<Self, KeyStorageError> {
+            Ok(Self {
+                keys_interactor: FileWriterFactory::new(FileWriterType::Keys)
+                    .testing_with(CREATE_TMP_DIR)
+                    .build()
+                    .map_err(KeyStorageError::OSError)?,
+                selected_key_interactor: FileWriterFactory::new(FileWriterType::SelectedKey)
+                    .testing_with(CREATE_TMP_DIR)
+                    .build()
+                    .map_err(KeyStorageError::OSError)?,
+            })
         }
     }
 
     #[test]
     fn test_basic() {
-        remove_all();
         let kp = enostr::FullKeypair::generate().to_keypair();
-        let resp = FileKeyStorage::mock().unwrap().add_key(&kp);
+        let storage = FileKeyStorage::mock().unwrap();
+        let resp = storage.add_key(&kp);
 
         assert_eq!(resp, KeyStorageResponse::ReceivedResult(Ok(())));
-        assert_num_storage(1);
+        assert_num_storage(&storage.get_keys(), 1);
 
-        let resp = FileKeyStorage::mock().unwrap().remove_key(&kp);
-        assert_eq!(resp, KeyStorageResponse::ReceivedResult(Ok(())));
-        assert_num_storage(0);
-        remove_all();
+        assert_eq!(
+            storage.remove_key(&kp),
+            KeyStorageResponse::ReceivedResult(Ok(()))
+        );
+        assert_num_storage(&storage.get_keys(), 0);
     }
 
-    #[allow(dead_code)]
-    fn assert_num_storage(n: usize) {
-        let resp = FileKeyStorage::mock().unwrap().get_keys();
-
-        if let KeyStorageResponse::ReceivedResult(Ok(vec)) = resp {
-            assert_eq!(vec.len(), n);
-            return;
+    fn assert_num_storage(keys_response: &KeyStorageResponse<Vec<Keypair>>, n: usize) {
+        match keys_response {
+            KeyStorageResponse::ReceivedResult(Ok(keys)) => {
+                assert_eq!(keys.len(), n);
+            }
+            KeyStorageResponse::ReceivedResult(Err(_e)) => {
+                panic!("could not get keys");
+            }
+            KeyStorageResponse::Waiting => {
+                panic!("did not receive result");
+            }
         }
-        panic!();
     }
 
     #[test]
     fn test_select_key() {
-        remove_all();
         let kp = enostr::FullKeypair::generate().to_keypair();
 
-        let _ = FileKeyStorage::mock().unwrap().add_key(&kp);
-        assert_num_storage(1);
+        let storage = FileKeyStorage::mock().unwrap();
+        let _ = storage.add_key(&kp);
+        assert_num_storage(&storage.get_keys(), 1);
 
-        let resp = FileKeyStorage::mock()
-            .unwrap()
-            .select_pubkey(Some(kp.pubkey));
+        let resp = storage.select_pubkey(Some(kp.pubkey));
         assert!(resp.is_ok());
 
-        let resp = FileKeyStorage::mock().unwrap().get_selected_pubkey();
+        let resp = storage.get_selected_pubkey();
 
         assert!(resp.is_ok());
-
-        remove_all();
     }
 }
