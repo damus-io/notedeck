@@ -1,4 +1,10 @@
-use std::{collections::HashMap, fs, path::PathBuf, time::SystemTime};
+use std::{
+    collections::{HashMap, VecDeque},
+    fs::{self, File},
+    io::{self, BufRead},
+    path::PathBuf,
+    time::SystemTime,
+};
 
 use crate::Error;
 
@@ -120,6 +126,42 @@ impl FileDirectoryInteractor {
         }
     }
 
+    pub fn get_file_last_n_lines(&self, file_name: String, n: usize) -> Result<FileResult, Error> {
+        let filepath = self.file_path.clone().join(file_name.clone());
+
+        if filepath.exists() && filepath.is_file() {
+            let file = File::open(&filepath)?;
+            let reader = io::BufReader::new(file);
+
+            let mut queue: VecDeque<String> = VecDeque::with_capacity(n);
+
+            let mut total_lines_in_file = 0;
+            for line in reader.lines() {
+                let line = line?;
+
+                queue.push_back(line);
+
+                if queue.len() > n {
+                    queue.pop_front();
+                }
+                total_lines_in_file += 1;
+            }
+
+            let output_num_lines = queue.len();
+            let output = queue.into_iter().collect::<Vec<String>>().join("\n");
+            Ok(FileResult {
+                output,
+                output_num_lines,
+                total_lines_in_file,
+            })
+        } else {
+            Err(Error::Generic(format!(
+                "Requested file was not found: {}",
+                file_name
+            )))
+        }
+    }
+
     pub fn delete_file(&self, file_name: String) -> Result<(), Error> {
         let file_to_delete = self.file_path.join(file_name.clone());
         if file_to_delete.exists() && file_to_delete.is_file() {
@@ -161,6 +203,12 @@ impl FileDirectoryInteractor {
 
         Ok(most_recent.map(|(_, file_name)| file_name))
     }
+}
+
+pub struct FileResult {
+    pub output: String,
+    pub output_num_lines: usize,
+    pub total_lines_in_file: usize,
 }
 
 #[cfg(test)]

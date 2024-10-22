@@ -130,7 +130,7 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) {
                     ui,
                 ),
                 Route::Support => {
-                    SupportView::default().show(ui);
+                    SupportView::new(&mut app.support).show(ui);
                     None
                 }
             }
