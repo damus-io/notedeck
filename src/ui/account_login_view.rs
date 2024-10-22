@@ -130,7 +130,8 @@ fn login_textedit(manager: &mut LoginState) -> TextEdit {
     manager.get_login_textedit(|text| {
         egui::TextEdit::singleline(text)
             .hint_text(
-                RichText::new("Your key here...").text_style(NotedeckTextStyle::Body.text_style()),
+                RichText::new("Enter your public key (npub, nip05), or private key (nsec) here...")
+                    .text_style(NotedeckTextStyle::Body.text_style()),
             )
             .vertical_align(Align::Center)
             .min_size(Vec2::new(0.0, 40.0))
