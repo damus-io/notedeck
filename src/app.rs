@@ -16,6 +16,7 @@ use crate::{
     notes_holder::NotesHolderStorage,
     profile::Profile,
     subscriptions::{SubKind, Subscriptions},
+    task,
     thread::Thread,
     timeline::{Timeline, TimelineId, TimelineKind, ViewFilter},
     ui::{self, DesktopSidePanel},
@@ -471,6 +472,13 @@ fn update_damus(damus: &mut Damus, ctx: &egui::Context) {
                 .insert("unknownids".to_string(), SubKind::OneShot);
             setup_initial_nostrdb_subs(&damus.ndb, &mut damus.note_cache, &mut damus.columns)
                 .expect("home subscription failed");
+
+            // This is only safe because we are absolutely single threaded ...
+            let damus_ptr = &mut *damus as *mut Damus;
+            task::spawn_sendable(async move {
+                let damus = unsafe { &mut *damus_ptr };
+                task::track_user_relays(damus).await;
+            });
         }
 
         DamusState::NewTimelineSub(new_timeline_id) => {
