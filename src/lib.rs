@@ -32,6 +32,7 @@ mod result;
 mod route;
 mod subscriptions;
 mod support;
+mod task;
 mod test_data;
 mod thread;
 mod time;
