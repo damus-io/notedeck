@@ -1021,7 +1021,11 @@ fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus) {
                 .show(ui);
 
                 if side_panel.response.clicked() {
-                    DesktopSidePanel::perform_action(app.columns_mut(), side_panel.action);
+                    DesktopSidePanel::perform_action(
+                        &mut app.columns,
+                        &mut app.support,
+                        side_panel.action,
+                    );
                 }
 
                 // vertical sidebar line

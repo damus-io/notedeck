@@ -7,6 +7,7 @@ use crate::{
     column::{Column, Columns},
     imgcache::ImageCache,
     route::Route,
+    support::Support,
     user_account::UserAccount,
     Damus,
 };
@@ -170,7 +171,7 @@ impl<'a> DesktopSidePanel<'a> {
         helper.take_animation_response()
     }
 
-    pub fn perform_action(columns: &mut Columns, action: SidePanelAction) {
+    pub fn perform_action(columns: &mut Columns, support: &mut Support, action: SidePanelAction) {
         let router = columns.get_first_router();
         match action {
             SidePanelAction::Panel => {} // TODO
@@ -220,6 +221,7 @@ impl<'a> DesktopSidePanel<'a> {
                 if router.routes().iter().any(|&r| r == Route::Support) {
                     router.go_back();
                 } else {
+                    support.refresh();
                     router.route_to(Route::Support);
                 }
             }
@@ -427,7 +429,11 @@ mod preview {
                         );
                         let response = panel.show(ui);
 
-                        DesktopSidePanel::perform_action(&mut self.app.columns, response.action);
+                        DesktopSidePanel::perform_action(
+                            &mut self.app.columns,
+                            &mut self.app.support,
+                            response.action,
+                        );
                     });
                 });
         }
