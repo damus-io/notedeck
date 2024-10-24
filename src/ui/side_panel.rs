@@ -7,6 +7,7 @@ use crate::{
     column::{Column, Columns},
     imgcache::ImageCache,
     route::Route,
+    support::Support,
     user_account::UserAccount,
     Damus,
 };
@@ -41,6 +42,7 @@ pub enum SidePanelAction {
     ComposeNote,
     Search,
     ExpandSidePanel,
+    Support,
 }
 
 pub struct SidePanelResponse {
@@ -114,6 +116,8 @@ impl<'a> DesktopSidePanel<'a> {
                         let pfp_resp = self.pfp_button(ui);
                         let settings_resp = ui.add(settings_button(dark_mode));
 
+                        let support_resp = ui.add(support_button());
+
                         let optional_inner = if pfp_resp.clicked() {
                             Some(egui::InnerResponse::new(
                                 SidePanelAction::Account,
@@ -123,6 +127,11 @@ impl<'a> DesktopSidePanel<'a> {
                             Some(egui::InnerResponse::new(
                                 SidePanelAction::Settings,
                                 settings_resp,
+                            ))
+                        } else if support_resp.clicked() {
+                            Some(egui::InnerResponse::new(
+                                SidePanelAction::Support,
+                                support_resp,
                             ))
                         } else {
                             None
@@ -162,7 +171,7 @@ impl<'a> DesktopSidePanel<'a> {
         helper.take_animation_response()
     }
 
-    pub fn perform_action(columns: &mut Columns, action: SidePanelAction) {
+    pub fn perform_action(columns: &mut Columns, support: &mut Support, action: SidePanelAction) {
         let router = columns.get_first_router();
         match action {
             SidePanelAction::Panel => {} // TODO
@@ -207,6 +216,14 @@ impl<'a> DesktopSidePanel<'a> {
             SidePanelAction::ExpandSidePanel => {
                 // TODO
                 info!("Clicked expand side panel button");
+            }
+            SidePanelAction::Support => {
+                if router.routes().iter().any(|&r| r == Route::Support) {
+                    router.go_back();
+                } else {
+                    support.refresh();
+                    router.route_to(Route::Support);
+                }
             }
         }
     }
@@ -352,6 +369,28 @@ fn expand_side_panel_button() -> impl Widget {
     }
 }
 
+fn support_button() -> impl Widget {
+    |ui: &mut egui::Ui| -> egui::Response {
+        let img_size = 16.0;
+
+        let max_size = ICON_WIDTH * ICON_EXPANSION_MULTIPLE; // max size of the widget
+        let img_data = egui::include_image!("../../assets/icons/help_icon_dark_4x.png");
+        let img = egui::Image::new(img_data).max_width(img_size);
+
+        let helper = AnimationHelper::new(ui, "help-button", vec2(max_size, max_size));
+
+        let cur_img_size = helper.scale_1d_pos(img_size);
+        img.paint_at(
+            ui,
+            helper
+                .get_animation_rect()
+                .shrink((max_size - cur_img_size) / 2.0),
+        );
+
+        helper.take_animation_response()
+    }
+}
+
 mod preview {
 
     use egui_extras::{Size, StripBuilder};
@@ -390,7 +429,11 @@ mod preview {
                         );
                         let response = panel.show(ui);
 
-                        DesktopSidePanel::perform_action(&mut self.app.columns, response.action);
+                        DesktopSidePanel::perform_action(
+                            &mut self.app.columns,
+                            &mut self.app.support,
+                            response.action,
+                        );
                     });
                 });
         }

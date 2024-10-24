@@ -13,7 +13,7 @@ crate-type = ["lib", "cdylib"]
 
 [dependencies]
 #egui-android = { git = "https://github.com/jb55/egui-android.git" }
-egui = { git = "https://github.com/emilk/egui", rev = "fcb7764e48ce00f8f8e58da10f937410d65b0bfb" }
+egui = { git = "https://github.com/emilk/egui", rev = "fcb7764e48ce00f8f8e58da10f937410d65b0bfb", features = ["serde"] }
 eframe = { git = "https://github.com/emilk/egui", rev = "fcb7764e48ce00f8f8e58da10f937410d65b0bfb", package = "eframe", default-features = false, features = [ "wgpu", "wayland", "x11", "android-native-activity" ] }
 egui_extras = { git = "https://github.com/emilk/egui", rev = "fcb7764e48ce00f8f8e58da10f937410d65b0bfb", package = "egui_extras", features = ["all_loaders"] }
 ehttp = "0.2.0"
@@ -43,7 +43,12 @@ strum_macros = "0.26"
 bitflags = "2.5.0"
 uuid = { version = "1.10.0", features = ["v4"] }
 indexmap = "2.6.0"
+dirs = "5.0.1"
+tracing-appender = "0.2.3"
+urlencoding = "2.1.3"
 
+[dev-dependencies]
+tempfile = "3.13.0"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "2.11.0"
