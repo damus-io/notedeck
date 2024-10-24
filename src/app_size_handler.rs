@@ -89,11 +89,7 @@ fn try_save_size(
             .write(FILE_NAME.to_owned(), &serialized_rect)
             .is_ok()
         {
-            info!(
-                "wrote size {} to directory: {:?}",
-                cur_size,
-                interactor.get_directory()
-            );
+            info!("wrote size {}", cur_size,);
             *maybe_saved_size = Some(cur_size);
         }
     }
