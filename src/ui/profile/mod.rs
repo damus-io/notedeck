@@ -9,7 +9,7 @@ pub use preview::ProfilePreview;
 
 use crate::{
     actionbar::NoteActionResponse, imgcache::ImageCache, notecache::NoteCache,
-    notes_holder::NotesHolderStorage, profile::Profile,
+    timeline::TimelineCache,
 };
 
 use super::timeline::{tabs_ui, TimelineTabView};
@@ -17,7 +17,7 @@ use super::timeline::{tabs_ui, TimelineTabView};
 pub struct ProfileView<'a> {
     pubkey: &'a Pubkey,
     col_id: usize,
-    profiles: &'a mut NotesHolderStorage<Profile>,
+    timeline_cache: &'a mut TimelineCache,
     ndb: &'a Ndb,
     note_cache: &'a mut NoteCache,
     img_cache: &'a mut ImageCache,
@@ -27,7 +27,7 @@ impl<'a> ProfileView<'a> {
     pub fn new(
         pubkey: &'a Pubkey,
         col_id: usize,
-        profiles: &'a mut NotesHolderStorage<Profile>,
+        timeline_cache: &'a mut TimelineCache,
         ndb: &'a Ndb,
         note_cache: &'a mut NoteCache,
         img_cache: &'a mut ImageCache,
@@ -35,7 +35,7 @@ impl<'a> ProfileView<'a> {
         ProfileView {
             pubkey,
             col_id,
-            profiles,
+            timeline_cache,
             ndb,
             note_cache,
             img_cache,
@@ -53,8 +53,8 @@ impl<'a> ProfileView<'a> {
                     ProfilePreview::new(&profile, self.img_cache).ui(ui);
                 }
                 let profile = self
-                    .profiles
-                    .notes_holder_mutated(self.ndb, self.note_cache, &txn, self.pubkey.bytes())
+                    .timeline_cache
+                    .notes(self.ndb, self.note_cache, &txn, self.pubkey.bytes())
                     .get_ptr();
 
                 profile.timeline.selected_view = tabs_ui(ui);

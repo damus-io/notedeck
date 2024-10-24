@@ -1,9 +1,6 @@
 use crate::{
-    actionbar::NoteActionResponse,
-    imgcache::ImageCache,
-    notecache::NoteCache,
-    notes_holder::{NotesHolder, NotesHolderStorage},
-    thread::Thread,
+    actionbar::NoteActionResponse, imgcache::ImageCache, notecache::NoteCache,
+    timeline::TimelineCache,
 };
 use nostrdb::{Ndb, NoteKey, Transaction};
 use tracing::error;
@@ -11,7 +8,7 @@ use tracing::error;
 use super::timeline::TimelineTabView;
 
 pub struct ThreadView<'a> {
-    threads: &'a mut NotesHolderStorage<Thread>,
+    timeline_cache: &'a mut TimelineCache,
     ndb: &'a Ndb,
     note_cache: &'a mut NoteCache,
     img_cache: &'a mut ImageCache,
@@ -23,7 +20,7 @@ pub struct ThreadView<'a> {
 impl<'a> ThreadView<'a> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        threads: &'a mut NotesHolderStorage<Thread>,
+        timeline_cache: &'a mut TimelineCache,
         ndb: &'a Ndb,
         note_cache: &'a mut NoteCache,
         img_cache: &'a mut ImageCache,
@@ -32,7 +29,7 @@ impl<'a> ThreadView<'a> {
     ) -> Self {
         let id_source = egui::Id::new("threadscroll_threadview");
         ThreadView {
-            threads,
+            timeline_cache,
             ndb,
             note_cache,
             img_cache,
@@ -91,8 +88,8 @@ impl<'a> ThreadView<'a> {
                 };
 
                 let thread = self
-                    .threads
-                    .notes_holder_mutated(self.ndb, self.note_cache, &txn, root_id)
+                    .timeline_cache
+                    .notes(self.ndb, self.note_cache, &txn, root_id)
                     .get_ptr();
 
                 // TODO(jb55): skip poll if ThreadResult is fresh?
