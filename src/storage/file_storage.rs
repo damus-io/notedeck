@@ -2,53 +2,24 @@ use std::{
     collections::{HashMap, VecDeque},
     fs::{self, File},
     io::{self, BufRead},
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::SystemTime,
 };
 
 use crate::Error;
 
-pub struct FileWriterFactory {
-    writer_type: FileWriterType,
-    use_test_dir: Option<fn() -> Result<PathBuf, Error>>,
-}
-
-impl FileWriterFactory {
-    pub fn new(writer_type: FileWriterType) -> Self {
-        Self {
-            writer_type,
-            use_test_dir: None,
-        }
-    }
-
-    pub fn testing_with(mut self, test_dir: fn() -> Result<PathBuf, Error>) -> Self {
-        self.use_test_dir = Some(test_dir);
-        self
-    }
-
-    pub fn build(self) -> Result<FileDirectoryInteractor, Error> {
-        let file_path = if let Some(create_dir) = self.use_test_dir {
-            create_dir()?
-        } else {
-            self.writer_type.get_path("notedeck")?
-        };
-
-        Ok(FileDirectoryInteractor { file_path })
-    }
-}
-
-pub enum FileWriterType {
+pub enum DataPaths {
     Log,
     Setting,
     Keys,
     SelectedKey,
 }
 
-impl FileWriterType {
-    pub fn get_path(&self, app_name: &str) -> Result<PathBuf, Error> {
+impl DataPaths {
+    pub fn get_path(&self) -> Result<PathBuf, Error> {
         let base_path = match self {
-            FileWriterType::Log => dirs::data_local_dir(),
-            FileWriterType::Setting | FileWriterType::Keys | FileWriterType::SelectedKey => {
+            DataPaths::Log => dirs::data_local_dir(),
+            DataPaths::Setting | DataPaths::Keys | DataPaths::SelectedKey => {
                 dirs::config_local_dir()
             }
         }
@@ -57,30 +28,24 @@ impl FileWriterType {
         ))?;
 
         let specific_path = match self {
-            FileWriterType::Log => PathBuf::from("logs"),
-            FileWriterType::Setting => PathBuf::from("settings"),
-            FileWriterType::Keys => PathBuf::from("storage").join("accounts"),
-            FileWriterType::SelectedKey => PathBuf::from("storage").join("selected_account"),
+            DataPaths::Log => PathBuf::from("logs"),
+            DataPaths::Setting => PathBuf::from("settings"),
+            DataPaths::Keys => PathBuf::from("storage").join("accounts"),
+            DataPaths::SelectedKey => PathBuf::from("storage").join("selected_account"),
         };
 
-        Ok(base_path.join(app_name).join(specific_path))
+        Ok(base_path.join("notedeck").join(specific_path))
     }
 }
 
 #[derive(Debug, PartialEq)]
-pub struct FileDirectoryInteractor {
-    file_path: PathBuf,
+pub struct Directory {
+    pub file_path: PathBuf,
 }
 
-impl FileDirectoryInteractor {
-    /// Write the file to the `file_path` directory
-    pub fn write(&self, file_name: String, data: &str) -> Result<(), Error> {
-        if !self.file_path.exists() {
-            fs::create_dir_all(self.file_path.clone())?
-        }
-
-        std::fs::write(self.file_path.join(file_name), data)?;
-        Ok(())
+impl Directory {
+    pub fn new(file_path: PathBuf) -> Self {
+        Self { file_path }
     }
 
     /// Get the files in the current directory where the key is the file name and the value is the file contents
@@ -162,22 +127,6 @@ impl FileDirectoryInteractor {
         }
     }
 
-    pub fn delete_file(&self, file_name: String) -> Result<(), Error> {
-        let file_to_delete = self.file_path.join(file_name.clone());
-        if file_to_delete.exists() && file_to_delete.is_file() {
-            fs::remove_file(file_to_delete).map_err(Error::Io)
-        } else {
-            Err(Error::Generic(format!(
-                "Requested file to delete was not found: {}",
-                file_name
-            )))
-        }
-    }
-
-    pub fn get_directory(&self) -> &PathBuf {
-        &self.file_path
-    }
-
     /// Get the file name which is most recently modified in the directory
     pub fn get_most_recent(&self) -> Result<Option<String>, Error> {
         let mut most_recent: Option<(SystemTime, String)> = None;
@@ -205,6 +154,28 @@ impl FileDirectoryInteractor {
     }
 }
 
+/// Write the file to the directory
+pub fn write_file(directory: &Path, file_name: String, data: &str) -> Result<(), Error> {
+    if !directory.exists() {
+        fs::create_dir_all(directory)?
+    }
+
+    std::fs::write(directory.join(file_name), data)?;
+    Ok(())
+}
+
+pub fn delete_file(directory: &Path, file_name: String) -> Result<(), Error> {
+    let file_to_delete = directory.join(file_name.clone());
+    if file_to_delete.exists() && file_to_delete.is_file() {
+        fs::remove_file(file_to_delete).map_err(Error::Io)
+    } else {
+        Err(Error::Generic(format!(
+            "Requested file to delete was not found: {}",
+            file_name
+        )))
+    }
+}
+
 pub struct FileResult {
     pub output: String,
     pub output_num_lines: usize,
@@ -215,31 +186,32 @@ pub struct FileResult {
 mod tests {
     use std::path::PathBuf;
 
-    use crate::Error;
+    use crate::{
+        storage::file_storage::{delete_file, write_file},
+        Error,
+    };
 
-    use super::FileWriterFactory;
+    use super::Directory;
 
     static CREATE_TMP_DIR: fn() -> Result<PathBuf, Error> =
         || Ok(tempfile::TempDir::new()?.path().to_path_buf());
 
     #[test]
     fn test_add_get_delete() {
-        if let Ok(interactor) = FileWriterFactory::new(super::FileWriterType::Keys)
-            .testing_with(CREATE_TMP_DIR)
-            .build()
-        {
+        if let Ok(path) = CREATE_TMP_DIR() {
+            let directory = Directory::new(path);
             let file_name = "file_test_name.txt".to_string();
             let file_contents = "test";
-            let write_res = interactor.write(file_name.clone(), file_contents);
+            let write_res = write_file(&directory.file_path, file_name.clone(), file_contents);
             assert!(write_res.is_ok());
 
-            if let Ok(asserted_file_contents) = interactor.get_file(file_name.clone()) {
+            if let Ok(asserted_file_contents) = directory.get_file(file_name.clone()) {
                 assert_eq!(asserted_file_contents, file_contents);
             } else {
                 panic!("File not found");
             }
 
-            let delete_res = interactor.delete_file(file_name);
+            let delete_res = delete_file(&directory.file_path, file_name);
             assert!(delete_res.is_ok());
         } else {
             panic!("could not get interactor")
@@ -248,17 +220,16 @@ mod tests {
 
     #[test]
     fn test_get_multiple() {
-        if let Ok(interactor) = FileWriterFactory::new(super::FileWriterType::Keys)
-            .testing_with(CREATE_TMP_DIR)
-            .build()
-        {
+        if let Ok(path) = CREATE_TMP_DIR() {
+            let directory = Directory::new(path);
+
             for i in 0..10 {
                 let file_name = format!("file{}.txt", i);
-                let write_res = interactor.write(file_name, "test");
+                let write_res = write_file(&directory.file_path, file_name, "test");
                 assert!(write_res.is_ok());
             }
 
-            if let Ok(files) = interactor.get_files() {
+            if let Ok(files) = directory.get_files() {
                 for i in 0..10 {
                     let file_name = format!("file{}.txt", i);
                     assert!(files.contains_key(&file_name));
@@ -268,7 +239,7 @@ mod tests {
                 panic!("Files not found");
             }
 
-            if let Ok(file_names) = interactor.get_file_names() {
+            if let Ok(file_names) = directory.get_file_names() {
                 for i in 0..10 {
                     let file_name = format!("file{}.txt", i);
                     assert!(file_names.contains(&file_name));
@@ -279,7 +250,7 @@ mod tests {
 
             for i in 0..10 {
                 let file_name = format!("file{}.txt", i);
-                assert!(interactor.delete_file(file_name).is_ok());
+                assert!(delete_file(&directory.file_path, file_name).is_ok());
             }
         } else {
             panic!("could not get interactor")

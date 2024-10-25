@@ -4,7 +4,7 @@ use enostr::{Keypair, Pubkey, SerializableKeypair};
 use crate::Error;
 
 use super::{
-    file_storage::{FileDirectoryInteractor, FileWriterFactory, FileWriterType},
+    file_storage::{delete_file, write_file, Directory},
     key_storage_impl::{KeyStorage, KeyStorageError, KeyStorageResponse},
 };
 
@@ -13,35 +13,31 @@ static SELECTED_PUBKEY_FILE_NAME: &str = "selected_pubkey";
 /// An OS agnostic file key storage implementation
 #[derive(Debug, PartialEq)]
 pub struct FileKeyStorage {
-    keys_interactor: FileDirectoryInteractor,
-    selected_key_interactor: FileDirectoryInteractor,
+    keys_directory: Directory,
+    selected_key_directory: Directory,
 }
 
 impl FileKeyStorage {
-    pub fn new() -> Result<Self, KeyStorageError> {
-        Ok(Self {
-            keys_interactor: FileWriterFactory::new(FileWriterType::Keys)
-                .build()
-                .map_err(KeyStorageError::OSError)?,
-            selected_key_interactor: FileWriterFactory::new(FileWriterType::SelectedKey)
-                .build()
-                .map_err(KeyStorageError::OSError)?,
-        })
+    pub fn new(keys_directory: Directory, selected_key_directory: Directory) -> Self {
+        Self {
+            keys_directory,
+            selected_key_directory,
+        }
     }
 
     fn add_key_internal(&self, key: &Keypair) -> Result<(), KeyStorageError> {
-        self.keys_interactor
-            .write(
-                key.pubkey.hex(),
-                &serde_json::to_string(&SerializableKeypair::from_keypair(key, "", 7))
-                    .map_err(|e| KeyStorageError::Addition(Error::Generic(e.to_string())))?,
-            )
-            .map_err(KeyStorageError::Addition)
+        write_file(
+            &self.keys_directory.file_path,
+            key.pubkey.hex(),
+            &serde_json::to_string(&SerializableKeypair::from_keypair(key, "", 7))
+                .map_err(|e| KeyStorageError::Addition(Error::Generic(e.to_string())))?,
+        )
+        .map_err(KeyStorageError::Addition)
     }
 
     fn get_keys_internal(&self) -> Result<Vec<Keypair>, KeyStorageError> {
         let keys = self
-            .keys_interactor
+            .keys_directory
             .get_files()
             .map_err(KeyStorageError::Retrieval)?
             .values()
@@ -52,14 +48,13 @@ impl FileKeyStorage {
     }
 
     fn remove_key_internal(&self, key: &Keypair) -> Result<(), KeyStorageError> {
-        self.keys_interactor
-            .delete_file(key.pubkey.hex())
+        delete_file(&self.keys_directory.file_path, key.pubkey.hex())
             .map_err(KeyStorageError::Removal)
     }
 
     fn get_selected_pubkey(&self) -> Result<Option<Pubkey>, KeyStorageError> {
         let pubkey_str = self
-            .selected_key_interactor
+            .selected_key_directory
             .get_file(SELECTED_PUBKEY_FILE_NAME.to_owned())
             .map_err(KeyStorageError::Selection)?;
 
@@ -69,22 +64,24 @@ impl FileKeyStorage {
 
     fn select_pubkey(&self, pubkey: Option<Pubkey>) -> Result<(), KeyStorageError> {
         if let Some(pubkey) = pubkey {
-            self.selected_key_interactor
-                .write(
-                    SELECTED_PUBKEY_FILE_NAME.to_owned(),
-                    &serde_json::to_string(&pubkey.hex())
-                        .map_err(|e| KeyStorageError::Selection(Error::Generic(e.to_string())))?,
-                )
-                .map_err(KeyStorageError::Selection)
+            write_file(
+                &self.selected_key_directory.file_path,
+                SELECTED_PUBKEY_FILE_NAME.to_owned(),
+                &serde_json::to_string(&pubkey.hex())
+                    .map_err(|e| KeyStorageError::Selection(Error::Generic(e.to_string())))?,
+            )
+            .map_err(KeyStorageError::Selection)
         } else if self
-            .selected_key_interactor
+            .selected_key_directory
             .get_file(SELECTED_PUBKEY_FILE_NAME.to_owned())
             .is_ok()
         {
             // Case where user chose to have no selected pubkey, but one already exists
-            self.selected_key_interactor
-                .delete_file(SELECTED_PUBKEY_FILE_NAME.to_owned())
-                .map_err(KeyStorageError::Selection)
+            delete_file(
+                &self.selected_key_directory.file_path,
+                SELECTED_PUBKEY_FILE_NAME.to_owned(),
+            )
+            .map_err(KeyStorageError::Selection)
         } else {
             Ok(())
         }
@@ -123,16 +120,10 @@ mod tests {
         || Ok(tempfile::TempDir::new()?.path().to_path_buf());
 
     impl FileKeyStorage {
-        fn mock() -> Result<Self, KeyStorageError> {
+        fn mock() -> Result<Self, Error> {
             Ok(Self {
-                keys_interactor: FileWriterFactory::new(FileWriterType::Keys)
-                    .testing_with(CREATE_TMP_DIR)
-                    .build()
-                    .map_err(KeyStorageError::OSError)?,
-                selected_key_interactor: FileWriterFactory::new(FileWriterType::SelectedKey)
-                    .testing_with(CREATE_TMP_DIR)
-                    .build()
-                    .map_err(KeyStorageError::OSError)?,
+                keys_directory: Directory::new(CREATE_TMP_DIR()?),
+                selected_key_directory: Directory::new(CREATE_TMP_DIR()?),
             })
         }
     }

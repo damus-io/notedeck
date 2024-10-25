@@ -15,7 +15,7 @@ use crate::{
     notecache::{CachedNote, NoteCache},
     notes_holder::NotesHolderStorage,
     profile::Profile,
-    storage::{FileKeyStorage, KeyStorageType},
+    storage::{Directory, FileKeyStorage, KeyStorageType},
     subscriptions::{SubKind, Subscriptions},
     support::Support,
     thread::Thread,
@@ -23,7 +23,7 @@ use crate::{
     ui::{self, DesktopSidePanel},
     unknowns::UnknownIds,
     view_state::ViewState,
-    Result,
+    DataPaths, Result,
 };
 
 use enostr::{ClientMessage, RelayEvent, RelayMessage, RelayPool};
@@ -671,12 +671,19 @@ impl Damus {
         config.set_ingester_threads(4);
 
         let keystore = if parsed_args.use_keystore {
-            match FileKeyStorage::new() {
-                Ok(ks) => KeyStorageType::FileSystem(ks),
-                Err(e) => {
-                    error!("failed to load the FileKeyStorage: {}", e.to_string());
+            if let Ok(keys_path) = DataPaths::Keys.get_path() {
+                if let Ok(selected_key_path) = DataPaths::SelectedKey.get_path() {
+                    KeyStorageType::FileSystem(FileKeyStorage::new(
+                        Directory::new(keys_path),
+                        Directory::new(selected_key_path),
+                    ))
+                } else {
+                    error!("Could not find path for selected key");
                     KeyStorageType::None
                 }
+            } else {
+                error!("Could not find data path for keys");
+                KeyStorageType::None
             }
         } else {
             KeyStorageType::None

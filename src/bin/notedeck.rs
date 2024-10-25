@@ -2,7 +2,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
 use notedeck::app_creation::generate_native_options;
 use notedeck::Damus;
-use notedeck::FileWriterFactory;
 
 // Entry point for wasm
 //#[cfg(target_arch = "wasm32")]
@@ -14,7 +13,7 @@ use notedeck::FileWriterFactory;
 async fn main() {
     #[allow(unused_variables)] // need guard to live for lifetime of program
     let (maybe_non_blocking, maybe_guard) =
-        if let Ok(log_interactor) = FileWriterFactory::new(notedeck::FileWriterType::Log).build() {
+        if let Ok(log_path) = notedeck::DataPaths::Log.get_path() {
             // Setup logging to file
             use std::panic;
 
@@ -26,7 +25,7 @@ async fn main() {
 
             let file_appender = RollingFileAppender::new(
                 Rotation::DAILY,
-                log_interactor.get_directory(),
+                log_path,
                 format!("notedeck-{}.log", env!("CARGO_PKG_VERSION")),
             );
             panic::set_hook(Box::new(|panic_info| {

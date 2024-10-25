@@ -1,36 +1,33 @@
 use tracing::error;
 
-use crate::{storage::FileDirectoryInteractor, FileWriterFactory};
+use crate::{storage::Directory, DataPaths};
 
 pub struct Support {
-    interactor: Option<FileDirectoryInteractor>,
+    directory: Option<Directory>,
     mailto_url: String,
-    log_dir: Option<String>,
     most_recent_log: Option<String>,
+}
+
+fn new_log_dir() -> Option<Directory> {
+    match DataPaths::Log.get_path() {
+        Ok(path) => Some(Directory::new(path)),
+        Err(e) => {
+            error!("Support could not open directory: {}", e.to_string());
+            None
+        }
+    }
 }
 
 impl Default for Support {
     fn default() -> Self {
-        let interactor = FileWriterFactory::new(crate::FileWriterType::Log).build();
-        if let Err(e) = &interactor {
-            error!(
-                "Support could not initialize directory interactor: {}",
-                e.to_string()
-            );
-        }
-        let interactor = interactor.ok();
-
-        let log_dir = interactor
-            .as_ref()
-            .map(|interactor| format!("{:?}", interactor.get_directory()));
+        let directory = new_log_dir();
 
         Self {
             mailto_url: MailtoFactory::new(SUPPORT_EMAIL.to_string())
                 .with_subject("Help Needed".to_owned())
                 .with_content(EMAIL_TEMPLATE.to_owned())
                 .build(),
-            interactor,
-            log_dir,
+            directory,
             most_recent_log: None,
         }
     }
@@ -42,12 +39,10 @@ static EMAIL_TEMPLATE: &str = "Describe the bug you have encountered:\n<-- your 
 
 impl Support {
     pub fn refresh(&mut self) {
-        if let Some(interactor) = &self.interactor {
-            self.most_recent_log = get_log_str(interactor);
+        if let Some(directory) = &self.directory {
+            self.most_recent_log = get_log_str(directory);
         } else {
-            self.interactor = FileWriterFactory::new(crate::FileWriterType::Log)
-                .build()
-                .ok();
+            self.directory = new_log_dir();
         }
     }
 
@@ -55,8 +50,8 @@ impl Support {
         &self.mailto_url
     }
 
-    pub fn get_log_dir(&self) -> Option<&String> {
-        self.log_dir.as_ref()
+    pub fn get_log_dir(&self) -> Option<&str> {
+        self.directory.as_ref()?.file_path.to_str()
     }
 
     pub fn get_most_recent_log(&self) -> Option<&String> {
@@ -64,7 +59,7 @@ impl Support {
     }
 }
 
-fn get_log_str(interactor: &FileDirectoryInteractor) -> Option<String> {
+fn get_log_str(interactor: &Directory) -> Option<String> {
     match interactor.get_most_recent() {
         Ok(Some(most_recent_name)) => {
             match interactor.get_file_last_n_lines(most_recent_name.clone(), MAX_LOG_LINES) {

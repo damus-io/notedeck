@@ -51,8 +51,7 @@ mod storage;
 pub use app::Damus;
 pub use error::Error;
 pub use profile::DisplayName;
-pub use storage::FileWriterFactory;
-pub use storage::FileWriterType;
+pub use storage::DataPaths;
 
 #[cfg(target_os = "android")]
 use winit::platform::android::EventLoopBuilderExtAndroid;
