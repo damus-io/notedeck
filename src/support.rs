@@ -23,7 +23,7 @@ impl Default for Support {
         let directory = new_log_dir();
 
         Self {
-            mailto_url: MailtoFactory::new(SUPPORT_EMAIL.to_string())
+            mailto_url: MailtoBuilder::new(SUPPORT_EMAIL.to_string())
                 .with_subject("Help Needed".to_owned())
                 .with_content(EMAIL_TEMPLATE.to_owned())
                 .build(),
@@ -98,20 +98,18 @@ fn get_prefix(file_name: &str, lines_displayed: usize, num_total_lines: usize) -
     )
 }
 
-struct MailtoFactory {
+struct MailtoBuilder {
     content: Option<String>,
     address: String,
     subject: Option<String>,
-    max_size: Option<usize>,
 }
 
-impl MailtoFactory {
+impl MailtoBuilder {
     fn new(address: String) -> Self {
         Self {
             content: None,
             address,
             subject: None,
-            max_size: None,
         }
     }
 
@@ -126,17 +124,8 @@ impl MailtoFactory {
         self
     }
 
-    #[allow(dead_code)]
-    pub fn with_capacity(mut self, max_size: usize) -> Self {
-        self.max_size = Some(max_size);
-        self
-    }
-
     pub fn build(self) -> String {
-        let mut url = match self.max_size {
-            Some(max_size) => String::with_capacity(max_size),
-            None => String::new(),
-        };
+        let mut url = String::new();
 
         url.push_str("mailto:");
         url.push_str(&self.address);
@@ -161,15 +150,7 @@ impl MailtoFactory {
 
             let body = urlencoding::encode(&content);
 
-            if let Some(max_size) = self.max_size {
-                if body.len() + url.len() <= max_size {
-                    url.push_str(&body);
-                } else {
-                    url.push_str(&body[..max_size - url.len()]);
-                }
-            } else {
-                url.push_str(&body);
-            }
+            url.push_str(&body);
         }
 
         url
