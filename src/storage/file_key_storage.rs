@@ -5,7 +5,7 @@ use crate::Error;
 
 use super::{
     file_storage::{delete_file, write_file, Directory},
-    key_storage_impl::{KeyStorage, KeyStorageError, KeyStorageResponse},
+    key_storage_impl::{KeyStorageError, KeyStorageResponse},
 };
 
 static SELECTED_PUBKEY_FILE_NAME: &str = "selected_pubkey";
@@ -88,24 +88,24 @@ impl FileKeyStorage {
     }
 }
 
-impl KeyStorage for FileKeyStorage {
-    fn get_keys(&self) -> KeyStorageResponse<Vec<enostr::Keypair>> {
+impl FileKeyStorage {
+    pub fn get_keys(&self) -> KeyStorageResponse<Vec<enostr::Keypair>> {
         KeyStorageResponse::ReceivedResult(self.get_keys_internal())
     }
 
-    fn add_key(&self, key: &enostr::Keypair) -> KeyStorageResponse<()> {
+    pub fn add_key(&self, key: &enostr::Keypair) -> KeyStorageResponse<()> {
         KeyStorageResponse::ReceivedResult(self.add_key_internal(key))
     }
 
-    fn remove_key(&self, key: &enostr::Keypair) -> KeyStorageResponse<()> {
+    pub fn remove_key(&self, key: &enostr::Keypair) -> KeyStorageResponse<()> {
         KeyStorageResponse::ReceivedResult(self.remove_key_internal(key))
     }
 
-    fn get_selected_key(&self) -> KeyStorageResponse<Option<Pubkey>> {
+    pub fn get_selected_key(&self) -> KeyStorageResponse<Option<Pubkey>> {
         KeyStorageResponse::ReceivedResult(self.get_selected_pubkey())
     }
 
-    fn select_key(&self, key: Option<Pubkey>) -> KeyStorageResponse<()> {
+    pub fn select_key(&self, key: Option<Pubkey>) -> KeyStorageResponse<()> {
         KeyStorageResponse::ReceivedResult(self.select_pubkey(key))
     }
 }

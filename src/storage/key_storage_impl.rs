@@ -38,16 +38,8 @@ impl<R: PartialEq> PartialEq for KeyStorageResponse<R> {
     }
 }
 
-pub trait KeyStorage {
-    fn get_keys(&self) -> KeyStorageResponse<Vec<Keypair>>;
-    fn add_key(&self, key: &Keypair) -> KeyStorageResponse<()>;
-    fn remove_key(&self, key: &Keypair) -> KeyStorageResponse<()>;
-    fn get_selected_key(&self) -> KeyStorageResponse<Option<Pubkey>>;
-    fn select_key(&self, key: Option<Pubkey>) -> KeyStorageResponse<()>;
-}
-
-impl KeyStorage for KeyStorageType {
-    fn get_keys(&self) -> KeyStorageResponse<Vec<Keypair>> {
+impl KeyStorageType {
+    pub fn get_keys(&self) -> KeyStorageResponse<Vec<Keypair>> {
         match self {
             Self::None => KeyStorageResponse::ReceivedResult(Ok(Vec::new())),
             Self::FileSystem(f) => f.get_keys(),
@@ -56,7 +48,7 @@ impl KeyStorage for KeyStorageType {
         }
     }
 
-    fn add_key(&self, key: &Keypair) -> KeyStorageResponse<()> {
+    pub fn add_key(&self, key: &Keypair) -> KeyStorageResponse<()> {
         let _ = key;
         match self {
             Self::None => KeyStorageResponse::ReceivedResult(Ok(())),
@@ -66,7 +58,7 @@ impl KeyStorage for KeyStorageType {
         }
     }
 
-    fn remove_key(&self, key: &Keypair) -> KeyStorageResponse<()> {
+    pub fn remove_key(&self, key: &Keypair) -> KeyStorageResponse<()> {
         let _ = key;
         match self {
             Self::None => KeyStorageResponse::ReceivedResult(Ok(())),
@@ -76,21 +68,21 @@ impl KeyStorage for KeyStorageType {
         }
     }
 
-    fn get_selected_key(&self) -> KeyStorageResponse<Option<Pubkey>> {
+    pub fn get_selected_key(&self) -> KeyStorageResponse<Option<Pubkey>> {
         match self {
             Self::None => KeyStorageResponse::ReceivedResult(Ok(None)),
             Self::FileSystem(f) => f.get_selected_key(),
             #[cfg(target_os = "macos")]
-            Self::SecurityFramework(f) => f.get_selected_key(),
+            Self::SecurityFramework(_) => unimplemented!(),
         }
     }
 
-    fn select_key(&self, key: Option<Pubkey>) -> KeyStorageResponse<()> {
+    pub fn select_key(&self, key: Option<Pubkey>) -> KeyStorageResponse<()> {
         match self {
             Self::None => KeyStorageResponse::ReceivedResult(Ok(())),
             Self::FileSystem(f) => f.select_key(key),
             #[cfg(target_os = "macos")]
-            Self::SecurityFramework(f) => f.select_key(key),
+            Self::SecurityFramework(_) => unimplemented!(),
         }
     }
 }

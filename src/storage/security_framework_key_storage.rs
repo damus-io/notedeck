@@ -9,7 +9,7 @@ use tracing::error;
 
 use crate::Error;
 
-use super::key_storage_impl::{KeyStorage, KeyStorageError, KeyStorageResponse};
+use super::{key_storage_impl::KeyStorageError, KeyStorageResponse};
 
 #[derive(Debug, PartialEq)]
 pub struct SecurityFrameworkKeyStorage {
@@ -23,7 +23,7 @@ impl SecurityFrameworkKeyStorage {
         }
     }
 
-    fn add_key(&self, key: &Keypair) -> Result<(), KeyStorageError> {
+    fn add_key_internal(&self, key: &Keypair) -> Result<(), KeyStorageError> {
         match set_generic_password(
             &self.service_name,
             key.pubkey.hex().as_str(),
@@ -112,26 +112,17 @@ impl SecurityFrameworkKeyStorage {
     }
 }
 
-impl KeyStorage for SecurityFrameworkKeyStorage {
-    fn add_key(&self, key: &Keypair) -> KeyStorageResponse<()> {
-        KeyStorageResponse::ReceivedResult(self.add_key(key))
+impl SecurityFrameworkKeyStorage {
+    pub fn add_key(&self, key: &Keypair) -> KeyStorageResponse<()> {
+        KeyStorageResponse::ReceivedResult(self.add_key_internal(key))
     }
 
-    fn get_keys(&self) -> KeyStorageResponse<Vec<Keypair>> {
+    pub fn get_keys(&self) -> KeyStorageResponse<Vec<Keypair>> {
         KeyStorageResponse::ReceivedResult(Ok(self.get_all_keypairs()))
     }
 
-    fn remove_key(&self, key: &Keypair) -> KeyStorageResponse<()> {
+    pub fn remove_key(&self, key: &Keypair) -> KeyStorageResponse<()> {
         KeyStorageResponse::ReceivedResult(self.delete_key(&key.pubkey))
-    }
-
-    fn get_selected_key(&self) -> KeyStorageResponse<Option<Pubkey>> {
-        unimplemented!()
-    }
-
-    fn select_key(&self, key: Option<Pubkey>) -> KeyStorageResponse<()> {
-        let _ = key;
-        unimplemented!()
     }
 }
 
@@ -154,7 +145,7 @@ mod tests {
         let num_keys_before_test = STORAGE.get_pubkeys().len();
 
         let keypair = FullKeypair::generate().to_keypair();
-        let add_result = STORAGE.add_key(&keypair);
+        let add_result = STORAGE.add_key_internal(&keypair);
         assert!(add_result.is_ok());
 
         let get_pubkeys_result = STORAGE.get_pubkeys();
@@ -177,7 +168,7 @@ mod tests {
             .collect();
 
         expected_keypairs.iter().for_each(|keypair| {
-            let add_result = STORAGE.add_key(keypair);
+            let add_result = STORAGE.add_key_internal(keypair);
             assert!(add_result.is_ok());
         });
 

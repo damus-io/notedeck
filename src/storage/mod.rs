@@ -11,4 +11,4 @@ pub use file_storage::Directory;
 mod security_framework_key_storage;
 
 pub mod key_storage_impl;
-pub use key_storage_impl::{KeyStorage, KeyStorageResponse, KeyStorageType};
+pub use key_storage_impl::{KeyStorageResponse, KeyStorageType};

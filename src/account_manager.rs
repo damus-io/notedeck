@@ -8,7 +8,7 @@ use crate::{
     imgcache::ImageCache,
     login_manager::LoginState,
     route::{Route, Router},
-    storage::{KeyStorage, KeyStorageResponse, KeyStorageType},
+    storage::{KeyStorageResponse, KeyStorageType},
     ui::{
         account_login_view::{AccountLoginResponse, AccountLoginView},
         account_management::{AccountsView, AccountsViewResponse},
