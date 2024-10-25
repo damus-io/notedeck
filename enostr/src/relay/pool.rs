@@ -2,6 +2,7 @@ use crate::relay::{Relay, RelayStatus};
 use crate::{ClientMessage, Result};
 use nostrdb::Filter;
 
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
@@ -46,6 +47,14 @@ pub struct RelayPool {
     pub relays: Vec<PoolRelay>,
     pub subs: HashMap<String, Vec<Filter>>,
     pub ping_rate: Duration,
+    /// Used when there are no others
+    pub bootstrapping_relays: BTreeSet<String>,
+    /// Locally specified relays
+    pub local_relays: BTreeSet<String>,
+    /// NIP-65 specified relays
+    pub advertised_relays: BTreeSet<String>,
+    /// If non-empty force the relay pool to use exactly this set
+    pub forced_relays: BTreeSet<String>,
 }
 
 impl Default for RelayPool {
@@ -61,6 +70,10 @@ impl RelayPool {
             relays: vec![],
             subs: HashMap::new(),
             ping_rate: Duration::from_secs(25),
+            bootstrapping_relays: BTreeSet::new(),
+            local_relays: BTreeSet::new(),
+            advertised_relays: BTreeSet::new(),
+            forced_relays: BTreeSet::new(),
         }
     }
 
@@ -154,8 +167,37 @@ impl RelayPool {
         }
     }
 
+    pub fn configure_relays(
+        &mut self,
+        wakeup: impl Fn() + Send + Sync + Clone + 'static,
+    ) -> Result<()> {
+        let urls = if !self.forced_relays.is_empty() {
+            debug!("using forced relays");
+            self.forced_relays.iter().cloned().collect::<Vec<_>>()
+        } else {
+            let mut combined_relays = self
+                .local_relays
+                .union(&self.advertised_relays)
+                .cloned()
+                .collect::<BTreeSet<_>>();
+
+            // If the combined set is empty, use `bootstrapping_relays`.
+            if combined_relays.is_empty() {
+                debug!("using bootstrapping relays");
+                combined_relays = self.bootstrapping_relays.clone();
+            } else {
+                debug!("using local+advertised relays");
+            }
+
+            // Collect the resulting set into a vector.
+            combined_relays.into_iter().collect::<Vec<_>>()
+        };
+
+        self.set_relays(&urls, wakeup)
+    }
+
     // Adds a websocket url to the RelayPool.
-    pub fn add_url(
+    fn add_url(
         &mut self,
         url: String,
         wakeup: impl Fn() + Send + Sync + Clone + 'static,
@@ -177,6 +219,7 @@ impl RelayPool {
 
         Ok(())
     }
+
     // Add and remove relays to match the provided list
     pub fn set_relays(
         &mut self,
@@ -206,6 +249,9 @@ impl RelayPool {
 
         // Remove the relays that are in old_urls but not in new_urls.
         let to_remove: HashSet<_> = old_urls.difference(&new_urls).cloned().collect();
+        for url in &to_remove {
+            debug!("removing relay {}", url);
+        }
         self.relays.retain(|pr| !to_remove.contains(&pr.relay.url));
 
         // FIXME - how do we close connections the removed relays?
@@ -213,6 +259,7 @@ impl RelayPool {
         // Add the relays that are in new_urls but not in old_urls.
         let to_add: HashSet<_> = new_urls.difference(&old_urls).cloned().collect();
         for url in to_add {
+            debug!("adding relay {}", url);
             if let Err(e) = self.add_url(url.clone(), wakeup.clone()) {
                 error!("Failed to add relay with URL {}: {:?}", url, e);
             }
@@ -222,7 +269,7 @@ impl RelayPool {
     }
 
     // standardize the format (ie, trailing slashes) to avoid dups
-    fn canonicalize_url(url: &String) -> String {
+    pub fn canonicalize_url(url: &String) -> String {
         match Url::parse(&url) {
             Ok(parsed_url) => parsed_url.to_string(),
             Err(_) => url.clone(), // If parsing fails, return the original URL.

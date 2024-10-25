@@ -22,7 +22,7 @@ pub async fn track_user_relays(damus: &mut Damus) {
     let txn = Transaction::new(&damus.ndb).expect("transaction");
     let relays = query_nip65_relays(&damus.ndb, &txn, &filter);
     debug!("track_user_relays: initial from nostrdb: {:#?}", relays);
-    set_relays(&mut damus.pool, relays);
+    set_advertised_relays(&mut damus.pool, relays);
     drop(txn);
 
     // Subscribe to user relay list updates
@@ -44,7 +44,7 @@ pub async fn track_user_relays(damus: &mut Damus) {
                     "track_user_relays: subscription from nostrdb: {:#?}",
                     relays
                 );
-                set_relays(&mut damus.pool, relays);
+                set_advertised_relays(&mut damus.pool, relays);
             }
             Err(err) => error!("err: {:?}", err),
         }
@@ -99,11 +99,12 @@ fn query_nip65_relays(ndb: &Ndb, txn: &Transaction, filter: &Filter) -> Vec<Stri
         .collect()
 }
 
-fn set_relays(pool: &mut RelayPool, relays: Vec<String>) {
+fn set_advertised_relays(pool: &mut RelayPool, relays: Vec<String>) {
     let wakeup = move || {
         // FIXME - how do we repaint?
     };
-    if let Err(e) = pool.set_relays(&relays, wakeup) {
+    pool.advertised_relays = relays.into_iter().collect();
+    if let Err(e) = pool.configure_relays(wakeup) {
         error!("{:?}", e)
     }
 }
