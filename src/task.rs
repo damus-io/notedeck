@@ -103,7 +103,10 @@ fn set_advertised_relays(pool: &mut RelayPool, relays: Vec<String>) {
     let wakeup = move || {
         // FIXME - how do we repaint?
     };
-    pool.advertised_relays = relays.into_iter().collect();
+    pool.advertised_relays = relays
+        .into_iter()
+        .map(|s| RelayPool::canonicalize_url(&s))
+        .collect();
     if let Err(e) = pool.configure_relays(wakeup) {
         error!("{:?}", e)
     }

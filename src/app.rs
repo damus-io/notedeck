@@ -696,10 +696,20 @@ impl Damus {
             "wss://nostr.wine",
             "wss://purplepag.es",
         ];
-        pool.bootstrapping_relays = bootstrapping_urls.iter().map(|&s| s.to_string()).collect();
-        let forced_urls = parsed_args.relays.into_iter().collect::<BTreeSet<_>>(); // normally empty
-        pool.forced_relays = forced_urls;
-        // the user tracker will call configure_relays after filling in advertised
+        pool.bootstrapping_relays = bootstrapping_urls
+            .iter()
+            .map(|&s| s.to_string())
+            .map(|s| RelayPool::canonicalize_url(&s))
+            .collect();
+        // normally empty
+        pool.forced_relays = parsed_args
+            .relays
+            .into_iter()
+            .map(|s| RelayPool::canonicalize_url(&s))
+            .collect::<BTreeSet<_>>();
+        // avoid relay thrash, don't call configure_relays here
+        // because the initial advertised set will be registered
+        // shortly and it will be called then
 
         let account = accounts
             .get_selected_account()
