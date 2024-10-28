@@ -213,7 +213,6 @@ impl Args {
                     error!("failed to parse filter in '{}'", filter_file);
                 }
             } else if arg == "--no-keystore" {
-                i += 1;
                 res.use_keystore = false;
             }
 

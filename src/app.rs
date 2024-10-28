@@ -694,6 +694,7 @@ impl Damus {
         for key in parsed_args.keys {
             info!("adding account: {}", key.pubkey);
             accounts.add_account(key);
+            accounts.select_account(accounts.num_accounts() - 1);
         }
 
         // setup relays if we have them
