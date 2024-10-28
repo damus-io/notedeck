@@ -1,4 +1,5 @@
 use egui::{vec2, Button, Label, Layout, RichText};
+use tracing::error;
 
 use crate::{
     app_style::{get_font_size, NotedeckTextStyle},
@@ -7,7 +8,7 @@ use crate::{
     support::Support,
 };
 
-use super::{button_hyperlink::ButtonHyperlink, padding};
+use super::padding;
 
 pub struct SupportView<'a> {
     support: &'a mut Support,
@@ -31,15 +32,18 @@ impl<'a> SupportView<'a> {
                 ui.label("Open your default email client to get help from the Damus team");
                 let size = vec2(120.0, 40.0);
                 ui.allocate_ui_with_layout(size, Layout::top_down(egui::Align::Center), |ui| {
-                    ui.add(ButtonHyperlink::new(
-                        Button::new(
-                            RichText::new("Open Email")
-                                .size(get_font_size(ui.ctx(), &NotedeckTextStyle::Body)),
-                        )
-                        .fill(PINK)
-                        .min_size(size),
-                        self.support.get_mailto_url(),
-                    ));
+                    let font_size = get_font_size(ui.ctx(), &NotedeckTextStyle::Body);
+                    let button_resp = ui.add(open_email_button(font_size, size));
+                    if button_resp.clicked() {
+                        if let Err(e) = open::that(self.support.get_mailto_url()) {
+                            error!(
+                                "Failed to open URL {} because: {}",
+                                self.support.get_mailto_url(),
+                                e
+                            );
+                        };
+                    };
+                    button_resp.on_hover_text_at_pointer(self.support.get_mailto_url());
                 })
             });
 
@@ -73,4 +77,10 @@ impl<'a> SupportView<'a> {
             }
         });
     }
+}
+
+fn open_email_button(font_size: f32, size: egui::Vec2) -> impl egui::Widget {
+    Button::new(RichText::new("Open Email").size(font_size))
+        .fill(PINK)
+        .min_size(size)
 }
