@@ -1,40 +1,45 @@
-#![cfg(target_os = "macos")]
+use std::borrow::Cow;
 
 use enostr::{Keypair, Pubkey, SecretKey};
-
-use security_framework::item::{ItemClass, ItemSearchOptions, Limit, SearchResult};
-use security_framework::passwords::{delete_generic_password, set_generic_password};
-
-use crate::key_storage::{KeyStorage, KeyStorageError, KeyStorageResponse};
-
+use security_framework::{
+    item::{ItemClass, ItemSearchOptions, Limit, SearchResult},
+    passwords::{delete_generic_password, set_generic_password},
+};
 use tracing::error;
 
-pub struct MacOSKeyStorage<'a> {
-    pub service_name: &'a str,
+use crate::Error;
+
+use super::{key_storage_impl::KeyStorageError, KeyStorageResponse};
+
+#[derive(Debug, PartialEq)]
+pub struct SecurityFrameworkKeyStorage {
+    pub service_name: Cow<'static, str>,
 }
 
-impl<'a> MacOSKeyStorage<'a> {
-    pub fn new(service_name: &'a str) -> Self {
-        MacOSKeyStorage { service_name }
+impl SecurityFrameworkKeyStorage {
+    pub fn new(service_name: String) -> Self {
+        SecurityFrameworkKeyStorage {
+            service_name: Cow::Owned(service_name),
+        }
     }
 
-    fn add_key(&self, key: &Keypair) -> Result<(), KeyStorageError> {
+    fn add_key_internal(&self, key: &Keypair) -> Result<(), KeyStorageError> {
         match set_generic_password(
-            self.service_name,
+            &self.service_name,
             key.pubkey.hex().as_str(),
             key.secret_key
                 .as_ref()
                 .map_or_else(|| &[] as &[u8], |sc| sc.as_secret_bytes()),
         ) {
             Ok(_) => Ok(()),
-            Err(_) => Err(KeyStorageError::Addition(key.pubkey.hex())),
+            Err(e) => Err(KeyStorageError::Addition(Error::Generic(e.to_string()))),
         }
     }
 
     fn get_pubkey_strings(&self) -> Vec<String> {
         let search_results = ItemSearchOptions::new()
             .class(ItemClass::generic_password())
-            .service(self.service_name)
+            .service(&self.service_name)
             .load_attributes(true)
             .limit(Limit::All)
             .search();
@@ -64,7 +69,7 @@ impl<'a> MacOSKeyStorage<'a> {
     fn get_privkey_bytes_for(&self, account: &str) -> Option<Vec<u8>> {
         let search_result = ItemSearchOptions::new()
             .class(ItemClass::generic_password())
-            .service(self.service_name)
+            .service(&self.service_name)
             .load_data(true)
             .account(account)
             .search();
@@ -97,26 +102,26 @@ impl<'a> MacOSKeyStorage<'a> {
     }
 
     fn delete_key(&self, pubkey: &Pubkey) -> Result<(), KeyStorageError> {
-        match delete_generic_password(self.service_name, pubkey.hex().as_str()) {
+        match delete_generic_password(&self.service_name, pubkey.hex().as_str()) {
             Ok(_) => Ok(()),
             Err(e) => {
                 error!("delete key error {}", e);
-                Err(KeyStorageError::Removal(pubkey.hex()))
+                Err(KeyStorageError::Removal(Error::Generic(e.to_string())))
             }
         }
     }
 }
 
-impl<'a> KeyStorage for MacOSKeyStorage<'a> {
-    fn add_key(&self, key: &Keypair) -> KeyStorageResponse<()> {
-        KeyStorageResponse::ReceivedResult(self.add_key(key))
+impl SecurityFrameworkKeyStorage {
+    pub fn add_key(&self, key: &Keypair) -> KeyStorageResponse<()> {
+        KeyStorageResponse::ReceivedResult(self.add_key_internal(key))
     }
 
-    fn get_keys(&self) -> KeyStorageResponse<Vec<Keypair>> {
+    pub fn get_keys(&self) -> KeyStorageResponse<Vec<Keypair>> {
         KeyStorageResponse::ReceivedResult(Ok(self.get_all_keypairs()))
     }
 
-    fn remove_key(&self, key: &Keypair) -> KeyStorageResponse<()> {
+    pub fn remove_key(&self, key: &Keypair) -> KeyStorageResponse<()> {
         KeyStorageResponse::ReceivedResult(self.delete_key(&key.pubkey))
     }
 }
@@ -127,8 +132,8 @@ mod tests {
     use enostr::FullKeypair;
 
     static TEST_SERVICE_NAME: &str = "NOTEDECKTEST";
-    static STORAGE: MacOSKeyStorage = MacOSKeyStorage {
-        service_name: TEST_SERVICE_NAME,
+    static STORAGE: SecurityFrameworkKeyStorage = SecurityFrameworkKeyStorage {
+        service_name: Cow::Borrowed(TEST_SERVICE_NAME),
     };
 
     // individual tests are ignored so test runner doesn't run them all concurrently
@@ -140,14 +145,14 @@ mod tests {
         let num_keys_before_test = STORAGE.get_pubkeys().len();
 
         let keypair = FullKeypair::generate().to_keypair();
-        let add_result = STORAGE.add_key(&keypair);
-        assert_eq!(add_result, Ok(()));
+        let add_result = STORAGE.add_key_internal(&keypair);
+        assert!(add_result.is_ok());
 
         let get_pubkeys_result = STORAGE.get_pubkeys();
         assert_eq!(get_pubkeys_result.len() - num_keys_before_test, 1);
 
         let remove_result = STORAGE.delete_key(&keypair.pubkey);
-        assert_eq!(remove_result, Ok(()));
+        assert!(remove_result.is_ok());
 
         let keys = STORAGE.get_pubkeys();
         assert_eq!(keys.len() - num_keys_before_test, 0);
@@ -163,8 +168,8 @@ mod tests {
             .collect();
 
         expected_keypairs.iter().for_each(|keypair| {
-            let add_result = STORAGE.add_key(keypair);
-            assert_eq!(add_result, Ok(()));
+            let add_result = STORAGE.add_key_internal(keypair);
+            assert!(add_result.is_ok());
         });
 
         let asserted_keypairs = STORAGE.get_all_keypairs();
@@ -172,7 +177,7 @@ mod tests {
 
         expected_keypairs.iter().for_each(|keypair| {
             let remove_result = STORAGE.delete_key(&keypair.pubkey);
-            assert_eq!(remove_result, Ok(()));
+            assert!(remove_result.is_ok());
         });
 
         let num_keys_after_test = STORAGE.get_all_keypairs().len();

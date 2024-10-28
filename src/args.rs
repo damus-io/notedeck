@@ -13,6 +13,7 @@ pub struct Args {
     pub light: bool,
     pub debug: bool,
     pub textmode: bool,
+    pub use_keystore: bool,
     pub dbpath: Option<String>,
     pub datapath: Option<String>,
 }
@@ -28,6 +29,7 @@ impl Args {
             since_optimize: true,
             debug: false,
             textmode: false,
+            use_keystore: true,
             dbpath: None,
             datapath: None,
         };
@@ -210,6 +212,8 @@ impl Args {
                 } else {
                     error!("failed to parse filter in '{}'", filter_file);
                 }
+            } else if arg == "--no-keystore" {
+                res.use_keystore = false;
             }
 
             i += 1;

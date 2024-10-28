@@ -1,6 +1,7 @@
 use crate::{
     account_manager::AccountManager,
     app_creation::setup_cc,
+    app_size_handler::AppSizeHandler,
     app_style::user_requested_visuals_change,
     args::Args,
     column::Columns,
@@ -9,19 +10,20 @@ use crate::{
     filter::{self, FilterState},
     frame_history::FrameHistory,
     imgcache::ImageCache,
-    key_storage::KeyStorageType,
     nav,
     note::NoteRef,
     notecache::{CachedNote, NoteCache},
     notes_holder::NotesHolderStorage,
     profile::Profile,
+    storage::{Directory, FileKeyStorage, KeyStorageType},
     subscriptions::{SubKind, Subscriptions},
+    support::Support,
     thread::Thread,
     timeline::{Timeline, TimelineId, TimelineKind, ViewFilter},
     ui::{self, DesktopSidePanel},
     unknowns::UnknownIds,
     view_state::ViewState,
-    Result,
+    DataPaths, Result,
 };
 
 use enostr::{ClientMessage, RelayEvent, RelayMessage, RelayPool};
@@ -60,6 +62,8 @@ pub struct Damus {
     pub img_cache: ImageCache,
     pub accounts: AccountManager,
     pub subscriptions: Subscriptions,
+    pub app_rect_handler: AppSizeHandler,
+    pub support: Support,
 
     frame_history: crate::frame_history::FrameHistory,
 
@@ -507,6 +511,8 @@ fn update_damus(damus: &mut Damus, ctx: &egui::Context) {
         error!("error processing event: {}", err);
     }
 
+    damus.app_rect_handler.try_save_app_size(ctx);
+
     damus.columns.attempt_perform_deletion_request();
 }
 
@@ -664,20 +670,35 @@ impl Damus {
         let mut config = Config::new();
         config.set_ingester_threads(4);
 
-        let mut accounts = AccountManager::new(
-            // TODO: should pull this from settings
-            None,
-            // TODO: use correct KeyStorage mechanism for current OS arch
-            KeyStorageType::None,
-        );
+        let keystore = if parsed_args.use_keystore {
+            if let Ok(keys_path) = DataPaths::Keys.get_path() {
+                if let Ok(selected_key_path) = DataPaths::SelectedKey.get_path() {
+                    KeyStorageType::FileSystem(FileKeyStorage::new(
+                        Directory::new(keys_path),
+                        Directory::new(selected_key_path),
+                    ))
+                } else {
+                    error!("Could not find path for selected key");
+                    KeyStorageType::None
+                }
+            } else {
+                error!("Could not find data path for keys");
+                KeyStorageType::None
+            }
+        } else {
+            KeyStorageType::None
+        };
+
+        let mut accounts = AccountManager::new(keystore);
+
+        let num_keys = parsed_args.keys.len();
 
         for key in parsed_args.keys {
             info!("adding account: {}", key.pubkey);
             accounts.add_account(key);
         }
 
-        // TODO: pull currently selected account from settings
-        if accounts.num_accounts() > 0 {
+        if num_keys != 0 {
             accounts.select_account(0);
         }
 
@@ -737,6 +758,8 @@ impl Damus {
             accounts,
             frame_history: FrameHistory::default(),
             view_state: ViewState::default(),
+            app_rect_handler: AppSizeHandler::default(),
+            support: Support::default(),
         }
     }
 
@@ -817,9 +840,11 @@ impl Damus {
             columns,
             textmode: false,
             ndb: Ndb::new(data_path.as_ref().to_str().expect("db path ok"), &config).expect("ndb"),
-            accounts: AccountManager::new(None, KeyStorageType::None),
+            accounts: AccountManager::new(KeyStorageType::None),
             frame_history: FrameHistory::default(),
             view_state: ViewState::default(),
+            app_rect_handler: AppSizeHandler::default(),
+            support: Support::default(),
         }
     }
 
@@ -1009,7 +1034,11 @@ fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus) {
                 .show(ui);
 
                 if side_panel.response.clicked() {
-                    DesktopSidePanel::perform_action(app.columns_mut(), side_panel.action);
+                    DesktopSidePanel::perform_action(
+                        &mut app.columns,
+                        &mut app.support,
+                        side_panel.action,
+                    );
                 }
 
                 // vertical sidebar line
