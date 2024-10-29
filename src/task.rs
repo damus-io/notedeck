@@ -13,6 +13,15 @@ use uuid::Uuid;
 use crate::note::NoteRef;
 use crate::Damus;
 
+pub fn spawn_track_user_relays(damus: &mut Damus) {
+    // This is only safe because we are absolutely single threaded ...
+    let damus_ptr = &mut *damus as *mut Damus;
+    spawn_sendable(async move {
+        let damus = unsafe { &mut *damus_ptr };
+        track_user_relays(damus).await;
+    });
+}
+
 pub async fn track_user_relays(damus: &mut Damus) {
     debug!("track_user_relays starting");
 
