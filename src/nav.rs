@@ -27,7 +27,8 @@ use egui_nav::{Nav, NavAction, TitleBarResponse};
 use nostrdb::{Ndb, Transaction};
 use tracing::{error, info};
 
-pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) {
+pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) -> bool {
+    let mut col_changed = false;
     let col_id = app.columns.get_column_id_at_index(col);
     // TODO(jb55): clean up this router_mut mess by using Router<R> in egui-nav directly
     let routes = app
@@ -201,12 +202,14 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) {
                 pubkey.bytes(),
             );
         }
+        col_changed = true;
     } else if let Some(NavAction::Navigated) = nav_response.action {
         let cur_router = app.columns_mut().column_mut(col).router_mut();
         cur_router.navigating = false;
         if cur_router.is_replacing() {
             cur_router.remove_previous_route();
         }
+        col_changed = true;
     }
 
     if let Some(title_response) = nav_response.title_response {
@@ -220,6 +223,8 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) {
             }
         }
     }
+
+    col_changed
 }
 
 fn unsubscribe_timeline(ndb: &Ndb, timeline: &Timeline) {

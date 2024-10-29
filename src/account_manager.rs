@@ -2,6 +2,7 @@ use std::cmp::Ordering;
 
 use enostr::{FilledKeypair, FullKeypair, Keypair};
 use nostrdb::Ndb;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     column::Columns,
@@ -32,7 +33,7 @@ pub enum AccountsRouteResponse {
     AddAccount(AccountLoginResponse),
 }
 
-#[derive(Debug, Eq, PartialEq, Clone, Copy)]
+#[derive(Debug, Eq, PartialEq, Clone, Copy, Serialize, Deserialize)]
 pub enum AccountsRoute {
     Accounts,
     AddAccount,

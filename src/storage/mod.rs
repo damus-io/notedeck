@@ -1,7 +1,9 @@
+mod columns;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod file_key_storage;
 mod file_storage;
 
+pub use columns::{load_columns, save_columns};
 pub use file_key_storage::FileKeyStorage;
 pub use file_storage::write_file;
 pub use file_storage::DataPaths;

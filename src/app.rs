@@ -15,7 +15,7 @@ use crate::{
     notecache::{CachedNote, NoteCache},
     notes_holder::NotesHolderStorage,
     profile::Profile,
-    storage::{Directory, FileKeyStorage, KeyStorageType},
+    storage::{self, Directory, FileKeyStorage, KeyStorageType},
     subscriptions::{SubKind, Subscriptions},
     support::Support,
     thread::Thread,
@@ -727,12 +727,28 @@ impl Damus {
             .map(|a| a.pubkey.bytes());
         let ndb = Ndb::new(&dbpath, &config).expect("ndb");
 
-        let mut columns: Columns = Columns::new();
-        for col in parsed_args.columns {
-            if let Some(timeline) = col.into_timeline(&ndb, account) {
-                columns.add_new_timeline_column(timeline);
+        let mut columns = if parsed_args.columns.is_empty() {
+            if let Some(serializable_columns) = storage::load_columns() {
+                info!("Using columns from disk");
+                serializable_columns.into_columns(&ndb, account)
+            } else {
+                info!("Could not load columns from disk");
+                Columns::new()
             }
-        }
+        } else {
+            info!(
+                "Using columns from command line arguments: {:?}",
+                parsed_args.columns
+            );
+            let mut columns: Columns = Columns::new();
+            for col in parsed_args.columns {
+                if let Some(timeline) = col.into_timeline(&ndb, account) {
+                    columns.add_new_timeline_column(timeline);
+                }
+            }
+
+            columns
+        };
 
         let debug = parsed_args.debug;
 
@@ -971,8 +987,8 @@ fn render_damus_mobile(ctx: &egui::Context, app: &mut Damus) {
     //let routes = app.timelines[0].routes.clone();
 
     main_panel(&ctx.style(), ui::is_narrow(ctx)).show(ctx, |ui| {
-        if !app.columns.columns().is_empty() {
-            nav::render_nav(0, app, ui);
+        if !app.columns.columns().is_empty() && nav::render_nav(0, app, ui) {
+            storage::save_columns(app.columns.as_serializable_columns());
         }
     });
 }
@@ -1049,10 +1065,13 @@ fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus) {
                 );
             });
 
+            let mut columns_changed = false;
             for col_index in 0..app.columns.num_columns() {
                 strip.cell(|ui| {
                     let rect = ui.available_rect_before_wrap();
-                    nav::render_nav(col_index, app, ui);
+                    if nav::render_nav(col_index, app, ui) {
+                        columns_changed = true;
+                    }
 
                     // vertical line
                     ui.painter().vline(
@@ -1063,6 +1082,10 @@ fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus) {
                 });
 
                 //strip.cell(|ui| timeline::timeline_view(ui, app, timeline_ind));
+            }
+
+            if columns_changed {
+                storage::save_columns(app.columns.as_serializable_columns());
             }
         });
 }

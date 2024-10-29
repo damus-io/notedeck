@@ -1,5 +1,6 @@
 use enostr::{NoteId, Pubkey};
 use nostrdb::Ndb;
+use serde::{Deserialize, Serialize};
 use std::fmt::{self};
 
 use crate::{
@@ -10,7 +11,7 @@ use crate::{
 };
 
 /// App routing. These describe different places you can go inside Notedeck.
-#[derive(Clone, Copy, Eq, PartialEq, Debug)]
+#[derive(Clone, Copy, Eq, PartialEq, Debug, Serialize, Deserialize)]
 pub enum Route {
     Timeline(TimelineRoute),
     Accounts(AccountsRoute),
