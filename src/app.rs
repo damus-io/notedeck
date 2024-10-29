@@ -10,6 +10,7 @@ use crate::{
     filter::{self, FilterState},
     frame_history::FrameHistory,
     imgcache::ImageCache,
+    muted::Muted,
     nav,
     note::NoteRef,
     notecache::{CachedNote, NoteCache},
@@ -66,6 +67,7 @@ pub struct Damus {
     pub subscriptions: Subscriptions,
     pub app_rect_handler: AppSizeHandler,
     pub support: Support,
+    pub muted: Muted,
 
     frame_history: crate::frame_history::FrameHistory,
 
@@ -454,6 +456,7 @@ fn update_damus(damus: &mut Damus, ctx: &egui::Context) {
                 .expect("home subscription failed");
 
             task::spawn_track_user_relays(damus);
+            task::spawn_track_user_muted(damus);
         }
 
         DamusState::NewTimelineSub(new_timeline_id) => {
@@ -745,6 +748,7 @@ impl Damus {
             view_state: ViewState::default(),
             app_rect_handler: AppSizeHandler::default(),
             support: Support::default(),
+            muted: Muted::default(),
         }
     }
 
@@ -830,6 +834,7 @@ impl Damus {
             view_state: ViewState::default(),
             app_rect_handler: AppSizeHandler::default(),
             support: Support::default(),
+            muted: Muted::default(),
         }
     }
 

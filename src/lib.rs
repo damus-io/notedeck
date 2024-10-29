@@ -21,6 +21,7 @@ mod imgcache;
 mod key_parsing;
 pub mod login_manager;
 mod multi_subscriber;
+mod muted;
 mod nav;
 mod note;
 mod notecache;
