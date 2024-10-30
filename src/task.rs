@@ -29,8 +29,16 @@ pub async fn track_user_relays(damus: &mut Damus) {
 
     // Do we have a user relay list stored in nostrdb? Start with that ...
     let txn = Transaction::new(&damus.ndb).expect("transaction");
-    let relays = query_nip65_relays(&damus.ndb, &txn, &filter);
-    debug!("track_user_relays: initial from nostrdb: {:#?}", relays);
+    let lim = filter.limit().unwrap_or(crate::filter::default_limit()) as i32;
+    let nks = damus
+        .ndb
+        .query(&txn, &[filter.clone()], lim)
+        .expect("query user relays results")
+        .iter()
+        .map(|qr| qr.note_key)
+        .collect();
+    let relays = handle_nip65_relays(&damus.ndb, &txn, &nks);
+    debug!("track_user_relays: initial: {:#?}", relays);
     set_advertised_relays(&mut damus.pool, relays);
     drop(txn);
 
@@ -45,14 +53,10 @@ pub async fn track_user_relays(damus: &mut Damus) {
     // Wait for updates to the subscription
     loop {
         match damus.ndb.wait_for_notes(ndbsub, 10).await {
-            Ok(vec) => {
-                debug!("saw {:?}", vec);
+            Ok(nks) => {
                 let txn = Transaction::new(&damus.ndb).expect("transaction");
-                let relays = query_nip65_relays(&damus.ndb, &txn, &filter);
-                debug!(
-                    "track_user_relays: subscription from nostrdb: {:#?}",
-                    relays
-                );
+                let relays = handle_nip65_relays(&damus.ndb, &txn, &nks);
+                debug!("track_user_relays: update: {:#?}", relays);
                 set_advertised_relays(&mut damus.pool, relays);
             }
             Err(err) => error!("err: {:?}", err),
@@ -90,15 +94,9 @@ fn _query_note_json(ndb: &Ndb, txn: &Transaction, filter: &Filter) -> Vec<String
         .collect()
 }
 
-fn query_nip65_relays(ndb: &Ndb, txn: &Transaction, filter: &Filter) -> Vec<String> {
-    let lim = filter.limit().unwrap_or(crate::filter::default_limit()) as i32;
-    let results = ndb
-        .query(txn, &[filter.clone()], lim)
-        .expect("query results");
-    results
-        .iter()
-        .map(|qr| NoteRef::new(qr.note_key, qr.note.created_at()))
-        .filter_map(|nr| ndb.get_note_by_key(txn, nr.key).ok())
+fn handle_nip65_relays(ndb: &Ndb, txn: &Transaction, nks: &Vec<NoteKey>) -> Vec<String> {
+    nks.iter()
+        .filter_map(|nk| ndb.get_note_by_key(txn, *nk).ok())
         .flat_map(|n| {
             n.tags()
                 .iter()
