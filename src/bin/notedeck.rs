@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
 use notedeck::app_creation::generate_native_options;
 use notedeck::Damus;
+use tracing_subscriber::EnvFilter;
 
 // Entry point for wasm
 //#[cfg(target_arch = "wasm32")]
@@ -41,7 +42,6 @@ async fn main() {
 
     // Log to stdout (if you run with `RUST_LOG=debug`).
     if let Some(non_blocking_writer) = maybe_non_blocking {
-        use tracing::Level;
         use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
         let console_layer = fmt::layer().with_target(true).with_writer(std::io::stdout);
@@ -51,16 +51,19 @@ async fn main() {
             .with_ansi(false)
             .with_writer(non_blocking_writer);
 
+        let env_filter =
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+
         // Set up the subscriber to combine both layers
         tracing_subscriber::registry()
             .with(console_layer)
             .with(file_layer)
-            .with(tracing_subscriber::filter::LevelFilter::from_level(
-                Level::INFO,
-            )) // Set log level
+            .with(env_filter)
             .init();
     } else {
-        tracing_subscriber::fmt::init();
+        tracing_subscriber::fmt()
+            .with_env_filter(EnvFilter::from_default_env())
+            .init();
     }
 
     let _res = eframe::run_native(
