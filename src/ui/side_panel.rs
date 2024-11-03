@@ -396,6 +396,7 @@ mod preview {
     use egui_extras::{Size, StripBuilder};
 
     use crate::{
+        app::get_active_columns_mut,
         test_data,
         ui::{Preview, PreviewConfig},
     };
@@ -409,7 +410,8 @@ mod preview {
     impl DesktopSidePanelPreview {
         fn new() -> Self {
             let mut app = test_data::test_app();
-            app.columns.add_column(Column::new(vec![Route::accounts()]));
+            get_active_columns_mut(&app.accounts, &mut app.decks)
+                .add_column(Column::new(vec![Route::accounts()]));
             DesktopSidePanelPreview { app }
         }
     }
@@ -430,7 +432,7 @@ mod preview {
                         let response = panel.show(ui);
 
                         DesktopSidePanel::perform_action(
-                            &mut self.app.columns,
+                            get_active_columns_mut(&self.app.accounts, &mut self.app.decks),
                             &mut self.app.support,
                             response.action,
                         );

@@ -1,5 +1,6 @@
 use crate::{
     account_manager::render_accounts_route,
+    app::{get_active_columns, get_active_columns_mut},
     app_style::{get_font_size, NotedeckTextStyle},
     fonts::NamedFontFamily,
     notes_holder::NotesHolder,
@@ -28,7 +29,7 @@ use nostrdb::{Ndb, Transaction};
 use tracing::{error, info};
 
 pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) {
-    let col_id = app.columns.get_column_id_at_index(col);
+    let col_id = get_active_columns(&app.accounts, &app.decks).get_column_id_at_index(col);
     // TODO(jb55): clean up this router_mut mess by using Router<R> in egui-nav directly
     let routes = app
         .columns()
@@ -36,18 +37,18 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) {
         .router()
         .routes()
         .iter()
-        .map(|r| r.get_titled_route(&app.columns, &app.ndb))
+        .map(|r| r.get_titled_route(get_active_columns(&app.accounts, &app.decks), &app.ndb))
         .collect();
     let nav_response = Nav::new(routes)
         .navigating(app.columns_mut().column_mut(col).router_mut().navigating)
         .returning(app.columns_mut().column_mut(col).router_mut().returning)
         .title(48.0, title_bar)
         .show_mut(col_id, ui, |ui, nav| {
-            let column = app.columns.column_mut(col);
+            let column = get_active_columns_mut(&app.accounts, &mut app.decks).column_mut(col);
             match &nav.top().route {
                 Route::Timeline(tlr) => render_timeline_route(
                     &app.ndb,
-                    &mut app.columns,
+                    get_active_columns_mut(&app.accounts, &mut app.decks),
                     &mut app.pool,
                     &mut app.drafts,
                     &mut app.img_cache,
@@ -64,9 +65,9 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) {
                         ui,
                         &app.ndb,
                         col,
-                        &mut app.columns,
                         &mut app.img_cache,
                         &mut app.accounts,
+                        &mut app.decks,
                         &mut app.view_state.login,
                         *amr,
                     );
@@ -120,7 +121,7 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) {
                 Route::Profile(pubkey) => render_profile_route(
                     pubkey,
                     &app.ndb,
-                    &mut app.columns,
+                    get_active_columns_mut(&app.accounts, &mut app.decks),
                     &mut app.profiles,
                     &mut app.pool,
                     &mut app.img_cache,
@@ -150,7 +151,7 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) {
             }
 
             AfterRouteExecution::OpenProfile(pubkey) => {
-                app.columns
+                get_active_columns_mut(&app.accounts, &mut app.decks)
                     .column_mut(col)
                     .router_mut()
                     .route_to(Route::Profile(pubkey));

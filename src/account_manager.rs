@@ -4,10 +4,11 @@ use enostr::{FilledKeypair, FullKeypair, Keypair};
 use nostrdb::Ndb;
 
 use crate::{
-    column::Columns,
+    app::get_active_columns_mut,
+    decks::{AccountId, Decks},
     imgcache::ImageCache,
     login_manager::LoginState,
-    route::{Route, Router},
+    route::Route,
     storage::{KeyStorageResponse, KeyStorageType},
     ui::{
         account_login_view::{AccountLoginResponse, AccountLoginView},
@@ -22,6 +23,7 @@ pub use crate::user_account::UserAccount;
 /// Represents all user-facing operations related to account management.
 pub struct AccountManager {
     currently_selected_account: Option<usize>,
+    select_next_frame: Option<usize>,
     accounts: Vec<UserAccount>,
     key_store: KeyStorageType,
 }
@@ -44,13 +46,12 @@ pub fn render_accounts_route(
     ui: &mut egui::Ui,
     ndb: &Ndb,
     col: usize,
-    columns: &mut Columns,
     img_cache: &mut ImageCache,
     accounts: &mut AccountManager,
+    decks: &mut Decks,
     login_state: &mut LoginState,
     route: AccountsRoute,
 ) {
-    let router = columns.column_mut(col).router_mut();
     let resp = match route {
         AccountsRoute::Accounts => AccountsView::new(ndb, accounts, img_cache)
             .ui(ui)
@@ -66,11 +67,28 @@ pub fn render_accounts_route(
     if let Some(resp) = resp {
         match resp {
             AccountsRouteResponse::Accounts(response) => {
-                process_accounts_view_response(accounts, response, router);
+                process_accounts_view_response(accounts, decks, col, response);
             }
-            AccountsRouteResponse::AddAccount(response) => {
-                process_login_view_response(accounts, response);
+            AccountsRouteResponse::AddAccount(login_resp) => {
+                let pubkey = match login_resp {
+                    AccountLoginResponse::CreateNew => {
+                        let kp = FullKeypair::generate().to_keypair();
+                        let pubkey = kp.pubkey;
+                        accounts.add_account(kp);
+                        pubkey
+                    }
+                    AccountLoginResponse::LoginWith(keypair) => {
+                        let pubkey = keypair.pubkey;
+                        accounts.add_account(keypair);
+                        pubkey
+                    }
+                };
+                decks.add_deck_default(AccountId::User(pubkey));
+                accounts.select_account_nextframe(accounts.num_accounts() - 1);
                 *login_state = Default::default();
+                let router = get_active_columns_mut(accounts, decks)
+                    .column_mut(col)
+                    .router_mut();
                 router.go_back();
             }
         }
@@ -78,16 +96,23 @@ pub fn render_accounts_route(
 }
 
 pub fn process_accounts_view_response(
-    manager: &mut AccountManager,
+    accounts: &mut AccountManager,
+    decks: &mut Decks,
+    col: usize,
     response: AccountsViewResponse,
-    router: &mut Router<Route>,
 ) {
+    let router = get_active_columns_mut(accounts, decks)
+        .column_mut(col)
+        .router_mut();
     match response {
         AccountsViewResponse::RemoveAccount(index) => {
-            manager.remove_account(index);
+            if let Some(acc) = accounts.get_account(index) {
+                decks.remove_for(AccountId::User(acc.pubkey));
+            }
+            accounts.remove_account(index);
         }
         AccountsViewResponse::SelectAccount(index) => {
-            manager.select_account(index);
+            accounts.select_account_nextframe(index);
         }
         AccountsViewResponse::RouteToLogin => {
             router.route_to(Route::add_account());
@@ -106,6 +131,7 @@ impl AccountManager {
         let currently_selected_account = get_selected_index(&accounts, &key_store);
         AccountManager {
             currently_selected_account,
+            select_next_frame: None,
             accounts,
             key_store,
         }
@@ -131,7 +157,7 @@ impl AccountManager {
             if let Some(selected_index) = self.currently_selected_account {
                 match selected_index.cmp(&index) {
                     Ordering::Greater => {
-                        self.select_account(selected_index - 1);
+                        self.select_account_nextframe(selected_index - 1);
                     }
                     Ordering::Equal => {
                         self.clear_selected_account();
@@ -188,10 +214,20 @@ impl AccountManager {
         }
     }
 
-    pub fn select_account(&mut self, index: usize) {
-        if let Some(account) = self.accounts.get(index) {
-            self.currently_selected_account = Some(index);
-            self.key_store.select_key(Some(account.pubkey));
+    /// Indicate to the `AccountManager` that the account at `index` should be selected next frame
+    pub fn select_account_nextframe(&mut self, index: usize) {
+        self.select_next_frame = Some(index)
+    }
+
+    /// Actually select the account at the index `select_next_frame`.
+    /// Should only be called in `Damus::update_damus`
+    pub fn perform_selection(&mut self) {
+        if let Some(index) = self.select_next_frame {
+            if let Some(account) = self.accounts.get(index) {
+                self.currently_selected_account = Some(index);
+                self.key_store.select_key(Some(account.pubkey));
+                self.select_next_frame = None;
+            }
         }
     }
 
@@ -212,16 +248,4 @@ fn get_selected_index(accounts: &[UserAccount], keystore: &KeyStorageType) -> Op
     };
 
     None
-}
-
-pub fn process_login_view_response(manager: &mut AccountManager, response: AccountLoginResponse) {
-    match response {
-        AccountLoginResponse::CreateNew => {
-            manager.add_account(FullKeypair::generate().to_keypair());
-        }
-        AccountLoginResponse::LoginWith(keypair) => {
-            manager.add_account(keypair);
-        }
-    }
-    manager.select_account(manager.num_accounts() - 1);
 }

@@ -5,6 +5,7 @@ use crate::{
     app_style::user_requested_visuals_change,
     args::Args,
     column::Columns,
+    decks::{AccountId, Decks},
     draft::Drafts,
     error::{Error, FilterError},
     filter::{self, FilterState},
@@ -26,7 +27,7 @@ use crate::{
     DataPaths, Result,
 };
 
-use enostr::{ClientMessage, RelayEvent, RelayMessage, RelayPool};
+use enostr::{ClientMessage, Pubkey, RelayEvent, RelayMessage, RelayPool};
 use uuid::Uuid;
 
 use egui::{Context, Frame, Style};
@@ -52,7 +53,7 @@ pub struct Damus {
     pub note_cache: NoteCache,
     pub pool: RelayPool,
 
-    pub columns: Columns,
+    pub decks: Decks,
     pub ndb: Ndb,
     pub view_state: ViewState,
     pub unknown_ids: UnknownIds,
@@ -178,7 +179,8 @@ fn send_initial_timeline_filter(
 
 fn send_initial_filters(damus: &mut Damus, relay_url: &str) {
     info!("Sending initial filters to {}", relay_url);
-    for timeline in damus.columns.timelines_mut() {
+    let current_columns = get_active_columns_mut(&damus.accounts, &mut damus.decks);
+    for timeline in current_columns.timelines_mut() {
         send_initial_timeline_filter(
             &damus.ndb,
             damus.since_optimize,
@@ -217,7 +219,8 @@ fn handle_key_events(input: &egui::InputState, _pixels_per_point: f32, columns: 
 
 fn try_process_event(damus: &mut Damus, ctx: &egui::Context) -> Result<()> {
     let ppp = ctx.pixels_per_point();
-    ctx.input(|i| handle_key_events(i, ppp, &mut damus.columns));
+    let current_columns = get_active_columns_mut(&damus.accounts, &mut damus.decks);
+    ctx.input(|i| handle_key_events(i, ppp, current_columns));
 
     let ctx2 = ctx.clone();
     let wakeup = move || {
@@ -239,10 +242,11 @@ fn try_process_event(damus: &mut Damus, ctx: &egui::Context) -> Result<()> {
         }
     }
 
-    let n_timelines = damus.columns.timelines().len();
+    let current_columns = get_active_columns_mut(&damus.accounts, &mut damus.decks);
+    let n_timelines = current_columns.timelines().len();
     for timeline_ind in 0..n_timelines {
         let is_ready = {
-            let timeline = &mut damus.columns.timelines[timeline_ind];
+            let timeline = &mut current_columns.timelines[timeline_ind];
             matches!(
                 is_timeline_ready(&damus.ndb, &mut damus.pool, &mut damus.note_cache, timeline),
                 Ok(true)
@@ -254,7 +258,7 @@ fn try_process_event(damus: &mut Damus, ctx: &egui::Context) -> Result<()> {
 
             if let Err(err) = Timeline::poll_notes_into_view(
                 timeline_ind,
-                damus.columns.timelines_mut(),
+                current_columns.timelines_mut(),
                 &damus.ndb,
                 &txn,
                 &mut damus.unknown_ids,
@@ -463,6 +467,8 @@ fn setup_new_nostrdb_sub(
 }
 
 fn update_damus(damus: &mut Damus, ctx: &egui::Context) {
+    damus.accounts.perform_selection();
+
     match damus.state {
         DamusState::Initializing => {
             #[cfg(feature = "profiling")]
@@ -473,23 +479,27 @@ fn update_damus(damus: &mut Damus, ctx: &egui::Context) {
             damus
                 .subscriptions()
                 .insert("unknownids".to_string(), SubKind::OneShot);
-            setup_initial_nostrdb_subs(&damus.ndb, &mut damus.note_cache, &mut damus.columns)
-                .expect("home subscription failed");
+            setup_initial_nostrdb_subs(
+                &damus.ndb,
+                &mut damus.note_cache,
+                get_active_columns_mut(&damus.accounts, &mut damus.decks),
+            )
+            .expect("home subscription failed");
         }
 
         DamusState::NewTimelineSub(new_timeline_id) => {
             info!("adding new timeline {}", new_timeline_id);
+            let current_columns = get_active_columns_mut(&damus.accounts, &mut damus.decks);
             setup_new_nostrdb_sub(
                 &damus.ndb,
                 &mut damus.note_cache,
-                &mut damus.columns,
+                current_columns,
                 new_timeline_id,
             )
             .expect("new timeline subscription failed");
 
             if let Some(filter) = {
-                let timeline = damus
-                    .columns
+                let timeline = current_columns
                     .find_timeline(new_timeline_id)
                     .expect("timeline");
                 match &timeline.filter {
@@ -513,7 +523,8 @@ fn update_damus(damus: &mut Damus, ctx: &egui::Context) {
 
     damus.app_rect_handler.try_save_app_size(ctx);
 
-    damus.columns.attempt_perform_deletion_request();
+    let current_columns = get_active_columns_mut(&damus.accounts, &mut damus.decks);
+    current_columns.attempt_perform_deletion_request();
 }
 
 fn process_event(damus: &mut Damus, _subid: &str, event: &str) {
@@ -547,7 +558,7 @@ fn handle_eose(damus: &mut Damus, subid: &str, relay_url: &str) -> Result<()> {
             UnknownIds::update(
                 &txn,
                 &mut damus.unknown_ids,
-                &damus.columns,
+                get_active_columns(&damus.accounts, &damus.decks),
                 &damus.ndb,
                 &mut damus.note_cache,
             );
@@ -564,7 +575,10 @@ fn handle_eose(damus: &mut Damus, subid: &str, relay_url: &str) -> Result<()> {
         }
 
         SubKind::FetchingContactList(timeline_uid) => {
-            let timeline = if let Some(tl) = damus.columns.find_timeline_mut(timeline_uid) {
+            let timeline = if let Some(tl) =
+                get_active_columns_mut(&damus.accounts, &mut damus.decks)
+                    .find_timeline_mut(timeline_uid)
+            {
                 tl
             } else {
                 error!(
@@ -699,7 +713,7 @@ impl Damus {
         }
 
         if num_keys != 0 {
-            accounts.select_account(0);
+            accounts.select_account_nextframe(0);
         }
 
         // setup relays if we have them
@@ -740,6 +754,23 @@ impl Damus {
             columns.new_column_picker();
         }
 
+        let mut decks = Decks::default();
+
+        if let Some(account) = account {
+            decks.add_deck(AccountId::User(Pubkey::new(*account)), columns);
+        }
+        for cur_account in accounts.get_accounts() {
+            if let Some(acc) = account {
+                if *cur_account.pubkey.bytes() == *acc {
+                    continue;
+                }
+            }
+
+            let mut col = Columns::default();
+            col.new_column_picker();
+            decks.add_deck(AccountId::User(cur_account.pubkey), col);
+        }
+
         Self {
             pool,
             debug,
@@ -752,7 +783,6 @@ impl Damus {
             state: DamusState::Initializing,
             img_cache: ImageCache::new(imgcache_dir.into()),
             note_cache: NoteCache::default(),
-            columns,
             textmode: parsed_args.textmode,
             ndb,
             accounts,
@@ -760,6 +790,7 @@ impl Damus {
             view_state: ViewState::default(),
             app_rect_handler: AppSizeHandler::default(),
             support: Support::default(),
+            decks,
         }
     }
 
@@ -792,11 +823,11 @@ impl Damus {
     }
 
     pub fn columns_mut(&mut self) -> &mut Columns {
-        &mut self.columns
+        get_active_columns_mut(&self.accounts, &mut self.decks)
     }
 
     pub fn columns(&self) -> &Columns {
-        &self.columns
+        get_active_columns(&self.accounts, &self.decks)
     }
 
     pub fn gen_subid(&self, kind: &SubKind) -> String {
@@ -818,6 +849,8 @@ impl Damus {
         let timeline = Timeline::new(TimelineKind::Universe, FilterState::ready(vec![filter]));
 
         columns.add_new_timeline_column(timeline);
+        let mut decks = Decks::default();
+        decks.add_deck(crate::decks::AccountId::Unnamed(0), columns);
 
         let imgcache_dir = data_path.as_ref().join(ImageCache::rel_datadir());
         let _ = std::fs::create_dir_all(imgcache_dir.clone());
@@ -837,7 +870,6 @@ impl Damus {
             pool: RelayPool::new(),
             img_cache: ImageCache::new(imgcache_dir),
             note_cache: NoteCache::default(),
-            columns,
             textmode: false,
             ndb: Ndb::new(data_path.as_ref().to_str().expect("db path ok"), &config).expect("ndb"),
             accounts: AccountManager::new(KeyStorageType::None),
@@ -845,6 +877,7 @@ impl Damus {
             view_state: ViewState::default(),
             app_rect_handler: AppSizeHandler::default(),
             support: Support::default(),
+            decks,
         }
     }
 
@@ -971,7 +1004,10 @@ fn render_damus_mobile(ctx: &egui::Context, app: &mut Damus) {
     //let routes = app.timelines[0].routes.clone();
 
     main_panel(&ctx.style(), ui::is_narrow(ctx)).show(ctx, |ui| {
-        if !app.columns.columns().is_empty() {
+        if !get_active_columns(&app.accounts, &app.decks)
+            .columns()
+            .is_empty()
+        {
             nav::render_nav(0, app, ui);
         }
     });
@@ -997,7 +1033,8 @@ fn render_damus_desktop(ctx: &egui::Context, app: &mut Damus) {
     puffin::profile_function!();
 
     let screen_size = ctx.screen_rect().width();
-    let calc_panel_width = (screen_size / app.columns.num_columns() as f32) - 30.0;
+    let calc_panel_width =
+        (screen_size / get_active_columns(&app.accounts, &app.decks).num_columns() as f32) - 30.0;
     let min_width = 320.0;
     let need_scroll = calc_panel_width < min_width;
     let panel_sizes = if need_scroll {
@@ -1021,7 +1058,10 @@ fn render_damus_desktop(ctx: &egui::Context, app: &mut Damus) {
 fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus) {
     StripBuilder::new(ui)
         .size(Size::exact(ui::side_panel::SIDE_PANEL_WIDTH))
-        .sizes(sizes, app.columns.num_columns())
+        .sizes(
+            sizes,
+            get_active_columns(&app.accounts, &app.decks).num_columns(),
+        )
         .clip(true)
         .horizontal(|mut strip| {
             strip.cell(|ui| {
@@ -1035,7 +1075,7 @@ fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus) {
 
                 if side_panel.response.clicked() {
                     DesktopSidePanel::perform_action(
-                        &mut app.columns,
+                        get_active_columns_mut(&app.accounts, &mut app.decks),
                         &mut app.support,
                         side_panel.action,
                     );
@@ -1049,7 +1089,7 @@ fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus) {
                 );
             });
 
-            for col_index in 0..app.columns.num_columns() {
+            for col_index in 0..get_active_columns(&app.accounts, &app.decks).num_columns() {
                 strip.cell(|ui| {
                     let rect = ui.available_rect_before_wrap();
                     nav::render_nav(col_index, app, ui);
@@ -1083,5 +1123,24 @@ impl eframe::App for Damus {
         puffin::GlobalProfiler::lock().new_frame();
         update_damus(self, ctx);
         render_damus(self, ctx);
+    }
+}
+
+pub fn get_active_columns<'a>(accounts: &AccountManager, decks: &'a Decks) -> &'a Columns {
+    if let Some(acc) = accounts.get_selected_account() {
+        decks.get_active_columns_for(&crate::decks::AccountId::User(acc.pubkey))
+    } else {
+        decks.get_default_columns()
+    }
+}
+
+pub fn get_active_columns_mut<'a>(
+    accounts: &AccountManager,
+    decks: &'a mut Decks,
+) -> &'a mut Columns {
+    if let Some(acc) = accounts.get_selected_account() {
+        decks.get_active_columns_for_mut(&crate::decks::AccountId::User(acc.pubkey))
+    } else {
+        decks.get_default_columns_mut()
     }
 }
