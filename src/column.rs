@@ -61,7 +61,9 @@ impl Columns {
     }
 
     pub fn new_column_picker(&mut self) {
-        self.add_column(Column::new(vec![Route::AddColumn]));
+        self.add_column(Column::new(vec![Route::AddColumn(
+            crate::ui::add_column::AddColumnRoute::Base,
+        )]));
     }
 
     fn get_new_id() -> u32 {

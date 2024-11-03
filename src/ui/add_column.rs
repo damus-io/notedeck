@@ -1,24 +1,43 @@
-use egui::{pos2, vec2, Color32, FontId, ImageSource, Pos2, Rect, Separator, Ui};
+use egui::{pos2, vec2, Color32, FontId, ImageSource, Pos2, Rect, RichText, Separator, Ui};
 use nostrdb::Ndb;
+use tracing::{error, info};
 
 use crate::{
     app_style::{get_font_size, NotedeckTextStyle},
+    key_parsing::perform_key_retrieval,
     timeline::{PubkeySource, Timeline, TimelineKind},
     ui::anim::ICON_EXPANSION_MULTIPLE,
     user_account::UserAccount,
+    Damus,
 };
 
 use super::anim::AnimationHelper;
 
 pub enum AddColumnResponse {
     Timeline(Timeline),
+    UndecidedNotification,
+    ExternalNotification,
+}
+
+pub enum NotificationColumnType {
+    Home,
+    External,
 }
 
 #[derive(Clone, Debug)]
 enum AddColumnOption {
     Universe,
+    UndecidedNotification,
+    ExternalNotification,
     Notification(PubkeySource),
     Home(PubkeySource),
+}
+
+#[derive(Clone, Copy, Eq, PartialEq, Debug)]
+pub enum AddColumnRoute {
+    Base,
+    UndecidedNotification,
+    ExternalNotification,
 }
 
 impl AddColumnOption {
@@ -34,11 +53,15 @@ impl AddColumnOption {
             AddColumnOption::Notification(pubkey) => TimelineKind::Notifications(pubkey)
                 .into_timeline(ndb, cur_account.map(|a| a.pubkey.bytes()))
                 .map(AddColumnResponse::Timeline),
+            AddColumnOption::UndecidedNotification => {
+                Some(AddColumnResponse::UndecidedNotification)
+            }
             AddColumnOption::Home(pubkey) => {
                 let tlk = TimelineKind::contact_list(pubkey);
                 tlk.into_timeline(ndb, cur_account.map(|a| a.pubkey.bytes()))
                     .map(AddColumnResponse::Timeline)
             }
+            AddColumnOption::ExternalNotification => Some(AddColumnResponse::ExternalNotification),
         }
     }
 }
@@ -55,7 +78,7 @@ impl<'a> AddColumnView<'a> {
 
     pub fn ui(&mut self, ui: &mut Ui) -> Option<AddColumnResponse> {
         let mut selected_option: Option<AddColumnResponse> = None;
-        for column_option_data in self.get_column_options() {
+        for column_option_data in self.get_base_options() {
             let option = column_option_data.option.clone();
             if self.column_option_ui(ui, column_option_data).clicked() {
                 selected_option = option.take_as_response(self.ndb, self.cur_account);
@@ -65,6 +88,65 @@ impl<'a> AddColumnView<'a> {
         }
 
         selected_option
+    }
+
+    fn notifications_ui(&mut self, ui: &mut Ui) -> Option<AddColumnResponse> {
+        let mut selected_option: Option<AddColumnResponse> = None;
+        for column_option_data in self.get_notifications_options() {
+            let option = column_option_data.option.clone();
+            if self.column_option_ui(ui, column_option_data).clicked() {
+                selected_option = option.take_as_response(self.ndb, self.cur_account);
+            }
+
+            ui.add(Separator::default().spacing(0.0));
+        }
+
+        selected_option
+    }
+
+    fn external_notification_ui(&mut self, ui: &mut Ui) -> Option<AddColumnResponse> {
+        ui.label(RichText::new("External Notification").heading());
+        ui.label("Paste the user's npub that you would like to have a notifications column for:");
+
+        let id = ui.id().with("external_notif");
+        let mut text = ui.ctx().data_mut(|data| {
+            let text = data.get_temp_mut_or_insert_with(id, String::new);
+            text.clone()
+        });
+        ui.text_edit_singleline(&mut text);
+        ui.ctx().data_mut(|d| d.insert_temp(id, text.clone()));
+
+        if ui.button("Validate").clicked() {
+            if let Some(payload) = perform_key_retrieval(&text).ready() {
+                match payload {
+                    Ok(keypair) => {
+                        info!(
+                            "Successfully retrieved external notification keypair {}",
+                            keypair.pubkey
+                        );
+                        if let Some(resp) =
+                            AddColumnOption::Notification(PubkeySource::Explicit(keypair.pubkey))
+                                .take_as_response(self.ndb, self.cur_account)
+                        {
+                            Some(resp)
+                        } else {
+                            error!("Failed to get timeline column");
+                            None
+                        }
+                    }
+                    Err(_) => {
+                        info!("User did not enter a valid npub or nip05");
+                        ui.colored_label(Color32::RED, "Please enter a valid npub or nip05");
+                        None
+                    }
+                }
+            } else {
+                ui.spinner();
+                None
+            }
+        } else {
+            None
+        }
     }
 
     fn column_option_ui(&mut self, ui: &mut Ui, data: ColumnOptionData) -> egui::Response {
@@ -168,7 +250,7 @@ impl<'a> AddColumnView<'a> {
         helper.take_animation_response()
     }
 
-    fn get_column_options(&self) -> Vec<ColumnOptionData> {
+    fn get_base_options(&self) -> Vec<ColumnOptionData> {
         let mut vec = Vec::new();
         vec.push(ColumnOptionData {
             title: "Universe",
@@ -190,13 +272,41 @@ impl<'a> AddColumnView<'a> {
                 icon: egui::include_image!("../../assets/icons/home_icon_dark_4x.png"),
                 option: AddColumnOption::Home(source.clone()),
             });
+        }
+        vec.push(ColumnOptionData {
+            title: "Notifications",
+            description: "Stay up to date with notifications and mentions",
+            icon: egui::include_image!("../../assets/icons/notifications_icon_dark_4x.png"),
+            option: AddColumnOption::UndecidedNotification,
+        });
+
+        vec
+    }
+
+    fn get_notifications_options(&self) -> Vec<ColumnOptionData> {
+        let mut vec = Vec::new();
+
+        if let Some(acc) = self.cur_account {
+            let source = if acc.secret_key.is_some() {
+                PubkeySource::DeckAuthor
+            } else {
+                PubkeySource::Explicit(acc.pubkey)
+            };
+
             vec.push(ColumnOptionData {
-                title: "Notifications",
-                description: "Stay up to date with notifications and mentions",
+                title: "Your Notifications",
+                description: "Stay up to date with your notifications and mentions",
                 icon: egui::include_image!("../../assets/icons/notifications_icon_dark_4x.png"),
                 option: AddColumnOption::Notification(source),
             });
         }
+
+        vec.push(ColumnOptionData {
+            title: "Someone else's Notifications",
+            description: "Stay up to date with someone else's notifications and mentions",
+            icon: egui::include_image!("../../assets/icons/notifications_icon_dark_4x.png"),
+            option: AddColumnOption::ExternalNotification,
+        });
 
         vec
     }
@@ -207,6 +317,46 @@ struct ColumnOptionData {
     description: &'static str,
     icon: ImageSource<'static>,
     option: AddColumnOption,
+}
+
+pub fn render_add_column_routes(
+    ui: &mut egui::Ui,
+    app: &mut Damus,
+    col: usize,
+    route: &AddColumnRoute,
+) {
+    let resp = match route {
+        AddColumnRoute::Base => {
+            AddColumnView::new(&app.ndb, app.accounts.get_selected_account()).ui(ui)
+        }
+        AddColumnRoute::UndecidedNotification => {
+            AddColumnView::new(&app.ndb, app.accounts.get_selected_account()).notifications_ui(ui)
+        }
+        AddColumnRoute::ExternalNotification => {
+            AddColumnView::new(&app.ndb, app.accounts.get_selected_account())
+                .external_notification_ui(ui)
+        }
+    };
+
+    if let Some(resp) = resp {
+        match resp {
+            AddColumnResponse::Timeline(timeline) => {
+                let id = timeline.id;
+                app.columns_mut().add_timeline_to_column(col, timeline);
+                app.subscribe_new_timeline(id);
+            }
+            AddColumnResponse::UndecidedNotification => {
+                app.columns_mut().column_mut(col).router_mut().route_to(
+                    crate::route::Route::AddColumn(AddColumnRoute::UndecidedNotification),
+                );
+            }
+            AddColumnResponse::ExternalNotification => {
+                app.columns_mut().column_mut(col).router_mut().route_to(
+                    crate::route::Route::AddColumn(AddColumnRoute::ExternalNotification),
+                );
+            }
+        };
+    }
 }
 
 mod preview {
