@@ -29,26 +29,31 @@ use nostrdb::{Ndb, Transaction};
 use tracing::{error, info};
 
 pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) {
-    let col_id = get_active_columns(&app.accounts, &app.decks).get_column_id_at_index(col);
+    let col_id = app.columns().get_column_id_at_index(col);
     // TODO(jb55): clean up this router_mut mess by using Router<R> in egui-nav directly
-    let routes = app
-        .columns()
+    let routes = get_active_columns(&app.accounts, &app.decks_cache)
         .column(col)
         .router()
         .routes()
         .iter()
-        .map(|r| r.get_titled_route(get_active_columns(&app.accounts, &app.decks), &app.ndb))
+        .map(|r| {
+            r.get_titled_route(
+                get_active_columns(&app.accounts, &app.decks_cache),
+                &app.ndb,
+            )
+        })
         .collect();
     let nav_response = Nav::new(routes)
         .navigating(app.columns_mut().column_mut(col).router_mut().navigating)
         .returning(app.columns_mut().column_mut(col).router_mut().returning)
         .title(48.0, title_bar)
         .show_mut(col_id, ui, |ui, nav| {
-            let column = get_active_columns_mut(&app.accounts, &mut app.decks).column_mut(col);
+            let column =
+                get_active_columns_mut(&app.accounts, &mut app.decks_cache).column_mut(col);
             match &nav.top().route {
                 Route::Timeline(tlr) => render_timeline_route(
                     &app.ndb,
-                    get_active_columns_mut(&app.accounts, &mut app.decks),
+                    get_active_columns_mut(&app.accounts, &mut app.decks_cache),
                     &mut app.pool,
                     &mut app.drafts,
                     &mut app.img_cache,
@@ -67,7 +72,7 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) {
                         col,
                         &mut app.img_cache,
                         &mut app.accounts,
-                        &mut app.decks,
+                        &mut app.decks_cache,
                         &mut app.view_state.login,
                         *amr,
                     );
@@ -121,7 +126,7 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) {
                 Route::Profile(pubkey) => render_profile_route(
                     pubkey,
                     &app.ndb,
-                    get_active_columns_mut(&app.accounts, &mut app.decks),
+                    get_active_columns_mut(&app.accounts, &mut app.decks_cache),
                     &mut app.profiles,
                     &mut app.pool,
                     &mut app.img_cache,
@@ -151,7 +156,7 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) {
             }
 
             AfterRouteExecution::OpenProfile(pubkey) => {
-                get_active_columns_mut(&app.accounts, &mut app.decks)
+                get_active_columns_mut(&app.accounts, &mut app.decks_cache)
                     .column_mut(col)
                     .router_mut()
                     .route_to(Route::Profile(pubkey));

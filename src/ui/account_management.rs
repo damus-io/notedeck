@@ -240,7 +240,7 @@ mod preview {
             {
                 process_accounts_view_response(
                     &mut self.app.accounts,
-                    &mut self.app.decks,
+                    &mut self.app.decks_cache,
                     0,
                     response,
                 );

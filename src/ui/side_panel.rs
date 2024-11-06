@@ -410,7 +410,7 @@ mod preview {
     impl DesktopSidePanelPreview {
         fn new() -> Self {
             let mut app = test_data::test_app();
-            get_active_columns_mut(&app.accounts, &mut app.decks)
+            get_active_columns_mut(&app.accounts, &mut app.decks_cache)
                 .add_column(Column::new(vec![Route::accounts()]));
             DesktopSidePanelPreview { app }
         }
@@ -432,7 +432,7 @@ mod preview {
                         let response = panel.show(ui);
 
                         DesktopSidePanel::perform_action(
-                            get_active_columns_mut(&self.app.accounts, &mut self.app.decks),
+                            get_active_columns_mut(&self.app.accounts, &mut self.app.decks_cache),
                             &mut self.app.support,
                             response.action,
                         );

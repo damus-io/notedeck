@@ -5,7 +5,7 @@ use nostrdb::Ndb;
 
 use crate::{
     app::get_active_columns_mut,
-    decks::{AccountId, Decks},
+    decks::{AccountId, DecksCache},
     imgcache::ImageCache,
     login_manager::LoginState,
     route::Route,
@@ -48,7 +48,7 @@ pub fn render_accounts_route(
     col: usize,
     img_cache: &mut ImageCache,
     accounts: &mut AccountManager,
-    decks: &mut Decks,
+    decks: &mut DecksCache,
     login_state: &mut LoginState,
     route: AccountsRoute,
 ) {
@@ -97,7 +97,7 @@ pub fn render_accounts_route(
 
 pub fn process_accounts_view_response(
     accounts: &mut AccountManager,
-    decks: &mut Decks,
+    decks: &mut DecksCache,
     col: usize,
     response: AccountsViewResponse,
 ) {
@@ -107,7 +107,7 @@ pub fn process_accounts_view_response(
     match response {
         AccountsViewResponse::RemoveAccount(index) => {
             if let Some(acc) = accounts.get_account(index) {
-                decks.remove_for(AccountId::User(acc.pubkey));
+                decks.remove_for(&AccountId::User(acc.pubkey));
             }
             accounts.remove_account(index);
         }
