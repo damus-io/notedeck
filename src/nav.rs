@@ -2,6 +2,7 @@ use crate::{
     account_manager::render_accounts_route,
     app::{get_active_columns, get_active_columns_mut},
     app_style::{get_font_size, NotedeckTextStyle},
+    decks::Deck,
     fonts::NamedFontFamily,
     notes_holder::NotesHolder,
     profile::Profile,
@@ -16,6 +17,7 @@ use crate::{
         self,
         add_column::{AddColumnResponse, AddColumnView},
         anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},
+        configure_deck::ConfigureDeckView,
         note::PostAction,
         support::SupportView,
         RelayView, View,
@@ -137,6 +139,24 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) {
                 ),
                 Route::Support => {
                     SupportView::new(&mut app.support).show(ui);
+                    None
+                }
+                Route::NewDeck => {
+                    let id = ui.id().with("new-deck");
+                    let new_deck_state = app.view_state.id_to_deck_state.entry(id).or_default();
+                    if let Some(resp) = ConfigureDeckView::new(new_deck_state).ui(ui) {
+                        if let Some(cur_acc) = app.accounts.get_selected_account() {
+                            app.decks_cache.add_deck(
+                                crate::decks::AccountId::User(cur_acc.pubkey),
+                                Deck::new(resp.icon, resp.name),
+                            );
+                        }
+
+                        new_deck_state.clear();
+                        get_active_columns_mut(&app.accounts, &mut app.decks_cache)
+                            .get_first_router()
+                            .go_back();
+                    }
                     None
                 }
             }

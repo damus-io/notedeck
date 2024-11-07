@@ -19,6 +19,7 @@ pub enum Route {
     AddColumn,
     Profile(Pubkey),
     Support,
+    NewDeck,
 }
 
 #[derive(Clone)]
@@ -102,6 +103,7 @@ impl Route {
                 format!("{}'s Profile", get_profile_displayname_string(ndb, pubkey))
             }
             Route::Support => "Damus Support".to_owned(),
+            Route::NewDeck => "Add Deck".to_owned(),
         };
 
         TitledRoute {
@@ -211,6 +213,7 @@ impl fmt::Display for Route {
             Route::AddColumn => write!(f, "Add Column"),
             Route::Profile(_) => write!(f, "Profile"),
             Route::Support => write!(f, "Support"),
+            Route::NewDeck => write!(f, "Add Deck"),
         }
     }
 }
