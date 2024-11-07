@@ -3,6 +3,7 @@ pub mod account_management;
 pub mod add_column;
 pub mod anim;
 pub mod mention;
+pub mod configure_deck;
 pub mod note;
 pub mod preview;
 pub mod profile;

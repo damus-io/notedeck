@@ -1,5 +1,6 @@
 use crate::{
     colors::{desktop_dark_color_theme, light_color_theme, mobile_dark_color_theme, ColorTheme},
+    fonts::NamedFontFamily,
     ui::is_narrow,
 };
 use egui::{
@@ -77,6 +78,7 @@ pub fn desktop_font_size(text_style: &NotedeckTextStyle) -> f32 {
         NotedeckTextStyle::Heading => 48.0,
         NotedeckTextStyle::Heading2 => 24.0,
         NotedeckTextStyle::Heading3 => 20.0,
+        NotedeckTextStyle::Heading4 => 14.0,
         NotedeckTextStyle::Body => 16.0,
         NotedeckTextStyle::Monospace => 13.0,
         NotedeckTextStyle::Button => 13.0,
@@ -90,6 +92,7 @@ pub fn mobile_font_size(text_style: &NotedeckTextStyle) -> f32 {
         NotedeckTextStyle::Heading => 48.0,
         NotedeckTextStyle::Heading2 => 24.0,
         NotedeckTextStyle::Heading3 => 20.0,
+        NotedeckTextStyle::Heading4 => 14.0,
         NotedeckTextStyle::Body => 13.0,
         NotedeckTextStyle::Monospace => 13.0,
         NotedeckTextStyle::Button => 13.0,
@@ -110,6 +113,7 @@ pub enum NotedeckTextStyle {
     Heading,
     Heading2,
     Heading3,
+    Heading4,
     Body,
     Monospace,
     Button,
@@ -122,6 +126,7 @@ impl NotedeckTextStyle {
             Self::Heading => TextStyle::Heading,
             Self::Heading2 => TextStyle::Name("Heading2".into()),
             Self::Heading3 => TextStyle::Name("Heading3".into()),
+            Self::Heading4 => TextStyle::Name("Heading4".into()),
             Self::Body => TextStyle::Body,
             Self::Monospace => TextStyle::Monospace,
             Self::Button => TextStyle::Button,
@@ -134,6 +139,7 @@ impl NotedeckTextStyle {
             Self::Heading => FontFamily::Proportional,
             Self::Heading2 => FontFamily::Proportional,
             Self::Heading3 => FontFamily::Proportional,
+            Self::Heading4 => FontFamily::Proportional,
             Self::Body => FontFamily::Proportional,
             Self::Monospace => FontFamily::Monospace,
             Self::Button => FontFamily::Proportional,
@@ -208,4 +214,16 @@ pub fn create_themed_visuals(theme: ColorTheme, default: Visuals) -> Visuals {
         image_loading_spinners: false,
         ..default
     }
+}
+
+pub static DECK_ICON_SIZE: f32 = 24.0;
+pub fn deck_icon_font() -> FontId {
+    deck_icon_font_sized(DECK_ICON_SIZE)
+}
+
+pub fn deck_icon_font_sized(size: f32) -> FontId {
+    egui::FontId::new(
+        size,
+        egui::FontFamily::Name(NamedFontFamily::Bold.as_str().into()), // TODO: change to emoji
+    )
 }
