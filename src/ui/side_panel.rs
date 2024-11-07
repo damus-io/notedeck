@@ -1,10 +1,13 @@
-use egui::{vec2, Color32, InnerResponse, Layout, Margin, Separator, Stroke, Widget};
+use egui::{
+    vec2, Button, Color32, InnerResponse, Layout, Margin, RichText, Separator, Stroke, Widget,
+};
 use tracing::info;
 
 use crate::{
     account_manager::AccountsRoute,
     colors,
     column::{Column, Columns},
+    decks::{AccountId, DecksCache},
     imgcache::ImageCache,
     route::Route,
     support::Support,
@@ -14,6 +17,7 @@ use crate::{
 
 use super::{
     anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},
+    configure_deck::deck_icon,
     profile::preview::get_account_url,
     ProfilePic, View,
 };
@@ -25,6 +29,7 @@ pub struct DesktopSidePanel<'a> {
     ndb: &'a nostrdb::Ndb,
     img_cache: &'a mut ImageCache,
     selected_account: Option<&'a UserAccount>,
+    decks_cache: &'a DecksCache,
 }
 
 impl<'a> View for DesktopSidePanel<'a> {
@@ -43,6 +48,7 @@ pub enum SidePanelAction {
     Search,
     ExpandSidePanel,
     Support,
+    NewDeck,
 }
 
 pub struct SidePanelResponse {
@@ -61,11 +67,13 @@ impl<'a> DesktopSidePanel<'a> {
         ndb: &'a nostrdb::Ndb,
         img_cache: &'a mut ImageCache,
         selected_account: Option<&'a UserAccount>,
+        decks_cache: &'a DecksCache,
     ) -> Self {
         Self {
             ndb,
             img_cache,
             selected_account,
+            decks_cache,
         }
     }
 
@@ -91,6 +99,11 @@ impl<'a> DesktopSidePanel<'a> {
 
                         ui.add(Separator::default().horizontal().spacing(8.0).shrink(4.0));
 
+                        ui.add(egui::Label::new(RichText::new("DECKS").size(11.0)));
+                        let add_deck_resp = ui.add(add_deck_button());
+                        let decks_resp =
+                            ui.add(decks_widget(self.decks_cache, self.selected_account));
+
                         if expand_resp.clicked() {
                             Some(InnerResponse::new(
                                 SidePanelAction::ExpandSidePanel,
@@ -105,6 +118,8 @@ impl<'a> DesktopSidePanel<'a> {
                             Some(InnerResponse::new(SidePanelAction::Search, search_resp))
                         } else if column_resp.clicked() {
                             Some(InnerResponse::new(SidePanelAction::Columns, column_resp))
+                        } else if add_deck_resp.clicked() {
+                            Some(InnerResponse::new(SidePanelAction::NewDeck, add_deck_resp))
                         } else {
                             None
                         }
@@ -223,6 +238,13 @@ impl<'a> DesktopSidePanel<'a> {
                 } else {
                     support.refresh();
                     router.route_to(Route::Support);
+                }
+            }
+            SidePanelAction::NewDeck => {
+                if router.routes().iter().any(|&r| r == Route::NewDeck) {
+                    router.go_back();
+                } else {
+                    router.route_to(Route::NewDeck);
                 }
             }
         }
@@ -391,6 +413,46 @@ fn support_button() -> impl Widget {
     }
 }
 
+fn add_deck_button() -> impl Widget {
+    Button::new("+") // TODO: convert to actual design
+}
+
+fn decks_widget<'a>(
+    decks_cache: &'a DecksCache,
+    selected_account: Option<&'a UserAccount>,
+) -> impl Widget + use<'a> {
+    move |ui: &mut egui::Ui| -> egui::Response {
+        let show_decks_id = ui.id().with("show-decks");
+        let (cur_decks, account_id) = if let Some(acc) = selected_account {
+            let account_id = &AccountId::User(acc.pubkey);
+            (
+                decks_cache.decks(account_id),
+                show_decks_id.with(account_id),
+            )
+        } else {
+            let account_id = &AccountId::Unnamed(0);
+            (
+                decks_cache.decks(account_id),
+                show_decks_id.with(account_id),
+            )
+        };
+        let active_index = cur_decks.active_index();
+
+        let mut resp = ui.label("");
+        for (index, deck) in cur_decks.decks().iter().enumerate() {
+            let highlight = index == active_index;
+            let deck_icon_resp = ui.add(deck_icon(
+                account_id.with(index),
+                Some(deck.icon),
+                40.0,
+                highlight,
+            ));
+            resp = resp.union(deck_icon_resp);
+        }
+        resp
+    }
+}
+
 mod preview {
 
     use egui_extras::{Size, StripBuilder};
@@ -428,6 +490,7 @@ mod preview {
                             &self.app.ndb,
                             &mut self.app.img_cache,
                             self.app.accounts.get_selected_account(),
+                            &self.app.decks_cache,
                         );
                         let response = panel.show(ui);
 
