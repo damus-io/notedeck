@@ -1072,7 +1072,8 @@ fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus) {
 
                 if side_panel.response.clicked() {
                     DesktopSidePanel::perform_action(
-                        get_active_columns_mut(&app.accounts, &mut app.decks_cache),
+                        &mut app.decks_cache,
+                        &app.accounts,
                         &mut app.support,
                         side_panel.action,
                     );

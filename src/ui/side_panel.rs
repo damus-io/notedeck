@@ -4,9 +4,10 @@ use egui::{
 use tracing::info;
 
 use crate::{
-    account_manager::AccountsRoute,
+    account_manager::{AccountManager, AccountsRoute},
+    app::{get_active_columns_mut, get_decks_mut},
     colors,
-    column::{Column, Columns},
+    column::Column,
     decks::{AccountId, DecksCache},
     imgcache::ImageCache,
     route::Route,
@@ -49,6 +50,7 @@ pub enum SidePanelAction {
     ExpandSidePanel,
     Support,
     NewDeck,
+    SwitchDeck(usize),
 }
 
 pub struct SidePanelResponse {
@@ -101,9 +103,7 @@ impl<'a> DesktopSidePanel<'a> {
 
                         ui.add(egui::Label::new(RichText::new("DECKS").size(11.0)));
                         let add_deck_resp = ui.add(add_deck_button());
-                        let decks_resp =
-                            ui.add(decks_widget(self.decks_cache, self.selected_account));
-
+                        let decks_inner = show_decks(ui, self.decks_cache, self.selected_account);
                         if expand_resp.clicked() {
                             Some(InnerResponse::new(
                                 SidePanelAction::ExpandSidePanel,
@@ -120,6 +120,15 @@ impl<'a> DesktopSidePanel<'a> {
                             Some(InnerResponse::new(SidePanelAction::Columns, column_resp))
                         } else if add_deck_resp.clicked() {
                             Some(InnerResponse::new(SidePanelAction::NewDeck, add_deck_resp))
+                        } else if decks_inner.response.clicked() {
+                            if let Some(clicked_index) = decks_inner.inner {
+                                Some(InnerResponse::new(
+                                    SidePanelAction::SwitchDeck(clicked_index),
+                                    decks_inner.response,
+                                ))
+                            } else {
+                                None
+                            }
                         } else {
                             None
                         }
@@ -186,8 +195,13 @@ impl<'a> DesktopSidePanel<'a> {
         helper.take_animation_response()
     }
 
-    pub fn perform_action(columns: &mut Columns, support: &mut Support, action: SidePanelAction) {
-        let router = columns.get_first_router();
+    pub fn perform_action(
+        decks_cache: &mut DecksCache,
+        accounts: &AccountManager,
+        support: &mut Support,
+        action: SidePanelAction,
+    ) {
+        let router = get_active_columns_mut(accounts, decks_cache).get_first_router();
         match action {
             SidePanelAction::Panel => {} // TODO
             SidePanelAction::Account => {
@@ -214,7 +228,7 @@ impl<'a> DesktopSidePanel<'a> {
                 if router.routes().iter().any(|&r| r == Route::AddColumn) {
                     router.go_back();
                 } else {
-                    columns.new_column_picker();
+                    get_active_columns_mut(accounts, decks_cache).new_column_picker();
                 }
             }
             SidePanelAction::ComposeNote => {
@@ -246,6 +260,10 @@ impl<'a> DesktopSidePanel<'a> {
                 } else {
                     router.route_to(Route::NewDeck);
                 }
+            }
+            SidePanelAction::SwitchDeck(index) => {
+                let decks = get_decks_mut(accounts, decks_cache);
+                decks.request_active(index);
             }
         }
     }
@@ -417,40 +435,43 @@ fn add_deck_button() -> impl Widget {
     Button::new("+") // TODO: convert to actual design
 }
 
-fn decks_widget<'a>(
+fn show_decks<'a>(
+    ui: &mut egui::Ui,
     decks_cache: &'a DecksCache,
     selected_account: Option<&'a UserAccount>,
-) -> impl Widget + use<'a> {
-    move |ui: &mut egui::Ui| -> egui::Response {
-        let show_decks_id = ui.id().with("show-decks");
-        let (cur_decks, account_id) = if let Some(acc) = selected_account {
-            let account_id = &AccountId::User(acc.pubkey);
-            (
-                decks_cache.decks(account_id),
-                show_decks_id.with(account_id),
-            )
-        } else {
-            let account_id = &AccountId::Unnamed(0);
-            (
-                decks_cache.decks(account_id),
-                show_decks_id.with(account_id),
-            )
-        };
-        let active_index = cur_decks.active_index();
+) -> InnerResponse<Option<usize>> {
+    let show_decks_id = ui.id().with("show-decks");
+    let (cur_decks, account_id) = if let Some(acc) = selected_account {
+        let account_id = &AccountId::User(acc.pubkey);
+        (
+            decks_cache.decks(account_id),
+            show_decks_id.with(account_id),
+        )
+    } else {
+        let account_id = &AccountId::Unnamed(0);
+        (
+            decks_cache.decks(account_id),
+            show_decks_id.with(account_id),
+        )
+    };
+    let active_index = cur_decks.active_index();
 
-        let mut resp = ui.label("");
-        for (index, deck) in cur_decks.decks().iter().enumerate() {
-            let highlight = index == active_index;
-            let deck_icon_resp = ui.add(deck_icon(
-                account_id.with(index),
-                Some(deck.icon),
-                40.0,
-                highlight,
-            ));
-            resp = resp.union(deck_icon_resp);
+    let mut resp = ui.label("");
+    let mut clicked_index = None;
+    for (index, deck) in cur_decks.decks().iter().enumerate() {
+        let highlight = index == active_index;
+        let deck_icon_resp = ui.add(deck_icon(
+            account_id.with(index),
+            Some(deck.icon),
+            40.0,
+            highlight,
+        ));
+        if deck_icon_resp.clicked() {
+            clicked_index = Some(index);
         }
-        resp
+        resp = resp.union(deck_icon_resp);
     }
+    InnerResponse::new(clicked_index, resp)
 }
 
 mod preview {
@@ -495,7 +516,8 @@ mod preview {
                         let response = panel.show(ui);
 
                         DesktopSidePanel::perform_action(
-                            get_active_columns_mut(&self.app.accounts, &mut self.app.decks_cache),
+                            &mut self.app.decks_cache,
+                            &self.app.accounts,
                             &mut self.app.support,
                             response.action,
                         );
