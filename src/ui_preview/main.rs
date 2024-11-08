@@ -3,6 +3,7 @@ use notedeck::app_creation::{
 };
 use notedeck::ui::add_column::AddColumnView;
 use notedeck::ui::configure_deck::ConfigureDeckView;
+use notedeck::ui::edit_deck::EditDeckView;
 use notedeck::ui::{
     account_login_view::AccountLoginView, account_management::AccountsView, DesktopSidePanel,
     PostView, Preview, PreviewApp, PreviewConfig, ProfilePic, ProfilePreview, RelayView,
@@ -106,5 +107,6 @@ async fn main() {
         PostView,
         AddColumnView,
         ConfigureDeckView,
+        EditDeckView,
     );
 }
