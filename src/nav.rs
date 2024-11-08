@@ -1,7 +1,8 @@
 use crate::{
     account_manager::render_accounts_route,
-    app::{get_active_columns, get_active_columns_mut},
+    app::{get_active_columns, get_active_columns_mut, get_decks_mut},
     app_style::{get_font_size, NotedeckTextStyle},
+    deck_state::DeckState,
     decks::Deck,
     fonts::NamedFontFamily,
     notes_holder::NotesHolder,
@@ -18,6 +19,7 @@ use crate::{
         add_column::{AddColumnResponse, AddColumnView},
         anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},
         configure_deck::ConfigureDeckView,
+        edit_deck::{EditDeckResponse, EditDeckView},
         note::PostAction,
         support::SupportView,
         RelayView, View,
@@ -38,12 +40,7 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) {
         .router()
         .routes()
         .iter()
-        .map(|r| {
-            r.get_titled_route(
-                get_active_columns(&app.accounts, &app.decks_cache),
-                &app.ndb,
-            )
-        })
+        .map(|r| r.get_titled_route(&app.accounts, &app.decks_cache, &app.ndb))
         .collect();
     let nav_response = Nav::new(routes)
         .navigating(app.columns_mut().column_mut(col).router_mut().navigating)
@@ -159,6 +156,36 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) {
                     }
                     None
                 }
+                Route::EditDeck(index) => {
+                    let cur_deck = get_decks_mut(&app.accounts, &mut app.decks_cache)
+                        .decks_mut()
+                        .get_mut(*index)
+                        .expect("index wasn't valid");
+                    let id = ui.id().with((
+                        "edit-deck",
+                        app.accounts.get_selected_account().map(|k| k.pubkey),
+                        index,
+                    ));
+                    let deck_state = app
+                        .view_state
+                        .id_to_deck_state
+                        .entry(id)
+                        .or_insert_with(|| DeckState::from_deck(cur_deck));
+                    if let Some(resp) = EditDeckView::new(deck_state).ui(ui) {
+                        match resp {
+                            EditDeckResponse::Edit(configure_deck_response) => {
+                                cur_deck.edit(configure_deck_response);
+                            }
+                            EditDeckResponse::Delete => {
+                                deck_state.deleting = true;
+                            }
+                        }
+                        get_active_columns_mut(&app.accounts, &mut app.decks_cache)
+                            .get_first_router()
+                            .go_back();
+                    }
+                    None
+                }
             }
         });
 
@@ -226,6 +253,24 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) {
                 &mut app.pool,
                 pubkey.bytes(),
             );
+        }
+
+        if let Some(Route::EditDeck(index)) = r {
+            let id = ui.id().with((
+                "edit-deck",
+                app.accounts.get_selected_account().map(|k| k.pubkey),
+                index,
+            ));
+            if let Some(state) = app.view_state.id_to_deck_state.get(&id) {
+                if state.deleting {
+                    if let Some(acc) = app.accounts.get_selected_account() {
+                        app.decks_cache
+                            .decks_mut(&crate::decks::AccountId::User(acc.pubkey))
+                            .request_deck_removal(index);
+                        app.view_state.id_to_deck_state.remove(&id);
+                    }
+                }
+            }
         }
     } else if let Some(NavAction::Navigated) = nav_response.action {
         let cur_router = app.columns_mut().column_mut(col).router_mut();

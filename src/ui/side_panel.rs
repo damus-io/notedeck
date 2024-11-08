@@ -51,6 +51,7 @@ pub enum SidePanelAction {
     Support,
     NewDeck,
     SwitchDeck(usize),
+    EditDeck(usize),
 }
 
 pub struct SidePanelResponse {
@@ -264,6 +265,13 @@ impl<'a> DesktopSidePanel<'a> {
             SidePanelAction::SwitchDeck(index) => {
                 let decks = get_decks_mut(accounts, decks_cache);
                 decks.request_active(index);
+            }
+            SidePanelAction::EditDeck(index) => {
+                if router.routes().iter().any(|&r| r == Route::EditDeck(index)) {
+                    router.go_back();
+                } else {
+                    router.route_to(Route::EditDeck(index));
+                }
             }
         }
     }
