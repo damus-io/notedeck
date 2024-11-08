@@ -121,6 +121,16 @@ impl<'a> DesktopSidePanel<'a> {
                             Some(InnerResponse::new(SidePanelAction::Columns, column_resp))
                         } else if add_deck_resp.clicked() {
                             Some(InnerResponse::new(SidePanelAction::NewDeck, add_deck_resp))
+                        } else if decks_inner.response.secondary_clicked() {
+                            info!("decks inner secondary click");
+                            if let Some(clicked_index) = decks_inner.inner {
+                                Some(InnerResponse::new(
+                                    SidePanelAction::EditDeck(clicked_index),
+                                    decks_inner.response,
+                                ))
+                            } else {
+                                None
+                            }
                         } else if decks_inner.response.clicked() {
                             if let Some(clicked_index) = decks_inner.inner {
                                 Some(InnerResponse::new(
@@ -474,7 +484,7 @@ fn show_decks<'a>(
             40.0,
             highlight,
         ));
-        if deck_icon_resp.clicked() {
+        if deck_icon_resp.clicked() || deck_icon_resp.secondary_clicked() {
             clicked_index = Some(index);
         }
         resp = resp.union(deck_icon_resp);

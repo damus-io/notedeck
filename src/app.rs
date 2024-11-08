@@ -1071,7 +1071,7 @@ fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus) {
                 )
                 .show(ui);
 
-                if side_panel.response.clicked() {
+                if side_panel.response.clicked() || side_panel.response.secondary_clicked() {
                     DesktopSidePanel::perform_action(
                         &mut app.decks_cache,
                         &app.accounts,
