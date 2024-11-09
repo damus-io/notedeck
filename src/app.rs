@@ -468,6 +468,7 @@ fn setup_new_nostrdb_sub(
 
 fn update_damus(damus: &mut Damus, ctx: &egui::Context) {
     damus.accounts.perform_selection();
+    perform_removal_requests(&mut damus.decks_cache);
     perform_active_requests(&mut damus.decks_cache);
 
     match damus.state {
@@ -1164,4 +1165,11 @@ fn perform_active_requests(decks_cache: &mut DecksCache) {
         .account_to_decks
         .values_mut()
         .for_each(|decks| decks.accept_active_request());
+}
+
+fn perform_removal_requests(decks_cache: &mut DecksCache) {
+    decks_cache
+        .account_to_decks
+        .values_mut()
+        .for_each(|decks| decks.process_deck_removal());
 }
