@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use enostr::Pubkey;
 use tracing::{error, info};
 
-use crate::column::Columns;
+use crate::{column::Columns, ui::configure_deck::ConfigureDeckResponse};
 
 #[derive(PartialEq, Eq, Hash, Debug, Clone)]
 pub enum AccountId {
@@ -118,6 +118,10 @@ impl Decks {
 
     pub fn decks(&self) -> &Vec<Deck> {
         &self.decks
+    }
+
+    pub fn decks_mut(&mut self) -> &mut Vec<Deck> {
+        &mut self.decks
     }
 
     pub fn add_deck(&mut self, deck: Deck) {
@@ -238,5 +242,10 @@ impl Deck {
 
     pub fn columns_mut(&mut self) -> &mut Columns {
         &mut self.columns
+    }
+
+    pub fn edit(&mut self, changes: ConfigureDeckResponse) {
+        self.name = changes.name;
+        self.icon = changes.icon;
     }
 }
