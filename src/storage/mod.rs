@@ -1,4 +1,3 @@
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod file_key_storage;
 mod file_storage;
 
