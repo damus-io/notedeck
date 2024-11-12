@@ -25,8 +25,8 @@ impl ImageCache {
         }
     }
 
-    pub fn rel_datadir() -> &'static str {
-        "cache/img"
+    pub fn rel_dir() -> &'static str {
+        "img"
     }
 
     pub fn write(cache_dir: &path::Path, url: &str, data: ColorImage) -> Result<()> {

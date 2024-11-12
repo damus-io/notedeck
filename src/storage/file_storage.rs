@@ -8,33 +8,45 @@ use std::{
 
 use crate::Error;
 
-pub enum DataPaths {
+#[derive(Debug, Clone)]
+pub struct DataPath {
+    base: PathBuf,
+}
+
+impl DataPath {
+    pub fn new(base: impl AsRef<Path>) -> Self {
+        let base = base.as_ref().to_path_buf();
+        Self { base }
+    }
+
+    pub fn default_base() -> Option<PathBuf> {
+        dirs::data_local_dir().map(|pb| pb.join("notedeck"))
+    }
+}
+
+pub enum DataPathType {
     Log,
     Setting,
     Keys,
     SelectedKey,
+    Db,
+    Cache,
 }
 
-impl DataPaths {
-    pub fn get_path(&self) -> Result<PathBuf, Error> {
-        let base_path = match self {
-            DataPaths::Log => dirs::data_local_dir(),
-            DataPaths::Setting | DataPaths::Keys | DataPaths::SelectedKey => {
-                dirs::config_local_dir()
-            }
+impl DataPath {
+    pub fn rel_path(&self, typ: DataPathType) -> PathBuf {
+        match typ {
+            DataPathType::Log => PathBuf::from("logs"),
+            DataPathType::Setting => PathBuf::from("settings"),
+            DataPathType::Keys => PathBuf::from("storage").join("accounts"),
+            DataPathType::SelectedKey => PathBuf::from("storage").join("selected_account"),
+            DataPathType::Db => PathBuf::from("db"),
+            DataPathType::Cache => PathBuf::from("cache"),
         }
-        .ok_or(Error::Generic(
-            "Could not open well known OS directory".to_owned(),
-        ))?;
+    }
 
-        let specific_path = match self {
-            DataPaths::Log => PathBuf::from("logs"),
-            DataPaths::Setting => PathBuf::from("settings"),
-            DataPaths::Keys => PathBuf::from("storage").join("accounts"),
-            DataPaths::SelectedKey => PathBuf::from("storage").join("selected_account"),
-        };
-
-        Ok(base_path.join("notedeck").join(specific_path))
+    pub fn path(&self, typ: DataPathType) -> PathBuf {
+        self.base.join(self.rel_path(typ))
     }
 }
 

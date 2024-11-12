@@ -1,15 +1,12 @@
 use std::time::{Duration, Instant};
 
 use egui::Context;
-use tracing::{error, info};
+use tracing::info;
 
-use crate::{
-    storage::{write_file, Directory},
-    DataPaths,
-};
+use crate::storage::{write_file, DataPath, DataPathType, Directory};
 
 pub struct AppSizeHandler {
-    directory: Option<Directory>,
+    directory: Directory,
     saved_size: Option<egui::Vec2>,
     last_saved: Instant,
 }
@@ -17,15 +14,9 @@ pub struct AppSizeHandler {
 static FILE_NAME: &str = "app_size.json";
 static DELAY: Duration = Duration::from_millis(500);
 
-impl Default for AppSizeHandler {
-    fn default() -> Self {
-        let directory = match DataPaths::Setting.get_path() {
-            Ok(path) => Some(Directory::new(path)),
-            Err(e) => {
-                error!("Could not load settings path: {}", e);
-                None
-            }
-        };
+impl AppSizeHandler {
+    pub fn new(path: &DataPath) -> Self {
+        let directory = Directory::new(path.path(DataPathType::Setting));
 
         Self {
             directory,
@@ -33,16 +24,12 @@ impl Default for AppSizeHandler {
             last_saved: Instant::now() - DELAY,
         }
     }
-}
 
-impl AppSizeHandler {
     pub fn try_save_app_size(&mut self, ctx: &Context) {
-        if let Some(interactor) = &self.directory {
-            // There doesn't seem to be a way to check if user is resizing window, so if the rect is different than last saved, we'll wait DELAY before saving again to avoid spamming io
-            if self.last_saved.elapsed() >= DELAY {
-                internal_try_save_app_size(interactor, &mut self.saved_size, ctx);
-                self.last_saved = Instant::now();
-            }
+        // There doesn't seem to be a way to check if user is resizing window, so if the rect is different than last saved, we'll wait DELAY before saving again to avoid spamming io
+        if self.last_saved.elapsed() >= DELAY {
+            internal_try_save_app_size(&self.directory, &mut self.saved_size, ctx);
+            self.last_saved = Instant::now();
         }
     }
 
@@ -51,14 +38,12 @@ impl AppSizeHandler {
             return self.saved_size;
         }
 
-        if let Some(directory) = &self.directory {
-            if let Ok(file_contents) = directory.get_file(FILE_NAME.to_owned()) {
-                if let Ok(rect) = serde_json::from_str::<egui::Vec2>(&file_contents) {
-                    return Some(rect);
-                }
-            } else {
-                info!("Could not find {}", FILE_NAME);
+        if let Ok(file_contents) = self.directory.get_file(FILE_NAME.to_owned()) {
+            if let Ok(rect) = serde_json::from_str::<egui::Vec2>(&file_contents) {
+                return Some(rect);
             }
+        } else {
+            info!("Could not find {}", FILE_NAME);
         }
 
         None

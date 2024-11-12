@@ -1,5 +1,6 @@
 use crate::app_style::NotedeckTextStyle;
 use crate::imgcache::ImageCache;
+use crate::storage::{DataPath, DataPathType};
 use crate::ui::ProfilePic;
 use crate::user_account::UserAccount;
 use crate::{colors, images, DisplayName};
@@ -126,7 +127,10 @@ mod previews {
     impl<'a> ProfilePreviewPreview<'a> {
         pub fn new() -> Self {
             let profile = test_profile_record();
-            let cache = ImageCache::new(ImageCache::rel_datadir().into());
+            let path = DataPath::new("previews")
+                .path(DataPathType::Cache)
+                .join(ImageCache::rel_dir());
+            let cache = ImageCache::new(path);
             ProfilePreviewPreview { profile, cache }
         }
     }

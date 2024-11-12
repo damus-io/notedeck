@@ -15,7 +15,7 @@ use crate::{
     notecache::{CachedNote, NoteCache},
     notes_holder::NotesHolderStorage,
     profile::Profile,
-    storage::{Directory, FileKeyStorage, KeyStorageType},
+    storage::{DataPath, DataPathType, Directory, FileKeyStorage, KeyStorageType},
     subscriptions::{SubKind, Subscriptions},
     support::Support,
     thread::Thread,
@@ -23,7 +23,7 @@ use crate::{
     ui::{self, DesktopSidePanel},
     unknowns::UnknownIds,
     view_state::ViewState,
-    DataPaths, Result,
+    Result,
 };
 
 use enostr::{ClientMessage, RelayEvent, RelayMessage, RelayPool};
@@ -67,6 +67,7 @@ pub struct Damus {
 
     frame_history: crate::frame_history::FrameHistory,
 
+    pub path: DataPath,
     // TODO: make these bitflags
     pub debug: bool,
     pub since_optimize: bool,
@@ -660,31 +661,25 @@ impl Damus {
         let data_path = parsed_args
             .datapath
             .unwrap_or(data_path.as_ref().to_str().expect("db path ok").to_string());
-        let dbpath = parsed_args.dbpath.unwrap_or(data_path.clone());
+        let path = DataPath::new(&data_path);
+        let dbpath_ = path.path(DataPathType::Db);
+        let dbpath = dbpath_.to_str().unwrap();
 
-        let _ = std::fs::create_dir_all(dbpath.clone());
+        let _ = std::fs::create_dir_all(dbpath);
 
-        let imgcache_dir = format!("{}/{}", data_path, ImageCache::rel_datadir());
+        let imgcache_dir = path.path(DataPathType::Cache).join(ImageCache::rel_dir());
         let _ = std::fs::create_dir_all(imgcache_dir.clone());
 
         let mut config = Config::new();
         config.set_ingester_threads(4);
 
         let keystore = if parsed_args.use_keystore {
-            if let Ok(keys_path) = DataPaths::Keys.get_path() {
-                if let Ok(selected_key_path) = DataPaths::SelectedKey.get_path() {
-                    KeyStorageType::FileSystem(FileKeyStorage::new(
-                        Directory::new(keys_path),
-                        Directory::new(selected_key_path),
-                    ))
-                } else {
-                    error!("Could not find path for selected key");
-                    KeyStorageType::None
-                }
-            } else {
-                error!("Could not find data path for keys");
-                KeyStorageType::None
-            }
+            let keys_path = path.path(DataPathType::Keys);
+            let selected_key_path = path.path(DataPathType::SelectedKey);
+            KeyStorageType::FileSystem(FileKeyStorage::new(
+                Directory::new(keys_path),
+                Directory::new(selected_key_path),
+            ))
         } else {
             KeyStorageType::None
         };
@@ -725,7 +720,7 @@ impl Damus {
             .get_selected_account()
             .as_ref()
             .map(|a| a.pubkey.bytes());
-        let ndb = Ndb::new(&dbpath, &config).expect("ndb");
+        let ndb = Ndb::new(dbpath, &config).expect("ndb");
 
         let mut columns: Columns = Columns::new();
         for col in parsed_args.columns {
@@ -740,6 +735,9 @@ impl Damus {
             columns.new_column_picker();
         }
 
+        let app_rect_handler = AppSizeHandler::new(&path);
+        let support = Support::new(&path);
+
         Self {
             pool,
             debug,
@@ -750,7 +748,7 @@ impl Damus {
             profiles: NotesHolderStorage::default(),
             drafts: Drafts::default(),
             state: DamusState::Initializing,
-            img_cache: ImageCache::new(imgcache_dir.into()),
+            img_cache: ImageCache::new(imgcache_dir),
             note_cache: NoteCache::default(),
             columns,
             textmode: parsed_args.textmode,
@@ -758,8 +756,9 @@ impl Damus {
             accounts,
             frame_history: FrameHistory::default(),
             view_state: ViewState::default(),
-            app_rect_handler: AppSizeHandler::default(),
-            support: Support::default(),
+            path,
+            app_rect_handler,
+            support,
         }
     }
 
@@ -819,12 +818,17 @@ impl Damus {
 
         columns.add_new_timeline_column(timeline);
 
-        let imgcache_dir = data_path.as_ref().join(ImageCache::rel_datadir());
+        let path = DataPath::new(&data_path);
+        let imgcache_dir = path.path(DataPathType::Cache).join(ImageCache::rel_dir());
         let _ = std::fs::create_dir_all(imgcache_dir.clone());
         let debug = true;
 
+        let app_rect_handler = AppSizeHandler::new(&path);
+        let support = Support::new(&path);
+
         let mut config = Config::new();
         config.set_ingester_threads(2);
+
         Self {
             debug,
             unknown_ids: UnknownIds::default(),
@@ -839,12 +843,20 @@ impl Damus {
             note_cache: NoteCache::default(),
             columns,
             textmode: false,
-            ndb: Ndb::new(data_path.as_ref().to_str().expect("db path ok"), &config).expect("ndb"),
+            ndb: Ndb::new(
+                path.path(DataPathType::Db)
+                    .to_str()
+                    .expect("db path should be ok"),
+                &config,
+            )
+            .expect("ndb"),
             accounts: AccountManager::new(KeyStorageType::None),
             frame_history: FrameHistory::default(),
             view_state: ViewState::default(),
-            app_rect_handler: AppSizeHandler::default(),
-            support: Support::default(),
+
+            path,
+            app_rect_handler,
+            support,
         }
     }
 

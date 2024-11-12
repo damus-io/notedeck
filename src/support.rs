@@ -1,26 +1,20 @@
 use tracing::error;
 
-use crate::{storage::Directory, DataPaths};
+use crate::storage::{DataPath, DataPathType, Directory};
 
 pub struct Support {
-    directory: Option<Directory>,
+    directory: Directory,
     mailto_url: String,
     most_recent_log: Option<String>,
 }
 
-fn new_log_dir() -> Option<Directory> {
-    match DataPaths::Log.get_path() {
-        Ok(path) => Some(Directory::new(path)),
-        Err(e) => {
-            error!("Support could not open directory: {}", e.to_string());
-            None
-        }
-    }
+fn new_log_dir(paths: &DataPath) -> Directory {
+    Directory::new(paths.path(DataPathType::Log))
 }
 
-impl Default for Support {
-    fn default() -> Self {
-        let directory = new_log_dir();
+impl Support {
+    pub fn new(path: &DataPath) -> Self {
+        let directory = new_log_dir(path);
 
         Self {
             mailto_url: MailtoBuilder::new(SUPPORT_EMAIL.to_string())
@@ -39,11 +33,7 @@ static EMAIL_TEMPLATE: &str = "Describe the bug you have encountered:\n<-- your 
 
 impl Support {
     pub fn refresh(&mut self) {
-        if let Some(directory) = &self.directory {
-            self.most_recent_log = get_log_str(directory);
-        } else {
-            self.directory = new_log_dir();
-        }
+        self.most_recent_log = get_log_str(&self.directory);
     }
 
     pub fn get_mailto_url(&self) -> &str {
@@ -51,7 +41,7 @@ impl Support {
     }
 
     pub fn get_log_dir(&self) -> Option<&str> {
-        self.directory.as_ref()?.file_path.to_str()
+        self.directory.file_path.to_str()
     }
 
     pub fn get_most_recent_log(&self) -> Option<&String> {

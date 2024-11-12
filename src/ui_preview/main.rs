@@ -1,10 +1,11 @@
-use notedeck::app_creation::{
-    generate_mobile_emulator_native_options, generate_native_options, setup_cc,
-};
-use notedeck::ui::add_column::AddColumnView;
 use notedeck::ui::{
-    account_login_view::AccountLoginView, account_management::AccountsView, DesktopSidePanel,
-    PostView, Preview, PreviewApp, PreviewConfig, ProfilePic, ProfilePreview, RelayView,
+    account_login_view::AccountLoginView, account_management::AccountsView,
+    add_column::AddColumnView, DesktopSidePanel, PostView, Preview, PreviewApp, PreviewConfig,
+    ProfilePic, ProfilePreview, RelayView,
+};
+use notedeck::{
+    app_creation::{generate_mobile_emulator_native_options, generate_native_options, setup_cc},
+    storage::DataPath,
 };
 use std::env;
 
@@ -30,7 +31,8 @@ impl PreviewRunner {
         let native_options = if self.force_mobile {
             generate_mobile_emulator_native_options()
         } else {
-            generate_native_options()
+            // TODO: tmp preview pathbuf?
+            generate_native_options(DataPath::new("previews"))
         };
 
         let is_mobile = self.force_mobile;

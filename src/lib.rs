@@ -46,12 +46,11 @@ mod view_state;
 #[macro_use]
 mod test_utils;
 
-mod storage;
+pub mod storage;
 
 pub use app::Damus;
 pub use error::Error;
 pub use profile::DisplayName;
-pub use storage::DataPaths;
 
 #[cfg(target_os = "android")]
 use winit::platform::android::EventLoopBuilderExtAndroid;
