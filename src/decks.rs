@@ -81,7 +81,6 @@ impl DecksCache {
 
 pub struct Decks {
     active_deck: usize,
-    new_active: Option<usize>,
     removal_request: Option<usize>,
     decks: Vec<Deck>,
 }
@@ -98,7 +97,6 @@ impl Decks {
 
         Decks {
             active_deck: 0,
-            new_active: None,
             removal_request: None,
             decks,
         }
@@ -132,77 +130,63 @@ impl Decks {
         self.active_deck
     }
 
-    pub fn request_active(&mut self, index: usize) {
-        self.new_active = Some(index);
-    }
-
-    pub fn accept_active_request(&mut self) {
-        if let Some(index) = self.new_active {
-            if index < self.decks.len() {
-                self.active_deck = index;
-            } else {
-                error!(
-                    "requested deck change that is invalid. decks len: {}, requested index: {}",
-                    self.decks.len(),
-                    index
-                );
-            }
-
-            self.new_active = None;
+    pub fn set_active(&mut self, index: usize) {
+        if index < self.decks.len() {
+            self.active_deck = index;
+        } else {
+            error!(
+                "requested deck change that is invalid. decks len: {}, requested index: {}",
+                self.decks.len(),
+                index
+            );
         }
     }
 
-    pub fn request_deck_removal(&mut self, index: usize) {
-        self.removal_request = Some(index)
-    }
+    pub fn remove_deck(&mut self, index: usize) {
+        if index < self.decks.len() {
+            if self.decks.len() > 1 {
+                self.decks.remove(index);
 
-    pub fn process_deck_removal(&mut self) {
-        if let Some(index) = self.removal_request {
-            if index < self.decks.len() {
-                if self.decks.len() > 1 {
-                    self.decks.remove(index);
-
-                    let info_prefix = format!("Removed deck at index {}", index);
-                    match index.cmp(&self.active_deck) {
-                        std::cmp::Ordering::Less => {
+                let info_prefix = format!("Removed deck at index {}", index);
+                match index.cmp(&self.active_deck) {
+                    std::cmp::Ordering::Less => {
+                        info!(
+                            "{}. The active deck was index {}, now it is {}",
+                            info_prefix,
+                            self.active_deck,
+                            self.active_deck - 1
+                        );
+                        self.active_deck -= 1
+                    }
+                    std::cmp::Ordering::Greater => {
+                        info!(
+                            "{}. Active deck remains at index {}.",
+                            info_prefix, self.active_deck
+                        )
+                    }
+                    std::cmp::Ordering::Equal => {
+                        if index != 0 {
                             info!(
-                                "{}. The active deck was index {}, now it is {}",
+                                "{}. Active deck was index {}, now it is {}",
                                 info_prefix,
                                 self.active_deck,
                                 self.active_deck - 1
                             );
-                            self.active_deck -= 1
-                        }
-                        std::cmp::Ordering::Greater => {
+                            self.active_deck -= 1;
+                        } else {
                             info!(
                                 "{}. Active deck remains at index {}.",
                                 info_prefix, self.active_deck
                             )
                         }
-                        std::cmp::Ordering::Equal => {
-                            if index != 0 {
-                                info!(
-                                    "{}. Active deck was index {}, now it is {}",
-                                    info_prefix,
-                                    self.active_deck,
-                                    self.active_deck - 1
-                                );
-                                self.active_deck -= 1;
-                            } else {
-                                info!(
-                                    "{}. Active deck remains at index {}.",
-                                    info_prefix, self.active_deck
-                                )
-                            }
-                        }
                     }
-                    self.removal_request = None;
-                } else {
-                    error!("attempted unsucessfully to remove the last deck for this account");
                 }
+                self.removal_request = None;
             } else {
-                error!("index was out of bounds");
+                error!("attempted unsucessfully to remove the last deck for this account");
             }
+        } else {
+            error!("index was out of bounds");
         }
     }
 }

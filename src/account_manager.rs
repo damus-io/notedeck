@@ -23,7 +23,6 @@ pub use crate::user_account::UserAccount;
 /// Represents all user-facing operations related to account management.
 pub struct AccountManager {
     currently_selected_account: Option<usize>,
-    select_next_frame: Option<usize>,
     accounts: Vec<UserAccount>,
     key_store: KeyStorageType,
 }
@@ -40,6 +39,12 @@ pub enum AccountsRoute {
     AddAccount,
 }
 
+#[derive(Debug)]
+pub enum AccountSelectionResponse {
+    Delete(usize),
+    Select(usize),
+}
+
 /// Render account management views from a route
 #[allow(clippy::too_many_arguments)]
 pub fn render_accounts_route(
@@ -51,7 +56,7 @@ pub fn render_accounts_route(
     decks: &mut DecksCache,
     login_state: &mut LoginState,
     route: AccountsRoute,
-) {
+) -> Option<AccountSelectionResponse> {
     let resp = match route {
         AccountsRoute::Accounts => AccountsView::new(ndb, accounts, img_cache)
             .ui(ui)
@@ -64,10 +69,12 @@ pub fn render_accounts_route(
             .map(AccountsRouteResponse::AddAccount),
     };
 
+    let mut selection = None;
+
     if let Some(resp) = resp {
         match resp {
             AccountsRouteResponse::Accounts(response) => {
-                process_accounts_view_response(accounts, decks, col, response);
+                selection = process_accounts_view_response(accounts, decks, col, response);
             }
             AccountsRouteResponse::AddAccount(login_resp) => {
                 let pubkey = match login_resp {
@@ -84,7 +91,9 @@ pub fn render_accounts_route(
                     }
                 };
                 decks.add_deck_default(AccountId::User(pubkey));
-                accounts.select_account_nextframe(accounts.num_accounts() - 1);
+                selection = Some(AccountSelectionResponse::Select(
+                    accounts.num_accounts() - 1,
+                ));
                 *login_state = Default::default();
                 let router = get_active_columns_mut(accounts, decks)
                     .column_mut(col)
@@ -93,6 +102,8 @@ pub fn render_accounts_route(
             }
         }
     }
+
+    selection
 }
 
 pub fn process_accounts_view_response(
@@ -100,24 +111,28 @@ pub fn process_accounts_view_response(
     decks: &mut DecksCache,
     col: usize,
     response: AccountsViewResponse,
-) {
+) -> Option<AccountSelectionResponse> {
     let router = get_active_columns_mut(accounts, decks)
         .column_mut(col)
         .router_mut();
+    let mut selection = None;
     match response {
         AccountsViewResponse::RemoveAccount(index) => {
-            if let Some(acc) = accounts.get_account(index) {
-                decks.remove_for(&AccountId::User(acc.pubkey));
-            }
-            accounts.remove_account(index);
+            let acc_sel = AccountSelectionResponse::Delete(index);
+            info!("account selection: {:?}", acc_sel);
+            selection = Some(acc_sel);
         }
         AccountsViewResponse::SelectAccount(index) => {
-            accounts.select_account_nextframe(index);
+            let acc_sel = AccountSelectionResponse::Select(index);
+            info!("account selection: {:?}", acc_sel);
+            selection = Some(AccountSelectionResponse::Select(index));
         }
         AccountsViewResponse::RouteToLogin => {
             router.route_to(Route::add_account());
         }
     }
+
+    selection
 }
 
 impl AccountManager {
@@ -131,7 +146,6 @@ impl AccountManager {
         let currently_selected_account = get_selected_index(&accounts, &key_store);
         AccountManager {
             currently_selected_account,
-            select_next_frame: None,
             accounts,
             key_store,
         }
@@ -157,7 +171,7 @@ impl AccountManager {
             if let Some(selected_index) = self.currently_selected_account {
                 match selected_index.cmp(&index) {
                     Ordering::Greater => {
-                        self.select_account_nextframe(selected_index - 1);
+                        self.select_account(selected_index - 1);
                     }
                     Ordering::Equal => {
                         self.clear_selected_account();
@@ -214,20 +228,11 @@ impl AccountManager {
         }
     }
 
-    /// Indicate to the `AccountManager` that the account at `index` should be selected next frame
-    pub fn select_account_nextframe(&mut self, index: usize) {
-        self.select_next_frame = Some(index)
-    }
-
-    /// Actually select the account at the index `select_next_frame`.
-    /// Should only be called in `Damus::update_damus`
-    pub fn perform_selection(&mut self) {
-        if let Some(index) = self.select_next_frame {
-            if let Some(account) = self.accounts.get(index) {
-                self.currently_selected_account = Some(index);
-                self.key_store.select_key(Some(account.pubkey));
-                self.select_next_frame = None;
-            }
+    /// Select the account at the index
+    pub fn select_account(&mut self, index: usize) {
+        if let Some(account) = self.accounts.get(index) {
+            self.currently_selected_account = Some(index);
+            self.key_store.select_key(Some(account.pubkey));
         }
     }
 

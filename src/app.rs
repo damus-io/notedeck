@@ -1,5 +1,5 @@
 use crate::{
-    account_manager::AccountManager,
+    account_manager::{AccountManager, AccountSelectionResponse},
     app_creation::setup_cc,
     app_size_handler::AppSizeHandler,
     app_style::user_requested_visuals_change,
@@ -11,7 +11,7 @@ use crate::{
     filter::{self, FilterState},
     frame_history::FrameHistory,
     imgcache::ImageCache,
-    nav,
+    nav::{self, SelectionResponse},
     note::NoteRef,
     notecache::{CachedNote, NoteCache},
     notes_holder::NotesHolderStorage,
@@ -467,10 +467,6 @@ fn setup_new_nostrdb_sub(
 }
 
 fn update_damus(damus: &mut Damus, ctx: &egui::Context) {
-    damus.accounts.perform_selection();
-    perform_removal_requests(&mut damus.decks_cache);
-    perform_active_requests(&mut damus.decks_cache);
-
     match damus.state {
         DamusState::Initializing => {
             #[cfg(feature = "profiling")]
@@ -715,7 +711,7 @@ impl Damus {
         }
 
         if num_keys != 0 {
-            accounts.select_account_nextframe(0);
+            accounts.select_account(0);
         }
 
         // setup relays if we have them
@@ -1061,6 +1057,7 @@ fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus) {
         )
         .clip(true)
         .horizontal(|mut strip| {
+            let mut selection_resp = None;
             strip.cell(|ui| {
                 let rect = ui.available_rect_before_wrap();
                 let side_panel = DesktopSidePanel::new(
@@ -1072,12 +1069,15 @@ fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus) {
                 .show(ui);
 
                 if side_panel.response.clicked() || side_panel.response.secondary_clicked() {
-                    DesktopSidePanel::perform_action(
+                    if let Some(resp) = DesktopSidePanel::perform_action(
                         &mut app.decks_cache,
                         &app.accounts,
                         &mut app.support,
                         side_panel.action,
-                    );
+                    ) {
+                        info!("Got selection response from side panel: {:?}", resp);
+                        selection_resp = Some(resp);
+                    }
                 }
 
                 // vertical sidebar line
@@ -1091,7 +1091,10 @@ fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus) {
             for col_index in 0..get_active_columns(&app.accounts, &app.decks_cache).num_columns() {
                 strip.cell(|ui| {
                     let rect = ui.available_rect_before_wrap();
-                    nav::render_nav(col_index, app, ui);
+                    if let Some(resp) = nav::render_nav(col_index, app, ui) {
+                        info!("Got selection response: {:?}", resp);
+                        selection_resp = Some(resp);
+                    }
 
                     // vertical line
                     ui.painter().vline(
@@ -1103,7 +1106,34 @@ fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus) {
 
                 //strip.cell(|ui| timeline::timeline_view(ui, app, timeline_ind));
             }
+
+            if let Some(resp) = selection_resp {
+                process_selection_response(&mut app.accounts, &mut app.decks_cache, resp);
+            }
         });
+}
+
+fn process_selection_response(
+    accounts: &mut AccountManager,
+    decks_cache: &mut DecksCache,
+    resp: SelectionResponse,
+) {
+    match resp {
+        SelectionResponse::Account(selection_resp) => match selection_resp {
+            AccountSelectionResponse::Delete(index) => {
+                if let Some(acc) = accounts.get_account(index) {
+                    decks_cache.remove_for(&AccountId::User(acc.pubkey));
+                }
+                accounts.remove_account(index);
+            }
+            AccountSelectionResponse::Select(index) => {
+                accounts.select_account(index);
+            }
+        },
+        SelectionResponse::SelectDeck(index) => {
+            get_decks_mut(accounts, decks_cache).set_active(index);
+        }
+    }
 }
 
 impl eframe::App for Damus {
@@ -1158,18 +1188,4 @@ pub fn get_decks_mut<'a>(
     } else {
         decks_cache.decks_mut(&AccountId::Unnamed(0))
     }
-}
-
-fn perform_active_requests(decks_cache: &mut DecksCache) {
-    decks_cache
-        .account_to_decks
-        .values_mut()
-        .for_each(|decks| decks.accept_active_request());
-}
-
-fn perform_removal_requests(decks_cache: &mut DecksCache) {
-    decks_cache
-        .account_to_decks
-        .values_mut()
-        .for_each(|decks| decks.process_deck_removal());
 }

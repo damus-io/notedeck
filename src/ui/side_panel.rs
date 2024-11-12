@@ -5,11 +5,12 @@ use tracing::info;
 
 use crate::{
     account_manager::{AccountManager, AccountsRoute},
-    app::{get_active_columns_mut, get_decks_mut},
+    app::get_active_columns_mut,
     colors,
     column::Column,
     decks::{AccountId, DecksCache},
     imgcache::ImageCache,
+    nav::SelectionResponse,
     route::Route,
     support::Support,
     user_account::UserAccount,
@@ -211,8 +212,9 @@ impl<'a> DesktopSidePanel<'a> {
         accounts: &AccountManager,
         support: &mut Support,
         action: SidePanelAction,
-    ) {
+    ) -> Option<SelectionResponse> {
         let router = get_active_columns_mut(accounts, decks_cache).get_first_router();
+        let mut switching_response = None;
         match action {
             SidePanelAction::Panel => {} // TODO
             SidePanelAction::Account => {
@@ -273,8 +275,7 @@ impl<'a> DesktopSidePanel<'a> {
                 }
             }
             SidePanelAction::SwitchDeck(index) => {
-                let decks = get_decks_mut(accounts, decks_cache);
-                decks.request_active(index);
+                switching_response = Some(SelectionResponse::SelectDeck(index))
             }
             SidePanelAction::EditDeck(index) => {
                 if router.routes().iter().any(|&r| r == Route::EditDeck(index)) {
@@ -284,6 +285,7 @@ impl<'a> DesktopSidePanel<'a> {
                 }
             }
         }
+        switching_response
     }
 }
 

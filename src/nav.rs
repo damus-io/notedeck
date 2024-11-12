@@ -1,5 +1,5 @@
 use crate::{
-    account_manager::render_accounts_route,
+    account_manager::{render_accounts_route, AccountSelectionResponse},
     app::{get_active_columns, get_active_columns_mut, get_decks_mut},
     app_style::{get_font_size, NotedeckTextStyle},
     deck_state::DeckState,
@@ -32,7 +32,13 @@ use egui_nav::{Nav, NavAction, TitleBarResponse};
 use nostrdb::{Ndb, Transaction};
 use tracing::{error, info};
 
-pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) {
+#[derive(Debug)]
+pub enum SelectionResponse {
+    Account(AccountSelectionResponse),
+    SelectDeck(usize),
+}
+
+pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) -> Option<SelectionResponse> {
     let col_id = app.columns().get_column_id_at_index(col);
     // TODO(jb55): clean up this router_mut mess by using Router<R> in egui-nav directly
     let routes = get_active_columns(&app.accounts, &app.decks_cache)
@@ -42,6 +48,7 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) {
         .iter()
         .map(|r| r.get_titled_route(&app.accounts, &app.decks_cache, &app.ndb))
         .collect();
+    let mut col_response = None;
     let nav_response = Nav::new(routes)
         .navigating(app.columns_mut().column_mut(col).router_mut().navigating)
         .returning(app.columns_mut().column_mut(col).router_mut().returning)
@@ -65,7 +72,7 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) {
                     ui,
                 ),
                 Route::Accounts(amr) => {
-                    render_accounts_route(
+                    if let Some(resp) = render_accounts_route(
                         ui,
                         &app.ndb,
                         col,
@@ -74,7 +81,9 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) {
                         &mut app.decks_cache,
                         &mut app.view_state.login,
                         *amr,
-                    );
+                    ) {
+                        col_response = Some(SelectionResponse::Account(resp));
+                    }
                     None
                 }
                 Route::Relays => {
@@ -266,7 +275,7 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) {
                     if let Some(acc) = app.accounts.get_selected_account() {
                         app.decks_cache
                             .decks_mut(&crate::decks::AccountId::User(acc.pubkey))
-                            .request_deck_removal(index);
+                            .remove_deck(index);
                         app.view_state.id_to_deck_state.remove(&id);
                     }
                 }
@@ -291,6 +300,8 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) {
             }
         }
     }
+
+    col_response
 }
 
 fn unsubscribe_timeline(ndb: &Ndb, timeline: &Timeline) {
