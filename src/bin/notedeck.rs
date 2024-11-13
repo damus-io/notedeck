@@ -13,13 +13,7 @@ use tracing_subscriber::EnvFilter;
 //#[cfg(target_arch = "wasm32")]
 //use wasm_bindgen::prelude::*;
 
-// Desktop
-#[cfg(not(target_arch = "wasm32"))]
-#[tokio::main]
-async fn main() {
-    let base_path = DataPath::default_base().unwrap_or(PathBuf::from_str(".").unwrap());
-    let path = DataPath::new(&base_path);
-
+fn setup_logging(path: &DataPath) {
     #[allow(unused_variables)] // need guard to live for lifetime of program
     let (maybe_non_blocking, maybe_guard) = {
         let log_path = path.path(DataPathType::Log);
@@ -71,6 +65,16 @@ async fn main() {
             .with_env_filter(EnvFilter::from_default_env())
             .init();
     }
+}
+
+// Desktop
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::main]
+async fn main() {
+    let base_path = DataPath::default_base().unwrap_or(PathBuf::from_str(".").unwrap());
+    let path = DataPath::new(&base_path);
+
+    setup_logging(&path);
 
     let _res = eframe::run_native(
         "Damus NoteDeck",
