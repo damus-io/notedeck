@@ -51,8 +51,7 @@ pub fn generate_mobile_emulator_native_options() -> eframe::NativeOptions {
     })
 }
 
-pub fn setup_cc(cc: &eframe::CreationContext<'_>, is_mobile: bool, light: bool) {
-    let ctx = &cc.egui_ctx;
+pub fn setup_cc(ctx: &egui::Context, is_mobile: bool, light: bool) {
     setup_fonts(ctx);
 
     //ctx.set_pixels_per_point(ctx.pixels_per_point() + UI_SCALE_FACTOR);

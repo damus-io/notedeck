@@ -77,7 +77,7 @@ async fn main() {
         generate_native_options(path),
         Box::new(|cc| {
             Ok(Box::new(Damus::new(
-                cc,
+                &cc.egui_ctx,
                 base_path,
                 std::env::args().collect(),
             )))

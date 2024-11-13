@@ -43,7 +43,7 @@ impl PreviewRunner {
             native_options,
             Box::new(move |cc| {
                 let app = Into::<PreviewApp>::into(preview);
-                setup_cc(cc, is_mobile, light_mode);
+                setup_cc(&cc.egui_ctx, is_mobile, light_mode);
                 Ok(Box::new(app))
             }),
         );

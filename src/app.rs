@@ -647,16 +647,12 @@ fn determine_key_storage_type() -> KeyStorageType {
 
 impl Damus {
     /// Called once before the first frame.
-    pub fn new<P: AsRef<Path>>(
-        cc: &eframe::CreationContext<'_>,
-        data_path: P,
-        args: Vec<String>,
-    ) -> Self {
+    pub fn new<P: AsRef<Path>>(ctx: &egui::Context, data_path: P, args: Vec<String>) -> Self {
         // arg parsing
         let parsed_args = Args::parse(&args);
         let is_mobile = parsed_args.is_mobile.unwrap_or(ui::is_compiled_as_mobile());
 
-        setup_cc(cc, is_mobile, parsed_args.light);
+        setup_cc(ctx, is_mobile, parsed_args.light);
 
         let data_path = parsed_args
             .datapath
@@ -700,13 +696,16 @@ impl Damus {
         // setup relays if we have them
         let pool = if parsed_args.relays.is_empty() {
             let mut pool = RelayPool::new();
-            relay_setup(&mut pool, &cc.egui_ctx);
+            relay_setup(&mut pool, ctx);
             pool
         } else {
-            let ctx = cc.egui_ctx.clone();
-            let wakeup = move || {
-                ctx.request_repaint();
+            let wakeup = {
+                let ctx = ctx.clone();
+                move || {
+                    ctx.request_repaint();
+                }
             };
+
             let mut pool = RelayPool::new();
             for relay in parsed_args.relays {
                 if let Err(e) = pool.add_url(relay.clone(), wakeup.clone()) {
