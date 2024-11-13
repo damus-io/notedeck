@@ -8,13 +8,13 @@ use nostrdb::{Ndb, Transaction};
 use std::fmt::Display;
 use tracing::{error, warn};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PubkeySource {
     Explicit(Pubkey),
     DeckAuthor,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ListKind {
     Contact(PubkeySource),
 }
@@ -27,7 +27,7 @@ pub enum ListKind {
 ///   - filter
 ///   - ... etc
 ///
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TimelineKind {
     List(ListKind),
 
@@ -58,8 +58,16 @@ impl TimelineKind {
         TimelineKind::List(ListKind::Contact(pk))
     }
 
+    pub fn is_contacts(&self) -> bool {
+        matches!(self, TimelineKind::List(ListKind::Contact(_)))
+    }
+
     pub fn profile(pk: PubkeySource) -> Self {
         TimelineKind::Profile(pk)
+    }
+
+    pub fn is_notifications(&self) -> bool {
+        matches!(self, TimelineKind::Notifications(_))
     }
 
     pub fn notifications(pk: PubkeySource) -> Self {
