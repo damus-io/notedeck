@@ -247,3 +247,61 @@ impl ArgColumn {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        app::Damus,
+        result::Result,
+        storage::{delete_file, write_file, Directory},
+        Error,
+    };
+
+    use std::path::{Path, PathBuf};
+
+    fn create_tmp_dir() -> PathBuf {
+        tempfile::TempDir::new()
+            .expect("tmp path")
+            .path()
+            .to_path_buf()
+    }
+
+    fn rmrf(path: impl AsRef<Path>) {
+        std::fs::remove_dir_all(path);
+    }
+
+    #[tokio::test]
+    async fn test_column_args() {
+        let tmpdir = create_tmp_dir();
+        let npub = "npub1xtscya34g58tk0z605fvr788k263gsu6cy9x0mhnm87echrgufzsevkk5s";
+        let args = vec![
+            "--no-keystore",
+            "--pub",
+            npub,
+            "-c",
+            "notifications",
+            "-c",
+            "contacts",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+
+        let ctx = egui::Context::default();
+        let app = Damus::new(&ctx, &tmpdir, args);
+
+        assert_eq!(app.columns.columns().len(), 2);
+
+        let tl1 = app.columns.column(0).router().top().timeline_id();
+        let tl2 = app.columns.column(1).router().top().timeline_id();
+
+        assert_eq!(tl1.is_some(), true);
+        assert_eq!(tl2.is_some(), true);
+
+        let timelines = app.columns.timelines();
+        assert!(timelines[0].kind.is_notifications());
+        assert!(timelines[1].kind.is_contacts());
+
+        rmrf(tmpdir);
+    }
+}
