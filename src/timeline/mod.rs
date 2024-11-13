@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use egui_virtual_list::VirtualList;
 use nostrdb::{Ndb, Note, Subscription, Transaction};
+use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::hash::Hash;
 use std::rc::Rc;
@@ -21,7 +22,7 @@ pub mod route;
 pub use kind::{PubkeySource, TimelineKind};
 pub use route::TimelineRoute;
 
-#[derive(Debug, Hash, Copy, Clone, Eq, PartialEq)]
+#[derive(Debug, Hash, Copy, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TimelineId(u32);
 
 impl TimelineId {
@@ -177,6 +178,18 @@ pub struct Timeline {
     pub subscription: Option<Subscription>,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SerializableTimeline {
+    pub id: TimelineId,
+    pub kind: TimelineKind,
+}
+
+impl SerializableTimeline {
+    pub fn into_timeline(self, ndb: &Ndb, deck_user_pubkey: Option<&[u8; 32]>) -> Option<Timeline> {
+        self.kind.into_timeline(ndb, deck_user_pubkey)
+    }
+}
+
 impl Timeline {
     /// Create a timeline from a contact list
     pub fn contact_list(contact_list: &Note, pk_src: PubkeySource) -> Result<Self> {
@@ -311,6 +324,13 @@ impl Timeline {
         }
 
         Ok(())
+    }
+
+    pub fn as_serializable_timeline(&self) -> SerializableTimeline {
+        SerializableTimeline {
+            id: self.id,
+            kind: self.kind.clone(),
+        }
     }
 }
 

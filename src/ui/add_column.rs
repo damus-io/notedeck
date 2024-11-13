@@ -1,4 +1,5 @@
 use core::f32;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use egui::{
@@ -39,7 +40,7 @@ enum AddColumnOption {
     Home(PubkeySource),
 }
 
-#[derive(Clone, Copy, Eq, PartialEq, Debug)]
+#[derive(Clone, Copy, Eq, PartialEq, Debug, Serialize, Deserialize)]
 pub enum AddColumnRoute {
     Base,
     UndecidedNotification,
@@ -276,11 +277,7 @@ impl<'a> AddColumnView<'a> {
         });
 
         if let Some(acc) = self.cur_account {
-            let source = if acc.secret_key.is_some() {
-                PubkeySource::DeckAuthor
-            } else {
-                PubkeySource::Explicit(acc.pubkey)
-            };
+            let source = PubkeySource::Explicit(acc.pubkey);
 
             vec.push(ColumnOptionData {
                 title: "Home timeline",

@@ -1,10 +1,13 @@
 use crate::route::{Route, Router};
-use crate::timeline::{Timeline, TimelineId};
+use crate::timeline::{SerializableTimeline, Timeline, TimelineId, TimelineRoute};
 use indexmap::IndexMap;
+use nostrdb::Ndb;
+use serde::{Deserialize, Deserializer, Serialize};
 use std::iter::Iterator;
 use std::sync::atomic::{AtomicU32, Ordering};
-use tracing::warn;
+use tracing::{error, warn};
 
+#[derive(Clone)]
 pub struct Column {
     router: Router<Route>,
 }
@@ -21,6 +24,28 @@ impl Column {
 
     pub fn router_mut(&mut self) -> &mut Router<Route> {
         &mut self.router
+    }
+}
+
+impl serde::Serialize for Column {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.router.routes().serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for Column {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let routes = Vec::<Route>::deserialize(deserializer)?;
+
+        Ok(Column {
+            router: Router::new(routes),
+        })
     }
 }
 
@@ -68,6 +93,10 @@ impl Columns {
 
     fn get_new_id() -> u32 {
         UIDS.fetch_add(1, Ordering::Relaxed)
+    }
+
+    pub fn add_column_at(&mut self, column: Column, index: u32) {
+        self.columns.insert(index, column);
     }
 
     pub fn add_column(&mut self, column: Column) {
@@ -195,5 +224,60 @@ impl Columns {
                 self.new_column_picker();
             }
         }
+    }
+
+    pub fn as_serializable_columns(&self) -> SerializableColumns {
+        SerializableColumns {
+            columns: self.columns.values().cloned().collect(),
+            timelines: self
+                .timelines
+                .values()
+                .map(|t| t.as_serializable_timeline())
+                .collect(),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct SerializableColumns {
+    pub columns: Vec<Column>,
+    pub timelines: Vec<SerializableTimeline>,
+}
+
+impl SerializableColumns {
+    pub fn into_columns(self, ndb: &Ndb, deck_pubkey: Option<&[u8; 32]>) -> Columns {
+        let mut columns = Columns::default();
+
+        for column in self.columns {
+            let id = Columns::get_new_id();
+            let mut routes = Vec::new();
+            for route in column.router.routes() {
+                match route {
+                    Route::Timeline(TimelineRoute::Timeline(timeline_id)) => {
+                        if let Some(serializable_tl) =
+                            self.timelines.iter().find(|tl| tl.id == *timeline_id)
+                        {
+                            let tl = serializable_tl.clone().into_timeline(ndb, deck_pubkey);
+                            if let Some(tl) = tl {
+                                routes.push(Route::Timeline(TimelineRoute::Timeline(tl.id)));
+                                columns.timelines.insert(id, tl);
+                            } else {
+                                error!("Problem deserializing timeline {:?}", serializable_tl);
+                            }
+                        }
+                    }
+                    Route::Timeline(TimelineRoute::Thread(_thread)) => {
+                        // TODO: open thread before pushing route
+                    }
+                    Route::Profile(_profile) => {
+                        // TODO: open profile before pushing route
+                    }
+                    _ => routes.push(*route),
+                }
+            }
+            columns.add_column_at(Column::new(routes), id);
+        }
+
+        columns
     }
 }

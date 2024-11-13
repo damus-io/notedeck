@@ -219,18 +219,13 @@ impl Args {
             i += 1;
         }
 
-        if res.columns.is_empty() {
-            let ck = TimelineKind::contact_list(PubkeySource::DeckAuthor);
-            info!("No columns set, setting up defaults: {:?}", ck);
-            res.columns.push(ArgColumn::Timeline(ck));
-        }
-
         res
     }
 }
 
 /// A way to define columns from the commandline. Can be column kinds or
 /// generic queries
+#[derive(Debug)]
 pub enum ArgColumn {
     Timeline(TimelineKind),
     Generic(Vec<Filter>),
