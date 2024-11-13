@@ -84,7 +84,7 @@ pub async fn android_main(app: AndroidApp) {
     let _res = eframe::run_native(
         "Damus NoteDeck",
         options,
-        Box::new(move |cc| Ok(Box::new(Damus::new(cc, path, app_args)))),
+        Box::new(move |cc| Ok(Box::new(Damus::new(&cc.egui_ctx, path, app_args)))),
     );
 }
 
