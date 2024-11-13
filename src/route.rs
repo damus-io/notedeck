@@ -3,8 +3,9 @@ use nostrdb::Ndb;
 use std::fmt::{self};
 
 use crate::{
-    account_manager::AccountsRoute,
-    column::Columns,
+    account_manager::{AccountManager, AccountsRoute},
+    app::{get_active_columns, get_decks},
+    decks::DecksCache,
     timeline::{TimelineId, TimelineRoute},
     ui::profile::preview::{get_note_users_displayname_string, get_profile_displayname_string},
 };
@@ -19,6 +20,8 @@ pub enum Route {
     AddColumn,
     Profile(Pubkey),
     Support,
+    NewDeck,
+    EditDeck(usize),
 }
 
 #[derive(Clone)]
@@ -70,10 +73,16 @@ impl Route {
         Route::Accounts(AccountsRoute::AddAccount)
     }
 
-    pub fn get_titled_route(&self, columns: &Columns, ndb: &Ndb) -> TitledRoute {
+    pub fn get_titled_route(
+        &self,
+        accounts: &AccountManager,
+        decks_cache: &DecksCache,
+        ndb: &Ndb,
+    ) -> TitledRoute {
         let title = match self {
             Route::Timeline(tlr) => match tlr {
                 TimelineRoute::Timeline(id) => {
+                    let columns = get_active_columns(accounts, decks_cache);
                     let timeline = columns
                         .find_timeline(*id)
                         .expect("expected to find timeline");
@@ -102,6 +111,16 @@ impl Route {
                 format!("{}'s Profile", get_profile_displayname_string(ndb, pubkey))
             }
             Route::Support => "Damus Support".to_owned(),
+            Route::NewDeck => "Add Deck".to_owned(),
+            Route::EditDeck(index) => {
+                let deck_name =
+                    if let Some(deck) = get_decks(accounts, decks_cache).decks().get(*index) {
+                        &deck.name
+                    } else {
+                        &String::new()
+                    };
+                format!("Edit Deck: {}", deck_name)
+            }
         };
 
         TitledRoute {
@@ -211,6 +230,8 @@ impl fmt::Display for Route {
             Route::AddColumn => write!(f, "Add Column"),
             Route::Profile(_) => write!(f, "Profile"),
             Route::Support => write!(f, "Support"),
+            Route::NewDeck => write!(f, "Add Deck"),
+            Route::EditDeck(_) => write!(f, "Edit Deck"),
         }
     }
 }

@@ -4,10 +4,11 @@ use enostr::{FilledKeypair, FullKeypair, Keypair};
 use nostrdb::Ndb;
 
 use crate::{
-    column::Columns,
+    app::get_active_columns_mut,
+    decks::{AccountId, DecksCache},
     imgcache::ImageCache,
     login_manager::LoginState,
-    route::{Route, Router},
+    route::Route,
     storage::{KeyStorageResponse, KeyStorageType},
     ui::{
         account_login_view::{AccountLoginResponse, AccountLoginView},
@@ -38,19 +39,24 @@ pub enum AccountsRoute {
     AddAccount,
 }
 
+#[derive(Debug)]
+pub enum AccountSelectionResponse {
+    Delete(usize),
+    Select(usize),
+}
+
 /// Render account management views from a route
 #[allow(clippy::too_many_arguments)]
 pub fn render_accounts_route(
     ui: &mut egui::Ui,
     ndb: &Ndb,
     col: usize,
-    columns: &mut Columns,
     img_cache: &mut ImageCache,
     accounts: &mut AccountManager,
+    decks: &mut DecksCache,
     login_state: &mut LoginState,
     route: AccountsRoute,
-) {
-    let router = columns.column_mut(col).router_mut();
+) -> Option<AccountSelectionResponse> {
     let resp = match route {
         AccountsRoute::Accounts => AccountsView::new(ndb, accounts, img_cache)
             .ui(ui)
@@ -63,36 +69,70 @@ pub fn render_accounts_route(
             .map(AccountsRouteResponse::AddAccount),
     };
 
+    let mut selection = None;
+
     if let Some(resp) = resp {
         match resp {
             AccountsRouteResponse::Accounts(response) => {
-                process_accounts_view_response(accounts, response, router);
+                selection = process_accounts_view_response(accounts, decks, col, response);
             }
-            AccountsRouteResponse::AddAccount(response) => {
-                process_login_view_response(accounts, response);
+            AccountsRouteResponse::AddAccount(login_resp) => {
+                let pubkey = match login_resp {
+                    AccountLoginResponse::CreateNew => {
+                        let kp = FullKeypair::generate().to_keypair();
+                        let pubkey = kp.pubkey;
+                        accounts.add_account(kp);
+                        pubkey
+                    }
+                    AccountLoginResponse::LoginWith(keypair) => {
+                        let pubkey = keypair.pubkey;
+                        accounts.add_account(keypair);
+                        pubkey
+                    }
+                };
+                decks.add_deck_default(AccountId::User(pubkey));
+                selection = Some(AccountSelectionResponse::Select(
+                    accounts.num_accounts() - 1,
+                ));
                 *login_state = Default::default();
+                let router = get_active_columns_mut(accounts, decks)
+                    .column_mut(col)
+                    .router_mut();
                 router.go_back();
             }
         }
     }
+
+    selection
 }
 
 pub fn process_accounts_view_response(
-    manager: &mut AccountManager,
+    accounts: &mut AccountManager,
+    decks: &mut DecksCache,
+    col: usize,
     response: AccountsViewResponse,
-    router: &mut Router<Route>,
-) {
+) -> Option<AccountSelectionResponse> {
+    let router = get_active_columns_mut(accounts, decks)
+        .column_mut(col)
+        .router_mut();
+    let mut selection = None;
     match response {
         AccountsViewResponse::RemoveAccount(index) => {
-            manager.remove_account(index);
+            let acc_sel = AccountSelectionResponse::Delete(index);
+            info!("account selection: {:?}", acc_sel);
+            selection = Some(acc_sel);
         }
         AccountsViewResponse::SelectAccount(index) => {
-            manager.select_account(index);
+            let acc_sel = AccountSelectionResponse::Select(index);
+            info!("account selection: {:?}", acc_sel);
+            selection = Some(AccountSelectionResponse::Select(index));
         }
         AccountsViewResponse::RouteToLogin => {
             router.route_to(Route::add_account());
         }
     }
+
+    selection
 }
 
 impl AccountManager {
@@ -188,6 +228,7 @@ impl AccountManager {
         }
     }
 
+    /// Select the account at the index
     pub fn select_account(&mut self, index: usize) {
         if let Some(account) = self.accounts.get(index) {
             self.currently_selected_account = Some(index);
@@ -212,16 +253,4 @@ fn get_selected_index(accounts: &[UserAccount], keystore: &KeyStorageType) -> Op
     };
 
     None
-}
-
-pub fn process_login_view_response(manager: &mut AccountManager, response: AccountLoginResponse) {
-    match response {
-        AccountLoginResponse::CreateNew => {
-            manager.add_account(FullKeypair::generate().to_keypair());
-        }
-        AccountLoginResponse::LoginWith(keypair) => {
-            manager.add_account(keypair);
-        }
-    }
-    manager.select_account(manager.num_accounts() - 1);
 }

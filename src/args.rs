@@ -290,15 +290,15 @@ mod tests {
         let ctx = egui::Context::default();
         let app = Damus::new(&ctx, &tmpdir, args);
 
-        assert_eq!(app.columns.columns().len(), 2);
+        assert_eq!(app.columns().columns().len(), 2);
 
-        let tl1 = app.columns.column(0).router().top().timeline_id();
-        let tl2 = app.columns.column(1).router().top().timeline_id();
+        let tl1 = app.columns().column(0).router().top().timeline_id();
+        let tl2 = app.columns().column(1).router().top().timeline_id();
 
         assert_eq!(tl1.is_some(), true);
         assert_eq!(tl2.is_some(), true);
 
-        let timelines = app.columns.timelines();
+        let timelines = app.columns().timelines();
         assert!(timelines[0].kind.is_notifications());
         assert!(timelines[1].kind.is_contacts());
 
