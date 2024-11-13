@@ -6,7 +6,7 @@ use nostrdb::Ndb;
 use crate::{
     column::Columns,
     imgcache::ImageCache,
-    login_manager::LoginState,
+    login_manager::AcquireKeyState,
     route::{Route, Router},
     storage::{KeyStorageResponse, KeyStorageType},
     ui::{
@@ -47,7 +47,7 @@ pub fn render_accounts_route(
     columns: &mut Columns,
     img_cache: &mut ImageCache,
     accounts: &mut AccountManager,
-    login_state: &mut LoginState,
+    login_state: &mut AcquireKeyState,
     route: AccountsRoute,
 ) {
     let router = columns.column_mut(col).router_mut();

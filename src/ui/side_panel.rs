@@ -196,7 +196,11 @@ impl<'a> DesktopSidePanel<'a> {
                 }
             }
             SidePanelAction::Columns => {
-                if router.routes().iter().any(|&r| r == Route::AddColumn) {
+                if router
+                    .routes()
+                    .iter()
+                    .any(|&r| matches!(r, Route::AddColumn(_)))
+                {
                     router.go_back();
                 } else {
                     columns.new_column_picker();

@@ -13,7 +13,7 @@ use crate::{
     },
     ui::{
         self,
-        add_column::{AddColumnResponse, AddColumnView},
+        add_column::render_add_column_routes,
         anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},
         note::PostAction,
         support::SupportView,
@@ -101,19 +101,9 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) {
 
                     None
                 }
-                Route::AddColumn => {
-                    let resp =
-                        AddColumnView::new(&app.ndb, app.accounts.get_selected_account()).ui(ui);
+                Route::AddColumn(route) => {
+                    render_add_column_routes(ui, app, col, route);
 
-                    if let Some(resp) = resp {
-                        match resp {
-                            AddColumnResponse::Timeline(timeline) => {
-                                let id = timeline.id;
-                                app.columns_mut().add_timeline_to_column(col, timeline);
-                                app.subscribe_new_timeline(id);
-                            }
-                        };
-                    }
                     None
                 }
 
@@ -205,7 +195,7 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) {
         let cur_router = app.columns_mut().column_mut(col).router_mut();
         cur_router.navigating = false;
         if cur_router.is_replacing() {
-            cur_router.remove_previous_route();
+            cur_router.remove_previous_routes();
         }
     }
 
