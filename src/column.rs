@@ -61,7 +61,6 @@ pub struct Columns {
 
     /// The selected column for key navigation
     selected: i32,
-    should_delete_column_at_index: Option<usize>,
 }
 static UIDS: AtomicU32 = AtomicU32::new(0);
 
@@ -207,22 +206,15 @@ impl Columns {
         self.selected += 1;
     }
 
-    pub fn request_deletion_at_index(&mut self, index: usize) {
-        self.should_delete_column_at_index = Some(index);
-    }
+    pub fn delete_column(&mut self, index: usize) {
+        if let Some((key, _)) = self.columns.get_index_mut(index) {
+            self.timelines.shift_remove(key);
+        }
 
-    pub fn attempt_perform_deletion_request(&mut self) {
-        if let Some(index) = self.should_delete_column_at_index {
-            if let Some((key, _)) = self.columns.get_index_mut(index) {
-                self.timelines.shift_remove(key);
-            }
+        self.columns.shift_remove_index(index);
 
-            self.columns.shift_remove_index(index);
-            self.should_delete_column_at_index = None;
-
-            if self.columns.is_empty() {
-                self.new_column_picker();
-            }
+        if self.columns.is_empty() {
+            self.new_column_picker();
         }
     }
 
