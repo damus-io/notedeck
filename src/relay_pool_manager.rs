@@ -41,9 +41,14 @@ impl<'a> RelayPoolManager<'a> {
         indices.iter().for_each(|index| self.remove_relay(*index));
     }
 
+    // This wants to add the relay to one of the pool collections
+    // (bootstrapping, local, advertised, or forced) and then call
+    // configure_relays ...
+    /*
     pub fn add_relay(&mut self, ctx: &egui::Context, relay_url: String) {
         let _ = self.pool.add_url(relay_url, create_wakeup(ctx));
     }
+    */
 }
 
 pub fn create_wakeup(ctx: &egui::Context) -> impl Fn() + Send + Sync + Clone + 'static {

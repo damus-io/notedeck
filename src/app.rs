@@ -18,6 +18,7 @@ use crate::{
     storage::{DataPath, DataPathType, Directory, FileKeyStorage, KeyStorageType},
     subscriptions::{SubKind, Subscriptions},
     support::Support,
+    task,
     thread::Thread,
     timeline::{Timeline, TimelineId, TimelineKind, ViewFilter},
     ui::{self, DesktopSidePanel},
@@ -34,6 +35,7 @@ use egui_extras::{Size, StripBuilder};
 
 use nostrdb::{Config, Filter, Ndb, Note, Transaction};
 
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::path::Path;
 use std::time::Duration;
@@ -72,31 +74,6 @@ pub struct Damus {
     pub debug: bool,
     pub since_optimize: bool,
     pub textmode: bool,
-}
-
-fn relay_setup(pool: &mut RelayPool, ctx: &egui::Context) {
-    let ctx = ctx.clone();
-    let wakeup = move || {
-        ctx.request_repaint();
-    };
-    if let Err(e) = pool.add_url("ws://localhost:8080".to_string(), wakeup.clone()) {
-        error!("{:?}", e)
-    }
-    if let Err(e) = pool.add_url("wss://relay.damus.io".to_string(), wakeup.clone()) {
-        error!("{:?}", e)
-    }
-    //if let Err(e) = pool.add_url("wss://pyramid.fiatjaf.com".to_string(), wakeup.clone()) {
-    //error!("{:?}", e)
-    //}
-    if let Err(e) = pool.add_url("wss://nos.lol".to_string(), wakeup.clone()) {
-        error!("{:?}", e)
-    }
-    if let Err(e) = pool.add_url("wss://nostr.wine".to_string(), wakeup.clone()) {
-        error!("{:?}", e)
-    }
-    if let Err(e) = pool.add_url("wss://purplepag.es".to_string(), wakeup) {
-        error!("{:?}", e)
-    }
 }
 
 fn send_initial_timeline_filter(
@@ -476,6 +453,8 @@ fn update_damus(damus: &mut Damus, ctx: &egui::Context) {
                 .insert("unknownids".to_string(), SubKind::OneShot);
             setup_initial_nostrdb_subs(&damus.ndb, &mut damus.note_cache, &mut damus.columns)
                 .expect("home subscription failed");
+
+            task::spawn_track_user_relays(damus);
         }
 
         DamusState::NewTimelineSub(new_timeline_id) => {
@@ -698,23 +677,29 @@ impl Damus {
         }
 
         // setup relays if we have them
-        let pool = if parsed_args.relays.is_empty() {
-            let mut pool = RelayPool::new();
-            relay_setup(&mut pool, &cc.egui_ctx);
-            pool
-        } else {
-            let ctx = cc.egui_ctx.clone();
-            let wakeup = move || {
-                ctx.request_repaint();
-            };
-            let mut pool = RelayPool::new();
-            for relay in parsed_args.relays {
-                if let Err(e) = pool.add_url(relay.clone(), wakeup.clone()) {
-                    error!("error adding relay {}: {}", relay, e);
-                }
-            }
-            pool
-        };
+        let mut pool = RelayPool::new();
+        let bootstrapping_urls = [
+            "ws://localhost:8080",
+            "wss://relay.damus.io",
+            //"wss://pyramid.fiatjaf.com",
+            "wss://nos.lol",
+            "wss://nostr.wine",
+            "wss://purplepag.es",
+        ];
+        pool.bootstrapping_relays = bootstrapping_urls
+            .iter()
+            .map(|&s| s.to_string())
+            .map(|s| RelayPool::canonicalize_url(&s))
+            .collect();
+        // normally empty
+        pool.forced_relays = parsed_args
+            .relays
+            .into_iter()
+            .map(|s| RelayPool::canonicalize_url(&s))
+            .collect::<BTreeSet<_>>();
+        // avoid relay thrash, don't call configure_relays here
+        // because the initial advertised set will be registered
+        // shortly and it will be called then
 
         let account = accounts
             .get_selected_account()

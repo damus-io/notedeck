@@ -9,17 +9,19 @@ use crate::{user_account::UserAccount, Damus};
 pub fn sample_pool() -> RelayPool {
     let mut pool = RelayPool::new();
     let wakeup = move || {};
-
-    pool.add_url("wss://relay.damus.io".to_string(), wakeup);
-    pool.add_url("wss://eden.nostr.land".to_string(), wakeup);
-    pool.add_url("wss://nostr.wine".to_string(), wakeup);
-    pool.add_url("wss://nos.lol".to_string(), wakeup);
-    pool.add_url("wss://test_relay_url_long_00000000000000000000000000000000000000000000000000000000000000000000000000000000000".to_string(), wakeup);
+    let bootstrapping_urls = [
+        "wss://relay.damus.io",
+        "wss://eden.nostr.land",
+        "wss://nostr.wine",
+        "wss://nos.lol",
+        "wss://test_relay_url_long_00000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+    ];
+    pool.bootstrapping_relays = bootstrapping_urls.iter().map(|&s| s.to_string()).collect();
 
     for _ in 0..20 {
-        pool.add_url("tmp".to_string(), wakeup);
+        pool.local_relays.insert("tmp".to_string());
     }
-
+    pool.configure_relays(wakeup);
     pool
 }
 

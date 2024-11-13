@@ -2,6 +2,9 @@ use crate::relay::{Relay, RelayStatus};
 use crate::{ClientMessage, Result};
 use nostrdb::Filter;
 
+use std::collections::BTreeSet;
+use std::collections::HashMap;
+use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use url::Url;
@@ -10,7 +13,7 @@ use url::Url;
 use ewebsock::{WsEvent, WsMessage};
 
 #[cfg(not(target_arch = "wasm32"))]
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 
 #[derive(Debug)]
 pub struct PoolEvent<'a> {
@@ -42,7 +45,16 @@ impl PoolRelay {
 
 pub struct RelayPool {
     pub relays: Vec<PoolRelay>,
+    pub subs: HashMap<String, Vec<Filter>>,
     pub ping_rate: Duration,
+    /// Used when there are no others
+    pub bootstrapping_relays: BTreeSet<String>,
+    /// Locally specified relays
+    pub local_relays: BTreeSet<String>,
+    /// NIP-65 specified relays
+    pub advertised_relays: BTreeSet<String>,
+    /// If non-empty force the relay pool to use exactly this set
+    pub forced_relays: BTreeSet<String>,
 }
 
 impl Default for RelayPool {
@@ -56,7 +68,12 @@ impl RelayPool {
     pub fn new() -> RelayPool {
         RelayPool {
             relays: vec![],
+            subs: HashMap::new(),
             ping_rate: Duration::from_secs(25),
+            bootstrapping_relays: BTreeSet::new(),
+            local_relays: BTreeSet::new(),
+            advertised_relays: BTreeSet::new(),
+            forced_relays: BTreeSet::new(),
         }
     }
 
@@ -85,9 +102,11 @@ impl RelayPool {
         for relay in &mut self.relays {
             relay.relay.send(&ClientMessage::close(subid.clone()));
         }
+        self.subs.remove(&subid);
     }
 
     pub fn subscribe(&mut self, subid: String, filter: Vec<Filter>) {
+        self.subs.insert(subid.clone(), filter.clone());
         for relay in &mut self.relays {
             relay.relay.subscribe(subid.clone(), filter.clone());
         }
@@ -148,30 +167,112 @@ impl RelayPool {
         }
     }
 
+    pub fn configure_relays(
+        &mut self,
+        wakeup: impl Fn() + Send + Sync + Clone + 'static,
+    ) -> Result<()> {
+        let urls = if !self.forced_relays.is_empty() {
+            debug!("using forced relays");
+            self.forced_relays.iter().cloned().collect::<Vec<_>>()
+        } else {
+            let mut combined_relays = self
+                .local_relays
+                .union(&self.advertised_relays)
+                .cloned()
+                .collect::<BTreeSet<_>>();
+
+            // If the combined set is empty, use `bootstrapping_relays`.
+            if combined_relays.is_empty() {
+                debug!("using bootstrapping relays");
+                combined_relays = self.bootstrapping_relays.clone();
+            } else {
+                debug!("using local+advertised relays");
+            }
+
+            // Collect the resulting set into a vector.
+            combined_relays.into_iter().collect::<Vec<_>>()
+        };
+
+        self.set_relays(&urls, wakeup)
+    }
+
     // Adds a websocket url to the RelayPool.
-    pub fn add_url(
+    fn add_url(
         &mut self,
         url: String,
         wakeup: impl Fn() + Send + Sync + Clone + 'static,
     ) -> Result<()> {
-        let url = Self::canonicalize_url(url);
+        let url = Self::canonicalize_url(&url);
         // Check if the URL already exists in the pool.
         if self.has(&url) {
             return Ok(());
         }
         let relay = Relay::new(url, wakeup)?;
-        let pool_relay = PoolRelay::new(relay);
+        let mut pool_relay = PoolRelay::new(relay);
+
+        // Add all of the existing subscriptions to the new relay
+        for (subid, filters) in &self.subs {
+            pool_relay.relay.subscribe(subid.clone(), filters.clone());
+        }
 
         self.relays.push(pool_relay);
 
         Ok(())
     }
 
-    // standardize the format (ie, trailing slashes)
-    fn canonicalize_url(url: String) -> String {
+    // Add and remove relays to match the provided list
+    pub fn set_relays(
+        &mut self,
+        urls: &Vec<String>,
+        wakeup: impl Fn() + Send + Sync + Clone + 'static,
+    ) -> Result<()> {
+        // Canonicalize the new URLs.
+        let new_urls = urls
+            .iter()
+            .map(|u| Self::canonicalize_url(u))
+            .collect::<HashSet<_>>();
+
+        // Get the old URLs from the existing relays.
+        let old_urls = self
+            .relays
+            .iter()
+            .map(|pr| pr.relay.url.clone())
+            .collect::<HashSet<_>>();
+
+        debug!("old relays: {:?}", old_urls);
+        debug!("new relays: {:?}", new_urls);
+
+        if new_urls.len() == 0 {
+            info!("bootstrapping, not clearing the relay list ...");
+            return Ok(());
+        }
+
+        // Remove the relays that are in old_urls but not in new_urls.
+        let to_remove: HashSet<_> = old_urls.difference(&new_urls).cloned().collect();
+        for url in &to_remove {
+            debug!("removing relay {}", url);
+        }
+        self.relays.retain(|pr| !to_remove.contains(&pr.relay.url));
+
+        // FIXME - how do we close connections the removed relays?
+
+        // Add the relays that are in new_urls but not in old_urls.
+        let to_add: HashSet<_> = new_urls.difference(&old_urls).cloned().collect();
+        for url in to_add {
+            debug!("adding relay {}", url);
+            if let Err(e) = self.add_url(url.clone(), wakeup.clone()) {
+                error!("Failed to add relay with URL {}: {:?}", url, e);
+            }
+        }
+
+        Ok(())
+    }
+
+    // standardize the format (ie, trailing slashes) to avoid dups
+    pub fn canonicalize_url(url: &String) -> String {
         match Url::parse(&url) {
             Ok(parsed_url) => parsed_url.to_string(),
-            Err(_) => url, // If parsing fails, return the original URL.
+            Err(_) => url.clone(), // If parsing fails, return the original URL.
         }
     }
 
