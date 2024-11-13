@@ -205,11 +205,12 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) -> bool {
     if let Some(title_response) = nav_response.title_response {
         match title_response {
             TitleResponse::RemoveColumn => {
-                app.columns_mut().request_deletion_at_index(col);
                 let tl = app.columns().find_timeline_for_column_index(col);
                 if let Some(timeline) = tl {
                     unsubscribe_timeline(app.ndb(), timeline);
                 }
+                app.columns_mut().delete_column(col);
+                col_changed = true;
             }
         }
     }

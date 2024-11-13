@@ -513,8 +513,6 @@ fn update_damus(damus: &mut Damus, ctx: &egui::Context) {
     }
 
     damus.app_rect_handler.try_save_app_size(ctx);
-
-    damus.columns.attempt_perform_deletion_request();
 }
 
 fn process_event(damus: &mut Damus, _subid: &str, event: &str) {
