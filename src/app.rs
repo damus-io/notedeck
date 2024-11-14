@@ -43,7 +43,6 @@ use tracing::{debug, error, info, trace, warn};
 pub enum DamusState {
     Initializing,
     Initialized,
-    NewTimelineSub(TimelineId),
 }
 
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
@@ -478,33 +477,6 @@ fn update_damus(damus: &mut Damus, ctx: &egui::Context) {
                 .expect("home subscription failed");
         }
 
-        DamusState::NewTimelineSub(new_timeline_id) => {
-            info!("adding new timeline {}", new_timeline_id);
-            setup_new_nostrdb_sub(
-                &damus.ndb,
-                &mut damus.note_cache,
-                &mut damus.columns,
-                new_timeline_id,
-            )
-            .expect("new timeline subscription failed");
-
-            if let Some(filter) = {
-                let timeline = damus
-                    .columns
-                    .find_timeline(new_timeline_id)
-                    .expect("timeline");
-                match &timeline.filter {
-                    FilterState::Ready(filters) => Some(filters.clone()),
-                    _ => None,
-                }
-            } {
-                let subid = Uuid::new_v4().to_string();
-                damus.pool.subscribe(subid, filter);
-
-                damus.state = DamusState::Initialized;
-            }
-        }
-
         DamusState::Initialized => (),
     };
 
@@ -817,10 +789,6 @@ impl Damus {
         } else {
             Uuid::new_v4().to_string()
         }
-    }
-
-    pub fn subscribe_new_timeline(&mut self, timeline_id: TimelineId) {
-        self.state = DamusState::NewTimelineSub(timeline_id);
     }
 
     pub fn mock<P: AsRef<Path>>(data_path: P) -> Self {
