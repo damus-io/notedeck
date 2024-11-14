@@ -361,10 +361,16 @@ pub fn render_add_column_routes(
 
     if let Some(resp) = resp {
         match resp {
-            AddColumnResponse::Timeline(timeline) => {
-                let id = timeline.id;
+            AddColumnResponse::Timeline(mut timeline) => {
+                crate::timeline::setup_new_timeline(
+                    &mut timeline,
+                    &app.ndb,
+                    &mut app.subscriptions,
+                    &mut app.pool,
+                    &mut app.note_cache,
+                    app.since_optimize,
+                );
                 app.columns_mut().add_timeline_to_column(col, timeline);
-                app.subscribe_new_timeline(id);
             }
             AddColumnResponse::UndecidedNotification => {
                 app.columns_mut().column_mut(col).router_mut().route_to(

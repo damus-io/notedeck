@@ -2,13 +2,12 @@ use enostr::{Filter, Pubkey};
 use nostrdb::{FilterBuilder, Ndb, ProfileRecord, Transaction};
 
 use crate::{
-    app::copy_notes_into_timeline,
     filter::{self, FilterState},
     multi_subscriber::MultiSubscriber,
     note::NoteRef,
     notecache::NoteCache,
     notes_holder::NotesHolder,
-    timeline::{PubkeySource, Timeline, TimelineKind},
+    timeline::{copy_notes_into_timeline, PubkeySource, Timeline, TimelineKind},
 };
 
 pub enum DisplayName<'a> {

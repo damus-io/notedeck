@@ -1,5 +1,6 @@
 use crate::timeline::{TimelineId, TimelineKind};
 use std::collections::HashMap;
+use uuid::Uuid;
 
 #[derive(Debug, Clone)]
 pub enum SubKind {
@@ -24,4 +25,8 @@ pub enum SubKind {
 #[derive(Default)]
 pub struct Subscriptions {
     pub subs: HashMap<String, SubKind>,
+}
+
+pub fn new_sub_id() -> String {
+    Uuid::new_v4().to_string()
 }

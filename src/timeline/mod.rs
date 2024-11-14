@@ -1,20 +1,26 @@
-use crate::error::Error;
-use crate::note::NoteRef;
-use crate::notecache::{CachedNote, NoteCache};
-use crate::unknowns::UnknownIds;
-use crate::Result;
-use crate::{filter, filter::FilterState};
+use crate::{
+    column::Columns,
+    error::{Error, FilterError},
+    filter::{self, FilterState, FilterStates},
+    note::NoteRef,
+    notecache::{CachedNote, NoteCache},
+    subscriptions::{self, SubKind, Subscriptions},
+    unknowns::UnknownIds,
+    Result,
+};
+
 use std::fmt;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use egui_virtual_list::VirtualList;
-use nostrdb::{Ndb, Note, Subscription, Transaction};
+use enostr::{Relay, RelayPool};
+use nostrdb::{Filter, Ndb, Note, Subscription, Transaction};
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::hash::Hash;
 use std::rc::Rc;
 
-use tracing::{debug, error};
+use tracing::{debug, error, info, warn};
 
 pub mod kind;
 pub mod route;
@@ -170,7 +176,7 @@ pub struct Timeline {
     pub kind: TimelineKind,
     // We may not have the filter loaded yet, so let's make it an option so
     // that codepaths have to explicitly handle it
-    pub filter: FilterState,
+    pub filter: FilterStates,
     pub views: Vec<TimelineTab>,
     pub selected_view: i32,
 
@@ -209,10 +215,11 @@ impl Timeline {
         Timeline::make_view_id(self.id, self.selected_view)
     }
 
-    pub fn new(kind: TimelineKind, filter: FilterState) -> Self {
+    pub fn new(kind: TimelineKind, filter_state: FilterState) -> Self {
         // global unique id for all new timelines
         static UIDS: AtomicU32 = AtomicU32::new(0);
 
+        let filter = FilterStates::new(filter_state);
         let subscription: Option<Subscription> = None;
         let notes = TimelineTab::new(ViewFilter::Notes);
         let replies = TimelineTab::new(ViewFilter::NotesAndReplies);
@@ -369,4 +376,305 @@ pub fn merge_sorted_vecs<T: Ord + Copy>(vec1: &[T], vec2: &[T]) -> (Vec<T>, Merg
     }
 
     (merged, result.unwrap_or(MergeKind::FrontInsert))
+}
+
+/// When adding a new timeline, we may have a situation where the
+/// FilterState is NeedsRemote. This can happen if we don't yet have the
+/// contact list, etc. For these situations, we query all of the relays
+/// with the same sub_id. We keep track of this sub_id and update the
+/// filter with the latest version of the returned filter (ie contact
+/// list) when they arrive.
+///
+/// We do this by maintaining this sub_id in the filter state, even when
+/// in the ready state. See: [`FilterReady`]
+pub fn setup_new_timeline(
+    timeline: &mut Timeline,
+    ndb: &Ndb,
+    subs: &mut Subscriptions,
+    pool: &mut RelayPool,
+    note_cache: &mut NoteCache,
+    since_optimize: bool,
+) {
+    // if we're ready, setup local subs
+    if is_timeline_ready(ndb, pool, note_cache, timeline) {
+        if let Err(err) = setup_timeline_nostrdb_sub(ndb, note_cache, timeline) {
+            error!("setup_new_timeline: {err}");
+        }
+    }
+
+    for relay in &mut pool.relays {
+        send_initial_timeline_filter(ndb, since_optimize, subs, &mut relay.relay, timeline);
+    }
+}
+
+/// Send initial filters for a specific relay. This typically gets called
+/// when we first connect to a new relay for the first time. For
+/// situations where you are adding a new timeline, use
+/// setup_new_timeline.
+pub fn send_initial_timeline_filters(
+    ndb: &Ndb,
+    since_optimize: bool,
+    columns: &mut Columns,
+    subs: &mut Subscriptions,
+    pool: &mut RelayPool,
+    relay_id: &str,
+) -> Option<()> {
+    info!("Sending initial filters to {}", relay_id);
+    let relay = &mut pool
+        .relays
+        .iter_mut()
+        .find(|r| r.relay.url == relay_id)?
+        .relay;
+
+    for timeline in columns.timelines_mut() {
+        send_initial_timeline_filter(ndb, since_optimize, subs, relay, timeline);
+    }
+
+    Some(())
+}
+
+pub fn send_initial_timeline_filter(
+    ndb: &Ndb,
+    can_since_optimize: bool,
+    subs: &mut Subscriptions,
+    relay: &mut Relay,
+    timeline: &mut Timeline,
+) {
+    let filter_state = timeline.filter.get(&relay.url);
+
+    match filter_state {
+        FilterState::Broken(err) => {
+            error!(
+                "FetchingRemote state in broken state when sending initial timeline filter? {err}"
+            );
+        }
+
+        FilterState::FetchingRemote(_unisub) => {
+            error!("FetchingRemote state when sending initial timeline filter?");
+        }
+
+        FilterState::GotRemote(_sub) => {
+            error!("GotRemote state when sending initial timeline filter?");
+        }
+
+        FilterState::Ready(filter) => {
+            let filter = filter.to_owned();
+            let new_filters = filter.into_iter().map(|f| {
+                // limit the size of remote filters
+                let default_limit = filter::default_remote_limit();
+                let mut lim = f.limit().unwrap_or(default_limit);
+                let mut filter = f;
+                if lim > default_limit {
+                    lim = default_limit;
+                    filter = filter.limit_mut(lim);
+                }
+
+                let notes = timeline.notes(ViewFilter::NotesAndReplies);
+
+                // Should we since optimize? Not always. For example
+                // if we only have a few notes locally. One way to
+                // determine this is by looking at the current filter
+                // and seeing what its limit is. If we have less
+                // notes than the limit, we might want to backfill
+                // older notes
+                if can_since_optimize && filter::should_since_optimize(lim, notes.len()) {
+                    filter = filter::since_optimize_filter(filter, notes);
+                } else {
+                    warn!("Skipping since optimization for {:?}: number of local notes is less than limit, attempting to backfill.", filter);
+                }
+
+                filter
+            }).collect();
+
+            //let sub_id = damus.gen_subid(&SubKind::Initial);
+            let sub_id = subscriptions::new_sub_id();
+            subs.subs.insert(sub_id.clone(), SubKind::Initial);
+
+            relay.subscribe(sub_id, new_filters);
+        }
+
+        // we need some data first
+        FilterState::NeedsRemote(filter) => {
+            fetch_contact_list(filter.to_owned(), ndb, subs, relay, timeline)
+        }
+    }
+}
+
+fn fetch_contact_list(
+    filter: Vec<Filter>,
+    ndb: &Ndb,
+    subs: &mut Subscriptions,
+    relay: &mut Relay,
+    timeline: &mut Timeline,
+) {
+    let sub_kind = SubKind::FetchingContactList(timeline.id);
+    let sub_id = subscriptions::new_sub_id();
+    let local_sub = ndb.subscribe(&filter).expect("sub");
+
+    timeline.filter.set_relay_state(
+        relay.url.clone(),
+        FilterState::fetching_remote(sub_id.clone(), local_sub),
+    );
+
+    subs.subs.insert(sub_id.clone(), sub_kind);
+
+    info!("fetching contact list from {}", &relay.url);
+    relay.subscribe(sub_id, filter);
+}
+
+fn setup_initial_timeline(
+    ndb: &Ndb,
+    timeline: &mut Timeline,
+    note_cache: &mut NoteCache,
+    filters: &[Filter],
+) -> Result<()> {
+    timeline.subscription = Some(ndb.subscribe(filters)?);
+    let txn = Transaction::new(ndb)?;
+    debug!(
+        "querying nostrdb sub {:?} {:?}",
+        timeline.subscription, timeline.filter
+    );
+    let lim = filters[0].limit().unwrap_or(crate::filter::default_limit()) as i32;
+    let notes = ndb
+        .query(&txn, filters, lim)?
+        .into_iter()
+        .map(NoteRef::from_query_result)
+        .collect();
+
+    copy_notes_into_timeline(timeline, &txn, ndb, note_cache, notes);
+
+    Ok(())
+}
+
+pub fn copy_notes_into_timeline(
+    timeline: &mut Timeline,
+    txn: &Transaction,
+    ndb: &Ndb,
+    note_cache: &mut NoteCache,
+    notes: Vec<NoteRef>,
+) {
+    let filters = {
+        let views = &timeline.views;
+        let filters: Vec<fn(&CachedNote, &Note) -> bool> =
+            views.iter().map(|v| v.filter.filter()).collect();
+        filters
+    };
+
+    for note_ref in notes {
+        for (view, filter) in filters.iter().enumerate() {
+            if let Ok(note) = ndb.get_note_by_key(txn, note_ref.key) {
+                if filter(
+                    note_cache.cached_note_or_insert_mut(note_ref.key, &note),
+                    &note,
+                ) {
+                    timeline.views[view].notes.push(note_ref)
+                }
+            }
+        }
+    }
+}
+
+pub fn setup_initial_nostrdb_subs(
+    ndb: &Ndb,
+    note_cache: &mut NoteCache,
+    columns: &mut Columns,
+) -> Result<()> {
+    for timeline in columns.timelines_mut() {
+        setup_timeline_nostrdb_sub(ndb, note_cache, timeline)?;
+    }
+
+    Ok(())
+}
+
+fn setup_timeline_nostrdb_sub(
+    ndb: &Ndb,
+    note_cache: &mut NoteCache,
+    timeline: &mut Timeline,
+) -> Result<()> {
+    let filter_state = timeline
+        .filter
+        .get_any_ready()
+        .ok_or(Error::empty_contact_list())?
+        .to_owned();
+
+    setup_initial_timeline(ndb, timeline, note_cache, &filter_state)?;
+
+    Ok(())
+}
+
+/// Check our timeline filter and see if we have any filter data ready.
+/// Our timelines may require additional data before it is functional. For
+/// example, when we have to fetch a contact list before we do the actual
+/// following list query.
+pub fn is_timeline_ready(
+    ndb: &Ndb,
+    pool: &mut RelayPool,
+    note_cache: &mut NoteCache,
+    timeline: &mut Timeline,
+) -> bool {
+    // TODO: we should debounce the filter states a bit to make sure we have
+    // seen all of the different contact lists from each relay
+    if let Some(_f) = timeline.filter.get_any_ready() {
+        return true;
+    }
+
+    let (relay_id, sub) = if let Some((relay_id, sub)) = timeline.filter.get_any_gotremote() {
+        (relay_id.to_string(), sub)
+    } else {
+        return false;
+    };
+
+    // We got at least one eose for our filter request. Let's see
+    // if nostrdb is done processing it yet.
+    let res = ndb.poll_for_notes(sub, 1);
+    if res.is_empty() {
+        debug!(
+            "check_timeline_filter_state: no notes found (yet?) for timeline {:?}",
+            timeline
+        );
+        return false;
+    }
+
+    info!("notes found for contact timeline after GotRemote!");
+
+    let note_key = res[0];
+
+    let filter = {
+        let txn = Transaction::new(ndb).expect("txn");
+        let note = ndb.get_note_by_key(&txn, note_key).expect("note");
+        filter::filter_from_tags(&note).map(|f| f.into_follow_filter())
+    };
+
+    // TODO: into_follow_filter is hardcoded to contact lists, let's generalize
+    match filter {
+        Err(Error::Filter(e)) => {
+            error!("got broken when building filter {e}");
+            timeline
+                .filter
+                .set_relay_state(relay_id, FilterState::broken(e));
+            false
+        }
+        Err(err) => {
+            error!("got broken when building filter {err}");
+            timeline
+                .filter
+                .set_relay_state(relay_id, FilterState::broken(FilterError::EmptyContactList));
+            false
+        }
+        Ok(filter) => {
+            // we just switched to the ready state, we should send initial
+            // queries and setup the local subscription
+            info!("Found contact list! Setting up local and remote contact list query");
+            setup_initial_timeline(ndb, timeline, note_cache, &filter).expect("setup init");
+            timeline
+                .filter
+                .set_relay_state(relay_id, FilterState::ready(filter.clone()));
+
+            //let ck = &timeline.kind;
+            //let subid = damus.gen_subid(&SubKind::Column(ck.clone()));
+            let subid = subscriptions::new_sub_id();
+            pool.subscribe(subid, filter);
+            true
+        }
+    }
 }

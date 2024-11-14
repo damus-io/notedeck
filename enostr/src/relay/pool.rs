@@ -22,7 +22,7 @@ impl<'a> PoolEvent<'a> {
     pub fn into_owned(self) -> PoolEventBuf {
         PoolEventBuf {
             relay: self.relay.to_owned(),
-            event: self.event
+            event: self.event,
         }
     }
 }
