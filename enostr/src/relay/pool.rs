@@ -18,6 +18,20 @@ pub struct PoolEvent<'a> {
     pub event: ewebsock::WsEvent,
 }
 
+impl<'a> PoolEvent<'a> {
+    pub fn into_owned(self) -> PoolEventBuf {
+        PoolEventBuf {
+            relay: self.relay.to_owned(),
+            event: self.event
+        }
+    }
+}
+
+pub struct PoolEventBuf {
+    pub relay: String,
+    pub event: ewebsock::WsEvent,
+}
+
 pub struct PoolRelay {
     pub relay: Relay,
     pub last_ping: Instant,
