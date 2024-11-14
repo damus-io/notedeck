@@ -1,12 +1,17 @@
 use enostr::{NoteId, Pubkey};
-use nostrdb::Ndb;
+use nostrdb::{Ndb, Transaction};
 use serde::{Deserialize, Serialize};
 use std::fmt::{self};
 
 use crate::{
     account_manager::AccountsRoute,
     column::Columns,
+    note::RootNoteId,
+    notecache::NoteCache,
+    subscriptions::SubRefs,
+    timeline::{TimelineCache, TimelineId, TimelineRoute},
     timeline::{TimelineId, TimelineRoute},
+    ui::profile::preview::{get_note_users_displayname_string, get_profile_displayname_string},
     ui::{
         add_column::AddColumnRoute,
         profile::preview::{get_note_users_displayname_string, get_profile_displayname_string},
@@ -21,7 +26,6 @@ pub enum Route {
     Relays,
     ComposeNote,
     AddColumn(AddColumnRoute),
-    Profile(Pubkey),
     Support,
 }
 
@@ -42,6 +46,26 @@ impl Route {
         Route::Timeline(TimelineRoute::Timeline(timeline_id))
     }
 
+    pub fn subscriptions<'a>(
+        &self,
+        ndb: &Ndb,
+        note_cache: &mut NoteCache,
+        txn: &Transaction,
+        columns: &'a Columns,
+        timeline_cache: &'a TimelineCache,
+    ) -> Option<SubRefs<'a>> {
+        match self {
+            Route::Timeline(tlr) => {
+                tlr.subscriptions(ndb, note_cache, txn, columns, timeline_cache)
+            }
+            Route::Accounts(_) => None,
+            Route::Relays => None,
+            Route::ComposeNote => None,
+            Route::AddColumn => None,
+            Route::Support => None,
+        }
+    }
+
     pub fn timeline_id(&self) -> Option<&TimelineId> {
         if let Route::Timeline(TimelineRoute::Timeline(tid)) = self {
             Some(tid)
@@ -54,7 +78,7 @@ impl Route {
         Route::Relays
     }
 
-    pub fn thread(thread_root: NoteId) -> Self {
+    pub fn thread(thread_root: RootNoteId) -> Self {
         Route::Timeline(TimelineRoute::Thread(thread_root))
     }
 
@@ -84,7 +108,10 @@ impl Route {
                     timeline.kind.to_title(ndb)
                 }
                 TimelineRoute::Thread(id) => {
-                    format!("{}'s Thread", get_note_users_displayname_string(ndb, id))
+                    format!(
+                        "{}'s Thread",
+                        get_note_users_displayname_string(ndb, &id.to_note_id())
+                    )
                 }
                 TimelineRoute::Reply(id) => {
                     format!("{}'s Reply", get_note_users_displayname_string(ndb, id))
@@ -209,6 +236,7 @@ impl fmt::Display for Route {
                 TimelineRoute::Thread(_id) => write!(f, "Thread"),
                 TimelineRoute::Reply(_id) => write!(f, "Reply"),
                 TimelineRoute::Quote(_id) => write!(f, "Quote"),
+                TimelineRoute::Profile(_) => write!(f, "Profile"),
             },
 
             Route::Relays => write!(f, "Relays"),

@@ -57,12 +57,15 @@ impl AddColumnOption {
             AddColumnOption::Universe => TimelineKind::Universe
                 .into_timeline(ndb, None)
                 .map(AddColumnResponse::Timeline),
+
             AddColumnOption::Notification(pubkey) => TimelineKind::Notifications(pubkey)
                 .into_timeline(ndb, cur_account.map(|a| a.pubkey.bytes()))
                 .map(AddColumnResponse::Timeline),
+
             AddColumnOption::UndecidedNotification => {
                 Some(AddColumnResponse::UndecidedNotification)
             }
+
             AddColumnOption::Home(pubkey) => {
                 let tlk = TimelineKind::contact_list(pubkey);
                 tlk.into_timeline(ndb, cur_account.map(|a| a.pubkey.bytes()))

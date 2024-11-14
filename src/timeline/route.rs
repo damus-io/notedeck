@@ -3,11 +3,10 @@ use crate::{
     column::Columns,
     draft::Drafts,
     imgcache::ImageCache,
+    note::RootNoteId,
     notecache::NoteCache,
-    notes_holder::NotesHolderStorage,
-    profile::Profile,
-    thread::Thread,
-    timeline::TimelineId,
+    subscriptions::SubRefs,
+    timeline::{TimelineCache, TimelineCacheKey, TimelineId},
     ui::{
         self,
         note::{
@@ -24,9 +23,49 @@ use nostrdb::{Ndb, Transaction};
 #[derive(Debug, Eq, PartialEq, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub enum TimelineRoute {
     Timeline(TimelineId),
-    Thread(NoteId),
+    Thread(RootNoteId),
     Reply(NoteId),
     Quote(NoteId),
+    Profile(Pubkey),
+}
+
+impl TimelineRoute {
+    // TODO(jb55): remove this and centralize subscriptions
+    pub fn subscriptions<'a>(
+        &self,
+        ndb: &Ndb,
+        note_cache: &mut NoteCache,
+        txn: &Transaction,
+        columns: &'a Columns,
+        timeline_cache: &'a TimelineCache,
+    ) -> Option<SubRefs<'a>> {
+        match self {
+            TimelineRoute::Reply(_) => None,
+            TimelineRoute::Quote(_) => None,
+
+            TimelineRoute::Profile(pubkey) => timeline_cache
+                .notes(
+                    ndb,
+                    note_cache,
+                    txn,
+                    &TimelineCacheKey::pubkey(pubkey),
+                )
+                .get_ptr()
+                .subscriptions(),
+
+            TimelineRoute::Timeline(tlid) => Some(columns.find_timeline(*tlid)?.subscriptions()),
+
+            TimelineRoute::Thread(root_note_id) => timeline_cache
+                .notes(
+                    ndb,
+                    note_cache,
+                    txn,
+                    &TimelineCacheKey::thread(*root_note_id),
+                )
+                .get_ptr()
+                .subscriptions(),
+        }
+    }
 }
 
 pub enum AfterRouteExecution {
@@ -48,7 +87,7 @@ pub fn render_timeline_route(
     drafts: &mut Drafts,
     img_cache: &mut ImageCache,
     note_cache: &mut NoteCache,
-    threads: &mut NotesHolderStorage<Thread>,
+    timeline_cache: &mut TimelineCache,
     accounts: &mut AccountManager,
     route: TimelineRoute,
     col: usize,
@@ -65,7 +104,14 @@ pub fn render_timeline_route(
                 let mut cur_column = columns.columns_mut();
                 let router = cur_column[col].router_mut();
 
-                bar_action.execute_and_process_result(ndb, router, threads, note_cache, pool, &txn);
+                bar_action.execute_and_process_result(
+                    ndb,
+                    router,
+                    timeline_cache,
+                    note_cache,
+                    pool,
+                    &txn,
+                );
             }
 
             timeline_response
@@ -73,16 +119,41 @@ pub fn render_timeline_route(
                 .map(AfterRouteExecution::OpenProfile)
         }
 
+        TimelineRoute::Profile(pubkey) => render_profile_route(
+            &pubkey,
+            ndb,
+            columns,
+            pool,
+            img_cache,
+            note_cache,
+            timeline_cache,
+            col,
+            ui,
+        ),
+
         TimelineRoute::Thread(id) => {
-            let timeline_response =
-                ui::ThreadView::new(threads, ndb, note_cache, img_cache, id.bytes(), textmode)
-                    .id_source(egui::Id::new(("threadscroll", col)))
-                    .ui(ui);
+            let timeline_response = ui::ThreadView::new(
+                timeline_cache,
+                ndb,
+                note_cache,
+                img_cache,
+                id.bytes(),
+                textmode,
+            )
+            .id_source(egui::Id::new(("threadscroll", col)))
+            .ui(ui);
             if let Some(bar_action) = timeline_response.bar_action {
                 let txn = Transaction::new(ndb).expect("txn");
                 let mut cur_column = columns.columns_mut();
                 let router = cur_column[col].router_mut();
-                bar_action.execute_and_process_result(ndb, router, threads, note_cache, pool, &txn);
+                bar_action.execute_and_process_result(
+                    ndb,
+                    router,
+                    timeline_cache,
+                    note_cache,
+                    pool,
+                    &txn,
+                );
             }
 
             timeline_response
@@ -160,22 +231,21 @@ pub fn render_profile_route(
     pubkey: &Pubkey,
     ndb: &Ndb,
     columns: &mut Columns,
-    profiles: &mut NotesHolderStorage<Profile>,
     pool: &mut RelayPool,
     img_cache: &mut ImageCache,
     note_cache: &mut NoteCache,
-    threads: &mut NotesHolderStorage<Thread>,
+    timeline_cache: &mut TimelineCache,
     col: usize,
     ui: &mut egui::Ui,
 ) -> Option<AfterRouteExecution> {
     let timeline_response =
-        ProfileView::new(pubkey, col, profiles, ndb, note_cache, img_cache).ui(ui);
+        ProfileView::new(pubkey, col, timeline_cache, ndb, note_cache, img_cache).ui(ui);
     if let Some(bar_action) = timeline_response.bar_action {
         let txn = nostrdb::Transaction::new(ndb).expect("txn");
         let mut cur_column = columns.columns_mut();
         let router = cur_column[col].router_mut();
 
-        bar_action.execute_and_process_result(ndb, router, threads, note_cache, pool, &txn);
+        bar_action.execute_and_process_result(ndb, router, timeline_cache, note_cache, pool, &txn);
     }
 
     timeline_response

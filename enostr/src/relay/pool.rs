@@ -82,6 +82,7 @@ impl RelayPool {
     }
 
     pub fn unsubscribe(&mut self, subid: String) {
+        // TODO(jb55): switch to &str
         for relay in &mut self.relays {
             relay.relay.send(&ClientMessage::close(subid.clone()));
         }

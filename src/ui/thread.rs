@@ -1,9 +1,9 @@
 use crate::{
     actionbar::NoteActionResponse,
     imgcache::ImageCache,
+    note::RootNoteId,
     notecache::NoteCache,
-    notes_holder::{NotesHolder, NotesHolderStorage},
-    thread::Thread,
+    timeline::{TimelineCache, TimelineCacheKey},
 };
 use nostrdb::{Ndb, NoteKey, Transaction};
 use tracing::error;
@@ -11,7 +11,7 @@ use tracing::error;
 use super::timeline::TimelineTabView;
 
 pub struct ThreadView<'a> {
-    threads: &'a mut NotesHolderStorage<Thread>,
+    timeline_cache: &'a mut TimelineCache,
     ndb: &'a Ndb,
     note_cache: &'a mut NoteCache,
     img_cache: &'a mut ImageCache,
@@ -23,7 +23,7 @@ pub struct ThreadView<'a> {
 impl<'a> ThreadView<'a> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        threads: &'a mut NotesHolderStorage<Thread>,
+        timeline_cache: &'a mut TimelineCache,
         ndb: &'a Ndb,
         note_cache: &'a mut NoteCache,
         img_cache: &'a mut ImageCache,
@@ -32,7 +32,7 @@ impl<'a> ThreadView<'a> {
     ) -> Self {
         let id_source = egui::Id::new("threadscroll_threadview");
         ThreadView {
-            threads,
+            timeline_cache,
             ndb,
             note_cache,
             img_cache,
@@ -83,16 +83,21 @@ impl<'a> ThreadView<'a> {
                         .note_cache
                         .cached_note_or_insert(selected_note_key, &note);
 
-                    cached_note
+                    RootNoteId::new_unsafe(cached_note
                         .reply
                         .borrow(note.tags())
                         .root()
-                        .map_or_else(|| self.selected_note_id, |nr| nr.id)
+                        .map_or_else(|| self.selected_note_id, |nr| nr.id))
                 };
 
                 let thread = self
-                    .threads
-                    .notes_holder_mutated(self.ndb, self.note_cache, &txn, root_id)
+                    .timeline_cache
+                    .notes(
+                        self.ndb,
+                        self.note_cache,
+                        &txn,
+                        &TimelineCacheKey::thread(root_id),
+                    )
                     .get_ptr();
 
                 // TODO(jb55): skip poll if ThreadResult is fresh?
