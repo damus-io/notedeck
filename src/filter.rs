@@ -72,9 +72,9 @@ impl FilterStates {
     pub fn set_relay_state(&mut self, relay: String, state: FilterState) {
         if self.states.contains_key(&relay) {
             let current_state = self.states.get(&relay).unwrap();
-            warn!(
-                "set_relay_state: we already have the {:?} state set for {}. overriding with {:?}",
-                current_state, &relay, state
+            debug!(
+                "set_relay_state: {:?} -> {:?} on {}",
+                current_state, state, &relay,
             );
         }
         self.states.insert(relay, state);
