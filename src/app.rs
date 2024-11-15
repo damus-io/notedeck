@@ -223,12 +223,13 @@ fn update_damus(damus: &mut Damus, ctx: &egui::Context) {
             damus
                 .subscriptions()
                 .insert("unknownids".to_string(), SubKind::OneShot);
-            timeline::setup_initial_nostrdb_subs(
+            if let Err(err) = timeline::setup_initial_nostrdb_subs(
                 &damus.ndb,
                 &mut damus.note_cache,
                 &mut damus.columns,
-            )
-            .expect("home subscription failed");
+            ) {
+                warn!("update_damus init: {err}");
+            }
         }
 
         DamusState::Initialized => (),
