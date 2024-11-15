@@ -71,31 +71,6 @@ pub struct Damus {
     pub textmode: bool,
 }
 
-fn relay_setup(pool: &mut RelayPool, ctx: &egui::Context) {
-    let ctx = ctx.clone();
-    let wakeup = move || {
-        ctx.request_repaint();
-    };
-    if let Err(e) = pool.add_url("ws://localhost:8080".to_string(), wakeup.clone()) {
-        error!("{:?}", e)
-    }
-    if let Err(e) = pool.add_url("wss://relay.damus.io".to_string(), wakeup.clone()) {
-        error!("{:?}", e)
-    }
-    //if let Err(e) = pool.add_url("wss://pyramid.fiatjaf.com".to_string(), wakeup.clone()) {
-    //error!("{:?}", e)
-    //}
-    if let Err(e) = pool.add_url("wss://nos.lol".to_string(), wakeup.clone()) {
-        error!("{:?}", e)
-    }
-    if let Err(e) = pool.add_url("wss://nostr.wine".to_string(), wakeup.clone()) {
-        error!("{:?}", e)
-    }
-    if let Err(e) = pool.add_url("wss://purplepag.es".to_string(), wakeup) {
-        error!("{:?}", e)
-    }
-}
-
 fn handle_key_events(input: &egui::InputState, _pixels_per_point: f32, columns: &mut Columns) {
     for event in &input.raw.events {
         if let egui::Event::Key {
@@ -142,6 +117,10 @@ fn try_process_event(damus: &mut Damus, ctx: &egui::Context) -> Result<()> {
 
         match (&ev.event).into() {
             RelayEvent::Opened => {
+                damus
+                    .accounts
+                    .send_initial_filters(&mut damus.pool, &ev.relay);
+
                 timeline::send_initial_timeline_filters(
                     &damus.ndb,
                     damus.since_optimize,
@@ -213,6 +192,8 @@ fn setup_profiling() {
 }
 
 fn update_damus(damus: &mut Damus, ctx: &egui::Context) {
+    damus.accounts.update(&damus.ndb, &mut damus.pool, ctx); // update user relay and mute lists
+
     match damus.state {
         DamusState::Initializing => {
             #[cfg(feature = "profiling")]
@@ -422,7 +403,7 @@ impl Damus {
             KeyStorageType::None
         };
 
-        let mut accounts = Accounts::new(keystore);
+        let mut accounts = Accounts::new(keystore, parsed_args.relays);
 
         let num_keys = parsed_args.keys.len();
 
@@ -443,27 +424,8 @@ impl Damus {
             accounts.select_account(0);
         }
 
-        // setup relays if we have them
-        let pool = if parsed_args.relays.is_empty() {
-            let mut pool = RelayPool::new();
-            relay_setup(&mut pool, ctx);
-            pool
-        } else {
-            let wakeup = {
-                let ctx = ctx.clone();
-                move || {
-                    ctx.request_repaint();
-                }
-            };
-
-            let mut pool = RelayPool::new();
-            for relay in parsed_args.relays {
-                if let Err(e) = pool.add_url(relay.clone(), wakeup.clone()) {
-                    error!("error adding relay {}: {}", relay, e);
-                }
-            }
-            pool
-        };
+        // AccountManager will setup the pool on first update
+        let pool = RelayPool::new();
 
         let account = accounts
             .get_selected_account()
@@ -613,7 +575,7 @@ impl Damus {
                 &config,
             )
             .expect("ndb"),
-            accounts: Accounts::new(KeyStorageType::None),
+            accounts: Accounts::new(KeyStorageType::None, vec![]),
             frame_history: FrameHistory::default(),
             view_state: ViewState::default(),
 

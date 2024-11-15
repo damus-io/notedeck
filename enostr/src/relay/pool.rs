@@ -2,6 +2,7 @@ use crate::relay::{Relay, RelayStatus};
 use crate::{ClientMessage, Result};
 use nostrdb::Filter;
 
+use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
 use url::Url;
@@ -87,6 +88,13 @@ impl RelayPool {
         }
 
         false
+    }
+
+    pub fn urls(&self) -> BTreeSet<String> {
+        self.relays
+            .iter()
+            .map(|pool_relay| pool_relay.relay.url.clone())
+            .collect()
     }
 
     pub fn send(&mut self, cmd: &ClientMessage) {
@@ -179,6 +187,22 @@ impl RelayPool {
         self.relays.push(pool_relay);
 
         Ok(())
+    }
+
+    pub fn add_urls(
+        &mut self,
+        urls: BTreeSet<String>,
+        wakeup: impl Fn() + Send + Sync + Clone + 'static,
+    ) -> Result<()> {
+        for url in urls {
+            self.add_url(url, wakeup.clone())?;
+        }
+        Ok(())
+    }
+
+    pub fn remove_urls(&mut self, urls: &BTreeSet<String>) {
+        self.relays
+            .retain(|pool_relay| !urls.contains(&pool_relay.relay.url));
     }
 
     // standardize the format (ie, trailing slashes)
