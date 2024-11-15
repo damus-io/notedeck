@@ -11,6 +11,7 @@ use crate::{
     column::Columns,
     imgcache::ImageCache,
     login_manager::AcquireKeyState,
+    muted::Muted,
     route::{Route, Router},
     storage::{KeyStorageResponse, KeyStorageType},
     ui::{
@@ -116,8 +117,98 @@ impl AccountRelayData {
     }
 }
 
+pub struct AccountMutedData {
+    filter: Filter,
+    subid: String,
+    sub: Option<Subscription>,
+    muted: Muted,
+}
+
+impl AccountMutedData {
+    pub fn new(ndb: &Ndb, pool: &mut RelayPool, pubkey: &[u8; 32]) -> Self {
+        // Construct a filter for the user's NIP-51 muted list
+        let filter = Filter::new()
+            .authors([pubkey])
+            .kinds([10000])
+            .limit(1)
+            .build();
+
+        // Local ndb subscription
+        let ndbsub = ndb
+            .subscribe(&[filter.clone()])
+            .expect("ndb muted subscription");
+
+        // Query the ndb immediately to see if the user's muted list is already there
+        let txn = Transaction::new(ndb).expect("transaction");
+        let lim = filter.limit().unwrap_or(crate::filter::default_limit()) as i32;
+        let nks = ndb
+            .query(&txn, &[filter.clone()], lim)
+            .expect("query user muted results")
+            .iter()
+            .map(|qr| qr.note_key)
+            .collect::<Vec<NoteKey>>();
+        let muted = Self::harvest_nip51_muted(ndb, &txn, &nks);
+        debug!("pubkey {}: initial muted {:?}", hex::encode(pubkey), muted);
+
+        // Id for future remote relay subscriptions
+        let subid = Uuid::new_v4().to_string();
+
+        // Add remote subscription to existing relays
+        pool.subscribe(subid.clone(), vec![filter.clone()]);
+
+        AccountMutedData {
+            filter,
+            subid,
+            sub: Some(ndbsub),
+            muted,
+        }
+    }
+
+    fn harvest_nip51_muted(ndb: &Ndb, txn: &Transaction, nks: &[NoteKey]) -> Muted {
+        let mut muted = Muted::default();
+        for nk in nks.iter() {
+            if let Ok(note) = ndb.get_note_by_key(txn, *nk) {
+                for tag in note.tags() {
+                    match tag.get(0).and_then(|t| t.variant().str()) {
+                        Some("p") => {
+                            if let Some(id) = tag.get(1).and_then(|f| f.variant().id()) {
+                                muted.pubkeys.insert(*id);
+                            }
+                        }
+                        Some("t") => {
+                            if let Some(str) = tag.get(1).and_then(|f| f.variant().str()) {
+                                muted.hashtags.insert(str.to_string());
+                            }
+                        }
+                        Some("word") => {
+                            if let Some(str) = tag.get(1).and_then(|f| f.variant().str()) {
+                                muted.words.insert(str.to_string());
+                            }
+                        }
+                        Some("e") => {
+                            if let Some(id) = tag.get(1).and_then(|f| f.variant().id()) {
+                                muted.threads.insert(*id);
+                            }
+                        }
+                        Some("alt") => {
+                            // maybe we can ignore these?
+                        }
+                        Some(x) => error!("query_nip51_muted: unexpected tag: {}", x),
+                        None => error!(
+                            "query_nip51_muted: bad tag value: {:?}",
+                            tag.get_unchecked(0).variant()
+                        ),
+                    }
+                }
+            }
+        }
+        muted
+    }
+}
+
 pub struct AccountData {
     relay: AccountRelayData,
+    muted: AccountMutedData,
 }
 
 /// The interface for managing the user's accounts.
@@ -355,6 +446,10 @@ impl Accounts {
                 &ClientMessage::req(data.relay.subid.clone(), vec![data.relay.filter.clone()]),
                 relay_url,
             );
+            pool.send_to(
+                &ClientMessage::req(data.muted.subid.clone(), vec![data.muted.filter.clone()]),
+                relay_url,
+            );
         }
     }
 
@@ -381,6 +476,7 @@ impl Accounts {
         // Create the user account data
         let new_account_data = AccountData {
             relay: AccountRelayData::new(ndb, pool, pubkey),
+            muted: AccountMutedData::new(ndb, pool, pubkey),
         };
         self.account_data.insert(*pubkey, new_account_data);
     }
@@ -405,6 +501,16 @@ impl Accounts {
                         relays
                     );
                     data.relay.advertised = relays.into_iter().collect();
+                    changed = true;
+                }
+            }
+            if let Some(sub) = data.muted.sub {
+                let nks = ndb.poll_for_notes(sub, 1);
+                if !nks.is_empty() {
+                    let txn = Transaction::new(ndb).expect("txn");
+                    let muted = AccountMutedData::harvest_nip51_muted(ndb, &txn, &nks);
+                    debug!("pubkey {}: updated muted {:?}", hex::encode(pubkey), muted);
+                    data.muted.muted = muted;
                     changed = true;
                 }
             }

@@ -6,7 +6,7 @@ use std::fmt;
 use std::ops::Deref;
 use tracing::debug;
 
-#[derive(Eq, PartialEq, Clone, Copy, Hash)]
+#[derive(Eq, PartialEq, Clone, Copy, Hash, Ord, PartialOrd)]
 pub struct Pubkey([u8; 32]);
 
 static HRP_NPUB: Hrp = Hrp::parse_unchecked("npub");
