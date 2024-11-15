@@ -580,7 +580,9 @@ pub fn setup_initial_nostrdb_subs(
     columns: &mut Columns,
 ) -> Result<()> {
     for timeline in columns.timelines_mut() {
-        setup_timeline_nostrdb_sub(ndb, note_cache, timeline)?;
+        if let Err(err) = setup_timeline_nostrdb_sub(ndb, note_cache, timeline) {
+            error!("setup_initial_nostrdb_subs: {err}");
+        }
     }
 
     Ok(())
