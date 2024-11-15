@@ -392,10 +392,11 @@ impl Damus {
             .datapath
             .unwrap_or(data_path.as_ref().to_str().expect("db path ok").to_string());
         let path = DataPath::new(&data_path);
-        let dbpath_ = path.path(DataPathType::Db);
-        let dbpath = dbpath_.to_str().unwrap();
+        let dbpath_str = parsed_args
+            .dbpath
+            .unwrap_or_else(|| path.path(DataPathType::Db).to_str().unwrap().to_string());
 
-        let _ = std::fs::create_dir_all(dbpath);
+        let _ = std::fs::create_dir_all(&dbpath_str);
 
         let imgcache_dir = path.path(DataPathType::Cache).join(ImageCache::rel_dir());
         let _ = std::fs::create_dir_all(imgcache_dir.clone());
@@ -453,7 +454,7 @@ impl Damus {
             .get_selected_account()
             .as_ref()
             .map(|a| a.pubkey.bytes());
-        let ndb = Ndb::new(dbpath, &config).expect("ndb");
+        let ndb = Ndb::new(&dbpath_str, &config).expect("ndb");
 
         let mut columns = if parsed_args.columns.is_empty() {
             if let Some(serializable_columns) = storage::load_columns(&path) {

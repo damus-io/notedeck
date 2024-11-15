@@ -265,6 +265,32 @@ mod tests {
         std::fs::remove_dir_all(path);
     }
 
+    /// Ensure dbpath actually sets the dbpath correctly.
+    #[tokio::test]
+    async fn test_dbpath() {
+        let datapath = create_tmp_dir();
+        let dbpath = create_tmp_dir();
+        let args = vec![
+            "--datapath",
+            &datapath.to_str().unwrap(),
+            "--dbpath",
+            &dbpath.to_str().unwrap(),
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+
+        let ctx = egui::Context::default();
+        let app = Damus::new(&ctx, &datapath, args);
+
+        assert!(Path::new(&dbpath.join("data.mdb")).exists());
+        assert!(Path::new(&dbpath.join("lock.mdb")).exists());
+        assert!(!Path::new(&datapath.join("db")).exists());
+
+        rmrf(datapath);
+        rmrf(dbpath);
+    }
+
     #[tokio::test]
     async fn test_column_args() {
         let tmpdir = create_tmp_dir();
