@@ -1,11 +1,14 @@
-use crate::decks::Deck;
+use crate::{app_style::emoji_font_family, decks::Deck};
 
 /// State for UI creating/editing deck
-#[derive(Default)]
 pub struct DeckState {
     pub deck_name: String,
     pub selected_glyph: Option<char>,
     pub deleting: bool,
+    pub selecting_glyph: bool,
+    pub warn_no_title: bool,
+    pub warn_no_icon: bool,
+    glyph_options: Option<Vec<char>>,
 }
 
 impl DeckState {
@@ -20,11 +23,43 @@ impl DeckState {
         Self {
             deck_name,
             selected_glyph,
-            deleting: false,
+            ..Default::default()
         }
     }
 
     pub fn clear(&mut self) {
         *self = Default::default();
     }
+
+    pub fn get_glyph_options(&mut self, ui: &egui::Ui) -> &Vec<char> {
+        self.glyph_options
+            .get_or_insert_with(|| available_characters(ui, emoji_font_family()))
+    }
+}
+
+impl Default for DeckState {
+    fn default() -> Self {
+        Self {
+            deck_name: Default::default(),
+            selected_glyph: Default::default(),
+            deleting: Default::default(),
+            selecting_glyph: true,
+            warn_no_icon: Default::default(),
+            warn_no_title: Default::default(),
+            glyph_options: Default::default(),
+        }
+    }
+}
+
+fn available_characters(ui: &egui::Ui, family: egui::FontFamily) -> Vec<char> {
+    ui.fonts(|f| {
+        f.lock()
+            .fonts
+            .font(&egui::FontId::new(10.0, family)) // size is arbitrary for getting the characters
+            .characters()
+            .iter()
+            .filter(|chr| !chr.is_whitespace() && !chr.is_ascii_control())
+            .copied()
+            .collect()
+    })
 }
