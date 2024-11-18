@@ -1,47 +1,47 @@
 use crate::key_parsing::perform_key_retrieval;
-use crate::key_parsing::LoginError;
+use crate::key_parsing::AcquireKeyError;
 use egui::{TextBuffer, TextEdit};
 use enostr::Keypair;
 use poll_promise::Promise;
 
-/// The UI view interface to log in to a nostr account.
+/// The state data for acquiring a nostr key
 #[derive(Default)]
-pub struct LoginState {
-    login_key: String,
-    promise_query: Option<(String, Promise<Result<Keypair, LoginError>>)>,
-    error: Option<LoginError>,
+pub struct AcquireKeyState {
+    desired_key: String,
+    promise_query: Option<(String, Promise<Result<Keypair, AcquireKeyError>>)>,
+    error: Option<AcquireKeyError>,
     key_on_error: Option<String>,
     should_create_new: bool,
 }
 
-impl<'a> LoginState {
+impl<'a> AcquireKeyState {
     pub fn new() -> Self {
-        LoginState::default()
+        AcquireKeyState::default()
     }
 
-    /// Get the textedit for the login UI without exposing the key variable
-    pub fn get_login_textedit(
+    /// Get the textedit for the UI without exposing the key variable
+    pub fn get_acquire_textedit(
         &'a mut self,
         textedit_closure: fn(&'a mut dyn TextBuffer) -> TextEdit<'a>,
     ) -> TextEdit<'a> {
-        textedit_closure(&mut self.login_key)
+        textedit_closure(&mut self.desired_key)
     }
 
-    /// User pressed the 'login' button
-    pub fn apply_login(&'a mut self) {
+    /// User pressed the 'acquire' button
+    pub fn apply_acquire(&'a mut self) {
         let new_promise = match &self.promise_query {
             Some((query, _)) => {
-                if query != &self.login_key {
-                    Some(perform_key_retrieval(&self.login_key))
+                if query != &self.desired_key {
+                    Some(perform_key_retrieval(&self.desired_key))
                 } else {
                     None
                 }
             }
-            None => Some(perform_key_retrieval(&self.login_key)),
+            None => Some(perform_key_retrieval(&self.desired_key)),
         };
 
         if let Some(new_promise) = new_promise {
-            self.promise_query = Some((self.login_key.clone(), new_promise));
+            self.promise_query = Some((self.desired_key.clone(), new_promise));
         }
     }
 
@@ -51,9 +51,9 @@ impl<'a> LoginState {
     }
 
     /// Whether to indicate to the user that a login error occured
-    pub fn check_for_error(&'a mut self) -> Option<&'a LoginError> {
+    pub fn check_for_error(&'a mut self) -> Option<&'a AcquireKeyError> {
         if let Some(error_key) = &self.key_on_error {
-            if self.login_key != *error_key {
+            if self.desired_key != *error_key {
                 self.error = None;
                 self.key_on_error = None;
             }
@@ -73,7 +73,7 @@ impl<'a> LoginState {
                         }
                         Err(e) => {
                             self.error = Some(e);
-                            self.key_on_error = Some(self.login_key.clone());
+                            self.key_on_error = Some(self.desired_key.clone());
                         }
                     };
                 }
@@ -100,7 +100,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_retrieve_key() {
-        let mut manager = LoginState::new();
+        let mut manager = AcquireKeyState::new();
         let expected_str = "3efdaebb1d8923ebd99c9e7ace3b4194ab45512e2be79c1b7d68d9243e0d2681";
         let expected_key = Keypair::only_pubkey(Pubkey::from_hex(expected_str).unwrap());
 
@@ -110,21 +110,21 @@ mod tests {
             let cur_time = start_time.elapsed();
 
             if cur_time < Duration::from_millis(10u64) {
-                let _ = manager.get_login_textedit(|text| {
+                let _ = manager.get_acquire_textedit(|text| {
                     text.clear();
                     text.insert_text("test", 0);
                     egui::TextEdit::singleline(text)
                 });
-                manager.apply_login();
+                manager.apply_acquire();
             } else if cur_time < Duration::from_millis(30u64) {
-                let _ = manager.get_login_textedit(|text| {
+                let _ = manager.get_acquire_textedit(|text| {
                     text.clear();
                     text.insert_text("test2", 0);
                     egui::TextEdit::singleline(text)
                 });
-                manager.apply_login();
+                manager.apply_acquire();
             } else {
-                let _ = manager.get_login_textedit(|text| {
+                let _ = manager.get_acquire_textedit(|text| {
                     text.clear();
                     text.insert_text(
                         "3efdaebb1d8923ebd99c9e7ace3b4194ab45512e2be79c1b7d68d9243e0d2681",
@@ -132,7 +132,7 @@ mod tests {
                     );
                     egui::TextEdit::singleline(text)
                 });
-                manager.apply_login();
+                manager.apply_acquire();
             }
 
             if let Some(key) = manager.check_for_successful_login() {

@@ -1,13 +1,13 @@
 use crate::app_style::NotedeckTextStyle;
-use crate::key_parsing::LoginError;
-use crate::login_manager::LoginState;
+use crate::key_parsing::AcquireKeyError;
+use crate::login_manager::AcquireKeyState;
 use crate::ui::{Preview, PreviewConfig, View};
 use egui::TextEdit;
 use egui::{Align, Button, Color32, Frame, InnerResponse, Margin, RichText, Vec2};
 use enostr::Keypair;
 
 pub struct AccountLoginView<'a> {
-    manager: &'a mut LoginState,
+    manager: &'a mut AcquireKeyState,
 }
 
 pub enum AccountLoginResponse {
@@ -16,7 +16,7 @@ pub enum AccountLoginResponse {
 }
 
 impl<'a> AccountLoginView<'a> {
-    pub fn new(state: &'a mut LoginState) -> Self {
+    pub fn new(state: &'a mut AcquireKeyState) -> Self {
         AccountLoginView { manager: state }
     }
 
@@ -43,7 +43,7 @@ impl<'a> AccountLoginView<'a> {
                 self.loading_and_error(ui);
 
                 if ui.add(login_button()).clicked() {
-                    self.manager.apply_login();
+                    self.manager.apply_acquire();
                 }
             });
 
@@ -90,13 +90,13 @@ impl<'a> AccountLoginView<'a> {
     }
 }
 
-fn show_error(ui: &mut egui::Ui, err: &LoginError) {
+fn show_error(ui: &mut egui::Ui, err: &AcquireKeyError) {
     ui.horizontal(|ui| {
         let error_label = match err {
-            LoginError::InvalidKey => {
+            AcquireKeyError::InvalidKey => {
                 egui::Label::new(RichText::new("Invalid key.").color(ui.visuals().error_fg_color))
             }
-            LoginError::Nip05Failed(e) => {
+            AcquireKeyError::Nip05Failed(e) => {
                 egui::Label::new(RichText::new(e).color(ui.visuals().error_fg_color))
             }
         };
@@ -126,8 +126,8 @@ fn login_button() -> Button<'static> {
     .min_size(Vec2::new(0.0, 40.0))
 }
 
-fn login_textedit(manager: &mut LoginState) -> TextEdit {
-    manager.get_login_textedit(|text| {
+fn login_textedit(manager: &mut AcquireKeyState) -> TextEdit {
+    manager.get_acquire_textedit(|text| {
         egui::TextEdit::singleline(text)
             .hint_text(
                 RichText::new("Enter your public key (npub, nip05), or private key (nsec) here...")
@@ -143,7 +143,7 @@ mod preview {
     use super::*;
 
     pub struct AccountLoginPreview {
-        manager: LoginState,
+        manager: AcquireKeyState,
     }
 
     impl View for AccountLoginPreview {
@@ -157,7 +157,7 @@ mod preview {
 
         fn preview(cfg: PreviewConfig) -> Self::Prev {
             let _ = cfg;
-            let manager = LoginState::new();
+            let manager = AcquireKeyState::new();
             AccountLoginPreview { manager }
         }
     }

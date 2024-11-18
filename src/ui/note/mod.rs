@@ -204,6 +204,11 @@ impl<'a> NoteView<'a> {
         }
     }
 
+    pub fn note_options(mut self, options: NoteOptions) -> Self {
+        *self.options_mut() = options;
+        self
+    }
+
     pub fn textmode(mut self, enable: bool) -> Self {
         self.options_mut().set_textmode(enable);
         self

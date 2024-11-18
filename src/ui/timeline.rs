@@ -2,6 +2,7 @@ use crate::actionbar::{BarAction, NoteActionResponse};
 use crate::timeline::TimelineTab;
 use crate::{
     column::Columns, imgcache::ImageCache, notecache::NoteCache, timeline::TimelineId, ui,
+    ui::note::NoteOptions,
 };
 use egui::containers::scroll_area::ScrollBarVisibility;
 use egui::{Direction, Layout};
@@ -15,7 +16,7 @@ pub struct TimelineView<'a> {
     ndb: &'a Ndb,
     note_cache: &'a mut NoteCache,
     img_cache: &'a mut ImageCache,
-    textmode: bool,
+    note_options: NoteOptions,
     reverse: bool,
 }
 
@@ -26,7 +27,7 @@ impl<'a> TimelineView<'a> {
         ndb: &'a Ndb,
         note_cache: &'a mut NoteCache,
         img_cache: &'a mut ImageCache,
-        textmode: bool,
+        note_options: NoteOptions,
     ) -> TimelineView<'a> {
         let reverse = false;
         TimelineView {
@@ -36,7 +37,7 @@ impl<'a> TimelineView<'a> {
             note_cache,
             img_cache,
             reverse,
-            textmode,
+            note_options,
         }
     }
 
@@ -49,7 +50,7 @@ impl<'a> TimelineView<'a> {
             self.note_cache,
             self.img_cache,
             self.reverse,
-            self.textmode,
+            self.note_options,
         )
     }
 
@@ -68,7 +69,7 @@ fn timeline_ui(
     note_cache: &mut NoteCache,
     img_cache: &mut ImageCache,
     reversed: bool,
-    textmode: bool,
+    note_options: NoteOptions,
 ) -> NoteActionResponse {
     //padding(4.0, ui, |ui| ui.heading("Notifications"));
     /*
@@ -114,7 +115,7 @@ fn timeline_ui(
             TimelineTabView::new(
                 timeline.current_view(),
                 reversed,
-                textmode,
+                note_options,
                 &txn,
                 ndb,
                 note_cache,
@@ -212,7 +213,7 @@ fn shrink_range_to_width(range: egui::Rangef, width: f32) -> egui::Rangef {
 pub struct TimelineTabView<'a> {
     tab: &'a TimelineTab,
     reversed: bool,
-    textmode: bool,
+    note_options: NoteOptions,
     txn: &'a Transaction,
     ndb: &'a Ndb,
     note_cache: &'a mut NoteCache,
@@ -223,7 +224,7 @@ impl<'a> TimelineTabView<'a> {
     pub fn new(
         tab: &'a TimelineTab,
         reversed: bool,
-        textmode: bool,
+        note_options: NoteOptions,
         txn: &'a Transaction,
         ndb: &'a Ndb,
         note_cache: &'a mut NoteCache,
@@ -233,7 +234,7 @@ impl<'a> TimelineTabView<'a> {
             tab,
             reversed,
             txn,
-            textmode,
+            note_options,
             ndb,
             note_cache,
             img_cache,
@@ -270,9 +271,7 @@ impl<'a> TimelineTabView<'a> {
 
                 ui::padding(8.0, ui, |ui| {
                     let resp = ui::NoteView::new(self.ndb, self.note_cache, self.img_cache, &note)
-                        .note_previews(!self.textmode)
-                        .selectable_text(false)
-                        .options_button(true)
+                        .note_options(self.note_options)
                         .show(ui);
 
                     bar_action = bar_action.or(resp.action.bar_action);

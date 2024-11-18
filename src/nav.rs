@@ -1,14 +1,15 @@
 use crate::{
-    account_manager::{render_accounts_route, AccountSelectionResponse},
+    account_manager::{render_accounts_route, AccountManager, AccountSelectionResponse},
     app::{get_active_columns, get_active_columns_mut, get_decks_mut},
     app_style::{get_font_size, NotedeckTextStyle},
     deck_state::DeckState,
-    decks::Deck,
+    decks::{AccountId, Deck, DecksCache},
     fonts::NamedFontFamily,
     notes_holder::NotesHolder,
     profile::Profile,
     relay_pool_manager::RelayPoolManager,
     route::Route,
+    storage::{self, DataPath},
     thread::Thread,
     timeline::{
         route::{render_profile_route, render_timeline_route, AfterRouteExecution, TimelineRoute},
@@ -16,7 +17,7 @@ use crate::{
     },
     ui::{
         self,
-        add_column::{AddColumnResponse, AddColumnView},
+        add_column::render_add_column_routes,
         anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},
         configure_deck::ConfigureDeckView,
         edit_deck::{EditDeckResponse, EditDeckView},
@@ -33,12 +34,50 @@ use nostrdb::{Ndb, Transaction};
 use tracing::{error, info};
 
 #[derive(Debug)]
-pub enum SelectionResponse {
+pub enum RenderNavResponse {
+    ColumnChanged,
+    RemoveColumn(usize),
     Account(AccountSelectionResponse),
     SelectDeck(usize),
 }
 
-pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) -> Option<SelectionResponse> {
+impl RenderNavResponse {
+    pub fn process_nav_response(
+        &self,
+        path: &DataPath,
+        accounts: &mut AccountManager,
+        decks_cache: &mut DecksCache,
+    ) {
+        let columns = get_active_columns_mut(accounts, decks_cache);
+        match self {
+            RenderNavResponse::ColumnChanged => {
+                storage::save_columns(path, columns.as_serializable_columns());
+            }
+
+            RenderNavResponse::RemoveColumn(col) => {
+                columns.delete_column(*col);
+                storage::save_columns(path, columns.as_serializable_columns());
+            }
+            RenderNavResponse::Account(selection_resp) => match *selection_resp {
+                AccountSelectionResponse::Delete(index) => {
+                    if let Some(acc) = accounts.get_account(index) {
+                        decks_cache.remove_for(&AccountId::User(acc.pubkey));
+                    }
+                    accounts.remove_account(index);
+                }
+                AccountSelectionResponse::Select(index) => {
+                    accounts.select_account(index);
+                }
+            },
+            RenderNavResponse::SelectDeck(index) => {
+                get_decks_mut(accounts, decks_cache).set_active(*index);
+            }
+        }
+    }
+}
+
+pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) -> Option<RenderNavResponse> {
+    let mut resp: Option<RenderNavResponse> = None;
     let col_id = app.columns().get_column_id_at_index(col);
     // TODO(jb55): clean up this router_mut mess by using Router<R> in egui-nav directly
     let routes = get_active_columns(&app.accounts, &app.decks_cache)
@@ -52,8 +91,9 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) -> Option<Sele
     let nav_response = Nav::new(routes)
         .navigating(app.columns_mut().column_mut(col).router_mut().navigating)
         .returning(app.columns_mut().column_mut(col).router_mut().returning)
+        .id_source(egui::Id::new(col_id))
         .title(48.0, title_bar)
-        .show_mut(col_id, ui, |ui, nav| {
+        .show_mut(ui, |ui, nav| {
             let column =
                 get_active_columns_mut(&app.accounts, &mut app.decks_cache).column_mut(col);
             match &nav.top().route {
@@ -82,7 +122,7 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) -> Option<Sele
                         &mut app.view_state.login,
                         *amr,
                     ) {
-                        col_response = Some(SelectionResponse::Account(resp));
+                        col_response = Some(RenderNavResponse::Account(resp));
                     }
                     None
                 }
@@ -115,19 +155,9 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) -> Option<Sele
 
                     None
                 }
-                Route::AddColumn => {
-                    let resp =
-                        AddColumnView::new(&app.ndb, app.accounts.get_selected_account()).ui(ui);
+                Route::AddColumn(route) => {
+                    render_add_column_routes(ui, app, col, route);
 
-                    if let Some(resp) = resp {
-                        match resp {
-                            AddColumnResponse::Timeline(timeline) => {
-                                let id = timeline.id;
-                                app.columns_mut().add_timeline_to_column(col, timeline);
-                                app.subscribe_new_timeline(id);
-                            }
-                        };
-                    }
                     None
                 }
 
@@ -268,7 +298,6 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) -> Option<Sele
                 pubkey.bytes(),
             );
         }
-
         if let Some(Route::EditDeck(index)) = r {
             let id = ui.id().with((
                 "edit-deck",
@@ -286,27 +315,29 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) -> Option<Sele
                 }
             }
         }
+        resp = Some(RenderNavResponse::ColumnChanged)
     } else if let Some(NavAction::Navigated) = nav_response.action {
         let cur_router = app.columns_mut().column_mut(col).router_mut();
         cur_router.navigating = false;
         if cur_router.is_replacing() {
-            cur_router.remove_previous_route();
+            cur_router.remove_previous_routes();
         }
+        resp = Some(RenderNavResponse::ColumnChanged)
     }
 
     if let Some(title_response) = nav_response.title_response {
         match title_response {
             TitleResponse::RemoveColumn => {
-                app.columns_mut().request_deletion_at_index(col);
                 let tl = app.columns().find_timeline_for_column_index(col);
                 if let Some(timeline) = tl {
                     unsubscribe_timeline(app.ndb(), timeline);
                 }
+                resp = Some(RenderNavResponse::RemoveColumn(col))
             }
         }
     }
 
-    col_response
+    resp
 }
 
 fn unsubscribe_timeline(ndb: &Ndb, timeline: &Timeline) {

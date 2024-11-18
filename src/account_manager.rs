@@ -2,12 +2,13 @@ use std::cmp::Ordering;
 
 use enostr::{FilledKeypair, FullKeypair, Keypair};
 use nostrdb::Ndb;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     app::get_active_columns_mut,
     decks::{AccountId, DecksCache},
     imgcache::ImageCache,
-    login_manager::LoginState,
+    login_manager::AcquireKeyState,
     route::Route,
     storage::{KeyStorageResponse, KeyStorageType},
     ui::{
@@ -33,7 +34,7 @@ pub enum AccountsRouteResponse {
     AddAccount(AccountLoginResponse),
 }
 
-#[derive(Debug, Eq, PartialEq, Clone, Copy)]
+#[derive(Debug, Eq, PartialEq, Clone, Copy, Serialize, Deserialize)]
 pub enum AccountsRoute {
     Accounts,
     AddAccount,
@@ -54,7 +55,7 @@ pub fn render_accounts_route(
     img_cache: &mut ImageCache,
     accounts: &mut AccountManager,
     decks: &mut DecksCache,
-    login_state: &mut LoginState,
+    login_state: &mut AcquireKeyState,
     route: AccountsRoute,
 ) -> Option<AccountSelectionResponse> {
     let resp = match route {

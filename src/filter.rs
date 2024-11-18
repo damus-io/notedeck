@@ -2,6 +2,7 @@ use crate::error::{Error, FilterError};
 use crate::note::NoteRef;
 use crate::Result;
 use nostrdb::{Filter, FilterBuilder, Note, Subscription};
+use std::collections::HashMap;
 use tracing::{debug, warn};
 
 /// A unified subscription has a local and remote component. The remote subid
@@ -10,6 +11,74 @@ use tracing::{debug, warn};
 pub struct UnifiedSubscription {
     pub local: Subscription,
     pub remote: String,
+}
+
+/// Each relay can have a different filter state. For example, some
+/// relays may have the contact list, some may not. Let's capture all of
+/// these states so that some relays don't stop the states of other
+/// relays.
+#[derive(Debug)]
+pub struct FilterStates {
+    pub initial_state: FilterState,
+    pub states: HashMap<String, FilterState>,
+}
+
+impl FilterStates {
+    pub fn get(&mut self, relay: &str) -> &FilterState {
+        // if our initial state is ready, then just use that
+        if let FilterState::Ready(_) = self.initial_state {
+            &self.initial_state
+        } else {
+            // otherwise we look at relay states
+            if !self.states.contains_key(relay) {
+                self.states
+                    .insert(relay.to_string(), self.initial_state.clone());
+            }
+            self.states.get(relay).unwrap()
+        }
+    }
+
+    pub fn get_any_gotremote(&self) -> Option<(&str, Subscription)> {
+        for (k, v) in self.states.iter() {
+            if let FilterState::GotRemote(sub) = v {
+                return Some((k, *sub));
+            }
+        }
+
+        None
+    }
+
+    pub fn get_any_ready(&self) -> Option<&Vec<Filter>> {
+        if let FilterState::Ready(fs) = &self.initial_state {
+            Some(fs)
+        } else {
+            for (_k, v) in self.states.iter() {
+                if let FilterState::Ready(ref fs) = v {
+                    return Some(fs);
+                }
+            }
+
+            None
+        }
+    }
+
+    pub fn new(initial_state: FilterState) -> Self {
+        Self {
+            initial_state,
+            states: HashMap::new(),
+        }
+    }
+
+    pub fn set_relay_state(&mut self, relay: String, state: FilterState) {
+        if self.states.contains_key(&relay) {
+            let current_state = self.states.get(&relay).unwrap();
+            debug!(
+                "set_relay_state: {:?} -> {:?} on {}",
+                current_state, state, &relay,
+            );
+        }
+        self.states.insert(relay, state);
+    }
 }
 
 /// We may need to fetch some data from relays before our filter is ready.

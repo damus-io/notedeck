@@ -219,18 +219,13 @@ impl Args {
             i += 1;
         }
 
-        if res.columns.is_empty() {
-            let ck = TimelineKind::contact_list(PubkeySource::DeckAuthor);
-            info!("No columns set, setting up defaults: {:?}", ck);
-            res.columns.push(ArgColumn::Timeline(ck));
-        }
-
         res
     }
 }
 
 /// A way to define columns from the commandline. Can be column kinds or
 /// generic queries
+#[derive(Debug)]
 pub enum ArgColumn {
     Timeline(TimelineKind),
     Generic(Vec<Filter>),
@@ -268,6 +263,32 @@ mod tests {
 
     fn rmrf(path: impl AsRef<Path>) {
         std::fs::remove_dir_all(path);
+    }
+
+    /// Ensure dbpath actually sets the dbpath correctly.
+    #[tokio::test]
+    async fn test_dbpath() {
+        let datapath = create_tmp_dir();
+        let dbpath = create_tmp_dir();
+        let args = vec![
+            "--datapath",
+            &datapath.to_str().unwrap(),
+            "--dbpath",
+            &dbpath.to_str().unwrap(),
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+
+        let ctx = egui::Context::default();
+        let app = Damus::new(&ctx, &datapath, args);
+
+        assert!(Path::new(&dbpath.join("data.mdb")).exists());
+        assert!(Path::new(&dbpath.join("lock.mdb")).exists());
+        assert!(!Path::new(&datapath.join("db")).exists());
+
+        rmrf(datapath);
+        rmrf(dbpath);
     }
 
     #[tokio::test]

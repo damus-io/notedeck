@@ -14,6 +14,13 @@ bitflags! {
         const selectable_text = 0b0000000000100000;
         const textmode        = 0b0000000001000000;
         const options_button  = 0b0000000010000000;
+        const hide_media      = 0b0000000100000000;
+    }
+}
+
+impl Default for NoteOptions {
+    fn default() -> NoteOptions {
+        NoteOptions::options_button | NoteOptions::note_previews | NoteOptions::actionbar
     }
 }
 
@@ -39,10 +46,22 @@ impl NoteOptions {
     create_setter!(set_actionbar, actionbar);
     create_setter!(set_wide, wide);
     create_setter!(set_options_button, options_button);
+    create_setter!(set_hide_media, hide_media);
+
+    pub fn new(is_universe_timeline: bool) -> Self {
+        let mut options = NoteOptions::default();
+        options.set_hide_media(is_universe_timeline);
+        options
+    }
 
     #[inline]
     pub fn has_actionbar(self) -> bool {
         (self & NoteOptions::actionbar) == NoteOptions::actionbar
+    }
+
+    #[inline]
+    pub fn has_hide_media(self) -> bool {
+        (self & NoteOptions::hide_media) == NoteOptions::hide_media
     }
 
     #[inline]

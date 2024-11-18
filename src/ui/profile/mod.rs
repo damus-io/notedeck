@@ -1,6 +1,7 @@
 pub mod picture;
 pub mod preview;
 
+use crate::ui::note::NoteOptions;
 use egui::{ScrollArea, Widget};
 use enostr::Pubkey;
 use nostrdb::{Ndb, Transaction};
@@ -18,6 +19,7 @@ pub struct ProfileView<'a> {
     pubkey: &'a Pubkey,
     col_id: usize,
     profiles: &'a mut NotesHolderStorage<Profile>,
+    note_options: NoteOptions,
     ndb: &'a Ndb,
     note_cache: &'a mut NoteCache,
     img_cache: &'a mut ImageCache,
@@ -31,6 +33,7 @@ impl<'a> ProfileView<'a> {
         ndb: &'a Ndb,
         note_cache: &'a mut NoteCache,
         img_cache: &'a mut ImageCache,
+        note_options: NoteOptions,
     ) -> Self {
         ProfileView {
             pubkey,
@@ -39,6 +42,7 @@ impl<'a> ProfileView<'a> {
             ndb,
             note_cache,
             img_cache,
+            note_options,
         }
     }
 
@@ -59,10 +63,12 @@ impl<'a> ProfileView<'a> {
 
                 profile.timeline.selected_view = tabs_ui(ui);
 
+                let reversed = false;
+
                 TimelineTabView::new(
                     profile.timeline.current_view(),
-                    false,
-                    false,
+                    reversed,
+                    self.note_options,
                     &txn,
                     self.ndb,
                     self.note_cache,

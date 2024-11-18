@@ -11,7 +11,7 @@ use crate::{
     column::Column,
     decks::{AccountId, DecksCache},
     imgcache::ImageCache,
-    nav::SelectionResponse,
+    nav::RenderNavResponse,
     route::Route,
     support::Support,
     user_account::UserAccount,
@@ -226,7 +226,7 @@ impl<'a> DesktopSidePanel<'a> {
         accounts: &AccountManager,
         support: &mut Support,
         action: SidePanelAction,
-    ) -> Option<SelectionResponse> {
+    ) -> Option<RenderNavResponse> {
         let router = get_active_columns_mut(accounts, decks_cache).get_first_router();
         let mut switching_response = None;
         match action {
@@ -252,7 +252,11 @@ impl<'a> DesktopSidePanel<'a> {
                 }
             }
             SidePanelAction::Columns => {
-                if router.routes().iter().any(|&r| r == Route::AddColumn) {
+                if router
+                    .routes()
+                    .iter()
+                    .any(|&r| matches!(r, Route::AddColumn(_)))
+                {
                     router.go_back();
                 } else {
                     get_active_columns_mut(accounts, decks_cache).new_column_picker();
@@ -289,7 +293,7 @@ impl<'a> DesktopSidePanel<'a> {
                 }
             }
             SidePanelAction::SwitchDeck(index) => {
-                switching_response = Some(SelectionResponse::SelectDeck(index))
+                switching_response = Some(RenderNavResponse::SelectDeck(index))
             }
             SidePanelAction::EditDeck(index) => {
                 if router.routes().iter().any(|&r| r == Route::EditDeck(index)) {

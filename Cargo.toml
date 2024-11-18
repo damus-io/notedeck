@@ -18,7 +18,7 @@ eframe = { git = "https://github.com/emilk/egui", rev = "fcb7764e48ce00f8f8e58da
 egui_extras = { git = "https://github.com/emilk/egui", rev = "fcb7764e48ce00f8f8e58da10f937410d65b0bfb", package = "egui_extras", features = ["all_loaders"] }
 ehttp = "0.2.0"
 egui_tabs = { git = "https://github.com/damus-io/egui-tabs", branch = "egui-0.28" }
-egui_nav = { git = "https://github.com/damus-io/egui-nav", rev = "6ba42de2bae384d10e35c532f3856b81d2e9f645" }
+egui_nav = { git = "https://github.com/damus-io/egui-nav", rev = "956338a90e09c7cda951d554626483e0cdbc7825" }
 egui_virtual_list = { git = "https://github.com/jb55/hello_egui", branch = "egui-0.28", package = "egui_virtual_list" }
 reqwest = { version = "0.12.4", default-features = false, features = [ "rustls-tls-native-roots" ] }
 image = { version = "0.25", features = ["jpeg", "png", "webp"] }

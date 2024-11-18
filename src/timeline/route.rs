@@ -7,12 +7,12 @@ use crate::{
     notes_holder::NotesHolderStorage,
     profile::Profile,
     thread::Thread,
-    timeline::TimelineId,
+    timeline::{TimelineId, TimelineKind},
     ui::{
         self,
         note::{
             post::{PostAction, PostResponse},
-            QuoteRepostView,
+            NoteOptions, QuoteRepostView,
         },
         profile::ProfileView,
     },
@@ -21,7 +21,7 @@ use crate::{
 use enostr::{NoteId, Pubkey, RelayPool};
 use nostrdb::{Ndb, Transaction};
 
-#[derive(Debug, Eq, PartialEq, Clone, Copy)]
+#[derive(Debug, Eq, PartialEq, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub enum TimelineRoute {
     Timeline(TimelineId),
     Thread(NoteId),
@@ -57,9 +57,28 @@ pub fn render_timeline_route(
 ) -> Option<AfterRouteExecution> {
     match route {
         TimelineRoute::Timeline(timeline_id) => {
-            let timeline_response =
-                ui::TimelineView::new(timeline_id, columns, ndb, note_cache, img_cache, textmode)
-                    .ui(ui);
+            let note_options = {
+                let is_universe = if let Some(timeline) = columns.find_timeline(timeline_id) {
+                    timeline.kind == TimelineKind::Universe
+                } else {
+                    false
+                };
+
+                let mut options = NoteOptions::new(is_universe);
+                options.set_textmode(textmode);
+                options
+            };
+
+            let timeline_response = ui::TimelineView::new(
+                timeline_id,
+                columns,
+                ndb,
+                note_cache,
+                img_cache,
+                note_options,
+            )
+            .ui(ui);
+
             if let Some(bar_action) = timeline_response.bar_action {
                 let txn = Transaction::new(ndb).expect("txn");
                 let mut cur_column = columns.columns_mut();
@@ -168,8 +187,16 @@ pub fn render_profile_route(
     col: usize,
     ui: &mut egui::Ui,
 ) -> Option<AfterRouteExecution> {
-    let timeline_response =
-        ProfileView::new(pubkey, col, profiles, ndb, note_cache, img_cache).ui(ui);
+    let timeline_response = ProfileView::new(
+        pubkey,
+        col,
+        profiles,
+        ndb,
+        note_cache,
+        img_cache,
+        NoteOptions::default(),
+    )
+    .ui(ui);
     if let Some(bar_action) = timeline_response.bar_action {
         let txn = nostrdb::Transaction::new(ndb).expect("txn");
         let mut cur_column = columns.columns_mut();

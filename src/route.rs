@@ -1,5 +1,6 @@
 use enostr::{NoteId, Pubkey};
 use nostrdb::Ndb;
+use serde::{Deserialize, Serialize};
 use std::fmt::{self};
 
 use crate::{
@@ -7,17 +8,20 @@ use crate::{
     app::{get_active_columns, get_decks},
     decks::DecksCache,
     timeline::{TimelineId, TimelineRoute},
-    ui::profile::preview::{get_note_users_displayname_string, get_profile_displayname_string},
+    ui::{
+        add_column::AddColumnRoute,
+        profile::preview::{get_note_users_displayname_string, get_profile_displayname_string},
+    },
 };
 
 /// App routing. These describe different places you can go inside Notedeck.
-#[derive(Clone, Copy, Eq, PartialEq, Debug)]
+#[derive(Clone, Copy, Eq, PartialEq, Debug, Serialize, Deserialize)]
 pub enum Route {
     Timeline(TimelineRoute),
     Accounts(AccountsRoute),
     Relays,
     ComposeNote,
-    AddColumn,
+    AddColumn(AddColumnRoute),
     Profile(Pubkey),
     Support,
     NewDeck,
@@ -106,7 +110,13 @@ impl Route {
                 AccountsRoute::AddAccount => "Add Account".to_owned(),
             },
             Route::ComposeNote => "Compose Note".to_owned(),
-            Route::AddColumn => "Add Column".to_owned(),
+            Route::AddColumn(c) => match c {
+                AddColumnRoute::Base => "Add Column".to_owned(),
+                AddColumnRoute::UndecidedNotification => "Add Notifications Column".to_owned(),
+                AddColumnRoute::ExternalNotification => {
+                    "Add External Notifications Column".to_owned()
+                }
+            },
             Route::Profile(pubkey) => {
                 format!("{}'s Profile", get_profile_displayname_string(ndb, pubkey))
             }
@@ -161,7 +171,7 @@ impl<R: Clone> Router<R> {
         self.routes.push(route);
     }
 
-    // Route to R. Then when it is successfully placed, should call `remove_previous_route`
+    // Route to R. Then when it is successfully placed, should call `remove_previous_routes` to remove all previous routes
     pub fn route_to_replaced(&mut self, route: R) {
         self.navigating = true;
         self.replacing = true;
@@ -186,14 +196,15 @@ impl<R: Clone> Router<R> {
         self.routes.pop()
     }
 
-    pub fn remove_previous_route(&mut self) -> Option<R> {
+    pub fn remove_previous_routes(&mut self) {
         let num_routes = self.routes.len();
         if num_routes <= 1 {
-            return None;
+            return;
         }
+
         self.returning = false;
         self.replacing = false;
-        Some(self.routes.remove(num_routes - 2))
+        self.routes.drain(..num_routes - 1);
     }
 
     pub fn is_replacing(&self) -> bool {
@@ -227,7 +238,7 @@ impl fmt::Display for Route {
             },
             Route::ComposeNote => write!(f, "Compose Note"),
 
-            Route::AddColumn => write!(f, "Add Column"),
+            Route::AddColumn(_) => write!(f, "Add Column"),
             Route::Profile(_) => write!(f, "Profile"),
             Route::Support => write!(f, "Support"),
             Route::NewDeck => write!(f, "Add Deck"),

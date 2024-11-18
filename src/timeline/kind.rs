@@ -5,16 +5,17 @@ use crate::timeline::Timeline;
 use crate::ui::profile::preview::get_profile_displayname_string;
 use enostr::{Filter, Pubkey};
 use nostrdb::{Ndb, Transaction};
+use serde::{Deserialize, Serialize};
 use std::fmt::Display;
 use tracing::{error, warn};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PubkeySource {
     Explicit(Pubkey),
     DeckAuthor,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ListKind {
     Contact(PubkeySource),
 }
@@ -27,7 +28,7 @@ pub enum ListKind {
 ///   - filter
 ///   - ... etc
 ///
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TimelineKind {
     List(ListKind),
 

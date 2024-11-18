@@ -139,6 +139,7 @@ fn render_note_contents(
     let selectable = options.has_selectable_text();
     let mut images: Vec<String> = vec![];
     let mut inline_note: Option<(&[u8; 32], &str)> = None;
+    let hide_media = options.has_hide_media();
 
     let response = ui.horizontal_wrapped(|ui| {
         let blocks = if let Ok(blocks) = ndb.get_blocks_by_key(txn, note_key) {
@@ -183,7 +184,7 @@ fn render_note_contents(
 
                 BlockType::Url => {
                     let lower_url = block.as_str().to_lowercase();
-                    if lower_url.ends_with("png") || lower_url.ends_with("jpg") {
+                    if !hide_media && (lower_url.ends_with("png") || lower_url.ends_with("jpg")) {
                         images.push(block.as_str().to_string());
                     } else {
                         #[cfg(feature = "profiling")]

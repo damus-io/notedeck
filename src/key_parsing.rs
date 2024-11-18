@@ -8,21 +8,23 @@ use reqwest::{Request, Response};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, PartialEq)]
-pub enum LoginError {
+pub enum AcquireKeyError {
     InvalidKey,
     Nip05Failed(String),
 }
 
-impl std::fmt::Display for LoginError {
+impl std::fmt::Display for AcquireKeyError {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
-            LoginError::InvalidKey => write!(f, "The inputted key is invalid."),
-            LoginError::Nip05Failed(e) => write!(f, "Failed to get pubkey from Nip05 address: {e}"),
+            AcquireKeyError::InvalidKey => write!(f, "The inputted key is invalid."),
+            AcquireKeyError::Nip05Failed(e) => {
+                write!(f, "Failed to get pubkey from Nip05 address: {e}")
+            }
         }
     }
 }
 
-impl std::error::Error for LoginError {}
+impl std::error::Error for AcquireKeyError {}
 
 #[derive(Deserialize, Serialize)]
 pub struct Nip05Result {
@@ -95,9 +97,9 @@ fn retrieving_nip05_pubkey(key: &str) -> bool {
     key.contains('@')
 }
 
-pub fn perform_key_retrieval(key: &str) -> Promise<Result<Keypair, LoginError>> {
+pub fn perform_key_retrieval(key: &str) -> Promise<Result<Keypair, AcquireKeyError>> {
     let key_string = String::from(key);
-    Promise::spawn_async(async move { get_login_key(&key_string).await })
+    Promise::spawn_async(async move { get_key(&key_string).await })
 }
 
 /// Attempts to turn a string slice key from the user into a Nostr-Sdk Keypair object.
@@ -108,7 +110,7 @@ pub fn perform_key_retrieval(key: &str) -> Promise<Result<Keypair, LoginError>> 
 /// - Private hex key: "5dab..."
 /// - NIP-05 address: "example@nostr.com"
 ///
-pub async fn get_login_key(key: &str) -> Result<Keypair, LoginError> {
+pub async fn get_key(key: &str) -> Result<Keypair, AcquireKeyError> {
     let tmp_key: &str = if let Some(stripped) = key.strip_prefix('@') {
         stripped
     } else {
@@ -118,7 +120,7 @@ pub async fn get_login_key(key: &str) -> Result<Keypair, LoginError> {
     if retrieving_nip05_pubkey(tmp_key) {
         match get_nip05_pubkey(tmp_key).await {
             Ok(pubkey) => Ok(Keypair::only_pubkey(pubkey)),
-            Err(e) => Err(LoginError::Nip05Failed(e.to_string())),
+            Err(e) => Err(AcquireKeyError::Nip05Failed(e.to_string())),
         }
     } else if let Ok(pubkey) = Pubkey::try_from_bech32_string(tmp_key, true) {
         Ok(Keypair::only_pubkey(pubkey))
@@ -127,7 +129,7 @@ pub async fn get_login_key(key: &str) -> Result<Keypair, LoginError> {
     } else if let Ok(secret_key) = SecretKey::from_str(tmp_key) {
         Ok(Keypair::from_secret(secret_key))
     } else {
-        Err(LoginError::InvalidKey)
+        Err(AcquireKeyError::InvalidKey)
     }
 }
 
@@ -141,7 +143,7 @@ mod tests {
         let pubkey_str = "npub1xtscya34g58tk0z605fvr788k263gsu6cy9x0mhnm87echrgufzsevkk5s";
         let expected_pubkey =
             Pubkey::try_from_bech32_string(pubkey_str, false).expect("Should not have errored.");
-        let login_key_result = get_login_key(pubkey_str).await;
+        let login_key_result = get_key(pubkey_str).await;
 
         assert_eq!(Ok(Keypair::only_pubkey(expected_pubkey)), login_key_result);
     }
