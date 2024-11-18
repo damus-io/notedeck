@@ -1,11 +1,13 @@
 use crate::{
     account_manager::render_accounts_route,
     app_style::{get_font_size, NotedeckTextStyle},
+    column::Columns,
     fonts::NamedFontFamily,
     notes_holder::NotesHolder,
     profile::Profile,
     relay_pool_manager::RelayPoolManager,
     route::Route,
+    storage::{self, DataPath},
     thread::Thread,
     timeline::{
         route::{render_profile_route, render_timeline_route, AfterRouteExecution, TimelineRoute},
@@ -27,8 +29,28 @@ use egui_nav::{Nav, NavAction, TitleBarResponse};
 use nostrdb::{Ndb, Transaction};
 use tracing::{error, info};
 
-pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) -> bool {
-    let mut col_changed = false;
+pub enum RenderNavResponse {
+    ColumnChanged,
+    RemoveColumn(usize),
+}
+
+impl RenderNavResponse {
+    pub fn process_nav_response(&self, path: &DataPath, columns: &mut Columns) {
+        match self {
+            RenderNavResponse::ColumnChanged => {
+                storage::save_columns(path, columns.as_serializable_columns());
+            }
+
+            RenderNavResponse::RemoveColumn(col) => {
+                columns.delete_column(*col);
+                storage::save_columns(path, columns.as_serializable_columns());
+            }
+        }
+    }
+}
+
+pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) -> Option<RenderNavResponse> {
+    let mut resp: Option<RenderNavResponse> = None;
     let col_id = app.columns.get_column_id_at_index(col);
     // TODO(jb55): clean up this router_mut mess by using Router<R> in egui-nav directly
     let routes = app
@@ -193,14 +215,14 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) -> bool {
                 pubkey.bytes(),
             );
         }
-        col_changed = true;
+        resp = Some(RenderNavResponse::ColumnChanged)
     } else if let Some(NavAction::Navigated) = nav_response.action {
         let cur_router = app.columns_mut().column_mut(col).router_mut();
         cur_router.navigating = false;
         if cur_router.is_replacing() {
             cur_router.remove_previous_routes();
         }
-        col_changed = true;
+        resp = Some(RenderNavResponse::ColumnChanged)
     }
 
     if let Some(title_response) = nav_response.title_response {
@@ -210,13 +232,12 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) -> bool {
                 if let Some(timeline) = tl {
                     unsubscribe_timeline(app.ndb(), timeline);
                 }
-                app.columns_mut().delete_column(col);
-                col_changed = true;
+                resp = Some(RenderNavResponse::RemoveColumn(col))
             }
         }
     }
 
-    col_changed
+    resp
 }
 
 fn unsubscribe_timeline(ndb: &Ndb, timeline: &Timeline) {

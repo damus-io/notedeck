@@ -729,8 +729,10 @@ fn render_damus_mobile(ctx: &egui::Context, app: &mut Damus) {
     //let routes = app.timelines[0].routes.clone();
 
     main_panel(&ctx.style(), ui::is_narrow(ctx)).show(ctx, |ui| {
-        if !app.columns.columns().is_empty() && nav::render_nav(0, app, ui) {
-            storage::save_columns(&app.path, app.columns.as_serializable_columns());
+        if !app.columns.columns().is_empty() {
+            if let Some(r) = nav::render_nav(0, app, ui) {
+                r.process_nav_response(&app.path, &mut app.columns)
+            }
         }
     });
 }
@@ -807,12 +809,12 @@ fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus) {
                 );
             });
 
-            let mut columns_changed = false;
+            let mut nav_resp: Option<nav::RenderNavResponse> = None;
             for col_index in 0..app.columns.num_columns() {
                 strip.cell(|ui| {
                     let rect = ui.available_rect_before_wrap();
-                    if nav::render_nav(col_index, app, ui) {
-                        columns_changed = true;
+                    if let Some(r) = nav::render_nav(col_index, app, ui) {
+                        nav_resp = Some(r);
                     }
 
                     // vertical line
@@ -826,8 +828,8 @@ fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus) {
                 //strip.cell(|ui| timeline::timeline_view(ui, app, timeline_ind));
             }
 
-            if columns_changed {
-                storage::save_columns(&app.path, app.columns.as_serializable_columns());
+            if let Some(r) = nav_resp {
+                r.process_nav_response(&app.path, &mut app.columns);
             }
         });
 }
