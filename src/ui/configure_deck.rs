@@ -1,7 +1,7 @@
-use egui::{vec2, Button, Color32, Label, RichText, Ui, Widget};
+use egui::{vec2, Button, Color32, Label, RichText, Stroke, Ui, Widget};
 
 use crate::{
-    app_style::{deck_icon_font_sized, get_font_size, NotedeckTextStyle, DECK_ICON_SIZE},
+    app_style::{deck_icon_font_sized, get_font_size, NotedeckTextStyle},
     colors::PINK,
     deck_state::DeckState,
     fonts::NamedFontFamily,
@@ -62,6 +62,7 @@ impl<'a> ConfigureDeckView<'a> {
                 .add(deck_icon(
                     ui.id().with("config-deck"),
                     self.state.selected_glyph,
+                    38.0,
                     64.0,
                     false,
                 ))
@@ -139,8 +140,10 @@ fn show_warnings(ui: &mut Ui, warn_no_icon: bool, warn_no_title: bool) {
             .join(" and ");
 
         ui.add(
-            egui::Label::new(RichText::new(format!("Please {}.", message)).color(Color32::RED))
-                .wrap(),
+            egui::Label::new(
+                RichText::new(format!("Please {}.", message)).color(ui.visuals().error_fg_color),
+            )
+            .wrap(),
         );
     }
 }
@@ -158,6 +161,7 @@ fn create_deck_button(text: &str) -> impl Widget + use<'_> {
 pub fn deck_icon(
     id: egui::Id,
     glyph: Option<char>,
+    font_size: f32,
     full_size: f32,
     highlight: bool,
 ) -> impl Widget {
@@ -171,12 +175,15 @@ pub fn deck_icon(
         let (stroke, fill_color) = if highlight {
             (
                 ui.visuals().selection.stroke,
-                ui.visuals().widgets.inactive.bg_fill,
+                ui.visuals().widgets.noninteractive.weak_bg_fill,
             )
         } else {
             (
-                ui.visuals().widgets.inactive.bg_stroke,
-                ui.visuals().widgets.inactive.bg_fill,
+                Stroke::new(
+                    ui.visuals().widgets.inactive.bg_stroke.width,
+                    ui.visuals().widgets.inactive.weak_bg_fill,
+                ),
+                ui.visuals().widgets.noninteractive.weak_bg_fill,
             )
         };
 
@@ -184,7 +191,8 @@ pub fn deck_icon(
         painter.circle(bg_center, radius, fill_color, stroke);
 
         if let Some(glyph) = glyph {
-            let font = deck_icon_font_sized(helper.scale_1d_pos(DECK_ICON_SIZE));
+            let font =
+                deck_icon_font_sized(helper.scale_1d_pos(font_size / std::f32::consts::SQRT_2));
             let glyph_galley = painter.layout_no_wrap(glyph.to_string(), font, Color32::WHITE);
 
             let top_left = {

@@ -6,6 +6,7 @@ use tracing::info;
 use crate::{
     account_manager::{AccountManager, AccountsRoute},
     app::get_active_columns_mut,
+    app_style::DECK_ICON_SIZE,
     colors,
     column::Column,
     decks::{AccountId, DecksCache},
@@ -492,19 +493,15 @@ fn show_decks<'a>(
     selected_account: Option<&'a UserAccount>,
 ) -> InnerResponse<Option<usize>> {
     let show_decks_id = ui.id().with("show-decks");
-    let (cur_decks, account_id) = if let Some(acc) = selected_account {
-        let account_id = &AccountId::User(acc.pubkey);
-        (
-            decks_cache.decks(account_id),
-            show_decks_id.with(account_id),
-        )
+    let account_id = if let Some(acc) = selected_account {
+        AccountId::User(acc.pubkey)
     } else {
-        let account_id = &AccountId::Unnamed(0);
-        (
-            decks_cache.decks(account_id),
-            show_decks_id.with(account_id),
-        )
+        AccountId::Unnamed(0)
     };
+    let (cur_decks, account_id) = (
+        decks_cache.decks(&account_id),
+        show_decks_id.with(&account_id),
+    );
     let active_index = cur_decks.active_index();
 
     let (_, mut resp) = ui.allocate_exact_size(vec2(0.0, 0.0), egui::Sense::click());
@@ -514,6 +511,7 @@ fn show_decks<'a>(
         let deck_icon_resp = ui.add(deck_icon(
             account_id.with(index),
             Some(deck.icon),
+            DECK_ICON_SIZE,
             40.0,
             highlight,
         ));

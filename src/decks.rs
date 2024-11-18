@@ -202,7 +202,7 @@ impl Default for Deck {
         let mut columns = Columns::default();
         columns.new_column_picker();
         Self {
-            icon: 'D',
+            icon: '🇩',
             name: String::from("Default Deck"),
             columns,
         }

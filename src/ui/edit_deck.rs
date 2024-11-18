@@ -2,7 +2,10 @@ use egui::Widget;
 
 use crate::deck_state::DeckState;
 
-use super::configure_deck::{ConfigureDeckResponse, ConfigureDeckView};
+use super::{
+    configure_deck::{ConfigureDeckResponse, ConfigureDeckView},
+    padding,
+};
 
 pub struct EditDeckView<'a> {
     config_view: ConfigureDeckView<'a>,
@@ -24,9 +27,11 @@ impl<'a> EditDeckView<'a> {
     pub fn ui(&mut self, ui: &mut egui::Ui) -> Option<EditDeckResponse> {
         let mut edit_deck_resp = None;
 
-        if ui.add(delete_button()).clicked() {
-            edit_deck_resp = Some(EditDeckResponse::Delete);
-        }
+        padding(egui::Margin::symmetric(16.0, 4.0), ui, |ui| {
+            if ui.add(delete_button()).clicked() {
+                edit_deck_resp = Some(EditDeckResponse::Delete);
+            }
+        });
 
         if let Some(config_resp) = self.config_view.ui(ui) {
             edit_deck_resp = Some(EditDeckResponse::Edit(config_resp))
@@ -37,7 +42,17 @@ impl<'a> EditDeckView<'a> {
 }
 
 fn delete_button() -> impl Widget {
-    egui::Button::new("delete deck")
+    |ui: &mut egui::Ui| {
+        let size = egui::vec2(108.0, 40.0);
+        ui.allocate_ui_with_layout(size, egui::Layout::top_down(egui::Align::Center), |ui| {
+            ui.add(
+                egui::Button::new("Delete Deck")
+                    .fill(ui.visuals().error_fg_color)
+                    .min_size(size),
+            )
+        })
+        .inner
+    }
 }
 
 mod preview {
