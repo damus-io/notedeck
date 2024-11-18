@@ -4,6 +4,7 @@ use crate::{
     notecache::NoteCache,
     notes_holder::{NotesHolder, NotesHolderStorage},
     thread::Thread,
+    ui::note::NoteOptions,
 };
 use nostrdb::{Ndb, NoteKey, Transaction};
 use tracing::error;
@@ -102,10 +103,15 @@ impl<'a> ThreadView<'a> {
                     error!("Thread::poll_notes_into_view: {e}");
                 }
 
+                // This is threadview. We are not the universe view...
+                let is_universe = false;
+                let mut note_options = NoteOptions::new(is_universe);
+                note_options.set_textmode(self.textmode);
+
                 TimelineTabView::new(
                     thread.view(),
                     true,
-                    self.textmode,
+                    note_options,
                     &txn,
                     self.ndb,
                     self.note_cache,
