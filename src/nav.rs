@@ -156,6 +156,11 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) -> Option<Sele
                                 crate::decks::AccountId::User(cur_acc.pubkey),
                                 Deck::new(resp.icon, resp.name),
                             );
+
+                            // set new deck as active
+                            let decks = get_decks_mut(&app.accounts, &mut app.decks_cache);
+                            let cur_index = decks.decks().len() - 1;
+                            decks.set_active(cur_index);
                         }
 
                         new_deck_state.clear();
