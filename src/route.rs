@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt::{self};
 
 use crate::{
-    account_manager::AccountsRoute,
+    accounts::AccountsRoute,
     column::Columns,
     timeline::{TimelineId, TimelineRoute},
     ui::{

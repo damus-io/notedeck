@@ -1,7 +1,7 @@
 use crate::colors::PINK;
 use crate::imgcache::ImageCache;
 use crate::{
-    account_manager::AccountManager,
+    accounts::Accounts,
     route::{Route, Router},
     ui::{Preview, PreviewConfig, View},
     Damus,
@@ -13,7 +13,7 @@ use super::profile::preview::SimpleProfilePreview;
 
 pub struct AccountsView<'a> {
     ndb: &'a Ndb,
-    accounts: &'a AccountManager,
+    accounts: &'a Accounts,
     img_cache: &'a mut ImageCache,
 }
 
@@ -31,7 +31,7 @@ enum ProfilePreviewOp {
 }
 
 impl<'a> AccountsView<'a> {
-    pub fn new(ndb: &'a Ndb, accounts: &'a AccountManager, img_cache: &'a mut ImageCache) -> Self {
+    pub fn new(ndb: &'a Ndb, accounts: &'a Accounts, img_cache: &'a mut ImageCache) -> Self {
         AccountsView {
             ndb,
             accounts,
@@ -56,7 +56,7 @@ impl<'a> AccountsView<'a> {
 
     fn show_accounts(
         ui: &mut Ui,
-        account_manager: &AccountManager,
+        accounts: &Accounts,
         ndb: &Ndb,
         img_cache: &mut ImageCache,
     ) -> Option<AccountsViewResponse> {
@@ -71,8 +71,8 @@ impl<'a> AccountsView<'a> {
                     return;
                 };
 
-                for i in 0..account_manager.num_accounts() {
-                    let account_pubkey = account_manager
+                for i in 0..accounts.num_accounts() {
+                    let account_pubkey = accounts
                         .get_account(i)
                         .map(|account| account.pubkey.bytes());
 
@@ -83,12 +83,12 @@ impl<'a> AccountsView<'a> {
                     };
 
                     let profile = ndb.get_profile_by_pubkey(&txn, account_pubkey).ok();
-                    let is_selected =
-                        if let Some(selected) = account_manager.get_selected_account_index() {
-                            i == selected
-                        } else {
-                            false
-                        };
+                    let is_selected = if let Some(selected) = accounts.get_selected_account_index()
+                    {
+                        i == selected
+                    } else {
+                        false
+                    };
 
                     let profile_peview_view = {
                         let width = ui.available_width();
@@ -217,7 +217,7 @@ fn selected_widget() -> impl egui::Widget {
 mod preview {
 
     use super::*;
-    use crate::{account_manager::process_accounts_view_response, test_data};
+    use crate::{accounts::process_accounts_view_response, test_data};
 
     pub struct AccountsPreview {
         app: Damus,

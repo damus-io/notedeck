@@ -1,10 +1,10 @@
 use crate::{
-    account_manager::AccountManager,
+    accounts::{Accounts, AccountsRoute},
     app_creation::setup_cc,
     app_size_handler::AppSizeHandler,
     app_style::user_requested_visuals_change,
     args::Args,
-    column::Columns,
+    column::{Column, Columns},
     draft::Drafts,
     filter::FilterState,
     frame_history::FrameHistory,
@@ -13,6 +13,7 @@ use crate::{
     notecache::NoteCache,
     notes_holder::NotesHolderStorage,
     profile::Profile,
+    route::Route,
     storage::{self, DataPath, DataPathType, Directory, FileKeyStorage, KeyStorageType},
     subscriptions::{SubKind, Subscriptions},
     support::Support,
@@ -57,7 +58,7 @@ pub struct Damus {
     pub threads: NotesHolderStorage<Thread>,
     pub profiles: NotesHolderStorage<Profile>,
     pub img_cache: ImageCache,
-    pub accounts: AccountManager,
+    pub accounts: Accounts,
     pub subscriptions: Subscriptions,
     pub app_rect_handler: AppSizeHandler,
     pub support: Support,
@@ -415,7 +416,7 @@ impl Damus {
             KeyStorageType::None
         };
 
-        let mut accounts = AccountManager::new(keystore);
+        let mut accounts = Accounts::new(keystore);
 
         let num_keys = parsed_args.keys.len();
 
@@ -489,7 +490,9 @@ impl Damus {
         let debug = parsed_args.debug;
 
         if columns.columns().is_empty() {
-            columns.new_column_picker();
+            columns.add_column(Column::new(vec![Route::Accounts(
+                AccountsRoute::AddAccount,
+            )]));
         }
 
         let app_rect_handler = AppSizeHandler::new(&path);
@@ -535,11 +538,11 @@ impl Damus {
         &mut self.img_cache
     }
 
-    pub fn accounts(&self) -> &AccountManager {
+    pub fn accounts(&self) -> &Accounts {
         &self.accounts
     }
 
-    pub fn accounts_mut(&mut self) -> &mut AccountManager {
+    pub fn accounts_mut(&mut self) -> &mut Accounts {
         &mut self.accounts
     }
 
@@ -603,7 +606,7 @@ impl Damus {
                 &config,
             )
             .expect("ndb"),
-            accounts: AccountManager::new(KeyStorageType::None),
+            accounts: Accounts::new(KeyStorageType::None),
             frame_history: FrameHistory::default(),
             view_state: ViewState::default(),
 

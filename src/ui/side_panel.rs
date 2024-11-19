@@ -2,7 +2,7 @@ use egui::{vec2, Color32, InnerResponse, Layout, Margin, Separator, Stroke, Widg
 use tracing::info;
 
 use crate::{
-    account_manager::AccountsRoute,
+    accounts::AccountsRoute,
     colors,
     column::{Column, Columns},
     imgcache::ImageCache,

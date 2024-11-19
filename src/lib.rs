@@ -4,7 +4,7 @@ mod error;
 //mod note;
 //mod block;
 mod abbrev;
-pub mod account_manager;
+pub mod accounts;
 mod actionbar;
 pub mod app_creation;
 mod app_size_handler;

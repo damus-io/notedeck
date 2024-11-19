@@ -2,7 +2,6 @@ use std::cmp::Ordering;
 
 use enostr::{FilledKeypair, FullKeypair, Keypair};
 use nostrdb::Ndb;
-use serde::{Deserialize, Serialize};
 
 use crate::{
     column::Columns,
@@ -12,32 +11,23 @@ use crate::{
     storage::{KeyStorageResponse, KeyStorageType},
     ui::{
         account_login_view::{AccountLoginResponse, AccountLoginView},
-        account_management::{AccountsView, AccountsViewResponse},
+        accounts::{AccountsView, AccountsViewResponse},
     },
     unknowns::SingleUnkIdAction,
+    user_account::UserAccount,
 };
 use tracing::{error, info};
 
-pub use crate::user_account::UserAccount;
+mod route;
+
+pub use route::{AccountsRoute, AccountsRouteResponse};
 
 /// The interface for managing the user's accounts.
 /// Represents all user-facing operations related to account management.
-pub struct AccountManager {
+pub struct Accounts {
     currently_selected_account: Option<usize>,
     accounts: Vec<UserAccount>,
     key_store: KeyStorageType,
-}
-
-// TODO(jb55): move to accounts/route.rs
-pub enum AccountsRouteResponse {
-    Accounts(AccountsViewResponse),
-    AddAccount(AccountLoginResponse),
-}
-
-#[derive(Debug, Eq, PartialEq, Clone, Copy, Serialize, Deserialize)]
-pub enum AccountsRoute {
-    Accounts,
-    AddAccount,
 }
 
 /// Render account management views from a route
@@ -48,7 +38,7 @@ pub fn render_accounts_route(
     col: usize,
     columns: &mut Columns,
     img_cache: &mut ImageCache,
-    accounts: &mut AccountManager,
+    accounts: &mut Accounts,
     login_state: &mut AcquireKeyState,
     route: AccountsRoute,
 ) -> SingleUnkIdAction {
@@ -84,7 +74,7 @@ pub fn render_accounts_route(
 }
 
 pub fn process_accounts_view_response(
-    manager: &mut AccountManager,
+    manager: &mut Accounts,
     response: AccountsViewResponse,
     router: &mut Router<Route>,
 ) {
@@ -101,7 +91,7 @@ pub fn process_accounts_view_response(
     }
 }
 
-impl AccountManager {
+impl Accounts {
     pub fn new(key_store: KeyStorageType) -> Self {
         let accounts = if let KeyStorageResponse::ReceivedResult(res) = key_store.get_keys() {
             res.unwrap_or_default()
@@ -110,7 +100,7 @@ impl AccountManager {
         };
 
         let currently_selected_account = get_selected_index(&accounts, &key_store);
-        AccountManager {
+        Accounts {
             currently_selected_account,
             accounts,
             key_store,
@@ -224,7 +214,7 @@ fn get_selected_index(accounts: &[UserAccount], keystore: &KeyStorageType) -> Op
 }
 
 pub fn process_login_view_response(
-    manager: &mut AccountManager,
+    manager: &mut Accounts,
     response: AccountLoginResponse,
 ) -> SingleUnkIdAction {
     let r = match response {

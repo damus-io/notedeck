@@ -1,5 +1,5 @@
 use crate::{
-    account_manager::render_accounts_route,
+    accounts::render_accounts_route,
     app_style::{get_font_size, NotedeckTextStyle},
     column::Columns,
     fonts::NamedFontFamily,

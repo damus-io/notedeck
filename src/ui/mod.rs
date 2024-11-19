@@ -1,5 +1,5 @@
 pub mod account_login_view;
-pub mod account_management;
+pub mod accounts;
 pub mod add_column;
 pub mod anim;
 pub mod mention;
@@ -13,7 +13,7 @@ pub mod thread;
 pub mod timeline;
 pub mod username;
 
-pub use account_management::AccountsView;
+pub use accounts::AccountsView;
 pub use mention::Mention;
 pub use note::{NoteResponse, NoteView, PostReplyView, PostView};
 pub use preview::{Preview, PreviewApp, PreviewConfig};

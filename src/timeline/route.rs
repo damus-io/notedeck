@@ -1,5 +1,5 @@
 use crate::{
-    account_manager::AccountManager,
+    accounts::Accounts,
     column::Columns,
     draft::Drafts,
     imgcache::ImageCache,
@@ -51,7 +51,7 @@ pub fn render_timeline_route(
     unknown_ids: &mut UnknownIds,
     note_cache: &mut NoteCache,
     threads: &mut NotesHolderStorage<Thread>,
-    accounts: &mut AccountManager,
+    accounts: &mut Accounts,
     route: TimelineRoute,
     col: usize,
     textmode: bool,
