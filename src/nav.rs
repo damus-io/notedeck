@@ -84,7 +84,7 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) -> Option<Rend
                     ui,
                 ),
                 Route::Accounts(amr) => {
-                    render_accounts_route(
+                    let action = render_accounts_route(
                         ui,
                         &app.ndb,
                         col,
@@ -94,6 +94,8 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) -> Option<Rend
                         &mut app.view_state.login,
                         *amr,
                     );
+                    let txn = Transaction::new(&app.ndb).expect("txn");
+                    action.process_action(&mut app.unknown_ids, &app.ndb, &txn);
                     None
                 }
                 Route::Relays => {

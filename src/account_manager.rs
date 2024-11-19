@@ -14,6 +14,7 @@ use crate::{
         account_login_view::{AccountLoginResponse, AccountLoginView},
         account_management::{AccountsView, AccountsViewResponse},
     },
+    unknowns::SingleUnkIdAction,
 };
 use tracing::{error, info};
 
@@ -50,7 +51,7 @@ pub fn render_accounts_route(
     accounts: &mut AccountManager,
     login_state: &mut AcquireKeyState,
     route: AccountsRoute,
-) {
+) -> SingleUnkIdAction {
     let router = columns.column_mut(col).router_mut();
     let resp = match route {
         AccountsRoute::Accounts => AccountsView::new(ndb, accounts, img_cache)
@@ -68,13 +69,17 @@ pub fn render_accounts_route(
         match resp {
             AccountsRouteResponse::Accounts(response) => {
                 process_accounts_view_response(accounts, response, router);
+                SingleUnkIdAction::no_action()
             }
             AccountsRouteResponse::AddAccount(response) => {
-                process_login_view_response(accounts, response);
+                let action = process_login_view_response(accounts, response);
                 *login_state = Default::default();
                 router.go_back();
+                action
             }
         }
+    } else {
+        SingleUnkIdAction::no_action()
     }
 }
 
@@ -153,14 +158,17 @@ impl AccountManager {
         false
     }
 
-    pub fn add_account(&mut self, account: Keypair) -> bool {
+    #[must_use = "UnknownIdAction's must be handled. Use .process_unknown_id_action()"]
+    pub fn add_account(&mut self, account: Keypair) -> SingleUnkIdAction {
         if self.has_account_pubkey(account.pubkey.bytes()) {
             info!("already have account, not adding {}", account.pubkey);
-            return false;
+            return SingleUnkIdAction::pubkey(account.pubkey);
         }
+
         let _ = self.key_store.add_key(&account);
+        let pk = account.pubkey;
         self.accounts.push(account);
-        true
+        SingleUnkIdAction::pubkey(pk)
     }
 
     pub fn num_accounts(&self) -> usize {
@@ -215,14 +223,16 @@ fn get_selected_index(accounts: &[UserAccount], keystore: &KeyStorageType) -> Op
     None
 }
 
-pub fn process_login_view_response(manager: &mut AccountManager, response: AccountLoginResponse) {
-    match response {
+pub fn process_login_view_response(
+    manager: &mut AccountManager,
+    response: AccountLoginResponse,
+) -> SingleUnkIdAction {
+    let r = match response {
         AccountLoginResponse::CreateNew => {
-            manager.add_account(FullKeypair::generate().to_keypair());
+            manager.add_account(FullKeypair::generate().to_keypair())
         }
-        AccountLoginResponse::LoginWith(keypair) => {
-            manager.add_account(keypair);
-        }
-    }
+        AccountLoginResponse::LoginWith(keypair) => manager.add_account(keypair),
+    };
     manager.select_account(manager.num_accounts() - 1);
+    r
 }

@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use enostr::{FullKeypair, Pubkey, RelayPool};
-use nostrdb::ProfileRecord;
+use nostrdb::{ProfileRecord, Transaction};
 
 use crate::{user_account::UserAccount, Damus};
 
@@ -100,8 +100,11 @@ pub fn test_app() -> Damus {
     let mut app = Damus::mock(path);
 
     let accounts = get_test_accounts();
+    let txn = Transaction::new(&app.ndb).expect("txn");
     for account in accounts {
-        app.accounts_mut().add_account(account);
+        app.accounts_mut()
+            .add_account(account)
+            .process_action(&mut app.unknown_ids, &app.ndb, &txn)
     }
 
     app

@@ -419,9 +419,17 @@ impl Damus {
 
         let num_keys = parsed_args.keys.len();
 
-        for key in parsed_args.keys {
-            info!("adding account: {}", key.pubkey);
-            accounts.add_account(key);
+        let mut unknown_ids = UnknownIds::default();
+        let ndb = Ndb::new(&dbpath_str, &config).expect("ndb");
+
+        {
+            let txn = Transaction::new(&ndb).expect("txn");
+            for key in parsed_args.keys {
+                info!("adding account: {}", key.pubkey);
+                accounts
+                    .add_account(key)
+                    .process_action(&mut unknown_ids, &ndb, &txn);
+            }
         }
 
         if num_keys != 0 {
@@ -454,7 +462,6 @@ impl Damus {
             .get_selected_account()
             .as_ref()
             .map(|a| a.pubkey.bytes());
-        let ndb = Ndb::new(&dbpath_str, &config).expect("ndb");
 
         let mut columns = if parsed_args.columns.is_empty() {
             if let Some(serializable_columns) = storage::load_columns(&path) {
@@ -491,7 +498,7 @@ impl Damus {
         Self {
             pool,
             debug,
-            unknown_ids: UnknownIds::default(),
+            unknown_ids,
             subscriptions: Subscriptions::default(),
             since_optimize: parsed_args.since_optimize,
             threads: NotesHolderStorage::default(),

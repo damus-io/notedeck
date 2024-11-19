@@ -12,6 +12,74 @@ use std::collections::HashSet;
 use std::time::{Duration, Instant};
 use tracing::error;
 
+#[must_use = "process_action should be used on this result"]
+pub enum SingleUnkIdAction {
+    NoAction,
+    NeedsProcess(UnknownId),
+}
+
+#[must_use = "process_action should be used on this result"]
+pub enum NoteRefsUnkIdAction {
+    NoAction,
+    NeedsProcess(Vec<NoteRef>),
+}
+
+impl NoteRefsUnkIdAction {
+    pub fn new(refs: Vec<NoteRef>) -> Self {
+        NoteRefsUnkIdAction::NeedsProcess(refs)
+    }
+
+    pub fn no_action() -> Self {
+        Self::NoAction
+    }
+
+    pub fn process_action(
+        &self,
+        txn: &Transaction,
+        ndb: &Ndb,
+        unk_ids: &mut UnknownIds,
+        note_cache: &mut NoteCache,
+    ) {
+        match self {
+            Self::NoAction => {}
+            Self::NeedsProcess(refs) => {
+                UnknownIds::update_from_note_refs(txn, ndb, unk_ids, note_cache, refs);
+            }
+        }
+    }
+}
+
+impl SingleUnkIdAction {
+    pub fn new(id: UnknownId) -> Self {
+        SingleUnkIdAction::NeedsProcess(id)
+    }
+
+    pub fn no_action() -> Self {
+        Self::NoAction
+    }
+
+    pub fn pubkey(pubkey: Pubkey) -> Self {
+        SingleUnkIdAction::new(UnknownId::Pubkey(pubkey))
+    }
+
+    pub fn note_id(note_id: NoteId) -> Self {
+        SingleUnkIdAction::new(UnknownId::Id(note_id))
+    }
+
+    /// Some functions may return unknown id actions that need to be processed.
+    /// For example, when we add a new account we need to make sure we have the
+    /// profile for that account. This function ensures we add this to the
+    /// unknown id tracker without adding side effects to functions.
+    pub fn process_action(&self, ids: &mut UnknownIds, ndb: &Ndb, txn: &Transaction) {
+        match self {
+            Self::NeedsProcess(id) => {
+                ids.add_unknown_id_if_missing(ndb, txn, id);
+            }
+            Self::NoAction => {}
+        }
+    }
+}
+
 /// Unknown Id searcher
 #[derive(Default)]
 pub struct UnknownIds {
@@ -119,6 +187,33 @@ impl UnknownIds {
         } else {
             false
         }
+    }
+
+    pub fn add_unknown_id_if_missing(&mut self, ndb: &Ndb, txn: &Transaction, unk_id: &UnknownId) {
+        match unk_id {
+            UnknownId::Pubkey(pk) => self.add_pubkey_if_missing(ndb, txn, pk),
+            UnknownId::Id(note_id) => self.add_note_id_if_missing(ndb, txn, note_id),
+        }
+    }
+
+    pub fn add_pubkey_if_missing(&mut self, ndb: &Ndb, txn: &Transaction, pubkey: &Pubkey) {
+        // we already have this profile, skip
+        if ndb.get_profile_by_pubkey(txn, pubkey).is_ok() {
+            return;
+        }
+
+        self.ids.insert(UnknownId::Pubkey(*pubkey));
+        self.mark_updated();
+    }
+
+    pub fn add_note_id_if_missing(&mut self, ndb: &Ndb, txn: &Transaction, note_id: &NoteId) {
+        // we already have this note, skip
+        if ndb.get_note_by_id(txn, note_id.bytes()).is_ok() {
+            return;
+        }
+
+        self.ids.insert(UnknownId::Id(*note_id));
+        self.mark_updated();
     }
 
     pub fn update(

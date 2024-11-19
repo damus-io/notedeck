@@ -6,7 +6,7 @@ use tracing::{debug, info, warn};
 
 use crate::{
     actionbar::NotesHolderResult, multi_subscriber::MultiSubscriber, note::NoteRef,
-    notecache::NoteCache, timeline::TimelineTab, Error, Result,
+    notecache::NoteCache, timeline::TimelineTab, unknowns::NoteRefsUnkIdAction, Error, Result,
 };
 
 pub struct NotesHolderStorage<M: NotesHolder> {
@@ -109,19 +109,21 @@ pub trait NotesHolder {
         notes: Vec<NoteRef>,
     ) -> Self;
 
-    #[must_use = "UnknownIds::update_from_note_refs should be used on this result"]
-    fn poll_notes_into_view(&mut self, txn: &Transaction, ndb: &Ndb) -> Result<()> {
+    fn poll_notes_into_view(
+        &mut self,
+        txn: &Transaction,
+        ndb: &Ndb,
+    ) -> Result<NoteRefsUnkIdAction> {
         if let Some(multi_subscriber) = self.get_multi_subscriber() {
             let reversed = true;
             let note_refs: Vec<NoteRef> = multi_subscriber.poll_for_notes(ndb, txn)?;
             self.get_view().insert(&note_refs, reversed);
+            Ok(NoteRefsUnkIdAction::new(note_refs))
         } else {
-            return Err(Error::Generic(
+            Err(Error::Generic(
                 "NotesHolder unexpectedly has no MultiSubscriber".to_owned(),
-            ));
+            ))
         }
-
-        Ok(())
     }
 
     /// Look for new thread notes since our last fetch
