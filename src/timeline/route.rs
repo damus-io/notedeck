@@ -3,6 +3,7 @@ use crate::{
     column::Columns,
     draft::Drafts,
     imgcache::ImageCache,
+    nav::RenderNavAction,
     notecache::NoteCache,
     notes_holder::NotesHolderStorage,
     profile::Profile,
@@ -10,53 +11,40 @@ use crate::{
     timeline::{TimelineId, TimelineKind},
     ui::{
         self,
-        note::{
-            post::{PostAction, PostResponse},
-            NoteOptions, QuoteRepostView,
-        },
+        note::{NoteOptions, QuoteRepostView},
         profile::ProfileView,
     },
     unknowns::UnknownIds,
 };
 
-use enostr::{NoteId, Pubkey, RelayPool};
+use enostr::{NoteId, Pubkey};
 use nostrdb::{Ndb, Transaction};
 
 #[derive(Debug, Eq, PartialEq, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub enum TimelineRoute {
     Timeline(TimelineId),
     Thread(NoteId),
+    Profile(Pubkey),
     Reply(NoteId),
     Quote(NoteId),
-}
-
-pub enum AfterRouteExecution {
-    Post(PostResponse),
-    OpenProfile(Pubkey),
-}
-
-impl AfterRouteExecution {
-    pub fn post(post: PostResponse) -> Self {
-        AfterRouteExecution::Post(post)
-    }
 }
 
 #[allow(clippy::too_many_arguments)]
 pub fn render_timeline_route(
     ndb: &Ndb,
     columns: &mut Columns,
-    pool: &mut RelayPool,
     drafts: &mut Drafts,
     img_cache: &mut ImageCache,
     unknown_ids: &mut UnknownIds,
     note_cache: &mut NoteCache,
     threads: &mut NotesHolderStorage<Thread>,
+    profiles: &mut NotesHolderStorage<Profile>,
     accounts: &mut Accounts,
     route: TimelineRoute,
     col: usize,
     textmode: bool,
     ui: &mut egui::Ui,
-) -> Option<AfterRouteExecution> {
+) -> Option<RenderNavAction> {
     match route {
         TimelineRoute::Timeline(timeline_id) => {
             let note_options = {
@@ -71,7 +59,7 @@ pub fn render_timeline_route(
                 options
             };
 
-            let timeline_response = ui::TimelineView::new(
+            let note_action = ui::TimelineView::new(
                 timeline_id,
                 columns,
                 ndb,
@@ -81,42 +69,21 @@ pub fn render_timeline_route(
             )
             .ui(ui);
 
-            if let Some(bar_action) = timeline_response.bar_action {
-                let txn = Transaction::new(ndb).expect("txn");
-                let mut cur_column = columns.columns_mut();
-                let router = cur_column[col].router_mut();
-
-                bar_action.execute_and_process_result(ndb, router, threads, note_cache, pool, &txn);
-            }
-
-            timeline_response
-                .open_profile
-                .map(AfterRouteExecution::OpenProfile)
+            note_action.map(RenderNavAction::NoteAction)
         }
 
-        TimelineRoute::Thread(id) => {
-            let timeline_response = ui::ThreadView::new(
-                threads,
-                ndb,
-                note_cache,
-                unknown_ids,
-                img_cache,
-                id.bytes(),
-                textmode,
-            )
-            .id_source(egui::Id::new(("threadscroll", col)))
-            .ui(ui);
-            if let Some(bar_action) = timeline_response.bar_action {
-                let txn = Transaction::new(ndb).expect("txn");
-                let mut cur_column = columns.columns_mut();
-                let router = cur_column[col].router_mut();
-                bar_action.execute_and_process_result(ndb, router, threads, note_cache, pool, &txn);
-            }
-
-            timeline_response
-                .open_profile
-                .map(AfterRouteExecution::OpenProfile)
-        }
+        TimelineRoute::Thread(id) => ui::ThreadView::new(
+            threads,
+            ndb,
+            note_cache,
+            unknown_ids,
+            img_cache,
+            id.bytes(),
+            textmode,
+        )
+        .id_source(egui::Id::new(("threadscroll", col)))
+        .ui(ui)
+        .map(Into::into),
 
         TimelineRoute::Reply(id) => {
             let txn = if let Ok(txn) = Transaction::new(ndb) {
@@ -135,21 +102,24 @@ pub fn render_timeline_route(
 
             let id = egui::Id::new(("post", col, note.key().unwrap()));
             let poster = accounts.selected_or_first_nsec()?;
-            let draft = drafts.reply_mut(note.id());
 
-            let response = egui::ScrollArea::vertical().show(ui, |ui| {
-                ui::PostReplyView::new(ndb, poster, draft, note_cache, img_cache, &note)
-                    .id_source(id)
-                    .show(ui)
-            });
+            let action = {
+                let draft = drafts.reply_mut(note.id());
 
-            if let Some(action) = &response.inner.action {
-                PostAction::execute(poster, action, pool, draft, |np, seckey| {
-                    np.to_reply(seckey, &note)
+                let response = egui::ScrollArea::vertical().show(ui, |ui| {
+                    ui::PostReplyView::new(ndb, poster, draft, note_cache, img_cache, &note)
+                        .id_source(id)
+                        .show(ui)
                 });
-            }
 
-            Some(AfterRouteExecution::post(response.inner))
+                response.inner.action
+            };
+
+            action.map(Into::into)
+        }
+
+        TimelineRoute::Profile(pubkey) => {
+            render_profile_route(&pubkey, ndb, profiles, img_cache, note_cache, col, ui)
         }
 
         TimelineRoute::Quote(id) => {
@@ -173,12 +143,7 @@ pub fn render_timeline_route(
                     .show(ui)
             });
 
-            if let Some(action) = &response.inner.action {
-                PostAction::execute(poster, action, pool, draft, |np, seckey| {
-                    np.to_quote(seckey, &note)
-                });
-            }
-            Some(AfterRouteExecution::post(response.inner))
+            response.inner.action.map(Into::into)
         }
     }
 }
@@ -187,16 +152,13 @@ pub fn render_timeline_route(
 pub fn render_profile_route(
     pubkey: &Pubkey,
     ndb: &Ndb,
-    columns: &mut Columns,
     profiles: &mut NotesHolderStorage<Profile>,
-    pool: &mut RelayPool,
     img_cache: &mut ImageCache,
     note_cache: &mut NoteCache,
-    threads: &mut NotesHolderStorage<Thread>,
     col: usize,
     ui: &mut egui::Ui,
-) -> Option<AfterRouteExecution> {
-    let timeline_response = ProfileView::new(
+) -> Option<RenderNavAction> {
+    let note_action = ProfileView::new(
         pubkey,
         col,
         profiles,
@@ -206,15 +168,6 @@ pub fn render_profile_route(
         NoteOptions::default(),
     )
     .ui(ui);
-    if let Some(bar_action) = timeline_response.bar_action {
-        let txn = nostrdb::Transaction::new(ndb).expect("txn");
-        let mut cur_column = columns.columns_mut();
-        let router = cur_column[col].router_mut();
 
-        bar_action.execute_and_process_result(ndb, router, threads, note_cache, pool, &txn);
-    }
-
-    timeline_response
-        .open_profile
-        .map(AfterRouteExecution::OpenProfile)
+    note_action.map(RenderNavAction::NoteAction)
 }

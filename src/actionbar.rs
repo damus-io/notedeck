@@ -1,7 +1,9 @@
 use crate::{
+    column::Columns,
     note::NoteRef,
     notecache::NoteCache,
     notes_holder::{NotesHolder, NotesHolderStorage},
+    profile::Profile,
     route::{Route, Router},
     thread::Thread,
 };
@@ -9,16 +11,11 @@ use enostr::{NoteId, Pubkey, RelayPool};
 use nostrdb::{Ndb, Transaction};
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
-pub enum BarAction {
+pub enum NoteAction {
     Reply(NoteId),
     Quote(NoteId),
     OpenThread(NoteId),
-}
-
-#[derive(Default)]
-pub struct NoteActionResponse {
-    pub bar_action: Option<BarAction>,
-    pub open_profile: Option<Pubkey>,
+    OpenProfile(Pubkey),
 }
 
 pub struct NewNotes {
@@ -50,47 +47,55 @@ fn open_thread(
     Thread::open(ndb, note_cache, txn, pool, threads, root_id)
 }
 
-impl BarAction {
+impl NoteAction {
     #[allow(clippy::too_many_arguments)]
     pub fn execute(
         self,
         ndb: &Ndb,
         router: &mut Router<Route>,
         threads: &mut NotesHolderStorage<Thread>,
+        profiles: &mut NotesHolderStorage<Profile>,
         note_cache: &mut NoteCache,
         pool: &mut RelayPool,
         txn: &Transaction,
     ) -> Option<NotesHolderResult> {
         match self {
-            BarAction::Reply(note_id) => {
+            NoteAction::Reply(note_id) => {
                 router.route_to(Route::reply(note_id));
-                router.navigating = true;
                 None
             }
 
-            BarAction::OpenThread(note_id) => {
+            NoteAction::OpenThread(note_id) => {
                 open_thread(ndb, txn, router, note_cache, pool, threads, note_id.bytes())
             }
 
-            BarAction::Quote(note_id) => {
+            NoteAction::OpenProfile(pubkey) => {
+                router.route_to(Route::profile(pubkey));
+                Profile::open(ndb, note_cache, txn, pool, profiles, pubkey.bytes())
+            }
+
+            NoteAction::Quote(note_id) => {
                 router.route_to(Route::quote(note_id));
-                router.navigating = true;
                 None
             }
         }
     }
 
-    /// Execute the BarAction and process the BarResult
+    /// Execute the NoteAction and process the NotesHolderResult
+    #[allow(clippy::too_many_arguments)]
     pub fn execute_and_process_result(
         self,
         ndb: &Ndb,
-        router: &mut Router<Route>,
+        columns: &mut Columns,
+        col: usize,
         threads: &mut NotesHolderStorage<Thread>,
+        profiles: &mut NotesHolderStorage<Profile>,
         note_cache: &mut NoteCache,
         pool: &mut RelayPool,
         txn: &Transaction,
     ) {
-        if let Some(br) = self.execute(ndb, router, threads, note_cache, pool, txn) {
+        let router = columns.column_mut(col).router_mut();
+        if let Some(br) = self.execute(ndb, router, threads, profiles, note_cache, pool, txn) {
             br.process(ndb, note_cache, txn, threads);
         }
     }

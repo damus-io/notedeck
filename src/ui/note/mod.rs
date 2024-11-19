@@ -8,12 +8,12 @@ pub mod reply;
 pub use contents::NoteContents;
 pub use context::{NoteContextButton, NoteContextSelection};
 pub use options::NoteOptions;
-pub use post::{PostAction, PostResponse, PostView};
+pub use post::{PostAction, PostResponse, PostType, PostView};
 pub use quote_repost::QuoteRepostView;
 pub use reply::PostReplyView;
 
 use crate::{
-    actionbar::{BarAction, NoteActionResponse},
+    actionbar::NoteAction,
     app_style::NotedeckTextStyle,
     colors,
     imgcache::ImageCache,
@@ -38,7 +38,7 @@ pub struct NoteView<'a> {
 pub struct NoteResponse {
     pub response: egui::Response,
     pub context_selection: Option<NoteContextSelection>,
-    pub action: NoteActionResponse,
+    pub action: Option<NoteAction>,
 }
 
 impl NoteResponse {
@@ -46,11 +46,11 @@ impl NoteResponse {
         Self {
             response,
             context_selection: None,
-            action: NoteActionResponse::default(),
+            action: None,
         }
     }
 
-    pub fn with_action(mut self, action: NoteActionResponse) -> Self {
+    pub fn with_action(mut self, action: Option<NoteAction>) -> Self {
         self.action = action;
         self
     }
@@ -437,8 +437,7 @@ impl<'a> NoteView<'a> {
         let note_key = self.note.key().expect("todo: support non-db notes");
         let txn = self.note.txn().expect("todo: support non-db notes");
 
-        let mut open_profile: Option<Pubkey> = None;
-        let mut bar_action: Option<BarAction> = None;
+        let mut note_action: Option<NoteAction> = None;
         let mut selected_option: Option<NoteContextSelection> = None;
 
         let profile = self.ndb.get_profile_by_pubkey(txn, self.note.pubkey());
@@ -454,7 +453,7 @@ impl<'a> NoteView<'a> {
         let response = if self.options().has_wide() {
             ui.horizontal(|ui| {
                 if self.pfp(note_key, &profile, ui).clicked() {
-                    open_profile = Some(Pubkey::new(*self.note.pubkey()));
+                    note_action = Some(NoteAction::OpenProfile(Pubkey::new(*self.note.pubkey())));
                 };
 
                 let size = ui.available_size();
@@ -498,12 +497,15 @@ impl<'a> NoteView<'a> {
                 self.options(),
             );
             let resp = ui.add(&mut contents);
-            bar_action = bar_action.or(contents.action().bar_action);
-            open_profile = open_profile.or(contents.action().open_profile);
+
+            if let Some(action) = contents.action() {
+                note_action = Some(*action);
+            }
 
             if self.options().has_actionbar() {
-                let ab = render_note_actionbar(ui, self.note.id(), note_key);
-                bar_action = bar_action.or(ab.inner);
+                if let Some(action) = render_note_actionbar(ui, self.note.id(), note_key).inner {
+                    note_action = Some(action);
+                }
             }
 
             resp
@@ -511,7 +513,7 @@ impl<'a> NoteView<'a> {
             // main design
             ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
                 if self.pfp(note_key, &profile, ui).clicked() {
-                    open_profile = Some(Pubkey::new(*self.note.pubkey()));
+                    note_action = Some(NoteAction::OpenProfile(Pubkey::new(*self.note.pubkey())));
                 };
 
                 ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
@@ -548,32 +550,34 @@ impl<'a> NoteView<'a> {
                         self.options(),
                     );
                     ui.add(&mut contents);
-                    bar_action = bar_action.or(contents.action().bar_action);
-                    open_profile = open_profile.or(contents.action().open_profile);
+
+                    if let Some(action) = contents.action() {
+                        note_action = Some(*action);
+                    }
 
                     if self.options().has_actionbar() {
-                        let ab = render_note_actionbar(ui, self.note.id(), note_key);
-                        bar_action = bar_action.or(ab.inner);
+                        if let Some(action) =
+                            render_note_actionbar(ui, self.note.id(), note_key).inner
+                        {
+                            note_action = Some(action);
+                        }
                     }
                 });
             })
             .response
         };
 
-        bar_action = check_note_hitbox(
+        note_action = check_note_hitbox(
             ui,
             self.note.id(),
             note_key,
             &response,
             maybe_hitbox,
-            bar_action,
+            note_action,
         );
 
         NoteResponse::new(response)
-            .with_action(NoteActionResponse {
-                bar_action,
-                open_profile,
-            })
+            .with_action(note_action)
             .select_option(selected_option)
     }
 }
@@ -630,8 +634,8 @@ fn check_note_hitbox(
     note_key: NoteKey,
     note_response: &Response,
     maybe_hitbox: Option<Response>,
-    prior_action: Option<BarAction>,
-) -> Option<BarAction> {
+    prior_action: Option<NoteAction>,
+) -> Option<NoteAction> {
     // Stash the dimensions of the note content so we can render the
     // hitbox in the next frame
     ui.ctx().data_mut(|d| {
@@ -640,7 +644,7 @@ fn check_note_hitbox(
 
     // If there was an hitbox and it was clicked open the thread
     match maybe_hitbox {
-        Some(hitbox) if hitbox.clicked() => Some(BarAction::OpenThread(NoteId::new(*note_id))),
+        Some(hitbox) if hitbox.clicked() => Some(NoteAction::OpenThread(NoteId::new(*note_id))),
         _ => prior_action,
     }
 }
@@ -649,15 +653,15 @@ fn render_note_actionbar(
     ui: &mut egui::Ui,
     note_id: &[u8; 32],
     note_key: NoteKey,
-) -> egui::InnerResponse<Option<BarAction>> {
+) -> egui::InnerResponse<Option<NoteAction>> {
     ui.horizontal(|ui| {
         let reply_resp = reply_button(ui, note_key);
         let quote_resp = quote_repost_button(ui, note_key);
 
         if reply_resp.clicked() {
-            Some(BarAction::Reply(NoteId::new(*note_id)))
+            Some(NoteAction::Reply(NoteId::new(*note_id)))
         } else if quote_resp.clicked() {
-            Some(BarAction::Quote(NoteId::new(*note_id)))
+            Some(NoteAction::Quote(NoteId::new(*note_id)))
         } else {
             None
         }

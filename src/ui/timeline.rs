@@ -1,4 +1,4 @@
-use crate::actionbar::{BarAction, NoteActionResponse};
+use crate::actionbar::NoteAction;
 use crate::timeline::TimelineTab;
 use crate::{
     column::Columns, imgcache::ImageCache, notecache::NoteCache, timeline::TimelineId, ui,
@@ -41,7 +41,7 @@ impl<'a> TimelineView<'a> {
         }
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui) -> NoteActionResponse {
+    pub fn ui(&mut self, ui: &mut egui::Ui) -> Option<NoteAction> {
         timeline_ui(
             ui,
             self.ndb,
@@ -70,7 +70,7 @@ fn timeline_ui(
     img_cache: &mut ImageCache,
     reversed: bool,
     note_options: NoteOptions,
-) -> NoteActionResponse {
+) -> Option<NoteAction> {
     //padding(4.0, ui, |ui| ui.heading("Notifications"));
     /*
     let font_id = egui::TextStyle::Body.resolve(ui.style());
@@ -85,7 +85,7 @@ fn timeline_ui(
             error!("tried to render timeline in column, but timeline was missing");
             // TODO (jb55): render error when timeline is missing?
             // this shouldn't happen...
-            return NoteActionResponse::default();
+            return None;
         };
 
         timeline.selected_view = tabs_ui(ui);
@@ -108,7 +108,7 @@ fn timeline_ui(
                 error!("tried to render timeline in column, but timeline was missing");
                 // TODO (jb55): render error when timeline is missing?
                 // this shouldn't happen...
-                return NoteActionResponse::default();
+                return None;
             };
 
             let txn = Transaction::new(ndb).expect("failed to create txn");
@@ -241,9 +241,8 @@ impl<'a> TimelineTabView<'a> {
         }
     }
 
-    pub fn show(&mut self, ui: &mut egui::Ui) -> NoteActionResponse {
-        let mut open_profile = None;
-        let mut bar_action: Option<BarAction> = None;
+    pub fn show(&mut self, ui: &mut egui::Ui) -> Option<NoteAction> {
+        let mut action: Option<NoteAction> = None;
         let len = self.tab.notes.len();
 
         self.tab
@@ -274,8 +273,9 @@ impl<'a> TimelineTabView<'a> {
                         .note_options(self.note_options)
                         .show(ui);
 
-                    bar_action = bar_action.or(resp.action.bar_action);
-                    open_profile = open_profile.or(resp.action.open_profile);
+                    if let Some(note_action) = resp.action {
+                        action = Some(note_action)
+                    }
 
                     if let Some(context) = resp.context_selection {
                         context.process(ui, &note);
@@ -288,9 +288,6 @@ impl<'a> TimelineTabView<'a> {
                 1
             });
 
-        NoteActionResponse {
-            open_profile,
-            bar_action,
-        }
+        action
     }
 }

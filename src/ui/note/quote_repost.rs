@@ -1,9 +1,9 @@
-use enostr::FilledKeypair;
+use enostr::{FilledKeypair, NoteId};
 use nostrdb::Ndb;
 
 use crate::{draft::Draft, imgcache::ImageCache, notecache::NoteCache, ui};
 
-use super::PostResponse;
+use super::{PostResponse, PostType};
 
 pub struct QuoteRepostView<'a> {
     ndb: &'a Ndb,
@@ -43,7 +43,7 @@ impl<'a> QuoteRepostView<'a> {
         ui::PostView::new(
             self.ndb,
             self.draft,
-            crate::draft::DraftSource::Quote(quoting_note_id),
+            PostType::Quote(NoteId::new(quoting_note_id.to_owned())),
             self.img_cache,
             self.note_cache,
             self.poster,

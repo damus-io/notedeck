@@ -1,13 +1,14 @@
-use crate::draft::{Draft, DraftSource};
+use crate::draft::{Draft, Drafts};
 use crate::imgcache::ImageCache;
 use crate::notecache::NoteCache;
 use crate::post::NewPost;
 use crate::ui;
 use crate::ui::{Preview, PreviewConfig, View};
+use crate::Result;
 use egui::widgets::text_edit::TextEdit;
 use egui::{Frame, Layout};
-use enostr::{FilledKeypair, FullKeypair, RelayPool};
-use nostrdb::{Config, Ndb, Note, Transaction};
+use enostr::{FilledKeypair, FullKeypair, NoteId, RelayPool};
+use nostrdb::{Config, Ndb, Transaction};
 use tracing::info;
 
 use super::contents::render_note_preview;
@@ -15,35 +16,59 @@ use super::contents::render_note_preview;
 pub struct PostView<'a> {
     ndb: &'a Ndb,
     draft: &'a mut Draft,
-    draft_source: DraftSource<'a>,
+    post_type: PostType,
     img_cache: &'a mut ImageCache,
     note_cache: &'a mut NoteCache,
     poster: FilledKeypair<'a>,
     id_source: Option<egui::Id>,
 }
 
-pub enum PostAction {
-    Post(NewPost),
+#[derive(Clone)]
+pub enum PostType {
+    New,
+    Quote(NoteId),
+    Reply(NoteId),
+}
+
+pub struct PostAction {
+    post_type: PostType,
+    post: NewPost,
 }
 
 impl PostAction {
-    pub fn execute<'b>(
-        poster: FilledKeypair<'_>,
-        action: &'b PostAction,
-        pool: &mut RelayPool,
-        draft: &mut Draft,
-        get_note: impl Fn(&'b NewPost, &[u8; 32]) -> Note<'b>,
-    ) {
-        match action {
-            PostAction::Post(np) => {
-                let note = get_note(np, &poster.secret_key.to_secret_bytes());
+    pub fn new(post_type: PostType, post: NewPost) -> Self {
+        PostAction { post_type, post }
+    }
 
-                let raw_msg = format!("[\"EVENT\",{}]", note.json().unwrap());
-                info!("sending {}", raw_msg);
-                pool.send(&enostr::ClientMessage::raw(raw_msg));
-                draft.clear();
+    pub fn execute(
+        &self,
+        ndb: &Ndb,
+        txn: &Transaction,
+        pool: &mut RelayPool,
+        drafts: &mut Drafts,
+    ) -> Result<()> {
+        let seckey = self.post.account.secret_key.to_secret_bytes();
+
+        let note = match self.post_type {
+            PostType::New => self.post.to_note(&seckey),
+
+            PostType::Reply(target) => {
+                let replying_to = ndb.get_note_by_id(txn, target.bytes())?;
+                self.post.to_reply(&seckey, &replying_to)
             }
-        }
+
+            PostType::Quote(target) => {
+                let quoting = ndb.get_note_by_id(txn, target.bytes())?;
+                self.post.to_quote(&seckey, &quoting)
+            }
+        };
+
+        let raw_msg = format!("[\"EVENT\",{}]", note.json().unwrap());
+        info!("sending {}", raw_msg);
+        pool.send(&enostr::ClientMessage::raw(raw_msg));
+        drafts.get_from_post_type(&self.post_type).clear();
+
+        Ok(())
     }
 }
 
@@ -56,7 +81,7 @@ impl<'a> PostView<'a> {
     pub fn new(
         ndb: &'a Ndb,
         draft: &'a mut Draft,
-        draft_source: DraftSource<'a>,
+        post_type: PostType,
         img_cache: &'a mut ImageCache,
         note_cache: &'a mut NoteCache,
         poster: FilledKeypair<'a>,
@@ -69,7 +94,7 @@ impl<'a> PostView<'a> {
             note_cache,
             poster,
             id_source,
-            draft_source,
+            post_type,
         }
     }
 
@@ -162,7 +187,7 @@ impl<'a> PostView<'a> {
 
                     let action = ui
                         .horizontal(|ui| {
-                            if let DraftSource::Quote(id) = self.draft_source {
+                            if let PostType::Quote(id) = self.post_type {
                                 let avail_size = ui.available_size_before_wrap();
                                 ui.with_layout(Layout::left_to_right(egui::Align::TOP), |ui| {
                                     Frame::none().show(ui, |ui| {
@@ -174,7 +199,7 @@ impl<'a> PostView<'a> {
                                                 self.note_cache,
                                                 self.img_cache,
                                                 txn,
-                                                id,
+                                                id.bytes(),
                                                 "",
                                             );
                                         });
@@ -187,10 +212,11 @@ impl<'a> PostView<'a> {
                                     .add_sized([91.0, 32.0], egui::Button::new("Post now"))
                                     .clicked()
                                 {
-                                    Some(PostAction::Post(NewPost::new(
+                                    let new_post = NewPost::new(
                                         self.draft.buffer.clone(),
                                         self.poster.to_full(),
-                                    )))
+                                    );
+                                    Some(PostAction::new(self.post_type.clone(), new_post))
                                 } else {
                                     None
                                 }
@@ -241,7 +267,7 @@ mod preview {
             PostView::new(
                 &self.ndb,
                 &mut self.draft,
-                DraftSource::Compose,
+                PostType::New,
                 &mut self.img_cache,
                 &mut self.note_cache,
                 self.poster.to_filled(),

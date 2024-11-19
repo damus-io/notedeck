@@ -261,9 +261,6 @@ impl SerializableColumns {
                     Route::Timeline(TimelineRoute::Thread(_thread)) => {
                         // TODO: open thread before pushing route
                     }
-                    Route::Profile(_profile) => {
-                        // TODO: open profile before pushing route
-                    }
                     _ => routes.push(*route),
                 }
             }

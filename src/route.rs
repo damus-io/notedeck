@@ -21,7 +21,6 @@ pub enum Route {
     Relays,
     ComposeNote,
     AddColumn(AddColumnRoute),
-    Profile(Pubkey),
     Support,
 }
 
@@ -58,6 +57,10 @@ impl Route {
         Route::Timeline(TimelineRoute::Thread(thread_root))
     }
 
+    pub fn profile(pubkey: Pubkey) -> Self {
+        Route::Timeline(TimelineRoute::Profile(pubkey))
+    }
+
     pub fn reply(replying_to: NoteId) -> Self {
         Route::Timeline(TimelineRoute::Reply(replying_to))
     }
@@ -92,6 +95,9 @@ impl Route {
                 TimelineRoute::Quote(id) => {
                     format!("{}'s Quote", get_note_users_displayname_string(ndb, id))
                 }
+                TimelineRoute::Profile(pubkey) => {
+                    format!("{}'s Profile", get_profile_displayname_string(ndb, pubkey))
+                }
             },
 
             Route::Relays => "Relays".to_owned(),
@@ -108,9 +114,6 @@ impl Route {
                     "Add External Notifications Column".to_owned()
                 }
             },
-            Route::Profile(pubkey) => {
-                format!("{}'s Profile", get_profile_displayname_string(ndb, pubkey))
-            }
             Route::Support => "Damus Support".to_owned(),
         };
 
@@ -207,6 +210,7 @@ impl fmt::Display for Route {
             Route::Timeline(tlr) => match tlr {
                 TimelineRoute::Timeline(name) => write!(f, "{}", name),
                 TimelineRoute::Thread(_id) => write!(f, "Thread"),
+                TimelineRoute::Profile(_id) => write!(f, "Profile"),
                 TimelineRoute::Reply(_id) => write!(f, "Reply"),
                 TimelineRoute::Quote(_id) => write!(f, "Quote"),
             },
@@ -220,7 +224,6 @@ impl fmt::Display for Route {
             Route::ComposeNote => write!(f, "Compose Note"),
 
             Route::AddColumn(_) => write!(f, "Add Column"),
-            Route::Profile(_) => write!(f, "Profile"),
             Route::Support => write!(f, "Support"),
         }
     }

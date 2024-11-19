@@ -745,9 +745,7 @@ fn render_damus_mobile(ctx: &egui::Context, app: &mut Damus) {
 
     main_panel(&ctx.style(), ui::is_narrow(ctx)).show(ctx, |ui| {
         if !app.columns.columns().is_empty() {
-            if let Some(r) = nav::render_nav(0, app, ui) {
-                r.process_nav_response(&app.path, &mut app.columns)
-            }
+            nav::render_nav(0, app, ui).process_render_nav_response(app);
         }
     });
 }
@@ -824,13 +822,11 @@ fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus) {
                 );
             });
 
-            let mut nav_resp: Option<nav::RenderNavResponse> = None;
+            let mut responses = Vec::with_capacity(app.columns.num_columns());
             for col_index in 0..app.columns.num_columns() {
                 strip.cell(|ui| {
                     let rect = ui.available_rect_before_wrap();
-                    if let Some(r) = nav::render_nav(col_index, app, ui) {
-                        nav_resp = Some(r);
-                    }
+                    responses.push(nav::render_nav(col_index, app, ui));
 
                     // vertical line
                     ui.painter().vline(
@@ -843,8 +839,8 @@ fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus) {
                 //strip.cell(|ui| timeline::timeline_view(ui, app, timeline_ind));
             }
 
-            if let Some(r) = nav_resp {
-                r.process_nav_response(&app.path, &mut app.columns);
+            for response in responses {
+                response.process_render_nav_response(app);
             }
         });
 }

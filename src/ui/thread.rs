@@ -1,5 +1,5 @@
 use crate::{
-    actionbar::NoteActionResponse,
+    actionbar::NoteAction,
     imgcache::ImageCache,
     notecache::NoteCache,
     notes_holder::{NotesHolder, NotesHolderStorage},
@@ -52,7 +52,7 @@ impl<'a> ThreadView<'a> {
         self
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui) -> NoteActionResponse {
+    pub fn ui(&mut self, ui: &mut egui::Ui) -> Option<NoteAction> {
         let txn = Transaction::new(self.ndb).expect("txn");
 
         let selected_note_key = if let Ok(key) = self
@@ -63,7 +63,7 @@ impl<'a> ThreadView<'a> {
             key
         } else {
             // TODO: render 404 ?
-            return NoteActionResponse::default();
+            return None;
         };
 
         ui.label(
@@ -80,7 +80,7 @@ impl<'a> ThreadView<'a> {
                 let note = if let Ok(note) = self.ndb.get_note_by_key(&txn, selected_note_key) {
                     note
                 } else {
-                    return NoteActionResponse::default();
+                    return None;
                 };
 
                 let root_id = {

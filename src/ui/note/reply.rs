@@ -2,8 +2,8 @@ use crate::draft::Draft;
 use crate::imgcache::ImageCache;
 use crate::notecache::NoteCache;
 use crate::ui;
-use crate::ui::note::PostResponse;
-use enostr::FilledKeypair;
+use crate::ui::note::{PostResponse, PostType};
+use enostr::{FilledKeypair, NoteId};
 use nostrdb::Ndb;
 
 pub struct PostReplyView<'a> {
@@ -79,7 +79,7 @@ impl<'a> PostReplyView<'a> {
                 ui::PostView::new(
                     self.ndb,
                     self.draft,
-                    crate::draft::DraftSource::Reply(replying_to),
+                    PostType::Reply(NoteId::new(*replying_to)),
                     self.img_cache,
                     self.note_cache,
                     self.poster,

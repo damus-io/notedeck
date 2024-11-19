@@ -1,23 +1,23 @@
 use crate::{
     accounts::render_accounts_route,
+    actionbar::NoteAction,
     app_style::{get_font_size, NotedeckTextStyle},
-    column::Columns,
     fonts::NamedFontFamily,
     notes_holder::NotesHolder,
     profile::Profile,
     relay_pool_manager::RelayPoolManager,
     route::Route,
-    storage::{self, DataPath},
+    storage::{self},
     thread::Thread,
     timeline::{
-        route::{render_profile_route, render_timeline_route, AfterRouteExecution, TimelineRoute},
+        route::{render_timeline_route, TimelineRoute},
         Timeline,
     },
     ui::{
         self,
         add_column::render_add_column_routes,
         anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},
-        note::PostAction,
+        note::{PostAction, PostType},
         support::SupportView,
         RelayView, View,
     },
@@ -25,32 +25,135 @@ use crate::{
 };
 
 use egui::{pos2, Color32, InnerResponse, Stroke};
-use egui_nav::{Nav, NavAction, TitleBarResponse};
+use egui_nav::{Nav, NavAction, NavResponse, TitleBarResponse};
 use nostrdb::{Ndb, Transaction};
 use tracing::{error, info};
 
-pub enum RenderNavResponse {
-    ColumnChanged,
-    RemoveColumn(usize),
+pub enum RenderNavAction {
+    PostAction(PostAction),
+    NoteAction(NoteAction),
+}
+
+impl From<PostAction> for RenderNavAction {
+    fn from(post_action: PostAction) -> Self {
+        Self::PostAction(post_action)
+    }
+}
+
+impl From<NoteAction> for RenderNavAction {
+    fn from(note_action: NoteAction) -> RenderNavAction {
+        Self::NoteAction(note_action)
+    }
+}
+
+pub struct RenderNavResponse {
+    column: usize,
+    response: NavResponse<Option<RenderNavAction>, TitleResponse>,
 }
 
 impl RenderNavResponse {
-    pub fn process_nav_response(&self, path: &DataPath, columns: &mut Columns) {
-        match self {
-            RenderNavResponse::ColumnChanged => {
-                storage::save_columns(path, columns.as_serializable_columns());
+    #[allow(private_interfaces)]
+    pub fn new(
+        column: usize,
+        response: NavResponse<Option<RenderNavAction>, TitleResponse>,
+    ) -> Self {
+        RenderNavResponse { column, response }
+    }
+
+    pub fn process_render_nav_response(&self, app: &mut Damus) {
+        let mut col_changed: bool = false;
+        let col = self.column;
+
+        if let Some(action) = &self.response.inner {
+            // start returning when we're finished posting
+            match action {
+                RenderNavAction::PostAction(post_action) => {
+                    let txn = Transaction::new(&app.ndb).expect("txn");
+                    let _ = post_action.execute(&app.ndb, &txn, &mut app.pool, &mut app.drafts);
+                    app.columns_mut().column_mut(col).router_mut().go_back();
+                }
+
+                RenderNavAction::NoteAction(note_action) => {
+                    let txn = Transaction::new(&app.ndb).expect("txn");
+
+                    note_action.execute_and_process_result(
+                        &app.ndb,
+                        &mut app.columns,
+                        col,
+                        &mut app.threads,
+                        &mut app.profiles,
+                        &mut app.note_cache,
+                        &mut app.pool,
+                        &txn,
+                    );
+                }
+            }
+        }
+
+        if let Some(NavAction::Returned) = self.response.action {
+            let r = app.columns_mut().column_mut(col).router_mut().pop();
+            let txn = Transaction::new(&app.ndb).expect("txn");
+            if let Some(Route::Timeline(TimelineRoute::Thread(id))) = r {
+                let root_id = {
+                    crate::note::root_note_id_from_selected_id(
+                        &app.ndb,
+                        &mut app.note_cache,
+                        &txn,
+                        id.bytes(),
+                    )
+                };
+                Thread::unsubscribe_locally(
+                    &txn,
+                    &app.ndb,
+                    &mut app.note_cache,
+                    &mut app.threads,
+                    &mut app.pool,
+                    root_id,
+                );
             }
 
-            RenderNavResponse::RemoveColumn(col) => {
-                columns.delete_column(*col);
-                storage::save_columns(path, columns.as_serializable_columns());
+            if let Some(Route::Timeline(TimelineRoute::Profile(pubkey))) = r {
+                Profile::unsubscribe_locally(
+                    &txn,
+                    &app.ndb,
+                    &mut app.note_cache,
+                    &mut app.profiles,
+                    &mut app.pool,
+                    pubkey.bytes(),
+                );
             }
+            col_changed = true;
+        } else if let Some(NavAction::Navigated) = self.response.action {
+            let cur_router = app.columns_mut().column_mut(col).router_mut();
+            cur_router.navigating = false;
+            if cur_router.is_replacing() {
+                cur_router.remove_previous_routes();
+            }
+            col_changed = true;
+        }
+
+        if let Some(title_response) = &self.response.title_response {
+            match title_response {
+                TitleResponse::RemoveColumn => {
+                    let tl = app.columns().find_timeline_for_column_index(col);
+                    if let Some(timeline) = tl {
+                        unsubscribe_timeline(app.ndb(), timeline);
+                    }
+
+                    app.columns_mut().delete_column(col);
+                    col_changed = true;
+                }
+            }
+        }
+
+        if col_changed {
+            storage::save_columns(&app.path, app.columns().as_serializable_columns());
         }
     }
 }
 
-pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) -> Option<RenderNavResponse> {
-    let mut resp: Option<RenderNavResponse> = None;
+#[must_use = "RenderNavResponse must be handled by calling .process_render_nav_response(..)"]
+pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) -> RenderNavResponse {
     let col_id = app.columns.get_column_id_at_index(col);
     // TODO(jb55): clean up this router_mut mess by using Router<R> in egui-nav directly
     let routes = app
@@ -61,186 +164,78 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) -> Option<Rend
         .iter()
         .map(|r| r.get_titled_route(&app.columns, &app.ndb))
         .collect();
+
     let nav_response = Nav::new(routes)
         .navigating(app.columns_mut().column_mut(col).router_mut().navigating)
         .returning(app.columns_mut().column_mut(col).router_mut().returning)
         .id_source(egui::Id::new(col_id))
         .title(48.0, title_bar)
-        .show_mut(ui, |ui, nav| {
-            let column = app.columns.column_mut(col);
-            match &nav.top().route {
-                Route::Timeline(tlr) => render_timeline_route(
+        .show_mut(ui, |ui, nav| match &nav.top().route {
+            Route::Timeline(tlr) => render_timeline_route(
+                &app.ndb,
+                &mut app.columns,
+                &mut app.drafts,
+                &mut app.img_cache,
+                &mut app.unknown_ids,
+                &mut app.note_cache,
+                &mut app.threads,
+                &mut app.profiles,
+                &mut app.accounts,
+                *tlr,
+                col,
+                app.textmode,
+                ui,
+            ),
+            Route::Accounts(amr) => {
+                let action = render_accounts_route(
+                    ui,
                     &app.ndb,
+                    col,
                     &mut app.columns,
-                    &mut app.pool,
-                    &mut app.drafts,
                     &mut app.img_cache,
-                    &mut app.unknown_ids,
-                    &mut app.note_cache,
-                    &mut app.threads,
                     &mut app.accounts,
-                    *tlr,
-                    col,
-                    app.textmode,
-                    ui,
-                ),
-                Route::Accounts(amr) => {
-                    let action = render_accounts_route(
-                        ui,
-                        &app.ndb,
-                        col,
-                        &mut app.columns,
-                        &mut app.img_cache,
-                        &mut app.accounts,
-                        &mut app.view_state.login,
-                        *amr,
-                    );
-                    let txn = Transaction::new(&app.ndb).expect("txn");
-                    action.process_action(&mut app.unknown_ids, &app.ndb, &txn);
-                    None
-                }
-                Route::Relays => {
-                    let manager = RelayPoolManager::new(app.pool_mut());
-                    RelayView::new(manager).ui(ui);
-                    None
-                }
-                Route::ComposeNote => {
-                    let kp = app.accounts.selected_or_first_nsec()?;
-                    let draft = app.drafts.compose_mut();
+                    &mut app.view_state.login,
+                    *amr,
+                );
+                let txn = Transaction::new(&app.ndb).expect("txn");
+                action.process_action(&mut app.unknown_ids, &app.ndb, &txn);
+                None
+            }
+            Route::Relays => {
+                let manager = RelayPoolManager::new(app.pool_mut());
+                RelayView::new(manager).ui(ui);
+                None
+            }
+            Route::ComposeNote => {
+                let kp = app.accounts.selected_or_first_nsec()?;
+                let draft = app.drafts.compose_mut();
 
-                    let txn = nostrdb::Transaction::new(&app.ndb).expect("txn");
-                    let post_response = ui::PostView::new(
-                        &app.ndb,
-                        draft,
-                        crate::draft::DraftSource::Compose,
-                        &mut app.img_cache,
-                        &mut app.note_cache,
-                        kp,
-                    )
-                    .ui(&txn, ui);
-
-                    if let Some(action) = post_response.action {
-                        PostAction::execute(kp, &action, &mut app.pool, draft, |np, seckey| {
-                            np.to_note(seckey)
-                        });
-                        column.router_mut().go_back();
-                    }
-
-                    None
-                }
-                Route::AddColumn(route) => {
-                    render_add_column_routes(ui, app, col, route);
-
-                    None
-                }
-
-                Route::Profile(pubkey) => render_profile_route(
-                    pubkey,
+                let txn = nostrdb::Transaction::new(&app.ndb).expect("txn");
+                let post_response = ui::PostView::new(
                     &app.ndb,
-                    &mut app.columns,
-                    &mut app.profiles,
-                    &mut app.pool,
+                    draft,
+                    PostType::New,
                     &mut app.img_cache,
                     &mut app.note_cache,
-                    &mut app.threads,
-                    col,
-                    ui,
-                ),
-                Route::Support => {
-                    SupportView::new(&mut app.support).show(ui);
-                    None
-                }
+                    kp,
+                )
+                .ui(&txn, ui);
+
+                post_response.action.map(Into::into)
+            }
+            Route::AddColumn(route) => {
+                render_add_column_routes(ui, app, col, route);
+
+                None
+            }
+
+            Route::Support => {
+                SupportView::new(&mut app.support).show(ui);
+                None
             }
         });
 
-    if let Some(after_route_execution) = nav_response.inner {
-        // start returning when we're finished posting
-        match after_route_execution {
-            AfterRouteExecution::Post(resp) => {
-                if let Some(action) = resp.action {
-                    match action {
-                        PostAction::Post(_) => {
-                            app.columns_mut().column_mut(col).router_mut().returning = true;
-                        }
-                    }
-                }
-            }
-
-            AfterRouteExecution::OpenProfile(pubkey) => {
-                app.columns
-                    .column_mut(col)
-                    .router_mut()
-                    .route_to(Route::Profile(pubkey));
-                let txn = Transaction::new(&app.ndb).expect("txn");
-                if let Some(res) = Profile::open(
-                    &app.ndb,
-                    &mut app.note_cache,
-                    &txn,
-                    &mut app.pool,
-                    &mut app.profiles,
-                    pubkey.bytes(),
-                ) {
-                    res.process(&app.ndb, &mut app.note_cache, &txn, &mut app.profiles);
-                }
-            }
-        }
-    }
-
-    if let Some(NavAction::Returned) = nav_response.action {
-        let r = app.columns_mut().column_mut(col).router_mut().pop();
-        let txn = Transaction::new(&app.ndb).expect("txn");
-        if let Some(Route::Timeline(TimelineRoute::Thread(id))) = r {
-            let root_id = {
-                crate::note::root_note_id_from_selected_id(
-                    &app.ndb,
-                    &mut app.note_cache,
-                    &txn,
-                    id.bytes(),
-                )
-            };
-            Thread::unsubscribe_locally(
-                &txn,
-                &app.ndb,
-                &mut app.note_cache,
-                &mut app.threads,
-                &mut app.pool,
-                root_id,
-            );
-        }
-
-        if let Some(Route::Profile(pubkey)) = r {
-            Profile::unsubscribe_locally(
-                &txn,
-                &app.ndb,
-                &mut app.note_cache,
-                &mut app.profiles,
-                &mut app.pool,
-                pubkey.bytes(),
-            );
-        }
-        resp = Some(RenderNavResponse::ColumnChanged)
-    } else if let Some(NavAction::Navigated) = nav_response.action {
-        let cur_router = app.columns_mut().column_mut(col).router_mut();
-        cur_router.navigating = false;
-        if cur_router.is_replacing() {
-            cur_router.remove_previous_routes();
-        }
-        resp = Some(RenderNavResponse::ColumnChanged)
-    }
-
-    if let Some(title_response) = nav_response.title_response {
-        match title_response {
-            TitleResponse::RemoveColumn => {
-                let tl = app.columns().find_timeline_for_column_index(col);
-                if let Some(timeline) = tl {
-                    unsubscribe_timeline(app.ndb(), timeline);
-                }
-                resp = Some(RenderNavResponse::RemoveColumn(col))
-            }
-        }
-    }
-
-    resp
+    RenderNavResponse::new(col, nav_response)
 }
 
 fn unsubscribe_timeline(ndb: &Ndb, timeline: &Timeline) {
