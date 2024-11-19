@@ -18,9 +18,7 @@ fn setup_logging(path: &DataPath) {
     let (maybe_non_blocking, maybe_guard) = {
         let log_path = path.path(DataPathType::Log);
         // Setup logging to file
-        use std::panic;
 
-        use tracing::error;
         use tracing_appender::{
             non_blocking,
             rolling::{RollingFileAppender, Rotation},
@@ -31,9 +29,6 @@ fn setup_logging(path: &DataPath) {
             log_path,
             format!("notedeck-{}.log", env!("CARGO_PKG_VERSION")),
         );
-        panic::set_hook(Box::new(|panic_info| {
-            error!("Notedeck panicked: {:?}", panic_info);
-        }));
 
         let (non_blocking, _guard) = non_blocking(file_appender);
 
