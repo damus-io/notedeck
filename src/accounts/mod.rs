@@ -1,11 +1,12 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use url::Url;
 use uuid::Uuid;
 
 use enostr::{ClientMessage, FilledKeypair, FullKeypair, Keypair, RelayPool};
-use nostrdb::{Filter, Ndb, NoteKey, Subscription, Transaction};
+use nostrdb::{Filter, Ndb, Note, NoteKey, Subscription, Transaction};
 
 use crate::{
     column::Columns,
@@ -121,7 +122,7 @@ pub struct AccountMutedData {
     filter: Filter,
     subid: String,
     sub: Option<Subscription>,
-    muted: Muted,
+    muted: Arc<Muted>,
 }
 
 impl AccountMutedData {
@@ -160,7 +161,7 @@ impl AccountMutedData {
             filter,
             subid,
             sub: Some(ndbsub),
-            muted,
+            muted: Arc::new(muted),
         }
     }
 
@@ -440,6 +441,19 @@ impl Accounts {
         self.key_store.select_key(None);
     }
 
+    pub fn mutefun(&self) -> Box<dyn Fn(&Note) -> bool> {
+        if let Some(index) = self.currently_selected_account {
+            if let Some(account) = self.accounts.get(index) {
+                let pubkey = account.pubkey.bytes();
+                if let Some(account_data) = self.account_data.get(pubkey) {
+                    let muted = Arc::clone(&account_data.muted.muted);
+                    return Box::new(move |note: &Note| muted.is_muted(note));
+                }
+            }
+        }
+        Box::new(|_: &Note| false)
+    }
+
     pub fn send_initial_filters(&mut self, pool: &mut RelayPool, relay_url: &str) {
         for data in self.account_data.values() {
             pool.send_to(
@@ -510,7 +524,7 @@ impl Accounts {
                     let txn = Transaction::new(ndb).expect("txn");
                     let muted = AccountMutedData::harvest_nip51_muted(ndb, &txn, &nks);
                     debug!("pubkey {}: updated muted {:?}", hex::encode(pubkey), muted);
-                    data.muted.muted = muted;
+                    data.muted.muted = Arc::new(muted);
                     changed = true;
                 }
             }

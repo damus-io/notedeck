@@ -1,5 +1,6 @@
 use crate::{
     column::Columns,
+    muted::MuteFun,
     note::NoteRef,
     notecache::NoteCache,
     notes_holder::{NotesHolder, NotesHolderStorage},
@@ -32,6 +33,7 @@ pub enum NotesHolderResult {
 /// making sure the thread is up to date. In a sense, it's a model for
 /// the thread view. We don't have a concept of model/view/controller etc
 /// in egui, but this is the closest thing to that.
+#[allow(clippy::too_many_arguments)]
 fn open_thread(
     ndb: &Ndb,
     txn: &Transaction,
@@ -40,11 +42,12 @@ fn open_thread(
     pool: &mut RelayPool,
     threads: &mut NotesHolderStorage<Thread>,
     selected_note: &[u8; 32],
+    is_muted: &MuteFun,
 ) -> Option<NotesHolderResult> {
     router.route_to(Route::thread(NoteId::new(selected_note.to_owned())));
 
     let root_id = crate::note::root_note_id_from_selected_id(ndb, note_cache, txn, selected_note);
-    Thread::open(ndb, note_cache, txn, pool, threads, root_id)
+    Thread::open(ndb, note_cache, txn, pool, threads, root_id, is_muted)
 }
 
 impl NoteAction {
@@ -58,6 +61,7 @@ impl NoteAction {
         note_cache: &mut NoteCache,
         pool: &mut RelayPool,
         txn: &Transaction,
+        is_muted: &MuteFun,
     ) -> Option<NotesHolderResult> {
         match self {
             NoteAction::Reply(note_id) => {
@@ -65,13 +69,28 @@ impl NoteAction {
                 None
             }
 
-            NoteAction::OpenThread(note_id) => {
-                open_thread(ndb, txn, router, note_cache, pool, threads, note_id.bytes())
-            }
+            NoteAction::OpenThread(note_id) => open_thread(
+                ndb,
+                txn,
+                router,
+                note_cache,
+                pool,
+                threads,
+                note_id.bytes(),
+                is_muted,
+            ),
 
             NoteAction::OpenProfile(pubkey) => {
                 router.route_to(Route::profile(pubkey));
-                Profile::open(ndb, note_cache, txn, pool, profiles, pubkey.bytes())
+                Profile::open(
+                    ndb,
+                    note_cache,
+                    txn,
+                    pool,
+                    profiles,
+                    pubkey.bytes(),
+                    is_muted,
+                )
             }
 
             NoteAction::Quote(note_id) => {
@@ -93,10 +112,13 @@ impl NoteAction {
         note_cache: &mut NoteCache,
         pool: &mut RelayPool,
         txn: &Transaction,
+        is_muted: &MuteFun,
     ) {
         let router = columns.column_mut(col).router_mut();
-        if let Some(br) = self.execute(ndb, router, threads, profiles, note_cache, pool, txn) {
-            br.process(ndb, note_cache, txn, threads);
+        if let Some(br) = self.execute(
+            ndb, router, threads, profiles, note_cache, pool, txn, is_muted,
+        ) {
+            br.process(ndb, note_cache, txn, threads, is_muted);
         }
     }
 }
@@ -112,12 +134,13 @@ impl NotesHolderResult {
         note_cache: &mut NoteCache,
         txn: &Transaction,
         storage: &mut NotesHolderStorage<N>,
+        is_muted: &MuteFun,
     ) {
         match self {
             // update the thread for next render if we have new notes
             NotesHolderResult::NewNotes(new_notes) => {
                 let holder = storage
-                    .notes_holder_mutated(ndb, note_cache, txn, &new_notes.id)
+                    .notes_holder_mutated(ndb, note_cache, txn, &new_notes.id, is_muted)
                     .get_ptr();
                 new_notes.process(holder);
             }

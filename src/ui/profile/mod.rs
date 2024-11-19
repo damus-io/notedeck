@@ -9,7 +9,7 @@ pub use picture::ProfilePic;
 pub use preview::ProfilePreview;
 
 use crate::{
-    actionbar::NoteAction, imgcache::ImageCache, notecache::NoteCache,
+    actionbar::NoteAction, imgcache::ImageCache, muted::MuteFun, notecache::NoteCache,
     notes_holder::NotesHolderStorage, profile::Profile,
 };
 
@@ -46,7 +46,7 @@ impl<'a> ProfileView<'a> {
         }
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui) -> Option<NoteAction> {
+    pub fn ui(&mut self, ui: &mut egui::Ui, is_muted: &MuteFun) -> Option<NoteAction> {
         let scroll_id = egui::Id::new(("profile_scroll", self.col_id, self.pubkey));
 
         ScrollArea::vertical()
@@ -58,7 +58,13 @@ impl<'a> ProfileView<'a> {
                 }
                 let profile = self
                     .profiles
-                    .notes_holder_mutated(self.ndb, self.note_cache, &txn, self.pubkey.bytes())
+                    .notes_holder_mutated(
+                        self.ndb,
+                        self.note_cache,
+                        &txn,
+                        self.pubkey.bytes(),
+                        is_muted,
+                    )
                     .get_ptr();
 
                 profile.timeline.selected_view = tabs_ui(ui);

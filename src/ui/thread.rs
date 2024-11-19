@@ -1,6 +1,7 @@
 use crate::{
     actionbar::NoteAction,
     imgcache::ImageCache,
+    muted::MuteFun,
     notecache::NoteCache,
     notes_holder::{NotesHolder, NotesHolderStorage},
     thread::Thread,
@@ -52,7 +53,7 @@ impl<'a> ThreadView<'a> {
         self
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui) -> Option<NoteAction> {
+    pub fn ui(&mut self, ui: &mut egui::Ui, is_muted: &MuteFun) -> Option<NoteAction> {
         let txn = Transaction::new(self.ndb).expect("txn");
 
         let selected_note_key = if let Ok(key) = self
@@ -97,13 +98,13 @@ impl<'a> ThreadView<'a> {
 
                 let thread = self
                     .threads
-                    .notes_holder_mutated(self.ndb, self.note_cache, &txn, root_id)
+                    .notes_holder_mutated(self.ndb, self.note_cache, &txn, root_id, is_muted)
                     .get_ptr();
 
                 // TODO(jb55): skip poll if ThreadResult is fresh?
 
                 // poll for new notes and insert them into our existing notes
-                match thread.poll_notes_into_view(&txn, self.ndb) {
+                match thread.poll_notes_into_view(&txn, self.ndb, is_muted) {
                     Ok(action) => {
                         action.process_action(&txn, self.ndb, self.unknown_ids, self.note_cache)
                     }

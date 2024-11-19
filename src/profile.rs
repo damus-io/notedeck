@@ -4,6 +4,7 @@ use nostrdb::{FilterBuilder, Ndb, ProfileRecord, Transaction};
 use crate::{
     filter::{self, FilterState},
     multi_subscriber::MultiSubscriber,
+    muted::MuteFun,
     note::NoteRef,
     notecache::NoteCache,
     notes_holder::NotesHolder,
@@ -61,11 +62,12 @@ impl Profile {
         source: PubkeySource,
         filters: Vec<Filter>,
         notes: Vec<NoteRef>,
+        is_muted: &MuteFun,
     ) -> Self {
         let mut timeline =
             Timeline::new(TimelineKind::profile(source), FilterState::ready(filters));
 
-        copy_notes_into_timeline(&mut timeline, txn, ndb, note_cache, notes);
+        copy_notes_into_timeline(&mut timeline, txn, ndb, note_cache, notes, is_muted);
 
         Profile {
             timeline,
@@ -111,6 +113,7 @@ impl NotesHolder for Profile {
         id: &[u8; 32],
         filters: Vec<Filter>,
         notes: Vec<NoteRef>,
+        is_muted: &MuteFun,
     ) -> Self {
         Profile::new(
             txn,
@@ -119,6 +122,7 @@ impl NotesHolder for Profile {
             PubkeySource::Explicit(Pubkey::new(*id)),
             filters,
             notes,
+            is_muted,
         )
     }
 

@@ -2,6 +2,7 @@ use crate::{
     column::Columns,
     error::{Error, FilterError},
     filter::{self, FilterState, FilterStates},
+    muted::MuteFun,
     note::NoteRef,
     notecache::{CachedNote, NoteCache},
     subscriptions::{self, SubKind, Subscriptions},
@@ -277,6 +278,7 @@ impl Timeline {
         txn: &Transaction,
         unknown_ids: &mut UnknownIds,
         note_cache: &mut NoteCache,
+        is_muted: &MuteFun,
     ) -> Result<()> {
         let timeline = timelines
             .get_mut(timeline_idx)
@@ -299,6 +301,9 @@ impl Timeline {
                 error!("hit race condition in poll_notes_into_view: https://github.com/damus-io/nostrdb/issues/35 note {:?} was not added to timeline", key);
                 continue;
             };
+            if is_muted(&note) {
+                continue;
+            }
 
             UnknownIds::update_from_note(txn, ndb, unknown_ids, note_cache, &note);
 
@@ -407,10 +412,11 @@ pub fn setup_new_timeline(
     pool: &mut RelayPool,
     note_cache: &mut NoteCache,
     since_optimize: bool,
+    is_muted: &MuteFun,
 ) {
     // if we're ready, setup local subs
-    if is_timeline_ready(ndb, pool, note_cache, timeline) {
-        if let Err(err) = setup_timeline_nostrdb_sub(ndb, note_cache, timeline) {
+    if is_timeline_ready(ndb, pool, note_cache, timeline, is_muted) {
+        if let Err(err) = setup_timeline_nostrdb_sub(ndb, note_cache, timeline, is_muted) {
             error!("setup_new_timeline: {err}");
         }
     }
@@ -540,6 +546,7 @@ fn setup_initial_timeline(
     timeline: &mut Timeline,
     note_cache: &mut NoteCache,
     filters: &[Filter],
+    is_muted: &MuteFun,
 ) -> Result<()> {
     timeline.subscription = Some(ndb.subscribe(filters)?);
     let txn = Transaction::new(ndb)?;
@@ -554,7 +561,7 @@ fn setup_initial_timeline(
         .map(NoteRef::from_query_result)
         .collect();
 
-    copy_notes_into_timeline(timeline, &txn, ndb, note_cache, notes);
+    copy_notes_into_timeline(timeline, &txn, ndb, note_cache, notes, is_muted);
 
     Ok(())
 }
@@ -565,6 +572,7 @@ pub fn copy_notes_into_timeline(
     ndb: &Ndb,
     note_cache: &mut NoteCache,
     notes: Vec<NoteRef>,
+    is_muted: &MuteFun,
 ) {
     let filters = {
         let views = &timeline.views;
@@ -576,6 +584,9 @@ pub fn copy_notes_into_timeline(
     for note_ref in notes {
         for (view, filter) in filters.iter().enumerate() {
             if let Ok(note) = ndb.get_note_by_key(txn, note_ref.key) {
+                if is_muted(&note) {
+                    continue;
+                }
                 if filter(
                     note_cache.cached_note_or_insert_mut(note_ref.key, &note),
                     &note,
@@ -591,9 +602,10 @@ pub fn setup_initial_nostrdb_subs(
     ndb: &Ndb,
     note_cache: &mut NoteCache,
     columns: &mut Columns,
+    is_muted: &MuteFun,
 ) -> Result<()> {
     for timeline in columns.timelines_mut() {
-        if let Err(err) = setup_timeline_nostrdb_sub(ndb, note_cache, timeline) {
+        if let Err(err) = setup_timeline_nostrdb_sub(ndb, note_cache, timeline, is_muted) {
             error!("setup_initial_nostrdb_subs: {err}");
         }
     }
@@ -605,6 +617,7 @@ fn setup_timeline_nostrdb_sub(
     ndb: &Ndb,
     note_cache: &mut NoteCache,
     timeline: &mut Timeline,
+    is_muted: &MuteFun,
 ) -> Result<()> {
     let filter_state = timeline
         .filter
@@ -612,7 +625,7 @@ fn setup_timeline_nostrdb_sub(
         .ok_or(Error::empty_contact_list())?
         .to_owned();
 
-    setup_initial_timeline(ndb, timeline, note_cache, &filter_state)?;
+    setup_initial_timeline(ndb, timeline, note_cache, &filter_state, is_muted)?;
 
     Ok(())
 }
@@ -626,6 +639,7 @@ pub fn is_timeline_ready(
     pool: &mut RelayPool,
     note_cache: &mut NoteCache,
     timeline: &mut Timeline,
+    is_muted: &MuteFun,
 ) -> bool {
     // TODO: we should debounce the filter states a bit to make sure we have
     // seen all of the different contact lists from each relay
@@ -680,7 +694,8 @@ pub fn is_timeline_ready(
             // we just switched to the ready state, we should send initial
             // queries and setup the local subscription
             info!("Found contact list! Setting up local and remote contact list query");
-            setup_initial_timeline(ndb, timeline, note_cache, &filter).expect("setup init");
+            setup_initial_timeline(ndb, timeline, note_cache, &filter, is_muted)
+                .expect("setup init");
             timeline
                 .filter
                 .set_relay_state(relay_id, FilterState::ready(filter.clone()));

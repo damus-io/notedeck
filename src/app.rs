@@ -147,6 +147,7 @@ fn try_process_event(damus: &mut Damus, ctx: &egui::Context) -> Result<()> {
                 &mut damus.pool,
                 &mut damus.note_cache,
                 timeline,
+                &damus.accounts.mutefun(),
             )
         };
 
@@ -160,6 +161,7 @@ fn try_process_event(damus: &mut Damus, ctx: &egui::Context) -> Result<()> {
                 &txn,
                 &mut damus.unknown_ids,
                 &mut damus.note_cache,
+                &damus.accounts.mutefun(),
             ) {
                 error!("poll_notes_into_view: {err}");
             }
@@ -208,6 +210,7 @@ fn update_damus(damus: &mut Damus, ctx: &egui::Context) {
                 &damus.ndb,
                 &mut damus.note_cache,
                 &mut damus.columns,
+                &damus.accounts.mutefun(),
             ) {
                 warn!("update_damus init: {err}");
             }

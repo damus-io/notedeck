@@ -3,7 +3,7 @@ use nostrdb::{Ndb, Note, Transaction};
 use tracing::{debug, error, info};
 use uuid::Uuid;
 
-use crate::{filter::UnifiedSubscription, note::NoteRef, Error};
+use crate::{filter::UnifiedSubscription, muted::MuteFun, note::NoteRef, Error};
 
 pub struct MultiSubscriber {
     filters: Vec<Filter>,
@@ -105,7 +105,12 @@ impl MultiSubscriber {
         }
     }
 
-    pub fn poll_for_notes(&mut self, ndb: &Ndb, txn: &Transaction) -> Result<Vec<NoteRef>, Error> {
+    pub fn poll_for_notes(
+        &mut self,
+        ndb: &Ndb,
+        txn: &Transaction,
+        is_muted: &MuteFun,
+    ) -> Result<Vec<NoteRef>, Error> {
         let sub = self.sub.as_ref().ok_or(Error::no_active_sub())?;
         let new_note_keys = ndb.poll_for_notes(sub.local, 500);
 
@@ -122,6 +127,10 @@ impl MultiSubscriber {
             } else {
                 continue;
             };
+
+            if is_muted(&note) {
+                continue;
+            }
 
             notes.push(note);
         }

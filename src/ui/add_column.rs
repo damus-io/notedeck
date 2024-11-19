@@ -374,6 +374,7 @@ pub fn render_add_column_routes(
                     &mut app.pool,
                     &mut app.note_cache,
                     app.since_optimize,
+                    &app.accounts.mutefun(),
                 );
                 app.columns_mut().add_timeline_to_column(col, timeline);
             }

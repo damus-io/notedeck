@@ -1,5 +1,6 @@
 use crate::{
     multi_subscriber::MultiSubscriber,
+    muted::MuteFun,
     note::NoteRef,
     notecache::NoteCache,
     notes_holder::NotesHolder,
@@ -74,6 +75,7 @@ impl NotesHolder for Thread {
         _: &[u8; 32],
         _: Vec<Filter>,
         notes: Vec<NoteRef>,
+        _: &MuteFun,
     ) -> Self {
         Thread::new(notes)
     }

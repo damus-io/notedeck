@@ -3,6 +3,7 @@ use crate::{
     column::Columns,
     draft::Drafts,
     imgcache::ImageCache,
+    muted::MuteFun,
     nav::RenderNavAction,
     notecache::NoteCache,
     notes_holder::NotesHolderStorage,
@@ -82,7 +83,7 @@ pub fn render_timeline_route(
             textmode,
         )
         .id_source(egui::Id::new(("threadscroll", col)))
-        .ui(ui)
+        .ui(ui, &accounts.mutefun())
         .map(Into::into),
 
         TimelineRoute::Reply(id) => {
@@ -118,9 +119,16 @@ pub fn render_timeline_route(
             action.map(Into::into)
         }
 
-        TimelineRoute::Profile(pubkey) => {
-            render_profile_route(&pubkey, ndb, profiles, img_cache, note_cache, col, ui)
-        }
+        TimelineRoute::Profile(pubkey) => render_profile_route(
+            &pubkey,
+            ndb,
+            profiles,
+            img_cache,
+            note_cache,
+            col,
+            ui,
+            &accounts.mutefun(),
+        ),
 
         TimelineRoute::Quote(id) => {
             let txn = Transaction::new(ndb).expect("txn");
@@ -157,6 +165,7 @@ pub fn render_profile_route(
     note_cache: &mut NoteCache,
     col: usize,
     ui: &mut egui::Ui,
+    is_muted: &MuteFun,
 ) -> Option<RenderNavAction> {
     let note_action = ProfileView::new(
         pubkey,
@@ -167,7 +176,7 @@ pub fn render_profile_route(
         img_cache,
         NoteOptions::default(),
     )
-    .ui(ui);
+    .ui(ui, is_muted);
 
     note_action.map(RenderNavAction::NoteAction)
 }

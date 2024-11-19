@@ -85,6 +85,7 @@ impl RenderNavResponse {
                         &mut app.note_cache,
                         &mut app.pool,
                         &txn,
+                        &app.accounts.mutefun(),
                     );
                 }
             }
@@ -109,6 +110,7 @@ impl RenderNavResponse {
                     &mut app.threads,
                     &mut app.pool,
                     root_id,
+                    &app.accounts.mutefun(),
                 );
             }
 
@@ -120,6 +122,7 @@ impl RenderNavResponse {
                     &mut app.profiles,
                     &mut app.pool,
                     pubkey.bytes(),
+                    &app.accounts.mutefun(),
                 );
             }
             col_changed = true;

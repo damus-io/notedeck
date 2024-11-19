@@ -3,6 +3,8 @@ use std::collections::BTreeSet;
 
 use tracing::debug;
 
+pub type MuteFun = dyn Fn(&Note) -> bool;
+
 #[derive(Default)]
 pub struct Muted {
     // TODO - implement private mutes
