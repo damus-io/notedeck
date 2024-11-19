@@ -19,7 +19,7 @@ use crate::{
     support::Support,
     thread::Thread,
     timeline::{self, Timeline, TimelineKind},
-    ui::{self, DesktopSidePanel},
+    ui::{self, add_column::AddColumnRoute, DesktopSidePanel},
     unknowns::UnknownIds,
     view_state::ViewState,
     Result,
@@ -490,9 +490,14 @@ impl Damus {
         let debug = parsed_args.debug;
 
         if columns.columns().is_empty() {
-            columns.add_column(Column::new(vec![Route::Accounts(
-                AccountsRoute::AddAccount,
-            )]));
+            if accounts.get_accounts().is_empty() {
+                columns.add_column(Column::new(vec![
+                    Route::AddColumn(AddColumnRoute::Base),
+                    Route::Accounts(AccountsRoute::AddAccount),
+                ]));
+            } else {
+                columns.new_column_picker();
+            }
         }
 
         let app_rect_handler = AppSizeHandler::new(&path);
