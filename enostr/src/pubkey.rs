@@ -3,12 +3,21 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use crate::Error;
 use nostr::bech32::Hrp;
 use std::fmt;
+use std::ops::Deref;
 use tracing::debug;
 
 #[derive(Eq, PartialEq, Clone, Copy, Hash)]
 pub struct Pubkey([u8; 32]);
 
 static HRP_NPUB: Hrp = Hrp::parse_unchecked("npub");
+
+impl Deref for Pubkey {
+    type Target = [u8; 32];
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
 
 impl Pubkey {
     pub fn new(data: [u8; 32]) -> Self {
