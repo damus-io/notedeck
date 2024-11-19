@@ -109,6 +109,7 @@ pub trait NotesHolder {
         notes: Vec<NoteRef>,
     ) -> Self;
 
+    #[must_use = "process_action must be handled in the Ok(action) case"]
     fn poll_notes_into_view(
         &mut self,
         txn: &Transaction,

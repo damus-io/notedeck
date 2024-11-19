@@ -75,6 +75,7 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) -> Option<Rend
                     &mut app.pool,
                     &mut app.drafts,
                     &mut app.img_cache,
+                    &mut app.unknown_ids,
                     &mut app.note_cache,
                     &mut app.threads,
                     &mut app.accounts,

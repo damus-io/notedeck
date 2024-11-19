@@ -5,6 +5,7 @@ use crate::{
     notes_holder::{NotesHolder, NotesHolderStorage},
     thread::Thread,
     ui::note::NoteOptions,
+    unknowns::UnknownIds,
 };
 use nostrdb::{Ndb, NoteKey, Transaction};
 use tracing::error;
@@ -15,6 +16,7 @@ pub struct ThreadView<'a> {
     threads: &'a mut NotesHolderStorage<Thread>,
     ndb: &'a Ndb,
     note_cache: &'a mut NoteCache,
+    unknown_ids: &'a mut UnknownIds,
     img_cache: &'a mut ImageCache,
     selected_note_id: &'a [u8; 32],
     textmode: bool,
@@ -27,6 +29,7 @@ impl<'a> ThreadView<'a> {
         threads: &'a mut NotesHolderStorage<Thread>,
         ndb: &'a Ndb,
         note_cache: &'a mut NoteCache,
+        unknown_ids: &'a mut UnknownIds,
         img_cache: &'a mut ImageCache,
         selected_note_id: &'a [u8; 32],
         textmode: bool,
@@ -36,6 +39,7 @@ impl<'a> ThreadView<'a> {
             threads,
             ndb,
             note_cache,
+            unknown_ids,
             img_cache,
             selected_note_id,
             textmode,
@@ -99,9 +103,12 @@ impl<'a> ThreadView<'a> {
                 // TODO(jb55): skip poll if ThreadResult is fresh?
 
                 // poll for new notes and insert them into our existing notes
-                if let Err(e) = thread.poll_notes_into_view(&txn, self.ndb) {
-                    error!("Thread::poll_notes_into_view: {e}");
-                }
+                match thread.poll_notes_into_view(&txn, self.ndb) {
+                    Ok(action) => {
+                        action.process_action(&txn, self.ndb, self.unknown_ids, self.note_cache)
+                    }
+                    Err(err) => error!("{err}"),
+                };
 
                 // This is threadview. We are not the universe view...
                 let is_universe = false;

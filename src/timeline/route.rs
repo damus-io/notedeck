@@ -16,6 +16,7 @@ use crate::{
         },
         profile::ProfileView,
     },
+    unknowns::UnknownIds,
 };
 
 use enostr::{NoteId, Pubkey, RelayPool};
@@ -47,6 +48,7 @@ pub fn render_timeline_route(
     pool: &mut RelayPool,
     drafts: &mut Drafts,
     img_cache: &mut ImageCache,
+    unknown_ids: &mut UnknownIds,
     note_cache: &mut NoteCache,
     threads: &mut NotesHolderStorage<Thread>,
     accounts: &mut AccountManager,
@@ -93,10 +95,17 @@ pub fn render_timeline_route(
         }
 
         TimelineRoute::Thread(id) => {
-            let timeline_response =
-                ui::ThreadView::new(threads, ndb, note_cache, img_cache, id.bytes(), textmode)
-                    .id_source(egui::Id::new(("threadscroll", col)))
-                    .ui(ui);
+            let timeline_response = ui::ThreadView::new(
+                threads,
+                ndb,
+                note_cache,
+                unknown_ids,
+                img_cache,
+                id.bytes(),
+                textmode,
+            )
+            .id_source(egui::Id::new(("threadscroll", col)))
+            .ui(ui);
             if let Some(bar_action) = timeline_response.bar_action {
                 let txn = Transaction::new(ndb).expect("txn");
                 let mut cur_column = columns.columns_mut();
