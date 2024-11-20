@@ -7,7 +7,6 @@ use crate::{
     profile::Profile,
     relay_pool_manager::RelayPoolManager,
     route::Route,
-    storage::{self},
     thread::Thread,
     timeline::{
         route::{render_timeline_route, TimelineRoute},
@@ -60,7 +59,8 @@ impl RenderNavResponse {
         RenderNavResponse { column, response }
     }
 
-    pub fn process_render_nav_response(&self, app: &mut Damus) {
+    #[must_use = "Make sure to save columns if result is true"]
+    pub fn process_render_nav_response(&self, app: &mut Damus) -> bool {
         let mut col_changed: bool = false;
         let col = self.column;
 
@@ -146,9 +146,7 @@ impl RenderNavResponse {
             }
         }
 
-        if col_changed {
-            storage::save_columns(&app.path, app.columns().as_serializable_columns());
-        }
+        col_changed
     }
 }
 

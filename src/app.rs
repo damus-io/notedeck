@@ -744,8 +744,10 @@ fn render_damus_mobile(ctx: &egui::Context, app: &mut Damus) {
     //let routes = app.timelines[0].routes.clone();
 
     main_panel(&ctx.style(), ui::is_narrow(ctx)).show(ctx, |ui| {
-        if !app.columns.columns().is_empty() {
-            nav::render_nav(0, app, ui).process_render_nav_response(app);
+        if !app.columns.columns().is_empty()
+            && nav::render_nav(0, app, ui).process_render_nav_response(app)
+        {
+            storage::save_columns(&app.path, app.columns().as_serializable_columns());
         }
     });
 }
@@ -822,6 +824,7 @@ fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus) {
                 );
             });
 
+            let mut save_cols = false;
             let mut responses = Vec::with_capacity(app.columns.num_columns());
             for col_index in 0..app.columns.num_columns() {
                 strip.cell(|ui| {
@@ -840,7 +843,12 @@ fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus) {
             }
 
             for response in responses {
-                response.process_render_nav_response(app);
+                let save = response.process_render_nav_response(app);
+                save_cols = save_cols || save;
+            }
+
+            if save_cols {
+                storage::save_columns(&app.path, app.columns().as_serializable_columns());
             }
         });
 }
