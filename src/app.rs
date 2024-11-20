@@ -824,7 +824,6 @@ fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus) {
                 );
             });
 
-            let mut save_cols = false;
             let mut responses = Vec::with_capacity(app.columns.num_columns());
             for col_index in 0..app.columns.num_columns() {
                 strip.cell(|ui| {
@@ -842,6 +841,7 @@ fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus) {
                 //strip.cell(|ui| timeline::timeline_view(ui, app, timeline_ind));
             }
 
+            let mut save_cols = false;
             for response in responses {
                 let save = response.process_render_nav_response(app);
                 save_cols = save_cols || save;
