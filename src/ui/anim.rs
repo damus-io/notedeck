@@ -60,6 +60,18 @@ impl AnimationHelper {
         }
     }
 
+    pub fn no_animation(ui: &mut egui::Ui, size: egui::Vec2) -> Self {
+        let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
+
+        Self {
+            rect,
+            center: rect.center(),
+            response,
+            animation_progress: 0.0,
+            expansion_multiple: ICON_EXPANSION_MULTIPLE,
+        }
+    }
+
     pub fn new_from_rect(
         ui: &mut egui::Ui,
         animation_name: impl std::hash::Hash,
