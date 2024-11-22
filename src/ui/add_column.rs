@@ -24,6 +24,7 @@ pub enum AddColumnResponse {
     Timeline(Timeline),
     UndecidedNotification,
     ExternalNotification,
+    Hashtag,
 }
 
 pub enum NotificationColumnType {
@@ -38,6 +39,8 @@ enum AddColumnOption {
     ExternalNotification,
     Notification(PubkeySource),
     Home(PubkeySource),
+    UndecidedHashtag,
+    Hashtag(String),
 }
 
 #[derive(Clone, Copy, Eq, PartialEq, Debug, Serialize, Deserialize)]
@@ -45,6 +48,7 @@ pub enum AddColumnRoute {
     Base,
     UndecidedNotification,
     ExternalNotification,
+    Hashtag,
 }
 
 impl AddColumnOption {
@@ -69,6 +73,10 @@ impl AddColumnOption {
                     .map(AddColumnResponse::Timeline)
             }
             AddColumnOption::ExternalNotification => Some(AddColumnResponse::ExternalNotification),
+            AddColumnOption::UndecidedHashtag => Some(AddColumnResponse::Hashtag),
+            AddColumnOption::Hashtag(hashtag) => TimelineKind::Hashtag(hashtag)
+                .into_timeline(ndb, None)
+                .map(AddColumnResponse::Timeline),
         }
     }
 }
@@ -292,6 +300,12 @@ impl<'a> AddColumnView<'a> {
             icon: egui::include_image!("../../assets/icons/notifications_icon_dark_4x.png"),
             option: AddColumnOption::UndecidedNotification,
         });
+        vec.push(ColumnOptionData {
+            title: "Hashtag",
+            description: "Stay up to date with a certain hashtag",
+            icon: egui::include_image!("../../assets/icons/notifications_icon_dark_4x.png"),
+            option: AddColumnOption::UndecidedHashtag,
+        });
 
         vec
     }
@@ -338,25 +352,16 @@ pub fn render_add_column_routes(
     col: usize,
     route: &AddColumnRoute,
 ) {
+    let mut add_column_view = AddColumnView::new(
+        &mut app.view_state.id_state_map,
+        &app.ndb,
+        app.accounts.get_selected_account(),
+    );
     let resp = match route {
-        AddColumnRoute::Base => AddColumnView::new(
-            &mut app.view_state.id_state_map,
-            &app.ndb,
-            app.accounts.get_selected_account(),
-        )
-        .ui(ui),
-        AddColumnRoute::UndecidedNotification => AddColumnView::new(
-            &mut app.view_state.id_state_map,
-            &app.ndb,
-            app.accounts.get_selected_account(),
-        )
-        .notifications_ui(ui),
-        AddColumnRoute::ExternalNotification => AddColumnView::new(
-            &mut app.view_state.id_state_map,
-            &app.ndb,
-            app.accounts.get_selected_account(),
-        )
-        .external_notification_ui(ui),
+        AddColumnRoute::Base => add_column_view.ui(ui),
+        AddColumnRoute::UndecidedNotification => add_column_view.notifications_ui(ui),
+        AddColumnRoute::ExternalNotification => add_column_view.external_notification_ui(ui),
+        AddColumnRoute::Hashtag => hashtag_ui(ui, &app.ndb, &mut app.view_state.id_string_map),
     };
 
     if let Some(resp) = resp {
@@ -382,8 +387,45 @@ pub fn render_add_column_routes(
                     crate::route::Route::AddColumn(AddColumnRoute::ExternalNotification),
                 );
             }
+            AddColumnResponse::Hashtag => {
+                app.columns_mut()
+                    .column_mut(col)
+                    .router_mut()
+                    .route_to(crate::route::Route::AddColumn(AddColumnRoute::Hashtag));
+            }
         };
     }
+}
+
+pub fn hashtag_ui(
+    ui: &mut Ui,
+    ndb: &Ndb,
+    id_string_map: &mut HashMap<Id, String>,
+) -> Option<AddColumnResponse> {
+    padding(16.0, ui, |ui| {
+        let id = ui.id().with("hashtag");
+        let text_buffer = id_string_map.entry(id).or_default();
+
+        let text_edit = egui::TextEdit::singleline(text_buffer)
+            .hint_text(
+                RichText::new("Enter the desired hashtag here")
+                    .text_style(NotedeckTextStyle::Body.text_style()),
+            )
+            .vertical_align(Align::Center)
+            .desired_width(f32::INFINITY)
+            .min_size(Vec2::new(0.0, 40.0))
+            .margin(Margin::same(12.0));
+        ui.add(text_edit);
+
+        if ui.button("Add").clicked() {
+            let resp = AddColumnOption::Hashtag(text_buffer.to_owned()).take_as_response(ndb, None);
+            id_string_map.remove(&id);
+            resp
+        } else {
+            None
+        }
+    })
+    .inner
 }
 
 mod preview {

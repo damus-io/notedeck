@@ -7,6 +7,7 @@ use crate::login_manager::AcquireKeyState;
 pub struct ViewState {
     pub login: AcquireKeyState,
     pub id_state_map: HashMap<egui::Id, AcquireKeyState>,
+    pub id_string_map: HashMap<egui::Id, String>,
 }
 
 impl ViewState {

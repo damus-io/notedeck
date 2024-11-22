@@ -40,6 +40,8 @@ pub enum TimelineKind {
 
     /// Generic filter
     Generic,
+
+    Hashtag(String),
 }
 
 impl Display for TimelineKind {
@@ -50,6 +52,7 @@ impl Display for TimelineKind {
             TimelineKind::Notifications(_) => f.write_str("Notifications"),
             TimelineKind::Profile(_) => f.write_str("Profile"),
             TimelineKind::Universe => f.write_str("Universe"),
+            TimelineKind::Hashtag(_) => f.write_str("Hashtag"),
         }
     }
 }
@@ -126,6 +129,19 @@ impl TimelineKind {
                 ))
             }
 
+            TimelineKind::Hashtag(hashtag) => {
+                let filter = Filter::new()
+                    .kinds([1])
+                    .limit(filter::default_limit())
+                    .tags([hashtag.clone()], 't')
+                    .build();
+
+                Some(Timeline::new(
+                    TimelineKind::Hashtag(hashtag),
+                    FilterState::ready(vec![filter]),
+                ))
+            }
+
             TimelineKind::List(ListKind::Contact(pk_src)) => {
                 let pk = match &pk_src {
                     PubkeySource::DeckAuthor => default_user?,
@@ -186,6 +202,7 @@ impl TimelineKind {
             },
             TimelineKind::Universe => "Universe".to_owned(),
             TimelineKind::Generic => "Custom Filter".to_owned(),
+            TimelineKind::Hashtag(hashtag) => format!("#{}", hashtag),
         }
     }
 }

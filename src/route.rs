@@ -113,6 +113,7 @@ impl Route {
                 AddColumnRoute::ExternalNotification => {
                     "Add External Notifications Column".to_owned()
                 }
+                AddColumnRoute::Hashtag => "Add Hashtag Column".to_owned(),
             },
             Route::Support => "Damus Support".to_owned(),
         };
