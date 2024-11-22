@@ -214,10 +214,7 @@ impl<'a> PostView<'a> {
                                 }
 
                                 if ui
-                                    .add_sized(
-                                        [91.0, 32.0],
-                                        egui::Button::new("Post now")
-                                    )
+                                    .add_sized([91.0, 32.0], egui::Button::new("Post now"))
                                     .clicked()
                                 {
                                     let new_post = NewPost::new(
