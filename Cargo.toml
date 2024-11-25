@@ -5,6 +5,8 @@ authors = ["William Casarin <jb55@jb55.com>"]
 edition = "2021"
 default-run = "notedeck"
 #rust-version = "1.60"
+license = "GPLv3"
+description = "A multiplatform nostr client"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -113,6 +115,11 @@ name = "android.permission.INTERNET"
 
 [package.metadata.android.application]
 label = "Damus"
+
+[package.metadata.generate-rpm]
+assets = [
+    { source = "target/release/notedeck", dest = "/usr/bin/notedeck", mode = "755" },
+]
 
 [[bin]]
 name = "notedeck"
