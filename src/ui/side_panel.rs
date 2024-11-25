@@ -85,7 +85,15 @@ impl<'a> DesktopSidePanel<'a> {
                     .with_layout(Layout::top_down(egui::Align::Center), |ui| {
                         let expand_resp = ui.add(expand_side_panel_button());
                         ui.add_space(28.0);
-                        let compose_resp = ui.add(compose_note_button());
+                        let is_interactive = self
+                            .selected_account
+                            .is_some_and(|s| s.secret_key.is_some());
+                        let compose_resp = ui.add(compose_note_button(is_interactive));
+                        let compose_resp = if is_interactive {
+                            compose_resp
+                        } else {
+                            compose_resp.on_hover_cursor(egui::CursorIcon::NotAllowed)
+                        };
                         let search_resp = ui.add(search_button());
                         let column_resp = ui.add(add_column_button(dark_mode));
 
@@ -279,15 +287,19 @@ fn add_column_button(dark_mode: bool) -> impl Widget {
     }
 }
 
-fn compose_note_button() -> impl Widget {
-    |ui: &mut egui::Ui| -> egui::Response {
+fn compose_note_button(interactive: bool) -> impl Widget {
+    move |ui: &mut egui::Ui| -> egui::Response {
         let max_size = ICON_WIDTH * ICON_EXPANSION_MULTIPLE; // max size of the widget
 
         let min_outer_circle_diameter = 40.0;
         let min_plus_sign_size = 14.0; // length of the plus sign
         let min_line_width = 2.25; // width of the plus sign
 
-        let helper = AnimationHelper::new(ui, "note-compose-button", vec2(max_size, max_size));
+        let helper = if interactive {
+            AnimationHelper::new(ui, "note-compose-button", vec2(max_size, max_size))
+        } else {
+            AnimationHelper::no_animation(ui, vec2(max_size, max_size))
+        };
 
         let painter = ui.painter_at(helper.get_animation_rect());
 
@@ -295,7 +307,13 @@ fn compose_note_button() -> impl Widget {
         let use_line_width = helper.scale_1d_pos(min_line_width);
         let use_edge_circle_radius = helper.scale_radius(min_line_width);
 
-        painter.circle_filled(helper.center(), use_background_radius, colors::PINK);
+        let fill_color = if interactive {
+            colors::PINK
+        } else {
+            ui.visuals().noninteractive().bg_fill
+        };
+
+        painter.circle_filled(helper.center(), use_background_radius, fill_color);
 
         let min_half_plus_sign_size = min_plus_sign_size / 2.0;
         let north_edge = helper.scale_from_center(0.0, min_half_plus_sign_size);

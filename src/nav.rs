@@ -205,7 +205,7 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) -> RenderNavRe
                 None
             }
             Route::ComposeNote => {
-                let kp = app.accounts.selected_or_first_nsec()?;
+                let kp = app.accounts.get_selected_account()?.to_full()?;
                 let draft = app.drafts.compose_mut();
 
                 let txn = nostrdb::Transaction::new(&app.ndb).expect("txn");
