@@ -72,7 +72,7 @@ async fn main() {
     setup_logging(&path);
 
     let _res = eframe::run_native(
-        "Damus NoteDeck",
+        "Damus Notedeck",
         generate_native_options(path),
         Box::new(|cc| {
             Ok(Box::new(Damus::new(
