@@ -105,7 +105,7 @@ jobs:
 #        run: ./trunk build
 
   packages:
-    name: Generate Packages
+    name: Build Packages
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
@@ -128,10 +128,14 @@ jobs:
           cargo generate-rpm
           cargo deb
 
-      - name: Upload Packages
-        uses: actions/upload-artifact@v3
+      - name: Upload RPM Package
+        uses: actions/upload-artifact@v4
         with:
-          name: notedeck-packages
-          path: |
-            target/generate-rpm/*.rpm
-            target/debian/*.deb
+          name: notedeck-rpm
+          path: target/generate-rpm/*.rpm
+
+      - name: Upload Debian Package
+        uses: actions/upload-artifact@v4
+        with:
+          name: notedeck-deb
+          path: target/debian/*.deb
