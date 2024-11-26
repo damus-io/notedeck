@@ -103,3 +103,31 @@ jobs:
 #        run: wget -qO- https://github.com/thedodd/trunk/releases/latest/download/trunk-x86_64-unknown-linux-gnu.tar.gz | tar -xzf-
 #      - name: Build
 #        run: ./trunk build
+
+  rpm:
+    name: Build RPM
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Install RPM Build Tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rpm binutils
+          cargo install cargo-generate-rpm
+
+      - name: Build Rust Project
+        run: cargo build --release
+
+      - name: Strip Debug Symbols
+        run: strip target/release/notedeck
+
+      - name: Build RPM
+        run: cargo generate-rpm
+
+      - name: Upload RPM Artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: notedeck-rpm
+          path: target/generate-rpm/*.rpm
