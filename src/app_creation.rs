@@ -14,7 +14,10 @@ pub fn generate_native_options(paths: DataPath) -> NativeOptions {
         let builder = builder
             .with_fullsize_content_view(true)
             .with_titlebar_shown(false)
-            .with_title_shown(false);
+            .with_title_shown(false)
+            .with_icon(std::sync::Arc::new(
+                eframe::icon_data::from_png_bytes(app_icon()).expect("icon"),
+            ));
 
         if let Some(window_size) = AppSizeHandler::new(&paths).get_app_size() {
             builder.with_inner_size(window_size)
@@ -25,6 +28,9 @@ pub fn generate_native_options(paths: DataPath) -> NativeOptions {
 
     eframe::NativeOptions {
         window_builder: Some(window_builder),
+        viewport: egui::ViewportBuilder::default().with_icon(std::sync::Arc::new(
+            eframe::icon_data::from_png_bytes(app_icon()).expect("icon"),
+        )),
         ..Default::default()
     }
 }
@@ -41,6 +47,10 @@ fn generate_native_options_with_builder_modifiers(
     }
 }
 
+pub fn app_icon() -> &'static [u8; 192739] {
+    std::include_bytes!("../assets/damus_rounded_256.png")
+}
+
 pub fn generate_mobile_emulator_native_options() -> eframe::NativeOptions {
     generate_native_options_with_builder_modifiers(|builder| {
         builder
@@ -48,6 +58,7 @@ pub fn generate_mobile_emulator_native_options() -> eframe::NativeOptions {
             .with_titlebar_shown(false)
             .with_title_shown(false)
             .with_inner_size([405.0, 915.0])
+            .with_icon(eframe::icon_data::from_png_bytes(app_icon()).expect("icon"))
     })
 }
 
