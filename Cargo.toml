@@ -13,11 +13,17 @@ description = "A multiplatform nostr client"
 [lib]
 crate-type = ["lib", "cdylib"]
 
-[dependencies]
-#egui-android = { git = "https://github.com/jb55/egui-android.git" }
+[workspace.dependencies]
 egui = { git = "https://github.com/emilk/egui", rev = "fcb7764e48ce00f8f8e58da10f937410d65b0bfb", features = ["serde"] }
 eframe = { git = "https://github.com/emilk/egui", rev = "fcb7764e48ce00f8f8e58da10f937410d65b0bfb", package = "eframe", default-features = false, features = [ "wgpu", "wayland", "x11", "android-native-activity" ] }
 egui_extras = { git = "https://github.com/emilk/egui", rev = "fcb7764e48ce00f8f8e58da10f937410d65b0bfb", package = "egui_extras", features = ["all_loaders"] }
+nostrdb = { git = "https://github.com/damus-io/nostrdb-rs", rev = "8d96dbd9b8e73ecb90819d843d14dc6c57e3acd4" }
+
+[dependencies]
+#egui-android = { git = "https://github.com/jb55/egui-android.git" }
+egui = { workspace = true }
+eframe = { workspace = true }
+egui_extras = { workspace = true }
 ehttp = "0.2.0"
 egui_tabs = { git = "https://github.com/damus-io/egui-tabs", branch = "egui-0.28" }
 egui_nav = { git = "https://github.com/damus-io/egui-nav", rev = "956338a90e09c7cda951d554626483e0cdbc7825" }
@@ -30,7 +36,7 @@ serde_derive = "1"
 serde = { version = "1", features = ["derive"] } # You only need this if you want app persistence
 tracing = "0.1.40"
 #wasm-bindgen = "0.2.83"
-nostrdb = { git = "https://github.com/damus-io/nostrdb-rs", rev = "9bbafd8a2e904b77a51e7cfca71eb5bb5650e829" }
+nostrdb = { workspace = true }
 #nostrdb = { path = "/Users/jb55/dev/github/damus-io/nostrdb-rs" }
 #nostrdb = "0.3.4"
 enostr = { path = "enostr" } 
