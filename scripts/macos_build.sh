@@ -13,21 +13,11 @@ if [ "$CURRENT_DIR" != "$REQUIRED_DIR" ]; then
     exit 1
 fi
 
-# Load environment variables from macos_build_secrets.sh
-SECRETS_FILE="./scripts/macos_build_secrets.sh"
-if [ ! -f "$SECRETS_FILE" ]; then
-    echo "Error: Secrets file '$SECRETS_FILE' not found. Please create it with the required variables." >&2
-    exit 1
-fi
-
-# Source the secrets
-source "$SECRETS_FILE"
-
 # Ensure all required variables are set
 REQUIRED_VARS=(NOTEDECK_APPLE_RELEASE_CERT_ID NOTEDECK_RELEASE_APPLE_ID NOTEDECK_APPLE_APP_SPECIFIC_PW NOTEDECK_APPLE_TEAM_ID)
 for VAR in "${REQUIRED_VARS[@]}"; do
     if [ -z "${!VAR:-}" ]; then
-        echo "Error: Required variable '$VAR' is not set in $SECRETS_FILE." >&2
+        echo "Error: Required variable '$VAR' is not set." >&2
         exit 1
     fi
 done
