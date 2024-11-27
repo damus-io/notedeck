@@ -75,11 +75,11 @@ rm notedeck.zip
 
 # Create the .dmg package
 echo "Creating .dmg package..."
-mkdir -p dist
+mkdir -p packages
 create-dmg \
   --window-size 600 400 \
   --app-drop-link 400 100 \
-  dist/notedeck.dmg \
+  packages/notedeck.dmg \
   target/release/bundle/osx/notedeck.app
 
 echo "Build and signing process completed successfully."
