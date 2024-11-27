@@ -32,15 +32,11 @@ impl Keypair {
         }
     }
 
-    pub fn to_full<'a>(&'a self) -> Option<FilledKeypair<'a>> {
-        if let Some(secret_key) = &self.secret_key {
-            Some(FilledKeypair {
-                pubkey: &self.pubkey,
-                secret_key: secret_key,
-            })
-        } else {
-            None
-        }
+    pub fn to_full(&self) -> Option<FilledKeypair<'_>> {
+        self.secret_key.as_ref().map(|secret_key| FilledKeypair {
+            pubkey: &self.pubkey,
+            secret_key,
+        })
     }
 }
 
@@ -74,7 +70,7 @@ impl FullKeypair {
         FullKeypair { pubkey, secret_key }
     }
 
-    pub fn to_filled<'a>(&'a self) -> FilledKeypair<'a> {
+    pub fn to_filled(&self) -> FilledKeypair<'_> {
         FilledKeypair::new(&self.pubkey, &self.secret_key)
     }
 
@@ -126,7 +122,7 @@ pub struct SerializableKeypair {
 impl SerializableKeypair {
     pub fn from_keypair(kp: &Keypair, pass: &str, log_n: u8) -> Self {
         Self {
-            pubkey: kp.pubkey.clone(),
+            pubkey: kp.pubkey,
             encrypted_secret_key: kp.secret_key.clone().and_then(|s| {
                 EncryptedSecretKey::new(&s, pass, log_n, nostr::nips::nip49::KeySecurity::Weak).ok()
             }),
@@ -135,7 +131,7 @@ impl SerializableKeypair {
 
     pub fn to_keypair(&self, pass: &str) -> Keypair {
         Keypair::new(
-            self.pubkey.clone(),
+            self.pubkey,
             self.encrypted_secret_key
                 .and_then(|e| e.to_secret_key(pass).ok()),
         )

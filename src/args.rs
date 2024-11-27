@@ -245,12 +245,7 @@ impl ArgColumn {
 
 #[cfg(test)]
 mod tests {
-    use crate::{
-        app::Damus,
-        result::Result,
-        storage::{delete_file, write_file, Directory},
-        Error,
-    };
+    use crate::app::Damus;
 
     use std::path::{Path, PathBuf};
 
@@ -262,7 +257,7 @@ mod tests {
     }
 
     fn rmrf(path: impl AsRef<Path>) {
-        std::fs::remove_dir_all(path);
+        let _ = std::fs::remove_dir_all(path);
     }
 
     /// Ensure dbpath actually sets the dbpath correctly.
@@ -281,7 +276,7 @@ mod tests {
         .collect();
 
         let ctx = egui::Context::default();
-        let app = Damus::new(&ctx, &datapath, args);
+        let _app = Damus::new(&ctx, &datapath, args);
 
         assert!(Path::new(&dbpath.join("data.mdb")).exists());
         assert!(Path::new(&dbpath.join("lock.mdb")).exists());
