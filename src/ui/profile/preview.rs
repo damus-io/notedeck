@@ -1,11 +1,11 @@
-use crate::app_style::NotedeckTextStyle;
+use crate::app_style::{get_font_size, NotedeckTextStyle};
 use crate::imgcache::ImageCache;
 use crate::storage::{DataPath, DataPathType};
 use crate::ui::ProfilePic;
 use crate::user_account::UserAccount;
 use crate::{colors, images, DisplayName};
 use egui::load::TexturePoll;
-use egui::{Frame, RichText, Sense, Widget};
+use egui::{Frame, Label, RichText, Sense, Widget};
 use egui_extras::Size;
 use enostr::NoteId;
 use nostrdb::ProfileRecord;
@@ -93,11 +93,20 @@ impl<'a, 'cache> egui::Widget for ProfilePreview<'a, 'cache> {
 pub struct SimpleProfilePreview<'a, 'cache> {
     profile: Option<&'a ProfileRecord<'a>>,
     cache: &'cache mut ImageCache,
+    is_nsec: bool,
 }
 
 impl<'a, 'cache> SimpleProfilePreview<'a, 'cache> {
-    pub fn new(profile: Option<&'a ProfileRecord<'a>>, cache: &'cache mut ImageCache) -> Self {
-        SimpleProfilePreview { profile, cache }
+    pub fn new(
+        profile: Option<&'a ProfileRecord<'a>>,
+        cache: &'cache mut ImageCache,
+        is_nsec: bool,
+    ) -> Self {
+        SimpleProfilePreview {
+            profile,
+            cache,
+            is_nsec,
+        }
     }
 }
 
@@ -108,6 +117,16 @@ impl<'a, 'cache> egui::Widget for SimpleProfilePreview<'a, 'cache> {
                 ui.add(ProfilePic::new(self.cache, get_profile_url(self.profile)).size(48.0));
                 ui.vertical(|ui| {
                     ui.add(display_name_widget(get_display_name(self.profile), true));
+                    if !self.is_nsec {
+                        ui.add(
+                            Label::new(
+                                RichText::new("View only mode")
+                                    .size(get_font_size(ui.ctx(), &NotedeckTextStyle::Tiny))
+                                    .color(ui.visuals().warn_fg_color),
+                            )
+                            .selectable(false),
+                        );
+                    }
                 });
             })
             .response
@@ -203,8 +222,10 @@ fn display_name_widget(
 ) -> impl egui::Widget + '_ {
     move |ui: &mut egui::Ui| match display_name {
         DisplayName::One(n) => {
-            let name_response =
-                ui.label(RichText::new(n).text_style(NotedeckTextStyle::Heading3.text_style()));
+            let name_response = ui.add(
+                Label::new(RichText::new(n).text_style(NotedeckTextStyle::Heading3.text_style()))
+                    .selectable(false),
+            );
             if add_placeholder_space {
                 ui.add_space(16.0);
             }
@@ -215,14 +236,21 @@ fn display_name_widget(
             display_name,
             username,
         } => {
-            ui.label(
-                RichText::new(display_name).text_style(NotedeckTextStyle::Heading3.text_style()),
+            ui.add(
+                Label::new(
+                    RichText::new(display_name)
+                        .text_style(NotedeckTextStyle::Heading3.text_style()),
+                )
+                .selectable(false),
             );
 
-            ui.label(
-                RichText::new(format!("@{}", username))
-                    .size(12.0)
-                    .color(colors::MID_GRAY),
+            ui.add(
+                Label::new(
+                    RichText::new(format!("@{}", username))
+                        .size(12.0)
+                        .color(colors::MID_GRAY),
+                )
+                .selectable(false),
             )
         }
     }

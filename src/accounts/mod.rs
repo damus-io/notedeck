@@ -130,7 +130,16 @@ impl Accounts {
                         self.select_account(selected_index - 1);
                     }
                     Ordering::Equal => {
-                        self.clear_selected_account();
+                        if self.accounts.is_empty() {
+                            // If no accounts remain, clear the selection
+                            self.clear_selected_account();
+                        } else if index >= self.accounts.len() {
+                            // If the removed account was the last one, select the new last account
+                            self.select_account(self.accounts.len() - 1);
+                        } else {
+                            // Otherwise, select the account at the same position
+                            self.select_account(index);
+                        }
                     }
                     Ordering::Less => {}
                 }

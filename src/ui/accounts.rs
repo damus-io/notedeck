@@ -1,4 +1,4 @@
-use crate::colors::PINK;
+use crate::colors::{self, PINK};
 use crate::imgcache::ImageCache;
 use crate::{
     accounts::Accounts,
@@ -6,7 +6,9 @@ use crate::{
     ui::{Preview, PreviewConfig, View},
     Damus,
 };
-use egui::{Align, Button, Frame, Image, InnerResponse, Layout, RichText, ScrollArea, Ui, Vec2};
+use egui::{
+    Align, Button, Frame, Image, InnerResponse, Layout, RichText, ScrollArea, Stroke, Ui, Vec2,
+};
 use nostrdb::{Ndb, Transaction};
 
 use super::profile::preview::SimpleProfilePreview;
@@ -25,7 +27,7 @@ pub enum AccountsViewResponse {
 }
 
 #[derive(Debug)]
-enum ProfilePreviewOp {
+enum ProfilePreviewAction {
     RemoveAccount,
     SwitchTo,
 }
@@ -72,14 +74,9 @@ impl<'a> AccountsView<'a> {
                 };
 
                 for i in 0..accounts.num_accounts() {
-                    let account_pubkey = accounts
-                        .get_account(i)
-                        .map(|account| account.pubkey.bytes());
-
-                    let account_pubkey = if let Some(pubkey) = account_pubkey {
-                        pubkey
-                    } else {
-                        continue;
+                    let (account_pubkey, has_nsec) = match accounts.get_account(i) {
+                        Some(acc) => (acc.pubkey.bytes(), acc.secret_key.is_some()),
+                        None => continue,
                     };
 
                     let profile = ndb.get_profile_by_pubkey(&txn, account_pubkey).ok();
@@ -91,15 +88,22 @@ impl<'a> AccountsView<'a> {
                     };
 
                     let profile_peview_view = {
-                        let width = ui.available_width();
-                        let preview = SimpleProfilePreview::new(profile.as_ref(), img_cache);
-                        show_profile_card(ui, preview, width, is_selected)
+                        let max_size = egui::vec2(ui.available_width(), 77.0);
+                        let resp = ui.allocate_response(max_size, egui::Sense::click());
+                        ui.allocate_ui_at_rect(resp.rect, |ui| {
+                            let preview =
+                                SimpleProfilePreview::new(profile.as_ref(), img_cache, has_nsec);
+                            show_profile_card(ui, preview, max_size, is_selected, resp)
+                        })
+                        .inner
                     };
 
                     if let Some(op) = profile_peview_view {
                         return_op = Some(match op {
-                            ProfilePreviewOp::SwitchTo => AccountsViewResponse::SelectAccount(i),
-                            ProfilePreviewOp::RemoveAccount => {
+                            ProfilePreviewAction::SwitchTo => {
+                                AccountsViewResponse::SelectAccount(i)
+                            }
+                            ProfilePreviewAction::RemoveAccount => {
                                 AccountsViewResponse::RemoveAccount(i)
                             }
                         });
@@ -130,30 +134,36 @@ impl<'a> AccountsView<'a> {
 fn show_profile_card(
     ui: &mut egui::Ui,
     preview: SimpleProfilePreview,
-    width: f32,
+    max_size: egui::Vec2,
     is_selected: bool,
-) -> Option<ProfilePreviewOp> {
-    let mut op: Option<ProfilePreviewOp> = None;
+    card_resp: egui::Response,
+) -> Option<ProfilePreviewAction> {
+    let mut op: Option<ProfilePreviewAction> = None;
 
-    ui.add_sized(Vec2::new(width, 50.0), |ui: &mut egui::Ui| {
-        Frame::none()
+    ui.add_sized(max_size, |ui: &mut egui::Ui| {
+        let mut frame = Frame::none();
+        if is_selected || card_resp.hovered() {
+            frame = frame.fill(ui.visuals().noninteractive().weak_bg_fill)
+        }
+        if is_selected {
+            frame = frame.stroke(Stroke::new(2.0, colors::PINK))
+        }
+        frame
+            .rounding(8.0)
+            .inner_margin(8.0)
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.add(preview);
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if is_selected {
-                            ui.add(selected_widget());
-                        } else {
-                            if ui
-                                .add(switch_button(ui.style().visuals.dark_mode))
-                                .clicked()
-                            {
-                                op = Some(ProfilePreviewOp::SwitchTo);
-                            }
-                            if ui.add(sign_out_button(ui)).clicked() {
-                                op = Some(ProfilePreviewOp::RemoveAccount)
-                            }
+                        if card_resp.clicked() {
+                            op = Some(ProfilePreviewAction::SwitchTo);
+                        }
+                        if ui
+                            .add_sized(egui::Vec2::new(84.0, 32.0), sign_out_button())
+                            .clicked()
+                        {
+                            op = Some(ProfilePreviewAction::RemoveAccount)
                         }
                     });
                 });
@@ -183,34 +193,8 @@ fn add_account_button() -> Button<'static> {
     .frame(false)
 }
 
-fn sign_out_button(ui: &egui::Ui) -> egui::Button<'static> {
-    let img_data = egui::include_image!("../../assets/icons/signout_icon_4x.png");
-    let img = Image::new(img_data).fit_to_exact_size(Vec2::new(16.0, 16.0));
-
-    egui::Button::image_and_text(
-        img,
-        RichText::new("Sign out").color(ui.visuals().noninteractive().fg_stroke.color),
-    )
-    .frame(false)
-}
-
-fn switch_button(dark_mode: bool) -> egui::Button<'static> {
-    let _ = dark_mode;
-
-    egui::Button::new("Switch").min_size(Vec2::new(76.0, 32.0))
-}
-
-fn selected_widget() -> impl egui::Widget {
-    |ui: &mut egui::Ui| {
-        Frame::none()
-            .show(ui, |ui| {
-                ui.label(RichText::new("Selected").size(13.0).color(PINK));
-                let img_data = egui::include_image!("../../assets/icons/select_icon_3x.png");
-                let img = Image::new(img_data).max_size(Vec2::new(16.0, 16.0));
-                ui.add(img);
-            })
-            .response
-    }
+fn sign_out_button() -> egui::Button<'static> {
+    egui::Button::new(RichText::new("Sign out"))
 }
 
 // PREVIEWS

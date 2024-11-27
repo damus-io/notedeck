@@ -81,6 +81,7 @@ pub fn desktop_font_size(text_style: &NotedeckTextStyle) -> f32 {
         NotedeckTextStyle::Monospace => 13.0,
         NotedeckTextStyle::Button => 13.0,
         NotedeckTextStyle::Small => 12.0,
+        NotedeckTextStyle::Tiny => 11.0,
     }
 }
 
@@ -94,6 +95,7 @@ pub fn mobile_font_size(text_style: &NotedeckTextStyle) -> f32 {
         NotedeckTextStyle::Monospace => 13.0,
         NotedeckTextStyle::Button => 13.0,
         NotedeckTextStyle::Small => 12.0,
+        NotedeckTextStyle::Tiny => 11.0,
     }
 }
 
@@ -114,6 +116,7 @@ pub enum NotedeckTextStyle {
     Monospace,
     Button,
     Small,
+    Tiny,
 }
 
 impl NotedeckTextStyle {
@@ -126,6 +129,7 @@ impl NotedeckTextStyle {
             Self::Monospace => TextStyle::Monospace,
             Self::Button => TextStyle::Button,
             Self::Small => TextStyle::Small,
+            Self::Tiny => TextStyle::Name("Tiny".into()),
         }
     }
 
@@ -138,6 +142,7 @@ impl NotedeckTextStyle {
             Self::Monospace => FontFamily::Monospace,
             Self::Button => FontFamily::Proportional,
             Self::Small => FontFamily::Proportional,
+            Self::Tiny => FontFamily::Proportional,
         }
     }
 }
@@ -154,6 +159,7 @@ pub fn create_themed_visuals(theme: ColorTheme, default: Visuals) -> Visuals {
                 color: theme.selection_color,
             },
         },
+        warn_fg_color: theme.warn_fg_color,
         widgets: Widgets {
             noninteractive: WidgetVisuals {
                 bg_fill: theme.noninteractive_bg_fill,
