@@ -104,30 +104,38 @@ jobs:
 #      - name: Build
 #        run: ./trunk build
 
-  rpm:
-    name: Build RPM
+  packages:
+    name: Build Packages
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
+      - name: Checkout Code
         uses: actions/checkout@v2
 
-      - name: Install RPM Build Tools
+      - name: Install Packaging Tools
         run: |
           sudo apt-get update
           sudo apt-get install -y rpm binutils
-          cargo install cargo-generate-rpm
+          cargo install cargo-generate-rpm cargo-deb
 
-      - name: Build Rust Project
+      - name: Build Project
         run: cargo build --release
 
       - name: Strip Debug Symbols
-        run: strip target/release/notedeck
+        run: strip target/release/notedeck || echo "Skipping strip if not applicable"
 
-      - name: Build RPM
-        run: cargo generate-rpm
+      - name: Build Packages
+        run: |
+          cargo generate-rpm
+          cargo deb
 
-      - name: Upload RPM Artifact
-        uses: actions/upload-artifact@v3
+      - name: Upload RPM Package
+        uses: actions/upload-artifact@v4
         with:
           name: notedeck-rpm
           path: target/generate-rpm/*.rpm
+
+      - name: Upload Debian Package
+        uses: actions/upload-artifact@v4
+        with:
+          name: notedeck-deb
+          path: target/debian/*.deb
