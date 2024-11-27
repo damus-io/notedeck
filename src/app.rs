@@ -429,6 +429,7 @@ impl Damus {
                 info!("adding account: {}", key.pubkey);
                 accounts
                     .add_account(key)
+                    .unk
                     .process_action(&mut unknown_ids, &ndb, &txn);
             }
         }

@@ -138,27 +138,45 @@ impl Accounts {
         }
     }
 
-    pub fn has_account_pubkey(&self, pubkey: &[u8; 32]) -> bool {
-        for account in &self.accounts {
-            if account.pubkey.bytes() == pubkey {
-                return true;
+    fn contains_account(&self, pubkey: &[u8; 32]) -> Option<ContainsAccount> {
+        for (index, account) in self.accounts.iter().enumerate() {
+            let has_pubkey = account.pubkey.bytes() == pubkey;
+            let has_nsec = account.secret_key.is_some();
+            if has_pubkey {
+                return Some(ContainsAccount { has_nsec, index });
             }
         }
 
-        false
+        None
     }
 
     #[must_use = "UnknownIdAction's must be handled. Use .process_unknown_id_action()"]
-    pub fn add_account(&mut self, account: Keypair) -> SingleUnkIdAction {
-        if self.has_account_pubkey(account.pubkey.bytes()) {
-            info!("already have account, not adding {}", account.pubkey);
-            return SingleUnkIdAction::pubkey(account.pubkey);
-        }
+    pub fn add_account(&mut self, account: Keypair) -> LoginAction {
+        let pubkey = account.pubkey;
+        let switch_to_index = if let Some(contains_acc) = self.contains_account(pubkey.bytes()) {
+            if account.secret_key.is_some() && !contains_acc.has_nsec {
+                info!(
+                    "user provided nsec, but we already have npub {}. Upgrading to nsec",
+                    pubkey
+                );
+                let _ = self.key_store.add_key(&account);
 
-        let _ = self.key_store.add_key(&account);
-        let pk = account.pubkey;
-        self.accounts.push(account);
-        SingleUnkIdAction::pubkey(pk)
+                self.accounts[contains_acc.index] = account;
+            } else {
+                info!("already have account, not adding {}", pubkey);
+            }
+            contains_acc.index
+        } else {
+            info!("adding new account {}", pubkey);
+            let _ = self.key_store.add_key(&account);
+            self.accounts.push(account);
+            self.accounts.len() - 1
+        };
+
+        LoginAction {
+            unk: SingleUnkIdAction::pubkey(pubkey),
+            switch_to_index,
+        }
     }
 
     pub fn num_accounts(&self) -> usize {
@@ -217,12 +235,23 @@ pub fn process_login_view_response(
     manager: &mut Accounts,
     response: AccountLoginResponse,
 ) -> SingleUnkIdAction {
-    let r = match response {
+    let login_action = match response {
         AccountLoginResponse::CreateNew => {
             manager.add_account(FullKeypair::generate().to_keypair())
         }
         AccountLoginResponse::LoginWith(keypair) => manager.add_account(keypair),
     };
-    manager.select_account(manager.num_accounts() - 1);
-    r
+    manager.select_account(login_action.switch_to_index);
+    login_action.unk
+}
+
+pub struct LoginAction {
+    pub unk: SingleUnkIdAction,
+    pub switch_to_index: usize,
+}
+
+#[derive(Default)]
+struct ContainsAccount {
+    pub has_nsec: bool,
+    pub index: usize,
 }
