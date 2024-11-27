@@ -102,11 +102,9 @@ pub fn test_app() -> Damus {
     let accounts = get_test_accounts();
     let txn = Transaction::new(&app.ndb).expect("txn");
     for account in accounts {
-        app.accounts_mut().add_account(account).unk.process_action(
-            &mut app.unknown_ids,
-            &app.ndb,
-            &txn,
-        )
+        app.accounts_mut()
+            .add_account(account)
+            .process_action(&mut app.unknown_ids, &app.ndb, &txn)
     }
 
     app

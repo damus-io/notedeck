@@ -1,7 +1,7 @@
 use std::cmp::Ordering;
 
 use enostr::{FilledKeypair, FullKeypair, Keypair};
-use nostrdb::Ndb;
+use nostrdb::{Ndb, Transaction};
 
 use crate::{
     column::Columns,
@@ -14,6 +14,7 @@ use crate::{
         accounts::{AccountsView, AccountsViewResponse},
     },
     unknowns::SingleUnkIdAction,
+    unknowns::UnknownIds,
     user_account::UserAccount,
 };
 use tracing::{error, info};
@@ -245,9 +246,20 @@ pub fn process_login_view_response(
     login_action.unk
 }
 
+#[must_use = "You must call process_login_action on this to handle unknown ids"]
 pub struct LoginAction {
-    pub unk: SingleUnkIdAction,
+    unk: SingleUnkIdAction,
     pub switch_to_index: usize,
+}
+
+impl LoginAction {
+    // Simple wrapper around processing the unknown action to expose too
+    // much internal logic. This allows us to have a must_use on our
+    // LoginAction type, otherwise the SingleUnkIdAction's must_use will
+    // be lost when returned in the login action
+    pub fn process_action(&mut self, ids: &mut UnknownIds, ndb: &Ndb, txn: &Transaction) {
+        self.unk.process_action(ids, ndb, txn);
+    }
 }
 
 #[derive(Default)]
