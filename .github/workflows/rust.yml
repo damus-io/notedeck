@@ -1,61 +1,8 @@
-on: [push, pull_request]
+on: [pull_request]
 
 name: CI
 
-env:
-  # This is required to enable the web_sys clipboard API which egui_web uses
-  # https://rustwasm.github.io/wasm-bindgen/api/web_sys/struct.Clipboard.html
-  # https://rustwasm.github.io/docs/wasm-bindgen/web-sys/unstable-apis.html
-  RUSTFLAGS: --cfg=web_sys_unstable_apis
-
 jobs:
-  check:
-    name: Check
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v2
-      - uses: actions-rs/toolchain@v1
-        with:
-          profile: minimal
-          toolchain: stable
-          override: true
-      - uses: actions-rs/cargo@v1
-        with:
-          command: check
-#         args: --all-features
-
-#  check_wasm:
-#    name: Check wasm32
-#    runs-on: ubuntu-latest
-#    steps:
-#      - uses: actions/checkout@v2
-#      - uses: actions-rs/toolchain@v1
-#        with:
-#          profile: minimal
-#          toolchain: stable
-#          target: wasm32-unknown-unknown
-#          override: true
-#      - uses: actions-rs/cargo@v1
-#        with:
-#          command: check
-#          args: --all-features --lib --target wasm32-unknown-unknown
-
-  test:
-    name: Test Suite
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v2
-      - uses: actions-rs/toolchain@v1
-        with:
-          profile: minimal
-          toolchain: stable
-          override: true
-      - run: sudo apt-get install libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libspeechd-dev libxkbcommon-dev libssl-dev
-      - uses: actions-rs/cargo@v1
-        with:
-          command: test
-          args: --lib
-
   fmt:
     name: Rustfmt
     runs-on: ubuntu-latest
@@ -83,59 +30,168 @@ jobs:
           toolchain: stable
           override: true
           components: clippy
+
+      - uses: Swatinem/rust-cache@v2
       - uses: actions-rs/cargo@v1
         with:
           command: clippy
           args: -- -D warnings
 
-#  trunk:
-#    name: trunk
-#    runs-on: ubuntu-latest
-#    steps:
-#      - uses: actions/checkout@v2
-#      - uses: actions-rs/toolchain@v1
-#        with:
-#          profile: minimal
-#          toolchain: 1.61.0
-#          target: wasm32-unknown-unknown
-#          override: true
-#      - name: Download and install Trunk binary
-#        run: wget -qO- https://github.com/thedodd/trunk/releases/latest/download/trunk-x86_64-unknown-linux-gnu.tar.gz | tar -xzf-
-#      - name: Build
-#        run: ./trunk build
-
-  packages:
-    name: Build Packages
-    runs-on: ubuntu-latest
+  build-and-test:
+    name: Build and Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        toolchain: [stable]
     steps:
+      # Checkout the repository
       - name: Checkout Code
         uses: actions/checkout@v2
 
+      # Set up the Rust toolchain
+      - name: Setup Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: ${{ matrix.toolchain }}
+          override: true
+
+      # Cache
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      # Install dependencies (only for Ubuntu)
+      - name: Install Dependencies (Ubuntu)
+        if: runner.os == 'Linux'
+        run: sudo apt-get install libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libspeechd-dev libxkbcommon-dev libssl-dev
+
+      # Run tests
+      - name: Run Tests
+        uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: --release
+
+      # Build
+      - name: Build
+        uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --release
+
+      # Strip Debug Symbols
+      #
+      ## > Don't strip for now <
+      #
+      #- name: Strip Debug Symbols
+      #  if: runner.os == 'Linux'
+      #  run: strip target/release/notedeck || echo "Skipping strip if not applicable"
+
+      # Upload bin for further packaging steps
+      - name: Upload Build Artifacts (Linux)
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: notedeck-linux-bin
+          path: target/release/notedeck
+
+      # Upload exe for further packaging steps
+      - name: Upload Build Artifacts (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: notedeck.exe
+          path: target/release/notedeck.exe
+
+  packaging:
+    name: Build Linux Packages
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    steps:
+      # Checkout the repository
+      - name: Checkout Code
+        uses: actions/checkout@v2
+
+      # Install Packaging Tools
       - name: Install Packaging Tools
         run: |
           sudo apt-get update
           sudo apt-get install -y rpm binutils
           cargo install cargo-generate-rpm cargo-deb
 
-      - name: Build Project
-        run: cargo build --release
+      - name: Download Build Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: notedeck-linux-bin  # Assuming you need the Release build
+          path: target/release
 
-      - name: Strip Debug Symbols
-        run: strip target/release/notedeck || echo "Skipping strip if not applicable"
+      # Cache
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
 
+      # Build Packages
       - name: Build Packages
         run: |
           cargo generate-rpm
           cargo deb
 
+      # Upload RPM Package
       - name: Upload RPM Package
         uses: actions/upload-artifact@v4
         with:
-          name: notedeck-rpm
+          name: notedeck.rpm
           path: target/generate-rpm/*.rpm
 
+      # Upload Debian Package
       - name: Upload Debian Package
         uses: actions/upload-artifact@v4
         with:
-          name: notedeck-deb
+          name: notedeck.deb
           path: target/debian/*.deb
+
+  windows-installer:
+    name: Build Windows Installer
+    runs-on: windows-latest
+    needs: build-and-test
+    steps:
+      # Checkout the repository
+      - name: Checkout Code
+        uses: actions/checkout@v2
+
+      - name: Download Build Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: notedeck.exe  # Assuming you need the Release build
+          path: target/release
+
+      # Create packages directory
+      - name: Create packages directory
+        run: mkdir packages
+
+      # Install Inno Setup
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress --yes
+
+      # Validate executable exists
+      - name: Validate required files
+        run: |
+          if (!(Test-Path -Path target\release\notedeck.exe)) {
+            throw "Executable 'notedeck.exe' not found in 'target/release'."
+          }
+
+      # Build Installer
+      - name: Run Inno Setup Script
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "scripts\windows-installer.iss"
+
+      # List outputs
+      - name: List Inno Script outputs
+        run: dir packages
+
+      # Upload the installer as an artifact
+      - name: Upload Installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: DamusNotedeckInstaller.exe
+          path: packages\DamusNotedeckInstaller.exe
