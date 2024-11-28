@@ -60,6 +60,7 @@ jobs:
     name: Build Linux Packages
     runs-on: ubuntu-latest
     needs: linux-build-test
+    if: github.ref_name == 'master'
     steps:
       # Checkout the repository
       - name: Checkout Code
@@ -106,6 +107,7 @@ jobs:
     name: Build macOS DMG
     runs-on: macos-latest
     needs: macos-build-test
+    if: github.ref_name == 'master'
     env:
       NOTEDECK_APPLE_RELEASE_CERT_ID: ${{ secrets.NOTEDECK_APPLE_RELEASE_CERT_ID }}
       NOTEDECK_RELEASE_APPLE_ID: ${{ secrets.NOTEDECK_RELEASE_APPLE_ID }}
@@ -154,6 +156,7 @@ jobs:
     name: Build Windows Installer
     runs-on: windows-latest
     needs: windows-build-test
+    if: github.ref_name == 'master'
     steps:
       # Checkout the repository
       - name: Checkout Code
