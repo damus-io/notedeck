@@ -4,7 +4,7 @@ A multiplatform nostr client. Works on android and desktop
 
 The desktop client is called notedeck:
 
-![notedeck](https://cdn.jb55.com/s/bebeeadf7001fae1.png)
+![notedeck](https://cdn.jb55.com/s/6130555f03db55b2.png)
 
 ## Android
 
