@@ -247,7 +247,7 @@ mod preview {
         }
     }
 
-    impl<'a> Preview for AccountsView<'a> {
+    impl Preview for AccountsView<'_> {
         type Prev = AccountsPreview;
 
         fn preview(_cfg: PreviewConfig) -> Self::Prev {

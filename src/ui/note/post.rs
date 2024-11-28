@@ -296,7 +296,7 @@ mod preview {
         }
     }
 
-    impl<'a> Preview for PostView<'a> {
+    impl Preview for PostView<'_> {
         type Prev = PostPreview;
 
         fn preview(_cfg: PreviewConfig) -> Self::Prev {

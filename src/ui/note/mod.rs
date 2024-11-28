@@ -61,7 +61,7 @@ impl NoteResponse {
     }
 }
 
-impl<'a> View for NoteView<'a> {
+impl View for NoteView<'_> {
     fn ui(&mut self, ui: &mut egui::Ui) {
         self.show(ui);
     }

@@ -40,7 +40,7 @@ impl<'a> Mention<'a> {
     }
 }
 
-impl<'a> egui::Widget for Mention<'a> {
+impl egui::Widget for Mention<'_> {
     fn ui(self, ui: &mut egui::Ui) -> egui::Response {
         mention_ui(
             self.ndb,

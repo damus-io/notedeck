@@ -9,7 +9,7 @@ pub struct ProfilePic<'cache, 'url> {
     size: f32,
 }
 
-impl<'cache, 'url> egui::Widget for ProfilePic<'cache, 'url> {
+impl egui::Widget for ProfilePic<'_, '_> {
     fn ui(self, ui: &mut egui::Ui) -> egui::Response {
         render_pfp(ui, self.cache, self.url, self.size)
     }
@@ -209,7 +209,7 @@ mod preview {
         }
     }
 
-    impl<'cache, 'url> Preview for ProfilePic<'cache, 'url> {
+    impl Preview for ProfilePic<'_, '_> {
         type Prev = ProfilePicPreview;
 
         fn preview(_cfg: PreviewConfig) -> Self::Prev {

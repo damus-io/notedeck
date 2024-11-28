@@ -27,7 +27,7 @@ pub struct DesktopSidePanel<'a> {
     selected_account: Option<&'a UserAccount>,
 }
 
-impl<'a> View for DesktopSidePanel<'a> {
+impl View for DesktopSidePanel<'_> {
     fn ui(&mut self, ui: &mut egui::Ui) {
         self.show(ui);
     }
@@ -461,7 +461,7 @@ mod preview {
         }
     }
 
-    impl<'a> Preview for DesktopSidePanel<'a> {
+    impl Preview for DesktopSidePanel<'_> {
         type Prev = DesktopSidePanelPreview;
 
         fn preview(_cfg: PreviewConfig) -> Self::Prev {

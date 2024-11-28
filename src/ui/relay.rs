@@ -9,7 +9,7 @@ pub struct RelayView<'a> {
     manager: RelayPoolManager<'a>,
 }
 
-impl<'a> View for RelayView<'a> {
+impl View for RelayView<'_> {
     fn ui(&mut self, ui: &mut egui::Ui) {
         ui.add_space(24.0);
 
@@ -200,7 +200,7 @@ mod preview {
         }
     }
 
-    impl<'a> Preview for RelayView<'a> {
+    impl Preview for RelayView<'_> {
         type Prev = RelayViewPreview;
 
         fn preview(_cfg: PreviewConfig) -> Self::Prev {
