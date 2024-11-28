@@ -47,8 +47,8 @@ fn generate_native_options_with_builder_modifiers(
     }
 }
 
-pub fn app_icon() -> &'static [u8; 192739] {
-    std::include_bytes!("../assets/damus_rounded_256.png")
+pub fn app_icon() -> &'static [u8; 271986] {
+    std::include_bytes!("../assets/damus-app-icon.png")
 }
 
 pub fn generate_mobile_emulator_native_options() -> eframe::NativeOptions {
