@@ -1,14 +1,10 @@
-# Damus
+# Damus Notedeck
 
 A multiplatform nostr client. Works on android and desktop
 
-Alpha! WIP!
-
-## Desktop
-
 The desktop client is called notedeck:
 
-![notedeck](https://cdn.jb55.com/s/notedeck-2024-04.png)
+![notedeck](https://cdn.jb55.com/s/bebeeadf7001fae1.png)
 
 ## Android
 
@@ -18,10 +14,8 @@ Look it actually runs on android!
 
 ## Usage
 
-You can customize the columns by passing them as command-line arguments. This is only for testing and will likely change.
-
 ```bash
-$ ./target/release/notedeck "$(cat queries/timeline.json)" "$(cat queries/notifications.json)"
+$ ./target/release/notedeck
 ```
 
 # Developer Setup
@@ -29,18 +23,6 @@ $ ./target/release/notedeck "$(cat queries/timeline.json)" "$(cat queries/notifi
 ## Desktop (Linux/MacOS, Windows?)
 
 If you're running debian-based machine like Ubuntu or ElementaryOS, all you need is to install [rustup] and run `sudo apt install build-essential`.
-
-First, install [nix][nix] if you don't have it.
-
-The `shell.nix` provides a reproducible build environment, mainly for android but it also includes rust tools if you don't have those installed. It will likely work without nix if you are just looking to do non-android dev and have the rust toolchain already installed. If you decide to use nix, I recommend using [direnv][direnv] to load the nix shell environment when you `cd` into the directory.
-
-If you don't have [direnv][direnv], enter the dev shell via:
-
-```bash
-$ nix-shell
-```
-
-Once you have your dev shell setup, you can build with this command:
 
 ```bash
 $ cargo run --release 
@@ -76,7 +58,6 @@ cargo apk run --release
 The app should appear on the emulator
 
 [direnv]: https://direnv.net/
-[nix]: https://nixos.org/download/
 
 ## Previews
 
