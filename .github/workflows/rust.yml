@@ -37,85 +37,36 @@ jobs:
           command: clippy
           args: -- -D warnings
 
-  build-and-test:
-    name: Build and Test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-        toolchain: [stable]
-    steps:
-      # Checkout the repository
-      - name: Checkout Code
-        uses: actions/checkout@v2
+  linux-build-test:
+    name: Build and Test (Linux)
+    uses: ./.github/workflows/build-and-test.yml
+    with:
+      os: ubuntu-latest
+      upload-artifact-name: notedeck-linux-bin
+      upload-artifact-path: target/release/notedeck
+      additional-setup: |
+        sudo apt-get install libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libspeechd-dev libxkbcommon-dev libssl-dev
 
-      # Set up the Rust toolchain
-      - name: Setup Rust
-        uses: actions-rs/toolchain@v1
-        with:
-          profile: minimal
-          toolchain: ${{ matrix.toolchain }}
-          override: true
+  macos-build-test:
+    name: Build and Test (macOS)
+    uses: ./.github/workflows/build-and-test.yml
+    with:
+      os: macos-latest
+      upload-artifact-name: notedeck-macos-bin
+      upload-artifact-path: target/release/notedeck
 
-      # Cache
-      - name: Rust cache
-        uses: Swatinem/rust-cache@v2
-
-      # Install dependencies (only for Ubuntu)
-      - name: Install Dependencies (Ubuntu)
-        if: runner.os == 'Linux'
-        run: sudo apt-get install libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libspeechd-dev libxkbcommon-dev libssl-dev
-
-      # Run tests
-      - name: Run Tests
-        uses: actions-rs/cargo@v1
-        with:
-          command: test
-          args: --release
-
-      # Build
-      - name: Build
-        uses: actions-rs/cargo@v1
-        with:
-          command: build
-          args: --release
-
-      # Strip Debug Symbols
-      #
-      ## > Don't strip for now <
-      #
-      #- name: Strip Debug Symbols
-      #  if: runner.os == 'Linux'
-      #  run: strip target/release/notedeck || echo "Skipping strip if not applicable"
-
-      # Upload bin for further packaging steps
-      - name: Upload Build Artifacts (Linux)
-        if: runner.os == 'Linux'
-        uses: actions/upload-artifact@v4
-        with:
-          name: notedeck-linux-bin
-          path: target/release/notedeck
-
-      # Upload artifacts (for macOS, adjust paths as needed)
-      - name: Upload Build Artifacts (macOS)
-        if: runner.os == 'macOS'
-        uses: actions/upload-artifact@v4
-        with:
-          name: notedeck-macos-bin
-          path: target/release/notedeck
-
-      # Upload exe for further packaging steps
-      - name: Upload Build Artifacts (Windows)
-        if: runner.os == 'Windows'
-        uses: actions/upload-artifact@v4
-        with:
-          name: notedeck.exe
-          path: target/release/notedeck.exe
+  windows-build-test:
+    name: Build and Test (Windows)
+    uses: ./.github/workflows/build-and-test.yml
+    with:
+      os: windows-latest
+      upload-artifact-name: notedeck.exe
+      upload-artifact-path: target/release/notedeck.exe
 
   packaging:
     name: Build Linux Packages
     runs-on: ubuntu-latest
-    needs: build-and-test
+    needs: linux-build-test
     steps:
       # Checkout the repository
       - name: Checkout Code
@@ -161,7 +112,7 @@ jobs:
   macos-dmg:
     name: Build macOS DMG
     runs-on: macos-latest
-    needs: build-and-test
+    needs: macos-build-test
     env:
       NOTEDECK_APPLE_RELEASE_CERT_ID: ${{ secrets.NOTEDECK_APPLE_RELEASE_CERT_ID }}
       NOTEDECK_RELEASE_APPLE_ID: ${{ secrets.NOTEDECK_RELEASE_APPLE_ID }}
@@ -179,6 +130,10 @@ jobs:
           profile: minimal
           toolchain: stable
           override: true
+
+      # create-dmg and cargo-bundle caching
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
 
       - name: Download Build Artifacts (MacOS)
         uses: actions/download-artifact@v4
@@ -209,7 +164,7 @@ jobs:
   windows-installer:
     name: Build Windows Installer
     runs-on: windows-latest
-    needs: build-and-test
+    needs: windows-build-test
     steps:
       # Checkout the repository
       - name: Checkout Code

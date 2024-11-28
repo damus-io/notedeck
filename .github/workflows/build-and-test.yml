@@ -1,0 +1,56 @@
+name: Build & Test
+
+on:
+  workflow_call:
+    inputs:
+      os:
+        required: true
+        type: string
+      upload-artifact-name:
+        required: true
+        type: string
+      upload-artifact-path:
+        required: true
+        type: string
+      additional-setup:
+        required: false
+        type: string
+
+jobs:
+  run:
+    runs-on: ${{ inputs.os }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v2
+
+      - name: Setup Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Additional Setup (if specified)
+        if: ${{ inputs.additional-setup != '' }}
+        run: ${{ inputs.additional-setup }}
+
+      - name: Run Tests
+        uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: --release
+
+      - name: Build
+        uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --release
+
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.upload-artifact-name }}
+          path: ${{ inputs.upload-artifact-path }}
