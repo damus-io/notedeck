@@ -77,7 +77,7 @@ impl<'a, 'cache> ProfilePreview<'a, 'cache> {
     }
 }
 
-impl<'a, 'cache> egui::Widget for ProfilePreview<'a, 'cache> {
+impl egui::Widget for ProfilePreview<'_, '_> {
     fn ui(self, ui: &mut egui::Ui) -> egui::Response {
         ui.vertical(|ui| {
             ui.add_sized([ui.available_size().x, 80.0], |ui: &mut egui::Ui| {
@@ -101,7 +101,7 @@ impl<'a, 'cache> SimpleProfilePreview<'a, 'cache> {
     }
 }
 
-impl<'a, 'cache> egui::Widget for SimpleProfilePreview<'a, 'cache> {
+impl egui::Widget for SimpleProfilePreview<'_, '_> {
     fn ui(self, ui: &mut egui::Ui) -> egui::Response {
         Frame::none()
             .show(ui, |ui| {
@@ -124,7 +124,7 @@ mod previews {
         cache: ImageCache,
     }
 
-    impl<'a> ProfilePreviewPreview<'a> {
+    impl ProfilePreviewPreview<'_> {
         pub fn new() -> Self {
             let profile = test_profile_record();
             let path = DataPath::new("previews")
@@ -135,19 +135,19 @@ mod previews {
         }
     }
 
-    impl<'a> Default for ProfilePreviewPreview<'a> {
+    impl Default for ProfilePreviewPreview<'_> {
         fn default() -> Self {
             ProfilePreviewPreview::new()
         }
     }
 
-    impl<'a> View for ProfilePreviewPreview<'a> {
+    impl View for ProfilePreviewPreview<'_> {
         fn ui(&mut self, ui: &mut egui::Ui) {
             ProfilePreview::new(&self.profile, &mut self.cache).ui(ui);
         }
     }
 
-    impl<'a, 'cache> Preview for ProfilePreview<'a, 'cache> {
+    impl<'a> Preview for ProfilePreview<'a, '_> {
         /// A preview of the profile preview :D
         type Prev = ProfilePreviewPreview<'a>;
 

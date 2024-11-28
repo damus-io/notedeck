@@ -32,7 +32,7 @@ impl<'a> Username<'a> {
     }
 }
 
-impl<'a> Widget for Username<'a> {
+impl Widget for Username<'_> {
     fn ui(self, ui: &mut egui::Ui) -> egui::Response {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;

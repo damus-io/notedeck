@@ -460,7 +460,7 @@ mod preview {
         }
     }
 
-    impl<'a> Preview for AddColumnView<'a> {
+    impl Preview for AddColumnView<'_> {
         type Prev = AddColumnPreview;
 
         fn preview(_cfg: PreviewConfig) -> Self::Prev {

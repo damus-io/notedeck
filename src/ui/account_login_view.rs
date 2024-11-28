@@ -152,7 +152,7 @@ mod preview {
         }
     }
 
-    impl<'a> Preview for AccountLoginView<'a> {
+    impl Preview for AccountLoginView<'_> {
         type Prev = AccountLoginPreview;
 
         fn preview(cfg: PreviewConfig) -> Self::Prev {
