@@ -1,5 +1,7 @@
 # Damus Notedeck
 
+[![CI](https://github.com/damus-io/notedeck/actions/workflows/rust.yml/badge.svg)](https://github.com/damus-io/notedeck/actions/workflows/rust.yml)
+
 A multiplatform nostr client. Works on android and desktop
 
 The desktop client is called notedeck:
