@@ -20,7 +20,7 @@ use super::{
     ProfilePic, View,
 };
 
-pub static SIDE_PANEL_WIDTH: f32 = 64.0;
+pub static SIDE_PANEL_WIDTH: f32 = 68.0;
 static ICON_WIDTH: f32 = 40.0;
 
 pub struct DesktopSidePanel<'a> {
@@ -88,6 +88,12 @@ impl<'a> DesktopSidePanel<'a> {
             .vertical(|ui| {
                 let top_resp = ui
                     .with_layout(Layout::top_down(egui::Align::Center), |ui| {
+                        // macos needs a bit of space to make room for window
+                        // minimize/close buttons
+                        if cfg!(target_os = "macos") {
+                            ui.add_space(24.0);
+                        }
+
                         let expand_resp = ui.add(expand_side_panel_button());
                         ui.add_space(4.0);
                         ui.add(milestone_name());
