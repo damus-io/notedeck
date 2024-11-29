@@ -73,15 +73,12 @@ jobs:
           sudo apt-get install -y rpm binutils
           cargo install cargo-generate-rpm cargo-deb
 
+      # download!
       - name: Download Build Artifacts
         uses: actions/download-artifact@v4
         with:
-          name: notedeck-linux-bin  # Assuming you need the Release build
+          name: notedeck-linux-bin
           path: target/release
-
-      # Cache
-      - name: Rust cache
-        uses: Swatinem/rust-cache@v2
 
       # Build Packages
       - name: Build Packages
