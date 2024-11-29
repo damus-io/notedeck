@@ -898,10 +898,10 @@ fn set_demo(
         Route::Accounts(AccountsRoute::Accounts),
     ]));
 
-    let timeline = TimelineKind::contact_list(timeline::PubkeySource::Explicit(demo_pubkey))
-        .into_timeline(ndb, Some(demo_pubkey.bytes()));
-
-    if let Some(timeline) = timeline {
+    if let Some(timeline) =
+        TimelineKind::contact_list(timeline::PubkeySource::Explicit(demo_pubkey))
+            .into_timeline(ndb, Some(demo_pubkey.bytes()))
+    {
         columns.add_new_timeline_column(timeline);
     }
     storage::save_columns(data_path, columns.as_serializable_columns());
