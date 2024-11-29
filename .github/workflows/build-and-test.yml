@@ -33,11 +33,11 @@ jobs:
         if: ${{ inputs.additional-setup != '' }}
         run: ${{ inputs.additional-setup }}
 
-      - name: Run Tests
-        run: cargo test --release
-
       - name: Build
         run: cargo build --release
+
+      - name: Run Tests
+        run: cargo test --release
 
       - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4
