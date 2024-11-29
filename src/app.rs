@@ -19,7 +19,7 @@ use crate::{
     support::Support,
     thread::Thread,
     timeline::{self, Timeline, TimelineKind},
-    ui::{self, DesktopSidePanel},
+    ui::{self, add_column::AddColumnRoute, DesktopSidePanel},
     unknowns::UnknownIds,
     view_state::ViewState,
     Result,
@@ -893,7 +893,11 @@ fn set_demo(
         accounts.select_account(0);
     }
 
-    columns.add_column(Column::new(vec![Route::Accounts(AccountsRoute::Accounts)]));
+    columns.add_column(Column::new(vec![
+        Route::AddColumn(AddColumnRoute::Base),
+        Route::Accounts(AccountsRoute::Accounts),
+    ]));
+
     let timeline = TimelineKind::contact_list(timeline::PubkeySource::Explicit(demo_pubkey))
         .into_timeline(ndb, Some(demo_pubkey.bytes()));
 
