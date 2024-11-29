@@ -81,7 +81,7 @@ pub fn desktop_font_size(text_style: &NotedeckTextStyle) -> f32 {
         NotedeckTextStyle::Monospace => 13.0,
         NotedeckTextStyle::Button => 13.0,
         NotedeckTextStyle::Small => 12.0,
-        NotedeckTextStyle::Tiny => 11.0,
+        NotedeckTextStyle::Tiny => 10.0,
     }
 }
 
@@ -95,7 +95,7 @@ pub fn mobile_font_size(text_style: &NotedeckTextStyle) -> f32 {
         NotedeckTextStyle::Monospace => 13.0,
         NotedeckTextStyle::Button => 13.0,
         NotedeckTextStyle::Small => 12.0,
-        NotedeckTextStyle::Tiny => 11.0,
+        NotedeckTextStyle::Tiny => 10.0,
     }
 }
 
