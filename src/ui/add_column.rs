@@ -3,8 +3,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use egui::{
-    pos2, vec2, Align, Color32, FontId, Id, ImageSource, Margin, Pos2, Rect, RichText, Separator,
-    Ui, Vec2,
+    pos2, vec2, Align, Button, Color32, FontId, Id, ImageSource, Margin, Pos2, Rect, RichText,
+    Separator, Ui, Vec2,
 };
 use nostrdb::Ndb;
 use tracing::error;
@@ -417,7 +417,14 @@ pub fn hashtag_ui(
             .margin(Margin::same(12.0));
         ui.add(text_edit);
 
-        if ui.button("Add").clicked() {
+        ui.add_space(8.0);
+        if ui
+            .add_sized(
+                egui::vec2(50.0, 40.0),
+                Button::new("Add").rounding(8.0).fill(crate::colors::PINK),
+            )
+            .clicked()
+        {
             let resp = AddColumnOption::Hashtag(text_buffer.to_owned()).take_as_response(ndb, None);
             id_string_map.remove(&id);
             resp
