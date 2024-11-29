@@ -904,5 +904,8 @@ fn set_demo(
     {
         columns.add_new_timeline_column(timeline);
     }
+
+    columns.add_new_timeline_column(Timeline::hashtag("introductions".to_string()));
+
     storage::save_columns(data_path, columns.as_serializable_columns());
 }
