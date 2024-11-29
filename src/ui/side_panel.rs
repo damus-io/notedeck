@@ -263,11 +263,14 @@ impl<'a> DesktopSidePanel<'a> {
 }
 
 fn settings_button(dark_mode: bool) -> impl Widget {
-    let _ = dark_mode;
-    |ui: &mut egui::Ui| {
+    move |ui: &mut egui::Ui| {
         let img_size = 24.0;
         let max_size = ICON_WIDTH * ICON_EXPANSION_MULTIPLE; // max size of the widget
-        let img_data = egui::include_image!("../../assets/icons/settings_dark_4x.png");
+        let img_data = if dark_mode {
+            egui::include_image!("../../assets/icons/settings_dark_4x.png")
+        } else {
+            egui::include_image!("../../assets/icons/settings_light_4x.png")
+        };
         let img = egui::Image::new(img_data).max_width(img_size);
 
         let helper = AnimationHelper::new(ui, "settings-button", vec2(max_size, max_size));
@@ -285,12 +288,15 @@ fn settings_button(dark_mode: bool) -> impl Widget {
 }
 
 fn add_column_button(dark_mode: bool) -> impl Widget {
-    let _ = dark_mode;
     move |ui: &mut egui::Ui| {
         let img_size = 24.0;
         let max_size = ICON_WIDTH * ICON_EXPANSION_MULTIPLE; // max size of the widget
 
-        let img_data = egui::include_image!("../../assets/icons/add_column_dark_4x.png");
+        let img_data = if dark_mode {
+            egui::include_image!("../../assets/icons/add_column_dark_4x.png")
+        } else {
+            egui::include_image!("../../assets/icons/add_column_light_4x.png")
+        };
 
         let img = egui::Image::new(img_data).max_width(img_size);
 
@@ -418,7 +424,11 @@ fn support_button() -> impl Widget {
         let img_size = 16.0;
 
         let max_size = ICON_WIDTH * ICON_EXPANSION_MULTIPLE; // max size of the widget
-        let img_data = egui::include_image!("../../assets/icons/help_icon_dark_4x.png");
+        let img_data = if ui.visuals().dark_mode {
+            egui::include_image!("../../assets/icons/help_icon_dark_4x.png")
+        } else {
+            egui::include_image!("../../assets/icons/help_icon_inverted_4x.png")
+        };
         let img = egui::Image::new(img_data).max_width(img_size);
 
         let helper = AnimationHelper::new(ui, "help-button", vec2(max_size, max_size));

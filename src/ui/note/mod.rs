@@ -370,7 +370,7 @@ impl<'a> NoteView<'a> {
                 ui.horizontal(|ui| {
                     ui.vertical(|ui| {
                         ui.add_space(2.0);
-                        ui.add_sized([20.0, 20.0], repost_icon());
+                        ui.add_sized([20.0, 20.0], repost_icon(ui.visuals().dark_mode));
                     });
                     ui.add_space(6.0);
                     let resp = ui.add(one_line_display_name_widget(
@@ -714,8 +714,12 @@ fn reply_button(ui: &mut egui::Ui, note_key: NoteKey) -> egui::Response {
     resp.union(put_resp)
 }
 
-fn repost_icon() -> egui::Image<'static> {
-    let img_data = egui::include_image!("../../../assets/icons/repost_icon_4x.png");
+fn repost_icon(dark_mode: bool) -> egui::Image<'static> {
+    let img_data = if dark_mode {
+        egui::include_image!("../../../assets/icons/repost_icon_4x.png")
+    } else {
+        egui::include_image!("../../../assets/icons/repost_light_4x.png")
+    };
     egui::Image::new(img_data)
 }
 
@@ -726,7 +730,7 @@ fn quote_repost_button(ui: &mut egui::Ui, note_key: NoteKey) -> egui::Response {
     let expand_size = 5.0;
     let rect = rect.translate(egui::vec2(-(expand_size / 2.0), 0.0));
 
-    let put_resp = ui.put(rect, repost_icon().max_width(size));
+    let put_resp = ui.put(rect, repost_icon(ui.visuals().dark_mode).max_width(size));
 
     resp.union(put_resp)
 }

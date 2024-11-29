@@ -352,7 +352,11 @@ fn delete_column_button(
     let img_size = 16.0;
     let max_size = icon_width * ICON_EXPANSION_MULTIPLE;
 
-    let img_data = egui::include_image!("../assets/icons/column_delete_icon_4x.png");
+    let img_data = if ui.visuals().dark_mode {
+        egui::include_image!("../assets/icons/column_delete_icon_4x.png")
+    } else {
+        egui::include_image!("../assets/icons/column_delete_icon_light_4x.png")
+    };
     let img = egui::Image::new(img_data).max_width(img_size);
 
     let button_rect = {
