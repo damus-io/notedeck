@@ -207,6 +207,19 @@ impl Timeline {
         ))
     }
 
+    pub fn hashtag(hashtag: String) -> Self {
+        let filter = Filter::new()
+            .kinds([1])
+            .limit(filter::default_limit())
+            .tags([hashtag.clone()], 't')
+            .build();
+
+        Timeline::new(
+            TimelineKind::Hashtag(hashtag),
+            FilterState::ready(vec![filter]),
+        )
+    }
+
     pub fn make_view_id(id: TimelineId, selected_view: i32) -> egui::Id {
         egui::Id::new((id, selected_view))
     }

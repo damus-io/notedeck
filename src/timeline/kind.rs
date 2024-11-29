@@ -129,18 +129,7 @@ impl TimelineKind {
                 ))
             }
 
-            TimelineKind::Hashtag(hashtag) => {
-                let filter = Filter::new()
-                    .kinds([1])
-                    .limit(filter::default_limit())
-                    .tags([hashtag.clone()], 't')
-                    .build();
-
-                Some(Timeline::new(
-                    TimelineKind::Hashtag(hashtag),
-                    FilterState::ready(vec![filter]),
-                ))
-            }
+            TimelineKind::Hashtag(hashtag) => Some(Timeline::hashtag(hashtag)),
 
             TimelineKind::List(ListKind::Contact(pk_src)) => {
                 let pk = match &pk_src {
