@@ -1,4 +1,6 @@
-use egui::{vec2, Color32, InnerResponse, Layout, Margin, Separator, Stroke, Widget};
+use egui::{
+    vec2, Color32, InnerResponse, Label, Layout, Margin, RichText, Separator, Stroke, Widget,
+};
 use tracing::info;
 
 use crate::{
@@ -87,7 +89,9 @@ impl<'a> DesktopSidePanel<'a> {
                 let top_resp = ui
                     .with_layout(Layout::top_down(egui::Align::Center), |ui| {
                         let expand_resp = ui.add(expand_side_panel_button());
-                        ui.add_space(28.0);
+                        ui.add_space(4.0);
+                        ui.add(milestone_name());
+                        ui.add_space(16.0);
                         let is_interactive = self
                             .selected_account
                             .is_some_and(|s| s.secret_key.is_some());
@@ -97,7 +101,7 @@ impl<'a> DesktopSidePanel<'a> {
                         } else {
                             compose_resp.on_hover_cursor(egui::CursorIcon::NotAllowed)
                         };
-                        let search_resp = ui.add(search_button());
+                        // let search_resp = ui.add(search_button());
                         let column_resp = ui.add(add_column_button(dark_mode));
 
                         ui.add(Separator::default().horizontal().spacing(8.0).shrink(4.0));
@@ -112,8 +116,8 @@ impl<'a> DesktopSidePanel<'a> {
                                 SidePanelAction::ComposeNote,
                                 compose_resp,
                             ))
-                        } else if search_resp.clicked() {
-                            Some(InnerResponse::new(SidePanelAction::Search, search_resp))
+                        // } else if search_resp.clicked() {
+                        //     Some(InnerResponse::new(SidePanelAction::Search, search_resp))
                         } else if column_resp.clicked() {
                             Some(InnerResponse::new(SidePanelAction::Columns, column_resp))
                         } else {
@@ -341,6 +345,7 @@ fn compose_note_button(interactive: bool) -> impl Widget {
     }
 }
 
+#[allow(unused)]
 fn search_button() -> impl Widget {
     |ui: &mut egui::Ui| -> egui::Response {
         let max_size = ICON_WIDTH * ICON_EXPANSION_MULTIPLE; // max size of the widget
@@ -413,6 +418,26 @@ fn support_button() -> impl Widget {
         );
 
         helper.take_animation_response()
+    }
+}
+
+fn milestone_name() -> impl Widget {
+    |ui: &mut egui::Ui| -> egui::Response {
+        ui.vertical_centered(|ui| {
+            let font = egui::FontId::new(
+                crate::app_style::get_font_size(
+                    ui.ctx(),
+                    &crate::app_style::NotedeckTextStyle::Small,
+                ),
+                egui::FontFamily::Name(crate::fonts::NamedFontFamily::Bold.as_str().into()),
+            );
+            ui.add(Label::new(
+                RichText::new("ALPHA")
+                    .color(crate::colors::PURPLE)
+                    .font(font),
+            ).selectable(false)).on_hover_text("Notedeck is an alpha product. Expect bugs and contact us when you run into issues.").on_hover_cursor(egui::CursorIcon::Help)
+        })
+        .inner
     }
 }
 

@@ -29,7 +29,7 @@ impl Support {
 
 static MAX_LOG_LINES: usize = 500;
 static SUPPORT_EMAIL: &str = "support@damus.io";
-static EMAIL_TEMPLATE: &str = concat!("Commit hash: ", env!("GIT_COMMIT_HASH"), "\n\nDescribe the bug you have encountered:\n<-- your statement here -->\n\n===== Paste your log below =====\n\n");
+static EMAIL_TEMPLATE: &str = concat!("Notedeck ", env!("CARGO_PKG_VERSION"), "\nCommit hash: ", env!("GIT_COMMIT_HASH"), "\n\nDescribe the bug you have encountered:\n<-- your statement here -->\n\n===== Paste your log below =====\n\n");
 
 impl Support {
     pub fn refresh(&mut self) {

@@ -75,6 +75,7 @@ impl<'a> SupportView<'a> {
                         .color(egui::Color32::RED),
                 );
             }
+            ui.label(format!("Notedeck {}", env!("CARGO_PKG_VERSION")));
             ui.label(format!("Commit hash: {}", env!("GIT_COMMIT_HASH")));
         });
     }
