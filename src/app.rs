@@ -19,13 +19,13 @@ use crate::{
     support::Support,
     thread::Thread,
     timeline::{self, Timeline, TimelineKind},
-    ui::{self, add_column::AddColumnRoute, DesktopSidePanel},
+    ui::{self, DesktopSidePanel},
     unknowns::UnknownIds,
     view_state::ViewState,
     Result,
 };
 
-use enostr::{ClientMessage, RelayEvent, RelayMessage, RelayPool};
+use enostr::{ClientMessage, Keypair, Pubkey, RelayEvent, RelayMessage, RelayPool};
 use uuid::Uuid;
 
 use egui::{Context, Frame, Style};
@@ -491,10 +491,7 @@ impl Damus {
 
         if columns.columns().is_empty() {
             if accounts.get_accounts().is_empty() {
-                columns.add_column(Column::new(vec![
-                    Route::AddColumn(AddColumnRoute::Base),
-                    Route::Accounts(AccountsRoute::AddAccount),
-                ]));
+                set_demo(&path, &ndb, &mut accounts, &mut columns, &mut unknown_ids);
             } else {
                 columns.new_column_picker();
             }
@@ -870,4 +867,32 @@ impl eframe::App for Damus {
         update_damus(self, ctx);
         render_damus(self, ctx);
     }
+}
+
+fn set_demo(
+    data_path: &DataPath,
+    ndb: &Ndb,
+    accounts: &mut Accounts,
+    columns: &mut Columns,
+    unk_ids: &mut UnknownIds,
+) {
+    let demo_pubkey =
+        Pubkey::from_hex("aa733081e4f0f79dd43023d8983265593f2b41a988671cfcef3f489b91ad93fe")
+            .unwrap();
+    {
+        let txn = Transaction::new(ndb).expect("txn");
+        accounts
+            .add_account(Keypair::only_pubkey(demo_pubkey))
+            .process_action(unk_ids, ndb, &txn);
+        accounts.select_account(0);
+    }
+
+    columns.add_column(Column::new(vec![Route::Accounts(AccountsRoute::Accounts)]));
+    let timeline = TimelineKind::contact_list(timeline::PubkeySource::Explicit(demo_pubkey))
+        .into_timeline(ndb, Some(demo_pubkey.bytes()));
+
+    if let Some(timeline) = timeline {
+        columns.add_new_timeline_column(timeline);
+    }
+    storage::save_columns(data_path, columns.as_serializable_columns());
 }
