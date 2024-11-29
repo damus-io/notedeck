@@ -2,7 +2,6 @@ use crate::{
     accounts::{Accounts, AccountsRoute},
     app_creation::setup_cc,
     app_size_handler::AppSizeHandler,
-    app_style::user_requested_visuals_change,
     args::Args,
     column::{Column, Columns},
     draft::Drafts,
@@ -658,42 +657,7 @@ fn circle_icon(ui: &mut egui::Ui, openness: f32, response: &egui::Response) {
 }
 */
 
-fn top_panel(ctx: &egui::Context) -> egui::TopBottomPanel {
-    let top_margin = egui::Margin {
-        top: 4.0,
-        left: 8.0,
-        right: 8.0,
-        ..Default::default()
-    };
-
-    let frame = Frame {
-        inner_margin: top_margin,
-        fill: ctx.style().visuals.panel_fill,
-        ..Default::default()
-    };
-
-    egui::TopBottomPanel::top("top_panel")
-        .frame(frame)
-        .show_separator_line(false)
-}
-
-fn render_panel(ctx: &egui::Context) {
-    top_panel(ctx).show(ctx, |ui| {
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
-            ui.visuals_mut().button_frame = false;
-
-            if let Some(new_visuals) =
-                user_requested_visuals_change(ui::is_oled(), ctx.style().visuals.dark_mode, ui)
-            {
-                ctx.set_visuals(new_visuals)
-            }
-        });
-    });
-}
-
 fn render_damus_mobile(ctx: &egui::Context, app: &mut Damus) {
-    //render_panel(ctx, app, 0);
-
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
 
@@ -723,7 +687,6 @@ fn main_panel(style: &Style, narrow: bool) -> egui::CentralPanel {
 }
 
 fn render_damus_desktop(ctx: &egui::Context, app: &mut Damus) {
-    render_panel(ctx);
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
 

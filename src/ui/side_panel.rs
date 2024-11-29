@@ -5,7 +5,7 @@ use tracing::info;
 
 use crate::{
     accounts::AccountsRoute,
-    colors,
+    app_style, colors,
     column::{Column, Columns},
     imgcache::ImageCache,
     route::Route,
@@ -130,6 +130,14 @@ impl<'a> DesktopSidePanel<'a> {
                     .with_layout(Layout::bottom_up(egui::Align::Center), |ui| {
                         let pfp_resp = self.pfp_button(ui);
                         let settings_resp = ui.add(settings_button(dark_mode));
+
+                        if let Some(new_visuals) = app_style::user_requested_visuals_change(
+                            super::is_oled(),
+                            ui.ctx().style().visuals.dark_mode,
+                            ui,
+                        ) {
+                            ui.ctx().set_visuals(new_visuals)
+                        }
 
                         let support_resp = ui.add(support_button());
 
