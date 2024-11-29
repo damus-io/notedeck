@@ -1,4 +1,4 @@
-use crate::colors::{self, PINK};
+use crate::colors::PINK;
 use crate::imgcache::ImageCache;
 use crate::{
     accounts::Accounts,
@@ -6,9 +6,7 @@ use crate::{
     ui::{Preview, PreviewConfig, View},
     Damus,
 };
-use egui::{
-    Align, Button, Frame, Image, InnerResponse, Layout, RichText, ScrollArea, Stroke, Ui, Vec2,
-};
+use egui::{Align, Button, Frame, Image, InnerResponse, Layout, RichText, ScrollArea, Ui, Vec2};
 use nostrdb::{Ndb, Transaction};
 
 use super::profile::preview::SimpleProfilePreview;
@@ -143,10 +141,10 @@ fn show_profile_card(
     ui.add_sized(max_size, |ui: &mut egui::Ui| {
         let mut frame = Frame::none();
         if is_selected || card_resp.hovered() {
-            frame = frame.fill(ui.visuals().noninteractive().weak_bg_fill)
+            frame = frame.fill(ui.visuals().noninteractive().weak_bg_fill);
         }
         if is_selected {
-            frame = frame.stroke(Stroke::new(2.0, colors::PINK))
+            frame = frame.stroke(ui.visuals().noninteractive().fg_stroke);
         }
         frame
             .rounding(8.0)
@@ -170,7 +168,7 @@ fn show_profile_card(
             })
             .response
     });
-    ui.add_space(16.0);
+    ui.add_space(8.0);
     op
 }
 

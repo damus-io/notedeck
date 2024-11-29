@@ -120,7 +120,7 @@ impl egui::Widget for SimpleProfilePreview<'_, '_> {
                     if !self.is_nsec {
                         ui.add(
                             Label::new(
-                                RichText::new("View only mode")
+                                RichText::new("Read only")
                                     .size(get_font_size(ui.ctx(), &NotedeckTextStyle::Tiny))
                                     .color(ui.visuals().warn_fg_color),
                             )
