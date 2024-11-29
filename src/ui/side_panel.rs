@@ -70,10 +70,13 @@ impl<'a> DesktopSidePanel<'a> {
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui) -> SidePanelResponse {
-        egui::Frame::none()
-            .inner_margin(Margin::same(8.0))
-            .show(ui, |ui| self.show_inner(ui))
-            .inner
+        let mut frame = egui::Frame::none().inner_margin(Margin::same(8.0));
+
+        if !ui.visuals().dark_mode {
+            frame = frame.fill(colors::ALMOST_WHITE);
+        }
+
+        frame.show(ui, |ui| self.show_inner(ui)).inner
     }
 
     fn show_inner(&mut self, ui: &mut egui::Ui) -> SidePanelResponse {

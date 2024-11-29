@@ -22,6 +22,7 @@ const LIGHT_GRAY: Color32 = Color32::from_rgb(0xc8, 0xc8, 0xc8); // 78%
 pub const MID_GRAY: Color32 = Color32::from_rgb(0xbd, 0xbd, 0xbd);
 const DARKER_GRAY: Color32 = Color32::from_rgb(0xa5, 0xa5, 0xa5); // 65%
 const EVEN_DARKER_GRAY: Color32 = Color32::from_rgb(0x89, 0x89, 0x89); // 54%
+pub const ALMOST_WHITE: Color32 = Color32::from_rgb(0xFA, 0xFA, 0xFA);
 
 pub struct ColorTheme {
     // VISUALS
