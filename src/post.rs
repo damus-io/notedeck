@@ -7,13 +7,20 @@ pub struct NewPost {
     pub account: FullKeypair,
 }
 
+fn add_client_tag(builder: NoteBuilder<'_>) -> NoteBuilder<'_> {
+    builder
+        .start_tag()
+        .tag_str("client")
+        .tag_str("Damus Notedeck")
+}
+
 impl NewPost {
     pub fn new(content: String, account: FullKeypair) -> Self {
         NewPost { content, account }
     }
 
     pub fn to_note(&self, seckey: &[u8; 32]) -> Note {
-        NoteBuilder::new()
+        add_client_tag(NoteBuilder::new())
             .kind(1)
             .content(&self.content)
             .sign(seckey)
@@ -22,7 +29,9 @@ impl NewPost {
     }
 
     pub fn to_reply(&self, seckey: &[u8; 32], replying_to: &Note) -> Note {
-        let builder = NoteBuilder::new().kind(1).content(&self.content);
+        let builder = add_client_tag(NoteBuilder::new())
+            .kind(1)
+            .content(&self.content);
 
         let nip10 = NoteReply::new(replying_to.tags());
 
