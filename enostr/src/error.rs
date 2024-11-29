@@ -17,25 +17,6 @@ pub enum Error {
     Generic(String),
 }
 
-impl std::cmp::PartialEq for Error {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Error::Empty, Error::Empty) => true,
-            (Error::DecodeFailed, Error::DecodeFailed) => true,
-            (Error::HexDecodeFailed, Error::HexDecodeFailed) => true,
-            (Error::InvalidSignature, Error::InvalidSignature) => true,
-            (Error::InvalidByteSize, Error::InvalidByteSize) => true,
-            (Error::InvalidPublicKey, Error::InvalidPublicKey) => true,
-            // This is slightly wrong but whatevs
-            (Error::Json(..), Error::Json(..)) => true,
-            (Error::Generic(left), Error::Generic(right)) => left == right,
-            (Error::Nostrdb(left), Error::Nostrdb(right)) => left == right,
-            //(Error::Secp(left), Error::Secp(right)) => left == right,
-            _ => false,
-        }
-    }
-}
-
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -53,8 +34,6 @@ impl fmt::Display for Error {
         }
     }
 }
-
-impl std::cmp::Eq for Error {}
 
 impl From<String> for Error {
     fn from(s: String) -> Self {

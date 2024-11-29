@@ -402,8 +402,7 @@ impl Damus {
         let imgcache_dir = path.path(DataPathType::Cache).join(ImageCache::rel_dir());
         let _ = std::fs::create_dir_all(imgcache_dir.clone());
 
-        let mut config = Config::new();
-        config.set_ingester_threads(4);
+        let config = Config::new().set_ingester_threads(4);
 
         let keystore = if parsed_args.use_keystore {
             let keys_path = path.path(DataPathType::Keys);
@@ -587,8 +586,7 @@ impl Damus {
         let app_rect_handler = AppSizeHandler::new(&path);
         let support = Support::new(&path);
 
-        let mut config = Config::new();
-        config.set_ingester_threads(2);
+        let config = Config::new().set_ingester_threads(2);
 
         Self {
             debug,

@@ -17,7 +17,7 @@ crate-type = ["lib", "cdylib"]
 egui = { git = "https://github.com/emilk/egui", rev = "fcb7764e48ce00f8f8e58da10f937410d65b0bfb", features = ["serde"] }
 eframe = { git = "https://github.com/emilk/egui", rev = "fcb7764e48ce00f8f8e58da10f937410d65b0bfb", package = "eframe", default-features = false, features = [ "wgpu", "wayland", "x11", "android-native-activity" ] }
 egui_extras = { git = "https://github.com/emilk/egui", rev = "fcb7764e48ce00f8f8e58da10f937410d65b0bfb", package = "egui_extras", features = ["all_loaders"] }
-nostrdb = { git = "https://github.com/damus-io/nostrdb-rs", rev = "8d96dbd9b8e73ecb90819d843d14dc6c57e3acd4" }
+nostrdb = { git = "https://github.com/damus-io/nostrdb-rs", rev = "71154e4100775f6932ee517da4350c433ba14ec7" }
 
 [dependencies]
 #egui-android = { git = "https://github.com/jb55/egui-android.git" }
