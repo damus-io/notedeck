@@ -122,6 +122,10 @@ pub fn render_note_preview(
         .inner
 }
 
+fn is_image_link(url: &str) -> bool {
+    url.ends_with("png") || url.ends_with("jpg") || url.ends_with("jpeg")
+}
+
 #[allow(clippy::too_many_arguments)]
 fn render_note_contents(
     ui: &mut egui::Ui,
@@ -184,7 +188,7 @@ fn render_note_contents(
 
                 BlockType::Url => {
                     let lower_url = block.as_str().to_lowercase();
-                    if !hide_media && (lower_url.ends_with("png") || lower_url.ends_with("jpg")) {
+                    if !hide_media && is_image_link(&lower_url) {
                         images.push(block.as_str().to_string());
                     } else {
                         #[cfg(feature = "profiling")]
