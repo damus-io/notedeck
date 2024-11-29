@@ -402,7 +402,15 @@ impl Damus {
         let imgcache_dir = path.path(DataPathType::Cache).join(ImageCache::rel_dir());
         let _ = std::fs::create_dir_all(imgcache_dir.clone());
 
-        let config = Config::new().set_ingester_threads(4);
+        let mapsize = if cfg!(target_os = "windows") {
+            // 16 Gib on windows because it actually creates the file
+            1024usize * 1024usize * 1024usize * 16usize
+        } else {
+            // 1 TiB for everything else since its just virtually mapped
+            1024usize * 1024usize * 1024usize * 1024usize
+        };
+
+        let config = Config::new().set_ingester_threads(4).set_mapsize(mapsize);
 
         let keystore = if parsed_args.use_keystore {
             let keys_path = path.path(DataPathType::Keys);
