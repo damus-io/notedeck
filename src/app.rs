@@ -680,7 +680,7 @@ fn top_panel(ctx: &egui::Context) -> egui::TopBottomPanel {
         .show_separator_line(false)
 }
 
-fn render_panel(ctx: &egui::Context, app: &mut Damus) {
+fn render_panel(ctx: &egui::Context) {
     top_panel(ctx).show(ctx, |ui| {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
             ui.visuals_mut().button_frame = false;
@@ -689,53 +689,6 @@ fn render_panel(ctx: &egui::Context, app: &mut Damus) {
                 user_requested_visuals_change(ui::is_oled(), ctx.style().visuals.dark_mode, ui)
             {
                 ctx.set_visuals(new_visuals)
-            }
-
-            if ui
-                .add(egui::Button::new("A").frame(false))
-                .on_hover_text("Text mode")
-                .clicked()
-            {
-                app.textmode = !app.textmode;
-            }
-
-            /*
-            if ui
-                .add(egui::Button::new("+").frame(false))
-                .on_hover_text("Add Timeline")
-                .clicked()
-            {
-                app.n_panels += 1;
-            }
-
-            if app.n_panels != 1
-                && ui
-                    .add(egui::Button::new("-").frame(false))
-                    .on_hover_text("Remove Timeline")
-                    .clicked()
-            {
-                app.n_panels -= 1;
-            }
-            */
-
-            //#[cfg(feature = "profiling")]
-            {
-                ui.weak(format!(
-                    "FPS: {:.2}, {:10.1}ms",
-                    app.frame_history.fps(),
-                    app.frame_history.mean_frame_time() * 1e3
-                ));
-
-                /*
-                if !app.timelines().count().is_empty() {
-                    ui.weak(format!(
-                        "{} notes",
-                        &app.timelines()
-                            .notes(ViewFilter::NotesAndReplies)
-                            .len()
-                    ));
-                }
-                */
             }
         });
     });
@@ -773,7 +726,7 @@ fn main_panel(style: &Style, narrow: bool) -> egui::CentralPanel {
 }
 
 fn render_damus_desktop(ctx: &egui::Context, app: &mut Damus) {
-    render_panel(ctx, app);
+    render_panel(ctx);
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
 

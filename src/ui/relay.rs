@@ -20,11 +20,12 @@ impl View for RelayView<'_> {
                 );
             });
 
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.add(add_relay_button()).clicked() {
-                    // TODO: navigate to 'add relay view'
-                };
-            });
+            // TODO: implement manually adding relays
+            // ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            //     if ui.add(add_relay_button()).clicked() {
+            //         // TODO: navigate to 'add relay view'
+            //     };
+            // });
         });
 
         ui.add_space(8.0);
@@ -111,6 +112,7 @@ fn get_right_side_width(status: &RelayStatus) -> f32 {
     }
 }
 
+#[allow(unused)]
 fn add_relay_button() -> egui::Button<'static> {
     Button::new("+ Add relay").min_size(Vec2::new(0.0, 32.0))
 }
