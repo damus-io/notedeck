@@ -427,13 +427,13 @@ fn milestone_name() -> impl Widget {
             let font = egui::FontId::new(
                 crate::app_style::get_font_size(
                     ui.ctx(),
-                    &crate::app_style::NotedeckTextStyle::Small,
+                    &crate::app_style::NotedeckTextStyle::Tiny,
                 ),
                 egui::FontFamily::Name(crate::fonts::NamedFontFamily::Bold.as_str().into()),
             );
             ui.add(Label::new(
                 RichText::new("ALPHA")
-                    .color(crate::colors::PURPLE)
+                    .color(crate::colors::GRAY_SECONDARY)
                     .font(font),
             ).selectable(false)).on_hover_text("Notedeck is an alpha product. Expect bugs and contact us when you run into issues.").on_hover_cursor(egui::CursorIcon::Help)
         })
