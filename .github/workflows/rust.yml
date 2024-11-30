@@ -170,10 +170,15 @@ jobs:
           path: packages/notedeck-${{ matrix.arch }}.dmg
 
   windows-installer:
-    name: Build Windows Installer (x86_64)
+    name: Windows Installer
     runs-on: windows-latest
     needs: windows-test
     if: github.ref_name == 'master' || github.ref_name == 'ci'
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, aarch64]
+
     steps:
       # Checkout the repository
       - name: Checkout Code
@@ -195,19 +200,59 @@ jobs:
       - name: Install Inno Setup
         run: choco install innosetup --no-progress --yes
 
+      # Set up Rust toolchain
+      - name: Install Rust toolchain
+        run: rustup target add ${{ matrix.arch }}-pc-windows-msvc
+
+      # Build
+      - name: Build
+        shell: pwsh
+        run: |
+          $target = "${{ matrix.arch }}-pc-windows-msvc"
+          Write-Output "Building for target: $target"
+          cargo build --release --target=$target
+
+      # Generate ISS Script
+      - name: Generate Inno Setup Script
+        shell: pwsh
+        run: |
+          $arch = "${{ matrix.arch }}"
+          $issContent = @"
+          [Setup]
+          AppName=Damus Notedeck
+          AppVersion=0.1
+          DefaultDirName={pf}\Notedeck
+          DefaultGroupName=Damus Notedeck
+          OutputDir=..\packages\$arch
+          OutputBaseFilename=DamusNotedeckInstaller
+          Compression=lzma
+          SolidCompression=yes
+
+          [Files]
+          Source: "..\target\$arch-pc-windows-msvc\release\notedeck.exe"; DestDir: "{app}"; Flags: ignoreversion
+
+          [Icons]
+          Name: "{group}\Damus Notedeck"; Filename: "{app}\notedeck.exe"
+
+          [Run]
+          Filename: "{app}\notedeck.exe"; Description: "Launch Damus Notedeck"; Flags: nowait postinstall skipifsilent
+          "@
+          Set-Content -Path "scripts/windows-installer-$arch.iss" -Value $issContent
+
       # Build Installer
       - name: Run Inno Setup Script
         run: |
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "scripts\windows-installer.iss"
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "scripts\windows-installer-${{ matrix.arch }}.iss"
 
-      # List outputs
-      - name: List Inno Script outputs
-        run: dir packages
-
+      # Move output
+      - name: Move Inno Script outputs to architecture-specific folder
+        run: |
+          New-Item -ItemType Directory -Force -Path packages\${{ matrix.arch }}
+          Move-Item -Path packages\${{ matrix.arch }}\DamusNotedeckInstaller.exe -Destination packages\${{ matrix.arch }}\DamusNotedeckInstaller.exe
       # Upload the installer as an artifact
       - name: Upload Installer
         uses: actions/upload-artifact@v4
         with:
-          name: DamusNotedeckInstaller.exe
-          path: packages\DamusNotedeckInstaller.exe
+          name: DamusNotedeckInstaller-${{ matrix.arch }}.exe
+          path: packages\${{ matrix.arch }}\DamusNotedeckInstaller.exe
 
