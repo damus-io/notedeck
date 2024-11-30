@@ -30,37 +30,37 @@ jobs:
           components: clippy
       - run: cargo clippy -- -D warnings
 
-  linux-build-test:
-    name: Build and Test (Linux)
+  linux-test:
+    name: Test (Linux)
     uses: ./.github/workflows/build-and-test.yml
     with:
       os: ubuntu-latest
-      upload-artifact-name: notedeck-linux-bin
-      upload-artifact-path: target/release/notedeck
       additional-setup: |
         sudo apt-get install libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libspeechd-dev libxkbcommon-dev libssl-dev
 
-  macos-build-test:
-    name: Build and Test (macOS)
+  macos-test:
+    name: Test (macOS)
     uses: ./.github/workflows/build-and-test.yml
     with:
       os: macos-latest
-      upload-artifact-name: notedeck-macos-bin
-      upload-artifact-path: target/release/notedeck
 
-  windows-build-test:
-    name: Build and Test (Windows)
+  windows-test:
+    name: Test (Windows)
     uses: ./.github/workflows/build-and-test.yml
     with:
       os: windows-latest
-      upload-artifact-name: notedeck.exe
-      upload-artifact-path: target/release/notedeck.exe
 
   packaging:
-    name: Build Linux Packages
+    name: rpm/deb
     runs-on: ubuntu-latest
-    needs: linux-build-test
-    if: github.ref_name == 'master'
+    needs: linux-test
+    #if: github.ref_name == 'master'
+
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, aarch64]
+
     steps:
       # Checkout the repository
       - name: Checkout Code
@@ -70,69 +70,80 @@ jobs:
       - name: Install Packaging Tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y rpm binutils
+          if [ "${{ matrix.arch }}" != "$(uname -m)" ]; then
+            sudo apt-get install -y gcc-${{ matrix.arch }}-linux-gnu g++-aarch64-linux-gnu
+            rustup target add ${{ matrix.arch }}-unknown-linux-gnu
+          fi
           cargo install cargo-generate-rpm cargo-deb
 
-      # download!
-      - name: Download Build Artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: notedeck-linux-bin
-          path: target/release
-
-      # Build Packages
-      - name: Build Packages
+      # Build
+      - name: Build (${{ matrix.arch }})
         run: |
-          cargo generate-rpm
-          cargo deb
+          echo "arch: $(uname -m)"
+          if [ "${{ matrix.arch }}" != "$(uname -m)" ]; then
+            cargo build --release --target=${{ matrix.arch }}-unknown-linux-gnu
+          else
+            cargo build --release
+          fi
+
+      # Build RPM Package
+      - name: Build RPM Package
+        run: |
+          if [ "${{ matrix.arch }}" != "$(uname -m)" ]; then
+            cargo generate-rpm --target=${{ matrix.arch }}-unknown-linux-gnu
+          else
+            cargo generate-rpm
+          fi
+
+      # Build Debian Package
+      - name: Build Debian Package
+        run: |
+          if [ "${{ matrix.arch }}" != "$(uname -m)" ]; then
+            cargo deb --target=${{ matrix.arch }}-unknown-linux-gnu
+          else
+            cargo deb
+          fi
 
       # Upload RPM Package
       - name: Upload RPM Package
         uses: actions/upload-artifact@v4
         with:
-          name: notedeck.rpm
-          path: target/generate-rpm/*.rpm
+          name: ${{ inputs.artifact-name }}-${{ matrix.arch }}.rpm
+          path: target/${{ matrix.arch }}-unknown-linux-gnu/generate-rpm/*.rpm
 
       # Upload Debian Package
       - name: Upload Debian Package
         uses: actions/upload-artifact@v4
         with:
-          name: notedeck.deb
-          path: target/debian/*.deb
+          name: ${{ inputs.artifact-name }}-${{ inputs.arch }}.deb
+          path: target/${{ matrix.arch }}-unknown-linux-gnu/debian/*.deb
 
   macos-dmg:
-    name: Build macOS DMG
+    name: macOS dmg
     runs-on: macos-latest
-    needs: macos-build-test
-    if: github.ref_name == 'master'
+    needs: macos-test
+    #if: github.ref_name == 'master'
     env:
       NOTEDECK_APPLE_RELEASE_CERT_ID: ${{ secrets.NOTEDECK_APPLE_RELEASE_CERT_ID }}
       NOTEDECK_RELEASE_APPLE_ID: ${{ secrets.NOTEDECK_RELEASE_APPLE_ID }}
       NOTEDECK_APPLE_APP_SPECIFIC_PW: ${{ secrets.NOTEDECK_APPLE_APP_SPECIFIC_PW }}
       NOTEDECK_APPLE_TEAM_ID: ${{ secrets.NOTEDECK_APPLE_TEAM_ID }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, aarch64]
+
     steps:
       # Checkout the repository
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # Set up Rust
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      # create-dmg and cargo-bundle caching
-      - name: Rust cache
-        uses: Swatinem/rust-cache@v2
-
-      - name: Download Build Artifacts (MacOS)
-        uses: actions/download-artifact@v4
-        with:
-          name: notedeck-macos-bin  # Assuming you need the Release build
-          path: target/release
-
       - name: Install Required Tools
         run: |
           brew install create-dmg
           cargo install cargo-bundle
+          rustup target add ${{ matrix.arch }}-apple-darwin
 
       - name: Import apple codesign cert
         uses: apple-actions/import-codesign-certs@v3
@@ -141,29 +152,27 @@ jobs:
           p12-password: ${{ secrets.CERTIFICATES_P12_PASSWORD }}
 
       - name: Run macOS DMG Build Script
-        run: ./scripts/macos_build.sh
+        run: ARCH=${{ matrix.arch }} ./scripts/macos_build.sh
 
       - name: Upload DMG Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: notedeck.dmg
-          path: packages/notedeck.dmg
+          name: notedeck-${{ matrix.arch }}.dmg
+          path: packages/notedeck-${{ matrix.arch }}.dmg
 
   windows-installer:
-    name: Build Windows Installer
+    name: Windows Installer
     runs-on: windows-latest
-    needs: windows-build-test
-    if: github.ref_name == 'master'
+    needs: windows-test
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, aarch64]
+
     steps:
       # Checkout the repository
       - name: Checkout Code
         uses: actions/checkout@v4
-
-      - name: Download Build Artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: notedeck.exe  # Assuming you need the Release build
-          path: target/release
 
       # Create packages directory
       - name: Create packages directory
@@ -173,25 +182,59 @@ jobs:
       - name: Install Inno Setup
         run: choco install innosetup --no-progress --yes
 
-      # Validate executable exists
-      - name: Validate required files
+      # Set up Rust toolchain
+      - name: Install Rust toolchain
+        run: rustup target add ${{ matrix.arch }}-pc-windows-msvc
+
+      # Build
+      - name: Build
+        shell: pwsh
         run: |
-          if (!(Test-Path -Path target\release\notedeck.exe)) {
-            throw "Executable 'notedeck.exe' not found in 'target/release'."
-          }
+          $target = "${{ matrix.arch }}-pc-windows-msvc"
+          Write-Output "Building for target: $target"
+          cargo build --release --target=$target
+
+      # Generate ISS Script
+      - name: Generate Inno Setup Script
+        shell: pwsh
+        run: |
+          $arch = "${{ matrix.arch }}"
+          $issContent = @"
+          [Setup]
+          AppName=Damus Notedeck
+          AppVersion=0.1
+          DefaultDirName={pf}\Notedeck
+          DefaultGroupName=Damus Notedeck
+          OutputDir=..\packages\$arch
+          OutputBaseFilename=DamusNotedeckInstaller
+          Compression=lzma
+          SolidCompression=yes
+
+          [Files]
+          Source: "..\target\$arch-pc-windows-msvc\release\notedeck.exe"; DestDir: "{app}"; Flags: ignoreversion
+
+          [Icons]
+          Name: "{group}\Damus Notedeck"; Filename: "{app}\notedeck.exe"
+
+          [Run]
+          Filename: "{app}\notedeck.exe"; Description: "Launch Damus Notedeck"; Flags: nowait postinstall skipifsilent
+          "@
+          Set-Content -Path "scripts/windows-installer-$arch.iss" -Value $issContent
 
       # Build Installer
       - name: Run Inno Setup Script
         run: |
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "scripts\windows-installer.iss"
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "scripts\windows-installer-${{ matrix.arch }}.iss"
 
-      # List outputs
-      - name: List Inno Script outputs
-        run: dir packages
-
+      # Move output
+      - name: Move Inno Script outputs to architecture-specific folder
+        run: |
+          New-Item -ItemType Directory -Force -Path packages\${{ matrix.arch }}
+          Move-Item -Path packages\${{ matrix.arch }}\DamusNotedeckInstaller.exe -Destination packages\${{ matrix.arch }}\DamusNotedeckInstaller.exe
       # Upload the installer as an artifact
       - name: Upload Installer
         uses: actions/upload-artifact@v4
         with:
-          name: DamusNotedeckInstaller.exe
-          path: packages\DamusNotedeckInstaller.exe
+          name: DamusNotedeckInstaller-${{ matrix.arch }}.exe
+          path: packages\${{ matrix.arch }}\DamusNotedeckInstaller.exe
+

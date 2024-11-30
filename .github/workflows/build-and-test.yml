@@ -1,15 +1,9 @@
-name: Build & Test
+name: Test
 
 on:
   workflow_call:
     inputs:
       os:
-        required: true
-        type: string
-      upload-artifact-name:
-        required: true
-        type: string
-      upload-artifact-path:
         required: true
         type: string
       additional-setup:
@@ -19,28 +13,14 @@ on:
 jobs:
   run:
     runs-on: ${{ inputs.os }}
+
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
-
-      - name: Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Rust cache
-        uses: Swatinem/rust-cache@v2
 
       - name: Additional Setup (if specified)
         if: ${{ inputs.additional-setup != '' }}
         run: ${{ inputs.additional-setup }}
 
-      - name: Run Tests
-        run: cargo test --release
-
-      - name: Build
-        run: cargo build --release
-
-      - name: Upload Build Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ inputs.upload-artifact-name }}
-          path: ${{ inputs.upload-artifact-path }}
+      - name: Run Tests (Native Only)
+        run: cargo test
