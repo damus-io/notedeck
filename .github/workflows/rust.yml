@@ -96,24 +96,26 @@ jobs:
         run: cargo generate-rpm
 
       - name: Build deb (Cross)
+        if: matrix.arch != runner.arch
         run: cargo deb --target=${{ matrix.arch }}-unknown-linux-gnu
 
       - name: Build deb
+        if: matrix.arch == runner.arch
         run: cargo deb
 
       - name: Upload RPM
         uses: actions/upload-artifact@v4
         if: runner.arch == matrix.arch
         with:
-          name: ${{ inputs.artifact-name }}-${{ matrix.arch }}.rpm
+          name: notedeck-${{ matrix.arch }}.rpm
           path: target/release/generate-rpm/notedeck.rpm
 
       - name: Upload RPM (Cross)
         uses: actions/upload-artifact@v4
         if: runner.arch != matrix.arch
         with:
-          name: ${{ inputs.artifact-name }}-${{ matrix.arch }}.rpm
-          path: target/${{ matrix.arch }}-unknown-linux-gnu/generate-rpm/notedeck.rpm
+          name: notedeck-${{ matrix.arch }}.rpm
+          path: target/${{ matrix.arch }}-unknown-linux-gnu/generate-rpm/*.rpm
 
       - name: Upload deb (Native)
         uses: actions/upload-artifact@v4
@@ -123,12 +125,12 @@ jobs:
           path: target/release/debian/notedeck.deb
 
       # Upload Debian Package (Cross)
-      - name: Upload db (Cross)
+      - name: Upload deb (Cross)
         uses: actions/upload-artifact@v4
         if: runner.arch != matrix.arch
         with:
           name: notedeck-${{ matrix.arch }}.deb
-          path: target/${{ matrix.arch }}-unknown-linux-gnu/debian/notedeck.deb
+          path: target/${{ matrix.arch }}-unknown-linux-gnu/debian/*.deb
 
   macos-dmg:
     name: macOS dmg
