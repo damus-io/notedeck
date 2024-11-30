@@ -54,7 +54,7 @@ jobs:
     name: rpm/deb
     runs-on: ubuntu-latest
     needs: linux-test
-    if: github.ref_name == 'master'
+    if: github.ref_name == 'master' || github.ref_name == 'ci'
 
     strategy:
       fail-fast: false
@@ -76,57 +76,65 @@ jobs:
           fi
           cargo install cargo-generate-rpm cargo-deb
 
-      # Cache
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
 
-      # Build
-      - name: Build (${{ matrix.arch }})
-        run: |
-          echo "arch: $(uname -m)"
-          if [ "${{ matrix.arch }}" != "$(uname -m)" ]; then
-            cargo build --release --target=${{ matrix.arch }}-unknown-linux-gnu
-          else
-            cargo build --release
-          fi
+      - name: Build Cross (${{ matrix.arch }})
+        if: matrix.arch != runner.arch
+        run: cargo build --release --target=${{ matrix.arch }}-unknown-linux-gnu
 
-      # Build RPM Package
-      - name: Build RPM Package
-        run: |
-          if [ "${{ matrix.arch }}" != "$(uname -m)" ]; then
-            cargo generate-rpm --target=${{ matrix.arch }}-unknown-linux-gnu
-          else
-            cargo generate-rpm
-          fi
+      - name: Build Native (${{ matrix.arch }})
+        if: matrix.arch == runner.arch
+        run: cargo build --release
 
-      # Build Debian Package
-      - name: Build Debian Package
-        run: |
-          if [ "${{ matrix.arch }}" != "$(uname -m)" ]; then
-            cargo deb --target=${{ matrix.arch }}-unknown-linux-gnu
-          else
-            cargo deb
-          fi
+      - name: Build RPM (Cross)
+        if: matrix.arch != runner.arch
+        run: cargo generate-rpm --target=${{ matrix.arch }}-unknown-linux-gnu
 
-      # Upload RPM Package
-      - name: Upload RPM Package
+      - name: Build RPM
+        if: matrix.arch == runner.arch
+        run: cargo generate-rpm
+
+      - name: Build deb (Cross)
+        run: cargo deb --target=${{ matrix.arch }}-unknown-linux-gnu
+
+      - name: Build deb
+        run: cargo deb
+
+      - name: Upload RPM
         uses: actions/upload-artifact@v4
+        if: runner.arch == matrix.arch
         with:
           name: ${{ inputs.artifact-name }}-${{ matrix.arch }}.rpm
-          path: target/${{ matrix.arch }}-unknown-linux-gnu/generate-rpm/*.rpm
+          path: target/release/generate-rpm/notedeck.rpm
 
-      # Upload Debian Package
-      - name: Upload Debian Package
+      - name: Upload RPM (Cross)
         uses: actions/upload-artifact@v4
+        if: runner.arch != matrix.arch
         with:
-          name: ${{ inputs.artifact-name }}-${{ inputs.arch }}.deb
-          path: target/${{ matrix.arch }}-unknown-linux-gnu/debian/*.deb
+          name: ${{ inputs.artifact-name }}-${{ matrix.arch }}.rpm
+          path: target/${{ matrix.arch }}-unknown-linux-gnu/generate-rpm/notedeck.rpm
+
+      - name: Upload deb (Native)
+        uses: actions/upload-artifact@v4
+        if: runner.arch == matrix.arch
+        with:
+          name: notedeck-${{ matrix.arch }}.deb
+          path: target/release/debian/notedeck.deb
+
+      # Upload Debian Package (Cross)
+      - name: Upload db (Cross)
+        uses: actions/upload-artifact@v4
+        if: runner.arch != matrix.arch
+        with:
+          name: notedeck-${{ matrix.arch }}.deb
+          path: target/${{ matrix.arch }}-unknown-linux-gnu/debian/notedeck.deb
 
   macos-dmg:
     name: macOS dmg
     runs-on: macos-latest
     needs: macos-test
-    if: github.ref_name == 'master'
+    if: github.ref_name == 'master' || github.ref_name == 'ci'
     env:
       NOTEDECK_APPLE_RELEASE_CERT_ID: ${{ secrets.NOTEDECK_APPLE_RELEASE_CERT_ID }}
       NOTEDECK_RELEASE_APPLE_ID: ${{ secrets.NOTEDECK_RELEASE_APPLE_ID }}
@@ -171,7 +179,7 @@ jobs:
     name: Build Windows Installer (x86_64)
     runs-on: windows-latest
     needs: windows-test
-    if: github.ref_name == 'master'
+    if: github.ref_name == 'master' || github.ref_name == 'ci'
     steps:
       # Checkout the repository
       - name: Checkout Code
