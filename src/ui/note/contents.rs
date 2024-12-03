@@ -211,6 +211,13 @@ fn render_note_contents(
                 }
             }
         }
+
+        if !images.is_empty() && !options.has_textmode() {
+            ui.add_space(2.0);
+            let carousel_id = egui::Id::new(("carousel", note.key().expect("expected tx note")));
+            image_carousel(ui, img_cache, images, carousel_id);
+            ui.add_space(2.0);
+        }
     });
 
     let note_action = if let Some((id, block_str)) = inline_note {
@@ -218,13 +225,6 @@ fn render_note_contents(
     } else {
         None
     };
-
-    if !images.is_empty() && !options.has_textmode() {
-        ui.add_space(2.0);
-        let carousel_id = egui::Id::new(("carousel", note.key().expect("expected tx note")));
-        image_carousel(ui, img_cache, images, carousel_id);
-        ui.add_space(2.0);
-    }
 
     NoteResponse::new(response.response).with_action(note_action)
 }
