@@ -30,6 +30,36 @@ jobs:
           components: clippy
       - run: cargo clippy -- -D warnings
 
+  android-build:
+    name: Build (Android)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v3
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platforms;android-30'
+          accept-android-sdk-licenses: true
+
+      - name: Install android target & cargo-apk
+        run: |
+          rustup target add aarch64-linux-android
+          cargo install cargo-apk
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run Tests
+        run: cargo apk build
+
   linux-test:
     name: Test (Linux)
     uses: ./.github/workflows/build-and-test.yml
