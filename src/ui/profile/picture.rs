@@ -2,6 +2,7 @@ use crate::images::ImageType;
 use crate::imgcache::ImageCache;
 use crate::ui::{Preview, PreviewConfig, View};
 use egui::{vec2, Sense, TextureHandle};
+use nostrdb::{Ndb, Transaction};
 
 pub struct ProfilePic<'cache, 'url> {
     cache: &'cache mut ImageCache,

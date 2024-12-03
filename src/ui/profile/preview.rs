@@ -7,8 +7,8 @@ use crate::{colors, images, DisplayName};
 use egui::load::TexturePoll;
 use egui::{Frame, Label, RichText, Sense, Widget};
 use egui_extras::Size;
-use enostr::NoteId;
-use nostrdb::ProfileRecord;
+use enostr::{NoteId, Pubkey};
+use nostrdb::{Ndb, ProfileRecord, Transaction};
 
 pub struct ProfilePreview<'a, 'cache> {
     profile: &'a ProfileRecord<'a>,
@@ -176,7 +176,7 @@ mod previews {
     }
 }
 
-pub fn get_display_name<'a>(profile: Option<&'a ProfileRecord<'a>>) -> DisplayName<'a> {
+pub fn get_display_name<'a>(profile: Option<&ProfileRecord<'a>>) -> DisplayName<'a> {
     if let Some(name) = profile.and_then(|p| crate::profile::get_profile_name(p)) {
         name
     } else {
@@ -184,7 +184,7 @@ pub fn get_display_name<'a>(profile: Option<&'a ProfileRecord<'a>>) -> DisplayNa
     }
 }
 
-pub fn get_profile_url<'a>(profile: Option<&'a ProfileRecord<'a>>) -> &'a str {
+pub fn get_profile_url<'a>(profile: Option<&ProfileRecord<'a>>) -> &'a str {
     if let Some(url) = profile.and_then(|pr| pr.record().profile().and_then(|p| p.picture())) {
         url
     } else {
@@ -279,8 +279,11 @@ pub fn one_line_display_name_widget(
     }
 }
 
-fn about_section_widget<'a>(profile: &'a ProfileRecord<'a>) -> impl egui::Widget + 'a {
-    |ui: &mut egui::Ui| {
+fn about_section_widget<'a, 'b>(profile: &'b ProfileRecord<'a>) -> impl egui::Widget + 'b
+where
+    'b: 'a,
+{
+    move |ui: &mut egui::Ui| {
         if let Some(about) = profile.record().profile().and_then(|p| p.about()) {
             ui.label(about)
         } else {
@@ -290,27 +293,30 @@ fn about_section_widget<'a>(profile: &'a ProfileRecord<'a>) -> impl egui::Widget
     }
 }
 
-fn get_display_name_as_string(profile: Option<&'_ ProfileRecord<'_>>) -> String {
+fn get_display_name_as_string<'a>(profile: Option<&ProfileRecord<'a>>) -> &'a str {
     let display_name = get_display_name(profile);
     match display_name {
-        DisplayName::One(n) => n.to_string(),
-        DisplayName::Both { display_name, .. } => display_name.to_string(),
+        DisplayName::One(n) => n,
+        DisplayName::Both { display_name, .. } => display_name,
     }
 }
 
-pub fn get_profile_displayname_string(ndb: &nostrdb::Ndb, pk: &enostr::Pubkey) -> String {
-    let txn = nostrdb::Transaction::new(ndb).expect("Transaction should have worked");
-    let profile = ndb.get_profile_by_pubkey(&txn, pk.bytes()).ok();
+pub fn get_profile_displayname_string<'a>(txn: &'a Transaction, ndb: &Ndb, pk: &Pubkey) -> &'a str {
+    let profile = ndb.get_profile_by_pubkey(txn, pk.bytes()).ok();
     get_display_name_as_string(profile.as_ref())
 }
 
-pub fn get_note_users_displayname_string(ndb: &nostrdb::Ndb, id: &NoteId) -> String {
-    let txn = nostrdb::Transaction::new(ndb).expect("Transaction should have worked");
-    let note = ndb.get_note_by_id(&txn, id.bytes());
+pub fn get_note_users_displayname_string<'a>(
+    txn: &'a Transaction,
+    ndb: &Ndb,
+    id: &NoteId,
+) -> &'a str {
+    let note = ndb.get_note_by_id(txn, id.bytes());
     let profile = if let Ok(note) = note {
-        ndb.get_profile_by_pubkey(&txn, note.pubkey()).ok()
+        ndb.get_profile_by_pubkey(txn, note.pubkey()).ok()
     } else {
         None
     };
+
     get_display_name_as_string(profile.as_ref())
 }

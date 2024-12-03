@@ -33,7 +33,7 @@ fn is_empty(s: &str) -> bool {
     s.chars().all(|c| c.is_whitespace())
 }
 
-pub fn get_profile_name<'a>(record: &'a ProfileRecord) -> Option<DisplayName<'a>> {
+pub fn get_profile_name<'a>(record: &ProfileRecord<'a>) -> Option<DisplayName<'a>> {
     let profile = record.record().profile()?;
     let display_name = profile.display_name().filter(|n| !is_empty(n));
     let name = profile.name().filter(|n| !is_empty(n));

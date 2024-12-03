@@ -1,5 +1,5 @@
 use enostr::{NoteId, Pubkey};
-use nostrdb::Ndb;
+use nostrdb::{Ndb, Transaction};
 use serde::{Deserialize, Serialize};
 use std::fmt::{self};
 
@@ -22,18 +22,6 @@ pub enum Route {
     ComposeNote,
     AddColumn(AddColumnRoute),
     Support,
-}
-
-#[derive(Clone)]
-pub struct TitledRoute {
-    pub route: Route,
-    pub title: String,
-}
-
-impl fmt::Display for TitledRoute {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.title)
-    }
 }
 
 impl Route {
@@ -77,8 +65,8 @@ impl Route {
         Route::Accounts(AccountsRoute::AddAccount)
     }
 
-    pub fn get_titled_route(&self, columns: &Columns, ndb: &Ndb) -> TitledRoute {
-        let title = match self {
+    pub fn title(&self, columns: &Columns, ndb: &Ndb) -> String {
+        match self {
             Route::Timeline(tlr) => match tlr {
                 TimelineRoute::Timeline(id) => {
                     let timeline = columns
@@ -87,16 +75,32 @@ impl Route {
                     timeline.kind.to_title(ndb)
                 }
                 TimelineRoute::Thread(id) => {
-                    format!("{}'s Thread", get_note_users_displayname_string(ndb, id))
+                    let txn = Transaction::new(ndb).expect("txn");
+                    format!(
+                        "{}'s Thread",
+                        get_note_users_displayname_string(&txn, ndb, id)
+                    )
                 }
                 TimelineRoute::Reply(id) => {
-                    format!("{}'s Reply", get_note_users_displayname_string(ndb, id))
+                    let txn = Transaction::new(ndb).expect("txn");
+                    format!(
+                        "{}'s Reply",
+                        get_note_users_displayname_string(&txn, ndb, id)
+                    )
                 }
                 TimelineRoute::Quote(id) => {
-                    format!("{}'s Quote", get_note_users_displayname_string(ndb, id))
+                    let txn = Transaction::new(ndb).expect("txn");
+                    format!(
+                        "{}'s Quote",
+                        get_note_users_displayname_string(&txn, ndb, id)
+                    )
                 }
                 TimelineRoute::Profile(pubkey) => {
-                    format!("{}'s Profile", get_profile_displayname_string(ndb, pubkey))
+                    let txn = Transaction::new(ndb).expect("txn");
+                    format!(
+                        "{}'s Profile",
+                        get_profile_displayname_string(&txn, ndb, pubkey)
+                    )
                 }
             },
 
@@ -116,11 +120,6 @@ impl Route {
                 AddColumnRoute::Hashtag => "Add Hashtag Column".to_owned(),
             },
             Route::Support => "Damus Support".to_owned(),
-        };
-
-        TitledRoute {
-            title,
-            route: *self,
         }
     }
 }
@@ -169,7 +168,7 @@ impl<R: Clone> Router<R> {
             return None;
         }
         self.returning = true;
-        self.routes.get(self.routes.len() - 2).cloned()
+        self.prev().cloned()
     }
 
     /// Pop a route, should only be called on a NavRespose::Returned reseponse
@@ -198,6 +197,10 @@ impl<R: Clone> Router<R> {
 
     pub fn top(&self) -> &R {
         self.routes.last().expect("routes can't be empty")
+    }
+
+    pub fn prev(&self) -> Option<&R> {
+        self.routes.get(self.routes.len() - 2)
     }
 
     pub fn routes(&self) -> &Vec<R> {

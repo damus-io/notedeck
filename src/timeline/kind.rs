@@ -20,6 +20,23 @@ pub enum ListKind {
     Contact(PubkeySource),
 }
 
+impl PubkeySource {
+    pub fn to_pubkey<'a>(&'a self, deck_author: &'a Pubkey) -> &'a Pubkey {
+        match self {
+            PubkeySource::Explicit(pk) => pk,
+            PubkeySource::DeckAuthor => deck_author,
+        }
+    }
+}
+
+impl ListKind {
+    pub fn pubkey_source(&self) -> Option<&PubkeySource> {
+        match self {
+            ListKind::Contact(pk_src) => Some(pk_src),
+        }
+    }
+}
+
 ///
 /// What kind of timeline is it?
 ///   - Follow List
@@ -58,6 +75,17 @@ impl Display for TimelineKind {
 }
 
 impl TimelineKind {
+    pub fn pubkey_source(&self) -> Option<&PubkeySource> {
+        match self {
+            TimelineKind::List(list_kind) => list_kind.pubkey_source(),
+            TimelineKind::Notifications(pk_src) => Some(pk_src),
+            TimelineKind::Profile(pk_src) => Some(pk_src),
+            TimelineKind::Universe => None,
+            TimelineKind::Generic => None,
+            TimelineKind::Hashtag(_ht) => None,
+        }
+    }
+
     pub fn contact_list(pk: PubkeySource) -> Self {
         TimelineKind::List(ListKind::Contact(pk))
     }
@@ -171,22 +199,33 @@ impl TimelineKind {
             TimelineKind::List(list_kind) => match list_kind {
                 ListKind::Contact(pubkey_source) => match pubkey_source {
                     PubkeySource::Explicit(pubkey) => {
-                        format!("{}'s Contacts", get_profile_displayname_string(ndb, pubkey))
+                        let txn = Transaction::new(ndb).expect("txn");
+                        format!(
+                            "{}'s Contacts",
+                            get_profile_displayname_string(&txn, ndb, pubkey)
+                        )
                     }
                     PubkeySource::DeckAuthor => "Contacts".to_owned(),
                 },
             },
             TimelineKind::Notifications(pubkey_source) => match pubkey_source {
                 PubkeySource::DeckAuthor => "Notifications".to_owned(),
-                PubkeySource::Explicit(pk) => format!(
-                    "{}'s Notifications",
-                    get_profile_displayname_string(ndb, pk)
-                ),
+                PubkeySource::Explicit(pk) => {
+                    let txn = Transaction::new(ndb).expect("txn");
+                    format!(
+                        "{}'s Notifications",
+                        get_profile_displayname_string(&txn, ndb, pk)
+                    )
+                }
             },
             TimelineKind::Profile(pubkey_source) => match pubkey_source {
                 PubkeySource::DeckAuthor => "Profile".to_owned(),
                 PubkeySource::Explicit(pk) => {
-                    format!("{}'s Profile", get_profile_displayname_string(ndb, pk))
+                    let txn = Transaction::new(ndb).expect("txn");
+                    format!(
+                        "{}'s Profile",
+                        get_profile_displayname_string(&txn, ndb, pk)
+                    )
                 }
             },
             TimelineKind::Universe => "Universe".to_owned(),
