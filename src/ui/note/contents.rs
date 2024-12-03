@@ -73,7 +73,7 @@ pub fn render_note_preview(
     img_cache: &mut ImageCache,
     txn: &Transaction,
     id: &[u8; 32],
-    _id_str: &str,
+    parent: NoteKey,
 ) -> NoteResponse {
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
@@ -117,6 +117,7 @@ pub fn render_note_preview(
                 .wide(true)
                 .note_previews(false)
                 .options_button(true)
+                .parent(parent)
                 .show(ui)
         })
         .inner
@@ -213,8 +214,8 @@ fn render_note_contents(
         }
     });
 
-    let note_action = if let Some((id, block_str)) = inline_note {
-        render_note_preview(ui, ndb, note_cache, img_cache, txn, id, block_str).action
+    let note_action = if let Some((id, _block_str)) = inline_note {
+        render_note_preview(ui, ndb, note_cache, img_cache, txn, id, note_key).action
     } else {
         None
     };

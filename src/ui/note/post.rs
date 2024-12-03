@@ -200,7 +200,7 @@ impl<'a> PostView<'a> {
                                                 self.img_cache,
                                                 txn,
                                                 id.bytes(),
-                                                "",
+                                                nostrdb::NoteKey::new(0),
                                             );
                                         });
                                     });

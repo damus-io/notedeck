@@ -31,6 +31,7 @@ pub struct NoteView<'a> {
     ndb: &'a Ndb,
     note_cache: &'a mut NoteCache,
     img_cache: &'a mut ImageCache,
+    parent: Option<NoteKey>,
     note: &'a nostrdb::Note<'a>,
     flags: NoteOptions,
 }
@@ -195,10 +196,12 @@ impl<'a> NoteView<'a> {
         note: &'a nostrdb::Note<'a>,
     ) -> Self {
         let flags = NoteOptions::actionbar | NoteOptions::note_previews;
+        let parent: Option<NoteKey> = None;
         Self {
             ndb,
             note_cache,
             img_cache,
+            parent,
             note,
             flags,
         }
@@ -255,6 +258,11 @@ impl<'a> NoteView<'a> {
 
     pub fn options_mut(&mut self) -> &mut NoteOptions {
         &mut self.flags
+    }
+
+    pub fn parent(mut self, parent: NoteKey) -> Self {
+        self.parent = Some(parent);
+        self
     }
 
     fn textmode_ui(&mut self, ui: &mut egui::Ui) -> egui::Response {
@@ -440,8 +448,9 @@ impl<'a> NoteView<'a> {
         let mut note_action: Option<NoteAction> = None;
         let mut selected_option: Option<NoteContextSelection> = None;
 
+        let hitbox_id = note_hitbox_id(note_key, self.options(), self.parent);
         let profile = self.ndb.get_profile_by_pubkey(txn, self.note.pubkey());
-        let maybe_hitbox = maybe_note_hitbox(ui, note_key);
+        let maybe_hitbox = maybe_note_hitbox(ui, hitbox_id);
         let container_right = {
             let r = ui.available_rect_before_wrap();
             let x = r.max.x;
@@ -571,14 +580,11 @@ impl<'a> NoteView<'a> {
             .response
         };
 
-        note_action = check_note_hitbox(
-            ui,
-            self.note.id(),
-            note_key,
-            &response,
-            maybe_hitbox,
-            note_action,
-        );
+        let note_action = if note_hitbox_clicked(ui, hitbox_id, &response.rect, maybe_hitbox) {
+            Some(NoteAction::OpenThread(NoteId::new(*self.note.id())))
+        } else {
+            note_action
+        };
 
         NoteResponse::new(response)
             .with_action(note_action)
@@ -610,16 +616,18 @@ fn get_reposted_note<'a>(ndb: &Ndb, txn: &'a Transaction, note: &Note) -> Option
     note.filter(|note| note.kind() == 1)
 }
 
-fn note_hitbox_id(note_key: NoteKey) -> egui::Id {
-    Id::new(("note_size", note_key))
+fn note_hitbox_id(
+    note_key: NoteKey,
+    note_options: NoteOptions,
+    parent: Option<NoteKey>,
+) -> egui::Id {
+    Id::new(("note_size", note_key, note_options, parent))
 }
 
-fn maybe_note_hitbox(ui: &mut egui::Ui, note_key: NoteKey) -> Option<Response> {
+fn maybe_note_hitbox(ui: &mut egui::Ui, hitbox_id: egui::Id) -> Option<Response> {
     ui.ctx()
-        .data_mut(|d| d.get_persisted(note_hitbox_id(note_key)))
+        .data_mut(|d| d.get_persisted(hitbox_id))
         .map(|note_size: Vec2| {
-            let id = ui.make_persistent_id(("hitbox_interact", note_key));
-
             // The hitbox should extend the entire width of the
             // container.  The hitbox height was cached last layout.
             let container_rect = ui.max_rect();
@@ -628,28 +636,31 @@ fn maybe_note_hitbox(ui: &mut egui::Ui, note_key: NoteKey) -> Option<Response> {
                 max: pos2(container_rect.max.x, container_rect.min.y + note_size.y),
             };
 
-            ui.interact(rect, id, egui::Sense::click())
+            let response = ui.interact(rect, hitbox_id, egui::Sense::click());
+
+            response
+                .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, "hitbox"));
+
+            response
         })
 }
 
-fn check_note_hitbox(
+fn note_hitbox_clicked(
     ui: &mut egui::Ui,
-    note_id: &[u8; 32],
-    note_key: NoteKey,
-    note_response: &Response,
+    hitbox_id: egui::Id,
+    note_rect: &Rect,
     maybe_hitbox: Option<Response>,
-    prior_action: Option<NoteAction>,
-) -> Option<NoteAction> {
+) -> bool {
     // Stash the dimensions of the note content so we can render the
     // hitbox in the next frame
     ui.ctx().data_mut(|d| {
-        d.insert_persisted(note_hitbox_id(note_key), note_response.rect.size());
+        d.insert_persisted(hitbox_id, note_rect.size());
     });
 
     // If there was an hitbox and it was clicked open the thread
     match maybe_hitbox {
-        Some(hitbox) if hitbox.clicked() => Some(NoteAction::OpenThread(NoteId::new(*note_id))),
-        _ => prior_action,
+        Some(hitbox) => hitbox.clicked(),
+        _ => false,
     }
 }
 
