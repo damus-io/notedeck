@@ -4,8 +4,9 @@ use serde::{Deserialize, Serialize};
 use std::fmt::{self};
 
 use crate::{
-    accounts::AccountsRoute,
-    column::Columns,
+    accounts::{Accounts, AccountsRoute},
+    app::{get_active_columns, get_decks},
+    decks::DecksCache,
     timeline::{TimelineId, TimelineRoute},
     ui::{
         add_column::AddColumnRoute,
@@ -22,6 +23,8 @@ pub enum Route {
     ComposeNote,
     AddColumn(AddColumnRoute),
     Support,
+    NewDeck,
+    EditDeck(usize),
 }
 
 #[derive(Clone)]
@@ -77,10 +80,16 @@ impl Route {
         Route::Accounts(AccountsRoute::AddAccount)
     }
 
-    pub fn get_titled_route(&self, columns: &Columns, ndb: &Ndb) -> TitledRoute {
+    pub fn get_titled_route(
+        &self,
+        accounts: &Accounts,
+        decks_cache: &DecksCache,
+        ndb: &Ndb,
+    ) -> TitledRoute {
         let title = match self {
             Route::Timeline(tlr) => match tlr {
                 TimelineRoute::Timeline(id) => {
+                    let columns = get_active_columns(accounts, decks_cache);
                     let timeline = columns
                         .find_timeline(*id)
                         .expect("expected to find timeline");
@@ -116,6 +125,16 @@ impl Route {
                 AddColumnRoute::Hashtag => "Add Hashtag Column".to_owned(),
             },
             Route::Support => "Damus Support".to_owned(),
+            Route::NewDeck => "Add Deck".to_owned(),
+            Route::EditDeck(index) => {
+                let deck_name =
+                    if let Some(deck) = get_decks(accounts, decks_cache).decks().get(*index) {
+                        &deck.name
+                    } else {
+                        &String::new()
+                    };
+                format!("Edit Deck: {}", deck_name)
+            }
         };
 
         TitledRoute {
@@ -226,6 +245,8 @@ impl fmt::Display for Route {
 
             Route::AddColumn(_) => write!(f, "Add Column"),
             Route::Support => write!(f, "Support"),
+            Route::NewDeck => write!(f, "Add Deck"),
+            Route::EditDeck(_) => write!(f, "Edit Deck"),
         }
     }
 }

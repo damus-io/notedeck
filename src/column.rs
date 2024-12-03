@@ -236,6 +236,19 @@ pub struct SerializableColumns {
     pub timelines: Vec<SerializableTimeline>,
 }
 
+impl From<&Columns> for SerializableColumns {
+    fn from(columns: &Columns) -> Self {
+        SerializableColumns {
+            columns: columns.columns.values().cloned().collect(),
+            timelines: columns
+                .timelines
+                .values()
+                .map(|t| t.as_serializable_timeline())
+                .collect(),
+        }
+    }
+}
+
 impl SerializableColumns {
     pub fn into_columns(self, ndb: &Ndb, deck_pubkey: Option<&[u8; 32]>) -> Columns {
         let mut columns = Columns::default();
@@ -269,4 +282,9 @@ impl SerializableColumns {
 
         columns
     }
+}
+
+pub enum ColumnsAction {
+    // Switch(usize), TODO: could use for keyboard selection
+    Remove(usize),
 }
