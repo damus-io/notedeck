@@ -11,7 +11,7 @@ description = "A multiplatform nostr client"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [lib]
-crate-type = ["lib", "cdylib"]
+crate-type = ["lib"]
 
 [workspace.dependencies]
 egui = { git = "https://github.com/emilk/egui", rev = "fcb7764e48ce00f8f8e58da10f937410d65b0bfb", features = ["serde"] }
