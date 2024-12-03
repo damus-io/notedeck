@@ -13,17 +13,12 @@ description = "A multiplatform nostr client"
 [lib]
 crate-type = ["lib", "cdylib"]
 
-[workspace.dependencies]
+[dependencies]
 egui = { version = "0.29.1", features = ["serde"] }
 eframe = { version = "0.29.1", default-features = false, features = [ "wgpu", "wayland", "x11", "android-native-activity" ] }
 egui_extras = { version = "0.29.1", features = ["all_loaders"] }
 nostrdb = { git = "https://github.com/damus-io/nostrdb-rs", rev = "71154e4100775f6932ee517da4350c433ba14ec7" }
-
-[dependencies]
 #egui-android = { git = "https://github.com/jb55/egui-android.git" }
-egui = { workspace = true }
-eframe = { workspace = true }
-egui_extras = { workspace = true }
 ehttp = "0.2.0"
 egui_tabs = "0.2.0"
 egui_nav = "0.2.0"
@@ -35,7 +30,6 @@ poll-promise = { version = "0.3.0", features = ["tokio"] }
 serde_derive = "1"
 serde = { version = "1", features = ["derive"] } # You only need this if you want app persistence
 tracing = "0.1.40"
-nostrdb = { workspace = true }
 enostr = { path = "enostr" } 
 serde_json = "1.0.89"
 env_logger = "0.10.0"
