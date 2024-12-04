@@ -636,7 +636,7 @@ fn maybe_note_hitbox(ui: &mut egui::Ui, hitbox_id: egui::Id) -> Option<Response>
                 max: pos2(container_rect.max.x, container_rect.min.y + note_size.y),
             };
 
-            let response = ui.interact(rect, hitbox_id, egui::Sense::click());
+            let response = ui.interact(rect, ui.id().with(hitbox_id), egui::Sense::click());
 
             response
                 .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, "hitbox"));
