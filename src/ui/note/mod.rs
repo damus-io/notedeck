@@ -451,64 +451,68 @@ impl<'a> NoteView<'a> {
 
         // wide design
         let response = if self.options().has_wide() {
-            ui.horizontal(|ui| {
-                if self.pfp(note_key, &profile, ui).clicked() {
-                    note_action = Some(NoteAction::OpenProfile(Pubkey::new(*self.note.pubkey())));
-                };
+            ui.vertical(|ui| {
+                ui.horizontal(|ui| {
+                    if self.pfp(note_key, &profile, ui).clicked() {
+                        note_action =
+                            Some(NoteAction::OpenProfile(Pubkey::new(*self.note.pubkey())));
+                    };
 
-                let size = ui.available_size();
-                ui.vertical(|ui| {
-                    ui.add_sized([size.x, self.options().pfp_size()], |ui: &mut egui::Ui| {
-                        ui.horizontal_centered(|ui| {
-                            selected_option = NoteView::note_header(
-                                ui,
-                                self.note_cache,
-                                self.note,
-                                &profile,
-                                self.options(),
-                                container_right,
-                            )
-                            .context_selection;
-                        })
-                        .response
-                    });
-
-                    let note_reply = self
-                        .note_cache
-                        .cached_note_or_insert_mut(note_key, self.note)
-                        .reply
-                        .borrow(self.note.tags());
-
-                    if note_reply.reply().is_some() {
-                        ui.horizontal(|ui| {
-                            reply_desc(ui, txn, &note_reply, self.ndb, self.img_cache);
+                    let size = ui.available_size();
+                    ui.vertical(|ui| {
+                        ui.add_sized([size.x, self.options().pfp_size()], |ui: &mut egui::Ui| {
+                            ui.horizontal_centered(|ui| {
+                                selected_option = NoteView::note_header(
+                                    ui,
+                                    self.note_cache,
+                                    self.note,
+                                    &profile,
+                                    self.options(),
+                                    container_right,
+                                )
+                                .context_selection;
+                            })
+                            .response
                         });
-                    }
+
+                        let note_reply = self
+                            .note_cache
+                            .cached_note_or_insert_mut(note_key, self.note)
+                            .reply
+                            .borrow(self.note.tags());
+
+                        if note_reply.reply().is_some() {
+                            ui.horizontal(|ui| {
+                                reply_desc(ui, txn, &note_reply, self.ndb, self.img_cache);
+                            });
+                        }
+                    });
                 });
-            });
 
-            let mut contents = NoteContents::new(
-                self.ndb,
-                self.img_cache,
-                self.note_cache,
-                txn,
-                self.note,
-                note_key,
-                self.options(),
-            );
-            let resp = ui.add(&mut contents);
+                let mut contents = NoteContents::new(
+                    self.ndb,
+                    self.img_cache,
+                    self.note_cache,
+                    txn,
+                    self.note,
+                    note_key,
+                    self.options(),
+                );
 
-            if let Some(action) = contents.action() {
-                note_action = Some(*action);
-            }
+                ui.add(&mut contents);
 
-            if self.options().has_actionbar() {
-                if let Some(action) = render_note_actionbar(ui, self.note.id(), note_key).inner {
-                    note_action = Some(action);
+                if let Some(action) = contents.action() {
+                    note_action = Some(*action);
                 }
-            }
 
-            resp
+                if self.options().has_actionbar() {
+                    if let Some(action) = render_note_actionbar(ui, self.note.id(), note_key).inner
+                    {
+                        note_action = Some(action);
+                    }
+                }
+            })
+            .response
         } else {
             // main design
             ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
