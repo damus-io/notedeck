@@ -58,9 +58,18 @@ impl<'a> NavTitle<'a> {
     }
 
     fn title_bar(&mut self, ui: &mut egui::Ui) -> Option<RenderNavAction> {
-        ui.spacing_mut().item_spacing.x = 10.0;
+        let item_spacing = 8.0;
+        ui.spacing_mut().item_spacing.x = item_spacing;
 
-        let back_button_resp = prev(self.routes).map(|r| self.back_button(ui, r));
+        let chev_x = 8.0;
+        let back_button_resp =
+            prev(self.routes).map(|r| self.back_button(ui, r, egui::Vec2::new(chev_x, 15.0)));
+
+        // add some space where chevron would have been. this makes the ui
+        // less bumpy when navigating
+        if back_button_resp.is_none() {
+            ui.add_space(chev_x + item_spacing);
+        }
 
         let delete_button_resp =
             self.title(ui, self.routes.last().unwrap(), back_button_resp.is_some());
@@ -74,19 +83,25 @@ impl<'a> NavTitle<'a> {
         }
     }
 
-    fn back_button(&self, ui: &mut egui::Ui, prev: &Route) -> egui::Response {
-        let prev_spacing = ui.spacing().item_spacing.x;
-        ui.spacing_mut().item_spacing.x = 4.0;
-
+    fn back_button(
+        &mut self,
+        ui: &mut egui::Ui,
+        prev: &Route,
+        chev_size: egui::Vec2,
+    ) -> egui::Response {
         //let color = ui.visuals().hyperlink_color;
         let color = ui.style().visuals.noninteractive().fg_stroke.color;
 
-        let chev_resp = chevron(
-            ui,
-            2.0,
-            egui::Vec2::new(10.0, 15.0),
-            Stroke::new(2.0, color),
-        );
+        //let spacing_prev = ui.spacing().item_spacing.x;
+        //ui.spacing_mut().item_spacing.x = 0.0;
+
+        let chev_resp = chevron(ui, 2.0, chev_size, Stroke::new(2.0, color));
+
+        //ui.spacing_mut().item_spacing.x = spacing_prev;
+
+        // NOTE(jb55): include graphic in back label as well because why
+        // not it looks cool
+        self.title_pfp(ui, prev, 32.0);
 
         let back_label = ui.add(
             egui::Label::new(
@@ -97,8 +112,6 @@ impl<'a> NavTitle<'a> {
             .selectable(false)
             .sense(egui::Sense::click()),
         );
-
-        ui.spacing_mut().item_spacing.x = prev_spacing;
 
         back_label.union(chev_resp)
     }
@@ -160,8 +173,7 @@ impl<'a> NavTitle<'a> {
         }
     }
 
-    fn title_pfp(&mut self, ui: &mut egui::Ui, top: &Route) {
-        let pfp_size = 32.0;
+    fn title_pfp(&mut self, ui: &mut egui::Ui, top: &Route, pfp_size: f32) {
         match top {
             Route::Timeline(tlr) => match tlr {
                 TimelineRoute::Timeline(tlid) => {
@@ -209,15 +221,15 @@ impl<'a> NavTitle<'a> {
         top: &Route,
         navigating: bool,
     ) -> Option<egui::Response> {
-        self.title_pfp(ui, top);
-
         if !navigating {
+            self.title_pfp(ui, top, 32.0);
             self.title_label(ui, top);
         }
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if navigating {
                 self.title_label(ui, top);
+                self.title_pfp(ui, top, 32.0);
                 None
             } else {
                 Some(self.delete_column_button(ui, 32.0))
