@@ -11,7 +11,7 @@ use crate::{
     },
 };
 
-use egui::{pos2, RichText, Stroke};
+use egui::{RichText, Stroke};
 use enostr::Pubkey;
 use nostrdb::{Ndb, Transaction};
 
@@ -58,18 +58,12 @@ impl<'a> NavTitle<'a> {
     }
 
     fn title_bar(&mut self, ui: &mut egui::Ui) -> Option<RenderNavAction> {
-        let icon_width = 32.0;
+        ui.spacing_mut().item_spacing.x = 10.0;
 
-        let back_button_resp = if prev(self.routes).is_some() {
-            let (button_rect, _resp) =
-                ui.allocate_exact_size(egui::vec2(icon_width, icon_width), egui::Sense::hover());
+        let back_button_resp = prev(self.routes).map(|r| self.back_button(ui, r));
 
-            Some(self.back_button(ui, button_rect))
-        } else {
-            None
-        };
-
-        let delete_button_resp = self.title(ui, self.routes.last().unwrap());
+        let delete_button_resp =
+            self.title(ui, self.routes.last().unwrap(), back_button_resp.is_some());
 
         if delete_button_resp.clicked() {
             Some(RenderNavAction::RemoveColumn)
@@ -80,43 +74,33 @@ impl<'a> NavTitle<'a> {
         }
     }
 
-    fn back_button(&self, ui: &mut egui::Ui, button_rect: egui::Rect) -> egui::Response {
-        let horizontal_length = 10.0;
-        let arrow_length = 5.0;
+    fn back_button(&self, ui: &mut egui::Ui, prev: &Route) -> egui::Response {
+        let prev_spacing = ui.spacing().item_spacing.x;
+        ui.spacing_mut().item_spacing.x = 4.0;
 
-        let helper = AnimationHelper::new_from_rect(ui, "note-compose-button", button_rect);
-        let painter = ui.painter_at(helper.get_animation_rect());
-        let stroke = Stroke::new(1.5, ui.visuals().text_color());
+        //let color = ui.visuals().hyperlink_color;
+        let color = ui.style().visuals.noninteractive().fg_stroke.color;
 
-        // Horizontal segment
-        let left_horizontal_point = pos2(-horizontal_length / 2., 0.);
-        let right_horizontal_point = pos2(horizontal_length / 2., 0.);
-        let scaled_left_horizontal_point = helper.scale_pos_from_center(left_horizontal_point);
-        let scaled_right_horizontal_point = helper.scale_pos_from_center(right_horizontal_point);
-
-        painter.line_segment(
-            [scaled_left_horizontal_point, scaled_right_horizontal_point],
-            stroke,
+        let chev_resp = chevron(
+            ui,
+            2.0,
+            egui::Vec2::new(10.0, 15.0),
+            Stroke::new(2.0, color),
         );
 
-        // Top Arrow
-        let sqrt_2_over_2 = std::f32::consts::SQRT_2 / 2.;
-        let right_top_arrow_point = helper.scale_pos_from_center(pos2(
-            left_horizontal_point.x + (sqrt_2_over_2 * arrow_length),
-            right_horizontal_point.y + sqrt_2_over_2 * arrow_length,
-        ));
+        let back_label = ui.add(
+            egui::Label::new(
+                RichText::new(prev.title(self.columns).to_string())
+                    .color(color)
+                    .text_style(NotedeckTextStyle::Body.text_style()),
+            )
+            .selectable(false)
+            .sense(egui::Sense::click()),
+        );
 
-        let scaled_left_arrow_point = scaled_left_horizontal_point;
-        painter.line_segment([scaled_left_arrow_point, right_top_arrow_point], stroke);
+        ui.spacing_mut().item_spacing.x = prev_spacing;
 
-        let right_bottom_arrow_point = helper.scale_pos_from_center(pos2(
-            left_horizontal_point.x + (sqrt_2_over_2 * arrow_length),
-            right_horizontal_point.y - sqrt_2_over_2 * arrow_length,
-        ));
-
-        painter.line_segment([scaled_left_arrow_point, right_bottom_arrow_point], stroke);
-
-        helper.take_animation_response()
+        back_label.union(chev_resp)
     }
 
     fn delete_column_button(&self, ui: &mut egui::Ui, icon_width: f32) -> egui::Response {
@@ -209,17 +193,29 @@ impl<'a> NavTitle<'a> {
         }
     }
 
-    fn title(&mut self, ui: &mut egui::Ui, top: &Route) -> egui::Response {
-        ui.spacing_mut().item_spacing.x = 10.0;
+    fn title_label(&self, ui: &mut egui::Ui, top: &Route) {
+        ui.add(
+            egui::Label::new(
+                RichText::new(top.title(self.columns))
+                    .text_style(NotedeckTextStyle::Body.text_style()),
+            )
+            .selectable(false),
+        );
+    }
 
+    fn title(&mut self, ui: &mut egui::Ui, top: &Route, right: bool) -> egui::Response {
         self.title_pfp(ui, top);
 
-        ui.label(
-            RichText::new(top.title(self.columns)).text_style(NotedeckTextStyle::Body.text_style()),
-        );
+        if !right {
+            self.title_label(ui, top);
+        }
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            self.delete_column_button(ui, 32.0)
+            let r = self.delete_column_button(ui, 32.0);
+            if right {
+                self.title_label(ui, top);
+            }
+            r
         })
         .inner
     }
@@ -233,4 +229,26 @@ fn prev<R>(xs: &[R]) -> Option<&R> {
     } else {
         Some(&xs[ind as usize])
     }
+}
+
+fn chevron(
+    ui: &mut egui::Ui,
+    pad: f32,
+    size: egui::Vec2,
+    stroke: impl Into<Stroke>,
+) -> egui::Response {
+    let (r, painter) = ui.allocate_painter(size, egui::Sense::click());
+
+    let min = r.rect.min;
+    let max = r.rect.max;
+
+    let apex = egui::Pos2::new(min.x + pad, min.y + size.y / 2.0);
+    let top = egui::Pos2::new(max.x - pad, min.y + pad);
+    let bottom = egui::Pos2::new(max.x - pad, max.y - pad);
+
+    let stroke = stroke.into();
+    painter.line_segment([apex, top], stroke);
+    painter.line_segment([apex, bottom], stroke);
+
+    r
 }
