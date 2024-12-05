@@ -1,6 +1,7 @@
 use crate::{
     accounts::render_accounts_route,
     actionbar::NoteAction,
+    app::{get_active_columns, get_active_columns_mut},
     notes_holder::NotesHolder,
     profile::Profile,
     relay_pool_manager::RelayPoolManager,
@@ -87,7 +88,10 @@ impl RenderNavResponse {
                 RenderNavAction::PostAction(post_action) => {
                     let txn = Transaction::new(&app.ndb).expect("txn");
                     let _ = post_action.execute(&app.ndb, &txn, &mut app.pool, &mut app.drafts);
-                    app.columns_mut().column_mut(col).router_mut().go_back();
+                    get_active_columns_mut(&app.accounts, &mut app.decks_cache)
+                        .column_mut(col)
+                        .router_mut()
+                        .go_back();
                 }
 
                 RenderNavAction::NoteAction(note_action) => {
@@ -95,7 +99,7 @@ impl RenderNavResponse {
 
                     note_action.execute_and_process_result(
                         &app.ndb,
-                        &mut app.columns,
+                        get_active_columns_mut(&app.accounts, &mut app.decks_cache),
                         col,
                         &mut app.threads,
                         &mut app.profiles,
@@ -176,7 +180,7 @@ fn render_nav_body(
     match top {
         Route::Timeline(tlr) => render_timeline_route(
             &app.ndb,
-            &mut app.columns,
+            get_active_columns_mut(&app.accounts, &mut app.decks_cache),
             &mut app.drafts,
             &mut app.img_cache,
             &mut app.unknown_ids,
@@ -194,9 +198,9 @@ fn render_nav_body(
                 ui,
                 &app.ndb,
                 col,
-                &mut app.columns,
                 &mut app.img_cache,
                 &mut app.accounts,
+                &mut app.decks_cache,
                 &mut app.view_state.login,
                 *amr,
             );
@@ -241,7 +245,7 @@ fn render_nav_body(
 
 #[must_use = "RenderNavResponse must be handled by calling .process_render_nav_response(..)"]
 pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) -> RenderNavResponse {
-    let col_id = app.columns.get_column_id_at_index(col);
+    let col_id = get_active_columns(&app.accounts, &app.decks_cache).get_column_id_at_index(col);
     // TODO(jb55): clean up this router_mut mess by using Router<R> in egui-nav directly
 
     let nav_response = Nav::new(app.columns().column(col).router().routes().clone())
@@ -252,7 +256,7 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) -> RenderNavRe
             NavUiType::Title => NavTitle::new(
                 &app.ndb,
                 &mut app.img_cache,
-                &app.columns,
+                get_active_columns_mut(&app.accounts, &mut app.decks_cache),
                 app.accounts.get_selected_account().map(|a| &a.pubkey),
                 nav.routes_arr(),
             )
