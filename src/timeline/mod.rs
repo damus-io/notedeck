@@ -1,5 +1,6 @@
 use crate::{
     column::Columns,
+    decks::DecksCache,
     error::{Error, FilterError},
     filter::{self, FilterState, FilterStates},
     muted::MuteFun,
@@ -601,12 +602,16 @@ pub fn copy_notes_into_timeline(
 pub fn setup_initial_nostrdb_subs(
     ndb: &Ndb,
     note_cache: &mut NoteCache,
-    columns: &mut Columns,
+    decks_cache: &mut DecksCache,
     is_muted: &MuteFun,
 ) -> Result<()> {
-    for timeline in columns.timelines_mut() {
-        if let Err(err) = setup_timeline_nostrdb_sub(ndb, note_cache, timeline, is_muted) {
-            error!("setup_initial_nostrdb_subs: {err}");
+    for decks in decks_cache.get_all_decks_mut() {
+        for deck in decks.decks_mut() {
+            for timeline in deck.columns_mut().timelines_mut() {
+                if let Err(err) = setup_timeline_nostrdb_sub(ndb, note_cache, timeline, is_muted) {
+                    error!("setup_initial_nostrdb_subs: {err}");
+                }
+            }
         }
     }
 

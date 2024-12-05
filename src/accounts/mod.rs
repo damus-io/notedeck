@@ -8,12 +8,13 @@ use uuid::Uuid;
 use enostr::{ClientMessage, FilledKeypair, FullKeypair, Keypair, RelayPool};
 use nostrdb::{Filter, Ndb, Note, NoteKey, Subscription, Transaction};
 
+use crate::app::get_active_columns_mut;
+use crate::decks::DecksCache;
 use crate::{
-    column::Columns,
     imgcache::ImageCache,
     login_manager::AcquireKeyState,
     muted::Muted,
-    route::{Route, Router},
+    route::Route,
     storage::{KeyStorageResponse, KeyStorageType},
     ui::{
         account_login_view::{AccountLoginResponse, AccountLoginView},
@@ -230,13 +231,12 @@ pub fn render_accounts_route(
     ui: &mut egui::Ui,
     ndb: &Ndb,
     col: usize,
-    columns: &mut Columns,
     img_cache: &mut ImageCache,
     accounts: &mut Accounts,
+    decks: &mut DecksCache,
     login_state: &mut AcquireKeyState,
     route: AccountsRoute,
 ) -> SingleUnkIdAction {
-    let router = columns.column_mut(col).router_mut();
     let resp = match route {
         AccountsRoute::Accounts => AccountsView::new(ndb, accounts, img_cache)
             .ui(ui)
@@ -252,12 +252,15 @@ pub fn render_accounts_route(
     if let Some(resp) = resp {
         match resp {
             AccountsRouteResponse::Accounts(response) => {
-                process_accounts_view_response(accounts, response, router);
+                process_accounts_view_response(accounts, decks, col, response);
                 SingleUnkIdAction::no_action()
             }
             AccountsRouteResponse::AddAccount(response) => {
-                let action = process_login_view_response(accounts, response);
+                let action = process_login_view_response(accounts, decks, response);
                 *login_state = Default::default();
+                let router = get_active_columns_mut(accounts, decks)
+                    .column_mut(col)
+                    .router_mut();
                 router.go_back();
                 action
             }
@@ -268,16 +271,20 @@ pub fn render_accounts_route(
 }
 
 pub fn process_accounts_view_response(
-    manager: &mut Accounts,
+    accounts: &mut Accounts,
+    decks: &mut DecksCache,
+    col: usize,
     response: AccountsViewResponse,
-    router: &mut Router<Route>,
 ) {
+    let router = get_active_columns_mut(accounts, decks)
+        .column_mut(col)
+        .router_mut();
     match response {
         AccountsViewResponse::RemoveAccount(index) => {
-            manager.remove_account(index);
+            accounts.remove_account(index);
         }
         AccountsViewResponse::SelectAccount(index) => {
-            manager.select_account(index);
+            accounts.select_account(index);
         }
         AccountsViewResponse::RouteToLogin => {
             router.route_to(Route::add_account());
@@ -619,15 +626,18 @@ fn get_selected_index(accounts: &[UserAccount], keystore: &KeyStorageType) -> Op
 
 pub fn process_login_view_response(
     manager: &mut Accounts,
+    decks: &mut DecksCache,
     response: AccountLoginResponse,
 ) -> SingleUnkIdAction {
-    let login_action = match response {
+    let (pubkey, login_action) = match response {
         AccountLoginResponse::CreateNew => {
-            manager.add_account(FullKeypair::generate().to_keypair())
+            let kp = FullKeypair::generate().to_keypair();
+            (kp.pubkey, manager.add_account(kp))
         }
-        AccountLoginResponse::LoginWith(keypair) => manager.add_account(keypair),
+        AccountLoginResponse::LoginWith(keypair) => (keypair.pubkey, manager.add_account(keypair)),
     };
     manager.select_account(login_action.switch_to_index);
+    decks.add_deck_default(pubkey);
     login_action.unk
 }
 
