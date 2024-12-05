@@ -130,4 +130,9 @@ impl AnimationHelper {
     pub fn scale_pos_from_center(&self, min_pos: Pos2) -> Pos2 {
         self.scale_from_center(min_pos.x, min_pos.y)
     }
+
+    /// New method for min/max scaling when needed
+    pub fn scale_1d_pos_min_max(&self, min_object_size: f32, max_object_size: f32) -> f32 {
+        min_object_size + ((max_object_size - min_object_size) * self.animation_progress)
+    }
 }

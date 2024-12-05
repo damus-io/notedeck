@@ -377,13 +377,12 @@ fn delete_column_button(
 
     let helper = AnimationHelper::new_from_rect(ui, "delete-column-button", button_rect);
 
-    let cur_img_size = helper.scale_1d_pos(img_size);
+    let cur_img_size = helper.scale_1d_pos_min_max(0.0, img_size);
 
     let animation_rect = helper.get_animation_rect();
     let animation_resp = helper.take_animation_response();
-    if allocation_response.union(animation_resp.clone()).hovered() {
-        img.paint_at(ui, animation_rect.shrink((max_size - cur_img_size) / 2.0));
-    }
+
+    img.paint_at(ui, animation_rect.shrink((max_size - cur_img_size) / 2.0));
 
     animation_resp
 }
