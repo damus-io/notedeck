@@ -65,7 +65,7 @@ impl<'a> NavTitle<'a> {
         let delete_button_resp =
             self.title(ui, self.routes.last().unwrap(), back_button_resp.is_some());
 
-        if delete_button_resp.clicked() {
+        if delete_button_resp.map_or(false, |r| r.clicked()) {
             Some(RenderNavAction::RemoveColumn)
         } else if back_button_resp.map_or(false, |r| r.clicked()) {
             Some(RenderNavAction::Back)
@@ -203,19 +203,25 @@ impl<'a> NavTitle<'a> {
         );
     }
 
-    fn title(&mut self, ui: &mut egui::Ui, top: &Route, right: bool) -> egui::Response {
+    fn title(
+        &mut self,
+        ui: &mut egui::Ui,
+        top: &Route,
+        navigating: bool,
+    ) -> Option<egui::Response> {
         self.title_pfp(ui, top);
 
-        if !right {
+        if !navigating {
             self.title_label(ui, top);
         }
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let r = self.delete_column_button(ui, 32.0);
-            if right {
+            if navigating {
                 self.title_label(ui, top);
+                None
+            } else {
+                Some(self.delete_column_button(ui, 32.0))
             }
-            r
         })
         .inner
     }
