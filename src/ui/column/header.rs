@@ -1,5 +1,6 @@
 use crate::{
     app_style::{get_font_size, NotedeckTextStyle},
+    column::Columns,
     fonts::NamedFontFamily,
     nav::RenderNavAction,
     route::Route,
@@ -9,12 +10,13 @@ use crate::{
 use egui::{pos2, Color32, Stroke};
 
 pub struct NavTitle<'a> {
+    columns: &'a Columns,
     routes: &'a [Route],
 }
 
 impl<'a> NavTitle<'a> {
-    pub fn new(routes: &'a [Route]) -> Self {
-        NavTitle { routes }
+    pub fn new(columns: &'a Columns, routes: &'a [Route]) -> Self {
+        NavTitle { columns, routes }
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui) -> Option<RenderNavAction> {
@@ -177,7 +179,7 @@ impl<'a> NavTitle<'a> {
 
         let title_galley = ui.fonts(|f| {
             f.layout(
-                top.to_string(),
+                top.title(self.columns).to_string(),
                 font,
                 ui.visuals().text_color(),
                 max_title_width,
