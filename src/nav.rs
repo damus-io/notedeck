@@ -249,7 +249,14 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) -> RenderNavRe
         .returning(app.columns_mut().column_mut(col).router_mut().returning)
         .id_source(egui::Id::new(col_id))
         .show_mut(ui, |ui, render_type, nav| match render_type {
-            NavUiType::Title => NavTitle::new(&app.columns, nav.routes_arr()).show(ui),
+            NavUiType::Title => NavTitle::new(
+                &app.ndb,
+                &mut app.img_cache,
+                &app.columns,
+                app.accounts.get_selected_account().map(|a| &a.pubkey),
+                nav.routes_arr(),
+            )
+            .show(ui),
             NavUiType::Body => render_nav_body(ui, app, nav.routes().last().expect("top"), col),
         });
 

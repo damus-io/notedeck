@@ -1,74 +1,75 @@
 use crate::{
-    app_style::{get_font_size, NotedeckTextStyle},
+    app_style::NotedeckTextStyle,
     column::Columns,
-    fonts::NamedFontFamily,
+    imgcache::ImageCache,
     nav::RenderNavAction,
     route::Route,
-    ui::anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},
+    timeline::{TimelineId, TimelineRoute},
+    ui::{
+        self,
+        anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},
+    },
 };
 
-use egui::{pos2, Color32, Stroke};
+use egui::{pos2, RichText, Stroke};
+use enostr::Pubkey;
+use nostrdb::{Ndb, Transaction};
 
 pub struct NavTitle<'a> {
+    ndb: &'a Ndb,
+    img_cache: &'a mut ImageCache,
     columns: &'a Columns,
+    deck_author: Option<&'a Pubkey>,
     routes: &'a [Route],
 }
 
 impl<'a> NavTitle<'a> {
-    pub fn new(columns: &'a Columns, routes: &'a [Route]) -> Self {
-        NavTitle { columns, routes }
+    pub fn new(
+        ndb: &'a Ndb,
+        img_cache: &'a mut ImageCache,
+        columns: &'a Columns,
+        deck_author: Option<&'a Pubkey>,
+        routes: &'a [Route],
+    ) -> Self {
+        NavTitle {
+            ndb,
+            img_cache,
+            columns,
+            deck_author,
+            routes,
+        }
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui) -> Option<RenderNavAction> {
-        let mut rect = ui.available_rect_before_wrap();
-        rect.set_height(48.0);
-        let bar = ui.allocate_rect(rect, egui::Sense::hover());
+        ui::padding(8.0, ui, |ui| {
+            let mut rect = ui.available_rect_before_wrap();
+            rect.set_height(48.0);
 
-        self.title_bar(ui, bar)
+            let mut child_ui =
+                ui.child_ui(rect, egui::Layout::left_to_right(egui::Align::Center), None);
+
+            let r = self.title_bar(&mut child_ui);
+
+            ui.advance_cursor_after_rect(rect);
+
+            r
+        })
+        .inner
     }
 
-    fn title_bar(
-        &mut self,
-        ui: &mut egui::Ui,
-        allocated_response: egui::Response,
-    ) -> Option<RenderNavAction> {
+    fn title_bar(&mut self, ui: &mut egui::Ui) -> Option<RenderNavAction> {
         let icon_width = 32.0;
-        let padding_external = 16.0;
-        let padding_internal = 8.0;
-        let has_back = prev(self.routes).is_some();
 
-        let (spacing_rect, titlebar_rect) = allocated_response
-            .rect
-            .split_left_right_at_x(allocated_response.rect.left() + padding_external);
+        let back_button_resp = if prev(self.routes).is_some() {
+            let (button_rect, _resp) =
+                ui.allocate_exact_size(egui::vec2(icon_width, icon_width), egui::Sense::hover());
 
-        ui.advance_cursor_after_rect(spacing_rect);
-
-        let (titlebar_resp, back_button_resp) = if has_back {
-            let (button_rect, titlebar_rect) = titlebar_rect.split_left_right_at_x(
-                allocated_response.rect.left() + icon_width + padding_external,
-            );
-            (
-                allocated_response.with_new_rect(titlebar_rect),
-                Some(self.back_button(ui, button_rect)),
-            )
+            Some(self.back_button(ui, button_rect))
         } else {
-            (allocated_response, None)
+            None
         };
 
-        self.title(
-            ui,
-            self.routes.last().unwrap(),
-            titlebar_resp.rect,
-            icon_width,
-            if has_back {
-                padding_internal
-            } else {
-                padding_external
-            },
-        );
-
-        let delete_button_resp =
-            self.delete_column_button(ui, titlebar_resp, icon_width, padding_external);
+        let delete_button_resp = self.title(ui, self.routes.last().unwrap());
 
         if delete_button_resp.clicked() {
             Some(RenderNavAction::RemoveColumn)
@@ -118,13 +119,7 @@ impl<'a> NavTitle<'a> {
         helper.take_animation_response()
     }
 
-    fn delete_column_button(
-        &self,
-        ui: &mut egui::Ui,
-        allocation_response: egui::Response,
-        icon_width: f32,
-        padding: f32,
-    ) -> egui::Response {
+    fn delete_column_button(&self, ui: &mut egui::Ui, icon_width: f32) -> egui::Response {
         let img_size = 16.0;
         let max_size = icon_width * ICON_EXPANSION_MULTIPLE;
 
@@ -135,20 +130,8 @@ impl<'a> NavTitle<'a> {
         };
         let img = egui::Image::new(img_data).max_width(img_size);
 
-        let button_rect = {
-            let titlebar_rect = allocation_response.rect;
-            let titlebar_width = titlebar_rect.width();
-            let titlebar_center = titlebar_rect.center();
-            let button_center_y = titlebar_center.y;
-            let button_center_x =
-                titlebar_center.x + (titlebar_width / 2.0) - (max_size / 2.0) - padding;
-            egui::Rect::from_center_size(
-                pos2(button_center_x, button_center_y),
-                egui::vec2(max_size, max_size),
-            )
-        };
-
-        let helper = AnimationHelper::new_from_rect(ui, "delete-column-button", button_rect);
+        let helper =
+            AnimationHelper::new(ui, "delete-column-button", egui::vec2(max_size, max_size));
 
         let cur_img_size = helper.scale_1d_pos_min_max(0.0, img_size);
 
@@ -160,42 +143,85 @@ impl<'a> NavTitle<'a> {
         animation_resp
     }
 
-    fn title(
-        &mut self,
-        ui: &mut egui::Ui,
-        top: &Route,
-        titlebar_rect: egui::Rect,
-        icon_width: f32,
-        padding: f32,
-    ) {
-        let painter = ui.painter_at(titlebar_rect);
+    fn pubkey_pfp<'txn, 'me>(
+        &'me mut self,
+        txn: &'txn Transaction,
+        pubkey: &[u8; 32],
+        pfp_size: f32,
+    ) -> Option<ui::ProfilePic<'me, 'txn>> {
+        self.ndb
+            .get_profile_by_pubkey(txn, pubkey)
+            .as_ref()
+            .ok()
+            .and_then(move |p| {
+                Some(ui::ProfilePic::from_profile(self.img_cache, p)?.size(pfp_size))
+            })
+    }
 
-        let font = egui::FontId::new(
-            get_font_size(ui.ctx(), &NotedeckTextStyle::Body),
-            egui::FontFamily::Name(NamedFontFamily::Bold.as_str().into()),
+    fn timeline_pfp(&mut self, ui: &mut egui::Ui, id: TimelineId, pfp_size: f32) {
+        let txn = Transaction::new(self.ndb).unwrap();
+
+        if let Some(pfp) = self
+            .columns
+            .find_timeline(id)
+            .and_then(|tl| tl.kind.pubkey_source())
+            .and_then(|pksrc| self.deck_author.map(|da| pksrc.to_pubkey(da)))
+            .and_then(|pk| self.pubkey_pfp(&txn, pk.bytes(), pfp_size))
+        {
+            ui.add(pfp);
+        } else {
+            ui.add(
+                ui::ProfilePic::new(self.img_cache, ui::ProfilePic::no_pfp_url()).size(pfp_size),
+            );
+        }
+    }
+
+    fn title_pfp(&mut self, ui: &mut egui::Ui, top: &Route) {
+        let pfp_size = 32.0;
+        match top {
+            Route::Timeline(tlr) => match tlr {
+                TimelineRoute::Timeline(tlid) => {
+                    self.timeline_pfp(ui, *tlid, pfp_size);
+                }
+
+                TimelineRoute::Thread(_note_id) => {}
+                TimelineRoute::Reply(_note_id) => {}
+                TimelineRoute::Quote(_note_id) => {}
+
+                TimelineRoute::Profile(pubkey) => {
+                    let txn = Transaction::new(self.ndb).unwrap();
+                    if let Some(pfp) = self.pubkey_pfp(&txn, pubkey.bytes(), pfp_size) {
+                        ui.add(pfp);
+                    } else {
+                        ui.add(
+                            ui::ProfilePic::new(self.img_cache, ui::ProfilePic::no_pfp_url())
+                                .size(pfp_size),
+                        );
+                    }
+                }
+            },
+
+            Route::Accounts(_as) => {}
+            Route::ComposeNote => {}
+            Route::AddColumn(_add_col_route) => {}
+            Route::Support => {}
+            Route::Relays => {}
+        }
+    }
+
+    fn title(&mut self, ui: &mut egui::Ui, top: &Route) -> egui::Response {
+        ui.spacing_mut().item_spacing.x = 10.0;
+
+        self.title_pfp(ui, top);
+
+        ui.label(
+            RichText::new(top.title(self.columns)).text_style(NotedeckTextStyle::Body.text_style()),
         );
 
-        let max_title_width = titlebar_rect.width() - icon_width - padding * 2.;
-
-        let title_galley = ui.fonts(|f| {
-            f.layout(
-                top.title(self.columns).to_string(),
-                font,
-                ui.visuals().text_color(),
-                max_title_width,
-            )
-        });
-
-        let pos = {
-            let titlebar_center = titlebar_rect.center();
-            let text_height = title_galley.rect.height();
-
-            let galley_pos_x = titlebar_rect.left() + padding;
-            let galley_pos_y = titlebar_center.y - (text_height / 2.);
-            pos2(galley_pos_x, galley_pos_y)
-        };
-
-        painter.galley(pos, title_galley, Color32::WHITE);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            self.delete_column_button(ui, 32.0)
+        })
+        .inner
     }
 }
 
