@@ -2,11 +2,10 @@ use crate::error::{Error, FilterError};
 use crate::filter;
 use crate::filter::FilterState;
 use crate::timeline::Timeline;
-use crate::ui::profile::preview::get_profile_displayname_string;
 use enostr::{Filter, Pubkey};
 use nostrdb::{Ndb, Transaction};
 use serde::{Deserialize, Serialize};
-use std::fmt::Display;
+use std::{borrow::Cow, fmt::Display};
 use tracing::{error, warn};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -194,43 +193,16 @@ impl TimelineKind {
         }
     }
 
-    pub fn to_title(&self, ndb: &Ndb) -> String {
+    pub fn to_title(&self) -> Cow<'static, str> {
         match self {
             TimelineKind::List(list_kind) => match list_kind {
-                ListKind::Contact(pubkey_source) => match pubkey_source {
-                    PubkeySource::Explicit(pubkey) => {
-                        let txn = Transaction::new(ndb).expect("txn");
-                        format!(
-                            "{}'s Contacts",
-                            get_profile_displayname_string(&txn, ndb, pubkey)
-                        )
-                    }
-                    PubkeySource::DeckAuthor => "Contacts".to_owned(),
-                },
+                ListKind::Contact(_pubkey_source) => Cow::Borrowed("Contacts"),
             },
-            TimelineKind::Notifications(pubkey_source) => match pubkey_source {
-                PubkeySource::DeckAuthor => "Notifications".to_owned(),
-                PubkeySource::Explicit(pk) => {
-                    let txn = Transaction::new(ndb).expect("txn");
-                    format!(
-                        "{}'s Notifications",
-                        get_profile_displayname_string(&txn, ndb, pk)
-                    )
-                }
-            },
-            TimelineKind::Profile(pubkey_source) => match pubkey_source {
-                PubkeySource::DeckAuthor => "Profile".to_owned(),
-                PubkeySource::Explicit(pk) => {
-                    let txn = Transaction::new(ndb).expect("txn");
-                    format!(
-                        "{}'s Profile",
-                        get_profile_displayname_string(&txn, ndb, pk)
-                    )
-                }
-            },
-            TimelineKind::Universe => "Universe".to_owned(),
-            TimelineKind::Generic => "Custom Filter".to_owned(),
-            TimelineKind::Hashtag(hashtag) => format!("#{}", hashtag),
+            TimelineKind::Notifications(_pubkey_source) => Cow::Borrowed("Notifications"),
+            TimelineKind::Profile(_pubkey_source) => Cow::Borrowed("Profile"),
+            TimelineKind::Universe => Cow::Borrowed("Universe"),
+            TimelineKind::Generic => Cow::Borrowed("Custom"),
+            TimelineKind::Hashtag(hashtag) => Cow::Owned(format!("#{}", hashtag)),
         }
     }
 }

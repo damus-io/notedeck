@@ -1,16 +1,15 @@
 use enostr::{NoteId, Pubkey};
-use nostrdb::{Ndb, Transaction};
 use serde::{Deserialize, Serialize};
-use std::fmt::{self};
+use std::{
+    borrow::Cow,
+    fmt::{self},
+};
 
 use crate::{
     accounts::AccountsRoute,
     column::Columns,
     timeline::{TimelineId, TimelineRoute},
-    ui::{
-        add_column::AddColumnRoute,
-        profile::preview::{get_note_users_displayname_string, get_profile_displayname_string},
-    },
+    ui::add_column::AddColumnRoute,
 };
 
 /// App routing. These describe different places you can go inside Notedeck.
@@ -65,61 +64,37 @@ impl Route {
         Route::Accounts(AccountsRoute::AddAccount)
     }
 
-    pub fn title(&self, columns: &Columns, ndb: &Ndb) -> String {
+    pub fn title(&self, columns: &Columns) -> Cow<'static, str> {
         match self {
             Route::Timeline(tlr) => match tlr {
                 TimelineRoute::Timeline(id) => {
                     let timeline = columns
                         .find_timeline(*id)
                         .expect("expected to find timeline");
-                    timeline.kind.to_title(ndb)
+                    timeline.kind.to_title()
                 }
-                TimelineRoute::Thread(id) => {
-                    let txn = Transaction::new(ndb).expect("txn");
-                    format!(
-                        "{}'s Thread",
-                        get_note_users_displayname_string(&txn, ndb, id)
-                    )
-                }
-                TimelineRoute::Reply(id) => {
-                    let txn = Transaction::new(ndb).expect("txn");
-                    format!(
-                        "{}'s Reply",
-                        get_note_users_displayname_string(&txn, ndb, id)
-                    )
-                }
-                TimelineRoute::Quote(id) => {
-                    let txn = Transaction::new(ndb).expect("txn");
-                    format!(
-                        "{}'s Quote",
-                        get_note_users_displayname_string(&txn, ndb, id)
-                    )
-                }
-                TimelineRoute::Profile(pubkey) => {
-                    let txn = Transaction::new(ndb).expect("txn");
-                    format!(
-                        "{}'s Profile",
-                        get_profile_displayname_string(&txn, ndb, pubkey)
-                    )
-                }
+                TimelineRoute::Thread(_id) => Cow::Borrowed("Thread"),
+                TimelineRoute::Reply(_id) => Cow::Borrowed("Reply"),
+                TimelineRoute::Quote(_id) => Cow::Borrowed("Quote"),
+                TimelineRoute::Profile(_pubkey) => Cow::Borrowed("Profile"),
             },
 
-            Route::Relays => "Relays".to_owned(),
+            Route::Relays => Cow::Borrowed("Relays"),
 
             Route::Accounts(amr) => match amr {
-                AccountsRoute::Accounts => "Accounts".to_owned(),
-                AccountsRoute::AddAccount => "Add Account".to_owned(),
+                AccountsRoute::Accounts => Cow::Borrowed("Accounts"),
+                AccountsRoute::AddAccount => Cow::Borrowed("Add Account"),
             },
-            Route::ComposeNote => "Compose Note".to_owned(),
+            Route::ComposeNote => Cow::Borrowed("Compose Note"),
             Route::AddColumn(c) => match c {
-                AddColumnRoute::Base => "Add Column".to_owned(),
-                AddColumnRoute::UndecidedNotification => "Add Notifications Column".to_owned(),
+                AddColumnRoute::Base => Cow::Borrowed("Add Column"),
+                AddColumnRoute::UndecidedNotification => Cow::Borrowed("Add Notifications Column"),
                 AddColumnRoute::ExternalNotification => {
-                    "Add External Notifications Column".to_owned()
+                    Cow::Borrowed("Add External Notifications Column")
                 }
-                AddColumnRoute::Hashtag => "Add Hashtag Column".to_owned(),
+                AddColumnRoute::Hashtag => Cow::Borrowed("Add Hashtag Column"),
             },
-            Route::Support => "Damus Support".to_owned(),
+            Route::Support => Cow::Borrowed("Damus Support"),
         }
     }
 }
