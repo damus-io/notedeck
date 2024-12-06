@@ -5,6 +5,7 @@ use tracing::debug;
 pub enum NamedFontFamily {
     Medium,
     Bold,
+    Emoji,
 }
 
 impl NamedFontFamily {
@@ -12,6 +13,7 @@ impl NamedFontFamily {
         match self {
             Self::Bold => "bold",
             Self::Medium => "medium",
+            Self::Emoji => "emoji",
         }
     }
 
@@ -124,7 +126,9 @@ pub fn setup_fonts(ctx: &egui::Context) {
     mono.extend(base_fonts.clone());
 
     let mut bold = vec!["OnestBold".to_owned()];
-    bold.extend(base_fonts);
+    bold.extend(base_fonts.clone());
+
+    let emoji = vec!["NotoEmoji".to_owned()];
 
     families.insert(egui::FontFamily::Proportional, proportional);
     families.insert(egui::FontFamily::Monospace, mono);
@@ -135,6 +139,10 @@ pub fn setup_fonts(ctx: &egui::Context) {
     families.insert(
         egui::FontFamily::Name(NamedFontFamily::Bold.as_str().into()),
         bold,
+    );
+    families.insert(
+        egui::FontFamily::Name(NamedFontFamily::Emoji.as_str().into()),
+        emoji,
     );
 
     debug!("fonts: {:?}", families);

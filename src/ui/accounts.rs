@@ -2,7 +2,6 @@ use crate::colors::PINK;
 use crate::imgcache::ImageCache;
 use crate::{
     accounts::Accounts,
-    route::{Route, Router},
     ui::{Preview, PreviewConfig, View},
     Damus,
 };
@@ -203,15 +202,12 @@ mod preview {
 
     pub struct AccountsPreview {
         app: Damus,
-        router: Router<Route>,
     }
 
     impl AccountsPreview {
         fn new() -> Self {
             let app = test_data::test_app();
-            let router = Router::new(vec![Route::accounts()]);
-
-            AccountsPreview { app, router }
+            AccountsPreview { app }
         }
     }
 
@@ -224,7 +220,12 @@ mod preview {
                     .ui(ui)
                     .inner
             {
-                process_accounts_view_response(self.app.accounts_mut(), response, &mut self.router);
+                process_accounts_view_response(
+                    &mut self.app.accounts,
+                    &mut self.app.decks_cache,
+                    0,
+                    response,
+                );
             }
         }
     }

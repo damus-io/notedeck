@@ -1,5 +1,6 @@
 use crate::{
     column::Columns,
+    decks::DecksCache,
     error::{Error, FilterError},
     filter::{self, FilterState, FilterStates},
     muted::MuteFun,
@@ -16,7 +17,6 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use egui_virtual_list::VirtualList;
 use enostr::{Relay, RelayPool};
 use nostrdb::{Filter, Ndb, Note, Subscription, Transaction};
-use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::hash::Hash;
 use std::rc::Rc;
@@ -185,7 +185,7 @@ pub struct Timeline {
     pub subscription: Option<Subscription>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Clone, Debug)]
 pub struct SerializableTimeline {
     pub id: TimelineId,
     pub kind: TimelineKind,
@@ -601,12 +601,16 @@ pub fn copy_notes_into_timeline(
 pub fn setup_initial_nostrdb_subs(
     ndb: &Ndb,
     note_cache: &mut NoteCache,
-    columns: &mut Columns,
+    decks_cache: &mut DecksCache,
     is_muted: &MuteFun,
 ) -> Result<()> {
-    for timeline in columns.timelines_mut() {
-        if let Err(err) = setup_timeline_nostrdb_sub(ndb, note_cache, timeline, is_muted) {
-            error!("setup_initial_nostrdb_subs: {err}");
+    for decks in decks_cache.account_to_decks.values_mut() {
+        for deck in decks.decks_mut() {
+            for timeline in deck.columns_mut().timelines_mut() {
+                if let Err(err) = setup_timeline_nostrdb_sub(ndb, note_cache, timeline, is_muted) {
+                    error!("setup_initial_nostrdb_subs: {err}");
+                }
+            }
         }
     }
 
