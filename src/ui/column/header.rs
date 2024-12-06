@@ -240,13 +240,7 @@ impl<'a> NavTitle<'a> {
 }
 
 fn prev<R>(xs: &[R]) -> Option<&R> {
-    let len = xs.len() as i32;
-    let ind = len - 2;
-    if ind < 0 {
-        None
-    } else {
-        Some(&xs[ind as usize])
-    }
+    xs.get(xs.len().checked_sub(2)?)
 }
 
 fn chevron(
