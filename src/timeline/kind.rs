@@ -14,7 +14,7 @@ pub enum PubkeySource {
     DeckAuthor,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ListKind {
     Contact(PubkeySource),
 }
@@ -44,7 +44,7 @@ impl ListKind {
 ///   - filter
 ///   - ... etc
 ///
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TimelineKind {
     List(ListKind),
 
