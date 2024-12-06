@@ -1,12 +1,15 @@
 use egui::{
-    vec2, Color32, InnerResponse, Label, Layout, Margin, RichText, Separator, Stroke, Widget,
+    vec2, Color32, InnerResponse, Label, Layout, Margin, RichText, ScrollArea, Separator, Stroke,
+    Widget,
 };
 use tracing::info;
 
 use crate::{
     accounts::{Accounts, AccountsRoute},
     app::get_active_columns_mut,
-    app_style, colors,
+    app_style,
+    app_style::DECK_ICON_SIZE,
+    colors,
     column::Column,
     decks::DecksAction,
     decks::DecksCache,
@@ -20,6 +23,7 @@ use crate::{
 
 use super::{
     anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},
+    configure_deck::deck_icon,
     profile::preview::get_account_url,
     ProfilePic, View,
 };
@@ -122,6 +126,21 @@ impl<'a> DesktopSidePanel<'a> {
 
                         ui.add(Separator::default().horizontal().spacing(8.0).shrink(4.0));
 
+                        ui.add_space(8.0);
+                        ui.add(egui::Label::new(
+                            RichText::new("DECKS")
+                                .size(11.0)
+                                .color(ui.visuals().noninteractive().fg_stroke.color),
+                        ));
+                        ui.add_space(8.0);
+                        let add_deck_resp = ui.add(add_deck_button());
+
+                        let decks_inner = ScrollArea::vertical()
+                            .max_height(ui.available_height() - (3.0 * (ICON_WIDTH + 12.0)))
+                            .show(ui, |ui| {
+                                show_decks(ui, self.decks_cache, self.selected_account)
+                            })
+                            .inner;
                         if expand_resp.clicked() {
                             Some(InnerResponse::new(
                                 SidePanelAction::ExpandSidePanel,
@@ -136,12 +155,34 @@ impl<'a> DesktopSidePanel<'a> {
                         //     Some(InnerResponse::new(SidePanelAction::Search, search_resp))
                         } else if column_resp.clicked() {
                             Some(InnerResponse::new(SidePanelAction::Columns, column_resp))
+                        } else if add_deck_resp.clicked() {
+                            Some(InnerResponse::new(SidePanelAction::NewDeck, add_deck_resp))
+                        } else if decks_inner.response.secondary_clicked() {
+                            info!("decks inner secondary click");
+                            if let Some(clicked_index) = decks_inner.inner {
+                                Some(InnerResponse::new(
+                                    SidePanelAction::EditDeck(clicked_index),
+                                    decks_inner.response,
+                                ))
+                            } else {
+                                None
+                            }
+                        } else if decks_inner.response.clicked() {
+                            if let Some(clicked_index) = decks_inner.inner {
+                                Some(InnerResponse::new(
+                                    SidePanelAction::SwitchDeck(clicked_index),
+                                    decks_inner.response,
+                                ))
+                            } else {
+                                None
+                            }
                         } else {
                             None
                         }
                     })
                     .inner;
 
+                ui.add(Separator::default().horizontal().spacing(8.0).shrink(4.0));
                 let (pfp_resp, bottom_resp) = ui
                     .with_layout(Layout::bottom_up(egui::Align::Center), |ui| {
                         let pfp_resp = self.pfp_button(ui);
@@ -479,6 +520,64 @@ fn support_button() -> impl Widget {
 
         helper.take_animation_response()
     }
+}
+
+fn add_deck_button() -> impl Widget {
+    |ui: &mut egui::Ui| -> egui::Response {
+        let img_size = 40.0;
+
+        let max_size = ICON_WIDTH * ICON_EXPANSION_MULTIPLE; // max size of the widget
+        let img_data = egui::include_image!("../../assets/icons/new_deck_icon_4x_dark.png");
+        let img = egui::Image::new(img_data).max_width(img_size);
+
+        let helper = AnimationHelper::new(ui, "new-deck-icon", vec2(max_size, max_size));
+
+        let cur_img_size = helper.scale_1d_pos(img_size);
+        img.paint_at(
+            ui,
+            helper
+                .get_animation_rect()
+                .shrink((max_size - cur_img_size) / 2.0),
+        );
+
+        helper.take_animation_response()
+    }
+}
+
+fn show_decks<'a>(
+    ui: &mut egui::Ui,
+    decks_cache: &'a DecksCache,
+    selected_account: Option<&'a UserAccount>,
+) -> InnerResponse<Option<usize>> {
+    let show_decks_id = ui.id().with("show-decks");
+    let account_id = if let Some(acc) = selected_account {
+        acc.pubkey
+    } else {
+        *decks_cache.get_fallback_pubkey()
+    };
+    let (cur_decks, account_id) = (
+        decks_cache.decks(&account_id),
+        show_decks_id.with(account_id),
+    );
+    let active_index = cur_decks.active_index();
+
+    let (_, mut resp) = ui.allocate_exact_size(vec2(0.0, 0.0), egui::Sense::click());
+    let mut clicked_index = None;
+    for (index, deck) in cur_decks.decks().iter().enumerate() {
+        let highlight = index == active_index;
+        let deck_icon_resp = ui.add(deck_icon(
+            account_id.with(index),
+            Some(deck.icon),
+            DECK_ICON_SIZE,
+            40.0,
+            highlight,
+        ));
+        if deck_icon_resp.clicked() || deck_icon_resp.secondary_clicked() {
+            clicked_index = Some(index);
+        }
+        resp = resp.union(deck_icon_resp);
+    }
+    InnerResponse::new(clicked_index, resp)
 }
 
 fn milestone_name() -> impl Widget {
