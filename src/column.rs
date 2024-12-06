@@ -90,6 +90,24 @@ impl Columns {
         )]));
     }
 
+    pub fn insert_intermediary_routes(&mut self, intermediary_routes: Vec<IntermediaryRoute>) {
+        let id = Self::get_new_id();
+
+        let routes = intermediary_routes
+            .into_iter()
+            .map(|r| match r {
+                IntermediaryRoute::Timeline(timeline) => {
+                    let route = Route::timeline(timeline.id);
+                    self.timelines.insert(id, timeline);
+                    route
+                }
+                IntermediaryRoute::Route(route) => route,
+            })
+            .collect();
+
+        self.columns.insert(id, Column::new(routes));
+    }
+
     fn get_new_id() -> u32 {
         UIDS.fetch_add(1, Ordering::Relaxed)
     }
@@ -269,4 +287,9 @@ impl SerializableColumns {
 
         columns
     }
+}
+
+pub enum IntermediaryRoute {
+    Timeline(Timeline),
+    Route(Route),
 }
