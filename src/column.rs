@@ -282,3 +282,8 @@ impl SerializableColumns {
         columns
     }
 }
+
+pub enum ColumnsAction {
+    // Switch(usize), TODO: could use for keyboard selection
+    Remove(usize),
+}

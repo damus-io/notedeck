@@ -205,6 +205,8 @@ impl<'a> NavTitle<'a> {
             Route::AddColumn(_add_col_route) => {}
             Route::Support => {}
             Route::Relays => {}
+            Route::NewDeck => {}
+            Route::EditDeck(_) => {}
         }
     }
 
