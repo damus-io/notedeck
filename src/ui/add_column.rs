@@ -284,7 +284,11 @@ impl<'a> AddColumnView<'a> {
         });
 
         if let Some(acc) = self.cur_account {
-            let source = PubkeySource::Explicit(acc.pubkey);
+            let source = if acc.secret_key.is_some() {
+                PubkeySource::DeckAuthor
+            } else {
+                PubkeySource::Explicit(acc.pubkey)
+            };
 
             vec.push(ColumnOptionData {
                 title: "Home timeline",
