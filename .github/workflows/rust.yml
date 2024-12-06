@@ -10,25 +10,17 @@ on:
       - "*"
 
 jobs:
-  fmt:
-    name: Rustfmt
+  lint: 
+    name: Rustfmt + Clippy
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt
-      - run: cargo fmt --all -- --check
-
-  clippy:
-    name: Clippy
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-      - run: cargo clippy -- -D warnings
+          components: rustfmt,clippy
+      - run: |
+          cargo fmt --all -- --check
+          cargo clippy
 
   linux-test:
     name: Test (Linux)
