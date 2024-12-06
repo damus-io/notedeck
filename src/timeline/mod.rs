@@ -17,7 +17,6 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use egui_virtual_list::VirtualList;
 use enostr::{Relay, RelayPool};
 use nostrdb::{Filter, Ndb, Note, Subscription, Transaction};
-use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::hash::Hash;
 use std::rc::Rc;
@@ -186,7 +185,7 @@ pub struct Timeline {
     pub subscription: Option<Subscription>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Clone, Debug)]
 pub struct SerializableTimeline {
     pub id: TimelineId,
     pub kind: TimelineKind,

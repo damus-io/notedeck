@@ -1,5 +1,4 @@
 use core::f32;
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use egui::{
@@ -43,7 +42,7 @@ enum AddColumnOption {
     Hashtag(String),
 }
 
-#[derive(Clone, Copy, Eq, PartialEq, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Eq, PartialEq, Debug)]
 pub enum AddColumnRoute {
     Base,
     UndecidedNotification,
