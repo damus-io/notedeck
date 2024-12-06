@@ -1,5 +1,5 @@
 use crate::{
-    accounts::{Accounts, AccountsRoute},
+    accounts::Accounts,
     app_creation::setup_cc,
     app_size_handler::AppSizeHandler,
     args::Args,
@@ -440,13 +440,19 @@ impl Damus {
             .as_ref()
             .map(|a| a.pubkey.bytes());
 
-        let columns = if parsed_args.columns.is_empty() {
-            if let Some(serializable_columns) = storage::load_columns(&path) {
-                info!("Using columns from disk");
-                serializable_columns.into_columns(&ndb, account)
+        let decks_cache = if parsed_args.columns.is_empty() {
+            if let Some(decks_cache) = storage::load_decks_cache(&path, &ndb) {
+                info!("Using decks cache from disk");
+                decks_cache
             } else {
-                info!("Could not load columns from disk");
-                Columns::new()
+                info!("Could read not decks cache from disk");
+                let mut cache = DecksCache::new_with_demo_config(&ndb);
+                for account in accounts.get_accounts() {
+                    cache.add_deck_default(account.pubkey);
+                }
+                set_demo(&mut cache, &ndb, &mut accounts, &mut unknown_ids);
+
+                cache
             }
         } else {
             let mut columns: Columns = Columns::new();
@@ -456,31 +462,17 @@ impl Damus {
                 }
             }
 
-            columns
-        };
-
-        let mut decks_cache = {
             let mut decks_cache = DecksCache::default();
-
             let mut decks = Decks::default();
             *decks.active_mut().columns_mut() = columns;
 
             if let Some(acc) = account {
                 decks_cache.add_decks(Pubkey::new(*acc), decks);
             }
-
             decks_cache
         };
 
         let debug = parsed_args.debug;
-
-        if get_active_columns(&accounts, &decks_cache).columns().is_empty() {
-            if accounts.get_accounts().is_empty() {
-                set_demo(&path, &ndb, &mut accounts, &mut decks_cache, &mut unknown_ids);
-            } else {
-                get_active_columns_mut(&accounts, &mut decks_cache).new_column_picker();
-            }
-        }
 
         let app_rect_handler = AppSizeHandler::new(&path);
         let support = Support::new(&path);
@@ -640,7 +632,7 @@ fn render_damus_mobile(ctx: &egui::Context, app: &mut Damus) {
         if !app.columns().columns().is_empty()
             && nav::render_nav(0, app, ui).process_render_nav_response(app)
         {
-            storage::save_columns(&app.path, app.columns().as_serializable_columns());
+            storage::save_decks_cache(&app.path, &app.decks_cache);
         }
     });
 }
@@ -755,7 +747,7 @@ fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus) {
             }
 
             if save_cols {
-                storage::save_columns(&app.path, app.columns().as_serializable_columns());
+                storage::save_decks_cache(&app.path, &app.decks_cache);
             }
         });
 }
@@ -810,37 +802,14 @@ pub fn get_decks_mut<'a>(accounts: &Accounts, decks_cache: &'a mut DecksCache) -
 }
 
 pub fn set_demo(
-    data_path: &DataPath,
+    decks_cache: &mut DecksCache,
     ndb: &Ndb,
     accounts: &mut Accounts,
-    decks_cache: &mut DecksCache,
     unk_ids: &mut UnknownIds,
 ) {
-    let columns = get_active_columns_mut(accounts, decks_cache);
-    let demo_pubkey =
-        Pubkey::from_hex("aa733081e4f0f79dd43023d8983265593f2b41a988671cfcef3f489b91ad93fe")
-            .unwrap();
-    {
-        let txn = Transaction::new(ndb).expect("txn");
-        accounts
-            .add_account(Keypair::only_pubkey(demo_pubkey))
-            .process_action(unk_ids, ndb, &txn);
-        accounts.select_account(0);
-    }
-
-    columns.add_column(crate::column::Column::new(vec![
-        crate::route::Route::AddColumn(ui::add_column::AddColumnRoute::Base),
-        crate::route::Route::Accounts(AccountsRoute::Accounts),
-    ]));
-
-    if let Some(timeline) =
-        timeline::TimelineKind::contact_list(timeline::PubkeySource::Explicit(demo_pubkey))
-            .into_timeline(ndb, Some(demo_pubkey.bytes()))
-    {
-        columns.add_new_timeline_column(timeline);
-    }
-
-    columns.add_new_timeline_column(Timeline::hashtag("introductions".to_string()));
-
-    storage::save_columns(data_path, columns.as_serializable_columns());
+    let txn = Transaction::new(ndb).expect("txn");
+    accounts
+        .add_account(Keypair::only_pubkey(decks_cache.fallback_pubkey))
+        .process_action(unk_ids, ndb, &txn);
+    accounts.select_account(accounts.num_accounts() - 1);
 }
