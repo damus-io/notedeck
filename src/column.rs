@@ -90,6 +90,18 @@ impl Columns {
         )]));
     }
 
+    pub fn timeline_with_routes(&mut self, timeline: Timeline, mut routes: Vec<Route>) {
+        let id = Self::get_new_id();
+
+        let timeline_route = Route::timeline(timeline.id);
+        if !routes.contains(&timeline_route) {
+            routes.push(timeline_route);
+        }
+
+        self.timelines.insert(id, timeline);
+        self.columns.insert(id, Column::new(routes));
+    }
+
     fn get_new_id() -> u32 {
         UIDS.fetch_add(1, Ordering::Relaxed)
     }
