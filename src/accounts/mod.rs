@@ -28,7 +28,7 @@ use tracing::{debug, error, info};
 
 mod route;
 
-pub use route::{AccountsRoute, AccountsRouteResponse};
+pub use route::{AccountsAction, AccountsRoute, AccountsRouteResponse};
 
 pub struct AccountRelayData {
     filter: Filter,
@@ -225,6 +225,22 @@ pub struct Accounts {
     needs_relay_config: bool,
 }
 
+#[must_use = "You must call process_login_action on this to handle unknown ids"]
+pub struct RenderAccountAction {
+    pub accounts_action: Option<AccountsAction>,
+    pub unk_id_action: SingleUnkIdAction,
+}
+
+impl RenderAccountAction {
+    // Simple wrapper around processing the unknown action to expose too
+    // much internal logic. This allows us to have a must_use on our
+    // LoginAction type, otherwise the SingleUnkIdAction's must_use will
+    // be lost when returned in the login action
+    pub fn process_action(&mut self, ids: &mut UnknownIds, ndb: &Ndb, txn: &Transaction) {
+        self.unk_id_action.process_action(ids, ndb, txn);
+    }
+}
+
 /// Render account management views from a route
 #[allow(clippy::too_many_arguments)]
 pub fn render_accounts_route(
@@ -236,7 +252,7 @@ pub fn render_accounts_route(
     decks: &mut DecksCache,
     login_state: &mut AcquireKeyState,
     route: AccountsRoute,
-) -> SingleUnkIdAction {
+) -> RenderAccountAction {
     let resp = match route {
         AccountsRoute::Accounts => AccountsView::new(ndb, accounts, img_cache)
             .ui(ui)
@@ -252,8 +268,11 @@ pub fn render_accounts_route(
     if let Some(resp) = resp {
         match resp {
             AccountsRouteResponse::Accounts(response) => {
-                process_accounts_view_response(accounts, decks, col, response);
-                SingleUnkIdAction::no_action()
+                let action = process_accounts_view_response(accounts, decks, col, response);
+                RenderAccountAction {
+                    accounts_action: action,
+                    unk_id_action: SingleUnkIdAction::no_action(),
+                }
             }
             AccountsRouteResponse::AddAccount(response) => {
                 let action = process_login_view_response(accounts, decks, response);
@@ -266,7 +285,10 @@ pub fn render_accounts_route(
             }
         }
     } else {
-        SingleUnkIdAction::no_action()
+        RenderAccountAction {
+            accounts_action: None,
+            unk_id_action: SingleUnkIdAction::no_action(),
+        }
     }
 }
 
@@ -275,21 +297,28 @@ pub fn process_accounts_view_response(
     decks: &mut DecksCache,
     col: usize,
     response: AccountsViewResponse,
-) {
+) -> Option<AccountsAction> {
     let router = get_active_columns_mut(accounts, decks)
         .column_mut(col)
         .router_mut();
+    let mut selection = None;
     match response {
         AccountsViewResponse::RemoveAccount(index) => {
-            accounts.remove_account(index);
+            let acc_sel = AccountsAction::Remove(index);
+            info!("account selection: {:?}", acc_sel);
+            selection = Some(acc_sel);
         }
         AccountsViewResponse::SelectAccount(index) => {
-            accounts.select_account(index);
+            let acc_sel = AccountsAction::Switch(index);
+            info!("account selection: {:?}", acc_sel);
+            selection = Some(acc_sel);
         }
         AccountsViewResponse::RouteToLogin => {
             router.route_to(Route::add_account());
         }
     }
+
+    selection
 }
 
 impl Accounts {
@@ -382,7 +411,7 @@ impl Accounts {
     }
 
     #[must_use = "UnknownIdAction's must be handled. Use .process_unknown_id_action()"]
-    pub fn add_account(&mut self, account: Keypair) -> LoginAction {
+    pub fn add_account(&mut self, account: Keypair) -> RenderAccountAction {
         let pubkey = account.pubkey;
         let switch_to_index = if let Some(contains_acc) = self.contains_account(pubkey.bytes()) {
             if account.secret_key.is_some() && !contains_acc.has_nsec {
@@ -404,9 +433,9 @@ impl Accounts {
             self.accounts.len() - 1
         };
 
-        LoginAction {
-            unk: SingleUnkIdAction::pubkey(pubkey),
-            switch_to_index,
+        RenderAccountAction {
+            accounts_action: Some(AccountsAction::Switch(switch_to_index)),
+            unk_id_action: SingleUnkIdAction::pubkey(pubkey),
         }
     }
 
@@ -628,33 +657,22 @@ pub fn process_login_view_response(
     manager: &mut Accounts,
     decks: &mut DecksCache,
     response: AccountLoginResponse,
-) -> SingleUnkIdAction {
-    let (pubkey, login_action) = match response {
+) -> RenderAccountAction {
+    let (r, pubkey) = match response {
         AccountLoginResponse::CreateNew => {
             let kp = FullKeypair::generate().to_keypair();
-            (kp.pubkey, manager.add_account(kp))
+            let pubkey = kp.pubkey;
+            (manager.add_account(kp), pubkey)
         }
-        AccountLoginResponse::LoginWith(keypair) => (keypair.pubkey, manager.add_account(keypair)),
+        AccountLoginResponse::LoginWith(keypair) => {
+            let pubkey = keypair.pubkey;
+            (manager.add_account(keypair), pubkey)
+        }
     };
-    manager.select_account(login_action.switch_to_index);
+
     decks.add_deck_default(pubkey);
-    login_action.unk
-}
 
-#[must_use = "You must call process_login_action on this to handle unknown ids"]
-pub struct LoginAction {
-    unk: SingleUnkIdAction,
-    pub switch_to_index: usize,
-}
-
-impl LoginAction {
-    // Simple wrapper around processing the unknown action to expose too
-    // much internal logic. This allows us to have a must_use on our
-    // LoginAction type, otherwise the SingleUnkIdAction's must_use will
-    // be lost when returned in the login action
-    pub fn process_action(&mut self, ids: &mut UnknownIds, ndb: &Ndb, txn: &Transaction) {
-        self.unk.process_action(ids, ndb, txn);
-    }
+    r
 }
 
 #[derive(Default)]

@@ -16,10 +16,10 @@ pub static FALLBACK_PUBKEY: fn() -> Pubkey = || {
     Pubkey::from_hex("aa733081e4f0f79dd43023d8983265593f2b41a988671cfcef3f489b91ad93fe").unwrap()
 };
 
-//pub enum DecksAction {
-//    Switch(usize),
-//    Removing(usize),
-//}
+pub enum DecksAction {
+    Switch(usize),
+    Removing(usize),
+}
 
 pub struct DecksCache {
     account_to_decks: HashMap<Pubkey, Decks>,

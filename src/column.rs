@@ -293,3 +293,8 @@ pub enum IntermediaryRoute {
     Timeline(Timeline),
     Route(Route),
 }
+
+pub enum ColumnsAction {
+    // Switch(usize), TODO: could use for keyboard selection
+    Remove(usize),
+}
