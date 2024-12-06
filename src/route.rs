@@ -21,6 +21,8 @@ pub enum Route {
     ComposeNote,
     AddColumn(AddColumnRoute),
     Support,
+    NewDeck,
+    EditDeck(usize),
 }
 
 impl Route {
@@ -95,6 +97,8 @@ impl Route {
                 AddColumnRoute::Hashtag => Cow::Borrowed("Add Hashtag Column"),
             },
             Route::Support => Cow::Borrowed("Damus Support"),
+            Route::NewDeck => Cow::Borrowed("Add Deck"),
+            Route::EditDeck(_) => Cow::Borrowed("Edit Deck"),
         }
     }
 }
@@ -204,6 +208,8 @@ impl fmt::Display for Route {
 
             Route::AddColumn(_) => write!(f, "Add Column"),
             Route::Support => write!(f, "Support"),
+            Route::NewDeck => write!(f, "Add Deck"),
+            Route::EditDeck(_) => write!(f, "Edit Deck"),
         }
     }
 }

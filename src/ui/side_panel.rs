@@ -8,8 +8,10 @@ use crate::{
     app::get_active_columns_mut,
     app_style, colors,
     column::Column,
+    decks::DecksAction,
     decks::DecksCache,
     imgcache::ImageCache,
+    nav::SwitchingAction,
     route::Route,
     support::Support,
     user_account::UserAccount,
@@ -48,6 +50,9 @@ pub enum SidePanelAction {
     Search,
     ExpandSidePanel,
     Support,
+    NewDeck,
+    SwitchDeck(usize),
+    EditDeck(usize),
 }
 
 pub struct SidePanelResponse {
@@ -210,8 +215,9 @@ impl<'a> DesktopSidePanel<'a> {
         accounts: &Accounts,
         support: &mut Support,
         action: SidePanelAction,
-    ) {
+    ) -> Option<SwitchingAction> {
         let router = get_active_columns_mut(accounts, decks_cache).get_first_router();
+        let mut switching_response = None;
         match action {
             SidePanelAction::Panel => {} // TODO
             SidePanelAction::Account => {
@@ -268,7 +274,27 @@ impl<'a> DesktopSidePanel<'a> {
                     router.route_to(Route::Support);
                 }
             }
+            SidePanelAction::NewDeck => {
+                if router.routes().iter().any(|&r| r == Route::NewDeck) {
+                    router.go_back();
+                } else {
+                    router.route_to(Route::NewDeck);
+                }
+            }
+            SidePanelAction::SwitchDeck(index) => {
+                switching_response = Some(crate::nav::SwitchingAction::Decks(DecksAction::Switch(
+                    index,
+                )))
+            }
+            SidePanelAction::EditDeck(index) => {
+                if router.routes().iter().any(|&r| r == Route::EditDeck(index)) {
+                    router.go_back();
+                } else {
+                    router.route_to(Route::EditDeck(index));
+                }
+            }
         }
+        switching_response
     }
 }
 

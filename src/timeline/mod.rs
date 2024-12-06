@@ -1,5 +1,14 @@
 use crate::{
-    column::Columns, decks::DecksCache, error::{Error, FilterError}, filter::{self, FilterState, FilterStates}, muted::MuteFun, note::NoteRef, notecache::{CachedNote, NoteCache}, subscriptions::{self, SubKind, Subscriptions}, unknowns::UnknownIds, Result
+    column::Columns,
+    decks::DecksCache,
+    error::{Error, FilterError},
+    filter::{self, FilterState, FilterStates},
+    muted::MuteFun,
+    note::NoteRef,
+    notecache::{CachedNote, NoteCache},
+    subscriptions::{self, SubKind, Subscriptions},
+    unknowns::UnknownIds,
+    Result,
 };
 
 use std::fmt;

@@ -449,10 +449,6 @@ impl Damus {
                 Columns::new()
             }
         } else {
-            info!(
-                "Using columns from command line arguments: {:?}",
-                parsed_args.columns
-            );
             let mut columns: Columns = Columns::new();
             for col in parsed_args.columns {
                 if let Some(timeline) = col.into_timeline(&ndb, account) {
@@ -700,6 +696,7 @@ fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus) {
         )
         .clip(true)
         .horizontal(|mut strip| {
+            let mut side_panel_action: Option<nav::SwitchingAction> = None;
             strip.cell(|ui| {
                 let rect = ui.available_rect_before_wrap();
                 let side_panel = DesktopSidePanel::new(
@@ -711,12 +708,14 @@ fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus) {
                 .show(ui);
 
                 if side_panel.response.clicked() || side_panel.response.secondary_clicked() {
-                    DesktopSidePanel::perform_action(
+                    if let Some(action) = DesktopSidePanel::perform_action(
                         &mut app.decks_cache,
                         &app.accounts,
                         &mut app.support,
                         side_panel.action,
-                    );
+                    ) {
+                        side_panel_action = Some(action);
+                    }
                 }
 
                 // vertical sidebar line
@@ -746,6 +745,10 @@ fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus) {
             }
 
             let mut save_cols = false;
+            if let Some(action) = side_panel_action {
+                save_cols = save_cols || action.process(app);
+            }
+
             for response in responses {
                 let save = response.process_render_nav_response(app);
                 save_cols = save_cols || save;
