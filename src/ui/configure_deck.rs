@@ -148,7 +148,7 @@ fn show_warnings(ui: &mut Ui, warn_no_icon: bool, warn_no_title: bool) {
     }
 }
 
-fn create_deck_button(text: &str) -> impl Widget + use<'_> {
+fn create_deck_button(text: &str) -> impl Widget + '_ {
     move |ui: &mut egui::Ui| {
         let size = vec2(108.0, 40.0);
         ui.allocate_ui_with_layout(size, egui::Layout::top_down(egui::Align::Center), |ui| {
