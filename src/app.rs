@@ -37,6 +37,8 @@ use std::path::Path;
 use std::time::Duration;
 use tracing::{error, info, trace, warn};
 
+use fluent_resmgr::resource_manager::ResourceManager;
+
 #[derive(Debug, Eq, PartialEq, Clone)]
 pub enum DamusState {
     Initializing,
@@ -69,6 +71,8 @@ pub struct Damus {
     pub debug: bool,
     pub since_optimize: bool,
     pub textmode: bool,
+
+    pub res_mgr: ResourceManager,
 }
 
 fn handle_key_events(input: &egui::InputState, _pixels_per_point: f32, columns: &mut Columns) {
@@ -471,6 +475,8 @@ impl Damus {
         let app_rect_handler = AppSizeHandler::new(&path);
         let support = Support::new(&path);
 
+        let res_mgr = ResourceManager::new("./assets/translations/{locale}/{res_id}".into());
+
         Self {
             pool,
             debug,
@@ -492,6 +498,7 @@ impl Damus {
             path,
             app_rect_handler,
             support,
+            res_mgr,
         }
     }
 
@@ -557,6 +564,8 @@ impl Damus {
 
         let config = Config::new().set_ingester_threads(2);
 
+        let res_mgr = ResourceManager::new("../assets/translations/{locale}/{res_id}".into());
+
         Self {
             debug,
             unknown_ids: UnknownIds::default(),
@@ -585,6 +594,7 @@ impl Damus {
             path,
             app_rect_handler,
             support,
+            res_mgr,
         }
     }
 
