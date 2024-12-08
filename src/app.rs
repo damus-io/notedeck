@@ -375,6 +375,16 @@ impl Damus {
         let parsed_args = Args::parse(&args);
         let is_mobile = parsed_args.is_mobile.unwrap_or(ui::is_compiled_as_mobile());
 
+        // Some people have been running notedeck in debug, let's catch that!
+        if !cfg!(test) && cfg!(debug_assertions) && !parsed_args.debug {
+            println!("--- WELCOME TO DAMUS NOTEDECK! ---");
+            println!("It looks like are running notedeck in debug mode, unless you are a developer, this is not likely what you want.");
+            println!("If you are a developer, run `cargo run -- --debug` to skip this message.");
+            println!("For everyone else, try again with `cargo run --release`. Enjoy!");
+            println!("---------------------------------");
+            panic!();
+        }
+
         setup_cc(ctx, is_mobile, parsed_args.light);
 
         let data_path = parsed_args
