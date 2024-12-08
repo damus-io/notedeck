@@ -275,8 +275,10 @@ pub fn get_unknown_note_ids<'a>(
     note: &Note<'a>,
     ids: &mut HashSet<UnknownId>,
 ) -> Result<()> {
-    // the author pubkey
+    #[cfg(feature = "profiling")]
+    puffin::profile_function!();
 
+    // the author pubkey
     if ndb.get_profile_by_pubkey(txn, note.pubkey()).is_err() {
         ids.insert(UnknownId::Pubkey(Pubkey::new(*note.pubkey())));
     }

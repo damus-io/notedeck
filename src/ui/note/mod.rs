@@ -413,6 +413,9 @@ impl<'a> NoteView<'a> {
         options: NoteOptions,
         container_right: Pos2,
     ) -> NoteResponse {
+        #[cfg(feature = "profiling")]
+        puffin::profile_function!();
+
         let note_key = note.key().unwrap();
 
         let inner_response = ui.horizontal(|ui| {
@@ -669,6 +672,9 @@ fn render_note_actionbar(
     note_id: &[u8; 32],
     note_key: NoteKey,
 ) -> egui::InnerResponse<Option<NoteAction>> {
+    #[cfg(feature = "profiling")]
+    puffin::profile_function!();
+
     ui.horizontal(|ui| {
         let reply_resp = reply_button(ui, note_key);
         let quote_resp = quote_repost_button(ui, note_key);
