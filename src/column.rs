@@ -7,9 +7,8 @@ use std::iter::Iterator;
 use std::sync::atomic::{AtomicU32, Ordering};
 use tracing::{error, warn};
 
-#[derive(Clone)]
 pub struct Column {
-    router: Router<Route>,
+    router: Router,
 }
 
 impl Column {
@@ -18,11 +17,11 @@ impl Column {
         Column { router }
     }
 
-    pub fn router(&self) -> &Router<Route> {
+    pub fn router(&self) -> &Router {
         &self.router
     }
 
-    pub fn router_mut(&mut self) -> &mut Router<Route> {
+    pub fn router_mut(&mut self) -> &mut Router {
         &mut self.router
     }
 }
@@ -112,7 +111,7 @@ impl Columns {
 
     // Get the first router in the columns if there are columns present.
     // Otherwise, create a new column picker and return the router
-    pub fn get_first_router(&mut self) -> &mut Router<Route> {
+    pub fn get_first_router(&mut self) -> &mut Router {
         if self.columns.is_empty() {
             self.new_column_picker();
         }

@@ -287,7 +287,7 @@ pub fn process_accounts_view_response(
             accounts.select_account(index);
         }
         AccountsViewResponse::RouteToLogin => {
-            router.route_to(Route::add_account());
+            router.navigate(Route::add_account());
         }
     }
 }

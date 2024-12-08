@@ -379,12 +379,12 @@ pub fn render_add_column_routes(
                 app.columns_mut().add_timeline_to_column(col, timeline);
             }
             AddColumnResponse::UndecidedNotification => {
-                app.columns_mut().column_mut(col).router_mut().route_to(
+                app.columns_mut().column_mut(col).router_mut().navigate(
                     crate::route::Route::AddColumn(AddColumnRoute::UndecidedNotification),
                 );
             }
             AddColumnResponse::ExternalNotification => {
-                app.columns_mut().column_mut(col).router_mut().route_to(
+                app.columns_mut().column_mut(col).router_mut().navigate(
                     crate::route::Route::AddColumn(AddColumnRoute::ExternalNotification),
                 );
             }
@@ -392,7 +392,7 @@ pub fn render_add_column_routes(
                 app.columns_mut()
                     .column_mut(col)
                     .router_mut()
-                    .route_to(crate::route::Route::AddColumn(AddColumnRoute::Hashtag));
+                    .navigate(crate::route::Route::AddColumn(AddColumnRoute::Hashtag));
             }
         };
     }

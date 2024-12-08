@@ -37,14 +37,14 @@ pub enum NotesHolderResult {
 fn open_thread(
     ndb: &Ndb,
     txn: &Transaction,
-    router: &mut Router<Route>,
+    router: &mut Router,
     note_cache: &mut NoteCache,
     pool: &mut RelayPool,
     threads: &mut NotesHolderStorage<Thread>,
     selected_note: &[u8; 32],
     is_muted: &MuteFun,
 ) -> Option<NotesHolderResult> {
-    router.route_to(Route::thread(NoteId::new(selected_note.to_owned())));
+    router.navigate(Route::thread(NoteId::new(selected_note.to_owned())));
 
     let root_id = crate::note::root_note_id_from_selected_id(ndb, note_cache, txn, selected_note);
     Thread::open(ndb, note_cache, txn, pool, threads, root_id, is_muted)
@@ -55,7 +55,7 @@ impl NoteAction {
     pub fn execute(
         self,
         ndb: &Ndb,
-        router: &mut Router<Route>,
+        router: &mut Router,
         threads: &mut NotesHolderStorage<Thread>,
         profiles: &mut NotesHolderStorage<Profile>,
         note_cache: &mut NoteCache,
@@ -65,7 +65,7 @@ impl NoteAction {
     ) -> Option<NotesHolderResult> {
         match self {
             NoteAction::Reply(note_id) => {
-                router.route_to(Route::reply(note_id));
+                router.navigate(Route::reply(note_id));
                 None
             }
 
@@ -81,7 +81,7 @@ impl NoteAction {
             ),
 
             NoteAction::OpenProfile(pubkey) => {
-                router.route_to(Route::profile(pubkey));
+                router.navigate(Route::profile(pubkey));
                 Profile::open(
                     ndb,
                     note_cache,
@@ -94,7 +94,7 @@ impl NoteAction {
             }
 
             NoteAction::Quote(note_id) => {
-                router.route_to(Route::quote(note_id));
+                router.navigate(Route::quote(note_id));
                 None
             }
         }

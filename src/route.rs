@@ -12,6 +12,8 @@ use crate::{
     ui::add_column::AddColumnRoute,
 };
 
+pub type Router = egui_nav::Router<Vec<Route>>;
+
 /// App routing. These describe different places you can go inside Notedeck.
 #[derive(Clone, Copy, Eq, PartialEq, Debug, Serialize, Deserialize)]
 pub enum Route {
@@ -96,90 +98,6 @@ impl Route {
             },
             Route::Support => Cow::Borrowed("Damus Support"),
         }
-    }
-}
-
-// TODO: add this to egui-nav so we don't have to deal with returning
-// and navigating headaches
-#[derive(Clone)]
-pub struct Router<R: Clone> {
-    routes: Vec<R>,
-    pub returning: bool,
-    pub navigating: bool,
-    replacing: bool,
-}
-
-impl<R: Clone> Router<R> {
-    pub fn new(routes: Vec<R>) -> Self {
-        if routes.is_empty() {
-            panic!("routes can't be empty")
-        }
-        let returning = false;
-        let navigating = false;
-        let replacing = false;
-        Router {
-            routes,
-            returning,
-            navigating,
-            replacing,
-        }
-    }
-
-    pub fn route_to(&mut self, route: R) {
-        self.navigating = true;
-        self.routes.push(route);
-    }
-
-    // Route to R. Then when it is successfully placed, should call `remove_previous_routes` to remove all previous routes
-    pub fn route_to_replaced(&mut self, route: R) {
-        self.navigating = true;
-        self.replacing = true;
-        self.routes.push(route);
-    }
-
-    /// Go back, start the returning process
-    pub fn go_back(&mut self) -> Option<R> {
-        if self.returning || self.routes.len() == 1 {
-            return None;
-        }
-        self.returning = true;
-        self.prev().cloned()
-    }
-
-    /// Pop a route, should only be called on a NavRespose::Returned reseponse
-    pub fn pop(&mut self) -> Option<R> {
-        if self.routes.len() == 1 {
-            return None;
-        }
-        self.returning = false;
-        self.routes.pop()
-    }
-
-    pub fn remove_previous_routes(&mut self) {
-        let num_routes = self.routes.len();
-        if num_routes <= 1 {
-            return;
-        }
-
-        self.returning = false;
-        self.replacing = false;
-        self.routes.drain(..num_routes - 1);
-    }
-
-    pub fn is_replacing(&self) -> bool {
-        self.replacing
-    }
-
-    pub fn top(&self) -> &R {
-        self.routes.last().expect("routes can't be empty")
-    }
-
-    pub fn prev(&self) -> Option<&R> {
-        self.routes.get(self.routes.len() - 2)
-    }
-
-    pub fn routes(&self) -> &Vec<R> {
-        &self.routes
     }
 }
 

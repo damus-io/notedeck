@@ -5,7 +5,7 @@ use crate::{
     notes_holder::NotesHolder,
     profile::Profile,
     relay_pool_manager::RelayPoolManager,
-    route::Route,
+    route::{Route, Router},
     thread::Thread,
     timeline::{
         route::{render_timeline_route, TimelineRoute},
@@ -22,7 +22,7 @@ use crate::{
     Damus,
 };
 
-use egui_nav::{Nav, NavAction, NavResponse, NavUiType};
+use egui_nav::{HasRouter, Nav, NavAction, NavResponse, NavUiType};
 use nostrdb::{Ndb, Transaction};
 use tracing::{error, info};
 
@@ -153,7 +153,7 @@ impl RenderNavResponse {
 
                 NavAction::Navigated => {
                     let cur_router = app.columns_mut().column_mut(col).router_mut();
-                    cur_router.navigating = false;
+                    cur_router.set_navigating(false);
                     if cur_router.is_replacing() {
                         cur_router.remove_previous_routes();
                     }
@@ -174,7 +174,7 @@ impl RenderNavResponse {
 fn render_nav_body(
     ui: &mut egui::Ui,
     app: &mut Damus,
-    top: &Route,
+    top: Route,
     col: usize,
 ) -> Option<RenderNavAction> {
     match top {
@@ -243,25 +243,51 @@ fn render_nav_body(
     }
 }
 
+struct RoutedDamus<'a> {
+    col: usize,
+    pub app: &'a mut Damus,
+}
+
+impl<'a> RoutedDamus<'a> {
+    pub fn new(col: usize, app: &'a mut Damus) -> RoutedDamus<'a> {
+        RoutedDamus { col, app }
+    }
+}
+
+impl<'a> HasRouter<Vec<Route>> for RoutedDamus<'a> {
+    fn get_router(&mut self) -> &mut Router {
+        let col = self.col;
+        self.app.columns_mut().column_mut(col).router_mut()
+    }
+}
+
 #[must_use = "RenderNavResponse must be handled by calling .process_render_nav_response(..)"]
 pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) -> RenderNavResponse {
     let col_id = get_active_columns(&app.accounts, &app.decks_cache).get_column_id_at_index(col);
     // TODO(jb55): clean up this router_mut mess by using Router<R> in egui-nav directly
 
-    let nav_response = Nav::new(&app.columns().column(col).router().routes().clone())
-        .navigating(app.columns_mut().column_mut(col).router_mut().navigating)
-        .returning(app.columns_mut().column_mut(col).router_mut().returning)
+    let nav_response = Nav::new(&mut RoutedDamus::new(col, app))
         .id_source(egui::Id::new(col_id))
-        .show_mut(ui, |ui, render_type, nav| match render_type {
-            NavUiType::Title => NavTitle::new(
-                &app.ndb,
-                &mut app.img_cache,
-                get_active_columns_mut(&app.accounts, &mut app.decks_cache),
-                app.accounts.get_selected_account().map(|a| &a.pubkey),
-                nav.routes(),
-            )
-            .show(ui),
-            NavUiType::Body => render_nav_body(ui, app, nav.routes().last().expect("top"), col),
+        .show_mut(ui, |ui, render_type, nav| {
+            match render_type {
+                NavUiType::Title => {
+                    let app = &mut nav.context().app;
+                    NavTitle::new(
+                      &app.ndb,
+                      &mut app.img_cache,
+                      get_active_columns_mut(&app.accounts, &mut app.decks_cache),
+                      app.accounts.get_selected_account().map(|a| &a.pubkey),
+                      &[]
+                    )
+                }
+                .show(ui),
+
+                NavUiType::Body => {
+                    let top = nav.top().to_owned();
+                    let app = &mut nav.context().app;
+                    render_nav_body(ui, app, top, col)
+                }
+            }
         });
 
     RenderNavResponse::new(col, nav_response)

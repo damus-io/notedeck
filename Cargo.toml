@@ -26,7 +26,7 @@ eframe = { workspace = true }
 egui_extras = { workspace = true }
 ehttp = "0.2.0"
 egui_tabs = "0.2.0"
-egui_nav = "0.2.0"
+egui_nav = { git = "https://github.com/damus-io/egui-nav", rev = "a0acc2b21b947a127016edae539d13bc27ca7312" }
 egui_virtual_list = "0.5.0"
 reqwest = { version = "0.12.4", default-features = false, features = [ "rustls-tls-native-roots" ] }
 image = { version = "0.25", features = ["jpeg", "png", "webp"] }
@@ -34,7 +34,7 @@ log = "0.4.17"
 poll-promise = { version = "0.3.0", features = ["tokio"] }
 serde_derive = "1"
 serde = { version = "1", features = ["derive"] } # You only need this if you want app persistence
-tracing = "0.1.40"
+tracing = "0.1.41"
 nostrdb = { workspace = true }
 enostr = { path = "enostr" } 
 serde_json = "1.0.89"

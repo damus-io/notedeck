@@ -223,7 +223,7 @@ impl<'a> DesktopSidePanel<'a> {
                     // return if we are already routing to accounts
                     router.go_back();
                 } else {
-                    router.route_to(Route::accounts());
+                    router.navigate(Route::accounts());
                 }
             }
             SidePanelAction::Settings => {
@@ -231,7 +231,7 @@ impl<'a> DesktopSidePanel<'a> {
                     // return if we are already routing to accounts
                     router.go_back();
                 } else {
-                    router.route_to(Route::relays());
+                    router.navigate(Route::relays());
                 }
             }
             SidePanelAction::Columns => {
@@ -249,7 +249,7 @@ impl<'a> DesktopSidePanel<'a> {
                 if router.routes().iter().any(|&r| r == Route::ComposeNote) {
                     router.go_back();
                 } else {
-                    router.route_to(Route::ComposeNote);
+                    router.navigate(Route::ComposeNote);
                 }
             }
             SidePanelAction::Search => {
@@ -265,7 +265,7 @@ impl<'a> DesktopSidePanel<'a> {
                     router.go_back();
                 } else {
                     support.refresh();
-                    router.route_to(Route::Support);
+                    router.navigate(Route::Support);
                 }
             }
         }
