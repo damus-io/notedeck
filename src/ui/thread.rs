@@ -73,7 +73,7 @@ impl<'a> ThreadView<'a> {
         );
 
         egui::ScrollArea::vertical()
-            .id_source(self.id_source)
+            .id_salt(self.id_source)
             .animated(false)
             .auto_shrink([false, false])
             .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)

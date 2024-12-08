@@ -244,7 +244,7 @@ fn image_carousel(
 
     ui.add_sized([width, height], |ui: &mut egui::Ui| {
         egui::ScrollArea::horizontal()
-            .id_source(carousel_id)
+            .id_salt(carousel_id)
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     for image in images {

@@ -248,7 +248,7 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) -> RenderNavRe
     let col_id = get_active_columns(&app.accounts, &app.decks_cache).get_column_id_at_index(col);
     // TODO(jb55): clean up this router_mut mess by using Router<R> in egui-nav directly
 
-    let nav_response = Nav::new(app.columns().column(col).router().routes().clone())
+    let nav_response = Nav::new(&app.columns().column(col).router().routes().clone())
         .navigating(app.columns_mut().column_mut(col).router_mut().navigating)
         .returning(app.columns_mut().column_mut(col).router_mut().returning)
         .id_source(egui::Id::new(col_id))
@@ -258,7 +258,7 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) -> RenderNavRe
                 &mut app.img_cache,
                 get_active_columns_mut(&app.accounts, &mut app.decks_cache),
                 app.accounts.get_selected_account().map(|a| &a.pubkey),
-                nav.routes_arr(),
+                nav.routes(),
             )
             .show(ui),
             NavUiType::Body => render_nav_body(ui, app, nav.routes().last().expect("top"), col),

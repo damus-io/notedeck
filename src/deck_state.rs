@@ -58,6 +58,7 @@ fn available_characters(ui: &egui::Ui, family: egui::FontFamily) -> Vec<char> {
             .font(&egui::FontId::new(10.0, family)) // size is arbitrary for getting the characters
             .characters()
             .iter()
+            .map(|(chr, _v)| chr)
             .filter(|chr| !chr.is_whitespace() && !chr.is_ascii_control())
             .copied()
             .collect()

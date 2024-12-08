@@ -50,7 +50,7 @@ impl<'a> ProfileView<'a> {
         let scroll_id = egui::Id::new(("profile_scroll", self.col_id, self.pubkey));
 
         ScrollArea::vertical()
-            .id_source(scroll_id)
+            .id_salt(scroll_id)
             .show(ui, |ui| {
                 let txn = Transaction::new(self.ndb).expect("txn");
                 if let Ok(profile) = self.ndb.get_profile_by_pubkey(&txn, self.pubkey.bytes()) {

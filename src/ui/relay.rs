@@ -65,7 +65,7 @@ impl<'a> RelayView<'a> {
                                 .inner_margin(Margin::symmetric(0.0, 4.0))
                                 .show(ui, |ui| {
                                     egui::ScrollArea::horizontal()
-                                        .id_source(index)
+                                        .id_salt(index)
                                         .max_width(
                                             ui.max_rect().width()
                                                 - get_right_side_width(relay_info.status),

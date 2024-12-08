@@ -97,7 +97,7 @@ fn timeline_ui(
     };
 
     egui::ScrollArea::vertical()
-        .id_source(scroll_id)
+        .id_salt(scroll_id)
         .animated(false)
         .auto_shrink([false, false])
         .scroll_bar_visibility(ScrollBarVisibility::AlwaysVisible)

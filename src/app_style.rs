@@ -235,7 +235,7 @@ pub fn create_themed_visuals(theme: ColorTheme, default: Visuals) -> Visuals {
     }
 }
 
-pub static DECK_ICON_SIZE: f32 = 24.0;
+//pub static DECK_ICON_SIZE: f32 = 24.0;
 
 pub fn deck_icon_font_sized(size: f32) -> FontId {
     egui::FontId::new(size, emoji_font_family())
