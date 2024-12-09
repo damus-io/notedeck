@@ -27,6 +27,7 @@ egui_virtual_list = { git = "https://github.com/jb55/hello_egui", rev = "a66b679
 ehttp = "0.5.0"
 enostr = { path = "crates/enostr" } 
 ewebsock = { version = "0.2.0", features = ["tls"] }
+futures = "0.3.31"
 hex = "0.4.3"
 image = { version = "0.25", features = ["jpeg", "png", "webp"] }
 indexmap = "2.6.0"

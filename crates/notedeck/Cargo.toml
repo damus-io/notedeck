@@ -15,6 +15,7 @@ enostr = { workspace = true }
 nostr = { workspace = true }
 egui = { workspace = true }
 eframe = { workspace = true }
+futures = { workspace = true }
 image = { workspace = true }
 base32 = { workspace = true }
 poll-promise = { workspace = true }
@@ -35,6 +36,8 @@ tokenator = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+tokio = { workspace = true }
+nostr = { workspace = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = { workspace = true }

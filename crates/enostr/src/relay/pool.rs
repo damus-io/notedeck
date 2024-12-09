@@ -343,7 +343,7 @@ impl RelayPool {
     }
 
     // standardize the format (ie, trailing slashes)
-    fn canonicalize_url(url: String) -> String {
+    pub fn canonicalize_url(url: String) -> String {
         match Url::parse(&url) {
             Ok(parsed_url) => parsed_url.to_string(),
             Err(_) => url, // If parsing fails, return the original URL.
