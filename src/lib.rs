@@ -33,6 +33,7 @@ mod profile;
 pub mod relay_pool_manager;
 mod result;
 mod route;
+pub mod submgr;
 mod subscriptions;
 mod support;
 mod test_data;
