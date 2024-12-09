@@ -4,11 +4,9 @@ use egui::{
 use tracing::info;
 
 use crate::{
-    accounts::{Accounts, AccountsRoute},
-    app::get_active_columns_mut,
+    accounts::AccountsRoute,
     app_style, colors,
-    column::Column,
-    decks::DecksCache,
+    column::{Column, Columns},
     imgcache::ImageCache,
     route::Route,
     support::Support,
@@ -29,7 +27,6 @@ pub struct DesktopSidePanel<'a> {
     ndb: &'a nostrdb::Ndb,
     img_cache: &'a mut ImageCache,
     selected_account: Option<&'a UserAccount>,
-    decks_cache: &'a DecksCache,
 }
 
 impl View for DesktopSidePanel<'_> {
@@ -66,13 +63,11 @@ impl<'a> DesktopSidePanel<'a> {
         ndb: &'a nostrdb::Ndb,
         img_cache: &'a mut ImageCache,
         selected_account: Option<&'a UserAccount>,
-        decks_cache: &'a DecksCache,
     ) -> Self {
         Self {
             ndb,
             img_cache,
             selected_account,
-            decks_cache,
         }
     }
 
@@ -205,13 +200,8 @@ impl<'a> DesktopSidePanel<'a> {
         helper.take_animation_response()
     }
 
-    pub fn perform_action(
-        decks_cache: &mut DecksCache,
-        accounts: &Accounts,
-        support: &mut Support,
-        action: SidePanelAction,
-    ) {
-        let router = get_active_columns_mut(accounts, decks_cache).get_first_router();
+    pub fn perform_action(columns: &mut Columns, support: &mut Support, action: SidePanelAction) {
+        let router = columns.get_first_router();
         match action {
             SidePanelAction::Panel => {} // TODO
             SidePanelAction::Account => {
@@ -242,7 +232,7 @@ impl<'a> DesktopSidePanel<'a> {
                 {
                     router.go_back();
                 } else {
-                    get_active_columns_mut(accounts, decks_cache).new_column_picker();
+                    columns.new_column_picker();
                 }
             }
             SidePanelAction::ComposeNote => {
@@ -480,7 +470,6 @@ mod preview {
     use egui_extras::{Size, StripBuilder};
 
     use crate::{
-        app::get_active_columns_mut,
         test_data,
         ui::{Preview, PreviewConfig},
     };
@@ -494,8 +483,7 @@ mod preview {
     impl DesktopSidePanelPreview {
         fn new() -> Self {
             let mut app = test_data::test_app();
-            get_active_columns_mut(&app.accounts, &mut app.decks_cache)
-                .add_column(Column::new(vec![Route::accounts()]));
+            app.columns.add_column(Column::new(vec![Route::accounts()]));
             DesktopSidePanelPreview { app }
         }
     }
@@ -512,13 +500,11 @@ mod preview {
                             &self.app.ndb,
                             &mut self.app.img_cache,
                             self.app.accounts.get_selected_account(),
-                            &self.app.decks_cache,
                         );
                         let response = panel.show(ui);
 
                         DesktopSidePanel::perform_action(
-                            &mut self.app.decks_cache,
-                            &self.app.accounts,
+                            &mut self.app.columns,
                             &mut self.app.support,
                             response.action,
                         );
