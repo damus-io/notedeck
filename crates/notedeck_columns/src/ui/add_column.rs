@@ -634,7 +634,7 @@ pub fn render_add_column_routes(
                     &mut timeline,
                     ctx.ndb,
                     &mut app.subscriptions,
-                    ctx.pool,
+                    ctx.subman.pool(),
                     ctx.note_cache,
                     app.since_optimize,
                 );
@@ -675,7 +675,7 @@ pub fn render_add_column_routes(
                             &mut timeline,
                             ctx.ndb,
                             &mut app.subscriptions,
-                            ctx.pool,
+                            ctx.subman.pool(),
                             ctx.note_cache,
                             app.since_optimize,
                         );

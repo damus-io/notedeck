@@ -15,6 +15,7 @@ pub mod relayspec;
 mod result;
 pub mod storage;
 mod style;
+pub mod subman;
 pub mod theme;
 mod time;
 mod timecache;
@@ -22,6 +23,10 @@ mod timed_serializer;
 pub mod ui;
 mod unknowns;
 mod user_account;
+
+/// Various utilities
+#[macro_use]
+pub mod util;
 
 pub use accounts::{AccountData, Accounts, AccountsAction, AddAccountAction, SwitchAccountAction};
 pub use app::{App, Notedeck};
@@ -42,6 +47,7 @@ pub use storage::{
     DataPath, DataPathType, Directory, FileKeyStorage, KeyStorageResponse, KeyStorageType,
 };
 pub use style::NotedeckTextStyle;
+pub use subman::SubMan;
 pub use theme::ColorTheme;
 pub use time::time_ago_since;
 pub use timecache::TimeCached;
