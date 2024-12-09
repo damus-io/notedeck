@@ -1,6 +1,6 @@
 use crate::{
     app_size_handler::AppSizeHandler,
-    app_style::{create_custom_style, dark_mode, desktop_font_size, light_mode, mobile_font_size},
+    app_style::{add_custom_style, dark_mode, light_mode},
     fonts::setup_fonts,
     storage::DataPath,
 };
@@ -79,9 +79,5 @@ pub fn setup_cc(ctx: &egui::Context, is_mobile: bool, light: bool) {
         ctx.set_visuals(dark_mode(is_mobile));
     }
 
-    ctx.set_style(if is_mobile {
-        create_custom_style(ctx, mobile_font_size)
-    } else {
-        create_custom_style(ctx, desktop_font_size)
-    });
+    ctx.all_styles_mut(|style| add_custom_style(is_mobile, style));
 }

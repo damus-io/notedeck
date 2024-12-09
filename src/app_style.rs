@@ -6,7 +6,7 @@ use crate::{
 use egui::{
     epaint::Shadow,
     style::{Interaction, Selection, WidgetVisuals, Widgets},
-    Button, Context, FontFamily, FontId, Rounding, Stroke, Style, TextStyle, Ui, Visuals,
+    Button, FontFamily, FontId, Rounding, Stroke, Style, TextStyle, Ui, Visuals,
 };
 use strum::IntoEnumIterator;
 use strum_macros::EnumIter;
@@ -52,9 +52,12 @@ pub fn user_requested_visuals_change(
 }
 
 /// Create custom text sizes for any FontSizes
-pub fn create_custom_style(ctx: &Context, font_size: fn(&NotedeckTextStyle) -> f32) -> Style {
-    let mut style = (*ctx.style()).clone();
-
+pub fn add_custom_style(is_mobile: bool, style: &mut Style) {
+    let font_size = if is_mobile {
+        mobile_font_size
+    } else {
+        desktop_font_size
+    };
     style.text_styles = NotedeckTextStyle::iter()
         .map(|text_style| {
             (
@@ -75,8 +78,6 @@ pub fn create_custom_style(ctx: &Context, font_size: fn(&NotedeckTextStyle) -> f
         style.debug.show_interactive_widgets = true;
         style.debug.debug_on_hover_with_all_modifiers = true;
     }
-
-    style
 }
 
 pub fn desktop_font_size(text_style: &NotedeckTextStyle) -> f32 {
