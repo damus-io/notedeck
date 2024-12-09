@@ -323,7 +323,7 @@ pub fn demo_decks(
             &txn,
             ctx.ndb,
             ctx.note_cache,
-            ctx.pool,
+            ctx.subman.pool(),
             &kind,
         ) {
             results.process(

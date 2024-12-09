@@ -13,6 +13,7 @@ dirs = { workspace = true }
 enostr = { workspace = true }
 egui = { workspace = true }
 eframe = { workspace = true }
+futures = { workspace = true }
 image = { workspace = true }
 base32 = { workspace = true }
 poll-promise = { workspace = true }
@@ -31,6 +32,8 @@ mime_guess = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+tokio = { workspace = true }
+nostr = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = { workspace = true }

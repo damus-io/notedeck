@@ -1,7 +1,7 @@
 use crate::persist::{AppSizeHandler, ZoomHandler};
 use crate::{
     Accounts, AppContext, Args, DataPath, DataPathType, Directory, FileKeyStorage, Images,
-    KeyStorageType, NoteCache, RelayDebugView, ThemeHandler, UnknownIds,
+    KeyStorageType, NoteCache, RelayDebugView, SubMan, ThemeHandler, UnknownIds,
 };
 use egui::ThemePreference;
 use enostr::RelayPool;
@@ -21,7 +21,6 @@ pub struct Notedeck {
     ndb: Ndb,
     img_cache: Images,
     unknown_ids: UnknownIds,
-    pool: RelayPool,
     note_cache: NoteCache,
     accounts: Accounts,
     path: DataPath,
@@ -31,6 +30,7 @@ pub struct Notedeck {
     zoom: ZoomHandler,
     app_size: AppSizeHandler,
     unrecognized_args: BTreeSet<String>,
+    subman: SubMan,
 }
 
 fn margin_top(narrow: bool) -> f32 {
@@ -71,7 +71,7 @@ impl eframe::App for Notedeck {
         puffin::GlobalProfiler::lock().new_frame();
 
         // handle account updates
-        self.accounts.update(&mut self.ndb, &mut self.pool, ctx);
+        self.accounts.update(&mut self.ndb, self.subman.pool(), ctx);
 
         main_panel(&ctx.style(), crate::ui::is_narrow(ctx)).show(ctx, |ui| {
             // render app
@@ -85,11 +85,11 @@ impl eframe::App for Notedeck {
         self.app_size.try_save_app_size(ctx);
 
         if self.args.relay_debug {
-            if self.pool.debug.is_none() {
-                self.pool.use_debug();
+            if self.subman.pool().debug.is_none() {
+                self.subman.pool().use_debug();
             }
 
-            if let Some(debug) = &mut self.pool.debug {
+            if let Some(debug) = &mut self.subman.pool().debug {
                 RelayDebugView::window(ctx, debug);
             }
         }
@@ -199,11 +199,12 @@ impl Notedeck {
             error!("error migrating image cache: {e}");
         }
 
+        let subman = SubMan::new(ndb.clone(), pool);
+
         Self {
             ndb,
             img_cache,
             unknown_ids,
-            pool,
             note_cache,
             accounts,
             path: path.clone(),
@@ -213,6 +214,7 @@ impl Notedeck {
             zoom,
             app_size,
             unrecognized_args,
+            subman,
         }
     }
 
@@ -226,12 +228,12 @@ impl Notedeck {
             ndb: &mut self.ndb,
             img_cache: &mut self.img_cache,
             unknown_ids: &mut self.unknown_ids,
-            pool: &mut self.pool,
             note_cache: &mut self.note_cache,
             accounts: &mut self.accounts,
             path: &self.path,
             args: &self.args,
             theme: &mut self.theme,
+            subman: &mut self.subman,
         }
     }
 
