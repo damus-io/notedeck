@@ -11,7 +11,7 @@ use crate::{
     },
 };
 
-use egui::{RichText, Stroke};
+use egui::{RichText, Stroke, UiBuilder};
 use enostr::Pubkey;
 use nostrdb::{Ndb, Transaction};
 
@@ -45,8 +45,11 @@ impl<'a> NavTitle<'a> {
             let mut rect = ui.available_rect_before_wrap();
             rect.set_height(48.0);
 
-            let mut child_ui =
-                ui.child_ui(rect, egui::Layout::left_to_right(egui::Align::Center), None);
+            let mut child_ui = ui.new_child(
+                UiBuilder::new()
+                    .max_rect(rect)
+                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            );
 
             let r = self.title_bar(&mut child_ui);
 

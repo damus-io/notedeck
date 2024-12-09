@@ -6,7 +6,9 @@ use crate::{
     ui::{Preview, PreviewConfig, View},
     Damus,
 };
-use egui::{Align, Button, Frame, Image, InnerResponse, Layout, RichText, ScrollArea, Ui, Vec2};
+use egui::{
+    Align, Button, Frame, Image, InnerResponse, Layout, RichText, ScrollArea, Ui, UiBuilder, Vec2,
+};
 use nostrdb::{Ndb, Transaction};
 
 use super::profile::preview::SimpleProfilePreview;
@@ -88,7 +90,7 @@ impl<'a> AccountsView<'a> {
                     let profile_peview_view = {
                         let max_size = egui::vec2(ui.available_width(), 77.0);
                         let resp = ui.allocate_response(max_size, egui::Sense::click());
-                        ui.allocate_ui_at_rect(resp.rect, |ui| {
+                        ui.allocate_new_ui(UiBuilder::new().max_rect(resp.rect), |ui| {
                             let preview =
                                 SimpleProfilePreview::new(profile.as_ref(), img_cache, has_nsec);
                             show_profile_card(ui, preview, max_size, is_selected, resp)
