@@ -82,8 +82,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 [target.'cfg(target_os = "android")'.dependencies]
 android_logger = "0.11.1"
 android-activity = { version = "0.4", features = [ "native-activity" ] }
-#winit = "0.28.6"
-winit = { version = "0.29", features = [ "android-native-activity" ] }
+winit = { version = "0.30.5", features = [ "android-native-activity" ] }
 #winit = { git="https://github.com/rust-windowing/winit.git", rev = "2a58b785fed2a3746f7c7eebce95bce67ddfd27c", features = ["android-native-activity"] }
 
 [package.metadata.bundle]
