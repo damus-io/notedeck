@@ -1,8 +1,10 @@
 #![allow(unused)]
 
-use std::collections::HashMap;
+use std::cmp::Ordering;
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
+use std::sync::{Arc, Mutex};
 
 use enostr::Filter;
 use nostrdb;
@@ -13,35 +15,44 @@ use nostrdb;
 /// already is one.  Using a lame (but short) placeholder name instead
 /// for now ...
 ///
-/// ```ignore
+/// ```no_run
 /// use std::error::Error;
+/// use std::sync::{Arc, Mutex};
 ///
 /// use notedeck::submgr::{SubMgr, SubSpecBuilder, SubError};
 /// use enostr::Filter;
 ///
 /// #[tokio::main]
 /// async fn main() -> Result<(), Box<dyn Error>> {
-///     let mut submgr = SubMgr::new();
+///     let submgr = SubMgr::new();
 ///
+///     // Define a filter and build the subscription specification
 ///     let filter = Filter::new().kinds(vec![1, 2, 3]).build();
-///     let ep = submgr.subscribe(SubSpecBuilder::new(vec![filter]).build())?;
+///     let spec = SubSpecBuilder::new(vec![filter]).build();
+///
+///     // Subscribe and obtain a SubReceiver
+///     let receiver = SubMgr::subscribe(submgr.clone(), spec)?;
+///
+///     // Process incoming note keys
 ///     loop {
-///         match ep.next().await {
-///             Ok(nks) => {
-///                 // process the note keys
+///         match receiver.next().await {
+///             Ok(note_keys) => {
+///                 // Process the note keys
+///                 println!("Received note keys: {:?}", note_keys);
 ///             },
 ///             Err(SubError::ReevaluateState) => {
-///                 // not really an error, break out of loop and reevaluate state
+///                 // Not really an error; break out to reevaluate the state
 ///                 break;
 ///             },
 ///             Err(err) => {
-///                 // something bad happened
+///                 // Handle other errors
 ///                 eprintln!("Error: {:?}", err);
 ///                 break;
 ///             },
 ///         }
 ///     }
-///     submgr.unsubscribe(ep)?;
+///
+///     // The subscription will automatically be cleaned up when the receiver goes out of scope
 ///     Ok(())
 /// }
 /// ```
@@ -73,9 +84,30 @@ impl Error for SubError {}
 
 pub type SubResult<T> = Result<T, SubError>;
 
+#[derive(Debug, Clone, Copy)]
 pub struct SubId(nostrdb::Subscription);
 
-#[derive(Debug)]
+impl Ord for SubId {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.0.id().cmp(&other.0.id()) // Access the inner `u64` and compare
+    }
+}
+
+impl PartialOrd for SubId {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other)) // Delegate to `cmp`
+    }
+}
+
+impl PartialEq for SubId {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.id() == other.0.id() // Compare the inner `u64`
+    }
+}
+
+impl Eq for SubId {}
+
+#[derive(Debug, Clone)]
 pub enum SubConstraint {
     OneShot,                    // terminate subscription after initial query
     Local,                      // only query the local db, no remote subs
@@ -108,6 +140,7 @@ impl SubSpecBuilder {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct SubSpec {
     rmtid: String,
     filters: Vec<Filter>,
@@ -118,32 +151,61 @@ pub struct SubSpec {
 }
 
 pub struct SubMgr {
-    subs: HashMap<SubId, (SubSpec, SubEndpoint)>,
+    subs: BTreeMap<SubId, (SubSpec, SubSender)>,
 }
 
 impl SubMgr {
-    pub fn new() -> Self {
-        SubMgr {
-            subs: HashMap::new(),
-        }
+    pub fn new() -> Arc<Mutex<Self>> {
+        Arc::new(Mutex::new(SubMgr {
+            subs: BTreeMap::new(),
+        }))
     }
 
-    pub fn subscribe(&mut self, sub: SubSpec) -> SubResult<SubEndpoint> {
-        unimplemented!();
+    pub fn subscribe(sub_mgr: Arc<Mutex<SubMgr>>, spec: SubSpec) -> SubResult<SubReceiver> {
+        let mut mgr = sub_mgr.lock().unwrap();
+        let (id, sender, receiver) = mgr.make_subscription(&spec)?;
+        mgr.subs.insert(id, (spec, sender));
+        Ok(SubReceiver {
+            id,
+            sub_mgr: sub_mgr.clone(),
+        })
     }
 
-    pub fn unsubscribe(&mut self, ep: SubEndpoint) -> SubResult<()> {
+    pub fn unsubscribe(sub_mgr: Arc<Mutex<SubMgr>>, id: SubId) -> SubResult<()> {
+        let mut mgr = sub_mgr.lock().unwrap();
+        mgr.subs.remove(&id);
+        Ok(())
+    }
+
+    fn make_subscription(&mut self, sub: &SubSpec) -> SubResult<(SubId, SubSender, SubReceiver)> {
         unimplemented!();
     }
 }
 
-pub struct SubEndpoint {
+pub struct SubSender {
+    // internals omitted ...
+}
+
+pub struct SubReceiver {
+    sub_mgr: Arc<Mutex<SubMgr>>,
     id: SubId,
     // internals omitted ...
 }
 
-impl SubEndpoint {
+impl SubReceiver {
+    pub fn new(id: SubId, sub_mgr: Arc<Mutex<SubMgr>>) -> Self {
+        SubReceiver { id, sub_mgr }
+    }
+
     pub async fn next(&self) -> SubResult<Vec<nostrdb::NoteKey>> {
         unimplemented!();
+    }
+}
+
+impl Drop for SubReceiver {
+    fn drop(&mut self) {
+        if let Err(err) = SubMgr::unsubscribe(self.sub_mgr.clone(), self.id.clone()) {
+            eprintln!("Failed to unsubscribe: {:?}", err);
+        }
     }
 }
