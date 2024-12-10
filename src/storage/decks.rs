@@ -174,13 +174,15 @@ impl MetadataKeyword {
 }
 impl fmt::Display for MetadataKeyword {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let name = MetadataKeyword::MAPPING
+        if let Some(name) = MetadataKeyword::MAPPING
             .iter()
             .find(|(_, keyword)| keyword == self)
             .map(|(name, _)| *name)
-            .expect("MAPPING is incorrect");
-
-        write!(f, "{}", name)
+        {
+            write!(f, "{}", name)
+        } else {
+            write!(f, "UnknownMetadataKeyword")
+        }
     }
 }
 
@@ -407,13 +409,15 @@ impl Keyword {
 
 impl fmt::Display for Keyword {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let name = Keyword::MAPPING
+        if let Some(name) = Keyword::MAPPING
             .iter()
             .find(|(_, keyword, _)| keyword == self)
             .map(|(name, _, _)| *name)
-            .expect("MAPPING is incorrect");
-
-        write!(f, "{}", name)
+        {
+            write!(f, "{}", name)
+        } else {
+            write!(f, "UnknownKeyword")
+        }
     }
 }
 
