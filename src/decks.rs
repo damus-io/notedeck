@@ -12,12 +12,13 @@ use crate::{
     ui::{add_column::AddColumnRoute, configure_deck::ConfigureDeckResponse},
 };
 
-static FALLBACK_PUBKEY: &str = "aa733081e4f0f79dd43023d8983265593f2b41a988671cfcef3f489b91ad93fe";
+pub static FALLBACK_PUBKEY: &str =
+    "aa733081e4f0f79dd43023d8983265593f2b41a988671cfcef3f489b91ad93fe";
 
-//pub enum DecksAction {
-//    Switch(usize),
-//    Removing(usize),
-//}
+pub enum DecksAction {
+    Switch(usize),
+    Removing(usize),
+}
 
 pub struct DecksCache {
     pub account_to_decks: HashMap<Pubkey, Decks>,
