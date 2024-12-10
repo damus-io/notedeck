@@ -1,6 +1,10 @@
 use crate::{
-    accounts::render_accounts_route,
+    accounts::{render_accounts_route, AccountsAction},
     actionbar::NoteAction,
+    app::{get_active_columns, get_active_columns_mut, get_decks_mut},
+    column::ColumnsAction,
+    deck_state::DeckState,
+    decks::{Deck, DecksAction},
     notes_holder::NotesHolder,
     profile::Profile,
     relay_pool_manager::RelayPoolManager,
@@ -14,6 +18,8 @@ use crate::{
         self,
         add_column::render_add_column_routes,
         column::NavTitle,
+        configure_deck::ConfigureDeckView,
+        edit_deck::{EditDeckResponse, EditDeckView},
         note::{PostAction, PostType},
         support::SupportView,
         RelayView, View,
@@ -25,11 +31,45 @@ use egui_nav::{Nav, NavAction, NavResponse, NavUiType};
 use nostrdb::{Ndb, Transaction};
 use tracing::{error, info};
 
+#[allow(clippy::enum_variant_names)]
 pub enum RenderNavAction {
     Back,
     RemoveColumn,
     PostAction(PostAction),
     NoteAction(NoteAction),
+    SwitchingAction(SwitchingAction),
+}
+
+pub enum SwitchingAction {
+    Accounts(AccountsAction),
+    Columns(ColumnsAction),
+    Decks(crate::decks::DecksAction),
+}
+
+impl SwitchingAction {
+    /// process the action, and return whether switching occured
+    pub fn process(&self, app: &mut Damus) -> bool {
+        match &self {
+            SwitchingAction::Accounts(account_action) => match *account_action {
+                AccountsAction::Switch(index) => app.accounts.select_account(index),
+                AccountsAction::Remove(index) => app.accounts.remove_account(index),
+            },
+            SwitchingAction::Columns(columns_action) => match *columns_action {
+                ColumnsAction::Remove(index) => {
+                    get_active_columns_mut(&app.accounts, &mut app.decks_cache).delete_column(index)
+                }
+            },
+            SwitchingAction::Decks(decks_action) => match *decks_action {
+                DecksAction::Switch(index) => {
+                    get_decks_mut(&app.accounts, &mut app.decks_cache).set_active(index)
+                }
+                DecksAction::Removing(index) => {
+                    get_decks_mut(&app.accounts, &mut app.decks_cache).remove_deck(index)
+                }
+            },
+        }
+        true
+    }
 }
 
 impl From<PostAction> for RenderNavAction {
@@ -59,7 +99,7 @@ impl RenderNavResponse {
 
     #[must_use = "Make sure to save columns if result is true"]
     pub fn process_render_nav_response(&self, app: &mut Damus) -> bool {
-        let mut col_changed: bool = false;
+        let mut switching_occured: bool = false;
         let col = self.column;
 
         if let Some(action) = self
@@ -81,13 +121,16 @@ impl RenderNavResponse {
                     }
 
                     app.columns_mut().delete_column(col);
-                    col_changed = true;
+                    switching_occured = true;
                 }
 
                 RenderNavAction::PostAction(post_action) => {
                     let txn = Transaction::new(&app.ndb).expect("txn");
                     let _ = post_action.execute(&app.ndb, &txn, &mut app.pool, &mut app.drafts);
-                    app.columns_mut().column_mut(col).router_mut().go_back();
+                    get_active_columns_mut(&app.accounts, &mut app.decks_cache)
+                        .column_mut(col)
+                        .router_mut()
+                        .go_back();
                 }
 
                 RenderNavAction::NoteAction(note_action) => {
@@ -95,7 +138,7 @@ impl RenderNavResponse {
 
                     note_action.execute_and_process_result(
                         &app.ndb,
-                        &mut app.columns,
+                        get_active_columns_mut(&app.accounts, &mut app.decks_cache),
                         col,
                         &mut app.threads,
                         &mut app.profiles,
@@ -104,6 +147,10 @@ impl RenderNavResponse {
                         &txn,
                         &app.accounts.mutefun(),
                     );
+                }
+
+                RenderNavAction::SwitchingAction(switching_action) => {
+                    switching_occured = switching_action.process(app);
                 }
             }
         }
@@ -144,7 +191,12 @@ impl RenderNavResponse {
                             &app.accounts.mutefun(),
                         );
                     }
-                    col_changed = true;
+
+                    if let Some(Route::EditDeck(index)) = r {
+                        SwitchingAction::Decks(DecksAction::Removing(index)).process(app);
+                    }
+
+                    switching_occured = true;
                 }
 
                 NavAction::Navigated => {
@@ -153,7 +205,7 @@ impl RenderNavResponse {
                     if cur_router.is_replacing() {
                         cur_router.remove_previous_routes();
                     }
-                    col_changed = true;
+                    switching_occured = true;
                 }
 
                 NavAction::Dragging => {}
@@ -163,7 +215,7 @@ impl RenderNavResponse {
             }
         }
 
-        col_changed
+        switching_occured
     }
 }
 
@@ -176,7 +228,7 @@ fn render_nav_body(
     match top {
         Route::Timeline(tlr) => render_timeline_route(
             &app.ndb,
-            &mut app.columns,
+            get_active_columns_mut(&app.accounts, &mut app.decks_cache),
             &mut app.drafts,
             &mut app.img_cache,
             &mut app.unknown_ids,
@@ -190,19 +242,21 @@ fn render_nav_body(
             ui,
         ),
         Route::Accounts(amr) => {
-            let action = render_accounts_route(
+            let mut action = render_accounts_route(
                 ui,
                 &app.ndb,
                 col,
-                &mut app.columns,
                 &mut app.img_cache,
                 &mut app.accounts,
+                &mut app.decks_cache,
                 &mut app.view_state.login,
                 *amr,
             );
             let txn = Transaction::new(&app.ndb).expect("txn");
             action.process_action(&mut app.unknown_ids, &app.ndb, &txn);
-            None
+            action
+                .accounts_action
+                .map(|f| RenderNavAction::SwitchingAction(SwitchingAction::Accounts(f)))
         }
         Route::Relays => {
             let manager = RelayPoolManager::new(app.pool_mut());
@@ -231,9 +285,67 @@ fn render_nav_body(
 
             None
         }
-
         Route::Support => {
             SupportView::new(&mut app.support).show(ui);
+            None
+        }
+        Route::NewDeck => {
+            let id = ui.id().with("new-deck");
+            let new_deck_state = app.view_state.id_to_deck_state.entry(id).or_default();
+            let mut resp = None;
+            if let Some(config_resp) = ConfigureDeckView::new(new_deck_state).ui(ui) {
+                if let Some(cur_acc) = app.accounts.get_selected_account() {
+                    app.decks_cache.add_deck(
+                        cur_acc.pubkey,
+                        Deck::new(config_resp.icon, config_resp.name),
+                    );
+
+                    // set new deck as active
+                    let cur_index = get_decks_mut(&app.accounts, &mut app.decks_cache)
+                        .decks()
+                        .len()
+                        - 1;
+                    resp = Some(RenderNavAction::SwitchingAction(SwitchingAction::Decks(
+                        DecksAction::Switch(cur_index),
+                    )));
+                }
+
+                new_deck_state.clear();
+                get_active_columns_mut(&app.accounts, &mut app.decks_cache)
+                    .get_first_router()
+                    .go_back();
+            }
+            resp
+        }
+        Route::EditDeck(index) => {
+            let cur_deck = get_decks_mut(&app.accounts, &mut app.decks_cache)
+                .decks_mut()
+                .get_mut(*index)
+                .expect("index wasn't valid");
+            let id = ui.id().with((
+                "edit-deck",
+                app.accounts.get_selected_account().map(|k| k.pubkey),
+                index,
+            ));
+            let deck_state = app
+                .view_state
+                .id_to_deck_state
+                .entry(id)
+                .or_insert_with(|| DeckState::from_deck(cur_deck));
+            if let Some(resp) = EditDeckView::new(deck_state).ui(ui) {
+                match resp {
+                    EditDeckResponse::Edit(configure_deck_response) => {
+                        cur_deck.edit(configure_deck_response);
+                    }
+                    EditDeckResponse::Delete => {
+                        deck_state.deleting = true;
+                    }
+                }
+                get_active_columns_mut(&app.accounts, &mut app.decks_cache)
+                    .get_first_router()
+                    .go_back();
+            }
+
             None
         }
     }
@@ -241,7 +353,7 @@ fn render_nav_body(
 
 #[must_use = "RenderNavResponse must be handled by calling .process_render_nav_response(..)"]
 pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) -> RenderNavResponse {
-    let col_id = app.columns.get_column_id_at_index(col);
+    let col_id = get_active_columns(&app.accounts, &app.decks_cache).get_column_id_at_index(col);
     // TODO(jb55): clean up this router_mut mess by using Router<R> in egui-nav directly
 
     let nav_response = Nav::new(&app.columns().column(col).router().routes().clone())
@@ -252,7 +364,7 @@ pub fn render_nav(col: usize, app: &mut Damus, ui: &mut egui::Ui) -> RenderNavRe
             NavUiType::Title => NavTitle::new(
                 &app.ndb,
                 &mut app.img_cache,
-                &app.columns,
+                get_active_columns_mut(&app.accounts, &mut app.decks_cache),
                 app.accounts.get_selected_account().map(|a| &a.pubkey),
                 nav.routes(),
             )

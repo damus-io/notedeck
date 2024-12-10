@@ -21,7 +21,7 @@ use crate::{
 use enostr::{NoteId, Pubkey};
 use nostrdb::{Ndb, Transaction};
 
-#[derive(Debug, Eq, PartialEq, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Eq, PartialEq, Clone, Copy)]
 pub enum TimelineRoute {
     Timeline(TimelineId),
     Thread(NoteId),
