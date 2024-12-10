@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{hash_map::ValuesMut, HashMap};
 
 use enostr::Pubkey;
 use nostrdb::Ndb;
@@ -12,7 +12,9 @@ use crate::{
     ui::{add_column::AddColumnRoute, configure_deck::ConfigureDeckResponse},
 };
 
-static FALLBACK_PUBKEY: &str = "aa733081e4f0f79dd43023d8983265593f2b41a988671cfcef3f489b91ad93fe";
+pub static FALLBACK_PUBKEY: fn() -> Pubkey = || {
+    Pubkey::from_hex("aa733081e4f0f79dd43023d8983265593f2b41a988671cfcef3f489b91ad93fe").unwrap()
+};
 
 //pub enum DecksAction {
 //    Switch(usize),
@@ -20,21 +22,21 @@ static FALLBACK_PUBKEY: &str = "aa733081e4f0f79dd43023d8983265593f2b41a988671cfc
 //}
 
 pub struct DecksCache {
-    pub account_to_decks: HashMap<Pubkey, Decks>,
-    pub fallback_pubkey: Pubkey,
+    account_to_decks: HashMap<Pubkey, Decks>,
+    fallback_pubkey: Pubkey,
 }
 
 impl Default for DecksCache {
     fn default() -> Self {
         let mut account_to_decks: HashMap<Pubkey, Decks> = Default::default();
-        account_to_decks.insert(Pubkey::from_hex(FALLBACK_PUBKEY).unwrap(), Decks::default());
+        account_to_decks.insert(FALLBACK_PUBKEY(), Decks::default());
         DecksCache::new(account_to_decks)
     }
 }
 
 impl DecksCache {
     pub fn new(account_to_decks: HashMap<Pubkey, Decks>) -> Self {
-        let fallback_pubkey = Pubkey::from_hex(FALLBACK_PUBKEY).unwrap();
+        let fallback_pubkey = FALLBACK_PUBKEY();
 
         Self {
             account_to_decks,
@@ -44,7 +46,7 @@ impl DecksCache {
 
     pub fn new_with_demo_config(ndb: &Ndb) -> Self {
         let mut account_to_decks: HashMap<Pubkey, Decks> = Default::default();
-        let fallback_pubkey = Pubkey::from_hex(FALLBACK_PUBKEY).unwrap();
+        let fallback_pubkey = FALLBACK_PUBKEY();
         account_to_decks.insert(fallback_pubkey, demo_decks(fallback_pubkey, ndb));
         DecksCache::new(account_to_decks)
     }
@@ -52,13 +54,17 @@ impl DecksCache {
     pub fn decks(&self, key: &Pubkey) -> &Decks {
         self.account_to_decks
             .get(key)
-            .unwrap_or_else(|| panic!("{:?} not found", key))
+            .unwrap_or_else(|| self.fallback())
     }
 
     pub fn decks_mut(&mut self, key: &Pubkey) -> &mut Decks {
+        self.account_to_decks.entry(*key).or_default()
+    }
+
+    pub fn fallback(&self) -> &Decks {
         self.account_to_decks
-            .get_mut(key)
-            .unwrap_or_else(|| panic!("{:?} not found", key))
+            .get(&self.fallback_pubkey)
+            .unwrap_or_else(|| panic!("fallback deck not found"))
     }
 
     pub fn fallback_mut(&mut self) -> &mut Decks {
@@ -106,6 +112,18 @@ impl DecksCache {
     pub fn remove_for(&mut self, key: &Pubkey) {
         info!("Removing decks for {:?}", key);
         self.account_to_decks.remove(key);
+    }
+
+    pub fn get_fallback_pubkey(&self) -> &Pubkey {
+        &self.fallback_pubkey
+    }
+
+    pub fn get_all_decks_mut(&mut self) -> ValuesMut<Pubkey, Decks> {
+        self.account_to_decks.values_mut()
+    }
+
+    pub fn get_mapping(&self) -> &HashMap<Pubkey, Decks> {
+        &self.account_to_decks
     }
 }
 
