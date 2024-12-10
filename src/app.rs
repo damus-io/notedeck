@@ -4,7 +4,7 @@ use crate::{
     app_size_handler::AppSizeHandler,
     args::Args,
     column::Columns,
-    decks::{Decks, DecksCache},
+    decks::{Decks, DecksCache, FALLBACK_PUBKEY},
     draft::Drafts,
     filter::FilterState,
     frame_history::FrameHistory,
@@ -450,21 +450,8 @@ impl Damus {
             .as_ref()
             .map(|a| a.pubkey.bytes());
 
-        let decks_cache = if parsed_args.columns.is_empty() {
-            if let Some(decks_cache) = storage::load_decks_cache(&path, &ndb) {
-                info!("Using decks cache from disk");
-                decks_cache
-            } else {
-                info!("Could read not decks cache from disk");
-                let mut cache = DecksCache::new_with_demo_config(&ndb);
-                for account in accounts.get_accounts() {
-                    cache.add_deck_default(account.pubkey);
-                }
-                set_demo(&mut cache, &ndb, &mut accounts, &mut unknown_ids);
-
-                cache
-            }
-        } else {
+        let decks_cache = if !parsed_args.columns.is_empty() {
+            info!("DecksCache: loading from command line arguments");
             let mut columns: Columns = Columns::new();
             for col in parsed_args.columns {
                 if let Some(timeline) = col.into_timeline(&ndb, account) {
@@ -472,14 +459,28 @@ impl Damus {
                 }
             }
 
-            let mut decks_cache = DecksCache::default();
-            let mut decks = Decks::default();
-            *decks.active_mut().columns_mut() = columns;
-
-            if let Some(acc) = account {
-                decks_cache.add_decks(Pubkey::new(*acc), decks);
-            }
+            columns_to_decks_cache(columns, account)
+        } else if let Some(decks_cache) = storage::load_decks_cache(&path, &ndb) {
+            info!(
+                "DecksCache: loading from disk {}",
+                crate::storage::DECKS_CACHE_FILE
+            );
             decks_cache
+        } else if let Some(cols) = storage::deserialize_columns(&path, &ndb, account) {
+            info!(
+                "DecksCache: loading from disk at depreciated location {}",
+                crate::storage::COLUMNS_FILE
+            );
+            columns_to_decks_cache(cols, account)
+        } else {
+            info!("DecksCache: creating new with demo configuration");
+            let mut cache = DecksCache::new_with_demo_config(&ndb);
+            for account in accounts.get_accounts() {
+                cache.add_deck_default(account.pubkey);
+            }
+            set_demo(&mut cache, &ndb, &mut accounts, &mut unknown_ids);
+
+            cache
         };
 
         let debug = parsed_args.debug;
@@ -822,4 +823,21 @@ pub fn set_demo(
         .add_account(Keypair::only_pubkey(*decks_cache.get_fallback_pubkey()))
         .process_action(unk_ids, ndb, &txn);
     accounts.select_account(accounts.num_accounts() - 1);
+}
+
+fn columns_to_decks_cache(cols: Columns, key: Option<&[u8; 32]>) -> DecksCache {
+    let mut account_to_decks: HashMap<Pubkey, Decks> = Default::default();
+    let decks = Decks::new(crate::decks::Deck::new_with_columns(
+        crate::decks::Deck::default().icon,
+        "My Deck".to_owned(),
+        cols,
+    ));
+
+    let account = if let Some(key) = key {
+        Pubkey::new(*key)
+    } else {
+        FALLBACK_PUBKEY()
+    };
+    account_to_decks.insert(account, decks);
+    DecksCache::new(account_to_decks)
 }
