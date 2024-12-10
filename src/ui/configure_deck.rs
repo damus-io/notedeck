@@ -216,13 +216,13 @@ fn glyph_icon_max_size(ui: &egui::Ui, glyph: &char, font_size: f32) -> egui::Vec
     glyph_galley.rect.size()
 }
 
-fn glyph_icon(glyph: char, font_size: f32, max_size: egui::Vec2) -> impl Widget {
+fn glyph_icon(glyph: char, font_size: f32, max_size: egui::Vec2, color: Color32) -> impl Widget {
     move |ui: &mut egui::Ui| {
         let helper = AnimationHelper::new(ui, ("glyph", glyph), max_size);
         let painter = ui.painter_at(helper.get_animation_rect());
 
         let font = deck_icon_font_sized(helper.scale_1d_pos(font_size));
-        let glyph_galley = painter.layout_no_wrap(glyph.to_string(), font, Color32::WHITE);
+        let glyph_galley = painter.layout_no_wrap(glyph.to_string(), font, color);
 
         let top_left = {
             let mut glyph_rect = glyph_galley.rect;
@@ -280,7 +280,15 @@ fn paint_row(ui: &mut egui::Ui, row_glyphs: &[char], font_size: f32) -> Option<c
     ui.horizontal(|ui| {
         for glyph in row_glyphs {
             let glyph_size = glyph_icon_max_size(ui, glyph, font_size);
-            if ui.add(glyph_icon(*glyph, font_size, glyph_size)).clicked() {
+            if ui
+                .add(glyph_icon(
+                    *glyph,
+                    font_size,
+                    glyph_size,
+                    ui.visuals().text_color(),
+                ))
+                .clicked()
+            {
                 selected_glyph = Some(*glyph);
             }
         }
