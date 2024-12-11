@@ -2,6 +2,7 @@ use crate::{
     accounts::Accounts,
     app_creation::setup_cc,
     app_size_handler::AppSizeHandler,
+    app_style::{dark_mode, light_mode},
     args::Args,
     column::Columns,
     decks::{Decks, DecksCache, FALLBACK_PUBKEY},
@@ -16,9 +17,10 @@ use crate::{
     storage::{self, DataPath, DataPathType, Directory, FileKeyStorage, KeyStorageType},
     subscriptions::{SubKind, Subscriptions},
     support::Support,
+    theme_handler::ThemeHandler,
     thread::Thread,
     timeline::{self, Timeline},
-    ui::{self, DesktopSidePanel},
+    ui::{self, is_compiled_as_mobile, DesktopSidePanel},
     unknowns::UnknownIds,
     view_state::ViewState,
     Result,
@@ -61,6 +63,7 @@ pub struct Damus {
     pub subscriptions: Subscriptions,
     pub app_rect_handler: AppSizeHandler,
     pub support: Support,
+    pub theme: ThemeHandler,
 
     frame_history: crate::frame_history::FrameHistory,
 
@@ -408,6 +411,15 @@ impl Damus {
             1024usize * 1024usize * 1024usize * 1024usize
         };
 
+        let theme = ThemeHandler::new(&path);
+        ctx.options_mut(|o| {
+            let cur_theme = theme.load();
+            info!("Loaded theme {:?} from disk", cur_theme);
+            o.theme_preference = cur_theme;
+        });
+        ctx.set_visuals_of(egui::Theme::Dark, dark_mode(is_compiled_as_mobile()));
+        ctx.set_visuals_of(egui::Theme::Light, light_mode());
+
         let config = Config::new().set_ingester_threads(4).set_mapsize(mapsize);
 
         let keystore = if parsed_args.use_keystore {
@@ -509,6 +521,7 @@ impl Damus {
             app_rect_handler,
             support,
             decks_cache,
+            theme,
         }
     }
 
@@ -560,6 +573,7 @@ impl Damus {
         let decks_cache = DecksCache::default();
 
         let path = DataPath::new(&data_path);
+        let theme = ThemeHandler::new(&path);
         let imgcache_dir = path.path(DataPathType::Cache).join(ImageCache::rel_dir());
         let _ = std::fs::create_dir_all(imgcache_dir.clone());
         let debug = true;
@@ -596,6 +610,7 @@ impl Damus {
             app_rect_handler,
             support,
             decks_cache,
+            theme,
         }
     }
 
@@ -715,6 +730,7 @@ fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus) {
                         &mut app.decks_cache,
                         &app.accounts,
                         &mut app.support,
+                        &mut app.theme,
                         side_panel.action,
                     ) {
                         side_panel_action = Some(action);

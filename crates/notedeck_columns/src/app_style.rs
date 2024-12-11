@@ -6,7 +6,7 @@ use crate::{
 use egui::{
     epaint::Shadow,
     style::{Interaction, Selection, WidgetVisuals, Widgets},
-    Button, FontFamily, FontId, Rounding, Stroke, Style, TextStyle, Ui, Visuals,
+    FontFamily, FontId, Rounding, Stroke, Style, TextStyle, Visuals,
 };
 use strum::IntoEnumIterator;
 use strum_macros::EnumIter;
@@ -26,29 +26,6 @@ pub fn dark_mode(mobile: bool) -> Visuals {
         },
         Visuals::dark(),
     )
-}
-
-pub fn user_requested_visuals_change(
-    oled: bool,
-    cur_darkmode: bool,
-    ui: &mut Ui,
-) -> Option<Visuals> {
-    if cur_darkmode {
-        if ui
-            .add(Button::new("☀").frame(false))
-            .on_hover_text("Switch to light mode")
-            .clicked()
-        {
-            return Some(light_mode());
-        }
-    } else if ui
-        .add(Button::new("🌙").frame(false))
-        .on_hover_text("Switch to dark mode")
-        .clicked()
-    {
-        return Some(dark_mode(oled));
-    }
-    None
 }
 
 /// Create custom text sizes for any FontSizes

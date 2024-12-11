@@ -1,13 +1,13 @@
 use egui::{
-    vec2, Color32, InnerResponse, Label, Layout, Margin, RichText, ScrollArea, Separator, Stroke,
-    Widget,
+    vec2, Button, Color32, InnerResponse, Label, Layout, Margin, RichText, ScrollArea, Separator,
+    Stroke, ThemePreference, Widget,
 };
 use tracing::{error, info};
 
 use crate::{
     accounts::{Accounts, AccountsRoute},
     app::{get_active_columns_mut, get_decks_mut},
-    app_style::{self, DECK_ICON_SIZE},
+    app_style::DECK_ICON_SIZE,
     colors,
     column::Column,
     decks::{DecksAction, DecksCache},
@@ -15,6 +15,7 @@ use crate::{
     nav::SwitchingAction,
     route::Route,
     support::Support,
+    theme_handler::ThemeHandler,
     user_account::UserAccount,
     Damus,
 };
@@ -55,6 +56,7 @@ pub enum SidePanelAction {
     NewDeck,
     SwitchDeck(usize),
     EditDeck(usize),
+    SaveTheme(ThemePreference),
 }
 
 pub struct SidePanelResponse {
@@ -186,13 +188,33 @@ impl<'a> DesktopSidePanel<'a> {
                         let pfp_resp = self.pfp_button(ui);
                         let settings_resp = ui.add(settings_button(dark_mode));
 
-                        if let Some(new_visuals) = app_style::user_requested_visuals_change(
-                            super::is_oled(),
-                            ui.ctx().style().visuals.dark_mode,
-                            ui,
-                        ) {
-                            ui.ctx().set_visuals(new_visuals)
-                        }
+                        let save_theme = if let Some((theme, resp)) = match ui.ctx().theme() {
+                            egui::Theme::Dark => {
+                                let resp = ui
+                                    .add(Button::new("☀").frame(false))
+                                    .on_hover_text("Switch to light mode");
+                                if resp.clicked() {
+                                    Some((ThemePreference::Light, resp))
+                                } else {
+                                    None
+                                }
+                            }
+                            egui::Theme::Light => {
+                                let resp = ui
+                                    .add(Button::new("🌙").frame(false))
+                                    .on_hover_text("Switch to dark mode");
+                                if resp.clicked() {
+                                    Some((ThemePreference::Dark, resp))
+                                } else {
+                                    None
+                                }
+                            }
+                        } {
+                            ui.ctx().set_theme(theme);
+                            Some((theme, resp))
+                        } else {
+                            None
+                        };
 
                         let support_resp = ui.add(support_button());
 
@@ -210,6 +232,11 @@ impl<'a> DesktopSidePanel<'a> {
                             Some(egui::InnerResponse::new(
                                 SidePanelAction::Support,
                                 support_resp,
+                            ))
+                        } else if let Some((theme, resp)) = save_theme {
+                            Some(egui::InnerResponse::new(
+                                SidePanelAction::SaveTheme(theme),
+                                resp,
                             ))
                         } else {
                             None
@@ -253,6 +280,7 @@ impl<'a> DesktopSidePanel<'a> {
         decks_cache: &mut DecksCache,
         accounts: &Accounts,
         support: &mut Support,
+        theme_handler: &mut ThemeHandler,
         action: SidePanelAction,
     ) -> Option<SwitchingAction> {
         let router = get_active_columns_mut(accounts, decks_cache).get_first_router();
@@ -344,6 +372,9 @@ impl<'a> DesktopSidePanel<'a> {
                         error!("Cannot push EditDeck route to index {}", index);
                     }
                 }
+            }
+            SidePanelAction::SaveTheme(theme) => {
+                theme_handler.save(theme);
             }
         }
         switching_response
@@ -656,6 +687,7 @@ mod preview {
                             &mut self.app.decks_cache,
                             &self.app.accounts,
                             &mut self.app.support,
+                            &mut self.app.theme,
                             response.action,
                         );
                     });

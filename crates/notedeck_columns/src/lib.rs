@@ -36,6 +36,7 @@ mod route;
 mod subscriptions;
 mod support;
 mod test_data;
+mod theme_handler;
 mod thread;
 mod time;
 mod timecache;
