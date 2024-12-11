@@ -47,7 +47,7 @@ fn setup_logging(path: &DataPath) {
             .with_writer(non_blocking_writer);
 
         let env_filter =
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("notedeck=info"));
 
         // Set up the subscriber to combine both layers
         tracing_subscriber::registry()
