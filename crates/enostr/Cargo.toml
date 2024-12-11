@@ -11,8 +11,7 @@ serde_derive = "1"
 serde = { version = "1", features = ["derive"] } # You only need this if you want app persistence
 serde_json = "1.0.89"
 nostr = { version = "0.30.0" }
-nostrdb = { git = "https://github.com/damus-io/nostrdb-rs", rev = "71154e4100775f6932ee517da4350c433ba14ec7" }
-hex = "0.4.3"
-tracing = "0.1.40"
-env_logger = "0.11.1"
-url = "2.5.2"
+nostrdb = { workspace = true }
+hex = { workspace = true }
+tracing = { workspace = true }
+url = { workspace = true }

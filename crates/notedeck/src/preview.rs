@@ -1,11 +1,11 @@
-use notedeck::ui::configure_deck::ConfigureDeckView;
-use notedeck::ui::edit_deck::EditDeckView;
-use notedeck::ui::{
+use notedeck_columns::ui::configure_deck::ConfigureDeckView;
+use notedeck_columns::ui::edit_deck::EditDeckView;
+use notedeck_columns::ui::{
     account_login_view::AccountLoginView, accounts::AccountsView, add_column::AddColumnView,
     DesktopSidePanel, PostView, Preview, PreviewApp, PreviewConfig, ProfilePic, ProfilePreview,
     RelayView,
 };
-use notedeck::{
+use notedeck_columns::{
     app_creation::{generate_mobile_emulator_native_options, generate_native_options, setup_cc},
     storage::DataPath,
 };
@@ -93,7 +93,7 @@ async fn main() {
         "light mode previews: {}",
         if light_mode { "enabled" } else { "disabled" }
     );
-    let is_mobile = is_mobile.unwrap_or(notedeck::ui::is_compiled_as_mobile());
+    let is_mobile = is_mobile.unwrap_or(notedeck_columns::ui::is_compiled_as_mobile());
     let runner = PreviewRunner::new(is_mobile, light_mode);
 
     previews!(

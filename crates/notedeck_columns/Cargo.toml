@@ -1,0 +1,58 @@
+[package]
+name = "notedeck_columns"
+version = "0.2.0"
+authors = ["William Casarin <jb55@jb55.com>"]
+edition = "2021"
+#rust-version = "1.60"
+license = "GPLv3"
+description = "A tweetdeck-style notedeck app"
+
+[lib]
+crate-type = ["lib", "cdylib"]
+
+[dependencies]
+base32 = { workspace = true }
+bitflags = { workspace = true }
+dirs = { workspace = true }
+eframe = { workspace = true }
+egui = { workspace = true }
+egui_extras = { workspace = true }
+egui_nav = { workspace = true }
+egui_tabs = { workspace = true }
+egui_virtual_list = { workspace = true }
+ehttp = { workspace = true }
+enostr = { workspace = true } 
+env_logger = { workspace = true }
+hex = { workspace = true }
+image = { workspace = true }
+indexmap = { workspace = true }
+log = { workspace = true }
+nostrdb = { workspace = true }
+open = { workspace = true }
+poll-promise = { workspace = true }
+puffin = { workspace = true, optional = true }
+puffin_egui = { workspace = true, optional = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_derive = { workspace = true }
+serde_json = { workspace = true }
+strum = { workspace = true }
+strum_macros = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "fs"] }
+tracing = { workspace = true }
+tracing-appender = { workspace = true }
+tracing-subscriber = { workspace = true }
+url = { workspace = true }
+urlencoding = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3.13.0"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "2.11.0"
+
+[features]
+default = []
+profiling = ["puffin", "puffin_egui", "eframe/puffin"]
+
