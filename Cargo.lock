@@ -1184,6 +1184,7 @@ dependencies = [
  "serde",
  "serde_derive",
  "serde_json",
+ "thiserror 2.0.6",
  "tracing",
  "url",
 ]
@@ -2484,7 +2485,7 @@ dependencies = [
  "cc",
  "flatbuffers",
  "libc",
- "thiserror 2.0.3",
+ "thiserror 2.0.6",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -2492,13 +2493,47 @@ dependencies = [
 
 [[package]]
 name = "notedeck"
+version = "0.1.0"
+dependencies = [
+ "base32",
+ "dirs",
+ "egui",
+ "enostr",
+ "hex",
+ "image",
+ "nostrdb",
+ "poll-promise",
+ "puffin 0.19.1 (git+https://github.com/jb55/puffin?rev=70ff86d5503815219b01a009afd3669b7903a057)",
+ "security-framework",
+ "serde",
+ "serde_json",
+ "strum",
+ "strum_macros",
+ "tempfile",
+ "thiserror 2.0.6",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "notedeck_chrome"
 version = "0.2.0"
 dependencies = [
  "android-activity 0.4.3",
  "android_logger",
  "eframe",
+ "egui",
+ "egui_extras",
+ "enostr",
+ "nostrdb",
+ "notedeck",
  "notedeck_columns",
+ "serde_json",
+ "strum",
+ "tempfile",
  "tokio",
+ "tracing",
  "tracing-appender",
  "tracing-subscriber",
  "winit",
@@ -2508,7 +2543,6 @@ dependencies = [
 name = "notedeck_columns"
 version = "0.2.0"
 dependencies = [
- "base32",
  "bitflags 2.6.0",
  "dirs",
  "eframe",
@@ -2525,6 +2559,7 @@ dependencies = [
  "indexmap",
  "log",
  "nostrdb",
+ "notedeck",
  "open",
  "poll-promise",
  "puffin 0.19.1 (git+https://github.com/jb55/puffin?rev=70ff86d5503815219b01a009afd3669b7903a057)",
@@ -2537,6 +2572,7 @@ dependencies = [
  "strum",
  "strum_macros",
  "tempfile",
+ "thiserror 2.0.6",
  "tokio",
  "tracing",
  "tracing-appender",
@@ -4226,11 +4262,11 @@ dependencies = [
 
 [[package]]
 name = "thiserror"
-version = "2.0.3"
+version = "2.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c006c85c7651b3cf2ada4584faa36773bd07bac24acfb39f3c431b36d7e667aa"
+checksum = "8fec2a1820ebd077e2b90c4df007bebf344cd394098a13c563957d0afc83ea47"
 dependencies = [
- "thiserror-impl 2.0.3",
+ "thiserror-impl 2.0.6",
 ]
 
 [[package]]
@@ -4246,9 +4282,9 @@ dependencies = [
 
 [[package]]
 name = "thiserror-impl"
-version = "2.0.3"
+version = "2.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f077553d607adc1caf65430528a576c757a71ed73944b66ebb58ef2bbd243568"
+checksum = "d65750cab40f4ff1929fb1ba509e9914eb756131cef4210da8d5d700d26f6312"
 dependencies = [
  "proc-macro2",
  "quote",

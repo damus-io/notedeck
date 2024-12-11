@@ -9,10 +9,10 @@ use crate::{
     route::Route,
     timeline::{kind::ListKind, PubkeySource, Timeline, TimelineId, TimelineKind, TimelineRoute},
     ui::add_column::AddColumnRoute,
-    Error,
+    Result,
 };
 
-use super::{DataPath, DataPathType, Directory};
+use notedeck::{DataPath, DataPathType, Directory};
 
 pub static COLUMNS_FILE: &str = "columns.json";
 
@@ -123,7 +123,7 @@ struct MigrationColumn {
 }
 
 impl<'de> Deserialize<'de> for MigrationColumn {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
@@ -266,9 +266,11 @@ pub fn deserialize_columns(path: &DataPath, ndb: &Ndb, user: Option<&[u8; 32]>) 
     string_to_columns(columns_json(path)?, ndb, user)
 }
 
-fn deserialize_columns_string(serialized_columns: String) -> Result<MigrationColumns, Error> {
-    serde_json::from_str::<MigrationColumns>(&serialized_columns)
-        .map_err(|e| Error::Generic(e.to_string()))
+fn deserialize_columns_string(serialized_columns: String) -> Result<MigrationColumns> {
+    Ok(
+        serde_json::from_str::<MigrationColumns>(&serialized_columns)
+            .map_err(notedeck::Error::Json)?,
+    )
 }
 
 #[cfg(test)]

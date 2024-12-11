@@ -9,13 +9,13 @@ use nostrdb::Ndb;
 use tracing::error;
 
 use crate::{
-    app_style::{get_font_size, NotedeckTextStyle},
     login_manager::AcquireKeyState,
     timeline::{PubkeySource, Timeline, TimelineKind},
     ui::anim::ICON_EXPANSION_MULTIPLE,
-    user_account::UserAccount,
     Damus,
 };
+
+use notedeck::{AppContext, NotedeckTextStyle, UserAccount};
 
 use super::{anim::AnimationHelper, padding};
 
@@ -180,8 +180,8 @@ impl<'a> AddColumnView<'a> {
         let max_width = ui.available_width();
         let title_style = NotedeckTextStyle::Body;
         let desc_style = NotedeckTextStyle::Button;
-        let title_min_font_size = get_font_size(ui.ctx(), &title_style);
-        let desc_min_font_size = get_font_size(ui.ctx(), &desc_style);
+        let title_min_font_size = notedeck::fonts::get_font_size(ui.ctx(), &title_style);
+        let desc_min_font_size = notedeck::fonts::get_font_size(ui.ctx(), &desc_style);
 
         let max_height = {
             let max_wrap_width =
@@ -279,7 +279,7 @@ impl<'a> AddColumnView<'a> {
         vec.push(ColumnOptionData {
             title: "Universe",
             description: "See the whole nostr universe",
-            icon: egui::include_image!("../../assets/icons/universe_icon_dark_4x.png"),
+            icon: egui::include_image!("../../../../assets/icons/universe_icon_dark_4x.png"),
             option: AddColumnOption::Universe,
         });
 
@@ -293,20 +293,20 @@ impl<'a> AddColumnView<'a> {
             vec.push(ColumnOptionData {
                 title: "Home timeline",
                 description: "See recommended notes first",
-                icon: egui::include_image!("../../assets/icons/home_icon_dark_4x.png"),
+                icon: egui::include_image!("../../../../assets/icons/home_icon_dark_4x.png"),
                 option: AddColumnOption::Home(source.clone()),
             });
         }
         vec.push(ColumnOptionData {
             title: "Notifications",
             description: "Stay up to date with notifications and mentions",
-            icon: egui::include_image!("../../assets/icons/notifications_icon_dark_4x.png"),
+            icon: egui::include_image!("../../../../assets/icons/notifications_icon_dark_4x.png"),
             option: AddColumnOption::UndecidedNotification,
         });
         vec.push(ColumnOptionData {
             title: "Hashtag",
             description: "Stay up to date with a certain hashtag",
-            icon: egui::include_image!("../../assets/icons/notifications_icon_dark_4x.png"),
+            icon: egui::include_image!("../../../../assets/icons/notifications_icon_dark_4x.png"),
             option: AddColumnOption::UndecidedHashtag,
         });
 
@@ -326,7 +326,9 @@ impl<'a> AddColumnView<'a> {
             vec.push(ColumnOptionData {
                 title: "Your Notifications",
                 description: "Stay up to date with your notifications and mentions",
-                icon: egui::include_image!("../../assets/icons/notifications_icon_dark_4x.png"),
+                icon: egui::include_image!(
+                    "../../../../assets/icons/notifications_icon_dark_4x.png"
+                ),
                 option: AddColumnOption::Notification(source),
             });
         }
@@ -334,7 +336,7 @@ impl<'a> AddColumnView<'a> {
         vec.push(ColumnOptionData {
             title: "Someone else's Notifications",
             description: "Stay up to date with someone else's notifications and mentions",
-            icon: egui::include_image!("../../assets/icons/notifications_icon_dark_4x.png"),
+            icon: egui::include_image!("../../../../assets/icons/notifications_icon_dark_4x.png"),
             option: AddColumnOption::ExternalNotification,
         });
 
@@ -352,19 +354,20 @@ struct ColumnOptionData {
 pub fn render_add_column_routes(
     ui: &mut egui::Ui,
     app: &mut Damus,
+    ctx: &mut AppContext<'_>,
     col: usize,
     route: &AddColumnRoute,
 ) {
     let mut add_column_view = AddColumnView::new(
         &mut app.view_state.id_state_map,
-        &app.ndb,
-        app.accounts.get_selected_account(),
+        ctx.ndb,
+        ctx.accounts.get_selected_account(),
     );
     let resp = match route {
         AddColumnRoute::Base => add_column_view.ui(ui),
         AddColumnRoute::UndecidedNotification => add_column_view.notifications_ui(ui),
         AddColumnRoute::ExternalNotification => add_column_view.external_notification_ui(ui),
-        AddColumnRoute::Hashtag => hashtag_ui(ui, &app.ndb, &mut app.view_state.id_string_map),
+        AddColumnRoute::Hashtag => hashtag_ui(ui, ctx.ndb, &mut app.view_state.id_string_map),
     };
 
     if let Some(resp) = resp {
@@ -372,27 +375,34 @@ pub fn render_add_column_routes(
             AddColumnResponse::Timeline(mut timeline) => {
                 crate::timeline::setup_new_timeline(
                     &mut timeline,
-                    &app.ndb,
+                    ctx.ndb,
                     &mut app.subscriptions,
-                    &mut app.pool,
-                    &mut app.note_cache,
+                    ctx.pool,
+                    ctx.note_cache,
                     app.since_optimize,
-                    &app.accounts.mutefun(),
+                    &ctx.accounts.mutefun(),
                 );
-                app.columns_mut().add_timeline_to_column(col, timeline);
+                app.columns_mut(ctx.accounts)
+                    .add_timeline_to_column(col, timeline);
             }
             AddColumnResponse::UndecidedNotification => {
-                app.columns_mut().column_mut(col).router_mut().route_to(
-                    crate::route::Route::AddColumn(AddColumnRoute::UndecidedNotification),
-                );
+                app.columns_mut(ctx.accounts)
+                    .column_mut(col)
+                    .router_mut()
+                    .route_to(crate::route::Route::AddColumn(
+                        AddColumnRoute::UndecidedNotification,
+                    ));
             }
             AddColumnResponse::ExternalNotification => {
-                app.columns_mut().column_mut(col).router_mut().route_to(
-                    crate::route::Route::AddColumn(AddColumnRoute::ExternalNotification),
-                );
+                app.columns_mut(ctx.accounts)
+                    .column_mut(col)
+                    .router_mut()
+                    .route_to(crate::route::Route::AddColumn(
+                        AddColumnRoute::ExternalNotification,
+                    ));
             }
             AddColumnResponse::Hashtag => {
-                app.columns_mut()
+                app.columns_mut(ctx.accounts)
                     .column_mut(col)
                     .router_mut()
                     .route_to(crate::route::Route::AddColumn(AddColumnRoute::Hashtag));
@@ -437,45 +447,4 @@ pub fn hashtag_ui(
         }
     })
     .inner
-}
-
-mod preview {
-    use crate::{
-        test_data,
-        ui::{Preview, PreviewConfig, View},
-        Damus,
-    };
-
-    use super::AddColumnView;
-
-    pub struct AddColumnPreview {
-        app: Damus,
-    }
-
-    impl AddColumnPreview {
-        fn new() -> Self {
-            let app = test_data::test_app();
-
-            AddColumnPreview { app }
-        }
-    }
-
-    impl View for AddColumnPreview {
-        fn ui(&mut self, ui: &mut egui::Ui) {
-            AddColumnView::new(
-                &mut self.app.view_state.id_state_map,
-                &self.app.ndb,
-                self.app.accounts.get_selected_account(),
-            )
-            .ui(ui);
-        }
-    }
-
-    impl Preview for AddColumnView<'_> {
-        type Prev = AddColumnPreview;
-
-        fn preview(_cfg: PreviewConfig) -> Self::Prev {
-            AddColumnPreview::new()
-        }
-    }
 }

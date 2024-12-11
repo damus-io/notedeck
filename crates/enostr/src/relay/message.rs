@@ -139,7 +139,6 @@ impl<'a> RelayMessage<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Note;
 
     #[test]
     fn test_handle_valid_notice() -> Result<()> {

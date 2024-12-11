@@ -1,6 +1,6 @@
 use tracing::error;
 
-use crate::storage::{DataPath, DataPathType, Directory};
+use notedeck::{DataPath, DataPathType, Directory};
 
 pub struct Support {
     directory: Directory,

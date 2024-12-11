@@ -2,11 +2,12 @@ use std::collections::HashMap;
 
 use enostr::{Filter, RelayPool};
 use nostrdb::{Ndb, Transaction};
+use notedeck::{MuteFun, NoteCache, NoteRef, NoteRefsUnkIdAction};
 use tracing::{debug, info, warn};
 
 use crate::{
-    actionbar::NotesHolderResult, multi_subscriber::MultiSubscriber, muted::MuteFun, note::NoteRef,
-    notecache::NoteCache, timeline::TimelineTab, unknowns::NoteRefsUnkIdAction, Error, Result,
+    actionbar::NotesHolderResult, multi_subscriber::MultiSubscriber, timeline::TimelineTab, Error,
+    Result,
 };
 
 pub struct NotesHolderStorage<M: NotesHolder> {

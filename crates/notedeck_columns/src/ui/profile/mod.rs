@@ -8,12 +8,10 @@ use nostrdb::{Ndb, Transaction};
 pub use picture::ProfilePic;
 pub use preview::ProfilePreview;
 
-use crate::{
-    actionbar::NoteAction, imgcache::ImageCache, muted::MuteFun, notecache::NoteCache,
-    notes_holder::NotesHolderStorage, profile::Profile,
-};
+use crate::{actionbar::NoteAction, notes_holder::NotesHolderStorage, profile::Profile};
 
 use super::timeline::{tabs_ui, TimelineTabView};
+use notedeck::{ImageCache, MuteFun, NoteCache};
 
 pub struct ProfileView<'a> {
     pubkey: &'a Pubkey,

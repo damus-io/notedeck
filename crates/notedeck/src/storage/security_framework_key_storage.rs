@@ -7,9 +7,9 @@ use security_framework::{
 };
 use tracing::error;
 
-use crate::Error;
+use crate::{Error, Result};
 
-use super::{key_storage_impl::KeyStorageError, KeyStorageResponse};
+use super::KeyStorageResponse;
 
 #[derive(Debug, PartialEq)]
 pub struct SecurityFrameworkKeyStorage {
@@ -23,7 +23,7 @@ impl SecurityFrameworkKeyStorage {
         }
     }
 
-    fn add_key_internal(&self, key: &Keypair) -> Result<(), KeyStorageError> {
+    fn add_key_internal(&self, key: &Keypair) -> Result<()> {
         match set_generic_password(
             &self.service_name,
             key.pubkey.hex().as_str(),
@@ -32,7 +32,7 @@ impl SecurityFrameworkKeyStorage {
                 .map_or_else(|| &[] as &[u8], |sc| sc.as_secret_bytes()),
         ) {
             Ok(_) => Ok(()),
-            Err(e) => Err(KeyStorageError::Addition(Error::Generic(e.to_string()))),
+            Err(e) => Err(Error::Generic(e.to_string())),
         }
     }
 
@@ -101,12 +101,12 @@ impl SecurityFrameworkKeyStorage {
             .collect()
     }
 
-    fn delete_key(&self, pubkey: &Pubkey) -> Result<(), KeyStorageError> {
+    fn delete_key(&self, pubkey: &Pubkey) -> Result<()> {
         match delete_generic_password(&self.service_name, pubkey.hex().as_str()) {
             Ok(_) => Ok(()),
             Err(e) => {
                 error!("delete key error {}", e);
-                Err(KeyStorageError::Removal(Error::Generic(e.to_string())))
+                Err(Error::Generic(e.to_string()))
             }
         }
     }

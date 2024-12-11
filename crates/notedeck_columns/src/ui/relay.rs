@@ -2,8 +2,8 @@ use crate::relay_pool_manager::{RelayPoolManager, RelayStatus};
 use crate::ui::{Preview, PreviewConfig, View};
 use egui::{Align, Button, Frame, Layout, Margin, Rgba, RichText, Rounding, Ui, Vec2};
 
-use crate::app_style::NotedeckTextStyle;
 use enostr::RelayPool;
+use notedeck::NotedeckTextStyle;
 
 pub struct RelayView<'a> {
     manager: RelayPoolManager<'a>,
@@ -126,7 +126,7 @@ fn delete_button(_dark_mode: bool) -> egui::Button<'static> {
         egui::include_image!("../../assets/icons/delete_icon_4x.png")
     };
     */
-    let img_data = egui::include_image!("../../assets/icons/delete_icon_4x.png");
+    let img_data = egui::include_image!("../../../../assets/icons/delete_icon_4x.png");
 
     egui::Button::image(egui::Image::new(img_data).max_width(10.0)).frame(false)
 }
@@ -165,12 +165,14 @@ fn show_connection_status(ui: &mut Ui, status: &RelayStatus) {
 
 fn get_connection_icon(status: &RelayStatus) -> egui::Image<'static> {
     let img_data = match status {
-        RelayStatus::Connected => egui::include_image!("../../assets/icons/connected_icon_4x.png"),
+        RelayStatus::Connected => {
+            egui::include_image!("../../../../assets/icons/connected_icon_4x.png")
+        }
         RelayStatus::Connecting => {
-            egui::include_image!("../../assets/icons/connecting_icon_4x.png")
+            egui::include_image!("../../../../assets/icons/connecting_icon_4x.png")
         }
         RelayStatus::Disconnected => {
-            egui::include_image!("../../assets/icons/disconnected_icon_4x.png")
+            egui::include_image!("../../../../assets/icons/disconnected_icon_4x.png")
         }
     };
 

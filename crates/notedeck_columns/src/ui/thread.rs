@@ -1,14 +1,12 @@
 use crate::{
     actionbar::NoteAction,
-    imgcache::ImageCache,
-    muted::MuteFun,
-    notecache::NoteCache,
     notes_holder::{NotesHolder, NotesHolderStorage},
     thread::Thread,
     ui::note::NoteOptions,
-    unknowns::UnknownIds,
 };
+
 use nostrdb::{Ndb, NoteKey, Transaction};
+use notedeck::{ImageCache, MuteFun, NoteCache, UnknownIds};
 use tracing::error;
 
 use super::timeline::TimelineTabView;

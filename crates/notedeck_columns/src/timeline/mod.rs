@@ -1,14 +1,14 @@
 use crate::{
     column::Columns,
     decks::DecksCache,
-    error::{Error, FilterError},
-    filter::{self, FilterState, FilterStates},
-    muted::MuteFun,
-    note::NoteRef,
-    notecache::{CachedNote, NoteCache},
+    error::Error,
     subscriptions::{self, SubKind, Subscriptions},
-    unknowns::UnknownIds,
     Result,
+};
+
+use notedeck::{
+    filter, CachedNote, FilterError, FilterState, FilterStates, MuteFun, NoteCache, NoteRef,
+    UnknownIds,
 };
 
 use std::fmt;
@@ -271,7 +271,9 @@ impl Timeline {
         let timeline = timelines
             .get_mut(timeline_idx)
             .ok_or(Error::TimelineNotFound)?;
-        let sub = timeline.subscription.ok_or(Error::no_active_sub())?;
+        let sub = timeline
+            .subscription
+            .ok_or(Error::App(notedeck::Error::no_active_sub()))?;
 
         let new_note_ids = ndb.poll_for_notes(sub, 500);
         if new_note_ids.is_empty() {
@@ -535,7 +537,7 @@ fn setup_initial_timeline(
         "querying nostrdb sub {:?} {:?}",
         timeline.subscription, timeline.filter
     );
-    let lim = filters[0].limit().unwrap_or(crate::filter::default_limit()) as i32;
+    let lim = filters[0].limit().unwrap_or(filter::default_limit()) as i32;
     let notes = ndb
         .query(&txn, filters, lim)?
         .into_iter()
@@ -607,7 +609,7 @@ fn setup_timeline_nostrdb_sub(
     let filter_state = timeline
         .filter
         .get_any_ready()
-        .ok_or(Error::empty_contact_list())?
+        .ok_or(Error::App(notedeck::Error::empty_contact_list()))?
         .to_owned();
 
     setup_initial_timeline(ndb, timeline, note_cache, &filter_state, is_muted)?;
@@ -661,7 +663,7 @@ pub fn is_timeline_ready(
 
     // TODO: into_follow_filter is hardcoded to contact lists, let's generalize
     match filter {
-        Err(Error::Filter(e)) => {
+        Err(notedeck::Error::Filter(e)) => {
             error!("got broken when building filter {e}");
             timeline
                 .filter

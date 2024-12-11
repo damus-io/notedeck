@@ -1,14 +1,10 @@
 use egui::{vec2, Button, Label, Layout, RichText};
 use tracing::error;
 
-use crate::{
-    app_style::{get_font_size, NotedeckTextStyle},
-    colors::PINK,
-    fonts::NamedFontFamily,
-    support::Support,
-};
+use crate::{colors::PINK, support::Support};
 
 use super::padding;
+use notedeck::{NamedFontFamily, NotedeckTextStyle};
 
 pub struct SupportView<'a> {
     support: &'a mut Support,
@@ -23,7 +19,7 @@ impl<'a> SupportView<'a> {
         padding(8.0, ui, |ui| {
             ui.spacing_mut().item_spacing = egui::vec2(0.0, 8.0);
             let font = egui::FontId::new(
-                get_font_size(ui.ctx(), &NotedeckTextStyle::Body),
+                notedeck::fonts::get_font_size(ui.ctx(), &NotedeckTextStyle::Body),
                 egui::FontFamily::Name(NamedFontFamily::Bold.as_str().into()),
             );
             ui.add(Label::new(RichText::new("Running into a bug?").font(font)));
@@ -32,7 +28,8 @@ impl<'a> SupportView<'a> {
                 ui.label("Open your default email client to get help from the Damus team");
                 let size = vec2(120.0, 40.0);
                 ui.allocate_ui_with_layout(size, Layout::top_down(egui::Align::Center), |ui| {
-                    let font_size = get_font_size(ui.ctx(), &NotedeckTextStyle::Body);
+                    let font_size =
+                        notedeck::fonts::get_font_size(ui.ctx(), &NotedeckTextStyle::Body);
                     let button_resp = ui.add(open_email_button(font_size, size));
                     if button_resp.clicked() {
                         if let Err(e) = open::that(self.support.get_mailto_url()) {
@@ -54,9 +51,9 @@ impl<'a> SupportView<'a> {
                     RichText::new("Step 2").text_style(NotedeckTextStyle::Heading3.text_style()),
                 );
                 let size = vec2(80.0, 40.0);
-                let copy_button = Button::new(
-                    RichText::new("Copy").size(get_font_size(ui.ctx(), &NotedeckTextStyle::Body)),
-                )
+                let copy_button = Button::new(RichText::new("Copy").size(
+                    notedeck::fonts::get_font_size(ui.ctx(), &NotedeckTextStyle::Body),
+                ))
                 .fill(PINK)
                 .min_size(size);
                 padding(8.0, ui, |ui| {

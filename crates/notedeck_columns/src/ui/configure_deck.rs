@@ -1,11 +1,6 @@
+use crate::{app_style::deck_icon_font_sized, colors::PINK, deck_state::DeckState};
 use egui::{vec2, Button, Color32, Label, RichText, Stroke, Ui, Widget};
-
-use crate::{
-    app_style::{deck_icon_font_sized, get_font_size, NotedeckTextStyle},
-    colors::PINK,
-    deck_state::DeckState,
-    fonts::NamedFontFamily,
-};
+use notedeck::{NamedFontFamily, NotedeckTextStyle};
 
 use super::{
     anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},
@@ -39,7 +34,7 @@ impl<'a> ConfigureDeckView<'a> {
 
     pub fn ui(&mut self, ui: &mut Ui) -> Option<ConfigureDeckResponse> {
         let title_font = egui::FontId::new(
-            get_font_size(ui.ctx(), &NotedeckTextStyle::Heading4),
+            notedeck::fonts::get_font_size(ui.ctx(), &NotedeckTextStyle::Heading4),
             egui::FontFamily::Name(NamedFontFamily::Bold.as_str().into()),
         );
         padding(16.0, ui, |ui| {
@@ -52,7 +47,10 @@ impl<'a> ConfigureDeckView<'a> {
             ui.add(Label::new(
                 RichText::new("We recommend short names")
                     .color(ui.visuals().noninteractive().fg_stroke.color)
-                    .size(get_font_size(ui.ctx(), &NotedeckTextStyle::Small)),
+                    .size(notedeck::fonts::get_font_size(
+                        ui.ctx(),
+                        &NotedeckTextStyle::Small,
+                    )),
             ));
 
             ui.add_space(32.0);

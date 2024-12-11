@@ -1,9 +1,8 @@
-use crate::error::{Error, FilterError};
-use crate::filter;
-use crate::filter::FilterState;
+use crate::error::Error;
 use crate::timeline::Timeline;
 use enostr::{Filter, Pubkey};
 use nostrdb::{Ndb, Transaction};
+use notedeck::{filter::default_limit, FilterError, FilterState};
 use serde::{Deserialize, Serialize};
 use std::{borrow::Cow, fmt::Display};
 use tracing::{error, warn};
@@ -111,7 +110,7 @@ impl TimelineKind {
                 TimelineKind::Universe,
                 FilterState::ready(vec![Filter::new()
                     .kinds([1])
-                    .limit(filter::default_limit())
+                    .limit(default_limit())
                     .build()]),
             )),
 
@@ -129,7 +128,7 @@ impl TimelineKind {
                 let filter = Filter::new()
                     .authors([pk])
                     .kinds([1])
-                    .limit(filter::default_limit())
+                    .limit(default_limit())
                     .build();
 
                 Some(Timeline::new(
@@ -147,7 +146,7 @@ impl TimelineKind {
                 let notifications_filter = Filter::new()
                     .pubkeys([pk])
                     .kinds([1])
-                    .limit(crate::filter::default_limit())
+                    .limit(default_limit())
                     .build();
 
                 Some(Timeline::new(
@@ -179,10 +178,12 @@ impl TimelineKind {
                 }
 
                 match Timeline::contact_list(&results[0].note, pk_src.clone()) {
-                    Err(Error::Filter(FilterError::EmptyContactList)) => Some(Timeline::new(
-                        TimelineKind::contact_list(pk_src),
-                        FilterState::needs_remote(vec![contact_filter]),
-                    )),
+                    Err(Error::App(notedeck::Error::Filter(FilterError::EmptyContactList))) => {
+                        Some(Timeline::new(
+                            TimelineKind::contact_list(pk_src),
+                            FilterState::needs_remote(vec![contact_filter]),
+                        ))
+                    }
                     Err(e) => {
                         error!("Unexpected error: {e}");
                         None

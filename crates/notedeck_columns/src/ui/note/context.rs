@@ -1,4 +1,3 @@
-use crate::colors;
 use egui::{Rect, Vec2};
 use enostr::{NoteId, Pubkey};
 use nostrdb::{Note, NoteKey};
@@ -136,7 +135,7 @@ impl NoteContextButton {
         let translated_radius = (cur_radius - 1.0) / 2.0;
 
         // This works in both themes
-        let color = colors::GRAY_SECONDARY;
+        let color = ui.style().visuals.noninteractive().fg_stroke.color;
 
         // Draw circles
         let painter = ui.painter_at(put_at);

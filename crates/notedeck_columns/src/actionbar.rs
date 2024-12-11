@@ -1,15 +1,14 @@
 use crate::{
     column::Columns,
-    muted::MuteFun,
-    note::NoteRef,
-    notecache::NoteCache,
     notes_holder::{NotesHolder, NotesHolderStorage},
     profile::Profile,
     route::{Route, Router},
     thread::Thread,
 };
+
 use enostr::{NoteId, Pubkey, RelayPool};
 use nostrdb::{Ndb, Transaction};
+use notedeck::{note::root_note_id_from_selected_id, MuteFun, NoteCache, NoteRef};
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
 pub enum NoteAction {
@@ -46,7 +45,7 @@ fn open_thread(
 ) -> Option<NotesHolderResult> {
     router.route_to(Route::thread(NoteId::new(selected_note.to_owned())));
 
-    let root_id = crate::note::root_note_id_from_selected_id(ndb, note_cache, txn, selected_note);
+    let root_id = root_note_id_from_selected_id(ndb, note_cache, txn, selected_note);
     Thread::open(ndb, note_cache, txn, pool, threads, root_id, is_muted)
 }
 

@@ -1,10 +1,10 @@
 use crate::draft::Draft;
-use crate::imgcache::ImageCache;
-use crate::notecache::NoteCache;
 use crate::ui;
 use crate::ui::note::{PostResponse, PostType};
 use enostr::{FilledKeypair, NoteId};
 use nostrdb::Ndb;
+
+use notedeck::{ImageCache, NoteCache};
 
 pub struct PostReplyView<'a> {
     ndb: &'a Ndb,

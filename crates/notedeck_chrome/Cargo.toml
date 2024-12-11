@@ -1,0 +1,82 @@
+[package]
+name = "notedeck_chrome"
+version = "0.2.0"
+authors = ["William Casarin <jb55@jb55.com>", "kernelkind <kernelkind@gmail.com>"]
+edition = "2021"
+default-run = "notedeck"
+#rust-version = "1.60"
+license = "GPLv3"
+description = "The nostr browser"
+
+[dependencies]
+eframe = { workspace = true }
+egui = { workspace = true }
+egui_extras = { workspace = true }
+enostr = { workspace = true }
+nostrdb = { workspace = true }
+notedeck = { workspace = true }
+notedeck_columns = { workspace = true }
+serde_json = { workspace = true }
+strum = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-appender = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[[bin]]
+name = "notedeck"
+path = "src/notedeck.rs"
+
+[[bin]]
+name = "ui_preview"
+path = "src/preview.rs"
+
+[features]
+default = []
+profiling = ["notedeck_columns/puffin"]
+
+[target.'cfg(target_os = "android")'.dependencies]
+android_logger = "0.11.1"
+android-activity = { version = "0.4", features = [ "native-activity" ] }
+winit = { version = "0.30.5", features = [ "android-native-activity" ] }
+#winit = { git="https://github.com/rust-windowing/winit.git", rev = "2a58b785fed2a3746f7c7eebce95bce67ddfd27c", features = ["android-native-activity"] }
+
+[package.metadata.bundle]
+identifier = "com.damus.notedeck"
+icon = ["assets/app_icon.icns"]
+
+[package.metadata.android]
+package = "com.damus.app"
+apk_name = "damus"
+#assets = "assets"
+
+[[package.metadata.android.uses_feature]]
+name = "android.hardware.vulkan.level"
+required = true
+version = 1
+
+[[package.metadata.android.uses_permission]]
+name = "android.permission.WRITE_EXTERNAL_STORAGE"
+max_sdk_version = 18
+
+[[package.metadata.android.uses_permission]]
+name = "android.permission.READ_EXTERNAL_STORAGE"
+max_sdk_version = 18
+
+[package.metadata.android.signing.release]
+path = "damus.keystore"
+keystore_password = "damuskeystore"
+
+[[package.metadata.android.uses_permission]]
+name = "android.permission.INTERNET"
+
+[package.metadata.android.application]
+label = "Damus"
+
+[package.metadata.generate-rpm]
+assets = [
+    { source = "target/release/notedeck", dest = "/usr/bin/notedeck", mode = "755" },
+]

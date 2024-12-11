@@ -1,7 +1,7 @@
 use egui::ThemePreference;
 use tracing::{error, info};
 
-use crate::storage::{write_file, DataPath, DataPathType, Directory};
+use crate::{storage, DataPath, DataPathType, Directory};
 
 pub struct ThemeHandler {
     directory: Directory,
@@ -43,7 +43,7 @@ impl ThemeHandler {
     }
 
     pub fn save(&self, theme: ThemePreference) {
-        match write_file(
+        match storage::write_file(
             &self.directory.file_path,
             THEME_FILE.to_owned(),
             &theme_to_serialized(&theme),

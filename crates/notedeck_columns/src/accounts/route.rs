@@ -11,9 +11,3 @@ pub enum AccountsRoute {
     Accounts,
     AddAccount,
 }
-
-#[derive(Debug)]
-pub enum AccountsAction {
-    Switch(usize),
-    Remove(usize),
-}

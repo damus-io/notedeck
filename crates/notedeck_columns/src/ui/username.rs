@@ -1,6 +1,6 @@
-use crate::fonts::NamedFontFamily;
 use egui::{Color32, RichText, Widget};
 use nostrdb::ProfileRecord;
+use notedeck::fonts::NamedFontFamily;
 
 pub struct Username<'a> {
     profile: Option<&'a ProfileRecord<'a>>,

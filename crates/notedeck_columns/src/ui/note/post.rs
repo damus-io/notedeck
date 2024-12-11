@@ -1,6 +1,4 @@
 use crate::draft::{Draft, Drafts};
-use crate::imgcache::ImageCache;
-use crate::notecache::NoteCache;
 use crate::post::NewPost;
 use crate::ui::{self, Preview, PreviewConfig, View};
 use crate::Result;
@@ -9,6 +7,8 @@ use egui::{Frame, Layout};
 use enostr::{FilledKeypair, FullKeypair, NoteId, RelayPool};
 use nostrdb::{Config, Ndb, Transaction};
 use tracing::info;
+
+use notedeck::{ImageCache, NoteCache};
 
 use super::contents::render_note_preview;
 

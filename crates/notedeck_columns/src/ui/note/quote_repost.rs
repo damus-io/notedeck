@@ -1,7 +1,8 @@
 use enostr::{FilledKeypair, NoteId};
 use nostrdb::Ndb;
+use notedeck::{ImageCache, NoteCache};
 
-use crate::{draft::Draft, imgcache::ImageCache, notecache::NoteCache, ui};
+use crate::{draft::Draft, ui};
 
 use super::{PostResponse, PostType};
 

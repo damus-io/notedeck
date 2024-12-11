@@ -1,12 +1,10 @@
 use enostr::{Filter, Pubkey};
 use nostrdb::{FilterBuilder, Ndb, ProfileRecord, Transaction};
 
+use notedeck::{filter::default_limit, FilterState, MuteFun, NoteCache, NoteRef};
+
 use crate::{
-    filter::{self, FilterState},
     multi_subscriber::MultiSubscriber,
-    muted::MuteFun,
-    note::NoteRef,
-    notecache::NoteCache,
     notes_holder::NotesHolder,
     timeline::{copy_notes_into_timeline, PubkeySource, Timeline, TimelineKind},
 };
@@ -79,7 +77,7 @@ impl Profile {
         vec![Filter::new()
             .authors([pk])
             .kinds([1])
-            .limit(filter::default_limit())]
+            .limit(default_limit())]
     }
 }
 

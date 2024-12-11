@@ -11,10 +11,11 @@ description = "A tweetdeck-style notedeck app"
 crate-type = ["lib", "cdylib"]
 
 [dependencies]
-base32 = { workspace = true }
+notedeck = { workspace = true }
 bitflags = { workspace = true }
 dirs = { workspace = true }
 eframe = { workspace = true }
+thiserror = { workspace = true }
 egui = { workspace = true }
 egui_extras = { workspace = true }
 egui_nav = { workspace = true }
@@ -47,7 +48,7 @@ urlencoding = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
-tempfile = "3.13.0"
+tempfile = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "2.11.0"

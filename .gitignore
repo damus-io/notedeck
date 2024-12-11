@@ -1,5 +1,5 @@
-.build-result
 .buildcmd
+build.log
 perf.data
 perf.data.old
 .privenv

@@ -5,20 +5,17 @@ use egui::{
 use tracing::{error, info};
 
 use crate::{
-    accounts::{Accounts, AccountsRoute},
+    accounts::AccountsRoute,
     app::{get_active_columns_mut, get_decks_mut},
     app_style::DECK_ICON_SIZE,
     colors,
-    column::Column,
     decks::{DecksAction, DecksCache},
-    imgcache::ImageCache,
     nav::SwitchingAction,
     route::Route,
     support::Support,
-    theme_handler::ThemeHandler,
-    user_account::UserAccount,
-    Damus,
 };
+
+use notedeck::{Accounts, ImageCache, NotedeckTextStyle, ThemeHandler, UserAccount};
 
 use super::{
     anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},
@@ -386,9 +383,9 @@ fn settings_button(dark_mode: bool) -> impl Widget {
         let img_size = 24.0;
         let max_size = ICON_WIDTH * ICON_EXPANSION_MULTIPLE; // max size of the widget
         let img_data = if dark_mode {
-            egui::include_image!("../../assets/icons/settings_dark_4x.png")
+            egui::include_image!("../../../../assets/icons/settings_dark_4x.png")
         } else {
-            egui::include_image!("../../assets/icons/settings_light_4x.png")
+            egui::include_image!("../../../../assets/icons/settings_light_4x.png")
         };
         let img = egui::Image::new(img_data).max_width(img_size);
 
@@ -412,9 +409,9 @@ fn add_column_button(dark_mode: bool) -> impl Widget {
         let max_size = ICON_WIDTH * ICON_EXPANSION_MULTIPLE; // max size of the widget
 
         let img_data = if dark_mode {
-            egui::include_image!("../../assets/icons/add_column_dark_4x.png")
+            egui::include_image!("../../../../assets/icons/add_column_dark_4x.png")
         } else {
-            egui::include_image!("../../assets/icons/add_column_light_4x.png")
+            egui::include_image!("../../../../assets/icons/add_column_light_4x.png")
         };
 
         let img = egui::Image::new(img_data).max_width(img_size);
@@ -531,7 +528,7 @@ fn search_button() -> impl Widget {
 fn expand_side_panel_button() -> impl Widget {
     |ui: &mut egui::Ui| -> egui::Response {
         let img_size = 40.0;
-        let img_data = egui::include_image!("../../assets/damus_rounded_80.png");
+        let img_data = egui::include_image!("../../../../assets/damus_rounded_80.png");
         let img = egui::Image::new(img_data).max_width(img_size);
 
         ui.add(img)
@@ -544,9 +541,9 @@ fn support_button() -> impl Widget {
 
         let max_size = ICON_WIDTH * ICON_EXPANSION_MULTIPLE; // max size of the widget
         let img_data = if ui.visuals().dark_mode {
-            egui::include_image!("../../assets/icons/help_icon_dark_4x.png")
+            egui::include_image!("../../../../assets/icons/help_icon_dark_4x.png")
         } else {
-            egui::include_image!("../../assets/icons/help_icon_inverted_4x.png")
+            egui::include_image!("../../../../assets/icons/help_icon_inverted_4x.png")
         };
         let img = egui::Image::new(img_data).max_width(img_size);
 
@@ -569,7 +566,7 @@ fn add_deck_button() -> impl Widget {
         let img_size = 40.0;
 
         let max_size = ICON_WIDTH * ICON_EXPANSION_MULTIPLE; // max size of the widget
-        let img_data = egui::include_image!("../../assets/icons/new_deck_icon_4x_dark.png");
+        let img_data = egui::include_image!("../../../../assets/icons/new_deck_icon_4x_dark.png");
         let img = egui::Image::new(img_data).max_width(img_size);
 
         let helper = AnimationHelper::new(ui, "new-deck-icon", vec2(max_size, max_size));
@@ -626,80 +623,18 @@ fn milestone_name() -> impl Widget {
     |ui: &mut egui::Ui| -> egui::Response {
         ui.vertical_centered(|ui| {
             let font = egui::FontId::new(
-                crate::app_style::get_font_size(
+                notedeck::fonts::get_font_size(
                     ui.ctx(),
-                    &crate::app_style::NotedeckTextStyle::Tiny,
+                    &NotedeckTextStyle::Tiny,
                 ),
-                egui::FontFamily::Name(crate::fonts::NamedFontFamily::Bold.as_str().into()),
+                egui::FontFamily::Name(notedeck::fonts::NamedFontFamily::Bold.as_str().into()),
             );
             ui.add(Label::new(
                 RichText::new("ALPHA")
-                    .color(crate::colors::GRAY_SECONDARY)
+                    .color( ui.style().visuals.noninteractive().fg_stroke.color)
                     .font(font),
             ).selectable(false)).on_hover_text("Notedeck is an alpha product. Expect bugs and contact us when you run into issues.").on_hover_cursor(egui::CursorIcon::Help)
         })
         .inner
-    }
-}
-
-mod preview {
-
-    use egui_extras::{Size, StripBuilder};
-
-    use crate::{
-        app::get_active_columns_mut,
-        test_data,
-        ui::{Preview, PreviewConfig},
-    };
-
-    use super::*;
-
-    pub struct DesktopSidePanelPreview {
-        app: Damus,
-    }
-
-    impl DesktopSidePanelPreview {
-        fn new() -> Self {
-            let mut app = test_data::test_app();
-            get_active_columns_mut(&app.accounts, &mut app.decks_cache)
-                .add_column(Column::new(vec![Route::accounts()]));
-            DesktopSidePanelPreview { app }
-        }
-    }
-
-    impl View for DesktopSidePanelPreview {
-        fn ui(&mut self, ui: &mut egui::Ui) {
-            StripBuilder::new(ui)
-                .size(Size::exact(SIDE_PANEL_WIDTH))
-                .sizes(Size::remainder(), 0)
-                .clip(true)
-                .horizontal(|mut strip| {
-                    strip.cell(|ui| {
-                        let mut panel = DesktopSidePanel::new(
-                            &self.app.ndb,
-                            &mut self.app.img_cache,
-                            self.app.accounts.get_selected_account(),
-                            &self.app.decks_cache,
-                        );
-                        let response = panel.show(ui);
-
-                        DesktopSidePanel::perform_action(
-                            &mut self.app.decks_cache,
-                            &self.app.accounts,
-                            &mut self.app.support,
-                            &mut self.app.theme,
-                            response.action,
-                        );
-                    });
-                });
-        }
-    }
-
-    impl Preview for DesktopSidePanel<'_> {
-        type Prev = DesktopSidePanelPreview;
-
-        fn preview(_cfg: PreviewConfig) -> Self::Prev {
-            DesktopSidePanelPreview::new()
-        }
     }
 }

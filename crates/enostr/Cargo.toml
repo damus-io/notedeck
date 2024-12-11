@@ -9,9 +9,10 @@ edition = "2021"
 ewebsock = { version = "0.2.0", features = ["tls"] }
 serde_derive = "1"
 serde = { version = "1", features = ["derive"] } # You only need this if you want app persistence
-serde_json = "1.0.89"
-nostr = { version = "0.30.0" }
+serde_json = { workspace = true }
+nostr = { workspace = true }
 nostrdb = { workspace = true }
 hex = { workspace = true }
 tracing = { workspace = true }
+thiserror = { workspace = true }
 url = { workspace = true }

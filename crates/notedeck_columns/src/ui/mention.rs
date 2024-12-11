@@ -1,5 +1,6 @@
-use crate::{colors, imgcache::ImageCache, ui};
+use crate::ui;
 use nostrdb::{Ndb, Transaction};
+use notedeck::ImageCache;
 
 pub struct Mention<'a> {
     ndb: &'a Ndb,
@@ -66,6 +67,8 @@ fn mention_ui(
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
 
+    let link_color = ui.visuals().hyperlink_color;
+
     ui.horizontal(|ui| {
         let profile = ndb.get_profile_by_pubkey(txn, pk).ok();
 
@@ -77,7 +80,7 @@ fn mention_ui(
             };
 
         let resp = ui.add(
-            egui::Label::new(egui::RichText::new(name).color(colors::PURPLE).size(size))
+            egui::Label::new(egui::RichText::new(name).color(link_color).size(size))
                 .selectable(selectable),
         );
 

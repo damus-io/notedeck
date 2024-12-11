@@ -1,13 +1,11 @@
 use crate::actionbar::NoteAction;
 use crate::timeline::TimelineTab;
-use crate::{
-    column::Columns, imgcache::ImageCache, notecache::NoteCache, timeline::TimelineId, ui,
-    ui::note::NoteOptions,
-};
+use crate::{column::Columns, timeline::TimelineId, ui, ui::note::NoteOptions};
 use egui::containers::scroll_area::ScrollBarVisibility;
 use egui::{Direction, Layout};
 use egui_tabs::TabColor;
 use nostrdb::{Ndb, Transaction};
+use notedeck::{ImageCache, NoteCache};
 use tracing::{error, warn};
 
 pub struct TimelineView<'a> {

@@ -1,7 +1,7 @@
 use enostr::{Keypair, Pubkey};
 
 use super::file_key_storage::FileKeyStorage;
-use crate::Error;
+use crate::Result;
 
 #[cfg(target_os = "macos")]
 use super::security_framework_key_storage::SecurityFrameworkKeyStorage;
@@ -18,7 +18,7 @@ pub enum KeyStorageType {
 #[derive(Debug)]
 pub enum KeyStorageResponse<R> {
     Waiting,
-    ReceivedResult(Result<R, KeyStorageError>),
+    ReceivedResult(Result<R>),
 }
 
 impl<R: PartialEq> PartialEq for KeyStorageResponse<R> {
@@ -86,27 +86,3 @@ impl KeyStorageType {
         }
     }
 }
-
-#[allow(dead_code)]
-#[derive(Debug)]
-pub enum KeyStorageError {
-    Retrieval(Error),
-    Addition(Error),
-    Selection(Error),
-    Removal(Error),
-    OSError(Error),
-}
-
-impl std::fmt::Display for KeyStorageError {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            Self::Retrieval(e) => write!(f, "Failed to retrieve keys: {:?}", e),
-            Self::Addition(key) => write!(f, "Failed to add key: {:?}", key),
-            Self::Selection(pubkey) => write!(f, "Failed to select key: {:?}", pubkey),
-            Self::Removal(key) => write!(f, "Failed to remove key: {:?}", key),
-            Self::OSError(e) => write!(f, "OS had an error: {:?}", e),
-        }
-    }
-}
-
-impl std::error::Error for KeyStorageError {}

@@ -1,13 +1,13 @@
 use crate::actionbar::NoteAction;
 use crate::images::ImageType;
-use crate::imgcache::ImageCache;
-use crate::notecache::NoteCache;
+use crate::ui;
 use crate::ui::note::{NoteOptions, NoteResponse};
 use crate::ui::ProfilePic;
-use crate::{colors, ui};
 use egui::{Color32, Hyperlink, Image, RichText};
 use nostrdb::{BlockType, Mention, Ndb, Note, NoteKey, Transaction};
 use tracing::warn;
+
+use notedeck::{ImageCache, NoteCache};
 
 pub struct NoteContents<'a> {
     ndb: &'a Ndb,
@@ -94,8 +94,8 @@ pub fn render_note_preview(
         return ui
             .horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
-                ui.colored_label(colors::PURPLE, "@");
-                ui.colored_label(colors::PURPLE, &id_str[4..16]);
+                ui.colored_label(link_color, "@");
+                ui.colored_label(link_color, &id_str[4..16]);
             })
             .response;
             */
@@ -145,6 +145,7 @@ fn render_note_contents(
     let mut images: Vec<String> = vec![];
     let mut inline_note: Option<(&[u8; 32], &str)> = None;
     let hide_media = options.has_hide_media();
+    let link_color = ui.visuals().hyperlink_color;
 
     let response = ui.horizontal_wrapped(|ui| {
         let blocks = if let Ok(blocks) = ndb.get_blocks_by_key(txn, note_key) {
@@ -177,14 +178,14 @@ fn render_note_contents(
                     }
 
                     _ => {
-                        ui.colored_label(colors::PURPLE, format!("@{}", &block.as_str()[4..16]));
+                        ui.colored_label(link_color, format!("@{}", &block.as_str()[4..16]));
                     }
                 },
 
                 BlockType::Hashtag => {
                     #[cfg(feature = "profiling")]
                     puffin::profile_scope!("hashtag contents");
-                    ui.colored_label(colors::PURPLE, format!("#{}", block.as_str()));
+                    ui.colored_label(link_color, format!("#{}", block.as_str()));
                 }
 
                 BlockType::Url => {
@@ -195,7 +196,7 @@ fn render_note_contents(
                         #[cfg(feature = "profiling")]
                         puffin::profile_scope!("url contents");
                         ui.add(Hyperlink::from_label_and_url(
-                            RichText::new(block.as_str()).color(colors::PURPLE),
+                            RichText::new(block.as_str()).color(link_color),
                             block.as_str(),
                         ));
                     }
@@ -208,7 +209,7 @@ fn render_note_contents(
                 }
 
                 _ => {
-                    ui.colored_label(colors::PURPLE, block.as_str());
+                    ui.colored_label(link_color, block.as_str());
                 }
             }
         }

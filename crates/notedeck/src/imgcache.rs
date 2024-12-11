@@ -29,6 +29,21 @@ impl ImageCache {
         "img"
     }
 
+    /*
+    pub fn fetch(image: &str) -> Result<Image> {
+        let m_cached_promise = img_cache.map().get(image);
+        if m_cached_promise.is_none() {
+            let res = crate::images::fetch_img(
+                img_cache,
+                ui.ctx(),
+                &image,
+                ImageType::Content(width.round() as u32, height.round() as u32),
+            );
+            img_cache.map_mut().insert(image.to_owned(), res);
+        }
+    }
+    */
+
     pub fn write(cache_dir: &path::Path, url: &str, data: ColorImage) -> Result<()> {
         let file_path = cache_dir.join(Self::key(url));
         let file = File::options()

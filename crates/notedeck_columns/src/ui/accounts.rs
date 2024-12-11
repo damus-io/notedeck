@@ -1,14 +1,9 @@
 use crate::colors::PINK;
-use crate::imgcache::ImageCache;
-use crate::{
-    accounts::Accounts,
-    ui::{Preview, PreviewConfig, View},
-    Damus,
-};
 use egui::{
     Align, Button, Frame, Image, InnerResponse, Layout, RichText, ScrollArea, Ui, UiBuilder, Vec2,
 };
 use nostrdb::{Ndb, Transaction};
+use notedeck::{Accounts, ImageCache};
 
 use super::profile::preview::SimpleProfilePreview;
 
@@ -180,7 +175,7 @@ fn scroll_area() -> ScrollArea {
 }
 
 fn add_account_button() -> Button<'static> {
-    let img_data = egui::include_image!("../../assets/icons/add_account_icon_4x.png");
+    let img_data = egui::include_image!("../../../../assets/icons/add_account_icon_4x.png");
     let img = Image::new(img_data).fit_to_exact_size(Vec2::new(48.0, 48.0));
     Button::image_and_text(
         img,
@@ -194,49 +189,4 @@ fn add_account_button() -> Button<'static> {
 
 fn sign_out_button() -> egui::Button<'static> {
     egui::Button::new(RichText::new("Sign out"))
-}
-
-// PREVIEWS
-mod preview {
-
-    use super::*;
-    use crate::{accounts::process_accounts_view_response, test_data};
-
-    pub struct AccountsPreview {
-        app: Damus,
-    }
-
-    impl AccountsPreview {
-        fn new() -> Self {
-            let app = test_data::test_app();
-            AccountsPreview { app }
-        }
-    }
-
-    impl View for AccountsPreview {
-        fn ui(&mut self, ui: &mut egui::Ui) {
-            ui.add_space(24.0);
-            // TODO(jb55): maybe just use render_nav here so we can step through routes
-            if let Some(response) =
-                AccountsView::new(&self.app.ndb, &self.app.accounts, &mut self.app.img_cache)
-                    .ui(ui)
-                    .inner
-            {
-                process_accounts_view_response(
-                    &mut self.app.accounts,
-                    &mut self.app.decks_cache,
-                    0,
-                    response,
-                );
-            }
-        }
-    }
-
-    impl Preview for AccountsView<'_> {
-        type Prev = AccountsPreview;
-
-        fn preview(_cfg: PreviewConfig) -> Self::Prev {
-            AccountsPreview::new()
-        }
-    }
 }

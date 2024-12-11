@@ -1,10 +1,10 @@
-use crate::app_style::NotedeckTextStyle;
 use crate::key_parsing::AcquireKeyError;
 use crate::login_manager::AcquireKeyState;
 use crate::ui::{Preview, PreviewConfig, View};
 use egui::TextEdit;
 use egui::{Align, Button, Color32, Frame, InnerResponse, Margin, RichText, Vec2};
 use enostr::Keypair;
+use notedeck::NotedeckTextStyle;
 
 pub struct AccountLoginView<'a> {
     manager: &'a mut AcquireKeyState,

@@ -1,12 +1,11 @@
 use crate::{
     multi_subscriber::MultiSubscriber,
-    muted::MuteFun,
-    note::NoteRef,
-    notecache::NoteCache,
     notes_holder::NotesHolder,
     timeline::{TimelineTab, ViewFilter},
 };
+
 use nostrdb::{Filter, FilterBuilder, Ndb, Transaction};
+use notedeck::{MuteFun, NoteCache, NoteRef};
 
 #[derive(Default)]
 pub struct Thread {

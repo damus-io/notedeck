@@ -1,7 +1,5 @@
 use crate::{
-    app_style::NotedeckTextStyle,
     column::Columns,
-    imgcache::ImageCache,
     nav::RenderNavAction,
     route::Route,
     timeline::{TimelineId, TimelineRoute},
@@ -14,6 +12,7 @@ use crate::{
 use egui::{RichText, Stroke, UiBuilder};
 use enostr::Pubkey;
 use nostrdb::{Ndb, Transaction};
+use notedeck::{ImageCache, NotedeckTextStyle};
 
 pub struct NavTitle<'a> {
     ndb: &'a Ndb,
@@ -124,9 +123,9 @@ impl<'a> NavTitle<'a> {
         let max_size = icon_width * ICON_EXPANSION_MULTIPLE;
 
         let img_data = if ui.visuals().dark_mode {
-            egui::include_image!("../../../assets/icons/column_delete_icon_4x.png")
+            egui::include_image!("../../../../../assets/icons/column_delete_icon_4x.png")
         } else {
-            egui::include_image!("../../../assets/icons/column_delete_icon_light_4x.png")
+            egui::include_image!("../../../../../assets/icons/column_delete_icon_light_4x.png")
         };
         let img = egui::Image::new(img_data).max_width(img_size);
 

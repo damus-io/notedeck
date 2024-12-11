@@ -1,11 +1,7 @@
 use crate::{
-    accounts::Accounts,
     column::Columns,
     draft::Drafts,
-    imgcache::ImageCache,
-    muted::MuteFun,
     nav::RenderNavAction,
-    notecache::NoteCache,
     notes_holder::NotesHolderStorage,
     profile::Profile,
     thread::Thread,
@@ -15,11 +11,11 @@ use crate::{
         note::{NoteOptions, QuoteRepostView},
         profile::ProfileView,
     },
-    unknowns::UnknownIds,
 };
 
 use enostr::{NoteId, Pubkey};
 use nostrdb::{Ndb, Transaction};
+use notedeck::{Accounts, ImageCache, MuteFun, NoteCache, UnknownIds};
 
 #[derive(Debug, Eq, PartialEq, Clone, Copy)]
 pub enum TimelineRoute {

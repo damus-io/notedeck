@@ -14,16 +14,14 @@ pub use reply::PostReplyView;
 
 use crate::{
     actionbar::NoteAction,
-    app_style::NotedeckTextStyle,
-    colors,
-    imgcache::ImageCache,
-    notecache::{CachedNote, NoteCache},
     ui::{self, View},
 };
+
 use egui::emath::{pos2, Vec2};
 use egui::{Id, Label, Pos2, Rect, Response, RichText, Sense};
 use enostr::{NoteId, Pubkey};
 use nostrdb::{Ndb, Note, NoteKey, NoteReply, Transaction};
+use notedeck::{CachedNote, ImageCache, NoteCache, NotedeckTextStyle};
 
 use super::profile::preview::{get_display_name, one_line_display_name_widget};
 
@@ -80,15 +78,9 @@ fn reply_desc(
 
     let size = 10.0;
     let selectable = false;
+    let color = ui.style().visuals.noninteractive().fg_stroke.color;
 
-    ui.add(
-        Label::new(
-            RichText::new("replying to")
-                .size(size)
-                .color(colors::GRAY_SECONDARY),
-        )
-        .selectable(selectable),
-    );
+    ui.add(Label::new(RichText::new("replying to").size(size).color(color)).selectable(selectable));
 
     let reply = if let Some(reply) = note_reply.reply() {
         reply
@@ -99,14 +91,7 @@ fn reply_desc(
     let reply_note = if let Ok(reply_note) = ndb.get_note_by_id(txn, reply.id) {
         reply_note
     } else {
-        ui.add(
-            Label::new(
-                RichText::new("a note")
-                    .size(size)
-                    .color(colors::GRAY_SECONDARY),
-            )
-            .selectable(selectable),
-        );
+        ui.add(Label::new(RichText::new("a note").size(size).color(color)).selectable(selectable));
         return;
     };
 
@@ -117,14 +102,7 @@ fn reply_desc(
                 .size(size)
                 .selectable(selectable),
         );
-        ui.add(
-            Label::new(
-                RichText::new("'s note")
-                    .size(size)
-                    .color(colors::GRAY_SECONDARY),
-            )
-            .selectable(selectable),
-        );
+        ui.add(Label::new(RichText::new("'s note").size(size).color(color)).selectable(selectable));
     } else if let Some(root) = note_reply.root() {
         // replying to another post in a thread, not the root
 
@@ -137,12 +115,8 @@ fn reply_desc(
                         .selectable(selectable),
                 );
                 ui.add(
-                    Label::new(
-                        RichText::new("'s note")
-                            .size(size)
-                            .color(colors::GRAY_SECONDARY),
-                    )
-                    .selectable(selectable),
+                    Label::new(RichText::new("'s note").size(size).color(color))
+                        .selectable(selectable),
                 );
             } else {
                 // replying to bob in alice's thread
@@ -153,8 +127,7 @@ fn reply_desc(
                         .selectable(selectable),
                 );
                 ui.add(
-                    Label::new(RichText::new("in").size(size).color(colors::GRAY_SECONDARY))
-                        .selectable(selectable),
+                    Label::new(RichText::new("in").size(size).color(color)).selectable(selectable),
                 );
                 ui.add(
                     ui::Mention::new(ndb, img_cache, txn, root_note.pubkey())
@@ -162,12 +135,8 @@ fn reply_desc(
                         .selectable(selectable),
                 );
                 ui.add(
-                    Label::new(
-                        RichText::new("'s thread")
-                            .size(size)
-                            .color(colors::GRAY_SECONDARY),
-                    )
-                    .selectable(selectable),
+                    Label::new(RichText::new("'s thread").size(size).color(color))
+                        .selectable(selectable),
                 );
             }
         } else {
@@ -177,12 +146,8 @@ fn reply_desc(
                     .selectable(selectable),
             );
             ui.add(
-                Label::new(
-                    RichText::new("in someone's thread")
-                        .size(size)
-                        .color(colors::GRAY_SECONDARY),
-                )
-                .selectable(selectable),
+                Label::new(RichText::new("in someone's thread").size(size).color(color))
+                    .selectable(selectable),
             );
         }
     }
@@ -382,6 +347,7 @@ impl<'a> NoteView<'a> {
                     });
                     ui.add_space(6.0);
                     let resp = ui.add(one_line_display_name_widget(
+                        ui.visuals(),
                         get_display_name(profile.as_ref().ok()),
                         style,
                     ));
@@ -391,10 +357,11 @@ impl<'a> NoteView<'a> {
                             ui.add(ui::ProfilePreview::new(rec, self.img_cache));
                         });
                     }
+                    let color = ui.style().visuals.noninteractive().fg_stroke.color;
                     ui.add_space(4.0);
                     ui.label(
                         RichText::new("Reposted")
-                            .color(colors::GRAY_SECONDARY)
+                            .color(color)
                             .text_style(style.text_style()),
                     );
                 });
@@ -690,9 +657,8 @@ fn render_note_actionbar(
 }
 
 fn secondary_label(ui: &mut egui::Ui, s: impl Into<String>) {
-    ui.add(Label::new(
-        RichText::new(s).size(10.0).color(colors::GRAY_SECONDARY),
-    ));
+    let color = ui.style().visuals.noninteractive().fg_stroke.color;
+    ui.add(Label::new(RichText::new(s).size(10.0).color(color)));
 }
 
 fn render_reltime(
@@ -718,9 +684,9 @@ fn render_reltime(
 
 fn reply_button(ui: &mut egui::Ui, note_key: NoteKey) -> egui::Response {
     let img_data = if ui.style().visuals.dark_mode {
-        egui::include_image!("../../../assets/icons/reply.png")
+        egui::include_image!("../../../../../assets/icons/reply.png")
     } else {
-        egui::include_image!("../../../assets/icons/reply-dark.png")
+        egui::include_image!("../../../../../assets/icons/reply-dark.png")
     };
 
     let (rect, size, resp) =
@@ -737,9 +703,9 @@ fn reply_button(ui: &mut egui::Ui, note_key: NoteKey) -> egui::Response {
 
 fn repost_icon(dark_mode: bool) -> egui::Image<'static> {
     let img_data = if dark_mode {
-        egui::include_image!("../../../assets/icons/repost_icon_4x.png")
+        egui::include_image!("../../../../../assets/icons/repost_icon_4x.png")
     } else {
-        egui::include_image!("../../../assets/icons/repost_light_4x.png")
+        egui::include_image!("../../../../../assets/icons/repost_light_4x.png")
     };
     egui::Image::new(img_data)
 }

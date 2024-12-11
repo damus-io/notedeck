@@ -1,8 +1,7 @@
-use crate::error::Error;
-use crate::imgcache::ImageCache;
-use crate::result::Result;
 use egui::{pos2, Color32, ColorImage, Rect, Sense, SizeHint, TextureHandle};
 use image::imageops::FilterType;
+use notedeck::ImageCache;
+use notedeck::Result;
 use poll_promise::Promise;
 use std::path;
 use tokio::fs;
@@ -183,7 +182,7 @@ fn fetch_img_from_disk(
     let path = path.to_owned();
     Promise::spawn_async(async move {
         let data = fs::read(path).await?;
-        let image_buffer = image::load_from_memory(&data)?;
+        let image_buffer = image::load_from_memory(&data).map_err(notedeck::Error::Image)?;
 
         // TODO: remove unwrap here
         let flat_samples = image_buffer.as_flat_samples_u8().unwrap();
@@ -239,7 +238,7 @@ fn fetch_img_from_net(
     let cache_path = cache_path.to_owned();
     ehttp::fetch(request, move |response| {
         let handle = response
-            .map_err(Error::Generic)
+            .map_err(notedeck::Error::Generic)
             .and_then(|resp| parse_img_response(resp, imgtyp))
             .map(|img| {
                 let texture_handle = ctx.load_texture(&cloned_url, img.clone(), Default::default());

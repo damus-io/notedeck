@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use egui::Context;
 use tracing::info;
 
-use crate::storage::{write_file, DataPath, DataPathType, Directory};
+use notedeck::{storage, DataPath, DataPathType, Directory};
 
 pub struct AppSizeHandler {
     directory: Directory,
@@ -71,7 +71,7 @@ fn try_save_size(
     maybe_saved_size: &mut Option<egui::Vec2>,
 ) {
     if let Ok(serialized_rect) = serde_json::to_string(&cur_size) {
-        if write_file(
+        if storage::write_file(
             &interactor.file_path,
             FILE_NAME.to_owned(),
             &serialized_rect,

@@ -1,9 +1,5 @@
-use std::path::Path;
-
-use enostr::{FullKeypair, Pubkey, RelayPool};
-use nostrdb::{ProfileRecord, Transaction};
-
-use crate::{user_account::UserAccount, Damus};
+use enostr::RelayPool;
+use nostrdb::ProfileRecord;
 
 #[allow(unused_must_use)]
 pub fn sample_pool() -> RelayPool {
@@ -70,6 +66,7 @@ pub fn test_profile_record() -> ProfileRecord<'static> {
     ProfileRecord::new_owned(&TEST_PROFILE_DATA).unwrap()
 }
 
+/*
 const TEN_ACCOUNT_HEXES: [&str; 10] = [
     "3efdaebb1d8923ebd99c9e7ace3b4194ab45512e2be79c1b7d68d9243e0d2681",
     "32e1827635450ebb3c5a7d12c1f8e7b2b514439ac10a67eef3d9fd9c5c68e245",
@@ -95,7 +92,7 @@ pub fn get_test_accounts() -> Vec<UserAccount> {
 }
 
 pub fn test_app() -> Damus {
-    let db_dir = Path::new(".");
+    let db_dir = Path::new("target/testdbs/test_app");
     let path = db_dir.to_str().unwrap();
     let mut app = Damus::mock(path);
 
@@ -109,3 +106,4 @@ pub fn test_app() -> Damus {
 
     app
 }
+*/

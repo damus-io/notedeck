@@ -1,14 +1,12 @@
-use crate::app_style::{get_font_size, NotedeckTextStyle};
-use crate::imgcache::ImageCache;
-use crate::storage::{DataPath, DataPathType};
 use crate::ui::ProfilePic;
-use crate::user_account::UserAccount;
 use crate::{colors, images, DisplayName};
 use egui::load::TexturePoll;
 use egui::{Frame, Label, RichText, Sense, Widget};
 use egui_extras::Size;
 use enostr::{NoteId, Pubkey};
 use nostrdb::{Ndb, ProfileRecord, Transaction};
+
+use notedeck::{DataPath, DataPathType, ImageCache, NotedeckTextStyle, UserAccount};
 
 pub struct ProfilePreview<'a, 'cache> {
     profile: &'a ProfileRecord<'a>,
@@ -121,7 +119,10 @@ impl egui::Widget for SimpleProfilePreview<'_, '_> {
                         ui.add(
                             Label::new(
                                 RichText::new("Read only")
-                                    .size(get_font_size(ui.ctx(), &NotedeckTextStyle::Tiny))
+                                    .size(notedeck::fonts::get_font_size(
+                                        ui.ctx(),
+                                        &NotedeckTextStyle::Tiny,
+                                    ))
                                     .color(ui.visuals().warn_fg_color),
                             )
                             .selectable(false),
@@ -256,17 +257,16 @@ fn display_name_widget(
     }
 }
 
-pub fn one_line_display_name_widget(
-    display_name: DisplayName<'_>,
+pub fn one_line_display_name_widget<'a>(
+    visuals: &egui::Visuals,
+    display_name: DisplayName<'a>,
     style: NotedeckTextStyle,
-) -> impl egui::Widget + '_ {
+) -> impl egui::Widget + 'a {
     let text_style = style.text_style();
+    let color = visuals.noninteractive().fg_stroke.color;
+
     move |ui: &mut egui::Ui| match display_name {
-        DisplayName::One(n) => ui.label(
-            RichText::new(n)
-                .text_style(text_style)
-                .color(colors::GRAY_SECONDARY),
-        ),
+        DisplayName::One(n) => ui.label(RichText::new(n).text_style(text_style).color(color)),
 
         DisplayName::Both {
             display_name,
@@ -274,7 +274,7 @@ pub fn one_line_display_name_widget(
         } => ui.label(
             RichText::new(display_name)
                 .text_style(text_style)
-                .color(colors::GRAY_SECONDARY),
+                .color(color),
         ),
     }
 }

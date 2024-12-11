@@ -1,11 +1,9 @@
-use eframe::Result;
+use crate::Result;
 use enostr::{Keypair, Pubkey, SerializableKeypair};
-
-use crate::Error;
 
 use super::{
     file_storage::{delete_file, write_file, Directory},
-    key_storage_impl::{KeyStorageError, KeyStorageResponse},
+    key_storage_impl::KeyStorageResponse,
 };
 
 static SELECTED_PUBKEY_FILE_NAME: &str = "selected_pubkey";
@@ -25,21 +23,18 @@ impl FileKeyStorage {
         }
     }
 
-    fn add_key_internal(&self, key: &Keypair) -> Result<(), KeyStorageError> {
+    fn add_key_internal(&self, key: &Keypair) -> Result<()> {
         write_file(
             &self.keys_directory.file_path,
             key.pubkey.hex(),
-            &serde_json::to_string(&SerializableKeypair::from_keypair(key, "", 7))
-                .map_err(|e| KeyStorageError::Addition(Error::Generic(e.to_string())))?,
+            &serde_json::to_string(&SerializableKeypair::from_keypair(key, "", 7))?,
         )
-        .map_err(KeyStorageError::Addition)
     }
 
-    fn get_keys_internal(&self) -> Result<Vec<Keypair>, KeyStorageError> {
+    fn get_keys_internal(&self) -> Result<Vec<Keypair>> {
         let keys = self
             .keys_directory
-            .get_files()
-            .map_err(KeyStorageError::Retrieval)?
+            .get_files()?
             .values()
             .filter_map(|str_key| serde_json::from_str::<SerializableKeypair>(str_key).ok())
             .map(|serializable_keypair| serializable_keypair.to_keypair(""))
@@ -47,41 +42,35 @@ impl FileKeyStorage {
         Ok(keys)
     }
 
-    fn remove_key_internal(&self, key: &Keypair) -> Result<(), KeyStorageError> {
+    fn remove_key_internal(&self, key: &Keypair) -> Result<()> {
         delete_file(&self.keys_directory.file_path, key.pubkey.hex())
-            .map_err(KeyStorageError::Removal)
     }
 
-    fn get_selected_pubkey(&self) -> Result<Option<Pubkey>, KeyStorageError> {
+    fn get_selected_pubkey(&self) -> Result<Option<Pubkey>> {
         let pubkey_str = self
             .selected_key_directory
-            .get_file(SELECTED_PUBKEY_FILE_NAME.to_owned())
-            .map_err(KeyStorageError::Selection)?;
+            .get_file(SELECTED_PUBKEY_FILE_NAME.to_owned())?;
 
-        serde_json::from_str(&pubkey_str)
-            .map_err(|e| KeyStorageError::Selection(Error::Generic(e.to_string())))
+        Ok(serde_json::from_str(&pubkey_str)?)
     }
 
-    fn select_pubkey(&self, pubkey: Option<Pubkey>) -> Result<(), KeyStorageError> {
+    fn select_pubkey(&self, pubkey: Option<Pubkey>) -> Result<()> {
         if let Some(pubkey) = pubkey {
             write_file(
                 &self.selected_key_directory.file_path,
                 SELECTED_PUBKEY_FILE_NAME.to_owned(),
-                &serde_json::to_string(&pubkey.hex())
-                    .map_err(|e| KeyStorageError::Selection(Error::Generic(e.to_string())))?,
+                &serde_json::to_string(&pubkey.hex())?,
             )
-            .map_err(KeyStorageError::Selection)
         } else if self
             .selected_key_directory
             .get_file(SELECTED_PUBKEY_FILE_NAME.to_owned())
             .is_ok()
         {
             // Case where user chose to have no selected pubkey, but one already exists
-            delete_file(
+            Ok(delete_file(
                 &self.selected_key_directory.file_path,
                 SELECTED_PUBKEY_FILE_NAME.to_owned(),
-            )
-            .map_err(KeyStorageError::Selection)
+            )?)
         } else {
             Ok(())
         }
@@ -114,13 +103,15 @@ impl FileKeyStorage {
 mod tests {
     use std::path::PathBuf;
 
+    use super::Result;
     use super::*;
+
     use enostr::Keypair;
-    static CREATE_TMP_DIR: fn() -> Result<PathBuf, Error> =
+    static CREATE_TMP_DIR: fn() -> Result<PathBuf> =
         || Ok(tempfile::TempDir::new()?.path().to_path_buf());
 
     impl FileKeyStorage {
-        fn mock() -> Result<Self, Error> {
+        fn mock() -> Result<Self> {
             Ok(Self {
                 keys_directory: Directory::new(CREATE_TMP_DIR()?),
                 selected_key_directory: Directory::new(CREATE_TMP_DIR()?),

@@ -6,7 +6,7 @@ use std::{
     time::SystemTime,
 };
 
-use crate::Error;
+use crate::{Error, Result};
 
 #[derive(Debug, Clone)]
 pub struct DataPath {
@@ -61,7 +61,7 @@ impl Directory {
     }
 
     /// Get the files in the current directory where the key is the file name and the value is the file contents
-    pub fn get_files(&self) -> Result<HashMap<String, String>, Error> {
+    pub fn get_files(&self) -> Result<HashMap<String, String>> {
         let dir = fs::read_dir(self.file_path.clone())?;
         let map = dir
             .filter_map(|f| f.ok())
@@ -76,7 +76,7 @@ impl Directory {
         Ok(map)
     }
 
-    pub fn get_file_names(&self) -> Result<Vec<String>, Error> {
+    pub fn get_file_names(&self) -> Result<Vec<String>> {
         let dir = fs::read_dir(self.file_path.clone())?;
         let names = dir
             .filter_map(|f| f.ok())
@@ -87,7 +87,7 @@ impl Directory {
         Ok(names)
     }
 
-    pub fn get_file(&self, file_name: String) -> Result<String, Error> {
+    pub fn get_file(&self, file_name: String) -> Result<String> {
         let filepath = self.file_path.clone().join(file_name.clone());
 
         if filepath.exists() && filepath.is_file() {
@@ -103,7 +103,7 @@ impl Directory {
         }
     }
 
-    pub fn get_file_last_n_lines(&self, file_name: String, n: usize) -> Result<FileResult, Error> {
+    pub fn get_file_last_n_lines(&self, file_name: String, n: usize) -> Result<FileResult> {
         let filepath = self.file_path.clone().join(file_name.clone());
 
         if filepath.exists() && filepath.is_file() {
@@ -140,7 +140,7 @@ impl Directory {
     }
 
     /// Get the file name which is most recently modified in the directory
-    pub fn get_most_recent(&self) -> Result<Option<String>, Error> {
+    pub fn get_most_recent(&self) -> Result<Option<String>> {
         let mut most_recent: Option<(SystemTime, String)> = None;
 
         for entry in fs::read_dir(&self.file_path)? {
@@ -173,7 +173,7 @@ pub struct FileResult {
 }
 
 /// Write the file to the directory
-pub fn write_file(directory: &Path, file_name: String, data: &str) -> Result<(), Error> {
+pub fn write_file(directory: &Path, file_name: String, data: &str) -> Result<()> {
     if !directory.exists() {
         fs::create_dir_all(directory)?
     }
@@ -182,7 +182,7 @@ pub fn write_file(directory: &Path, file_name: String, data: &str) -> Result<(),
     Ok(())
 }
 
-pub fn delete_file(directory: &Path, file_name: String) -> Result<(), Error> {
+pub fn delete_file(directory: &Path, file_name: String) -> Result<()> {
     let file_to_delete = directory.join(file_name.clone());
     if file_to_delete.exists() && file_to_delete.is_file() {
         fs::remove_file(file_to_delete).map_err(Error::Io)
@@ -200,12 +200,12 @@ mod tests {
 
     use crate::{
         storage::file_storage::{delete_file, write_file},
-        Error,
+        Result,
     };
 
     use super::Directory;
 
-    static CREATE_TMP_DIR: fn() -> Result<PathBuf, Error> =
+    static CREATE_TMP_DIR: fn() -> Result<PathBuf> =
         || Ok(tempfile::TempDir::new()?.path().to_path_buf());
 
     #[test]
