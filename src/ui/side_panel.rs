@@ -2,17 +2,15 @@ use egui::{
     vec2, Color32, InnerResponse, Label, Layout, Margin, RichText, ScrollArea, Separator, Stroke,
     Widget,
 };
-use tracing::info;
+use tracing::{error, info};
 
 use crate::{
     accounts::{Accounts, AccountsRoute},
-    app::get_active_columns_mut,
-    app_style,
-    app_style::DECK_ICON_SIZE,
+    app::{get_active_columns_mut, get_decks_mut},
+    app_style::{self, DECK_ICON_SIZE},
     colors,
     column::Column,
-    decks::DecksAction,
-    decks::DecksCache,
+    decks::{DecksAction, DecksCache},
     imgcache::ImageCache,
     nav::SwitchingAction,
     route::Route,
@@ -331,7 +329,20 @@ impl<'a> DesktopSidePanel<'a> {
                 if router.routes().iter().any(|&r| r == Route::EditDeck(index)) {
                     router.go_back();
                 } else {
-                    router.route_to(Route::EditDeck(index));
+                    switching_response = Some(crate::nav::SwitchingAction::Decks(
+                        DecksAction::Switch(index),
+                    ));
+                    if let Some(edit_deck) = get_decks_mut(accounts, decks_cache)
+                        .decks_mut()
+                        .get_mut(index)
+                    {
+                        edit_deck
+                            .columns_mut()
+                            .get_first_router()
+                            .route_to(Route::EditDeck(index));
+                    } else {
+                        error!("Cannot push EditDeck route to index {}", index);
+                    }
                 }
             }
         }

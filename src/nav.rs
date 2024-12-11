@@ -192,10 +192,6 @@ impl RenderNavResponse {
                         );
                     }
 
-                    if let Some(Route::EditDeck(index)) = r {
-                        SwitchingAction::Decks(DecksAction::Removing(index)).process(app);
-                    }
-
                     switching_occured = true;
                 }
 
@@ -318,6 +314,7 @@ fn render_nav_body(
             resp
         }
         Route::EditDeck(index) => {
+            let mut action = None;
             let cur_deck = get_decks_mut(&app.accounts, &mut app.decks_cache)
                 .decks_mut()
                 .get_mut(*index)
@@ -338,7 +335,9 @@ fn render_nav_body(
                         cur_deck.edit(configure_deck_response);
                     }
                     EditDeckResponse::Delete => {
-                        deck_state.deleting = true;
+                        action = Some(RenderNavAction::SwitchingAction(SwitchingAction::Decks(
+                            DecksAction::Removing(*index),
+                        )));
                     }
                 }
                 get_active_columns_mut(&app.accounts, &mut app.decks_cache)
@@ -346,7 +345,7 @@ fn render_nav_body(
                     .go_back();
             }
 
-            None
+            action
         }
     }
 }

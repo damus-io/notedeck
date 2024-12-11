@@ -4,7 +4,6 @@ use crate::{app_style::emoji_font_family, decks::Deck};
 pub struct DeckState {
     pub deck_name: String,
     pub selected_glyph: Option<char>,
-    pub deleting: bool,
     pub selecting_glyph: bool,
     pub warn_no_title: bool,
     pub warn_no_icon: bool,
@@ -42,7 +41,6 @@ impl Default for DeckState {
         Self {
             deck_name: Default::default(),
             selected_glyph: Default::default(),
-            deleting: Default::default(),
             selecting_glyph: true,
             warn_no_icon: Default::default(),
             warn_no_title: Default::default(),

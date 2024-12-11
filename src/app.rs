@@ -729,6 +729,11 @@ fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus) {
                 );
             });
 
+            let mut save_cols = false;
+            if let Some(action) = side_panel_action {
+                save_cols = save_cols || action.process(app);
+            }
+
             let num_cols = app.columns().num_columns();
             let mut responses = Vec::with_capacity(num_cols);
             for col_index in 0..num_cols {
@@ -745,11 +750,6 @@ fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus) {
                 });
 
                 //strip.cell(|ui| timeline::timeline_view(ui, app, timeline_ind));
-            }
-
-            let mut save_cols = false;
-            if let Some(action) = side_panel_action {
-                save_cols = save_cols || action.process(app);
             }
 
             for response in responses {
