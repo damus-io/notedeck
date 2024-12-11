@@ -13,7 +13,7 @@ const THEME_FILE: &str = "theme.txt";
 impl ThemeHandler {
     pub fn new(path: &DataPath) -> Self {
         let directory = Directory::new(path.path(DataPathType::Setting));
-        let fallback_theme = ThemePreference::Light;
+        let fallback_theme = ThemePreference::Dark;
         Self {
             directory,
             fallback_theme,
