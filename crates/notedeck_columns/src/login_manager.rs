@@ -45,7 +45,6 @@ impl<'a> AcquireKeyState {
         }
     }
 
-    /// Whether to indicate to the user that there is a network operation occuring
     pub fn is_awaiting_network(&self) -> bool {
         self.promise_query.is_some()
     }
@@ -98,8 +97,8 @@ mod tests {
     use super::*;
     use std::time::{Duration, Instant};
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn test_retrieve_key() {
+    #[test]
+    fn test_retrieve_key() {
         let mut manager = AcquireKeyState::new();
         let expected_str = "3efdaebb1d8923ebd99c9e7ace3b4194ab45512e2be79c1b7d68d9243e0d2681";
         let expected_key = Keypair::only_pubkey(Pubkey::from_hex(expected_str).unwrap());
@@ -141,6 +140,6 @@ mod tests {
             }
         }
 
-        panic!("Test failed to get expected key.");
+        panic!();
     }
 }
