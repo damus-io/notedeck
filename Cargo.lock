@@ -2508,6 +2508,7 @@ dependencies = [
 name = "notedeck_columns"
 version = "0.2.0"
 dependencies = [
+ "android_logger",
  "base32",
  "bitflags 2.6.0",
  "dirs",
@@ -2544,6 +2545,7 @@ dependencies = [
  "url",
  "urlencoding",
  "uuid",
+ "winit",
 ]
 
 [[package]]

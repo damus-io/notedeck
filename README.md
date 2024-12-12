@@ -41,7 +41,7 @@ $ rustup target add aarch64-linux-android
 To run on a real device, just type:
 
 ```bash
-$ cargo apk run --release
+$ cargo apk run --release -p notedeck
 ```
 
 ## Android Emulator

@@ -56,7 +56,7 @@ name = "android.permission.READ_EXTERNAL_STORAGE"
 max_sdk_version = 18
 
 [package.metadata.android.signing.release]
-path = "damus.keystore"
+path = "../../damus.keystore"
 keystore_password = "damuskeystore"
 
 [[package.metadata.android.uses_permission]]
