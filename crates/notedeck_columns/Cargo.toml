@@ -32,7 +32,6 @@ open = { workspace = true }
 poll-promise = { workspace = true }
 puffin = { workspace = true, optional = true }
 puffin_egui = { workspace = true, optional = true }
-reqwest = { workspace = true }
 serde = { workspace = true }
 serde_derive = { workspace = true }
 serde_json = { workspace = true }

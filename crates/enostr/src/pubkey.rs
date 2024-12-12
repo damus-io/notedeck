@@ -1,7 +1,6 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::Error;
-use nostr::bech32::Hrp;
 use std::fmt;
 use std::ops::Deref;
 use tracing::debug;
@@ -9,7 +8,7 @@ use tracing::debug;
 #[derive(Eq, PartialEq, Clone, Copy, Hash, Ord, PartialOrd)]
 pub struct Pubkey([u8; 32]);
 
-static HRP_NPUB: Hrp = Hrp::parse_unchecked("npub");
+static HRP_NPUB: bech32::Hrp = bech32::Hrp::parse_unchecked("npub");
 
 impl Deref for Pubkey {
     type Target = [u8; 32];
@@ -58,7 +57,7 @@ impl Pubkey {
     }
 
     pub fn try_from_bech32_string(s: &str, verify: bool) -> Result<Self, Error> {
-        let data = match nostr::bech32::decode(s) {
+        let data = match bech32::decode(s) {
             Ok(res) => Ok(res),
             Err(_) => Err(Error::InvalidBech32),
         }?;
@@ -79,7 +78,7 @@ impl Pubkey {
     }
 
     pub fn to_bech(&self) -> Option<String> {
-        nostr::bech32::encode::<nostr::bech32::Bech32>(HRP_NPUB, &self.0).ok()
+        bech32::encode::<bech32::Bech32>(HRP_NPUB, &self.0).ok()
     }
 }
 

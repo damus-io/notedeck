@@ -10,6 +10,7 @@ members = [
 
 [workspace.dependencies]
 base32 = "0.4.0"
+bech32 = { version = "0.11", default-features = false }
 bitflags = "2.5.0"
 dirs = "5.0.1"
 eframe = { version = "0.29.1", default-features = false, features = [ "wgpu", "wayland", "x11", "android-native-activity" ] }
@@ -26,7 +27,7 @@ hex = "0.4.3"
 image = { version = "0.25", features = ["jpeg", "png", "webp"] }
 indexmap = "2.6.0"
 log = "0.4.17"
-nostr = { version = "0.30.0" }
+nostr = { version = "0.37.0", default-features = false, features = ["std", "nip49"] }
 nostrdb = { git = "https://github.com/damus-io/nostrdb-rs", rev = "71154e4100775f6932ee517da4350c433ba14ec7" }
 notedeck = { path = "crates/notedeck" } 
 notedeck_chrome = { path = "crates/notedeck_chrome" } 
@@ -35,7 +36,6 @@ open = "5.3.0"
 poll-promise = { version = "0.3.0", features = ["tokio"] }
 puffin = { git = "https://github.com/jb55/puffin", package = "puffin", rev = "70ff86d5503815219b01a009afd3669b7903a057" }
 puffin_egui = { git = "https://github.com/jb55/puffin", package = "puffin_egui", rev = "70ff86d5503815219b01a009afd3669b7903a057" }
-reqwest = { version = "0.12.4", default-features = false, features = [ "rustls-tls-native-roots" ] }
 serde = { version = "1", features = ["derive"] } # You only need this if you want app persistence
 serde_derive = "1"
 serde_json = "1.0.89"
