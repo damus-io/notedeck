@@ -13,7 +13,7 @@ impl fmt::Debug for NoteId {
     }
 }
 
-static HRP_NOTE: nostr::bech32::Hrp = nostr::bech32::Hrp::parse_unchecked("note");
+static HRP_NOTE: bech32::Hrp = bech32::Hrp::parse_unchecked("note");
 
 impl NoteId {
     pub fn new(bytes: [u8; 32]) -> Self {
@@ -34,7 +34,7 @@ impl NoteId {
     }
 
     pub fn to_bech(&self) -> Option<String> {
-        nostr::bech32::encode::<nostr::bech32::Bech32>(HRP_NOTE, &self.0).ok()
+        bech32::encode::<bech32::Bech32>(HRP_NOTE, &self.0).ok()
     }
 }
 

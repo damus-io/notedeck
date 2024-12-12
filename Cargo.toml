@@ -25,7 +25,6 @@ hex = "0.4.3"
 image = { version = "0.25", features = ["jpeg", "png", "webp"] }
 indexmap = "2.6.0"
 log = "0.4.17"
-nostr = { version = "0.30.0" }
 nostrdb = { git = "https://github.com/damus-io/nostrdb-rs", rev = "71154e4100775f6932ee517da4350c433ba14ec7" }
 notedeck = { path = "crates/notedeck" } 
 notedeck_columns = { path = "crates/notedeck_columns" } 
