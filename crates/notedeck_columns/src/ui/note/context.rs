@@ -2,6 +2,7 @@ use crate::colors;
 use egui::{Rect, Vec2};
 use enostr::{NoteId, Pubkey};
 use nostrdb::{Note, NoteKey};
+use tracing::error;
 
 #[derive(Clone)]
 #[allow(clippy::enum_variant_names)]
@@ -9,6 +10,7 @@ pub enum NoteContextSelection {
     CopyText,
     CopyPubkey,
     CopyNoteId,
+    CopyNoteJSON,
 }
 
 impl NoteContextSelection {
@@ -31,6 +33,12 @@ impl NoteContextSelection {
                     if let Some(bech) = NoteId::new(*note.id()).to_bech() {
                         w.copied_text = bech;
                     }
+                });
+            }
+            NoteContextSelection::CopyNoteJSON => {
+                ui.output_mut(|w| match note.json() {
+                    Ok(json) => w.copied_text = json,
+                    Err(err) => error!("error copying note json: {err}"),
                 });
             }
         }
@@ -160,6 +168,10 @@ impl NoteContextButton {
             }
             if ui.button("Copy note id").clicked() {
                 context_selection = Some(NoteContextSelection::CopyNoteId);
+                ui.close_menu();
+            }
+            if ui.button("Copy note json").clicked() {
+                context_selection = Some(NoteContextSelection::CopyNoteJSON);
                 ui.close_menu();
             }
         });
