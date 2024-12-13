@@ -1,4 +1,4 @@
-use ewebsock::{WsMessage, WsReceiver, WsSender};
+use ewebsock::{Options, WsMessage, WsReceiver, WsSender};
 
 use crate::{ClientMessage, Result};
 use nostrdb::Filter;
@@ -50,7 +50,7 @@ impl Eq for Relay {}
 impl Relay {
     pub fn new(url: String, wakeup: impl Fn() + Send + Sync + 'static) -> Result<Self> {
         let status = RelayStatus::Connecting;
-        let (sender, receiver) = ewebsock::connect_with_wakeup(&url, wakeup)?;
+        let (sender, receiver) = ewebsock::connect_with_wakeup(&url, Options::default(), wakeup)?;
 
         Ok(Self {
             url,
@@ -77,7 +77,8 @@ impl Relay {
     }
 
     pub fn connect(&mut self, wakeup: impl Fn() + Send + Sync + 'static) -> Result<()> {
-        let (sender, receiver) = ewebsock::connect_with_wakeup(&self.url, wakeup)?;
+        let (sender, receiver) =
+            ewebsock::connect_with_wakeup(&self.url, Options::default(), wakeup)?;
         self.status = RelayStatus::Connecting;
         self.sender = sender;
         self.receiver = receiver;
