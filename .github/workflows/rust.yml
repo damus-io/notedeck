@@ -89,11 +89,11 @@ jobs:
 
       - name: Build deb (Cross)
         if: matrix.arch != runner.arch
-        run: cargo deb --target=${{ matrix.arch }}-unknown-linux-gnu
+        run: cargo deb -p notedeck_chrome --target=${{ matrix.arch }}-unknown-linux-gnu
 
       - name: Build deb
         if: matrix.arch == runner.arch
-        run: cargo deb
+        run: cargo deb -p notedeck_chrome
 
       - name: Upload RPM
         uses: actions/upload-artifact@v4

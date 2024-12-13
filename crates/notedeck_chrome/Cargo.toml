@@ -78,6 +78,10 @@ name = "android.permission.INTERNET"
 [package.metadata.android.application]
 label = "Damus"
 
+[package.metadata.deb]
+name = "notedeck"
+copyright = "2024 Damus, Nostr Inc."
+
 [package.metadata.generate-rpm]
 name = "notedeck"
 assets = [
