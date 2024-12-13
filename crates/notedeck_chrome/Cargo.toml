@@ -79,6 +79,7 @@ name = "android.permission.INTERNET"
 label = "Damus"
 
 [package.metadata.generate-rpm]
+name = "notedeck"
 assets = [
     { source = "target/release/notedeck", dest = "/usr/bin/notedeck", mode = "755" },
 ]

@@ -81,11 +81,11 @@ jobs:
 
       - name: Build RPM (Cross)
         if: matrix.arch != runner.arch
-        run: cargo generate-rpm --target=${{ matrix.arch }}-unknown-linux-gnu
+        run: cargo generate-rpm -p crates/notedeck_chrome --target=${{ matrix.arch }}-unknown-linux-gnu
 
       - name: Build RPM
         if: matrix.arch == runner.arch
-        run: cargo generate-rpm
+        run: cargo generate-rpm -p crates/notedeck_chrome
 
       - name: Build deb (Cross)
         if: matrix.arch != runner.arch
