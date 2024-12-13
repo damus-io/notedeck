@@ -5,6 +5,7 @@ set -u  # Treat unset variables as an error
 set -o pipefail  # Catch errors in pipelines
 
 # Ensure the script is running in the correct directory
+NAME="Notedeck"
 REQUIRED_DIR="notedeck"
 ARCH=${ARCH:-"aarch64"}
 TARGET=${TARGET:-${ARCH}-apple-darwin}
@@ -53,11 +54,11 @@ codesign \
   --options runtime \
   --entitlements entitlements.plist \
   --sign "$NOTEDECK_APPLE_RELEASE_CERT_ID" \
-  target/${TARGET}/release/bundle/osx/notedeck.app
+  target/${TARGET}/release/bundle/osx/$NAME.app
 
 # Create a zip for notarization
 echo "Creating zip for notarization..."
-zip -r notedeck.zip target/${TARGET}/release/bundle/osx/notedeck.app
+zip -r notedeck.zip target/${TARGET}/release/bundle/osx/$NAME.app
 
 # Submit for notarization
 echo "Submitting for notarization..."
@@ -70,7 +71,7 @@ xcrun notarytool submit \
 
 # Staple the notarization
 echo "Stapling notarization to the app..."
-xcrun stapler staple target/${TARGET}/release/bundle/osx/notedeck.app
+xcrun stapler staple target/${TARGET}/release/bundle/osx/$NAME.app
 
 echo "Removing notedeck.zip"
 rm notedeck.zip
@@ -81,7 +82,7 @@ mkdir -p packages
 create-dmg \
   --window-size 600 400 \
   --app-drop-link 400 100 \
-  packages/notedeck-${ARCH}.dmg \
-  target/${TARGET}/release/bundle/osx/notedeck.app
+  packages/$NAME-${ARCH}.dmg \
+  target/${TARGET}/release/bundle/osx/$NAME.app
 
 echo "Build and signing process completed successfully."

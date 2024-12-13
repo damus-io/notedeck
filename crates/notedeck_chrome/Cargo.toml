@@ -45,6 +45,8 @@ android-activity = { version = "0.4", features = [ "native-activity" ] }
 winit = { version = "0.30.5", features = [ "android-native-activity" ] }
 
 [package.metadata.bundle]
+name = "Notedeck"
+short_description = "The nostr browser"
 identifier = "com.damus.notedeck"
 icon = ["assets/app_icon.icns"]
 
