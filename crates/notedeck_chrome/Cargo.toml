@@ -52,7 +52,7 @@ icon = ["assets/app_icon.icns"]
 
 [package.metadata.android]
 package = "com.damus.app"
-apk_name = "damus"
+apk_name = "Notedeck"
 #assets = "assets"
 
 [[package.metadata.android.uses_feature]]
