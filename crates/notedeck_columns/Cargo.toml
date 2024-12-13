@@ -27,7 +27,6 @@ env_logger = { workspace = true }
 hex = { workspace = true }
 image = { workspace = true }
 indexmap = { workspace = true }
-log = { workspace = true }
 nostrdb = { workspace = true }
 open = { workspace = true }
 poll-promise = { workspace = true }

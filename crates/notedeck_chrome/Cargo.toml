@@ -40,6 +40,7 @@ profiling = ["notedeck_columns/puffin"]
 
 [target.'cfg(target_os = "android")'.dependencies]
 android_logger = "0.11.1"
+log = { workspace = true }
 android-activity = { version = "0.4", features = [ "native-activity" ] }
 winit = { version = "0.30.5", features = [ "android-native-activity" ] }
 
