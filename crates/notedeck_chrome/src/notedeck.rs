@@ -130,6 +130,7 @@ mod tests {
         let datapath = create_tmp_dir();
         let dbpath = create_tmp_dir();
         let args: Vec<String> = vec![
+            "--testrunner",
             "--datapath",
             &datapath.to_str().unwrap(),
             "--dbpath",
@@ -155,6 +156,7 @@ mod tests {
         let tmpdir = create_tmp_dir();
         let npub = "npub1xtscya34g58tk0z605fvr788k263gsu6cy9x0mhnm87echrgufzsevkk5s";
         let args: Vec<String> = vec![
+            "--testrunner",
             "--no-keystore",
             "--pub",
             npub,

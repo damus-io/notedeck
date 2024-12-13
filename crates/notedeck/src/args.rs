@@ -7,6 +7,10 @@ pub struct Args {
     pub keys: Vec<Keypair>,
     pub light: bool,
     pub debug: bool,
+
+    /// Enable when running tests so we don't panic on app startup
+    pub tests: bool,
+
     pub use_keystore: bool,
     pub dbpath: Option<String>,
     pub datapath: Option<String>,
@@ -20,6 +24,7 @@ impl Args {
             keys: vec![],
             light: false,
             debug: false,
+            tests: false,
             use_keystore: true,
             dbpath: None,
             datapath: None,
@@ -38,6 +43,8 @@ impl Args {
                 res.light = false;
             } else if arg == "--debug" {
                 res.debug = true;
+            } else if arg == "--testrunner" {
+                res.tests = true;
             } else if arg == "--pub" || arg == "--npub" {
                 i += 1;
                 let pubstr = if let Some(next_arg) = args.get(i) {

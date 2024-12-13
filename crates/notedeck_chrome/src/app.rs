@@ -55,7 +55,7 @@ impl Notedeck {
             .unwrap_or(notedeck::ui::is_compiled_as_mobile());
 
         // Some people have been running notedeck in debug, let's catch that!
-        if !cfg!(test) && cfg!(debug_assertions) && !parsed_args.debug {
+        if !parsed_args.tests && cfg!(debug_assertions) && !parsed_args.debug {
             println!("--- WELCOME TO DAMUS NOTEDECK! ---");
             println!("It looks like are running notedeck in debug mode, unless you are a developer, this is not likely what you want.");
             println!("If you are a developer, run `cargo run -- --debug` to skip this message.");
