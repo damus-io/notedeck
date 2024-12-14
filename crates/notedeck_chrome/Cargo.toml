@@ -26,6 +26,9 @@ tracing-subscriber = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 
+[lib]
+crate-type = ["lib", "cdylib"]
+
 [[bin]]
 name = "notedeck"
 path = "src/notedeck.rs"
@@ -76,7 +79,7 @@ keystore_password = "damuskeystore"
 name = "android.permission.INTERNET"
 
 [package.metadata.android.application]
-label = "Damus"
+label = "Notedeck"
 
 [package.metadata.deb]
 name = "notedeck"

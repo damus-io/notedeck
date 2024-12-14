@@ -2,6 +2,7 @@
 //use egui_android::run_android;
 
 use crate::app::Notedeck;
+use notedeck_columns::Damus;
 use winit::platform::android::activity::AndroidApp;
 use winit::platform::android::EventLoopBuilderExtAndroid;
 
@@ -25,7 +26,12 @@ pub async fn android_main(app: AndroidApp) {
     let _res = eframe::run_native(
         "Damus Notedeck",
         options,
-        Box::new(move |cc| Ok(Box::new(Notedeck::new(&cc.egui_ctx, path, &app_args)))),
+        Box::new(move |cc| {
+            let mut notedeck = Notedeck::new(&cc.egui_ctx, path, &app_args);
+            let damus = Damus::new(&mut notedeck.app_context(), &app_args);
+            notedeck.add_app(damus);
+            Ok(Box::new(notedeck))
+        }),
     );
 }
 
