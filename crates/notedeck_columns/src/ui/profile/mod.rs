@@ -1,12 +1,14 @@
 pub mod picture;
 pub mod preview;
 
+use crate::notes_holder::NotesHolder;
 use crate::ui::note::NoteOptions;
 use egui::{ScrollArea, Widget};
 use enostr::Pubkey;
 use nostrdb::{Ndb, Transaction};
 pub use picture::ProfilePic;
 pub use preview::ProfilePreview;
+use tracing::error;
 
 use crate::{actionbar::NoteAction, notes_holder::NotesHolderStorage, profile::Profile};
 
@@ -66,6 +68,11 @@ impl<'a> ProfileView<'a> {
                     .get_ptr();
 
                 profile.timeline.selected_view = tabs_ui(ui);
+
+                // poll for new notes and insert them into our existing notes
+                if let Err(e) = profile.poll_notes_into_view(&txn, self.ndb, is_muted) {
+                    error!("Profile::poll_notes_into_view: {e}");
+                }
 
                 let reversed = false;
 
