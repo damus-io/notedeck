@@ -8,6 +8,7 @@ queries/damus-notifs.json
 .git
 cache
 /dist
+/packages
 .direnv/
 src/camera.rs
 scripts/macos_build_secrets.sh
