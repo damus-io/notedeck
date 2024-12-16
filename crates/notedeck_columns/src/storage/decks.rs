@@ -304,12 +304,7 @@ fn deserialize_columns(ndb: &Ndb, deck_user: &[u8; 32], serialized: Vec<Vec<Stri
                     match &ir {
                         IntermediaryRoute::Route(Route::Timeline(TimelineRoute::Thread(_)))
                         | IntermediaryRoute::Route(Route::Timeline(TimelineRoute::Profile(_))) => {
-                            // Do nothing. Threads & Profiles not yet supported for deserialization
-                        }
-                        IntermediaryRoute::Timeline(tl)
-                            if matches!(tl.kind, TimelineKind::Profile(_)) =>
-                        {
-                            // Do nothing. Profiles aren't yet supported for deserialization
+                            // Do nothing. TimelineRoute Threads & Profiles not yet supported for deserialization
                         }
                         _ => cur_routes.push(ir),
                     }
@@ -361,6 +356,8 @@ enum Keyword {
     Support,
     Deck,
     Edit,
+    NotesSubSelection,
+    ExternalNotesSubSelection,
 }
 
 impl Keyword {
@@ -525,6 +522,12 @@ fn serialize_route(route: &Route, columns: &Columns) -> Option<String> {
                 }
                 AddColumnRoute::Hashtag => {
                     selections.push(Selection::Keyword(Keyword::HashtagSelection))
+                }
+                AddColumnRoute::UndecidedNotesSub => {
+                    selections.push(Selection::Keyword(Keyword::NotesSubSelection))
+                }
+                AddColumnRoute::ExternalNotesSub => {
+                    selections.push(Selection::Keyword(Keyword::ExternalNotesSubSelection))
                 }
             }
         }
@@ -717,6 +720,14 @@ fn selections_to_route(selections: Vec<Selection>) -> Option<CleanIntermediaryRo
             Selection::Keyword(Keyword::HashtagSelection) => Some(CleanIntermediaryRoute::ToRoute(
                 Route::AddColumn(AddColumnRoute::Hashtag),
             )),
+            Selection::Keyword(Keyword::NotesSubSelection) => {
+                Some(CleanIntermediaryRoute::ToRoute(Route::AddColumn(
+                    AddColumnRoute::UndecidedNotesSub,
+                )))
+            }
+            Selection::Keyword(Keyword::ExternalNotesSubSelection) => Some(
+                CleanIntermediaryRoute::ToRoute(Route::AddColumn(AddColumnRoute::ExternalNotesSub)),
+            ),
             _ => None,
         },
         Selection::Keyword(Keyword::Support) => {
@@ -746,6 +757,8 @@ fn selections_to_route(selections: Vec<Selection>) -> Option<CleanIntermediaryRo
         | Selection::Keyword(Keyword::NotificationSelection)
         | Selection::Keyword(Keyword::ExternalNotifSelection)
         | Selection::Keyword(Keyword::HashtagSelection)
+        | Selection::Keyword(Keyword::NotesSubSelection)
+        | Selection::Keyword(Keyword::ExternalNotesSubSelection)
         | Selection::Keyword(Keyword::Edit) => None,
     }
 }

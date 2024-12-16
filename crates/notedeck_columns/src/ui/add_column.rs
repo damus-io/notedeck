@@ -5,6 +5,7 @@ use egui::{
     pos2, vec2, Align, Button, Color32, FontId, Id, ImageSource, Margin, Pos2, Rect, RichText,
     Separator, Ui, Vec2,
 };
+use enostr::Pubkey;
 use nostrdb::Ndb;
 use tracing::error;
 
@@ -24,6 +25,8 @@ pub enum AddColumnResponse {
     UndecidedNotification,
     ExternalNotification,
     Hashtag,
+    UndecidedNotesSub,
+    ExternalNotesSub,
 }
 
 pub enum NotificationColumnType {
@@ -40,6 +43,9 @@ enum AddColumnOption {
     Home(PubkeySource),
     UndecidedHashtag,
     Hashtag(String),
+    UndecidedNotesSub,
+    ExternalNotesSub,
+    NotesSub(PubkeySource),
 }
 
 #[derive(Clone, Copy, Eq, PartialEq, Debug)]
@@ -48,6 +54,8 @@ pub enum AddColumnRoute {
     UndecidedNotification,
     ExternalNotification,
     Hashtag,
+    UndecidedNotesSub,
+    ExternalNotesSub,
 }
 
 impl AddColumnOption {
@@ -76,6 +84,13 @@ impl AddColumnOption {
             AddColumnOption::Hashtag(hashtag) => TimelineKind::Hashtag(hashtag)
                 .into_timeline(ndb, None)
                 .map(AddColumnResponse::Timeline),
+            AddColumnOption::UndecidedNotesSub => Some(AddColumnResponse::UndecidedNotesSub),
+            AddColumnOption::ExternalNotesSub => Some(AddColumnResponse::ExternalNotesSub),
+            AddColumnOption::NotesSub(pubkey_source) => {
+                let tlk = TimelineKind::profile(pubkey_source);
+                tlk.into_timeline(ndb, cur_account.map(|a| a.pubkey.bytes()))
+                    .map(AddColumnResponse::Timeline)
+            }
         }
     }
 }
@@ -128,8 +143,42 @@ impl<'a> AddColumnView<'a> {
     }
 
     fn external_notification_ui(&mut self, ui: &mut Ui) -> Option<AddColumnResponse> {
+        let id = ui.id().with("external_notif");
+
+        self.external_ui(ui, id, |pubkey| {
+            AddColumnOption::Notification(PubkeySource::Explicit(pubkey))
+        })
+    }
+
+    fn notes_sub_ui(&mut self, ui: &mut Ui) -> Option<AddColumnResponse> {
+        let mut selected_option: Option<AddColumnResponse> = None;
+        for column_option_data in self.get_notes_sub_options() {
+            let option = column_option_data.option.clone();
+            if self.column_option_ui(ui, column_option_data).clicked() {
+                selected_option = option.take_as_response(self.ndb, self.cur_account);
+            }
+
+            ui.add(Separator::default().spacing(0.0));
+        }
+
+        selected_option
+    }
+
+    fn external_notes_sub_ui(&mut self, ui: &mut Ui) -> Option<AddColumnResponse> {
+        let id = ui.id().with("external_notes_sub");
+
+        self.external_ui(ui, id, |pubkey| {
+            AddColumnOption::NotesSub(PubkeySource::Explicit(pubkey))
+        })
+    }
+
+    fn external_ui(
+        &mut self,
+        ui: &mut Ui,
+        id: egui::Id,
+        to_tl: fn(Pubkey) -> AddColumnOption,
+    ) -> Option<AddColumnResponse> {
         padding(16.0, ui, |ui| {
-            let id = ui.id().with("external_notif");
             let key_state = self.key_state_map.entry(id).or_default();
 
             let text_edit = key_state.get_acquire_textedit(|text| {
@@ -164,8 +213,7 @@ impl<'a> AddColumnView<'a> {
 
             if let Some(keypair) = key_state.check_for_successful_login() {
                 key_state.should_create_new();
-                AddColumnOption::Notification(PubkeySource::Explicit(keypair.pubkey))
-                    .take_as_response(self.ndb, self.cur_account)
+                to_tl(keypair.pubkey).take_as_response(self.ndb, self.cur_account)
             } else {
                 None
             }
@@ -309,6 +357,12 @@ impl<'a> AddColumnView<'a> {
             icon: egui::include_image!("../../../../assets/icons/notifications_icon_dark_4x.png"),
             option: AddColumnOption::UndecidedHashtag,
         });
+        vec.push(ColumnOptionData {
+            title: "Subscribe Notes",
+            description: "Stay up to date with someone's notes & replies",
+            icon: egui::include_image!("../../../../assets/icons/notifications_icon_dark_4x.png"),
+            option: AddColumnOption::UndecidedNotesSub,
+        });
 
         vec
     }
@@ -342,6 +396,36 @@ impl<'a> AddColumnView<'a> {
 
         vec
     }
+
+    fn get_notes_sub_options(&self) -> Vec<ColumnOptionData> {
+        let mut vec = Vec::new();
+
+        if let Some(acc) = self.cur_account {
+            let source = if acc.secret_key.is_some() {
+                PubkeySource::DeckAuthor
+            } else {
+                PubkeySource::Explicit(acc.pubkey)
+            };
+
+            vec.push(ColumnOptionData {
+                title: "Your Notes",
+                description: "Keep track of your notes & replies",
+                icon: egui::include_image!(
+                    "../../../../assets/icons/notifications_icon_dark_4x.png"
+                ),
+                option: AddColumnOption::NotesSub(source),
+            });
+        }
+
+        vec.push(ColumnOptionData {
+            title: "Someone else's Notes",
+            description: "Stay up to date with someone else's notes & replies",
+            icon: egui::include_image!("../../../../assets/icons/notifications_icon_dark_4x.png"),
+            option: AddColumnOption::ExternalNotesSub,
+        });
+
+        vec
+    }
 }
 
 struct ColumnOptionData {
@@ -368,6 +452,8 @@ pub fn render_add_column_routes(
         AddColumnRoute::UndecidedNotification => add_column_view.notifications_ui(ui),
         AddColumnRoute::ExternalNotification => add_column_view.external_notification_ui(ui),
         AddColumnRoute::Hashtag => hashtag_ui(ui, ctx.ndb, &mut app.view_state.id_string_map),
+        AddColumnRoute::UndecidedNotesSub => add_column_view.notes_sub_ui(ui),
+        AddColumnRoute::ExternalNotesSub => add_column_view.external_notes_sub_ui(ui),
     };
 
     if let Some(resp) = resp {
@@ -406,6 +492,22 @@ pub fn render_add_column_routes(
                     .column_mut(col)
                     .router_mut()
                     .route_to(crate::route::Route::AddColumn(AddColumnRoute::Hashtag));
+            }
+            AddColumnResponse::UndecidedNotesSub => {
+                app.columns_mut(ctx.accounts)
+                    .column_mut(col)
+                    .router_mut()
+                    .route_to(crate::route::Route::AddColumn(
+                        AddColumnRoute::UndecidedNotesSub,
+                    ));
+            }
+            AddColumnResponse::ExternalNotesSub => {
+                app.columns_mut(ctx.accounts)
+                    .column_mut(col)
+                    .router_mut()
+                    .route_to(crate::route::Route::AddColumn(
+                        AddColumnRoute::ExternalNotesSub,
+                    ));
             }
         };
     }

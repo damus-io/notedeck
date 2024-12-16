@@ -94,6 +94,10 @@ impl Route {
                     Cow::Borrowed("Add External Notifications Column")
                 }
                 AddColumnRoute::Hashtag => Cow::Borrowed("Add Hashtag Column"),
+                AddColumnRoute::UndecidedNotesSub => Cow::Borrowed("Subscribe to someone's notes"),
+                AddColumnRoute::ExternalNotesSub => {
+                    Cow::Borrowed("Subscribe to someone else's notes")
+                }
             },
             Route::Support => Cow::Borrowed("Damus Support"),
             Route::NewDeck => Cow::Borrowed("Add Deck"),

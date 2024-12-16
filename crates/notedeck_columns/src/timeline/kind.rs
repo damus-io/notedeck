@@ -200,7 +200,7 @@ impl TimelineKind {
                 ListKind::Contact(_pubkey_source) => Cow::Borrowed("Contacts"),
             },
             TimelineKind::Notifications(_pubkey_source) => Cow::Borrowed("Notifications"),
-            TimelineKind::Profile(_pubkey_source) => Cow::Borrowed("Profile"),
+            TimelineKind::Profile(_pubkey_source) => Cow::Borrowed("Notes"),
             TimelineKind::Universe => Cow::Borrowed("Universe"),
             TimelineKind::Generic => Cow::Borrowed("Custom"),
             TimelineKind::Hashtag(hashtag) => Cow::Owned(format!("#{}", hashtag)),
