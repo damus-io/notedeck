@@ -46,7 +46,11 @@ impl<'a> AcquireKeyState {
     }
 
     pub fn is_awaiting_network(&self) -> bool {
-        self.promise_query.is_some()
+        if let Some((_, promise)) = &self.promise_query {
+            promise.ready().is_none()
+        } else {
+            false
+        }
     }
 
     /// Whether to indicate to the user that a login error occured
@@ -62,23 +66,30 @@ impl<'a> AcquireKeyState {
     }
 
     /// Whether to indicate to the user that a successful login occured
-    pub fn check_for_successful_login(&mut self) -> Option<Keypair> {
-        if let Some((_, promise)) = &mut self.promise_query {
-            if promise.ready().is_some() {
-                if let Some((_, promise)) = self.promise_query.take() {
-                    match promise.block_and_take() {
-                        Ok(key) => {
-                            return Some(key);
-                        }
-                        Err(e) => {
-                            self.error = Some(e);
-                            self.key_on_error = Some(self.desired_key.clone());
-                        }
-                    };
-                }
+    pub fn get_login_keypair(&mut self) -> Option<&Keypair> {
+        if let Some((_, promise)) = &self.promise_query {
+            match promise.poll() {
+                std::task::Poll::Ready(inner) => match inner {
+                    Ok(kp) => Some(kp),
+                    Err(e) => {
+                        self.error = Some(e.clone());
+                        self.key_on_error = Some(self.desired_key.clone());
+                        None
+                    }
+                },
+                std::task::Poll::Pending => None,
+            }
+        } else {
+            None
+        }
+    }
+
+    pub fn handle_input_change_after_acquire(&mut self) {
+        if let Some((query, _)) = &self.promise_query {
+            if *query != self.desired_key {
+                self.promise_query = None;
             }
         }
-        None
     }
 
     pub fn should_create_new(&mut self) {
@@ -88,6 +99,36 @@ impl<'a> AcquireKeyState {
     pub fn check_for_create_new(&self) -> bool {
         self.should_create_new
     }
+
+    pub fn loading_and_error_ui(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(8.0);
+
+        ui.vertical_centered(|ui| {
+            if self.is_awaiting_network() {
+                ui.add(egui::Spinner::new());
+            }
+        });
+
+        if let Some(err) = self.check_for_error() {
+            show_error(ui, err);
+        }
+
+        ui.add_space(8.0);
+    }
+}
+
+fn show_error(ui: &mut egui::Ui, err: &AcquireKeyError) {
+    ui.horizontal(|ui| {
+        let error_label = match err {
+            AcquireKeyError::InvalidKey => egui::Label::new(
+                egui::RichText::new("Invalid key.").color(ui.visuals().error_fg_color),
+            ),
+            AcquireKeyError::Nip05Failed(e) => {
+                egui::Label::new(egui::RichText::new(e).color(ui.visuals().error_fg_color))
+            }
+        };
+        ui.add(error_label.truncate());
+    });
 }
 
 #[cfg(test)]
@@ -134,8 +175,8 @@ mod tests {
                 manager.apply_acquire();
             }
 
-            if let Some(key) = manager.check_for_successful_login() {
-                assert_eq!(expected_key, key);
+            if let Some(key) = manager.get_login_keypair() {
+                assert_eq!(expected_key, key.clone());
                 return;
             }
         }
