@@ -64,8 +64,18 @@ impl<'a, 'cache> ProfilePreview<'a, 'cache> {
     }
 
     fn body(self, ui: &mut egui::Ui) {
-        crate::ui::padding(12.0, ui, |ui| {
-            ui.add(ProfilePic::new(self.cache, get_profile_url(Some(self.profile))).size(80.0));
+        let padding = 12.0;
+        crate::ui::padding(padding, ui, |ui| {
+            let mut pfp_rect = ui.available_rect_before_wrap();
+            let size = 80.0;
+            pfp_rect.set_width(size);
+            pfp_rect.set_height(size);
+            let pfp_rect = pfp_rect.translate(egui::vec2(0.0, -(padding + 2.0 + (size / 2.0))));
+
+            ui.put(
+                pfp_rect,
+                ProfilePic::new(self.cache, get_profile_url(Some(self.profile))).size(size),
+            );
             ui.add(display_name_widget(
                 get_display_name(Some(self.profile)),
                 false,
