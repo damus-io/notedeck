@@ -1,6 +1,8 @@
-use egui::{FontFamily, TextStyle};
+use egui::{Context, FontFamily, FontId, TextStyle};
 
 use strum_macros::EnumIter;
+
+use crate::fonts::get_font_size;
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, EnumIter)]
 pub enum NotedeckTextStyle {
@@ -42,5 +44,9 @@ impl NotedeckTextStyle {
             Self::Small => FontFamily::Proportional,
             Self::Tiny => FontFamily::Proportional,
         }
+    }
+
+    pub fn get_font_id(&self, ctx: &Context) -> FontId {
+        FontId::new(get_font_size(ctx, self), self.font_family())
     }
 }
