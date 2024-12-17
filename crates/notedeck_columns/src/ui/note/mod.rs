@@ -320,6 +320,11 @@ impl<'a> NoteView<'a> {
                             self.img_cache,
                         ));
                     });
+
+                if resp.hovered() || resp.clicked() {
+                    ui::show_pointer(ui);
+                }
+
                 resp
             }
             None => ui
