@@ -37,7 +37,7 @@ impl MultiSubscriber {
         })
     }
 
-    pub fn unsubscribe(&mut self, ndb: &Ndb, pool: &mut RelayPool) {
+    pub fn unsubscribe(&mut self, ndb: &mut Ndb, pool: &mut RelayPool) {
         if self.subscribers == 0 {
             error!("No subscribers to unsubscribe from");
             return;
