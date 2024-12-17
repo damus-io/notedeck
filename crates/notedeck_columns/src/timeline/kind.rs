@@ -194,16 +194,75 @@ impl TimelineKind {
         }
     }
 
-    pub fn to_title(&self) -> Cow<'static, str> {
+    pub fn to_title(&self) -> ColumnTitle<'_> {
         match self {
             TimelineKind::List(list_kind) => match list_kind {
-                ListKind::Contact(_pubkey_source) => Cow::Borrowed("Contacts"),
+                ListKind::Contact(_pubkey_source) => ColumnTitle::simple("Contacts"),
             },
-            TimelineKind::Notifications(_pubkey_source) => Cow::Borrowed("Notifications"),
-            TimelineKind::Profile(_pubkey_source) => Cow::Borrowed("Notes"),
-            TimelineKind::Universe => Cow::Borrowed("Universe"),
-            TimelineKind::Generic => Cow::Borrowed("Custom"),
-            TimelineKind::Hashtag(hashtag) => Cow::Owned(format!("#{}", hashtag)),
+            TimelineKind::Notifications(_pubkey_source) => ColumnTitle::simple("Notifications"),
+            TimelineKind::Profile(_pubkey_source) => ColumnTitle::needs_db(self),
+            TimelineKind::Universe => ColumnTitle::simple("Universe"),
+            TimelineKind::Generic => ColumnTitle::simple("Custom"),
+            TimelineKind::Hashtag(hashtag) => ColumnTitle::formatted(format!("#{}", hashtag)),
         }
+    }
+}
+
+#[derive(Debug)]
+pub struct TitleNeedsDb<'a> {
+    kind: &'a TimelineKind,
+}
+
+impl<'a> TitleNeedsDb<'a> {
+    pub fn new(kind: &'a TimelineKind) -> Self {
+        TitleNeedsDb { kind }
+    }
+
+    pub fn title<'txn>(
+        &self,
+        txn: &'txn Transaction,
+        ndb: &Ndb,
+        deck_author: Option<&Pubkey>,
+    ) -> &'txn str {
+        if let TimelineKind::Profile(pubkey_source) = self.kind {
+            if let Some(deck_author) = deck_author {
+                let pubkey = pubkey_source.to_pubkey(deck_author);
+                let profile = ndb.get_profile_by_pubkey(txn, pubkey);
+                let m_name = profile
+                    .ok()
+                    .as_ref()
+                    .and_then(|p| crate::profile::get_profile_name(p))
+                    .map(|display_name| display_name.username());
+
+                m_name.unwrap_or("Profile")
+            } else {
+                // why would be there be no deck author? weird
+                "nostrich"
+            }
+        } else {
+            "Unknown"
+        }
+    }
+}
+
+/// This saves us from having to construct a transaction if we don't need to
+/// for a particular column when rendering the title
+#[derive(Debug)]
+pub enum ColumnTitle<'a> {
+    Simple(Cow<'static, str>),
+    NeedsDb(TitleNeedsDb<'a>),
+}
+
+impl<'a> ColumnTitle<'a> {
+    pub fn simple(title: &'static str) -> Self {
+        Self::Simple(Cow::Borrowed(title))
+    }
+
+    pub fn formatted(title: String) -> Self {
+        Self::Simple(Cow::Owned(title))
+    }
+
+    pub fn needs_db(kind: &'a TimelineKind) -> ColumnTitle<'a> {
+        Self::NeedsDb(TitleNeedsDb::new(kind))
     }
 }

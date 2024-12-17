@@ -1,13 +1,10 @@
 use enostr::{NoteId, Pubkey};
-use std::{
-    borrow::Cow,
-    fmt::{self},
-};
+use std::fmt::{self};
 
 use crate::{
     accounts::AccountsRoute,
     column::Columns,
-    timeline::{TimelineId, TimelineRoute},
+    timeline::{kind::ColumnTitle, TimelineId, TimelineRoute},
     ui::add_column::AddColumnRoute,
 };
 
@@ -65,7 +62,7 @@ impl Route {
         Route::Accounts(AccountsRoute::AddAccount)
     }
 
-    pub fn title(&self, columns: &Columns) -> Cow<'static, str> {
+    pub fn title<'a>(&self, columns: &'a Columns) -> ColumnTitle<'a> {
         match self {
             Route::Timeline(tlr) => match tlr {
                 TimelineRoute::Timeline(id) => {
@@ -74,36 +71,38 @@ impl Route {
                         .expect("expected to find timeline");
                     timeline.kind.to_title()
                 }
-                TimelineRoute::Thread(_id) => Cow::Borrowed("Thread"),
-                TimelineRoute::Reply(_id) => Cow::Borrowed("Reply"),
-                TimelineRoute::Quote(_id) => Cow::Borrowed("Quote"),
-                TimelineRoute::Profile(_pubkey) => Cow::Borrowed("Profile"),
+                TimelineRoute::Thread(_id) => ColumnTitle::simple("Thread"),
+                TimelineRoute::Reply(_id) => ColumnTitle::simple("Reply"),
+                TimelineRoute::Quote(_id) => ColumnTitle::simple("Quote"),
+                TimelineRoute::Profile(_pubkey) => ColumnTitle::simple("Profile"),
             },
 
-            Route::Relays => Cow::Borrowed("Relays"),
+            Route::Relays => ColumnTitle::simple("Relays"),
 
             Route::Accounts(amr) => match amr {
-                AccountsRoute::Accounts => Cow::Borrowed("Accounts"),
-                AccountsRoute::AddAccount => Cow::Borrowed("Add Account"),
+                AccountsRoute::Accounts => ColumnTitle::simple("Accounts"),
+                AccountsRoute::AddAccount => ColumnTitle::simple("Add Account"),
             },
-            Route::ComposeNote => Cow::Borrowed("Compose Note"),
+            Route::ComposeNote => ColumnTitle::simple("Compose Note"),
             Route::AddColumn(c) => match c {
-                AddColumnRoute::Base => Cow::Borrowed("Add Column"),
-                AddColumnRoute::UndecidedNotification => Cow::Borrowed("Add Notifications Column"),
-                AddColumnRoute::ExternalNotification => {
-                    Cow::Borrowed("Add External Notifications Column")
+                AddColumnRoute::Base => ColumnTitle::simple("Add Column"),
+                AddColumnRoute::UndecidedNotification => {
+                    ColumnTitle::simple("Add Notifications Column")
                 }
-                AddColumnRoute::Hashtag => Cow::Borrowed("Add Hashtag Column"),
+                AddColumnRoute::ExternalNotification => {
+                    ColumnTitle::simple("Add External Notifications Column")
+                }
+                AddColumnRoute::Hashtag => ColumnTitle::simple("Add Hashtag Column"),
                 AddColumnRoute::UndecidedIndividual => {
-                    Cow::Borrowed("Subscribe to someone's notes")
+                    ColumnTitle::simple("Subscribe to someone's notes")
                 }
                 AddColumnRoute::ExternalIndividual => {
-                    Cow::Borrowed("Subscribe to someone else's notes")
+                    ColumnTitle::simple("Subscribe to someone else's notes")
                 }
             },
-            Route::Support => Cow::Borrowed("Damus Support"),
-            Route::NewDeck => Cow::Borrowed("Add Deck"),
-            Route::EditDeck(_) => Cow::Borrowed("Edit Deck"),
+            Route::Support => ColumnTitle::simple("Damus Support"),
+            Route::NewDeck => ColumnTitle::simple("Add Deck"),
+            Route::EditDeck(_) => ColumnTitle::simple("Edit Deck"),
         }
     }
 }

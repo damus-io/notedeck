@@ -2,7 +2,7 @@ use crate::{
     column::Columns,
     nav::RenderNavAction,
     route::Route,
-    timeline::{TimelineId, TimelineRoute},
+    timeline::{ColumnTitle, TimelineId, TimelineRoute},
     ui::{
         self,
         anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},
@@ -105,17 +105,29 @@ impl<'a> NavTitle<'a> {
         // not it looks cool
         self.title_pfp(ui, prev, 32.0);
 
-        let back_label = ui.add(
-            egui::Label::new(
-                RichText::new(prev.title(self.columns).to_string())
-                    .color(color)
-                    .text_style(NotedeckTextStyle::Body.text_style()),
-            )
-            .selectable(false)
-            .sense(egui::Sense::click()),
-        );
+        let column_title = prev.title(self.columns);
 
-        back_label.union(chev_resp)
+        let back_resp = match &column_title {
+            ColumnTitle::Simple(title) => ui.add(Self::back_label(title, color)),
+
+            ColumnTitle::NeedsDb(need_db) => {
+                let txn = Transaction::new(self.ndb).unwrap();
+                let title = need_db.title(&txn, self.ndb, self.deck_author);
+                ui.add(Self::back_label(title, color))
+            }
+        };
+
+        back_resp.union(chev_resp)
+    }
+
+    fn back_label(title: &str, color: egui::Color32) -> egui::Label {
+        egui::Label::new(
+            RichText::new(title.to_string())
+                .color(color)
+                .text_style(NotedeckTextStyle::Body.text_style()),
+        )
+        .selectable(false)
+        .sense(egui::Sense::click())
     }
 
     fn delete_column_button(&self, ui: &mut egui::Ui, icon_width: f32) -> egui::Response {
@@ -209,14 +221,25 @@ impl<'a> NavTitle<'a> {
         }
     }
 
+    fn title_label_value(title: &str) -> egui::Label {
+        egui::Label::new(RichText::new(title).text_style(NotedeckTextStyle::Body.text_style()))
+            .selectable(false)
+    }
+
     fn title_label(&self, ui: &mut egui::Ui, top: &Route) {
-        ui.add(
-            egui::Label::new(
-                RichText::new(top.title(self.columns))
-                    .text_style(NotedeckTextStyle::Body.text_style()),
-            )
-            .selectable(false),
-        );
+        let column_title = top.title(self.columns);
+
+        match &column_title {
+            ColumnTitle::Simple(title) => {
+                ui.add(Self::title_label_value(title));
+            }
+
+            ColumnTitle::NeedsDb(need_db) => {
+                let txn = Transaction::new(self.ndb).unwrap();
+                let title = need_db.title(&txn, self.ndb, self.deck_author);
+                ui.add(Self::title_label_value(title));
+            }
+        };
     }
 
     fn title(

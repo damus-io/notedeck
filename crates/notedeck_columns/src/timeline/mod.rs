@@ -26,7 +26,7 @@ use tracing::{debug, error, info, warn};
 pub mod kind;
 pub mod route;
 
-pub use kind::{PubkeySource, TimelineKind};
+pub use kind::{ColumnTitle, PubkeySource, TimelineKind};
 pub use route::TimelineRoute;
 
 #[derive(Debug, Hash, Copy, Clone, Eq, PartialEq)]
