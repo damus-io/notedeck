@@ -72,27 +72,54 @@ fn reply_desc(
     note_reply: &NoteReply,
     ndb: &Ndb,
     img_cache: &mut ImageCache,
-) {
+    note_cache: &mut NoteCache,
+) -> Option<NoteAction> {
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
 
+    let mut note_action: Option<NoteAction> = None;
     let size = 10.0;
     let selectable = false;
-    let color = ui.style().visuals.noninteractive().fg_stroke.color;
+    let visuals = ui.visuals();
+    let color = visuals.noninteractive().fg_stroke.color;
+    let link_color = visuals.hyperlink_color;
+
+    // note link renderer helper
+    let note_link = |ui: &mut egui::Ui,
+                     note_cache: &mut NoteCache,
+                     img_cache: &mut ImageCache,
+                     text: &str,
+                     note: &Note<'_>| {
+        let r = ui.add(
+            Label::new(RichText::new(text).size(size).color(link_color))
+                .sense(Sense::click())
+                .selectable(selectable),
+        );
+
+        if r.clicked() {
+            // TODO: jump to note
+        }
+
+        if r.hovered() {
+            r.on_hover_ui_at_pointer(|ui| {
+                ui.set_max_width(400.0);
+                ui::NoteView::new(ndb, note_cache, img_cache, note)
+                    .actionbar(false)
+                    .wide(true)
+                    .show(ui);
+            });
+        }
+    };
 
     ui.add(Label::new(RichText::new("replying to").size(size).color(color)).selectable(selectable));
 
-    let reply = if let Some(reply) = note_reply.reply() {
-        reply
-    } else {
-        return;
-    };
+    let reply = note_reply.reply()?;
 
     let reply_note = if let Ok(reply_note) = ndb.get_note_by_id(txn, reply.id) {
         reply_note
     } else {
         ui.add(Label::new(RichText::new("a note").size(size).color(color)).selectable(selectable));
-        return;
+        return None;
     };
 
     if note_reply.is_reply_to_root() {
@@ -102,22 +129,29 @@ fn reply_desc(
                 .size(size)
                 .selectable(selectable),
         );
-        ui.add(Label::new(RichText::new("'s note").size(size).color(color)).selectable(selectable));
+        ui.add(Label::new(RichText::new("'s").size(size).color(color)).selectable(selectable));
+        note_link(ui, note_cache, img_cache, "thread", &reply_note);
     } else if let Some(root) = note_reply.root() {
         // replying to another post in a thread, not the root
 
         if let Ok(root_note) = ndb.get_note_by_id(txn, root.id) {
             if root_note.pubkey() == reply_note.pubkey() {
                 // simply "replying to bob's note" when replying to bob in his thread
+                let action = ui::Mention::new(ndb, img_cache, txn, reply_note.pubkey())
+                    .size(size)
+                    .selectable(selectable)
+                    .show(ui)
+                    .inner;
+
+                if action.is_some() {
+                    note_action = action;
+                }
+
                 ui.add(
-                    ui::Mention::new(ndb, img_cache, txn, reply_note.pubkey())
-                        .size(size)
-                        .selectable(selectable),
+                    Label::new(RichText::new("'s").size(size).color(color)).selectable(selectable),
                 );
-                ui.add(
-                    Label::new(RichText::new("'s note").size(size).color(color))
-                        .selectable(selectable),
-                );
+
+                note_link(ui, note_cache, img_cache, "note", &reply_note);
             } else {
                 // replying to bob in alice's thread
 
@@ -127,6 +161,10 @@ fn reply_desc(
                         .selectable(selectable),
                 );
                 ui.add(
+                    Label::new(RichText::new("'s").size(size).color(color)).selectable(selectable),
+                );
+                note_link(ui, note_cache, img_cache, "note", &reply_note);
+                ui.add(
                     Label::new(RichText::new("in").size(size).color(color)).selectable(selectable),
                 );
                 ui.add(
@@ -135,9 +173,9 @@ fn reply_desc(
                         .selectable(selectable),
                 );
                 ui.add(
-                    Label::new(RichText::new("'s thread").size(size).color(color))
-                        .selectable(selectable),
+                    Label::new(RichText::new("'s").size(size).color(color)).selectable(selectable),
                 );
+                note_link(ui, note_cache, img_cache, "thread", &root_note);
             }
         } else {
             ui.add(
@@ -151,6 +189,8 @@ fn reply_desc(
             );
         }
     }
+
+    note_action
 }
 
 impl<'a> NoteView<'a> {
@@ -467,7 +507,14 @@ impl<'a> NoteView<'a> {
 
                         if note_reply.reply().is_some() {
                             ui.horizontal(|ui| {
-                                reply_desc(ui, txn, &note_reply, self.ndb, self.img_cache);
+                                reply_desc(
+                                    ui,
+                                    txn,
+                                    &note_reply,
+                                    self.ndb,
+                                    self.img_cache,
+                                    self.note_cache,
+                                );
                             });
                         }
                     });
@@ -524,7 +571,14 @@ impl<'a> NoteView<'a> {
                             .borrow(self.note.tags());
 
                         if note_reply.reply().is_some() {
-                            reply_desc(ui, txn, &note_reply, self.ndb, self.img_cache);
+                            reply_desc(
+                                ui,
+                                txn,
+                                &note_reply,
+                                self.ndb,
+                                self.img_cache,
+                                self.note_cache,
+                            );
                         }
                     });
 
