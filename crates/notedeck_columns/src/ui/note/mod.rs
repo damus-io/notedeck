@@ -716,11 +716,14 @@ fn repost_icon(dark_mode: bool) -> egui::Image<'static> {
 }
 
 fn quote_repost_button(ui: &mut egui::Ui, note_key: NoteKey) -> egui::Response {
-    let (rect, size, resp) =
-        ui::anim::hover_expand_small(ui, ui.id().with(("repost_anim", note_key)));
-
+    let size = 14.0;
     let expand_size = 5.0;
-    let rect = rect.translate(egui::vec2(-(expand_size / 2.0), 0.0));
+    let anim_speed = 0.05;
+    let id = ui.id().with(("repost_anim", note_key));
+
+    let (rect, size, resp) = ui::anim::hover_expand(ui, id, size, expand_size, anim_speed);
+
+    let rect = rect.translate(egui::vec2(-(expand_size / 2.0), -1.0));
 
     let put_resp = ui.put(rect, repost_icon(ui.visuals().dark_mode).max_width(size));
 
