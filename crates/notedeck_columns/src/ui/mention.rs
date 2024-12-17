@@ -76,7 +76,7 @@ fn mention_ui(
             if let Some(name) = profile.as_ref().and_then(crate::profile::get_profile_name) {
                 format!("@{}", name.username())
             } else {
-                "??".to_string()
+                "@???".to_string()
             };
 
         let resp = ui.add(
