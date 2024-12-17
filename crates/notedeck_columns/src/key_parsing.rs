@@ -7,7 +7,7 @@ use enostr::{Keypair, Pubkey, SecretKey};
 use poll_promise::Promise;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum AcquireKeyError {
     InvalidKey,
     Nip05Failed(String),

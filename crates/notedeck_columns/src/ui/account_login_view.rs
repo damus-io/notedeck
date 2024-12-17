@@ -1,4 +1,3 @@
-use crate::key_parsing::AcquireKeyError;
 use crate::login_manager::AcquireKeyState;
 use crate::ui::{Preview, PreviewConfig, View};
 use egui::TextEdit;
@@ -40,7 +39,7 @@ impl<'a> AccountLoginView<'a> {
             ui.vertical_centered_justified(|ui| {
                 ui.add(login_textedit(self.manager));
 
-                self.loading_and_error(ui);
+                self.manager.loading_and_error_ui(ui);
 
                 if ui.add(login_button()).clicked() {
                     self.manager.apply_acquire();
@@ -67,41 +66,11 @@ impl<'a> AccountLoginView<'a> {
             return Some(AccountLoginResponse::CreateNew);
         }
 
-        if let Some(keypair) = self.manager.check_for_successful_login() {
-            return Some(AccountLoginResponse::LoginWith(keypair));
+        if let Some(keypair) = self.manager.get_login_keypair() {
+            return Some(AccountLoginResponse::LoginWith(keypair.clone()));
         }
         None
     }
-
-    fn loading_and_error(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(8.0);
-
-        ui.vertical_centered(|ui| {
-            if self.manager.is_awaiting_network() {
-                ui.add(egui::Spinner::new());
-            }
-        });
-
-        if let Some(err) = self.manager.check_for_error() {
-            show_error(ui, err);
-        }
-
-        ui.add_space(8.0);
-    }
-}
-
-fn show_error(ui: &mut egui::Ui, err: &AcquireKeyError) {
-    ui.horizontal(|ui| {
-        let error_label = match err {
-            AcquireKeyError::InvalidKey => {
-                egui::Label::new(RichText::new("Invalid key.").color(ui.visuals().error_fg_color))
-            }
-            AcquireKeyError::Nip05Failed(e) => {
-                egui::Label::new(RichText::new(e).color(ui.visuals().error_fg_color))
-            }
-        };
-        ui.add(error_label.truncate());
-    });
 }
 
 fn login_title_text() -> RichText {
