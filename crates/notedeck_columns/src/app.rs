@@ -512,9 +512,26 @@ fn render_damus_mobile(app: &mut Damus, app_ctx: &mut AppContext<'_>) {
     });
 }
 
+fn margin_top(narrow: bool) -> f32 {
+    #[cfg(target_os = "android")]
+    {
+        // FIXME - query the system bar height and adjust more precisely
+        let _ = narrow; // suppress compiler warning on android
+        40.0
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        if narrow {
+            50.0
+        } else {
+            0.0
+        }
+    }
+}
+
 fn main_panel(style: &Style, narrow: bool) -> egui::CentralPanel {
     let inner_margin = egui::Margin {
-        top: if narrow { 50.0 } else { 0.0 },
+        top: margin_top(narrow),
         left: 0.0,
         right: 0.0,
         bottom: 0.0,
