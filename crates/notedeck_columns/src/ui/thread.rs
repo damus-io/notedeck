@@ -5,7 +5,7 @@ use crate::{
     ui::note::NoteOptions,
 };
 
-use nostrdb::{Ndb, NoteKey, Transaction};
+use nostrdb::{Ndb, Transaction};
 use notedeck::{ImageCache, MuteFun, NoteCache, UnknownIds};
 use tracing::error;
 
@@ -54,16 +54,13 @@ impl<'a> ThreadView<'a> {
     pub fn ui(&mut self, ui: &mut egui::Ui, is_muted: &MuteFun) -> Option<NoteAction> {
         let txn = Transaction::new(self.ndb).expect("txn");
 
-        let selected_note_key = if let Ok(key) = self
-            .ndb
-            .get_notekey_by_id(&txn, self.selected_note_id)
-            .map(NoteKey::new)
-        {
-            key
-        } else {
-            // TODO: render 404 ?
-            return None;
-        };
+        let selected_note_key =
+            if let Ok(key) = self.ndb.get_notekey_by_id(&txn, self.selected_note_id) {
+                key
+            } else {
+                // TODO: render 404 ?
+                return None;
+            };
 
         ui.label(
             egui::RichText::new("Threads ALPHA! It's not done. Things will be broken.")

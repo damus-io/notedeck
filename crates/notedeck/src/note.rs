@@ -49,10 +49,7 @@ pub fn root_note_id_from_selected_id<'a>(
     txn: &'a Transaction,
     selected_note_id: &'a [u8; 32],
 ) -> &'a [u8; 32] {
-    let selected_note_key = if let Ok(key) = ndb
-        .get_notekey_by_id(txn, selected_note_id)
-        .map(NoteKey::new)
-    {
+    let selected_note_key = if let Ok(key) = ndb.get_notekey_by_id(txn, selected_note_id) {
         key
     } else {
         return selected_note_id;
