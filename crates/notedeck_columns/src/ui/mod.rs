@@ -59,3 +59,7 @@ pub fn hline(ui: &egui::Ui) {
     let stroke = ui.style().visuals.widgets.noninteractive.bg_stroke;
     ui.painter().hline(rect.x_range(), resize_y, stroke);
 }
+
+pub fn show_pointer(ui: &egui::Ui) {
+    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+}
