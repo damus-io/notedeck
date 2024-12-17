@@ -1,4 +1,7 @@
+use crate::actionbar::NoteAction;
 use crate::ui;
+use egui::Sense;
+use enostr::Pubkey;
 use nostrdb::{Ndb, Transaction};
 use notedeck::ImageCache;
 
@@ -39,10 +42,8 @@ impl<'a> Mention<'a> {
         self.size = size;
         self
     }
-}
 
-impl egui::Widget for Mention<'_> {
-    fn ui(self, ui: &mut egui::Ui) -> egui::Response {
+    pub fn show(self, ui: &mut egui::Ui) -> egui::InnerResponse<Option<NoteAction>> {
         mention_ui(
             self.ndb,
             self.img_cache,
@@ -55,6 +56,12 @@ impl egui::Widget for Mention<'_> {
     }
 }
 
+impl egui::Widget for Mention<'_> {
+    fn ui(self, ui: &mut egui::Ui) -> egui::Response {
+        self.show(ui).response
+    }
+}
+
 fn mention_ui(
     ndb: &Ndb,
     img_cache: &mut ImageCache,
@@ -63,7 +70,7 @@ fn mention_ui(
     ui: &mut egui::Ui,
     size: f32,
     selectable: bool,
-) -> egui::Response {
+) -> egui::InnerResponse<Option<NoteAction>> {
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
 
@@ -81,8 +88,19 @@ fn mention_ui(
 
         let resp = ui.add(
             egui::Label::new(egui::RichText::new(name).color(link_color).size(size))
+                .sense(Sense::click())
                 .selectable(selectable),
         );
+
+        let note_action = if resp.clicked() {
+            ui::show_pointer(ui);
+            Some(NoteAction::OpenProfile(Pubkey::new(*pk)))
+        } else if resp.hovered() {
+            ui::show_pointer(ui);
+            None
+        } else {
+            None
+        };
 
         if let Some(rec) = profile.as_ref() {
             resp.on_hover_ui_at_pointer(|ui| {
@@ -90,6 +108,7 @@ fn mention_ui(
                 ui.add(ui::ProfilePreview::new(rec, img_cache));
             });
         }
+
+        note_action
     })
-    .response
 }

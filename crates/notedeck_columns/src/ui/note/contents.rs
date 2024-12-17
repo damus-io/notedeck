@@ -1,8 +1,10 @@
 use crate::actionbar::NoteAction;
 use crate::images::ImageType;
-use crate::ui;
-use crate::ui::note::{NoteOptions, NoteResponse};
-use crate::ui::ProfilePic;
+use crate::ui::{
+    self,
+    note::{NoteOptions, NoteResponse},
+    ProfilePic,
+};
 use egui::{Color32, Hyperlink, Image, RichText};
 use nostrdb::{BlockType, Mention, Ndb, Note, NoteKey, Transaction};
 use tracing::warn;
@@ -143,6 +145,7 @@ fn render_note_contents(
 
     let selectable = options.has_selectable_text();
     let mut images: Vec<String> = vec![];
+    let mut note_action: Option<NoteAction> = None;
     let mut inline_note: Option<(&[u8; 32], &str)> = None;
     let hide_media = options.has_hide_media();
     let link_color = ui.visuals().hyperlink_color;
@@ -162,11 +165,21 @@ fn render_note_contents(
             match block.blocktype() {
                 BlockType::MentionBech32 => match block.as_mention().unwrap() {
                     Mention::Profile(profile) => {
-                        ui.add(ui::Mention::new(ndb, img_cache, txn, profile.pubkey()));
+                        let act = ui::Mention::new(ndb, img_cache, txn, profile.pubkey())
+                            .show(ui)
+                            .inner;
+                        if act.is_some() {
+                            note_action = act;
+                        }
                     }
 
                     Mention::Pubkey(npub) => {
-                        ui.add(ui::Mention::new(ndb, img_cache, txn, npub.pubkey()));
+                        let act = ui::Mention::new(ndb, img_cache, txn, npub.pubkey())
+                            .show(ui)
+                            .inner;
+                        if act.is_some() {
+                            note_action = act;
+                        }
                     }
 
                     Mention::Note(note) if options.has_note_previews() => {
@@ -215,7 +228,7 @@ fn render_note_contents(
         }
     });
 
-    let note_action = if let Some((id, _block_str)) = inline_note {
+    let preview_note_action = if let Some((id, _block_str)) = inline_note {
         render_note_preview(ui, ndb, note_cache, img_cache, txn, id, note_key).action
     } else {
         None
@@ -227,6 +240,8 @@ fn render_note_contents(
         image_carousel(ui, img_cache, images, carousel_id);
         ui.add_space(2.0);
     }
+
+    let note_action = preview_note_action.or(note_action);
 
     NoteResponse::new(response.response).with_action(note_action)
 }
