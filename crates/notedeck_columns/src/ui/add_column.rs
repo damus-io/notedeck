@@ -3,11 +3,10 @@ use std::collections::HashMap;
 
 use egui::{
     pos2, vec2, Align, Button, Color32, FontId, Id, ImageSource, Margin, Pos2, Rect, RichText,
-    Separator, Ui, Vec2,
+    Separator, Ui, Vec2, Widget,
 };
 use enostr::Pubkey;
-use nostrdb::Ndb;
-use tracing::error;
+use nostrdb::{Ndb, Transaction};
 
 use crate::{
     login_manager::AcquireKeyState,
@@ -16,9 +15,9 @@ use crate::{
     Damus,
 };
 
-use notedeck::{AppContext, NotedeckTextStyle, UserAccount};
+use notedeck::{AppContext, ImageCache, NotedeckTextStyle, UserAccount};
 
-use super::{anim::AnimationHelper, padding};
+use super::{anim::AnimationHelper, padding, ProfilePreview};
 
 pub enum AddColumnResponse {
     Timeline(Timeline),
@@ -98,6 +97,7 @@ impl AddColumnOption {
 pub struct AddColumnView<'a> {
     key_state_map: &'a mut HashMap<Id, AcquireKeyState>,
     ndb: &'a Ndb,
+    img_cache: &'a mut ImageCache,
     cur_account: Option<&'a UserAccount>,
 }
 
@@ -105,11 +105,13 @@ impl<'a> AddColumnView<'a> {
     pub fn new(
         key_state_map: &'a mut HashMap<Id, AcquireKeyState>,
         ndb: &'a Ndb,
+        img_cache: &'a mut ImageCache,
         cur_account: Option<&'a UserAccount>,
     ) -> Self {
         Self {
             key_state_map,
             ndb,
+            img_cache,
             cur_account,
         }
     }
@@ -144,7 +146,6 @@ impl<'a> AddColumnView<'a> {
 
     fn external_notification_ui(&mut self, ui: &mut Ui) -> Option<AddColumnResponse> {
         let id = ui.id().with("external_notif");
-
         self.external_ui(ui, id, |pubkey| {
             AddColumnOption::Notification(PubkeySource::Explicit(pubkey))
         })
@@ -176,7 +177,7 @@ impl<'a> AddColumnView<'a> {
         &mut self,
         ui: &mut Ui,
         id: egui::Id,
-        to_tl: fn(Pubkey) -> AddColumnOption,
+        to_option: fn(Pubkey) -> AddColumnOption,
     ) -> Option<AddColumnResponse> {
         padding(16.0, ui, |ui| {
             let key_state = self.key_state_map.entry(id).or_default();
@@ -195,28 +196,40 @@ impl<'a> AddColumnView<'a> {
 
             ui.add(text_edit);
 
-            if ui.button("Add").clicked() {
+            key_state.handle_input_change_after_acquire();
+            key_state.loading_and_error_ui(ui);
+
+            if key_state.get_login_keypair().is_none() && ui.add(find_user_button()).clicked() {
                 key_state.apply_acquire();
             }
 
-            if key_state.is_awaiting_network() {
-                ui.spinner();
-            }
+            let resp = if let Some(keypair) = key_state.get_login_keypair() {
+                let txn = Transaction::new(self.ndb).expect("txn");
+                if let Ok(profile) = self.ndb.get_profile_by_pubkey(&txn, keypair.pubkey.bytes()) {
+                    egui::Frame::window(ui.style())
+                        .outer_margin(Margin {
+                            left: 4.0,
+                            right: 4.0,
+                            top: 12.0,
+                            bottom: 32.0,
+                        })
+                        .show(ui, |ui| {
+                            ProfilePreview::new(&profile, self.img_cache).ui(ui);
+                        });
+                }
 
-            if let Some(error) = key_state.check_for_error() {
-                error!("acquire key error: {}", error);
-                ui.colored_label(
-                    Color32::RED,
-                    "Please enter a valid npub, public hex key or nip05",
-                );
-            }
-
-            if let Some(keypair) = key_state.check_for_successful_login() {
-                key_state.should_create_new();
-                to_tl(keypair.pubkey).take_as_response(self.ndb, self.cur_account)
+                if ui.add(add_column_button()).clicked() {
+                    to_option(keypair.pubkey).take_as_response(self.ndb, self.cur_account)
+                } else {
+                    None
+                }
             } else {
                 None
-            }
+            };
+            if resp.is_some() {
+                self.key_state_map.remove(&id);
+            };
+            resp
         })
         .inner
     }
@@ -360,7 +373,7 @@ impl<'a> AddColumnView<'a> {
         vec.push(ColumnOptionData {
             title: "Individual",
             description: "Stay up to date with someone's notes & replies",
-            icon: egui::include_image!("../../../../assets/icons/notifications_icon_dark_4x.png"),
+            icon: egui::include_image!("../../../../assets/icons/profile_icon_4x.png"),
             option: AddColumnOption::UndecidedIndividual,
         });
 
@@ -410,9 +423,7 @@ impl<'a> AddColumnView<'a> {
             vec.push(ColumnOptionData {
                 title: "Your Notes",
                 description: "Keep track of your notes & replies",
-                icon: egui::include_image!(
-                    "../../../../assets/icons/notifications_icon_dark_4x.png"
-                ),
+                icon: egui::include_image!("../../../../assets/icons/profile_icon_4x.png"),
                 option: AddColumnOption::Individual(source),
             });
         }
@@ -420,11 +431,36 @@ impl<'a> AddColumnView<'a> {
         vec.push(ColumnOptionData {
             title: "Someone else's Notes",
             description: "Stay up to date with someone else's notes & replies",
-            icon: egui::include_image!("../../../../assets/icons/notifications_icon_dark_4x.png"),
+            icon: egui::include_image!("../../../../assets/icons/profile_icon_4x.png"),
             option: AddColumnOption::ExternalIndividual,
         });
 
         vec
+    }
+}
+
+fn find_user_button() -> impl Widget {
+    sized_button("Find User")
+}
+
+fn add_column_button() -> impl Widget {
+    sized_button("Add")
+}
+
+fn sized_button(text: &str) -> impl Widget + '_ {
+    move |ui: &mut egui::Ui| -> egui::Response {
+        let painter = ui.painter();
+        let galley = painter.layout(
+            text.to_owned(),
+            NotedeckTextStyle::Body.get_font_id(ui.ctx()),
+            Color32::WHITE,
+            ui.available_width(),
+        );
+
+        ui.add_sized(
+            galley.rect.expand2(vec2(16.0, 8.0)).size(),
+            Button::new(galley).rounding(8.0).fill(crate::colors::PINK),
+        )
     }
 }
 
@@ -445,6 +481,7 @@ pub fn render_add_column_routes(
     let mut add_column_view = AddColumnView::new(
         &mut app.view_state.id_state_map,
         ctx.ndb,
+        ctx.img_cache,
         ctx.accounts.get_selected_account(),
     );
     let resp = match route {
@@ -519,7 +556,7 @@ pub fn hashtag_ui(
     id_string_map: &mut HashMap<Id, String>,
 ) -> Option<AddColumnResponse> {
     padding(16.0, ui, |ui| {
-        let id = ui.id().with("hashtag");
+        let id = ui.id().with("hashtag)");
         let text_buffer = id_string_map.entry(id).or_default();
 
         let text_edit = egui::TextEdit::singleline(text_buffer)
@@ -535,10 +572,7 @@ pub fn hashtag_ui(
 
         ui.add_space(8.0);
         if ui
-            .add_sized(
-                egui::vec2(50.0, 40.0),
-                Button::new("Add").rounding(8.0).fill(crate::colors::PINK),
-            )
+            .add_sized(egui::vec2(50.0, 40.0), add_column_button())
             .clicked()
         {
             let resp = AddColumnOption::Hashtag(text_buffer.to_owned()).take_as_response(ndb, None);
