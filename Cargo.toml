@@ -28,7 +28,7 @@ image = { version = "0.25", features = ["jpeg", "png", "webp"] }
 indexmap = "2.6.0"
 log = "0.4.17"
 nostr = { version = "0.37.0", default-features = false, features = ["std", "nip49"] }
-nostrdb = { git = "https://github.com/damus-io/nostrdb-rs", rev = "46ca13dffdfe2320d4488912506c7bfa02afe284" }
+nostrdb = { git = "https://github.com/damus-io/nostrdb-rs", rev = "d7ad4a44b929157795601a68542490b4184ae657" }
 notedeck = { path = "crates/notedeck" } 
 notedeck_chrome = { path = "crates/notedeck_chrome" } 
 notedeck_columns = { path = "crates/notedeck_columns" } 
@@ -41,7 +41,7 @@ serde_derive = "1"
 serde_json = "1.0.89"
 strum = "0.26"
 strum_macros = "0.26"
-thiserror = "2.0.6"
+thiserror = "2.0.7"
 tokio = { version = "1.16", features = ["macros", "rt-multi-thread", "fs"] }
 tracing = "0.1.40"
 tracing-appender = "0.2.3"
