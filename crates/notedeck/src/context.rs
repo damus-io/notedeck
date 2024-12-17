@@ -6,7 +6,7 @@ use nostrdb::Ndb;
 // TODO: make this interface more sandboxed
 
 pub struct AppContext<'a> {
-    pub ndb: &'a Ndb,
+    pub ndb: &'a mut Ndb,
     pub img_cache: &'a mut ImageCache,
     pub unknown_ids: &'a mut UnknownIds,
     pub pool: &'a mut RelayPool,

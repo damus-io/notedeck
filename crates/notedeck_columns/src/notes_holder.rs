@@ -155,7 +155,7 @@ pub trait NotesHolder {
     /// Local NotesHolder unsubscribe
     fn unsubscribe_locally<M: NotesHolder>(
         txn: &Transaction,
-        ndb: &Ndb,
+        ndb: &mut Ndb,
         note_cache: &mut NoteCache,
         notes_holder_storage: &mut NotesHolderStorage<M>,
         pool: &mut RelayPool,

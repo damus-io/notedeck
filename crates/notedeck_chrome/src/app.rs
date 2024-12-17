@@ -162,7 +162,7 @@ impl Notedeck {
 
     pub fn app_context(&mut self) -> AppContext<'_> {
         AppContext {
-            ndb: &self.ndb,
+            ndb: &mut self.ndb,
             img_cache: &mut self.img_cache,
             unknown_ids: &mut self.unknown_ids,
             pool: &mut self.pool,

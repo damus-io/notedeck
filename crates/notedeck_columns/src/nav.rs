@@ -407,7 +407,7 @@ pub fn render_nav(
     RenderNavResponse::new(col, nav_response)
 }
 
-fn unsubscribe_timeline(ndb: &Ndb, timeline: &Timeline) {
+fn unsubscribe_timeline(ndb: &mut Ndb, timeline: &Timeline) {
     if let Some(sub_id) = timeline.subscription {
         if let Err(e) = ndb.unsubscribe(sub_id) {
             error!("unsubscribe error: {}", e);
