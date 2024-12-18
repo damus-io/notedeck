@@ -1135,8 +1135,7 @@ dependencies = [
 [[package]]
 name = "egui_nav"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cca758d7454588a5d927fd4fcb71cbb1ad21bcda251acd7860b04d91f83bcc4c"
+source = "git+https://github.com/damus-io/egui-nav?rev=8a0508e17b02e382c04b4c3f724713a6b7807819#8a0508e17b02e382c04b4c3f724713a6b7807819"
 dependencies = [
  "egui",
  "egui_extras",
