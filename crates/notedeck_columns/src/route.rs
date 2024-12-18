@@ -66,10 +66,11 @@ impl Route {
         match self {
             Route::Timeline(tlr) => match tlr {
                 TimelineRoute::Timeline(id) => {
-                    let timeline = columns
-                        .find_timeline(*id)
-                        .expect("expected to find timeline");
-                    timeline.kind.to_title()
+                    if let Some(timeline) = columns.find_timeline(*id) {
+                        timeline.kind.to_title()
+                    } else {
+                        ColumnTitle::simple("Unknown")
+                    }
                 }
                 TimelineRoute::Thread(_id) => ColumnTitle::simple("Thread"),
                 TimelineRoute::Reply(_id) => ColumnTitle::simple("Reply"),
