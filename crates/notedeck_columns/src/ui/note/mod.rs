@@ -66,6 +66,7 @@ impl View for NoteView<'_> {
     }
 }
 
+#[must_use = "Please handle the resulting note action"]
 fn reply_desc(
     ui: &mut egui::Ui,
     txn: &Transaction,
@@ -124,12 +125,18 @@ fn reply_desc(
 
     if note_reply.is_reply_to_root() {
         // We're replying to the root, let's show this
-        ui.add(
-            ui::Mention::new(ndb, img_cache, txn, reply_note.pubkey())
-                .size(size)
-                .selectable(selectable),
-        );
+        let action = ui::Mention::new(ndb, img_cache, txn, reply_note.pubkey())
+            .size(size)
+            .selectable(selectable)
+            .show(ui)
+            .inner;
+
+        if action.is_some() {
+            note_action = action;
+        }
+
         ui.add(Label::new(RichText::new("'s").size(size).color(color)).selectable(selectable));
+
         note_link(ui, note_cache, img_cache, "thread", &reply_note);
     } else if let Some(root) = note_reply.root() {
         // replying to another post in a thread, not the root
@@ -155,34 +162,53 @@ fn reply_desc(
             } else {
                 // replying to bob in alice's thread
 
-                ui.add(
-                    ui::Mention::new(ndb, img_cache, txn, reply_note.pubkey())
-                        .size(size)
-                        .selectable(selectable),
-                );
+                let action = ui::Mention::new(ndb, img_cache, txn, reply_note.pubkey())
+                    .size(size)
+                    .selectable(selectable)
+                    .show(ui)
+                    .inner;
+
+                if action.is_some() {
+                    note_action = action;
+                }
+
                 ui.add(
                     Label::new(RichText::new("'s").size(size).color(color)).selectable(selectable),
                 );
+
                 note_link(ui, note_cache, img_cache, "note", &reply_note);
+
                 ui.add(
                     Label::new(RichText::new("in").size(size).color(color)).selectable(selectable),
                 );
-                ui.add(
-                    ui::Mention::new(ndb, img_cache, txn, root_note.pubkey())
-                        .size(size)
-                        .selectable(selectable),
-                );
+
+                let action = ui::Mention::new(ndb, img_cache, txn, root_note.pubkey())
+                    .size(size)
+                    .selectable(selectable)
+                    .show(ui)
+                    .inner;
+
+                if action.is_some() {
+                    note_action = action;
+                }
+
                 ui.add(
                     Label::new(RichText::new("'s").size(size).color(color)).selectable(selectable),
                 );
+
                 note_link(ui, note_cache, img_cache, "thread", &root_note);
             }
         } else {
-            ui.add(
-                ui::Mention::new(ndb, img_cache, txn, reply_note.pubkey())
-                    .size(size)
-                    .selectable(selectable),
-            );
+            let action = ui::Mention::new(ndb, img_cache, txn, reply_note.pubkey())
+                .size(size)
+                .selectable(selectable)
+                .show(ui)
+                .inner;
+
+            if action.is_some() {
+                note_action = action;
+            }
+
             ui.add(
                 Label::new(RichText::new("in someone's thread").size(size).color(color))
                     .selectable(selectable),
@@ -506,16 +532,22 @@ impl<'a> NoteView<'a> {
                             .borrow(self.note.tags());
 
                         if note_reply.reply().is_some() {
-                            ui.horizontal(|ui| {
-                                reply_desc(
-                                    ui,
-                                    txn,
-                                    &note_reply,
-                                    self.ndb,
-                                    self.img_cache,
-                                    self.note_cache,
-                                );
-                            });
+                            let action = ui
+                                .horizontal(|ui| {
+                                    reply_desc(
+                                        ui,
+                                        txn,
+                                        &note_reply,
+                                        self.ndb,
+                                        self.img_cache,
+                                        self.note_cache,
+                                    )
+                                })
+                                .inner;
+
+                            if action.is_some() {
+                                note_action = action;
+                            }
                         }
                     });
                 });
@@ -571,7 +603,7 @@ impl<'a> NoteView<'a> {
                             .borrow(self.note.tags());
 
                         if note_reply.reply().is_some() {
-                            reply_desc(
+                            let action = reply_desc(
                                 ui,
                                 txn,
                                 &note_reply,
@@ -579,6 +611,10 @@ impl<'a> NoteView<'a> {
                                 self.img_cache,
                                 self.note_cache,
                             );
+
+                            if action.is_some() {
+                                note_action = action;
+                            }
                         }
                     });
 
