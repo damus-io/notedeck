@@ -164,6 +164,7 @@ mod tests {
             ("Multiple #tags #in #one post", vec!["tags", "in", "one"]),
             ("No hashtags here", vec![]),
             ("#tag1 with #tag2!", vec!["tag1", "tag2"]),
+            ("#tag1,#tag2", vec!["tag1", "tag2"]),
             ("Ignore # empty", vec![]),
             ("Keep #alphanumeric123", vec!["alphanumeric123"]),
             ("Testing emoji #🍌sfd", vec!["🍌sfd"]),
