@@ -20,9 +20,18 @@ impl NewPost {
     }
 
     pub fn to_note(&self, seckey: &[u8; 32]) -> Note {
-        add_client_tag(NoteBuilder::new())
+        let mut builder = add_client_tag(NoteBuilder::new())
             .kind(1)
-            .content(&self.content)
+            .content(&self.content);
+
+        for hashtag in Self::extract_hashtags(&self.content) {
+            builder = builder
+                .start_tag()
+                .tag_str("t")
+                .tag_str(&hashtag);
+        }
+
+        builder
             .sign(seckey)
             .build()
             .expect("note should be ok")
@@ -106,9 +115,18 @@ impl NewPost {
             enostr::NoteId::new(*quoting.id()).to_bech().unwrap()
         );
 
-        NoteBuilder::new()
+        let mut builder = NoteBuilder::new()
             .kind(1)
-            .content(&new_content)
+            .content(&new_content);
+
+        for hashtag in Self::extract_hashtags(&self.content) {
+            builder = builder
+                .start_tag()
+                .tag_str("t")
+                .tag_str(&hashtag);
+        }
+
+        builder
             .start_tag()
             .tag_str("q")
             .tag_str(&hex::encode(quoting.id()))
@@ -118,5 +136,46 @@ impl NewPost {
             .sign(seckey)
             .build()
             .expect("expected build to work")
+    }
+
+    fn extract_hashtags(content: &str) -> Vec<String> {
+        let mut hashtags = Vec::new();
+        for word in content.split_whitespace() {
+            if word.starts_with('#') && word.len() > 1 {
+                let tag = word[1..].trim_end_matches(|c: char| !c.is_alphanumeric())
+                    .to_string();
+                if !tag.is_empty() {
+                    hashtags.push(tag);
+                }
+            }
+        }
+        hashtags
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_hashtags() {
+        let test_cases = vec![
+            ("Hello #world", vec!["world"]),
+            ("Multiple #tags #in #one post", vec!["tags", "in", "one"]),
+            ("No hashtags here", vec![]),
+            ("#tag1 with #tag2!", vec!["tag1", "tag2"]),
+            ("Ignore # empty", vec![]),
+            ("Keep #alphanumeric123", vec!["alphanumeric123"]),
+        ];
+
+        for (input, expected) in test_cases {
+            let result = NewPost::extract_hashtags(input);
+            assert_eq!(
+                result,
+                expected.into_iter().map(String::from).collect::<Vec<_>>(),
+                "Failed for input: {}",
+                input
+            );
+        }
     }
 }
