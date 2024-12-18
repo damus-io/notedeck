@@ -138,14 +138,14 @@ impl NewPost {
             .expect("expected build to work")
     }
 
-    fn extract_hashtags(content: &str) -> Vec<String> {
-        let mut hashtags = Vec::new();
+    fn extract_hashtags(content: &str) -> HashSet<String> {
+        let mut hashtags = HashSet::new();
         for word in content.split_whitespace() {
             if word.starts_with('#') && word.len() > 1 {
                 let tag = word[1..].trim_end_matches(|c: char| !c.is_alphanumeric())
-                    .to_string();
+                    .to_lowercase();
                 if !tag.is_empty() {
-                    hashtags.push(tag);
+                    hashtags.insert(tag);
                 }
             }
         }
@@ -166,13 +166,18 @@ mod tests {
             ("#tag1 with #tag2!", vec!["tag1", "tag2"]),
             ("Ignore # empty", vec![]),
             ("Keep #alphanumeric123", vec!["alphanumeric123"]),
+            ("Testing emoji #🍌sfd", vec!["🍌sfd"]),
+            ("Testing emoji with space #🍌 sfd", vec!["🍌"]),
+            ("Duplicate #tag #tag #tag", vec!["tag"]),
+            ("Mixed case #TaG #tag #TAG", vec!["tag"]),
         ];
 
         for (input, expected) in test_cases {
             let result = NewPost::extract_hashtags(input);
+            let expected: HashSet<String> = expected.into_iter().map(String::from).collect();
             assert_eq!(
                 result,
-                expected.into_iter().map(String::from).collect::<Vec<_>>(),
+                expected,
                 "Failed for input: {}",
                 input
             );
