@@ -1,6 +1,11 @@
 use crate::actionbar::NoteAction;
 use crate::timeline::TimelineTab;
-use crate::{column::Columns, timeline::TimelineId, ui, ui::note::NoteOptions};
+use crate::{
+    column::Columns,
+    timeline::{TimelineId, ViewFilter},
+    ui,
+    ui::note::NoteOptions,
+};
 use egui::containers::scroll_area::ScrollBarVisibility;
 use egui::{Direction, Layout};
 use egui_tabs::TabColor;
@@ -86,7 +91,7 @@ fn timeline_ui(
             return None;
         };
 
-        timeline.selected_view = tabs_ui(ui);
+        timeline.selected_view = tabs_ui(ui, timeline.selected_view, &timeline.views);
 
         // need this for some reason??
         ui.add_space(3.0);
@@ -124,11 +129,11 @@ fn timeline_ui(
         .inner
 }
 
-pub fn tabs_ui(ui: &mut egui::Ui) -> i32 {
+pub fn tabs_ui(ui: &mut egui::Ui, selected: usize, views: &[TimelineTab]) -> usize {
     ui.spacing_mut().item_spacing.y = 0.0;
 
-    let tab_res = egui_tabs::Tabs::new(2)
-        .selected(1)
+    let tab_res = egui_tabs::Tabs::new(views.len() as i32)
+        .selected(selected as i32)
         .hover_bg(TabColor::none())
         .selected_fg(TabColor::none())
         .selected_bg(TabColor::none())
@@ -141,7 +146,10 @@ pub fn tabs_ui(ui: &mut egui::Ui) -> i32 {
 
             let ind = state.index();
 
-            let txt = if ind == 0 { "Notes" } else { "Notes & Replies" };
+            let txt = match views[ind as usize].filter {
+                ViewFilter::Notes => "Notes",
+                ViewFilter::NotesAndReplies => "Notes & Replies",
+            };
 
             let res = ui.add(egui::Label::new(txt).selectable(false));
 
@@ -189,7 +197,7 @@ pub fn tabs_ui(ui: &mut egui::Ui) -> i32 {
 
     ui.painter().hline(underline, underline_y, stroke);
 
-    sel
+    sel as usize
 }
 
 fn get_label_width(ui: &mut egui::Ui, text: &str) -> f32 {

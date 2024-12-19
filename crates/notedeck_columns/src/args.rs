@@ -1,6 +1,6 @@
 use notedeck::FilterState;
 
-use crate::timeline::{PubkeySource, Timeline, TimelineKind};
+use crate::timeline::{PubkeySource, Timeline, TimelineKind, TimelineTab};
 use enostr::{Filter, Pubkey};
 use nostrdb::Ndb;
 use tracing::{debug, error, info};
@@ -151,6 +151,7 @@ impl ArgColumn {
             ArgColumn::Generic(filters) => Some(Timeline::new(
                 TimelineKind::Generic,
                 FilterState::ready(filters),
+                TimelineTab::full_tabs(),
             )),
             ArgColumn::Timeline(tk) => tk.into_timeline(ndb, user),
         }

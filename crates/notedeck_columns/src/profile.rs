@@ -6,7 +6,7 @@ use notedeck::{filter::default_limit, FilterState, MuteFun, NoteCache, NoteRef};
 use crate::{
     multi_subscriber::MultiSubscriber,
     notes_holder::NotesHolder,
-    timeline::{copy_notes_into_timeline, PubkeySource, Timeline, TimelineKind},
+    timeline::{copy_notes_into_timeline, PubkeySource, Timeline, TimelineKind, TimelineTab},
 };
 
 pub enum DisplayName<'a> {
@@ -62,8 +62,11 @@ impl Profile {
         notes: Vec<NoteRef>,
         is_muted: &MuteFun,
     ) -> Self {
-        let mut timeline =
-            Timeline::new(TimelineKind::profile(source), FilterState::ready(filters));
+        let mut timeline = Timeline::new(
+            TimelineKind::profile(source),
+            FilterState::ready(filters),
+            TimelineTab::full_tabs(),
+        );
 
         copy_notes_into_timeline(&mut timeline, txn, ndb, note_cache, notes, is_muted);
 

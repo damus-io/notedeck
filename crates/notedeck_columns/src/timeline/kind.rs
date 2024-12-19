@@ -1,5 +1,5 @@
 use crate::error::Error;
-use crate::timeline::Timeline;
+use crate::timeline::{Timeline, TimelineTab};
 use enostr::{Filter, Pubkey};
 use nostrdb::{Ndb, Transaction};
 use notedeck::{filter::default_limit, FilterError, FilterState};
@@ -119,6 +119,7 @@ impl TimelineKind {
                     .kinds([1])
                     .limit(default_limit())
                     .build()]),
+                TimelineTab::no_replies(),
             )),
 
             TimelineKind::Generic => {
@@ -141,6 +142,7 @@ impl TimelineKind {
                 Some(Timeline::new(
                     TimelineKind::profile(pk_src),
                     FilterState::ready(vec![filter]),
+                    TimelineTab::full_tabs(),
                 ))
             }
 
@@ -159,6 +161,7 @@ impl TimelineKind {
                 Some(Timeline::new(
                     TimelineKind::notifications(pk_src),
                     FilterState::ready(vec![notifications_filter]),
+                    TimelineTab::only_notes_and_replies(),
                 ))
             }
 
@@ -181,6 +184,7 @@ impl TimelineKind {
                     return Some(Timeline::new(
                         TimelineKind::contact_list(pk_src),
                         FilterState::needs_remote(vec![contact_filter.clone()]),
+                        TimelineTab::full_tabs(),
                     ));
                 }
 
@@ -189,6 +193,7 @@ impl TimelineKind {
                         Some(Timeline::new(
                             TimelineKind::contact_list(pk_src),
                             FilterState::needs_remote(vec![contact_filter]),
+                            TimelineTab::full_tabs(),
                         ))
                     }
                     Err(e) => {

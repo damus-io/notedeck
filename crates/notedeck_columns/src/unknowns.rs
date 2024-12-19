@@ -1,4 +1,4 @@
-use crate::{column::Columns, timeline::ViewFilter, Result};
+use crate::{column::Columns, Result};
 use nostrdb::{Ndb, NoteKey, Transaction};
 use notedeck::{CachedNote, NoteCache, UnknownIds};
 use tracing::error;
@@ -37,7 +37,7 @@ pub fn get_unknown_ids(
     let mut new_cached_notes: Vec<(NoteKey, CachedNote)> = vec![];
 
     for timeline in columns.timelines() {
-        for noteref in timeline.notes(ViewFilter::NotesAndReplies) {
+        for noteref in timeline.all_or_any_notes() {
             let note = ndb.get_note_by_key(txn, noteref.key)?;
             let note_key = note.key().unwrap();
             let cached_note = note_cache.cached_note(noteref.key);

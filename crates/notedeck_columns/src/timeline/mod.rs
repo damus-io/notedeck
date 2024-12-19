@@ -60,13 +60,6 @@ impl ViewFilter {
         }
     }
 
-    pub fn index(&self) -> usize {
-        match self {
-            ViewFilter::Notes => 0,
-            ViewFilter::NotesAndReplies => 1,
-        }
-    }
-
     pub fn filter_notes(cache: &CachedNote, note: &Note) -> bool {
         !cache.reply.borrow(note.tags()).is_reply()
     }
@@ -98,6 +91,21 @@ pub struct TimelineTab {
 impl TimelineTab {
     pub fn new(filter: ViewFilter) -> Self {
         TimelineTab::new_with_capacity(filter, 1000)
+    }
+
+    pub fn only_notes_and_replies() -> Vec<Self> {
+        vec![TimelineTab::new(ViewFilter::NotesAndReplies)]
+    }
+
+    pub fn no_replies() -> Vec<Self> {
+        vec![TimelineTab::new(ViewFilter::Notes)]
+    }
+
+    pub fn full_tabs() -> Vec<Self> {
+        vec![
+            TimelineTab::new(ViewFilter::Notes),
+            TimelineTab::new(ViewFilter::NotesAndReplies),
+        ]
     }
 
     pub fn new_with_capacity(filter: ViewFilter, cap: usize) -> Self {
@@ -179,7 +187,7 @@ pub struct Timeline {
     // that codepaths have to explicitly handle it
     pub filter: FilterStates,
     pub views: Vec<TimelineTab>,
-    pub selected_view: i32,
+    pub selected_view: usize,
 
     /// Our nostrdb subscription
     pub subscription: Option<Subscription>,
@@ -198,6 +206,7 @@ impl Timeline {
         Ok(Timeline::new(
             TimelineKind::contact_list(pk_src),
             FilterState::ready(filter),
+            TimelineTab::full_tabs(),
         ))
     }
 
@@ -211,10 +220,11 @@ impl Timeline {
         Timeline::new(
             TimelineKind::Hashtag(hashtag),
             FilterState::ready(vec![filter]),
+            TimelineTab::full_tabs(),
         )
     }
 
-    pub fn make_view_id(id: TimelineId, selected_view: i32) -> egui::Id {
+    pub fn make_view_id(id: TimelineId, selected_view: usize) -> egui::Id {
         egui::Id::new((id, selected_view))
     }
 
@@ -222,15 +232,12 @@ impl Timeline {
         Timeline::make_view_id(self.id, self.selected_view)
     }
 
-    pub fn new(kind: TimelineKind, filter_state: FilterState) -> Self {
+    pub fn new(kind: TimelineKind, filter_state: FilterState, views: Vec<TimelineTab>) -> Self {
         // global unique id for all new timelines
         static UIDS: AtomicU32 = AtomicU32::new(0);
 
         let filter = FilterStates::new(filter_state);
         let subscription: Option<Subscription> = None;
-        let notes = TimelineTab::new(ViewFilter::Notes);
-        let replies = TimelineTab::new(ViewFilter::NotesAndReplies);
-        let views = vec![notes, replies];
         let selected_view = 0;
         let id = TimelineId::new(UIDS.fetch_add(1, Ordering::Relaxed));
 
@@ -245,23 +252,32 @@ impl Timeline {
     }
 
     pub fn current_view(&self) -> &TimelineTab {
-        &self.views[self.selected_view as usize]
+        &self.views[self.selected_view]
     }
 
     pub fn current_view_mut(&mut self) -> &mut TimelineTab {
-        &mut self.views[self.selected_view as usize]
+        &mut self.views[self.selected_view]
     }
 
-    pub fn notes(&self, view: ViewFilter) -> &[NoteRef] {
-        &self.views[view.index()].notes
+    /// Get the note refs for NotesAndReplies. If we only have Notes, then
+    /// just return that instead
+    pub fn all_or_any_notes(&self) -> &[NoteRef] {
+        self.notes(ViewFilter::NotesAndReplies).unwrap_or_else(|| {
+            self.notes(ViewFilter::Notes)
+                .expect("should have at least notes")
+        })
     }
 
-    pub fn view(&self, view: ViewFilter) -> &TimelineTab {
-        &self.views[view.index()]
+    pub fn notes(&self, view: ViewFilter) -> Option<&[NoteRef]> {
+        self.view(view).map(|v| &*v.notes)
     }
 
-    pub fn view_mut(&mut self, view: ViewFilter) -> &mut TimelineTab {
-        &mut self.views[view.index()]
+    pub fn view(&self, view: ViewFilter) -> Option<&TimelineTab> {
+        self.views.iter().find(|tab| tab.filter == view)
+    }
+
+    pub fn view_mut(&mut self, view: ViewFilter) -> Option<&mut TimelineTab> {
+        self.views.iter_mut().find(|tab| tab.filter == view)
     }
 
     pub fn poll_notes_into_view(
@@ -314,13 +330,10 @@ impl Timeline {
         let reversed = false;
 
         // ViewFilter::NotesAndReplies
-        {
+        if let Some(view) = timeline.view_mut(ViewFilter::NotesAndReplies) {
             let refs: Vec<NoteRef> = new_refs.iter().map(|(_note, nr)| *nr).collect();
 
-            let reversed = false;
-            timeline
-                .view_mut(ViewFilter::NotesAndReplies)
-                .insert(&refs, reversed);
+            view.insert(&refs, reversed);
         }
 
         //
@@ -328,7 +341,7 @@ impl Timeline {
         //
         // TODO(jb55): this is mostly just copied from above, let's just use a loop
         //             I initially tried this but ran into borrow checker issues
-        {
+        if let Some(view) = timeline.view_mut(ViewFilter::Notes) {
             let mut filtered_refs = Vec::with_capacity(new_refs.len());
             for (note, nr) in &new_refs {
                 let cached_note = note_cache.cached_note_or_insert(nr.key, note);
@@ -338,9 +351,7 @@ impl Timeline {
                 }
             }
 
-            timeline
-                .view_mut(ViewFilter::Notes)
-                .insert(&filtered_refs, reversed);
+            view.insert(&filtered_refs, reversed);
         }
 
         Ok(())
@@ -478,7 +489,7 @@ pub fn send_initial_timeline_filter(
                     filter = filter.limit_mut(lim);
                 }
 
-                let notes = timeline.notes(ViewFilter::NotesAndReplies);
+                let notes = timeline.all_or_any_notes();
 
                 // Should we since optimize? Not always. For example
                 // if we only have a few notes locally. One way to
