@@ -1,7 +1,7 @@
 use tracing::{debug, error, info};
 
 use crate::{
-    KeyStorageResponse, KeyStorageType, Muted, SingleUnkIdAction, UnknownIds, UserAccount,
+    KeyStorageResponse, KeyStorageType, MuteFun, Muted, SingleUnkIdAction, UnknownIds, UserAccount,
 };
 use enostr::{ClientMessage, FilledKeypair, Keypair, RelayPool};
 use nostrdb::{Filter, Ndb, Note, NoteKey, Subscription, Transaction};
@@ -401,17 +401,19 @@ impl Accounts {
         self.key_store.select_key(None);
     }
 
-    pub fn mutefun(&self) -> Box<dyn Fn(&Note) -> bool> {
+    pub fn mutefun(&self) -> Box<MuteFun> {
         if let Some(index) = self.currently_selected_account {
             if let Some(account) = self.accounts.get(index) {
                 let pubkey = account.pubkey.bytes();
                 if let Some(account_data) = self.account_data.get(pubkey) {
                     let muted = Arc::clone(&account_data.muted.muted);
-                    return Box::new(move |note: &Note| muted.is_muted(note));
+                    return Box::new(move |note: &Note, thread: &[u8; 32]| {
+                        muted.is_muted(note, thread)
+                    });
                 }
             }
         }
-        Box::new(|_: &Note| false)
+        Box::new(|_: &Note, _: &[u8; 32]| None)
     }
 
     pub fn send_initial_filters(&mut self, pool: &mut RelayPool, relay_url: &str) {

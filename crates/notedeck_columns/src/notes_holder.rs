@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use enostr::{Filter, RelayPool};
 use nostrdb::{Ndb, Transaction};
-use notedeck::{MuteFun, NoteCache, NoteRef, NoteRefsUnkIdAction};
+use notedeck::{NoteCache, NoteRef, NoteRefsUnkIdAction};
 use tracing::{debug, info, warn};
 
 use crate::{
@@ -56,7 +56,6 @@ impl<M: NotesHolder> NotesHolderStorage<M> {
         note_cache: &mut NoteCache,
         txn: &Transaction,
         id: &[u8; 32],
-        is_muted: &MuteFun,
     ) -> Vitality<'a, M> {
         // we can't use the naive hashmap entry API here because lookups
         // require a copy, wait until we have a raw entry api. We could
@@ -90,7 +89,7 @@ impl<M: NotesHolder> NotesHolderStorage<M> {
 
         self.id_to_object.insert(
             id.to_owned(),
-            M::new_notes_holder(txn, ndb, note_cache, id, M::filters(id), notes, is_muted),
+            M::new_notes_holder(txn, ndb, note_cache, id, M::filters(id), notes),
         );
         Vitality::Fresh(self.id_to_object.get_mut(id).unwrap())
     }
@@ -109,7 +108,6 @@ pub trait NotesHolder {
         id: &[u8; 32],
         filters: Vec<Filter>,
         notes: Vec<NoteRef>,
-        is_muted: &MuteFun,
     ) -> Self;
 
     #[must_use = "process_action must be handled in the Ok(action) case"]
@@ -117,11 +115,10 @@ pub trait NotesHolder {
         &mut self,
         txn: &Transaction,
         ndb: &Ndb,
-        is_muted: &MuteFun,
     ) -> Result<NoteRefsUnkIdAction> {
         if let Some(multi_subscriber) = self.get_multi_subscriber() {
             let reversed = true;
-            let note_refs: Vec<NoteRef> = multi_subscriber.poll_for_notes(ndb, txn, is_muted)?;
+            let note_refs: Vec<NoteRef> = multi_subscriber.poll_for_notes(ndb, txn)?;
             self.get_view().insert(&note_refs, reversed);
             Ok(NoteRefsUnkIdAction::new(note_refs))
         } else {
@@ -160,10 +157,9 @@ pub trait NotesHolder {
         notes_holder_storage: &mut NotesHolderStorage<M>,
         pool: &mut RelayPool,
         id: &[u8; 32],
-        is_muted: &MuteFun,
     ) {
         let notes_holder = notes_holder_storage
-            .notes_holder_mutated(ndb, note_cache, txn, id, is_muted)
+            .notes_holder_mutated(ndb, note_cache, txn, id)
             .get_ptr();
 
         if let Some(multi_subscriber) = notes_holder.get_multi_subscriber() {
@@ -178,9 +174,8 @@ pub trait NotesHolder {
         pool: &mut RelayPool,
         storage: &mut NotesHolderStorage<M>,
         id: &[u8; 32],
-        is_muted: &MuteFun,
     ) -> Option<NotesHolderResult> {
-        let vitality = storage.notes_holder_mutated(ndb, note_cache, txn, id, is_muted);
+        let vitality = storage.notes_holder_mutated(ndb, note_cache, txn, id);
 
         let (holder, result) = match vitality {
             Vitality::Stale(holder) => {

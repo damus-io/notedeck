@@ -93,13 +93,13 @@ impl<'a> ThreadView<'a> {
 
                 let thread = self
                     .threads
-                    .notes_holder_mutated(self.ndb, self.note_cache, &txn, root_id, is_muted)
+                    .notes_holder_mutated(self.ndb, self.note_cache, &txn, root_id)
                     .get_ptr();
 
                 // TODO(jb55): skip poll if ThreadResult is fresh?
 
                 // poll for new notes and insert them into our existing notes
-                match thread.poll_notes_into_view(&txn, self.ndb, is_muted) {
+                match thread.poll_notes_into_view(&txn, self.ndb) {
                     Ok(action) => {
                         action.process_action(&txn, self.ndb, self.unknown_ids, self.note_cache)
                     }
@@ -120,7 +120,7 @@ impl<'a> ThreadView<'a> {
                     self.note_cache,
                     self.img_cache,
                 )
-                .show(ui)
+                .show(ui, is_muted)
             })
             .inner
     }
