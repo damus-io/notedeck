@@ -141,6 +141,11 @@ fn try_process_event(
                 app_ctx.note_cache,
                 timeline,
                 &app_ctx.accounts.mutefun(),
+                app_ctx
+                    .accounts
+                    .get_selected_account()
+                    .as_ref()
+                    .map(|sa| &sa.pubkey),
             )
         };
 

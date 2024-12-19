@@ -25,6 +25,13 @@ impl PubkeySource {
             PubkeySource::DeckAuthor => deck_author,
         }
     }
+
+    pub fn to_pubkey_bytes<'a>(&'a self, deck_author: &'a [u8; 32]) -> &'a [u8; 32] {
+        match self {
+            PubkeySource::Explicit(pk) => pk.bytes(),
+            PubkeySource::DeckAuthor => deck_author,
+        }
+    }
 }
 
 impl ListKind {
@@ -177,7 +184,7 @@ impl TimelineKind {
                     ));
                 }
 
-                match Timeline::contact_list(&results[0].note, pk_src.clone()) {
+                match Timeline::contact_list(&results[0].note, pk_src.clone(), default_user) {
                     Err(Error::App(notedeck::Error::Filter(FilterError::EmptyContactList))) => {
                         Some(Timeline::new(
                             TimelineKind::contact_list(pk_src),

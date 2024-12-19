@@ -192,13 +192,14 @@ impl FilteredTags {
 
 /// Create a filter from tags. This can be used to create a filter
 /// from a contact list
-pub fn filter_from_tags(note: &Note) -> Result<FilteredTags> {
+pub fn filter_from_tags(note: &Note, add_pubkey: Option<&[u8; 32]>) -> Result<FilteredTags> {
     let mut author_filter = Filter::new();
     let mut hashtag_filter = Filter::new();
     let mut author_res: Option<FilterBuilder> = None;
     let mut hashtag_res: Option<FilterBuilder> = None;
     let mut author_count = 0i32;
     let mut hashtag_count = 0i32;
+    let mut has_added_pubkey = false;
 
     let tags = note.tags();
 
@@ -223,6 +224,13 @@ pub fn filter_from_tags(note: &Note) -> Result<FilteredTags> {
                 continue;
             };
 
+            if let Some(pk) = add_pubkey {
+                if author == pk {
+                    // we don't need to add it afterwards
+                    has_added_pubkey = true;
+                }
+            }
+
             author_filter.add_id_element(author)?;
             author_count += 1;
         } else if t == "t" {
@@ -234,6 +242,14 @@ pub fn filter_from_tags(note: &Note) -> Result<FilteredTags> {
 
             hashtag_filter.add_str_element(hashtag)?;
             hashtag_count += 1;
+        }
+    }
+
+    // some additional ad-hoc logic for adding a pubkey
+    if let Some(pk) = add_pubkey {
+        if !has_added_pubkey {
+            author_filter.add_id_element(pk)?;
+            author_count += 1;
         }
     }
 

@@ -15,7 +15,7 @@ use std::fmt;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use egui_virtual_list::VirtualList;
-use enostr::{Relay, RelayPool};
+use enostr::{Pubkey, Relay, RelayPool};
 use nostrdb::{Filter, Ndb, Note, Subscription, Transaction};
 use std::cell::RefCell;
 use std::hash::Hash;
@@ -187,8 +187,13 @@ pub struct Timeline {
 
 impl Timeline {
     /// Create a timeline from a contact list
-    pub fn contact_list(contact_list: &Note, pk_src: PubkeySource) -> Result<Self> {
-        let filter = filter::filter_from_tags(contact_list)?.into_follow_filter();
+    pub fn contact_list(
+        contact_list: &Note,
+        pk_src: PubkeySource,
+        deck_author: Option<&[u8; 32]>,
+    ) -> Result<Self> {
+        let our_pubkey = deck_author.map(|da| pk_src.to_pubkey_bytes(da));
+        let filter = filter::filter_from_tags(contact_list, our_pubkey)?.into_follow_filter();
 
         Ok(Timeline::new(
             TimelineKind::contact_list(pk_src),
@@ -388,6 +393,7 @@ pub fn merge_sorted_vecs<T: Ord + Copy>(vec1: &[T], vec2: &[T]) -> (Vec<T>, Merg
 ///
 /// We do this by maintaining this sub_id in the filter state, even when
 /// in the ready state. See: [`FilterReady`]
+#[allow(clippy::too_many_arguments)]
 pub fn setup_new_timeline(
     timeline: &mut Timeline,
     ndb: &Ndb,
@@ -396,9 +402,10 @@ pub fn setup_new_timeline(
     note_cache: &mut NoteCache,
     since_optimize: bool,
     is_muted: &MuteFun,
+    our_pk: Option<&Pubkey>,
 ) {
     // if we're ready, setup local subs
-    if is_timeline_ready(ndb, pool, note_cache, timeline, is_muted) {
+    if is_timeline_ready(ndb, pool, note_cache, timeline, is_muted, our_pk) {
         if let Err(err) = setup_timeline_nostrdb_sub(ndb, note_cache, timeline, is_muted) {
             error!("setup_new_timeline: {err}");
         }
@@ -627,6 +634,7 @@ pub fn is_timeline_ready(
     note_cache: &mut NoteCache,
     timeline: &mut Timeline,
     is_muted: &MuteFun,
+    our_pk: Option<&Pubkey>,
 ) -> bool {
     // TODO: we should debounce the filter states a bit to make sure we have
     // seen all of the different contact lists from each relay
@@ -658,7 +666,12 @@ pub fn is_timeline_ready(
     let filter = {
         let txn = Transaction::new(ndb).expect("txn");
         let note = ndb.get_note_by_key(&txn, note_key).expect("note");
-        filter::filter_from_tags(&note).map(|f| f.into_follow_filter())
+        let add_pk = timeline
+            .kind
+            .pubkey_source()
+            .as_ref()
+            .and_then(|pk_src| our_pk.map(|pk| pk_src.to_pubkey_bytes(pk)));
+        filter::filter_from_tags(&note, add_pk).map(|f| f.into_follow_filter())
     };
 
     // TODO: into_follow_filter is hardcoded to contact lists, let's generalize

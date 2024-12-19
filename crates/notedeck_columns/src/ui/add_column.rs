@@ -504,6 +504,10 @@ pub fn render_add_column_routes(
                     ctx.note_cache,
                     app.since_optimize,
                     &ctx.accounts.mutefun(),
+                    ctx.accounts
+                        .get_selected_account()
+                        .as_ref()
+                        .map(|sa| &sa.pubkey),
                 );
                 app.columns_mut(ctx.accounts)
                     .add_timeline_to_column(col, timeline);
