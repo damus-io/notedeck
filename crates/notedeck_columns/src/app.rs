@@ -139,7 +139,6 @@ fn try_process_event(
                 app_ctx.pool,
                 app_ctx.note_cache,
                 timeline,
-                &app_ctx.accounts.mutefun(),
                 app_ctx
                     .accounts
                     .get_selected_account()
@@ -158,7 +157,6 @@ fn try_process_event(
                 &txn,
                 app_ctx.unknown_ids,
                 app_ctx.note_cache,
-                &app_ctx.accounts.mutefun(),
             ) {
                 error!("poll_notes_into_view: {err}");
             }
@@ -210,7 +208,6 @@ fn update_damus(damus: &mut Damus, app_ctx: &mut AppContext<'_>) {
                 app_ctx.ndb,
                 app_ctx.note_cache,
                 &mut damus.decks_cache,
-                &app_ctx.accounts.mutefun(),
             ) {
                 warn!("update_damus init: {err}");
             }
