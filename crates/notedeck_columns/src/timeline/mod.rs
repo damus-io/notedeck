@@ -220,7 +220,7 @@ impl Timeline {
         Timeline::new(
             TimelineKind::Hashtag(hashtag),
             FilterState::ready(vec![filter]),
-            TimelineTab::full_tabs(),
+            TimelineTab::only_notes_and_replies(),
         )
     }
 
