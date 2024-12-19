@@ -57,7 +57,7 @@ pub struct Damus {
     pub textmode: bool,
 }
 
-fn handle_key_events(input: &egui::InputState, _pixels_per_point: f32, columns: &mut Columns) {
+fn handle_key_events(input: &egui::InputState, columns: &mut Columns) {
     for event in &input.raw.events {
         if let egui::Event::Key {
             key, pressed: true, ..
@@ -87,9 +87,8 @@ fn try_process_event(
     app_ctx: &mut AppContext<'_>,
     ctx: &egui::Context,
 ) -> Result<()> {
-    let ppp = ctx.pixels_per_point();
     let current_columns = get_active_columns_mut(app_ctx.accounts, &mut damus.decks_cache);
-    ctx.input(|i| handle_key_events(i, ppp, current_columns));
+    ctx.input(|i| handle_key_events(i, current_columns));
 
     let ctx2 = ctx.clone();
     let wakeup = move || {
