@@ -10,7 +10,8 @@ use egui::containers::scroll_area::ScrollBarVisibility;
 use egui::{Direction, Layout};
 use egui_tabs::TabColor;
 use nostrdb::{Ndb, Transaction};
-use notedeck::{ImageCache, NoteCache};
+use notedeck::note::root_note_id_from_selected_id;
+use notedeck::{ImageCache, MuteFun, NoteCache};
 use tracing::{error, warn};
 
 pub struct TimelineView<'a> {
@@ -44,7 +45,7 @@ impl<'a> TimelineView<'a> {
         }
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui) -> Option<NoteAction> {
+    pub fn ui(&mut self, ui: &mut egui::Ui, is_muted: &MuteFun) -> Option<NoteAction> {
         timeline_ui(
             ui,
             self.ndb,
@@ -54,6 +55,7 @@ impl<'a> TimelineView<'a> {
             self.img_cache,
             self.reverse,
             self.note_options,
+            is_muted,
         )
     }
 
@@ -73,6 +75,7 @@ fn timeline_ui(
     img_cache: &mut ImageCache,
     reversed: bool,
     note_options: NoteOptions,
+    is_muted: &MuteFun,
 ) -> Option<NoteAction> {
     //padding(4.0, ui, |ui| ui.heading("Notifications"));
     /*
@@ -124,7 +127,7 @@ fn timeline_ui(
                 note_cache,
                 img_cache,
             )
-            .show(ui)
+            .show(ui, is_muted)
         })
         .inner
 }
@@ -247,7 +250,7 @@ impl<'a> TimelineTabView<'a> {
         }
     }
 
-    pub fn show(&mut self, ui: &mut egui::Ui) -> Option<NoteAction> {
+    pub fn show(&mut self, ui: &mut egui::Ui, is_muted: &MuteFun) -> Option<NoteAction> {
         let mut action: Option<NoteAction> = None;
         let len = self.tab.notes.len();
 
@@ -273,6 +276,13 @@ impl<'a> TimelineTabView<'a> {
                     warn!("failed to query note {:?}", note_key);
                     return 0;
                 };
+
+                if is_muted(
+                    &note,
+                    root_note_id_from_selected_id(self.ndb, self.note_cache, self.txn, &note.id()),
+                ) {
+                    return 0;
+                }
 
                 ui::padding(8.0, ui, |ui| {
                     let resp = ui::NoteView::new(self.ndb, self.note_cache, self.img_cache, &note)

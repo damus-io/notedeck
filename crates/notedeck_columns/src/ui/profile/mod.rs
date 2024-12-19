@@ -86,7 +86,7 @@ impl<'a> ProfileView<'a> {
                     self.note_cache,
                     self.img_cache,
                 )
-                .show(ui)
+                .show(ui, is_muted)
             })
             .inner
     }
