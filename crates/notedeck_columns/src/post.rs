@@ -132,7 +132,7 @@ impl NewPost {
         for word in content.split_whitespace() {
             if word.starts_with('#') && word.len() > 1 {
                 let tag = word[1..]
-                    .trim_end_matches(|c: char| !c.is_alphanumeric())
+                    .trim_end_matches(|c: char| c.is_ascii_punctuation())
                     .to_lowercase();
                 if !tag.is_empty() {
                     hashtags.insert(tag);
@@ -155,9 +155,8 @@ mod tests {
             ("No hashtags here", vec![]),
             ("#tag1 with #tag2!", vec!["tag1", "tag2"]),
             ("Ignore # empty", vec![]),
-            ("Keep #alphanumeric123", vec!["alphanumeric123"]),
-            ("Testing emoji #🍌sfd", vec!["🍌sfd"]),
-            ("Testing emoji with space #🍌 sfd", vec!["🍌"]),
+            ("Testing emoji #🍌banana", vec!["🍌banana"]),
+            ("Testing emoji #🍌", vec!["🍌"]),
             ("Duplicate #tag #tag #tag", vec!["tag"]),
             ("Mixed case #TaG #tag #TAG", vec!["tag"]),
             (
