@@ -20,12 +20,15 @@ impl NewPost {
     }
 
     pub fn to_note(&self, seckey: &[u8; 32]) -> Note {
-        add_client_tag(NoteBuilder::new())
+        let mut builder = add_client_tag(NoteBuilder::new())
             .kind(1)
-            .content(&self.content)
-            .sign(seckey)
-            .build()
-            .expect("note should be ok")
+            .content(&self.content);
+
+        for hashtag in Self::extract_hashtags(&self.content) {
+            builder = builder.start_tag().tag_str("t").tag_str(&hashtag);
+        }
+
+        builder.sign(seckey).build().expect("note should be ok")
     }
 
     pub fn to_reply(&self, seckey: &[u8; 32], replying_to: &Note) -> Note {
@@ -106,9 +109,13 @@ impl NewPost {
             enostr::NoteId::new(*quoting.id()).to_bech().unwrap()
         );
 
-        NoteBuilder::new()
-            .kind(1)
-            .content(&new_content)
+        let mut builder = NoteBuilder::new().kind(1).content(&new_content);
+
+        for hashtag in Self::extract_hashtags(&self.content) {
+            builder = builder.start_tag().tag_str("t").tag_str(&hashtag);
+        }
+
+        builder
             .start_tag()
             .tag_str("q")
             .tag_str(&hex::encode(quoting.id()))
@@ -118,5 +125,50 @@ impl NewPost {
             .sign(seckey)
             .build()
             .expect("expected build to work")
+    }
+
+    fn extract_hashtags(content: &str) -> HashSet<String> {
+        let mut hashtags = HashSet::new();
+        for word in content.split_whitespace() {
+            if word.starts_with('#') && word.len() > 1 {
+                let tag = word[1..]
+                    .trim_end_matches(|c: char| c.is_ascii_punctuation())
+                    .to_lowercase();
+                if !tag.is_empty() {
+                    hashtags.insert(tag);
+                }
+            }
+        }
+        hashtags
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_hashtags() {
+        let test_cases = vec![
+            ("Hello #world", vec!["world"]),
+            ("Multiple #tags #in #one post", vec!["tags", "in", "one"]),
+            ("No hashtags here", vec![]),
+            ("#tag1 with #tag2!", vec!["tag1", "tag2"]),
+            ("Ignore # empty", vec![]),
+            ("Testing emoji #🍌banana", vec!["🍌banana"]),
+            ("Testing emoji #🍌", vec!["🍌"]),
+            ("Duplicate #tag #tag #tag", vec!["tag"]),
+            ("Mixed case #TaG #tag #TAG", vec!["tag"]),
+            (
+                "#tag1, #tag2, #tag3 with commas",
+                vec!["tag1", "tag2", "tag3"],
+            ),
+        ];
+
+        for (input, expected) in test_cases {
+            let result = NewPost::extract_hashtags(input);
+            let expected: HashSet<String> = expected.into_iter().map(String::from).collect();
+            assert_eq!(result, expected, "Failed for input: {}", input);
+        }
     }
 }
