@@ -117,11 +117,13 @@ pub trait NotesHolder {
         &mut self,
         txn: &Transaction,
         ndb: &Ndb,
+        note_cache: &mut NoteCache,
         is_muted: &MuteFun,
     ) -> Result<NoteRefsUnkIdAction> {
         if let Some(multi_subscriber) = self.get_multi_subscriber() {
             let reversed = true;
-            let note_refs: Vec<NoteRef> = multi_subscriber.poll_for_notes(ndb, txn, is_muted)?;
+            let note_refs: Vec<NoteRef> =
+                multi_subscriber.poll_for_notes(ndb, note_cache, txn, is_muted)?;
             self.get_view().insert(&note_refs, reversed);
             Ok(NoteRefsUnkIdAction::new(note_refs))
         } else {

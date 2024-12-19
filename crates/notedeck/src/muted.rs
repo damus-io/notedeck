@@ -1,9 +1,9 @@
 use nostrdb::Note;
 use std::collections::BTreeSet;
 
-use tracing::debug;
+use tracing::{debug, trace};
 
-pub type MuteFun = dyn Fn(&Note) -> bool;
+pub type MuteFun = dyn Fn(&Note, &[u8; 32]) -> bool;
 
 #[derive(Default)]
 pub struct Muted {
@@ -32,7 +32,13 @@ impl std::fmt::Debug for Muted {
 }
 
 impl Muted {
-    pub fn is_muted(&self, note: &Note) -> bool {
+    pub fn is_muted(&self, note: &Note, thread: &[u8; 32]) -> bool {
+        trace!(
+            "{}: thread: {}",
+            hex::encode(note.id()),
+            hex::encode(thread)
+        );
+
         if self.pubkeys.contains(note.pubkey()) {
             debug!(
                 "{}: MUTED pubkey: {}",
@@ -55,7 +61,16 @@ impl Muted {
         //     }
         // }
 
-        // FIXME - Implement thread muting here
+        if self.threads.contains(thread) {
+            debug!(
+                "{}: MUTED thread: {}",
+                hex::encode(note.id()),
+                hex::encode(thread)
+            );
+            return true;
+        }
+
+        // if we get here it's not muted
         false
     }
 }

@@ -7,8 +7,8 @@ use crate::{
 };
 
 use notedeck::{
-    filter, CachedNote, FilterError, FilterState, FilterStates, MuteFun, NoteCache, NoteRef,
-    UnknownIds,
+    filter, note::root_note_id_from_selected_id, CachedNote, FilterError, FilterState,
+    FilterStates, MuteFun, NoteCache, NoteRef, UnknownIds,
 };
 
 use std::fmt;
@@ -312,7 +312,10 @@ impl Timeline {
                 error!("hit race condition in poll_notes_into_view: https://github.com/damus-io/nostrdb/issues/35 note {:?} was not added to timeline", key);
                 continue;
             };
-            if is_muted(&note) {
+            if is_muted(
+                &note,
+                root_note_id_from_selected_id(ndb, note_cache, txn, note.id()),
+            ) {
                 continue;
             }
 
@@ -585,7 +588,10 @@ pub fn copy_notes_into_timeline(
     for note_ref in notes {
         for (view, filter) in filters.iter().enumerate() {
             if let Ok(note) = ndb.get_note_by_key(txn, note_ref.key) {
-                if is_muted(&note) {
+                if is_muted(
+                    &note,
+                    root_note_id_from_selected_id(ndb, note_cache, txn, note.id()),
+                ) {
                     continue;
                 }
                 if filter(

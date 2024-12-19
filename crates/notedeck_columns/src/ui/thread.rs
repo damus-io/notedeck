@@ -99,7 +99,7 @@ impl<'a> ThreadView<'a> {
                 // TODO(jb55): skip poll if ThreadResult is fresh?
 
                 // poll for new notes and insert them into our existing notes
-                match thread.poll_notes_into_view(&txn, self.ndb, is_muted) {
+                match thread.poll_notes_into_view(&txn, self.ndb, self.note_cache, is_muted) {
                     Ok(action) => {
                         action.process_action(&txn, self.ndb, self.unknown_ids, self.note_cache)
                     }

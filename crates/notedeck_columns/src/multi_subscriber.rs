@@ -4,7 +4,9 @@ use tracing::{debug, error, info};
 use uuid::Uuid;
 
 use crate::Error;
-use notedeck::{MuteFun, NoteRef, UnifiedSubscription};
+use notedeck::{
+    note::root_note_id_from_selected_id, MuteFun, NoteCache, NoteRef, UnifiedSubscription,
+};
 
 pub struct MultiSubscriber {
     filters: Vec<Filter>,
@@ -109,6 +111,7 @@ impl MultiSubscriber {
     pub fn poll_for_notes(
         &mut self,
         ndb: &Ndb,
+        note_cache: &mut NoteCache,
         txn: &Transaction,
         is_muted: &MuteFun,
     ) -> Result<Vec<NoteRef>, Error> {
@@ -129,7 +132,10 @@ impl MultiSubscriber {
                 continue;
             };
 
-            if is_muted(&note) {
+            if is_muted(
+                &note,
+                root_note_id_from_selected_id(ndb, note_cache, txn, note.id()),
+            ) {
                 continue;
             }
 

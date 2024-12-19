@@ -279,7 +279,7 @@ impl<'a> TimelineTabView<'a> {
 
                 if is_muted(
                     &note,
-                    root_note_id_from_selected_id(self.ndb, self.note_cache, self.txn, &note.id()),
+                    root_note_id_from_selected_id(self.ndb, self.note_cache, self.txn, note.id()),
                 ) {
                     return 0;
                 }

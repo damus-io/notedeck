@@ -71,7 +71,9 @@ impl<'a> ProfileView<'a> {
                     tabs_ui(ui, profile.timeline.selected_view, &profile.timeline.views);
 
                 // poll for new notes and insert them into our existing notes
-                if let Err(e) = profile.poll_notes_into_view(&txn, self.ndb, is_muted) {
+                if let Err(e) =
+                    profile.poll_notes_into_view(&txn, self.ndb, self.note_cache, is_muted)
+                {
                     error!("Profile::poll_notes_into_view: {e}");
                 }
 
