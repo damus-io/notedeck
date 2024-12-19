@@ -67,9 +67,13 @@ impl<'a> NavTitle<'a> {
         let back_button_resp =
             prev(self.routes).map(|r| self.back_button(ui, r, egui::Vec2::new(chev_x, 15.0)));
 
-        // add some space where chevron would have been. this makes the ui
-        // less bumpy when navigating
-        if back_button_resp.is_none() {
+        if let Some(back_resp) = &back_button_resp {
+            if back_resp.hovered() || back_resp.clicked() {
+                ui::show_pointer(ui);
+            }
+        } else {
+            // add some space where chevron would have been. this makes the ui
+            // less bumpy when navigating
             ui.add_space(chev_x + item_spacing);
         }
 
