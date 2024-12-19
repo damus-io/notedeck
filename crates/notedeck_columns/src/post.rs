@@ -25,16 +25,10 @@ impl NewPost {
             .content(&self.content);
 
         for hashtag in Self::extract_hashtags(&self.content) {
-            builder = builder
-                .start_tag()
-                .tag_str("t")
-                .tag_str(&hashtag);
+            builder = builder.start_tag().tag_str("t").tag_str(&hashtag);
         }
 
-        builder
-            .sign(seckey)
-            .build()
-            .expect("note should be ok")
+        builder.sign(seckey).build().expect("note should be ok")
     }
 
     pub fn to_reply(&self, seckey: &[u8; 32], replying_to: &Note) -> Note {
@@ -115,15 +109,10 @@ impl NewPost {
             enostr::NoteId::new(*quoting.id()).to_bech().unwrap()
         );
 
-        let mut builder = NoteBuilder::new()
-            .kind(1)
-            .content(&new_content);
+        let mut builder = NoteBuilder::new().kind(1).content(&new_content);
 
         for hashtag in Self::extract_hashtags(&self.content) {
-            builder = builder
-                .start_tag()
-                .tag_str("t")
-                .tag_str(&hashtag);
+            builder = builder.start_tag().tag_str("t").tag_str(&hashtag);
         }
 
         builder
@@ -142,7 +131,8 @@ impl NewPost {
         let mut hashtags = HashSet::new();
         for word in content.split_whitespace() {
             if word.starts_with('#') && word.len() > 1 {
-                let tag = word[1..].trim_end_matches(|c: char| !c.is_alphanumeric())
+                let tag = word[1..]
+                    .trim_end_matches(|c: char| !c.is_alphanumeric())
                     .to_lowercase();
                 if !tag.is_empty() {
                     hashtags.insert(tag);
@@ -170,17 +160,16 @@ mod tests {
             ("Testing emoji with space #🍌 sfd", vec!["🍌"]),
             ("Duplicate #tag #tag #tag", vec!["tag"]),
             ("Mixed case #TaG #tag #TAG", vec!["tag"]),
+            (
+                "#tag1, #tag2, #tag3 with commas",
+                vec!["tag1", "tag2", "tag3"],
+            ),
         ];
 
         for (input, expected) in test_cases {
             let result = NewPost::extract_hashtags(input);
             let expected: HashSet<String> = expected.into_iter().map(String::from).collect();
-            assert_eq!(
-                result,
-                expected,
-                "Failed for input: {}",
-                input
-            );
+            assert_eq!(result, expected, "Failed for input: {}", input);
         }
     }
 }
