@@ -12,6 +12,7 @@ mod notecache;
 mod result;
 pub mod storage;
 mod style;
+pub mod submgr;
 pub mod theme;
 mod theme_handler;
 mod time;
@@ -19,6 +20,10 @@ mod timecache;
 pub mod ui;
 mod unknowns;
 mod user_account;
+
+/// Various utilities
+#[macro_use]
+pub mod util;
 
 pub use accounts::{AccountData, Accounts, AccountsAction, AddAccountAction};
 pub use app::App;
