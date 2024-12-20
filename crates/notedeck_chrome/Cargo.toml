@@ -40,6 +40,8 @@ path = "src/preview.rs"
 [features]
 default = []
 profiling = ["notedeck_columns/puffin"]
+debug-widget-callstack = ["egui/callstack"]
+debug-interactive-widgets = []
 
 [target.'cfg(target_os = "android")'.dependencies]
 android_logger = "0.11.1"
