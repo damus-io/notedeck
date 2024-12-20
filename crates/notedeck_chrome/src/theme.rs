@@ -124,9 +124,26 @@ pub fn add_custom_style(is_mobile: bool, style: &mut Style) {
         ..Interaction::default()
     };
 
-    #[cfg(debug_assertions)]
+    // debug: show callstack for the current widget on hover if all
+    // modifier keys are pressed down.
+    #[cfg(feature = "debug-widget-callstack")]
     {
-        style.debug.show_interactive_widgets = true;
+        #[cfg(not(debug_assertions))]
+        compile_error!(
+            "The `debug-widget-callstack` feature requires a debug build, \
+             release builds are unsupported."
+        );
         style.debug.debug_on_hover_with_all_modifiers = true;
+    }
+
+    // debug: show an overlay on all interactive widgets
+    #[cfg(feature = "debug-interactive-widgets")]
+    {
+        #[cfg(not(debug_assertions))]
+        compile_error!(
+            "The `debug-interactive-widgets` feature requires a debug build, \
+             release builds are unsupported."
+        );
+        style.debug.show_interactive_widgets = true;
     }
 }

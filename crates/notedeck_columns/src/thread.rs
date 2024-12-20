@@ -5,7 +5,7 @@ use crate::{
 };
 
 use nostrdb::{Filter, FilterBuilder, Ndb, Transaction};
-use notedeck::{MuteFun, NoteCache, NoteRef};
+use notedeck::{NoteCache, NoteRef};
 
 #[derive(Default)]
 pub struct Thread {
@@ -74,7 +74,6 @@ impl NotesHolder for Thread {
         _: &[u8; 32],
         _: Vec<Filter>,
         notes: Vec<NoteRef>,
-        _: &MuteFun,
     ) -> Self {
         Thread::new(notes)
     }

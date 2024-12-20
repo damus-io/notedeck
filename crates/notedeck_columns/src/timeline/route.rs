@@ -64,7 +64,7 @@ pub fn render_timeline_route(
                 img_cache,
                 note_options,
             )
-            .ui(ui);
+            .ui(ui, &accounts.mutefun());
 
             note_action.map(RenderNavAction::NoteAction)
         }
