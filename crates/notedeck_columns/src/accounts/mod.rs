@@ -1,7 +1,9 @@
 use enostr::FullKeypair;
 use nostrdb::Ndb;
 
-use notedeck::{Accounts, AccountsAction, AddAccountAction, ImageCache, SingleUnkIdAction};
+use notedeck::{
+    Accounts, AccountsAction, AddAccountAction, ImageCache, SingleUnkIdAction, SwitchAccountAction,
+};
 
 use crate::app::get_active_columns_mut;
 use crate::decks::DecksCache;
@@ -87,7 +89,7 @@ pub fn process_accounts_view_response(
             selection = Some(acc_sel);
         }
         AccountsViewResponse::SelectAccount(index) => {
-            let acc_sel = AccountsAction::Switch(index);
+            let acc_sel = AccountsAction::Switch(SwitchAccountAction::new(Some(col), index));
             info!("account selection: {:?}", acc_sel);
             selection = Some(acc_sel);
         }

@@ -4,7 +4,7 @@ use crate::{
     app::{get_active_columns, get_active_columns_mut, get_decks_mut},
     column::ColumnsAction,
     deck_state::DeckState,
-    decks::{Deck, DecksAction},
+    decks::{Deck, DecksAction, DecksCache},
     notes_holder::NotesHolder,
     profile::Profile,
     relay_pool_manager::RelayPoolManager,
@@ -50,23 +50,32 @@ pub enum SwitchingAction {
 
 impl SwitchingAction {
     /// process the action, and return whether switching occured
-    pub fn process(&self, app: &mut Damus, ctx: &mut AppContext<'_>) -> bool {
+    pub fn process(&self, decks_cache: &mut DecksCache, ctx: &mut AppContext<'_>) -> bool {
         match &self {
-            SwitchingAction::Accounts(account_action) => match *account_action {
-                AccountsAction::Switch(index) => ctx.accounts.select_account(index),
-                AccountsAction::Remove(index) => ctx.accounts.remove_account(index),
+            SwitchingAction::Accounts(account_action) => match account_action {
+                AccountsAction::Switch(switch_action) => {
+                    ctx.accounts.select_account(switch_action.switch_to);
+                    // pop nav after switch
+                    if let Some(src) = switch_action.source {
+                        get_active_columns_mut(ctx.accounts, decks_cache)
+                            .column_mut(src)
+                            .router_mut()
+                            .go_back();
+                    }
+                }
+                AccountsAction::Remove(index) => ctx.accounts.remove_account(*index),
             },
             SwitchingAction::Columns(columns_action) => match *columns_action {
                 ColumnsAction::Remove(index) => {
-                    get_active_columns_mut(ctx.accounts, &mut app.decks_cache).delete_column(index)
+                    get_active_columns_mut(ctx.accounts, decks_cache).delete_column(index)
                 }
             },
             SwitchingAction::Decks(decks_action) => match *decks_action {
                 DecksAction::Switch(index) => {
-                    get_decks_mut(ctx.accounts, &mut app.decks_cache).set_active(index)
+                    get_decks_mut(ctx.accounts, decks_cache).set_active(index)
                 }
                 DecksAction::Removing(index) => {
-                    get_decks_mut(ctx.accounts, &mut app.decks_cache).remove_deck(index)
+                    get_decks_mut(ctx.accounts, decks_cache).remove_deck(index)
                 }
             },
         }
@@ -157,7 +166,7 @@ impl RenderNavResponse {
                 }
 
                 RenderNavAction::SwitchingAction(switching_action) => {
-                    switching_occured = switching_action.process(app, ctx);
+                    switching_occured = switching_action.process(&mut app.decks_cache, ctx);
                 }
             }
         }

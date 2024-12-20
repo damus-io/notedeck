@@ -13,9 +13,24 @@ use uuid::Uuid;
 // TODO: remove this
 use std::sync::Arc;
 
+#[derive(Debug, Clone)]
+pub struct SwitchAccountAction {
+    /// Some index representing the source of the action
+    pub source: Option<usize>,
+
+    /// The account index to switch to
+    pub switch_to: usize,
+}
+
+impl SwitchAccountAction {
+    pub fn new(source: Option<usize>, switch_to: usize) -> Self {
+        SwitchAccountAction { source, switch_to }
+    }
+}
+
 #[derive(Debug)]
 pub enum AccountsAction {
-    Switch(usize),
+    Switch(SwitchAccountAction),
     Remove(usize),
 }
 
@@ -338,8 +353,12 @@ impl Accounts {
             self.accounts.len() - 1
         };
 
+        let source: Option<usize> = None;
         AddAccountAction {
-            accounts_action: Some(AccountsAction::Switch(switch_to_index)),
+            accounts_action: Some(AccountsAction::Switch(SwitchAccountAction::new(
+                source,
+                switch_to_index,
+            ))),
             unk_id_action: SingleUnkIdAction::pubkey(pubkey),
         }
     }

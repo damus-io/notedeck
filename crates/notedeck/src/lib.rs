@@ -20,7 +20,7 @@ pub mod ui;
 mod unknowns;
 mod user_account;
 
-pub use accounts::{AccountData, Accounts, AccountsAction, AddAccountAction};
+pub use accounts::{AccountData, Accounts, AccountsAction, AddAccountAction, SwitchAccountAction};
 pub use app::App;
 pub use args::Args;
 pub use context::AppContext;

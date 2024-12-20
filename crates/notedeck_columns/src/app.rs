@@ -620,7 +620,7 @@ fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus, ctx: &mut App
 
             let mut save_cols = false;
             if let Some(action) = side_panel_action {
-                save_cols = save_cols || action.process(app, ctx);
+                save_cols = save_cols || action.process(&mut app.decks_cache, ctx);
             }
 
             let num_cols = app.columns(ctx.accounts).num_columns();
