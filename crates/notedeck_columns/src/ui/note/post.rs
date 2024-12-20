@@ -1,11 +1,11 @@
 use crate::draft::{Draft, Drafts};
 use crate::post::NewPost;
-use crate::ui::{self, Preview, PreviewConfig, View};
+use crate::ui::{self, Preview, PreviewConfig};
 use crate::Result;
 use egui::widgets::text_edit::TextEdit;
 use egui::{Frame, Layout};
 use enostr::{FilledKeypair, FullKeypair, NoteId, RelayPool};
-use nostrdb::{Config, Ndb, Transaction};
+use nostrdb::{Ndb, Transaction};
 use tracing::info;
 
 use notedeck::{ImageCache, NoteCache};
@@ -257,38 +257,31 @@ fn post_button(interactive: bool) -> impl egui::Widget {
 
 mod preview {
     use super::*;
+    use notedeck::{App, AppContext};
 
     pub struct PostPreview {
-        ndb: Ndb,
-        img_cache: ImageCache,
-        note_cache: NoteCache,
         draft: Draft,
         poster: FullKeypair,
     }
 
     impl PostPreview {
         fn new() -> Self {
-            let ndb = Ndb::new(".", &Config::new()).expect("ndb");
-
             PostPreview {
-                ndb,
-                img_cache: ImageCache::new(".".into()),
-                note_cache: NoteCache::default(),
                 draft: Draft::new(),
                 poster: FullKeypair::generate(),
             }
         }
     }
 
-    impl View for PostPreview {
-        fn ui(&mut self, ui: &mut egui::Ui) {
-            let txn = Transaction::new(&self.ndb).expect("txn");
+    impl App for PostPreview {
+        fn update(&mut self, app: &mut AppContext<'_>, ui: &mut egui::Ui) {
+            let txn = Transaction::new(app.ndb).expect("txn");
             PostView::new(
-                &self.ndb,
+                app.ndb,
                 &mut self.draft,
                 PostType::New,
-                &mut self.img_cache,
-                &mut self.note_cache,
+                app.img_cache,
+                app.note_cache,
                 self.poster.to_filled(),
             )
             .ui(&txn, ui);

@@ -15,5 +15,4 @@ pub struct AppContext<'a> {
     pub path: &'a DataPath,
     pub args: &'a Args,
     pub theme: &'a mut ThemeHandler,
-    pub egui: &'a egui::Context,
 }

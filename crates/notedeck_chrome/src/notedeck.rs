@@ -3,8 +3,6 @@ use notedeck_chrome::{setup::generate_native_options, Notedeck};
 
 use notedeck::{DataPath, DataPathType};
 use notedeck_columns::Damus;
-use std::path::PathBuf;
-use std::str::FromStr;
 use tracing_subscriber::EnvFilter;
 
 // Entry point for wasm
@@ -64,8 +62,8 @@ fn setup_logging(path: &DataPath) {
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::main]
 async fn main() {
-    let base_path = DataPath::default_base().unwrap_or(PathBuf::from_str(".").unwrap());
-    let path = DataPath::new(&base_path);
+    let base_path = DataPath::default_base_or_cwd();
+    let path = DataPath::new(base_path.clone());
 
     setup_logging(&path);
 

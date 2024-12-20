@@ -25,7 +25,38 @@ pub struct Notedeck {
     theme: ThemeHandler,
     tabs: Tabs,
     app_rect_handler: AppSizeHandler,
-    egui: egui::Context,
+}
+
+fn margin_top(narrow: bool) -> f32 {
+    #[cfg(target_os = "android")]
+    {
+        // FIXME - query the system bar height and adjust more precisely
+        let _ = narrow; // suppress compiler warning on android
+        40.0
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        if narrow {
+            50.0
+        } else {
+            0.0
+        }
+    }
+}
+
+/// Our chrome, which is basically nothing
+fn main_panel(style: &egui::Style, narrow: bool) -> egui::CentralPanel {
+    let inner_margin = egui::Margin {
+        top: margin_top(narrow),
+        left: 0.0,
+        right: 0.0,
+        bottom: 0.0,
+    };
+    egui::CentralPanel::default().frame(egui::Frame {
+        inner_margin,
+        fill: style.visuals.panel_fill,
+        ..Default::default()
+    })
 }
 
 impl eframe::App for Notedeck {
@@ -36,19 +67,34 @@ impl eframe::App for Notedeck {
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // TODO: render chrome
+        #[cfg(feature = "profiling")]
+        puffin::GlobalProfiler::lock().new_frame();
 
-        // render app
-        if let Some(app) = &self.tabs.app {
-            let app = app.clone();
-            app.borrow_mut().update(&mut self.app_context());
-        }
+        main_panel(&ctx.style(), notedeck::ui::is_narrow(ctx)).show(ctx, |ui| {
+            // render app
+            if let Some(app) = &self.tabs.app {
+                let app = app.clone();
+                app.borrow_mut().update(&mut self.app_context(), ui);
+            }
+        });
 
         self.app_rect_handler.try_save_app_size(ctx);
+
+        #[cfg(feature = "profiling")]
+        puffin_egui::profiler_window(ctx);
     }
+}
+
+#[cfg(feature = "profiling")]
+fn setup_profiling() {
+    puffin::set_scopes_on(true); // tell puffin to collect data
 }
 
 impl Notedeck {
     pub fn new<P: AsRef<Path>>(ctx: &egui::Context, data_path: P, args: &[String]) -> Self {
+        #[cfg(feature = "profiling")]
+        setup_profiling();
+
         let parsed_args = Args::parse(args);
         let is_mobile = parsed_args
             .is_mobile
@@ -139,7 +185,6 @@ impl Notedeck {
         let img_cache = ImageCache::new(imgcache_dir);
         let note_cache = NoteCache::default();
         let unknown_ids = UnknownIds::default();
-        let egui = ctx.clone();
         let tabs = Tabs::new(None);
         let parsed_args = Args::parse(args);
         let app_rect_handler = AppSizeHandler::new(&path);
@@ -155,7 +200,6 @@ impl Notedeck {
             path: path.clone(),
             args: parsed_args,
             theme,
-            egui,
             tabs,
         }
     }
@@ -171,7 +215,6 @@ impl Notedeck {
             path: &self.path,
             args: &self.args,
             theme: &mut self.theme,
-            egui: &self.egui,
         }
     }
 

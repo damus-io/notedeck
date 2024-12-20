@@ -22,7 +22,6 @@ use notedeck::{Accounts, AppContext, DataPath, DataPathType, FilterState, ImageC
 use enostr::{ClientMessage, Keypair, Pubkey, RelayEvent, RelayMessage, RelayPool};
 use uuid::Uuid;
 
-use egui::{Frame, Style};
 use egui_extras::{Size, StripBuilder};
 
 use nostrdb::{Ndb, Transaction};
@@ -185,22 +184,11 @@ fn unknown_id_send(unknown_ids: &mut UnknownIds, pool: &mut RelayPool) {
     pool.send(&msg);
 }
 
-#[cfg(feature = "profiling")]
-fn setup_profiling() {
-    puffin::set_scopes_on(true); // tell puffin to collect data
-}
-
-fn update_damus(damus: &mut Damus, app_ctx: &mut AppContext<'_>) {
-    let _ctx = app_ctx.egui.clone();
-    let ctx = &_ctx;
-
+fn update_damus(damus: &mut Damus, app_ctx: &mut AppContext<'_>, ctx: &egui::Context) {
     app_ctx.accounts.update(app_ctx.ndb, app_ctx.pool, ctx); // update user relay and mute lists
 
     match damus.state {
         DamusState::Initializing => {
-            #[cfg(feature = "profiling")]
-            setup_profiling();
-
             damus.state = DamusState::Initialized;
             // this lets our eose handler know to close unknownids right away
             damus
@@ -337,18 +325,15 @@ fn process_message(damus: &mut Damus, ctx: &mut AppContext<'_>, relay: &str, msg
     }
 }
 
-fn render_damus(damus: &mut Damus, app_ctx: &mut AppContext<'_>) {
-    if notedeck::ui::is_narrow(app_ctx.egui) {
-        render_damus_mobile(damus, app_ctx);
+fn render_damus(damus: &mut Damus, app_ctx: &mut AppContext<'_>, ui: &mut egui::Ui) {
+    if notedeck::ui::is_narrow(ui.ctx()) {
+        render_damus_mobile(damus, app_ctx, ui);
     } else {
-        render_damus_desktop(damus, app_ctx);
+        render_damus_desktop(damus, app_ctx, ui);
     }
 
     // We use this for keeping timestamps and things up to date
-    app_ctx.egui.request_repaint_after(Duration::from_secs(1));
-
-    #[cfg(feature = "profiling")]
-    puffin_egui::profiler_window(ctx);
+    ui.ctx().request_repaint_after(Duration::from_secs(1));
 }
 
 /*
@@ -498,63 +483,24 @@ fn circle_icon(ui: &mut egui::Ui, openness: f32, response: &egui::Response) {
 }
 */
 
-fn render_damus_mobile(app: &mut Damus, app_ctx: &mut AppContext<'_>) {
-    let _ctx = app_ctx.egui.clone();
-    let ctx = &_ctx;
-
+fn render_damus_mobile(app: &mut Damus, app_ctx: &mut AppContext<'_>, ui: &mut egui::Ui) {
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
 
     //let routes = app.timelines[0].routes.clone();
 
-    main_panel(&ctx.style(), notedeck::ui::is_narrow(ctx)).show(ctx, |ui| {
-        if !app.columns(app_ctx.accounts).columns().is_empty()
-            && nav::render_nav(0, app, app_ctx, ui).process_render_nav_response(app, app_ctx)
-        {
-            storage::save_decks_cache(app_ctx.path, &app.decks_cache);
-        }
-    });
-}
-
-fn margin_top(narrow: bool) -> f32 {
-    #[cfg(target_os = "android")]
+    if !app.columns(app_ctx.accounts).columns().is_empty()
+        && nav::render_nav(0, app, app_ctx, ui).process_render_nav_response(app, app_ctx)
     {
-        // FIXME - query the system bar height and adjust more precisely
-        let _ = narrow; // suppress compiler warning on android
-        40.0
-    }
-    #[cfg(not(target_os = "android"))]
-    {
-        if narrow {
-            50.0
-        } else {
-            0.0
-        }
+        storage::save_decks_cache(app_ctx.path, &app.decks_cache);
     }
 }
 
-fn main_panel(style: &Style, narrow: bool) -> egui::CentralPanel {
-    let inner_margin = egui::Margin {
-        top: margin_top(narrow),
-        left: 0.0,
-        right: 0.0,
-        bottom: 0.0,
-    };
-    egui::CentralPanel::default().frame(Frame {
-        inner_margin,
-        fill: style.visuals.panel_fill,
-        ..Default::default()
-    })
-}
-
-fn render_damus_desktop(app: &mut Damus, app_ctx: &mut AppContext<'_>) {
-    let _ctx = app_ctx.egui.clone();
-    let ctx = &_ctx;
-
+fn render_damus_desktop(app: &mut Damus, app_ctx: &mut AppContext<'_>, ui: &mut egui::Ui) {
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
 
-    let screen_size = ctx.screen_rect().width();
+    let screen_size = ui.ctx().screen_rect().width();
     let calc_panel_width = (screen_size
         / get_active_columns(app_ctx.accounts, &app.decks_cache).num_columns() as f32)
         - 30.0;
@@ -566,16 +512,14 @@ fn render_damus_desktop(app: &mut Damus, app_ctx: &mut AppContext<'_>) {
         Size::remainder()
     };
 
-    main_panel(&ctx.style(), notedeck::ui::is_narrow(ctx)).show(ctx, |ui| {
-        ui.spacing_mut().item_spacing.x = 0.0;
-        if need_scroll {
-            egui::ScrollArea::horizontal().show(ui, |ui| {
-                timelines_view(ui, panel_sizes, app, app_ctx);
-            });
-        } else {
+    ui.spacing_mut().item_spacing.x = 0.0;
+    if need_scroll {
+        egui::ScrollArea::horizontal().show(ui, |ui| {
             timelines_view(ui, panel_sizes, app, app_ctx);
-        }
-    });
+        });
+    } else {
+        timelines_view(ui, panel_sizes, app, app_ctx);
+    }
 }
 
 fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus, ctx: &mut AppContext<'_>) {
@@ -653,17 +597,15 @@ fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus, ctx: &mut App
 }
 
 impl notedeck::App for Damus {
-    fn update(&mut self, ctx: &mut AppContext<'_>) {
+    fn update(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) {
         /*
         self.app
             .frame_history
             .on_new_frame(ctx.input(|i| i.time), frame.info().cpu_usage);
         */
 
-        #[cfg(feature = "profiling")]
-        puffin::GlobalProfiler::lock().new_frame();
-        update_damus(self, ctx);
-        render_damus(self, ctx);
+        update_damus(self, ctx, ui.ctx());
+        render_damus(self, ctx, ui);
     }
 }
 

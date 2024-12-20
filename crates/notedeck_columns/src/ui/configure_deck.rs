@@ -297,10 +297,11 @@ fn paint_row(ui: &mut egui::Ui, row_glyphs: &[char], font_size: f32) -> Option<c
 mod preview {
     use crate::{
         deck_state::DeckState,
-        ui::{Preview, PreviewConfig, View},
+        ui::{Preview, PreviewConfig},
     };
 
     use super::ConfigureDeckView;
+    use notedeck::{App, AppContext};
 
     pub struct ConfigureDeckPreview {
         state: DeckState,
@@ -314,8 +315,8 @@ mod preview {
         }
     }
 
-    impl View for ConfigureDeckPreview {
-        fn ui(&mut self, ui: &mut egui::Ui) {
+    impl App for ConfigureDeckPreview {
+        fn update(&mut self, _app_ctx: &mut AppContext<'_>, ui: &mut egui::Ui) {
             ConfigureDeckView::new(&mut self.state).ui(ui);
         }
     }

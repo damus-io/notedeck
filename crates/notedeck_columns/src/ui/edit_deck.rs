@@ -58,10 +58,11 @@ fn delete_button() -> impl Widget {
 mod preview {
     use crate::{
         deck_state::DeckState,
-        ui::{Preview, PreviewConfig, View},
+        ui::{Preview, PreviewConfig},
     };
 
     use super::EditDeckView;
+    use notedeck::{App, AppContext};
 
     pub struct EditDeckPreview {
         state: DeckState,
@@ -75,8 +76,8 @@ mod preview {
         }
     }
 
-    impl View for EditDeckPreview {
-        fn ui(&mut self, ui: &mut egui::Ui) {
+    impl App for EditDeckPreview {
+        fn update(&mut self, _app_ctx: &mut AppContext<'_>, ui: &mut egui::Ui) {
             EditDeckView::new(&mut self.state).ui(ui);
         }
     }

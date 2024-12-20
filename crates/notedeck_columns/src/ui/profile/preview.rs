@@ -6,7 +6,7 @@ use egui_extras::Size;
 use enostr::{NoteId, Pubkey};
 use nostrdb::{Ndb, ProfileRecord, Transaction};
 
-use notedeck::{DataPath, DataPathType, ImageCache, NotedeckTextStyle, UserAccount};
+use notedeck::{ImageCache, NotedeckTextStyle, UserAccount};
 
 pub struct ProfilePreview<'a, 'cache> {
     profile: &'a ProfileRecord<'a>,
@@ -147,21 +147,17 @@ impl egui::Widget for SimpleProfilePreview<'_, '_> {
 mod previews {
     use super::*;
     use crate::test_data::test_profile_record;
-    use crate::ui::{Preview, PreviewConfig, View};
+    use crate::ui::{Preview, PreviewConfig};
+    use notedeck::{App, AppContext};
 
     pub struct ProfilePreviewPreview<'a> {
         profile: ProfileRecord<'a>,
-        cache: ImageCache,
     }
 
     impl ProfilePreviewPreview<'_> {
         pub fn new() -> Self {
             let profile = test_profile_record();
-            let path = DataPath::new("previews")
-                .path(DataPathType::Cache)
-                .join(ImageCache::rel_dir());
-            let cache = ImageCache::new(path);
-            ProfilePreviewPreview { profile, cache }
+            ProfilePreviewPreview { profile }
         }
     }
 
@@ -171,9 +167,9 @@ mod previews {
         }
     }
 
-    impl View for ProfilePreviewPreview<'_> {
-        fn ui(&mut self, ui: &mut egui::Ui) {
-            ProfilePreview::new(&self.profile, &mut self.cache).ui(ui);
+    impl App for ProfilePreviewPreview<'_> {
+        fn update(&mut self, app: &mut AppContext<'_>, ui: &mut egui::Ui) {
+            ProfilePreview::new(&self.profile, app.img_cache).ui(ui);
         }
     }
 

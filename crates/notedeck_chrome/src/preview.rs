@@ -1,7 +1,6 @@
 use notedeck::DataPath;
-use notedeck_chrome::setup::{
-    generate_mobile_emulator_native_options, generate_native_options, setup_cc,
-};
+use notedeck_chrome::setup::generate_native_options;
+use notedeck_chrome::Notedeck;
 use notedeck_columns::ui::configure_deck::ConfigureDeckView;
 use notedeck_columns::ui::edit_deck::EditDeckView;
 use notedeck_columns::ui::{
@@ -10,42 +9,32 @@ use notedeck_columns::ui::{
 };
 use std::env;
 
-struct PreviewRunner {
-    force_mobile: bool,
-    light_mode: bool,
-}
+struct PreviewRunner {}
 
 impl PreviewRunner {
-    fn new(force_mobile: bool, light_mode: bool) -> Self {
-        PreviewRunner {
-            force_mobile,
-            light_mode,
-        }
+    fn new() -> Self {
+        PreviewRunner {}
     }
 
     async fn run<P>(self, preview: P)
     where
-        P: Into<PreviewApp> + 'static,
+        P: notedeck::App + 'static,
     {
         tracing_subscriber::fmt::init();
 
-        let native_options = if self.force_mobile {
-            generate_mobile_emulator_native_options()
-        } else {
-            // TODO: tmp preview pathbuf?
-            generate_native_options(DataPath::new("previews"))
-        };
+        let base_path = DataPath::default_base_or_cwd();
+        let path = DataPath::new(&base_path);
 
-        let is_mobile = self.force_mobile;
-        let light_mode = self.light_mode;
+        let _res = eframe::run_native(
+            "Notedeck Preview",
+            generate_native_options(path),
+            Box::new(|cc| {
+                let args: Vec<String> = std::env::args().collect();
+                let mut notedeck = Notedeck::new(&cc.egui_ctx, &base_path, &args);
 
-        let _ = eframe::run_native(
-            "UI Preview Runner",
-            native_options,
-            Box::new(move |cc| {
-                let app = Into::<PreviewApp>::into(preview);
-                setup_cc(&cc.egui_ctx, is_mobile, light_mode);
-                Ok(Box::new(app))
+                notedeck.add_app(PreviewApp::new(preview));
+
+                Ok(Box::new(notedeck))
             }),
         );
     }
@@ -93,7 +82,7 @@ async fn main() {
         if light_mode { "enabled" } else { "disabled" }
     );
     let is_mobile = is_mobile.unwrap_or(notedeck::ui::is_compiled_as_mobile());
-    let runner = PreviewRunner::new(is_mobile, light_mode);
+    let runner = PreviewRunner::new();
 
     previews!(
         runner,

@@ -3,6 +3,7 @@ build.log
 perf.data
 perf.data.old
 .privenv
+*.swp
 target
 queries/damus-notifs.json
 .git

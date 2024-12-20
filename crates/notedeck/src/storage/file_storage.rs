@@ -22,18 +22,12 @@ impl DataPath {
     pub fn default_base() -> Option<PathBuf> {
         dirs::data_local_dir().map(|pb| pb.join("notedeck"))
     }
-}
 
-pub enum DataPathType {
-    Log,
-    Setting,
-    Keys,
-    SelectedKey,
-    Db,
-    Cache,
-}
+    pub fn default_base_or_cwd() -> PathBuf {
+        use std::str::FromStr;
+        Self::default_base().unwrap_or_else(|| PathBuf::from_str(".").unwrap())
+    }
 
-impl DataPath {
     pub fn rel_path(&self, typ: DataPathType) -> PathBuf {
         match typ {
             DataPathType::Log => PathBuf::from("logs"),
@@ -48,6 +42,21 @@ impl DataPath {
     pub fn path(&self, typ: DataPathType) -> PathBuf {
         self.base.join(self.rel_path(typ))
     }
+}
+
+impl Default for DataPath {
+    fn default() -> Self {
+        Self::new(Self::default_base_or_cwd())
+    }
+}
+
+pub enum DataPathType {
+    Log,
+    Setting,
+    Keys,
+    SelectedKey,
+    Db,
+    Cache,
 }
 
 #[derive(Debug, PartialEq)]

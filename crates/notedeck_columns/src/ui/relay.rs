@@ -184,6 +184,7 @@ fn get_connection_icon(status: &RelayStatus) -> egui::Image<'static> {
 mod preview {
     use super::*;
     use crate::test_data::sample_pool;
+    use notedeck::{App, AppContext};
 
     pub struct RelayViewPreview {
         pool: RelayPool,
@@ -197,8 +198,8 @@ mod preview {
         }
     }
 
-    impl View for RelayViewPreview {
-        fn ui(&mut self, ui: &mut egui::Ui) {
+    impl App for RelayViewPreview {
+        fn update(&mut self, _app: &mut AppContext<'_>, ui: &mut egui::Ui) {
             self.pool.try_recv();
             RelayView::new(RelayPoolManager::new(&mut self.pool)).ui(ui);
         }

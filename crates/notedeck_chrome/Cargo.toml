@@ -10,18 +10,20 @@ description = "The nostr browser"
 
 [dependencies]
 eframe = { workspace = true }
-egui = { workspace = true }
 egui_extras = { workspace = true }
+egui = { workspace = true }
 enostr = { workspace = true }
 nostrdb = { workspace = true }
-notedeck = { workspace = true }
 notedeck_columns = { workspace = true }
+notedeck = { workspace = true }
+puffin = { workspace = true, optional = true }
+puffin_egui = { workspace = true, optional = true }
 serde_json = { workspace = true }
 strum = { workspace = true }
 tokio = { workspace = true }
-tracing = { workspace = true }
 tracing-appender = { workspace = true }
 tracing-subscriber = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
@@ -39,7 +41,7 @@ path = "src/preview.rs"
 
 [features]
 default = []
-profiling = ["notedeck_columns/puffin"]
+profiling = ["notedeck_columns/puffin", "puffin", "puffin_egui"]
 
 [target.'cfg(target_os = "android")'.dependencies]
 android_logger = "0.11.1"

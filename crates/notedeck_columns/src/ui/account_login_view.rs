@@ -1,5 +1,5 @@
 use crate::login_manager::AcquireKeyState;
-use crate::ui::{Preview, PreviewConfig, View};
+use crate::ui::{Preview, PreviewConfig};
 use egui::TextEdit;
 use egui::{Align, Button, Color32, Frame, InnerResponse, Margin, RichText, Vec2};
 use enostr::Keypair;
@@ -110,13 +110,14 @@ fn login_textedit(manager: &mut AcquireKeyState) -> TextEdit {
 
 mod preview {
     use super::*;
+    use notedeck::{App, AppContext};
 
     pub struct AccountLoginPreview {
         manager: AcquireKeyState,
     }
 
-    impl View for AccountLoginPreview {
-        fn ui(&mut self, ui: &mut egui::Ui) {
+    impl App for AccountLoginPreview {
+        fn update(&mut self, _app_ctx: &mut AppContext<'_>, ui: &mut egui::Ui) {
             AccountLoginView::new(&mut self.manager).ui(ui);
         }
     }
