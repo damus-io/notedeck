@@ -2,7 +2,7 @@ use crate::images::ImageType;
 use crate::ui::{Preview, PreviewConfig};
 use egui::{vec2, Sense, TextureHandle};
 use nostrdb::{Ndb, Transaction};
-use tracing::info;
+use tracing::{debug, info};
 
 use notedeck::{AppContext, ImageCache};
 
@@ -145,6 +145,7 @@ mod preview {
             egui::ScrollArea::both().show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     let txn = Transaction::new(app.ndb).unwrap();
+                    let mut clipped = 0;
 
                     let keys = if let Some(keys) = &self.keys {
                         keys
@@ -172,12 +173,18 @@ mod preview {
                             anim_speed,
                         );
 
-                        ui.put(rect, ui::ProfilePic::new(app.img_cache, url).size(size))
-                            .on_hover_ui_at_pointer(|ui| {
-                                ui.set_max_width(300.0);
-                                ui.add(ui::ProfilePreview::new(&profile, app.img_cache));
-                            });
+                        if ui.is_rect_visible(rect) {
+                            ui.put(rect, ui::ProfilePic::new(app.img_cache, url).size(size))
+                                .on_hover_ui_at_pointer(|ui| {
+                                    ui.set_max_width(300.0);
+                                    ui.add(ui::ProfilePreview::new(&profile, app.img_cache));
+                                });
+                        } else {
+                            clipped += 1;
+                        }
                     }
+
+                    debug!("clipped {} profile pics", clipped);
                 });
             });
         }
