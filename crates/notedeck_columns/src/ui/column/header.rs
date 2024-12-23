@@ -77,10 +77,9 @@ impl<'a> NavTitle<'a> {
             ui.add_space(chev_x + item_spacing);
         }
 
-        let delete_button_resp =
-            self.title(ui, self.routes.last().unwrap(), back_button_resp.is_some());
+        let remove_column = self.title(ui, self.routes.last().unwrap(), back_button_resp.is_some());
 
-        if delete_button_resp.map_or(false, |r| r.clicked()) {
+        if remove_column {
             Some(RenderNavAction::RemoveColumn)
         } else if back_button_resp.map_or(false, |r| r.clicked()) {
             Some(RenderNavAction::Back)
@@ -156,6 +155,35 @@ impl<'a> NavTitle<'a> {
         img.paint_at(ui, animation_rect.shrink((max_size - cur_img_size) / 2.0));
 
         animation_resp
+    }
+
+    fn delete_button_section(&self, ui: &mut egui::Ui) -> bool {
+        let id = ui.id().with("title");
+
+        let delete_button_resp = self.delete_column_button(ui, 32.0);
+        if delete_button_resp.clicked() {
+            ui.data_mut(|d| d.insert_temp(id, true));
+        }
+
+        if ui.data_mut(|d| *d.get_temp_mut_or_default(id)) {
+            let mut confirm_pressed = false;
+            delete_button_resp.show_tooltip_ui(|ui| {
+                let confirm_resp = ui.button("Confirm");
+                if confirm_resp.clicked() {
+                    confirm_pressed = true;
+                }
+
+                if confirm_resp.clicked() || ui.button("Cancel").clicked() {
+                    ui.data_mut(|d| d.insert_temp(id, false));
+                }
+            });
+            if !confirm_pressed && delete_button_resp.clicked_elsewhere() {
+                ui.data_mut(|d| d.insert_temp(id, false));
+            }
+            confirm_pressed
+        } else {
+            false
+        }
     }
 
     fn pubkey_pfp<'txn, 'me>(
@@ -260,12 +288,7 @@ impl<'a> NavTitle<'a> {
         };
     }
 
-    fn title(
-        &mut self,
-        ui: &mut egui::Ui,
-        top: &Route,
-        navigating: bool,
-    ) -> Option<egui::Response> {
+    fn title(&mut self, ui: &mut egui::Ui, top: &Route, navigating: bool) -> bool {
         if !navigating {
             self.title_pfp(ui, top, 32.0);
             self.title_label(ui, top);
@@ -275,9 +298,9 @@ impl<'a> NavTitle<'a> {
             if navigating {
                 self.title_label(ui, top);
                 self.title_pfp(ui, top, 32.0);
-                None
+                false
             } else {
-                Some(self.delete_column_button(ui, 32.0))
+                self.delete_button_section(ui)
             }
         })
         .inner
