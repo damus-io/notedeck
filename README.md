@@ -46,10 +46,22 @@ $ cargo apk run --release -p notedeck_chrome
 
 ## Android Emulator
 
+With Android Studio:
+
 - Install [Android Studio](https://developer.android.com/studio)
 - Open 'Device Manager' in Android Studio
 - Add a new device with API level `34` and ABI `arm64-v8a` (even though the app uses 30, the 30 emulator can't find the vulkan adapter, but 34 works fine)
 - Start up the emulator
+
+Without Android Studio:
+
+```sh
+# create emulator
+avdmanager create avd -k 'system-images;android-34;google_apis;arm64-v8a' -n notedeck
+
+# start up the emulator
+env ANDROID_EMULATOR_WAIT_TIME_BEFORE_KILL=999 emulator -avd notedeck
+```
 
 while the emulator is running, run:
 
