@@ -2,7 +2,7 @@ use crate::{
     column::Columns,
     nav::RenderNavAction,
     route::Route,
-    timeline::{ColumnTitle, TimelineId, TimelineRoute},
+    timeline::{ColumnTitle, TimelineId, TimelineKind, TimelineRoute},
     ui::{
         self,
         anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},
@@ -195,7 +195,21 @@ impl<'a> NavTitle<'a> {
         match top {
             Route::Timeline(tlr) => match tlr {
                 TimelineRoute::Timeline(tlid) => {
-                    self.timeline_pfp(ui, *tlid, pfp_size);
+                    let is_hashtag = self
+                        .columns
+                        .find_timeline(*tlid)
+                        .map_or(false, |tl| matches!(tl.kind, TimelineKind::Hashtag(_)));
+
+                    if is_hashtag {
+                        ui.add(
+                            egui::Image::new(egui::include_image!(
+                                "../../../../../assets/icons/hashtag_icon_4x.png"
+                            ))
+                            .fit_to_exact_size(egui::vec2(pfp_size, pfp_size)),
+                        );
+                    } else {
+                        self.timeline_pfp(ui, *tlid, pfp_size);
+                    }
                 }
 
                 TimelineRoute::Thread(_note_id) => {}

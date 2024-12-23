@@ -215,7 +215,7 @@ impl TimelineKind {
             TimelineKind::Profile(_pubkey_source) => ColumnTitle::needs_db(self),
             TimelineKind::Universe => ColumnTitle::simple("Universe"),
             TimelineKind::Generic => ColumnTitle::simple("Custom"),
-            TimelineKind::Hashtag(hashtag) => ColumnTitle::formatted(format!("#{}", hashtag)),
+            TimelineKind::Hashtag(hashtag) => ColumnTitle::formatted(hashtag.to_string()),
         }
     }
 }

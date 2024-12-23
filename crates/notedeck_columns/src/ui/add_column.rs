@@ -367,7 +367,7 @@ impl<'a> AddColumnView<'a> {
         vec.push(ColumnOptionData {
             title: "Hashtag",
             description: "Stay up to date with a certain hashtag",
-            icon: egui::include_image!("../../../../assets/icons/notifications_icon_dark_4x.png"),
+            icon: egui::include_image!("../../../../assets/icons/hashtag_icon_4x.png"),
             option: AddColumnOption::UndecidedHashtag,
         });
         vec.push(ColumnOptionData {
