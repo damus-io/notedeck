@@ -129,11 +129,11 @@ impl NewPost {
 
     fn extract_hashtags(content: &str) -> HashSet<String> {
         let mut hashtags = HashSet::new();
-        for word in content.split_whitespace() {
+        for word in
+            content.split(|c: char| c.is_whitespace() || (c.is_ascii_punctuation() && c != '#'))
+        {
             if word.starts_with('#') && word.len() > 1 {
-                let tag = word[1..]
-                    .trim_end_matches(|c: char| c.is_ascii_punctuation())
-                    .to_lowercase();
+                let tag = word[1..].to_lowercase();
                 if !tag.is_empty() {
                     hashtags.insert(tag);
                 }
@@ -163,6 +163,9 @@ mod tests {
                 "#tag1, #tag2, #tag3 with commas",
                 vec!["tag1", "tag2", "tag3"],
             ),
+            ("Separated by commas #tag1,#tag2", vec!["tag1", "tag2"]),
+            ("Separated by periods #tag1.#tag2", vec!["tag1", "tag2"]),
+            ("Separated by semicolons #tag1;#tag2", vec!["tag1", "tag2"]),
         ];
 
         for (input, expected) in test_cases {
