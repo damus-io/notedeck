@@ -1,0 +1,8 @@
+[package]
+name = "notedeck_ui"
+version = "0.1.0"
+edition = "2021"
+description = "Reusable notedeck ui widgets"
+
+[dependencies]
+egui = { workspace = true }

@@ -1029,7 +1029,6 @@ dependencies = [
  "parking_lot",
  "percent-encoding",
  "pollster",
- "puffin 0.19.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "raw-window-handle 0.6.2",
  "static_assertions",
  "wasm-bindgen",
@@ -1054,7 +1053,6 @@ dependencies = [
  "epaint",
  "log",
  "nohash-hasher",
- "puffin 0.19.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde",
 ]
 
@@ -1070,7 +1068,6 @@ dependencies = [
  "egui",
  "epaint",
  "log",
- "puffin 0.19.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "thiserror 1.0.69",
  "type-map",
  "web-time 1.1.0",
@@ -1088,7 +1085,6 @@ dependencies = [
  "arboard",
  "egui",
  "log",
- "puffin 0.19.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "raw-window-handle 0.6.2",
  "smithay-clipboard",
  "web-time 1.1.0",
@@ -1122,11 +1118,9 @@ dependencies = [
  "ahash",
  "bytemuck",
  "egui",
- "egui-winit",
  "glow 0.14.2",
  "log",
  "memoffset",
- "puffin 0.19.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "wasm-bindgen",
  "web-sys",
  "winit",
@@ -1281,7 +1275,6 @@ dependencies = [
  "log",
  "nohash-hasher",
  "parking_lot",
- "puffin 0.19.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde",
 ]
 
@@ -2534,7 +2527,7 @@ dependencies = [
  "image",
  "nostrdb",
  "poll-promise",
- "puffin 0.19.1 (git+https://github.com/jb55/puffin?rev=70ff86d5503815219b01a009afd3669b7903a057)",
+ "puffin",
  "security-framework",
  "serde",
  "serde_json",
@@ -2561,7 +2554,7 @@ dependencies = [
  "nostrdb",
  "notedeck",
  "notedeck_columns",
- "puffin 0.19.1 (git+https://github.com/jb55/puffin?rev=70ff86d5503815219b01a009afd3669b7903a057)",
+ "puffin",
  "puffin_egui",
  "serde_json",
  "strum",
@@ -2593,9 +2586,10 @@ dependencies = [
  "indexmap",
  "nostrdb",
  "notedeck",
+ "notedeck_ui",
  "open",
  "poll-promise",
- "puffin 0.19.1 (git+https://github.com/jb55/puffin?rev=70ff86d5503815219b01a009afd3669b7903a057)",
+ "puffin",
  "puffin_egui",
  "security-framework",
  "serde",
@@ -2612,6 +2606,13 @@ dependencies = [
  "url",
  "urlencoding",
  "uuid",
+]
+
+[[package]]
+name = "notedeck_ui"
+version = "0.1.0"
+dependencies = [
+ "egui",
 ]
 
 [[package]]
@@ -3251,20 +3252,6 @@ dependencies = [
 [[package]]
 name = "puffin"
 version = "0.19.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fa9dae7b05c02ec1a6bc9bcf20d8bc64a7dcbf57934107902a872014899b741f"
-dependencies = [
- "anyhow",
- "byteorder",
- "cfg-if",
- "itertools 0.10.5",
- "once_cell",
- "parking_lot",
-]
-
-[[package]]
-name = "puffin"
-version = "0.19.1"
 source = "git+https://github.com/jb55/puffin?rev=70ff86d5503815219b01a009afd3669b7903a057#70ff86d5503815219b01a009afd3669b7903a057"
 dependencies = [
  "anyhow",
@@ -3289,7 +3276,7 @@ dependencies = [
  "natord",
  "once_cell",
  "parking_lot",
- "puffin 0.19.1 (git+https://github.com/jb55/puffin?rev=70ff86d5503815219b01a009afd3669b7903a057)",
+ "puffin",
  "time",
  "vec1",
  "web-time 0.2.4",

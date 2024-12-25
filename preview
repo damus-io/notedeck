@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
 
 # pass --mobile for mobile previews
-#RUST_LOG=info cargo run --bin ui_preview --features profiling --release -- "$@"
-cargo run --bin ui_preview --release -- "$@"
+cargo run --bin ui_preview --features profiling --release -- "$@"
+#cargo run --bin ui_preview --release -- "$@"

@@ -1,10 +1,11 @@
 use crate::images::ImageType;
 use crate::ui::{Preview, PreviewConfig};
 use egui::{vec2, Sense, TextureHandle};
-use nostrdb::{Ndb, Transaction};
+use nostrdb::{Ndb, ProfileKey, Transaction};
 use tracing::{debug, info};
 
 use notedeck::{AppContext, ImageCache};
+use notedeck_ui::PanZoomArea;
 
 pub struct ProfilePic<'cache, 'url> {
     cache: &'cache mut ImageCache,
@@ -129,58 +130,86 @@ fn paint_circle(ui: &mut egui::Ui, size: f32) -> egui::Response {
 mod preview {
     use super::*;
     use crate::ui;
-    use nostrdb::*;
+    use nostrdb::Filter;
     use std::collections::HashSet;
 
+    #[derive(PartialEq, Eq, Debug, Hash)]
+    struct ProfileCache {
+        key: ProfileKey,
+        url: String,
+    }
+
+    impl ProfileCache {
+        pub fn new(key: ProfileKey, url: String) -> Self {
+            ProfileCache { key, url }
+        }
+    }
+
     pub struct ProfilePicPreview {
-        keys: Option<Vec<ProfileKey>>,
+        profiles: Option<Vec<ProfileCache>>,
     }
 
     impl ProfilePicPreview {
         fn new() -> Self {
-            ProfilePicPreview { keys: None }
+            ProfilePicPreview { profiles: None }
         }
 
         fn show(&mut self, app: &mut AppContext<'_>, ui: &mut egui::Ui) {
-            egui::ScrollArea::both().show(ui, |ui| {
+            #[cfg(feature = "profiling")]
+            puffin::profile_scope!("viz");
+
+            PanZoomArea::new().show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
-                    let txn = Transaction::new(app.ndb).unwrap();
                     let mut clipped = 0;
 
-                    let keys = if let Some(keys) = &self.keys {
-                        keys
+                    let profiles = if let Some(profiles) = self.profiles.as_ref() {
+                        profiles
                     } else {
                         return;
                     };
 
-                    for key in keys {
-                        let profile = app.ndb.get_profile_by_key(&txn, *key).unwrap();
-                        let url = profile
-                            .record()
-                            .profile()
-                            .expect("should have profile")
-                            .picture()
-                            .expect("should have picture");
+                    {
+                        #[cfg(feature = "profiling")]
+                        puffin::profile_scope!("profile pictures");
+                        for profile in profiles {
+                            /*
+                            let expand_size = 10.0;
+                            let anim_speed = 0.05;
 
-                        let expand_size = 10.0;
-                        let anim_speed = 0.05;
+                            let (rect, size, _resp) = ui::anim::hover_expand(
+                                ui,
+                                egui::Id::new(profile.key),
+                                ui::ProfilePic::default_size(),
+                                expand_size,
+                                anim_speed,
+                            );
+                            */
 
-                        let (rect, size, _resp) = ui::anim::hover_expand(
-                            ui,
-                            egui::Id::new(profile.key().unwrap()),
-                            ui::ProfilePic::default_size(),
-                            expand_size,
-                            anim_speed,
-                        );
+                            let size = ui::ProfilePic::default_size();
+                            let mut rect = ui.available_rect_before_wrap();
+                            rect.set_width(size);
+                            rect.set_height(size);
 
-                        if ui.is_rect_visible(rect) {
-                            ui.put(rect, ui::ProfilePic::new(app.img_cache, url).size(size))
+                            if rect.max.x > ui.max_rect().max.x {
+                                rect = rect.translate(egui::vec2(-rect.min.x, size));
+                            }
+
+                            if ui.is_rect_visible(rect) {
+                                ui.put(
+                                    rect,
+                                    ui::ProfilePic::new(app.img_cache, &profile.url).size(size),
+                                )
                                 .on_hover_ui_at_pointer(|ui| {
                                     ui.set_max_width(300.0);
+                                    let txn = Transaction::new(app.ndb).unwrap();
+                                    let profile =
+                                        app.ndb.get_profile_by_key(&txn, profile.key).unwrap();
                                     ui.add(ui::ProfilePreview::new(&profile, app.img_cache));
                                 });
-                        } else {
-                            clipped += 1;
+                            } else {
+                                ui.allocate_space(rect.size());
+                                clipped += 1;
+                            }
                         }
                     }
 
@@ -193,7 +222,7 @@ mod preview {
             let txn = Transaction::new(ndb).unwrap();
             let filters = vec![Filter::new().kinds(vec![0]).build()];
             let mut pks = HashSet::new();
-            let mut keys = HashSet::new();
+            let mut profiles: HashSet<ProfileCache> = HashSet::new();
 
             for query_result in ndb.query(&txn, &filters, 20000).unwrap() {
                 pks.insert(query_result.note.pubkey());
@@ -206,27 +235,24 @@ mod preview {
                     continue;
                 };
 
-                if profile
-                    .record()
-                    .profile()
-                    .and_then(|p| p.picture())
-                    .is_none()
-                {
+                let url = profile.record().profile().and_then(|p| p.picture());
+                if url.is_none() {
                     continue;
                 }
+                let url = url.unwrap();
 
-                keys.insert(profile.key().expect("should not be owned"));
+                profiles.insert(ProfileCache::new(profile.key().unwrap(), url.to_owned()));
             }
 
-            let keys: Vec<ProfileKey> = keys.into_iter().collect();
-            info!("Loaded {} profiles", keys.len());
-            self.keys = Some(keys);
+            let profiles: Vec<ProfileCache> = profiles.into_iter().collect();
+            info!("Loaded {} profiles", profiles.len());
+            self.profiles = Some(profiles);
         }
     }
 
     impl notedeck::App for ProfilePicPreview {
         fn update(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) {
-            if self.keys.is_none() {
+            if self.profiles.is_none() {
                 self.setup(ctx.ndb);
             }
 

@@ -12,6 +12,7 @@ crate-type = ["lib", "cdylib"]
 
 [dependencies]
 notedeck = { workspace = true }
+notedeck_ui = { workspace = true }
 bitflags = { workspace = true }
 dirs = { workspace = true }
 eframe = { workspace = true }
@@ -53,5 +54,5 @@ security-framework = "2.11.0"
 
 [features]
 default = []
-profiling = ["puffin", "puffin_egui", "eframe/puffin"]
+profiling = ["puffin", "puffin_egui"]
 
