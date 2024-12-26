@@ -190,6 +190,60 @@ impl FilteredTags {
     }
 }
 
+/// Create a "last N notes per pubkey" query.
+pub fn last_n_per_pubkey_from_tags(
+    note: &Note,
+    kind: u64,
+    notes_per_pubkey: u64,
+) -> Result<Vec<Filter>> {
+    let mut filters: Vec<Filter> = vec![];
+
+    for tag in note.tags() {
+        // TODO: fix arbitrary MAX_FILTER limit in nostrdb
+        if filters.len() == 15 {
+            break;
+        }
+
+        if tag.count() < 2 {
+            continue;
+        }
+
+        let t = if let Some(t) = tag.get_unchecked(0).variant().str() {
+            t
+        } else {
+            continue;
+        };
+
+        if t == "p" {
+            let author = if let Some(author) = tag.get_unchecked(1).variant().id() {
+                author
+            } else {
+                continue;
+            };
+
+            let mut filter = Filter::new();
+            filter.start_authors_field()?;
+            filter.add_id_element(author)?;
+            filter.end_field();
+            filters.push(filter.kinds([kind]).limit(notes_per_pubkey).build());
+        } else if t == "t" {
+            let hashtag = if let Some(hashtag) = tag.get_unchecked(1).variant().str() {
+                hashtag
+            } else {
+                continue;
+            };
+
+            let mut filter = Filter::new();
+            filter.start_tags_field('t')?;
+            filter.add_str_element(hashtag)?;
+            filter.end_field();
+            filters.push(filter.kinds([kind]).limit(notes_per_pubkey).build());
+        }
+    }
+
+    Ok(filters)
+}
+
 /// Create a filter from tags. This can be used to create a filter
 /// from a contact list
 pub fn filter_from_tags(
