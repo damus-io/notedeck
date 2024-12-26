@@ -3,6 +3,7 @@ use crate::{
     decks::DecksCache,
     error::Error,
     subscriptions::{self, SubKind, Subscriptions},
+    timeline::kind::ListKind,
     Result,
 };
 
@@ -26,7 +27,7 @@ use tracing::{debug, error, info, warn};
 pub mod kind;
 pub mod route;
 
-pub use kind::{ColumnTitle, PubkeySource, TimelineKind};
+pub use kind::{AlgoTimeline, ColumnTitle, PubkeySource, TimelineKind};
 pub use route::TimelineRoute;
 
 #[derive(Debug, Hash, Copy, Clone, Eq, PartialEq)]
@@ -210,6 +211,18 @@ impl Timeline {
         ))
     }
 
+    pub fn last_per_pubkey(list: &Note, list_kind: &ListKind) -> Result<Self> {
+        let kind = 1;
+        let notes_per_pk = 1;
+        let filter = filter::last_n_per_pubkey_from_tags(list, kind, notes_per_pk)?;
+
+        Ok(Timeline::new(
+            TimelineKind::last_per_pubkey(list_kind.clone()),
+            FilterState::ready(filter),
+            TimelineTab::only_notes_and_replies(),
+        ))
+    }
+
     pub fn hashtag(hashtag: String) -> Self {
         let filter = Filter::new()
             .kinds([1])
@@ -292,6 +305,12 @@ impl Timeline {
         let timeline = timelines
             .get_mut(timeline_idx)
             .ok_or(Error::TimelineNotFound)?;
+
+        if !timeline.kind.should_subscribe_locally() {
+            // don't need to poll for timelines that don't have local subscriptions
+            return Ok(());
+        }
+
         let sub = timeline
             .subscription
             .ok_or(Error::App(notedeck::Error::no_active_sub()))?;
@@ -549,14 +568,20 @@ fn setup_initial_timeline(
     filters: &[Filter],
     is_muted: &MuteFun,
 ) -> Result<()> {
-    timeline.subscription = Some(ndb.subscribe(filters)?);
+    // some timelines are one-shot and a refreshed, like last_per_pubkey algo feed
+    if timeline.kind.should_subscribe_locally() {
+        timeline.subscription = Some(ndb.subscribe(filters)?);
+    }
     let txn = Transaction::new(ndb)?;
     debug!(
         "querying nostrdb sub {:?} {:?}",
         timeline.subscription, timeline.filter
     );
-    let lim = filters[0].limit().unwrap_or(filter::default_limit()) as i32;
-    let notes = ndb
+    let mut lim = 0i32;
+    for filter in filters {
+        lim += filter.limit().unwrap_or(1) as i32;
+    }
+    let notes: Vec<NoteRef> = ndb
         .query(&txn, filters, lim)?
         .into_iter()
         .map(NoteRef::from_query_result)
