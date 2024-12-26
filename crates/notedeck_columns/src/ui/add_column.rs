@@ -11,6 +11,7 @@ use nostrdb::{Ndb, Transaction};
 use crate::{
     login_manager::AcquireKeyState,
     route::Route,
+    storage::{ParseError, TokenParser, TokenSerializable},
     timeline::{kind::ListKind, PubkeySource, Timeline, TimelineKind},
     ui::anim::ICON_EXPANSION_MULTIPLE,
     Damus,
@@ -61,8 +62,9 @@ enum AddColumnOption {
     Individual(PubkeySource),
 }
 
-#[derive(Clone, Copy, Eq, PartialEq, Debug)]
+#[derive(Clone, Copy, Eq, PartialEq, Debug, Default)]
 pub enum AddAlgoRoute {
+    #[default]
     Base,
     LastPerPubkey,
 }
@@ -76,6 +78,67 @@ pub enum AddColumnRoute {
     Algo(AddAlgoRoute),
     UndecidedIndividual,
     ExternalIndividual,
+}
+
+impl TokenSerializable for AddColumnRoute {
+    fn parse<'a>(parser: &mut TokenParser<'a>) -> Result<Self, ParseError<'a>> {
+        // all start with column
+        parser.parse_token("column")?;
+
+        // if we're done then we have the base
+        if parser.is_eof() {
+            return Ok(AddColumnRoute::Base);
+        }
+
+        TokenParser::alt(
+            parser,
+            &[
+                |p| {
+                    p.parse_all(|p| {
+                        p.parse_token("external_notif_selection")?;
+                        Ok(AddColumnRoute::UndecidedNotification)
+                    })
+                },
+                |p| {
+                    p.parse_all(|p| {
+                        p.parse_token("external_notif_selection")?;
+                        Ok(AddColumnRoute::ExternalNotification)
+                    })
+                },
+                |p| {
+                    p.parse_all(|p| {
+                        p.parse_token("hashtag_selection")?;
+                        Ok(AddColumnRoute::Hashtag)
+                    })
+                },
+                |p| {
+                    p.parse_all(|p| {
+                        p.parse_token("algo_selection")?;
+                        Ok(AddColumnRoute::Algo(AddAlgoRoute::Base))
+                    })
+                },
+                |p| {
+                    p.parse_all(|p| {
+                        p.parse_token("algo_selection")?;
+                        p.parse_token("last_per_pubkey")?;
+                        Ok(AddColumnRoute::Algo(AddAlgoRoute::LastPerPubkey))
+                    })
+                },
+                |p| {
+                    p.parse_all(|p| {
+                        p.parse_token("individual_selection")?;
+                        Ok(AddColumnRoute::UndecidedIndividual)
+                    })
+                },
+                |p| {
+                    p.parse_all(|p| {
+                        p.parse_token("external_individual_selection")?;
+                        Ok(AddColumnRoute::ExternalIndividual)
+                    })
+                },
+            ],
+        )
+    }
 }
 
 impl AddColumnOption {
