@@ -35,6 +35,10 @@ impl PubkeySource {
 }
 
 impl ListKind {
+    pub fn contact_list(pk_src: PubkeySource) -> Self {
+        ListKind::Contact(pk_src)
+    }
+
     pub fn pubkey_source(&self) -> Option<&PubkeySource> {
         match self {
             ListKind::Contact(pk_src) => Some(pk_src),
@@ -54,6 +58,9 @@ impl ListKind {
 pub enum TimelineKind {
     List(ListKind),
 
+    /// The last not per pubkey
+    Algo(AlgoTimeline),
+
     Notifications(PubkeySource),
 
     Profile(PubkeySource),
@@ -69,10 +76,19 @@ pub enum TimelineKind {
     Hashtag(String),
 }
 
+/// Hardcoded algo timelines
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AlgoTimeline {
+    /// LastPerPubkey: a special nostr query that fetches the last N
+    /// notes for each pubkey on the list
+    LastPerPubkey(ListKind),
+}
+
 impl Display for TimelineKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             TimelineKind::List(ListKind::Contact(_src)) => f.write_str("Contacts"),
+            TimelineKind::Algo(AlgoTimeline::LastPerPubkey(_lk)) => f.write_str("Last Notes"),
             TimelineKind::Generic => f.write_str("Timeline"),
             TimelineKind::Notifications(_) => f.write_str("Notifications"),
             TimelineKind::Profile(_) => f.write_str("Profile"),
@@ -87,6 +103,7 @@ impl TimelineKind {
     pub fn pubkey_source(&self) -> Option<&PubkeySource> {
         match self {
             TimelineKind::List(list_kind) => list_kind.pubkey_source(),
+            TimelineKind::Algo(AlgoTimeline::LastPerPubkey(list_kind)) => list_kind.pubkey_source(),
             TimelineKind::Notifications(pk_src) => Some(pk_src),
             TimelineKind::Profile(pk_src) => Some(pk_src),
             TimelineKind::Universe => None,
@@ -96,8 +113,27 @@ impl TimelineKind {
         }
     }
 
+    /// Some feeds are not realtime, like certain algo feeds
+    pub fn should_subscribe_locally(&self) -> bool {
+        match self {
+            TimelineKind::Algo(AlgoTimeline::LastPerPubkey(_list_kind)) => false,
+
+            TimelineKind::List(_list_kind) => true,
+            TimelineKind::Notifications(_pk_src) => true,
+            TimelineKind::Profile(_pk_src) => true,
+            TimelineKind::Universe => true,
+            TimelineKind::Generic => true,
+            TimelineKind::Hashtag(_ht) => true,
+            TimelineKind::Thread(_ht) => true,
+        }
+    }
+
+    pub fn last_per_pubkey(list_kind: ListKind) -> Self {
+        TimelineKind::Algo(AlgoTimeline::LastPerPubkey(list_kind))
+    }
+
     pub fn contact_list(pk: PubkeySource) -> Self {
-        TimelineKind::List(ListKind::Contact(pk))
+        TimelineKind::List(ListKind::contact_list(pk))
     }
 
     pub fn is_contacts(&self) -> bool {
@@ -136,6 +172,48 @@ impl TimelineKind {
             TimelineKind::Generic => {
                 warn!("you can't convert a TimelineKind::Generic to a Timeline");
                 None
+            }
+
+            TimelineKind::Algo(AlgoTimeline::LastPerPubkey(ListKind::Contact(pk_src))) => {
+                let pk = match &pk_src {
+                    PubkeySource::DeckAuthor => default_user?,
+                    PubkeySource::Explicit(pk) => pk.bytes(),
+                };
+
+                let contact_filter = Filter::new().authors([pk]).kinds([3]).limit(1).build();
+
+                let txn = Transaction::new(ndb).expect("txn");
+                let results = ndb
+                    .query(&txn, &[contact_filter.clone()], 1)
+                    .expect("contact query failed?");
+
+                let kind_fn = TimelineKind::last_per_pubkey;
+                let tabs = TimelineTab::only_notes_and_replies();
+
+                if results.is_empty() {
+                    return Some(Timeline::new(
+                        kind_fn(ListKind::contact_list(pk_src)),
+                        FilterState::needs_remote(vec![contact_filter.clone()]),
+                        tabs,
+                    ));
+                }
+
+                let list_kind = ListKind::contact_list(pk_src);
+
+                match Timeline::last_per_pubkey(&results[0].note, &list_kind) {
+                    Err(Error::App(notedeck::Error::Filter(FilterError::EmptyContactList))) => {
+                        Some(Timeline::new(
+                            kind_fn(list_kind),
+                            FilterState::needs_remote(vec![contact_filter]),
+                            tabs,
+                        ))
+                    }
+                    Err(e) => {
+                        error!("Unexpected error: {e}");
+                        None
+                    }
+                    Ok(tl) => Some(tl),
+                }
             }
 
             TimelineKind::Profile(pk_src) => {
@@ -221,6 +299,9 @@ impl TimelineKind {
         match self {
             TimelineKind::List(list_kind) => match list_kind {
                 ListKind::Contact(_pubkey_source) => ColumnTitle::simple("Contacts"),
+            },
+            TimelineKind::Algo(AlgoTimeline::LastPerPubkey(list_kind)) => match list_kind {
+                ListKind::Contact(_pubkey_source) => ColumnTitle::simple("Contacts (last notes)"),
             },
             TimelineKind::Notifications(_pubkey_source) => ColumnTitle::simple("Notifications"),
             TimelineKind::Profile(_pubkey_source) => ColumnTitle::needs_db(self),
