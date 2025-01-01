@@ -5,7 +5,7 @@ use crate::ui::note::NoteOptions;
 use crate::{colors, images};
 use crate::{notes_holder::NotesHolder, DisplayName};
 use egui::load::TexturePoll;
-use egui::{Label, RichText, ScrollArea, Sense, Widget};
+use egui::{Label, RichText, ScrollArea, Sense};
 use enostr::Pubkey;
 use nostrdb::{Ndb, ProfileRecord, Transaction};
 pub use picture::ProfilePic;
@@ -56,7 +56,7 @@ impl<'a> ProfileView<'a> {
             .show(ui, |ui| {
                 let txn = Transaction::new(self.ndb).expect("txn");
                 if let Ok(profile) = self.ndb.get_profile_by_pubkey(&txn, self.pubkey.bytes()) {
-                    ProfilePreview::new(&profile, self.img_cache).ui(ui);
+                    self.profile_body(ui, profile);
                 }
                 let profile = self
                     .profiles
@@ -91,6 +91,43 @@ impl<'a> ProfileView<'a> {
                 .show(ui)
             })
             .inner
+    }
+
+    fn profile_body(&mut self, ui: &mut egui::Ui, profile: ProfileRecord<'_>) {
+        ui.vertical(|ui| {
+            ui.add_sized([ui.available_size().x, 120.0], |ui: &mut egui::Ui| {
+                banner(ui, &profile)
+            });
+
+            let padding = 12.0;
+            crate::ui::padding(padding, ui, |ui| {
+                let mut pfp_rect = ui.available_rect_before_wrap();
+                let size = 80.0;
+                pfp_rect.set_width(size);
+                pfp_rect.set_height(size);
+                let pfp_rect = pfp_rect.translate(egui::vec2(0.0, -(padding + 2.0 + (size / 2.0))));
+
+                ui.put(
+                    pfp_rect,
+                    ProfilePic::new(self.img_cache, get_profile_url(Some(&profile))).size(size),
+                );
+                ui.add(display_name_widget(get_display_name(Some(&profile)), false));
+                ui.add(about_section_widget(&profile));
+
+                if let Some(website_url) = profile.record().profile().and_then(|p| p.website()) {
+                    if ui
+                        .label(RichText::new(website_url).color(colors::PINK))
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .interact(Sense::click())
+                        .clicked()
+                    {
+                        if let Err(e) = open::that(website_url) {
+                            error!("Failed to open URL {} because: {}", website_url, e);
+                        };
+                    }
+                }
+            });
+        });
     }
 }
 
