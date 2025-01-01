@@ -13,6 +13,8 @@ use ewebsock::{WsEvent, WsMessage};
 #[cfg(not(target_arch = "wasm32"))]
 use tracing::{debug, error};
 
+use super::subs_debug::SubsDebug;
+
 #[derive(Debug)]
 pub struct PoolEvent<'a> {
     pub relay: &'a str,
@@ -58,6 +60,7 @@ impl PoolRelay {
 pub struct RelayPool {
     pub relays: Vec<PoolRelay>,
     pub ping_rate: Duration,
+    pub debug: Option<SubsDebug>,
 }
 
 impl Default for RelayPool {
@@ -72,7 +75,12 @@ impl RelayPool {
         RelayPool {
             relays: vec![],
             ping_rate: Duration::from_secs(25),
+            debug: None,
         }
+    }
+
+    pub fn use_debug(&mut self) {
+        self.debug = Some(SubsDebug::default());
     }
 
     pub fn ping_rate(&mut self, duration: Duration) -> &mut Self {
@@ -99,18 +107,32 @@ impl RelayPool {
 
     pub fn send(&mut self, cmd: &ClientMessage) {
         for relay in &mut self.relays {
+            if let Some(debug) = &mut self.debug {
+                debug.send_cmd(relay.relay.url.clone(), cmd);
+            }
             relay.relay.send(cmd);
         }
     }
 
     pub fn unsubscribe(&mut self, subid: String) {
         for relay in &mut self.relays {
-            relay.relay.send(&ClientMessage::close(subid.clone()));
+            let cmd = &ClientMessage::close(subid.clone());
+            if let Some(debug) = &mut self.debug {
+                debug.send_cmd(relay.relay.url.clone(), cmd);
+            }
+            relay.relay.send(cmd);
         }
     }
 
     pub fn subscribe(&mut self, subid: String, filter: Vec<Filter>) {
         for relay in &mut self.relays {
+            if let Some(debug) = &mut self.debug {
+                debug.send_cmd(
+                    relay.relay.url.clone(),
+                    &ClientMessage::req(subid.clone(), filter.clone()),
+                );
+            }
+
             relay.relay.subscribe(subid.clone(), filter.clone());
         }
     }
@@ -164,6 +186,9 @@ impl RelayPool {
         for relay in &mut self.relays {
             let relay = &mut relay.relay;
             if relay.url == relay_url {
+                if let Some(debug) = &mut self.debug {
+                    debug.send_cmd(relay.url.clone(), cmd);
+                }
                 relay.send(cmd);
                 return;
             }
@@ -242,10 +267,17 @@ impl RelayPool {
                         }
                     }
                 }
-                return Some(PoolEvent {
+
+                if let Some(debug) = &mut self.debug {
+                    debug.receive_cmd(relay.url.clone(), (&event).into());
+                }
+
+                let pool_event = PoolEvent {
                     event,
                     relay: &relay.url,
-                });
+                };
+
+                return Some(pool_event);
             }
         }
 

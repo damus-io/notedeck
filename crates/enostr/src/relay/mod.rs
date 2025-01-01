@@ -8,6 +8,7 @@ use tracing::{debug, error, info};
 
 pub mod message;
 pub mod pool;
+pub mod subs_debug;
 
 #[derive(Debug)]
 pub enum RelayStatus {

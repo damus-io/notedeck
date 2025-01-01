@@ -7,6 +7,7 @@ use notedeck::{
 
 use enostr::RelayPool;
 use nostrdb::{Config, Ndb, Transaction};
+use notedeck_columns::ui::relay_debug::RelayDebugView;
 use std::cell::RefCell;
 use std::path::Path;
 use std::rc::Rc;
@@ -79,6 +80,16 @@ impl eframe::App for Notedeck {
         });
 
         self.app_rect_handler.try_save_app_size(ctx);
+
+        if self.args.relay_debug {
+            if self.pool.debug.is_none() {
+                self.pool.use_debug();
+            }
+
+            if let Some(debug) = &mut self.pool.debug {
+                RelayDebugView::window(ctx, debug);
+            }
+        }
 
         #[cfg(feature = "profiling")]
         puffin_egui::profiler_window(ctx);

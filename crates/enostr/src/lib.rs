@@ -18,6 +18,7 @@ pub use profile::Profile;
 pub use pubkey::Pubkey;
 pub use relay::message::{RelayEvent, RelayMessage};
 pub use relay::pool::{PoolEvent, RelayPool};
+pub use relay::subs_debug::{OwnedRelayEvent, RelayLogEvent, SubsDebug, TransferStats};
 pub use relay::{Relay, RelayStatus};
 
 pub type Result<T> = std::result::Result<T, error::Error>;

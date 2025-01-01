@@ -8,6 +8,12 @@ pub struct CommandResult<'a> {
     message: &'a str,
 }
 
+pub fn calculate_command_result_size(result: &CommandResult) -> usize {
+    std::mem::size_of_val(result)
+        + result.event_id.as_bytes().len()
+        + result.message.as_bytes().len()
+}
+
 #[derive(Debug, Eq, PartialEq)]
 pub enum RelayMessage<'a> {
     OK(CommandResult<'a>),

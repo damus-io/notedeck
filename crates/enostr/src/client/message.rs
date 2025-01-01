@@ -3,7 +3,7 @@ use nostrdb::Filter;
 use serde_json::json;
 
 /// Messages sent by clients, received by relays
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ClientMessage {
     Event {
         note: Note,

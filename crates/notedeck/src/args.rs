@@ -7,6 +7,7 @@ pub struct Args {
     pub keys: Vec<Keypair>,
     pub light: bool,
     pub debug: bool,
+    pub relay_debug: bool,
 
     /// Enable when running tests so we don't panic on app startup
     pub tests: bool,
@@ -24,6 +25,7 @@ impl Args {
             keys: vec![],
             light: false,
             debug: false,
+            relay_debug: false,
             tests: false,
             use_keystore: true,
             dbpath: None,
@@ -108,6 +110,8 @@ impl Args {
                 res.relays.push(relay.clone());
             } else if arg == "--no-keystore" {
                 res.use_keystore = false;
+            } else if arg == "--relay-debug" {
+                res.relay_debug = true;
             }
 
             i += 1;
