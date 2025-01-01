@@ -1,12 +1,13 @@
 use crate::ui::ProfilePic;
-use crate::{colors, images, DisplayName};
-use egui::load::TexturePoll;
-use egui::{Frame, Label, RichText, Sense, Widget};
+use crate::DisplayName;
+use egui::{Frame, Label, RichText, Widget};
 use egui_extras::Size;
 use enostr::{NoteId, Pubkey};
 use nostrdb::{Ndb, ProfileRecord, Transaction};
 
 use notedeck::{ImageCache, NotedeckTextStyle, UserAccount};
+
+use super::{about_section_widget, banner, display_name_widget, get_display_name, get_profile_url};
 
 pub struct ProfilePreview<'a, 'cache> {
     profile: &'a ProfileRecord<'a>,
@@ -26,41 +27,6 @@ impl<'a, 'cache> ProfilePreview<'a, 'cache> {
 
     pub fn banner_height(&mut self, size: Size) {
         self.banner_height = size;
-    }
-
-    fn banner_texture(
-        ui: &mut egui::Ui,
-        profile: &ProfileRecord<'_>,
-    ) -> Option<egui::load::SizedTexture> {
-        // TODO: cache banner
-        let banner = profile.record().profile().and_then(|p| p.banner());
-
-        if let Some(banner) = banner {
-            let texture_load_res =
-                egui::Image::new(banner).load_for_size(ui.ctx(), ui.available_size());
-            if let Ok(texture_poll) = texture_load_res {
-                match texture_poll {
-                    TexturePoll::Pending { .. } => {}
-                    TexturePoll::Ready { texture, .. } => return Some(texture),
-                }
-            }
-        }
-
-        None
-    }
-
-    fn banner(ui: &mut egui::Ui, profile: &ProfileRecord<'_>) -> egui::Response {
-        if let Some(texture) = Self::banner_texture(ui, profile) {
-            images::aspect_fill(
-                ui,
-                Sense::hover(),
-                texture.id,
-                texture.size.x / texture.size.y,
-            )
-        } else {
-            // TODO: default banner texture
-            ui.label("")
-        }
     }
 
     fn body(self, ui: &mut egui::Ui) {
@@ -89,7 +55,7 @@ impl egui::Widget for ProfilePreview<'_, '_> {
     fn ui(self, ui: &mut egui::Ui) -> egui::Response {
         ui.vertical(|ui| {
             ui.add_sized([ui.available_size().x, 80.0], |ui: &mut egui::Ui| {
-                ProfilePreview::banner(ui, self.profile)
+                banner(ui, self.profile)
             });
 
             self.body(ui);
@@ -183,22 +149,6 @@ mod previews {
     }
 }
 
-pub fn get_display_name<'a>(profile: Option<&ProfileRecord<'a>>) -> DisplayName<'a> {
-    if let Some(name) = profile.and_then(|p| crate::profile::get_profile_name(p)) {
-        name
-    } else {
-        DisplayName::One("??")
-    }
-}
-
-pub fn get_profile_url<'a>(profile: Option<&ProfileRecord<'a>>) -> &'a str {
-    if let Some(url) = profile.and_then(|pr| pr.record().profile().and_then(|p| p.picture())) {
-        url
-    } else {
-        ProfilePic::no_pfp_url()
-    }
-}
-
 pub fn get_profile_url_owned(profile: Option<ProfileRecord<'_>>) -> &str {
     if let Some(url) = profile.and_then(|pr| pr.record().profile().and_then(|p| p.picture())) {
         url
@@ -223,46 +173,6 @@ pub fn get_account_url<'a>(
     }
 }
 
-fn display_name_widget(
-    display_name: DisplayName<'_>,
-    add_placeholder_space: bool,
-) -> impl egui::Widget + '_ {
-    move |ui: &mut egui::Ui| match display_name {
-        DisplayName::One(n) => {
-            let name_response = ui.add(
-                Label::new(RichText::new(n).text_style(NotedeckTextStyle::Heading3.text_style()))
-                    .selectable(false),
-            );
-            if add_placeholder_space {
-                ui.add_space(16.0);
-            }
-            name_response
-        }
-
-        DisplayName::Both {
-            display_name,
-            username,
-        } => {
-            ui.add(
-                Label::new(
-                    RichText::new(display_name)
-                        .text_style(NotedeckTextStyle::Heading3.text_style()),
-                )
-                .selectable(false),
-            );
-
-            ui.add(
-                Label::new(
-                    RichText::new(format!("@{}", username))
-                        .size(12.0)
-                        .color(colors::MID_GRAY),
-                )
-                .selectable(false),
-            )
-        }
-    }
-}
-
 pub fn one_line_display_name_widget<'a>(
     visuals: &egui::Visuals,
     display_name: DisplayName<'a>,
@@ -282,20 +192,6 @@ pub fn one_line_display_name_widget<'a>(
                 .text_style(text_style)
                 .color(color),
         ),
-    }
-}
-
-fn about_section_widget<'a, 'b>(profile: &'b ProfileRecord<'a>) -> impl egui::Widget + 'b
-where
-    'b: 'a,
-{
-    move |ui: &mut egui::Ui| {
-        if let Some(about) = profile.record().profile().and_then(|p| p.about()) {
-            ui.label(about)
-        } else {
-            // need any Response so we dont need an Option
-            ui.allocate_response(egui::Vec2::ZERO, egui::Sense::hover())
-        }
     }
 }
 

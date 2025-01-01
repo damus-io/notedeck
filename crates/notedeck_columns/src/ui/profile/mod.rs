@@ -1,11 +1,13 @@
 pub mod picture;
 pub mod preview;
 
-use crate::notes_holder::NotesHolder;
 use crate::ui::note::NoteOptions;
-use egui::{ScrollArea, Widget};
+use crate::{colors, images};
+use crate::{notes_holder::NotesHolder, DisplayName};
+use egui::load::TexturePoll;
+use egui::{Label, RichText, ScrollArea, Sense, Widget};
 use enostr::Pubkey;
-use nostrdb::{Ndb, Transaction};
+use nostrdb::{Ndb, ProfileRecord, Transaction};
 pub use picture::ProfilePic;
 pub use preview::ProfilePreview;
 use tracing::error;
@@ -13,7 +15,7 @@ use tracing::error;
 use crate::{actionbar::NoteAction, notes_holder::NotesHolderStorage, profile::Profile};
 
 use super::timeline::{tabs_ui, TimelineTabView};
-use notedeck::{ImageCache, MuteFun, NoteCache};
+use notedeck::{ImageCache, MuteFun, NoteCache, NotedeckTextStyle};
 
 pub struct ProfileView<'a> {
     pubkey: &'a Pubkey,
@@ -89,5 +91,110 @@ impl<'a> ProfileView<'a> {
                 .show(ui)
             })
             .inner
+    }
+}
+
+fn display_name_widget(
+    display_name: DisplayName<'_>,
+    add_placeholder_space: bool,
+) -> impl egui::Widget + '_ {
+    move |ui: &mut egui::Ui| match display_name {
+        DisplayName::One(n) => {
+            let name_response = ui.add(
+                Label::new(RichText::new(n).text_style(NotedeckTextStyle::Heading3.text_style()))
+                    .selectable(false),
+            );
+            if add_placeholder_space {
+                ui.add_space(16.0);
+            }
+            name_response
+        }
+
+        DisplayName::Both {
+            display_name,
+            username,
+        } => {
+            ui.add(
+                Label::new(
+                    RichText::new(display_name)
+                        .text_style(NotedeckTextStyle::Heading3.text_style()),
+                )
+                .selectable(false),
+            );
+
+            ui.add(
+                Label::new(
+                    RichText::new(format!("@{}", username))
+                        .size(12.0)
+                        .color(colors::MID_GRAY),
+                )
+                .selectable(false),
+            )
+        }
+    }
+}
+
+pub fn get_profile_url<'a>(profile: Option<&ProfileRecord<'a>>) -> &'a str {
+    if let Some(url) = profile.and_then(|pr| pr.record().profile().and_then(|p| p.picture())) {
+        url
+    } else {
+        ProfilePic::no_pfp_url()
+    }
+}
+
+pub fn get_display_name<'a>(profile: Option<&ProfileRecord<'a>>) -> DisplayName<'a> {
+    if let Some(name) = profile.and_then(|p| crate::profile::get_profile_name(p)) {
+        name
+    } else {
+        DisplayName::One("??")
+    }
+}
+
+fn about_section_widget<'a, 'b>(profile: &'b ProfileRecord<'a>) -> impl egui::Widget + 'b
+where
+    'b: 'a,
+{
+    move |ui: &mut egui::Ui| {
+        if let Some(about) = profile.record().profile().and_then(|p| p.about()) {
+            ui.label(about)
+        } else {
+            // need any Response so we dont need an Option
+            ui.allocate_response(egui::Vec2::ZERO, egui::Sense::hover())
+        }
+    }
+}
+
+fn banner_texture(
+    ui: &mut egui::Ui,
+    profile: &ProfileRecord<'_>,
+) -> Option<egui::load::SizedTexture> {
+    // TODO: cache banner
+    let banner = profile.record().profile().and_then(|p| p.banner());
+
+    if let Some(banner) = banner {
+        let texture_load_res =
+            egui::Image::new(banner).load_for_size(ui.ctx(), ui.available_size());
+        if let Ok(texture_poll) = texture_load_res {
+            match texture_poll {
+                TexturePoll::Pending { .. } => {}
+                TexturePoll::Ready { texture, .. } => return Some(texture),
+            }
+        }
+    }
+
+    None
+}
+
+fn banner(ui: &mut egui::Ui, profile: &ProfileRecord<'_>) -> egui::Response {
+    if let Some(texture) = banner_texture(ui, profile) {
+        images::aspect_fill(
+            ui,
+            Sense::hover(),
+            texture.id,
+            texture.size.x / texture.size.y,
+        )
+    } else {
+        // TODO: default banner texture
+        ui.label("")
     }
 }
