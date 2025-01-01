@@ -131,6 +131,15 @@ impl<'a> RelayDebugView<'a> {
 
         self.debug.try_increment_stats();
     }
+
+    pub fn window(ctx: &egui::Context, debug: &mut SubsDebug) {
+        let mut open = true;
+        egui::Window::new("Relay Debugger")
+            .open(&mut open)
+            .show(ctx, |ui| {
+                RelayDebugView::new(debug).ui(ui);
+            });
+    }
 }
 
 fn format_sec(c: &enostr::TransferStats) -> String {
