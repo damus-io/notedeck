@@ -9,7 +9,7 @@ pub struct RelayPoolManager<'a> {
 
 pub struct RelayInfo<'a> {
     pub relay_url: &'a str,
-    pub status: &'a RelayStatus,
+    pub status: RelayStatus,
 }
 
 impl<'a> RelayPoolManager<'a> {
@@ -22,8 +22,8 @@ impl<'a> RelayPoolManager<'a> {
             .relays
             .iter()
             .map(|relay| RelayInfo {
-                relay_url: &relay.relay.url,
-                status: &relay.relay.status,
+                relay_url: relay.url(),
+                status: relay.status(),
             })
             .collect()
     }
