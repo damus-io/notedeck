@@ -47,11 +47,11 @@ impl MulticastRelay {
 }
 
 pub fn setup_multicast_relay() -> Result<MulticastRelay> {
-    let address = "239.19.18.1:9797".to_string();
+    let address = "239.19.88.1:9797".to_string();
     let multicast_ip = Ipv4Addr::new(239, 19, 88, 1);
 
     let socket = UdpSocket::bind("0.0.0.0:9797")?;
-    let interface = Ipv4Addr::new(192, 168, 100, 1);
+    let interface = Ipv4Addr::new(192, 168, 100, 161);
 
     socket.join_multicast_v4(&multicast_ip, &interface)?;
     socket.set_nonblocking(true)?;
@@ -69,44 +69,31 @@ impl UdpReceiver {
     }
 
     pub fn try_recv(&self) -> Option<WsEvent> {
-        let mut size_buffer = [0u8; 4];
+        let mut buffer = [0u8; 65535];
         // Read the size header
-        match self.socket.recv_from(&mut size_buffer) {
-            Ok((4, src)) => {
-                let size = (u32::from_be_bytes(size_buffer) as usize) + 4;
+        match self.socket.recv_from(&mut buffer) {
+            Ok((size, src)) => {
+                let parsed_size = u32::from_be_bytes(buffer[0..4].try_into().ok()?) as usize;
                 debug!("multicast: read size {} from start of header", size - 4);
 
-                // Allocate buffer of exact size for the payload
-                let mut buffer = vec![0u8; size];
-                match self.socket.recv_from(&mut buffer) {
-                    Ok((len, _)) if len == (size) => {
-                        let text = String::from_utf8_lossy(&buffer[4..]);
-                        debug!("multicast: received {} bytes from {}: {}", len, src, &text);
-                        Some(WsEvent::Message(WsMessage::Text(text.to_string())))
-                    }
-                    Ok((len, _)) => {
-                        error!(
-                            "multicast: partial data received: expected {}, got {}",
-                            size, len
-                        );
-                        None
-                    }
-                    Err(e) => {
-                        error!("multicast: error receiving data: {}", e);
-                        None
-                    }
+                if size != parsed_size {
+                    error!(
+                        "multicast: partial data received: expected {}, got {}",
+                        parsed_size, size
+                    );
+                    return None;
                 }
+
+                let text = String::from_utf8_lossy(&buffer[4..size]);
+                debug!("multicast: received {} bytes from {}: {}", size, src, &text);
+                Some(WsEvent::Message(WsMessage::Text(text.to_string())))
             }
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                 // No data available, continue
                 None
             }
             Err(e) => {
-                error!("multicast: error receiving size header: {}", e);
-                None
-            }
-            Ok((size, _)) => {
-                error!("multicast: header size wrong? {size}");
+                error!("multicast: error receiving data: {}", e);
                 None
             }
         }
