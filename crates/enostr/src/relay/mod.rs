@@ -25,6 +25,7 @@ pub fn setup_multicast_socket() -> Result<UdpSocket> {
     let multicast_ip = Ipv4Addr::new(239, 1, 1, 1);
     let interface = Ipv4Addr::new(0, 0, 0, 0);
     socket.join_multicast_v4(&multicast_ip, &interface)?;
+    socket.set_nonblocking(true)?;
 
     Ok(socket)
 }
