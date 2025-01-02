@@ -194,31 +194,3 @@ pub fn one_line_display_name_widget<'a>(
         ),
     }
 }
-
-fn get_display_name_as_string<'a>(profile: Option<&ProfileRecord<'a>>) -> &'a str {
-    let display_name = get_display_name(profile);
-    match display_name {
-        DisplayName::One(n) => n,
-        DisplayName::Both { display_name, .. } => display_name,
-    }
-}
-
-pub fn get_profile_displayname_string<'a>(txn: &'a Transaction, ndb: &Ndb, pk: &Pubkey) -> &'a str {
-    let profile = ndb.get_profile_by_pubkey(txn, pk.bytes()).ok();
-    get_display_name_as_string(profile.as_ref())
-}
-
-pub fn get_note_users_displayname_string<'a>(
-    txn: &'a Transaction,
-    ndb: &Ndb,
-    id: &NoteId,
-) -> &'a str {
-    let note = ndb.get_note_by_id(txn, id.bytes());
-    let profile = if let Ok(note) = note {
-        ndb.get_profile_by_pubkey(txn, note.pubkey()).ok()
-    } else {
-        None
-    };
-
-    get_display_name_as_string(profile.as_ref())
-}
