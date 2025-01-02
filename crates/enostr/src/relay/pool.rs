@@ -1,4 +1,4 @@
-use crate::relay::{Relay, RelayStatus, UdpReceiver};
+use crate::relay::{setup_multicast_relay, MulticastRelay, Relay, RelayStatus};
 use crate::{ClientMessage, Result};
 use nostrdb::Filter;
 
@@ -36,33 +36,6 @@ pub struct PoolEventBuf {
 pub enum PoolRelay {
     Websocket(WebsocketRelay),
     Multicast(MulticastRelay),
-}
-
-pub struct MulticastRelay {
-    receiver: UdpReceiver,
-}
-
-impl MulticastRelay {
-    pub fn new(receiver: UdpReceiver) -> Self {
-        MulticastRelay { receiver }
-    }
-
-    pub fn send(&self, msg: &ClientMessage) -> Result<()> {
-        let json = msg.to_json()?;
-        let len = json.len();
-
-        debug!("writing to multicast relay");
-        let mut buf: Vec<u8> = Vec::with_capacity(4 + len);
-
-        // Write the length of the message as 4 bytes (big-endian)
-        buf.extend_from_slice(&(len as u32).to_be_bytes());
-
-        // Append the JSON message bytes
-        buf.extend_from_slice(json.as_bytes());
-
-        self.receiver.socket.send_to(&buf, "239.1.1.1:3000")?;
-        Ok(())
-    }
 }
 
 pub struct WebsocketRelay {
@@ -122,7 +95,7 @@ impl PoolRelay {
     }
 
     pub fn multicast() -> Result<Self> {
-        Ok(Self::Multicast(MulticastRelay::new(UdpReceiver::new()?)))
+        Ok(Self::Multicast(setup_multicast_relay()?))
     }
 }
 

@@ -18,16 +18,47 @@ pub enum RelayStatus {
     Disconnected,
 }
 
-pub fn setup_multicast_socket() -> Result<UdpSocket> {
+pub struct MulticastRelay {
+    address: String,
+    receiver: UdpReceiver,
+}
+
+impl MulticastRelay {
+    pub fn new(address: String, receiver: UdpReceiver) -> Self {
+        MulticastRelay { address, receiver }
+    }
+
+    pub fn send(&self, msg: &ClientMessage) -> Result<()> {
+        let json = msg.to_json()?;
+        let len = json.len();
+
+        debug!("writing to multicast relay");
+        let mut buf: Vec<u8> = Vec::with_capacity(4 + len);
+
+        // Write the length of the message as 4 bytes (big-endian)
+        buf.extend_from_slice(&(len as u32).to_be_bytes());
+
+        // Append the JSON message bytes
+        buf.extend_from_slice(json.as_bytes());
+
+        self.receiver.socket.send_to(&buf, &self.address)?;
+        Ok(())
+    }
+}
+
+pub fn setup_multicast_relay() -> Result<MulticastRelay> {
     let socket = UdpSocket::bind("0.0.0.0:9797")?;
 
     // Join the multicast group
-    let multicast_ip = Ipv4Addr::new(239, 1, 1, 1);
+    let multicast_ip = Ipv4Addr::new(239, 19, 88, 1);
     let interface = Ipv4Addr::new(0, 0, 0, 0);
     socket.join_multicast_v4(&multicast_ip, &interface)?;
     socket.set_nonblocking(true)?;
 
-    Ok(socket)
+    Ok(MulticastRelay::new(
+        "239.19.88.1:9797".to_string(),
+        UdpReceiver::new(socket),
+    ))
 }
 
 pub struct UdpReceiver {
@@ -35,9 +66,8 @@ pub struct UdpReceiver {
 }
 
 impl UdpReceiver {
-    pub fn new() -> Result<Self> {
-        let socket = setup_multicast_socket()?;
-        Ok(Self { socket })
+    pub fn new(socket: UdpSocket) -> Self {
+        Self { socket }
     }
 
     pub fn try_recv(&self) -> Option<WsEvent> {
