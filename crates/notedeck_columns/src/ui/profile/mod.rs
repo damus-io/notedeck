@@ -6,7 +6,7 @@ use crate::ui::note::NoteOptions;
 use crate::{colors, images};
 use crate::{notes_holder::NotesHolder, NostrName};
 use egui::load::TexturePoll;
-use egui::{Label, RichText, ScrollArea, Sense};
+use egui::{Label, RichText, Rounding, ScrollArea, Sense, Stroke};
 use enostr::Pubkey;
 use nostrdb::{Ndb, ProfileRecord, Transaction};
 pub use picture::ProfilePic;
@@ -112,23 +112,113 @@ impl<'a> ProfileView<'a> {
                     pfp_rect,
                     ProfilePic::new(self.img_cache, get_profile_url(Some(&profile))).size(size),
                 );
+
+                if ui.add(copy_key_widget(&pfp_rect)).clicked() {
+                    ui.output_mut(|w| {
+                        w.copied_text = if let Some(bech) = self.pubkey.to_bech() {
+                            bech
+                        } else {
+                            error!("Could not convert Pubkey to bech");
+                            String::new()
+                        }
+                    });
+                }
+
+                ui.add_space(18.0);
+
                 ui.add(display_name_widget(get_display_name(Some(&profile)), false));
+
+                ui.add_space(8.0);
+
                 ui.add(about_section_widget(&profile));
 
-                if let Some(website_url) = profile.record().profile().and_then(|p| p.website()) {
-                    if ui
-                        .label(RichText::new(website_url).color(colors::PINK))
-                        .on_hover_cursor(egui::CursorIcon::PointingHand)
-                        .interact(Sense::click())
-                        .clicked()
+                ui.horizontal_wrapped(|ui| {
+                    if let Some(website_url) = profile
+                        .record()
+                        .profile()
+                        .and_then(|p| p.website())
+                        .filter(|s| !s.is_empty())
                     {
-                        if let Err(e) = open::that(website_url) {
-                            error!("Failed to open URL {} because: {}", website_url, e);
-                        };
+                        handle_link(ui, website_url);
                     }
-                }
+
+                    if let Some(lud16) = profile
+                        .record()
+                        .profile()
+                        .and_then(|p| p.lud16())
+                        .filter(|s| !s.is_empty())
+                    {
+                        handle_lud16(ui, lud16);
+                    }
+                });
             });
         });
+    }
+}
+
+fn handle_link(ui: &mut egui::Ui, website_url: &str) {
+    ui.image(egui::include_image!(
+        "../../../../../assets/icons/links_4x.png"
+    ));
+    if ui
+        .label(RichText::new(website_url).color(colors::PINK))
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .interact(Sense::click())
+        .clicked()
+    {
+        if let Err(e) = open::that(website_url) {
+            error!("Failed to open URL {} because: {}", website_url, e);
+        };
+    }
+}
+
+fn handle_lud16(ui: &mut egui::Ui, lud16: &str) {
+    ui.image(egui::include_image!(
+        "../../../../../assets/icons/zap_4x.png"
+    ));
+
+    let _ = ui.label(RichText::new(lud16).color(colors::PINK));
+}
+
+fn copy_key_widget(pfp_rect: &egui::Rect) -> impl egui::Widget + '_ {
+    |ui: &mut egui::Ui| -> egui::Response {
+        let painter = ui.painter();
+        let copy_key_rect = painter.round_rect_to_pixels(egui::Rect::from_center_size(
+            pfp_rect.center_bottom(),
+            egui::vec2(48.0, 28.0),
+        ));
+        let resp = ui.interact(
+            copy_key_rect,
+            ui.id().with("custom_painter"),
+            Sense::click(),
+        );
+
+        let copy_key_rounding = Rounding::same(100.0);
+        let fill_color = if resp.hovered() {
+            ui.visuals().widgets.inactive.weak_bg_fill
+        } else {
+            ui.visuals().noninteractive().bg_stroke.color
+        };
+        painter.rect_filled(copy_key_rect, copy_key_rounding, fill_color);
+
+        let stroke_color = ui.visuals().widgets.inactive.weak_bg_fill;
+        painter.rect_stroke(
+            copy_key_rect.shrink(1.0),
+            copy_key_rounding,
+            Stroke::new(1.0, stroke_color),
+        );
+        egui::Image::new(egui::include_image!(
+            "../../../../../assets/icons/key_4x.png"
+        ))
+        .paint_at(
+            ui,
+            painter.round_rect_to_pixels(egui::Rect::from_center_size(
+                copy_key_rect.center(),
+                egui::vec2(16.0, 16.0),
+            )),
+        );
+
+        resp
     }
 }
 
@@ -142,25 +232,40 @@ fn display_name_widget(name: NostrName<'_>, add_placeholder_space: bool) -> impl
                 .selectable(false),
             )
         });
-        let username_resp = name.username.map(|username| {
-            ui.add(
-                Label::new(
-                    RichText::new(format!("@{}", username))
-                        .size(16.0)
-                        .color(colors::MID_GRAY),
-                )
-                .selectable(false),
-            )
-        });
 
-        let resp = if let Some(disp_resp) = disp_resp {
-            if let Some(username_resp) = username_resp {
-                username_resp
-            } else {
-                disp_resp
-            }
-        } else {
-            ui.add(Label::new(RichText::new(name.name())))
+        let (username_resp, nip05_resp) = ui
+            .horizontal(|ui| {
+                let username_resp = name.username.map(|username| {
+                    ui.add(
+                        Label::new(
+                            RichText::new(format!("@{}", username))
+                                .size(16.0)
+                                .color(colors::MID_GRAY),
+                        )
+                        .selectable(false),
+                    )
+                });
+
+                let nip05_resp = name.nip05.map(|nip05| {
+                    ui.image(egui::include_image!(
+                        "../../../../../assets/icons/verified_4x.png"
+                    ));
+                    ui.add(Label::new(
+                        RichText::new(nip05).size(16.0).color(colors::TEAL),
+                    ))
+                });
+
+                (username_resp, nip05_resp)
+            })
+            .inner;
+
+        let resp = match (disp_resp, username_resp, nip05_resp) {
+            (Some(disp), Some(username), Some(nip05)) => disp.union(username).union(nip05),
+            (Some(disp), Some(username), None) => disp.union(username),
+            (Some(disp), None, None) => disp,
+            (None, Some(username), Some(nip05)) => username.union(nip05),
+            (None, Some(username), None) => username,
+            _ => ui.add(Label::new(RichText::new(name.name()))),
         };
 
         if add_placeholder_space {
@@ -185,7 +290,9 @@ where
 {
     move |ui: &mut egui::Ui| {
         if let Some(about) = profile.record().profile().and_then(|p| p.about()) {
-            ui.label(about)
+            let resp = ui.label(about);
+            ui.add_space(8.0);
+            resp
         } else {
             // need any Response so we dont need an Option
             ui.allocate_response(egui::Vec2::ZERO, egui::Sense::hover())
