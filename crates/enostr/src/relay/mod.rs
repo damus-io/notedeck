@@ -56,19 +56,33 @@ pub fn setup_multicast_relay() -> Result<MulticastRelay> {
     socket.join_multicast_v4(&multicast_ip, &interface)?;
     socket.set_nonblocking(true)?;
 
-    Ok(MulticastRelay::new(address, UdpReceiver::new(socket)))
+    Ok(MulticastRelay::new(
+        address,
+        UdpReceiver::new(socket, multicast_ip, interface),
+    ))
 }
 
 pub struct UdpReceiver {
     socket: UdpSocket,
+    multicast_ip: Ipv4Addr,
+    interface: Ipv4Addr,
 }
 
 impl UdpReceiver {
-    pub fn new(socket: UdpSocket) -> Self {
-        Self { socket }
+    pub fn new(socket: UdpSocket, multicast_ip: Ipv4Addr, interface: Ipv4Addr) -> Self {
+        Self {
+            socket,
+            multicast_ip,
+            interface,
+        }
     }
 
     pub fn try_recv(&self) -> Option<WsEvent> {
+        // we have to do this or we will lose the connection and timeout
+        self.socket
+            .join_multicast_v4(&self.multicast_ip, &self.interface)
+            .ok()?;
+
         let mut buffer = [0u8; 65535];
         // Read the size header
         match self.socket.recv_from(&mut buffer) {
@@ -76,7 +90,7 @@ impl UdpReceiver {
                 let parsed_size = u32::from_be_bytes(buffer[0..4].try_into().ok()?) as usize;
                 debug!("multicast: read size {} from start of header", size - 4);
 
-                if size != parsed_size+4 {
+                if size != parsed_size + 4 {
                     error!(
                         "multicast: partial data received: expected {}, got {}",
                         parsed_size, size
