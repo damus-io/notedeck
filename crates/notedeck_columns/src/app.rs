@@ -19,7 +19,7 @@ use crate::{
 
 use notedeck::{Accounts, AppContext, DataPath, DataPathType, FilterState, ImageCache, UnknownIds};
 
-use enostr::{ClientMessage, Keypair, Pubkey, RelayEvent, RelayMessage, RelayPool};
+use enostr::{ClientMessage, Keypair, PoolRelay, Pubkey, RelayEvent, RelayMessage, RelayPool};
 use uuid::Uuid;
 
 use egui_extras::{Size, StripBuilder};
@@ -124,7 +124,9 @@ fn try_process_event(
             RelayEvent::Closed => warn!("{} connection closed", &ev.relay),
             RelayEvent::Error(e) => error!("{}: {}", &ev.relay, e),
             RelayEvent::Other(msg) => trace!("other event {:?}", &msg),
-            RelayEvent::Message(msg) => process_message(damus, app_ctx, &ev.relay, &msg),
+            RelayEvent::Message(msg) => {
+                process_message(damus, app_ctx, &ev.relay, &msg);
+            }
         }
     }
 
@@ -209,16 +211,6 @@ fn update_damus(damus: &mut Damus, app_ctx: &mut AppContext<'_>, ctx: &egui::Con
 
     if let Err(err) = try_process_event(damus, app_ctx, ctx) {
         error!("error processing event: {}", err);
-    }
-}
-
-fn process_event(ndb: &Ndb, _subid: &str, event: &str) {
-    #[cfg(feature = "profiling")]
-    puffin::profile_function!();
-
-    //info!("processing event {}", event);
-    if let Err(_err) = ndb.process_event(event) {
-        error!("error processing event {}", event);
     }
 }
 
@@ -314,7 +306,29 @@ fn handle_eose(
 
 fn process_message(damus: &mut Damus, ctx: &mut AppContext<'_>, relay: &str, msg: &RelayMessage) {
     match msg {
-        RelayMessage::Event(subid, ev) => process_event(ctx.ndb, subid, ev),
+        RelayMessage::Event(_subid, ev) => {
+            let relay = if let Some(relay) = ctx.pool.relays.iter().find(|r| r.url() == relay) {
+                relay
+            } else {
+                error!("couldn't find relay {} for note processing!?", relay);
+                return;
+            };
+
+            match relay {
+                PoolRelay::Websocket(_) => {
+                    //info!("processing event {}", event);
+                    if let Err(err) = ctx.ndb.process_event(ev) {
+                        error!("error processing event {ev}: {err}");
+                    }
+                }
+                PoolRelay::Multicast(_) => {
+                    // multicast events are client events
+                    if let Err(err) = ctx.ndb.process_client_event(ev) {
+                        error!("error processing multicast event {ev}: {err}");
+                    }
+                }
+            }
+        }
         RelayMessage::Notice(msg) => warn!("Notice from {}: {}", relay, msg),
         RelayMessage::OK(cr) => info!("OK {:?}", cr),
         RelayMessage::Eose(sid) => {

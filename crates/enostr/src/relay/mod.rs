@@ -76,7 +76,7 @@ impl UdpReceiver {
                 let parsed_size = u32::from_be_bytes(buffer[0..4].try_into().ok()?) as usize;
                 debug!("multicast: read size {} from start of header", size - 4);
 
-                if size != parsed_size {
+                if size != parsed_size+4 {
                     error!(
                         "multicast: partial data received: expected {}, got {}",
                         parsed_size, size
