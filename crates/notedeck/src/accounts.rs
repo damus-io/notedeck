@@ -517,13 +517,18 @@ impl Accounts {
         debug!("desired relays: {:?}", desired_relays);
 
         let add: BTreeSet<String> = desired_relays.difference(&pool.urls()).cloned().collect();
-        let sub: BTreeSet<String> = pool.urls().difference(&desired_relays).cloned().collect();
+        let mut sub: BTreeSet<String> = pool.urls().difference(&desired_relays).cloned().collect();
         if !add.is_empty() {
             debug!("configuring added relays: {:?}", add);
             let _ = pool.add_urls(add, wakeup);
         }
         if !sub.is_empty() {
             debug!("removing unwanted relays: {:?}", sub);
+
+            // certain relays are persistent like the multicast relay,
+            // although we should probably have a way to explicitly
+            // disable it
+            sub.remove("multicast");
             pool.remove_urls(&sub);
         }
 

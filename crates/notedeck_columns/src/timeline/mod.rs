@@ -15,7 +15,7 @@ use std::fmt;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use egui_virtual_list::VirtualList;
-use enostr::{Pubkey, Relay, RelayPool};
+use enostr::{PoolRelay, Pubkey, RelayPool};
 use nostrdb::{Filter, Ndb, Note, Subscription, Transaction};
 use std::cell::RefCell;
 use std::hash::Hash;
@@ -423,7 +423,7 @@ pub fn setup_new_timeline(
     }
 
     for relay in &mut pool.relays {
-        send_initial_timeline_filter(ndb, since_optimize, subs, &mut relay.relay, timeline);
+        send_initial_timeline_filter(ndb, since_optimize, subs, relay, timeline);
     }
 }
 
@@ -440,11 +440,7 @@ pub fn send_initial_timeline_filters(
     relay_id: &str,
 ) -> Option<()> {
     info!("Sending initial filters to {}", relay_id);
-    let relay = &mut pool
-        .relays
-        .iter_mut()
-        .find(|r| r.relay.url == relay_id)?
-        .relay;
+    let relay = &mut pool.relays.iter_mut().find(|r| r.url() == relay_id)?;
 
     for timeline in columns.timelines_mut() {
         send_initial_timeline_filter(ndb, since_optimize, subs, relay, timeline);
@@ -457,10 +453,10 @@ pub fn send_initial_timeline_filter(
     ndb: &Ndb,
     can_since_optimize: bool,
     subs: &mut Subscriptions,
-    relay: &mut Relay,
+    relay: &mut PoolRelay,
     timeline: &mut Timeline,
 ) {
-    let filter_state = timeline.filter.get(&relay.url);
+    let filter_state = timeline.filter.get(relay.url());
 
     match filter_state {
         FilterState::Broken(err) => {
@@ -510,7 +506,9 @@ pub fn send_initial_timeline_filter(
             let sub_id = subscriptions::new_sub_id();
             subs.subs.insert(sub_id.clone(), SubKind::Initial);
 
-            relay.subscribe(sub_id, new_filters);
+            if let Err(err) = relay.subscribe(sub_id, new_filters) {
+                error!("error subscribing: {err}");
+            }
         }
 
         // we need some data first
@@ -524,7 +522,7 @@ fn fetch_contact_list(
     filter: Vec<Filter>,
     ndb: &Ndb,
     subs: &mut Subscriptions,
-    relay: &mut Relay,
+    relay: &mut PoolRelay,
     timeline: &mut Timeline,
 ) {
     let sub_kind = SubKind::FetchingContactList(timeline.id);
@@ -532,14 +530,16 @@ fn fetch_contact_list(
     let local_sub = ndb.subscribe(&filter).expect("sub");
 
     timeline.filter.set_relay_state(
-        relay.url.clone(),
+        relay.url().to_string(),
         FilterState::fetching_remote(sub_id.clone(), local_sub),
     );
 
     subs.subs.insert(sub_id.clone(), sub_kind);
 
-    info!("fetching contact list from {}", &relay.url);
-    relay.subscribe(sub_id, filter);
+    info!("fetching contact list from {}", relay.url());
+    if let Err(err) = relay.subscribe(sub_id, filter) {
+        error!("error subscribing: {err}");
+    }
 }
 
 fn setup_initial_timeline(

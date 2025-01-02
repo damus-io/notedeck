@@ -1,3 +1,3 @@
 mod message;
 
-pub use message::ClientMessage;
+pub use message::{ClientMessage, EventClientMessage};

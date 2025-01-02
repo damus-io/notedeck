@@ -6,7 +6,6 @@ use egui::widgets::text_edit::TextEdit;
 use egui::{Frame, Layout};
 use enostr::{FilledKeypair, FullKeypair, NoteId, RelayPool};
 use nostrdb::{Ndb, Transaction};
-use tracing::info;
 
 use notedeck::{ImageCache, NoteCache};
 
@@ -62,9 +61,7 @@ impl PostAction {
             }
         };
 
-        let raw_msg = format!("[\"EVENT\",{}]", note.json().unwrap());
-        info!("sending {}", raw_msg);
-        pool.send(&enostr::ClientMessage::raw(raw_msg));
+        pool.send(&enostr::ClientMessage::event(note));
         drafts.get_from_post_type(&self.post_type).clear();
 
         Ok(())

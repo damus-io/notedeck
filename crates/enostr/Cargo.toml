@@ -17,3 +17,5 @@ hex = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
 url = { workspace = true }
+mio = { workspace = true }
+tokio = { workspace = true }

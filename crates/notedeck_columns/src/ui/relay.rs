@@ -104,7 +104,7 @@ impl<'a> RelayView<'a> {
     }
 }
 
-fn get_right_side_width(status: &RelayStatus) -> f32 {
+fn get_right_side_width(status: RelayStatus) -> f32 {
     match status {
         RelayStatus::Connected => 150.0,
         RelayStatus::Connecting => 160.0,
@@ -138,7 +138,7 @@ fn relay_frame(ui: &mut Ui) -> Frame {
         .stroke(ui.style().visuals.noninteractive().bg_stroke)
 }
 
-fn show_connection_status(ui: &mut Ui, status: &RelayStatus) {
+fn show_connection_status(ui: &mut Ui, status: RelayStatus) {
     let fg_color = match status {
         RelayStatus::Connected => ui.visuals().selection.bg_fill,
         RelayStatus::Connecting => ui.visuals().warn_fg_color,
@@ -163,7 +163,7 @@ fn show_connection_status(ui: &mut Ui, status: &RelayStatus) {
     });
 }
 
-fn get_connection_icon(status: &RelayStatus) -> egui::Image<'static> {
+fn get_connection_icon(status: RelayStatus) -> egui::Image<'static> {
     let img_data = match status {
         RelayStatus::Connected => {
             egui::include_image!("../../../../assets/icons/connected_icon_4x.png")

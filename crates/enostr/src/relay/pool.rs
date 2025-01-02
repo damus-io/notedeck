@@ -1,4 +1,4 @@
-use crate::relay::{Relay, RelayStatus};
+use crate::relay::{setup_multicast_relay, MulticastRelay, Relay, RelayStatus};
 use crate::{ClientMessage, Result};
 use nostrdb::Filter;
 
@@ -33,7 +33,12 @@ pub struct PoolEventBuf {
     pub event: ewebsock::WsEvent,
 }
 
-pub struct PoolRelay {
+pub enum PoolRelay {
+    Websocket(WebsocketRelay),
+    Multicast(MulticastRelay),
+}
+
+pub struct WebsocketRelay {
     pub relay: Relay,
     pub last_ping: Instant,
     pub last_connect_attempt: Instant,
@@ -41,8 +46,69 @@ pub struct PoolRelay {
 }
 
 impl PoolRelay {
-    pub fn new(relay: Relay) -> PoolRelay {
-        PoolRelay {
+    pub fn url(&self) -> &str {
+        match self {
+            Self::Websocket(wsr) => &wsr.relay.url,
+            Self::Multicast(_wsr) => "multicast",
+        }
+    }
+
+    pub fn set_status(&mut self, status: RelayStatus) {
+        match self {
+            Self::Websocket(wsr) => {
+                wsr.relay.status = status;
+            }
+            Self::Multicast(_mcr) => {}
+        }
+    }
+
+    pub fn try_recv(&self) -> Option<WsEvent> {
+        match self {
+            Self::Websocket(recvr) => recvr.relay.receiver.try_recv(),
+            Self::Multicast(recvr) => recvr.try_recv(),
+        }
+    }
+
+    pub fn status(&self) -> RelayStatus {
+        match self {
+            Self::Websocket(wsr) => wsr.relay.status,
+            Self::Multicast(mcr) => mcr.status,
+        }
+    }
+
+    pub fn send(&mut self, msg: &ClientMessage) -> Result<()> {
+        match self {
+            Self::Websocket(wsr) => {
+                wsr.relay.send(msg);
+                Ok(())
+            }
+
+            Self::Multicast(mcr) => {
+                // we only send event client messages at the moment
+                if let ClientMessage::Event(ecm) = msg {
+                    mcr.send(ecm)?;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    pub fn subscribe(&mut self, subid: String, filter: Vec<Filter>) -> Result<()> {
+        self.send(&ClientMessage::req(subid, filter))
+    }
+
+    pub fn websocket(relay: Relay) -> Self {
+        Self::Websocket(WebsocketRelay::new(relay))
+    }
+
+    pub fn multicast(wakeup: impl Fn() + Send + Sync + Clone + 'static) -> Result<Self> {
+        Ok(Self::Multicast(setup_multicast_relay(wakeup)?))
+    }
+}
+
+impl WebsocketRelay {
+    pub fn new(relay: Relay) -> Self {
+        Self {
             relay,
             last_ping: Instant::now(),
             last_connect_attempt: Instant::now(),
@@ -75,6 +141,15 @@ impl RelayPool {
         }
     }
 
+    pub fn add_multicast_relay(
+        &mut self,
+        wakeup: impl Fn() + Send + Sync + Clone + 'static,
+    ) -> Result<()> {
+        let multicast_relay = PoolRelay::multicast(wakeup)?;
+        self.relays.push(multicast_relay);
+        Ok(())
+    }
+
     pub fn ping_rate(&mut self, duration: Duration) -> &mut Self {
         self.ping_rate = duration;
         self
@@ -82,7 +157,7 @@ impl RelayPool {
 
     pub fn has(&self, url: &str) -> bool {
         for relay in &self.relays {
-            if relay.relay.url == url {
+            if relay.url() == url {
                 return true;
             }
         }
@@ -93,25 +168,35 @@ impl RelayPool {
     pub fn urls(&self) -> BTreeSet<String> {
         self.relays
             .iter()
-            .map(|pool_relay| pool_relay.relay.url.clone())
+            .map(|pool_relay| pool_relay.url().to_string())
             .collect()
     }
 
     pub fn send(&mut self, cmd: &ClientMessage) {
         for relay in &mut self.relays {
-            relay.relay.send(cmd);
+            if let Err(err) = relay.send(cmd) {
+                error!("error sending {:?} to {}: {err}", cmd, relay.url());
+            }
         }
     }
 
     pub fn unsubscribe(&mut self, subid: String) {
         for relay in &mut self.relays {
-            relay.relay.send(&ClientMessage::close(subid.clone()));
+            if let Err(err) = relay.send(&ClientMessage::close(subid.clone())) {
+                error!(
+                    "error unsubscribing from {} on {}: {err}",
+                    &subid,
+                    relay.url()
+                );
+            }
         }
     }
 
     pub fn subscribe(&mut self, subid: String, filter: Vec<Filter>) {
         for relay in &mut self.relays {
-            relay.relay.subscribe(subid.clone(), filter.clone());
+            if let Err(err) = relay.send(&ClientMessage::req(subid.clone(), filter.clone())) {
+                error!("error subscribing to {}: {err}", relay.url());
+            }
         }
     }
 
@@ -121,40 +206,47 @@ impl RelayPool {
         for relay in &mut self.relays {
             let now = std::time::Instant::now();
 
-            match relay.relay.status {
-                RelayStatus::Disconnected => {
-                    let reconnect_at = relay.last_connect_attempt + relay.retry_connect_after;
-                    if now > reconnect_at {
-                        relay.last_connect_attempt = now;
-                        let next_duration = Duration::from_millis(
-                            ((relay.retry_connect_after.as_millis() as f64) * 1.5) as u64,
-                        );
-                        debug!(
-                            "bumping reconnect duration from {:?} to {:?} and retrying connect",
-                            relay.retry_connect_after, next_duration
-                        );
-                        relay.retry_connect_after = next_duration;
-                        if let Err(err) = relay.relay.connect(wakeup.clone()) {
-                            error!("error connecting to relay: {}", err);
+            match relay {
+                PoolRelay::Multicast(_) => {}
+                PoolRelay::Websocket(relay) => {
+                    match relay.relay.status {
+                        RelayStatus::Disconnected => {
+                            let reconnect_at =
+                                relay.last_connect_attempt + relay.retry_connect_after;
+                            if now > reconnect_at {
+                                relay.last_connect_attempt = now;
+                                let next_duration = Duration::from_millis(
+                                    ((relay.retry_connect_after.as_millis() as f64) * 1.5) as u64,
+                                );
+                                debug!(
+                                    "bumping reconnect duration from {:?} to {:?} and retrying connect",
+                                    relay.retry_connect_after, next_duration
+                                );
+                                relay.retry_connect_after = next_duration;
+                                if let Err(err) = relay.relay.connect(wakeup.clone()) {
+                                    error!("error connecting to relay: {}", err);
+                                }
+                            } else {
+                                // let's wait a bit before we try again
+                            }
                         }
-                    } else {
-                        // let's wait a bit before we try again
+
+                        RelayStatus::Connected => {
+                            relay.retry_connect_after =
+                                WebsocketRelay::initial_reconnect_duration();
+
+                            let should_ping = now - relay.last_ping > self.ping_rate;
+                            if should_ping {
+                                debug!("pinging {}", relay.relay.url);
+                                relay.relay.ping();
+                                relay.last_ping = Instant::now();
+                            }
+                        }
+
+                        RelayStatus::Connecting => {
+                            // cool story bro
+                        }
                     }
-                }
-
-                RelayStatus::Connected => {
-                    relay.retry_connect_after = PoolRelay::initial_reconnect_duration();
-
-                    let should_ping = now - relay.last_ping > self.ping_rate;
-                    if should_ping {
-                        debug!("pinging {}", relay.relay.url);
-                        relay.relay.ping();
-                        relay.last_ping = Instant::now();
-                    }
-                }
-
-                RelayStatus::Connecting => {
-                    // cool story bro
                 }
             }
         }
@@ -162,9 +254,10 @@ impl RelayPool {
 
     pub fn send_to(&mut self, cmd: &ClientMessage, relay_url: &str) {
         for relay in &mut self.relays {
-            let relay = &mut relay.relay;
-            if relay.url == relay_url {
-                relay.send(cmd);
+            if relay.url() == relay_url {
+                if let Err(err) = relay.send(cmd) {
+                    error!("error sending {:?} to {}: {err}", cmd, relay_url);
+                }
                 return;
             }
         }
@@ -182,7 +275,7 @@ impl RelayPool {
             return Ok(());
         }
         let relay = Relay::new(url, wakeup)?;
-        let pool_relay = PoolRelay::new(relay);
+        let pool_relay = PoolRelay::websocket(relay);
 
         self.relays.push(pool_relay);
 
@@ -202,7 +295,7 @@ impl RelayPool {
 
     pub fn remove_urls(&mut self, urls: &BTreeSet<String>) {
         self.relays
-            .retain(|pool_relay| !urls.contains(&pool_relay.relay.url));
+            .retain(|pool_relay| !urls.contains(pool_relay.url()));
     }
 
     // standardize the format (ie, trailing slashes)
@@ -219,32 +312,47 @@ impl RelayPool {
     /// If no message is received from any relays, None is returned.
     pub fn try_recv(&mut self) -> Option<PoolEvent<'_>> {
         for relay in &mut self.relays {
-            let relay = &mut relay.relay;
-            if let Some(event) = relay.receiver.try_recv() {
+            if let PoolRelay::Multicast(mcr) = relay {
+                // try rejoin on multicast
+                if mcr.should_rejoin() {
+                    if let Err(err) = mcr.rejoin() {
+                        error!("multicast: rejoin error: {err}");
+                    } else {
+                        debug!("multicast: rejoin success");
+                    }
+                }
+            }
+
+            if let Some(event) = relay.try_recv() {
                 match &event {
                     WsEvent::Opened => {
-                        relay.status = RelayStatus::Connected;
+                        relay.set_status(RelayStatus::Connected);
                     }
                     WsEvent::Closed => {
-                        relay.status = RelayStatus::Disconnected;
+                        relay.set_status(RelayStatus::Disconnected);
                     }
                     WsEvent::Error(err) => {
                         error!("{:?}", err);
-                        relay.status = RelayStatus::Disconnected;
+                        relay.set_status(RelayStatus::Disconnected);
                     }
                     WsEvent::Message(ev) => {
                         // let's just handle pongs here.
                         // We only need to do this natively.
                         #[cfg(not(target_arch = "wasm32"))]
                         if let WsMessage::Ping(ref bs) = ev {
-                            debug!("pong {}", &relay.url);
-                            relay.sender.send(WsMessage::Pong(bs.to_owned()));
+                            debug!("pong {}", relay.url());
+                            match relay {
+                                PoolRelay::Websocket(wsr) => {
+                                    wsr.relay.sender.send(WsMessage::Pong(bs.to_owned()));
+                                }
+                                PoolRelay::Multicast(_mcr) => {}
+                            }
                         }
                     }
                 }
                 return Some(PoolEvent {
                     event,
-                    relay: &relay.url,
+                    relay: relay.url(),
                 });
             }
         }

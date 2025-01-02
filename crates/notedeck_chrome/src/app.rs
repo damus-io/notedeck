@@ -10,7 +10,7 @@ use nostrdb::{Config, Ndb, Transaction};
 use std::cell::RefCell;
 use std::path::Path;
 use std::rc::Rc;
-use tracing::info;
+use tracing::{error, info};
 
 /// Our browser app state
 pub struct Notedeck {
@@ -182,7 +182,13 @@ impl Notedeck {
         }
 
         // AccountManager will setup the pool on first update
-        let pool = RelayPool::new();
+        let mut pool = RelayPool::new();
+        {
+            let ctx = ctx.clone();
+            if let Err(err) = pool.add_multicast_relay(move || ctx.request_repaint()) {
+                error!("error setting up multicast relay: {err}");
+            }
+        }
 
         let img_cache = ImageCache::new(imgcache_dir);
         let note_cache = NoteCache::default();

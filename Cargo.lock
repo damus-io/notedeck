@@ -1211,12 +1211,14 @@ dependencies = [
  "bech32",
  "ewebsock",
  "hex",
+ "mio",
  "nostr",
  "nostrdb",
  "serde",
  "serde_derive",
  "serde_json",
  "thiserror 2.0.7",
+ "tokio",
  "tracing",
  "url",
 ]
@@ -2352,6 +2354,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "mio"
+version = "1.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2886843bf800fba2e3377cff24abf6379b4c4d5c6681eaf9ea5b0d15090450bd"
+dependencies = [
+ "libc",
+ "log",
+ "wasi",
+ "windows-sys 0.52.0",
+]
+
+[[package]]
 name = "naga"
 version = "22.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2508,9 +2522,8 @@ dependencies = [
 
 [[package]]
 name = "nostrdb"
-version = "0.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "775484658a10d646c5e835fb9132a7528d1bf546a791d1176b052f1be69c04b2"
+version = "0.5.1"
+source = "git+https://github.com/damus-io/nostrdb-rs?rev=2111948b078b24a1659d0bd5d8570f370269c99b#2111948b078b24a1659d0bd5d8570f370269c99b"
 dependencies = [
  "bindgen",
  "cc",
