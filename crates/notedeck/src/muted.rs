@@ -1,9 +1,10 @@
 use nostrdb::Note;
 use std::collections::BTreeSet;
 
-use tracing::debug;
+use tracing::{debug, trace};
 
-pub type MuteFun = dyn Fn(&Note) -> bool;
+// If the note is muted return a reason string, otherwise None
+pub type MuteFun = dyn Fn(&Note, &[u8; 32]) -> Option<String>;
 
 #[derive(Default)]
 pub struct Muted {
@@ -32,14 +33,21 @@ impl std::fmt::Debug for Muted {
 }
 
 impl Muted {
-    pub fn is_muted(&self, note: &Note) -> bool {
+    // If the note is muted return a reason string, otherwise None
+    pub fn is_muted(&self, note: &Note, thread: &[u8; 32]) -> Option<String> {
+        trace!(
+            "{}: thread: {}",
+            hex::encode(note.id()),
+            hex::encode(thread)
+        );
+
         if self.pubkeys.contains(note.pubkey()) {
             debug!(
                 "{}: MUTED pubkey: {}",
                 hex::encode(note.id()),
                 hex::encode(note.pubkey())
             );
-            return true;
+            return Some(format!("pubkey {}", hex::encode(note.pubkey())));
         }
         // FIXME - Implement hashtag muting here
 
@@ -51,11 +59,20 @@ impl Muted {
         // for word in &self.words {
         //     if content.contains(&word.to_lowercase()) {
         //         debug!("{}: MUTED word: {}", hex::encode(note.id()), word);
-        //         return true;
+        //         return Some(format!("muted word {}", word));
         //     }
         // }
 
-        // FIXME - Implement thread muting here
-        false
+        if self.threads.contains(thread) {
+            debug!(
+                "{}: MUTED thread: {}",
+                hex::encode(note.id()),
+                hex::encode(thread)
+            );
+            return Some(format!("thread {}", hex::encode(thread)));
+        }
+
+        // if we get here it's not muted
+        None
     }
 }
