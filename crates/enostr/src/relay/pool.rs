@@ -48,9 +48,18 @@ impl MulticastRelay {
     }
 
     pub fn send(&self, msg: &ClientMessage) -> Result<()> {
-        self.receiver
-            .socket
-            .send_to((msg.to_json()?).as_bytes(), "239.1.1.1:3000")?;
+        let json = msg.to_json()?;
+        let len = json.len();
+
+        let mut buf: Vec<u8> = Vec::with_capacity(4 + len);
+
+        // Write the length of the message as 4 bytes (big-endian)
+        buf.extend_from_slice(&(len as u32).to_be_bytes());
+
+        // Append the JSON message bytes
+        buf.extend_from_slice(json.as_bytes());
+
+        self.receiver.socket.send_to(&buf, "239.1.1.1:3000")?;
         Ok(())
     }
 }
