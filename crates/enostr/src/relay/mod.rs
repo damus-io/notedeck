@@ -47,18 +47,16 @@ impl MulticastRelay {
 }
 
 pub fn setup_multicast_relay() -> Result<MulticastRelay> {
-    let socket = UdpSocket::bind("0.0.0.0:9797")?;
-
-    // Join the multicast group
+    let address = "239.19.18.1:9797".to_string();
     let multicast_ip = Ipv4Addr::new(239, 19, 88, 1);
-    let interface = Ipv4Addr::new(0, 0, 0, 0);
+
+    let socket = UdpSocket::bind("0.0.0.0:9797")?;
+    let interface = Ipv4Addr::new(192, 168, 100, 1);
+
     socket.join_multicast_v4(&multicast_ip, &interface)?;
     socket.set_nonblocking(true)?;
 
-    Ok(MulticastRelay::new(
-        "239.19.88.1:9797".to_string(),
-        UdpReceiver::new(socket),
-    ))
+    Ok(MulticastRelay::new(address, UdpReceiver::new(socket)))
 }
 
 pub struct UdpReceiver {
@@ -76,7 +74,7 @@ impl UdpReceiver {
         match self.socket.recv_from(&mut size_buffer) {
             Ok((4, src)) => {
                 let size = (u32::from_be_bytes(size_buffer) as usize) + 4;
-                debug!("multicast: read size {} from start of header", size-4);
+                debug!("multicast: read size {} from start of header", size - 4);
 
                 // Allocate buffer of exact size for the payload
                 let mut buffer = vec![0u8; size];
