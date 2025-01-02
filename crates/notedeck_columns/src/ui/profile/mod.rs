@@ -6,7 +6,7 @@ use crate::ui::note::NoteOptions;
 use crate::{colors, images};
 use crate::{notes_holder::NotesHolder, NostrName};
 use egui::load::TexturePoll;
-use egui::{Label, RichText, Rounding, ScrollArea, Sense, Stroke};
+use egui::{vec2, Color32, Label, Layout, Rect, RichText, Rounding, ScrollArea, Sense, Stroke};
 use enostr::Pubkey;
 use nostrdb::{Ndb, ProfileRecord, Transaction};
 pub use picture::ProfilePic;
@@ -108,21 +108,27 @@ impl<'a> ProfileView<'a> {
                 pfp_rect.set_height(size);
                 let pfp_rect = pfp_rect.translate(egui::vec2(0.0, -(padding + 2.0 + (size / 2.0))));
 
-                ui.put(
-                    pfp_rect,
-                    ProfilePic::new(self.img_cache, get_profile_url(Some(&profile))).size(size),
-                );
+                ui.horizontal(|ui| {
+                    ui.put(
+                        pfp_rect,
+                        ProfilePic::new(self.img_cache, get_profile_url(Some(&profile))).size(size),
+                    );
 
-                if ui.add(copy_key_widget(&pfp_rect)).clicked() {
-                    ui.output_mut(|w| {
-                        w.copied_text = if let Some(bech) = self.pubkey.to_bech() {
-                            bech
-                        } else {
-                            error!("Could not convert Pubkey to bech");
-                            String::new()
-                        }
+                    if ui.add(copy_key_widget(&pfp_rect)).clicked() {
+                        ui.output_mut(|w| {
+                            w.copied_text = if let Some(bech) = self.pubkey.to_bech() {
+                                bech
+                            } else {
+                                error!("Could not convert Pubkey to bech");
+                                String::new()
+                            }
+                        });
+                    }
+
+                    ui.with_layout(Layout::right_to_left(egui::Align::Max), |ui| {
+                        ui.add(edit_profile_button())
                     });
-                }
+                });
 
                 ui.add_space(18.0);
 
@@ -217,6 +223,66 @@ fn copy_key_widget(pfp_rect: &egui::Rect) -> impl egui::Widget + '_ {
                 egui::vec2(16.0, 16.0),
             )),
         );
+
+        resp
+    }
+}
+
+fn edit_profile_button() -> impl egui::Widget + 'static {
+    |ui: &mut egui::Ui| -> egui::Response {
+        let (rect, resp) = ui.allocate_exact_size(vec2(124.0, 32.0), Sense::click());
+        let painter = ui.painter_at(rect);
+        let rect = painter.round_rect_to_pixels(rect);
+
+        painter.rect_filled(
+            rect,
+            Rounding::same(8.0),
+            if resp.hovered() {
+                ui.visuals().widgets.active.bg_fill
+            } else {
+                ui.visuals().widgets.inactive.bg_fill
+            },
+        );
+        painter.rect_stroke(
+            rect.shrink(1.0),
+            Rounding::same(8.0),
+            if resp.hovered() {
+                ui.visuals().widgets.active.bg_stroke
+            } else {
+                ui.visuals().widgets.inactive.bg_stroke
+            },
+        );
+
+        let edit_icon_size = vec2(16.0, 16.0);
+        let galley = painter.layout(
+            "Edit Profile".to_owned(),
+            NotedeckTextStyle::Button.get_font_id(ui.ctx()),
+            ui.visuals().text_color(),
+            rect.width(),
+        );
+
+        let space_between_icon_galley = 8.0;
+        let half_icon_size = edit_icon_size.x / 2.0;
+        let galley_rect = {
+            let galley_rect = Rect::from_center_size(rect.center(), galley.rect.size());
+            galley_rect.translate(vec2(half_icon_size + space_between_icon_galley / 2.0, 0.0))
+        };
+
+        let edit_icon_rect = {
+            let mut center = galley_rect.left_center();
+            center.x -= half_icon_size + space_between_icon_galley;
+            painter.round_rect_to_pixels(Rect::from_center_size(
+                painter.round_pos_to_pixel_center(center),
+                edit_icon_size,
+            ))
+        };
+
+        painter.galley(galley_rect.left_top(), galley, Color32::WHITE);
+
+        egui::Image::new(egui::include_image!(
+            "../../../../../assets/icons/edit_icon_4x_dark.png"
+        ))
+        .paint_at(ui, edit_icon_rect);
 
         resp
     }
