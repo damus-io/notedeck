@@ -79,9 +79,9 @@ impl UdpReceiver {
 
     pub fn try_recv(&self) -> Option<WsEvent> {
         // we have to do this or we will lose the connection and timeout
-        self.socket
-            .join_multicast_v4(&self.multicast_ip, &self.interface)
-            .ok()?;
+        let _ = self
+            .socket
+            .join_multicast_v4(&self.multicast_ip, &self.interface);
 
         let mut buffer = [0u8; 65535];
         // Read the size header
