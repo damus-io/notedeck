@@ -51,6 +51,7 @@ impl MulticastRelay {
         let json = msg.to_json()?;
         let len = json.len();
 
+        debug!("writing to multicast relay");
         let mut buf: Vec<u8> = Vec::with_capacity(4 + len);
 
         // Write the length of the message as 4 bytes (big-endian)
