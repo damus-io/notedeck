@@ -1,9 +1,8 @@
 use crate::ui::ProfilePic;
-use crate::DisplayName;
+use crate::NostrName;
 use egui::{Frame, Label, RichText, Widget};
 use egui_extras::Size;
-use enostr::{NoteId, Pubkey};
-use nostrdb::{Ndb, ProfileRecord, Transaction};
+use nostrdb::ProfileRecord;
 
 use notedeck::{ImageCache, NotedeckTextStyle, UserAccount};
 
@@ -175,22 +174,17 @@ pub fn get_account_url<'a>(
 
 pub fn one_line_display_name_widget<'a>(
     visuals: &egui::Visuals,
-    display_name: DisplayName<'a>,
+    display_name: NostrName<'a>,
     style: NotedeckTextStyle,
 ) -> impl egui::Widget + 'a {
     let text_style = style.text_style();
     let color = visuals.noninteractive().fg_stroke.color;
 
-    move |ui: &mut egui::Ui| match display_name {
-        DisplayName::One(n) => ui.label(RichText::new(n).text_style(text_style).color(color)),
-
-        DisplayName::Both {
-            display_name,
-            username: _,
-        } => ui.label(
-            RichText::new(display_name)
+    move |ui: &mut egui::Ui| -> egui::Response {
+        ui.label(
+            RichText::new(display_name.name())
                 .text_style(text_style)
                 .color(color),
-        ),
+        )
     }
 }

@@ -9,20 +9,28 @@ use crate::{
     timeline::{copy_notes_into_timeline, PubkeySource, Timeline, TimelineKind, TimelineTab},
 };
 
-pub enum DisplayName<'a> {
-    One(&'a str),
-
-    Both {
-        username: &'a str,
-        display_name: &'a str,
-    },
+pub struct NostrName<'a> {
+    pub username: Option<&'a str>,
+    pub display_name: Option<&'a str>,
+    pub nip05: Option<&'a str>,
 }
 
-impl<'a> DisplayName<'a> {
-    pub fn username(&self) -> &'a str {
-        match self {
-            Self::One(n) => n,
-            Self::Both { username, .. } => username,
+impl<'a> NostrName<'a> {
+    pub fn name(&self) -> &'a str {
+        if let Some(name) = self.username {
+            name
+        } else if let Some(name) = self.display_name {
+            name
+        } else {
+            self.nip05.unwrap_or("??")
+        }
+    }
+
+    pub fn unknown() -> Self {
+        Self {
+            username: None,
+            display_name: None,
+            nip05: None,
         }
     }
 }
@@ -31,19 +39,35 @@ fn is_empty(s: &str) -> bool {
     s.chars().all(|c| c.is_whitespace())
 }
 
-pub fn get_profile_name<'a>(record: &ProfileRecord<'a>) -> Option<DisplayName<'a>> {
-    let profile = record.record().profile()?;
-    let display_name = profile.display_name().filter(|n| !is_empty(n));
-    let name = profile.name().filter(|n| !is_empty(n));
+pub fn get_display_name<'a>(record: Option<&ProfileRecord<'a>>) -> NostrName<'a> {
+    if let Some(record) = record {
+        if let Some(profile) = record.record().profile() {
+            let display_name = profile.display_name().filter(|n| !is_empty(n));
+            let username = profile.name().filter(|n| !is_empty(n));
+            let nip05 = if let Some(raw_nip05) = profile.nip05() {
+                if let Some(at_pos) = raw_nip05.find('@') {
+                    if raw_nip05.starts_with('_') {
+                        raw_nip05.get(at_pos + 1..)
+                    } else {
+                        Some(raw_nip05)
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
 
-    match (display_name, name) {
-        (None, None) => None,
-        (Some(disp), None) => Some(DisplayName::One(disp)),
-        (None, Some(username)) => Some(DisplayName::One(username)),
-        (Some(display_name), Some(username)) => Some(DisplayName::Both {
-            display_name,
-            username,
-        }),
+            NostrName {
+                username,
+                display_name,
+                nip05,
+            }
+        } else {
+            NostrName::unknown()
+        }
+    } else {
+        NostrName::unknown()
     }
 }
 

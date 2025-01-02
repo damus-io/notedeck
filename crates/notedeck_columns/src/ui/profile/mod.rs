@@ -1,9 +1,10 @@
 pub mod picture;
 pub mod preview;
 
+use crate::profile::get_display_name;
 use crate::ui::note::NoteOptions;
 use crate::{colors, images};
-use crate::{notes_holder::NotesHolder, DisplayName};
+use crate::{notes_holder::NotesHolder, NostrName};
 use egui::load::TexturePoll;
 use egui::{Label, RichText, ScrollArea, Sense};
 use enostr::Pubkey;
@@ -131,43 +132,42 @@ impl<'a> ProfileView<'a> {
     }
 }
 
-fn display_name_widget(
-    display_name: DisplayName<'_>,
-    add_placeholder_space: bool,
-) -> impl egui::Widget + '_ {
-    move |ui: &mut egui::Ui| match display_name {
-        DisplayName::One(n) => {
-            let name_response = ui.add(
-                Label::new(RichText::new(n).text_style(NotedeckTextStyle::Heading3.text_style()))
-                    .selectable(false),
-            );
-            if add_placeholder_space {
-                ui.add_space(16.0);
-            }
-            name_response
-        }
-
-        DisplayName::Both {
-            display_name,
-            username,
-        } => {
+fn display_name_widget(name: NostrName<'_>, add_placeholder_space: bool) -> impl egui::Widget + '_ {
+    move |ui: &mut egui::Ui| -> egui::Response {
+        let disp_resp = name.display_name.map(|disp_name| {
             ui.add(
                 Label::new(
-                    RichText::new(display_name)
-                        .text_style(NotedeckTextStyle::Heading3.text_style()),
+                    RichText::new(disp_name).text_style(NotedeckTextStyle::Heading3.text_style()),
                 )
                 .selectable(false),
-            );
-
+            )
+        });
+        let username_resp = name.username.map(|username| {
             ui.add(
                 Label::new(
                     RichText::new(format!("@{}", username))
-                        .size(12.0)
+                        .size(16.0)
                         .color(colors::MID_GRAY),
                 )
                 .selectable(false),
             )
+        });
+
+        let resp = if let Some(disp_resp) = disp_resp {
+            if let Some(username_resp) = username_resp {
+                username_resp
+            } else {
+                disp_resp
+            }
+        } else {
+            ui.add(Label::new(RichText::new(name.name())))
+        };
+
+        if add_placeholder_space {
+            ui.add_space(16.0);
         }
+
+        resp
     }
 }
 
@@ -176,14 +176,6 @@ pub fn get_profile_url<'a>(profile: Option<&ProfileRecord<'a>>) -> &'a str {
         url
     } else {
         ProfilePic::no_pfp_url()
-    }
-}
-
-pub fn get_display_name<'a>(profile: Option<&ProfileRecord<'a>>) -> DisplayName<'a> {
-    if let Some(name) = profile.and_then(|p| crate::profile::get_profile_name(p)) {
-        name
-    } else {
-        DisplayName::One("??")
     }
 }
 
