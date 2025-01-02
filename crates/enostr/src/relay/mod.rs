@@ -75,13 +75,14 @@ impl UdpReceiver {
         // Read the size header
         match self.socket.recv_from(&mut size_buffer) {
             Ok((4, src)) => {
-                let size = u32::from_be_bytes(size_buffer) as usize;
+                let size = (u32::from_be_bytes(size_buffer) as usize) + 4;
+                debug!("multicast: read size {} from start of header", size-4);
 
                 // Allocate buffer of exact size for the payload
                 let mut buffer = vec![0u8; size];
                 match self.socket.recv_from(&mut buffer) {
-                    Ok((len, _)) if len == size => {
-                        let text = String::from_utf8_lossy(&buffer);
+                    Ok((len, _)) if len == (size) => {
+                        let text = String::from_utf8_lossy(&buffer[4..]);
                         debug!("multicast: received {} bytes from {}: {}", len, src, &text);
                         Some(WsEvent::Message(WsMessage::Text(text.to_string())))
                     }
