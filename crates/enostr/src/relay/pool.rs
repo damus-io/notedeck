@@ -50,7 +50,7 @@ impl MulticastRelay {
     pub fn send(&self, msg: &ClientMessage) -> Result<()> {
         self.receiver
             .socket
-            .send_to((&msg.to_json()?).as_bytes(), "239.1.1.1:3000")?;
+            .send_to((msg.to_json()?).as_bytes(), "239.1.1.1:3000")?;
         Ok(())
     }
 }

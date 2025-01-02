@@ -44,7 +44,7 @@ impl UdpReceiver {
         let mut size_buffer = [0u8; 4];
         // Read the size header
         match self.socket.recv_from(&mut size_buffer) {
-            Ok((len, src)) if len == 4 => {
+            Ok((4, src)) => {
                 let size = u32::from_be_bytes(size_buffer) as usize;
 
                 // Allocate buffer of exact size for the payload
