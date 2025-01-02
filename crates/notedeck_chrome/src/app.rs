@@ -114,10 +114,12 @@ impl Notedeck {
 
         let data_path = parsed_args
             .datapath
+            .clone()
             .unwrap_or(data_path.as_ref().to_str().expect("db path ok").to_string());
         let path = DataPath::new(&data_path);
         let dbpath_str = parsed_args
             .dbpath
+            .clone()
             .unwrap_or_else(|| path.path(DataPathType::Db).to_str().unwrap().to_string());
 
         let _ = std::fs::create_dir_all(&dbpath_str);
@@ -158,7 +160,7 @@ impl Notedeck {
             KeyStorageType::None
         };
 
-        let mut accounts = Accounts::new(keystore, parsed_args.relays);
+        let mut accounts = Accounts::new(keystore, parsed_args.relays.clone());
 
         let num_keys = parsed_args.keys.len();
 
@@ -167,10 +169,10 @@ impl Notedeck {
 
         {
             let txn = Transaction::new(&ndb).expect("txn");
-            for key in parsed_args.keys {
-                info!("adding account: {}", key.pubkey);
+            for key in &parsed_args.keys {
+                info!("adding account: {}", &key.pubkey);
                 accounts
-                    .add_account(key)
+                    .add_account(key.clone())
                     .process_action(&mut unknown_ids, &ndb, &txn);
             }
         }
@@ -186,7 +188,6 @@ impl Notedeck {
         let note_cache = NoteCache::default();
         let unknown_ids = UnknownIds::default();
         let tabs = Tabs::new(None);
-        let parsed_args = Args::parse(args);
         let app_rect_handler = AppSizeHandler::new(&path);
 
         Self {
