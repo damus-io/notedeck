@@ -19,8 +19,7 @@ pub enum RelayStatus {
 }
 
 pub fn setup_multicast_socket() -> Result<UdpSocket> {
-    let multicast_addr = "239.1.1.1:3000";
-    let socket = UdpSocket::bind(multicast_addr)?;
+    let socket = UdpSocket::bind("0.0.0.0:9797")?;
 
     // Join the multicast group
     let multicast_ip = Ipv4Addr::new(239, 1, 1, 1);
