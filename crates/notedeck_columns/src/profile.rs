@@ -1,11 +1,12 @@
-use enostr::{Filter, Pubkey};
-use nostrdb::{FilterBuilder, Ndb, ProfileRecord, Transaction};
+use enostr::{Filter, FullKeypair, Pubkey};
+use nostrdb::{FilterBuilder, Ndb, Note, NoteBuilder, ProfileRecord, Transaction};
 
 use notedeck::{filter::default_limit, FilterState, MuteFun, NoteCache, NoteRef};
 
 use crate::{
     multi_subscriber::MultiSubscriber,
     notes_holder::NotesHolder,
+    profile_state::ProfileState,
     timeline::{copy_notes_into_timeline, PubkeySource, Timeline, TimelineKind, TimelineTab},
 };
 
@@ -154,4 +155,36 @@ impl NotesHolder for Profile {
     fn set_multi_subscriber(&mut self, subscriber: MultiSubscriber) {
         self.multi_subscriber = Some(subscriber);
     }
+}
+
+pub struct SaveProfileChanges {
+    pub kp: FullKeypair,
+    pub state: ProfileState,
+}
+
+impl SaveProfileChanges {
+    pub fn new(kp: FullKeypair, state: ProfileState) -> Self {
+        Self { kp, state }
+    }
+    pub fn to_note(&self) -> Note {
+        let sec = &self.kp.secret_key.to_secret_bytes();
+        add_client_tag(NoteBuilder::new())
+            .kind(0)
+            .content(&self.state.to_json())
+            .sign(sec)
+            .build()
+            .expect("should build")
+    }
+}
+
+fn add_client_tag(builder: NoteBuilder<'_>) -> NoteBuilder<'_> {
+    builder
+        .start_tag()
+        .tag_str("client")
+        .tag_str("Damus Notedeck")
+}
+
+pub enum ProfileAction {
+    Edit(FullKeypair),
+    SaveChanges(SaveProfileChanges),
 }
