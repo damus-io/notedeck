@@ -23,6 +23,7 @@ mod nav;
 mod notes_holder;
 mod post;
 mod profile;
+mod profile_state;
 pub mod relay_pool_manager;
 mod route;
 mod subscriptions;

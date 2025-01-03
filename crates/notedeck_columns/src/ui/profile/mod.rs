@@ -1,3 +1,4 @@
+pub mod edit;
 pub mod picture;
 pub mod preview;
 
@@ -5,6 +6,7 @@ use crate::profile::get_display_name;
 use crate::ui::note::NoteOptions;
 use crate::{colors, images};
 use crate::{notes_holder::NotesHolder, NostrName};
+pub use edit::EditProfileView;
 use egui::load::TexturePoll;
 use egui::{vec2, Color32, Label, Layout, Rect, RichText, Rounding, ScrollArea, Sense, Stroke};
 use enostr::Pubkey;
