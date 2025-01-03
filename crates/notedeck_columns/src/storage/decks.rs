@@ -541,6 +541,11 @@ fn serialize_route(route: &Route, columns: &Columns) -> Option<String> {
             selections.push(Selection::Keyword(Keyword::Edit));
             selections.push(Selection::Payload(index.to_string()));
         }
+        Route::EditProfile(pubkey) => {
+            selections.push(Selection::Keyword(Keyword::Profile));
+            selections.push(Selection::Keyword(Keyword::Edit));
+            selections.push(Selection::Payload(pubkey.hex()));
+        }
     }
 
     if selections.is_empty() {
@@ -649,6 +654,15 @@ fn selections_to_route(selections: Vec<Selection>) -> Option<CleanIntermediaryRo
             Selection::Keyword(Keyword::DeckAuthor) => Some(CleanIntermediaryRoute::ToTimeline(
                 TimelineKind::profile(PubkeySource::DeckAuthor),
             )),
+            Selection::Keyword(Keyword::Edit) => {
+                if let Selection::Payload(hex) = selections.get(2)? {
+                    Some(CleanIntermediaryRoute::ToRoute(Route::EditProfile(
+                        Pubkey::from_hex(hex.as_str()).ok()?,
+                    )))
+                } else {
+                    None
+                }
+            }
             _ => None,
         },
         Selection::Keyword(Keyword::Universe) => {

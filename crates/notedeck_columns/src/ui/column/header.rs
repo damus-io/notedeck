@@ -256,6 +256,9 @@ impl<'a> NavTitle<'a> {
             Route::Relays => {}
             Route::NewDeck => {}
             Route::EditDeck(_) => {}
+            Route::EditProfile(pubkey) => {
+                self.show_profile(ui, pubkey, pfp_size);
+            }
         }
     }
 
