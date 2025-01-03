@@ -53,9 +53,11 @@ impl<'a, 'cache> ProfilePreview<'a, 'cache> {
 impl egui::Widget for ProfilePreview<'_, '_> {
     fn ui(self, ui: &mut egui::Ui) -> egui::Response {
         ui.vertical(|ui| {
-            ui.add_sized([ui.available_size().x, 80.0], |ui: &mut egui::Ui| {
-                banner(ui, self.profile)
-            });
+            banner(
+                ui,
+                self.profile.record().profile().and_then(|p| p.banner()),
+                80.0,
+            );
 
             self.body(ui);
         })

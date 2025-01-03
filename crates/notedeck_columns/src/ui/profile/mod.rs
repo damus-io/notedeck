@@ -96,9 +96,11 @@ impl<'a> ProfileView<'a> {
 
     fn profile_body(&mut self, ui: &mut egui::Ui, profile: ProfileRecord<'_>) {
         ui.vertical(|ui| {
-            ui.add_sized([ui.available_size().x, 120.0], |ui: &mut egui::Ui| {
-                banner(ui, &profile)
-            });
+            banner(
+                ui,
+                profile.record().profile().and_then(|p| p.banner()),
+                120.0,
+            );
 
             let padding = 12.0;
             crate::ui::padding(padding, ui, |ui| {
@@ -343,7 +345,11 @@ fn display_name_widget(name: NostrName<'_>, add_placeholder_space: bool) -> impl
 }
 
 pub fn get_profile_url<'a>(profile: Option<&ProfileRecord<'a>>) -> &'a str {
-    if let Some(url) = profile.and_then(|pr| pr.record().profile().and_then(|p| p.picture())) {
+    unwrap_profile_url(profile.and_then(|pr| pr.record().profile().and_then(|p| p.picture())))
+}
+
+pub fn unwrap_profile_url(maybe_url: Option<&str>) -> &str {
+    if let Some(url) = maybe_url {
         url
     } else {
         ProfilePic::no_pfp_url()
@@ -366,16 +372,11 @@ where
     }
 }
 
-fn banner_texture(
-    ui: &mut egui::Ui,
-    profile: &ProfileRecord<'_>,
-) -> Option<egui::load::SizedTexture> {
+fn banner_texture(ui: &mut egui::Ui, banner_url: &str) -> Option<egui::load::SizedTexture> {
     // TODO: cache banner
-    let banner = profile.record().profile().and_then(|p| p.banner());
-
-    if let Some(banner) = banner {
+    if !banner_url.is_empty() {
         let texture_load_res =
-            egui::Image::new(banner).load_for_size(ui.ctx(), ui.available_size());
+            egui::Image::new(banner_url).load_for_size(ui.ctx(), ui.available_size());
         if let Ok(texture_poll) = texture_load_res {
             match texture_poll {
                 TexturePoll::Pending { .. } => {}
@@ -387,16 +388,18 @@ fn banner_texture(
     None
 }
 
-fn banner(ui: &mut egui::Ui, profile: &ProfileRecord<'_>) -> egui::Response {
-    if let Some(texture) = banner_texture(ui, profile) {
-        images::aspect_fill(
-            ui,
-            Sense::hover(),
-            texture.id,
-            texture.size.x / texture.size.y,
-        )
-    } else {
-        // TODO: default banner texture
-        ui.label("")
-    }
+fn banner(ui: &mut egui::Ui, banner_url: Option<&str>, height: f32) -> egui::Response {
+    ui.add_sized([ui.available_size().x, height], |ui: &mut egui::Ui| {
+        banner_url
+            .and_then(|url| banner_texture(ui, url))
+            .map(|texture| {
+                images::aspect_fill(
+                    ui,
+                    Sense::hover(),
+                    texture.id,
+                    texture.size.x / texture.size.y,
+                )
+            })
+            .unwrap_or_else(|| ui.label(""))
+    })
 }
