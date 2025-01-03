@@ -3,7 +3,7 @@ use crate::{
     draft::Drafts,
     nav::RenderNavAction,
     notes_holder::NotesHolderStorage,
-    profile::Profile,
+    profile::{Profile, ProfileAction},
     thread::Thread,
     timeline::{TimelineId, TimelineKind},
     ui::{
@@ -117,6 +117,7 @@ pub fn render_timeline_route(
 
         TimelineRoute::Profile(pubkey) => render_profile_route(
             &pubkey,
+            accounts,
             ndb,
             profiles,
             img_cache,
@@ -155,6 +156,7 @@ pub fn render_timeline_route(
 #[allow(clippy::too_many_arguments)]
 pub fn render_profile_route(
     pubkey: &Pubkey,
+    accounts: &Accounts,
     ndb: &Ndb,
     profiles: &mut NotesHolderStorage<Profile>,
     img_cache: &mut ImageCache,
@@ -163,8 +165,9 @@ pub fn render_profile_route(
     ui: &mut egui::Ui,
     is_muted: &MuteFun,
 ) -> Option<RenderNavAction> {
-    let note_action = ProfileView::new(
+    let action = ProfileView::new(
         pubkey,
+        accounts,
         col,
         profiles,
         ndb,
@@ -174,5 +177,16 @@ pub fn render_profile_route(
     )
     .ui(ui, is_muted);
 
-    note_action.map(RenderNavAction::NoteAction)
+    if let Some(action) = action {
+        match action {
+            ui::profile::ProfileViewAction::EditProfile => accounts
+                .get_full(pubkey.bytes())
+                .map(|kp| RenderNavAction::ProfileAction(ProfileAction::Edit(kp.to_full()))),
+            ui::profile::ProfileViewAction::Note(note_action) => {
+                Some(RenderNavAction::NoteAction(note_action))
+            }
+        }
+    } else {
+        None
+    }
 }

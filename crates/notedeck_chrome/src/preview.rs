@@ -3,6 +3,7 @@ use notedeck_chrome::setup::generate_native_options;
 use notedeck_chrome::Notedeck;
 use notedeck_columns::ui::configure_deck::ConfigureDeckView;
 use notedeck_columns::ui::edit_deck::EditDeckView;
+use notedeck_columns::ui::profile::EditProfileView;
 use notedeck_columns::ui::{
     account_login_view::AccountLoginView, PostView, Preview, PreviewApp, PreviewConfig, ProfilePic,
     ProfilePreview, RelayView,
@@ -95,5 +96,6 @@ async fn main() {
         PostView,
         ConfigureDeckView,
         EditDeckView,
+        EditProfileView,
     );
 }

@@ -23,6 +23,7 @@ mod nav;
 mod notes_holder;
 mod post;
 mod profile;
+mod profile_state;
 pub mod relay_pool_manager;
 mod route;
 mod subscriptions;
@@ -42,6 +43,6 @@ pub mod storage;
 
 pub use app::Damus;
 pub use error::Error;
-pub use profile::DisplayName;
+pub use profile::NostrName;
 
 pub type Result<T> = std::result::Result<T, error::Error>;

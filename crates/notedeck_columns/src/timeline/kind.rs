@@ -241,10 +241,9 @@ impl<'a> TitleNeedsDb<'a> {
                 let pubkey = pubkey_source.to_pubkey(deck_author);
                 let profile = ndb.get_profile_by_pubkey(txn, pubkey);
                 let m_name = profile
-                    .ok()
                     .as_ref()
-                    .and_then(|p| crate::profile::get_profile_name(p))
-                    .map(|display_name| display_name.username());
+                    .ok()
+                    .map(|p| crate::profile::get_display_name(Some(p)).name());
 
                 m_name.unwrap_or("Profile")
             } else {

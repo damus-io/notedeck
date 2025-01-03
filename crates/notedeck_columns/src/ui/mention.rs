@@ -1,5 +1,5 @@
-use crate::actionbar::NoteAction;
 use crate::ui;
+use crate::{actionbar::NoteAction, profile::get_display_name};
 use egui::Sense;
 use enostr::Pubkey;
 use nostrdb::{Ndb, Transaction};
@@ -79,12 +79,7 @@ fn mention_ui(
     ui.horizontal(|ui| {
         let profile = ndb.get_profile_by_pubkey(txn, pk).ok();
 
-        let name: String =
-            if let Some(name) = profile.as_ref().and_then(crate::profile::get_profile_name) {
-                format!("@{}", name.username())
-            } else {
-                "@???".to_string()
-            };
+        let name: String = format!("@{}", get_display_name(profile.as_ref()).name());
 
         let resp = ui.add(
             egui::Label::new(egui::RichText::new(name).color(link_color).size(size))
