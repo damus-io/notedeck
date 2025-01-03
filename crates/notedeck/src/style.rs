@@ -49,4 +49,11 @@ impl NotedeckTextStyle {
     pub fn get_font_id(&self, ctx: &Context) -> FontId {
         FontId::new(get_font_size(ctx, self), self.font_family())
     }
+
+    pub fn get_bolded_font(&self, ctx: &Context) -> FontId {
+        FontId::new(
+            get_font_size(ctx, self),
+            egui::FontFamily::Name(crate::NamedFontFamily::Bold.as_str().into()),
+        )
+    }
 }
