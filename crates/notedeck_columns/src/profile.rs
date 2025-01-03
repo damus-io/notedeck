@@ -1,12 +1,16 @@
-use enostr::{Filter, FullKeypair, Pubkey};
-use nostrdb::{FilterBuilder, Ndb, Note, NoteBuilder, ProfileRecord, Transaction};
+use enostr::{Filter, FullKeypair, Pubkey, RelayPool};
+use nostrdb::{
+    FilterBuilder, Ndb, Note, NoteBuildOptions, NoteBuilder, ProfileRecord, Transaction,
+};
 
 use notedeck::{filter::default_limit, FilterState, MuteFun, NoteCache, NoteRef};
+use tracing::info;
 
 use crate::{
     multi_subscriber::MultiSubscriber,
     notes_holder::NotesHolder,
     profile_state::ProfileState,
+    route::{Route, Router},
     timeline::{copy_notes_into_timeline, PubkeySource, Timeline, TimelineKind, TimelineTab},
 };
 
@@ -171,7 +175,7 @@ impl SaveProfileChanges {
         add_client_tag(NoteBuilder::new())
             .kind(0)
             .content(&self.state.to_json())
-            .sign(sec)
+            .options(NoteBuildOptions::default().created_at(true).sign(sec))
             .build()
             .expect("should build")
     }
@@ -187,4 +191,24 @@ fn add_client_tag(builder: NoteBuilder<'_>) -> NoteBuilder<'_> {
 pub enum ProfileAction {
     Edit(FullKeypair),
     SaveChanges(SaveProfileChanges),
+}
+
+impl ProfileAction {
+    pub fn process(&self, ndb: &Ndb, pool: &mut RelayPool, router: &mut Router<Route>) {
+        match self {
+            ProfileAction::Edit(kp) => {
+                router.route_to(Route::EditProfile(kp.pubkey));
+            }
+            ProfileAction::SaveChanges(changes) => {
+                let raw_msg = format!("[\"EVENT\",{}]", changes.to_note().json().unwrap());
+
+                let _ = ndb.process_client_event(raw_msg.as_str());
+
+                info!("sending {}", raw_msg);
+                pool.send(&enostr::ClientMessage::raw(raw_msg));
+
+                router.go_back();
+            }
+        }
+    }
 }

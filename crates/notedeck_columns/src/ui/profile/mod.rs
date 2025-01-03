@@ -18,10 +18,11 @@ use tracing::error;
 use crate::{actionbar::NoteAction, notes_holder::NotesHolderStorage, profile::Profile};
 
 use super::timeline::{tabs_ui, TimelineTabView};
-use notedeck::{ImageCache, MuteFun, NoteCache, NotedeckTextStyle};
+use notedeck::{Accounts, ImageCache, MuteFun, NoteCache, NotedeckTextStyle};
 
 pub struct ProfileView<'a> {
     pubkey: &'a Pubkey,
+    accounts: &'a Accounts,
     col_id: usize,
     profiles: &'a mut NotesHolderStorage<Profile>,
     note_options: NoteOptions,
@@ -30,9 +31,16 @@ pub struct ProfileView<'a> {
     img_cache: &'a mut ImageCache,
 }
 
+pub enum ProfileViewAction {
+    EditProfile,
+    Note(NoteAction),
+}
+
 impl<'a> ProfileView<'a> {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         pubkey: &'a Pubkey,
+        accounts: &'a Accounts,
         col_id: usize,
         profiles: &'a mut NotesHolderStorage<Profile>,
         ndb: &'a Ndb,
@@ -42,6 +50,7 @@ impl<'a> ProfileView<'a> {
     ) -> Self {
         ProfileView {
             pubkey,
+            accounts,
             col_id,
             profiles,
             ndb,
@@ -51,15 +60,18 @@ impl<'a> ProfileView<'a> {
         }
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui, is_muted: &MuteFun) -> Option<NoteAction> {
+    pub fn ui(&mut self, ui: &mut egui::Ui, is_muted: &MuteFun) -> Option<ProfileViewAction> {
         let scroll_id = egui::Id::new(("profile_scroll", self.col_id, self.pubkey));
 
         ScrollArea::vertical()
             .id_salt(scroll_id)
             .show(ui, |ui| {
+                let mut action = None;
                 let txn = Transaction::new(self.ndb).expect("txn");
                 if let Ok(profile) = self.ndb.get_profile_by_pubkey(&txn, self.pubkey.bytes()) {
-                    self.profile_body(ui, profile);
+                    if self.profile_body(ui, profile) {
+                        action = Some(ProfileViewAction::EditProfile);
+                    }
                 }
                 let profile = self
                     .profiles
@@ -82,7 +94,7 @@ impl<'a> ProfileView<'a> {
 
                 let reversed = false;
 
-                TimelineTabView::new(
+                if let Some(note_action) = TimelineTabView::new(
                     profile.timeline.current_view(),
                     reversed,
                     self.note_options,
@@ -92,11 +104,16 @@ impl<'a> ProfileView<'a> {
                     self.img_cache,
                 )
                 .show(ui)
+                {
+                    action = Some(ProfileViewAction::Note(note_action));
+                }
+                action
             })
             .inner
     }
 
-    fn profile_body(&mut self, ui: &mut egui::Ui, profile: ProfileRecord<'_>) {
+    fn profile_body(&mut self, ui: &mut egui::Ui, profile: ProfileRecord<'_>) -> bool {
+        let mut action = false;
         ui.vertical(|ui| {
             banner(
                 ui,
@@ -129,9 +146,13 @@ impl<'a> ProfileView<'a> {
                         });
                     }
 
-                    ui.with_layout(Layout::right_to_left(egui::Align::Max), |ui| {
-                        ui.add(edit_profile_button())
-                    });
+                    if self.accounts.contains_full_kp(self.pubkey) {
+                        ui.with_layout(Layout::right_to_left(egui::Align::Max), |ui| {
+                            if ui.add(edit_profile_button()).clicked() {
+                                action = true;
+                            }
+                        });
+                    }
                 });
 
                 ui.add_space(18.0);
@@ -163,6 +184,8 @@ impl<'a> ProfileView<'a> {
                 });
             });
         });
+
+        action
     }
 }
 

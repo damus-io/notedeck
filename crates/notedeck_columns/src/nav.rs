@@ -6,7 +6,8 @@ use crate::{
     deck_state::DeckState,
     decks::{Deck, DecksAction, DecksCache},
     notes_holder::NotesHolder,
-    profile::Profile,
+    profile::{Profile, ProfileAction, SaveProfileChanges},
+    profile_state::ProfileState,
     relay_pool_manager::RelayPoolManager,
     route::Route,
     thread::Thread,
@@ -21,6 +22,7 @@ use crate::{
         configure_deck::ConfigureDeckView,
         edit_deck::{EditDeckResponse, EditDeckView},
         note::{PostAction, PostType},
+        profile::EditProfileView,
         support::SupportView,
         RelayView, View,
     },
@@ -39,6 +41,7 @@ pub enum RenderNavAction {
     RemoveColumn,
     PostAction(PostAction),
     NoteAction(NoteAction),
+    ProfileAction(ProfileAction),
     SwitchingAction(SwitchingAction),
 }
 
@@ -167,6 +170,15 @@ impl RenderNavResponse {
 
                 RenderNavAction::SwitchingAction(switching_action) => {
                     switching_occured = switching_action.process(&mut app.decks_cache, ctx);
+                }
+                RenderNavAction::ProfileAction(profile_action) => {
+                    profile_action.process(
+                        ctx.ndb,
+                        ctx.pool,
+                        get_active_columns_mut(ctx.accounts, &mut app.decks_cache)
+                            .column_mut(col)
+                            .router_mut(),
+                    );
                 }
             }
         }
@@ -366,6 +378,35 @@ fn render_nav_body(
                     .go_back();
             }
 
+            action
+        }
+        Route::EditProfile(pubkey) => {
+            let mut action = None;
+            if let Some(kp) = ctx.accounts.get_full(pubkey.bytes()) {
+                let state = app
+                    .view_state
+                    .pubkey_to_profile_state
+                    .entry(*kp.pubkey)
+                    .or_insert_with(|| {
+                        let txn = Transaction::new(ctx.ndb).expect("txn");
+                        if let Ok(record) = ctx.ndb.get_profile_by_pubkey(&txn, kp.pubkey.bytes()) {
+                            ProfileState::from_profile(&record)
+                        } else {
+                            ProfileState::default()
+                        }
+                    });
+                if EditProfileView::new(state, ctx.img_cache).ui(ui) {
+                    if let Some(taken_state) =
+                        app.view_state.pubkey_to_profile_state.remove(kp.pubkey)
+                    {
+                        action = Some(RenderNavAction::ProfileAction(ProfileAction::SaveChanges(
+                            SaveProfileChanges::new(kp.to_full(), taken_state),
+                        )))
+                    }
+                }
+            } else {
+                error!("Pubkey in EditProfile route did not have an nsec attached in Accounts");
+            }
             action
         }
     }
