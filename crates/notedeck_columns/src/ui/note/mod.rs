@@ -16,6 +16,7 @@ pub use reply_description::reply_desc;
 
 use crate::{
     actionbar::NoteAction,
+    profile::get_display_name,
     ui::{self, View},
 };
 
@@ -25,7 +26,7 @@ use enostr::{NoteId, Pubkey};
 use nostrdb::{Ndb, Note, NoteKey, Transaction};
 use notedeck::{CachedNote, ImageCache, NoteCache, NotedeckTextStyle};
 
-use super::profile::preview::{get_display_name, one_line_display_name_widget};
+use super::profile::preview::one_line_display_name_widget;
 
 pub struct NoteView<'a> {
     ndb: &'a Ndb,

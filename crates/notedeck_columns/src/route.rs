@@ -16,6 +16,7 @@ pub enum Route {
     Relays,
     ComposeNote,
     AddColumn(AddColumnRoute),
+    EditProfile(Pubkey),
     Support,
     NewDeck,
     EditDeck(usize),
@@ -104,6 +105,7 @@ impl Route {
             Route::Support => ColumnTitle::simple("Damus Support"),
             Route::NewDeck => ColumnTitle::simple("Add Deck"),
             Route::EditDeck(_) => ColumnTitle::simple("Edit Deck"),
+            Route::EditProfile(_) => ColumnTitle::simple("Edit Profile"),
         }
     }
 }
@@ -215,6 +217,7 @@ impl fmt::Display for Route {
             Route::Support => write!(f, "Support"),
             Route::NewDeck => write!(f, "Add Deck"),
             Route::EditDeck(_) => write!(f, "Edit Deck"),
+            Route::EditProfile(_) => write!(f, "Edit Profile"),
         }
     }
 }

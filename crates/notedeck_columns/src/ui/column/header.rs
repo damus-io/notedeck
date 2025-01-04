@@ -245,15 +245,7 @@ impl<'a> NavTitle<'a> {
                 TimelineRoute::Quote(_note_id) => {}
 
                 TimelineRoute::Profile(pubkey) => {
-                    let txn = Transaction::new(self.ndb).unwrap();
-                    if let Some(pfp) = self.pubkey_pfp(&txn, pubkey.bytes(), pfp_size) {
-                        ui.add(pfp);
-                    } else {
-                        ui.add(
-                            ui::ProfilePic::new(self.img_cache, ui::ProfilePic::no_pfp_url())
-                                .size(pfp_size),
-                        );
-                    }
+                    self.show_profile(ui, pubkey, pfp_size);
                 }
             },
 
@@ -264,7 +256,21 @@ impl<'a> NavTitle<'a> {
             Route::Relays => {}
             Route::NewDeck => {}
             Route::EditDeck(_) => {}
+            Route::EditProfile(pubkey) => {
+                self.show_profile(ui, pubkey, pfp_size);
+            }
         }
+    }
+
+    fn show_profile(&mut self, ui: &mut egui::Ui, pubkey: &Pubkey, pfp_size: f32) {
+        let txn = Transaction::new(self.ndb).unwrap();
+        if let Some(pfp) = self.pubkey_pfp(&txn, pubkey.bytes(), pfp_size) {
+            ui.add(pfp);
+        } else {
+            ui.add(
+                ui::ProfilePic::new(self.img_cache, ui::ProfilePic::no_pfp_url()).size(pfp_size),
+            );
+        };
     }
 
     fn title_label_value(title: &str) -> egui::Label {

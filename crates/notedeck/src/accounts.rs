@@ -330,6 +330,14 @@ impl Accounts {
         None
     }
 
+    pub fn contains_full_kp(&self, pubkey: &enostr::Pubkey) -> bool {
+        if let Some(contains) = self.contains_account(pubkey.bytes()) {
+            contains.has_nsec
+        } else {
+            false
+        }
+    }
+
     #[must_use = "UnknownIdAction's must be handled. Use .process_unknown_id_action()"]
     pub fn add_account(&mut self, account: Keypair) -> AddAccountAction {
         let pubkey = account.pubkey;
@@ -566,6 +574,18 @@ impl Accounts {
             self.update_relay_configuration(pool, wakeup);
             self.needs_relay_config = false;
         }
+    }
+
+    pub fn get_full<'a>(&'a self, pubkey: &[u8; 32]) -> Option<FilledKeypair<'a>> {
+        if let Some(contains) = self.contains_account(pubkey) {
+            if contains.has_nsec {
+                if let Some(kp) = self.get_account(contains.index) {
+                    return kp.to_full();
+                }
+            }
+        }
+
+        None
     }
 }
 
