@@ -342,8 +342,6 @@ impl RelayPool {
                 if mcr.should_rejoin() {
                     if let Err(err) = mcr.rejoin() {
                         error!("multicast: rejoin error: {err}");
-                    } else {
-                        debug!("multicast: rejoin success");
                     }
                 }
             }
