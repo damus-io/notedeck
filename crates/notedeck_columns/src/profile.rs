@@ -5,7 +5,7 @@ use nostrdb::{
     FilterBuilder, Ndb, Note, NoteBuildOptions, NoteBuilder, ProfileRecord, Transaction,
 };
 
-use notedeck::{filter::default_limit, FilterState, MuteFun, NoteCache, NoteRef};
+use notedeck::{filter::default_limit, FilterState, NoteCache, NoteRef};
 use tracing::info;
 
 use crate::{
@@ -91,7 +91,6 @@ impl Profile {
         source: PubkeySource,
         filters: Vec<Filter>,
         notes: Vec<NoteRef>,
-        is_muted: &MuteFun,
     ) -> Self {
         let mut timeline = Timeline::new(
             TimelineKind::profile(source),
@@ -99,7 +98,7 @@ impl Profile {
             TimelineTab::full_tabs(),
         );
 
-        copy_notes_into_timeline(&mut timeline, txn, ndb, note_cache, notes, is_muted);
+        copy_notes_into_timeline(&mut timeline, txn, ndb, note_cache, notes);
 
         Profile {
             timeline,
@@ -145,7 +144,6 @@ impl NotesHolder for Profile {
         id: &[u8; 32],
         filters: Vec<Filter>,
         notes: Vec<NoteRef>,
-        is_muted: &MuteFun,
     ) -> Self {
         Profile::new(
             txn,
@@ -154,7 +152,6 @@ impl NotesHolder for Profile {
             PubkeySource::Explicit(Pubkey::new(*id)),
             filters,
             notes,
-            is_muted,
         )
     }
 

@@ -29,6 +29,7 @@ pub struct ProfileView<'a> {
     ndb: &'a Ndb,
     note_cache: &'a mut NoteCache,
     img_cache: &'a mut ImageCache,
+    is_muted: &'a MuteFun,
 }
 
 pub enum ProfileViewAction {
@@ -46,6 +47,7 @@ impl<'a> ProfileView<'a> {
         ndb: &'a Ndb,
         note_cache: &'a mut NoteCache,
         img_cache: &'a mut ImageCache,
+        is_muted: &'a MuteFun,
         note_options: NoteOptions,
     ) -> Self {
         ProfileView {
@@ -57,10 +59,11 @@ impl<'a> ProfileView<'a> {
             note_cache,
             img_cache,
             note_options,
+            is_muted,
         }
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui, is_muted: &MuteFun) -> Option<ProfileViewAction> {
+    pub fn ui(&mut self, ui: &mut egui::Ui) -> Option<ProfileViewAction> {
         let scroll_id = egui::Id::new(("profile_scroll", self.col_id, self.pubkey));
 
         ScrollArea::vertical()
@@ -75,20 +78,14 @@ impl<'a> ProfileView<'a> {
                 }
                 let profile = self
                     .profiles
-                    .notes_holder_mutated(
-                        self.ndb,
-                        self.note_cache,
-                        &txn,
-                        self.pubkey.bytes(),
-                        is_muted,
-                    )
+                    .notes_holder_mutated(self.ndb, self.note_cache, &txn, self.pubkey.bytes())
                     .get_ptr();
 
                 profile.timeline.selected_view =
                     tabs_ui(ui, profile.timeline.selected_view, &profile.timeline.views);
 
                 // poll for new notes and insert them into our existing notes
-                if let Err(e) = profile.poll_notes_into_view(&txn, self.ndb, is_muted) {
+                if let Err(e) = profile.poll_notes_into_view(&txn, self.ndb) {
                     error!("Profile::poll_notes_into_view: {e}");
                 }
 
@@ -102,11 +99,13 @@ impl<'a> ProfileView<'a> {
                     self.ndb,
                     self.note_cache,
                     self.img_cache,
+                    self.is_muted,
                 )
                 .show(ui)
                 {
                     action = Some(ProfileViewAction::Note(note_action));
                 }
+
                 action
             })
             .inner

@@ -1032,6 +1032,7 @@ checksum = "53eafabcce0cb2325a59a98736efe0bf060585b437763f8c476957fb274bb974"
 dependencies = [
  "accesskit",
  "ahash",
+ "backtrace",
  "emath",
  "epaint",
  "log",

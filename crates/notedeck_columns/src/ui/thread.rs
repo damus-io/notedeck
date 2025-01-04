@@ -20,6 +20,7 @@ pub struct ThreadView<'a> {
     selected_note_id: &'a [u8; 32],
     textmode: bool,
     id_source: egui::Id,
+    is_muted: &'a MuteFun,
 }
 
 impl<'a> ThreadView<'a> {
@@ -32,6 +33,7 @@ impl<'a> ThreadView<'a> {
         img_cache: &'a mut ImageCache,
         selected_note_id: &'a [u8; 32],
         textmode: bool,
+        is_muted: &'a MuteFun,
     ) -> Self {
         let id_source = egui::Id::new("threadscroll_threadview");
         ThreadView {
@@ -43,6 +45,7 @@ impl<'a> ThreadView<'a> {
             selected_note_id,
             textmode,
             id_source,
+            is_muted,
         }
     }
 
@@ -51,7 +54,7 @@ impl<'a> ThreadView<'a> {
         self
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui, is_muted: &MuteFun) -> Option<NoteAction> {
+    pub fn ui(&mut self, ui: &mut egui::Ui) -> Option<NoteAction> {
         let txn = Transaction::new(self.ndb).expect("txn");
 
         let selected_note_key =
@@ -93,13 +96,13 @@ impl<'a> ThreadView<'a> {
 
                 let thread = self
                     .threads
-                    .notes_holder_mutated(self.ndb, self.note_cache, &txn, root_id, is_muted)
+                    .notes_holder_mutated(self.ndb, self.note_cache, &txn, root_id)
                     .get_ptr();
 
                 // TODO(jb55): skip poll if ThreadResult is fresh?
 
                 // poll for new notes and insert them into our existing notes
-                match thread.poll_notes_into_view(&txn, self.ndb, is_muted) {
+                match thread.poll_notes_into_view(&txn, self.ndb) {
                     Ok(action) => {
                         action.process_action(&txn, self.ndb, self.unknown_ids, self.note_cache)
                     }
@@ -119,6 +122,7 @@ impl<'a> ThreadView<'a> {
                     self.ndb,
                     self.note_cache,
                     self.img_cache,
+                    self.is_muted,
                 )
                 .show(ui)
             })

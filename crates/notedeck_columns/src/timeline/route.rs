@@ -63,6 +63,7 @@ pub fn render_timeline_route(
                 note_cache,
                 img_cache,
                 note_options,
+                &accounts.mutefun(),
             )
             .ui(ui);
 
@@ -77,9 +78,10 @@ pub fn render_timeline_route(
             img_cache,
             id.bytes(),
             textmode,
+            &accounts.mutefun(),
         )
         .id_source(egui::Id::new(("threadscroll", col)))
-        .ui(ui, &accounts.mutefun())
+        .ui(ui)
         .map(Into::into),
 
         TimelineRoute::Reply(id) => {
@@ -173,9 +175,10 @@ pub fn render_profile_route(
         ndb,
         note_cache,
         img_cache,
+        is_muted,
         NoteOptions::default(),
     )
-    .ui(ui, is_muted);
+    .ui(ui);
 
     if let Some(action) = action {
         match action {

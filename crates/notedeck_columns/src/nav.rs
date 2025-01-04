@@ -164,7 +164,6 @@ impl RenderNavResponse {
                         ctx.note_cache,
                         ctx.pool,
                         &txn,
-                        &ctx.accounts.mutefun(),
                     );
                 }
 
@@ -209,7 +208,6 @@ impl RenderNavResponse {
                             &mut app.threads,
                             ctx.pool,
                             root_id,
-                            &ctx.accounts.mutefun(),
                         );
                     }
 
@@ -221,7 +219,6 @@ impl RenderNavResponse {
                             &mut app.profiles,
                             ctx.pool,
                             pubkey.bytes(),
-                            &ctx.accounts.mutefun(),
                         );
                     }
 
