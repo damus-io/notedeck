@@ -9,8 +9,31 @@ use winit::platform::android::EventLoopBuilderExtAndroid;
 #[no_mangle]
 #[tokio::main]
 pub async fn android_main(app: AndroidApp) {
+    use tracing_logcat::{LogcatMakeWriter, LogcatTag};
+    use tracing_subscriber::{prelude::*, EnvFilter};
+
     std::env::set_var("RUST_BACKTRACE", "full");
-    android_logger::init_once(android_logger::Config::default().with_min_level(log::Level::Info));
+    std::env::set_var(
+        "RUST_LOG",
+        "enostr=debug,notedeck_columns=debug,notedeck_chrome=debug",
+    );
+
+    let writer =
+        LogcatMakeWriter::new(LogcatTag::Target).expect("Failed to initialize logcat writer");
+
+    let fmt_layer = tracing_subscriber::fmt::layer()
+        .with_level(false)
+        .with_target(false)
+        .without_time();
+
+    let filter_layer = EnvFilter::try_from_default_env()
+        .or_else(|_| EnvFilter::try_new("info"))
+        .unwrap();
+
+    tracing_subscriber::registry()
+        .with(filter_layer)
+        .with(fmt_layer)
+        .init();
 
     let path = app.internal_data_path().expect("data path");
     let mut options = eframe::NativeOptions::default();

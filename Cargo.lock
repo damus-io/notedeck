@@ -134,24 +134,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc7eb209b1518d6bb87b283c20095f5228ecda460da70b44f0802523dea6da04"
 
 [[package]]
-name = "android_log-sys"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "85965b6739a430150bdd138e2374a98af0c3ee0d030b3bb7fc3bddff58d0102e"
-
-[[package]]
-name = "android_logger"
-version = "0.11.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8619b80c242aa7bd638b5c7ddd952addeecb71f69c75e33f1d47b2804f8f883a"
-dependencies = [
- "android_log-sys",
- "env_logger",
- "log",
- "once_cell",
-]
-
-[[package]]
 name = "android_system_properties"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1256,19 +1238,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "env_logger"
-version = "0.10.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4cd405aab171cb85d6735e5c8d9db038c17d3ca007a4d2c25f337935c3d90580"
-dependencies = [
- "humantime",
- "is-terminal",
- "log",
- "regex",
- "termcolor",
-]
-
-[[package]]
 name = "epaint"
 version = "0.29.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1790,12 +1759,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d71d3574edd2771538b901e6549113b4006ece66150fb69c0fb6d9a2adae946"
 
 [[package]]
-name = "humantime"
-version = "2.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9a3a5bfb195931eeb336b2a7b4d761daec841b97f947d34394601737a7bba5e4"
-
-[[package]]
 name = "icu_collections"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2030,17 +1993,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "928bae27f42bc99b60d9ac7334e3a21d10ad8f1835a4e12ec3ec0464765ed1b3"
 dependencies = [
  "once_cell",
-]
-
-[[package]]
-name = "is-terminal"
-version = "0.4.13"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "261f68e344040fbd0edea105bef17c66edf46f984ddb1115b775ce31be948f4b"
-dependencies = [
- "hermit-abi",
- "libc",
- "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2566,7 +2518,6 @@ name = "notedeck_chrome"
 version = "0.2.0"
 dependencies = [
  "android-activity 0.4.3",
- "android_logger",
  "eframe",
  "egui",
  "egui_extras",
@@ -2583,6 +2534,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-appender",
+ "tracing-logcat",
  "tracing-subscriber",
  "winit",
 ]
@@ -2601,7 +2553,6 @@ dependencies = [
  "egui_virtual_list",
  "ehttp 0.2.0",
  "enostr",
- "env_logger",
  "hex",
  "image",
  "indexmap",
@@ -4352,6 +4303,17 @@ dependencies = [
  "log",
  "once_cell",
  "tracing-core",
+]
+
+[[package]]
+name = "tracing-logcat"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "678d561ce3d4b33dfcfb1c6bd13c422aad89be5bf0e66e20d518a5a254345b54"
+dependencies = [
+ "rustix",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

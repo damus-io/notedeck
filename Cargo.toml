@@ -21,7 +21,6 @@ egui_tabs = "0.2.0"
 egui_virtual_list = "0.5.0"
 ehttp = "0.2.0"
 enostr = { path = "crates/enostr" } 
-env_logger = "0.10.0"
 ewebsock = { version = "0.2.0", features = ["tls"] }
 hex = "0.4.3"
 image = { version = "0.25", features = ["jpeg", "png", "webp"] }

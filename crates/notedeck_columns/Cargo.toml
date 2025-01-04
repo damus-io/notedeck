@@ -23,7 +23,6 @@ egui_tabs = { workspace = true }
 egui_virtual_list = { workspace = true }
 ehttp = { workspace = true }
 enostr = { workspace = true } 
-env_logger = { workspace = true }
 hex = { workspace = true }
 image = { workspace = true }
 indexmap = { workspace = true }
