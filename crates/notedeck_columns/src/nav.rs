@@ -173,6 +173,7 @@ impl RenderNavResponse {
                 }
                 RenderNavAction::ProfileAction(profile_action) => {
                     profile_action.process(
+                        &mut app.view_state.pubkey_to_profile_state,
                         ctx.ndb,
                         ctx.pool,
                         get_active_columns_mut(ctx.accounts, &mut app.decks_cache)

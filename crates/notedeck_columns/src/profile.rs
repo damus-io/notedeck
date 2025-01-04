@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use enostr::{Filter, FullKeypair, Pubkey, RelayPool};
 use nostrdb::{
     FilterBuilder, Ndb, Note, NoteBuildOptions, NoteBuilder, ProfileRecord, Transaction,
@@ -194,7 +196,13 @@ pub enum ProfileAction {
 }
 
 impl ProfileAction {
-    pub fn process(&self, ndb: &Ndb, pool: &mut RelayPool, router: &mut Router<Route>) {
+    pub fn process(
+        &self,
+        state_map: &mut HashMap<Pubkey, ProfileState>,
+        ndb: &Ndb,
+        pool: &mut RelayPool,
+        router: &mut Router<Route>,
+    ) {
         match self {
             ProfileAction::Edit(kp) => {
                 router.route_to(Route::EditProfile(kp.pubkey));
@@ -203,6 +211,7 @@ impl ProfileAction {
                 let raw_msg = format!("[\"EVENT\",{}]", changes.to_note().json().unwrap());
 
                 let _ = ndb.process_client_event(raw_msg.as_str());
+                let _ = state_map.remove_entry(&changes.kp.pubkey);
 
                 info!("sending {}", raw_msg);
                 pool.send(&enostr::ClientMessage::raw(raw_msg));
