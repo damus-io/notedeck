@@ -13,6 +13,8 @@ use ewebsock::{WsEvent, WsMessage};
 #[cfg(not(target_arch = "wasm32"))]
 use tracing::{debug, error};
 
+use super::subs_debug::SubsDebug;
+
 #[derive(Debug)]
 pub struct PoolEvent<'a> {
     pub relay: &'a str,
@@ -124,6 +126,7 @@ impl WebsocketRelay {
 pub struct RelayPool {
     pub relays: Vec<PoolRelay>,
     pub ping_rate: Duration,
+    pub debug: Option<SubsDebug>,
 }
 
 impl Default for RelayPool {
@@ -138,6 +141,7 @@ impl RelayPool {
         RelayPool {
             relays: vec![],
             ping_rate: Duration::from_secs(25),
+            debug: None,
         }
     }
 
@@ -148,6 +152,10 @@ impl RelayPool {
         let multicast_relay = PoolRelay::multicast(wakeup)?;
         self.relays.push(multicast_relay);
         Ok(())
+    }
+
+    pub fn use_debug(&mut self) {
+        self.debug = Some(SubsDebug::default());
     }
 
     pub fn ping_rate(&mut self, duration: Duration) -> &mut Self {
@@ -174,6 +182,9 @@ impl RelayPool {
 
     pub fn send(&mut self, cmd: &ClientMessage) {
         for relay in &mut self.relays {
+            if let Some(debug) = &mut self.debug {
+                debug.send_cmd(relay.url().to_owned(), cmd);
+            }
             if let Err(err) = relay.send(cmd) {
                 error!("error sending {:?} to {}: {err}", cmd, relay.url());
             }
@@ -182,7 +193,11 @@ impl RelayPool {
 
     pub fn unsubscribe(&mut self, subid: String) {
         for relay in &mut self.relays {
-            if let Err(err) = relay.send(&ClientMessage::close(subid.clone())) {
+            let cmd = ClientMessage::close(subid.clone());
+            if let Some(debug) = &mut self.debug {
+                debug.send_cmd(relay.url().to_owned(), &cmd);
+            }
+            if let Err(err) = relay.send(&cmd) {
                 error!(
                     "error unsubscribing from {} on {}: {err}",
                     &subid,
@@ -194,6 +209,13 @@ impl RelayPool {
 
     pub fn subscribe(&mut self, subid: String, filter: Vec<Filter>) {
         for relay in &mut self.relays {
+            if let Some(debug) = &mut self.debug {
+                debug.send_cmd(
+                    relay.url().to_owned(),
+                    &ClientMessage::req(subid.clone(), filter.clone()),
+                );
+            }
+
             if let Err(err) = relay.send(&ClientMessage::req(subid.clone(), filter.clone())) {
                 error!("error subscribing to {}: {err}", relay.url());
             }
@@ -255,8 +277,11 @@ impl RelayPool {
     pub fn send_to(&mut self, cmd: &ClientMessage, relay_url: &str) {
         for relay in &mut self.relays {
             if relay.url() == relay_url {
+                if let Some(debug) = &mut self.debug {
+                    debug.send_cmd(relay.url().to_owned(), cmd);
+                }
                 if let Err(err) = relay.send(cmd) {
-                    error!("error sending {:?} to {}: {err}", cmd, relay_url);
+                    error!("send_to err: {err}");
                 }
                 return;
             }
@@ -350,10 +375,17 @@ impl RelayPool {
                         }
                     }
                 }
-                return Some(PoolEvent {
+
+                if let Some(debug) = &mut self.debug {
+                    debug.receive_cmd(relay.url().to_owned(), (&event).into());
+                }
+
+                let pool_event = PoolEvent {
                     event,
                     relay: relay.url(),
-                });
+                };
+
+                return Some(pool_event);
             }
         }
 

@@ -13,6 +13,7 @@ use tracing::{debug, error};
 
 pub mod message;
 pub mod pool;
+pub mod subs_debug;
 
 #[derive(Debug, Copy, Clone)]
 pub enum RelayStatus {
@@ -91,7 +92,7 @@ impl MulticastRelay {
     }
 
     pub fn send(&self, msg: &EventClientMessage) -> Result<()> {
-        let json = msg.to_json()?;
+        let json = msg.to_json();
         let len = json.len();
 
         debug!("writing to multicast relay");

@@ -2,21 +2,21 @@ use crate::Error;
 use nostrdb::{Filter, Note};
 use serde_json::json;
 
-#[derive(Debug)]
-pub struct EventClientMessage<'a> {
-    note: Note<'a>,
+#[derive(Debug, Clone)]
+pub struct EventClientMessage {
+    pub note_json: String,
 }
 
-impl EventClientMessage<'_> {
-    pub fn to_json(&self) -> Result<String, Error> {
-        Ok(format!("[\"EVENT\", {}]", self.note.json()?))
+impl EventClientMessage {
+    pub fn to_json(&self) -> String {
+        format!("[\"EVENT\", {}]", self.note_json)
     }
 }
 
 /// Messages sent by clients, received by relays
-#[derive(Debug)]
-pub enum ClientMessage<'a> {
-    Event(EventClientMessage<'a>),
+#[derive(Debug, Clone)]
+pub enum ClientMessage {
+    Event(EventClientMessage),
     Req {
         sub_id: String,
         filters: Vec<Filter>,
@@ -27,9 +27,11 @@ pub enum ClientMessage<'a> {
     Raw(String),
 }
 
-impl<'a> ClientMessage<'a> {
-    pub fn event(note: Note<'a>) -> Self {
-        ClientMessage::Event(EventClientMessage { note })
+impl ClientMessage {
+    pub fn event(note: Note) -> Result<Self, Error> {
+        Ok(ClientMessage::Event(EventClientMessage {
+            note_json: note.json()?,
+        }))
     }
 
     pub fn raw(raw: String) -> Self {
@@ -46,7 +48,7 @@ impl<'a> ClientMessage<'a> {
 
     pub fn to_json(&self) -> Result<String, Error> {
         Ok(match self {
-            Self::Event(ecm) => ecm.to_json()?,
+            Self::Event(ecm) => ecm.to_json(),
             Self::Raw(raw) => raw.clone(),
             Self::Req { sub_id, filters } => {
                 if filters.is_empty() {

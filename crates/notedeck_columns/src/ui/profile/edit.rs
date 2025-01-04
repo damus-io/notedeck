@@ -195,7 +195,7 @@ mod preview {
         }
     }
 
-    impl<'a> Preview for EditProfileView<'a> {
+    impl Preview for EditProfileView<'_> {
         type Prev = EditProfilePreivew;
 
         fn preview(_cfg: PreviewConfig) -> Self::Prev {

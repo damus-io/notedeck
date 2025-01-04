@@ -61,7 +61,7 @@ impl PostAction {
             }
         };
 
-        pool.send(&enostr::ClientMessage::event(note));
+        pool.send(&enostr::ClientMessage::event(note)?);
         drafts.get_from_post_type(&self.post_type).clear();
 
         Ok(())
