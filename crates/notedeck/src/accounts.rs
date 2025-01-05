@@ -421,7 +421,7 @@ impl Accounts {
                 }
             }
         }
-        Box::new(|_: &Note, _: &[u8; 32]| None)
+        Box::new(|_: &Note, _: &[u8; 32]| false)
     }
 
     pub fn send_initial_filters(&mut self, pool: &mut RelayPool, relay_url: &str) {

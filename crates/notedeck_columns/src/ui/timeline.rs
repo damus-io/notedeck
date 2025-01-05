@@ -7,7 +7,7 @@ use crate::{
     ui::note::NoteOptions,
 };
 use egui::containers::scroll_area::ScrollBarVisibility;
-use egui::{Color32, Direction, Layout};
+use egui::{Direction, Layout};
 use egui_tabs::TabColor;
 use nostrdb::{Ndb, Transaction};
 use notedeck::note::root_note_id_from_selected_id;
@@ -286,18 +286,13 @@ impl<'a> TimelineTabView<'a> {
                     return 0;
                 };
 
-                ui::padding(8.0, ui, |ui| {
-                    if let Some(muted_reason) = is_muted(
-                        &note,
-                        root_note_id_from_selected_id(
-                            self.ndb,
-                            self.note_cache,
-                            self.txn,
-                            note.id(),
-                        ),
-                    ) {
-                        ui.colored_label(Color32::RED, format!("MUTED {}", muted_reason));
-                    } else {
+                let muted = is_muted(
+                    &note,
+                    root_note_id_from_selected_id(self.ndb, self.note_cache, self.txn, note.id()),
+                );
+
+                if !muted {
+                    ui::padding(8.0, ui, |ui| {
                         let resp =
                             ui::NoteView::new(self.ndb, self.note_cache, self.img_cache, &note)
                                 .note_options(self.note_options)
@@ -310,11 +305,10 @@ impl<'a> TimelineTabView<'a> {
                         if let Some(context) = resp.context_selection {
                             context.process(ui, &note);
                         }
-                    };
-                });
+                    });
 
-                ui::hline(ui);
-                //ui.add(egui::Separator::default().spacing(0.0));
+                    ui::hline(ui);
+                }
 
                 1
             });
