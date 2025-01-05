@@ -25,6 +25,42 @@ pub enum ParseError<'a> {
     EOF,
 }
 
+pub struct TokenWriter {
+    delim: &'static str,
+    tokens_written: usize,
+    buf: Vec<u8>,
+}
+
+impl Default for TokenWriter {
+    fn default() -> Self {
+        Self::new(":")
+    }
+}
+
+impl TokenWriter {
+    pub fn new(delim: &'static str) -> Self {
+        let buf = vec![];
+        let tokens_written = 0;
+        Self {
+            buf,
+            tokens_written,
+            delim,
+        }
+    }
+
+    pub fn write_token(&mut self, token: &str) {
+        if self.tokens_written > 0 {
+            self.buf.extend_from_slice(self.delim.as_bytes())
+        }
+        self.buf.extend_from_slice(token.as_bytes());
+        self.tokens_written += 1;
+    }
+
+    pub fn buffer(&self) -> &[u8] {
+        &self.buf
+    }
+}
+
 #[derive(Clone)]
 pub struct TokenParser<'a> {
     tokens: &'a [&'a str],
@@ -146,7 +182,7 @@ pub trait TokenSerializable: Sized {
     /// Return a list of serialization plans for a type. We do this for
     /// type safety and assume constructing these types are lightweight
     fn parse<'a>(parser: &mut TokenParser<'a>) -> Result<Self, ParseError<'a>>;
-    fn serialize(&self, write_token: fn(&str) -> Result<(), std::io::Error>) -> Result<(), std::io::Error>;
+    fn serialize(&self, writer: &mut TokenWriter);
 }
 
 #[cfg(test)]
