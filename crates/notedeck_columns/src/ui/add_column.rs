@@ -11,7 +11,7 @@ use nostrdb::{Ndb, Transaction};
 use crate::{
     login_manager::AcquireKeyState,
     route::Route,
-    storage::{ParseError, TokenParser, TokenSerializable},
+    storage::{ParseError, TokenParser, TokenSerializable, TokenWriter},
     timeline::{kind::ListKind, PubkeySource, Timeline, TimelineKind},
     ui::anim::ICON_EXPANSION_MULTIPLE,
     Damus,
@@ -111,14 +111,10 @@ impl AddColumnRoute {
 }
 
 impl TokenSerializable for AddColumnRoute {
-    fn serialize(
-        &self,
-        write_token: fn(&str) -> Result<(), std::io::Error>,
-    ) -> Result<(), std::io::Error> {
+    fn serialize(&self, writer: &mut TokenWriter) {
         for token in self.tokens() {
-            write_token(token)?;
+            writer.write_token(token);
         }
-        Ok(())
     }
 
     fn parse<'a>(parser: &mut TokenParser<'a>) -> Result<Self, ParseError<'a>> {
