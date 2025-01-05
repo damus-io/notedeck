@@ -146,6 +146,7 @@ pub trait TokenSerializable: Sized {
     /// Return a list of serialization plans for a type. We do this for
     /// type safety and assume constructing these types are lightweight
     fn parse<'a>(parser: &mut TokenParser<'a>) -> Result<Self, ParseError<'a>>;
+    fn serialize(&self, write_token: fn(&str) -> Result<(), std::io::Error>) -> Result<(), std::io::Error>;
 }
 
 #[cfg(test)]
