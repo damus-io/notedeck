@@ -97,14 +97,14 @@ impl AddColumnRoute {
     /// Route tokens use in both serialization and deserialization
     fn tokens(&self) -> &'static [&'static str] {
         match self {
-            Self::Base => &[],
-            Self::UndecidedNotification => &["notification_selection"],
-            Self::ExternalNotification => &["external_notif_selection"],
-            Self::UndecidedIndividual => &["individual_selection"],
-            Self::ExternalIndividual => &["external_individual_selection"],
-            Self::Hashtag => &["hashtag"],
-            Self::Algo(AddAlgoRoute::Base) => &["algo_selection"],
-            Self::Algo(AddAlgoRoute::LastPerPubkey) => &["algo_selection", "last_per_pubkey"],
+            Self::Base => &["column"],
+            Self::UndecidedNotification => &["column", "notification_selection"],
+            Self::ExternalNotification => &["column", "external_notif_selection"],
+            Self::UndecidedIndividual => &["column", "individual_selection"],
+            Self::ExternalIndividual => &["column", "external_individual_selection"],
+            Self::Hashtag => &["column", "hashtag"],
+            Self::Algo(AddAlgoRoute::Base) => &["column", "algo_selection"],
+            Self::Algo(AddAlgoRoute::LastPerPubkey) => &["column", "algo_selection", "last_per_pubkey"],
             // NOTE!!! When adding to this, update the parser for TokenSerializable below
         }
     }
@@ -118,17 +118,10 @@ impl TokenSerializable for AddColumnRoute {
     }
 
     fn parse<'a>(parser: &mut TokenParser<'a>) -> Result<Self, ParseError<'a>> {
-        // all start with column
-        parser.parse_token("column")?;
-
-        // if we're done then we have the base
-        if parser.is_eof() {
-            return Ok(AddColumnRoute::Base);
-        }
-
         TokenParser::alt(
             parser,
             &[
+                |p| parse_column_route(p, AddColumnRoute::Base),
                 |p| parse_column_route(p, AddColumnRoute::UndecidedNotification),
                 |p| parse_column_route(p, AddColumnRoute::ExternalNotification),
                 |p| parse_column_route(p, AddColumnRoute::UndecidedIndividual),
