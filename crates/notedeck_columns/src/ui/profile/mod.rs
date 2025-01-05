@@ -18,7 +18,7 @@ use tracing::error;
 use crate::{actionbar::NoteAction, notes_holder::NotesHolderStorage, profile::Profile};
 
 use super::timeline::{tabs_ui, TimelineTabView};
-use notedeck::{Accounts, ImageCache, MuteFun, NoteCache, NotedeckTextStyle};
+use notedeck::{Accounts, ImageCache, NoteCache, NotedeckTextStyle};
 
 pub struct ProfileView<'a> {
     pubkey: &'a Pubkey,
@@ -29,7 +29,6 @@ pub struct ProfileView<'a> {
     ndb: &'a Ndb,
     note_cache: &'a mut NoteCache,
     img_cache: &'a mut ImageCache,
-    is_muted: &'a MuteFun,
 }
 
 pub enum ProfileViewAction {
@@ -47,7 +46,6 @@ impl<'a> ProfileView<'a> {
         ndb: &'a Ndb,
         note_cache: &'a mut NoteCache,
         img_cache: &'a mut ImageCache,
-        is_muted: &'a MuteFun,
         note_options: NoteOptions,
     ) -> Self {
         ProfileView {
@@ -59,7 +57,6 @@ impl<'a> ProfileView<'a> {
             note_cache,
             img_cache,
             note_options,
-            is_muted,
         }
     }
 

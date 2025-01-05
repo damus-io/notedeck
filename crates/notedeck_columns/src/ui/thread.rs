@@ -6,7 +6,7 @@ use crate::{
 };
 
 use nostrdb::{Ndb, Transaction};
-use notedeck::{ImageCache, MuteFun, NoteCache, UnknownIds};
+use notedeck::{ImageCache, NoteCache, UnknownIds, Muted};
 use tracing::error;
 
 use super::timeline::TimelineTabView;
@@ -20,7 +20,6 @@ pub struct ThreadView<'a> {
     selected_note_id: &'a [u8; 32],
     textmode: bool,
     id_source: egui::Id,
-    is_muted: &'a MuteFun,
 }
 
 impl<'a> ThreadView<'a> {
@@ -33,7 +32,7 @@ impl<'a> ThreadView<'a> {
         img_cache: &'a mut ImageCache,
         selected_note_id: &'a [u8; 32],
         textmode: bool,
-        is_muted: &'a MuteFun,
+        muted: &'a Muted,
     ) -> Self {
         let id_source = egui::Id::new("threadscroll_threadview");
         ThreadView {
@@ -45,7 +44,7 @@ impl<'a> ThreadView<'a> {
             selected_note_id,
             textmode,
             id_source,
-            is_muted,
+            muted,
         }
     }
 

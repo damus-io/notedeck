@@ -11,7 +11,7 @@ use egui::{Direction, Layout};
 use egui_tabs::TabColor;
 use nostrdb::{Ndb, Transaction};
 use notedeck::note::root_note_id_from_selected_id;
-use notedeck::{ImageCache, MuteFun, NoteCache};
+use notedeck::{Accounts, ImageCache, NoteCache, Muted};
 use tracing::{error, warn};
 
 pub struct TimelineView<'a> {
@@ -22,7 +22,6 @@ pub struct TimelineView<'a> {
     img_cache: &'a mut ImageCache,
     note_options: NoteOptions,
     reverse: bool,
-    is_muted: &'a MuteFun,
 }
 
 impl<'a> TimelineView<'a> {
@@ -33,7 +32,7 @@ impl<'a> TimelineView<'a> {
         note_cache: &'a mut NoteCache,
         img_cache: &'a mut ImageCache,
         note_options: NoteOptions,
-        is_muted: &'a MuteFun,
+        accounts: &'a Accounts,
     ) -> TimelineView<'a> {
         let reverse = false;
         TimelineView {
@@ -44,7 +43,7 @@ impl<'a> TimelineView<'a> {
             img_cache,
             reverse,
             note_options,
-            is_muted,
+            accounts,
         }
     }
 
@@ -78,7 +77,7 @@ fn timeline_ui(
     img_cache: &mut ImageCache,
     reversed: bool,
     note_options: NoteOptions,
-    is_muted: &MuteFun,
+    accounts: &Accounts,
 ) -> Option<NoteAction> {
     //padding(4.0, ui, |ui| ui.heading("Notifications"));
     /*
@@ -105,6 +104,8 @@ fn timeline_ui(
         egui::Id::new(("tlscroll", timeline.view_id()))
     };
 
+    let mute_data = accounts.mute_data();
+
     egui::ScrollArea::vertical()
         .id_salt(scroll_id)
         .animated(false)
@@ -129,7 +130,7 @@ fn timeline_ui(
                 ndb,
                 note_cache,
                 img_cache,
-                is_muted,
+                mute_data,
             )
             .show(ui)
         })
@@ -231,7 +232,7 @@ pub struct TimelineTabView<'a> {
     ndb: &'a Ndb,
     note_cache: &'a mut NoteCache,
     img_cache: &'a mut ImageCache,
-    is_muted: &'a MuteFun,
+    mute_data: Option<&'a Muted>,
 }
 
 impl<'a> TimelineTabView<'a> {
@@ -244,7 +245,7 @@ impl<'a> TimelineTabView<'a> {
         ndb: &'a Ndb,
         note_cache: &'a mut NoteCache,
         img_cache: &'a mut ImageCache,
-        is_muted: &'a MuteFun,
+        mute_data: Option<&'a Muted>,
     ) -> Self {
         Self {
             tab,
@@ -254,7 +255,7 @@ impl<'a> TimelineTabView<'a> {
             ndb,
             note_cache,
             img_cache,
-            is_muted,
+            mute_data,
         }
     }
 
@@ -262,7 +263,6 @@ impl<'a> TimelineTabView<'a> {
         let mut action: Option<NoteAction> = None;
         let len = self.tab.notes.len();
 
-        let is_muted = self.is_muted;
         self.tab
             .list
             .clone()
@@ -286,10 +286,21 @@ impl<'a> TimelineTabView<'a> {
                     return 0;
                 };
 
-                let muted = is_muted(
-                    &note,
-                    root_note_id_from_selected_id(self.ndb, self.note_cache, self.txn, note.id()),
-                );
+                let muted = self
+                    .accounts()
+                    .mute_data()
+                    .map(|md| {
+                        md.is_muted(
+                            &note,
+                            root_note_id_from_selected_id(
+                                self.ndb,
+                                self.note_cache,
+                                self.txn,
+                                note.id(),
+                            ),
+                        )
+                    })
+                    .unwrap_or(false);
 
                 if !muted {
                     ui::padding(8.0, ui, |ui| {

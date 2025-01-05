@@ -15,7 +15,7 @@ use crate::{
 
 use enostr::{NoteId, Pubkey};
 use nostrdb::{Ndb, Transaction};
-use notedeck::{Accounts, ImageCache, MuteFun, NoteCache, UnknownIds};
+use notedeck::{Accounts, ImageCache, NoteCache, UnknownIds};
 
 #[derive(Debug, Eq, PartialEq, Clone, Copy)]
 pub enum TimelineRoute {
@@ -63,7 +63,7 @@ pub fn render_timeline_route(
                 note_cache,
                 img_cache,
                 note_options,
-                &accounts.mutefun(),
+                &accounts,
             )
             .ui(ui);
 
@@ -165,7 +165,6 @@ pub fn render_profile_route(
     note_cache: &mut NoteCache,
     col: usize,
     ui: &mut egui::Ui,
-    is_muted: &MuteFun,
 ) -> Option<RenderNavAction> {
     let action = ProfileView::new(
         pubkey,
@@ -175,7 +174,6 @@ pub fn render_profile_route(
         ndb,
         note_cache,
         img_cache,
-        is_muted,
         NoteOptions::default(),
     )
     .ui(ui);

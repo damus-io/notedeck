@@ -28,7 +28,7 @@ pub use error::{Error, FilterError};
 pub use filter::{FilterState, FilterStates, UnifiedSubscription};
 pub use fonts::NamedFontFamily;
 pub use imgcache::ImageCache;
-pub use muted::{MuteFun, Muted};
+pub use muted::Muted;
 pub use note::NoteRef;
 pub use notecache::{CachedNote, NoteCache};
 pub use result::Result;

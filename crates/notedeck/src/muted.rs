@@ -3,9 +3,6 @@ use std::collections::BTreeSet;
 
 use tracing::{debug, trace};
 
-// If the note is muted return a reason string, otherwise None
-pub type MuteFun = dyn Fn(&Note, &[u8; 32]) -> bool;
-
 #[derive(Default)]
 pub struct Muted {
     // TODO - implement private mutes
