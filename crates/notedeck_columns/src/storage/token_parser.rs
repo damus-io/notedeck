@@ -56,6 +56,12 @@ impl TokenWriter {
         self.tokens_written += 1;
     }
 
+    pub fn str(&self) -> &str {
+        // SAFETY: only &strs are ever serialized, so its guaranteed to be
+        // correct here
+        unsafe { std::str::from_utf8_unchecked(self.buffer()) }
+    }
+
     pub fn buffer(&self) -> &[u8] {
         &self.buf
     }
@@ -194,21 +200,27 @@ mod tests {
         use crate::ui::add_column::{AddAlgoRoute, AddColumnRoute};
 
         {
-            let data = &"column:algo_selection:last_per_pubkey"
-                .split(":")
-                .collect::<Vec<&str>>();
+            let data_str = "column:algo_selection:last_per_pubkey";
+            let data = &data_str.split(":").collect::<Vec<&str>>();
+            let mut token_writer = TokenWriter::default();
             let mut parser = TokenParser::new(&data);
             let parsed = AddColumnRoute::parse(&mut parser).unwrap();
             let expected = AddColumnRoute::Algo(AddAlgoRoute::LastPerPubkey);
-            assert_eq!(expected, parsed)
+            parsed.serialize(&mut token_writer);
+            assert_eq!(expected, parsed);
+            assert_eq!(token_writer.str(), data_str);
         }
 
         {
-            let data: &[&str] = &["column"];
+            let data_str = "column";
+            let mut token_writer = TokenWriter::default();
+            let data: &[&str] = &[data_str];
             let mut parser = TokenParser::new(data);
             let parsed = AddColumnRoute::parse(&mut parser).unwrap();
             let expected = AddColumnRoute::Base;
-            assert_eq!(expected, parsed)
+            parsed.serialize(&mut token_writer);
+            assert_eq!(expected, parsed);
+            assert_eq!(token_writer.str(), data_str);
         }
     }
 }
