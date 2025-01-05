@@ -80,7 +80,47 @@ pub enum AddColumnRoute {
     ExternalIndividual,
 }
 
+// Parser for the common case without any payloads
+fn parse_column_route<'a>(
+    parser: &mut TokenParser<'a>,
+    route: AddColumnRoute,
+) -> Result<AddColumnRoute, ParseError<'a>> {
+    parser.parse_all(|p| {
+        for token in route.tokens() {
+            p.parse_token(token)?;
+        }
+        Ok(route)
+    })
+}
+
+impl AddColumnRoute {
+    /// Route tokens use in both serialization and deserialization
+    fn tokens(&self) -> &'static [&'static str] {
+        match self {
+            Self::Base => &[],
+            Self::UndecidedNotification => &["notification_selection"],
+            Self::ExternalNotification => &["external_notif_selection"],
+            Self::UndecidedIndividual => &["individual_selection"],
+            Self::ExternalIndividual => &["external_individual_selection"],
+            Self::Hashtag => &["hashtag"],
+            Self::Algo(AddAlgoRoute::Base) => &["algo_selection"],
+            Self::Algo(AddAlgoRoute::LastPerPubkey) => &["algo_selection", "last_per_pubkey"],
+            // NOTE!!! When adding to this, update the parser for TokenSerializable below
+        }
+    }
+}
+
 impl TokenSerializable for AddColumnRoute {
+    fn serialize(
+        &self,
+        write_token: fn(&str) -> Result<(), std::io::Error>,
+    ) -> Result<(), std::io::Error> {
+        for token in self.tokens() {
+            write_token(token)?;
+        }
+        Ok(())
+    }
+
     fn parse<'a>(parser: &mut TokenParser<'a>) -> Result<Self, ParseError<'a>> {
         // all start with column
         parser.parse_token("column")?;
@@ -93,49 +133,13 @@ impl TokenSerializable for AddColumnRoute {
         TokenParser::alt(
             parser,
             &[
-                |p| {
-                    p.parse_all(|p| {
-                        p.parse_token("external_notif_selection")?;
-                        Ok(AddColumnRoute::UndecidedNotification)
-                    })
-                },
-                |p| {
-                    p.parse_all(|p| {
-                        p.parse_token("external_notif_selection")?;
-                        Ok(AddColumnRoute::ExternalNotification)
-                    })
-                },
-                |p| {
-                    p.parse_all(|p| {
-                        p.parse_token("hashtag_selection")?;
-                        Ok(AddColumnRoute::Hashtag)
-                    })
-                },
-                |p| {
-                    p.parse_all(|p| {
-                        p.parse_token("algo_selection")?;
-                        Ok(AddColumnRoute::Algo(AddAlgoRoute::Base))
-                    })
-                },
-                |p| {
-                    p.parse_all(|p| {
-                        p.parse_token("algo_selection")?;
-                        p.parse_token("last_per_pubkey")?;
-                        Ok(AddColumnRoute::Algo(AddAlgoRoute::LastPerPubkey))
-                    })
-                },
-                |p| {
-                    p.parse_all(|p| {
-                        p.parse_token("individual_selection")?;
-                        Ok(AddColumnRoute::UndecidedIndividual)
-                    })
-                },
-                |p| {
-                    p.parse_all(|p| {
-                        p.parse_token("external_individual_selection")?;
-                        Ok(AddColumnRoute::ExternalIndividual)
-                    })
-                },
+                |p| parse_column_route(p, AddColumnRoute::UndecidedNotification),
+                |p| parse_column_route(p, AddColumnRoute::ExternalNotification),
+                |p| parse_column_route(p, AddColumnRoute::UndecidedIndividual),
+                |p| parse_column_route(p, AddColumnRoute::ExternalIndividual),
+                |p| parse_column_route(p, AddColumnRoute::Hashtag),
+                |p| parse_column_route(p, AddColumnRoute::Algo(AddAlgoRoute::Base)),
+                |p| parse_column_route(p, AddColumnRoute::Algo(AddAlgoRoute::LastPerPubkey)),
             ],
         )
     }
