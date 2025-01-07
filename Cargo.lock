@@ -2505,6 +2505,7 @@ dependencies = [
  "security-framework",
  "serde",
  "serde_json",
+ "sha2",
  "strum",
  "strum_macros",
  "tempfile",

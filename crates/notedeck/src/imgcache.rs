@@ -5,9 +5,12 @@ use poll_promise::Promise;
 use egui::ColorImage;
 
 use std::collections::HashMap;
-use std::fs::File;
+use std::fs::{create_dir_all, File};
 
+use hex::ToHex;
+use sha2::Digest;
 use std::path;
+use std::path::PathBuf;
 
 pub type ImageCacheValue = Promise<Result<TextureHandle>>;
 pub type ImageCacheMap = HashMap<String, ImageCacheValue>;
@@ -46,6 +49,9 @@ impl ImageCache {
 
     pub fn write(cache_dir: &path::Path, url: &str, data: ColorImage) -> Result<()> {
         let file_path = cache_dir.join(Self::key(url));
+        if let Some(p) = file_path.parent() {
+            create_dir_all(p)?;
+        }
         let file = File::options()
             .write(true)
             .create(true)
@@ -64,7 +70,12 @@ impl ImageCache {
     }
 
     pub fn key(url: &str) -> String {
-        base32::encode(base32::Alphabet::Crockford, url.as_bytes())
+        let k: String = sha2::Sha256::digest(url.as_bytes()).encode_hex();
+        PathBuf::from(&k[0..2])
+            .join(&k[2..4])
+            .join(k)
+            .to_string_lossy()
+            .to_string()
     }
 
     pub fn map(&self) -> &ImageCacheMap {
