@@ -1,4 +1,5 @@
 use crate::{
+    colors,
     column::Columns,
     nav::RenderNavAction,
     route::Route,
@@ -9,7 +10,7 @@ use crate::{
     },
 };
 
-use egui::{RichText, Stroke, UiBuilder};
+use egui::{Margin, RichText, Stroke, UiBuilder};
 use enostr::Pubkey;
 use nostrdb::{Ndb, Transaction};
 use notedeck::{ImageCache, NotedeckTextStyle};
@@ -20,6 +21,7 @@ pub struct NavTitle<'a> {
     columns: &'a Columns,
     deck_author: Option<&'a Pubkey>,
     routes: &'a [Route],
+    col_id: usize,
 }
 
 impl<'a> NavTitle<'a> {
@@ -29,6 +31,7 @@ impl<'a> NavTitle<'a> {
         columns: &'a Columns,
         deck_author: Option<&'a Pubkey>,
         routes: &'a [Route],
+        col_id: usize,
     ) -> Self {
         NavTitle {
             ndb,
@@ -36,6 +39,7 @@ impl<'a> NavTitle<'a> {
             columns,
             deck_author,
             routes,
+            col_id,
         }
     }
 
@@ -77,10 +81,19 @@ impl<'a> NavTitle<'a> {
             ui.add_space(chev_x + item_spacing);
         }
 
-        let remove_column = self.title(ui, self.routes.last().unwrap(), back_button_resp.is_some());
+        let title_resp = self.title(ui, self.routes.last().unwrap(), back_button_resp.is_some());
 
-        if remove_column {
-            Some(RenderNavAction::RemoveColumn)
+        if let Some(resp) = title_resp {
+            match resp {
+                TitleResponse::RemoveColumn => Some(RenderNavAction::RemoveColumn),
+                TitleResponse::MoveColumn(to_index) => {
+                    let from = self.col_id;
+                    None // TODO:
+                         // Some(RenderNavAction::SwitchingAction(SwitchingAction::Columns(
+                         // ColumnsAction::Switch(from, to_index),
+                         // )))
+                }
+            }
         } else if back_button_resp.map_or(false, |r| r.clicked()) {
             Some(RenderNavAction::Back)
         } else {
@@ -157,6 +170,25 @@ impl<'a> NavTitle<'a> {
         animation_resp
     }
 
+    fn move_column_button(&self, ui: &mut egui::Ui, icon_width: f32) -> egui::Response {
+        let img_size = 16.0;
+        let max_size = icon_width * ICON_EXPANSION_MULTIPLE;
+
+        let img_data = egui::include_image!("../../../../../assets/icons/move_column_4x.png");
+        let img = egui::Image::new(img_data).max_width(img_size);
+
+        let helper = AnimationHelper::new(ui, "move-column-button", egui::vec2(max_size, max_size));
+
+        let cur_img_size = helper.scale_1d_pos_min_max(0.0, img_size);
+
+        let animation_rect = helper.get_animation_rect();
+        let animation_resp = helper.take_animation_response();
+
+        img.paint_at(ui, animation_rect.shrink((max_size - cur_img_size) / 2.0));
+
+        animation_resp
+    }
+
     fn delete_button_section(&self, ui: &mut egui::Ui) -> bool {
         let id = ui.id().with("title");
 
@@ -183,6 +215,174 @@ impl<'a> NavTitle<'a> {
             confirm_pressed
         } else {
             false
+        }
+    }
+
+    // returns the column index to switch to, if any
+    fn move_button_section(&mut self, ui: &mut egui::Ui) -> Option<usize> {
+        let cur_id = ui.id().with("move");
+        let move_resp = self.move_column_button(ui, 32.0);
+        if move_resp.clicked() {
+            ui.data_mut(|d| d.insert_temp(cur_id, true));
+        }
+
+        ui.data(|d| d.get_temp(cur_id)).and_then(|val| {
+            if val {
+                let resp = self.add_move_tooltip(cur_id, &move_resp);
+                if move_resp.clicked_elsewhere() || resp.is_some() {
+                    ui.data_mut(|d| d.remove_temp::<bool>(cur_id));
+                }
+                resp
+            } else {
+                None
+            }
+        })
+    }
+
+    fn move_tooltip_col_presentation(&mut self, ui: &mut egui::Ui, col: usize) -> egui::Response {
+        ui.horizontal(|ui| {
+            self.title_presentation(ui, self.columns.column(col).router().top(), 32.0);
+        })
+        .response
+    }
+
+    fn add_move_tooltip(&mut self, id: egui::Id, move_resp: &egui::Response) -> Option<usize> {
+        let mut inner_resp = None;
+        move_resp.show_tooltip_ui(|ui| {
+            let x_range = ui.available_rect_before_wrap().x_range();
+            let is_dragging = egui::DragAndDrop::payload::<usize>(ui.ctx()).is_some(); // must be outside ui.dnd_drop_zone to capture properly
+            let (_, _) = ui.dnd_drop_zone::<usize, ()>(
+                egui::Frame::none()
+                    .inner_margin(Margin::same(8.0))
+                    .rounding(egui::Rounding::same(8.0)),
+                |ui| {
+                    let distances: Vec<(egui::Response, f32)> =
+                        self.collect_column_distances(ui, id);
+
+                    if let Some((closest_index, closest_resp, distance)) =
+                        self.find_closest_column(&distances)
+                    {
+                        if is_dragging && closest_index != self.col_id {
+                            if self.should_draw_hint(closest_index, distance) {
+                                ui.painter().hline(
+                                    x_range,
+                                    self.calculate_hint_y(
+                                        &distances,
+                                        closest_resp,
+                                        closest_index,
+                                        distance,
+                                    ),
+                                    egui::Stroke::new(1.0, ui.visuals().text_color()),
+                                );
+                            }
+
+                            if ui.input(|i| i.pointer.any_released()) {
+                                inner_resp =
+                                    Some(self.calculate_new_index(closest_index, distance));
+                            }
+                        }
+                    }
+                },
+            );
+        });
+        inner_resp
+    }
+
+    fn collect_column_distances(
+        &mut self,
+        ui: &mut egui::Ui,
+        id: egui::Id,
+    ) -> Vec<(egui::Response, f32)> {
+        let y_margin = 4.0;
+        let item_frame = egui::Frame::none()
+            .rounding(egui::Rounding::same(8.0))
+            .inner_margin(Margin::symmetric(8.0, y_margin));
+
+        (0..self.columns.num_columns())
+            .filter_map(|col| {
+                let item_id = id.with(col);
+                let col_resp = if col == self.col_id {
+                    ui.dnd_drag_source(item_id, col, |ui| {
+                        item_frame
+                            .stroke(egui::Stroke::new(2.0, colors::PINK))
+                            .fill(ui.visuals().panel_fill)
+                            .show(ui, |ui| self.move_tooltip_col_presentation(ui, col));
+                    })
+                    .response
+                } else {
+                    item_frame
+                        .show(ui, |ui| {
+                            self.move_tooltip_col_presentation(ui, col)
+                                .on_hover_cursor(egui::CursorIcon::NotAllowed)
+                        })
+                        .response
+                };
+
+                ui.input(|i| i.pointer.interact_pos()).map(|pointer| {
+                    let distance = pointer.y - col_resp.rect.center().y;
+                    (col_resp, distance)
+                })
+            })
+            .collect()
+    }
+
+    fn find_closest_column(
+        &'a self,
+        distances: &'a [(egui::Response, f32)],
+    ) -> Option<(usize, &'a egui::Response, f32)> {
+        distances
+            .iter()
+            .enumerate()
+            .min_by(|(_, (_, dist1)), (_, (_, dist2))| {
+                dist1.abs().partial_cmp(&dist2.abs()).unwrap()
+            })
+            .filter(|(index, (_, distance))| {
+                (index + 1 != self.col_id && *distance > 0.0)
+                    || (index.saturating_sub(1) != self.col_id && *distance < 0.0)
+            })
+            .map(|(index, (resp, dist))| (index, resp, *dist))
+    }
+
+    fn should_draw_hint(&self, closest_index: usize, distance: f32) -> bool {
+        let is_above = distance < 0.0;
+        (is_above && closest_index.saturating_sub(1) != self.col_id)
+            || (!is_above && closest_index + 1 != self.col_id)
+    }
+
+    fn calculate_new_index(&self, closest_index: usize, distance: f32) -> usize {
+        let moving_up = self.col_id > closest_index;
+        match (distance < 0.0, moving_up) {
+            (true, true) | (false, false) => closest_index,
+            (true, false) => closest_index.saturating_sub(1),
+            (false, true) => closest_index + 1,
+        }
+    }
+
+    fn calculate_hint_y(
+        &self,
+        distances: &[(egui::Response, f32)],
+        closest_resp: &egui::Response,
+        closest_index: usize,
+        distance: f32,
+    ) -> f32 {
+        let y_margin = 4.0;
+
+        let offset = if distance < 0.0 {
+            distances
+                .get(closest_index.wrapping_sub(1))
+                .map(|(above_resp, _)| (closest_resp.rect.top() - above_resp.rect.bottom()) / 2.0)
+                .unwrap_or(y_margin)
+        } else {
+            distances
+                .get(closest_index + 1)
+                .map(|(below_resp, _)| (below_resp.rect.top() - closest_resp.rect.bottom()) / 2.0)
+                .unwrap_or(y_margin)
+        };
+
+        if distance < 0.0 {
+            closest_resp.rect.top() - offset
+        } else {
+            closest_resp.rect.bottom() + offset
         }
     }
 
@@ -294,23 +494,39 @@ impl<'a> NavTitle<'a> {
         };
     }
 
-    fn title(&mut self, ui: &mut egui::Ui, top: &Route, navigating: bool) -> bool {
+    fn title(&mut self, ui: &mut egui::Ui, top: &Route, navigating: bool) -> Option<TitleResponse> {
         if !navigating {
-            self.title_pfp(ui, top, 32.0);
-            self.title_label(ui, top);
+            self.title_presentation(ui, top, 32.0);
         }
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if navigating {
-                self.title_label(ui, top);
-                self.title_pfp(ui, top, 32.0);
-                false
+                self.title_presentation(ui, top, 32.0);
+                None
             } else {
-                self.delete_button_section(ui)
+                let remove_col = self.delete_button_section(ui);
+                let move_col = self.move_button_section(ui);
+                if let Some(col) = move_col {
+                    Some(TitleResponse::MoveColumn(col))
+                } else if remove_col {
+                    Some(TitleResponse::RemoveColumn)
+                } else {
+                    None
+                }
             }
         })
         .inner
     }
+
+    fn title_presentation(&mut self, ui: &mut egui::Ui, top: &Route, pfp_size: f32) {
+        self.title_pfp(ui, top, pfp_size);
+        self.title_label(ui, top);
+    }
+}
+
+enum TitleResponse {
+    RemoveColumn,
+    MoveColumn(usize),
 }
 
 fn prev<R>(xs: &[R]) -> Option<&R> {

@@ -447,6 +447,7 @@ pub fn render_nav(
             get_active_columns_mut(ctx.accounts, &mut app.decks_cache),
             ctx.accounts.get_selected_account().map(|a| &a.pubkey),
             nav.routes(),
+            col,
         )
         .show(ui),
         NavUiType::Body => render_nav_body(ui, app, ctx, nav.routes().last().expect("top"), col),
