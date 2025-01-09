@@ -72,6 +72,9 @@ impl SwitchingAction {
                 ColumnsAction::Remove(index) => {
                     get_active_columns_mut(ctx.accounts, decks_cache).delete_column(index)
                 }
+                ColumnsAction::Switch(from, to) => {
+                    get_active_columns_mut(ctx.accounts, decks_cache).move_col(from, to);
+                }
             },
             SwitchingAction::Decks(decks_action) => match *decks_action {
                 DecksAction::Switch(index) => {

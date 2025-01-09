@@ -1,7 +1,9 @@
+use crate::colors;
+use crate::column::ColumnsAction;
+use crate::nav::RenderNavAction;
+use crate::nav::SwitchingAction;
 use crate::{
-    colors,
     column::Columns,
-    nav::RenderNavAction,
     route::Route,
     timeline::{ColumnTitle, TimelineId, TimelineKind, TimelineRoute},
     ui::{
@@ -10,7 +12,8 @@ use crate::{
     },
 };
 
-use egui::{Margin, RichText, Stroke, UiBuilder};
+use egui::Margin;
+use egui::{RichText, Stroke, UiBuilder};
 use enostr::Pubkey;
 use nostrdb::{Ndb, Transaction};
 use notedeck::{ImageCache, NotedeckTextStyle};
@@ -88,10 +91,9 @@ impl<'a> NavTitle<'a> {
                 TitleResponse::RemoveColumn => Some(RenderNavAction::RemoveColumn),
                 TitleResponse::MoveColumn(to_index) => {
                     let from = self.col_id;
-                    None // TODO:
-                         // Some(RenderNavAction::SwitchingAction(SwitchingAction::Columns(
-                         // ColumnsAction::Switch(from, to_index),
-                         // )))
+                    Some(RenderNavAction::SwitchingAction(SwitchingAction::Columns(
+                        ColumnsAction::Switch(from, to_index),
+                    )))
                 }
             }
         } else if back_button_resp.map_or(false, |r| r.clicked()) {

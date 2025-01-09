@@ -238,6 +238,6 @@ pub enum IntermediaryRoute {
 }
 
 pub enum ColumnsAction {
-    // Switch(usize), TODO: could use for keyboard selection
+    Switch(usize, usize), // from Switch.0 to Switch.1,
     Remove(usize),
 }
