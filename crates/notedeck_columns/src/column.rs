@@ -211,6 +211,25 @@ impl Columns {
             self.new_column_picker();
         }
     }
+
+    pub fn move_col(&mut self, from_index: usize, to_index: usize) {
+        if from_index == to_index
+            || from_index >= self.columns.len()
+            || to_index >= self.columns.len()
+        {
+            return;
+        }
+
+        if from_index < to_index {
+            for i in from_index..to_index {
+                self.columns.swap_indices(i, i + 1);
+            }
+        } else {
+            for i in (to_index..from_index).rev() {
+                self.columns.swap_indices(i, i + 1);
+            }
+        }
+    }
 }
 
 pub enum IntermediaryRoute {
