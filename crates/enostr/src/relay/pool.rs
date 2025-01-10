@@ -237,9 +237,7 @@ impl RelayPool {
                                 relay.last_connect_attempt + relay.retry_connect_after;
                             if now > reconnect_at {
                                 relay.last_connect_attempt = now;
-                                let next_duration = Duration::from_millis(
-                                    ((relay.retry_connect_after.as_millis() as f64) * 1.5) as u64,
-                                );
+                                let next_duration = Duration::from_millis(3000);
                                 debug!(
                                     "bumping reconnect duration from {:?} to {:?} and retrying connect",
                                     relay.retry_connect_after, next_duration
