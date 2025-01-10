@@ -208,7 +208,9 @@ impl Notedeck {
         let app_rect_handler = AppSizeHandler::new(&path);
 
         // migrate
-        img_cache.migrate_v0().expect("img-cache migration");
+        if let Err(e) = img_cache.migrate_v0() {
+            error!("error migrating image cache: {e}");
+        }
 
         Self {
             ndb,

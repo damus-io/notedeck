@@ -82,33 +82,37 @@ impl ImageCache {
     /// Migrate from base32 encoded url to sha256 url + sub-dir structure
     pub fn migrate_v0(&self) -> Result<()> {
         for file in std::fs::read_dir(&self.cache_dir)? {
-            if let Ok(file) = file {
-                if !file.path().is_file() {
-                    continue;
-                }
-                let old_filename = file.file_name().to_string_lossy().to_string();
-                let old_url = if let Some(u) =
-                    base32::decode(base32::Alphabet::Crockford, &old_filename)
-                        .and_then(|s| String::from_utf8(s).ok())
-                {
-                    u
-                } else {
-                    warn!("Invalid base32 filename: {}", &old_filename);
-                    continue;
-                };
-                let new_path = self.cache_dir.join(Self::key(&old_url));
-                if let Some(p) = new_path.parent() {
-                    create_dir_all(p)?;
-                }
+            let file = if let Ok(f) = file {
+                f
+            } else {
+                // not sure how this could fail, skip entry
+                continue;
+            };
+            if !file.path().is_file() {
+                continue;
+            }
+            let old_filename = file.file_name().to_string_lossy().to_string();
+            let old_url = if let Some(u) =
+                base32::decode(base32::Alphabet::Crockford, &old_filename)
+                    .and_then(|s| String::from_utf8(s).ok())
+            {
+                u
+            } else {
+                warn!("Invalid base32 filename: {}", &old_filename);
+                continue;
+            };
+            let new_path = self.cache_dir.join(Self::key(&old_url));
+            if let Some(p) = new_path.parent() {
+                create_dir_all(p)?;
+            }
 
-                if let Err(e) = std::fs::rename(file.path(), &new_path) {
-                    warn!(
-                        "Failed to migrate file from {} to {}: {:?}",
-                        file.path().display(),
-                        new_path.display(),
-                        e
-                    );
-                }
+            if let Err(e) = std::fs::rename(file.path(), &new_path) {
+                warn!(
+                    "Failed to migrate file from {} to {}: {:?}",
+                    file.path().display(),
+                    new_path.display(),
+                    e
+                );
             }
         }
         Ok(())
