@@ -207,6 +207,11 @@ impl Notedeck {
         let tabs = Tabs::new(None);
         let app_rect_handler = AppSizeHandler::new(&path);
 
+        // migrate
+        if let Err(e) = img_cache.migrate_v0() {
+            error!("error migrating image cache: {e}");
+        }
+
         Self {
             ndb,
             img_cache,
