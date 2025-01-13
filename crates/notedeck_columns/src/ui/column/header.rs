@@ -204,9 +204,25 @@ impl<'a> NavTitle<'a> {
     // returns the column index to switch to, if any
     fn move_button_section(&mut self, ui: &mut egui::Ui) -> Option<usize> {
         let cur_id = ui.id().with("move");
-        let move_resp = ui.add(grab_button());
+        let mut move_resp = ui.add(grab_button());
+
+        // showing the hover text while showing the move tooltip causes some weird visuals
+        if ui.data(|d| d.get_temp::<bool>(cur_id).is_none()) {
+            move_resp = move_resp.on_hover_text("Moves this column to another positon");
+        }
+
         if move_resp.clicked() {
-            ui.data_mut(|d| d.insert_temp(cur_id, true));
+            ui.data_mut(|d| {
+                if let Some(val) = d.get_temp::<bool>(cur_id) {
+                    if val {
+                        d.remove_temp::<bool>(cur_id);
+                    } else {
+                        d.insert_temp(cur_id, true);
+                    }
+                } else {
+                    d.insert_temp(cur_id, true);
+                }
+            });
         }
 
         ui.data(|d| d.get_temp(cur_id)).and_then(|val| {
