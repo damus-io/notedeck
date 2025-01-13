@@ -19,6 +19,7 @@ notedeck = { workspace = true }
 puffin = { workspace = true, optional = true }
 puffin_egui = { workspace = true, optional = true }
 serde_json = { workspace = true }
+serde = { workspace = true }
 strum = { workspace = true }
 tokio = { workspace = true }
 tracing-appender = { workspace = true }

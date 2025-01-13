@@ -2530,6 +2530,7 @@ dependencies = [
  "notedeck_columns",
  "puffin 0.19.1 (git+https://github.com/jb55/puffin?rev=70ff86d5503815219b01a009afd3669b7903a057)",
  "puffin_egui",
+ "serde",
  "serde_json",
  "strum",
  "tempfile",
