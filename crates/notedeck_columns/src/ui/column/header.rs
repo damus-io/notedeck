@@ -172,25 +172,6 @@ impl<'a> NavTitle<'a> {
         animation_resp
     }
 
-    fn move_column_button(&self, ui: &mut egui::Ui, icon_width: f32) -> egui::Response {
-        let img_size = 16.0;
-        let max_size = icon_width * ICON_EXPANSION_MULTIPLE;
-
-        let img_data = egui::include_image!("../../../../../assets/icons/move_column_4x.png");
-        let img = egui::Image::new(img_data).max_width(img_size);
-
-        let helper = AnimationHelper::new(ui, "move-column-button", egui::vec2(max_size, max_size));
-
-        let cur_img_size = helper.scale_1d_pos_min_max(0.0, img_size);
-
-        let animation_rect = helper.get_animation_rect();
-        let animation_resp = helper.take_animation_response();
-
-        img.paint_at(ui, animation_rect.shrink((max_size - cur_img_size) / 2.0));
-
-        animation_resp
-    }
-
     fn delete_button_section(&self, ui: &mut egui::Ui) -> bool {
         let id = ui.id().with("title");
 
@@ -223,7 +204,7 @@ impl<'a> NavTitle<'a> {
     // returns the column index to switch to, if any
     fn move_button_section(&mut self, ui: &mut egui::Ui) -> Option<usize> {
         let cur_id = ui.id().with("move");
-        let move_resp = self.move_column_button(ui, 32.0);
+        let move_resp = ui.add(grab_button());
         if move_resp.clicked() {
             ui.data_mut(|d| d.insert_temp(cur_id, true));
         }
@@ -506,8 +487,8 @@ impl<'a> NavTitle<'a> {
                 self.title_presentation(ui, top, 32.0);
                 None
             } else {
-                let remove_col = self.delete_button_section(ui);
                 let move_col = self.move_button_section(ui);
+                let remove_col = self.delete_button_section(ui);
                 if let Some(col) = move_col {
                     Some(TitleResponse::MoveColumn(col))
                 } else if remove_col {
@@ -555,4 +536,36 @@ fn chevron(
     painter.line_segment([apex, bottom], stroke);
 
     r
+}
+
+fn grab_button() -> impl egui::Widget {
+    |ui: &mut egui::Ui| -> egui::Response {
+        let max_size = egui::vec2(48.0, 48.0);
+        let helper = AnimationHelper::new(ui, "grab", max_size);
+        let painter = ui.painter_at(helper.get_animation_rect());
+        let min_circle_radius = 2.0;
+        let cur_circle_radius = helper.scale_1d_pos(min_circle_radius);
+        let horiz_spacing = 4.0;
+        let vert_spacing = 10.0;
+        let horiz_from_center = (horiz_spacing + min_circle_radius) / 2.0;
+        let vert_from_center = (vert_spacing + min_circle_radius) / 2.0;
+
+        let color = ui.style().visuals.noninteractive().fg_stroke.color;
+
+        let middle_left = helper.scale_from_center(-horiz_from_center, 0.0);
+        let middle_right = helper.scale_from_center(horiz_from_center, 0.0);
+        let top_left = helper.scale_from_center(-horiz_from_center, -vert_from_center);
+        let top_right = helper.scale_from_center(horiz_from_center, -vert_from_center);
+        let bottom_left = helper.scale_from_center(-horiz_from_center, vert_from_center);
+        let bottom_right = helper.scale_from_center(horiz_from_center, vert_from_center);
+
+        painter.circle_filled(middle_left, cur_circle_radius, color);
+        painter.circle_filled(middle_right, cur_circle_radius, color);
+        painter.circle_filled(top_left, cur_circle_radius, color);
+        painter.circle_filled(top_right, cur_circle_radius, color);
+        painter.circle_filled(bottom_left, cur_circle_radius, color);
+        painter.circle_filled(bottom_right, cur_circle_radius, color);
+
+        helper.take_animation_response()
+    }
 }
