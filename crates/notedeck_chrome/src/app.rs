@@ -1,4 +1,4 @@
-use crate::{app_size::AppSizeHandler, setup::setup_cc, theme};
+use crate::{app_size::AppSizeHandler, persist_zoom::ZoomHandler, setup::setup_cc, theme};
 
 use notedeck::{
     Accounts, AppContext, Args, DataPath, DataPathType, Directory, FileKeyStorage, ImageCache,
@@ -26,6 +26,7 @@ pub struct Notedeck {
     theme: ThemeHandler,
     tabs: Tabs,
     app_rect_handler: AppSizeHandler,
+    zoom_handler: ZoomHandler,
 }
 
 fn margin_top(narrow: bool) -> f32 {
@@ -80,6 +81,7 @@ impl eframe::App for Notedeck {
         });
 
         self.app_rect_handler.try_save_app_size(ctx);
+        self.zoom_handler.try_save_zoom_factor(ctx);
 
         if self.args.relay_debug {
             if self.pool.debug.is_none() {
@@ -206,6 +208,11 @@ impl Notedeck {
         let unknown_ids = UnknownIds::default();
         let tabs = Tabs::new(None);
         let app_rect_handler = AppSizeHandler::new(&path);
+        let zoom_handler = ZoomHandler::new(&path);
+
+        if let Some(zoom_factor) = zoom_handler.get_zoom_factor() {
+            ctx.set_zoom_factor(zoom_factor);
+        }
 
         // migrate
         if let Err(e) = img_cache.migrate_v0() {
@@ -224,6 +231,7 @@ impl Notedeck {
             args: parsed_args,
             theme,
             tabs,
+            zoom_handler,
         }
     }
 
