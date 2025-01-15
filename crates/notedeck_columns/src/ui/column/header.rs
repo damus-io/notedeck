@@ -223,6 +223,8 @@ impl<'a> NavTitle<'a> {
                     d.insert_temp(cur_id, true);
                 }
             });
+        } else if move_resp.hovered() {
+            ui::show_pointer(ui);
         }
 
         ui.data(|d| d.get_temp(cur_id)).and_then(|val| {
