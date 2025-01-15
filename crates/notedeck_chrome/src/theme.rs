@@ -81,7 +81,7 @@ pub fn light_color_theme() -> ColorTheme {
 
         // INACTIVE WIDGET
         inactive_bg_stroke_color: EVEN_DARKER_GRAY,
-        inactive_bg_fill: LIGHT_GRAY,
+        inactive_bg_fill: LIGHTER_GRAY,
         inactive_weak_bg_fill: EVEN_DARKER_GRAY,
     }
 }

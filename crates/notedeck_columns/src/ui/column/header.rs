@@ -304,7 +304,7 @@ impl<'a> NavTitle<'a> {
                     ui.dnd_drag_source(item_id, col, |ui| {
                         item_frame
                             .stroke(egui::Stroke::new(2.0, colors::PINK))
-                            .fill(ui.visuals().panel_fill)
+                            .fill(ui.visuals().widgets.noninteractive.bg_stroke.color)
                             .show(ui, |ui| self.move_tooltip_col_presentation(ui, col));
                     })
                     .response
