@@ -86,11 +86,11 @@ impl NoteContextButton {
     }
 
     fn max_radius() -> f32 {
-        8.0
+        4.0
     }
 
     fn min_radius() -> f32 {
-        Self::max_radius() / Self::expansion_multiple()
+        2.0
     }
 
     fn max_distance_between_circles() -> f32 {

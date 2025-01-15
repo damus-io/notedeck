@@ -558,10 +558,10 @@ fn chevron(
 
 fn grab_button() -> impl egui::Widget {
     |ui: &mut egui::Ui| -> egui::Response {
-        let max_size = egui::vec2(48.0, 48.0);
+        let max_size = egui::vec2(20.0, 20.0);
         let helper = AnimationHelper::new(ui, "grab", max_size);
         let painter = ui.painter_at(helper.get_animation_rect());
-        let min_circle_radius = 2.0;
+        let min_circle_radius = 1.0;
         let cur_circle_radius = helper.scale_1d_pos(min_circle_radius);
         let horiz_spacing = 4.0;
         let vert_spacing = 10.0;
