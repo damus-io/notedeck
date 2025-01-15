@@ -6,6 +6,7 @@ use ehttp::{Request, Response};
 use enostr::{Keypair, Pubkey, SecretKey};
 use poll_promise::Promise;
 use serde::{Deserialize, Serialize};
+use tracing::error;
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum AcquireKeyError {
@@ -104,7 +105,10 @@ fn nip05_promise_wrapper(id: &str) -> Promise<Result<Keypair, AcquireKeyError>> 
         let result = original_promise.block_and_take();
         let transformed_result = match result {
             Ok(public_key) => Ok(Keypair::only_pubkey(public_key)),
-            Err(e) => Err(AcquireKeyError::Nip05Failed(e.to_string())),
+            Err(e) => {
+                error!("Nip05 Failed: {e}");
+                Err(AcquireKeyError::Nip05Failed(e.to_string()))
+            }
         };
         sender.send(transformed_result);
     });
