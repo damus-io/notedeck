@@ -250,12 +250,12 @@ impl<'a> NavTitle<'a> {
     fn add_move_tooltip(&mut self, id: egui::Id, move_resp: &egui::Response) -> Option<usize> {
         let mut inner_resp = None;
         move_resp.show_tooltip_ui(|ui| {
+            // dnd frame color workaround
+            ui.visuals_mut().widgets.inactive.bg_stroke = Stroke::default();
             let x_range = ui.available_rect_before_wrap().x_range();
             let is_dragging = egui::DragAndDrop::payload::<usize>(ui.ctx()).is_some(); // must be outside ui.dnd_drop_zone to capture properly
             let (_, _) = ui.dnd_drop_zone::<usize, ()>(
-                egui::Frame::none()
-                    .inner_margin(Margin::same(8.0))
-                    .rounding(egui::Rounding::same(8.0)),
+                egui::Frame::none().inner_margin(Margin::same(8.0)),
                 |ui| {
                     let distances: Vec<(egui::Response, f32)> =
                         self.collect_column_distances(ui, id);
