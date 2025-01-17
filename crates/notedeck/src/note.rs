@@ -1,11 +1,85 @@
 use crate::notecache::NoteCache;
+use enostr::NoteId;
 use nostrdb::{Ndb, Note, NoteKey, QueryResult, Transaction};
+use std::borrow::Borrow;
 use std::cmp::Ordering;
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
 pub struct NoteRef {
     pub key: NoteKey,
     pub created_at: u64,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq, Debug, Hash)]
+pub struct RootNoteIdBuf([u8; 32]);
+
+#[derive(Clone, Copy, Eq, PartialEq, Debug, Hash)]
+pub struct RootNoteId<'a>(&'a [u8; 32]);
+
+impl RootNoteIdBuf {
+    pub fn to_note_id(self) -> NoteId {
+        NoteId::new(self.0)
+    }
+
+    pub fn bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+
+    pub fn new(
+        ndb: &Ndb,
+        note_cache: &mut NoteCache,
+        txn: &Transaction,
+        id: &[u8; 32],
+    ) -> Result<RootNoteIdBuf, RootIdError> {
+        root_note_id_from_selected_id(ndb, note_cache, txn, id).map(|rnid| Self(*rnid.bytes()))
+    }
+
+    pub fn new_unsafe(id: [u8; 32]) -> Self {
+        Self(id)
+    }
+
+    pub fn borrow(&self) -> RootNoteId<'_> {
+        RootNoteId(self.bytes())
+    }
+}
+
+impl<'a> RootNoteId<'a> {
+    pub fn to_note_id(self) -> NoteId {
+        NoteId::new(*self.0)
+    }
+
+    pub fn bytes(&self) -> &[u8; 32] {
+        self.0
+    }
+
+    pub fn to_owned(&self) -> RootNoteIdBuf {
+        RootNoteIdBuf::new_unsafe(*self.bytes())
+    }
+
+    pub fn new(
+        ndb: &Ndb,
+        note_cache: &mut NoteCache,
+        txn: &'a Transaction,
+        id: &'a [u8; 32],
+    ) -> Result<RootNoteId<'a>, RootIdError> {
+        root_note_id_from_selected_id(ndb, note_cache, txn, id)
+    }
+
+    pub fn new_unsafe(id: &'a [u8; 32]) -> Self {
+        Self(id)
+    }
+}
+
+impl Borrow<[u8; 32]> for RootNoteIdBuf {
+    fn borrow(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+impl<'a> Borrow<[u8; 32]> for RootNoteId<'a> {
+    fn borrow(&self) -> &[u8; 32] {
+        self.0
+    }
 }
 
 impl NoteRef {
