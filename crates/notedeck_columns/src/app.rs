@@ -51,6 +51,8 @@ pub struct Damus {
     //frame_history: crate::frame_history::FrameHistory,
 
     // TODO: make these bitflags
+    /// Were columns loaded from the commandline? If so disable persistence.
+    pub tmp_columns: bool,
     pub debug: bool,
     pub since_optimize: bool,
     pub textmode: bool,
@@ -378,7 +380,8 @@ impl Damus {
             .as_ref()
             .map(|a| a.pubkey.bytes());
 
-        let decks_cache = if !parsed_args.columns.is_empty() {
+        let tmp_columns = !parsed_args.columns.is_empty();
+        let decks_cache = if tmp_columns {
             info!("DecksCache: loading from command line arguments");
             let mut columns: Columns = Columns::new();
             for col in parsed_args.columns {
@@ -424,6 +427,7 @@ impl Damus {
             textmode: parsed_args.textmode,
             //frame_history: FrameHistory::default(),
             view_state: ViewState::default(),
+            tmp_columns,
             support,
             decks_cache,
             debug,
@@ -465,6 +469,7 @@ impl Damus {
             drafts: Drafts::default(),
             state: DamusState::Initializing,
             textmode: false,
+            tmp_columns: true,
             //frame_history: FrameHistory::default(),
             view_state: ViewState::default(),
             support,
@@ -502,6 +507,7 @@ fn render_damus_mobile(app: &mut Damus, app_ctx: &mut AppContext<'_>, ui: &mut e
 
     if !app.columns(app_ctx.accounts).columns().is_empty()
         && nav::render_nav(0, app, app_ctx, ui).process_render_nav_response(app, app_ctx)
+        && !app.tmp_columns
     {
         storage::save_decks_cache(app_ctx.path, &app.decks_cache);
     }
@@ -599,6 +605,10 @@ fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus, ctx: &mut App
             for response in responses {
                 let save = response.process_render_nav_response(app, ctx);
                 save_cols = save_cols || save;
+            }
+
+            if app.tmp_columns {
+                save_cols = false;
             }
 
             if save_cols {
