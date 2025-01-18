@@ -367,7 +367,7 @@ impl Keyword {
         ("contact", Keyword::Contact, false),
         ("explicit", Keyword::Explicit, true),
         ("deck_author", Keyword::DeckAuthor, false),
-        ("profile", Keyword::Profile, true),
+        ("profile", Keyword::Profile, false),
         ("hashtag", Keyword::Hashtag, true),
         ("generic", Keyword::Generic, false),
         ("thread", Keyword::Thread, true),
