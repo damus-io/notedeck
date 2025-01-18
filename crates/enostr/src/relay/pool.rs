@@ -286,6 +286,24 @@ impl RelayPool {
         }
     }
 
+    /// check whether a relay url is valid to add
+    pub fn is_valid_url(&self, url: &str) -> bool {
+        if url.is_empty() {
+            return false;
+        }
+        let url = match Url::parse(url) {
+            Ok(parsed_url) => parsed_url.to_string(),
+            Err(_err) => {
+                // debug!("bad relay url \"{}\": {:?}", url, err);
+                return false;
+            }
+        };
+        if self.has(&url) {
+            return false;
+        }
+        true
+    }
+
     // Adds a websocket url to the RelayPool.
     pub fn add_url(
         &mut self,

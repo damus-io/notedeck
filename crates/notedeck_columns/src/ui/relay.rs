@@ -1,12 +1,21 @@
+use std::collections::HashMap;
+
+use crate::colors::PINK;
 use crate::relay_pool_manager::{RelayPoolManager, RelayStatus};
 use crate::ui::{Preview, PreviewConfig, View};
-use egui::{Align, Button, Frame, Layout, Margin, Rgba, RichText, Rounding, Ui, Vec2};
+use egui::{Align, Button, Frame, Id, Image, Layout, Margin, Rgba, RichText, Rounding, Ui, Vec2};
 
 use enostr::RelayPool;
 use notedeck::NotedeckTextStyle;
 
+use tracing::debug;
+
+use super::add_column::sized_button;
+use super::padding;
+
 pub struct RelayView<'a> {
     manager: RelayPoolManager<'a>,
+    id_string_map: &'a mut HashMap<Id, String>,
 }
 
 impl View for RelayView<'_> {
@@ -19,13 +28,6 @@ impl View for RelayView<'_> {
                     RichText::new("Relays").text_style(NotedeckTextStyle::Heading2.text_style()),
                 );
             });
-
-            // TODO: implement manually adding relays
-            // ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            //     if ui.add(add_relay_button()).clicked() {
-            //         // TODO: navigate to 'add relay view'
-            //     };
-            // });
         });
 
         ui.add_space(8.0);
@@ -37,13 +39,20 @@ impl View for RelayView<'_> {
                 if let Some(indices) = self.show_relays(ui) {
                     self.manager.remove_relays(indices);
                 }
+                ui.add_space(8.0);
+                if let Some(add_relay) = self.show_add_relay_ui(ui) {
+                    debug!("add relay \"{}\"", add_relay);
+                }
             });
     }
 }
 
 impl<'a> RelayView<'a> {
-    pub fn new(manager: RelayPoolManager<'a>) -> Self {
-        RelayView { manager }
+    pub fn new(manager: RelayPoolManager<'a>, id_string_map: &'a mut HashMap<Id, String>) -> Self {
+        RelayView {
+            manager,
+            id_string_map,
+        }
     }
 
     pub fn panel(&mut self, ui: &mut egui::Ui) {
@@ -102,6 +111,81 @@ impl<'a> RelayView<'a> {
 
         indices_to_remove
     }
+
+    const RELAY_PREFILL: &'static str = "wss://";
+
+    fn show_add_relay_ui(&mut self, ui: &mut Ui) -> Option<String> {
+        let id = ui.id().with("add-relay)");
+        match self.id_string_map.get(&id) {
+            None => {
+                ui.with_layout(Layout::top_down(Align::Min), |ui| {
+                    let relay_button = add_relay_button();
+                    if ui.add(relay_button).clicked() {
+                        debug!("add relay clicked");
+                        self.id_string_map
+                            .insert(id, Self::RELAY_PREFILL.to_string());
+                    };
+                });
+                None
+            }
+            Some(_) => {
+                ui.with_layout(Layout::top_down(Align::Min), |ui| {
+                    self.add_relay_entry(ui, id)
+                })
+                .inner
+            }
+        }
+    }
+
+    pub fn add_relay_entry(&mut self, ui: &mut Ui, id: Id) -> Option<String> {
+        padding(16.0, ui, |ui| {
+            let text_buffer = self
+                .id_string_map
+                .entry(id)
+                .or_insert_with(|| Self::RELAY_PREFILL.to_string());
+            let is_enabled = self.manager.is_valid_relay(text_buffer);
+            let text_edit = egui::TextEdit::singleline(text_buffer)
+                .hint_text(
+                    RichText::new("Enter the relay here")
+                        .text_style(NotedeckTextStyle::Body.text_style()),
+                )
+                .vertical_align(Align::Center)
+                .desired_width(f32::INFINITY)
+                .min_size(Vec2::new(0.0, 40.0))
+                .margin(Margin::same(12.0));
+            ui.add(text_edit);
+            ui.add_space(8.0);
+            if ui
+                .add_sized(egui::vec2(50.0, 40.0), add_relay_button2(is_enabled))
+                .clicked()
+            {
+                self.id_string_map.remove(&id) // remove and return the value
+            } else {
+                None
+            }
+        })
+        .inner
+    }
+}
+
+fn add_relay_button() -> Button<'static> {
+    let img_data = egui::include_image!("../../../../assets/icons/add_relay_icon_4x.png");
+    let img = Image::new(img_data).fit_to_exact_size(Vec2::new(48.0, 48.0));
+    Button::image_and_text(
+        img,
+        RichText::new(" Add relay")
+            .size(16.0)
+            // TODO: this color should not be hard coded. Find some way to add it to the visuals
+            .color(PINK),
+    )
+    .frame(false)
+}
+
+fn add_relay_button2(is_enabled: bool) -> impl egui::Widget + 'static {
+    move |ui: &mut egui::Ui| -> egui::Response {
+        let button_widget = sized_button("Add");
+        ui.add_enabled(is_enabled, button_widget)
+    }
 }
 
 fn get_right_side_width(status: RelayStatus) -> f32 {
@@ -110,11 +194,6 @@ fn get_right_side_width(status: RelayStatus) -> f32 {
         RelayStatus::Connecting => 160.0,
         RelayStatus::Disconnected => 175.0,
     }
-}
-
-#[allow(unused)]
-fn add_relay_button() -> egui::Button<'static> {
-    Button::new("+ Add relay").min_size(Vec2::new(0.0, 32.0))
 }
 
 fn delete_button(_dark_mode: bool) -> egui::Button<'static> {
@@ -201,7 +280,8 @@ mod preview {
     impl App for RelayViewPreview {
         fn update(&mut self, _app: &mut AppContext<'_>, ui: &mut egui::Ui) {
             self.pool.try_recv();
-            RelayView::new(RelayPoolManager::new(&mut self.pool)).ui(ui);
+            let mut id_string_map = HashMap::new();
+            RelayView::new(RelayPoolManager::new(&mut self.pool), &mut id_string_map).ui(ui);
         }
     }
 

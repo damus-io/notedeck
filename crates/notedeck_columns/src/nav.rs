@@ -291,7 +291,7 @@ fn render_nav_body(
         }
         Route::Relays => {
             let manager = RelayPoolManager::new(ctx.pool);
-            RelayView::new(manager).ui(ui);
+            RelayView::new(manager, &mut app.view_state.id_string_map).ui(ui);
             None
         }
         Route::ComposeNote => {

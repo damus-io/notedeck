@@ -44,6 +44,11 @@ impl<'a> RelayPoolManager<'a> {
     pub fn add_relay(&mut self, ctx: &egui::Context, relay_url: String) {
         let _ = self.pool.add_url(relay_url, create_wakeup(ctx));
     }
+
+    /// check whether a relay url is valid
+    pub fn is_valid_relay(&self, url: &str) -> bool {
+        self.pool.is_valid_url(url)
+    }
 }
 
 pub fn create_wakeup(ctx: &egui::Context) -> impl Fn() + Send + Sync + Clone + 'static {

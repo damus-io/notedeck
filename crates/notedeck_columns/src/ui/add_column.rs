@@ -447,7 +447,7 @@ fn add_column_button() -> impl Widget {
     sized_button("Add")
 }
 
-fn sized_button(text: &str) -> impl Widget + '_ {
+pub(crate) fn sized_button(text: &str) -> impl Widget + '_ {
     move |ui: &mut egui::Ui| -> egui::Response {
         let painter = ui.painter();
         let galley = painter.layout(
