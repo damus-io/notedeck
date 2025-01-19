@@ -151,6 +151,7 @@ impl TimelineTab {
                     // reversed in this case means chronological, since the
                     // default is reverse-chronological. yeah it's confusing.
                     if !reversed {
+                        debug!("inserting {} new notes at start", new_refs.len());
                         list.items_inserted_at_start(new_items);
                     }
                 }
