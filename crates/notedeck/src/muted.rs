@@ -1,7 +1,7 @@
 use nostrdb::Note;
 use std::collections::BTreeSet;
 
-use tracing::{debug, trace};
+//use tracing::{debug, trace};
 
 // If the note is muted return a reason string, otherwise None
 pub type MuteFun = dyn Fn(&Note, &[u8; 32]) -> bool;
@@ -35,18 +35,22 @@ impl std::fmt::Debug for Muted {
 impl Muted {
     // If the note is muted return a reason string, otherwise None
     pub fn is_muted(&self, note: &Note, thread: &[u8; 32]) -> bool {
+        /*
         trace!(
             "{}: thread: {}",
             hex::encode(note.id()),
             hex::encode(thread)
         );
+        */
 
         if self.pubkeys.contains(note.pubkey()) {
-            debug!(
+            /*
+            trace!(
                 "{}: MUTED pubkey: {}",
                 hex::encode(note.id()),
                 hex::encode(note.pubkey())
             );
+            */
             return true;
         }
         // FIXME - Implement hashtag muting here
@@ -64,11 +68,13 @@ impl Muted {
         // }
 
         if self.threads.contains(thread) {
-            debug!(
+            /*
+            trace!(
                 "{}: MUTED thread: {}",
                 hex::encode(note.id()),
                 hex::encode(thread)
             );
+            */
             return true;
         }
 
