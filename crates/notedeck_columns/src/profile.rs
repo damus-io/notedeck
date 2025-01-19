@@ -1,19 +1,16 @@
 use std::collections::HashMap;
 
-use enostr::{Filter, FullKeypair, Pubkey, RelayPool};
-use nostrdb::{
-    FilterBuilder, Ndb, Note, NoteBuildOptions, NoteBuilder, ProfileRecord, Transaction,
-};
+use enostr::{Filter, FullKeypair, Pubkey, PubkeyRef, RelayPool};
+use nostrdb::{FilterBuilder, Ndb, Note, NoteBuildOptions, NoteBuilder, ProfileRecord};
 
-use notedeck::{filter::default_limit, FilterState, NoteCache, NoteRef};
+use notedeck::{filter::default_limit, FilterState};
 use tracing::info;
 
 use crate::{
     multi_subscriber::MultiSubscriber,
-    notes_holder::NotesHolder,
     profile_state::ProfileState,
     route::{Route, Router},
-    timeline::{copy_notes_into_timeline, PubkeySource, Timeline, TimelineKind, TimelineTab},
+    timeline::{PubkeySource, Timeline, TimelineKind, TimelineTab},
 };
 
 pub struct NostrName<'a> {
@@ -80,83 +77,28 @@ pub fn get_display_name<'a>(record: Option<&ProfileRecord<'a>>) -> NostrName<'a>
 
 pub struct Profile {
     pub timeline: Timeline,
-    pub multi_subscriber: Option<MultiSubscriber>,
+    pub subscription: Option<MultiSubscriber>,
 }
 
 impl Profile {
-    pub fn new(
-        txn: &Transaction,
-        ndb: &Ndb,
-        note_cache: &mut NoteCache,
-        source: PubkeySource,
-        filters: Vec<Filter>,
-        notes: Vec<NoteRef>,
-    ) -> Self {
-        let mut timeline = Timeline::new(
+    pub fn new(source: PubkeySource, filters: Vec<Filter>) -> Self {
+        let timeline = Timeline::new(
             TimelineKind::profile(source),
             FilterState::ready(filters),
             TimelineTab::full_tabs(),
         );
 
-        copy_notes_into_timeline(&mut timeline, txn, ndb, note_cache, notes);
-
         Profile {
             timeline,
-            multi_subscriber: None,
+            subscription: None,
         }
     }
 
-    fn filters_raw(pk: &[u8; 32]) -> Vec<FilterBuilder> {
+    pub fn filters_raw(pk: PubkeyRef<'_>) -> Vec<FilterBuilder> {
         vec![Filter::new()
-            .authors([pk])
+            .authors([pk.bytes()])
             .kinds([1])
             .limit(default_limit())]
-    }
-}
-
-impl NotesHolder for Profile {
-    fn get_multi_subscriber(&mut self) -> Option<&mut MultiSubscriber> {
-        self.multi_subscriber.as_mut()
-    }
-
-    fn get_view(&mut self) -> &mut crate::timeline::TimelineTab {
-        self.timeline.current_view_mut()
-    }
-
-    fn filters(for_id: &[u8; 32]) -> Vec<enostr::Filter> {
-        Profile::filters_raw(for_id)
-            .into_iter()
-            .map(|mut f| f.build())
-            .collect()
-    }
-
-    fn filters_since(for_id: &[u8; 32], since: u64) -> Vec<enostr::Filter> {
-        Profile::filters_raw(for_id)
-            .into_iter()
-            .map(|f| f.since(since).build())
-            .collect()
-    }
-
-    fn new_notes_holder(
-        txn: &Transaction,
-        ndb: &Ndb,
-        note_cache: &mut NoteCache,
-        id: &[u8; 32],
-        filters: Vec<Filter>,
-        notes: Vec<NoteRef>,
-    ) -> Self {
-        Profile::new(
-            txn,
-            ndb,
-            note_cache,
-            PubkeySource::Explicit(Pubkey::new(*id)),
-            filters,
-            notes,
-        )
-    }
-
-    fn set_multi_subscriber(&mut self, subscriber: MultiSubscriber) {
-        self.multi_subscriber = Some(subscriber);
     }
 }
 

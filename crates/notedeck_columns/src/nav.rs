@@ -5,12 +5,10 @@ use crate::{
     column::ColumnsAction,
     deck_state::DeckState,
     decks::{Deck, DecksAction, DecksCache},
-    notes_holder::NotesHolder,
-    profile::{Profile, ProfileAction, SaveProfileChanges},
+    profile::{ProfileAction, SaveProfileChanges},
     profile_state::ProfileState,
     relay_pool_manager::RelayPoolManager,
     route::Route,
-    thread::Thread,
     timeline::{
         route::{render_timeline_route, TimelineRoute},
         Timeline,
@@ -29,7 +27,7 @@ use crate::{
     Damus,
 };
 
-use notedeck::{AccountsAction, AppContext};
+use notedeck::{AccountsAction, AppContext, RootIdError};
 
 use egui_nav::{Nav, NavAction, NavResponse, NavUiType};
 use nostrdb::{Ndb, Transaction};
@@ -162,11 +160,11 @@ impl RenderNavResponse {
                         ctx.ndb,
                         get_active_columns_mut(ctx.accounts, &mut app.decks_cache),
                         col,
-                        &mut app.threads,
-                        &mut app.profiles,
+                        &mut app.timeline_cache,
                         ctx.note_cache,
                         ctx.pool,
                         &txn,
+                        ctx.unknown_ids,
                     );
                 }
 
@@ -195,34 +193,38 @@ impl RenderNavResponse {
                         .router_mut()
                         .pop();
                     let txn = Transaction::new(ctx.ndb).expect("txn");
-                    if let Some(Route::Timeline(TimelineRoute::Thread(id))) = r {
-                        let root_id = {
-                            notedeck::note::root_note_id_from_selected_id(
-                                ctx.ndb,
-                                ctx.note_cache,
-                                &txn,
-                                id.bytes(),
-                            )
-                        };
-                        Thread::unsubscribe_locally(
-                            &txn,
-                            ctx.ndb,
-                            ctx.note_cache,
-                            &mut app.threads,
-                            ctx.pool,
-                            root_id,
-                        );
-                    }
 
-                    if let Some(Route::Timeline(TimelineRoute::Profile(pubkey))) = r {
-                        Profile::unsubscribe_locally(
-                            &txn,
+                    if let Some(Route::Timeline(TimelineRoute::Thread(id))) = r {
+                        match notedeck::note::root_note_id_from_selected_id(
                             ctx.ndb,
                             ctx.note_cache,
-                            &mut app.profiles,
-                            ctx.pool,
-                            pubkey.bytes(),
-                        );
+                            &txn,
+                            id.bytes(),
+                        ) {
+                            Ok(root_id) => {
+                                if let Some(thread) =
+                                    app.timeline_cache.threads.get_mut(root_id.bytes())
+                                {
+                                    if let Some(sub) = &mut thread.subscription {
+                                        sub.unsubscribe(ctx.ndb, ctx.pool);
+                                    }
+                                }
+                            }
+
+                            Err(RootIdError::NoteNotFound) => {
+                                error!("thread returned: note not found for unsub??: {}", id.hex())
+                            }
+
+                            Err(RootIdError::NoRootId) => {
+                                error!("thread returned: note not found for unsub??: {}", id.hex())
+                            }
+                        }
+                    } else if let Some(Route::Timeline(TimelineRoute::Profile(pubkey))) = r {
+                        if let Some(profile) = app.timeline_cache.profiles.get_mut(pubkey.bytes()) {
+                            if let Some(sub) = &mut profile.subscription {
+                                sub.unsubscribe(ctx.ndb, ctx.pool);
+                            }
+                        }
                     }
 
                     switching_occured = true;
@@ -263,8 +265,7 @@ fn render_nav_body(
             ctx.img_cache,
             ctx.unknown_ids,
             ctx.note_cache,
-            &mut app.threads,
-            &mut app.profiles,
+            &mut app.timeline_cache,
             ctx.accounts,
             *tlr,
             col,

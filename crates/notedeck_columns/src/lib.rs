@@ -20,7 +20,6 @@ mod key_parsing;
 pub mod login_manager;
 mod multi_subscriber;
 mod nav;
-mod notes_holder;
 mod post;
 mod profile;
 mod profile_state;

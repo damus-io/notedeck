@@ -117,22 +117,31 @@ impl PartialOrd for NoteRef {
     }
 }
 
-pub fn root_note_id_from_selected_id<'a>(
+#[derive(Debug, Copy, Clone)]
+pub enum RootIdError {
+    NoteNotFound,
+    NoRootId,
+}
+
+pub fn root_note_id_from_selected_id<'txn, 'a>(
     ndb: &Ndb,
     note_cache: &mut NoteCache,
-    txn: &'a Transaction,
+    txn: &'txn Transaction,
     selected_note_id: &'a [u8; 32],
-) -> &'a [u8; 32] {
+) -> Result<RootNoteId<'txn>, RootIdError>
+where
+    'a: 'txn,
+{
     let selected_note_key = if let Ok(key) = ndb.get_notekey_by_id(txn, selected_note_id) {
         key
     } else {
-        return selected_note_id;
+        return Err(RootIdError::NoteNotFound);
     };
 
     let note = if let Ok(note) = ndb.get_note_by_key(txn, selected_note_key) {
         note
     } else {
-        return selected_note_id;
+        return Err(RootIdError::NoteNotFound);
     };
 
     note_cache
@@ -140,5 +149,8 @@ pub fn root_note_id_from_selected_id<'a>(
         .reply
         .borrow(note.tags())
         .root()
-        .map_or_else(|| selected_note_id, |nr| nr.id)
+        .map_or_else(
+            || Ok(RootNoteId::new_unsafe(selected_note_id)),
+            |rnid| Ok(RootNoteId::new_unsafe(rnid.id)),
+        )
 }

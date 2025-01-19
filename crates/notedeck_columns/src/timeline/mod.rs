@@ -3,11 +3,13 @@ use crate::{
     decks::DecksCache,
     error::Error,
     subscriptions::{self, SubKind, Subscriptions},
+    thread::Thread,
     Result,
 };
 
 use notedeck::{
-    filter, CachedNote, FilterError, FilterState, FilterStates, NoteCache, NoteRef, UnknownIds,
+    filter, CachedNote, FilterError, FilterState, FilterStates, NoteCache, NoteRef, RootNoteIdBuf,
+    UnknownIds,
 };
 
 use std::fmt;
@@ -15,16 +17,18 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use egui_virtual_list::VirtualList;
 use enostr::{PoolRelay, Pubkey, RelayPool};
-use nostrdb::{Filter, Ndb, Note, Subscription, Transaction};
+use nostrdb::{Filter, Ndb, Note, NoteKey, Subscription, Transaction};
 use std::cell::RefCell;
 use std::hash::Hash;
 use std::rc::Rc;
 
 use tracing::{debug, error, info, warn};
 
+pub mod cache;
 pub mod kind;
 pub mod route;
 
+pub use cache::{TimelineCache, TimelineCacheKey};
 pub use kind::{ColumnTitle, PubkeySource, TimelineKind};
 pub use route::TimelineRoute;
 
@@ -123,7 +127,7 @@ impl TimelineTab {
         }
     }
 
-    pub fn insert(&mut self, new_refs: &[NoteRef], reversed: bool) {
+    fn insert(&mut self, new_refs: &[NoteRef], reversed: bool) {
         if new_refs.is_empty() {
             return;
         }
@@ -189,7 +193,6 @@ pub struct Timeline {
     pub views: Vec<TimelineTab>,
     pub selected_view: usize,
 
-    /// Our nostrdb subscription
     pub subscription: Option<Subscription>,
 }
 
@@ -208,6 +211,18 @@ impl Timeline {
             FilterState::ready(filter),
             TimelineTab::full_tabs(),
         ))
+    }
+
+    pub fn thread(note_id: RootNoteIdBuf) -> Self {
+        let filter = Thread::filters_raw(note_id.borrow())
+            .iter_mut()
+            .map(|fb| fb.build())
+            .collect();
+        Timeline::new(
+            TimelineKind::Thread(note_id),
+            FilterState::ready(filter),
+            TimelineTab::only_notes_and_replies(),
+        )
     }
 
     pub fn hashtag(hashtag: String) -> Self {
@@ -280,18 +295,107 @@ impl Timeline {
         self.views.iter_mut().find(|tab| tab.filter == view)
     }
 
-    pub fn poll_notes_into_view(
-        timeline_idx: usize,
-        mut timelines: Vec<&mut Timeline>,
+    /// Initial insert of notes into a timeline. Subsequent inserts should
+    /// just use the insert function
+    pub fn insert_new(
+        &mut self,
+        txn: &Transaction,
+        ndb: &Ndb,
+        note_cache: &mut NoteCache,
+        notes: &[NoteRef],
+    ) {
+        let filters = {
+            let views = &self.views;
+            let filters: Vec<fn(&CachedNote, &Note) -> bool> =
+                views.iter().map(|v| v.filter.filter()).collect();
+            filters
+        };
+
+        for note_ref in notes {
+            for (view, filter) in filters.iter().enumerate() {
+                if let Ok(note) = ndb.get_note_by_key(txn, note_ref.key) {
+                    if filter(
+                        note_cache.cached_note_or_insert_mut(note_ref.key, &note),
+                        &note,
+                    ) {
+                        self.views[view].notes.push(*note_ref)
+                    }
+                }
+            }
+        }
+    }
+
+    /// The main function used for inserting notes into timelines. Handles
+    /// inserting into multiple views if we have them. All timeline note
+    /// insertions should use this function.
+    pub fn insert(
+        &mut self,
+        new_note_ids: &[NoteKey],
         ndb: &Ndb,
         txn: &Transaction,
         unknown_ids: &mut UnknownIds,
         note_cache: &mut NoteCache,
+        reversed: bool,
     ) -> Result<()> {
-        let timeline = timelines
-            .get_mut(timeline_idx)
-            .ok_or(Error::TimelineNotFound)?;
-        let sub = timeline
+        let mut new_refs: Vec<(Note, NoteRef)> = Vec::with_capacity(new_note_ids.len());
+
+        for key in new_note_ids {
+            let note = if let Ok(note) = ndb.get_note_by_key(txn, *key) {
+                note
+            } else {
+                error!("hit race condition in poll_notes_into_view: https://github.com/damus-io/nostrdb/issues/35 note {:?} was not added to timeline", key);
+                continue;
+            };
+
+            // Ensure that unknown ids are captured when inserting notes
+            // into the timeline
+            UnknownIds::update_from_note(txn, ndb, unknown_ids, note_cache, &note);
+
+            let created_at = note.created_at();
+            new_refs.push((
+                note,
+                NoteRef {
+                    key: *key,
+                    created_at,
+                },
+            ));
+        }
+
+        for view in &mut self.views {
+            match view.filter {
+                ViewFilter::NotesAndReplies => {
+                    let refs: Vec<NoteRef> = new_refs.iter().map(|(_note, nr)| *nr).collect();
+
+                    view.insert(&refs, reversed);
+                }
+
+                ViewFilter::Notes => {
+                    let mut filtered_refs = Vec::with_capacity(new_refs.len());
+                    for (note, nr) in &new_refs {
+                        let cached_note = note_cache.cached_note_or_insert(nr.key, note);
+
+                        if ViewFilter::filter_notes(cached_note, note) {
+                            filtered_refs.push(*nr);
+                        }
+                    }
+
+                    view.insert(&filtered_refs, reversed);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn poll_notes_into_view(
+        &mut self,
+        ndb: &Ndb,
+        txn: &Transaction,
+        unknown_ids: &mut UnknownIds,
+        note_cache: &mut NoteCache,
+        reversed: bool,
+    ) -> Result<()> {
+        let sub = self
             .subscription
             .ok_or(Error::App(notedeck::Error::no_active_sub()))?;
 
@@ -302,55 +406,7 @@ impl Timeline {
             debug!("{} new notes! {:?}", new_note_ids.len(), new_note_ids);
         }
 
-        let mut new_refs: Vec<(Note, NoteRef)> = Vec::with_capacity(new_note_ids.len());
-
-        for key in new_note_ids {
-            let note = if let Ok(note) = ndb.get_note_by_key(txn, key) {
-                note
-            } else {
-                error!("hit race condition in poll_notes_into_view: https://github.com/damus-io/nostrdb/issues/35 note {:?} was not added to timeline", key);
-                continue;
-            };
-
-            UnknownIds::update_from_note(txn, ndb, unknown_ids, note_cache, &note);
-
-            let created_at = note.created_at();
-            new_refs.push((note, NoteRef { key, created_at }));
-        }
-
-        // We're assuming reverse-chronological here (timelines). This
-        // flag ensures we trigger the items_inserted_at_start
-        // optimization in VirtualList. We need this flag because we can
-        // insert notes into chronological order sometimes, and this
-        // optimization doesn't make sense in those situations.
-        let reversed = false;
-
-        // ViewFilter::NotesAndReplies
-        if let Some(view) = timeline.view_mut(ViewFilter::NotesAndReplies) {
-            let refs: Vec<NoteRef> = new_refs.iter().map(|(_note, nr)| *nr).collect();
-
-            view.insert(&refs, reversed);
-        }
-
-        //
-        // handle the filtered case (ViewFilter::Notes, no replies)
-        //
-        // TODO(jb55): this is mostly just copied from above, let's just use a loop
-        //             I initially tried this but ran into borrow checker issues
-        if let Some(view) = timeline.view_mut(ViewFilter::Notes) {
-            let mut filtered_refs = Vec::with_capacity(new_refs.len());
-            for (note, nr) in &new_refs {
-                let cached_note = note_cache.cached_note_or_insert(nr.key, note);
-
-                if ViewFilter::filter_notes(cached_note, note) {
-                    filtered_refs.push(*nr);
-                }
-            }
-
-            view.insert(&filtered_refs, reversed);
-        }
-
-        Ok(())
+        self.insert(&new_note_ids, ndb, txn, unknown_ids, note_cache, reversed)
     }
 }
 
@@ -550,43 +606,16 @@ fn setup_initial_timeline(
         timeline.subscription, timeline.filter
     );
     let lim = filters[0].limit().unwrap_or(filter::default_limit()) as i32;
-    let notes = ndb
+
+    let notes: Vec<NoteRef> = ndb
         .query(&txn, filters, lim)?
         .into_iter()
         .map(NoteRef::from_query_result)
         .collect();
 
-    copy_notes_into_timeline(timeline, &txn, ndb, note_cache, notes);
+    timeline.insert_new(&txn, ndb, note_cache, &notes);
 
     Ok(())
-}
-
-pub fn copy_notes_into_timeline(
-    timeline: &mut Timeline,
-    txn: &Transaction,
-    ndb: &Ndb,
-    note_cache: &mut NoteCache,
-    notes: Vec<NoteRef>,
-) {
-    let filters = {
-        let views = &timeline.views;
-        let filters: Vec<fn(&CachedNote, &Note) -> bool> =
-            views.iter().map(|v| v.filter.filter()).collect();
-        filters
-    };
-
-    for note_ref in notes {
-        for (view, filter) in filters.iter().enumerate() {
-            if let Ok(note) = ndb.get_note_by_key(txn, note_ref.key) {
-                if filter(
-                    note_cache.cached_note_or_insert_mut(note_ref.key, &note),
-                    &note,
-                ) {
-                    timeline.views[view].notes.push(note_ref)
-                }
-            }
-        }
-    }
 }
 
 pub fn setup_initial_nostrdb_subs(

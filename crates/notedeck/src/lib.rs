@@ -29,7 +29,7 @@ pub use filter::{FilterState, FilterStates, UnifiedSubscription};
 pub use fonts::NamedFontFamily;
 pub use imgcache::ImageCache;
 pub use muted::{MuteFun, Muted};
-pub use note::NoteRef;
+pub use note::{NoteRef, RootIdError, RootNoteId, RootNoteIdBuf};
 pub use notecache::{CachedNote, NoteCache};
 pub use result::Result;
 pub use storage::{

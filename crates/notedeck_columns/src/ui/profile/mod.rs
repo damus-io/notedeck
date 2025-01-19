@@ -2,33 +2,39 @@ pub mod edit;
 pub mod picture;
 pub mod preview;
 
-use crate::profile::get_display_name;
-use crate::ui::note::NoteOptions;
-use crate::{colors, images};
-use crate::{notes_holder::NotesHolder, NostrName};
 pub use edit::EditProfileView;
 use egui::load::TexturePoll;
 use egui::{vec2, Color32, Label, Layout, Rect, RichText, Rounding, ScrollArea, Sense, Stroke};
-use enostr::Pubkey;
+use enostr::{Pubkey, PubkeyRef};
 use nostrdb::{Ndb, ProfileRecord, Transaction};
 pub use picture::ProfilePic;
 pub use preview::ProfilePreview;
 use tracing::error;
 
-use crate::{actionbar::NoteAction, notes_holder::NotesHolderStorage, profile::Profile};
+use crate::{
+    actionbar::NoteAction,
+    colors, images,
+    profile::get_display_name,
+    timeline::{TimelineCache, TimelineCacheKey},
+    ui::{
+        note::NoteOptions,
+        timeline::{tabs_ui, TimelineTabView},
+    },
+    NostrName,
+};
 
-use super::timeline::{tabs_ui, TimelineTabView};
-use notedeck::{Accounts, ImageCache, MuteFun, NoteCache, NotedeckTextStyle};
+use notedeck::{Accounts, ImageCache, MuteFun, NoteCache, NotedeckTextStyle, UnknownIds};
 
 pub struct ProfileView<'a> {
     pubkey: &'a Pubkey,
     accounts: &'a Accounts,
     col_id: usize,
-    profiles: &'a mut NotesHolderStorage<Profile>,
+    timeline_cache: &'a mut TimelineCache,
     note_options: NoteOptions,
     ndb: &'a Ndb,
     note_cache: &'a mut NoteCache,
     img_cache: &'a mut ImageCache,
+    unknown_ids: &'a mut UnknownIds,
     is_muted: &'a MuteFun,
 }
 
@@ -43,10 +49,11 @@ impl<'a> ProfileView<'a> {
         pubkey: &'a Pubkey,
         accounts: &'a Accounts,
         col_id: usize,
-        profiles: &'a mut NotesHolderStorage<Profile>,
+        timeline_cache: &'a mut TimelineCache,
         ndb: &'a Ndb,
         note_cache: &'a mut NoteCache,
         img_cache: &'a mut ImageCache,
+        unknown_ids: &'a mut UnknownIds,
         is_muted: &'a MuteFun,
         note_options: NoteOptions,
     ) -> Self {
@@ -54,10 +61,11 @@ impl<'a> ProfileView<'a> {
             pubkey,
             accounts,
             col_id,
-            profiles,
+            timeline_cache,
             ndb,
             note_cache,
             img_cache,
+            unknown_ids,
             note_options,
             is_muted,
         }
@@ -76,23 +84,33 @@ impl<'a> ProfileView<'a> {
                         action = Some(ProfileViewAction::EditProfile);
                     }
                 }
-                let profile = self
-                    .profiles
-                    .notes_holder_mutated(self.ndb, self.note_cache, &txn, self.pubkey.bytes())
+                let profile_timeline = self
+                    .timeline_cache
+                    .notes(
+                        self.ndb,
+                        self.note_cache,
+                        &txn,
+                        TimelineCacheKey::Profile(PubkeyRef::new(self.pubkey.bytes())),
+                    )
                     .get_ptr();
 
-                profile.timeline.selected_view =
-                    tabs_ui(ui, profile.timeline.selected_view, &profile.timeline.views);
+                profile_timeline.selected_view =
+                    tabs_ui(ui, profile_timeline.selected_view, &profile_timeline.views);
 
+                let reversed = false;
                 // poll for new notes and insert them into our existing notes
-                if let Err(e) = profile.poll_notes_into_view(&txn, self.ndb) {
+                if let Err(e) = profile_timeline.poll_notes_into_view(
+                    self.ndb,
+                    &txn,
+                    self.unknown_ids,
+                    self.note_cache,
+                    reversed,
+                ) {
                     error!("Profile::poll_notes_into_view: {e}");
                 }
 
-                let reversed = false;
-
                 if let Some(note_action) = TimelineTabView::new(
-                    profile.timeline.current_view(),
+                    profile_timeline.current_view(),
                     reversed,
                     self.note_options,
                     &txn,

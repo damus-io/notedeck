@@ -473,6 +473,10 @@ fn serialize_route(route: &Route, columns: &Columns) -> Option<String> {
                         TimelineKind::Universe => {
                             selections.push(Selection::Keyword(Keyword::Universe))
                         }
+                        TimelineKind::Thread(root_id) => {
+                            selections.push(Selection::Keyword(Keyword::Thread));
+                            selections.push(Selection::Payload(hex::encode(root_id.bytes())));
+                        }
                         TimelineKind::Generic => {
                             selections.push(Selection::Keyword(Keyword::Generic))
                         }

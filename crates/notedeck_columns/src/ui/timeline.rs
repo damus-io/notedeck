@@ -286,10 +286,14 @@ impl<'a> TimelineTabView<'a> {
                     return 0;
                 };
 
-                let muted = is_muted(
-                    &note,
-                    root_note_id_from_selected_id(self.ndb, self.note_cache, self.txn, note.id()),
-                );
+                // should we mute the thread? we might not have it!
+                let muted = if let Ok(root_id) =
+                    root_note_id_from_selected_id(self.ndb, self.note_cache, self.txn, note.id())
+                {
+                    is_muted(&note, root_id.bytes())
+                } else {
+                    false
+                };
 
                 if !muted {
                     ui::padding(8.0, ui, |ui| {

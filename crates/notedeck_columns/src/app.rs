@@ -3,14 +3,10 @@ use crate::{
     column::Columns,
     decks::{Decks, DecksCache, FALLBACK_PUBKEY},
     draft::Drafts,
-    nav,
-    notes_holder::NotesHolderStorage,
-    profile::Profile,
-    storage,
+    nav, storage,
     subscriptions::{SubKind, Subscriptions},
     support::Support,
-    thread::Thread,
-    timeline::{self, Timeline},
+    timeline::{self, TimelineCache},
     ui::{self, DesktopSidePanel},
     unknowns,
     view_state::ViewState,
@@ -43,8 +39,7 @@ pub struct Damus {
     pub decks_cache: DecksCache,
     pub view_state: ViewState,
     pub drafts: Drafts,
-    pub threads: NotesHolderStorage<Thread>,
-    pub profiles: NotesHolderStorage<Profile>,
+    pub timeline_cache: TimelineCache,
     pub subscriptions: Subscriptions,
     pub support: Support,
 
@@ -152,14 +147,15 @@ fn try_process_event(
 
         if is_ready {
             let txn = Transaction::new(app_ctx.ndb).expect("txn");
+            // only thread timelines are reversed
+            let reversed = false;
 
-            if let Err(err) = Timeline::poll_notes_into_view(
-                timeline_ind,
-                current_columns.timelines_mut(),
+            if let Err(err) = current_columns.timelines_mut()[timeline_ind].poll_notes_into_view(
                 app_ctx.ndb,
                 &txn,
                 app_ctx.unknown_ids,
                 app_ctx.note_cache,
+                reversed,
             ) {
                 error!("poll_notes_into_view: {err}");
             }
@@ -420,8 +416,7 @@ impl Damus {
         Self {
             subscriptions: Subscriptions::default(),
             since_optimize: parsed_args.since_optimize,
-            threads: NotesHolderStorage::default(),
-            profiles: NotesHolderStorage::default(),
+            timeline_cache: TimelineCache::default(),
             drafts: Drafts::default(),
             state: DamusState::Initializing,
             textmode: parsed_args.textmode,
@@ -464,8 +459,7 @@ impl Damus {
             debug,
             subscriptions: Subscriptions::default(),
             since_optimize: true,
-            threads: NotesHolderStorage::default(),
-            profiles: NotesHolderStorage::default(),
+            timeline_cache: TimelineCache::default(),
             drafts: Drafts::default(),
             state: DamusState::Initializing,
             textmode: false,
@@ -479,14 +473,6 @@ impl Damus {
 
     pub fn subscriptions(&mut self) -> &mut HashMap<String, SubKind> {
         &mut self.subscriptions.subs
-    }
-
-    pub fn threads(&self) -> &NotesHolderStorage<Thread> {
-        &self.threads
-    }
-
-    pub fn threads_mut(&mut self) -> &mut NotesHolderStorage<Thread> {
-        &mut self.threads
     }
 }
 

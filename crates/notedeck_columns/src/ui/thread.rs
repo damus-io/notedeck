@@ -1,18 +1,17 @@
 use crate::{
     actionbar::NoteAction,
-    notes_holder::{NotesHolder, NotesHolderStorage},
-    thread::Thread,
+    timeline::{TimelineCache, TimelineCacheKey},
     ui::note::NoteOptions,
 };
 
 use nostrdb::{Ndb, Transaction};
-use notedeck::{ImageCache, MuteFun, NoteCache, UnknownIds};
+use notedeck::{ImageCache, MuteFun, NoteCache, RootNoteId, UnknownIds};
 use tracing::error;
 
 use super::timeline::TimelineTabView;
 
 pub struct ThreadView<'a> {
-    threads: &'a mut NotesHolderStorage<Thread>,
+    timeline_cache: &'a mut TimelineCache,
     ndb: &'a Ndb,
     note_cache: &'a mut NoteCache,
     unknown_ids: &'a mut UnknownIds,
@@ -26,7 +25,7 @@ pub struct ThreadView<'a> {
 impl<'a> ThreadView<'a> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        threads: &'a mut NotesHolderStorage<Thread>,
+        timeline_cache: &'a mut TimelineCache,
         ndb: &'a Ndb,
         note_cache: &'a mut NoteCache,
         unknown_ids: &'a mut UnknownIds,
@@ -37,7 +36,7 @@ impl<'a> ThreadView<'a> {
     ) -> Self {
         let id_source = egui::Id::new("threadscroll_threadview");
         ThreadView {
-            threads,
+            timeline_cache,
             ndb,
             note_cache,
             unknown_ids,
@@ -57,14 +56,6 @@ impl<'a> ThreadView<'a> {
     pub fn ui(&mut self, ui: &mut egui::Ui) -> Option<NoteAction> {
         let txn = Transaction::new(self.ndb).expect("txn");
 
-        let selected_note_key =
-            if let Ok(key) = self.ndb.get_notekey_by_id(&txn, self.selected_note_id) {
-                key
-            } else {
-                // TODO: render 404 ?
-                return None;
-            };
-
         ui.label(
             egui::RichText::new("Threads ALPHA! It's not done. Things will be broken.")
                 .color(egui::Color32::RED),
@@ -76,38 +67,39 @@ impl<'a> ThreadView<'a> {
             .auto_shrink([false, false])
             .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
             .show(ui, |ui| {
-                let note = if let Ok(note) = self.ndb.get_note_by_key(&txn, selected_note_key) {
-                    note
-                } else {
-                    return None;
-                };
+                let root_id =
+                    match RootNoteId::new(self.ndb, self.note_cache, &txn, self.selected_note_id) {
+                        Ok(root_id) => root_id,
 
-                let root_id = {
-                    let cached_note = self
-                        .note_cache
-                        .cached_note_or_insert(selected_note_key, &note);
+                        Err(err) => {
+                            ui.label(format!("Error loading thread: {:?}", err));
+                            return None;
+                        }
+                    };
 
-                    cached_note
-                        .reply
-                        .borrow(note.tags())
-                        .root()
-                        .map_or_else(|| self.selected_note_id, |nr| nr.id)
-                };
-
-                let thread = self
-                    .threads
-                    .notes_holder_mutated(self.ndb, self.note_cache, &txn, root_id)
+                let thread_timeline = self
+                    .timeline_cache
+                    .notes(
+                        self.ndb,
+                        self.note_cache,
+                        &txn,
+                        TimelineCacheKey::Thread(root_id),
+                    )
                     .get_ptr();
 
                 // TODO(jb55): skip poll if ThreadResult is fresh?
 
+                let reversed = true;
                 // poll for new notes and insert them into our existing notes
-                match thread.poll_notes_into_view(&txn, self.ndb) {
-                    Ok(action) => {
-                        action.process_action(&txn, self.ndb, self.unknown_ids, self.note_cache)
-                    }
-                    Err(err) => error!("{err}"),
-                };
+                if let Err(err) = thread_timeline.poll_notes_into_view(
+                    self.ndb,
+                    &txn,
+                    self.unknown_ids,
+                    self.note_cache,
+                    reversed,
+                ) {
+                    error!("error polling notes into thread timeline: {err}");
+                }
 
                 // This is threadview. We are not the universe view...
                 let is_universe = false;
@@ -115,7 +107,7 @@ impl<'a> ThreadView<'a> {
                 note_options.set_textmode(self.textmode);
 
                 TimelineTabView::new(
-                    thread.view(),
+                    thread_timeline.current_view(),
                     true,
                     note_options,
                     &txn,

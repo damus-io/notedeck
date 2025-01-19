@@ -2,7 +2,7 @@ use crate::error::Error;
 use crate::timeline::{Timeline, TimelineTab};
 use enostr::{Filter, Pubkey};
 use nostrdb::{Ndb, Transaction};
-use notedeck::{filter::default_limit, FilterError, FilterState};
+use notedeck::{filter::default_limit, FilterError, FilterState, RootNoteIdBuf};
 use serde::{Deserialize, Serialize};
 use std::{borrow::Cow, fmt::Display};
 use tracing::{error, warn};
@@ -58,6 +58,9 @@ pub enum TimelineKind {
 
     Profile(PubkeySource),
 
+    /// This could be any note id, doesn't need to be the root id
+    Thread(RootNoteIdBuf),
+
     Universe,
 
     /// Generic filter
@@ -75,6 +78,7 @@ impl Display for TimelineKind {
             TimelineKind::Profile(_) => f.write_str("Profile"),
             TimelineKind::Universe => f.write_str("Universe"),
             TimelineKind::Hashtag(_) => f.write_str("Hashtag"),
+            TimelineKind::Thread(_) => f.write_str("Thread"),
         }
     }
 }
@@ -88,6 +92,7 @@ impl TimelineKind {
             TimelineKind::Universe => None,
             TimelineKind::Generic => None,
             TimelineKind::Hashtag(_ht) => None,
+            TimelineKind::Thread(_ht) => None,
         }
     }
 
@@ -101,6 +106,10 @@ impl TimelineKind {
 
     pub fn profile(pk: PubkeySource) -> Self {
         TimelineKind::Profile(pk)
+    }
+
+    pub fn thread(root_id: RootNoteIdBuf) -> Self {
+        TimelineKind::Thread(root_id)
     }
 
     pub fn is_notifications(&self) -> bool {
@@ -121,6 +130,8 @@ impl TimelineKind {
                     .build()]),
                 TimelineTab::no_replies(),
             )),
+
+            TimelineKind::Thread(root_id) => Some(Timeline::thread(root_id)),
 
             TimelineKind::Generic => {
                 warn!("you can't convert a TimelineKind::Generic to a Timeline");
@@ -213,6 +224,7 @@ impl TimelineKind {
             },
             TimelineKind::Notifications(_pubkey_source) => ColumnTitle::simple("Notifications"),
             TimelineKind::Profile(_pubkey_source) => ColumnTitle::needs_db(self),
+            TimelineKind::Thread(_root_id) => ColumnTitle::simple("Thread"),
             TimelineKind::Universe => ColumnTitle::simple("Universe"),
             TimelineKind::Generic => ColumnTitle::simple("Custom"),
             TimelineKind::Hashtag(hashtag) => ColumnTitle::formatted(hashtag.to_string()),
