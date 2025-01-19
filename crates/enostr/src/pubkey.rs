@@ -1,6 +1,7 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::Error;
+use std::borrow::Borrow;
 use std::fmt;
 use std::ops::Deref;
 use tracing::debug;
@@ -8,12 +9,45 @@ use tracing::debug;
 #[derive(Eq, PartialEq, Clone, Copy, Hash, Ord, PartialOrd)]
 pub struct Pubkey([u8; 32]);
 
+#[derive(Eq, PartialEq, Clone, Copy, Hash, Ord, PartialOrd)]
+pub struct PubkeyRef<'a>(&'a [u8; 32]);
+
 static HRP_NPUB: bech32::Hrp = bech32::Hrp::parse_unchecked("npub");
+
+impl<'a> Borrow<[u8; 32]> for PubkeyRef<'a> {
+    fn borrow(&self) -> &[u8; 32] {
+        self.0
+    }
+}
+
+impl<'a> PubkeyRef<'a> {
+    pub fn new(bytes: &'a [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    pub fn bytes(&self) -> &[u8; 32] {
+        self.0
+    }
+
+    pub fn to_owned(&self) -> Pubkey {
+        Pubkey::new(*self.bytes())
+    }
+
+    pub fn hex(&self) -> String {
+        hex::encode(self.bytes())
+    }
+}
 
 impl Deref for Pubkey {
     type Target = [u8; 32];
 
     fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl Borrow<[u8; 32]> for Pubkey {
+    fn borrow(&self) -> &[u8; 32] {
         &self.0
     }
 }
@@ -29,6 +63,10 @@ impl Pubkey {
 
     pub fn bytes(&self) -> &[u8; 32] {
         &self.0
+    }
+
+    pub fn as_ref(&self) -> PubkeyRef<'_> {
+        PubkeyRef(self.bytes())
     }
 
     pub fn parse(s: &str) -> Result<Self, Error> {
@@ -83,6 +121,12 @@ impl Pubkey {
 }
 
 impl fmt::Display for Pubkey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.hex())
+    }
+}
+
+impl fmt::Debug for PubkeyRef<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.hex())
     }
