@@ -75,7 +75,7 @@ async fn main() {
             let args: Vec<String> = std::env::args().collect();
             let ctx = &cc.egui_ctx;
             let mut notedeck = Notedeck::new(ctx, base_path, &args);
-            setup_chrome(ctx, &notedeck.args(), notedeck.theme());
+            setup_chrome(ctx, notedeck.args(), notedeck.theme());
 
             let damus = Damus::new(&mut notedeck.app_context(), &args);
             // TODO: move "chrome" frame over Damus app somehow

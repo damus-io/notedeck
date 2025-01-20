@@ -76,7 +76,7 @@ impl Borrow<[u8; 32]> for RootNoteIdBuf {
     }
 }
 
-impl<'a> Borrow<[u8; 32]> for RootNoteId<'a> {
+impl Borrow<[u8; 32]> for RootNoteId<'_> {
     fn borrow(&self) -> &[u8; 32] {
         self.0
     }

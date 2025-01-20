@@ -33,7 +33,7 @@ impl PreviewRunner {
                 let ctx = &cc.egui_ctx;
 
                 let mut notedeck = Notedeck::new(ctx, &base_path, &args);
-                setup_chrome(ctx, &notedeck.args(), notedeck.theme());
+                setup_chrome(ctx, notedeck.args(), notedeck.theme());
 
                 notedeck.set_app(PreviewApp::new(preview));
 

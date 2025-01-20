@@ -14,7 +14,7 @@ pub struct PubkeyRef<'a>(&'a [u8; 32]);
 
 static HRP_NPUB: bech32::Hrp = bech32::Hrp::parse_unchecked("npub");
 
-impl<'a> Borrow<[u8; 32]> for PubkeyRef<'a> {
+impl Borrow<[u8; 32]> for PubkeyRef<'_> {
     fn borrow(&self) -> &[u8; 32] {
         self.0
     }
