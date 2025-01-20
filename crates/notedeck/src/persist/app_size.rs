@@ -2,9 +2,8 @@ use std::time::Duration;
 
 use egui::Context;
 
-use notedeck::{DataPath, DataPathType};
-
 use crate::timed_serializer::TimedSerializer;
+use crate::{DataPath, DataPathType};
 
 pub struct AppSizeHandler {
     serializer: TimedSerializer<egui::Vec2>,

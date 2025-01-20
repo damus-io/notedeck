@@ -1,6 +1,5 @@
-use notedeck::DataPath;
-use notedeck_chrome::setup::generate_native_options;
-use notedeck_chrome::Notedeck;
+use notedeck::{DataPath, Notedeck};
+use notedeck_chrome::setup::{generate_native_options, setup_chrome};
 use notedeck_columns::ui::configure_deck::ConfigureDeckView;
 use notedeck_columns::ui::edit_deck::EditDeckView;
 use notedeck_columns::ui::profile::EditProfileView;
@@ -31,9 +30,12 @@ impl PreviewRunner {
             generate_native_options(path),
             Box::new(|cc| {
                 let args: Vec<String> = std::env::args().collect();
-                let mut notedeck = Notedeck::new(&cc.egui_ctx, &base_path, &args);
+                let ctx = &cc.egui_ctx;
 
-                notedeck.add_app(PreviewApp::new(preview));
+                let mut notedeck = Notedeck::new(ctx, &base_path, &args);
+                setup_chrome(ctx, &notedeck.args(), notedeck.theme());
+
+                notedeck.set_app(PreviewApp::new(preview));
 
                 Ok(Box::new(notedeck))
             }),

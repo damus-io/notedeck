@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use notedeck::{storage, DataPath, DataPathType, Directory};
+use crate::{storage, DataPath, DataPathType, Directory};
 use serde::{Deserialize, Serialize};
 use tracing::info;
 

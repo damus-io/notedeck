@@ -1,10 +1,15 @@
 //#[cfg(target_os = "android")]
 //use egui_android::run_android;
 
-use crate::app::Notedeck;
 use notedeck_columns::Damus;
 use winit::platform::android::activity::AndroidApp;
 use winit::platform::android::EventLoopBuilderExtAndroid;
+
+use crate::setup::setup_chrome;
+use notedeck::Notedeck;
+use serde_json::Value;
+use std::fs;
+use std::path::PathBuf;
 
 #[no_mangle]
 #[tokio::main]
@@ -50,18 +55,17 @@ pub async fn android_main(app: AndroidApp) {
         "Damus Notedeck",
         options,
         Box::new(move |cc| {
-            let mut notedeck = Notedeck::new(&cc.egui_ctx, path, &app_args);
+            let ctx = &cc.egui_ctx;
+            let mut notedeck = Notedeck::new(ctx, path, &app_args);
+            setup_chrome(ctx, &notedeck.args(), notedeck.theme());
+
             let damus = Damus::new(&mut notedeck.app_context(), &app_args);
-            notedeck.add_app(damus);
+            notedeck.set_app(damus);
+
             Ok(Box::new(notedeck))
         }),
     );
 }
-
-use serde_json::Value;
-use std::fs;
-use std::path::PathBuf;
-
 /*
 Read args from a config file:
 - allows use of more interesting args w/o risk of checking them in by mistake
