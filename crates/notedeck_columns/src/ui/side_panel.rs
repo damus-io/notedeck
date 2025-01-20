@@ -112,7 +112,7 @@ impl<'a> DesktopSidePanel<'a> {
                         let is_interactive = self
                             .selected_account
                             .is_some_and(|s| s.secret_key.is_some());
-                        let compose_resp = ui.add(compose_note_button(is_interactive));
+                        let compose_resp = ui.add(compose_note_button(is_interactive, dark_mode));
                         let compose_resp = if is_interactive {
                             compose_resp
                         } else {
@@ -430,7 +430,7 @@ fn add_column_button(dark_mode: bool) -> impl Widget {
     }
 }
 
-fn compose_note_button(interactive: bool) -> impl Widget {
+fn compose_note_button(interactive: bool, dark_mode: bool) -> impl Widget {
     move |ui: &mut egui::Ui| -> egui::Response {
         let max_size = ICON_WIDTH * ICON_EXPANSION_MULTIPLE; // max size of the widget
 
@@ -464,13 +464,19 @@ fn compose_note_button(interactive: bool) -> impl Widget {
         let west_edge = helper.scale_from_center(-min_half_plus_sign_size, 0.0);
         let east_edge = helper.scale_from_center(min_half_plus_sign_size, 0.0);
 
+        let icon_color = if !dark_mode && !interactive {
+            Color32::BLACK
+        } else {
+            Color32::WHITE
+        };
+
         painter.line_segment(
             [north_edge, south_edge],
-            Stroke::new(use_line_width, Color32::WHITE),
+            Stroke::new(use_line_width, icon_color),
         );
         painter.line_segment(
             [west_edge, east_edge],
-            Stroke::new(use_line_width, Color32::WHITE),
+            Stroke::new(use_line_width, icon_color),
         );
         painter.circle_filled(north_edge, use_edge_circle_radius, Color32::WHITE);
         painter.circle_filled(south_edge, use_edge_circle_radius, Color32::WHITE);
@@ -635,6 +641,6 @@ fn milestone_name() -> impl Widget {
                     .font(font),
             ).selectable(false)).on_hover_text("Notedeck is an alpha product. Expect bugs and contact us when you run into issues.").on_hover_cursor(egui::CursorIcon::Help)
         })
-        .inner
+            .inner
     }
 }
