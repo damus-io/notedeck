@@ -203,6 +203,15 @@ impl<'a> PostView<'a> {
                                 });
                             }
 
+                            ui.with_layout(
+                                egui::Layout::left_to_right(egui::Align::BOTTOM),
+                                |ui| {
+                                    if ui.add(media_upload_button()).clicked() {
+                                        // TODO: implement media upload
+                                    }
+                                },
+                            );
+
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::BOTTOM), |ui| {
                                 if ui
                                     .add_sized(
@@ -249,6 +258,38 @@ fn post_button(interactive: bool) -> impl egui::Widget {
             )
             .on_hover_cursor(egui::CursorIcon::NotAllowed)
         }
+    }
+}
+
+fn media_upload_button() -> impl egui::Widget {
+    |ui: &mut egui::Ui| -> egui::Response {
+        let resp = ui.allocate_response(egui::vec2(32.0, 32.0), egui::Sense::click());
+        let painter = ui.painter();
+        let (fill_color, stroke) = if resp.hovered() {
+            (
+                ui.visuals().widgets.hovered.bg_fill,
+                ui.visuals().widgets.hovered.bg_stroke,
+            )
+        } else if resp.clicked() {
+            (
+                ui.visuals().widgets.active.bg_fill,
+                ui.visuals().widgets.active.bg_stroke,
+            )
+        } else {
+            (
+                ui.visuals().widgets.inactive.bg_fill,
+                ui.visuals().widgets.inactive.bg_stroke,
+            )
+        };
+
+        painter.rect_filled(resp.rect, 8.0, fill_color);
+        painter.rect_stroke(resp.rect, 8.0, stroke);
+        egui::Image::new(egui::include_image!(
+            "../../../../../assets/icons/media_upload_dark_4x.png"
+        ))
+        .max_size(egui::vec2(16.0, 16.0))
+        .paint_at(ui, resp.rect.shrink(8.0));
+        resp
     }
 }
 
