@@ -12,6 +12,7 @@ strum_macros = { workspace = true }
 dirs = { workspace = true }
 enostr = { workspace = true }
 egui = { workspace = true }
+eframe = { workspace = true }
 image = { workspace = true }
 base32 = { workspace = true }
 poll-promise = { workspace = true }
@@ -22,6 +23,7 @@ serde = { workspace = true }
 hex = { workspace = true }
 thiserror = { workspace = true }
 puffin = { workspace = true, optional = true }
+puffin_egui = { workspace = true, optional = true }
 sha2 = { workspace = true }
 
 [dev-dependencies]
@@ -31,4 +33,4 @@ tempfile = { workspace = true }
 security-framework = { workspace = true }
 
 [features]
-profiling = ["puffin"]
+profiling = ["puffin", "puffin_egui"]

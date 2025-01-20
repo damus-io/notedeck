@@ -1,9 +1,35 @@
-use crate::{app_size::AppSizeHandler, fonts, theme};
+use crate::{fonts, theme};
 
 use eframe::NativeOptions;
-use notedeck::DataPath;
+use egui::ThemePreference;
+use notedeck::{AppSizeHandler, DataPath};
+use tracing::info;
 
-pub fn setup_cc(ctx: &egui::Context, is_mobile: bool, light: bool) {
+pub fn setup_chrome(ctx: &egui::Context, args: &notedeck::Args, theme: ThemePreference) {
+    let is_mobile = args
+        .is_mobile
+        .unwrap_or(notedeck::ui::is_compiled_as_mobile());
+
+    // Some people have been running notedeck in debug, let's catch that!
+    if !args.tests && cfg!(debug_assertions) && !args.debug {
+        println!("--- WELCOME TO DAMUS NOTEDECK! ---");
+        println!("It looks like are running notedeck in debug mode, unless you are a developer, this is not likely what you want.");
+        println!("If you are a developer, run `cargo run -- --debug` to skip this message.");
+        println!("For everyone else, try again with `cargo run --release`. Enjoy!");
+        println!("---------------------------------");
+        panic!();
+    }
+
+    ctx.options_mut(|o| {
+        info!("Loaded theme {:?} from disk", theme);
+        o.theme_preference = theme;
+    });
+    ctx.set_visuals_of(egui::Theme::Dark, theme::dark_mode(is_mobile));
+    ctx.set_visuals_of(egui::Theme::Light, theme::light_mode());
+    setup_cc(ctx, is_mobile);
+}
+
+pub fn setup_cc(ctx: &egui::Context, is_mobile: bool) {
     fonts::setup_fonts(ctx);
 
     //ctx.set_pixels_per_point(ctx.pixels_per_point() + UI_SCALE_FACTOR);
@@ -13,12 +39,6 @@ pub fn setup_cc(ctx: &egui::Context, is_mobile: bool, light: bool) {
     //ctx.tessellation_options_mut(|to| to.feathering = false);
 
     egui_extras::install_image_loaders(ctx);
-
-    if light {
-        ctx.set_visuals(theme::light_mode())
-    } else {
-        ctx.set_visuals(theme::dark_mode(is_mobile));
-    }
 
     ctx.all_styles_mut(|style| theme::add_custom_style(is_mobile, style));
 }

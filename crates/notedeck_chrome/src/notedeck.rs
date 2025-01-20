@@ -1,7 +1,8 @@
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
-use notedeck_chrome::{setup::generate_native_options, Notedeck};
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// hide console window on Windows in release
+use notedeck_chrome::setup::{generate_native_options, setup_chrome};
 
-use notedeck::{DataPath, DataPathType};
+use notedeck::{DataPath, DataPathType, Notedeck};
 use notedeck_columns::Damus;
 use tracing_subscriber::EnvFilter;
 
@@ -72,10 +73,13 @@ async fn main() {
         generate_native_options(path),
         Box::new(|cc| {
             let args: Vec<String> = std::env::args().collect();
-            let mut notedeck = Notedeck::new(&cc.egui_ctx, base_path, &args);
+            let ctx = &cc.egui_ctx;
+            let mut notedeck = Notedeck::new(ctx, base_path, &args);
+            setup_chrome(ctx, &notedeck.args(), notedeck.theme());
 
             let damus = Damus::new(&mut notedeck.app_context(), &args);
-            notedeck.add_app(damus);
+            // TODO: move "chrome" frame over Damus app somehow
+            notedeck.set_app(damus);
 
             Ok(Box::new(notedeck))
         }),

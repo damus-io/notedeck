@@ -1,5 +1,5 @@
+use crate::{DataPath, DataPathType};
 use egui::Context;
-use notedeck::{DataPath, DataPathType};
 
 use crate::timed_serializer::TimedSerializer;
 
