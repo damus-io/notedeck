@@ -4,7 +4,7 @@ use nostrdb::{Ndb, Note, NoteKey, QueryResult, Transaction};
 use std::borrow::Borrow;
 use std::cmp::Ordering;
 
-#[derive(Debug, Eq, PartialEq, Copy, Clone)]
+#[derive(Debug, Eq, PartialEq, Copy, Clone, Hash)]
 pub struct NoteRef {
     pub key: NoteKey,
     pub created_at: u64,
