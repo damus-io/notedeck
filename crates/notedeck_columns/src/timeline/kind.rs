@@ -1,4 +1,7 @@
 use crate::error::Error;
+use crate::storage::{
+    ParseError, Payload, Token, TokenParser, TokenPayload, TokenSerializable, TokenWriter,
+};
 use crate::timeline::{Timeline, TimelineTab};
 use enostr::{Filter, Pubkey};
 use nostrdb::{Ndb, Transaction};
@@ -7,9 +10,10 @@ use serde::{Deserialize, Serialize};
 use std::{borrow::Cow, fmt::Display};
 use tracing::{error, warn};
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Default, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PubkeySource {
     Explicit(Pubkey),
+    #[default]
     DeckAuthor,
 }
 
@@ -19,6 +23,10 @@ pub enum ListKind {
 }
 
 impl PubkeySource {
+    pub fn pubkey(pubkey: Pubkey) -> Self {
+        PubkeySource::Explicit(pubkey)
+    }
+
     pub fn to_pubkey<'a>(&'a self, deck_author: &'a Pubkey) -> &'a Pubkey {
         match self {
             PubkeySource::Explicit(pk) => pk,
@@ -34,6 +42,44 @@ impl PubkeySource {
     }
 }
 
+impl TokenSerializable for PubkeySource {
+    fn serialize_tokens(&self, writer: &mut TokenWriter) {
+        match self {
+            PubkeySource::DeckAuthor => {
+                writer.write_token("deck_author");
+            }
+            PubkeySource::Explicit(pk) => {
+                writer.write_token(&hex::encode(pk.bytes()));
+            }
+        }
+    }
+
+    fn parse_from_tokens<'a>(parser: &mut TokenParser<'a>) -> Result<Self, ParseError<'a>> {
+        parser.try_parse(|p| {
+            match p.pull_token() {
+                // we handle bare payloads and assume they are explicit pubkey sources
+                Ok("explicit") => {
+                    if let Ok(hex) = p.pull_token() {
+                        let pk = Pubkey::from_hex(hex).map_err(|_| ParseError::HexDecodeFailed)?;
+                        Ok(PubkeySource::Explicit(pk))
+                    } else {
+                        Err(ParseError::ExpectedPayload(TokenPayload::Pubkey))
+                    }
+                }
+
+                Err(_) | Ok("deck_author") => Ok(PubkeySource::DeckAuthor),
+
+                Ok(hex) => {
+                    let pk = Pubkey::from_hex(hex).map_err(|_| ParseError::HexDecodeFailed)?;
+                    Ok(PubkeySource::Explicit(pk))
+                }
+            }
+        })
+    }
+}
+
+const LIST_CONTACT_TOKENS: &[Token] = &[Token::alts("contacts", &["contact"]), Token::pubkey()];
+
 impl ListKind {
     pub fn contact_list(pk_src: PubkeySource) -> Self {
         ListKind::Contact(pk_src)
@@ -43,6 +89,39 @@ impl ListKind {
         match self {
             ListKind::Contact(pk_src) => Some(pk_src),
         }
+    }
+
+    fn payload(&self) -> Option<Payload> {
+        match self {
+            ListKind::Contact(pk_src) => Some(Payload::pubkey_source(pk_src.clone())),
+        }
+    }
+
+    const fn tokens(&self) -> &'static [Token] {
+        match self {
+            ListKind::Contact(_pubkey) => LIST_CONTACT_TOKENS,
+        }
+    }
+}
+
+impl TokenSerializable for ListKind {
+    fn serialize_tokens(&self, writer: &mut TokenWriter) {
+        Token::serialize_all(writer, self.tokens(), self.payload().as_ref());
+    }
+
+    fn parse_from_tokens<'a>(parser: &mut TokenParser<'a>) -> Result<Self, ParseError<'a>> {
+        TokenParser::alt(
+            parser,
+            &[|p| {
+                let maybe_payload =
+                    Token::parse_all(p, ListKind::Contact(PubkeySource::default()).tokens())?;
+                let payload = maybe_payload
+                    .as_ref()
+                    .and_then(|mp| mp.get_pubkey_source())
+                    .ok_or(ParseError::ExpectedPayload(TokenPayload::Pubkey))?;
+                Ok(ListKind::Contact(payload.to_owned()))
+            }],
+        )
     }
 }
 
