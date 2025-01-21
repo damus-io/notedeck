@@ -4,6 +4,7 @@ use std::fmt::{self};
 use crate::{
     accounts::AccountsRoute,
     column::Columns,
+    storage::{ParseError, TokenParser, TokenSerializable, TokenWriter},
     timeline::{kind::ColumnTitle, TimelineId, TimelineRoute},
     ui::add_column::{AddAlgoRoute, AddColumnRoute},
 };
@@ -20,6 +21,95 @@ pub enum Route {
     Support,
     NewDeck,
     EditDeck(usize),
+}
+
+impl TokenSerializable for Route {
+    fn serialize_tokens(&self, writer: &mut TokenWriter) {
+        match self {
+            Route::Timeline(routes) => routes.serialize_tokens(writer),
+            Route::Accounts(routes) => routes.serialize_tokens(writer),
+            Route::AddColumn(routes) => routes.serialize_tokens(writer),
+            Route::EditDeck(ind) => {
+                writer.write_token("deck");
+                writer.write_token("edit");
+                writer.write_token(&ind.to_string());
+            }
+            Route::EditProfile(pubkey) => {
+                writer.write_token("profile");
+                writer.write_token("edit");
+                writer.write_token(&pubkey.hex());
+            }
+            Route::Relays => {
+                writer.write_token("relay");
+            }
+            Route::ComposeNote => {
+                writer.write_token("compose");
+            }
+            Route::Support => {
+                writer.write_token("support");
+            }
+            Route::NewDeck => {
+                writer.write_token("deck");
+                writer.write_token("new");
+            }
+        }
+    }
+
+    fn parse_from_tokens<'a>(parser: &mut TokenParser<'a>) -> Result<Self, ParseError<'a>> {
+        TokenParser::alt(
+            parser,
+            &[
+                |p| Ok(Route::Timeline(TimelineRoute::parse_from_tokens(p)?)),
+                |p| Ok(Route::Accounts(AccountsRoute::parse_from_tokens(p)?)),
+                |p| Ok(Route::AddColumn(AddColumnRoute::parse_from_tokens(p)?)),
+                |p| {
+                    p.parse_all(|p| {
+                        p.parse_token("deck")?;
+                        p.parse_token("edit")?;
+                        let ind_str = p.pull_token()?;
+                        let parsed_index = ind_str
+                            .parse::<usize>()
+                            .map_err(|_| ParseError::DecodeFailed)?;
+                        Ok(Route::EditDeck(parsed_index))
+                    })
+                },
+                |p| {
+                    p.parse_all(|p| {
+                        p.parse_token("profile")?;
+                        p.parse_token("edit")?;
+                        let pubkey = Pubkey::from_hex(p.pull_token()?)
+                            .map_err(|_| ParseError::HexDecodeFailed)?;
+                        Ok(Route::EditProfile(pubkey))
+                    })
+                },
+                |p| {
+                    p.parse_all(|p| {
+                        p.parse_token("relay")?;
+                        Ok(Route::Relays)
+                    })
+                },
+                |p| {
+                    p.parse_all(|p| {
+                        p.parse_token("compose")?;
+                        Ok(Route::ComposeNote)
+                    })
+                },
+                |p| {
+                    p.parse_all(|p| {
+                        p.parse_token("support")?;
+                        Ok(Route::Support)
+                    })
+                },
+                |p| {
+                    p.parse_all(|p| {
+                        p.parse_token("deck")?;
+                        p.parse_token("new")?;
+                        Ok(Route::NewDeck)
+                    })
+                },
+            ],
+        )
+    }
 }
 
 impl Route {
