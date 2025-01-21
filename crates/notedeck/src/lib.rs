@@ -43,3 +43,7 @@ pub use time::time_ago_since;
 pub use timecache::TimeCached;
 pub use unknowns::{get_unknown_note_ids, NoteRefsUnkIdAction, SingleUnkIdAction, UnknownIds};
 pub use user_account::UserAccount;
+
+// export libs
+pub use enostr;
+pub use nostrdb;
