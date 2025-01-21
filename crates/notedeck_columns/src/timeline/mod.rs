@@ -30,7 +30,7 @@ pub mod kind;
 pub mod route;
 
 pub use cache::{TimelineCache, TimelineCacheKey};
-pub use kind::{AlgoTimeline, ColumnTitle, PubkeySource, TimelineKind};
+pub use kind::{ColumnTitle, PubkeySource, TimelineKind};
 pub use route::TimelineRoute;
 
 #[derive(Debug, Hash, Copy, Clone, Eq, PartialEq)]
