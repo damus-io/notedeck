@@ -183,8 +183,6 @@ fn unknown_id_send(unknown_ids: &mut UnknownIds, pool: &mut RelayPool) {
 }
 
 fn update_damus(damus: &mut Damus, app_ctx: &mut AppContext<'_>, ctx: &egui::Context) {
-    app_ctx.accounts.update(app_ctx.ndb, app_ctx.pool, ctx); // update user relay and mute lists
-
     match damus.state {
         DamusState::Initializing => {
             damus.state = DamusState::Initialized;
