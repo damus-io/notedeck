@@ -104,20 +104,23 @@ impl AddColumnRoute {
             Self::ExternalIndividual => &["column", "external_individual_selection"],
             Self::Hashtag => &["column", "hashtag"],
             Self::Algo(AddAlgoRoute::Base) => &["column", "algo_selection"],
-            Self::Algo(AddAlgoRoute::LastPerPubkey) => &["column", "algo_selection", "last_per_pubkey"],
-            // NOTE!!! When adding to this, update the parser for TokenSerializable below
+            Self::Algo(AddAlgoRoute::LastPerPubkey) => {
+                &["column", "algo_selection", "last_per_pubkey"]
+            } // NOTE!!! When adding to this, update the parser for TokenSerializable below
         }
     }
 }
 
 impl TokenSerializable for AddColumnRoute {
-    fn serialize(&self, writer: &mut TokenWriter) {
+    fn serialize_tokens(&self, writer: &mut TokenWriter) {
         for token in self.tokens() {
             writer.write_token(token);
         }
     }
 
-    fn parse<'a>(parser: &mut TokenParser<'a>) -> Result<Self, ParseError<'a>> {
+    fn parse_from_tokens<'a>(parser: &mut TokenParser<'a>) -> Result<Self, ParseError<'a>> {
+        parser.peek_parse_token("column")?;
+
         TokenParser::alt(
             parser,
             &[
