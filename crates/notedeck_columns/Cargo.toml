@@ -46,6 +46,9 @@ uuid = { workspace = true }
 sha2 = { workspace = true }
 base64 = { workspace = true }
 
+[target.'cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))'.dependencies]
+rfd = "0.15"
+
 [dev-dependencies]
 tempfile = { workspace = true }
 
