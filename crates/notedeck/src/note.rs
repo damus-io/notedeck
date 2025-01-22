@@ -34,6 +34,10 @@ impl RootNoteIdBuf {
         root_note_id_from_selected_id(ndb, note_cache, txn, id).map(|rnid| Self(*rnid.bytes()))
     }
 
+    pub fn hex(&self) -> String {
+        hex::encode(self.bytes())
+    }
+
     pub fn new_unsafe(id: [u8; 32]) -> Self {
         Self(id)
     }
@@ -50,6 +54,10 @@ impl<'a> RootNoteId<'a> {
 
     pub fn bytes(&self) -> &[u8; 32] {
         self.0
+    }
+
+    pub fn hex(&self) -> String {
+        hex::encode(self.bytes())
     }
 
     pub fn to_owned(&self) -> RootNoteIdBuf {
