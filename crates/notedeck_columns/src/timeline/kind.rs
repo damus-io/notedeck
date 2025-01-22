@@ -152,6 +152,87 @@ pub enum TimelineKind {
     Hashtag(String),
 }
 
+const NOTIFS_TOKEN_DEPRECATED: &str = "notifs";
+const NOTIFS_TOKEN: &str = "notifications";
+
+fn parse_hex_id<'a>(parser: &mut TokenParser<'a>) -> Result<[u8; 32], ParseError<'a>> {
+    let hex = parser.pull_token()?;
+    hex::decode(hex)
+        .map_err(|_| ParseError::HexDecodeFailed)?
+        .as_slice()
+        .try_into()
+        .map_err(|_| ParseError::HexDecodeFailed)
+}
+
+impl TokenSerializable for TimelineKind {
+    fn serialize_tokens(&self, writer: &mut TokenWriter) {
+        match self {
+            TimelineKind::List(list_kind) => list_kind.serialize_tokens(writer),
+            TimelineKind::Algo(algo_timeline) => algo_timeline.serialize_tokens(writer),
+            TimelineKind::Notifications(pk_src) => {
+                writer.write_token(NOTIFS_TOKEN);
+                pk_src.serialize_tokens(writer);
+            }
+            TimelineKind::Profile(pk_src) => {
+                writer.write_token("profile");
+                pk_src.serialize_tokens(writer);
+            }
+            TimelineKind::Thread(root_note_id) => {
+                writer.write_token("thread");
+                writer.write_token(&root_note_id.hex());
+            }
+            TimelineKind::Universe => {
+                writer.write_token("universe");
+            }
+            TimelineKind::Generic => {
+                writer.write_token("generic");
+            }
+            TimelineKind::Hashtag(ht) => {
+                writer.write_token("hashtag");
+                writer.write_token(ht);
+            }
+        }
+    }
+
+    fn parse_from_tokens<'a>(parser: &mut TokenParser<'a>) -> Result<Self, ParseError<'a>> {
+        TokenParser::alt(
+            parser,
+            &[
+                |p| Ok(TimelineKind::List(ListKind::parse_from_tokens(p)?)),
+                |p| Ok(TimelineKind::Algo(AlgoTimeline::parse_from_tokens(p)?)),
+                |p| {
+                    // still handle deprecated form (notifs)
+                    p.parse_any_token(&[NOTIFS_TOKEN, NOTIFS_TOKEN_DEPRECATED])?;
+                    Ok(TimelineKind::Notifications(
+                        PubkeySource::parse_from_tokens(p)?,
+                    ))
+                },
+                |p| {
+                    p.parse_token("profile")?;
+                    Ok(TimelineKind::Profile(PubkeySource::parse_from_tokens(p)?))
+                },
+                |p| {
+                    p.parse_token("thread")?;
+                    let note_id = RootNoteIdBuf::new_unsafe(parse_hex_id(p)?);
+                    Ok(TimelineKind::Thread(note_id))
+                },
+                |p| {
+                    p.parse_token("universe")?;
+                    Ok(TimelineKind::Universe)
+                },
+                |p| {
+                    p.parse_token("generic")?;
+                    Ok(TimelineKind::Generic)
+                },
+                |p| {
+                    p.parse_token("hashtag")?;
+                    Ok(TimelineKind::Hashtag(p.pull_token()?.to_string()))
+                },
+            ],
+        )
+    }
+}
+
 /// Hardcoded algo timelines
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AlgoTimeline {
