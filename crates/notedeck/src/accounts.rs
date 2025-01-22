@@ -589,6 +589,33 @@ impl Accounts {
 
         None
     }
+
+    pub fn add_advertised_relay(&mut self, relay_to_add: &str) {
+        info!("add advertised relay \"{}\"", relay_to_add);
+        match self.currently_selected_account {
+            None => error!("no account is currently selected."),
+            Some(index) => match self.accounts.get(index) {
+                None => error!("selected account index {} is out of range.", index),
+                Some(keypair) => {
+                    let key_bytes: [u8; 32] = *keypair.pubkey.bytes();
+                    match self.account_data.get_mut(&key_bytes) {
+                        None => error!("no account data found for the provided key."),
+                        Some(account_data) => {
+                            let advertised = &mut account_data.relay.advertised;
+                            if advertised.is_empty() {
+                                // If the selected account has no advertised relays
+                                // iniitialize with the bootstrapping set.
+                                advertised.extend(self.bootstrap_relays.iter().cloned());
+                            }
+                            advertised.insert(relay_to_add.to_string());
+                            self.needs_relay_config = true;
+                            // FIXME - need to publish the advertised set
+                        }
+                    }
+                }
+            },
+        }
+    }
 }
 
 fn get_selected_index(accounts: &[UserAccount], keystore: &KeyStorageType) -> Option<usize> {

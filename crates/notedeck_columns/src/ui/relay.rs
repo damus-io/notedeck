@@ -6,7 +6,7 @@ use crate::ui::{Preview, PreviewConfig, View};
 use egui::{Align, Button, Frame, Id, Image, Layout, Margin, Rgba, RichText, Rounding, Ui, Vec2};
 
 use enostr::RelayPool;
-use notedeck::NotedeckTextStyle;
+use notedeck::{Accounts, NotedeckTextStyle};
 
 use tracing::debug;
 
@@ -14,6 +14,7 @@ use super::add_column::sized_button;
 use super::padding;
 
 pub struct RelayView<'a> {
+    accounts: &'a mut Accounts,
     manager: RelayPoolManager<'a>,
     id_string_map: &'a mut HashMap<Id, String>,
 }
@@ -40,16 +41,21 @@ impl View for RelayView<'_> {
                     self.manager.remove_relays(indices);
                 }
                 ui.add_space(8.0);
-                if let Some(add_relay) = self.show_add_relay_ui(ui) {
-                    debug!("add relay \"{}\"", add_relay);
+                if let Some(relay_to_add) = self.show_add_relay_ui(ui) {
+                    self.accounts.add_advertised_relay(&relay_to_add);
                 }
             });
     }
 }
 
 impl<'a> RelayView<'a> {
-    pub fn new(manager: RelayPoolManager<'a>, id_string_map: &'a mut HashMap<Id, String>) -> Self {
+    pub fn new(
+        accounts: &'a mut Accounts,
+        manager: RelayPoolManager<'a>,
+        id_string_map: &'a mut HashMap<Id, String>,
+    ) -> Self {
         RelayView {
+            accounts,
             manager,
             id_string_map,
         }
@@ -278,10 +284,15 @@ mod preview {
     }
 
     impl App for RelayViewPreview {
-        fn update(&mut self, _app: &mut AppContext<'_>, ui: &mut egui::Ui) {
+        fn update(&mut self, app: &mut AppContext<'_>, ui: &mut egui::Ui) {
             self.pool.try_recv();
             let mut id_string_map = HashMap::new();
-            RelayView::new(RelayPoolManager::new(&mut self.pool), &mut id_string_map).ui(ui);
+            RelayView::new(
+                app.accounts,
+                RelayPoolManager::new(&mut self.pool),
+                &mut id_string_map,
+            )
+            .ui(ui);
         }
     }
 
