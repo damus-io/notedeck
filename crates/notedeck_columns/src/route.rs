@@ -3,18 +3,22 @@ use std::fmt::{self};
 
 use crate::{
     accounts::AccountsRoute,
-    column::Columns,
-    timeline::{kind::ColumnTitle, TimelineId, TimelineRoute},
+    timeline::{
+        kind::{AlgoTimeline, ColumnTitle, ListKind},
+        ThreadSelection, TimelineKind,
+    },
     ui::add_column::{AddAlgoRoute, AddColumnRoute},
 };
 
 use tokenator::{ParseError, TokenParser, TokenSerializable, TokenWriter};
 
 /// App routing. These describe different places you can go inside Notedeck.
-#[derive(Clone, Copy, Eq, PartialEq, Debug)]
+#[derive(Clone, Eq, PartialEq, Debug)]
 pub enum Route {
-    Timeline(TimelineRoute),
+    Timeline(TimelineKind),
     Accounts(AccountsRoute),
+    Reply(NoteId),
+    Quote(NoteId),
     Relays,
     ComposeNote,
     AddColumn(AddColumnRoute),
@@ -24,12 +28,60 @@ pub enum Route {
     EditDeck(usize),
 }
 
-impl TokenSerializable for Route {
-    fn serialize_tokens(&self, writer: &mut TokenWriter) {
+impl Route {
+    pub fn timeline(timeline_kind: TimelineKind) -> Self {
+        Route::Timeline(timeline_kind)
+    }
+
+    pub fn timeline_id(&self) -> Option<&TimelineKind> {
+        if let Route::Timeline(tid) = self {
+            Some(tid)
+        } else {
+            None
+        }
+    }
+
+    pub fn relays() -> Self {
+        Route::Relays
+    }
+
+    pub fn thread(thread_selection: ThreadSelection) -> Self {
+        Route::Timeline(TimelineKind::Thread(thread_selection))
+    }
+
+    pub fn profile(pubkey: Pubkey) -> Self {
+        Route::Timeline(TimelineKind::profile(pubkey))
+    }
+
+    pub fn reply(replying_to: NoteId) -> Self {
+        Route::Reply(replying_to)
+    }
+
+    pub fn quote(quoting: NoteId) -> Self {
+        Route::Quote(quoting)
+    }
+
+    pub fn accounts() -> Self {
+        Route::Accounts(AccountsRoute::Accounts)
+    }
+
+    pub fn add_account() -> Self {
+        Route::Accounts(AccountsRoute::AddAccount)
+    }
+
+    pub fn serialize_tokens(&self, writer: &mut TokenWriter) {
         match self {
-            Route::Timeline(routes) => routes.serialize_tokens(writer),
+            Route::Timeline(timeline_kind) => timeline_kind.serialize_tokens(writer),
             Route::Accounts(routes) => routes.serialize_tokens(writer),
             Route::AddColumn(routes) => routes.serialize_tokens(writer),
+            Route::Reply(note_id) => {
+                writer.write_token("reply");
+                writer.write_token(&note_id.hex());
+            }
+            Route::Quote(note_id) => {
+                writer.write_token("quote");
+                writer.write_token(&note_id.hex());
+            }
             Route::EditDeck(ind) => {
                 writer.write_token("deck");
                 writer.write_token("edit");
@@ -56,11 +108,20 @@ impl TokenSerializable for Route {
         }
     }
 
-    fn parse_from_tokens<'a>(parser: &mut TokenParser<'a>) -> Result<Self, ParseError<'a>> {
+    pub fn parse<'a>(
+        parser: &mut TokenParser<'a>,
+        deck_author: &Pubkey,
+    ) -> Result<Self, ParseError<'a>> {
+        let tlkind =
+            parser.try_parse(|p| Ok(Route::Timeline(TimelineKind::parse(p, deck_author)?)));
+
+        if tlkind.is_ok() {
+            return tlkind;
+        }
+
         TokenParser::alt(
             parser,
             &[
-                |p| Ok(Route::Timeline(TimelineRoute::parse_from_tokens(p)?)),
                 |p| Ok(Route::Accounts(AccountsRoute::parse_from_tokens(p)?)),
                 |p| Ok(Route::AddColumn(AddColumnRoute::parse_from_tokens(p)?)),
                 |p| {
@@ -91,6 +152,18 @@ impl TokenSerializable for Route {
                 },
                 |p| {
                     p.parse_all(|p| {
+                        p.parse_token("quote")?;
+                        Ok(Route::Quote(NoteId::new(tokenator::parse_hex_id(p)?)))
+                    })
+                },
+                |p| {
+                    p.parse_all(|p| {
+                        p.parse_token("reply")?;
+                        Ok(Route::Reply(NoteId::new(tokenator::parse_hex_id(p)?)))
+                    })
+                },
+                |p| {
+                    p.parse_all(|p| {
                         p.parse_token("compose")?;
                         Ok(Route::ComposeNote)
                     })
@@ -111,64 +184,13 @@ impl TokenSerializable for Route {
             ],
         )
     }
-}
 
-impl Route {
-    pub fn timeline(timeline_id: TimelineId) -> Self {
-        Route::Timeline(TimelineRoute::Timeline(timeline_id))
-    }
-
-    pub fn timeline_id(&self) -> Option<&TimelineId> {
-        if let Route::Timeline(TimelineRoute::Timeline(tid)) = self {
-            Some(tid)
-        } else {
-            None
-        }
-    }
-
-    pub fn relays() -> Self {
-        Route::Relays
-    }
-
-    pub fn thread(thread_root: NoteId) -> Self {
-        Route::Timeline(TimelineRoute::Thread(thread_root))
-    }
-
-    pub fn profile(pubkey: Pubkey) -> Self {
-        Route::Timeline(TimelineRoute::Profile(pubkey))
-    }
-
-    pub fn reply(replying_to: NoteId) -> Self {
-        Route::Timeline(TimelineRoute::Reply(replying_to))
-    }
-
-    pub fn quote(quoting: NoteId) -> Self {
-        Route::Timeline(TimelineRoute::Quote(quoting))
-    }
-
-    pub fn accounts() -> Self {
-        Route::Accounts(AccountsRoute::Accounts)
-    }
-
-    pub fn add_account() -> Self {
-        Route::Accounts(AccountsRoute::AddAccount)
-    }
-
-    pub fn title<'a>(&self, columns: &'a Columns) -> ColumnTitle<'a> {
+    pub fn title(&self) -> ColumnTitle<'_> {
         match self {
-            Route::Timeline(tlr) => match tlr {
-                TimelineRoute::Timeline(id) => {
-                    if let Some(timeline) = columns.find_timeline(*id) {
-                        timeline.kind.to_title()
-                    } else {
-                        ColumnTitle::simple("Unknown")
-                    }
-                }
-                TimelineRoute::Thread(_id) => ColumnTitle::simple("Thread"),
-                TimelineRoute::Reply(_id) => ColumnTitle::simple("Reply"),
-                TimelineRoute::Quote(_id) => ColumnTitle::simple("Quote"),
-                TimelineRoute::Profile(_pubkey) => ColumnTitle::simple("Profile"),
-            },
+            Route::Timeline(kind) => kind.to_title(),
+
+            Route::Reply(_id) => ColumnTitle::simple("Reply"),
+            Route::Quote(_id) => ColumnTitle::simple("Quote"),
 
             Route::Relays => ColumnTitle::simple("Relays"),
 
@@ -292,13 +314,21 @@ impl<R: Clone> Router<R> {
 impl fmt::Display for Route {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Route::Timeline(tlr) => match tlr {
-                TimelineRoute::Timeline(name) => write!(f, "{}", name),
-                TimelineRoute::Thread(_id) => write!(f, "Thread"),
-                TimelineRoute::Profile(_id) => write!(f, "Profile"),
-                TimelineRoute::Reply(_id) => write!(f, "Reply"),
-                TimelineRoute::Quote(_id) => write!(f, "Quote"),
+            Route::Timeline(kind) => match kind {
+                TimelineKind::List(ListKind::Contact(_pk)) => write!(f, "Contacts"),
+                TimelineKind::Algo(AlgoTimeline::LastPerPubkey(ListKind::Contact(_))) => {
+                    write!(f, "Last Per Pubkey (Contact)")
+                }
+                TimelineKind::Notifications(_) => write!(f, "Notifications"),
+                TimelineKind::Universe => write!(f, "Universe"),
+                TimelineKind::Generic(_) => write!(f, "Custom"),
+                TimelineKind::Hashtag(ht) => write!(f, "Hashtag ({})", ht),
+                TimelineKind::Thread(_id) => write!(f, "Thread"),
+                TimelineKind::Profile(_id) => write!(f, "Profile"),
             },
+
+            Route::Reply(_id) => write!(f, "Reply"),
+            Route::Quote(_id) => write!(f, "Quote"),
 
             Route::Relays => write!(f, "Relays"),
 

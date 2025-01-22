@@ -7,7 +7,7 @@ check:
 	cargo check
 
 tags: fake
-	find . -type d -name target -prune -o -type f -name '*.rs' -print | xargs ctags
+	rusty-tags vi
 
 jni: fake
 	cargo ndk --target arm64-v8a -o $(ANDROID_DIR)/app/src/main/jniLibs/ build --profile release

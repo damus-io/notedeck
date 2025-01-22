@@ -1,7 +1,7 @@
 use std::{collections::HashMap, fmt, str::FromStr};
 
 use enostr::Pubkey;
-use nostrdb::Ndb;
+use nostrdb::{Ndb, Transaction};
 use serde::{Deserialize, Serialize};
 use tracing::{error, info};
 
@@ -9,16 +9,20 @@ use crate::{
     column::{Columns, IntermediaryRoute},
     decks::{Deck, Decks, DecksCache},
     route::Route,
-    timeline::TimelineKind,
+    timeline::{TimelineCache, TimelineKind},
     Error,
 };
 
 use notedeck::{storage, DataPath, DataPathType, Directory};
-use tokenator::{ParseError, TokenParser, TokenSerializable, TokenWriter};
+use tokenator::{ParseError, TokenParser, TokenWriter};
 
 pub static DECKS_CACHE_FILE: &str = "decks_cache.json";
 
-pub fn load_decks_cache(path: &DataPath, ndb: &Ndb) -> Option<DecksCache> {
+pub fn load_decks_cache(
+    path: &DataPath,
+    ndb: &Ndb,
+    timeline_cache: &mut TimelineCache,
+) -> Option<DecksCache> {
     let data_path = path.path(DataPathType::Setting);
 
     let decks_cache_str = match Directory::new(data_path).get_file(DECKS_CACHE_FILE.to_owned()) {
@@ -35,7 +39,9 @@ pub fn load_decks_cache(path: &DataPath, ndb: &Ndb) -> Option<DecksCache> {
     let serializable_decks_cache =
         serde_json::from_str::<SerializableDecksCache>(&decks_cache_str).ok()?;
 
-    serializable_decks_cache.decks_cache(ndb).ok()
+    serializable_decks_cache
+        .decks_cache(ndb, timeline_cache)
+        .ok()
 }
 
 pub fn save_decks_cache(path: &DataPath, decks_cache: &DecksCache) {
@@ -81,14 +87,17 @@ impl SerializableDecksCache {
         }
     }
 
-    pub fn decks_cache(self, ndb: &Ndb) -> Result<DecksCache, Error> {
+    pub fn decks_cache(
+        self,
+        ndb: &Ndb,
+        timeline_cache: &mut TimelineCache,
+    ) -> Result<DecksCache, Error> {
         let account_to_decks = self
             .decks_cache
             .into_iter()
             .map(|(pubkey, serializable_decks)| {
-                let deck_key = pubkey.bytes();
                 serializable_decks
-                    .decks(ndb, deck_key)
+                    .decks(ndb, timeline_cache, &pubkey)
                     .map(|decks| (pubkey, decks))
             })
             .collect::<Result<HashMap<Pubkey, Decks>, Error>>()?;
@@ -142,12 +151,17 @@ impl SerializableDecks {
         }
     }
 
-    fn decks(self, ndb: &Ndb, deck_key: &[u8; 32]) -> Result<Decks, Error> {
+    fn decks(
+        self,
+        ndb: &Ndb,
+        timeline_cache: &mut TimelineCache,
+        deck_key: &Pubkey,
+    ) -> Result<Decks, Error> {
         Ok(Decks::from_decks(
             self.active_deck,
             self.decks
                 .into_iter()
-                .map(|d| d.deck(ndb, deck_key))
+                .map(|d| d.deck(ndb, timeline_cache, deck_key))
                 .collect::<Result<_, _>>()?,
         ))
     }
@@ -252,8 +266,13 @@ impl SerializableDeck {
         SerializableDeck { metadata, columns }
     }
 
-    pub fn deck(self, ndb: &Ndb, deck_user: &[u8; 32]) -> Result<Deck, Error> {
-        let columns = deserialize_columns(ndb, deck_user, self.columns);
+    pub fn deck(
+        self,
+        ndb: &Ndb,
+        timeline_cache: &mut TimelineCache,
+        deck_user: &Pubkey,
+    ) -> Result<Deck, Error> {
+        let columns = deserialize_columns(ndb, timeline_cache, deck_user, self.columns);
         let deserialized_metadata = deserialize_metadata(self.metadata)
             .ok_or(Error::Generic("Could not deserialize metadata".to_owned()))?;
 
@@ -292,7 +311,12 @@ fn serialize_columns(columns: &Columns) -> Vec<Vec<String>> {
     cols_serialized
 }
 
-fn deserialize_columns(ndb: &Ndb, deck_user: &[u8; 32], columns: Vec<Vec<String>>) -> Columns {
+fn deserialize_columns(
+    ndb: &Ndb,
+    timeline_cache: &mut TimelineCache,
+    deck_user: &Pubkey,
+    columns: Vec<Vec<String>>,
+) -> Columns {
     let mut cols = Columns::new();
     for column in columns {
         let mut cur_routes = Vec::new();
@@ -301,11 +325,9 @@ fn deserialize_columns(ndb: &Ndb, deck_user: &[u8; 32], columns: Vec<Vec<String>
             let tokens: Vec<&str> = route.split(":").collect();
             let mut parser = TokenParser::new(&tokens);
 
-            match CleanIntermediaryRoute::parse_from_tokens(&mut parser) {
+            match CleanIntermediaryRoute::parse(&mut parser, deck_user) {
                 Ok(route_intermediary) => {
-                    if let Some(ir) =
-                        route_intermediary.into_intermediary_route(ndb, Some(deck_user))
-                    {
+                    if let Some(ir) = route_intermediary.into_intermediary_route(ndb) {
                         cur_routes.push(ir);
                     }
                 }
@@ -316,7 +338,7 @@ fn deserialize_columns(ndb: &Ndb, deck_user: &[u8; 32], columns: Vec<Vec<String>
         }
 
         if !cur_routes.is_empty() {
-            cols.insert_intermediary_routes(cur_routes);
+            cols.insert_intermediary_routes(timeline_cache, cur_routes);
         }
     }
 
@@ -329,48 +351,38 @@ enum CleanIntermediaryRoute {
 }
 
 impl CleanIntermediaryRoute {
-    fn into_intermediary_route(
-        self,
-        ndb: &Ndb,
-        user: Option<&[u8; 32]>,
-    ) -> Option<IntermediaryRoute> {
+    fn into_intermediary_route(self, ndb: &Ndb) -> Option<IntermediaryRoute> {
         match self {
-            CleanIntermediaryRoute::ToTimeline(timeline_kind) => Some(IntermediaryRoute::Timeline(
-                timeline_kind.into_timeline(ndb, user)?,
-            )),
+            CleanIntermediaryRoute::ToTimeline(timeline_kind) => {
+                let txn = Transaction::new(ndb).unwrap();
+                Some(IntermediaryRoute::Timeline(
+                    timeline_kind.into_timeline(&txn, ndb)?,
+                ))
+            }
             CleanIntermediaryRoute::ToRoute(route) => Some(IntermediaryRoute::Route(route)),
         }
     }
-}
 
-impl TokenSerializable for CleanIntermediaryRoute {
-    fn serialize_tokens(&self, writer: &mut TokenWriter) {
-        match self {
-            CleanIntermediaryRoute::ToTimeline(tlk) => {
-                tlk.serialize_tokens(writer);
-            }
-            CleanIntermediaryRoute::ToRoute(route) => {
-                route.serialize_tokens(writer);
-            }
+    fn parse<'a>(
+        parser: &mut TokenParser<'a>,
+        deck_author: &Pubkey,
+    ) -> Result<Self, ParseError<'a>> {
+        let timeline = parser.try_parse(|p| {
+            Ok(CleanIntermediaryRoute::ToTimeline(TimelineKind::parse(
+                p,
+                deck_author,
+            )?))
+        });
+        if timeline.is_ok() {
+            return timeline;
         }
-    }
 
-    fn parse_from_tokens<'a>(parser: &mut TokenParser<'a>) -> Result<Self, ParseError<'a>> {
-        TokenParser::alt(
-            parser,
-            &[
-                |p| {
-                    Ok(CleanIntermediaryRoute::ToTimeline(
-                        TimelineKind::parse_from_tokens(p)?,
-                    ))
-                },
-                |p| {
-                    Ok(CleanIntermediaryRoute::ToRoute(Route::parse_from_tokens(
-                        p,
-                    )?))
-                },
-            ],
-        )
+        parser.try_parse(|p| {
+            Ok(CleanIntermediaryRoute::ToRoute(Route::parse(
+                p,
+                deck_author,
+            )?))
+        })
     }
 }
 

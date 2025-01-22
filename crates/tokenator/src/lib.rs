@@ -218,3 +218,15 @@ pub trait TokenSerializable: Sized {
     fn parse_from_tokens<'a>(parser: &mut TokenParser<'a>) -> Result<Self, ParseError<'a>>;
     fn serialize_tokens(&self, writer: &mut TokenWriter);
 }
+
+/// Parse a 32 byte hex string
+pub fn parse_hex_id<'a>(parser: &mut TokenParser<'a>) -> Result<[u8; 32], ParseError<'a>> {
+    use hex;
+
+    let hexid = parser.pull_token()?;
+    hex::decode(hexid)
+        .map_err(|_| ParseError::HexDecodeFailed)?
+        .as_slice()
+        .try_into()
+        .map_err(|_| ParseError::HexDecodeFailed)
+}

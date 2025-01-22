@@ -1,4 +1,4 @@
-use crate::{column::Columns, Result};
+use crate::{timeline::TimelineCache, Result};
 use nostrdb::{Ndb, NoteKey, Transaction};
 use notedeck::{CachedNote, NoteCache, UnknownIds};
 use tracing::error;
@@ -6,12 +6,12 @@ use tracing::error;
 pub fn update_from_columns(
     txn: &Transaction,
     unknown_ids: &mut UnknownIds,
-    columns: &Columns,
+    timeline_cache: &TimelineCache,
     ndb: &Ndb,
     note_cache: &mut NoteCache,
 ) -> bool {
     let before = unknown_ids.ids().len();
-    if let Err(e) = get_unknown_ids(txn, unknown_ids, columns, ndb, note_cache) {
+    if let Err(e) = get_unknown_ids(txn, unknown_ids, timeline_cache, ndb, note_cache) {
         error!("UnknownIds::update {e}");
     }
     let after = unknown_ids.ids().len();
@@ -27,7 +27,7 @@ pub fn update_from_columns(
 pub fn get_unknown_ids(
     txn: &Transaction,
     unknown_ids: &mut UnknownIds,
-    columns: &Columns,
+    timeline_cache: &TimelineCache,
     ndb: &Ndb,
     note_cache: &mut NoteCache,
 ) -> Result<()> {
@@ -36,7 +36,7 @@ pub fn get_unknown_ids(
 
     let mut new_cached_notes: Vec<(NoteKey, CachedNote)> = vec![];
 
-    for timeline in columns.timelines() {
+    for (_kind, timeline) in timeline_cache.timelines.iter() {
         for noteref in timeline.all_or_any_notes() {
             let note = ndb.get_note_by_key(txn, noteref.key)?;
             let note_key = note.key().unwrap();

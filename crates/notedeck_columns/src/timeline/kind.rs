@@ -1,23 +1,35 @@
 use crate::error::Error;
 use crate::timeline::{Timeline, TimelineTab};
-use enostr::{Filter, Pubkey};
+use enostr::{Filter, NoteId, Pubkey};
 use nostrdb::{Ndb, Transaction};
-use notedeck::{filter::default_limit, FilterError, FilterState, RootNoteIdBuf};
+use notedeck::{
+    filter::{self, default_limit},
+    FilterError, FilterState, NoteCache, RootIdError, RootNoteIdBuf,
+};
 use serde::{Deserialize, Serialize};
+use std::hash::{Hash, Hasher};
 use std::{borrow::Cow, fmt::Display};
 use tokenator::{ParseError, TokenParser, TokenSerializable, TokenWriter};
 use tracing::{error, warn};
 
-#[derive(Clone, Default, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Hash, Copy, Default, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PubkeySource {
     Explicit(Pubkey),
     #[default]
     DeckAuthor,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Hash, Eq)]
 pub enum ListKind {
-    Contact(PubkeySource),
+    Contact(Pubkey),
+}
+
+impl ListKind {
+    pub fn pubkey(&self) -> Option<&Pubkey> {
+        match self {
+            Self::Contact(pk) => Some(pk),
+        }
+    }
 }
 
 impl PubkeySource {
@@ -28,13 +40,6 @@ impl PubkeySource {
     pub fn to_pubkey<'a>(&'a self, deck_author: &'a Pubkey) -> &'a Pubkey {
         match self {
             PubkeySource::Explicit(pk) => pk,
-            PubkeySource::DeckAuthor => deck_author,
-        }
-    }
-
-    pub fn to_pubkey_bytes<'a>(&'a self, deck_author: &'a [u8; 32]) -> &'a [u8; 32] {
-        match self {
-            PubkeySource::Explicit(pk) => pk.bytes(),
             PubkeySource::DeckAuthor => deck_author,
         }
     }
@@ -77,32 +82,18 @@ impl TokenSerializable for PubkeySource {
 }
 
 impl ListKind {
-    pub fn contact_list(pk_src: PubkeySource) -> Self {
-        ListKind::Contact(pk_src)
+    pub fn contact_list(pk: Pubkey) -> Self {
+        ListKind::Contact(pk)
     }
 
-    pub fn pubkey_source(&self) -> Option<&PubkeySource> {
-        match self {
-            ListKind::Contact(pk_src) => Some(pk_src),
-        }
-    }
-}
-
-impl TokenSerializable for ListKind {
-    fn serialize_tokens(&self, writer: &mut TokenWriter) {
-        match self {
-            ListKind::Contact(pk_src) => {
-                writer.write_token("contact");
-                pk_src.serialize_tokens(writer);
-            }
-        }
-    }
-
-    fn parse_from_tokens<'a>(parser: &mut TokenParser<'a>) -> Result<Self, ParseError<'a>> {
+    pub fn parse<'a>(
+        parser: &mut TokenParser<'a>,
+        deck_author: &Pubkey,
+    ) -> Result<Self, ParseError<'a>> {
         parser.parse_all(|p| {
             p.parse_token("contact")?;
             let pk_src = PubkeySource::parse_from_tokens(p)?;
-            Ok(ListKind::Contact(pk_src))
+            Ok(ListKind::Contact(*pk_src.to_pubkey(deck_author)))
         })
 
         /* here for u when you need more things to parse
@@ -120,7 +111,79 @@ impl TokenSerializable for ListKind {
         )
         */
     }
+
+    pub fn serialize_tokens(&self, writer: &mut TokenWriter) {
+        match self {
+            ListKind::Contact(pk) => {
+                writer.write_token("contact");
+                PubkeySource::pubkey(*pk).serialize_tokens(writer);
+            }
+        }
+    }
 }
+
+/// Thread selection hashing is done in a specific way. For TimelineCache
+/// lookups, we want to only let the root_id influence thread selection.
+/// This way Thread TimelineKinds always map to the same cached timeline
+/// for now (we will likely have to rework this since threads aren't
+/// *really* timelines)
+#[derive(Debug, Clone)]
+pub struct ThreadSelection {
+    pub root_id: RootNoteIdBuf,
+
+    /// The selected note, if different than the root_id. None here
+    /// means the root is selected
+    pub selected_note: Option<NoteId>,
+}
+
+impl ThreadSelection {
+    pub fn selected_or_root(&self) -> &[u8; 32] {
+        self.selected_note
+            .as_ref()
+            .map(|sn| sn.bytes())
+            .unwrap_or(self.root_id.bytes())
+    }
+
+    pub fn from_root_id(root_id: RootNoteIdBuf) -> Self {
+        Self {
+            root_id,
+            selected_note: None,
+        }
+    }
+
+    pub fn from_note_id(
+        ndb: &Ndb,
+        note_cache: &mut NoteCache,
+        txn: &Transaction,
+        note_id: NoteId,
+    ) -> Result<Self, RootIdError> {
+        let root_id = RootNoteIdBuf::new(ndb, note_cache, txn, note_id.bytes())?;
+        Ok(if root_id.bytes() == note_id.bytes() {
+            Self::from_root_id(root_id)
+        } else {
+            Self {
+                root_id,
+                selected_note: Some(note_id),
+            }
+        })
+    }
+}
+
+impl Hash for ThreadSelection {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        // only hash the root id for thread selection
+        self.root_id.hash(state)
+    }
+}
+
+// need this to only match root_id or else hash lookups will fail
+impl PartialEq for ThreadSelection {
+    fn eq(&self, other: &Self) -> bool {
+        self.root_id == other.root_id
+    }
+}
+
+impl Eq for ThreadSelection {}
 
 ///
 /// What kind of timeline is it?
@@ -130,24 +193,23 @@ impl TokenSerializable for ListKind {
 ///   - filter
 ///   - ... etc
 ///
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TimelineKind {
     List(ListKind),
 
     /// The last not per pubkey
     Algo(AlgoTimeline),
 
-    Notifications(PubkeySource),
+    Notifications(Pubkey),
 
-    Profile(PubkeySource),
+    Profile(Pubkey),
 
-    /// This could be any note id, doesn't need to be the root id
-    Thread(RootNoteIdBuf),
+    Thread(ThreadSelection),
 
     Universe,
 
-    /// Generic filter
-    Generic,
+    /// Generic filter, references a hash of a filter
+    Generic(u64),
 
     Hashtag(String),
 }
@@ -155,86 +217,8 @@ pub enum TimelineKind {
 const NOTIFS_TOKEN_DEPRECATED: &str = "notifs";
 const NOTIFS_TOKEN: &str = "notifications";
 
-fn parse_hex_id<'a>(parser: &mut TokenParser<'a>) -> Result<[u8; 32], ParseError<'a>> {
-    let hex = parser.pull_token()?;
-    hex::decode(hex)
-        .map_err(|_| ParseError::HexDecodeFailed)?
-        .as_slice()
-        .try_into()
-        .map_err(|_| ParseError::HexDecodeFailed)
-}
-
-impl TokenSerializable for TimelineKind {
-    fn serialize_tokens(&self, writer: &mut TokenWriter) {
-        match self {
-            TimelineKind::List(list_kind) => list_kind.serialize_tokens(writer),
-            TimelineKind::Algo(algo_timeline) => algo_timeline.serialize_tokens(writer),
-            TimelineKind::Notifications(pk_src) => {
-                writer.write_token(NOTIFS_TOKEN);
-                pk_src.serialize_tokens(writer);
-            }
-            TimelineKind::Profile(pk_src) => {
-                writer.write_token("profile");
-                pk_src.serialize_tokens(writer);
-            }
-            TimelineKind::Thread(root_note_id) => {
-                writer.write_token("thread");
-                writer.write_token(&root_note_id.hex());
-            }
-            TimelineKind::Universe => {
-                writer.write_token("universe");
-            }
-            TimelineKind::Generic => {
-                writer.write_token("generic");
-            }
-            TimelineKind::Hashtag(ht) => {
-                writer.write_token("hashtag");
-                writer.write_token(ht);
-            }
-        }
-    }
-
-    fn parse_from_tokens<'a>(parser: &mut TokenParser<'a>) -> Result<Self, ParseError<'a>> {
-        TokenParser::alt(
-            parser,
-            &[
-                |p| Ok(TimelineKind::List(ListKind::parse_from_tokens(p)?)),
-                |p| Ok(TimelineKind::Algo(AlgoTimeline::parse_from_tokens(p)?)),
-                |p| {
-                    // still handle deprecated form (notifs)
-                    p.parse_any_token(&[NOTIFS_TOKEN, NOTIFS_TOKEN_DEPRECATED])?;
-                    Ok(TimelineKind::Notifications(
-                        PubkeySource::parse_from_tokens(p)?,
-                    ))
-                },
-                |p| {
-                    p.parse_token("profile")?;
-                    Ok(TimelineKind::Profile(PubkeySource::parse_from_tokens(p)?))
-                },
-                |p| {
-                    p.parse_token("thread")?;
-                    let note_id = RootNoteIdBuf::new_unsafe(parse_hex_id(p)?);
-                    Ok(TimelineKind::Thread(note_id))
-                },
-                |p| {
-                    p.parse_token("universe")?;
-                    Ok(TimelineKind::Universe)
-                },
-                |p| {
-                    p.parse_token("generic")?;
-                    Ok(TimelineKind::Generic)
-                },
-                |p| {
-                    p.parse_token("hashtag")?;
-                    Ok(TimelineKind::Hashtag(p.pull_token()?.to_string()))
-                },
-            ],
-        )
-    }
-}
-
 /// Hardcoded algo timelines
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Hash, Clone, Copy, PartialEq, Eq)]
 pub enum AlgoTimeline {
     /// LastPerPubkey: a special nostr query that fetches the last N
     /// notes for each pubkey on the list
@@ -244,8 +228,8 @@ pub enum AlgoTimeline {
 /// The identifier for our last per pubkey algo
 const LAST_PER_PUBKEY_TOKEN: &str = "last_per_pubkey";
 
-impl TokenSerializable for AlgoTimeline {
-    fn serialize_tokens(&self, writer: &mut TokenWriter) {
+impl AlgoTimeline {
+    pub fn serialize_tokens(&self, writer: &mut TokenWriter) {
         match self {
             AlgoTimeline::LastPerPubkey(list_kind) => {
                 writer.write_token(LAST_PER_PUBKEY_TOKEN);
@@ -254,16 +238,17 @@ impl TokenSerializable for AlgoTimeline {
         }
     }
 
-    fn parse_from_tokens<'a>(parser: &mut TokenParser<'a>) -> Result<Self, ParseError<'a>> {
-        TokenParser::alt(
-            parser,
-            &[|p| {
-                p.parse_all(|p| {
-                    p.parse_token(LAST_PER_PUBKEY_TOKEN)?;
-                    Ok(AlgoTimeline::LastPerPubkey(ListKind::parse_from_tokens(p)?))
-                })
-            }],
-        )
+    pub fn parse<'a>(
+        parser: &mut TokenParser<'a>,
+        deck_author: &Pubkey,
+    ) -> Result<Self, ParseError<'a>> {
+        parser.parse_all(|p| {
+            p.parse_token(LAST_PER_PUBKEY_TOKEN)?;
+            Ok(AlgoTimeline::LastPerPubkey(ListKind::parse(
+                p,
+                deck_author,
+            )?))
+        })
     }
 }
 
@@ -272,7 +257,7 @@ impl Display for TimelineKind {
         match self {
             TimelineKind::List(ListKind::Contact(_src)) => f.write_str("Contacts"),
             TimelineKind::Algo(AlgoTimeline::LastPerPubkey(_lk)) => f.write_str("Last Notes"),
-            TimelineKind::Generic => f.write_str("Timeline"),
+            TimelineKind::Generic(_) => f.write_str("Timeline"),
             TimelineKind::Notifications(_) => f.write_str("Notifications"),
             TimelineKind::Profile(_) => f.write_str("Profile"),
             TimelineKind::Universe => f.write_str("Universe"),
@@ -283,14 +268,14 @@ impl Display for TimelineKind {
 }
 
 impl TimelineKind {
-    pub fn pubkey_source(&self) -> Option<&PubkeySource> {
+    pub fn pubkey(&self) -> Option<&Pubkey> {
         match self {
-            TimelineKind::List(list_kind) => list_kind.pubkey_source(),
-            TimelineKind::Algo(AlgoTimeline::LastPerPubkey(list_kind)) => list_kind.pubkey_source(),
-            TimelineKind::Notifications(pk_src) => Some(pk_src),
-            TimelineKind::Profile(pk_src) => Some(pk_src),
+            TimelineKind::List(list_kind) => list_kind.pubkey(),
+            TimelineKind::Algo(AlgoTimeline::LastPerPubkey(list_kind)) => list_kind.pubkey(),
+            TimelineKind::Notifications(pk) => Some(pk),
+            TimelineKind::Profile(pk) => Some(pk),
             TimelineKind::Universe => None,
-            TimelineKind::Generic => None,
+            TimelineKind::Generic(_) => None,
             TimelineKind::Hashtag(_ht) => None,
             TimelineKind::Thread(_ht) => None,
         }
@@ -305,17 +290,108 @@ impl TimelineKind {
             TimelineKind::Notifications(_pk_src) => true,
             TimelineKind::Profile(_pk_src) => true,
             TimelineKind::Universe => true,
-            TimelineKind::Generic => true,
+            TimelineKind::Generic(_) => true,
             TimelineKind::Hashtag(_ht) => true,
             TimelineKind::Thread(_ht) => true,
         }
+    }
+
+    pub fn serialize_tokens(&self, writer: &mut TokenWriter) {
+        match self {
+            TimelineKind::List(list_kind) => list_kind.serialize_tokens(writer),
+            TimelineKind::Algo(algo_timeline) => algo_timeline.serialize_tokens(writer),
+            TimelineKind::Notifications(pk) => {
+                writer.write_token(NOTIFS_TOKEN);
+                PubkeySource::pubkey(*pk).serialize_tokens(writer);
+            }
+            TimelineKind::Profile(pk) => {
+                writer.write_token("profile");
+                PubkeySource::pubkey(*pk).serialize_tokens(writer);
+            }
+            TimelineKind::Thread(root_note_id) => {
+                writer.write_token("thread");
+                writer.write_token(&root_note_id.root_id.hex());
+            }
+            TimelineKind::Universe => {
+                writer.write_token("universe");
+            }
+            TimelineKind::Generic(_usize) => {
+                // TODO: lookup filter and then serialize
+                writer.write_token("generic");
+            }
+            TimelineKind::Hashtag(ht) => {
+                writer.write_token("hashtag");
+                writer.write_token(ht);
+            }
+        }
+    }
+
+    pub fn parse<'a>(
+        parser: &mut TokenParser<'a>,
+        deck_author: &Pubkey,
+    ) -> Result<Self, ParseError<'a>> {
+        let profile = parser.try_parse(|p| {
+            p.parse_token("profile")?;
+            let pk_src = PubkeySource::parse_from_tokens(p)?;
+            Ok(TimelineKind::Profile(*pk_src.to_pubkey(deck_author)))
+        });
+        if profile.is_ok() {
+            return profile;
+        }
+
+        let notifications = parser.try_parse(|p| {
+            // still handle deprecated form (notifs)
+            p.parse_any_token(&[NOTIFS_TOKEN, NOTIFS_TOKEN_DEPRECATED])?;
+            let pk_src = PubkeySource::parse_from_tokens(p)?;
+            Ok(TimelineKind::Notifications(*pk_src.to_pubkey(deck_author)))
+        });
+        if notifications.is_ok() {
+            return notifications;
+        }
+
+        let list_tl =
+            parser.try_parse(|p| Ok(TimelineKind::List(ListKind::parse(p, deck_author)?)));
+        if list_tl.is_ok() {
+            return list_tl;
+        }
+
+        let algo_tl =
+            parser.try_parse(|p| Ok(TimelineKind::Algo(AlgoTimeline::parse(p, deck_author)?)));
+        if algo_tl.is_ok() {
+            return algo_tl;
+        }
+
+        TokenParser::alt(
+            parser,
+            &[
+                |p| {
+                    p.parse_token("thread")?;
+                    Ok(TimelineKind::Thread(ThreadSelection::from_root_id(
+                        RootNoteIdBuf::new_unsafe(tokenator::parse_hex_id(p)?),
+                    )))
+                },
+                |p| {
+                    p.parse_token("universe")?;
+                    Ok(TimelineKind::Universe)
+                },
+                |p| {
+                    p.parse_token("generic")?;
+                    // TODO: generic filter serialization
+                    Ok(TimelineKind::Generic(0))
+                },
+                |p| {
+                    p.parse_token("hashtag")?;
+                    Ok(TimelineKind::Hashtag(p.pull_token()?.to_string()))
+                },
+            ],
+        )
     }
 
     pub fn last_per_pubkey(list_kind: ListKind) -> Self {
         TimelineKind::Algo(AlgoTimeline::LastPerPubkey(list_kind))
     }
 
-    pub fn contact_list(pk: PubkeySource) -> Self {
+    pub fn contact_list(pk: Pubkey) -> Self {
         TimelineKind::List(ListKind::contact_list(pk))
     }
 
@@ -323,51 +399,98 @@ impl TimelineKind {
         matches!(self, TimelineKind::List(ListKind::Contact(_)))
     }
 
-    pub fn profile(pk: PubkeySource) -> Self {
+    pub fn profile(pk: Pubkey) -> Self {
         TimelineKind::Profile(pk)
     }
 
-    pub fn thread(root_id: RootNoteIdBuf) -> Self {
-        TimelineKind::Thread(root_id)
+    pub fn thread(selected_note: ThreadSelection) -> Self {
+        TimelineKind::Thread(selected_note)
     }
 
     pub fn is_notifications(&self) -> bool {
         matches!(self, TimelineKind::Notifications(_))
     }
 
-    pub fn notifications(pk: PubkeySource) -> Self {
+    pub fn notifications(pk: Pubkey) -> Self {
         TimelineKind::Notifications(pk)
     }
 
-    pub fn into_timeline(self, ndb: &Ndb, default_user: Option<&[u8; 32]>) -> Option<Timeline> {
+    // TODO: probably should set default limit here
+    pub fn filters(&self, txn: &Transaction, ndb: &Ndb) -> FilterState {
+        match self {
+            TimelineKind::Universe => FilterState::ready(universe_filter()),
+
+            TimelineKind::List(list_k) => match list_k {
+                ListKind::Contact(pubkey) => contact_filter_state(txn, ndb, pubkey),
+            },
+
+            // TODO: still need to update this to fetch likes, zaps, etc
+            TimelineKind::Notifications(pubkey) => FilterState::ready(vec![Filter::new()
+                .pubkeys([pubkey.bytes()])
+                .kinds([1])
+                .limit(default_limit())
+                .build()]),
+
+            TimelineKind::Hashtag(hashtag) => FilterState::ready(vec![Filter::new()
+                .kinds([1])
+                .limit(filter::default_limit())
+                .tags([hashtag.clone()], 't')
+                .build()]),
+
+            TimelineKind::Algo(algo_timeline) => match algo_timeline {
+                AlgoTimeline::LastPerPubkey(list_k) => match list_k {
+                    ListKind::Contact(pubkey) => last_per_pubkey_filter_state(ndb, pubkey),
+                },
+            },
+
+            TimelineKind::Generic(_) => {
+                todo!("implement generic filter lookups")
+            }
+
+            TimelineKind::Thread(selection) => FilterState::ready(vec![
+                nostrdb::Filter::new()
+                    .kinds([1])
+                    .event(selection.root_id.bytes())
+                    .build(),
+                nostrdb::Filter::new()
+                    .ids([selection.root_id.bytes()])
+                    .limit(1)
+                    .build(),
+            ]),
+
+            TimelineKind::Profile(pk) => FilterState::ready(vec![Filter::new()
+                .authors([pk.bytes()])
+                .kinds([1])
+                .limit(default_limit())
+                .build()]),
+        }
+    }
+
+    pub fn into_timeline(self, txn: &Transaction, ndb: &Ndb) -> Option<Timeline> {
         match self {
             TimelineKind::Universe => Some(Timeline::new(
                 TimelineKind::Universe,
-                FilterState::ready(vec![Filter::new()
-                    .kinds([1])
-                    .limit(default_limit())
-                    .build()]),
+                FilterState::ready(universe_filter()),
                 TimelineTab::no_replies(),
             )),
 
             TimelineKind::Thread(root_id) => Some(Timeline::thread(root_id)),
 
-            TimelineKind::Generic => {
+            TimelineKind::Generic(_filter_id) => {
                 warn!("you can't convert a TimelineKind::Generic to a Timeline");
+                // TODO: you actually can! just need to look up the filter id
                 None
             }
 
-            TimelineKind::Algo(AlgoTimeline::LastPerPubkey(ListKind::Contact(pk_src))) => {
-                let pk = match &pk_src {
-                    PubkeySource::DeckAuthor => default_user?,
-                    PubkeySource::Explicit(pk) => pk.bytes(),
-                };
+            TimelineKind::Algo(AlgoTimeline::LastPerPubkey(ListKind::Contact(pk))) => {
+                let contact_filter = Filter::new()
+                    .authors([pk.bytes()])
+                    .kinds([3])
+                    .limit(1)
+                    .build();
 
-                let contact_filter = Filter::new().authors([pk]).kinds([3]).limit(1).build();
-
-                let txn = Transaction::new(ndb).expect("txn");
                 let results = ndb
-                    .query(&txn, &[contact_filter.clone()], 1)
+                    .query(txn, &[contact_filter.clone()], 1)
                     .expect("contact query failed?");
 
                 let kind_fn = TimelineKind::last_per_pubkey;
@@ -375,13 +498,13 @@ impl TimelineKind {
 
                 if results.is_empty() {
                     return Some(Timeline::new(
-                        kind_fn(ListKind::contact_list(pk_src)),
+                        kind_fn(ListKind::contact_list(pk)),
                         FilterState::needs_remote(vec![contact_filter.clone()]),
                         tabs,
                     ));
                 }
 
-                let list_kind = ListKind::contact_list(pk_src);
+                let list_kind = ListKind::contact_list(pk);
 
                 match Timeline::last_per_pubkey(&results[0].note, &list_kind) {
                     Err(Error::App(notedeck::Error::Filter(FilterError::EmptyContactList))) => {
@@ -399,39 +522,29 @@ impl TimelineKind {
                 }
             }
 
-            TimelineKind::Profile(pk_src) => {
-                let pk = match &pk_src {
-                    PubkeySource::DeckAuthor => default_user?,
-                    PubkeySource::Explicit(pk) => pk.bytes(),
-                };
-
+            TimelineKind::Profile(pk) => {
                 let filter = Filter::new()
-                    .authors([pk])
+                    .authors([pk.bytes()])
                     .kinds([1])
                     .limit(default_limit())
                     .build();
 
                 Some(Timeline::new(
-                    TimelineKind::profile(pk_src),
+                    TimelineKind::profile(pk),
                     FilterState::ready(vec![filter]),
                     TimelineTab::full_tabs(),
                 ))
             }
 
-            TimelineKind::Notifications(pk_src) => {
-                let pk = match &pk_src {
-                    PubkeySource::DeckAuthor => default_user?,
-                    PubkeySource::Explicit(pk) => pk.bytes(),
-                };
-
+            TimelineKind::Notifications(pk) => {
                 let notifications_filter = Filter::new()
-                    .pubkeys([pk])
+                    .pubkeys([pk.bytes()])
                     .kinds([1])
                     .limit(default_limit())
                     .build();
 
                 Some(Timeline::new(
-                    TimelineKind::notifications(pk_src),
+                    TimelineKind::notifications(pk),
                     FilterState::ready(vec![notifications_filter]),
                     TimelineTab::only_notes_and_replies(),
                 ))
@@ -439,42 +552,11 @@ impl TimelineKind {
 
             TimelineKind::Hashtag(hashtag) => Some(Timeline::hashtag(hashtag)),
 
-            TimelineKind::List(ListKind::Contact(pk_src)) => {
-                let pk = match &pk_src {
-                    PubkeySource::DeckAuthor => default_user?,
-                    PubkeySource::Explicit(pk) => pk.bytes(),
-                };
-
-                let contact_filter = Filter::new().authors([pk]).kinds([3]).limit(1).build();
-
-                let txn = Transaction::new(ndb).expect("txn");
-                let results = ndb
-                    .query(&txn, &[contact_filter.clone()], 1)
-                    .expect("contact query failed?");
-
-                if results.is_empty() {
-                    return Some(Timeline::new(
-                        TimelineKind::contact_list(pk_src),
-                        FilterState::needs_remote(vec![contact_filter.clone()]),
-                        TimelineTab::full_tabs(),
-                    ));
-                }
-
-                match Timeline::contact_list(&results[0].note, pk_src.clone(), default_user) {
-                    Err(Error::App(notedeck::Error::Filter(FilterError::EmptyContactList))) => {
-                        Some(Timeline::new(
-                            TimelineKind::contact_list(pk_src),
-                            FilterState::needs_remote(vec![contact_filter]),
-                            TimelineTab::full_tabs(),
-                        ))
-                    }
-                    Err(e) => {
-                        error!("Unexpected error: {e}");
-                        None
-                    }
-                    Ok(tl) => Some(tl),
-                }
-            }
+            TimelineKind::List(ListKind::Contact(pk)) => Some(Timeline::new(
+                TimelineKind::contact_list(pk),
+                contact_filter_state(txn, ndb, &pk),
+                TimelineTab::full_tabs(),
+            )),
         }
     }
 
@@ -490,7 +572,7 @@ impl TimelineKind {
             TimelineKind::Profile(_pubkey_source) => ColumnTitle::needs_db(self),
             TimelineKind::Thread(_root_id) => ColumnTitle::simple("Thread"),
             TimelineKind::Universe => ColumnTitle::simple("Universe"),
-            TimelineKind::Generic => ColumnTitle::simple("Custom"),
+            TimelineKind::Generic(_) => ColumnTitle::simple("Custom"),
             TimelineKind::Hashtag(hashtag) => ColumnTitle::formatted(hashtag.to_string()),
         }
     }
@@ -506,26 +588,15 @@ impl<'a> TitleNeedsDb<'a> {
         TitleNeedsDb { kind }
     }
 
-    pub fn title<'txn>(
-        &self,
-        txn: &'txn Transaction,
-        ndb: &Ndb,
-        deck_author: Option<&Pubkey>,
-    ) -> &'txn str {
-        if let TimelineKind::Profile(pubkey_source) = self.kind {
-            if let Some(deck_author) = deck_author {
-                let pubkey = pubkey_source.to_pubkey(deck_author);
-                let profile = ndb.get_profile_by_pubkey(txn, pubkey);
-                let m_name = profile
-                    .as_ref()
-                    .ok()
-                    .map(|p| crate::profile::get_display_name(Some(p)).name());
+    pub fn title<'txn>(&self, txn: &'txn Transaction, ndb: &Ndb) -> &'txn str {
+        if let TimelineKind::Profile(pubkey) = self.kind {
+            let profile = ndb.get_profile_by_pubkey(txn, pubkey);
+            let m_name = profile
+                .as_ref()
+                .ok()
+                .map(|p| crate::profile::get_display_name(Some(p)).name());
 
-                m_name.unwrap_or("Profile")
-            } else {
-                // why would be there be no deck author? weird
-                "nostrich"
-            }
+            m_name.unwrap_or("Profile")
         } else {
             "Unknown"
         }
@@ -552,4 +623,66 @@ impl<'a> ColumnTitle<'a> {
     pub fn needs_db(kind: &'a TimelineKind) -> ColumnTitle<'a> {
         Self::NeedsDb(TitleNeedsDb::new(kind))
     }
+}
+
+fn contact_filter_state(txn: &Transaction, ndb: &Ndb, pk: &Pubkey) -> FilterState {
+    let contact_filter = Filter::new()
+        .authors([pk.bytes()])
+        .kinds([3])
+        .limit(1)
+        .build();
+
+    let results = ndb
+        .query(txn, &[contact_filter.clone()], 1)
+        .expect("contact query failed?");
+
+    if results.is_empty() {
+        FilterState::needs_remote(vec![contact_filter.clone()])
+    } else {
+        let with_hashtags = false;
+        match filter::filter_from_tags(&results[0].note, Some(pk.bytes()), with_hashtags) {
+            Err(notedeck::Error::Filter(FilterError::EmptyContactList)) => {
+                FilterState::needs_remote(vec![contact_filter])
+            }
+            Err(err) => {
+                error!("Error getting contact filter state: {err}");
+                FilterState::Broken(FilterError::EmptyContactList)
+            }
+            Ok(filter) => FilterState::ready(filter.into_follow_filter()),
+        }
+    }
+}
+
+fn last_per_pubkey_filter_state(ndb: &Ndb, pk: &Pubkey) -> FilterState {
+    let contact_filter = Filter::new()
+        .authors([pk.bytes()])
+        .kinds([3])
+        .limit(1)
+        .build();
+
+    let txn = Transaction::new(ndb).expect("txn");
+    let results = ndb
+        .query(&txn, &[contact_filter.clone()], 1)
+        .expect("contact query failed?");
+
+    if results.is_empty() {
+        FilterState::needs_remote(vec![contact_filter])
+    } else {
+        let kind = 1;
+        let notes_per_pk = 1;
+        match filter::last_n_per_pubkey_from_tags(&results[0].note, kind, notes_per_pk) {
+            Err(notedeck::Error::Filter(FilterError::EmptyContactList)) => {
+                FilterState::needs_remote(vec![contact_filter])
+            }
+            Err(err) => {
+                error!("Error getting contact filter state: {err}");
+                FilterState::Broken(FilterError::EmptyContactList)
+            }
+            Ok(filter) => FilterState::ready(filter),
+        }
+    }
+}
+
+fn universe_filter() -> Vec<Filter> {
+    vec![Filter::new().kinds([1]).limit(default_limit()).build()]
 }

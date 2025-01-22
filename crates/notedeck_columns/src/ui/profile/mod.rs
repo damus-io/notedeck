@@ -5,7 +5,7 @@ pub mod preview;
 pub use edit::EditProfileView;
 use egui::load::TexturePoll;
 use egui::{vec2, Color32, Label, Layout, Rect, RichText, Rounding, ScrollArea, Sense, Stroke};
-use enostr::{Pubkey, PubkeyRef};
+use enostr::Pubkey;
 use nostrdb::{Ndb, ProfileRecord, Transaction};
 pub use picture::ProfilePic;
 pub use preview::ProfilePreview;
@@ -15,7 +15,7 @@ use crate::{
     actionbar::NoteAction,
     colors, images,
     profile::get_display_name,
-    timeline::{TimelineCache, TimelineCacheKey},
+    timeline::{TimelineCache, TimelineKind},
     ui::{
         note::NoteOptions,
         timeline::{tabs_ui, TimelineTabView},
@@ -90,7 +90,7 @@ impl<'a> ProfileView<'a> {
                         self.ndb,
                         self.note_cache,
                         &txn,
-                        TimelineCacheKey::Profile(PubkeyRef::new(self.pubkey.bytes())),
+                        &TimelineKind::Profile(*self.pubkey),
                     )
                     .get_ptr();
 

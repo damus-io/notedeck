@@ -9,7 +9,7 @@ pub struct NoteId([u8; 32]);
 
 impl fmt::Debug for NoteId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.hex())
+        write!(f, "NoteId({})", self.hex())
     }
 }
 

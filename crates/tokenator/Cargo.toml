@@ -5,3 +5,4 @@ edition = "2021"
 description = "A simple library for parsing a serializing string tokens"
 
 [dependencies]
+hex = { workspace = true }

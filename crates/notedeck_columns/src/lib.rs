@@ -29,7 +29,6 @@ mod route;
 mod subscriptions;
 mod support;
 mod test_data;
-mod thread;
 mod timeline;
 pub mod ui;
 mod unknowns;

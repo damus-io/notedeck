@@ -1,6 +1,5 @@
 use crate::error::{Error, FilterError};
 use crate::note::NoteRef;
-use crate::Result;
 use nostrdb::{Filter, FilterBuilder, Note, Subscription};
 use std::collections::HashMap;
 use tracing::{debug, warn};
@@ -24,7 +23,7 @@ pub struct FilterStates {
 }
 
 impl FilterStates {
-    pub fn get(&mut self, relay: &str) -> &FilterState {
+    pub fn get_mut(&mut self, relay: &str) -> &FilterState {
         // if our initial state is ready, then just use that
         if let FilterState::Ready(_) = self.initial_state {
             &self.initial_state
@@ -195,7 +194,7 @@ pub fn last_n_per_pubkey_from_tags(
     note: &Note,
     kind: u64,
     notes_per_pubkey: u64,
-) -> Result<Vec<Filter>> {
+) -> Result<Vec<Filter>, Error> {
     let mut filters: Vec<Filter> = vec![];
 
     for tag in note.tags() {
@@ -250,7 +249,7 @@ pub fn filter_from_tags(
     note: &Note,
     add_pubkey: Option<&[u8; 32]>,
     with_hashtags: bool,
-) -> Result<FilteredTags> {
+) -> Result<FilteredTags, Error> {
     let mut author_filter = Filter::new();
     let mut hashtag_filter = Filter::new();
     let mut author_res: Option<FilterBuilder> = None;
@@ -337,4 +336,12 @@ pub fn filter_from_tags(
         authors: author_res,
         hashtags: hashtag_res,
     })
+}
+
+pub fn make_filters_since(raw: &[Filter], since: u64) -> Vec<Filter> {
+    let mut filters = Vec::with_capacity(raw.len());
+    for builder in raw {
+        filters.push(Filter::copy_from(builder).since(since).build());
+    }
+    filters
 }

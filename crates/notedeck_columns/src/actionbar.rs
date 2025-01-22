@@ -1,7 +1,7 @@
 use crate::{
     column::Columns,
     route::{Route, Router},
-    timeline::{TimelineCache, TimelineCacheKey},
+    timeline::{ThreadSelection, TimelineCache, TimelineKind},
 };
 
 use enostr::{NoteId, Pubkey, RelayPool};
@@ -17,13 +17,13 @@ pub enum NoteAction {
     OpenProfile(Pubkey),
 }
 
-pub struct NewNotes<'a> {
-    pub id: TimelineCacheKey<'a>,
+pub struct NewNotes {
+    pub id: TimelineKind,
     pub notes: Vec<NoteKey>,
 }
 
-pub enum TimelineOpenResult<'a> {
-    NewNotes(NewNotes<'a>),
+pub enum TimelineOpenResult {
+    NewNotes(NewNotes),
 }
 
 /// open_thread is called when a note is selected and we need to navigate
@@ -32,16 +32,18 @@ pub enum TimelineOpenResult<'a> {
 /// the thread view. We don't have a concept of model/view/controller etc
 /// in egui, but this is the closest thing to that.
 #[allow(clippy::too_many_arguments)]
-fn open_thread<'txn>(
+fn open_thread(
     ndb: &Ndb,
-    txn: &'txn Transaction,
+    txn: &Transaction,
     router: &mut Router<Route>,
     note_cache: &mut NoteCache,
     pool: &mut RelayPool,
     timeline_cache: &mut TimelineCache,
-    selected_note: &'txn [u8; 32],
-) -> Option<TimelineOpenResult<'txn>> {
-    router.route_to(Route::thread(NoteId::new(selected_note.to_owned())));
+    selected_note: &[u8; 32],
+) -> Option<TimelineOpenResult> {
+    router.route_to(Route::thread(
+        ThreadSelection::from_note_id(ndb, note_cache, txn, NoteId::new(*selected_note)).ok()?,
+    ));
 
     match root_note_id_from_selected_id(ndb, note_cache, txn, selected_note) {
         Ok(root_id) => timeline_cache.open(
@@ -49,7 +51,7 @@ fn open_thread<'txn>(
             note_cache,
             txn,
             pool,
-            TimelineCacheKey::thread(root_id),
+            &TimelineKind::Thread(ThreadSelection::from_root_id(root_id.to_owned())),
         ),
 
         Err(RootIdError::NoteNotFound) => {
@@ -72,18 +74,15 @@ fn open_thread<'txn>(
 
 impl NoteAction {
     #[allow(clippy::too_many_arguments)]
-    pub fn execute<'txn, 'a>(
-        &'a self,
+    pub fn execute(
+        &self,
         ndb: &Ndb,
         router: &mut Router<Route>,
         timeline_cache: &mut TimelineCache,
         note_cache: &mut NoteCache,
         pool: &mut RelayPool,
-        txn: &'txn Transaction,
-    ) -> Option<TimelineOpenResult<'txn>>
-    where
-        'a: 'txn,
-    {
+        txn: &Transaction,
+    ) -> Option<TimelineOpenResult> {
         match self {
             NoteAction::Reply(note_id) => {
                 router.route_to(Route::reply(*note_id));
@@ -102,13 +101,7 @@ impl NoteAction {
 
             NoteAction::OpenProfile(pubkey) => {
                 router.route_to(Route::profile(*pubkey));
-                timeline_cache.open(
-                    ndb,
-                    note_cache,
-                    txn,
-                    pool,
-                    TimelineCacheKey::profile(pubkey.as_ref()),
-                )
+                timeline_cache.open(ndb, note_cache, txn, pool, &TimelineKind::Profile(*pubkey))
             }
 
             NoteAction::Quote(note_id) => {
@@ -138,8 +131,8 @@ impl NoteAction {
     }
 }
 
-impl<'a> TimelineOpenResult<'a> {
-    pub fn new_notes(notes: Vec<NoteKey>, id: TimelineCacheKey<'a>) -> Self {
+impl TimelineOpenResult {
+    pub fn new_notes(notes: Vec<NoteKey>, id: TimelineKind) -> Self {
         Self::NewNotes(NewNotes::new(notes, id))
     }
 
@@ -160,8 +153,8 @@ impl<'a> TimelineOpenResult<'a> {
     }
 }
 
-impl<'a> NewNotes<'a> {
-    pub fn new(notes: Vec<NoteKey>, id: TimelineCacheKey<'a>) -> Self {
+impl NewNotes {
+    pub fn new(notes: Vec<NoteKey>, id: TimelineKind) -> Self {
         NewNotes { notes, id }
     }
 
@@ -175,46 +168,18 @@ impl<'a> NewNotes<'a> {
         unknown_ids: &mut UnknownIds,
         note_cache: &mut NoteCache,
     ) {
-        match self.id {
-            TimelineCacheKey::Profile(pubkey) => {
-                let profile = if let Some(profile) = timeline_cache.profiles.get_mut(pubkey.bytes())
-                {
-                    profile
-                } else {
-                    return;
-                };
+        let reversed = matches!(&self.id, TimelineKind::Thread(_));
 
-                let reversed = false;
+        let timeline = if let Some(profile) = timeline_cache.timelines.get_mut(&self.id) {
+            profile
+        } else {
+            error!("NewNotes: could not get timeline for key {}", self.id);
+            return;
+        };
 
-                if let Err(err) = profile.timeline.insert(
-                    &self.notes,
-                    ndb,
-                    txn,
-                    unknown_ids,
-                    note_cache,
-                    reversed,
-                ) {
-                    error!("error inserting notes into profile timeline: {err}")
-                }
-            }
-
-            TimelineCacheKey::Thread(root_id) => {
-                // threads are chronological, ie reversed from reverse-chronological, the default.
-                let reversed = true;
-                let thread = if let Some(thread) = timeline_cache.threads.get_mut(root_id.bytes()) {
-                    thread
-                } else {
-                    return;
-                };
-
-                if let Err(err) =
-                    thread
-                        .timeline
-                        .insert(&self.notes, ndb, txn, unknown_ids, note_cache, reversed)
-                {
-                    error!("error inserting notes into thread timeline: {err}")
-                }
-            }
+        if let Err(err) = timeline.insert(&self.notes, ndb, txn, unknown_ids, note_cache, reversed)
+        {
+            error!("error inserting notes into profile timeline: {err}")
         }
     }
 }

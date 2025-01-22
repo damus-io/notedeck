@@ -1,7 +1,7 @@
 use crate::{
     accounts::render_accounts_route,
     actionbar::NoteAction,
-    app::{get_active_columns, get_active_columns_mut, get_decks_mut},
+    app::{get_active_columns_mut, get_decks_mut},
     column::ColumnsAction,
     deck_state::DeckState,
     decks::{Deck, DecksAction, DecksCache},
@@ -9,10 +9,7 @@ use crate::{
     profile_state::ProfileState,
     relay_pool_manager::RelayPoolManager,
     route::Route,
-    timeline::{
-        route::{render_timeline_route, TimelineRoute},
-        Timeline,
-    },
+    timeline::{route::render_timeline_route, TimelineCache},
     ui::{
         self,
         add_column::render_add_column_routes,
@@ -27,11 +24,10 @@ use crate::{
     Damus,
 };
 
-use notedeck::{AccountsAction, AppContext, RootIdError};
-
 use egui_nav::{Nav, NavAction, NavResponse, NavUiType};
-use nostrdb::{Ndb, Transaction};
-use tracing::{error, info};
+use nostrdb::Transaction;
+use notedeck::{AccountsAction, AppContext};
+use tracing::error;
 
 #[allow(clippy::enum_variant_names)]
 pub enum RenderNavAction {
@@ -51,7 +47,12 @@ pub enum SwitchingAction {
 
 impl SwitchingAction {
     /// process the action, and return whether switching occured
-    pub fn process(&self, decks_cache: &mut DecksCache, ctx: &mut AppContext<'_>) -> bool {
+    pub fn process(
+        &self,
+        timeline_cache: &mut TimelineCache,
+        decks_cache: &mut DecksCache,
+        ctx: &mut AppContext<'_>,
+    ) -> bool {
         match &self {
             SwitchingAction::Accounts(account_action) => match account_action {
                 AccountsAction::Switch(switch_action) => {
@@ -68,8 +69,15 @@ impl SwitchingAction {
             },
             SwitchingAction::Columns(columns_action) => match *columns_action {
                 ColumnsAction::Remove(index) => {
-                    get_active_columns_mut(ctx.accounts, decks_cache).delete_column(index)
+                    let kinds_to_pop =
+                        get_active_columns_mut(ctx.accounts, decks_cache).delete_column(index);
+                    for kind in &kinds_to_pop {
+                        if let Err(err) = timeline_cache.pop(kind, ctx.ndb, ctx.pool) {
+                            error!("error popping timeline: {err}");
+                        }
+                    }
                 }
+
                 ColumnsAction::Switch(from, to) => {
                     get_active_columns_mut(ctx.accounts, decks_cache).move_col(from, to);
                 }
@@ -133,14 +141,14 @@ impl RenderNavResponse {
                 }
 
                 RenderNavAction::RemoveColumn => {
-                    let tl = app
-                        .columns(ctx.accounts)
-                        .find_timeline_for_column_index(col);
-                    if let Some(timeline) = tl {
-                        unsubscribe_timeline(ctx.ndb, timeline);
+                    let kinds_to_pop = app.columns_mut(ctx.accounts).delete_column(col);
+
+                    for kind in &kinds_to_pop {
+                        if let Err(err) = app.timeline_cache.pop(kind, ctx.ndb, ctx.pool) {
+                            error!("error popping timeline: {err}");
+                        }
                     }
 
-                    app.columns_mut(ctx.accounts).delete_column(col);
                     switching_occured = true;
                 }
 
@@ -169,7 +177,11 @@ impl RenderNavResponse {
                 }
 
                 RenderNavAction::SwitchingAction(switching_action) => {
-                    switching_occured = switching_action.process(&mut app.decks_cache, ctx);
+                    switching_occured = switching_action.process(
+                        &mut app.timeline_cache,
+                        &mut app.decks_cache,
+                        ctx,
+                    );
                 }
                 RenderNavAction::ProfileAction(profile_action) => {
                     profile_action.process(
@@ -192,40 +204,12 @@ impl RenderNavResponse {
                         .column_mut(col)
                         .router_mut()
                         .pop();
-                    let txn = Transaction::new(ctx.ndb).expect("txn");
 
-                    if let Some(Route::Timeline(TimelineRoute::Thread(id))) = r {
-                        match notedeck::note::root_note_id_from_selected_id(
-                            ctx.ndb,
-                            ctx.note_cache,
-                            &txn,
-                            id.bytes(),
-                        ) {
-                            Ok(root_id) => {
-                                if let Some(thread) =
-                                    app.timeline_cache.threads.get_mut(root_id.bytes())
-                                {
-                                    if let Some(sub) = &mut thread.subscription {
-                                        sub.unsubscribe(ctx.ndb, ctx.pool);
-                                    }
-                                }
-                            }
-
-                            Err(RootIdError::NoteNotFound) => {
-                                error!("thread returned: note not found for unsub??: {}", id.hex())
-                            }
-
-                            Err(RootIdError::NoRootId) => {
-                                error!("thread returned: note not found for unsub??: {}", id.hex())
-                            }
+                    if let Some(Route::Timeline(kind)) = &r {
+                        if let Err(err) = app.timeline_cache.pop(kind, ctx.ndb, ctx.pool) {
+                            error!("popping timeline had an error: {err} for {:?}", kind);
                         }
-                    } else if let Some(Route::Timeline(TimelineRoute::Profile(pubkey))) = r {
-                        if let Some(profile) = app.timeline_cache.profiles.get_mut(pubkey.bytes()) {
-                            if let Some(sub) = &mut profile.subscription {
-                                sub.unsubscribe(ctx.ndb, ctx.pool);
-                            }
-                        }
-                    }
+                    };
 
                     switching_occured = true;
                 }
@@ -255,21 +239,21 @@ fn render_nav_body(
     app: &mut Damus,
     ctx: &mut AppContext<'_>,
     top: &Route,
+    depth: usize,
     col: usize,
 ) -> Option<RenderNavAction> {
     match top {
-        Route::Timeline(tlr) => render_timeline_route(
+        Route::Timeline(kind) => render_timeline_route(
             ctx.ndb,
-            get_active_columns_mut(ctx.accounts, &mut app.decks_cache),
-            &mut app.drafts,
             ctx.img_cache,
             ctx.unknown_ids,
             ctx.note_cache,
             &mut app.timeline_cache,
             ctx.accounts,
-            *tlr,
+            kind,
             col,
             app.textmode,
+            depth,
             ui,
         ),
         Route::Accounts(amr) => {
@@ -294,6 +278,78 @@ fn render_nav_body(
             RelayView::new(ctx.accounts, manager, &mut app.view_state.id_string_map).ui(ui);
             None
         }
+
+        Route::Reply(id) => {
+            let txn = if let Ok(txn) = Transaction::new(ctx.ndb) {
+                txn
+            } else {
+                ui.label("Reply to unknown note");
+                return None;
+            };
+
+            let note = if let Ok(note) = ctx.ndb.get_note_by_id(&txn, id.bytes()) {
+                note
+            } else {
+                ui.label("Reply to unknown note");
+                return None;
+            };
+
+            let id = egui::Id::new(("post", col, note.key().unwrap()));
+            let poster = ctx.accounts.selected_or_first_nsec()?;
+
+            let action = {
+                let draft = app.drafts.reply_mut(note.id());
+
+                let response = egui::ScrollArea::vertical().show(ui, |ui| {
+                    ui::PostReplyView::new(
+                        ctx.ndb,
+                        poster,
+                        draft,
+                        ctx.note_cache,
+                        ctx.img_cache,
+                        &note,
+                    )
+                    .id_source(id)
+                    .show(ui)
+                });
+
+                response.inner.action
+            };
+
+            action.map(Into::into)
+        }
+
+        Route::Quote(id) => {
+            let txn = Transaction::new(ctx.ndb).expect("txn");
+
+            let note = if let Ok(note) = ctx.ndb.get_note_by_id(&txn, id.bytes()) {
+                note
+            } else {
+                ui.label("Quote of unknown note");
+                return None;
+            };
+
+            let id = egui::Id::new(("post", col, note.key().unwrap()));
+
+            let poster = ctx.accounts.selected_or_first_nsec()?;
+            let draft = app.drafts.quote_mut(note.id());
+
+            let response = egui::ScrollArea::vertical().show(ui, |ui| {
+                crate::ui::note::QuoteRepostView::new(
+                    ctx.ndb,
+                    poster,
+                    ctx.note_cache,
+                    ctx.img_cache,
+                    draft,
+                    &note,
+                )
+                .id_source(id)
+                .show(ui)
+            });
+
+            response.inner.action.map(Into::into)
+        }
+
         Route::ComposeNote => {
             let kp = ctx.accounts.get_selected_account()?.to_full()?;
             let draft = app.drafts.compose_mut();
@@ -421,9 +477,6 @@ pub fn render_nav(
     ctx: &mut AppContext<'_>,
     ui: &mut egui::Ui,
 ) -> RenderNavResponse {
-    let col_id = get_active_columns(ctx.accounts, &app.decks_cache).get_column_id_at_index(col);
-    // TODO(jb55): clean up this router_mut mess by using Router<R> in egui-nav directly
-
     let nav_response = Nav::new(
         &app.columns(ctx.accounts)
             .column(col)
@@ -443,33 +496,24 @@ pub fn render_nav(
             .router_mut()
             .returning,
     )
-    .id_source(egui::Id::new(col_id))
+    .id_source(egui::Id::new(("nav", col)))
     .show_mut(ui, |ui, render_type, nav| match render_type {
         NavUiType::Title => NavTitle::new(
             ctx.ndb,
             ctx.img_cache,
             get_active_columns_mut(ctx.accounts, &mut app.decks_cache),
-            ctx.accounts.get_selected_account().map(|a| &a.pubkey),
             nav.routes(),
             col,
         )
         .show(ui),
-        NavUiType::Body => render_nav_body(ui, app, ctx, nav.routes().last().expect("top"), col),
+        NavUiType::Body => {
+            if let Some(top) = nav.routes().last() {
+                render_nav_body(ui, app, ctx, top, nav.routes().len(), col)
+            } else {
+                None
+            }
+        }
     });
 
     RenderNavResponse::new(col, nav_response)
-}
-
-fn unsubscribe_timeline(ndb: &mut Ndb, timeline: &Timeline) {
-    if let Some(sub_id) = timeline.subscription {
-        if let Err(e) = ndb.unsubscribe(sub_id) {
-            error!("unsubscribe error: {}", e);
-        } else {
-            info!(
-                "successfully unsubscribed from timeline {} with sub id {}",
-                timeline.id,
-                sub_id.id()
-            );
-        }
-    }
 }

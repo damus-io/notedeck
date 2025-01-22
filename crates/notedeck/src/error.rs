@@ -35,6 +35,9 @@ impl From<String> for Error {
 pub enum FilterError {
     #[error("empty contact list")]
     EmptyContactList,
+
+    #[error("filter not ready")]
+    FilterNotReady,
 }
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone, thiserror::Error)]

@@ -288,7 +288,7 @@ impl<'a> DesktopSidePanel<'a> {
                 if router
                     .routes()
                     .iter()
-                    .any(|&r| r == Route::Accounts(AccountsRoute::Accounts))
+                    .any(|r| r == &Route::Accounts(AccountsRoute::Accounts))
                 {
                     // return if we are already routing to accounts
                     router.go_back();
@@ -297,7 +297,7 @@ impl<'a> DesktopSidePanel<'a> {
                 }
             }
             SidePanelAction::Settings => {
-                if router.routes().iter().any(|&r| r == Route::Relays) {
+                if router.routes().iter().any(|r| r == &Route::Relays) {
                     // return if we are already routing to accounts
                     router.go_back();
                 } else {
@@ -308,7 +308,7 @@ impl<'a> DesktopSidePanel<'a> {
                 if router
                     .routes()
                     .iter()
-                    .any(|&r| matches!(r, Route::AddColumn(_)))
+                    .any(|r| matches!(r, Route::AddColumn(_)))
                 {
                     router.go_back();
                 } else {
@@ -316,7 +316,7 @@ impl<'a> DesktopSidePanel<'a> {
                 }
             }
             SidePanelAction::ComposeNote => {
-                if router.routes().iter().any(|&r| r == Route::ComposeNote) {
+                if router.routes().iter().any(|r| r == &Route::ComposeNote) {
                     router.go_back();
                 } else {
                     router.route_to(Route::ComposeNote);
@@ -331,7 +331,7 @@ impl<'a> DesktopSidePanel<'a> {
                 info!("Clicked expand side panel button");
             }
             SidePanelAction::Support => {
-                if router.routes().iter().any(|&r| r == Route::Support) {
+                if router.routes().iter().any(|r| r == &Route::Support) {
                     router.go_back();
                 } else {
                     support.refresh();
@@ -339,7 +339,7 @@ impl<'a> DesktopSidePanel<'a> {
                 }
             }
             SidePanelAction::NewDeck => {
-                if router.routes().iter().any(|&r| r == Route::NewDeck) {
+                if router.routes().iter().any(|r| r == &Route::NewDeck) {
                     router.go_back();
                 } else {
                     router.route_to(Route::NewDeck);
@@ -351,7 +351,7 @@ impl<'a> DesktopSidePanel<'a> {
                 )))
             }
             SidePanelAction::EditDeck(index) => {
-                if router.routes().iter().any(|&r| r == Route::EditDeck(index)) {
+                if router.routes().iter().any(|r| r == &Route::EditDeck(index)) {
                     router.go_back();
                 } else {
                     switching_response = Some(crate::nav::SwitchingAction::Decks(

@@ -143,32 +143,39 @@ impl AddColumnOption {
         ndb: &Ndb,
         cur_account: Option<&UserAccount>,
     ) -> Option<AddColumnResponse> {
+        let txn = Transaction::new(ndb).unwrap();
         match self {
             AddColumnOption::Algo(algo_option) => Some(AddColumnResponse::Algo(algo_option)),
             AddColumnOption::Universe => TimelineKind::Universe
-                .into_timeline(ndb, None)
+                .into_timeline(&txn, ndb)
                 .map(AddColumnResponse::Timeline),
-            AddColumnOption::Notification(pubkey) => TimelineKind::Notifications(pubkey)
-                .into_timeline(ndb, cur_account.map(|a| a.pubkey.bytes()))
-                .map(AddColumnResponse::Timeline),
+            AddColumnOption::Notification(pubkey) => {
+                TimelineKind::Notifications(*pubkey.to_pubkey(&cur_account.map(|kp| kp.pubkey)?))
+                    .into_timeline(&txn, ndb)
+                    .map(AddColumnResponse::Timeline)
+            }
             AddColumnOption::UndecidedNotification => {
                 Some(AddColumnResponse::UndecidedNotification)
             }
-            AddColumnOption::Contacts(pubkey) => {
-                let tlk = TimelineKind::contact_list(pubkey);
-                tlk.into_timeline(ndb, cur_account.map(|a| a.pubkey.bytes()))
+            AddColumnOption::Contacts(pk_src) => {
+                let tlk = TimelineKind::contact_list(
+                    *pk_src.to_pubkey(&cur_account.map(|kp| kp.pubkey)?),
+                );
+                tlk.into_timeline(&txn, ndb)
                     .map(AddColumnResponse::Timeline)
             }
             AddColumnOption::ExternalNotification => Some(AddColumnResponse::ExternalNotification),
             AddColumnOption::UndecidedHashtag => Some(AddColumnResponse::Hashtag),
             AddColumnOption::Hashtag(hashtag) => TimelineKind::Hashtag(hashtag)
-                .into_timeline(ndb, None)
+                .into_timeline(&txn, ndb)
                 .map(AddColumnResponse::Timeline),
             AddColumnOption::UndecidedIndividual => Some(AddColumnResponse::UndecidedIndividual),
             AddColumnOption::ExternalIndividual => Some(AddColumnResponse::ExternalIndividual),
             AddColumnOption::Individual(pubkey_source) => {
-                let tlk = TimelineKind::profile(pubkey_source);
-                tlk.into_timeline(ndb, cur_account.map(|a| a.pubkey.bytes()))
+                let tlk = TimelineKind::profile(
+                    *pubkey_source.to_pubkey(&cur_account.map(|kp| kp.pubkey)?),
+                );
+                tlk.into_timeline(&txn, ndb)
                     .map(AddColumnResponse::Timeline)
             }
         }
@@ -232,13 +239,17 @@ impl<'a> AddColumnView<'a> {
         })
     }
 
-    fn algo_last_per_pk_ui(&mut self, ui: &mut Ui) -> Option<AddColumnResponse> {
+    fn algo_last_per_pk_ui(
+        &mut self,
+        ui: &mut Ui,
+        deck_author: Pubkey,
+    ) -> Option<AddColumnResponse> {
         let algo_option = ColumnOptionData {
             title: "Contact List",
             description: "Source the last note for each user in your contact list",
             icon: egui::include_image!("../../../../assets/icons/home_icon_dark_4x.png"),
             option: AddColumnOption::Algo(AlgoOption::LastPerPubkey(Decision::Decided(
-                ListKind::contact_list(PubkeySource::DeckAuthor),
+                ListKind::contact_list(deck_author),
             ))),
         };
 
@@ -319,18 +330,22 @@ impl<'a> AddColumnView<'a> {
             }
 
             let resp = if let Some(keypair) = key_state.get_login_keypair() {
-                let txn = Transaction::new(self.ndb).expect("txn");
-                if let Ok(profile) = self.ndb.get_profile_by_pubkey(&txn, keypair.pubkey.bytes()) {
-                    egui::Frame::window(ui.style())
-                        .outer_margin(Margin {
-                            left: 4.0,
-                            right: 4.0,
-                            top: 12.0,
-                            bottom: 32.0,
-                        })
-                        .show(ui, |ui| {
-                            ProfilePreview::new(&profile, self.img_cache).ui(ui);
-                        });
+                {
+                    let txn = Transaction::new(self.ndb).expect("txn");
+                    if let Ok(profile) =
+                        self.ndb.get_profile_by_pubkey(&txn, keypair.pubkey.bytes())
+                    {
+                        egui::Frame::window(ui.style())
+                            .outer_margin(Margin {
+                                left: 4.0,
+                                right: 4.0,
+                                top: 12.0,
+                                bottom: 32.0,
+                            })
+                            .show(ui, |ui| {
+                                ProfilePreview::new(&profile, self.img_cache).ui(ui);
+                            });
+                    }
                 }
 
                 if ui.add(add_column_button()).clicked() {
@@ -470,7 +485,7 @@ impl<'a> AddColumnView<'a> {
                 title: "Contacts",
                 description: "See notes from your contacts",
                 icon: egui::include_image!("../../../../assets/icons/home_icon_dark_4x.png"),
-                option: AddColumnOption::Contacts(source.clone()),
+                option: AddColumnOption::Contacts(source),
             });
         }
         vec.push(ColumnOptionData {
@@ -609,7 +624,13 @@ pub fn render_add_column_routes(
         AddColumnRoute::Base => add_column_view.ui(ui),
         AddColumnRoute::Algo(r) => match r {
             AddAlgoRoute::Base => add_column_view.algo_ui(ui),
-            AddAlgoRoute::LastPerPubkey => add_column_view.algo_last_per_pk_ui(ui),
+            AddAlgoRoute::LastPerPubkey => {
+                if let Some(deck_author) = ctx.accounts.get_selected_account() {
+                    add_column_view.algo_last_per_pk_ui(ui, deck_author.pubkey)
+                } else {
+                    None
+                }
+            }
         },
         AddColumnRoute::UndecidedNotification => add_column_view.notifications_ui(ui),
         AddColumnRoute::ExternalNotification => add_column_view.external_notification_ui(ui),
@@ -628,13 +649,16 @@ pub fn render_add_column_routes(
                     ctx.pool,
                     ctx.note_cache,
                     app.since_optimize,
-                    ctx.accounts
-                        .get_selected_account()
-                        .as_ref()
-                        .map(|sa| &sa.pubkey),
                 );
+
                 app.columns_mut(ctx.accounts)
-                    .add_timeline_to_column(col, timeline);
+                    .column_mut(col)
+                    .router_mut()
+                    .route_to_replaced(Route::timeline(timeline.kind.clone()));
+
+                app.timeline_cache
+                    .timelines
+                    .insert(timeline.kind.clone(), timeline);
             }
 
             AddColumnResponse::Algo(algo_option) => match algo_option {
@@ -654,14 +678,8 @@ pub fn render_add_column_routes(
                 // add it to our list of timelines
                 AlgoOption::LastPerPubkey(Decision::Decided(list_kind)) => {
                     let maybe_timeline = {
-                        let default_user = ctx
-                            .accounts
-                            .get_selected_account()
-                            .as_ref()
-                            .map(|sa| sa.pubkey.bytes());
-
-                        TimelineKind::last_per_pubkey(list_kind.clone())
-                            .into_timeline(ctx.ndb, default_user)
+                        let txn = Transaction::new(ctx.ndb).unwrap();
+                        TimelineKind::last_per_pubkey(list_kind).into_timeline(&txn, ctx.ndb)
                     };
 
                     if let Some(mut timeline) = maybe_timeline {
@@ -672,14 +690,16 @@ pub fn render_add_column_routes(
                             ctx.pool,
                             ctx.note_cache,
                             app.since_optimize,
-                            ctx.accounts
-                                .get_selected_account()
-                                .as_ref()
-                                .map(|sa| &sa.pubkey),
                         );
 
                         app.columns_mut(ctx.accounts)
-                            .add_timeline_to_column(col, timeline);
+                            .column_mut(col)
+                            .router_mut()
+                            .route_to_replaced(Route::timeline(timeline.kind.clone()));
+
+                        app.timeline_cache
+                            .timelines
+                            .insert(timeline.kind.clone(), timeline);
                     } else {
                         // we couldn't fetch the timeline yet... let's let
                         // the user know ?
