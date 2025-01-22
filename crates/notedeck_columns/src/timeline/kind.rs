@@ -160,6 +160,32 @@ pub enum AlgoTimeline {
     LastPerPubkey(ListKind),
 }
 
+/// The identifier for our last per pubkey algo
+const LAST_PER_PUBKEY_TOKEN: &str = "last_per_pubkey";
+
+impl TokenSerializable for AlgoTimeline {
+    fn serialize_tokens(&self, writer: &mut TokenWriter) {
+        match self {
+            AlgoTimeline::LastPerPubkey(list_kind) => {
+                writer.write_token(LAST_PER_PUBKEY_TOKEN);
+                list_kind.serialize_tokens(writer);
+            }
+        }
+    }
+
+    fn parse_from_tokens<'a>(parser: &mut TokenParser<'a>) -> Result<Self, ParseError<'a>> {
+        TokenParser::alt(
+            parser,
+            &[|p| {
+                p.parse_all(|p| {
+                    p.parse_token(LAST_PER_PUBKEY_TOKEN)?;
+                    Ok(AlgoTimeline::LastPerPubkey(ListKind::parse_from_tokens(p)?))
+                })
+            }],
+        )
+    }
+}
+
 impl Display for TimelineKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
