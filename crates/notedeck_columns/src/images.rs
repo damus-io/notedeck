@@ -4,6 +4,7 @@ use notedeck::ImageCache;
 use notedeck::Result;
 use poll_promise::Promise;
 use std::path;
+use std::path::PathBuf;
 use tokio::fs;
 
 //pub type ImageCacheKey = String;
@@ -196,6 +197,10 @@ fn fetch_img_from_disk(
 
         Ok(ctx.load_texture(&url, img, Default::default()))
     })
+}
+
+pub fn fetch_binary_from_disk(path: PathBuf) -> Result<Vec<u8>> {
+    std::fs::read(path).map_err(|e| notedeck::Error::Generic(e.to_string()))
 }
 
 /// Controls type-specific handling
