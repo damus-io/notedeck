@@ -1,13 +1,16 @@
 use crate::draft::{Draft, Drafts};
+use crate::images::fetch_img;
+use crate::media_upload::{nostrbuild_nip96_upload, MediaPath};
 use crate::post::NewPost;
 use crate::ui::{self, Preview, PreviewConfig};
 use crate::Result;
 use egui::widgets::text_edit::TextEdit;
-use egui::{Frame, Layout};
+use egui::{vec2, Frame, Layout, Margin, Pos2, ScrollArea, Sense};
 use enostr::{FilledKeypair, FullKeypair, NoteId, RelayPool};
 use nostrdb::{Ndb, Transaction};
 
 use notedeck::{ImageCache, NoteCache};
+use tracing::error;
 
 use super::contents::render_note_preview;
 
@@ -156,7 +159,6 @@ impl<'a> PostView<'a> {
         let stroke = if focused {
             ui.visuals().selection.stroke
         } else {
-            //ui.visuals().selection.stroke
             ui.visuals().noninteractive().bg_stroke
         };
 
@@ -181,34 +183,46 @@ impl<'a> PostView<'a> {
                 ui.vertical(|ui| {
                     let edit_response = ui.horizontal(|ui| self.editbox(txn, ui)).inner;
 
+                    if let PostType::Quote(id) = self.post_type {
+                        let avail_size = ui.available_size_before_wrap();
+                        ui.with_layout(Layout::left_to_right(egui::Align::TOP), |ui| {
+                            Frame::none().show(ui, |ui| {
+                                ui.vertical(|ui| {
+                                    ui.set_max_width(avail_size.x * 0.8);
+                                    render_note_preview(
+                                        ui,
+                                        self.ndb,
+                                        self.note_cache,
+                                        self.img_cache,
+                                        txn,
+                                        id.bytes(),
+                                        nostrdb::NoteKey::new(0),
+                                    );
+                                });
+                            });
+                        });
+                    }
+
+                    Frame::none()
+                        .inner_margin(Margin::symmetric(0.0, 8.0))
+                        .show(ui, |ui| {
+                            ScrollArea::horizontal().show(ui, |ui| {
+                                ui.with_layout(Layout::left_to_right(egui::Align::Min), |ui| {
+                                    ui.add_space(4.0);
+                                    self.show_media(ui);
+                                });
+                            });
+                        });
+
+                    self.transfer_uploads(ui);
+                    self.show_upload_errors(ui);
+
                     let action = ui
                         .horizontal(|ui| {
-                            if let PostType::Quote(id) = self.post_type {
-                                let avail_size = ui.available_size_before_wrap();
-                                ui.with_layout(Layout::left_to_right(egui::Align::TOP), |ui| {
-                                    Frame::none().show(ui, |ui| {
-                                        ui.vertical(|ui| {
-                                            ui.set_max_width(avail_size.x * 0.8);
-                                            render_note_preview(
-                                                ui,
-                                                self.ndb,
-                                                self.note_cache,
-                                                self.img_cache,
-                                                txn,
-                                                id.bytes(),
-                                                nostrdb::NoteKey::new(0),
-                                            );
-                                        });
-                                    });
-                                });
-                            }
-
                             ui.with_layout(
                                 egui::Layout::left_to_right(egui::Align::BOTTOM),
                                 |ui| {
-                                    if ui.add(media_upload_button()).clicked() {
-                                        // TODO: implement media upload
-                                    }
+                                    self.show_upload_media_button(ui);
                                 },
                             );
 
@@ -223,6 +237,7 @@ impl<'a> PostView<'a> {
                                     let new_post = NewPost::new(
                                         self.draft.buffer.clone(),
                                         self.poster.to_full(),
+                                        self.draft.uploaded_media.clone(),
                                     );
                                     Some(PostAction::new(self.post_type.clone(), new_post))
                                 } else {
@@ -241,6 +256,134 @@ impl<'a> PostView<'a> {
                 .inner
             })
             .inner
+    }
+
+    fn show_media(&mut self, ui: &mut egui::Ui) {
+        let mut to_remove = Vec::new();
+        for (i, media) in self.draft.uploaded_media.iter().enumerate() {
+            let (width, height) = if let Some(dims) = media.dimensions {
+                (dims.0, dims.1)
+            } else {
+                (300, 300)
+            };
+            let m_cached_promise = self.img_cache.map().get(&media.url);
+            if m_cached_promise.is_none() {
+                let promise = fetch_img(
+                    &self.img_cache,
+                    ui.ctx(),
+                    &media.url,
+                    crate::images::ImageType::Content(width, height),
+                );
+                self.img_cache
+                    .map_mut()
+                    .insert(media.url.to_owned(), promise);
+            }
+
+            match self.img_cache.map()[&media.url].ready() {
+                Some(Ok(texture)) => {
+                    let media_size = vec2(width as f32, height as f32);
+                    let max_size = vec2(300.0, 300.0);
+                    let size = if media_size.x > max_size.x || media_size.y > max_size.y {
+                        max_size
+                    } else {
+                        media_size
+                    };
+
+                    let img_resp = ui.add(egui::Image::new(texture).max_size(size).rounding(12.0));
+
+                    let remove_button_rect = {
+                        let top_left = img_resp.rect.left_top();
+                        let spacing = 13.0;
+                        let center = Pos2::new(top_left.x + spacing, top_left.y + spacing);
+                        egui::Rect::from_center_size(center, egui::vec2(26.0, 26.0))
+                    };
+                    if show_remove_upload_button(ui, remove_button_rect).clicked() {
+                        to_remove.push(i);
+                    }
+                    ui.advance_cursor_after_rect(img_resp.rect);
+                }
+                Some(Err(e)) => {
+                    self.draft.upload_errors.push(e.to_string());
+                    error!("{e}");
+                }
+                None => {
+                    ui.spinner();
+                }
+            }
+        }
+        to_remove.reverse();
+        for i in to_remove {
+            self.draft.uploaded_media.remove(i);
+        }
+    }
+
+    fn show_upload_media_button(&mut self, ui: &mut egui::Ui) {
+        if ui.add(media_upload_button()).clicked() {
+            #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+            {
+                if let Some(file) = rfd::FileDialog::new().pick_file() {
+                    match MediaPath::new(file) {
+                        Ok(media_path) => {
+                            let promise = nostrbuild_nip96_upload(
+                                self.poster.secret_key.secret_bytes(),
+                                media_path,
+                            );
+                            self.draft.uploading_media.push(promise);
+                        }
+                        Err(e) => {
+                            error!("{e}");
+                            self.draft.upload_errors.push(e.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn transfer_uploads(&mut self, ui: &mut egui::Ui) {
+        let mut indexes_to_remove = Vec::new();
+        for (i, promise) in self.draft.uploading_media.iter().enumerate() {
+            match promise.ready() {
+                Some(Ok(media)) => {
+                    self.draft.uploaded_media.push(media.clone());
+                    indexes_to_remove.push(i);
+                }
+                Some(Err(e)) => {
+                    self.draft.upload_errors.push(e.to_string());
+                    error!("{e}");
+                }
+                None => {
+                    ui.spinner();
+                }
+            }
+        }
+
+        indexes_to_remove.reverse();
+        for i in indexes_to_remove {
+            let _ = self.draft.uploading_media.remove(i);
+        }
+    }
+
+    fn show_upload_errors(&mut self, ui: &mut egui::Ui) {
+        let mut to_remove = Vec::new();
+        for (i, error) in self.draft.upload_errors.iter().enumerate() {
+            if ui
+                .add(
+                    egui::Label::new(egui::RichText::new(error).color(ui.visuals().warn_fg_color))
+                        .sense(Sense::click())
+                        .selectable(false),
+                )
+                .on_hover_text_at_pointer("Dismiss")
+                .clicked()
+            {
+                to_remove.push(i);
+            }
+        }
+        to_remove.reverse();
+
+        for i in to_remove {
+            self.draft.upload_errors.remove(i);
+        }
     }
 }
 
@@ -293,7 +436,54 @@ fn media_upload_button() -> impl egui::Widget {
     }
 }
 
+fn show_remove_upload_button(ui: &mut egui::Ui, desired_rect: egui::Rect) -> egui::Response {
+    let resp = ui.allocate_rect(desired_rect, egui::Sense::click());
+    let size = 24.0;
+    let (fill_color, stroke) = if resp.hovered() {
+        (
+            ui.visuals().widgets.hovered.bg_fill,
+            ui.visuals().widgets.hovered.bg_stroke,
+        )
+    } else if resp.clicked() {
+        (
+            ui.visuals().widgets.active.bg_fill,
+            ui.visuals().widgets.active.bg_stroke,
+        )
+    } else {
+        (
+            ui.visuals().widgets.inactive.bg_fill,
+            ui.visuals().widgets.inactive.bg_stroke,
+        )
+    };
+    let center = desired_rect.center();
+    let painter = ui.painter_at(desired_rect);
+    let radius = size / 2.0;
+
+    painter.circle_filled(center, radius, fill_color);
+    painter.circle_stroke(center, radius, stroke);
+
+    painter.line_segment(
+        [
+            Pos2::new(center.x - 4.0, center.y - 4.0),
+            Pos2::new(center.x + 4.0, center.y + 4.0),
+        ],
+        egui::Stroke::new(1.33, ui.visuals().text_color()),
+    );
+
+    painter.line_segment(
+        [
+            Pos2::new(center.x + 4.0, center.y - 4.0),
+            Pos2::new(center.x - 4.0, center.y + 4.0),
+        ],
+        egui::Stroke::new(1.33, ui.visuals().text_color()),
+    );
+    resp
+}
+
 mod preview {
+
+    use crate::media_upload::Nip94Event;
+
     use super::*;
     use notedeck::{App, AppContext};
 
@@ -304,8 +494,30 @@ mod preview {
 
     impl PostPreview {
         fn new() -> Self {
+            let mut draft = Draft::new();
+            // can use any url here
+            draft.uploaded_media.push(Nip94Event::new(
+                "https://image.nostr.build/41b40657dd6abf7c275dffc86b29bd863e9337a74870d4ee1c33a72a91c9d733.jpg".to_owned(),
+                612,
+                407,
+            ));
+            draft.uploaded_media.push(Nip94Event::new(
+                "https://image.nostr.build/thumb/fdb46182b039d29af0f5eac084d4d30cd4ad2580ea04fe6c7e79acfe095f9852.png".to_owned(),
+                80,
+                80,
+            ));
+            draft.uploaded_media.push(Nip94Event::new(
+                "https://i.nostr.build/7EznpHsnBZ36Akju.png".to_owned(),
+                2438,
+                1476,
+            ));
+            draft.uploaded_media.push(Nip94Event::new(
+                "https://i.nostr.build/qCCw8szrjTydTiMV.png".to_owned(),
+                2002,
+                2272,
+            ));
             PostPreview {
-                draft: Draft::new(),
+                draft,
                 poster: FullKeypair::generate(),
             }
         }
