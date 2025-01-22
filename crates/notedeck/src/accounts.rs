@@ -5,7 +5,7 @@ use crate::{
     UserAccount,
 };
 use enostr::{ClientMessage, FilledKeypair, Keypair, RelayPool};
-use nostrdb::{Filter, Ndb, Note, NoteKey, Subscription, Transaction};
+use nostrdb::{Filter, Ndb, Note, NoteBuilder, NoteKey, Subscription, Transaction};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use url::Url;
@@ -143,6 +143,20 @@ impl AccountRelayData {
             }
         }
         relays
+    }
+
+    pub fn publish_nip65_relays(&self, seckey: &[u8; 32], pool: &mut RelayPool) {
+        let mut builder = NoteBuilder::new().kind(10002).content("");
+        for rs in &self.advertised {
+            builder = builder.start_tag().tag_str("r").tag_str(&rs.url);
+            if rs.has_read_marker {
+                builder = builder.tag_str("read");
+            } else if rs.has_write_marker {
+                builder = builder.tag_str("write");
+            }
+        }
+        let note = builder.sign(seckey).build().expect("note build");
+        pool.send(&enostr::ClientMessage::event(note).expect("note client message"));
     }
 }
 
@@ -607,7 +621,7 @@ impl Accounts {
         None
     }
 
-    pub fn add_advertised_relay(&mut self, relay_to_add: &str) {
+    pub fn add_advertised_relay(&mut self, relay_to_add: &str, pool: &mut RelayPool) {
         let relay_to_add = AccountRelayData::canonicalize_url(relay_to_add);
         info!("add advertised relay \"{}\"", relay_to_add);
         match self.currently_selected_account {
@@ -627,7 +641,12 @@ impl Accounts {
                             }
                             advertised.insert(RelaySpec::new(relay_to_add, false, false));
                             self.needs_relay_config = true;
-                            // FIXME - need to publish the advertised set
+                            // If we have the secret key publish the nip-65 relay list
+                            if let Some(secretkey) = &keypair.secret_key {
+                                account_data
+                                    .relay
+                                    .publish_nip65_relays(&secretkey.to_secret_bytes(), pool);
+                            }
                         }
                     }
                 }

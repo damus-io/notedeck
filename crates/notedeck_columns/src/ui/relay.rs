@@ -42,7 +42,8 @@ impl View for RelayView<'_> {
                 }
                 ui.add_space(8.0);
                 if let Some(relay_to_add) = self.show_add_relay_ui(ui) {
-                    self.accounts.add_advertised_relay(&relay_to_add);
+                    self.accounts
+                        .add_advertised_relay(&relay_to_add, self.manager.pool);
                 }
             });
     }
