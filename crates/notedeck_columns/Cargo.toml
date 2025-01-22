@@ -12,6 +12,7 @@ crate-type = ["lib", "cdylib"]
 
 [dependencies]
 notedeck = { workspace = true }
+tokenator = { workspace = true }
 bitflags = { workspace = true }
 dirs = { workspace = true }
 eframe = { workspace = true }

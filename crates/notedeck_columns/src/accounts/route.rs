@@ -1,6 +1,6 @@
 use super::{AccountLoginResponse, AccountsViewResponse};
-use crate::storage::{ParseError, TokenParser, TokenSerializable, TokenWriter};
 use serde::{Deserialize, Serialize};
+use tokenator::{ParseError, TokenParser, TokenSerializable, TokenWriter};
 
 pub enum AccountsRouteResponse {
     Accounts(AccountsViewResponse),
@@ -58,7 +58,7 @@ fn parse_accounts_route<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{TokenParser, TokenSerializable, TokenWriter};
+    use tokenator::{TokenParser, TokenSerializable, TokenWriter};
 
     #[test]
     fn test_accounts_route_serialize() {

@@ -4,10 +4,11 @@ use std::fmt::{self};
 use crate::{
     accounts::AccountsRoute,
     column::Columns,
-    storage::{ParseError, TokenParser, TokenSerializable, TokenWriter},
     timeline::{kind::ColumnTitle, TimelineId, TimelineRoute},
     ui::add_column::{AddAlgoRoute, AddColumnRoute},
 };
+
+use tokenator::{ParseError, TokenParser, TokenSerializable, TokenWriter};
 
 /// App routing. These describe different places you can go inside Notedeck.
 #[derive(Clone, Copy, Eq, PartialEq, Debug)]

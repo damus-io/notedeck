@@ -3,7 +3,6 @@ use crate::{
     draft::Drafts,
     nav::RenderNavAction,
     profile::ProfileAction,
-    storage::{ParseError, Payload, Token, TokenParser, TokenSerializable, TokenWriter},
     timeline::{TimelineCache, TimelineId, TimelineKind},
     ui::{
         self,
@@ -11,6 +10,8 @@ use crate::{
         profile::ProfileView,
     },
 };
+
+use tokenator::{ParseError, TokenParser, TokenSerializable, TokenWriter};
 
 use enostr::{NoteId, Pubkey};
 use nostrdb::{Ndb, Transaction};
@@ -25,61 +26,61 @@ pub enum TimelineRoute {
     Quote(NoteId),
 }
 
-const PROFILE_TOKENS: &[Token] = &[Token::id("profile"), Token::pubkey()];
-const THREAD_TOKENS: &[Token] = &[Token::id("thread"), Token::note_id()];
-const REPLY_TOKENS: &[Token] = &[Token::id("reply"), Token::note_id()];
-const QUOTE_TOKENS: &[Token] = &[Token::id("quote"), Token::note_id()];
+fn parse_pubkey<'a>(parser: &mut TokenParser<'a>) -> Result<Pubkey, ParseError<'a>> {
+    let hex = parser.pull_token()?;
+    Pubkey::from_hex(hex).map_err(|_| ParseError::HexDecodeFailed)
+}
 
-impl TimelineRoute {
-    fn payload(&self) -> Option<Payload> {
-        match self {
-            TimelineRoute::Profile(pk) => Some(Payload::pubkey(*pk)),
-            TimelineRoute::Thread(note_id) => Some(Payload::note_id(*note_id)),
-            TimelineRoute::Reply(note_id) => Some(Payload::note_id(*note_id)),
-            TimelineRoute::Quote(note_id) => Some(Payload::note_id(*note_id)),
-            TimelineRoute::Timeline(_timeline_id) => todo!("handle timeline_ids"),
-        }
-    }
-
-    fn tokens(&self) -> &'static [Token] {
-        match self {
-            TimelineRoute::Profile(_) => PROFILE_TOKENS,
-            TimelineRoute::Thread(_) => THREAD_TOKENS,
-            TimelineRoute::Reply(_) => REPLY_TOKENS,
-            TimelineRoute::Quote(_) => QUOTE_TOKENS,
-            TimelineRoute::Timeline(_) => todo!("handle timeline_ids"),
-        }
-    }
-
-    /// NOTE!! update parse_from_tokens as well when adding to this match
-    fn parse<'a>(&self, parser: &mut TokenParser<'a>) -> Result<TimelineRoute, ParseError<'a>> {
-        let payload = Token::parse_all(parser, self.tokens())?;
-
-        match self {
-            TimelineRoute::Profile(_) => {
-                Ok(TimelineRoute::Profile(Payload::parse_pubkey(payload)?))
-            }
-            TimelineRoute::Thread(_) => Ok(TimelineRoute::Thread(Payload::parse_note_id(payload)?)),
-            TimelineRoute::Reply(_) => Ok(TimelineRoute::Reply(Payload::parse_note_id(payload)?)),
-            TimelineRoute::Quote(_) => Ok(TimelineRoute::Quote(Payload::parse_note_id(payload)?)),
-            TimelineRoute::Timeline(_) => todo!("handle timeline parsing"),
-        }
-    }
+fn parse_note_id<'a>(parser: &mut TokenParser<'a>) -> Result<NoteId, ParseError<'a>> {
+    let hex = parser.pull_token()?;
+    NoteId::from_hex(hex).map_err(|_| ParseError::HexDecodeFailed)
 }
 
 impl TokenSerializable for TimelineRoute {
     fn serialize_tokens(&self, writer: &mut TokenWriter) {
-        Token::serialize_all(writer, self.tokens(), self.payload().as_ref());
+        match self {
+            TimelineRoute::Profile(pk) => {
+                writer.write_token("profile");
+                writer.write_token(&pk.hex());
+            }
+            TimelineRoute::Thread(note_id) => {
+                writer.write_token("thread");
+                writer.write_token(&note_id.hex());
+            }
+            TimelineRoute::Reply(note_id) => {
+                writer.write_token("reply");
+                writer.write_token(&note_id.hex());
+            }
+            TimelineRoute::Quote(note_id) => {
+                writer.write_token("quote");
+                writer.write_token(&note_id.hex());
+            }
+            TimelineRoute::Timeline(_tlid) => {
+                todo!("tlid")
+            }
+        }
     }
 
     fn parse_from_tokens<'a>(parser: &mut TokenParser<'a>) -> Result<Self, ParseError<'a>> {
         TokenParser::alt(
             parser,
             &[
-                |p| TimelineRoute::Profile(Pubkey::new([0; 32])).parse(p),
-                |p| TimelineRoute::Thread(NoteId::new([0; 32])).parse(p),
-                |p| TimelineRoute::Reply(NoteId::new([0; 32])).parse(p),
-                |p| TimelineRoute::Quote(NoteId::new([0; 32])).parse(p),
+                |p| {
+                    p.parse_token("profile")?;
+                    Ok(TimelineRoute::Profile(parse_pubkey(p)?))
+                },
+                |p| {
+                    p.parse_token("thread")?;
+                    Ok(TimelineRoute::Thread(parse_note_id(p)?))
+                },
+                |p| {
+                    p.parse_token("reply")?;
+                    Ok(TimelineRoute::Reply(parse_note_id(p)?))
+                },
+                |p| {
+                    p.parse_token("quote")?;
+                    Ok(TimelineRoute::Quote(parse_note_id(p)?))
+                },
                 |_p| todo!("handle timeline parsing"),
             ],
         )
@@ -258,8 +259,8 @@ pub fn render_profile_route(
 
 #[cfg(test)]
 mod tests {
-    use crate::storage::{TokenParser, TokenSerializable, TokenWriter};
     use enostr::NoteId;
+    use tokenator::{TokenParser, TokenSerializable, TokenWriter};
 
     #[test]
     fn test_timeline_route_serialize() {

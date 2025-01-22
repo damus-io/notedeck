@@ -11,13 +11,13 @@ use nostrdb::{Ndb, Transaction};
 use crate::{
     login_manager::AcquireKeyState,
     route::Route,
-    storage::{ParseError, TokenParser, TokenSerializable, TokenWriter},
     timeline::{kind::ListKind, PubkeySource, Timeline, TimelineKind},
     ui::anim::ICON_EXPANSION_MULTIPLE,
     Damus,
 };
 
 use notedeck::{AppContext, ImageCache, NotedeckTextStyle, UserAccount};
+use tokenator::{ParseError, TokenParser, TokenSerializable, TokenWriter};
 
 use super::{anim::AnimationHelper, padding, ProfilePreview};
 
@@ -764,4 +764,38 @@ pub fn hashtag_ui(
         }
     })
     .inner
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_column_serialize() {
+        use super::{AddAlgoRoute, AddColumnRoute};
+
+        {
+            let data_str = "column:algo_selection:last_per_pubkey";
+            let data = &data_str.split(":").collect::<Vec<&str>>();
+            let mut token_writer = TokenWriter::default();
+            let mut parser = TokenParser::new(&data);
+            let parsed = AddColumnRoute::parse_from_tokens(&mut parser).unwrap();
+            let expected = AddColumnRoute::Algo(AddAlgoRoute::LastPerPubkey);
+            parsed.serialize_tokens(&mut token_writer);
+            assert_eq!(expected, parsed);
+            assert_eq!(token_writer.str(), data_str);
+        }
+
+        {
+            let data_str = "column";
+            let mut token_writer = TokenWriter::default();
+            let data: &[&str] = &[data_str];
+            let mut parser = TokenParser::new(data);
+            let parsed = AddColumnRoute::parse_from_tokens(&mut parser).unwrap();
+            let expected = AddColumnRoute::Base;
+            parsed.serialize_tokens(&mut token_writer);
+            assert_eq!(expected, parsed);
+            assert_eq!(token_writer.str(), data_str);
+        }
+    }
 }

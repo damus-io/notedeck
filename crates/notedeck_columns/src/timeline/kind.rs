@@ -1,13 +1,11 @@
 use crate::error::Error;
-use crate::storage::{
-    ParseError, Payload, Token, TokenParser, TokenPayload, TokenSerializable, TokenWriter,
-};
 use crate::timeline::{Timeline, TimelineTab};
 use enostr::{Filter, Pubkey};
 use nostrdb::{Ndb, Transaction};
 use notedeck::{filter::default_limit, FilterError, FilterState, RootNoteIdBuf};
 use serde::{Deserialize, Serialize};
 use std::{borrow::Cow, fmt::Display};
+use tokenator::{ParseError, TokenParser, TokenSerializable, TokenWriter};
 use tracing::{error, warn};
 
 #[derive(Clone, Default, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -63,7 +61,7 @@ impl TokenSerializable for PubkeySource {
                         let pk = Pubkey::from_hex(hex).map_err(|_| ParseError::HexDecodeFailed)?;
                         Ok(PubkeySource::Explicit(pk))
                     } else {
-                        Err(ParseError::ExpectedPayload(TokenPayload::Pubkey))
+                        Err(ParseError::HexDecodeFailed)
                     }
                 }
 
@@ -78,8 +76,6 @@ impl TokenSerializable for PubkeySource {
     }
 }
 
-const LIST_CONTACT_TOKENS: &[Token] = &[Token::alts("contacts", &["contact"]), Token::pubkey()];
-
 impl ListKind {
     pub fn contact_list(pk_src: PubkeySource) -> Self {
         ListKind::Contact(pk_src)
@@ -90,38 +86,39 @@ impl ListKind {
             ListKind::Contact(pk_src) => Some(pk_src),
         }
     }
-
-    fn payload(&self) -> Option<Payload> {
-        match self {
-            ListKind::Contact(pk_src) => Some(Payload::pubkey_source(pk_src.clone())),
-        }
-    }
-
-    const fn tokens(&self) -> &'static [Token] {
-        match self {
-            ListKind::Contact(_pubkey) => LIST_CONTACT_TOKENS,
-        }
-    }
 }
 
 impl TokenSerializable for ListKind {
     fn serialize_tokens(&self, writer: &mut TokenWriter) {
-        Token::serialize_all(writer, self.tokens(), self.payload().as_ref());
+        match self {
+            ListKind::Contact(pk_src) => {
+                writer.write_token("contact");
+                pk_src.serialize_tokens(writer);
+            }
+        }
     }
 
     fn parse_from_tokens<'a>(parser: &mut TokenParser<'a>) -> Result<Self, ParseError<'a>> {
+        parser.parse_all(|p| {
+            p.parse_token("contact")?;
+            let pk_src = PubkeySource::parse_from_tokens(p)?;
+            Ok(ListKind::Contact(pk_src))
+        })
+
+        /* here for u when you need more things to parse
         TokenParser::alt(
             parser,
             &[|p| {
-                let maybe_payload =
-                    Token::parse_all(p, ListKind::Contact(PubkeySource::default()).tokens())?;
-                let payload = maybe_payload
-                    .as_ref()
-                    .and_then(|mp| mp.get_pubkey_source())
-                    .ok_or(ParseError::ExpectedPayload(TokenPayload::Pubkey))?;
-                Ok(ListKind::Contact(payload.to_owned()))
+                p.parse_all(|p| {
+                    p.parse_token("contact")?;
+                    let pk_src = PubkeySource::parse_from_tokens(p)?;
+                    Ok(ListKind::Contact(pk_src))
+                });
+            },|p| {
+                // more cases...
             }],
         )
+        */
     }
 }
 
