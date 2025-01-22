@@ -2546,6 +2546,7 @@ dependencies = [
 name = "notedeck_columns"
 version = "0.2.0"
 dependencies = [
+ "base64 0.22.1",
  "bitflags 2.6.0",
  "dirs",
  "eframe",
@@ -2569,6 +2570,7 @@ dependencies = [
  "serde",
  "serde_derive",
  "serde_json",
+ "sha2",
  "strum",
  "strum_macros",
  "tempfile",
