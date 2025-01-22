@@ -10,6 +10,7 @@ mod muted;
 pub mod note;
 mod notecache;
 mod persist;
+pub mod relayspec;
 mod result;
 pub mod storage;
 mod style;
@@ -33,6 +34,7 @@ pub use muted::{MuteFun, Muted};
 pub use note::{NoteRef, RootIdError, RootNoteId, RootNoteIdBuf};
 pub use notecache::{CachedNote, NoteCache};
 pub use persist::*;
+pub use relayspec::RelaySpec;
 pub use result::Result;
 pub use storage::{
     DataPath, DataPathType, Directory, FileKeyStorage, KeyStorageResponse, KeyStorageType,
