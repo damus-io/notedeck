@@ -68,6 +68,9 @@ impl eframe::App for Notedeck {
         #[cfg(feature = "profiling")]
         puffin::GlobalProfiler::lock().new_frame();
 
+        // handle account updates
+        self.accounts.update(&self.ndb, &mut self.pool, ctx);
+
         main_panel(&ctx.style(), crate::ui::is_narrow(ctx)).show(ctx, |ui| {
             // render app
             if let Some(app) = &self.app {
