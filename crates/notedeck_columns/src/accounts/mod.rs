@@ -97,7 +97,7 @@ pub fn process_accounts_view_response(
             router.route_to(Route::add_account());
         }
     }
-
+    accounts.needs_relay_config();
     selection
 }
 

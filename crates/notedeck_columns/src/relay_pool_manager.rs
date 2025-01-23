@@ -41,6 +41,7 @@ impl<'a> RelayPoolManager<'a> {
         indices.iter().for_each(|index| self.remove_relay(*index));
     }
 
+    // FIXME - this is not ever called?
     pub fn add_relay(&mut self, ctx: &egui::Context, relay_url: String) {
         let _ = self.pool.add_url(relay_url, create_wakeup(ctx));
     }

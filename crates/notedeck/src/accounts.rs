@@ -343,6 +343,10 @@ impl Accounts {
         }
     }
 
+    pub fn needs_relay_config(&mut self) {
+        self.needs_relay_config = true;
+    }
+
     fn contains_account(&self, pubkey: &[u8; 32]) -> Option<ContainsAccount> {
         for (index, account) in self.accounts.iter().enumerate() {
             let has_pubkey = account.pubkey.bytes() == pubkey;
@@ -420,6 +424,15 @@ impl Accounts {
         } else {
             None
         }
+    }
+
+    pub fn get_selected_account_data(&self) -> Option<&AccountData> {
+        if let Some(account) = self.get_selected_account() {
+            if let Some(account_data) = self.account_data.get(account.pubkey.bytes()) {
+                return Some(account_data);
+            }
+        }
+        None
     }
 
     pub fn select_account(&mut self, index: usize) {
@@ -532,12 +545,17 @@ impl Accounts {
         pool: &mut RelayPool,
         wakeup: impl Fn() + Send + Sync + Clone + 'static,
     ) {
+        debug!(
+            "updating relay configuration for currently selected account {:?}",
+            self.currently_selected_account
+        );
+
         // If forced relays are set use them only
         let mut desired_relays = self.forced_relays.clone();
 
-        // Compose the desired relay lists from the accounts
+        // Compose the desired relay lists from the selected account
         if desired_relays.is_empty() {
-            for data in self.account_data.values() {
+            if let Some(data) = self.get_selected_account_data() {
                 desired_relays.extend(data.relay.local.iter().cloned());
                 desired_relays.extend(data.relay.advertised.iter().cloned());
             }
@@ -621,9 +639,17 @@ impl Accounts {
         None
     }
 
-    pub fn add_advertised_relay(&mut self, relay_to_add: &str, pool: &mut RelayPool) {
-        let relay_to_add = AccountRelayData::canonicalize_url(relay_to_add);
-        info!("add advertised relay \"{}\"", relay_to_add);
+    fn modify_advertised_relays(
+        &mut self,
+        relay_url: &str,
+        pool: &mut RelayPool,
+        action: RelayAction,
+    ) {
+        let relay_url = AccountRelayData::canonicalize_url(relay_url);
+        match action {
+            RelayAction::Add => info!("add advertised relay \"{}\"", relay_url),
+            RelayAction::Remove => info!("remove advertised relay \"{}\"", relay_url),
+        }
         match self.currently_selected_account {
             None => error!("no account is currently selected."),
             Some(index) => match self.accounts.get(index) {
@@ -635,13 +661,21 @@ impl Accounts {
                         Some(account_data) => {
                             let advertised = &mut account_data.relay.advertised;
                             if advertised.is_empty() {
-                                // If the selected account has no advertised relays
-                                // iniitialize with the bootstrapping set.
+                                // If the selected account has no advertised relays,
+                                // initialize with the bootstrapping set.
                                 advertised.extend(self.bootstrap_relays.iter().cloned());
                             }
-                            advertised.insert(RelaySpec::new(relay_to_add, false, false));
+                            match action {
+                                RelayAction::Add => {
+                                    advertised.insert(RelaySpec::new(relay_url, false, false));
+                                }
+                                RelayAction::Remove => {
+                                    advertised.remove(&RelaySpec::new(relay_url, false, false));
+                                }
+                            }
                             self.needs_relay_config = true;
-                            // If we have the secret key publish the nip-65 relay list
+
+                            // If we have the secret key publish the NIP-65 relay list
                             if let Some(secretkey) = &keypair.secret_key {
                                 account_data
                                     .relay
@@ -653,6 +687,19 @@ impl Accounts {
             },
         }
     }
+
+    pub fn add_advertised_relay(&mut self, relay_to_add: &str, pool: &mut RelayPool) {
+        self.modify_advertised_relays(relay_to_add, pool, RelayAction::Add);
+    }
+
+    pub fn remove_advertised_relay(&mut self, relay_to_remove: &str, pool: &mut RelayPool) {
+        self.modify_advertised_relays(relay_to_remove, pool, RelayAction::Remove);
+    }
+}
+
+enum RelayAction {
+    Add,
+    Remove,
 }
 
 fn get_selected_index(accounts: &[UserAccount], keystore: &KeyStorageType) -> Option<usize> {
