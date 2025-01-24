@@ -96,7 +96,7 @@ impl<'a> NavTitle<'a> {
                     )))
                 }
             }
-        } else if back_button_resp.map_or(false, |r| r.clicked()) {
+        } else if back_button_resp.is_some_and(|r| r.clicked()) {
             Some(RenderNavAction::Back)
         } else {
             None
@@ -427,7 +427,7 @@ impl<'a> NavTitle<'a> {
                     let is_hashtag = self
                         .columns
                         .find_timeline(*tlid)
-                        .map_or(false, |tl| matches!(tl.kind, TimelineKind::Hashtag(_)));
+                        .is_some_and(|tl| matches!(tl.kind, TimelineKind::Hashtag(_)));
 
                     if is_hashtag {
                         ui.add(

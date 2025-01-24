@@ -118,10 +118,10 @@ impl AccountRelayData {
                             if let Some(url) = tag.get(1).and_then(|f| f.variant().str()) {
                                 let has_read_marker = tag
                                     .get(2)
-                                    .map_or(false, |m| m.variant().str() == Some("read"));
+                                    .is_some_and(|m| m.variant().str() == Some("read"));
                                 let has_write_marker = tag
                                     .get(2)
-                                    .map_or(false, |m| m.variant().str() == Some("write"));
+                                    .is_some_and(|m| m.variant().str() == Some("write"));
                                 relays.push(RelaySpec::new(
                                     Self::canonicalize_url(url),
                                     has_read_marker,
