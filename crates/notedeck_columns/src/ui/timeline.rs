@@ -116,6 +116,8 @@ fn timeline_ui(
         .data(|d| d.get_temp::<bool>(show_top_button_id))
         .unwrap_or(false);
 
+    let at_top = !show_top_button;
+
     let goto_top = if show_top_button {
         let top_button_pos = ui.available_rect_before_wrap().right_top() - vec2(48.0, -24.0);
         egui::Area::new(ui.id().with("foreground_area"))
@@ -149,7 +151,7 @@ fn timeline_ui(
         };
 
         let txn = Transaction::new(ndb).expect("failed to create txn");
-        TimelineTabView::new(
+        let action = TimelineTabView::new(
             timeline.current_view(),
             reversed,
             note_options,
@@ -159,7 +161,13 @@ fn timeline_ui(
             img_cache,
             is_muted,
         )
-        .show(ui)
+        .show(ui);
+
+        if at_top && ui.ctx().input(|i| i.smooth_scroll_delta.y == 0.0) {
+            ui.scroll_to_rect(ui.clip_rect().translate(vec2(0.0, 0.0)), None);
+        }
+
+        action
     });
 
     let at_top_after_scroll = scroll_output.state.offset.y == 0.0;
