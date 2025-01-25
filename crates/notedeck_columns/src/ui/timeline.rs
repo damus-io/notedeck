@@ -1,3 +1,5 @@
+use std::f32::consts::PI;
+
 use crate::actionbar::NoteAction;
 use crate::timeline::TimelineTab;
 use crate::{
@@ -7,12 +9,14 @@ use crate::{
     ui::note::NoteOptions,
 };
 use egui::containers::scroll_area::ScrollBarVisibility;
-use egui::{Direction, Layout};
+use egui::{vec2, Direction, Layout, Pos2, Stroke};
 use egui_tabs::TabColor;
 use nostrdb::{Ndb, Transaction};
 use notedeck::note::root_note_id_from_selected_id;
 use notedeck::{ImageCache, MuteFun, NoteCache};
 use tracing::{error, warn};
+
+use super::anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE};
 
 pub struct TimelineView<'a> {
     timeline_id: TimelineId,
@@ -105,35 +109,120 @@ fn timeline_ui(
         egui::Id::new(("tlscroll", timeline.view_id()))
     };
 
-    egui::ScrollArea::vertical()
+    let show_top_button_id = ui.id().with((scroll_id, "at_top"));
+
+    let show_top_button = ui
+        .ctx()
+        .data(|d| d.get_temp::<bool>(show_top_button_id))
+        .unwrap_or(false);
+
+    let goto_top = if show_top_button {
+        let top_button_pos = ui.available_rect_before_wrap().right_top() - vec2(48.0, -24.0);
+        egui::Area::new(ui.id().with("foreground_area"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(top_button_pos)
+            .show(ui.ctx(), |ui| {
+                ui.add(goto_top_button(top_button_pos)).clicked()
+            })
+            .inner
+    } else {
+        false
+    };
+
+    let mut scroll_area = egui::ScrollArea::vertical()
         .id_salt(scroll_id)
         .animated(false)
         .auto_shrink([false, false])
-        .scroll_bar_visibility(ScrollBarVisibility::AlwaysVisible)
-        .show(ui, |ui| {
-            let timeline = if let Some(timeline) = columns.find_timeline_mut(timeline_id) {
-                timeline
-            } else {
-                error!("tried to render timeline in column, but timeline was missing");
-                // TODO (jb55): render error when timeline is missing?
-                // this shouldn't happen...
-                return None;
-            };
+        .scroll_bar_visibility(ScrollBarVisibility::AlwaysVisible);
+    if goto_top {
+        scroll_area = scroll_area.vertical_scroll_offset(0.0);
+    }
 
-            let txn = Transaction::new(ndb).expect("failed to create txn");
-            TimelineTabView::new(
-                timeline.current_view(),
-                reversed,
-                note_options,
-                &txn,
-                ndb,
-                note_cache,
-                img_cache,
-                is_muted,
-            )
-            .show(ui)
-        })
-        .inner
+    let scroll_output = scroll_area.show(ui, |ui| {
+        let timeline = if let Some(timeline) = columns.find_timeline_mut(timeline_id) {
+            timeline
+        } else {
+            error!("tried to render timeline in column, but timeline was missing");
+            // TODO (jb55): render error when timeline is missing?
+            // this shouldn't happen...
+            return None;
+        };
+
+        let txn = Transaction::new(ndb).expect("failed to create txn");
+        TimelineTabView::new(
+            timeline.current_view(),
+            reversed,
+            note_options,
+            &txn,
+            ndb,
+            note_cache,
+            img_cache,
+            is_muted,
+        )
+        .show(ui)
+    });
+
+    let at_top_after_scroll = scroll_output.state.offset.y == 0.0;
+    let cur_show_top_button = ui.ctx().data(|d| d.get_temp::<bool>(show_top_button_id));
+
+    if at_top_after_scroll {
+        if cur_show_top_button != Some(false) {
+            ui.ctx()
+                .data_mut(|d| d.insert_temp(show_top_button_id, false));
+        }
+    } else if cur_show_top_button == Some(false) {
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(show_top_button_id, true));
+    }
+
+    scroll_output.inner
+}
+
+fn goto_top_button(center: Pos2) -> impl egui::Widget {
+    move |ui: &mut egui::Ui| -> egui::Response {
+        let radius = 12.0;
+        let max_size = vec2(
+            ICON_EXPANSION_MULTIPLE * 2.0 * radius,
+            ICON_EXPANSION_MULTIPLE * 2.0 * radius,
+        );
+        let helper = AnimationHelper::new_from_rect(ui, "goto_top", {
+            let painter = ui.painter();
+            let center = painter.round_pos_to_pixel_center(center);
+            egui::Rect::from_center_size(center, max_size)
+        });
+
+        let painter = ui.painter();
+        painter.circle_filled(center, helper.scale_1d_pos(radius), crate::colors::PINK);
+
+        let create_pt = |angle: f32| {
+            let side = radius / 2.0;
+            let x = side * angle.cos();
+            let mut y = side * angle.sin();
+
+            let height = (side * (3.0_f32).sqrt()) / 2.0;
+            y += height / 2.0;
+            Pos2 { x, y }
+        };
+
+        let left_pt =
+            painter.round_pos_to_pixel_center(helper.scale_pos_from_center(create_pt(-PI)));
+        let center_pt =
+            painter.round_pos_to_pixel_center(helper.scale_pos_from_center(create_pt(-PI / 2.0)));
+        let right_pt =
+            painter.round_pos_to_pixel_center(helper.scale_pos_from_center(create_pt(0.0)));
+
+        let line_width = helper.scale_1d_pos(4.0);
+        let line_color = ui.visuals().text_color();
+        painter.line_segment([left_pt, center_pt], Stroke::new(line_width, line_color));
+        painter.line_segment([center_pt, right_pt], Stroke::new(line_width, line_color));
+
+        let end_radius = (line_width - 1.0) / 2.0;
+        painter.circle_filled(left_pt, end_radius, line_color);
+        painter.circle_filled(center_pt, end_radius, line_color);
+        painter.circle_filled(right_pt, end_radius, line_color);
+
+        helper.take_animation_response()
+    }
 }
 
 pub fn tabs_ui(ui: &mut egui::Ui, selected: usize, views: &[TimelineTab]) -> usize {
