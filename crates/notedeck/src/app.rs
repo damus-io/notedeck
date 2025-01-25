@@ -185,6 +185,16 @@ impl Notedeck {
             ctx.set_zoom_factor(z);
         }
 
+        #[cfg(debug_assertions)]
+        {
+            ctx.style_mut(|f| {
+                f.debug = egui::style::DebugOptions {
+                    debug_on_hover_with_all_modifiers: true,
+                    ..Default::default()
+                }
+            });
+        }
+
         // migrate
         if let Err(e) = img_cache.migrate_v0() {
             error!("error migrating image cache: {e}");
