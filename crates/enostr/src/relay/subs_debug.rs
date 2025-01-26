@@ -188,13 +188,13 @@ fn calculate_client_message_size(message: &ClientMessage) -> usize {
         ClientMessage::Req { sub_id, filters } => {
             mem::size_of_val(message)
                 + mem::size_of_val(sub_id)
-                + sub_id.as_bytes().len()
+                + sub_id.len()
                 + filters.iter().map(mem::size_of_val).sum::<usize>()
         }
         ClientMessage::Close { sub_id } => {
-            mem::size_of_val(message) + mem::size_of_val(sub_id) + sub_id.as_bytes().len()
+            mem::size_of_val(message) + mem::size_of_val(sub_id) + sub_id.len()
         }
-        ClientMessage::Raw(data) => mem::size_of_val(message) + data.as_bytes().len(),
+        ClientMessage::Raw(data) => mem::size_of_val(message) + data.len(),
     }
 }
 
@@ -217,7 +217,7 @@ fn calculate_ws_message_size(message: &WsMessage) -> usize {
             mem::size_of_val(message) + vec.len()
         }
         WsMessage::Text(string) | WsMessage::Unknown(string) => {
-            mem::size_of_val(message) + string.as_bytes().len()
+            mem::size_of_val(message) + string.len()
         }
     }
 }
@@ -233,13 +233,11 @@ fn calculate_error_size(error: &Error) -> usize {
         | Error::Io(_)
         | Error::InvalidPublicKey => mem::size_of_val(error), // No heap usage
 
-        Error::Json(json_err) => mem::size_of_val(error) + json_err.to_string().as_bytes().len(),
+        Error::Json(json_err) => mem::size_of_val(error) + json_err.to_string().len(),
 
-        Error::Nostrdb(nostrdb_err) => {
-            mem::size_of_val(error) + nostrdb_err.to_string().as_bytes().len()
-        }
+        Error::Nostrdb(nostrdb_err) => mem::size_of_val(error) + nostrdb_err.to_string().len(),
 
-        Error::Generic(string) => mem::size_of_val(error) + string.as_bytes().len(),
+        Error::Generic(string) => mem::size_of_val(error) + string.len(),
     }
 }
 
@@ -248,7 +246,7 @@ fn calculate_relay_message_size(message: &RelayMessage) -> usize {
         RelayMessage::OK(result) => calculate_command_result_size(result),
         RelayMessage::Eose(str_ref)
         | RelayMessage::Event(str_ref, _)
-        | RelayMessage::Notice(str_ref) => mem::size_of_val(message) + str_ref.as_bytes().len(),
+        | RelayMessage::Notice(str_ref) => mem::size_of_val(message) + str_ref.len(),
     }
 }
 
