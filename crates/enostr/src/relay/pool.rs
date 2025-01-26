@@ -140,7 +140,7 @@ impl RelayPool {
     pub fn new() -> RelayPool {
         RelayPool {
             relays: vec![],
-            ping_rate: Duration::from_secs(25),
+            ping_rate: Duration::from_secs(45),
             debug: None,
         }
     }
