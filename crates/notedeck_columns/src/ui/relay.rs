@@ -37,8 +37,9 @@ impl View for RelayView<'_> {
             .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
             .auto_shrink([false; 2])
             .show(ui, |ui| {
-                if let Some(indices) = self.show_relays(ui) {
-                    self.manager.remove_relays(indices);
+                if let Some(relay_to_remove) = self.show_relays(ui) {
+                    self.accounts
+                        .remove_advertised_relay(&relay_to_remove, self.manager.pool);
                 }
                 ui.add_space(8.0);
                 if let Some(relay_to_add) = self.show_add_relay_ui(ui) {
@@ -66,9 +67,9 @@ impl<'a> RelayView<'a> {
         egui::CentralPanel::default().show(ui.ctx(), |ui| self.ui(ui));
     }
 
-    /// Show the current relays, and returns the indices of relays the user requested to delete
-    fn show_relays(&'a self, ui: &mut Ui) -> Option<Vec<usize>> {
-        let mut indices_to_remove: Option<Vec<usize>> = None;
+    /// Show the current relays and return a relay the user selected to delete
+    fn show_relays(&'a self, ui: &mut Ui) -> Option<String> {
+        let mut relay_to_remove = None;
         for (index, relay_info) in self.manager.get_relay_infos().iter().enumerate() {
             ui.add_space(8.0);
             ui.vertical_centered_justified(|ui| {
@@ -106,7 +107,7 @@ impl<'a> RelayView<'a> {
 
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             if ui.add(delete_button(ui.visuals().dark_mode)).clicked() {
-                                indices_to_remove.get_or_insert_with(Vec::new).push(index);
+                                relay_to_remove = Some(relay_info.relay_url.to_string());
                             };
 
                             show_connection_status(ui, relay_info.status);
@@ -115,8 +116,7 @@ impl<'a> RelayView<'a> {
                 });
             });
         }
-
-        indices_to_remove
+        relay_to_remove
     }
 
     const RELAY_PREFILL: &'static str = "wss://";
