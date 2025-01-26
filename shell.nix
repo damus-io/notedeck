@@ -19,6 +19,9 @@ mkShell ({
     pkg-config
     #cmake
     fontconfig
+    zenity
+    #gtk3
+    #gsettings-desktop-schemas
     #brotli
     #wabt
     #gdb
@@ -38,6 +41,7 @@ mkShell ({
 } // (
   lib.optionalAttrs (!stdenv.isDarwin) {
     LD_LIBRARY_PATH = "${x11libs}";
+    #XDG_DATA_DIRS = "${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/${pkgs.gsettings-desktop-schemas.name}:${pkgs.gtk3}/share/gsettings-schemas/${pkgs.gtk3.name}";
   }
 ) // (
   lib.optionalAttrs use_android (
