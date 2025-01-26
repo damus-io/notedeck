@@ -116,17 +116,15 @@ fn timeline_ui(
         .data(|d| d.get_temp::<bool>(show_top_button_id))
         .unwrap_or(false);
 
-    let goto_top = if show_top_button {
+    let goto_top_resp = if show_top_button {
         let top_button_pos = ui.available_rect_before_wrap().right_top() - vec2(48.0, -24.0);
         egui::Area::new(ui.id().with("foreground_area"))
             .order(egui::Order::Foreground)
             .fixed_pos(top_button_pos)
-            .show(ui.ctx(), |ui| {
-                ui.add(goto_top_button(top_button_pos)).clicked()
-            })
+            .show(ui.ctx(), |ui| Some(ui.add(goto_top_button(top_button_pos))))
             .inner
     } else {
-        false
+        None
     };
 
     let mut scroll_area = egui::ScrollArea::vertical()
@@ -134,8 +132,13 @@ fn timeline_ui(
         .animated(false)
         .auto_shrink([false, false])
         .scroll_bar_visibility(ScrollBarVisibility::AlwaysVisible);
-    if goto_top {
-        scroll_area = scroll_area.vertical_scroll_offset(0.0);
+
+    if let Some(goto_top_resp) = goto_top_resp {
+        if goto_top_resp.clicked() {
+            scroll_area = scroll_area.vertical_scroll_offset(0.0);
+        } else if goto_top_resp.hovered() {
+            ui::show_pointer(ui);
+        }
     }
 
     let scroll_output = scroll_area.show(ui, |ui| {
