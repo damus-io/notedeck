@@ -10,6 +10,7 @@ members = [
 
 [workspace.dependencies]
 base32 = "0.4.0"
+base64 = "0.22.1"
 bech32 = { version = "0.11", default-features = false }
 bitflags = "2.5.0"
 dirs = "5.0.1"

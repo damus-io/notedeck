@@ -18,6 +18,7 @@ mod frame_history;
 mod images;
 mod key_parsing;
 pub mod login_manager;
+mod media_upload;
 mod multi_subscriber;
 mod nav;
 mod post;
