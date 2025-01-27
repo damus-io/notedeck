@@ -204,7 +204,9 @@ impl Timeline {
         deck_author: Option<&[u8; 32]>,
     ) -> Result<Self> {
         let our_pubkey = deck_author.map(|da| pk_src.to_pubkey_bytes(da));
-        let filter = filter::filter_from_tags(contact_list, our_pubkey)?.into_follow_filter();
+        let with_hashtags = false;
+        let filter =
+            filter::filter_from_tags(contact_list, our_pubkey, with_hashtags)?.into_follow_filter();
 
         Ok(Timeline::new(
             TimelineKind::contact_list(pk_src),
@@ -689,6 +691,7 @@ pub fn is_timeline_ready(
     info!("notes found for contact timeline after GotRemote!");
 
     let note_key = res[0];
+    let with_hashtags = false;
 
     let filter = {
         let txn = Transaction::new(ndb).expect("txn");
@@ -698,7 +701,7 @@ pub fn is_timeline_ready(
             .pubkey_source()
             .as_ref()
             .and_then(|pk_src| our_pk.map(|pk| pk_src.to_pubkey_bytes(pk)));
-        filter::filter_from_tags(&note, add_pk).map(|f| f.into_follow_filter())
+        filter::filter_from_tags(&note, add_pk, with_hashtags).map(|f| f.into_follow_filter())
     };
 
     // TODO: into_follow_filter is hardcoded to contact lists, let's generalize
