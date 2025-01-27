@@ -1,5 +1,5 @@
 { pkgs ? import <nixpkgs> { }
-, android ? "https://github.com/tadfisher/android-nixpkgs/archive/refs/tags/2024-04-02.tar.gz"
+, android ? "https://github.com/tadfisher/android-nixpkgs/archive/refs/tags/2025-01-27.tar.gz"
 , use_android ? true
 , android_emulator ? false
 }:
@@ -20,6 +20,7 @@ mkShell ({
     #cmake
     fontconfig
     zenity
+    gradle
     #gtk3
     #gsettings-desktop-schemas
     #brotli
@@ -47,14 +48,16 @@ mkShell ({
   lib.optionalAttrs use_android (
     let
       android-nixpkgs = callPackage (fetchTarball android) { };
-      ndk-version = "24.0.8215888";
+      #ndk-version = "24.0.8215888";
+      ndk-version = "27.2.12479018";
 
       android-sdk = android-nixpkgs.sdk (sdkPkgs: with sdkPkgs; [
         cmdline-tools-latest
         build-tools-34-0-0
         platform-tools
-        platforms-android-30
-        ndk-24-0-8215888
+        platforms-android-31
+        ndk-27-2-12479018
+        #ndk-24-0-8215888
       ] ++ lib.optional android_emulator [ emulator ]);
 
       android-sdk-path = "${android-sdk.out}/share/android-sdk";
@@ -64,6 +67,7 @@ mkShell ({
     {
       buildInputs = [ android-sdk ];
       ANDROID_NDK_ROOT = android-ndk-path;
+      GRADLE_OPTS = "-Dorg.gradle.project.android.aapt2FromMavenOverride=${aapt}/bin/aapt2";
     }
   )
 ))

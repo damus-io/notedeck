@@ -2,9 +2,13 @@
 build.log
 perf.data
 perf.data.old
+crates/notedeck_chrome/android/app/build
 .privenv
+*.so
 *.swp
+*.jar
 target
+.gradle
 queries/damus-notifs.json
 .git
 cache
