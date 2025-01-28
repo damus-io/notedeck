@@ -22,11 +22,6 @@
         </activity>
     </application>
 
-[[package.metadata.android.uses_feature]]
-name = "android.hardware.vulkan.level"
-required = true
-version = 1
-
     <uses-feature android:name="android.hardware.vulkan.level"
                   android:required="true"
                   android:version="1" />
