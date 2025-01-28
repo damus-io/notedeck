@@ -18,6 +18,7 @@ dirs = "5.0.1"
 eframe = { version = "0.30.0", default-features = false, features = [ "wgpu", "wayland", "x11", "android-game-activity" ] }
 egui = { version = "0.30.0", features = ["serde"] }
 egui_extras = { version = "0.30.0", features = ["all_loaders"] }
+egui-winit = { version = "0.30.0", features = ["android-game-activity"] }
 egui_nav = { git = "https://github.com/damus-io/egui-nav", rev = "eb297a0fefd9047352102346625a2eba93a1aa04" }
 egui_tabs = { git = "https://github.com/damus-io/egui-tabs", rev = "5d0bacc6ce2c645fe8a77723d2beb0f85b8148ee" }
 egui_virtual_list = "0.6.0"
@@ -47,7 +48,7 @@ strum = "0.26"
 strum_macros = "0.26"
 thiserror = "2.0.7"
 tokio = { version = "1.16", features = ["macros", "rt-multi-thread", "fs"] }
-tracing = "0.1.40"
+tracing = { version = "0.1.40", features = ["log"] }
 tracing-appender = "0.2.3"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tempfile = "3.13.0"
