@@ -47,8 +47,8 @@ debug-interactive-widgets = []
 [target.'cfg(target_os = "android")'.dependencies]
 tracing-logcat = "0.1.0"
 log = { workspace = true }
-android-activity = { version = "0.4", features = [ "native-activity" ] }
-winit = { version = "0.30.5", features = [ "android-native-activity" ] }
+android-activity = { version = "0.4", features = [ "game-activity" ] }
+winit = { version = "0.30.5", features = [ "android-game-activity" ] }
 
 [package.metadata.bundle]
 name = "Notedeck"
