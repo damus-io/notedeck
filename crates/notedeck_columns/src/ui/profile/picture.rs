@@ -113,9 +113,9 @@ fn pfp_image(ui: &mut egui::Ui, img: &TextureHandle, size: f32) -> egui::Respons
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
 
-    //img.show_max_size(ui, egui::vec2(size, size))
-    ui.add(egui::Image::new(img).max_width(size))
-    //.with_options()
+    let response = ui.add(egui::Image::new(img).max_width(size));
+    draw_profile_border(ui, response.rect.center(), size);
+    response
 }
 
 fn paint_circle(ui: &mut egui::Ui, size: f32) -> egui::Response {
@@ -123,7 +123,19 @@ fn paint_circle(ui: &mut egui::Ui, size: f32) -> egui::Response {
     ui.painter()
         .circle_filled(rect.center(), size / 2.0, ui.visuals().weak_text_color());
 
+    draw_profile_border(ui, rect.center(), size);
     response
+}
+
+fn draw_profile_border(ui: &mut egui::Ui, center: egui::Pos2, size: f32) {
+    let border_color = ui.visuals().widgets.noninteractive.bg_stroke.color;
+    let border_width = 2.0;
+
+    ui.painter().circle_stroke(
+        center,
+        size / 2.0,
+        egui::Stroke::new(border_width, border_color),
+    );
 }
 
 mod preview {
