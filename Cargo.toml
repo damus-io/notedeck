@@ -16,7 +16,7 @@ rmpv = "1.3.0"
 bech32 = { version = "0.11", default-features = false }
 bitflags = "2.5.0"
 dirs = "5.0.1"
-eframe = { version = "0.29.1", default-features = false, features = [ "wgpu", "wayland", "x11", "android-native-activity" ] }
+eframe = { version = "0.29.1", default-features = false, features = [ "wgpu", "wayland", "x11", "android-game-activity" ] }
 egui = { version = "0.29.1", features = ["serde"] }
 egui_extras = { version = "0.29.1", features = ["all_loaders"] }
 egui_nav = { git = "https://github.com/damus-io/egui-nav", rev = "ac7d663307b76634757024b438dd4b899790da99" }

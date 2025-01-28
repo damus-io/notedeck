@@ -16,7 +16,7 @@ import com.google.androidgamesdk.GameActivity;
 
 public class MainActivity extends GameActivity {
   static {
-    System.loadLibrary("main");
+    System.loadLibrary("notedeck_chrome");
   }
 
   @Override
