@@ -67,7 +67,7 @@ impl NoteOptions {
         options
     }
 
-    pub fn pfp_size(&self) -> f32 {
+    pub fn pfp_size(&self) -> i8 {
         if self.has_small_pfp() {
             ProfilePic::small_size()
         } else if self.has_medium_pfp() {

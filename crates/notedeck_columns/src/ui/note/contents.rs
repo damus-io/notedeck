@@ -94,11 +94,11 @@ pub fn render_note_preview(
             */
     };
 
-    egui::Frame::none()
+    egui::Frame::new()
         .fill(ui.visuals().noninteractive().weak_bg_fill)
-        .inner_margin(egui::Margin::same(8.0))
-        .outer_margin(egui::Margin::symmetric(0.0, 8.0))
-        .rounding(egui::Rounding::same(10.0))
+        .inner_margin(egui::Margin::same(8))
+        .outer_margin(egui::Margin::symmetric(0, 8))
+        .rounding(egui::Rounding::same(10))
         .stroke(egui::Stroke::new(
             1.0,
             ui.visuals().noninteractive().bg_stroke.color,

@@ -189,8 +189,8 @@ impl<'a, 'd> NoteView<'a, 'd> {
         .response
     }
 
-    pub fn expand_size() -> f32 {
-        5.0
+    pub fn expand_size() -> i8 {
+        5
     }
 
     fn pfp(
@@ -223,8 +223,8 @@ impl<'a, 'd> NoteView<'a, 'd> {
                 let (rect, size, resp) = ui::anim::hover_expand(
                     ui,
                     egui::Id::new((profile_key, note_key)),
-                    pfp_size,
-                    ui::NoteView::expand_size(),
+                    pfp_size as f32,
+                    ui::NoteView::expand_size() as f32,
                     anim_speed,
                 );
 
@@ -246,6 +246,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
 
                 resp
             }
+
             None => {
                 // This has to match the expand size from the above case to
                 // prevent bounciness
@@ -255,7 +256,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
                 ui.put(
                     rect,
                     ui::ProfilePic::new(self.note_context.img_cache, ui::ProfilePic::no_pfp_url())
-                        .size(pfp_size),
+                        .size(pfp_size as f32),
                 )
                 .interact(sense)
             }
@@ -354,7 +355,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
 
                     let size = ui.available_size();
                     ui.vertical(|ui| {
-                        ui.add_sized([size.x, self.options().pfp_size()], |ui: &mut egui::Ui| {
+                        ui.add_sized([size.x, self.options().pfp_size() as f32], |ui: &mut egui::Ui| {
                             ui.horizontal_centered(|ui| {
                                 NoteView::note_header(
                                     ui,

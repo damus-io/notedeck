@@ -60,9 +60,7 @@ impl<'a> SupportView<'a> {
                     ui.add(Label::new("Press the button below to copy your most recent logs to your system's clipboard. Then paste it into your email.").wrap());
                     ui.allocate_ui_with_layout(size, Layout::top_down(egui::Align::Center), |ui| {
                         if ui.add(copy_button).clicked() {
-                            ui.output_mut(|w| {
-                                w.copied_text = logs.to_string();
-                            });
+                            ui.ctx().copy_text(logs.to_string());
                         }
                     });
                 });

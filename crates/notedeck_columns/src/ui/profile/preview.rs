@@ -89,7 +89,7 @@ impl<'a, 'cache> SimpleProfilePreview<'a, 'cache> {
 
 impl egui::Widget for SimpleProfilePreview<'_, '_> {
     fn ui(self, ui: &mut egui::Ui) -> egui::Response {
-        Frame::none()
+        Frame::new()
             .show(ui, |ui| {
                 ui.add(ProfilePic::new(self.cache, get_profile_url(self.profile)).size(48.0));
                 ui.vertical(|ui| {

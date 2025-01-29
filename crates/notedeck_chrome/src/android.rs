@@ -17,7 +17,7 @@ pub async fn android_main(app: AndroidApp) {
     use tracing_subscriber::{prelude::*, EnvFilter};
 
     std::env::set_var("RUST_BACKTRACE", "full");
-    std::env::set_var("RUST_LOG", "egui=trace");
+    std::env::set_var("RUST_LOG", "egui=trace,android_activity=debug");
 
     //std::env::set_var(
     //    "RUST_LOG",

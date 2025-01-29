@@ -154,14 +154,13 @@ impl<'a, 'd> ProfileView<'a, 'd> {
                     );
 
                     if ui.add(copy_key_widget(&pfp_rect)).clicked() {
-                        ui.output_mut(|w| {
-                            w.copied_text = if let Some(bech) = self.pubkey.to_bech() {
-                                bech
-                            } else {
-                                error!("Could not convert Pubkey to bech");
-                                String::new()
-                            }
-                        });
+                        let to_copy = if let Some(bech) = self.pubkey.to_bech() {
+                            bech
+                        } else {
+                            error!("Could not convert Pubkey to bech");
+                            String::new()
+                        };
+                        ui.ctx().copy_text(to_copy)
                     }
 
                     if self.accounts.contains_full_kp(self.pubkey) {
@@ -244,7 +243,7 @@ fn copy_key_widget(pfp_rect: &egui::Rect) -> impl egui::Widget + '_ {
             Sense::click(),
         );
 
-        let copy_key_rounding = Rounding::same(100.0);
+        let copy_key_rounding = Rounding::same(100);
         let fill_color = if resp.hovered() {
             ui.visuals().widgets.inactive.weak_bg_fill
         } else {
@@ -281,7 +280,7 @@ fn edit_profile_button() -> impl egui::Widget + 'static {
 
         painter.rect_filled(
             rect,
-            Rounding::same(8.0),
+            Rounding::same(8),
             if resp.hovered() {
                 ui.visuals().widgets.active.bg_fill
             } else {
@@ -290,7 +289,7 @@ fn edit_profile_button() -> impl egui::Widget + 'static {
         );
         painter.rect_stroke(
             rect.shrink(1.0),
-            Rounding::same(8.0),
+            Rounding::same(8),
             if resp.hovered() {
                 ui.visuals().widgets.active.bg_stroke
             } else {

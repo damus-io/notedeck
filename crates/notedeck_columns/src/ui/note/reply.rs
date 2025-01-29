@@ -54,13 +54,12 @@ impl<'a, 'd> PostReplyView<'a, 'd> {
 
             // This is the offset of the post view's pfp. We use this
             // to indent things so that the reply line is aligned
-            let pfp_offset = ui::PostView::outer_margin()
+            let pfp_offset: i8 = ui::PostView::outer_margin()
                 + ui::PostView::inner_margin()
-                + ui::ProfilePic::small_size() / 2.0;
+                + ui::ProfilePic::small_size() / 2;
 
-            let note_offset = pfp_offset
-                - ui::ProfilePic::medium_size() / 2.0
-                - ui::NoteView::expand_size() / 2.0;
+            let note_offset: i8 =
+                pfp_offset - ui::ProfilePic::medium_size() / 2 - ui::NoteView::expand_size() / 2;
 
             let selection = egui::Frame::none()
                 .outer_margin(egui::Margin::same(note_offset))
@@ -103,14 +102,14 @@ impl<'a, 'd> PostReplyView<'a, 'd> {
             // Position the line right above the poster's profile pic in
             // the post box. Use the PostView's margin values to
             // determine this offset.
-            rect.min.x = avail_rect.min.x + pfp_offset;
+            rect.min.x = avail_rect.min.x + pfp_offset as f32;
 
             // honestly don't know what the fuck I'm doing here. just trying
             // to get the line under the profile picture
             rect.min.y = avail_rect.min.y
-                + (ui::ProfilePic::medium_size() / 2.0
-                    + ui::ProfilePic::medium_size()
-                    + ui::NoteView::expand_size() * 2.0)
+                + (ui::ProfilePic::medium_size() as f32 / 2.0
+                    + ui::ProfilePic::medium_size() as f32
+                    + ui::NoteView::expand_size() as f32 * 2.0)
                 + 1.0;
 
             // For some reason we need to nudge the reply line's height a
@@ -125,7 +124,7 @@ impl<'a, 'd> PostReplyView<'a, 'd> {
                 3.0
             };
 
-            rect.max.y = rect_before_post.max.y + ui::PostView::outer_margin() + nudge;
+            rect.max.y = rect_before_post.max.y + ui::PostView::outer_margin() as f32 + nudge;
 
             ui.painter().vline(
                 rect.left(),

@@ -27,7 +27,7 @@ impl<'a> EditDeckView<'a> {
     pub fn ui(&mut self, ui: &mut egui::Ui) -> Option<EditDeckResponse> {
         let mut edit_deck_resp = None;
 
-        padding(egui::Margin::symmetric(16.0, 4.0), ui, |ui| {
+        padding(egui::Margin::symmetric(16, 4), ui, |ui| {
             if ui.add(delete_button()).clicked() {
                 edit_deck_resp = Some(EditDeckResponse::Delete);
             }

@@ -36,7 +36,7 @@ impl<'a> AccountsView<'a> {
     }
 
     pub fn ui(&mut self, ui: &mut Ui) -> InnerResponse<Option<AccountsViewResponse>> {
-        Frame::none().outer_margin(12.0).show(ui, |ui| {
+        Frame::new().outer_margin(12.0).show(ui, |ui| {
             if let Some(resp) = Self::top_section_buttons_widget(ui).inner {
                 return Some(resp);
             }
@@ -135,7 +135,7 @@ fn show_profile_card(
     let mut op: Option<ProfilePreviewAction> = None;
 
     ui.add_sized(max_size, |ui: &mut egui::Ui| {
-        let mut frame = Frame::none();
+        let mut frame = Frame::new();
         if is_selected || card_resp.hovered() {
             frame = frame.fill(ui.visuals().noninteractive().weak_bg_fill);
         }

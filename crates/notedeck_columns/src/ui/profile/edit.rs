@@ -142,7 +142,7 @@ fn singleline_textedit(data: &mut String) -> impl egui::Widget + '_ {
     TextEdit::singleline(data)
         .min_size(vec2(0.0, 40.0))
         .vertical_align(egui::Align::Center)
-        .margin(Margin::symmetric(12.0, 10.0))
+        .margin(Margin::symmetric(12, 10))
         .desired_width(f32::INFINITY)
 }
 
@@ -150,13 +150,13 @@ fn multiline_textedit(data: &mut String) -> impl egui::Widget + '_ {
     TextEdit::multiline(data)
         // .min_size(vec2(0.0, 40.0))
         .vertical_align(egui::Align::TOP)
-        .margin(Margin::symmetric(12.0, 10.0))
+        .margin(Margin::symmetric(12, 10))
         .desired_width(f32::INFINITY)
         .desired_rows(1)
 }
 
 fn in_frame(ui: &mut egui::Ui, contents: impl FnOnce(&mut egui::Ui)) {
-    egui::Frame::none().show(ui, |ui| {
+    egui::Frame::new().show(ui, |ui| {
         ui.spacing_mut().item_spacing = egui::vec2(0.0, 8.0);
         contents(ui);
     });
@@ -164,7 +164,7 @@ fn in_frame(ui: &mut egui::Ui, contents: impl FnOnce(&mut egui::Ui)) {
 
 fn button(text: &str, width: f32) -> egui::Button<'static> {
     Button::new(text)
-        .rounding(Rounding::same(8.0))
+        .rounding(Rounding::same(8))
         .min_size(vec2(width, 40.0))
 }
 
