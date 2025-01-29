@@ -113,28 +113,29 @@ fn pfp_image(ui: &mut egui::Ui, img: &TextureHandle, size: f32) -> egui::Respons
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
 
-    let response = ui.add(egui::Image::new(img).max_width(size));
-    draw_profile_border(ui, response.rect.center(), size);
+    let (rect, response) = ui.allocate_at_least(vec2(size, size), Sense::hover());
+    draw_bg_border(ui, rect.center(), size);
+    ui.put(rect, egui::Image::new(img).max_width(size));
+
     response
 }
 
 fn paint_circle(ui: &mut egui::Ui, size: f32) -> egui::Response {
     let (rect, response) = ui.allocate_at_least(vec2(size, size), Sense::hover());
+
+    draw_bg_border(ui, rect.center(), size);
     ui.painter()
         .circle_filled(rect.center(), size / 2.0, ui.visuals().weak_text_color());
 
-    draw_profile_border(ui, rect.center(), size);
     response
 }
 
-fn draw_profile_border(ui: &mut egui::Ui, center: egui::Pos2, size: f32) {
-    let border_color = ui.visuals().widgets.noninteractive.bg_stroke.color;
-    let border_width = 2.0;
-
-    ui.painter().circle_stroke(
+fn draw_bg_border(ui: &mut egui::Ui, center: egui::Pos2, size: f32) {
+    let border_size = size + 4.0;
+    ui.painter().circle_filled(
         center,
-        size / 2.0,
-        egui::Stroke::new(border_width, border_color),
+        border_size / 2.0,
+        ui.visuals().widgets.noninteractive.bg_stroke.color,
     );
 }
 
