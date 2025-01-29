@@ -76,10 +76,10 @@ impl<'a> RelayView<'a> {
                 relay_frame(ui).show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                            Frame::none()
+                            Frame::new()
                                 // This frame is needed to add margin because the label will be added to the outer frame first and centered vertically before the connection status is added so the vertical centering isn't accurate.
                                 // TODO: remove this hack and actually center the url & status at the same time
-                                .inner_margin(Margin::symmetric(0.0, 4.0))
+                                .inner_margin(Margin::symmetric(0, 4))
                                 .show(ui, |ui| {
                                     egui::ScrollArea::horizontal()
                                         .id_salt(index)
@@ -159,7 +159,7 @@ impl<'a> RelayView<'a> {
                 .vertical_align(Align::Center)
                 .desired_width(f32::INFINITY)
                 .min_size(Vec2::new(0.0, 40.0))
-                .margin(Margin::same(12.0));
+                .margin(Margin::same(12));
             ui.add(text_edit);
             ui.add_space(8.0);
             if ui
@@ -218,8 +218,8 @@ fn delete_button(_dark_mode: bool) -> egui::Button<'static> {
 }
 
 fn relay_frame(ui: &mut Ui) -> Frame {
-    Frame::none()
-        .inner_margin(Margin::same(8.0))
+    Frame::new()
+        .inner_margin(Margin::same(8))
         .rounding(ui.style().noninteractive().rounding)
         .stroke(ui.style().visuals.noninteractive().bg_stroke)
 }
@@ -238,10 +238,10 @@ fn show_connection_status(ui: &mut Ui, status: RelayStatus) {
         RelayStatus::Disconnected => "Not Connected",
     };
 
-    let frame = Frame::none()
-        .rounding(Rounding::same(100.0))
+    let frame = Frame::new()
+        .rounding(Rounding::same(100))
         .fill(bg_color)
-        .inner_margin(Margin::symmetric(12.0, 4.0));
+        .inner_margin(Margin::symmetric(12, 4));
 
     frame.show(ui, |ui| {
         ui.label(RichText::new(label_text).color(fg_color));

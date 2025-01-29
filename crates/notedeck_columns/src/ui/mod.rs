@@ -49,7 +49,7 @@ pub fn padding<R>(
     ui: &mut egui::Ui,
     add_contents: impl FnOnce(&mut egui::Ui) -> R,
 ) -> egui::InnerResponse<R> {
-    egui::Frame::none()
+    egui::Frame::new()
         .inner_margin(amount)
         .show(ui, add_contents)
 }

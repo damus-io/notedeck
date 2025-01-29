@@ -16,30 +16,22 @@ impl NoteContextSelection {
     pub fn process(&self, ui: &mut egui::Ui, note: &Note<'_>) {
         match self {
             NoteContextSelection::CopyText => {
-                ui.output_mut(|w| {
-                    w.copied_text = note.content().to_string();
-                });
+                ui.ctx().copy_text(note.content().to_string());
             }
             NoteContextSelection::CopyPubkey => {
-                ui.output_mut(|w| {
-                    if let Some(bech) = Pubkey::new(*note.pubkey()).to_bech() {
-                        w.copied_text = bech;
-                    }
-                });
+                if let Some(bech) = Pubkey::new(*note.pubkey()).to_bech() {
+                    ui.ctx().copy_text(bech);
+                }
             }
             NoteContextSelection::CopyNoteId => {
-                ui.output_mut(|w| {
-                    if let Some(bech) = NoteId::new(*note.id()).to_bech() {
-                        w.copied_text = bech;
-                    }
-                });
+                if let Some(bech) = NoteId::new(*note.id()).to_bech() {
+                    ui.ctx().copy_text(bech);
+                }
             }
-            NoteContextSelection::CopyNoteJSON => {
-                ui.output_mut(|w| match note.json() {
-                    Ok(json) => w.copied_text = json,
-                    Err(err) => error!("error copying note json: {err}"),
-                });
-            }
+            NoteContextSelection::CopyNoteJSON => match note.json() {
+                Ok(json) => ui.ctx().copy_text(json),
+                Err(err) => error!("error copying note json: {err}"),
+            },
         }
     }
 }

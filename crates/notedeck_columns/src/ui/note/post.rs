@@ -256,12 +256,12 @@ impl<'a> PostView<'a> {
         self.id_source.unwrap_or_else(|| egui::Id::new("post"))
     }
 
-    pub fn outer_margin() -> f32 {
-        16.0
+    pub fn outer_margin() -> i8 {
+        16
     }
 
-    pub fn inner_margin() -> f32 {
-        12.0
+    pub fn inner_margin() -> i8 {
+        12
     }
 
     pub fn ui(&mut self, txn: &nostrdb::Transaction, ui: &mut egui::Ui) -> PostResponse {
@@ -281,9 +281,9 @@ impl<'a> PostView<'a> {
 
         if focused {
             frame = frame.shadow(egui::epaint::Shadow {
-                offset: egui::vec2(0.0, 0.0),
-                blur: 8.0,
-                spread: 0.0,
+                offset: [0, 0],
+                blur: 8,
+                spread: 0,
                 color: stroke.color,
             });
         }
@@ -296,7 +296,7 @@ impl<'a> PostView<'a> {
                     if let PostType::Quote(id) = self.post_type {
                         let avail_size = ui.available_size_before_wrap();
                         ui.with_layout(Layout::left_to_right(egui::Align::TOP), |ui| {
-                            Frame::none().show(ui, |ui| {
+                            Frame::new().show(ui, |ui| {
                                 ui.vertical(|ui| {
                                     ui.set_max_width(avail_size.x * 0.8);
                                     render_note_preview(
@@ -314,8 +314,8 @@ impl<'a> PostView<'a> {
                         });
                     }
 
-                    Frame::none()
-                        .inner_margin(Margin::symmetric(0.0, 8.0))
+                    Frame::new()
+                        .inner_margin(Margin::symmetric(0, 8))
                         .show(ui, |ui| {
                             ScrollArea::horizontal().show(ui, |ui| {
                                 ui.with_layout(Layout::left_to_right(egui::Align::Min), |ui| {

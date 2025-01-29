@@ -60,10 +60,6 @@ sha2 = "0.10.8"
 bincode = "1.3.3"
 mime_guess = "2.0.5"
 
-[patch.crates-io]
-egui = { git = "https://github.com/damus-io/egui", branch = "update_layouter_0.29.1" }
-epaint = { git = "https://github.com/damus-io/egui", branch = "update_layouter_0.29.1" }
-
 [profile.small]
 inherits = 'release'
 opt-level = 'z'     # Optimize for size
@@ -71,3 +67,12 @@ lto = true          # Enable link-time optimization
 codegen-units = 1   # Reduce number of codegen units to increase optimizations
 panic = 'abort'     # Abort on panic
 strip = true        # Strip symbols from binary*
+
+
+[patch.crates-io]
+egui = { git = "https://github.com/jb55/egui", rev = "03c769a3576920d5e33e01c06167e7c67d296625" }
+eframe = { git = "https://github.com/jb55/egui", rev = "03c769a3576920d5e33e01c06167e7c67d296625" }
+egui-winit = { git = "https://github.com/jb55/egui", rev = "03c769a3576920d5e33e01c06167e7c67d296625" }
+egui_extras = { git = "https://github.com/jb55/egui", rev = "03c769a3576920d5e33e01c06167e7c67d296625" }
+# on master was git = "https://github.com/damus-io/egui", branch = "update_layouter_0.29.1"
+epaint = { git = "https://github.com/jb55/egui", rev = "03c769a3576920d5e33e01c06167e7c67d296625" }

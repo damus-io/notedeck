@@ -295,7 +295,7 @@ impl<'a> AddColumnView<'a> {
                     .vertical_align(Align::Center)
                     .desired_width(f32::INFINITY)
                     .min_size(Vec2::new(0.0, 40.0))
-                    .margin(Margin::same(12.0))
+                    .margin(Margin::same(12))
             });
 
             ui.add(text_edit);
@@ -315,10 +315,10 @@ impl<'a> AddColumnView<'a> {
                     {
                         egui::Frame::window(ui.style())
                             .outer_margin(Margin {
-                                left: 4.0,
-                                right: 4.0,
-                                top: 12.0,
-                                bottom: 32.0,
+                                left: 4,
+                                right: 4,
+                                top: 12,
+                                bottom: 32,
                             })
                             .show(ui, |ui| {
                                 ProfilePreview::new(&profile, self.img_cache).ui(ui);
@@ -755,7 +755,7 @@ pub fn hashtag_ui(
             .vertical_align(Align::Center)
             .desired_width(f32::INFINITY)
             .min_size(Vec2::new(0.0, 40.0))
-            .margin(Margin::same(12.0));
+            .margin(Margin::same(12));
         ui.add(text_edit);
 
         ui.add_space(8.0);

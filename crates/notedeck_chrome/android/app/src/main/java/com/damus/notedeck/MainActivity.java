@@ -23,7 +23,6 @@ public class MainActivity extends GameActivity {
   protected void onCreate(Bundle savedInstanceState) {
       // Shrink view so it does not get covered by insets.
 
-	  /*
       View content = getWindow().getDecorView().findViewById(android.R.id.content);
       ViewCompat.setOnApplyWindowInsetsListener(content, (v, windowInsets) -> {
         Insets insets = windowInsets.getInsets(WindowInsetsCompat.Type.systemBars());
@@ -39,7 +38,6 @@ public class MainActivity extends GameActivity {
       });
 
       WindowCompat.setDecorFitsSystemWindows(getWindow(), true);
-      */
 
       super.onCreate(savedInstanceState);
   }
@@ -48,11 +46,10 @@ public class MainActivity extends GameActivity {
   public boolean onTouchEvent(MotionEvent event) {
       // Offset the location so it fits the view with margins caused by insets.
 
-	  /*
       int[] location = new int[2];
       findViewById(android.R.id.content).getLocationOnScreen(location);
       event.offsetLocation(-location[0], -location[1]);
-      */
+
       return super.onTouchEvent(event);
   }
 }

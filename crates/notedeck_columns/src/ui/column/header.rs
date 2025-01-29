@@ -252,7 +252,7 @@ impl<'a> NavTitle<'a> {
             let x_range = ui.available_rect_before_wrap().x_range();
             let is_dragging = egui::DragAndDrop::payload::<usize>(ui.ctx()).is_some(); // must be outside ui.dnd_drop_zone to capture properly
             let (_, _) = ui.dnd_drop_zone::<usize, ()>(
-                egui::Frame::none().inner_margin(Margin::same(8.0)),
+                egui::Frame::new().inner_margin(Margin::same(8)),
                 |ui| {
                     let distances: Vec<(egui::Response, f32)> =
                         self.collect_column_distances(ui, id);
@@ -291,10 +291,10 @@ impl<'a> NavTitle<'a> {
         ui: &mut egui::Ui,
         id: egui::Id,
     ) -> Vec<(egui::Response, f32)> {
-        let y_margin = 4.0;
-        let item_frame = egui::Frame::none()
-            .rounding(egui::Rounding::same(8.0))
-            .inner_margin(Margin::symmetric(8.0, y_margin));
+        let y_margin: i8 = 4;
+        let item_frame = egui::Frame::new()
+            .rounding(egui::Rounding::same(8))
+            .inner_margin(Margin::symmetric(8, y_margin));
 
         (0..self.columns.num_columns())
             .filter_map(|col| {
