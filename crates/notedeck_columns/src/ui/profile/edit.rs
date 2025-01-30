@@ -62,7 +62,7 @@ impl<'a> EditProfileView<'a> {
         });
         ui.put(
             pfp_rect,
-            ProfilePic::new(self.img_cache, pfp_url).size(size),
+            ProfilePic::new(self.img_cache, pfp_url).size(size).border(2.0),
         );
 
         in_frame(ui, |ui| {

@@ -10,18 +10,19 @@ pub struct ProfilePic<'cache, 'url> {
     cache: &'cache mut ImageCache,
     url: &'url str,
     size: f32,
+    border: Option<f32>,
 }
 
 impl egui::Widget for ProfilePic<'_, '_> {
     fn ui(self, ui: &mut egui::Ui) -> egui::Response {
-        render_pfp(ui, self.cache, self.url, self.size)
+        render_pfp(ui, self.cache, self.url, self.size, self.border)
     }
 }
 
 impl<'cache, 'url> ProfilePic<'cache, 'url> {
     pub fn new(cache: &'cache mut ImageCache, url: &'url str) -> Self {
         let size = Self::default_size();
-        ProfilePic { cache, url, size }
+        ProfilePic { cache, url, size, border: None }
     }
 
     pub fn from_profile(
@@ -60,6 +61,12 @@ impl<'cache, 'url> ProfilePic<'cache, 'url> {
         self.size = size;
         self
     }
+
+    #[inline]
+    pub fn border(mut self, width: f32) -> Self {
+        self.border = Some(width);
+        self
+    }
 }
 
 fn render_pfp(
@@ -67,6 +74,7 @@ fn render_pfp(
     img_cache: &mut ImageCache,
     url: &str,
     ui_size: f32,
+    border: Option<f32>,
 ) -> egui::Response {
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
@@ -81,7 +89,7 @@ fn render_pfp(
     }
 
     match img_cache.map()[url].ready() {
-        None => paint_circle(ui, ui_size),
+        None => paint_circle(ui, ui_size, border),
 
         // Failed to fetch profile!
         Some(Err(_err)) => {
@@ -97,41 +105,46 @@ fn render_pfp(
             }
 
             match img_cache.map().get(url).unwrap().ready() {
-                None => paint_circle(ui, ui_size),
+                None => paint_circle(ui, ui_size, border),
                 Some(Err(_e)) => {
                     //error!("Image load error: {:?}", e);
-                    paint_circle(ui, ui_size)
+                    paint_circle(ui, ui_size, border)
                 }
-                Some(Ok(img)) => pfp_image(ui, img, ui_size),
+                Some(Ok(img)) => pfp_image(ui, img, ui_size, border),
             }
         }
-        Some(Ok(img)) => pfp_image(ui, img, ui_size),
+        Some(Ok(img)) => pfp_image(ui, img, ui_size, border),
     }
 }
 
-fn pfp_image(ui: &mut egui::Ui, img: &TextureHandle, size: f32) -> egui::Response {
+fn pfp_image(ui: &mut egui::Ui, img: &TextureHandle, size: f32, border: Option<f32>) 
+    -> egui::Response {
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
 
     let (rect, response) = ui.allocate_at_least(vec2(size, size), Sense::hover());
-    draw_bg_border(ui, rect.center(), size);
+    if let Some(border_width) = border {
+        draw_bg_border(ui, rect.center(), size, border_width);
+    }
     ui.put(rect, egui::Image::new(img).max_width(size));
 
     response
 }
 
-fn paint_circle(ui: &mut egui::Ui, size: f32) -> egui::Response {
+fn paint_circle(ui: &mut egui::Ui, size: f32, border: Option<f32>) -> egui::Response {
     let (rect, response) = ui.allocate_at_least(vec2(size, size), Sense::hover());
 
-    draw_bg_border(ui, rect.center(), size);
+    if let Some(border_width) = border {
+        draw_bg_border(ui, rect.center(), size, border_width);
+    }
     ui.painter()
         .circle_filled(rect.center(), size / 2.0, ui.visuals().weak_text_color());
 
     response
 }
 
-fn draw_bg_border(ui: &mut egui::Ui, center: egui::Pos2, size: f32) {
-    let border_size = size + 4.0;
+fn draw_bg_border(ui: &mut egui::Ui, center: egui::Pos2, size: f32, border_width: f32) {
+    let border_size = size + (border_width * 2.0);
     ui.painter().circle_filled(
         center,
         border_size / 2.0,
@@ -185,7 +198,7 @@ mod preview {
                             anim_speed,
                         );
 
-                        ui.put(rect, ui::ProfilePic::new(app.img_cache, url).size(size))
+                        ui.put(rect, ui::ProfilePic::new(app.img_cache, url).size(size).border(2.0))
                             .on_hover_ui_at_pointer(|ui| {
                                 ui.set_max_width(300.0);
                                 ui.add(ui::ProfilePreview::new(&profile, app.img_cache));
