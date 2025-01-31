@@ -19,7 +19,6 @@ mkShell ({
     pkg-config
     #cmake
     fontconfig
-    zenity
     gradle
     #gtk3
     #gsettings-desktop-schemas
@@ -27,6 +26,8 @@ mkShell ({
     #wabt
     #gdb
     #heaptrack
+  ] ++ lib.optionals (!stdenv.isDarwin) [
+    zenity
   ] ++ lib.optionals use_android [
     jre
     openssl
