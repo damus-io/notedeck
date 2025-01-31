@@ -68,12 +68,6 @@ jobs:
           fi
           cargo install cargo-generate-rpm cargo-deb
 
-      - name: Rust cache
-        uses: Swatinem/rust-cache@v2
-
-      - name: Cargo Fetch
-        run: cargo fetch
-
       - name: Build Cross (${{ matrix.arch }})
         if: matrix.arch != runner.arch
         run: cargo build --release --target=${{ matrix.arch }}-unknown-linux-gnu
@@ -258,4 +252,36 @@ jobs:
         with:
           name: DamusNotedeckInstaller-${{ matrix.arch }}.exe
           path: packages\${{ matrix.arch }}\DamusNotedeckInstaller.exe
+
+  upload-artifacts:
+    name: Upload Artifacts to Server
+    runs-on: ubuntu-20.04
+    needs: [packaging, macos-dmg, windows-installer]
+    if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/ci'
+
+    steps:
+      - name: Download all Artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Setup SSH and Upload
+        run: |
+          eval "$(ssh-agent -s)"
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          echo "${{ secrets.DEPLOY_SFTP_KEY }}" | tr -d '\r' | ssh-add -
+          echo "${{ secrets.DEPLOY_IP }} ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEN65pj1cNMqlf96jZLr1i9+mnHIN4jjRPPTDix6sRnt" >> ~/.ssh/known_hosts
+          ls -la /home/runner/work/notedeck/notedeck/notedeck-x86_64.rpm
+          export ARTIFACTS=/home/runner/work/notedeck/notedeck
+          sftp ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_IP }} <<EOF
+          cd upload/artifacts
+          put $ARTIFACTS/notedeck-x86_64.rpm/*
+          put $ARTIFACTS/notedeck-x86_64.deb/*
+          put $ARTIFACTS/notedeck-x86_64.dmg/*
+          put $ARTIFACTS/notedeck-aarch64.rpm/*
+          put $ARTIFACTS/notedeck-aarch64.deb/*
+          put $ARTIFACTS/notedeck-aarch64.dmg/*
+          put $ARTIFACTS/DamusNotedeckInstaller-x86_64.exe/*
+          put $ARTIFACTS/DamusNotedeckInstaller-aarch64.exe/*
+          bye
+          EOF
 

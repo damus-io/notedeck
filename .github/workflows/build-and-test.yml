@@ -22,8 +22,5 @@ jobs:
         if: ${{ inputs.additional-setup != '' }}
         run: ${{ inputs.additional-setup }}
 
-      - name: Rust cache
-        uses: Swatinem/rust-cache@v2
-
       - name: Run Tests (Native Only)
         run: cargo test
