@@ -22,7 +22,12 @@ impl egui::Widget for ProfilePic<'_, '_> {
 impl<'cache, 'url> ProfilePic<'cache, 'url> {
     pub fn new(cache: &'cache mut ImageCache, url: &'url str) -> Self {
         let size = Self::default_size();
-        ProfilePic { cache, url, size, border: None }
+        ProfilePic {
+            cache,
+            url,
+            size,
+            border: None,
+        }
     }
 
     pub fn from_profile(
@@ -117,8 +122,12 @@ fn render_pfp(
     }
 }
 
-fn pfp_image(ui: &mut egui::Ui, img: &TextureHandle, size: f32, border: Option<f32>) 
-    -> egui::Response {
+fn pfp_image(
+    ui: &mut egui::Ui,
+    img: &TextureHandle,
+    size: f32,
+    border: Option<f32>,
+) -> egui::Response {
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
 
@@ -198,11 +207,16 @@ mod preview {
                             anim_speed,
                         );
 
-                        ui.put(rect, ui::ProfilePic::new(app.img_cache, url).size(size).border(2.0))
-                            .on_hover_ui_at_pointer(|ui| {
-                                ui.set_max_width(300.0);
-                                ui.add(ui::ProfilePreview::new(&profile, app.img_cache));
-                            });
+                        ui.put(
+                            rect,
+                            ui::ProfilePic::new(app.img_cache, url)
+                                .size(size)
+                                .border(2.0),
+                        )
+                        .on_hover_ui_at_pointer(|ui| {
+                            ui.set_max_width(300.0);
+                            ui.add(ui::ProfilePreview::new(&profile, app.img_cache));
+                        });
                     }
                 });
             });

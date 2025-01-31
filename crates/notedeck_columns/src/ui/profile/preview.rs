@@ -91,9 +91,11 @@ impl egui::Widget for SimpleProfilePreview<'_, '_> {
     fn ui(self, ui: &mut egui::Ui) -> egui::Response {
         Frame::none()
             .show(ui, |ui| {
-                ui.add(ProfilePic::new(self.cache, get_profile_url(self.profile))
-                    .size(48.0)
-                    .border(1.5));
+                ui.add(
+                    ProfilePic::new(self.cache, get_profile_url(self.profile))
+                        .size(48.0)
+                        .border(2.0),
+                );
                 ui.vertical(|ui| {
                     ui.add(display_name_widget(get_display_name(self.profile), true));
                     if !self.is_nsec {

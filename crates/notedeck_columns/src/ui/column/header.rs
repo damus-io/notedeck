@@ -398,7 +398,11 @@ impl<'a> NavTitle<'a> {
             .as_ref()
             .ok()
             .and_then(move |p| {
-                Some(ui::ProfilePic::from_profile(self.img_cache, p)?.size(pfp_size).border(2.0))
+                Some(
+                    ui::ProfilePic::from_profile(self.img_cache, p)?
+                        .size(pfp_size)
+                        .border(2.0),
+                )
             })
     }
 

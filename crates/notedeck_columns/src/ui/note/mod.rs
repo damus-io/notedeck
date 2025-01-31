@@ -228,14 +228,19 @@ impl<'a> NoteView<'a> {
                     anim_speed,
                 );
 
-                ui.put(rect, ui::ProfilePic::new(self.img_cache, pic).size(size).border(2.0))
-                    .on_hover_ui_at_pointer(|ui| {
-                        ui.set_max_width(300.0);
-                        ui.add(ui::ProfilePreview::new(
-                            profile.as_ref().unwrap(),
-                            self.img_cache,
-                        ));
-                    });
+                ui.put(
+                    rect,
+                    ui::ProfilePic::new(self.img_cache, pic)
+                        .size(size)
+                        .border(2.0),
+                )
+                .on_hover_ui_at_pointer(|ui| {
+                    ui.set_max_width(300.0);
+                    ui.add(ui::ProfilePreview::new(
+                        profile.as_ref().unwrap(),
+                        self.img_cache,
+                    ));
+                });
 
                 if resp.hovered() || resp.clicked() {
                     ui::show_pointer(ui);

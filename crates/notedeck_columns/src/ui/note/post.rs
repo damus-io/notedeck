@@ -113,9 +113,13 @@ impl<'a> PostView<'a> {
             .get_profile_by_pubkey(txn, self.poster.pubkey.bytes())
             .as_ref()
             .ok()
-            .and_then(|p| Some(ui::ProfilePic::from_profile(self.img_cache, p)?
-                .size(pfp_size)
-                .border(2.0)));
+            .and_then(|p| {
+                Some(
+                    ui::ProfilePic::from_profile(self.img_cache, p)?
+                        .size(pfp_size)
+                        .border(2.0),
+                )
+            });
 
         if let Some(pfp) = poster_pfp {
             ui.add(pfp);

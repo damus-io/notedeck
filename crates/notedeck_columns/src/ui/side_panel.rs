@@ -266,7 +266,9 @@ impl<'a> DesktopSidePanel<'a> {
         let txn = nostrdb::Transaction::new(self.ndb).expect("should be able to create txn");
         let profile_url = get_account_url(&txn, self.ndb, self.selected_account);
 
-        let widget = ProfilePic::new(self.img_cache, profile_url).size(cur_pfp_size).border(2.0);
+        let widget = ProfilePic::new(self.img_cache, profile_url)
+            .size(cur_pfp_size)
+            .border(2.0);
 
         ui.put(helper.get_animation_rect(), widget);
 
