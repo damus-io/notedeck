@@ -101,7 +101,7 @@ impl<'a> EditProfileView<'a> {
         });
 
         in_frame(ui, |ui| {
-            ui.add(label("NIP-05 verification"));
+            ui.add(label("Nostr address (NIP-05 identity)"));
             ui.add(singleline_textedit(&mut self.state.nip05));
             let split = &mut self.state.nip05.split('@');
             let prefix = split.next();
