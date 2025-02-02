@@ -1,14 +1,21 @@
 use poll_promise::Promise;
 
-use crate::{media_upload::Nip94Event, ui::note::PostType, Error};
+use crate::{media_upload::Nip94Event, post::PostBuffer, ui::note::PostType, Error};
 use std::collections::HashMap;
 
 #[derive(Default)]
 pub struct Draft {
-    pub buffer: String,
+    pub buffer: PostBuffer,
+    pub cur_mention_hint: Option<MentionHint>,
     pub uploaded_media: Vec<Nip94Event>, // media uploads to include
     pub uploading_media: Vec<Promise<Result<Nip94Event, Error>>>, // promises that aren't ready yet
     pub upload_errors: Vec<String>,      // media upload errors to show the user
+}
+
+pub struct MentionHint {
+    pub index: usize,
+    pub pos: egui::Pos2,
+    pub text: String,
 }
 
 #[derive(Default)]
@@ -46,7 +53,7 @@ impl Draft {
     }
 
     pub fn clear(&mut self) {
-        self.buffer = "".to_string();
+        self.buffer = PostBuffer::default();
         self.upload_errors = Vec::new();
         self.uploaded_media = Vec::new();
         self.uploading_media = Vec::new();
