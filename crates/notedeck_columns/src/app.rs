@@ -500,7 +500,8 @@ fn render_damus_mobile(app: &mut Damus, app_ctx: &mut AppContext<'_>, ui: &mut e
     //let routes = app.timelines[0].routes.clone();
 
     if !app.columns(app_ctx.accounts).columns().is_empty()
-        && nav::render_nav(0, app, app_ctx, ui).process_render_nav_response(app, app_ctx)
+        && nav::render_nav(0, ui.available_rect_before_wrap(), app, app_ctx, ui)
+            .process_render_nav_response(app, app_ctx)
         && !app.tmp_columns
     {
         storage::save_decks_cache(app_ctx.path, &app.decks_cache);
@@ -584,14 +585,17 @@ fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus, ctx: &mut App
             for col_index in 0..num_cols {
                 strip.cell(|ui| {
                     let rect = ui.available_rect_before_wrap();
-                    responses.push(nav::render_nav(col_index, app, ctx, ui));
+                    let v_line_stroke = ui.visuals().widgets.noninteractive.bg_stroke;
+                    let inner_rect = {
+                        let mut inner = rect;
+                        inner.set_right(rect.right() - v_line_stroke.width);
+                        inner
+                    };
+                    responses.push(nav::render_nav(col_index, inner_rect, app, ctx, ui));
 
                     // vertical line
-                    ui.painter().vline(
-                        rect.right(),
-                        rect.y_range(),
-                        ui.visuals().widgets.noninteractive.bg_stroke,
-                    );
+                    ui.painter()
+                        .vline(rect.right(), rect.y_range(), v_line_stroke);
                 });
 
                 //strip.cell(|ui| timeline::timeline_view(ui, app, timeline_ind));

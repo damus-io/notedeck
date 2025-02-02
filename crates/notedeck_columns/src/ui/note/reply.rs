@@ -14,6 +14,7 @@ pub struct PostReplyView<'a> {
     draft: &'a mut Draft,
     note: &'a nostrdb::Note<'a>,
     id_source: Option<egui::Id>,
+    inner_rect: egui::Rect,
 }
 
 impl<'a> PostReplyView<'a> {
@@ -24,6 +25,7 @@ impl<'a> PostReplyView<'a> {
         note_cache: &'a mut NoteCache,
         img_cache: &'a mut ImageCache,
         note: &'a nostrdb::Note<'a>,
+        inner_rect: egui::Rect,
     ) -> Self {
         let id_source: Option<egui::Id> = None;
         PostReplyView {
@@ -34,6 +36,7 @@ impl<'a> PostReplyView<'a> {
             note_cache,
             img_cache,
             id_source,
+            inner_rect,
         }
     }
 
@@ -83,6 +86,7 @@ impl<'a> PostReplyView<'a> {
                     self.img_cache,
                     self.note_cache,
                     self.poster,
+                    self.inner_rect,
                 )
                 .id_source(id)
                 .ui(self.note.txn().unwrap(), ui)

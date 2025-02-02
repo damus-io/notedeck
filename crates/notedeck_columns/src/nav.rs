@@ -241,6 +241,7 @@ fn render_nav_body(
     top: &Route,
     depth: usize,
     col: usize,
+    inner_rect: egui::Rect,
 ) -> Option<RenderNavAction> {
     match top {
         Route::Timeline(kind) => render_timeline_route(
@@ -308,6 +309,7 @@ fn render_nav_body(
                         ctx.note_cache,
                         ctx.img_cache,
                         &note,
+                        inner_rect,
                     )
                     .id_source(id)
                     .show(ui)
@@ -342,6 +344,7 @@ fn render_nav_body(
                     ctx.img_cache,
                     draft,
                     &note,
+                    inner_rect,
                 )
                 .id_source(id)
                 .show(ui)
@@ -362,6 +365,7 @@ fn render_nav_body(
                 ctx.img_cache,
                 ctx.note_cache,
                 kp,
+                inner_rect,
             )
             .ui(&txn, ui);
 
@@ -473,6 +477,7 @@ fn render_nav_body(
 #[must_use = "RenderNavResponse must be handled by calling .process_render_nav_response(..)"]
 pub fn render_nav(
     col: usize,
+    inner_rect: egui::Rect,
     app: &mut Damus,
     ctx: &mut AppContext<'_>,
     ui: &mut egui::Ui,
@@ -508,7 +513,7 @@ pub fn render_nav(
         .show(ui),
         NavUiType::Body => {
             if let Some(top) = nav.routes().last() {
-                render_nav_body(ui, app, ctx, top, nav.routes().len(), col)
+                render_nav_body(ui, app, ctx, top, nav.routes().len(), col, inner_rect)
             } else {
                 None
             }
