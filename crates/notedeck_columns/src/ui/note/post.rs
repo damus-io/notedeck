@@ -1,12 +1,16 @@
-use crate::draft::{Draft, Drafts};
+use crate::draft::{Draft, Drafts, MentionHint};
 use crate::images::fetch_img;
 use crate::media_upload::{nostrbuild_nip96_upload, MediaPath};
-use crate::post::NewPost;
+use crate::post::{MentionType, NewPost};
+use crate::profile::get_display_name;
+use crate::ui::search_results::SearchResultsView;
 use crate::ui::{self, Preview, PreviewConfig};
 use crate::Result;
+use egui::text::CCursorRange;
+use egui::text_edit::TextEditOutput;
 use egui::widgets::text_edit::TextEdit;
 use egui::{vec2, Frame, Layout, Margin, Pos2, ScrollArea, Sense};
-use enostr::{FilledKeypair, FullKeypair, NoteId, RelayPool};
+use enostr::{FilledKeypair, FullKeypair, NoteId, Pubkey, RelayPool};
 use nostrdb::{Ndb, Transaction};
 
 use notedeck::{ImageCache, NoteCache};
@@ -126,18 +130,85 @@ impl<'a> PostView<'a> {
             );
         }
 
-        let response = ui.add_sized(
-            ui.available_size(),
-            TextEdit::multiline(&mut self.draft.buffer)
-                .hint_text(egui::RichText::new("Write a banger note here...").weak())
-                .frame(false),
-        );
+        let textedit = TextEdit::multiline(&mut self.draft.buffer)
+            .hint_text(egui::RichText::new("Write a banger note here...").weak())
+            .frame(false)
+            .desired_width(ui.available_width());
 
-        let focused = response.has_focus();
+        let out = textedit.show(ui);
+
+        if let Some(cursor_index) = get_cursor_index(&out.state.cursor.char_range()) {
+            self.show_mention_hints(txn, ui, cursor_index, &out);
+        }
+
+        let focused = out.response.has_focus();
 
         ui.ctx().data_mut(|d| d.insert_temp(self.id(), focused));
 
-        response
+        out.response
+    }
+
+    fn show_mention_hints(
+        &mut self,
+        txn: &nostrdb::Transaction,
+        ui: &mut egui::Ui,
+        cursor_index: usize,
+        textedit_output: &TextEditOutput,
+    ) {
+        if let Some(mention) = &self.draft.buffer.get_mention(cursor_index) {
+            if mention.info.mention_type == MentionType::Pending {
+                let mention_str = self.draft.buffer.get_mention_string(mention);
+
+                if !mention_str.is_empty() {
+                    if let Some(mention_hint) = &mut self.draft.cur_mention_hint {
+                        if mention_hint.index != mention.index {
+                            mention_hint.index = mention.index;
+                            mention_hint.pos = calculate_mention_hints_pos(
+                                textedit_output,
+                                mention.info.start_index,
+                            );
+                        }
+                        mention_hint.text = mention_str.to_owned();
+                    } else {
+                        self.draft.cur_mention_hint = Some(MentionHint {
+                            index: mention.index,
+                            text: mention_str.to_owned(),
+                            pos: calculate_mention_hints_pos(
+                                textedit_output,
+                                mention.info.start_index,
+                            ),
+                        });
+                    }
+                }
+
+                if let Some(hint) = &self.draft.cur_mention_hint {
+                    let hint_rect = {
+                        let mut hint_rect = self.inner_rect;
+                        hint_rect.set_top(hint.pos.y);
+                        hint_rect
+                    };
+
+                    if let Ok(res) = self.ndb.search_profile(txn, mention_str, 10) {
+                        let hint_selection =
+                            SearchResultsView::new(self.img_cache, self.ndb, txn, &res)
+                                .show_in_rect(hint_rect, ui);
+
+                        if let Some(hint_index) = hint_selection {
+                            if let Some(pk) = res.get(hint_index) {
+                                let record = self.ndb.get_profile_by_pubkey(txn, pk);
+
+                                self.draft.buffer.select_mention_and_replace_name(
+                                    mention.index,
+                                    get_display_name(record.ok().as_ref()).name(),
+                                    Pubkey::new(**pk),
+                                );
+                                self.draft.cur_mention_hint = None;
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     fn focused(&self, ui: &egui::Ui) -> bool {
@@ -237,10 +308,12 @@ impl<'a> PostView<'a> {
                                     )
                                     .clicked()
                                 {
+                                    let output = self.draft.buffer.output();
                                     let new_post = NewPost::new(
-                                        self.draft.buffer.clone(),
+                                        output.text,
                                         self.poster.to_full(),
                                         self.draft.uploaded_media.clone(),
+                                        output.mentions,
                                     );
                                     Some(PostAction::new(self.post_type.clone(), new_post))
                                 } else {
@@ -483,6 +556,32 @@ fn show_remove_upload_button(ui: &mut egui::Ui, desired_rect: egui::Rect) -> egu
         egui::Stroke::new(1.33, ui.visuals().text_color()),
     );
     resp
+}
+
+fn get_cursor_index(cursor: &Option<CCursorRange>) -> Option<usize> {
+    let range = cursor.as_ref()?;
+
+    if range.primary.index == range.secondary.index {
+        Some(range.primary.index)
+    } else {
+        None
+    }
+}
+
+fn calculate_mention_hints_pos(out: &TextEditOutput, char_pos: usize) -> egui::Pos2 {
+    let mut cur_pos = 0;
+
+    for row in &out.galley.rows {
+        if cur_pos + row.glyphs.len() <= char_pos {
+            cur_pos += row.glyphs.len();
+        } else if let Some(glyph) = row.glyphs.get(char_pos - cur_pos) {
+            let mut pos = glyph.pos + out.galley_pos.to_vec2();
+            pos.y += row.rect.height();
+            return pos;
+        }
+    }
+
+    out.text_clip_rect.left_bottom()
 }
 
 mod preview {

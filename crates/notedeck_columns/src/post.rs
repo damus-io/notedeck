@@ -13,6 +13,7 @@ pub struct NewPost {
     pub content: String,
     pub account: FullKeypair,
     pub media: Vec<Nip94Event>,
+    pub mentions: Vec<Pubkey>,
 }
 
 fn add_client_tag(builder: NoteBuilder<'_>) -> NoteBuilder<'_> {
@@ -23,11 +24,17 @@ fn add_client_tag(builder: NoteBuilder<'_>) -> NoteBuilder<'_> {
 }
 
 impl NewPost {
-    pub fn new(content: String, account: FullKeypair, media: Vec<Nip94Event>) -> Self {
+    pub fn new(
+        content: String,
+        account: enostr::FullKeypair,
+        media: Vec<Nip94Event>,
+        mentions: Vec<Pubkey>,
+    ) -> Self {
         NewPost {
             content,
             account,
             media,
+            mentions,
         }
     }
 
