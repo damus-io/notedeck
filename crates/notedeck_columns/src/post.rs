@@ -1,6 +1,11 @@
-use enostr::FullKeypair;
+use egui::TextBuffer;
+use enostr::{FullKeypair, Pubkey};
 use nostrdb::{Note, NoteBuilder, NoteReply};
-use std::collections::HashSet;
+use std::{
+    collections::{BTreeMap, HashMap, HashSet},
+    ops::Range,
+};
+use tracing::error;
 
 use crate::media_upload::Nip94Event;
 
@@ -203,9 +208,450 @@ fn add_imeta_tags<'a>(builder: NoteBuilder<'a>, media: &Vec<Nip94Event>) -> Note
     builder
 }
 
+type MentionKey = usize;
+
+#[derive(Debug, Clone)]
+pub struct PostBuffer {
+    pub text_buffer: String,
+    pub mention_indicator: char,
+    pub mentions: HashMap<MentionKey, MentionInfo>,
+    mentions_key: MentionKey,
+
+    // the start index of a mention is inclusive
+    pub mention_starts: BTreeMap<usize, MentionKey>, // maps the mention start index with the correct `MentionKey`
+
+    // the end index of a mention is exclusive
+    pub mention_ends: BTreeMap<usize, MentionKey>, // maps the mention end index with the correct `MentionKey`
+}
+
+impl Default for PostBuffer {
+    fn default() -> Self {
+        Self {
+            mention_indicator: '@',
+            mentions_key: 0,
+            text_buffer: Default::default(),
+            mentions: Default::default(),
+            mention_starts: Default::default(),
+            mention_ends: Default::default(),
+        }
+    }
+}
+
+impl PostBuffer {
+    pub fn get_new_mentions_key(&mut self) -> usize {
+        let prev = self.mentions_key;
+        self.mentions_key += 1;
+        prev
+    }
+
+    pub fn get_mention(&self, cursor_index: usize) -> Option<MentionIndex<'_>> {
+        self.mention_ends
+            .range(cursor_index..)
+            .next()
+            .and_then(|(_, mention_key)| {
+                self.mentions
+                    .get(mention_key)
+                    .filter(|info| {
+                        if let MentionType::Finalized(_) = info.mention_type {
+                            // should exclude the last character if we're finalized
+                            info.start_index <= cursor_index && cursor_index < info.end_index
+                        } else {
+                            info.start_index <= cursor_index && cursor_index <= info.end_index
+                        }
+                    })
+                    .map(|info| MentionIndex {
+                        index: *mention_key,
+                        info,
+                    })
+            })
+    }
+
+    pub fn get_mention_string<'a>(&'a self, mention_key: &MentionIndex<'a>) -> &'a str {
+        self.text_buffer
+            .char_range(mention_key.info.start_index + 1..mention_key.info.end_index)
+        // don't include the delim
+    }
+
+    pub fn select_full_mention(&mut self, mention_key: usize, pk: Pubkey) {
+        if let Some(info) = self.mentions.get_mut(&mention_key) {
+            info.mention_type = MentionType::Finalized(pk);
+        } else {
+            error!("Error selecting mention for index: {mention_key}. Have the following mentions: {:?}", self.mentions);
+        }
+    }
+
+    pub fn select_mention_and_replace_name(
+        &mut self,
+        mention_key: usize,
+        full_name: &str,
+        pk: Pubkey,
+    ) {
+        if let Some(info) = self.mentions.get(&mention_key) {
+            let text_start_index = info.start_index + 1;
+            self.delete_char_range(text_start_index..info.end_index);
+            self.insert_text(full_name, text_start_index);
+            self.select_full_mention(mention_key, pk);
+        } else {
+            error!("Error selecting mention for index: {mention_key}. Have the following mentions: {:?}", self.mentions);
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.text_buffer.is_empty()
+    }
+
+    pub fn output(&self) -> PostOutput {
+        let mut out = self.text_buffer.clone();
+        let mut mentions = Vec::new();
+        for (cur_end_ind, mention_ind) in self.mention_ends.iter().rev() {
+            if let Some(info) = self.mentions.get(mention_ind) {
+                if let MentionType::Finalized(pk) = info.mention_type {
+                    if let Some(bech) = pk.to_bech() {
+                        out.replace_range(info.start_index..*cur_end_ind, &format!("nostr:{bech}"));
+                        mentions.push(pk);
+                    }
+                }
+            }
+        }
+        mentions.reverse();
+
+        PostOutput {
+            text: out,
+            mentions,
+        }
+    }
+}
+
+pub struct PostOutput {
+    pub text: String,
+    pub mentions: Vec<Pubkey>,
+}
+
+#[derive(Debug)]
+pub struct MentionIndex<'a> {
+    pub index: usize,
+    pub info: &'a MentionInfo,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum MentionType {
+    Pending,
+    Finalized(Pubkey),
+}
+
+impl TextBuffer for PostBuffer {
+    fn is_mutable(&self) -> bool {
+        true
+    }
+
+    fn as_str(&self) -> &str {
+        self.text_buffer.as_str()
+    }
+
+    fn insert_text(&mut self, text: &str, char_index: usize) -> usize {
+        if text.is_empty() {
+            return 0;
+        }
+        let text_num_chars = text.chars().count();
+        self.text_buffer.insert_text(text, char_index);
+
+        // the text was inserted before or inside these mentions. We need to at least move their ends
+        let pending_ends_to_update: Vec<usize> = self
+            .mention_ends
+            .range(char_index..)
+            .filter(|(k, v)| {
+                let is_last = **k == char_index;
+                let is_finalized = if let Some(info) = self.mentions.get(*v) {
+                    matches!(info.mention_type, MentionType::Finalized(_))
+                } else {
+                    false
+                };
+                !(is_last && is_finalized)
+            })
+            .map(|(&k, _)| k)
+            .collect();
+
+        for cur_end in pending_ends_to_update {
+            let mention_key = if let Some(mention_key) = self.mention_ends.get(&cur_end) {
+                *mention_key
+            } else {
+                continue;
+            };
+
+            self.mention_ends.remove(&cur_end);
+
+            let new_end = cur_end + text_num_chars;
+            self.mention_ends.insert(new_end, mention_key);
+            // replaced the current end with the new value
+
+            if let Some(mention_info) = self.mentions.get_mut(&mention_key) {
+                if mention_info.start_index >= char_index {
+                    // the text is being inserted before this mention. move the start index as well
+                    self.mention_starts.remove(&mention_info.start_index);
+                    let new_start = mention_info.start_index + text_num_chars;
+                    self.mention_starts.insert(new_start, mention_key);
+                    mention_info.start_index = new_start;
+                } else {
+                    // text is being inserted inside this mention. Make sure it is in the pending state
+                    mention_info.mention_type = MentionType::Pending;
+                }
+
+                mention_info.end_index = new_end;
+            } else {
+                error!("Could not find mention at index {}", mention_key);
+            }
+        }
+
+        if first_is_desired_char(text, self.mention_indicator) {
+            // if a mention already exists where we're inserting the delim, remove it
+            let to_remove = self.get_mention(char_index).map(|old_mention| {
+                (
+                    old_mention.index,
+                    old_mention.info.start_index..old_mention.info.end_index,
+                )
+            });
+
+            if let Some((key, range)) = to_remove {
+                self.mention_ends.remove(&range.end);
+                self.mention_starts.remove(&range.start);
+                self.mentions.remove(&key);
+            }
+
+            let start_index = char_index;
+            let end_index = char_index + text_num_chars;
+            let mention_key = self.get_new_mentions_key();
+            self.mentions.insert(
+                mention_key,
+                MentionInfo {
+                    start_index,
+                    end_index,
+                    mention_type: MentionType::Pending,
+                },
+            );
+            self.mention_starts.insert(start_index, mention_key);
+            self.mention_ends.insert(end_index, mention_key);
+        }
+
+        text_num_chars
+    }
+
+    fn delete_char_range(&mut self, char_range: Range<usize>) {
+        let deletion_num_chars = char_range.len();
+        let Range {
+            start: deletion_start,
+            end: deletion_end,
+        } = char_range;
+
+        self.text_buffer.delete_char_range(char_range);
+
+        // these mentions will be affected by the deletion
+        let ends_to_update: Vec<usize> = self
+            .mention_ends
+            .range(deletion_start..)
+            .map(|(&k, _)| k)
+            .collect();
+
+        for cur_mention_end in ends_to_update {
+            let mention_key = match &self.mention_ends.get(&cur_mention_end) {
+                Some(ind) => **ind,
+                None => continue,
+            };
+            let cur_mention_start = match self.mentions.get(&mention_key) {
+                Some(i) => i.start_index,
+                None => {
+                    error!("Could not find mention at index {}", mention_key);
+                    continue;
+                }
+            };
+
+            if cur_mention_end <= deletion_start {
+                // nothing happens to this mention
+                continue;
+            }
+
+            let status = if cur_mention_start >= deletion_start {
+                if cur_mention_start >= deletion_end {
+                    // mention falls after the range
+                    // need to shift both start and end
+
+                    DeletionStatus::ShiftStartAndEnd(
+                        cur_mention_start - deletion_num_chars,
+                        cur_mention_end - deletion_num_chars,
+                    )
+                } else {
+                    // fully delete mention
+
+                    DeletionStatus::FullyRemove
+                }
+            } else if cur_mention_end > deletion_end {
+                // inner partial delete
+
+                DeletionStatus::ShiftEnd(cur_mention_end - deletion_num_chars)
+            } else {
+                // outer partial delete
+
+                DeletionStatus::ShiftEnd(deletion_start)
+            };
+
+            match status {
+                DeletionStatus::FullyRemove => {
+                    self.mention_starts.remove(&cur_mention_start);
+                    self.mention_ends.remove(&cur_mention_end);
+                    self.mentions.remove(&mention_key);
+                }
+                DeletionStatus::ShiftEnd(new_end)
+                | DeletionStatus::ShiftStartAndEnd(_, new_end) => {
+                    let mention_info = match self.mentions.get_mut(&mention_key) {
+                        Some(i) => i,
+                        None => {
+                            error!("Could not find mention at index {}", mention_key);
+                            continue;
+                        }
+                    };
+
+                    self.mention_ends.remove(&cur_mention_end);
+                    self.mention_ends.insert(new_end, mention_key);
+                    mention_info.end_index = new_end;
+
+                    if let DeletionStatus::ShiftStartAndEnd(new_start, _) = status {
+                        self.mention_starts.remove(&cur_mention_start);
+                        self.mention_starts.insert(new_start, mention_key);
+                        mention_info.start_index = new_start;
+                    }
+
+                    if let DeletionStatus::ShiftEnd(_) = status {
+                        mention_info.mention_type = MentionType::Pending;
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn first_is_desired_char(text: &str, desired: char) -> bool {
+    if let Some(char) = text.chars().next() {
+        char == desired
+    } else {
+        false
+    }
+}
+
+#[derive(Debug)]
+enum DeletionStatus {
+    FullyRemove,
+    ShiftEnd(usize),
+    ShiftStartAndEnd(usize, usize),
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct MentionInfo {
+    pub start_index: usize,
+    pub end_index: usize,
+    pub mention_type: MentionType,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pretty_assertions::assert_eq;
+
+    impl MentionInfo {
+        pub fn bounds(&self) -> Range<usize> {
+            self.start_index..self.end_index
+        }
+    }
+
+    const JB55: fn() -> Pubkey = || {
+        Pubkey::from_hex("32e1827635450ebb3c5a7d12c1f8e7b2b514439ac10a67eef3d9fd9c5c68e245")
+            .unwrap()
+    };
+    const KK: fn() -> Pubkey = || {
+        Pubkey::from_hex("4a0510f26880d40e432f4865cb5714d9d3c200ca6ebb16b418ae6c555f574967")
+            .unwrap()
+    };
+
+    #[derive(PartialEq, Clone, Debug)]
+    struct MentionExample {
+        text: String,
+        mention1: Option<MentionInfo>,
+        mention2: Option<MentionInfo>,
+        mention3: Option<MentionInfo>,
+        mention4: Option<MentionInfo>,
+    }
+
+    fn apply_mention_example(buf: &mut PostBuffer) -> MentionExample {
+        buf.insert_text("test ", 0);
+        buf.insert_text("@jb55", 5);
+        buf.select_full_mention(0, JB55());
+        buf.insert_text(" test ", 10);
+        buf.insert_text("@vrod", 16);
+        buf.select_full_mention(1, JB55());
+        buf.insert_text(" test ", 21);
+        buf.insert_text("@elsat", 27);
+        buf.select_full_mention(2, JB55());
+        buf.insert_text(" test ", 33);
+        buf.insert_text("@kernelkind", 39);
+        buf.select_full_mention(3, KK());
+        buf.insert_text(" test", 50);
+
+        let mention1_bounds = 5..10;
+        let mention2_bounds = 16..21;
+        let mention3_bounds = 27..33;
+        let mention4_bounds = 39..50;
+
+        let text = "test @jb55 test @vrod test @elsat test @kernelkind test";
+
+        assert_eq!(buf.as_str(), text);
+        assert_eq!(buf.mentions.len(), 4);
+
+        let mention1 = buf.mentions.get(&0).unwrap();
+        assert_eq!(mention1.bounds(), mention1_bounds);
+        assert_eq!(mention1.mention_type, MentionType::Finalized(JB55()));
+        let mention2 = buf.mentions.get(&1).unwrap();
+        assert_eq!(mention2.bounds(), mention2_bounds);
+        assert_eq!(mention2.mention_type, MentionType::Finalized(JB55()));
+        let mention3 = buf.mentions.get(&2).unwrap();
+        assert_eq!(mention3.bounds(), mention3_bounds);
+        assert_eq!(mention3.mention_type, MentionType::Finalized(JB55()));
+        let mention4 = buf.mentions.get(&3).unwrap();
+        assert_eq!(mention4.bounds(), mention4_bounds);
+        assert_eq!(mention4.mention_type, MentionType::Finalized(KK()));
+
+        let text = text.to_owned();
+        MentionExample {
+            text,
+            mention1: Some(mention1.clone()),
+            mention2: Some(mention2.clone()),
+            mention3: Some(mention3.clone()),
+            mention4: Some(mention4.clone()),
+        }
+    }
+
+    impl PostBuffer {
+        fn to_example(&self) -> MentionExample {
+            let mention1 = self.mentions.get(&0).cloned();
+            let mention2 = self.mentions.get(&1).cloned();
+            let mention3 = self.mentions.get(&2).cloned();
+            let mention4 = self.mentions.get(&3).cloned();
+
+            MentionExample {
+                text: self.text_buffer.clone(),
+                mention1,
+                mention2,
+                mention3,
+                mention4,
+            }
+        }
+    }
+
+    impl MentionInfo {
+        fn shifted(mut self, offset: usize) -> Self {
+            self.end_index -= offset;
+            self.start_index -= offset;
+
+            self
+        }
+    }
 
     #[test]
     fn test_extract_hashtags() {
@@ -233,5 +679,372 @@ mod tests {
             let expected: HashSet<String> = expected.into_iter().map(String::from).collect();
             assert_eq!(result, expected, "Failed for input: {}", input);
         }
+    }
+
+    #[test]
+    fn test_insert_single_mention() {
+        let mut buf = PostBuffer::default();
+        buf.insert_text("test ", 0);
+        buf.insert_text("@", 5);
+        assert!(buf.get_mention(5).is_some());
+        buf.insert_text("jb55", 6);
+        assert_eq!(buf.as_str(), "test @jb55");
+        assert_eq!(buf.mentions.len(), 1);
+        assert_eq!(buf.mentions.get(&0).unwrap().bounds(), 5..10);
+
+        buf.select_full_mention(0, JB55());
+
+        assert_eq!(
+            buf.mentions.get(&0).unwrap().mention_type,
+            MentionType::Finalized(JB55())
+        );
+    }
+
+    #[test]
+    fn test_insert_mention_with_space() {
+        let mut buf = PostBuffer::default();
+        buf.insert_text("@", 0);
+        buf.insert_text("jb", 1);
+        buf.insert_text("55", 3);
+        assert!(buf.get_mention(1).is_some());
+        assert_eq!(buf.mentions.len(), 1);
+        assert_eq!(buf.mentions.get(&0).unwrap().bounds(), 0..5);
+        buf.insert_text(" test", 5);
+        assert_eq!(buf.mentions.get(&0).unwrap().bounds(), 0..10);
+        assert_eq!(buf.as_str(), "@jb55 test");
+
+        buf.select_full_mention(0, JB55());
+
+        assert_eq!(
+            buf.mentions.get(&0).unwrap().mention_type,
+            MentionType::Finalized(JB55())
+        );
+    }
+
+    #[test]
+    fn test_insert_mention_with_emojis() {
+        let mut buf = PostBuffer::default();
+        buf.insert_text("test ", 0);
+        buf.insert_text("@test😀 🏴‍☠️ :D", 5);
+        buf.select_full_mention(0, JB55());
+        buf.insert_text(" test", 19);
+
+        assert_eq!(buf.as_str(), "test @test😀 🏴‍☠️ :D test");
+        let mention = buf.mentions.get(&0).unwrap();
+        assert_eq!(
+            *mention,
+            MentionInfo {
+                start_index: 5,
+                end_index: 19,
+                mention_type: MentionType::Finalized(JB55())
+            }
+        );
+    }
+
+    #[test]
+    fn test_insert_partial_to_full() {
+        let mut buf = PostBuffer::default();
+        buf.insert_text("@jb", 0);
+        assert_eq!(buf.mentions.len(), 1);
+        assert_eq!(buf.mentions.get(&0).unwrap().bounds(), 0..3);
+        buf.select_mention_and_replace_name(0, "jb55", JB55());
+        assert_eq!(buf.as_str(), "@jb55");
+
+        buf.insert_text(" test", 5);
+        assert_eq!(buf.as_str(), "@jb55 test");
+
+        assert_eq!(buf.mentions.len(), 1);
+        let mention = buf.mentions.get(&0).unwrap();
+        assert_eq!(mention.bounds(), 0..5);
+        assert_eq!(mention.mention_type, MentionType::Finalized(JB55()));
+    }
+
+    #[test]
+    fn test_insert_mention_after() {
+        let mut buf = PostBuffer::default();
+        buf.insert_text("test text here", 0);
+        buf.insert_text("@jb55", 4);
+
+        assert!(buf.get_mention(4).is_some());
+        assert_eq!(buf.mentions.len(), 1);
+        assert_eq!(buf.mentions.get(&0).unwrap().bounds(), 4..9);
+        assert_eq!("test@jb55 text here", buf.as_str());
+
+        buf.select_full_mention(0, JB55());
+
+        assert_eq!(
+            buf.mentions.get(&0).unwrap().mention_type,
+            MentionType::Finalized(JB55())
+        );
+    }
+
+    #[test]
+    fn test_insert_mention_then_text() {
+        let mut buf = PostBuffer::default();
+
+        buf.insert_text("@jb55", 0);
+        buf.select_full_mention(0, JB55());
+
+        buf.insert_text(" test", 5);
+        assert_eq!(buf.as_str(), "@jb55 test");
+        assert_eq!(buf.mentions.len(), 1);
+        assert_eq!(buf.mentions.get(&0).unwrap().bounds(), 0..5);
+        assert!(buf.get_mention(6).is_none());
+    }
+
+    #[test]
+    fn test_insert_two_mentions() {
+        let mut buf = PostBuffer::default();
+
+        buf.insert_text("@jb55", 0);
+        buf.select_full_mention(0, JB55());
+        buf.insert_text(" test ", 5);
+        buf.insert_text("@kernelkind", 11);
+        buf.select_full_mention(1, KK());
+        buf.insert_text(" test", 22);
+
+        assert_eq!(buf.as_str(), "@jb55 test @kernelkind test");
+        assert_eq!(buf.mentions.len(), 2);
+        assert_eq!(buf.mentions.get(&0).unwrap().bounds(), 0..5);
+        assert_eq!(buf.mentions.get(&1).unwrap().bounds(), 11..22);
+    }
+
+    #[test]
+    fn test_insert_into_mention() {
+        let mut buf = PostBuffer::default();
+
+        buf.insert_text("@jb55", 0);
+        buf.select_full_mention(0, JB55());
+        buf.insert_text(" test", 5);
+
+        assert_eq!(buf.mentions.len(), 1);
+        let mention = buf.mentions.get(&0).unwrap();
+        assert_eq!(mention.bounds(), 0..5);
+        assert_eq!(mention.mention_type, MentionType::Finalized(JB55()));
+
+        buf.insert_text("oops", 2);
+        assert_eq!(buf.as_str(), "@joopsb55 test");
+        assert_eq!(buf.mentions.len(), 1);
+        let mention = buf.mentions.get(&0).unwrap();
+        assert_eq!(mention.bounds(), 0..9);
+        assert_eq!(mention.mention_type, MentionType::Pending);
+    }
+
+    #[test]
+    fn test_insert_mention_inside_mention() {
+        let mut buf = PostBuffer::default();
+
+        buf.insert_text("@jb55", 0);
+        buf.select_full_mention(0, JB55());
+        buf.insert_text(" test", 5);
+
+        assert_eq!(buf.mentions.len(), 1);
+        let mention = buf.mentions.get(&0).unwrap();
+        assert_eq!(mention.bounds(), 0..5);
+        assert_eq!(mention.mention_type, MentionType::Finalized(JB55()));
+
+        buf.insert_text("@oops", 3);
+        assert_eq!(buf.as_str(), "@jb@oops55 test");
+        assert_eq!(buf.mentions.len(), 1);
+        assert_eq!(buf.mention_ends.len(), 1);
+        assert_eq!(buf.mention_starts.len(), 1);
+        let mention = buf.mentions.get(&1).unwrap();
+        assert_eq!(mention.bounds(), 3..8);
+        assert_eq!(mention.mention_type, MentionType::Pending);
+    }
+
+    #[test]
+    fn test_delete_before_mention() {
+        let mut buf = PostBuffer::default();
+        let before = apply_mention_example(&mut buf);
+
+        let range = 1..5;
+        let len = range.len();
+        buf.delete_char_range(range);
+
+        assert_eq!(
+            MentionExample {
+                text: "t@jb55 test @vrod test @elsat test @kernelkind test".to_owned(),
+                mention1: Some(before.mention1.clone().unwrap().shifted(len)),
+                mention2: Some(before.mention2.clone().unwrap().shifted(len)),
+                mention3: Some(before.mention3.clone().unwrap().shifted(len)),
+                mention4: Some(before.mention4.clone().unwrap().shifted(len)),
+            },
+            buf.to_example(),
+        );
+    }
+
+    #[test]
+    fn test_delete_after_mention() {
+        let mut buf = PostBuffer::default();
+        let before = apply_mention_example(&mut buf);
+
+        let range = 11..16;
+        let len = range.len();
+        buf.delete_char_range(range);
+
+        assert_eq!(
+            MentionExample {
+                text: "test @jb55 @vrod test @elsat test @kernelkind test".to_owned(),
+                mention2: Some(before.mention2.clone().unwrap().shifted(len)),
+                mention3: Some(before.mention3.clone().unwrap().shifted(len)),
+                mention4: Some(before.mention4.clone().unwrap().shifted(len)),
+                ..before.clone()
+            },
+            buf.to_example(),
+        );
+    }
+
+    #[test]
+    fn test_delete_mention_partial_inner() {
+        let mut buf = PostBuffer::default();
+        let before = apply_mention_example(&mut buf);
+
+        let range = 17..20;
+        let len = range.len();
+        buf.delete_char_range(range);
+
+        assert_eq!(
+            MentionExample {
+                text: "test @jb55 test @d test @elsat test @kernelkind test".to_owned(),
+                mention2: Some(MentionInfo {
+                    start_index: 16,
+                    end_index: 18,
+                    mention_type: MentionType::Pending,
+                }),
+                mention3: Some(before.mention3.clone().unwrap().shifted(len)),
+                mention4: Some(before.mention4.clone().unwrap().shifted(len)),
+                ..before.clone()
+            },
+            buf.to_example(),
+        );
+    }
+
+    #[test]
+    fn test_delete_mention_partial_outer() {
+        let mut buf = PostBuffer::default();
+        let before = apply_mention_example(&mut buf);
+
+        let range = 17..27;
+        let len = range.len();
+        buf.delete_char_range(range);
+
+        assert_eq!(
+            MentionExample {
+                text: "test @jb55 test @@elsat test @kernelkind test".to_owned(),
+                mention2: Some(MentionInfo {
+                    start_index: 16,
+                    end_index: 17,
+                    mention_type: MentionType::Pending
+                }),
+                mention3: Some(before.mention3.clone().unwrap().shifted(len)),
+                mention4: Some(before.mention4.clone().unwrap().shifted(len)),
+                ..before.clone()
+            },
+            buf.to_example(),
+        );
+    }
+
+    #[test]
+    fn test_delete_mention_partial_and_full() {
+        let mut buf = PostBuffer::default();
+        let before = apply_mention_example(&mut buf);
+
+        buf.delete_char_range(17..28);
+
+        assert_eq!(
+            MentionExample {
+                text: "test @jb55 test @elsat test @kernelkind test".to_owned(),
+                mention2: Some(MentionInfo {
+                    end_index: 17,
+                    mention_type: MentionType::Pending,
+                    ..before.mention2.clone().unwrap()
+                }),
+                mention3: None,
+                mention4: Some(MentionInfo {
+                    start_index: 28,
+                    end_index: 39,
+                    ..before.mention4.clone().unwrap()
+                }),
+                ..before.clone()
+            },
+            buf.to_example()
+        )
+    }
+
+    #[test]
+    fn test_delete_mention_full_one() {
+        let mut buf = PostBuffer::default();
+        let before = apply_mention_example(&mut buf);
+
+        let range = 10..26;
+        let len = range.len();
+        buf.delete_char_range(range);
+
+        assert_eq!(
+            MentionExample {
+                text: "test @jb55 @elsat test @kernelkind test".to_owned(),
+                mention2: None,
+                mention3: Some(before.mention3.clone().unwrap().shifted(len)),
+                mention4: Some(before.mention4.clone().unwrap().shifted(len)),
+                ..before.clone()
+            },
+            buf.to_example()
+        );
+    }
+
+    #[test]
+    fn test_delete_mention_full_two() {
+        let mut buf = PostBuffer::default();
+        let before = apply_mention_example(&mut buf);
+
+        buf.delete_char_range(11..28);
+
+        assert_eq!(
+            MentionExample {
+                text: "test @jb55 elsat test @kernelkind test".to_owned(),
+                mention2: None,
+                mention3: None,
+                mention4: Some(MentionInfo {
+                    start_index: 22,
+                    end_index: 33,
+                    ..before.mention4.clone().unwrap()
+                }),
+                ..before.clone()
+            },
+            buf.to_example()
+        )
+    }
+
+    #[test]
+    fn test_two_then_one_between() {
+        let mut buf = PostBuffer::default();
+
+        buf.insert_text("@jb", 0);
+        buf.select_mention_and_replace_name(0, "jb55", JB55());
+        buf.insert_text(" test ", 5);
+        buf.insert_text("@kernel", 11);
+        buf.select_mention_and_replace_name(1, "KernelKind", KK());
+        buf.insert_text(" test", 22);
+
+        assert_eq!(buf.as_str(), "@jb55 test @KernelKind test");
+        assert_eq!(buf.mentions.len(), 2);
+
+        buf.insert_text(" ", 5);
+        buf.insert_text("@els", 6);
+        assert_eq!(buf.mentions.len(), 3);
+        assert_eq!(buf.mentions.get(&2).unwrap().bounds(), 6..10);
+        buf.select_mention_and_replace_name(2, "elsat", JB55());
+        assert_eq!(buf.as_str(), "@jb55 @elsat test @KernelKind test");
+
+        let jb_mention = buf.mentions.get(&0).unwrap();
+        let kk_mention = buf.mentions.get(&1).unwrap();
+        let el_mention = buf.mentions.get(&2).unwrap();
+        assert_eq!(jb_mention.bounds(), 0..5);
+        assert_eq!(jb_mention.mention_type, MentionType::Finalized(JB55()));
+        assert_eq!(kk_mention.bounds(), 18..29);
+        assert_eq!(kk_mention.mention_type, MentionType::Finalized(KK()));
+        assert_eq!(el_mention.bounds(), 6..12);
+        assert_eq!(el_mention.mention_type, MentionType::Finalized(JB55()));
     }
 }
