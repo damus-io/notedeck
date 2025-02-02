@@ -14,6 +14,7 @@ pub struct QuoteRepostView<'a> {
     draft: &'a mut Draft,
     quoting_note: &'a nostrdb::Note<'a>,
     id_source: Option<egui::Id>,
+    inner_rect: egui::Rect,
 }
 
 impl<'a> QuoteRepostView<'a> {
@@ -24,6 +25,7 @@ impl<'a> QuoteRepostView<'a> {
         img_cache: &'a mut ImageCache,
         draft: &'a mut Draft,
         quoting_note: &'a nostrdb::Note<'a>,
+        inner_rect: egui::Rect,
     ) -> Self {
         let id_source: Option<egui::Id> = None;
         QuoteRepostView {
@@ -34,6 +36,7 @@ impl<'a> QuoteRepostView<'a> {
             draft,
             quoting_note,
             id_source,
+            inner_rect,
         }
     }
 
@@ -48,6 +51,7 @@ impl<'a> QuoteRepostView<'a> {
             self.img_cache,
             self.note_cache,
             self.poster,
+            self.inner_rect,
         )
         .id_source(id)
         .ui(self.quoting_note.txn().unwrap(), ui)

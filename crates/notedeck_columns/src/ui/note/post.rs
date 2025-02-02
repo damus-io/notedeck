@@ -22,6 +22,7 @@ pub struct PostView<'a> {
     note_cache: &'a mut NoteCache,
     poster: FilledKeypair<'a>,
     id_source: Option<egui::Id>,
+    inner_rect: egui::Rect,
 }
 
 #[derive(Clone)]
@@ -84,6 +85,7 @@ impl<'a> PostView<'a> {
         img_cache: &'a mut ImageCache,
         note_cache: &'a mut NoteCache,
         poster: FilledKeypair<'a>,
+        inner_rect: egui::Rect,
     ) -> Self {
         let id_source: Option<egui::Id> = None;
         PostView {
@@ -94,6 +96,7 @@ impl<'a> PostView<'a> {
             poster,
             id_source,
             post_type,
+            inner_rect,
         }
     }
 
@@ -533,6 +536,7 @@ mod preview {
                 app.img_cache,
                 app.note_cache,
                 self.poster.to_filled(),
+                ui.available_rect_before_wrap(),
             )
             .ui(&txn, ui);
         }
