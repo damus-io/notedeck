@@ -52,6 +52,10 @@ impl NewPost {
             builder = add_imeta_tags(builder, &self.media);
         }
 
+        if !self.mentions.is_empty() {
+            builder = add_mention_tags(builder, &self.mentions);
+        }
+
         builder.sign(seckey).build().expect("note should be ok")
     }
 
@@ -125,6 +129,10 @@ impl NewPost {
             builder = add_imeta_tags(builder, &self.media);
         }
 
+        if !self.mentions.is_empty() {
+            builder = add_mention_tags(builder, &self.mentions);
+        }
+
         builder
             .sign(seckey)
             .build()
@@ -148,6 +156,10 @@ impl NewPost {
 
         if !self.media.is_empty() {
             builder = add_imeta_tags(builder, &self.media);
+        }
+
+        if !self.mentions.is_empty() {
+            builder = add_mention_tags(builder, &self.mentions);
         }
 
         builder
@@ -183,6 +195,16 @@ fn append_urls(content: &mut String, media: &Vec<Nip94Event>) {
         content.push(' ');
         content.push_str(&ev.url);
     }
+}
+
+fn add_mention_tags<'a>(builder: NoteBuilder<'a>, mentions: &Vec<Pubkey>) -> NoteBuilder<'a> {
+    let mut builder = builder;
+
+    for mention in mentions {
+        builder = builder.start_tag().tag_str("p").tag_str(&mention.hex());
+    }
+
+    builder
 }
 
 fn add_imeta_tags<'a>(builder: NoteBuilder<'a>, media: &Vec<Nip94Event>) -> NoteBuilder<'a> {
@@ -1053,5 +1075,81 @@ mod tests {
         assert_eq!(kk_mention.mention_type, MentionType::Finalized(KK()));
         assert_eq!(el_mention.bounds(), 6..12);
         assert_eq!(el_mention.mention_type, MentionType::Finalized(JB55()));
+    }
+
+    #[test]
+    fn note_single_mention() {
+        let mut buf = PostBuffer::default();
+        buf.insert_text("@jb55", 0);
+        buf.select_full_mention(0, JB55());
+
+        let out = buf.output();
+        let kp = FullKeypair::generate();
+        let post = NewPost::new(out.text, kp.clone(), Vec::new(), out.mentions);
+        let note = post.to_note(&kp.pubkey);
+
+        let mut tags_iter = note.tags().iter();
+        tags_iter.next(); //ignore the first one, the client tag
+        let tag = tags_iter.next().unwrap();
+        assert_eq!(tag.count(), 2);
+        assert_eq!(tag.get(0).unwrap().str().unwrap(), "p");
+        assert_eq!(tag.get(1).unwrap().id().unwrap(), JB55().bytes());
+        assert!(tags_iter.next().is_none());
+        assert_eq!(
+            note.content(),
+            "nostr:npub1xtscya34g58tk0z605fvr788k263gsu6cy9x0mhnm87echrgufzsevkk5s"
+        );
+    }
+
+    #[test]
+    fn note_two_mentions() {
+        let mut buf = PostBuffer::default();
+
+        buf.insert_text("@jb55", 0);
+        buf.select_full_mention(0, JB55());
+        buf.insert_text(" test ", 5);
+        buf.insert_text("@KernelKind", 11);
+        buf.select_full_mention(1, KK());
+        buf.insert_text(" test", 22);
+        assert_eq!(buf.as_str(), "@jb55 test @KernelKind test");
+
+        let out = buf.output();
+        let kp = FullKeypair::generate();
+        let post = NewPost::new(out.text, kp.clone(), Vec::new(), out.mentions);
+        let note = post.to_note(&kp.pubkey);
+
+        let mut tags_iter = note.tags().iter();
+        tags_iter.next(); //ignore the first one, the client tag
+        let jb_tag = tags_iter.next().unwrap();
+        assert_eq!(jb_tag.count(), 2);
+        assert_eq!(jb_tag.get(0).unwrap().str().unwrap(), "p");
+        assert_eq!(jb_tag.get(1).unwrap().id().unwrap(), JB55().bytes());
+
+        let kk_tag = tags_iter.next().unwrap();
+        assert_eq!(kk_tag.count(), 2);
+        assert_eq!(kk_tag.get(0).unwrap().str().unwrap(), "p");
+        assert_eq!(kk_tag.get(1).unwrap().id().unwrap(), KK().bytes());
+
+        assert!(tags_iter.next().is_none());
+
+        assert_eq!(note.content(), "nostr:npub1xtscya34g58tk0z605fvr788k263gsu6cy9x0mhnm87echrgufzsevkk5s test nostr:npub1fgz3pungsr2quse0fpjuk4c5m8fuyqx2d6a3ddqc4ek92h6hf9ns0mjeck test");
+    }
+
+    #[test]
+    fn note_one_pending() {
+        let mut buf = PostBuffer::default();
+
+        buf.insert_text("test ", 0);
+        buf.insert_text("@jb55 test", 5);
+
+        let out = buf.output();
+        let kp = FullKeypair::generate();
+        let post = NewPost::new(out.text, kp.clone(), Vec::new(), out.mentions);
+        let note = post.to_note(&kp.pubkey);
+
+        let mut tags_iter = note.tags().iter();
+        tags_iter.next(); //ignore the first one, the client tag
+        assert!(tags_iter.next().is_none());
+        assert_eq!(note.content(), "test @jb55 test");
     }
 }
