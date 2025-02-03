@@ -1,15 +1,15 @@
 use crate::draft::{Draft, Drafts, MentionHint};
 use crate::images::fetch_img;
 use crate::media_upload::{nostrbuild_nip96_upload, MediaPath};
-use crate::post::{MentionType, NewPost};
+use crate::post::{downcast_post_buffer, MentionType, NewPost};
 use crate::profile::get_display_name;
 use crate::ui::search_results::SearchResultsView;
 use crate::ui::{self, Preview, PreviewConfig};
 use crate::Result;
-use egui::text::CCursorRange;
+use egui::text::{CCursorRange, LayoutJob};
 use egui::text_edit::TextEditOutput;
 use egui::widgets::text_edit::TextEdit;
-use egui::{vec2, Frame, Layout, Margin, Pos2, ScrollArea, Sense};
+use egui::{vec2, Frame, Layout, Margin, Pos2, ScrollArea, Sense, TextBuffer};
 use enostr::{FilledKeypair, FullKeypair, NoteId, Pubkey, RelayPool};
 use nostrdb::{Ndb, Transaction};
 
@@ -130,10 +130,21 @@ impl<'a> PostView<'a> {
             );
         }
 
+        let mut layouter = |ui: &egui::Ui, buf: &dyn TextBuffer, wrap_width: f32| {
+            let mut layout_job = if let Some(post_buffer) = downcast_post_buffer(buf) {
+                post_buffer.to_layout_job()
+            } else {
+                LayoutJob::default()
+            };
+            layout_job.wrap.max_width = wrap_width;
+            ui.fonts(|f| f.layout_job(layout_job))
+        };
+
         let textedit = TextEdit::multiline(&mut self.draft.buffer)
             .hint_text(egui::RichText::new("Write a banger note here...").weak())
             .frame(false)
-            .desired_width(ui.available_width());
+            .desired_width(ui.available_width())
+            .layouter(&mut layouter);
 
         let out = textedit.show(ui);
 
