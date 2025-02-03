@@ -610,13 +610,15 @@ fn show_decks<'a>(
     let mut clicked_index = None;
     for (index, deck) in cur_decks.decks().iter().enumerate() {
         let highlight = index == active_index;
-        let deck_icon_resp = ui.add(deck_icon(
-            account_id.with(index),
-            Some(deck.icon),
-            DECK_ICON_SIZE,
-            40.0,
-            highlight,
-        ));
+        let deck_icon_resp = ui
+            .add(deck_icon(
+                account_id.with(index),
+                Some(deck.icon),
+                DECK_ICON_SIZE,
+                40.0,
+                highlight,
+            ))
+            .on_hover_text_at_pointer(&deck.name);
         if deck_icon_resp.clicked() || deck_icon_resp.secondary_clicked() {
             clicked_index = Some(index);
         }
