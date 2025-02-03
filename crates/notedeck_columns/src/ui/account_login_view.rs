@@ -1,8 +1,9 @@
 use crate::login_manager::AcquireKeyState;
 use crate::ui::{Preview, PreviewConfig};
-use egui::TextEdit;
 use egui::{Align, Button, Color32, Frame, InnerResponse, Margin, RichText, Vec2};
+use egui::{Layout, TextEdit};
 use enostr::Keypair;
+use notedeck::fonts::get_font_size;
 use notedeck::NotedeckTextStyle;
 
 pub struct AccountLoginView<'a> {
@@ -38,6 +39,14 @@ impl<'a> AccountLoginView<'a> {
 
             ui.vertical_centered_justified(|ui| {
                 ui.add(login_textedit(self.manager));
+                ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
+                let help_text_style = NotedeckTextStyle::Small;
+                ui.add(egui::Label::new(
+                    RichText::new("Enter your public key (npub), nostr address (e.g. vrod@damus.io), or private key (nsec). You must enter your private key to be able to post, reply, etc.")
+                        .text_style(help_text_style.text_style())
+                        .size(get_font_size(ui.ctx(), &help_text_style)).color(ui.visuals().weak_text_color()),
+                    ).wrap())
+                });
 
                 self.manager.loading_and_error_ui(ui);
 
@@ -99,8 +108,7 @@ fn login_textedit(manager: &mut AcquireKeyState) -> TextEdit {
     manager.get_acquire_textedit(|text| {
         egui::TextEdit::singleline(text)
             .hint_text(
-                RichText::new("Enter your public key (npub), nostr address (e.g. vrod@damus.io), or private key (nsec) here...")
-                    .text_style(NotedeckTextStyle::Body.text_style()),
+                RichText::new("Your key here...").text_style(NotedeckTextStyle::Body.text_style()),
             )
             .vertical_align(Align::Center)
             .min_size(Vec2::new(0.0, 40.0))
