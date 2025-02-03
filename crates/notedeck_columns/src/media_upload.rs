@@ -118,7 +118,7 @@ fn create_nip96_request(
         method: "POST".to_string(),
         url: upload_url.to_string(),
         headers,
-        body: body.into(),
+        body,
     }
 }
 

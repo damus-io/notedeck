@@ -269,7 +269,7 @@ impl<'a> PostView<'a> {
             let m_cached_promise = self.img_cache.map().get(&media.url);
             if m_cached_promise.is_none() {
                 let promise = fetch_img(
-                    &self.img_cache,
+                    self.img_cache,
                     ui.ctx(),
                     &media.url,
                     crate::images::ImageType::Content(width, height),
