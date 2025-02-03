@@ -1,4 +1,4 @@
-use egui::TextBuffer;
+use egui::{text::LayoutJob, TextBuffer, TextFormat};
 use enostr::{FullKeypair, Pubkey};
 use nostrdb::{Note, NoteBuilder, NoteReply};
 use std::{
@@ -351,6 +351,70 @@ impl PostBuffer {
             mentions,
         }
     }
+
+    pub fn to_layout_job(&self, ui: &egui::Ui) -> LayoutJob {
+        let mut job = LayoutJob::default();
+        let colored_fmt = default_text_format_colored(ui, crate::colors::PINK);
+
+        let mut prev_text_char_index = 0;
+        let mut prev_text_byte_index = 0;
+        for (start_char_index, mention_ind) in &self.mention_starts {
+            if let Some(info) = self.mentions.get(mention_ind) {
+                if matches!(info.mention_type, MentionType::Finalized(_)) {
+                    let end_char_index = info.end_index;
+
+                    let char_indices = prev_text_char_index..*start_char_index;
+                    if let Some(byte_indicies) =
+                        char_indices_to_byte(&self.text_buffer, char_indices.clone())
+                    {
+                        if let Some(prev_text) = self.text_buffer.get(byte_indicies.clone()) {
+                            job.append(prev_text, 0.0, default_text_format(ui));
+                            prev_text_char_index = *start_char_index;
+                            prev_text_byte_index = byte_indicies.end;
+                        }
+                    }
+
+                    let char_indices = *start_char_index..end_char_index;
+                    if let Some(byte_indicies) =
+                        char_indices_to_byte(&self.text_buffer, char_indices.clone())
+                    {
+                        if let Some(cur_text) = self.text_buffer.get(byte_indicies.clone()) {
+                            job.append(cur_text, 0.0, colored_fmt.clone());
+                            prev_text_char_index = end_char_index;
+                            prev_text_byte_index = byte_indicies.end;
+                        }
+                    }
+                }
+            }
+        }
+
+        if prev_text_byte_index < self.text_buffer.len() {
+            if let Some(cur_text) = self.text_buffer.get(prev_text_byte_index..) {
+                job.append(cur_text, 0.0, default_text_format(ui));
+            } else {
+                error!(
+                    "could not retrieve substring from [{} to {}) in PostBuffer::text_buffer",
+                    prev_text_byte_index,
+                    self.text_buffer.len()
+                );
+            }
+        }
+
+        job
+    }
+}
+
+fn char_indices_to_byte(text: &str, char_range: Range<usize>) -> Option<Range<usize>> {
+    let mut char_indices = text.char_indices();
+
+    let start = char_indices.nth(char_range.start)?.0;
+    let end = if char_range.end < text.chars().count() {
+        char_indices.nth(char_range.end - char_range.start - 1)?.0
+    } else {
+        text.len()
+    };
+
+    Some(start..end)
 }
 
 pub fn downcast_post_buffer(buffer: &dyn TextBuffer) -> Option<&PostBuffer> {
@@ -363,6 +427,19 @@ pub fn downcast_post_buffer(buffer: &dyn TextBuffer) -> Option<&PostBuffer> {
     } else {
         None
     }
+}
+
+fn default_text_format(ui: &egui::Ui) -> TextFormat {
+    default_text_format_colored(
+        ui,
+        ui.visuals()
+            .override_text_color
+            .unwrap_or_else(|| ui.visuals().widgets.inactive.text_color()),
+    )
+}
+
+fn default_text_format_colored(ui: &egui::Ui, color: egui::Color32) -> TextFormat {
+    TextFormat::simple(egui::FontSelection::default().resolve(ui.style()), color)
 }
 
 pub struct PostOutput {
