@@ -1165,8 +1165,7 @@ checksum = "f25c0e292a7ca6d6498557ff1df68f32c99850012b6ea401cf8daf771f22ff53"
 [[package]]
 name = "ecolor"
 version = "0.29.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "775cfde491852059e386c4e1deb4aef381c617dc364184c6f6afee99b87c402b"
+source = "git+https://github.com/kernelkind/egui?branch=update_layouter_0.29.1#4b19e72384345078581f940c9cd17dcb2f43d124"
 dependencies = [
  "bytemuck",
  "emath",
@@ -1211,8 +1210,7 @@ dependencies = [
 [[package]]
 name = "egui"
 version = "0.29.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "53eafabcce0cb2325a59a98736efe0bf060585b437763f8c476957fb274bb974"
+source = "git+https://github.com/kernelkind/egui?branch=update_layouter_0.29.1#4b19e72384345078581f940c9cd17dcb2f43d124"
 dependencies = [
  "accesskit",
  "ahash",
@@ -1364,8 +1362,7 @@ checksum = "60b1af1c220855b6ceac025d3f6ecdd2b7c4894bfe9cd9bda4fbb4bc7c0d4cf0"
 [[package]]
 name = "emath"
 version = "0.29.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b1fe0049ce51d0fb414d029e668dd72eb30bc2b739bf34296ed97bd33df544f3"
+source = "git+https://github.com/kernelkind/egui?branch=update_layouter_0.29.1#4b19e72384345078581f940c9cd17dcb2f43d124"
 dependencies = [
  "bytemuck",
  "serde",
@@ -1452,8 +1449,7 @@ dependencies = [
 [[package]]
 name = "epaint"
 version = "0.29.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a32af8da821bd4f43f2c137e295459ee2e1661d87ca8779dfa0eaf45d870e20f"
+source = "git+https://github.com/kernelkind/egui?branch=update_layouter_0.29.1#4b19e72384345078581f940c9cd17dcb2f43d124"
 dependencies = [
  "ab_glyph",
  "ahash",
@@ -1471,8 +1467,7 @@ dependencies = [
 [[package]]
 name = "epaint_default_fonts"
 version = "0.29.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "483440db0b7993cf77a20314f08311dbe95675092405518c0677aa08c151a3ea"
+source = "git+https://github.com/kernelkind/egui?branch=update_layouter_0.29.1#4b19e72384345078581f940c9cd17dcb2f43d124"
 
 [[package]]
 name = "equivalent"
@@ -2389,7 +2384,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc2f4eb4bc735547cfed7c0a4922cbd04a4655978c09b54f1f7b228750664c34"
 dependencies = [
  "cfg-if",
- "windows-targets 0.52.6",
+ "windows-targets 0.48.5",
 ]
 
 [[package]]

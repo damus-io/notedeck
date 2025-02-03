@@ -57,6 +57,10 @@ uuid = { version = "1.10.0", features = ["v4"] }
 security-framework = "2.11.0"
 sha2 = "0.10.8"
 
+[patch.crates-io]
+egui = { git = "https://github.com/kernelkind/egui", branch = "update_layouter_0.29.1" }
+epaint = { git = "https://github.com/kernelkind/egui", branch = "update_layouter_0.29.1" }
+
 [profile.small]
 inherits = 'release'
 opt-level = 'z'     # Optimize for size
