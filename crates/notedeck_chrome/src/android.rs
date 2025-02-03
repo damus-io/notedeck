@@ -104,7 +104,7 @@ Example android-config.json:
 
 Install/update android-config.json with:
 ```
-adb push android-config.json /sdcard/Android/data/com.damus.app/files/android-config.json
+adb push android-config.json /sdcard/Android/data/com.damus.notedeck/files/android-config.json
 ```
 
 Using internal storage would be better but it seems hard to get the config file onto
