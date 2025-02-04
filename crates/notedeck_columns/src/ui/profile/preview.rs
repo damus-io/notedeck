@@ -41,7 +41,7 @@ impl<'a, 'cache> ProfilePreview<'a, 'cache> {
                 pfp_rect,
                 ProfilePic::new(self.cache, get_profile_url(Some(self.profile)))
                     .size(size)
-                    .border(2.0),
+                    .border(ProfilePic::border_stroke(ui)),
             );
             ui.add(display_name_widget(
                 get_display_name(Some(self.profile)),

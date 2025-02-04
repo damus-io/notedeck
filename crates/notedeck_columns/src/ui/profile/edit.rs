@@ -64,7 +64,7 @@ impl<'a> EditProfileView<'a> {
             pfp_rect,
             ProfilePic::new(self.img_cache, pfp_url)
                 .size(size)
-                .border(2.0),
+                .border(ProfilePic::border_stroke(ui)),
         );
 
         in_frame(ui, |ui| {

@@ -1,6 +1,6 @@
 use crate::images::ImageType;
 use crate::ui::{Preview, PreviewConfig};
-use egui::{vec2, Sense, TextureHandle};
+use egui::{vec2, Sense, Stroke, TextureHandle};
 use nostrdb::{Ndb, Transaction};
 use tracing::info;
 
@@ -10,7 +10,7 @@ pub struct ProfilePic<'cache, 'url> {
     cache: &'cache mut ImageCache,
     url: &'url str,
     size: f32,
-    border: Option<f32>,
+    border: Option<Stroke>,
 }
 
 impl egui::Widget for ProfilePic<'_, '_> {
@@ -28,6 +28,10 @@ impl<'cache, 'url> ProfilePic<'cache, 'url> {
             size,
             border: None,
         }
+    }
+
+    pub fn border_stroke(ui: &egui::Ui) -> Stroke {
+        Stroke::new(4.0, ui.visuals().panel_fill)
     }
 
     pub fn from_profile(
@@ -68,8 +72,8 @@ impl<'cache, 'url> ProfilePic<'cache, 'url> {
     }
 
     #[inline]
-    pub fn border(mut self, width: f32) -> Self {
-        self.border = Some(width);
+    pub fn border(mut self, stroke: Stroke) -> Self {
+        self.border = Some(stroke);
         self
     }
 }
@@ -79,7 +83,7 @@ fn render_pfp(
     img_cache: &mut ImageCache,
     url: &str,
     ui_size: f32,
-    border: Option<f32>,
+    border: Option<Stroke>,
 ) -> egui::Response {
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
@@ -126,39 +130,37 @@ fn pfp_image(
     ui: &mut egui::Ui,
     img: &TextureHandle,
     size: f32,
-    border: Option<f32>,
+    border: Option<Stroke>,
 ) -> egui::Response {
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
 
     let (rect, response) = ui.allocate_at_least(vec2(size, size), Sense::hover());
-    if let Some(border_width) = border {
-        draw_bg_border(ui, rect.center(), size, border_width);
+    if let Some(stroke) = border {
+        draw_bg_border(ui, rect.center(), size, stroke);
     }
     ui.put(rect, egui::Image::new(img).max_width(size));
 
     response
 }
 
-fn paint_circle(ui: &mut egui::Ui, size: f32, border: Option<f32>) -> egui::Response {
+fn paint_circle(ui: &mut egui::Ui, size: f32, border: Option<Stroke>) -> egui::Response {
     let (rect, response) = ui.allocate_at_least(vec2(size, size), Sense::hover());
 
-    if let Some(border_width) = border {
-        draw_bg_border(ui, rect.center(), size, border_width);
+    if let Some(stroke) = border {
+        draw_bg_border(ui, rect.center(), size, stroke);
     }
+
     ui.painter()
         .circle_filled(rect.center(), size / 2.0, ui.visuals().weak_text_color());
 
     response
 }
 
-fn draw_bg_border(ui: &mut egui::Ui, center: egui::Pos2, size: f32, border_width: f32) {
-    let border_size = size + (border_width * 2.0);
-    ui.painter().circle_filled(
-        center,
-        border_size / 2.0,
-        ui.visuals().widgets.noninteractive.bg_stroke.color,
-    );
+fn draw_bg_border(ui: &mut egui::Ui, center: egui::Pos2, size: f32, stroke: Stroke) {
+    let border_size = size + (stroke.width * 2.0);
+    ui.painter()
+        .circle_filled(center, border_size / 2.0, stroke.color);
 }
 
 mod preview {
@@ -211,7 +213,7 @@ mod preview {
                             rect,
                             ui::ProfilePic::new(app.img_cache, url)
                                 .size(size)
-                                .border(2.0),
+                                .border(ui::ProfilePic::border_stroke(ui)),
                         )
                         .on_hover_ui_at_pointer(|ui| {
                             ui.set_max_width(300.0);

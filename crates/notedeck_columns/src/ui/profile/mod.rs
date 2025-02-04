@@ -151,7 +151,7 @@ impl<'a> ProfileView<'a> {
                         pfp_rect,
                         ProfilePic::new(self.img_cache, get_profile_url(Some(&profile)))
                             .size(size)
-                            .border(2.0),
+                            .border(ProfilePic::border_stroke(ui)),
                     );
 
                     if ui.add(copy_key_widget(&pfp_rect)).clicked() {
