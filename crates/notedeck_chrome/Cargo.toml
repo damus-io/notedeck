@@ -1,6 +1,6 @@
 [package]
 name = "notedeck_chrome"
-version = "0.3.0"
+version = { workspace = true }
 authors = ["William Casarin <jb55@jb55.com>", "kernelkind <kernelkind@gmail.com>"]
 edition = "2021"
 default-run = "notedeck"
