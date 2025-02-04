@@ -21,7 +21,7 @@ impl egui::Widget for ProfilePic<'_, '_> {
 
 impl<'cache, 'url> ProfilePic<'cache, 'url> {
     pub fn new(cache: &'cache mut ImageCache, url: &'url str) -> Self {
-        let size = Self::default_size();
+        let size = Self::default_size() as f32;
         ProfilePic {
             cache,
             url,
@@ -46,18 +46,18 @@ impl<'cache, 'url> ProfilePic<'cache, 'url> {
     }
 
     #[inline]
-    pub fn default_size() -> f32 {
-        38.0
+    pub fn default_size() -> i8 {
+        38
     }
 
     #[inline]
-    pub fn medium_size() -> f32 {
-        32.0
+    pub fn medium_size() -> i8 {
+        32
     }
 
     #[inline]
-    pub fn small_size() -> f32 {
-        24.0
+    pub fn small_size() -> i8 {
+        24
     }
 
     #[inline]
@@ -204,7 +204,7 @@ mod preview {
                         let (rect, size, _resp) = ui::anim::hover_expand(
                             ui,
                             egui::Id::new(profile.key().unwrap()),
-                            ui::ProfilePic::default_size(),
+                            ui::ProfilePic::default_size() as f32,
                             expand_size,
                             anim_speed,
                         );

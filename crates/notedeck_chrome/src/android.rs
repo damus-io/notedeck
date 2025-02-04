@@ -1,9 +1,8 @@
 //#[cfg(target_os = "android")]
 //use egui_android::run_android;
 
+use egui_winit::winit::platform::android::activity::AndroidApp;
 use notedeck_columns::Damus;
-use winit::platform::android::activity::AndroidApp;
-use winit::platform::android::EventLoopBuilderExtAndroid;
 
 use crate::setup::setup_chrome;
 use notedeck::Notedeck;
@@ -18,10 +17,12 @@ pub async fn android_main(app: AndroidApp) {
     use tracing_subscriber::{prelude::*, EnvFilter};
 
     std::env::set_var("RUST_BACKTRACE", "full");
-    std::env::set_var(
-        "RUST_LOG",
-        "enostr=debug,notedeck_columns=debug,notedeck_chrome=debug",
-    );
+    std::env::set_var("RUST_LOG", "egui=trace,android_activity=debug");
+
+    //std::env::set_var(
+    //    "RUST_LOG",
+    //    "enostr=debug,notedeck_columns=debug,notedeck_chrome=debug",
+    //);
 
     let writer =
         LogcatMakeWriter::new(LogcatTag::Target).expect("Failed to initialize logcat writer");
@@ -44,10 +45,12 @@ pub async fn android_main(app: AndroidApp) {
     let mut options = eframe::NativeOptions::default();
     options.renderer = eframe::Renderer::Wgpu;
     // Clone `app` to use it both in the closure and later in the function
-    let app_clone_for_event_loop = app.clone();
-    options.event_loop_builder = Some(Box::new(move |builder| {
-        builder.with_android_app(app_clone_for_event_loop);
-    }));
+    //let app_clone_for_event_loop = app.clone();
+    //options.event_loop_builder = Some(Box::new(move |builder| {
+    //    builder.with_android_app(app_clone_for_event_loop);
+    //}));
+
+    options.android_app = Some(app.clone());
 
     let app_args = get_app_args(app);
 
@@ -88,7 +91,7 @@ Example android-config.json:
 
 Install/update android-config.json with:
 ```
-adb push android-config.json /sdcard/Android/data/com.damus.app/files/android-config.json
+adb push android-config.json /sdcard/Android/data/com.damus.notedeck/files/android-config.json
 ```
 
 Using internal storage would be better but it seems hard to get the config file onto

@@ -16,7 +16,7 @@ import com.google.androidgamesdk.GameActivity;
 
 public class MainActivity extends GameActivity {
   static {
-    System.loadLibrary("main");
+    System.loadLibrary("notedeck_chrome");
   }
 
   @Override
@@ -49,6 +49,7 @@ public class MainActivity extends GameActivity {
       int[] location = new int[2];
       findViewById(android.R.id.content).getLocationOnScreen(location);
       event.offsetLocation(-location[0], -location[1]);
+
       return super.onTouchEvent(event);
   }
 }

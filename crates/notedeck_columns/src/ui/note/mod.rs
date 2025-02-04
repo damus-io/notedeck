@@ -189,8 +189,8 @@ impl<'a> NoteView<'a> {
         .response
     }
 
-    pub fn expand_size() -> f32 {
-        5.0
+    pub fn expand_size() -> i8 {
+        5
     }
 
     fn pfp(
@@ -223,8 +223,8 @@ impl<'a> NoteView<'a> {
                 let (rect, size, resp) = ui::anim::hover_expand(
                     ui,
                     egui::Id::new((profile_key, note_key)),
-                    pfp_size,
-                    ui::NoteView::expand_size(),
+                    pfp_size as f32,
+                    ui::NoteView::expand_size() as f32,
                     anim_speed,
                 );
 
@@ -246,7 +246,7 @@ impl<'a> NoteView<'a> {
             None => ui
                 .add(
                     ui::ProfilePic::new(self.img_cache, ui::ProfilePic::no_pfp_url())
-                        .size(pfp_size),
+                        .size(pfp_size as f32),
                 )
                 .interact(sense),
         }
@@ -360,20 +360,23 @@ impl<'a> NoteView<'a> {
 
                     let size = ui.available_size();
                     ui.vertical(|ui| {
-                        ui.add_sized([size.x, self.options().pfp_size()], |ui: &mut egui::Ui| {
-                            ui.horizontal_centered(|ui| {
-                                selected_option = NoteView::note_header(
-                                    ui,
-                                    self.note_cache,
-                                    self.note,
-                                    &profile,
-                                    self.options(),
-                                    container_right,
-                                )
-                                .context_selection;
-                            })
-                            .response
-                        });
+                        ui.add_sized(
+                            [size.x, self.options().pfp_size() as f32],
+                            |ui: &mut egui::Ui| {
+                                ui.horizontal_centered(|ui| {
+                                    selected_option = NoteView::note_header(
+                                        ui,
+                                        self.note_cache,
+                                        self.note,
+                                        &profile,
+                                        self.options(),
+                                        container_right,
+                                    )
+                                    .context_selection;
+                                })
+                                .response
+                            },
+                        );
 
                         let note_reply = self
                             .note_cache
