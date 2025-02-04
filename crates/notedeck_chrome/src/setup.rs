@@ -10,6 +10,8 @@ pub fn setup_chrome(ctx: &egui::Context, args: &notedeck::Args, theme: ThemePref
         .is_mobile
         .unwrap_or(notedeck::ui::is_compiled_as_mobile());
 
+    let is_oled = notedeck::ui::is_oled();
+
     // Some people have been running notedeck in debug, let's catch that!
     if !args.tests && cfg!(debug_assertions) && !args.debug {
         println!("--- WELCOME TO DAMUS NOTEDECK! ---");
@@ -24,7 +26,7 @@ pub fn setup_chrome(ctx: &egui::Context, args: &notedeck::Args, theme: ThemePref
         info!("Loaded theme {:?} from disk", theme);
         o.theme_preference = theme;
     });
-    ctx.set_visuals_of(egui::Theme::Dark, theme::dark_mode(is_mobile));
+    ctx.set_visuals_of(egui::Theme::Dark, theme::dark_mode(is_oled));
     ctx.set_visuals_of(egui::Theme::Light, theme::light_mode());
     setup_cc(ctx, is_mobile);
 }

@@ -90,9 +90,9 @@ pub fn light_mode() -> Visuals {
     notedeck::theme::create_themed_visuals(light_color_theme(), Visuals::light())
 }
 
-pub fn dark_mode(mobile: bool) -> Visuals {
+pub fn dark_mode(is_oled: bool) -> Visuals {
     notedeck::theme::create_themed_visuals(
-        if mobile {
+        if is_oled {
             mobile_dark_color_theme()
         } else {
             desktop_dark_color_theme()
