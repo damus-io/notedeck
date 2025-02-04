@@ -118,7 +118,7 @@ impl<'a> DesktopSidePanel<'a> {
                         } else {
                             compose_resp.on_hover_cursor(egui::CursorIcon::NotAllowed)
                         };
-                        // let search_resp = ui.add(search_button());
+                        let search_resp = ui.add(search_button());
                         let column_resp = ui.add(add_column_button(dark_mode));
 
                         ui.add(Separator::default().horizontal().spacing(8.0).shrink(4.0));
@@ -148,8 +148,8 @@ impl<'a> DesktopSidePanel<'a> {
                                 SidePanelAction::ComposeNote,
                                 compose_resp,
                             ))
-                        // } else if search_resp.clicked() {
-                        //     Some(InnerResponse::new(SidePanelAction::Search, search_resp))
+                        } else if search_resp.clicked() {
+                            Some(InnerResponse::new(SidePanelAction::Search, search_resp))
                         } else if column_resp.clicked() {
                             Some(InnerResponse::new(SidePanelAction::Columns, column_resp))
                         } else if add_deck_resp.clicked() {
