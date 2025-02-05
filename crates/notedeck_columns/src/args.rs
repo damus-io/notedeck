@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use crate::timeline::TimelineKind;
 use enostr::{Filter, Pubkey};
 use tracing::{debug, error, info};
@@ -9,7 +11,8 @@ pub struct ColumnsArgs {
 }
 
 impl ColumnsArgs {
-    pub fn parse(args: &[String], deck_author: Option<&Pubkey>) -> Self {
+    pub fn parse(args: &[String], deck_author: Option<&Pubkey>) -> (Self, BTreeSet<String>) {
+        let mut unrecognized_args = BTreeSet::new();
         let mut res = Self {
             columns: vec![],
             since_optimize: true,
@@ -132,12 +135,14 @@ impl ColumnsArgs {
                 } else {
                     error!("failed to parse filter in '{}'", filter_file);
                 }
+            } else {
+                unrecognized_args.insert(arg.clone());
             }
 
             i += 1;
         }
 
-        res
+        (res, unrecognized_args)
     }
 }
 

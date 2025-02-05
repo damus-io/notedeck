@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use enostr::{Keypair, Pubkey, SecretKey};
 use tracing::error;
 
@@ -18,7 +20,9 @@ pub struct Args {
 }
 
 impl Args {
-    pub fn parse(args: &[String]) -> Self {
+    // parse arguments, return set of unrecognized args
+    pub fn parse(args: &[String]) -> (Self, BTreeSet<String>) {
+        let mut unrecognized_args = BTreeSet::new();
         let mut res = Args {
             relays: vec![],
             is_mobile: None,
@@ -112,11 +116,13 @@ impl Args {
                 res.use_keystore = false;
             } else if arg == "--relay-debug" {
                 res.relay_debug = true;
+            } else {
+                unrecognized_args.insert(arg.clone());
             }
 
             i += 1;
         }
 
-        res
+        (res, unrecognized_args)
     }
 }

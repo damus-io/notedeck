@@ -7,6 +7,7 @@ use egui::ThemePreference;
 use enostr::RelayPool;
 use nostrdb::{Config, Ndb, Transaction};
 use std::cell::RefCell;
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::rc::Rc;
 use tracing::{error, info};
@@ -29,6 +30,7 @@ pub struct Notedeck {
     app: Option<Rc<RefCell<dyn App>>>,
     zoom: ZoomHandler,
     app_size: AppSizeHandler,
+    unrecognized_args: BTreeSet<String>,
 }
 
 fn margin_top(narrow: bool) -> f32 {
@@ -106,7 +108,9 @@ impl Notedeck {
         #[cfg(feature = "profiling")]
         setup_profiling();
 
-        let parsed_args = Args::parse(args);
+        // Skip the first argument, which is the program name.
+        let args_to_parse: Vec<String> = args[1..].to_vec();
+        let (parsed_args, unrecognized_args) = Args::parse(&args_to_parse);
 
         let data_path = parsed_args
             .datapath
@@ -203,6 +207,7 @@ impl Notedeck {
             app: None,
             zoom,
             app_size,
+            unrecognized_args,
         }
     }
 
@@ -235,5 +240,9 @@ impl Notedeck {
 
     pub fn theme(&self) -> ThemePreference {
         self.theme.load()
+    }
+
+    pub fn unrecognized_args(&self) -> &BTreeSet<String> {
+        &self.unrecognized_args
     }
 }

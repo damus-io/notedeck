@@ -33,6 +33,11 @@ impl PreviewRunner {
                 let ctx = &cc.egui_ctx;
 
                 let mut notedeck = Notedeck::new(ctx, &base_path, &args);
+                assert!(
+                    notedeck.unrecognized_args().is_empty(),
+                    "unrecognized args: {:?}",
+                    notedeck.unrecognized_args()
+                );
                 setup_chrome(ctx, notedeck.args(), notedeck.theme());
 
                 notedeck.set_app(PreviewApp::new(preview));

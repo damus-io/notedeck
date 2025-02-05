@@ -60,6 +60,19 @@ pub async fn android_main(app: AndroidApp) {
             setup_chrome(ctx, &notedeck.args(), notedeck.theme());
 
             let damus = Damus::new(&mut notedeck.app_context(), &app_args);
+
+            // ensure we recognized all the arguments
+            let completely_unrecognized: Vec<String> = notedeck
+                .unrecognized_args()
+                .intersection(damus.unrecognized_args())
+                .cloned()
+                .collect();
+            assert!(
+                completely_unrecognized.is_empty(),
+                "unrecognized args: {:?}",
+                completely_unrecognized
+            );
+
             notedeck.set_app(damus);
 
             Ok(Box::new(notedeck))
