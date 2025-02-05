@@ -131,7 +131,7 @@ mod tests {
     async fn test_dbpath() {
         let datapath = create_tmp_dir();
         let dbpath = create_tmp_dir();
-        let args: Vec<String> = vec![
+        let args: Vec<String> = [
             "--testrunner",
             "--datapath",
             &datapath.to_str().unwrap(),
@@ -157,7 +157,7 @@ mod tests {
     async fn test_column_args() {
         let tmpdir = create_tmp_dir();
         let npub = "npub1xtscya34g58tk0z605fvr788k263gsu6cy9x0mhnm87echrgufzsevkk5s";
-        let args: Vec<String> = vec![
+        let args: Vec<String> = [
             "--testrunner",
             "--no-keystore",
             "--pub",
