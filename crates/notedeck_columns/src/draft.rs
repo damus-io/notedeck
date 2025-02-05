@@ -1,3 +1,4 @@
+use egui::text::LayoutJob;
 use poll_promise::Promise;
 
 use crate::{media_upload::Nip94Event, post::PostBuffer, ui::note::PostType, Error};
@@ -6,6 +7,7 @@ use std::collections::HashMap;
 #[derive(Default)]
 pub struct Draft {
     pub buffer: PostBuffer,
+    pub cur_layout: Option<(String, LayoutJob)>, // `PostBuffer::text_buffer` to current `LayoutJob`
     pub cur_mention_hint: Option<MentionHint>,
     pub uploaded_media: Vec<Nip94Event>, // media uploads to include
     pub uploading_media: Vec<Promise<Result<Nip94Event, Error>>>, // promises that aren't ready yet

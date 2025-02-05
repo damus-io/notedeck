@@ -247,6 +247,7 @@ pub struct PostBuffer {
     pub mention_indicator: char,
     pub mentions: HashMap<MentionKey, MentionInfo>,
     mentions_key: MentionKey,
+    pub selected_mention: bool,
 
     // the start index of a mention is inclusive
     pub mention_starts: BTreeMap<usize, MentionKey>, // maps the mention start index with the correct `MentionKey`
@@ -260,6 +261,7 @@ impl Default for PostBuffer {
         Self {
             mention_indicator: '@',
             mentions_key: 0,
+            selected_mention: false,
             text_buffer: Default::default(),
             mentions: Default::default(),
             mention_starts: Default::default(),
@@ -306,6 +308,7 @@ impl PostBuffer {
     pub fn select_full_mention(&mut self, mention_key: usize, pk: Pubkey) {
         if let Some(info) = self.mentions.get_mut(&mention_key) {
             info.mention_type = MentionType::Finalized(pk);
+            self.selected_mention = true;
         } else {
             error!("Error selecting mention for index: {mention_key}. Have the following mentions: {:?}", self.mentions);
         }
@@ -401,6 +404,18 @@ impl PostBuffer {
         }
 
         job
+    }
+
+    pub fn need_new_layout(&self, cache: Option<&(String, LayoutJob)>) -> bool {
+        if let Some((text, _)) = cache {
+            if self.selected_mention {
+                return true;
+            }
+
+            self.text_buffer != *text
+        } else {
+            true
+        }
     }
 }
 

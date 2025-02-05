@@ -130,13 +130,28 @@ impl<'a> PostView<'a> {
             );
         }
 
+        let mut updated_layout = false;
         let mut layouter = |ui: &egui::Ui, buf: &dyn TextBuffer, wrap_width: f32| {
-            let mut layout_job = if let Some(post_buffer) = downcast_post_buffer(buf) {
-                post_buffer.to_layout_job(ui)
+            if let Some(post_buffer) = downcast_post_buffer(buf) {
+                let maybe_job = if post_buffer.need_new_layout(self.draft.cur_layout.as_ref()) {
+                    Some(post_buffer.to_layout_job(ui))
+                } else {
+                    None
+                };
+
+                if let Some(job) = maybe_job {
+                    self.draft.cur_layout = Some((post_buffer.text_buffer.clone(), job));
+                    updated_layout = true;
+                }
+            };
+
+            let mut layout_job = if let Some((_, job)) = &self.draft.cur_layout {
+                job.clone()
             } else {
                 error!("Failed to get custom mentions layouter");
                 text_edit_default_layout(ui, buf.as_str().to_owned(), wrap_width)
             };
+
             layout_job.wrap.max_width = wrap_width;
             ui.fonts(|f| f.layout_job(layout_job))
         };
@@ -148,6 +163,10 @@ impl<'a> PostView<'a> {
             .layouter(&mut layouter);
 
         let out = textedit.show(ui);
+
+        if updated_layout {
+            self.draft.buffer.selected_mention = false;
+        }
 
         if let Some(cursor_index) = get_cursor_index(&out.state.cursor.char_range()) {
             self.show_mention_hints(txn, ui, cursor_index, &out);
