@@ -10,6 +10,7 @@ mod muted;
 pub mod note;
 mod notecache;
 mod persist;
+pub mod relay_debug;
 pub mod relayspec;
 mod result;
 pub mod storage;
@@ -34,6 +35,7 @@ pub use muted::{MuteFun, Muted};
 pub use note::{NoteRef, RootIdError, RootNoteId, RootNoteIdBuf};
 pub use notecache::{CachedNote, NoteCache};
 pub use persist::*;
+pub use relay_debug::RelayDebugView;
 pub use relayspec::RelaySpec;
 pub use result::Result;
 pub use storage::{

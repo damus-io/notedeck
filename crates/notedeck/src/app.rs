@@ -1,7 +1,7 @@
 use crate::persist::{AppSizeHandler, ZoomHandler};
 use crate::{
     Accounts, AppContext, Args, DataPath, DataPathType, Directory, FileKeyStorage, ImageCache,
-    KeyStorageType, NoteCache, ThemeHandler, UnknownIds,
+    KeyStorageType, NoteCache, RelayDebugView, ThemeHandler, UnknownIds,
 };
 use egui::ThemePreference;
 use enostr::RelayPool;
@@ -84,8 +84,14 @@ impl eframe::App for Notedeck {
         self.zoom.try_save_zoom_factor(ctx);
         self.app_size.try_save_app_size(ctx);
 
-        if self.args.relay_debug && self.pool.debug.is_none() {
-            self.pool.use_debug();
+        if self.args.relay_debug {
+            if self.pool.debug.is_none() {
+                self.pool.use_debug();
+            }
+
+            if let Some(debug) = &mut self.pool.debug {
+                RelayDebugView::window(ctx, debug);
+            }
         }
 
         #[cfg(feature = "profiling")]
