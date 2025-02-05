@@ -25,7 +25,7 @@ use nostrdb::{Ndb, Transaction};
 use std::collections::HashMap;
 use std::path::Path;
 use std::time::Duration;
-use tracing::{error, info, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 
 #[derive(Debug, Eq, PartialEq, Clone)]
 pub enum DamusState {
@@ -158,10 +158,11 @@ fn try_process_event(
 }
 
 fn unknown_id_send(unknown_ids: &mut UnknownIds, pool: &mut RelayPool) {
+    debug!("unknown_id_send called on: {:?}", &unknown_ids);
     let filter = unknown_ids.filter().expect("filter");
     info!(
         "Getting {} unknown ids from relays",
-        unknown_ids.ids().len()
+        unknown_ids.ids_iter().len()
     );
     let msg = ClientMessage::req("unknownids".to_string(), filter);
     unknown_ids.clear();

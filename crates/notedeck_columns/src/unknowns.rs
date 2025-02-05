@@ -10,11 +10,11 @@ pub fn update_from_columns(
     ndb: &Ndb,
     note_cache: &mut NoteCache,
 ) -> bool {
-    let before = unknown_ids.ids().len();
+    let before = unknown_ids.ids_iter().len();
     if let Err(e) = get_unknown_ids(txn, unknown_ids, timeline_cache, ndb, note_cache) {
         error!("UnknownIds::update {e}");
     }
-    let after = unknown_ids.ids().len();
+    let after = unknown_ids.ids_iter().len();
 
     if before != after {
         unknown_ids.mark_updated();

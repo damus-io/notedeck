@@ -6,7 +6,7 @@ use crate::{
 
 use enostr::{Filter, NoteId, Pubkey};
 use nostrdb::{BlockType, Mention, Ndb, Note, NoteKey, Transaction};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 use tracing::error;
 
@@ -78,10 +78,12 @@ impl SingleUnkIdAction {
     }
 }
 
+type RelayUrl = String;
+
 /// Unknown Id searcher
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct UnknownIds {
-    ids: HashSet<UnknownId>,
+    ids: HashMap<UnknownId, HashSet<RelayUrl>>,
     first_updated: Option<Instant>,
     last_updated: Option<Instant>,
 }
@@ -108,20 +110,20 @@ impl UnknownIds {
         Instant::now() - last_updated >= Duration::from_secs(2)
     }
 
-    pub fn ids(&self) -> &HashSet<UnknownId> {
-        &self.ids
+    pub fn ids_iter(&self) -> impl ExactSizeIterator<Item = &UnknownId> {
+        self.ids.keys()
     }
 
-    pub fn ids_mut(&mut self) -> &mut HashSet<UnknownId> {
+    pub fn ids_mut(&mut self) -> &mut HashMap<UnknownId, HashSet<RelayUrl>> {
         &mut self.ids
     }
 
     pub fn clear(&mut self) {
-        self.ids = HashSet::default();
+        self.ids = HashMap::default();
     }
 
     pub fn filter(&self) -> Option<Vec<Filter>> {
-        let ids: Vec<&UnknownId> = self.ids.iter().collect();
+        let ids: Vec<&UnknownId> = self.ids.keys().collect();
         get_unknown_ids_filter(&ids)
     }
 
@@ -170,14 +172,14 @@ impl UnknownIds {
         note_cache: &mut NoteCache,
         note: &Note,
     ) -> bool {
-        let before = unknown_ids.ids().len();
+        let before = unknown_ids.ids_iter().len();
         let key = note.key().expect("note key");
         //let cached_note = note_cache.cached_note_or_insert(key, note).clone();
         let cached_note = note_cache.cached_note_or_insert(key, note);
         if let Err(e) = get_unknown_note_ids(ndb, cached_note, txn, note, unknown_ids.ids_mut()) {
             error!("UnknownIds::update_from_note {e}");
         }
-        let after = unknown_ids.ids().len();
+        let after = unknown_ids.ids_iter().len();
 
         if before != after {
             unknown_ids.mark_updated();
@@ -200,7 +202,7 @@ impl UnknownIds {
             return;
         }
 
-        self.ids.insert(UnknownId::Pubkey(*pubkey));
+        self.ids.entry(UnknownId::Pubkey(*pubkey)).or_default();
         self.mark_updated();
     }
 
@@ -210,12 +212,12 @@ impl UnknownIds {
             return;
         }
 
-        self.ids.insert(UnknownId::Id(*note_id));
+        self.ids.entry(UnknownId::Id(*note_id)).or_default();
         self.mark_updated();
     }
 }
 
-#[derive(Hash, Clone, Copy, PartialEq, Eq)]
+#[derive(Hash, Clone, Copy, PartialEq, Eq, Debug)]
 pub enum UnknownId {
     Pubkey(Pubkey),
     Id(NoteId),
@@ -250,14 +252,15 @@ pub fn get_unknown_note_ids<'a>(
     cached_note: &CachedNote,
     txn: &'a Transaction,
     note: &Note<'a>,
-    ids: &mut HashSet<UnknownId>,
+    ids: &mut HashMap<UnknownId, HashSet<RelayUrl>>,
 ) -> Result<()> {
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
 
     // the author pubkey
     if ndb.get_profile_by_pubkey(txn, note.pubkey()).is_err() {
-        ids.insert(UnknownId::Pubkey(Pubkey::new(*note.pubkey())));
+        ids.entry(UnknownId::Pubkey(Pubkey::new(*note.pubkey())))
+            .or_default();
     }
 
     // pull notes that notes are replying to
@@ -265,14 +268,15 @@ pub fn get_unknown_note_ids<'a>(
         let note_reply = cached_note.reply.borrow(note.tags());
         if let Some(root) = note_reply.root() {
             if ndb.get_note_by_id(txn, root.id).is_err() {
-                ids.insert(UnknownId::Id(NoteId::new(*root.id)));
+                ids.entry(UnknownId::Id(NoteId::new(*root.id))).or_default();
             }
         }
 
         if !note_reply.is_reply_to_root() {
             if let Some(reply) = note_reply.reply() {
                 if ndb.get_note_by_id(txn, reply.id).is_err() {
-                    ids.insert(UnknownId::Id(NoteId::new(*reply.id)));
+                    ids.entry(UnknownId::Id(NoteId::new(*reply.id)))
+                        .or_default();
                 }
             }
         }
@@ -287,36 +291,56 @@ pub fn get_unknown_note_ids<'a>(
         match block.as_mention().unwrap() {
             Mention::Pubkey(npub) => {
                 if ndb.get_profile_by_pubkey(txn, npub.pubkey()).is_err() {
-                    ids.insert(UnknownId::Pubkey(Pubkey::new(*npub.pubkey())));
+                    ids.entry(UnknownId::Pubkey(Pubkey::new(*npub.pubkey())))
+                        .or_default();
                 }
             }
             Mention::Profile(nprofile) => {
                 if ndb.get_profile_by_pubkey(txn, nprofile.pubkey()).is_err() {
-                    ids.insert(UnknownId::Pubkey(Pubkey::new(*nprofile.pubkey())));
+                    let id = UnknownId::Pubkey(Pubkey::new(*nprofile.pubkey()));
+                    let relays = nprofile
+                        .relays_iter()
+                        .map(String::from)
+                        .collect::<HashSet<RelayUrl>>();
+                    ids.entry(id).or_default().extend(relays);
                 }
             }
-            Mention::Event(ev) => match ndb.get_note_by_id(txn, ev.id()) {
-                Err(_) => {
-                    ids.insert(UnknownId::Id(NoteId::new(*ev.id())));
-                    if let Some(pk) = ev.pubkey() {
-                        if ndb.get_profile_by_pubkey(txn, pk).is_err() {
-                            ids.insert(UnknownId::Pubkey(Pubkey::new(*pk)));
+            Mention::Event(ev) => {
+                let relays = ev
+                    .relays_iter()
+                    .map(String::from)
+                    .collect::<HashSet<RelayUrl>>();
+                match ndb.get_note_by_id(txn, ev.id()) {
+                    Err(_) => {
+                        ids.entry(UnknownId::Id(NoteId::new(*ev.id())))
+                            .or_default()
+                            .extend(relays.clone());
+                        if let Some(pk) = ev.pubkey() {
+                            if ndb.get_profile_by_pubkey(txn, pk).is_err() {
+                                ids.entry(UnknownId::Pubkey(Pubkey::new(*pk)))
+                                    .or_default()
+                                    .extend(relays);
+                            }
+                        }
+                    }
+                    Ok(note) => {
+                        if ndb.get_profile_by_pubkey(txn, note.pubkey()).is_err() {
+                            ids.entry(UnknownId::Pubkey(Pubkey::new(*note.pubkey())))
+                                .or_default()
+                                .extend(relays);
                         }
                     }
                 }
-                Ok(note) => {
-                    if ndb.get_profile_by_pubkey(txn, note.pubkey()).is_err() {
-                        ids.insert(UnknownId::Pubkey(Pubkey::new(*note.pubkey())));
-                    }
-                }
-            },
+            }
             Mention::Note(note) => match ndb.get_note_by_id(txn, note.id()) {
                 Err(_) => {
-                    ids.insert(UnknownId::Id(NoteId::new(*note.id())));
+                    ids.entry(UnknownId::Id(NoteId::new(*note.id())))
+                        .or_default();
                 }
                 Ok(note) => {
                     if ndb.get_profile_by_pubkey(txn, note.pubkey()).is_err() {
-                        ids.insert(UnknownId::Pubkey(Pubkey::new(*note.pubkey())));
+                        ids.entry(UnknownId::Pubkey(Pubkey::new(*note.pubkey())))
+                            .or_default();
                     }
                 }
             },
