@@ -247,7 +247,7 @@ impl Timeline {
         let filter = Filter::new()
             .kinds([1])
             .limit(filter::default_limit())
-            .tags([hashtag.clone()], 't')
+            .tags([hashtag.to_lowercase()], 't')
             .build();
 
         Timeline::new(

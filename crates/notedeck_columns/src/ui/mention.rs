@@ -1,5 +1,5 @@
 use crate::ui;
-use crate::{actionbar::NoteAction, profile::get_display_name};
+use crate::{actionbar::NoteAction, profile::get_display_name, timeline::TimelineKind};
 use egui::Sense;
 use enostr::Pubkey;
 use nostrdb::{Ndb, Transaction};
@@ -89,7 +89,9 @@ fn mention_ui(
 
         let note_action = if resp.clicked() {
             ui::show_pointer(ui);
-            Some(NoteAction::OpenProfile(Pubkey::new(*pk)))
+            Some(NoteAction::OpenTimeline(TimelineKind::profile(
+                Pubkey::new(*pk),
+            )))
         } else if resp.hovered() {
             ui::show_pointer(ui);
             None

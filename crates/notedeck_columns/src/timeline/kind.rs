@@ -434,7 +434,7 @@ impl TimelineKind {
             TimelineKind::Hashtag(hashtag) => FilterState::ready(vec![Filter::new()
                 .kinds([1])
                 .limit(filter::default_limit())
-                .tags([hashtag.clone()], 't')
+                .tags([hashtag.to_lowercase()], 't')
                 .build()]),
 
             TimelineKind::Algo(algo_timeline) => match algo_timeline {
