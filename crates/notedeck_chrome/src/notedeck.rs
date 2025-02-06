@@ -4,13 +4,14 @@ use notedeck_chrome::setup::{generate_native_options, setup_chrome};
 
 use notedeck::{DataPath, DataPathType, Notedeck};
 use notedeck_columns::Damus;
+use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::EnvFilter;
 
 // Entry point for wasm
 //#[cfg(target_arch = "wasm32")]
 //use wasm_bindgen::prelude::*;
 
-fn setup_logging(path: &DataPath) {
+fn setup_logging(path: &DataPath) -> Option<WorkerGuard> {
     #[allow(unused_variables)] // need guard to live for lifetime of program
     let (maybe_non_blocking, maybe_guard) = {
         let log_path = path.path(DataPathType::Log);
@@ -57,6 +58,8 @@ fn setup_logging(path: &DataPath) {
             .with_env_filter(EnvFilter::from_default_env())
             .init();
     }
+
+    maybe_guard
 }
 
 // Desktop
@@ -66,7 +69,8 @@ async fn main() {
     let base_path = DataPath::default_base_or_cwd();
     let path = DataPath::new(base_path.clone());
 
-    setup_logging(&path);
+    // This guard must be scoped for the duration of the entire program so all logs will be written
+    let _guard = setup_logging(&path);
 
     let _res = eframe::run_native(
         "Damus Notedeck",
