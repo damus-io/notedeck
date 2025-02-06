@@ -141,7 +141,7 @@ pub fn render_profile_route(
 #[cfg(test)]
 mod tests {
     use enostr::NoteId;
-    use tokenator::{TokenParser, TokenSerializable, TokenWriter};
+    use tokenator::{TokenParser, TokenWriter};
 
     use crate::timeline::{ThreadSelection, TimelineKind};
     use enostr::Pubkey;
@@ -149,8 +149,6 @@ mod tests {
 
     #[test]
     fn test_timeline_route_serialize() {
-        use super::TimelineKind;
-
         let note_id_hex = "1c54e5b0c386425f7e017d9e068ddef8962eb2ce1bb08ed27e24b93411c12e60";
         let note_id = NoteId::from_hex(note_id_hex).unwrap();
         let data_str = format!("thread:{}", note_id_hex);
