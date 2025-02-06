@@ -776,7 +776,8 @@ pub fn hashtag_ui(
             .add_sized(egui::vec2(50.0, 40.0), add_column_button())
             .clicked()
         {
-            let resp = AddColumnOption::Hashtag(text_buffer.to_owned()).take_as_response(ndb, None);
+            let resp =
+                AddColumnOption::Hashtag(sanitize_hashtag(text_buffer)).take_as_response(ndb, None);
             id_string_map.remove(&id);
             resp
         } else {
@@ -784,6 +785,10 @@ pub fn hashtag_ui(
         }
     })
     .inner
+}
+
+fn sanitize_hashtag(raw_hashtag: &str) -> String {
+    raw_hashtag.replace("#", "")
 }
 
 #[cfg(test)]
