@@ -321,18 +321,20 @@ impl<'a> PostView<'a> {
         if ui.add(media_upload_button()).clicked() {
             #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
             {
-                if let Some(file) = rfd::FileDialog::new().pick_file() {
-                    match MediaPath::new(file) {
-                        Ok(media_path) => {
-                            let promise = nostrbuild_nip96_upload(
-                                self.poster.secret_key.secret_bytes(),
-                                media_path,
-                            );
-                            self.draft.uploading_media.push(promise);
-                        }
-                        Err(e) => {
-                            error!("{e}");
-                            self.draft.upload_errors.push(e.to_string());
+                if let Some(files) = rfd::FileDialog::new().pick_files() {
+                    for file in files {
+                        match MediaPath::new(file) {
+                            Ok(media_path) => {
+                                let promise = nostrbuild_nip96_upload(
+                                    self.poster.secret_key.secret_bytes(),
+                                    media_path,
+                                );
+                                self.draft.uploading_media.push(promise);
+                            }
+                            Err(e) => {
+                                error!("{e}");
+                                self.draft.upload_errors.push(e.to_string());
+                            }
                         }
                     }
                 }
