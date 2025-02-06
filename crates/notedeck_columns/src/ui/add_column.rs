@@ -150,7 +150,7 @@ impl AddColumnOption {
                 .into_timeline(&txn, ndb)
                 .map(AddColumnResponse::Timeline),
             AddColumnOption::Notification(pubkey) => {
-                TimelineKind::Notifications(*pubkey.to_pubkey(&cur_account.map(|kp| kp.pubkey)?))
+                TimelineKind::Notifications(*pubkey.as_pubkey(&cur_account.map(|kp| kp.pubkey)?))
                     .into_timeline(&txn, ndb)
                     .map(AddColumnResponse::Timeline)
             }
@@ -159,7 +159,7 @@ impl AddColumnOption {
             }
             AddColumnOption::Contacts(pk_src) => {
                 let tlk = TimelineKind::contact_list(
-                    *pk_src.to_pubkey(&cur_account.map(|kp| kp.pubkey)?),
+                    *pk_src.as_pubkey(&cur_account.map(|kp| kp.pubkey)?),
                 );
                 tlk.into_timeline(&txn, ndb)
                     .map(AddColumnResponse::Timeline)
@@ -173,7 +173,7 @@ impl AddColumnOption {
             AddColumnOption::ExternalIndividual => Some(AddColumnResponse::ExternalIndividual),
             AddColumnOption::Individual(pubkey_source) => {
                 let tlk = TimelineKind::profile(
-                    *pubkey_source.to_pubkey(&cur_account.map(|kp| kp.pubkey)?),
+                    *pubkey_source.as_pubkey(&cur_account.map(|kp| kp.pubkey)?),
                 );
                 tlk.into_timeline(&txn, ndb)
                     .map(AddColumnResponse::Timeline)

@@ -37,7 +37,7 @@ impl PubkeySource {
         PubkeySource::Explicit(pubkey)
     }
 
-    pub fn to_pubkey<'a>(&'a self, deck_author: &'a Pubkey) -> &'a Pubkey {
+    pub fn as_pubkey<'a>(&'a self, deck_author: &'a Pubkey) -> &'a Pubkey {
         match self {
             PubkeySource::Explicit(pk) => pk,
             PubkeySource::DeckAuthor => deck_author,
@@ -93,7 +93,7 @@ impl ListKind {
         parser.parse_all(|p| {
             p.parse_token("contact")?;
             let pk_src = PubkeySource::parse_from_tokens(p)?;
-            Ok(ListKind::Contact(*pk_src.to_pubkey(deck_author)))
+            Ok(ListKind::Contact(*pk_src.as_pubkey(deck_author)))
         })
 
         /* here for u when you need more things to parse
@@ -333,7 +333,7 @@ impl TimelineKind {
         let profile = parser.try_parse(|p| {
             p.parse_token("profile")?;
             let pk_src = PubkeySource::parse_from_tokens(p)?;
-            Ok(TimelineKind::Profile(*pk_src.to_pubkey(deck_author)))
+            Ok(TimelineKind::Profile(*pk_src.as_pubkey(deck_author)))
         });
         if profile.is_ok() {
             return profile;
@@ -343,7 +343,7 @@ impl TimelineKind {
             // still handle deprecated form (notifs)
             p.parse_any_token(&[NOTIFS_TOKEN, NOTIFS_TOKEN_DEPRECATED])?;
             let pk_src = PubkeySource::parse_from_tokens(p)?;
-            Ok(TimelineKind::Notifications(*pk_src.to_pubkey(deck_author)))
+            Ok(TimelineKind::Notifications(*pk_src.as_pubkey(deck_author)))
         });
         if notifications.is_ok() {
             return notifications;
