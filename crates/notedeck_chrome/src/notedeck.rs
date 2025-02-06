@@ -194,7 +194,7 @@ mod tests {
             .timeline_id()
             .unwrap();
 
-        let timelines = app.timeline_cache.timelines.len() == 2;
+        assert_eq!(app.timeline_cache.timelines.len(), 2);
         assert!(app.timeline_cache.timelines.get(&tl1).is_some());
         assert!(app.timeline_cache.timelines.get(&tl2).is_some());
 
