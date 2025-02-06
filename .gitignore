@@ -1,6 +1,8 @@
 .buildcmd
 build.log
 perf.data
+rusty-tags.vi
+notedeck-settings
 perf.data.old
 crates/notedeck_chrome/android/app/build
 .privenv

@@ -1,6 +1,6 @@
 use crate::{
     actionbar::NoteAction,
-    timeline::{TimelineCache, TimelineCacheKey},
+    timeline::{ThreadSelection, TimelineCache, TimelineKind},
     ui::note::NoteOptions,
 };
 
@@ -83,7 +83,7 @@ impl<'a> ThreadView<'a> {
                         self.ndb,
                         self.note_cache,
                         &txn,
-                        TimelineCacheKey::Thread(root_id),
+                        &TimelineKind::Thread(ThreadSelection::from_root_id(root_id.to_owned())),
                     )
                     .get_ptr();
 

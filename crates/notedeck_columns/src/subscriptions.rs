@@ -1,4 +1,4 @@
-use crate::timeline::{TimelineId, TimelineKind};
+use crate::timeline::TimelineKind;
 use std::collections::HashMap;
 use uuid::Uuid;
 
@@ -16,7 +16,7 @@ pub enum SubKind {
     /// We are fetching a contact list so that we can use it for our follows
     /// Filter.
     // TODO: generalize this to any list?
-    FetchingContactList(TimelineId),
+    FetchingContactList(TimelineKind),
 }
 
 /// Subscriptions that need to be tracked at various stages. Sometimes we

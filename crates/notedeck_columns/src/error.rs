@@ -5,6 +5,9 @@ pub enum Error {
     #[error("timeline not found")]
     TimelineNotFound,
 
+    #[error("timeline is missing a subscription")]
+    MissingSubscription,
+
     #[error("load failed")]
     LoadFailed,
 

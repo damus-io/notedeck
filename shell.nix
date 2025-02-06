@@ -14,7 +14,6 @@ mkShell ({
     #cargo-edit
     #cargo-watch
     rustup
-    rustfmt
     libiconv
     pkg-config
     #cmake

@@ -3,8 +3,7 @@ use std::f32::consts::PI;
 use crate::actionbar::NoteAction;
 use crate::timeline::TimelineTab;
 use crate::{
-    column::Columns,
-    timeline::{TimelineId, ViewFilter},
+    timeline::{TimelineCache, TimelineKind, ViewFilter},
     ui,
     ui::note::NoteOptions,
 };
@@ -19,8 +18,8 @@ use tracing::{error, warn};
 use super::anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE};
 
 pub struct TimelineView<'a> {
-    timeline_id: TimelineId,
-    columns: &'a mut Columns,
+    timeline_id: &'a TimelineKind,
+    timeline_cache: &'a mut TimelineCache,
     ndb: &'a Ndb,
     note_cache: &'a mut NoteCache,
     img_cache: &'a mut ImageCache,
@@ -31,8 +30,8 @@ pub struct TimelineView<'a> {
 
 impl<'a> TimelineView<'a> {
     pub fn new(
-        timeline_id: TimelineId,
-        columns: &'a mut Columns,
+        timeline_id: &'a TimelineKind,
+        timeline_cache: &'a mut TimelineCache,
         ndb: &'a Ndb,
         note_cache: &'a mut NoteCache,
         img_cache: &'a mut ImageCache,
@@ -43,7 +42,7 @@ impl<'a> TimelineView<'a> {
         TimelineView {
             ndb,
             timeline_id,
-            columns,
+            timeline_cache,
             note_cache,
             img_cache,
             reverse,
@@ -57,7 +56,7 @@ impl<'a> TimelineView<'a> {
             ui,
             self.ndb,
             self.timeline_id,
-            self.columns,
+            self.timeline_cache,
             self.note_cache,
             self.img_cache,
             self.reverse,
@@ -76,8 +75,8 @@ impl<'a> TimelineView<'a> {
 fn timeline_ui(
     ui: &mut egui::Ui,
     ndb: &Ndb,
-    timeline_id: TimelineId,
-    columns: &mut Columns,
+    timeline_id: &TimelineKind,
+    timeline_cache: &mut TimelineCache,
     note_cache: &mut NoteCache,
     img_cache: &mut ImageCache,
     reversed: bool,
@@ -92,7 +91,7 @@ fn timeline_ui(
     */
 
     let scroll_id = {
-        let timeline = if let Some(timeline) = columns.find_timeline_mut(timeline_id) {
+        let timeline = if let Some(timeline) = timeline_cache.timelines.get_mut(timeline_id) {
             timeline
         } else {
             error!("tried to render timeline in column, but timeline was missing");
@@ -142,7 +141,7 @@ fn timeline_ui(
     }
 
     let scroll_output = scroll_area.show(ui, |ui| {
-        let timeline = if let Some(timeline) = columns.find_timeline_mut(timeline_id) {
+        let timeline = if let Some(timeline) = timeline_cache.timelines.get(timeline_id) {
             timeline
         } else {
             error!("tried to render timeline in column, but timeline was missing");

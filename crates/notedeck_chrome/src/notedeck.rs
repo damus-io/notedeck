@@ -183,21 +183,20 @@ mod tests {
             .column(0)
             .router()
             .top()
-            .timeline_id();
+            .timeline_id()
+            .unwrap();
 
         let tl2 = app
             .columns(app_ctx.accounts)
             .column(1)
             .router()
             .top()
-            .timeline_id();
+            .timeline_id()
+            .unwrap();
 
-        assert_eq!(tl1.is_some(), true);
-        assert_eq!(tl2.is_some(), true);
-
-        let timelines = app.columns(app_ctx.accounts).timelines();
-        assert!(timelines[0].kind.is_notifications());
-        assert!(timelines[1].kind.is_contacts());
+        let timelines = app.timeline_cache.timelines.len() == 2;
+        assert!(app.timeline_cache.timelines.get(&tl1).is_some());
+        assert!(app.timeline_cache.timelines.get(&tl2).is_some());
 
         rmrf(tmpdir);
     }

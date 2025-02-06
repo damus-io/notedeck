@@ -5,7 +5,7 @@ use crate::nav::SwitchingAction;
 use crate::{
     column::Columns,
     route::Route,
-    timeline::{ColumnTitle, TimelineId, TimelineKind, TimelineRoute},
+    timeline::{ColumnTitle, TimelineKind},
     ui::{
         self,
         anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},
@@ -22,7 +22,6 @@ pub struct NavTitle<'a> {
     ndb: &'a Ndb,
     img_cache: &'a mut ImageCache,
     columns: &'a Columns,
-    deck_author: Option<&'a Pubkey>,
     routes: &'a [Route],
     col_id: usize,
 }
@@ -32,7 +31,6 @@ impl<'a> NavTitle<'a> {
         ndb: &'a Ndb,
         img_cache: &'a mut ImageCache,
         columns: &'a Columns,
-        deck_author: Option<&'a Pubkey>,
         routes: &'a [Route],
         col_id: usize,
     ) -> Self {
@@ -40,7 +38,6 @@ impl<'a> NavTitle<'a> {
             ndb,
             img_cache,
             columns,
-            deck_author,
             routes,
             col_id,
         }
@@ -123,14 +120,14 @@ impl<'a> NavTitle<'a> {
         // not it looks cool
         self.title_pfp(ui, prev, 32.0);
 
-        let column_title = prev.title(self.columns);
+        let column_title = prev.title();
 
         let back_resp = match &column_title {
             ColumnTitle::Simple(title) => ui.add(Self::back_label(title, color)),
 
             ColumnTitle::NeedsDb(need_db) => {
                 let txn = Transaction::new(self.ndb).unwrap();
-                let title = need_db.title(&txn, self.ndb, self.deck_author);
+                let title = need_db.title(&txn, self.ndb);
                 ui.add(Self::back_label(title, color))
             }
         };
@@ -402,14 +399,11 @@ impl<'a> NavTitle<'a> {
             })
     }
 
-    fn timeline_pfp(&mut self, ui: &mut egui::Ui, id: TimelineId, pfp_size: f32) {
+    fn timeline_pfp(&mut self, ui: &mut egui::Ui, id: &TimelineKind, pfp_size: f32) {
         let txn = Transaction::new(self.ndb).unwrap();
 
-        if let Some(pfp) = self
-            .columns
-            .find_timeline(id)
-            .and_then(|tl| tl.kind.pubkey_source())
-            .and_then(|pksrc| self.deck_author.map(|da| pksrc.to_pubkey(da)))
+        if let Some(pfp) = id
+            .pubkey()
             .and_then(|pk| self.pubkey_pfp(&txn, pk.bytes(), pfp_size))
         {
             ui.add(pfp);
@@ -422,34 +416,35 @@ impl<'a> NavTitle<'a> {
 
     fn title_pfp(&mut self, ui: &mut egui::Ui, top: &Route, pfp_size: f32) {
         match top {
-            Route::Timeline(tlr) => match tlr {
-                TimelineRoute::Timeline(tlid) => {
-                    let is_hashtag = self
-                        .columns
-                        .find_timeline(*tlid)
-                        .is_some_and(|tl| matches!(tl.kind, TimelineKind::Hashtag(_)));
-
-                    if is_hashtag {
-                        ui.add(
-                            egui::Image::new(egui::include_image!(
-                                "../../../../../assets/icons/hashtag_icon_4x.png"
-                            ))
-                            .fit_to_exact_size(egui::vec2(pfp_size, pfp_size)),
-                        );
-                    } else {
-                        self.timeline_pfp(ui, *tlid, pfp_size);
-                    }
+            Route::Timeline(kind) => match kind {
+                TimelineKind::Hashtag(_ht) => {
+                    ui.add(
+                        egui::Image::new(egui::include_image!(
+                            "../../../../../assets/icons/hashtag_icon_4x.png"
+                        ))
+                        .fit_to_exact_size(egui::vec2(pfp_size, pfp_size)),
+                    );
                 }
 
-                TimelineRoute::Thread(_note_id) => {}
-                TimelineRoute::Reply(_note_id) => {}
-                TimelineRoute::Quote(_note_id) => {}
-
-                TimelineRoute::Profile(pubkey) => {
+                TimelineKind::Profile(pubkey) => {
                     self.show_profile(ui, pubkey, pfp_size);
+                }
+
+                TimelineKind::Thread(_) => {
+                    // no pfp for threads
+                }
+
+                TimelineKind::Universe
+                | TimelineKind::Algo(_)
+                | TimelineKind::Notifications(_)
+                | TimelineKind::Generic(_)
+                | TimelineKind::List(_) => {
+                    self.timeline_pfp(ui, kind, pfp_size);
                 }
             },
 
+            Route::Reply(_) => {}
+            Route::Quote(_) => {}
             Route::Accounts(_as) => {}
             Route::ComposeNote => {}
             Route::AddColumn(_add_col_route) => {}
@@ -480,7 +475,7 @@ impl<'a> NavTitle<'a> {
     }
 
     fn title_label(&self, ui: &mut egui::Ui, top: &Route) {
-        let column_title = top.title(self.columns);
+        let column_title = top.title();
 
         match &column_title {
             ColumnTitle::Simple(title) => {
@@ -489,7 +484,7 @@ impl<'a> NavTitle<'a> {
 
             ColumnTitle::NeedsDb(need_db) => {
                 let txn = Transaction::new(self.ndb).unwrap();
-                let title = need_db.title(&txn, self.ndb, self.deck_author);
+                let title = need_db.title(&txn, self.ndb);
                 ui.add(Self::title_label_value(title));
             }
         };

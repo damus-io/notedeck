@@ -17,6 +17,7 @@ pub use reply_description::reply_desc;
 use crate::{
     actionbar::NoteAction,
     profile::get_display_name,
+    timeline::{ThreadSelection, TimelineKind},
     ui::{self, View},
 };
 
@@ -354,8 +355,9 @@ impl<'a> NoteView<'a> {
             ui.vertical(|ui| {
                 ui.horizontal(|ui| {
                     if self.pfp(note_key, &profile, ui).clicked() {
-                        note_action =
-                            Some(NoteAction::OpenProfile(Pubkey::new(*self.note.pubkey())));
+                        note_action = Some(NoteAction::OpenTimeline(TimelineKind::profile(
+                            Pubkey::new(*self.note.pubkey()),
+                        )));
                     };
 
                     let size = ui.available_size();
@@ -415,7 +417,7 @@ impl<'a> NoteView<'a> {
                 ui.add(&mut contents);
 
                 if let Some(action) = contents.action() {
-                    note_action = Some(*action);
+                    note_action = Some(action.clone());
                 }
 
                 if self.options().has_actionbar() {
@@ -430,7 +432,9 @@ impl<'a> NoteView<'a> {
             // main design
             ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
                 if self.pfp(note_key, &profile, ui).clicked() {
-                    note_action = Some(NoteAction::OpenProfile(Pubkey::new(*self.note.pubkey())));
+                    note_action = Some(NoteAction::OpenTimeline(TimelineKind::Profile(
+                        Pubkey::new(*self.note.pubkey()),
+                    )));
                 };
 
                 ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
@@ -480,7 +484,7 @@ impl<'a> NoteView<'a> {
                     ui.add(&mut contents);
 
                     if let Some(action) = contents.action() {
-                        note_action = Some(*action);
+                        note_action = Some(action.clone());
                     }
 
                     if self.options().has_actionbar() {
@@ -496,7 +500,16 @@ impl<'a> NoteView<'a> {
         };
 
         let note_action = if note_hitbox_clicked(ui, hitbox_id, &response.rect, maybe_hitbox) {
-            Some(NoteAction::OpenThread(NoteId::new(*self.note.id())))
+            if let Ok(selection) = ThreadSelection::from_note_id(
+                self.ndb,
+                self.note_cache,
+                self.note.txn().unwrap(),
+                NoteId::new(*self.note.id()),
+            ) {
+                Some(NoteAction::OpenTimeline(TimelineKind::Thread(selection)))
+            } else {
+                None
+            }
         } else {
             note_action
         };

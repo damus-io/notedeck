@@ -1,25 +1,19 @@
 use crate::{
-    column::Columns,
-    decks::DecksCache,
     error::Error,
+    multi_subscriber::MultiSubscriber,
     subscriptions::{self, SubKind, Subscriptions},
-    thread::Thread,
+    timeline::kind::ListKind,
     Result,
 };
 
 use notedeck::{
-    filter, CachedNote, FilterError, FilterState, FilterStates, NoteCache, NoteRef, RootNoteIdBuf,
-    UnknownIds,
+    filter, CachedNote, FilterError, FilterState, FilterStates, NoteCache, NoteRef, UnknownIds,
 };
-
-use std::fmt;
-use std::sync::atomic::{AtomicU32, Ordering};
 
 use egui_virtual_list::VirtualList;
 use enostr::{PoolRelay, Pubkey, RelayPool};
-use nostrdb::{Filter, Ndb, Note, NoteKey, Subscription, Transaction};
+use nostrdb::{Filter, Ndb, Note, NoteKey, Transaction};
 use std::cell::RefCell;
-use std::hash::Hash;
 use std::rc::Rc;
 
 use tracing::{debug, error, info, warn};
@@ -28,16 +22,25 @@ pub mod cache;
 pub mod kind;
 pub mod route;
 
-pub use cache::{TimelineCache, TimelineCacheKey};
-pub use kind::{ColumnTitle, PubkeySource, TimelineKind};
-pub use route::TimelineRoute;
+pub use cache::TimelineCache;
+pub use kind::{ColumnTitle, PubkeySource, ThreadSelection, TimelineKind};
 
-#[derive(Debug, Hash, Copy, Clone, Eq, PartialEq)]
-pub struct TimelineId(u32);
+//#[derive(Debug, Hash, Clone, Eq, PartialEq)]
+//pub type TimelineId = TimelineKind;
+
+/*
 
 impl TimelineId {
-    pub fn new(id: u32) -> Self {
+    pub fn kind(&self) -> &TimelineKind {
+        &self.kind
+    }
+
+    pub fn new(id: TimelineKind) -> Self {
         TimelineId(id)
+    }
+
+    pub fn profile(pubkey: Pubkey) -> Self {
+        TimelineId::new(TimelineKind::Profile(PubkeySource::pubkey(pubkey)))
     }
 }
 
@@ -46,6 +49,7 @@ impl fmt::Display for TimelineId {
         write!(f, "TimelineId({})", self.0)
     }
 }
+*/
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Default)]
 pub enum ViewFilter {
@@ -185,7 +189,6 @@ impl TimelineTab {
 /// A column in a deck. Holds navigation state, loaded notes, column kind, etc.
 #[derive(Debug)]
 pub struct Timeline {
-    pub id: TimelineId,
     pub kind: TimelineKind,
     // We may not have the filter loaded yet, so let's make it an option so
     // that codepaths have to explicitly handle it
@@ -193,45 +196,58 @@ pub struct Timeline {
     pub views: Vec<TimelineTab>,
     pub selected_view: usize,
 
-    pub subscription: Option<Subscription>,
+    pub subscription: Option<MultiSubscriber>,
 }
 
 impl Timeline {
     /// Create a timeline from a contact list
-    pub fn contact_list(
-        contact_list: &Note,
-        pk_src: PubkeySource,
-        deck_author: Option<&[u8; 32]>,
-    ) -> Result<Self> {
-        let our_pubkey = deck_author.map(|da| pk_src.to_pubkey_bytes(da));
+    pub fn contact_list(contact_list: &Note, pubkey: &[u8; 32]) -> Result<Self> {
         let with_hashtags = false;
-        let filter =
-            filter::filter_from_tags(contact_list, our_pubkey, with_hashtags)?.into_follow_filter();
+        let filter = filter::filter_from_tags(contact_list, Some(pubkey), with_hashtags)?
+            .into_follow_filter();
 
         Ok(Timeline::new(
-            TimelineKind::contact_list(pk_src),
+            TimelineKind::contact_list(Pubkey::new(*pubkey)),
             FilterState::ready(filter),
             TimelineTab::full_tabs(),
         ))
     }
 
-    pub fn thread(note_id: RootNoteIdBuf) -> Self {
-        let filter = Thread::filters_raw(note_id.borrow())
-            .iter_mut()
-            .map(|fb| fb.build())
-            .collect();
+    pub fn thread(selection: ThreadSelection) -> Self {
+        let filter = vec![
+            nostrdb::Filter::new()
+                .kinds([1])
+                .event(selection.root_id.bytes())
+                .build(),
+            nostrdb::Filter::new()
+                .ids([selection.root_id.bytes()])
+                .limit(1)
+                .build(),
+        ];
         Timeline::new(
-            TimelineKind::Thread(note_id),
+            TimelineKind::Thread(selection),
             FilterState::ready(filter),
             TimelineTab::only_notes_and_replies(),
         )
+    }
+
+    pub fn last_per_pubkey(list: &Note, list_kind: &ListKind) -> Result<Self> {
+        let kind = 1;
+        let notes_per_pk = 1;
+        let filter = filter::last_n_per_pubkey_from_tags(list, kind, notes_per_pk)?;
+
+        Ok(Timeline::new(
+            TimelineKind::last_per_pubkey(*list_kind),
+            FilterState::ready(filter),
+            TimelineTab::only_notes_and_replies(),
+        ))
     }
 
     pub fn hashtag(hashtag: String) -> Self {
         let filter = Filter::new()
             .kinds([1])
             .limit(filter::default_limit())
-            .tags([hashtag.clone()], 't')
+            .tags([hashtag.to_lowercase()], 't')
             .build();
 
         Timeline::new(
@@ -241,25 +257,20 @@ impl Timeline {
         )
     }
 
-    pub fn make_view_id(id: TimelineId, selected_view: usize) -> egui::Id {
+    pub fn make_view_id(id: &TimelineKind, selected_view: usize) -> egui::Id {
         egui::Id::new((id, selected_view))
     }
 
     pub fn view_id(&self) -> egui::Id {
-        Timeline::make_view_id(self.id, self.selected_view)
+        Timeline::make_view_id(&self.kind, self.selected_view)
     }
 
     pub fn new(kind: TimelineKind, filter_state: FilterState, views: Vec<TimelineTab>) -> Self {
-        // global unique id for all new timelines
-        static UIDS: AtomicU32 = AtomicU32::new(0);
-
         let filter = FilterStates::new(filter_state);
-        let subscription: Option<Subscription> = None;
+        let subscription: Option<MultiSubscriber> = None;
         let selected_view = 0;
-        let id = TimelineId::new(UIDS.fetch_add(1, Ordering::Relaxed));
 
         Timeline {
-            id,
             kind,
             filter,
             views,
@@ -397,8 +408,15 @@ impl Timeline {
         note_cache: &mut NoteCache,
         reversed: bool,
     ) -> Result<()> {
+        if !self.kind.should_subscribe_locally() {
+            // don't need to poll for timelines that don't have local subscriptions
+            return Ok(());
+        }
+
         let sub = self
             .subscription
+            .as_ref()
+            .and_then(|s| s.local_subid)
             .ok_or(Error::App(notedeck::Error::no_active_sub()))?;
 
         let new_note_ids = ndb.poll_for_notes(sub, 500);
@@ -466,10 +484,9 @@ pub fn setup_new_timeline(
     pool: &mut RelayPool,
     note_cache: &mut NoteCache,
     since_optimize: bool,
-    our_pk: Option<&Pubkey>,
 ) {
     // if we're ready, setup local subs
-    if is_timeline_ready(ndb, pool, note_cache, timeline, our_pk) {
+    if is_timeline_ready(ndb, pool, note_cache, timeline) {
         if let Err(err) = setup_timeline_nostrdb_sub(ndb, note_cache, timeline) {
             error!("setup_new_timeline: {err}");
         }
@@ -487,7 +504,7 @@ pub fn setup_new_timeline(
 pub fn send_initial_timeline_filters(
     ndb: &Ndb,
     since_optimize: bool,
-    columns: &mut Columns,
+    timeline_cache: &mut TimelineCache,
     subs: &mut Subscriptions,
     pool: &mut RelayPool,
     relay_id: &str,
@@ -495,7 +512,7 @@ pub fn send_initial_timeline_filters(
     info!("Sending initial filters to {}", relay_id);
     let relay = &mut pool.relays.iter_mut().find(|r| r.url() == relay_id)?;
 
-    for timeline in columns.timelines_mut() {
+    for (_kind, timeline) in timeline_cache.timelines.iter_mut() {
         send_initial_timeline_filter(ndb, since_optimize, subs, relay, timeline);
     }
 
@@ -509,7 +526,7 @@ pub fn send_initial_timeline_filter(
     relay: &mut PoolRelay,
     timeline: &mut Timeline,
 ) {
-    let filter_state = timeline.filter.get(relay.url());
+    let filter_state = timeline.filter.get_mut(relay.url());
 
     match filter_state {
         FilterState::Broken(err) => {
@@ -549,7 +566,7 @@ pub fn send_initial_timeline_filter(
                 if can_since_optimize && filter::should_since_optimize(lim, notes.len()) {
                     filter = filter::since_optimize_filter(filter, notes);
                 } else {
-                    warn!("Skipping since optimization for {:?}: number of local notes is less than limit, attempting to backfill.", filter);
+                    warn!("Skipping since optimization for {:?}: number of local notes is less than limit, attempting to backfill.", &timeline.kind);
                 }
 
                 filter
@@ -578,7 +595,7 @@ fn fetch_contact_list(
     relay: &mut PoolRelay,
     timeline: &mut Timeline,
 ) {
-    let sub_kind = SubKind::FetchingContactList(timeline.id);
+    let sub_kind = SubKind::FetchingContactList(timeline.kind.clone());
     let sub_id = subscriptions::new_sub_id();
     let local_sub = ndb.subscribe(&filter).expect("sub");
 
@@ -601,14 +618,34 @@ fn setup_initial_timeline(
     note_cache: &mut NoteCache,
     filters: &[Filter],
 ) -> Result<()> {
-    timeline.subscription = Some(ndb.subscribe(filters)?);
-    let txn = Transaction::new(ndb)?;
+    // some timelines are one-shot and a refreshed, like last_per_pubkey algo feed
+    if timeline.kind.should_subscribe_locally() {
+        let local_sub = ndb.subscribe(filters)?;
+        match &mut timeline.subscription {
+            None => {
+                timeline.subscription = Some(MultiSubscriber::with_initial_local_sub(
+                    local_sub,
+                    filters.to_vec(),
+                ));
+            }
+
+            Some(msub) => {
+                msub.local_subid = Some(local_sub);
+            }
+        };
+    }
+
     debug!(
         "querying nostrdb sub {:?} {:?}",
         timeline.subscription, timeline.filter
     );
-    let lim = filters[0].limit().unwrap_or(filter::default_limit()) as i32;
 
+    let mut lim = 0i32;
+    for filter in filters {
+        lim += filter.limit().unwrap_or(1) as i32;
+    }
+
+    let txn = Transaction::new(ndb)?;
     let notes: Vec<NoteRef> = ndb
         .query(&txn, filters, lim)?
         .into_iter()
@@ -623,15 +660,11 @@ fn setup_initial_timeline(
 pub fn setup_initial_nostrdb_subs(
     ndb: &Ndb,
     note_cache: &mut NoteCache,
-    decks_cache: &mut DecksCache,
+    timeline_cache: &mut TimelineCache,
 ) -> Result<()> {
-    for decks in decks_cache.get_all_decks_mut() {
-        for deck in decks.decks_mut() {
-            for timeline in deck.columns_mut().timelines_mut() {
-                if let Err(err) = setup_timeline_nostrdb_sub(ndb, note_cache, timeline) {
-                    error!("setup_initial_nostrdb_subs: {err}");
-                }
-            }
+    for (_kind, timeline) in timeline_cache.timelines.iter_mut() {
+        if let Err(err) = setup_timeline_nostrdb_sub(ndb, note_cache, timeline) {
+            error!("setup_initial_nostrdb_subs: {err}");
         }
     }
 
@@ -663,7 +696,6 @@ pub fn is_timeline_ready(
     pool: &mut RelayPool,
     note_cache: &mut NoteCache,
     timeline: &mut Timeline,
-    our_pk: Option<&Pubkey>,
 ) -> bool {
     // TODO: we should debounce the filter states a bit to make sure we have
     // seen all of the different contact lists from each relay
@@ -696,11 +728,7 @@ pub fn is_timeline_ready(
     let filter = {
         let txn = Transaction::new(ndb).expect("txn");
         let note = ndb.get_note_by_key(&txn, note_key).expect("note");
-        let add_pk = timeline
-            .kind
-            .pubkey_source()
-            .as_ref()
-            .and_then(|pk_src| our_pk.map(|pk| pk_src.to_pubkey_bytes(pk)));
+        let add_pk = timeline.kind.pubkey().map(|pk| pk.bytes());
         filter::filter_from_tags(&note, add_pk, with_hashtags).map(|f| f.into_follow_filter())
     };
 

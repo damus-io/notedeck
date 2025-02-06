@@ -1,61 +1,44 @@
 use crate::{
-    column::Columns,
-    draft::Drafts,
     nav::RenderNavAction,
     profile::ProfileAction,
-    timeline::{TimelineCache, TimelineId, TimelineKind},
-    ui::{
-        self,
-        note::{NoteOptions, QuoteRepostView},
-        profile::ProfileView,
-    },
+    timeline::{TimelineCache, TimelineKind},
+    ui::{self, note::NoteOptions, profile::ProfileView},
 };
 
-use enostr::{NoteId, Pubkey};
-use nostrdb::{Ndb, Transaction};
+use enostr::Pubkey;
+use nostrdb::Ndb;
 use notedeck::{Accounts, ImageCache, MuteFun, NoteCache, UnknownIds};
-
-#[derive(Debug, Eq, PartialEq, Clone, Copy)]
-pub enum TimelineRoute {
-    Timeline(TimelineId),
-    Thread(NoteId),
-    Profile(Pubkey),
-    Reply(NoteId),
-    Quote(NoteId),
-}
 
 #[allow(clippy::too_many_arguments)]
 pub fn render_timeline_route(
     ndb: &Ndb,
-    columns: &mut Columns,
-    drafts: &mut Drafts,
     img_cache: &mut ImageCache,
     unknown_ids: &mut UnknownIds,
     note_cache: &mut NoteCache,
     timeline_cache: &mut TimelineCache,
     accounts: &mut Accounts,
-    route: TimelineRoute,
+    kind: &TimelineKind,
     col: usize,
     textmode: bool,
+    depth: usize,
     ui: &mut egui::Ui,
 ) -> Option<RenderNavAction> {
-    match route {
-        TimelineRoute::Timeline(timeline_id) => {
-            let note_options = {
-                let is_universe = if let Some(timeline) = columns.find_timeline(timeline_id) {
-                    timeline.kind == TimelineKind::Universe
-                } else {
-                    false
-                };
+    let note_options = {
+        let mut options = NoteOptions::new(kind == &TimelineKind::Universe);
+        options.set_textmode(textmode);
+        options
+    };
 
-                let mut options = NoteOptions::new(is_universe);
-                options.set_textmode(textmode);
-                options
-            };
-
+    match kind {
+        TimelineKind::List(_)
+        | TimelineKind::Algo(_)
+        | TimelineKind::Notifications(_)
+        | TimelineKind::Universe
+        | TimelineKind::Hashtag(_)
+        | TimelineKind::Generic(_) => {
             let note_action = ui::TimelineView::new(
-                timeline_id,
-                columns,
+                kind,
+                timeline_cache,
                 ndb,
                 note_cache,
                 img_cache,
@@ -67,89 +50,50 @@ pub fn render_timeline_route(
             note_action.map(RenderNavAction::NoteAction)
         }
 
-        TimelineRoute::Thread(id) => ui::ThreadView::new(
+        TimelineKind::Profile(pubkey) => {
+            if depth > 1 {
+                render_profile_route(
+                    pubkey,
+                    accounts,
+                    ndb,
+                    timeline_cache,
+                    img_cache,
+                    note_cache,
+                    unknown_ids,
+                    col,
+                    ui,
+                    &accounts.mutefun(),
+                )
+            } else {
+                // we render profiles like timelines if they are at the root
+                let note_action = ui::TimelineView::new(
+                    kind,
+                    timeline_cache,
+                    ndb,
+                    note_cache,
+                    img_cache,
+                    note_options,
+                    &accounts.mutefun(),
+                )
+                .ui(ui);
+
+                note_action.map(RenderNavAction::NoteAction)
+            }
+        }
+
+        TimelineKind::Thread(id) => ui::ThreadView::new(
             timeline_cache,
             ndb,
             note_cache,
             unknown_ids,
             img_cache,
-            id.bytes(),
+            id.selected_or_root(),
             textmode,
             &accounts.mutefun(),
         )
         .id_source(egui::Id::new(("threadscroll", col)))
         .ui(ui)
         .map(Into::into),
-
-        TimelineRoute::Reply(id) => {
-            let txn = if let Ok(txn) = Transaction::new(ndb) {
-                txn
-            } else {
-                ui.label("Reply to unknown note");
-                return None;
-            };
-
-            let note = if let Ok(note) = ndb.get_note_by_id(&txn, id.bytes()) {
-                note
-            } else {
-                ui.label("Reply to unknown note");
-                return None;
-            };
-
-            let id = egui::Id::new(("post", col, note.key().unwrap()));
-            let poster = accounts.selected_or_first_nsec()?;
-
-            let action = {
-                let draft = drafts.reply_mut(note.id());
-
-                let response = egui::ScrollArea::vertical().show(ui, |ui| {
-                    ui::PostReplyView::new(ndb, poster, draft, note_cache, img_cache, &note)
-                        .id_source(id)
-                        .show(ui)
-                });
-
-                response.inner.action
-            };
-
-            action.map(Into::into)
-        }
-
-        TimelineRoute::Profile(pubkey) => render_profile_route(
-            &pubkey,
-            accounts,
-            ndb,
-            timeline_cache,
-            img_cache,
-            note_cache,
-            unknown_ids,
-            col,
-            ui,
-            &accounts.mutefun(),
-        ),
-
-        TimelineRoute::Quote(id) => {
-            let txn = Transaction::new(ndb).expect("txn");
-
-            let note = if let Ok(note) = ndb.get_note_by_id(&txn, id.bytes()) {
-                note
-            } else {
-                ui.label("Quote of unknown note");
-                return None;
-            };
-
-            let id = egui::Id::new(("post", col, note.key().unwrap()));
-
-            let poster = accounts.selected_or_first_nsec()?;
-            let draft = drafts.quote_mut(note.id());
-
-            let response = egui::ScrollArea::vertical().show(ui, |ui| {
-                QuoteRepostView::new(ndb, poster, note_cache, img_cache, draft, &note)
-                    .id_source(id)
-                    .show(ui)
-            });
-
-            response.inner.action.map(Into::into)
-        }
     }
 }
 
@@ -191,5 +135,34 @@ pub fn render_profile_route(
         }
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use enostr::NoteId;
+    use tokenator::{TokenParser, TokenSerializable, TokenWriter};
+
+    use crate::timeline::{ThreadSelection, TimelineKind};
+    use enostr::Pubkey;
+    use notedeck::RootNoteIdBuf;
+
+    #[test]
+    fn test_timeline_route_serialize() {
+        use super::TimelineKind;
+
+        let note_id_hex = "1c54e5b0c386425f7e017d9e068ddef8962eb2ce1bb08ed27e24b93411c12e60";
+        let note_id = NoteId::from_hex(note_id_hex).unwrap();
+        let data_str = format!("thread:{}", note_id_hex);
+        let data = &data_str.split(":").collect::<Vec<&str>>();
+        let mut token_writer = TokenWriter::default();
+        let mut parser = TokenParser::new(&data);
+        let parsed = TimelineKind::parse(&mut parser, &Pubkey::new(*note_id.bytes())).unwrap();
+        let expected = TimelineKind::Thread(ThreadSelection::from_root_id(
+            RootNoteIdBuf::new_unsafe(*note_id.bytes()),
+        ));
+        parsed.serialize_tokens(&mut token_writer);
+        assert_eq!(expected, parsed);
+        assert_eq!(token_writer.str(), data_str);
     }
 }

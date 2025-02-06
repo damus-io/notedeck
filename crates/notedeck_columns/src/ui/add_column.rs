@@ -10,12 +10,14 @@ use nostrdb::{Ndb, Transaction};
 
 use crate::{
     login_manager::AcquireKeyState,
-    timeline::{PubkeySource, Timeline, TimelineKind},
+    route::Route,
+    timeline::{kind::ListKind, PubkeySource, Timeline, TimelineKind},
     ui::anim::ICON_EXPANSION_MULTIPLE,
     Damus,
 };
 
 use notedeck::{AppContext, ImageCache, NotedeckTextStyle, UserAccount};
+use tokenator::{ParseError, TokenParser, TokenSerializable, TokenWriter};
 
 use super::{anim::AnimationHelper, padding, ProfilePreview};
 
@@ -24,13 +26,25 @@ pub enum AddColumnResponse {
     UndecidedNotification,
     ExternalNotification,
     Hashtag,
+    Algo(AlgoOption),
     UndecidedIndividual,
     ExternalIndividual,
 }
 
 pub enum NotificationColumnType {
-    Home,
+    Contacts,
     External,
+}
+
+#[derive(Clone, Debug)]
+pub enum Decision<T> {
+    Undecided,
+    Decided(T),
+}
+
+#[derive(Clone, Debug)]
+pub enum AlgoOption {
+    LastPerPubkey(Decision<ListKind>),
 }
 
 #[derive(Clone, Debug)]
@@ -38,13 +52,21 @@ enum AddColumnOption {
     Universe,
     UndecidedNotification,
     ExternalNotification,
+    Algo(AlgoOption),
     Notification(PubkeySource),
-    Home(PubkeySource),
+    Contacts(PubkeySource),
     UndecidedHashtag,
     Hashtag(String),
     UndecidedIndividual,
     ExternalIndividual,
     Individual(PubkeySource),
+}
+
+#[derive(Clone, Copy, Eq, PartialEq, Debug, Default)]
+pub enum AddAlgoRoute {
+    #[default]
+    Base,
+    LastPerPubkey,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq, Debug)]
@@ -53,8 +75,66 @@ pub enum AddColumnRoute {
     UndecidedNotification,
     ExternalNotification,
     Hashtag,
+    Algo(AddAlgoRoute),
     UndecidedIndividual,
     ExternalIndividual,
+}
+
+// Parser for the common case without any payloads
+fn parse_column_route<'a>(
+    parser: &mut TokenParser<'a>,
+    route: AddColumnRoute,
+) -> Result<AddColumnRoute, ParseError<'a>> {
+    parser.parse_all(|p| {
+        for token in route.tokens() {
+            p.parse_token(token)?;
+        }
+        Ok(route)
+    })
+}
+
+impl AddColumnRoute {
+    /// Route tokens use in both serialization and deserialization
+    fn tokens(&self) -> &'static [&'static str] {
+        match self {
+            Self::Base => &["column"],
+            Self::UndecidedNotification => &["column", "notification_selection"],
+            Self::ExternalNotification => &["column", "external_notif_selection"],
+            Self::UndecidedIndividual => &["column", "individual_selection"],
+            Self::ExternalIndividual => &["column", "external_individual_selection"],
+            Self::Hashtag => &["column", "hashtag"],
+            Self::Algo(AddAlgoRoute::Base) => &["column", "algo_selection"],
+            Self::Algo(AddAlgoRoute::LastPerPubkey) => {
+                &["column", "algo_selection", "last_per_pubkey"]
+            } // NOTE!!! When adding to this, update the parser for TokenSerializable below
+        }
+    }
+}
+
+impl TokenSerializable for AddColumnRoute {
+    fn serialize_tokens(&self, writer: &mut TokenWriter) {
+        for token in self.tokens() {
+            writer.write_token(token);
+        }
+    }
+
+    fn parse_from_tokens<'a>(parser: &mut TokenParser<'a>) -> Result<Self, ParseError<'a>> {
+        parser.peek_parse_token("column")?;
+
+        TokenParser::alt(
+            parser,
+            &[
+                |p| parse_column_route(p, AddColumnRoute::Base),
+                |p| parse_column_route(p, AddColumnRoute::UndecidedNotification),
+                |p| parse_column_route(p, AddColumnRoute::ExternalNotification),
+                |p| parse_column_route(p, AddColumnRoute::UndecidedIndividual),
+                |p| parse_column_route(p, AddColumnRoute::ExternalIndividual),
+                |p| parse_column_route(p, AddColumnRoute::Hashtag),
+                |p| parse_column_route(p, AddColumnRoute::Algo(AddAlgoRoute::Base)),
+                |p| parse_column_route(p, AddColumnRoute::Algo(AddAlgoRoute::LastPerPubkey)),
+            ],
+        )
+    }
 }
 
 impl AddColumnOption {
@@ -63,31 +143,39 @@ impl AddColumnOption {
         ndb: &Ndb,
         cur_account: Option<&UserAccount>,
     ) -> Option<AddColumnResponse> {
+        let txn = Transaction::new(ndb).unwrap();
         match self {
+            AddColumnOption::Algo(algo_option) => Some(AddColumnResponse::Algo(algo_option)),
             AddColumnOption::Universe => TimelineKind::Universe
-                .into_timeline(ndb, None)
+                .into_timeline(&txn, ndb)
                 .map(AddColumnResponse::Timeline),
-            AddColumnOption::Notification(pubkey) => TimelineKind::Notifications(pubkey)
-                .into_timeline(ndb, cur_account.map(|a| a.pubkey.bytes()))
-                .map(AddColumnResponse::Timeline),
+            AddColumnOption::Notification(pubkey) => {
+                TimelineKind::Notifications(*pubkey.to_pubkey(&cur_account.map(|kp| kp.pubkey)?))
+                    .into_timeline(&txn, ndb)
+                    .map(AddColumnResponse::Timeline)
+            }
             AddColumnOption::UndecidedNotification => {
                 Some(AddColumnResponse::UndecidedNotification)
             }
-            AddColumnOption::Home(pubkey) => {
-                let tlk = TimelineKind::contact_list(pubkey);
-                tlk.into_timeline(ndb, cur_account.map(|a| a.pubkey.bytes()))
+            AddColumnOption::Contacts(pk_src) => {
+                let tlk = TimelineKind::contact_list(
+                    *pk_src.to_pubkey(&cur_account.map(|kp| kp.pubkey)?),
+                );
+                tlk.into_timeline(&txn, ndb)
                     .map(AddColumnResponse::Timeline)
             }
             AddColumnOption::ExternalNotification => Some(AddColumnResponse::ExternalNotification),
             AddColumnOption::UndecidedHashtag => Some(AddColumnResponse::Hashtag),
             AddColumnOption::Hashtag(hashtag) => TimelineKind::Hashtag(hashtag)
-                .into_timeline(ndb, None)
+                .into_timeline(&txn, ndb)
                 .map(AddColumnResponse::Timeline),
             AddColumnOption::UndecidedIndividual => Some(AddColumnResponse::UndecidedIndividual),
             AddColumnOption::ExternalIndividual => Some(AddColumnResponse::ExternalIndividual),
             AddColumnOption::Individual(pubkey_source) => {
-                let tlk = TimelineKind::profile(pubkey_source);
-                tlk.into_timeline(ndb, cur_account.map(|a| a.pubkey.bytes()))
+                let tlk = TimelineKind::profile(
+                    *pubkey_source.to_pubkey(&cur_account.map(|kp| kp.pubkey)?),
+                );
+                tlk.into_timeline(&txn, ndb)
                     .map(AddColumnResponse::Timeline)
             }
         }
@@ -151,6 +239,44 @@ impl<'a> AddColumnView<'a> {
         })
     }
 
+    fn algo_last_per_pk_ui(
+        &mut self,
+        ui: &mut Ui,
+        deck_author: Pubkey,
+    ) -> Option<AddColumnResponse> {
+        let algo_option = ColumnOptionData {
+            title: "Contact List",
+            description: "Source the last note for each user in your contact list",
+            icon: egui::include_image!("../../../../assets/icons/home_icon_dark_4x.png"),
+            option: AddColumnOption::Algo(AlgoOption::LastPerPubkey(Decision::Decided(
+                ListKind::contact_list(deck_author),
+            ))),
+        };
+
+        let option = algo_option.option.clone();
+        if self.column_option_ui(ui, algo_option).clicked() {
+            option.take_as_response(self.ndb, self.cur_account)
+        } else {
+            None
+        }
+    }
+
+    fn algo_ui(&mut self, ui: &mut Ui) -> Option<AddColumnResponse> {
+        let algo_option = ColumnOptionData {
+            title: "Last Note per User",
+            description: "Show the last note for each user from a list",
+            icon: egui::include_image!("../../../../assets/icons/universe_icon_dark_4x.png"),
+            option: AddColumnOption::Algo(AlgoOption::LastPerPubkey(Decision::Undecided)),
+        };
+
+        let option = algo_option.option.clone();
+        if self.column_option_ui(ui, algo_option).clicked() {
+            option.take_as_response(self.ndb, self.cur_account)
+        } else {
+            None
+        }
+    }
+
     fn individual_ui(&mut self, ui: &mut Ui) -> Option<AddColumnResponse> {
         let mut selected_option: Option<AddColumnResponse> = None;
         for column_option_data in self.get_individual_options() {
@@ -204,18 +330,22 @@ impl<'a> AddColumnView<'a> {
             }
 
             let resp = if let Some(keypair) = key_state.get_login_keypair() {
-                let txn = Transaction::new(self.ndb).expect("txn");
-                if let Ok(profile) = self.ndb.get_profile_by_pubkey(&txn, keypair.pubkey.bytes()) {
-                    egui::Frame::window(ui.style())
-                        .outer_margin(Margin {
-                            left: 4.0,
-                            right: 4.0,
-                            top: 12.0,
-                            bottom: 32.0,
-                        })
-                        .show(ui, |ui| {
-                            ProfilePreview::new(&profile, self.img_cache).ui(ui);
-                        });
+                {
+                    let txn = Transaction::new(self.ndb).expect("txn");
+                    if let Ok(profile) =
+                        self.ndb.get_profile_by_pubkey(&txn, keypair.pubkey.bytes())
+                    {
+                        egui::Frame::window(ui.style())
+                            .outer_margin(Margin {
+                                left: 4.0,
+                                right: 4.0,
+                                top: 12.0,
+                                bottom: 32.0,
+                            })
+                            .show(ui, |ui| {
+                                ProfilePreview::new(&profile, self.img_cache).ui(ui);
+                            });
+                    }
                 }
 
                 if ui.add(add_column_button()).clicked() {
@@ -352,10 +482,10 @@ impl<'a> AddColumnView<'a> {
             };
 
             vec.push(ColumnOptionData {
-                title: "Home timeline",
-                description: "See recommended notes first",
+                title: "Contacts",
+                description: "See notes from your contacts",
                 icon: egui::include_image!("../../../../assets/icons/home_icon_dark_4x.png"),
-                option: AddColumnOption::Home(source.clone()),
+                option: AddColumnOption::Contacts(source),
             });
         }
         vec.push(ColumnOptionData {
@@ -375,6 +505,12 @@ impl<'a> AddColumnView<'a> {
             description: "Stay up to date with someone's notes & replies",
             icon: egui::include_image!("../../../../assets/icons/profile_icon_4x.png"),
             option: AddColumnOption::UndecidedIndividual,
+        });
+        vec.push(ColumnOptionData {
+            title: "Algo",
+            description: "Algorithmic feeds to aid in note discovery",
+            icon: egui::include_image!("../../../../assets/icons/plus_icon_4x.png"),
+            option: AddColumnOption::Algo(AlgoOption::LastPerPubkey(Decision::Undecided)),
         });
 
         vec
@@ -486,6 +622,16 @@ pub fn render_add_column_routes(
     );
     let resp = match route {
         AddColumnRoute::Base => add_column_view.ui(ui),
+        AddColumnRoute::Algo(r) => match r {
+            AddAlgoRoute::Base => add_column_view.algo_ui(ui),
+            AddAlgoRoute::LastPerPubkey => {
+                if let Some(deck_author) = ctx.accounts.get_selected_account() {
+                    add_column_view.algo_last_per_pk_ui(ui, deck_author.pubkey)
+                } else {
+                    None
+                }
+            }
+        },
         AddColumnRoute::UndecidedNotification => add_column_view.notifications_ui(ui),
         AddColumnRoute::ExternalNotification => add_column_view.external_notification_ui(ui),
         AddColumnRoute::Hashtag => hashtag_ui(ui, ctx.ndb, &mut app.view_state.id_string_map),
@@ -503,21 +649,73 @@ pub fn render_add_column_routes(
                     ctx.pool,
                     ctx.note_cache,
                     app.since_optimize,
-                    ctx.accounts
-                        .get_selected_account()
-                        .as_ref()
-                        .map(|sa| &sa.pubkey),
                 );
+
                 app.columns_mut(ctx.accounts)
-                    .add_timeline_to_column(col, timeline);
+                    .column_mut(col)
+                    .router_mut()
+                    .route_to_replaced(Route::timeline(timeline.kind.clone()));
+
+                app.timeline_cache
+                    .timelines
+                    .insert(timeline.kind.clone(), timeline);
             }
+
+            AddColumnResponse::Algo(algo_option) => match algo_option {
+                // If we are undecided, we simply route to the LastPerPubkey
+                // algo route selection
+                AlgoOption::LastPerPubkey(Decision::Undecided) => {
+                    app.columns_mut(ctx.accounts)
+                        .column_mut(col)
+                        .router_mut()
+                        .route_to(Route::AddColumn(AddColumnRoute::Algo(
+                            AddAlgoRoute::LastPerPubkey,
+                        )));
+                }
+
+                // We have a decision on where we want the last per pubkey
+                // source to be, so let;s create a timeline from that and
+                // add it to our list of timelines
+                AlgoOption::LastPerPubkey(Decision::Decided(list_kind)) => {
+                    let maybe_timeline = {
+                        let txn = Transaction::new(ctx.ndb).unwrap();
+                        TimelineKind::last_per_pubkey(list_kind).into_timeline(&txn, ctx.ndb)
+                    };
+
+                    if let Some(mut timeline) = maybe_timeline {
+                        crate::timeline::setup_new_timeline(
+                            &mut timeline,
+                            ctx.ndb,
+                            &mut app.subscriptions,
+                            ctx.pool,
+                            ctx.note_cache,
+                            app.since_optimize,
+                        );
+
+                        app.columns_mut(ctx.accounts)
+                            .column_mut(col)
+                            .router_mut()
+                            .route_to_replaced(Route::timeline(timeline.kind.clone()));
+
+                        app.timeline_cache
+                            .timelines
+                            .insert(timeline.kind.clone(), timeline);
+                    } else {
+                        // we couldn't fetch the timeline yet... let's let
+                        // the user know ?
+
+                        // TODO: spin off the list search here instead
+
+                        ui.label(format!("error: could not find {:?}", &list_kind));
+                    }
+                }
+            },
+
             AddColumnResponse::UndecidedNotification => {
                 app.columns_mut(ctx.accounts)
                     .column_mut(col)
                     .router_mut()
-                    .route_to(crate::route::Route::AddColumn(
-                        AddColumnRoute::UndecidedNotification,
-                    ));
+                    .route_to(Route::AddColumn(AddColumnRoute::UndecidedNotification));
             }
             AddColumnResponse::ExternalNotification => {
                 app.columns_mut(ctx.accounts)
@@ -586,4 +784,38 @@ pub fn hashtag_ui(
         }
     })
     .inner
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_column_serialize() {
+        use super::{AddAlgoRoute, AddColumnRoute};
+
+        {
+            let data_str = "column:algo_selection:last_per_pubkey";
+            let data = &data_str.split(":").collect::<Vec<&str>>();
+            let mut token_writer = TokenWriter::default();
+            let mut parser = TokenParser::new(&data);
+            let parsed = AddColumnRoute::parse_from_tokens(&mut parser).unwrap();
+            let expected = AddColumnRoute::Algo(AddAlgoRoute::LastPerPubkey);
+            parsed.serialize_tokens(&mut token_writer);
+            assert_eq!(expected, parsed);
+            assert_eq!(token_writer.str(), data_str);
+        }
+
+        {
+            let data_str = "column";
+            let mut token_writer = TokenWriter::default();
+            let data: &[&str] = &[data_str];
+            let mut parser = TokenParser::new(data);
+            let parsed = AddColumnRoute::parse_from_tokens(&mut parser).unwrap();
+            let expected = AddColumnRoute::Base;
+            parsed.serialize_tokens(&mut token_writer);
+            assert_eq!(expected, parsed);
+            assert_eq!(token_writer.str(), data_str);
+        }
+    }
 }

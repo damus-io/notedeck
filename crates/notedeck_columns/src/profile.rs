@@ -1,16 +1,13 @@
 use std::collections::HashMap;
 
-use enostr::{Filter, FullKeypair, Pubkey, PubkeyRef, RelayPool};
-use nostrdb::{FilterBuilder, Ndb, Note, NoteBuildOptions, NoteBuilder, ProfileRecord};
+use enostr::{FullKeypair, Pubkey, RelayPool};
+use nostrdb::{Ndb, Note, NoteBuildOptions, NoteBuilder, ProfileRecord};
 
-use notedeck::{filter::default_limit, FilterState};
 use tracing::info;
 
 use crate::{
-    multi_subscriber::MultiSubscriber,
     profile_state::ProfileState,
     route::{Route, Router},
-    timeline::{PubkeySource, Timeline, TimelineKind, TimelineTab},
 };
 
 pub struct NostrName<'a> {
@@ -72,33 +69,6 @@ pub fn get_display_name<'a>(record: Option<&ProfileRecord<'a>>) -> NostrName<'a>
         }
     } else {
         NostrName::unknown()
-    }
-}
-
-pub struct Profile {
-    pub timeline: Timeline,
-    pub subscription: Option<MultiSubscriber>,
-}
-
-impl Profile {
-    pub fn new(source: PubkeySource, filters: Vec<Filter>) -> Self {
-        let timeline = Timeline::new(
-            TimelineKind::profile(source),
-            FilterState::ready(filters),
-            TimelineTab::full_tabs(),
-        );
-
-        Profile {
-            timeline,
-            subscription: None,
-        }
-    }
-
-    pub fn filters_raw(pk: PubkeyRef<'_>) -> Vec<FilterBuilder> {
-        vec![Filter::new()
-            .authors([pk.bytes()])
-            .kinds([1])
-            .limit(default_limit())]
     }
 }
 

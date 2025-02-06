@@ -1,8 +1,5 @@
-use notedeck::FilterState;
-
-use crate::timeline::{PubkeySource, Timeline, TimelineKind, TimelineTab};
+use crate::timeline::TimelineKind;
 use enostr::{Filter, Pubkey};
-use nostrdb::Ndb;
 use tracing::{debug, error, info};
 
 pub struct ColumnsArgs {
@@ -12,7 +9,7 @@ pub struct ColumnsArgs {
 }
 
 impl ColumnsArgs {
-    pub fn parse(args: &[String]) -> Self {
+    pub fn parse(args: &[String], deck_author: Option<&Pubkey>) -> Self {
         let mut res = Self {
             columns: vec![],
             since_optimize: true,
@@ -55,40 +52,48 @@ impl ColumnsArgs {
                     if let Ok(pubkey) = Pubkey::parse(rest) {
                         info!("contact column for user {}", pubkey.hex());
                         res.columns
-                            .push(ArgColumn::Timeline(TimelineKind::contact_list(
-                                PubkeySource::Explicit(pubkey),
-                            )))
+                            .push(ArgColumn::Timeline(TimelineKind::contact_list(pubkey)))
                     } else {
                         error!("error parsing contacts pubkey {}", rest);
                         continue;
                     }
                 } else if column_name == "contacts" {
-                    res.columns
-                        .push(ArgColumn::Timeline(TimelineKind::contact_list(
-                            PubkeySource::DeckAuthor,
-                        )))
+                    if let Some(deck_author) = deck_author {
+                        res.columns
+                            .push(ArgColumn::Timeline(TimelineKind::contact_list(
+                                deck_author.to_owned(),
+                            )))
+                    } else {
+                        panic!("No accounts available, could not handle implicit pubkey contacts column")
+                    }
                 } else if let Some(notif_pk_str) = column_name.strip_prefix("notifications:") {
                     if let Ok(pubkey) = Pubkey::parse(notif_pk_str) {
                         info!("got notifications column for user {}", pubkey.hex());
                         res.columns
-                            .push(ArgColumn::Timeline(TimelineKind::notifications(
-                                PubkeySource::Explicit(pubkey),
-                            )))
+                            .push(ArgColumn::Timeline(TimelineKind::notifications(pubkey)))
                     } else {
                         error!("error parsing notifications pubkey {}", notif_pk_str);
                         continue;
                     }
                 } else if column_name == "notifications" {
                     debug!("got notification column for default user");
-                    res.columns
-                        .push(ArgColumn::Timeline(TimelineKind::notifications(
-                            PubkeySource::DeckAuthor,
-                        )))
+                    if let Some(deck_author) = deck_author {
+                        res.columns
+                            .push(ArgColumn::Timeline(TimelineKind::notifications(
+                                deck_author.to_owned(),
+                            )));
+                    } else {
+                        panic!("Tried to push notifications timeline with no available users");
+                    }
                 } else if column_name == "profile" {
                     debug!("got profile column for default user");
-                    res.columns.push(ArgColumn::Timeline(TimelineKind::profile(
-                        PubkeySource::DeckAuthor,
-                    )))
+                    if let Some(deck_author) = deck_author {
+                        res.columns.push(ArgColumn::Timeline(TimelineKind::profile(
+                            deck_author.to_owned(),
+                        )));
+                    } else {
+                        panic!("Tried to push profile timeline with no available users");
+                    }
                 } else if column_name == "universe" {
                     debug!("got universe column");
                     res.columns
@@ -96,9 +101,8 @@ impl ColumnsArgs {
                 } else if let Some(profile_pk_str) = column_name.strip_prefix("profile:") {
                     if let Ok(pubkey) = Pubkey::parse(profile_pk_str) {
                         info!("got profile column for user {}", pubkey.hex());
-                        res.columns.push(ArgColumn::Timeline(TimelineKind::profile(
-                            PubkeySource::Explicit(pubkey),
-                        )))
+                        res.columns
+                            .push(ArgColumn::Timeline(TimelineKind::profile(pubkey)))
                     } else {
                         error!("error parsing profile pubkey {}", profile_pk_str);
                         continue;
@@ -146,14 +150,13 @@ pub enum ArgColumn {
 }
 
 impl ArgColumn {
-    pub fn into_timeline(self, ndb: &Ndb, user: Option<&[u8; 32]>) -> Option<Timeline> {
+    pub fn into_timeline_kind(self) -> TimelineKind {
         match self {
-            ArgColumn::Generic(filters) => Some(Timeline::new(
-                TimelineKind::Generic,
-                FilterState::ready(filters),
-                TimelineTab::full_tabs(),
-            )),
-            ArgColumn::Timeline(tk) => tk.into_timeline(ndb, user),
+            ArgColumn::Generic(_filters) => {
+                // TODO: fix generic filters by referencing some filter map
+                TimelineKind::Generic(0)
+            }
+            ArgColumn::Timeline(tk) => tk,
         }
     }
 }

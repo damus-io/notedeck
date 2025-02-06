@@ -1,25 +1,28 @@
 use std::{collections::HashMap, fmt, str::FromStr};
 
-use enostr::{NoteId, Pubkey};
-use nostrdb::Ndb;
+use enostr::Pubkey;
+use nostrdb::{Ndb, Transaction};
 use serde::{Deserialize, Serialize};
 use tracing::{error, info};
 
 use crate::{
-    accounts::AccountsRoute,
     column::{Columns, IntermediaryRoute},
     decks::{Deck, Decks, DecksCache},
     route::Route,
-    timeline::{kind::ListKind, PubkeySource, TimelineKind, TimelineRoute},
-    ui::add_column::AddColumnRoute,
+    timeline::{TimelineCache, TimelineKind},
     Error,
 };
 
 use notedeck::{storage, DataPath, DataPathType, Directory};
+use tokenator::{ParseError, TokenParser, TokenWriter};
 
 pub static DECKS_CACHE_FILE: &str = "decks_cache.json";
 
-pub fn load_decks_cache(path: &DataPath, ndb: &Ndb) -> Option<DecksCache> {
+pub fn load_decks_cache(
+    path: &DataPath,
+    ndb: &Ndb,
+    timeline_cache: &mut TimelineCache,
+) -> Option<DecksCache> {
     let data_path = path.path(DataPathType::Setting);
 
     let decks_cache_str = match Directory::new(data_path).get_file(DECKS_CACHE_FILE.to_owned()) {
@@ -36,7 +39,9 @@ pub fn load_decks_cache(path: &DataPath, ndb: &Ndb) -> Option<DecksCache> {
     let serializable_decks_cache =
         serde_json::from_str::<SerializableDecksCache>(&decks_cache_str).ok()?;
 
-    serializable_decks_cache.decks_cache(ndb).ok()
+    serializable_decks_cache
+        .decks_cache(ndb, timeline_cache)
+        .ok()
 }
 
 pub fn save_decks_cache(path: &DataPath, decks_cache: &DecksCache) {
@@ -82,14 +87,17 @@ impl SerializableDecksCache {
         }
     }
 
-    pub fn decks_cache(self, ndb: &Ndb) -> Result<DecksCache, Error> {
+    pub fn decks_cache(
+        self,
+        ndb: &Ndb,
+        timeline_cache: &mut TimelineCache,
+    ) -> Result<DecksCache, Error> {
         let account_to_decks = self
             .decks_cache
             .into_iter()
             .map(|(pubkey, serializable_decks)| {
-                let deck_key = pubkey.bytes();
                 serializable_decks
-                    .decks(ndb, deck_key)
+                    .decks(ndb, timeline_cache, &pubkey)
                     .map(|decks| (pubkey, decks))
             })
             .collect::<Result<HashMap<Pubkey, Decks>, Error>>()?;
@@ -143,12 +151,17 @@ impl SerializableDecks {
         }
     }
 
-    fn decks(self, ndb: &Ndb, deck_key: &[u8; 32]) -> Result<Decks, Error> {
+    fn decks(
+        self,
+        ndb: &Ndb,
+        timeline_cache: &mut TimelineCache,
+        deck_key: &Pubkey,
+    ) -> Result<Decks, Error> {
         Ok(Decks::from_decks(
             self.active_deck,
             self.decks
                 .into_iter()
-                .map(|d| d.deck(ndb, deck_key))
+                .map(|d| d.deck(ndb, timeline_cache, deck_key))
                 .collect::<Result<_, _>>()?,
         ))
     }
@@ -253,8 +266,13 @@ impl SerializableDeck {
         SerializableDeck { metadata, columns }
     }
 
-    pub fn deck(self, ndb: &Ndb, deck_user: &[u8; 32]) -> Result<Deck, Error> {
-        let columns = deserialize_columns(ndb, deck_user, self.columns);
+    pub fn deck(
+        self,
+        ndb: &Ndb,
+        timeline_cache: &mut TimelineCache,
+        deck_user: &Pubkey,
+    ) -> Result<Deck, Error> {
+        let columns = deserialize_columns(ndb, timeline_cache, deck_user, self.columns);
         let deserialized_metadata = deserialize_metadata(self.metadata)
             .ok_or(Error::Generic("Could not deserialize metadata".to_owned()))?;
 
@@ -283,9 +301,9 @@ fn serialize_columns(columns: &Columns) -> Vec<Vec<String>> {
     for column in columns.columns() {
         let mut column_routes = Vec::new();
         for route in column.router().routes() {
-            if let Some(route_str) = serialize_route(route, columns) {
-                column_routes.push(route_str);
-            }
+            let mut writer = TokenWriter::default();
+            route.serialize_tokens(&mut writer);
+            column_routes.push(writer.str().to_string());
         }
         cols_serialized.push(column_routes);
     }
@@ -293,143 +311,38 @@ fn serialize_columns(columns: &Columns) -> Vec<Vec<String>> {
     cols_serialized
 }
 
-fn deserialize_columns(ndb: &Ndb, deck_user: &[u8; 32], serialized: Vec<Vec<String>>) -> Columns {
+fn deserialize_columns(
+    ndb: &Ndb,
+    timeline_cache: &mut TimelineCache,
+    deck_user: &Pubkey,
+    columns: Vec<Vec<String>>,
+) -> Columns {
     let mut cols = Columns::new();
-    for serialized_routes in serialized {
+    for column in columns {
         let mut cur_routes = Vec::new();
-        for serialized_route in serialized_routes {
-            let selections = Selection::from_serialized(&serialized_route);
-            if let Some(route_intermediary) = selections_to_route(selections.clone()) {
-                if let Some(ir) = route_intermediary.intermediary_route(ndb, Some(deck_user)) {
-                    match &ir {
-                        IntermediaryRoute::Route(Route::Timeline(TimelineRoute::Thread(_)))
-                        | IntermediaryRoute::Route(Route::Timeline(TimelineRoute::Profile(_))) => {
-                            // Do nothing. TimelineRoute Threads & Profiles not yet supported for deserialization
-                        }
-                        _ => cur_routes.push(ir),
+
+        for route in column {
+            let tokens: Vec<&str> = route.split(":").collect();
+            let mut parser = TokenParser::new(&tokens);
+
+            match CleanIntermediaryRoute::parse(&mut parser, deck_user) {
+                Ok(route_intermediary) => {
+                    if let Some(ir) = route_intermediary.into_intermediary_route(ndb) {
+                        cur_routes.push(ir);
                     }
                 }
-            } else {
-                error!(
-                    "could not turn selections to RouteIntermediary: {:?}",
-                    selections
-                );
+                Err(err) => {
+                    error!("could not turn tokens to RouteIntermediary: {:?}", err);
+                }
             }
         }
 
         if !cur_routes.is_empty() {
-            cols.insert_intermediary_routes(cur_routes);
+            cols.insert_intermediary_routes(timeline_cache, cur_routes);
         }
     }
 
     cols
-}
-
-#[derive(Clone, Debug)]
-enum Selection {
-    Keyword(Keyword),
-    Payload(String),
-}
-
-#[derive(Clone, PartialEq, Debug)]
-enum Keyword {
-    Notifs,
-    Universe,
-    Contact,
-    Explicit,
-    DeckAuthor,
-    Profile,
-    Hashtag,
-    Generic,
-    Thread,
-    Reply,
-    Quote,
-    Account,
-    Show,
-    New,
-    Relay,
-    Compose,
-    Column,
-    NotificationSelection,
-    ExternalNotifSelection,
-    HashtagSelection,
-    Support,
-    Deck,
-    Edit,
-    IndividualSelection,
-    ExternalIndividualSelection,
-}
-
-impl Keyword {
-    const MAPPING: &'static [(&'static str, Keyword, bool)] = &[
-        ("notifs", Keyword::Notifs, false),
-        ("universe", Keyword::Universe, false),
-        ("contact", Keyword::Contact, false),
-        ("explicit", Keyword::Explicit, true),
-        ("deck_author", Keyword::DeckAuthor, false),
-        ("profile", Keyword::Profile, false),
-        ("hashtag", Keyword::Hashtag, true),
-        ("generic", Keyword::Generic, false),
-        ("thread", Keyword::Thread, true),
-        ("reply", Keyword::Reply, true),
-        ("quote", Keyword::Quote, true),
-        ("account", Keyword::Account, false),
-        ("show", Keyword::Show, false),
-        ("new", Keyword::New, false),
-        ("relay", Keyword::Relay, false),
-        ("compose", Keyword::Compose, false),
-        ("column", Keyword::Column, false),
-        (
-            "notification_selection",
-            Keyword::NotificationSelection,
-            false,
-        ),
-        (
-            "external_notif_selection",
-            Keyword::ExternalNotifSelection,
-            false,
-        ),
-        ("hashtag_selection", Keyword::HashtagSelection, false),
-        ("support", Keyword::Support, false),
-        ("deck", Keyword::Deck, false),
-        ("edit", Keyword::Edit, true),
-    ];
-
-    fn has_payload(&self) -> bool {
-        Keyword::MAPPING
-            .iter()
-            .find(|(_, keyword, _)| keyword == self)
-            .map(|(_, _, has_payload)| *has_payload)
-            .unwrap_or(false)
-    }
-}
-
-impl fmt::Display for Keyword {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if let Some(name) = Keyword::MAPPING
-            .iter()
-            .find(|(_, keyword, _)| keyword == self)
-            .map(|(name, _, _)| *name)
-        {
-            write!(f, "{}", name)
-        } else {
-            write!(f, "UnknownKeyword")
-        }
-    }
-}
-
-impl FromStr for Keyword {
-    type Err = Error;
-
-    fn from_str(serialized: &str) -> Result<Self, Self::Err> {
-        Keyword::MAPPING
-            .iter()
-            .find(|(name, _, _)| *name == serialized)
-            .map(|(_, keyword, _)| keyword.clone())
-            .ok_or(Error::Generic(
-                "Could not convert string to Keyword enum".to_owned(),
-            ))
-    }
 }
 
 enum CleanIntermediaryRoute {
@@ -438,357 +351,38 @@ enum CleanIntermediaryRoute {
 }
 
 impl CleanIntermediaryRoute {
-    fn intermediary_route(self, ndb: &Ndb, user: Option<&[u8; 32]>) -> Option<IntermediaryRoute> {
+    fn into_intermediary_route(self, ndb: &Ndb) -> Option<IntermediaryRoute> {
         match self {
-            CleanIntermediaryRoute::ToTimeline(timeline_kind) => Some(IntermediaryRoute::Timeline(
-                timeline_kind.into_timeline(ndb, user)?,
-            )),
+            CleanIntermediaryRoute::ToTimeline(timeline_kind) => {
+                let txn = Transaction::new(ndb).unwrap();
+                Some(IntermediaryRoute::Timeline(
+                    timeline_kind.into_timeline(&txn, ndb)?,
+                ))
+            }
             CleanIntermediaryRoute::ToRoute(route) => Some(IntermediaryRoute::Route(route)),
         }
     }
-}
 
-// TODO: The public-accessible version will be a subset of this
-fn serialize_route(route: &Route, columns: &Columns) -> Option<String> {
-    let mut selections: Vec<Selection> = Vec::new();
-    match route {
-        Route::Timeline(timeline_route) => match timeline_route {
-            TimelineRoute::Timeline(timeline_id) => {
-                if let Some(timeline) = columns.find_timeline(*timeline_id) {
-                    match &timeline.kind {
-                        TimelineKind::List(list_kind) => match list_kind {
-                            ListKind::Contact(pubkey_source) => {
-                                selections.push(Selection::Keyword(Keyword::Contact));
-                                selections.extend(generate_pubkey_selections(pubkey_source));
-                            }
-                        },
-                        TimelineKind::Notifications(pubkey_source) => {
-                            selections.push(Selection::Keyword(Keyword::Notifs));
-                            selections.extend(generate_pubkey_selections(pubkey_source));
-                        }
-                        TimelineKind::Profile(pubkey_source) => {
-                            selections.push(Selection::Keyword(Keyword::Profile));
-                            selections.extend(generate_pubkey_selections(pubkey_source));
-                        }
-                        TimelineKind::Universe => {
-                            selections.push(Selection::Keyword(Keyword::Universe))
-                        }
-                        TimelineKind::Thread(root_id) => {
-                            selections.push(Selection::Keyword(Keyword::Thread));
-                            selections.push(Selection::Payload(hex::encode(root_id.bytes())));
-                        }
-                        TimelineKind::Generic => {
-                            selections.push(Selection::Keyword(Keyword::Generic))
-                        }
-                        TimelineKind::Hashtag(hashtag) => {
-                            selections.push(Selection::Keyword(Keyword::Hashtag));
-                            selections.push(Selection::Payload(hashtag.to_string()));
-                        }
-                    }
-                }
-            }
-            TimelineRoute::Thread(note_id) => {
-                selections.push(Selection::Keyword(Keyword::Thread));
-                selections.push(Selection::Payload(note_id.hex()));
-            }
-            TimelineRoute::Profile(pubkey) => {
-                selections.push(Selection::Keyword(Keyword::Profile));
-                selections.push(Selection::Keyword(Keyword::Explicit));
-                selections.push(Selection::Payload(pubkey.hex()));
-            }
-            TimelineRoute::Reply(note_id) => {
-                selections.push(Selection::Keyword(Keyword::Reply));
-                selections.push(Selection::Payload(note_id.hex()));
-            }
-            TimelineRoute::Quote(note_id) => {
-                selections.push(Selection::Keyword(Keyword::Quote));
-                selections.push(Selection::Payload(note_id.hex()));
-            }
-        },
-        Route::Accounts(accounts_route) => {
-            selections.push(Selection::Keyword(Keyword::Account));
-            match accounts_route {
-                AccountsRoute::Accounts => selections.push(Selection::Keyword(Keyword::Show)),
-                AccountsRoute::AddAccount => selections.push(Selection::Keyword(Keyword::New)),
-            }
-        }
-        Route::Relays => selections.push(Selection::Keyword(Keyword::Relay)),
-        Route::ComposeNote => selections.push(Selection::Keyword(Keyword::Compose)),
-        Route::AddColumn(add_column_route) => {
-            selections.push(Selection::Keyword(Keyword::Column));
-            match add_column_route {
-                AddColumnRoute::Base => (),
-                AddColumnRoute::UndecidedNotification => {
-                    selections.push(Selection::Keyword(Keyword::NotificationSelection))
-                }
-                AddColumnRoute::ExternalNotification => {
-                    selections.push(Selection::Keyword(Keyword::ExternalNotifSelection))
-                }
-                AddColumnRoute::Hashtag => {
-                    selections.push(Selection::Keyword(Keyword::HashtagSelection))
-                }
-                AddColumnRoute::UndecidedIndividual => {
-                    selections.push(Selection::Keyword(Keyword::IndividualSelection))
-                }
-                AddColumnRoute::ExternalIndividual => {
-                    selections.push(Selection::Keyword(Keyword::ExternalIndividualSelection))
-                }
-            }
-        }
-        Route::Support => selections.push(Selection::Keyword(Keyword::Support)),
-        Route::NewDeck => {
-            selections.push(Selection::Keyword(Keyword::Deck));
-            selections.push(Selection::Keyword(Keyword::New));
-        }
-        Route::EditDeck(index) => {
-            selections.push(Selection::Keyword(Keyword::Deck));
-            selections.push(Selection::Keyword(Keyword::Edit));
-            selections.push(Selection::Payload(index.to_string()));
-        }
-        Route::EditProfile(pubkey) => {
-            selections.push(Selection::Keyword(Keyword::Profile));
-            selections.push(Selection::Keyword(Keyword::Edit));
-            selections.push(Selection::Payload(pubkey.hex()));
-        }
-    }
-
-    if selections.is_empty() {
-        None
-    } else {
-        Some(
-            selections
-                .iter()
-                .map(|k| k.to_string())
-                .collect::<Vec<String>>()
-                .join(":"),
-        )
-    }
-}
-
-fn generate_pubkey_selections(source: &PubkeySource) -> Vec<Selection> {
-    let mut selections = Vec::new();
-    match source {
-        PubkeySource::Explicit(pubkey) => {
-            selections.push(Selection::Keyword(Keyword::Explicit));
-            selections.push(Selection::Payload(pubkey.hex()));
-        }
-        PubkeySource::DeckAuthor => {
-            selections.push(Selection::Keyword(Keyword::DeckAuthor));
-        }
-    }
-    selections
-}
-
-impl Selection {
-    fn from_serialized(serialized: &str) -> Vec<Self> {
-        let mut selections = Vec::new();
-        let seperator = ":";
-
-        let mut serialized_copy = serialized.to_string();
-        let mut buffer = serialized_copy.as_mut();
-
-        let mut next_is_payload = false;
-        while let Some(index) = buffer.find(seperator) {
-            if let Ok(keyword) = Keyword::from_str(&buffer[..index]) {
-                selections.push(Selection::Keyword(keyword.clone()));
-                if keyword.has_payload() {
-                    next_is_payload = true;
-                }
-            }
-
-            buffer = &mut buffer[index + seperator.len()..];
+    fn parse<'a>(
+        parser: &mut TokenParser<'a>,
+        deck_author: &Pubkey,
+    ) -> Result<Self, ParseError<'a>> {
+        let timeline = parser.try_parse(|p| {
+            Ok(CleanIntermediaryRoute::ToTimeline(TimelineKind::parse(
+                p,
+                deck_author,
+            )?))
+        });
+        if timeline.is_ok() {
+            return timeline;
         }
 
-        if next_is_payload {
-            selections.push(Selection::Payload(buffer.to_string()));
-        } else if let Ok(keyword) = Keyword::from_str(buffer) {
-            selections.push(Selection::Keyword(keyword.clone()));
-        }
-
-        selections
-    }
-}
-
-fn selections_to_route(selections: Vec<Selection>) -> Option<CleanIntermediaryRoute> {
-    match selections.first()? {
-        Selection::Keyword(Keyword::Contact) => match selections.get(1)? {
-            Selection::Keyword(Keyword::Explicit) => {
-                if let Selection::Payload(hex) = selections.get(2)? {
-                    Some(CleanIntermediaryRoute::ToTimeline(
-                        TimelineKind::contact_list(PubkeySource::Explicit(
-                            Pubkey::from_hex(hex.as_str()).ok()?,
-                        )),
-                    ))
-                } else {
-                    None
-                }
-            }
-            Selection::Keyword(Keyword::DeckAuthor) => Some(CleanIntermediaryRoute::ToTimeline(
-                TimelineKind::contact_list(PubkeySource::DeckAuthor),
-            )),
-            _ => None,
-        },
-        Selection::Keyword(Keyword::Notifs) => match selections.get(1)? {
-            Selection::Keyword(Keyword::Explicit) => {
-                if let Selection::Payload(hex) = selections.get(2)? {
-                    Some(CleanIntermediaryRoute::ToTimeline(
-                        TimelineKind::notifications(PubkeySource::Explicit(
-                            Pubkey::from_hex(hex.as_str()).ok()?,
-                        )),
-                    ))
-                } else {
-                    None
-                }
-            }
-            Selection::Keyword(Keyword::DeckAuthor) => Some(CleanIntermediaryRoute::ToTimeline(
-                TimelineKind::notifications(PubkeySource::DeckAuthor),
-            )),
-            _ => None,
-        },
-        Selection::Keyword(Keyword::Profile) => match selections.get(1)? {
-            Selection::Keyword(Keyword::Explicit) => {
-                if let Selection::Payload(hex) = selections.get(2)? {
-                    Some(CleanIntermediaryRoute::ToTimeline(TimelineKind::profile(
-                        PubkeySource::Explicit(Pubkey::from_hex(hex.as_str()).ok()?),
-                    )))
-                } else {
-                    None
-                }
-            }
-            Selection::Keyword(Keyword::DeckAuthor) => Some(CleanIntermediaryRoute::ToTimeline(
-                TimelineKind::profile(PubkeySource::DeckAuthor),
-            )),
-            Selection::Keyword(Keyword::Edit) => {
-                if let Selection::Payload(hex) = selections.get(2)? {
-                    Some(CleanIntermediaryRoute::ToRoute(Route::EditProfile(
-                        Pubkey::from_hex(hex.as_str()).ok()?,
-                    )))
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        },
-        Selection::Keyword(Keyword::Universe) => {
-            Some(CleanIntermediaryRoute::ToTimeline(TimelineKind::Universe))
-        }
-        Selection::Keyword(Keyword::Hashtag) => {
-            if let Selection::Payload(hashtag) = selections.get(1)? {
-                Some(CleanIntermediaryRoute::ToTimeline(TimelineKind::Hashtag(
-                    hashtag.to_string(),
-                )))
-            } else {
-                None
-            }
-        }
-        Selection::Keyword(Keyword::Generic) => {
-            Some(CleanIntermediaryRoute::ToTimeline(TimelineKind::Generic))
-        }
-        Selection::Keyword(Keyword::Thread) => {
-            if let Selection::Payload(hex) = selections.get(1)? {
-                Some(CleanIntermediaryRoute::ToRoute(Route::thread(
-                    NoteId::from_hex(hex.as_str()).ok()?,
-                )))
-            } else {
-                None
-            }
-        }
-        Selection::Keyword(Keyword::Reply) => {
-            if let Selection::Payload(hex) = selections.get(1)? {
-                Some(CleanIntermediaryRoute::ToRoute(Route::reply(
-                    NoteId::from_hex(hex.as_str()).ok()?,
-                )))
-            } else {
-                None
-            }
-        }
-        Selection::Keyword(Keyword::Quote) => {
-            if let Selection::Payload(hex) = selections.get(1)? {
-                Some(CleanIntermediaryRoute::ToRoute(Route::quote(
-                    NoteId::from_hex(hex.as_str()).ok()?,
-                )))
-            } else {
-                None
-            }
-        }
-        Selection::Keyword(Keyword::Account) => match selections.get(1)? {
-            Selection::Keyword(Keyword::Show) => Some(CleanIntermediaryRoute::ToRoute(
-                Route::Accounts(AccountsRoute::Accounts),
-            )),
-            Selection::Keyword(Keyword::New) => Some(CleanIntermediaryRoute::ToRoute(
-                Route::Accounts(AccountsRoute::AddAccount),
-            )),
-            _ => None,
-        },
-        Selection::Keyword(Keyword::Relay) => Some(CleanIntermediaryRoute::ToRoute(Route::Relays)),
-        Selection::Keyword(Keyword::Compose) => {
-            Some(CleanIntermediaryRoute::ToRoute(Route::ComposeNote))
-        }
-        Selection::Keyword(Keyword::Column) => match selections.get(1)? {
-            Selection::Keyword(Keyword::NotificationSelection) => {
-                Some(CleanIntermediaryRoute::ToRoute(Route::AddColumn(
-                    AddColumnRoute::UndecidedNotification,
-                )))
-            }
-            Selection::Keyword(Keyword::ExternalNotifSelection) => {
-                Some(CleanIntermediaryRoute::ToRoute(Route::AddColumn(
-                    AddColumnRoute::ExternalNotification,
-                )))
-            }
-            Selection::Keyword(Keyword::HashtagSelection) => Some(CleanIntermediaryRoute::ToRoute(
-                Route::AddColumn(AddColumnRoute::Hashtag),
-            )),
-            Selection::Keyword(Keyword::IndividualSelection) => {
-                Some(CleanIntermediaryRoute::ToRoute(Route::AddColumn(
-                    AddColumnRoute::UndecidedIndividual,
-                )))
-            }
-            Selection::Keyword(Keyword::ExternalIndividualSelection) => {
-                Some(CleanIntermediaryRoute::ToRoute(Route::AddColumn(
-                    AddColumnRoute::ExternalIndividual,
-                )))
-            }
-            _ => None,
-        },
-        Selection::Keyword(Keyword::Support) => {
-            Some(CleanIntermediaryRoute::ToRoute(Route::Support))
-        }
-        Selection::Keyword(Keyword::Deck) => match selections.get(1)? {
-            Selection::Keyword(Keyword::New) => {
-                Some(CleanIntermediaryRoute::ToRoute(Route::NewDeck))
-            }
-            Selection::Keyword(Keyword::Edit) => {
-                if let Selection::Payload(index_str) = selections.get(2)? {
-                    let parsed_index = index_str.parse::<usize>().ok()?;
-                    Some(CleanIntermediaryRoute::ToRoute(Route::EditDeck(
-                        parsed_index,
-                    )))
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        },
-        Selection::Payload(_)
-        | Selection::Keyword(Keyword::Explicit)
-        | Selection::Keyword(Keyword::New)
-        | Selection::Keyword(Keyword::DeckAuthor)
-        | Selection::Keyword(Keyword::Show)
-        | Selection::Keyword(Keyword::NotificationSelection)
-        | Selection::Keyword(Keyword::ExternalNotifSelection)
-        | Selection::Keyword(Keyword::HashtagSelection)
-        | Selection::Keyword(Keyword::IndividualSelection)
-        | Selection::Keyword(Keyword::ExternalIndividualSelection)
-        | Selection::Keyword(Keyword::Edit) => None,
-    }
-}
-
-impl fmt::Display for Selection {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Selection::Keyword(keyword) => write!(f, "{}", keyword),
-            Selection::Payload(payload) => write!(f, "{}", payload),
-        }
+        parser.try_parse(|p| {
+            Ok(CleanIntermediaryRoute::ToRoute(Route::parse(
+                p,
+                deck_author,
+            )?))
+        })
     }
 }
 

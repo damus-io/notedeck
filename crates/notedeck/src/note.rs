@@ -3,6 +3,7 @@ use enostr::NoteId;
 use nostrdb::{Ndb, Note, NoteKey, QueryResult, Transaction};
 use std::borrow::Borrow;
 use std::cmp::Ordering;
+use std::fmt;
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone, Hash)]
 pub struct NoteRef {
@@ -10,8 +11,14 @@ pub struct NoteRef {
     pub created_at: u64,
 }
 
-#[derive(Clone, Copy, Eq, PartialEq, Debug, Hash)]
+#[derive(Clone, Copy, Eq, PartialEq, Hash)]
 pub struct RootNoteIdBuf([u8; 32]);
+
+impl fmt::Debug for RootNoteIdBuf {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "RootNoteIdBuf({})", self.hex())
+    }
+}
 
 #[derive(Clone, Copy, Eq, PartialEq, Debug, Hash)]
 pub struct RootNoteId<'a>(&'a [u8; 32]);
@@ -34,6 +41,10 @@ impl RootNoteIdBuf {
         root_note_id_from_selected_id(ndb, note_cache, txn, id).map(|rnid| Self(*rnid.bytes()))
     }
 
+    pub fn hex(&self) -> String {
+        hex::encode(self.bytes())
+    }
+
     pub fn new_unsafe(id: [u8; 32]) -> Self {
         Self(id)
     }
@@ -50,6 +61,10 @@ impl<'a> RootNoteId<'a> {
 
     pub fn bytes(&self) -> &[u8; 32] {
         self.0
+    }
+
+    pub fn hex(&self) -> String {
+        hex::encode(self.bytes())
     }
 
     pub fn to_owned(&self) -> RootNoteIdBuf {

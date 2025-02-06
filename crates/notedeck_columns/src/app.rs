@@ -111,7 +111,7 @@ fn try_process_event(
                 timeline::send_initial_timeline_filters(
                     app_ctx.ndb,
                     damus.since_optimize,
-                    get_active_columns_mut(app_ctx.accounts, &mut damus.decks_cache),
+                    &mut damus.timeline_cache,
                     &mut damus.subscriptions,
                     app_ctx.pool,
                     &ev.relay,
@@ -127,30 +127,16 @@ fn try_process_event(
         }
     }
 
-    let current_columns = get_active_columns_mut(app_ctx.accounts, &mut damus.decks_cache);
-    let n_timelines = current_columns.timelines().len();
-    for timeline_ind in 0..n_timelines {
-        let is_ready = {
-            let timeline = &mut current_columns.timelines[timeline_ind];
-            timeline::is_timeline_ready(
-                app_ctx.ndb,
-                app_ctx.pool,
-                app_ctx.note_cache,
-                timeline,
-                app_ctx
-                    .accounts
-                    .get_selected_account()
-                    .as_ref()
-                    .map(|sa| &sa.pubkey),
-            )
-        };
+    for (_kind, timeline) in damus.timeline_cache.timelines.iter_mut() {
+        let is_ready =
+            timeline::is_timeline_ready(app_ctx.ndb, app_ctx.pool, app_ctx.note_cache, timeline);
 
         if is_ready {
             let txn = Transaction::new(app_ctx.ndb).expect("txn");
             // only thread timelines are reversed
             let reversed = false;
 
-            if let Err(err) = current_columns.timelines_mut()[timeline_ind].poll_notes_into_view(
+            if let Err(err) = timeline.poll_notes_into_view(
                 app_ctx.ndb,
                 &txn,
                 app_ctx.unknown_ids,
@@ -193,7 +179,7 @@ fn update_damus(damus: &mut Damus, app_ctx: &mut AppContext<'_>, ctx: &egui::Con
             if let Err(err) = timeline::setup_initial_nostrdb_subs(
                 app_ctx.ndb,
                 app_ctx.note_cache,
-                &mut damus.decks_cache,
+                &mut damus.timeline_cache,
             ) {
                 warn!("update_damus init: {err}");
             }
@@ -208,15 +194,16 @@ fn update_damus(damus: &mut Damus, app_ctx: &mut AppContext<'_>, ctx: &egui::Con
 }
 
 fn handle_eose(
-    damus: &mut Damus,
+    subscriptions: &Subscriptions,
+    timeline_cache: &mut TimelineCache,
     ctx: &mut AppContext<'_>,
     subid: &str,
     relay_url: &str,
 ) -> Result<()> {
-    let sub_kind = if let Some(sub_kind) = damus.subscriptions().get(subid) {
+    let sub_kind = if let Some(sub_kind) = subscriptions.subs.get(subid) {
         sub_kind
     } else {
-        let n_subids = damus.subscriptions().len();
+        let n_subids = subscriptions.subs.len();
         warn!(
             "got unknown eose subid {}, {} tracked subscriptions",
             subid, n_subids
@@ -224,7 +211,7 @@ fn handle_eose(
         return Ok(());
     };
 
-    match *sub_kind {
+    match sub_kind {
         SubKind::Timeline(_) => {
             // eose on timeline? whatevs
         }
@@ -233,7 +220,7 @@ fn handle_eose(
             unknowns::update_from_columns(
                 &txn,
                 ctx.unknown_ids,
-                get_active_columns(ctx.accounts, &damus.decks_cache),
+                timeline_cache,
                 ctx.ndb,
                 ctx.note_cache,
             );
@@ -250,10 +237,7 @@ fn handle_eose(
         }
 
         SubKind::FetchingContactList(timeline_uid) => {
-            let timeline = if let Some(tl) =
-                get_active_columns_mut(ctx.accounts, &mut damus.decks_cache)
-                    .find_timeline_mut(timeline_uid)
-            {
+            let timeline = if let Some(tl) = timeline_cache.timelines.get_mut(timeline_uid) {
                 tl
             } else {
                 error!(
@@ -263,7 +247,7 @@ fn handle_eose(
                 return Ok(());
             };
 
-            let filter_state = timeline.filter.get(relay_url);
+            let filter_state = timeline.filter.get_mut(relay_url);
 
             // If this request was fetching a contact list, our filter
             // state should be "FetchingRemote". We look at the local
@@ -325,7 +309,13 @@ fn process_message(damus: &mut Damus, ctx: &mut AppContext<'_>, relay: &str, msg
         RelayMessage::Notice(msg) => warn!("Notice from {}: {}", relay, msg),
         RelayMessage::OK(cr) => info!("OK {:?}", cr),
         RelayMessage::Eose(sid) => {
-            if let Err(err) = handle_eose(damus, ctx, sid, relay) {
+            if let Err(err) = handle_eose(
+                &damus.subscriptions,
+                &mut damus.timeline_cache,
+                ctx,
+                sid,
+                relay,
+            ) {
                 error!("error handling eose: {}", err);
             }
         }
@@ -367,39 +357,58 @@ impl Damus {
     pub fn new(ctx: &mut AppContext<'_>, args: &[String]) -> Self {
         // arg parsing
 
-        let parsed_args = ColumnsArgs::parse(args);
+        let parsed_args = ColumnsArgs::parse(
+            args,
+            ctx.accounts
+                .get_selected_account()
+                .as_ref()
+                .map(|kp| &kp.pubkey),
+        );
+
         let account = ctx
             .accounts
             .get_selected_account()
             .as_ref()
             .map(|a| a.pubkey.bytes());
 
+        let mut timeline_cache = TimelineCache::default();
         let tmp_columns = !parsed_args.columns.is_empty();
         let decks_cache = if tmp_columns {
             info!("DecksCache: loading from command line arguments");
             let mut columns: Columns = Columns::new();
+            let txn = Transaction::new(ctx.ndb).unwrap();
             for col in parsed_args.columns {
-                if let Some(timeline) = col.into_timeline(ctx.ndb, account) {
-                    columns.add_new_timeline_column(timeline);
+                let timeline_kind = col.into_timeline_kind();
+                if let Some(add_result) = columns.add_new_timeline_column(
+                    &mut timeline_cache,
+                    &txn,
+                    ctx.ndb,
+                    ctx.note_cache,
+                    ctx.pool,
+                    &timeline_kind,
+                ) {
+                    add_result.process(
+                        ctx.ndb,
+                        ctx.note_cache,
+                        &txn,
+                        &mut timeline_cache,
+                        ctx.unknown_ids,
+                    );
                 }
             }
 
             columns_to_decks_cache(columns, account)
-        } else if let Some(decks_cache) = crate::storage::load_decks_cache(ctx.path, ctx.ndb) {
+        } else if let Some(decks_cache) =
+            crate::storage::load_decks_cache(ctx.path, ctx.ndb, &mut timeline_cache)
+        {
             info!(
                 "DecksCache: loading from disk {}",
                 crate::storage::DECKS_CACHE_FILE
             );
             decks_cache
-        } else if let Some(cols) = storage::deserialize_columns(ctx.path, ctx.ndb, account) {
-            info!(
-                "DecksCache: loading from disk at depreciated location {}",
-                crate::storage::COLUMNS_FILE
-            );
-            columns_to_decks_cache(cols, account)
         } else {
             info!("DecksCache: creating new with demo configuration");
-            let mut cache = DecksCache::new_with_demo_config(ctx.ndb);
+            let mut cache = DecksCache::new_with_demo_config(&mut timeline_cache, ctx);
             for account in ctx.accounts.get_accounts() {
                 cache.add_deck_default(account.pubkey);
             }
@@ -414,7 +423,7 @@ impl Damus {
         Self {
             subscriptions: Subscriptions::default(),
             since_optimize: parsed_args.since_optimize,
-            timeline_cache: TimelineCache::default(),
+            timeline_cache,
             drafts: Drafts::default(),
             state: DamusState::Initializing,
             textmode: parsed_args.textmode,
@@ -565,7 +574,8 @@ fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus, ctx: &mut App
 
             let mut save_cols = false;
             if let Some(action) = side_panel_action {
-                save_cols = save_cols || action.process(&mut app.decks_cache, ctx);
+                save_cols =
+                    save_cols || action.process(&mut app.timeline_cache, &mut app.decks_cache, ctx);
             }
 
             let num_cols = app.columns(ctx.accounts).num_columns();

@@ -1,10 +1,9 @@
-use crate::actionbar::NoteAction;
-use crate::images::ImageType;
 use crate::ui::{
     self,
     note::{NoteOptions, NoteResponse},
     ProfilePic,
 };
+use crate::{actionbar::NoteAction, images::ImageType, timeline::TimelineKind};
 use egui::{Color32, Hyperlink, Image, RichText};
 use nostrdb::{BlockType, Mention, Ndb, Note, NoteKey, Transaction};
 use tracing::warn;
@@ -198,7 +197,15 @@ fn render_note_contents(
                 BlockType::Hashtag => {
                     #[cfg(feature = "profiling")]
                     puffin::profile_scope!("hashtag contents");
-                    ui.colored_label(link_color, format!("#{}", block.as_str()));
+                    let resp = ui.colored_label(link_color, format!("#{}", block.as_str()));
+
+                    if resp.clicked() {
+                        note_action = Some(NoteAction::OpenTimeline(TimelineKind::Hashtag(
+                            block.as_str().to_string(),
+                        )));
+                    } else if resp.hovered() {
+                        ui::show_pointer(ui);
+                    }
                 }
 
                 BlockType::Url => {

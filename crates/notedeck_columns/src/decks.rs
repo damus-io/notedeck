@@ -1,14 +1,15 @@
 use std::collections::{hash_map::ValuesMut, HashMap};
 
 use enostr::Pubkey;
-use nostrdb::Ndb;
+use nostrdb::Transaction;
+use notedeck::AppContext;
 use tracing::{error, info};
 
 use crate::{
     accounts::AccountsRoute,
     column::{Column, Columns},
     route::Route,
-    timeline::{self, Timeline, TimelineKind},
+    timeline::{TimelineCache, TimelineKind},
     ui::{add_column::AddColumnRoute, configure_deck::ConfigureDeckResponse},
 };
 
@@ -44,10 +45,13 @@ impl DecksCache {
         }
     }
 
-    pub fn new_with_demo_config(ndb: &Ndb) -> Self {
+    pub fn new_with_demo_config(timeline_cache: &mut TimelineCache, ctx: &mut AppContext) -> Self {
         let mut account_to_decks: HashMap<Pubkey, Decks> = Default::default();
         let fallback_pubkey = FALLBACK_PUBKEY();
-        account_to_decks.insert(fallback_pubkey, demo_decks(fallback_pubkey, ndb));
+        account_to_decks.insert(
+            fallback_pubkey,
+            demo_decks(fallback_pubkey, timeline_cache, ctx),
+        );
         DecksCache::new(account_to_decks)
     }
 
@@ -298,7 +302,11 @@ impl Deck {
     }
 }
 
-pub fn demo_decks(demo_pubkey: Pubkey, ndb: &Ndb) -> Decks {
+pub fn demo_decks(
+    demo_pubkey: Pubkey,
+    timeline_cache: &mut TimelineCache,
+    ctx: &mut AppContext,
+) -> Decks {
     let deck = {
         let mut columns = Columns::default();
         columns.add_column(Column::new(vec![
@@ -306,14 +314,27 @@ pub fn demo_decks(demo_pubkey: Pubkey, ndb: &Ndb) -> Decks {
             Route::Accounts(AccountsRoute::Accounts),
         ]));
 
-        if let Some(timeline) =
-            TimelineKind::contact_list(timeline::PubkeySource::Explicit(demo_pubkey))
-                .into_timeline(ndb, Some(demo_pubkey.bytes()))
-        {
-            columns.add_new_timeline_column(timeline);
+        let kind = TimelineKind::contact_list(demo_pubkey);
+        let txn = Transaction::new(ctx.ndb).unwrap();
+
+        if let Some(results) = columns.add_new_timeline_column(
+            timeline_cache,
+            &txn,
+            ctx.ndb,
+            ctx.note_cache,
+            ctx.pool,
+            &kind,
+        ) {
+            results.process(
+                ctx.ndb,
+                ctx.note_cache,
+                &txn,
+                timeline_cache,
+                ctx.unknown_ids,
+            );
         }
 
-        columns.add_new_timeline_column(Timeline::hashtag("introductions".to_string()));
+        //columns.add_new_timeline_column(Timeline::hashtag("introductions".to_string()));
 
         Deck {
             icon: '🇩',

@@ -414,6 +414,12 @@ impl Accounts {
             .or_else(|| self.accounts.iter().find_map(|a| a.to_full()))
     }
 
+    /// Get the selected account's pubkey as bytes. Common operation so
+    /// we make it a helper here.
+    pub fn selected_account_pubkey_bytes(&self) -> Option<&[u8; 32]> {
+        self.get_selected_account().map(|kp| kp.pubkey.bytes())
+    }
+
     pub fn get_selected_account(&self) -> Option<&UserAccount> {
         if let Some(account_index) = self.currently_selected_account {
             if let Some(account) = self.get_account(account_index) {
