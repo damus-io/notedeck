@@ -47,11 +47,14 @@ impl FileKeyStorage {
     }
 
     fn get_selected_pubkey(&self) -> Result<Option<Pubkey>> {
-        let pubkey_str = self
+        match self
             .selected_key_directory
-            .get_file(SELECTED_PUBKEY_FILE_NAME.to_owned())?;
-
-        Ok(serde_json::from_str(&pubkey_str)?)
+            .get_file(SELECTED_PUBKEY_FILE_NAME.to_owned())
+        {
+            Ok(pubkey_str) => Ok(Some(serde_json::from_str(&pubkey_str)?)),
+            Err(crate::Error::Io(_)) => Ok(None),
+            Err(e) => Err(e),
+        }
     }
 
     fn select_pubkey(&self, pubkey: Option<Pubkey>) -> Result<()> {
@@ -163,5 +166,16 @@ mod tests {
         let resp = storage.get_selected_pubkey();
 
         assert!(resp.is_ok());
+    }
+
+    #[test]
+    fn test_get_selected_key_when_no_file() {
+        let storage = FileKeyStorage::mock().unwrap();
+
+        // Should return Ok(None) when no key has been selected
+        match storage.get_selected_key() {
+            KeyStorageResponse::ReceivedResult(Ok(None)) => (), // This is what we expect
+            other => panic!("Expected Ok(None), got {:?}", other),
+        }
     }
 }
