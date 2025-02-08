@@ -37,11 +37,7 @@ impl Default for DecksCache {
 impl DecksCache {
     pub fn new(mut account_to_decks: HashMap<Pubkey, Decks>) -> Self {
         let fallback_pubkey = FALLBACK_PUBKEY();
-
-        // Ensure fallback deck exists
-        if !account_to_decks.contains_key(&fallback_pubkey) {
-            account_to_decks.insert(fallback_pubkey, Decks::default());
-        }
+        account_to_decks.entry(fallback_pubkey).or_default();
 
         Self {
             account_to_decks,
