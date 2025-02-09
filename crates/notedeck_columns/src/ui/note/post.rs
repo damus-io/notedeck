@@ -227,12 +227,18 @@ impl<'a> PostView<'a> {
                             );
 
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::BOTTOM), |ui| {
-                                if ui
+                                let post_button_clicked = ui
                                     .add_sized(
                                         [91.0, 32.0],
                                         post_button(!self.draft.buffer.is_empty()),
                                     )
-                                    .clicked()
+                                    .clicked();
+
+                                let ctrl_enter_pressed = ui
+                                    .input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::Enter));
+
+                                if post_button_clicked
+                                    || (!self.draft.buffer.is_empty() && ctrl_enter_pressed)
                                 {
                                     let new_post = NewPost::new(
                                         self.draft.buffer.clone(),
