@@ -1,3 +1,19 @@
+# Unreleased
+
+## Added
+
+- Added the ability to tag users in posts (kernelkind)
+- Added ctrl-enter shortcut to send post (Ethan Tuttle)
+
+## Changed
+
+- Updated NIP-05 verification text to "Nostr address" (Derek Ross)
+
+## Fixed
+
+- Added *experimental* last post per pubkey algo feeds (William Casarin)
+- Fixed stale feeds (William Casarin)
+
 # Notedeck Alpha 2 - v0.3 - 2025-01-31
 
 ## Added
