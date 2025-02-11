@@ -82,7 +82,7 @@ async fn main() {
             // ensure we recognized all the arguments
             let completely_unrecognized: Vec<String> = notedeck
                 .unrecognized_args()
-                .intersection(&damus.unrecognized_args())
+                .intersection(damus.unrecognized_args())
                 .cloned()
                 .collect();
             assert!(
