@@ -51,7 +51,7 @@ pub use storage::{
     DataPath, DataPathType, Directory, FileKeyStorage, KeyStorageResponse, KeyStorageType,
 };
 pub use style::NotedeckTextStyle;
-pub use subman::SubMan;
+pub use subman::{SubError, SubMan};
 pub use theme::ColorTheme;
 pub use time::time_ago_since;
 pub use timecache::TimeCached;
