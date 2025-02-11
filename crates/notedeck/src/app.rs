@@ -1,12 +1,13 @@
 use crate::persist::{AppSizeHandler, ZoomHandler};
 use crate::{
     Accounts, AppContext, Args, DataPath, DataPathType, Directory, FileKeyStorage, ImageCache,
-    KeyStorageType, NoteCache, ThemeHandler, UnknownIds,
+    KeyStorageType, NoteCache, RelayDebugView, ThemeHandler, UnknownIds,
 };
 use egui::ThemePreference;
 use enostr::RelayPool;
 use nostrdb::{Config, Ndb, Transaction};
 use std::cell::RefCell;
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::rc::Rc;
 use tracing::{error, info};
@@ -29,6 +30,7 @@ pub struct Notedeck {
     app: Option<Rc<RefCell<dyn App>>>,
     zoom: ZoomHandler,
     app_size: AppSizeHandler,
+    unrecognized_args: BTreeSet<String>,
 }
 
 fn margin_top(narrow: bool) -> f32 {
@@ -82,8 +84,14 @@ impl eframe::App for Notedeck {
         self.zoom.try_save_zoom_factor(ctx);
         self.app_size.try_save_app_size(ctx);
 
-        if self.args.relay_debug && self.pool.debug.is_none() {
-            self.pool.use_debug();
+        if self.args.relay_debug {
+            if self.pool.debug.is_none() {
+                self.pool.use_debug();
+            }
+
+            if let Some(debug) = &mut self.pool.debug {
+                RelayDebugView::window(ctx, debug);
+            }
         }
 
         #[cfg(feature = "profiling")]
@@ -106,7 +114,8 @@ impl Notedeck {
         #[cfg(feature = "profiling")]
         setup_profiling();
 
-        let parsed_args = Args::parse(args);
+        // Skip the first argument, which is the program name.
+        let (parsed_args, unrecognized_args) = Args::parse(&args[1..]);
 
         let data_path = parsed_args
             .datapath
@@ -203,6 +212,7 @@ impl Notedeck {
             app: None,
             zoom,
             app_size,
+            unrecognized_args,
         }
     }
 
@@ -235,5 +245,9 @@ impl Notedeck {
 
     pub fn theme(&self) -> ThemePreference {
         self.theme.load()
+    }
+
+    pub fn unrecognized_args(&self) -> &BTreeSet<String> {
+        &self.unrecognized_args
     }
 }

@@ -22,7 +22,7 @@ use egui_extras::{Size, StripBuilder};
 
 use nostrdb::{Ndb, Transaction};
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 use std::time::Duration;
 use tracing::{debug, error, info, trace, warn};
@@ -51,6 +51,8 @@ pub struct Damus {
     pub debug: bool,
     pub since_optimize: bool,
     pub textmode: bool,
+
+    pub unrecognized_args: BTreeSet<String>,
 }
 
 fn handle_key_events(input: &egui::InputState, columns: &mut Columns) {
@@ -358,7 +360,7 @@ impl Damus {
     pub fn new(ctx: &mut AppContext<'_>, args: &[String]) -> Self {
         // arg parsing
 
-        let parsed_args = ColumnsArgs::parse(
+        let (parsed_args, unrecognized_args) = ColumnsArgs::parse(
             args,
             ctx.accounts
                 .get_selected_account()
@@ -434,6 +436,7 @@ impl Damus {
             support,
             decks_cache,
             debug,
+            unrecognized_args,
         }
     }
 
@@ -476,11 +479,16 @@ impl Damus {
             view_state: ViewState::default(),
             support,
             decks_cache,
+            unrecognized_args: BTreeSet::default(),
         }
     }
 
     pub fn subscriptions(&mut self) -> &mut HashMap<String, SubKind> {
         &mut self.subscriptions.subs
+    }
+
+    pub fn unrecognized_args(&self) -> &BTreeSet<String> {
+        &self.unrecognized_args
     }
 }
 

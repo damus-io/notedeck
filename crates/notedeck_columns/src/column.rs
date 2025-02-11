@@ -9,7 +9,7 @@ use notedeck::NoteCache;
 use std::iter::Iterator;
 use tracing::warn;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Column {
     router: Router<Route>,
 }
@@ -29,7 +29,7 @@ impl Column {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct Columns {
     /// Columns are simply routers into settings, timelines, etc
     columns: Vec<Column>,

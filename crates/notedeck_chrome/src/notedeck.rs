@@ -82,6 +82,19 @@ async fn main() {
             setup_chrome(ctx, notedeck.args(), notedeck.theme());
 
             let damus = Damus::new(&mut notedeck.app_context(), &args);
+
+            // ensure we recognized all the arguments
+            let completely_unrecognized: Vec<String> = notedeck
+                .unrecognized_args()
+                .intersection(damus.unrecognized_args())
+                .cloned()
+                .collect();
+            assert!(
+                completely_unrecognized.is_empty(),
+                "unrecognized args: {:?}",
+                completely_unrecognized
+            );
+
             // TODO: move "chrome" frame over Damus app somehow
             notedeck.set_app(damus);
 
@@ -135,7 +148,7 @@ mod tests {
     async fn test_dbpath() {
         let datapath = create_tmp_dir();
         let dbpath = create_tmp_dir();
-        let args: Vec<String> = vec![
+        let args: Vec<String> = [
             "--testrunner",
             "--datapath",
             &datapath.to_str().unwrap(),
@@ -161,7 +174,7 @@ mod tests {
     async fn test_column_args() {
         let tmpdir = create_tmp_dir();
         let npub = "npub1xtscya34g58tk0z605fvr788k263gsu6cy9x0mhnm87echrgufzsevkk5s";
-        let args: Vec<String> = vec![
+        let args: Vec<String> = [
             "--testrunner",
             "--no-keystore",
             "--pub",
@@ -177,8 +190,20 @@ mod tests {
 
         let ctx = egui::Context::default();
         let mut notedeck = Notedeck::new(&ctx, &tmpdir, &args);
+        let unrecognized_args = notedeck.unrecognized_args().clone();
         let mut app_ctx = notedeck.app_context();
         let app = Damus::new(&mut app_ctx, &args);
+
+        // ensure we recognized all the arguments
+        let completely_unrecognized: Vec<String> = unrecognized_args
+            .intersection(app.unrecognized_args())
+            .cloned()
+            .collect();
+        assert!(
+            completely_unrecognized.is_empty(),
+            "unrecognized args: {:?}",
+            completely_unrecognized
+        );
 
         assert_eq!(app.columns(app_ctx.accounts).columns().len(), 2);
 
@@ -201,6 +226,41 @@ mod tests {
         assert_eq!(app.timeline_cache.timelines.len(), 2);
         assert!(app.timeline_cache.timelines.get(&tl1).is_some());
         assert!(app.timeline_cache.timelines.get(&tl2).is_some());
+
+        rmrf(tmpdir);
+    }
+
+    #[tokio::test]
+    async fn test_unknown_args() {
+        let tmpdir = create_tmp_dir();
+        let npub = "npub1xtscya34g58tk0z605fvr788k263gsu6cy9x0mhnm87echrgufzsevkk5s";
+        let args: Vec<String> = [
+            "--testrunner",
+            "--no-keystore",
+            "--unknown-arg", // <-- UNKNOWN
+            "--pub",
+            npub,
+            "-c",
+            "notifications",
+            "-c",
+            "contacts",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+
+        let ctx = egui::Context::default();
+        let mut notedeck = Notedeck::new(&ctx, &tmpdir, &args);
+        let mut app_ctx = notedeck.app_context();
+        let app = Damus::new(&mut app_ctx, &args);
+
+        // ensure we recognized all the arguments
+        let completely_unrecognized: Vec<String> = notedeck
+            .unrecognized_args()
+            .intersection(app.unrecognized_args())
+            .cloned()
+            .collect();
+        assert_eq!(completely_unrecognized, ["--unknown-arg"]);
 
         rmrf(tmpdir);
     }

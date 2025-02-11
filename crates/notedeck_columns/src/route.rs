@@ -229,7 +229,7 @@ impl Route {
 
 // TODO: add this to egui-nav so we don't have to deal with returning
 // and navigating headaches
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Router<R: Clone> {
     routes: Vec<R>,
     pub returning: bool,
