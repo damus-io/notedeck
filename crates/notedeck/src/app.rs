@@ -115,8 +115,7 @@ impl Notedeck {
         setup_profiling();
 
         // Skip the first argument, which is the program name.
-        let args_to_parse: Vec<String> = args[1..].to_vec();
-        let (parsed_args, unrecognized_args) = Args::parse(&args_to_parse);
+        let (parsed_args, unrecognized_args) = Args::parse(&args[1..]);
 
         let data_path = parsed_args
             .datapath
