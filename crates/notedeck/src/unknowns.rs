@@ -1,13 +1,14 @@
 use crate::{
     note::NoteRef,
     notecache::{CachedNote, NoteCache},
+    subman::{SubConstraint, SubSpec, SubSpecBuilder},
     Result,
 };
 
 use enostr::{Filter, NoteId, Pubkey};
 use nostr::RelayUrl;
 use nostrdb::{BlockType, Mention, Ndb, Note, NoteKey, Transaction};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::{Duration, Instant};
 use tracing::error;
 
@@ -117,13 +118,80 @@ impl UnknownIds {
         &mut self.ids
     }
 
+    pub fn numids(&self) -> usize {
+        self.ids.len()
+    }
+
     pub fn clear(&mut self) {
         self.ids = HashMap::default();
     }
 
-    pub fn filter(&self) -> Option<Vec<Filter>> {
-        let ids: Vec<&UnknownId> = self.ids.keys().collect();
-        get_unknown_ids_filter(&ids)
+    pub fn generate_resolution_requests(&self) -> Vec<SubSpec> {
+        // 1. resolve as many ids per request as possible
+        // 2. each request only has one filter (https://github.com/nostr-protocol/nips/pull/1645)
+        // 3. each request is limited to MAX_CHUNK_IDS
+        // 4. use relay hints when available
+
+        // Collect the unknown ids by relay
+        let mut ids_by_relay: BTreeMap<RelayUrl, (Vec<Pubkey>, Vec<NoteId>)> = BTreeMap::new();
+        for (unknown_id, relay_hints) in self.ids.iter() {
+            // 1. use default relays (empty RelayUrl) if no hints are available
+            // 2. query the default relays even when hints are available
+            for relay in std::iter::once("".to_string())
+                .chain(relay_hints.iter().map(|relay| relay.to_string()))
+            {
+                match unknown_id {
+                    UnknownId::Pubkey(pk) => {
+                        if let Ok(parsed_relay) = RelayUrl::parse(relay.clone().as_str()) {
+                            ids_by_relay
+                                .entry(parsed_relay)
+                                .or_insert_with(|| (Vec::new(), Vec::new()))
+                                .0
+                                .push(*pk);
+                        }
+                    }
+                    UnknownId::Id(nid) => {
+                        if let Ok(parsed_relay) = RelayUrl::parse(relay.as_str()) {
+                            ids_by_relay
+                                .entry(parsed_relay)
+                                .or_insert_with(|| (Vec::new(), Vec::new()))
+                                .1
+                                .push(*nid);
+                        }
+                    }
+                }
+            }
+        }
+
+        const MAX_CHUNK_IDS: usize = 500;
+
+        let mut subspecs = vec![];
+        for (relay, (pubkeys, noteids)) in ids_by_relay {
+            // make a template SubSpecBuilder w/ the common parts
+            let mut ssb = SubSpecBuilder::new()
+                .constraint(SubConstraint::OneShot)
+                .constraint(SubConstraint::OnlyRemote);
+            if !relay.to_string().is_empty() {
+                ssb = ssb.constraint(SubConstraint::AllowedRelays(vec![relay.to_string()]));
+            }
+            for chunk in pubkeys.chunks(MAX_CHUNK_IDS) {
+                let pks: Vec<&[u8; 32]> = chunk.iter().map(|pk| pk.bytes()).collect();
+                subspecs.push(
+                    ssb.clone()
+                        .filters(vec![Filter::new().authors(pks).kinds([0]).build()])
+                        .build(),
+                );
+            }
+            for chunk in noteids.chunks(MAX_CHUNK_IDS) {
+                let nids: Vec<&[u8; 32]> = chunk.iter().map(|nid| nid.bytes()).collect();
+                subspecs.push(
+                    ssb.clone()
+                        .filters(vec![Filter::new().ids(nids).build()])
+                        .build(),
+                );
+            }
+        }
+        subspecs
     }
 
     /// We've updated some unknown ids, update the last_updated time to now
@@ -348,32 +416,4 @@ pub fn get_unknown_note_ids<'a>(
     }
 
     Ok(())
-}
-
-fn get_unknown_ids_filter(ids: &[&UnknownId]) -> Option<Vec<Filter>> {
-    if ids.is_empty() {
-        return None;
-    }
-
-    let ids = &ids[0..500.min(ids.len())];
-    let mut filters: Vec<Filter> = vec![];
-
-    let pks: Vec<&[u8; 32]> = ids
-        .iter()
-        .flat_map(|id| id.is_pubkey().map(|pk| pk.bytes()))
-        .collect();
-    if !pks.is_empty() {
-        let pk_filter = Filter::new().authors(pks).kinds([0]).build();
-        filters.push(pk_filter);
-    }
-
-    let note_ids: Vec<&[u8; 32]> = ids
-        .iter()
-        .flat_map(|id| id.is_id().map(|id| id.bytes()))
-        .collect();
-    if !note_ids.is_empty() {
-        filters.push(Filter::new().ids(note_ids).build());
-    }
-
-    Some(filters)
 }

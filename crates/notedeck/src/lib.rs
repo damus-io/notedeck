@@ -51,7 +51,7 @@ pub use relayspec::RelaySpec;
 pub use result::Result;
 pub use storage::{AccountStorage, DataPath, DataPathType, Directory};
 pub use style::NotedeckTextStyle;
-pub use subman::SubMan;
+pub use subman::{SubError, SubMan};
 pub use theme::ColorTheme;
 pub use time::time_ago_since;
 pub use timecache::TimeCached;

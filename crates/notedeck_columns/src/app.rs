@@ -192,20 +192,39 @@ fn try_process_event<'a>(
     }
 
     if app_ctx.unknown_ids.ready_to_send() {
-        unknown_id_send(app_ctx.unknown_ids, app_ctx.subman.pool());
+        unknown_id_send(app_ctx.unknown_ids, app_ctx.subman);
     }
 }
 
-fn unknown_id_send(unknown_ids: &mut UnknownIds, pool: &mut RelayPool) {
-    debug!("unknown_id_send called on: {:?}", &unknown_ids);
-    let filter = unknown_ids.filter().expect("filter");
-    info!(
-        "Getting {} unknown ids from relays",
-        unknown_ids.ids_iter().len()
-    );
-    let msg = ClientMessage::req("unknownids".to_string(), filter);
+fn unknown_id_send(unknown_ids: &mut UnknownIds, subman: &mut SubMan) {
+    info!("Getting {} unknown ids from relays", &unknown_ids.numids());
+    for subspec in unknown_ids.generate_resolution_requests() {
+        debug!("unknown_ids subscribe: {:?}", subspec);
+        match subman.subscribe(subspec) {
+            Err(err) => error!("unknown_id_send subscribe failed: {:?}", err),
+            Ok(mut rcvr) => {
+                tokio::spawn(async move {
+                    loop {
+                        match rcvr.next().await {
+                            Err(SubError::StreamEnded) => {
+                                debug!("unknown_id_send: {} complete", rcvr.idstr());
+                                break;
+                            }
+                            Err(err) => {
+                                error!("unknown_id_send: {}: error: {:?}", rcvr.idstr(), err);
+                                break;
+                            }
+                            Ok(note_keys) => {
+                                debug!("{}: received note keys: {:?}", rcvr.idstr(), note_keys);
+                                // only need the prefetch into ndb, all done
+                            }
+                        }
+                    }
+                });
+            }
+        }
+    }
     unknown_ids.clear();
-    pool.send(&msg);
 }
 
 fn update_damus(damus: &mut Damus, app_ctx: &mut AppContext<'_>, ctx: &egui::Context) {
