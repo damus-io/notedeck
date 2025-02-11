@@ -105,9 +105,9 @@ impl Directory {
                 .ok_or_else(|| Error::Generic("Could not turn path to string".to_owned()))?;
             Ok(fs::read_to_string(filepath_str)?)
         } else {
-            Err(Error::Generic(format!(
-                "Requested file was not found: {}",
-                file_name
+            Err(Error::Io(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("Requested file was not found: {}", file_name),
             )))
         }
     }

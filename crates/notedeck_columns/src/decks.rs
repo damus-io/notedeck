@@ -36,8 +36,9 @@ impl Default for DecksCache {
 }
 
 impl DecksCache {
-    pub fn new(account_to_decks: HashMap<Pubkey, Decks>) -> Self {
+    pub fn new(mut account_to_decks: HashMap<Pubkey, Decks>) -> Self {
         let fallback_pubkey = FALLBACK_PUBKEY();
+        account_to_decks.entry(fallback_pubkey).or_default();
 
         Self {
             account_to_decks,
