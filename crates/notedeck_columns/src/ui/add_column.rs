@@ -7,11 +7,12 @@ use egui::{
 };
 use enostr::Pubkey;
 use nostrdb::{Ndb, Transaction};
+use tracing::error;
 
 use crate::{
     login_manager::AcquireKeyState,
     route::Route,
-    timeline::{kind::ListKind, PubkeySource, Timeline, TimelineKind},
+    timeline::{kind::ListKind, PubkeySource, TimelineKind},
     ui::anim::ICON_EXPANSION_MULTIPLE,
     Damus,
 };
@@ -22,7 +23,7 @@ use tokenator::{ParseError, TokenParser, TokenSerializable, TokenWriter};
 use super::{anim::AnimationHelper, padding, ProfilePreview};
 
 pub enum AddColumnResponse {
-    Timeline(Timeline),
+    Timeline(TimelineKind),
     UndecidedNotification,
     ExternalNotification,
     Hashtag,
@@ -56,7 +57,6 @@ enum AddColumnOption {
     Notification(PubkeySource),
     Contacts(PubkeySource),
     UndecidedHashtag,
-    Hashtag(String),
     UndecidedIndividual,
     ExternalIndividual,
     Individual(PubkeySource),
@@ -138,46 +138,24 @@ impl TokenSerializable for AddColumnRoute {
 }
 
 impl AddColumnOption {
-    pub fn take_as_response(
-        self,
-        ndb: &Ndb,
-        cur_account: Option<&UserAccount>,
-    ) -> Option<AddColumnResponse> {
-        let txn = Transaction::new(ndb).unwrap();
+    pub fn take_as_response(self, cur_account: &UserAccount) -> AddColumnResponse {
         match self {
-            AddColumnOption::Algo(algo_option) => Some(AddColumnResponse::Algo(algo_option)),
-            AddColumnOption::Universe => TimelineKind::Universe
-                .into_timeline(&txn, ndb)
-                .map(AddColumnResponse::Timeline),
-            AddColumnOption::Notification(pubkey) => {
-                TimelineKind::Notifications(*pubkey.as_pubkey(&cur_account.map(|kp| kp.pubkey)?))
-                    .into_timeline(&txn, ndb)
-                    .map(AddColumnResponse::Timeline)
-            }
-            AddColumnOption::UndecidedNotification => {
-                Some(AddColumnResponse::UndecidedNotification)
-            }
-            AddColumnOption::Contacts(pk_src) => {
-                let tlk = TimelineKind::contact_list(
-                    *pk_src.as_pubkey(&cur_account.map(|kp| kp.pubkey)?),
-                );
-                tlk.into_timeline(&txn, ndb)
-                    .map(AddColumnResponse::Timeline)
-            }
-            AddColumnOption::ExternalNotification => Some(AddColumnResponse::ExternalNotification),
-            AddColumnOption::UndecidedHashtag => Some(AddColumnResponse::Hashtag),
-            AddColumnOption::Hashtag(hashtag) => TimelineKind::Hashtag(hashtag)
-                .into_timeline(&txn, ndb)
-                .map(AddColumnResponse::Timeline),
-            AddColumnOption::UndecidedIndividual => Some(AddColumnResponse::UndecidedIndividual),
-            AddColumnOption::ExternalIndividual => Some(AddColumnResponse::ExternalIndividual),
-            AddColumnOption::Individual(pubkey_source) => {
-                let tlk = TimelineKind::profile(
-                    *pubkey_source.as_pubkey(&cur_account.map(|kp| kp.pubkey)?),
-                );
-                tlk.into_timeline(&txn, ndb)
-                    .map(AddColumnResponse::Timeline)
-            }
+            AddColumnOption::Algo(algo_option) => AddColumnResponse::Algo(algo_option),
+            AddColumnOption::Universe => AddColumnResponse::Timeline(TimelineKind::Universe),
+            AddColumnOption::Notification(pubkey) => AddColumnResponse::Timeline(
+                TimelineKind::Notifications(*pubkey.as_pubkey(&cur_account.pubkey)),
+            ),
+            AddColumnOption::UndecidedNotification => AddColumnResponse::UndecidedNotification,
+            AddColumnOption::Contacts(pk_src) => AddColumnResponse::Timeline(
+                TimelineKind::contact_list(*pk_src.as_pubkey(&cur_account.pubkey)),
+            ),
+            AddColumnOption::ExternalNotification => AddColumnResponse::ExternalNotification,
+            AddColumnOption::UndecidedHashtag => AddColumnResponse::Hashtag,
+            AddColumnOption::UndecidedIndividual => AddColumnResponse::UndecidedIndividual,
+            AddColumnOption::ExternalIndividual => AddColumnResponse::ExternalIndividual,
+            AddColumnOption::Individual(pubkey_source) => AddColumnResponse::Timeline(
+                TimelineKind::profile(*pubkey_source.as_pubkey(&cur_account.pubkey)),
+            ),
         }
     }
 }
@@ -209,7 +187,7 @@ impl<'a> AddColumnView<'a> {
         for column_option_data in self.get_base_options() {
             let option = column_option_data.option.clone();
             if self.column_option_ui(ui, column_option_data).clicked() {
-                selected_option = option.take_as_response(self.ndb, self.cur_account);
+                selected_option = self.cur_account.map(|acct| option.take_as_response(acct))
             }
 
             ui.add(Separator::default().spacing(0.0));
@@ -223,7 +201,7 @@ impl<'a> AddColumnView<'a> {
         for column_option_data in self.get_notifications_options() {
             let option = column_option_data.option.clone();
             if self.column_option_ui(ui, column_option_data).clicked() {
-                selected_option = option.take_as_response(self.ndb, self.cur_account);
+                selected_option = self.cur_account.map(|acct| option.take_as_response(acct));
             }
 
             ui.add(Separator::default().spacing(0.0));
@@ -255,7 +233,7 @@ impl<'a> AddColumnView<'a> {
 
         let option = algo_option.option.clone();
         if self.column_option_ui(ui, algo_option).clicked() {
-            option.take_as_response(self.ndb, self.cur_account)
+            self.cur_account.map(|acct| option.take_as_response(acct))
         } else {
             None
         }
@@ -271,7 +249,7 @@ impl<'a> AddColumnView<'a> {
 
         let option = algo_option.option.clone();
         if self.column_option_ui(ui, algo_option).clicked() {
-            option.take_as_response(self.ndb, self.cur_account)
+            self.cur_account.map(|acct| option.take_as_response(acct))
         } else {
             None
         }
@@ -282,7 +260,7 @@ impl<'a> AddColumnView<'a> {
         for column_option_data in self.get_individual_options() {
             let option = column_option_data.option.clone();
             if self.column_option_ui(ui, column_option_data).clicked() {
-                selected_option = option.take_as_response(self.ndb, self.cur_account);
+                selected_option = self.cur_account.map(|acct| option.take_as_response(acct));
             }
 
             ui.add(Separator::default().spacing(0.0));
@@ -349,7 +327,8 @@ impl<'a> AddColumnView<'a> {
                 }
 
                 if ui.add(add_column_button()).clicked() {
-                    to_option(keypair.pubkey).take_as_response(self.ndb, self.cur_account)
+                    self.cur_account
+                        .map(|acc| to_option(keypair.pubkey).take_as_response(acc))
                 } else {
                     None
                 }
@@ -634,14 +613,23 @@ pub fn render_add_column_routes(
         },
         AddColumnRoute::UndecidedNotification => add_column_view.notifications_ui(ui),
         AddColumnRoute::ExternalNotification => add_column_view.external_notification_ui(ui),
-        AddColumnRoute::Hashtag => hashtag_ui(ui, ctx.ndb, &mut app.view_state.id_string_map),
+        AddColumnRoute::Hashtag => hashtag_ui(ui, &mut app.view_state.id_string_map),
         AddColumnRoute::UndecidedIndividual => add_column_view.individual_ui(ui),
         AddColumnRoute::ExternalIndividual => add_column_view.external_individual_ui(ui),
     };
 
     if let Some(resp) = resp {
         match resp {
-            AddColumnResponse::Timeline(mut timeline) => {
+            AddColumnResponse::Timeline(timeline_kind) => 'leave: {
+                let txn = Transaction::new(ctx.ndb).unwrap();
+                let mut timeline =
+                    if let Some(timeline) = timeline_kind.into_timeline(&txn, ctx.ndb) {
+                        timeline
+                    } else {
+                        error!("Could not convert column response to timeline");
+                        break 'leave;
+                    };
+
                 crate::timeline::setup_new_timeline(
                     &mut timeline,
                     ctx.ndb,
@@ -706,7 +694,7 @@ pub fn render_add_column_routes(
 
                         // TODO: spin off the list search here instead
 
-                        ui.label(format!("error: could not find {:?}", &list_kind));
+                        ui.label(format!("error: could not find {:?}", list_kind));
                     }
                 }
             },
@@ -753,7 +741,6 @@ pub fn render_add_column_routes(
 
 pub fn hashtag_ui(
     ui: &mut Ui,
-    ndb: &Ndb,
     id_string_map: &mut HashMap<Id, String>,
 ) -> Option<AddColumnResponse> {
     padding(16.0, ui, |ui| {
@@ -777,9 +764,9 @@ pub fn hashtag_ui(
             .clicked()
         {
             let resp =
-                AddColumnOption::Hashtag(sanitize_hashtag(text_buffer)).take_as_response(ndb, None);
+                AddColumnResponse::Timeline(TimelineKind::Hashtag(sanitize_hashtag(text_buffer)));
             id_string_map.remove(&id);
-            resp
+            Some(resp)
         } else {
             None
         }
