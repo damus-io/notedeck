@@ -65,6 +65,7 @@ impl<'a> SearchResultsView<'a> {
             .show(ui.ctx(), |ui| {
                 egui::Frame::none()
                     .fill(ui.visuals().panel_fill)
+                    .inner_margin(8.0)
                     .show(ui, |ui| {
                         let width = rect.width();
                         let scroll_resp = ScrollArea::vertical()
