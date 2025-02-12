@@ -1,6 +1,8 @@
 use crate::login_manager::AcquireKeyState;
 use crate::ui::{Preview, PreviewConfig};
-use egui::{Align, Button, Color32, Frame, InnerResponse, Margin, RichText, Vec2};
+use egui::{
+    Align, Button, Color32, Frame, Image, InnerResponse, Margin, RichText, TextBuffer, Vec2,
+};
 use egui::{Layout, TextEdit};
 use enostr::Keypair;
 use notedeck::fonts::get_font_size;
@@ -38,7 +40,16 @@ impl<'a> AccountLoginView<'a> {
             });
 
             ui.vertical_centered_justified(|ui| {
-                ui.add(login_textedit(self.manager));
+                ui.horizontal(|ui| {
+                    let available_width = ui.available_width();
+                    let button_width = 32.0;
+                    let text_edit_width = available_width - button_width;
+
+                    ui.add_sized([text_edit_width, 40.0], login_textedit(self.manager));
+                    if eye_button(ui, self.manager.password_visible()).clicked() {
+                        self.manager.toggle_password_visibility();
+                    }
+                });
                 ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
                 let help_text_style = NotedeckTextStyle::Small;
                 ui.add(egui::Label::new(
@@ -105,7 +116,7 @@ fn login_button() -> Button<'static> {
 }
 
 fn login_textedit(manager: &mut AcquireKeyState) -> TextEdit {
-    manager.get_acquire_textedit(|text| {
+    let create_textedit: fn(&mut dyn TextBuffer) -> TextEdit = |text| {
         egui::TextEdit::singleline(text)
             .hint_text(
                 RichText::new("Your key here...").text_style(NotedeckTextStyle::Body.text_style()),
@@ -113,7 +124,28 @@ fn login_textedit(manager: &mut AcquireKeyState) -> TextEdit {
             .vertical_align(Align::Center)
             .min_size(Vec2::new(0.0, 40.0))
             .margin(Margin::same(12.0))
-    })
+    };
+
+    let is_visible = manager.password_visible();
+    let mut text_edit = manager.get_acquire_textedit(create_textedit);
+    if !is_visible {
+        text_edit = text_edit.password(true);
+    }
+    text_edit
+}
+
+fn eye_button(ui: &mut egui::Ui, is_visible: bool) -> egui::Response {
+    let is_dark_mode = ui.visuals().dark_mode;
+    let icon = Image::new(if is_visible && is_dark_mode {
+        egui::include_image!("../../../../assets/icons/eye-dark.png")
+    } else if is_visible {
+        egui::include_image!("../../../../assets/icons/eye-light.png")
+    } else if is_dark_mode {
+        egui::include_image!("../../../../assets/icons/eye-slash-dark.png")
+    } else {
+        egui::include_image!("../../../../assets/icons/eye-slash-light.png")
+    });
+    ui.add(Button::image(icon).frame(false))
 }
 
 mod preview {
