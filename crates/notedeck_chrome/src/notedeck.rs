@@ -151,9 +151,9 @@ mod tests {
         let args: Vec<String> = [
             "--testrunner",
             "--datapath",
-            &datapath.to_str().unwrap(),
+            datapath.to_str().unwrap(),
             "--dbpath",
-            &dbpath.to_str().unwrap(),
+            dbpath.to_str().unwrap(),
         ]
         .iter()
         .map(|s| s.to_string())
@@ -224,8 +224,8 @@ mod tests {
             .unwrap();
 
         assert_eq!(app.timeline_cache.timelines.len(), 2);
-        assert!(app.timeline_cache.timelines.get(&tl1).is_some());
-        assert!(app.timeline_cache.timelines.get(&tl2).is_some());
+        assert!(app.timeline_cache.timelines.contains_key(tl1));
+        assert!(app.timeline_cache.timelines.contains_key(tl2));
 
         rmrf(tmpdir);
     }

@@ -144,7 +144,7 @@ mod tests {
         let data_str = format!("thread:{}", note_id_hex);
         let data = &data_str.split(":").collect::<Vec<&str>>();
         let mut token_writer = TokenWriter::default();
-        let mut parser = TokenParser::new(&data);
+        let mut parser = TokenParser::new(data);
         let parsed = TimelineKind::parse(&mut parser, &Pubkey::new(*note_id.bytes())).unwrap();
         let expected = TimelineKind::Thread(ThreadSelection::from_root_id(
             RootNoteIdBuf::new_unsafe(*note_id.bytes()),
