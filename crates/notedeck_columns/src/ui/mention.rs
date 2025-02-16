@@ -1,3 +1,4 @@
+use crate::gif::GifStateMap;
 use crate::ui;
 use crate::{actionbar::NoteAction, profile::get_display_name, timeline::TimelineKind};
 use egui::Sense;
@@ -8,6 +9,7 @@ use notedeck::ImageCache;
 pub struct Mention<'a> {
     ndb: &'a Ndb,
     img_cache: &'a mut ImageCache,
+    gifs: &'a mut GifStateMap,
     txn: &'a Transaction,
     pk: &'a [u8; 32],
     selectable: bool,
@@ -18,6 +20,7 @@ impl<'a> Mention<'a> {
     pub fn new(
         ndb: &'a Ndb,
         img_cache: &'a mut ImageCache,
+        gifs: &'a mut GifStateMap,
         txn: &'a Transaction,
         pk: &'a [u8; 32],
     ) -> Self {
@@ -26,6 +29,7 @@ impl<'a> Mention<'a> {
         Mention {
             ndb,
             img_cache,
+            gifs,
             txn,
             pk,
             selectable,
@@ -47,6 +51,7 @@ impl<'a> Mention<'a> {
         mention_ui(
             self.ndb,
             self.img_cache,
+            self.gifs,
             self.txn,
             self.pk,
             ui,
@@ -62,9 +67,11 @@ impl egui::Widget for Mention<'_> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn mention_ui(
     ndb: &Ndb,
     img_cache: &mut ImageCache,
+    gifs: &mut GifStateMap,
     txn: &Transaction,
     pk: &[u8; 32],
     ui: &mut egui::Ui,
@@ -102,7 +109,7 @@ fn mention_ui(
         if let Some(rec) = profile.as_ref() {
             resp.on_hover_ui_at_pointer(|ui| {
                 ui.set_max_width(300.0);
-                ui.add(ui::ProfilePreview::new(rec, img_cache));
+                ui.add(ui::ProfilePreview::new(rec, img_cache, gifs));
             });
         }
 

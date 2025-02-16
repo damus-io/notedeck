@@ -4,6 +4,7 @@ use crate::nav::RenderNavAction;
 use crate::nav::SwitchingAction;
 use crate::{
     column::Columns,
+    gif::GifStateMap,
     route::Route,
     timeline::{ColumnTitle, TimelineKind},
     ui::{
@@ -21,6 +22,7 @@ use notedeck::{ImageCache, NotedeckTextStyle};
 pub struct NavTitle<'a> {
     ndb: &'a Ndb,
     img_cache: &'a mut ImageCache,
+    gifs: &'a mut GifStateMap,
     columns: &'a Columns,
     routes: &'a [Route],
     col_id: usize,
@@ -30,6 +32,7 @@ impl<'a> NavTitle<'a> {
     pub fn new(
         ndb: &'a Ndb,
         img_cache: &'a mut ImageCache,
+        gifs: &'a mut GifStateMap,
         columns: &'a Columns,
         routes: &'a [Route],
         col_id: usize,
@@ -37,6 +40,7 @@ impl<'a> NavTitle<'a> {
         NavTitle {
             ndb,
             img_cache,
+            gifs,
             columns,
             routes,
             col_id,
@@ -395,7 +399,7 @@ impl<'a> NavTitle<'a> {
             .as_ref()
             .ok()
             .and_then(move |p| {
-                Some(ui::ProfilePic::from_profile(self.img_cache, p)?.size(pfp_size))
+                Some(ui::ProfilePic::from_profile(self.img_cache, self.gifs, p)?.size(pfp_size))
             })
     }
 
@@ -409,7 +413,8 @@ impl<'a> NavTitle<'a> {
             ui.add(pfp);
         } else {
             ui.add(
-                ui::ProfilePic::new(self.img_cache, ui::ProfilePic::no_pfp_url()).size(pfp_size),
+                ui::ProfilePic::new(self.img_cache, self.gifs, ui::ProfilePic::no_pfp_url())
+                    .size(pfp_size),
             );
         }
     }
@@ -464,7 +469,8 @@ impl<'a> NavTitle<'a> {
             ui.add(pfp);
         } else {
             ui.add(
-                ui::ProfilePic::new(self.img_cache, ui::ProfilePic::no_pfp_url()).size(pfp_size),
+                ui::ProfilePic::new(self.img_cache, self.gifs, ui::ProfilePic::no_pfp_url())
+                    .size(pfp_size),
             );
         };
     }

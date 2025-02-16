@@ -1,4 +1,5 @@
 use crate::draft::{Draft, Drafts, MentionHint};
+use crate::gif::GifStateMap;
 use crate::images::fetch_img;
 use crate::media_upload::{nostrbuild_nip96_upload, MediaPath};
 use crate::post::{downcast_post_buffer, MentionType, NewPost};
@@ -24,6 +25,7 @@ pub struct PostView<'a> {
     post_type: PostType,
     img_cache: &'a mut ImageCache,
     note_cache: &'a mut NoteCache,
+    gifs: &'a mut GifStateMap,
     poster: FilledKeypair<'a>,
     id_source: Option<egui::Id>,
     inner_rect: egui::Rect,
@@ -82,12 +84,14 @@ pub struct PostResponse {
 }
 
 impl<'a> PostView<'a> {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         ndb: &'a Ndb,
         draft: &'a mut Draft,
         post_type: PostType,
         img_cache: &'a mut ImageCache,
         note_cache: &'a mut NoteCache,
+        gifs: &'a mut GifStateMap,
         poster: FilledKeypair<'a>,
         inner_rect: egui::Rect,
     ) -> Self {
@@ -97,6 +101,7 @@ impl<'a> PostView<'a> {
             draft,
             img_cache,
             note_cache,
+            gifs,
             poster,
             id_source,
             post_type,
@@ -120,13 +125,16 @@ impl<'a> PostView<'a> {
             .get_profile_by_pubkey(txn, self.poster.pubkey.bytes())
             .as_ref()
             .ok()
-            .and_then(|p| Some(ui::ProfilePic::from_profile(self.img_cache, p)?.size(pfp_size)));
+            .and_then(|p| {
+                Some(ui::ProfilePic::from_profile(self.img_cache, self.gifs, p)?.size(pfp_size))
+            });
 
         if let Some(pfp) = poster_pfp {
             ui.add(pfp);
         } else {
             ui.add(
-                ui::ProfilePic::new(self.img_cache, ui::ProfilePic::no_pfp_url()).size(pfp_size),
+                ui::ProfilePic::new(self.img_cache, self.gifs, ui::ProfilePic::no_pfp_url())
+                    .size(pfp_size),
             );
         }
 
@@ -221,7 +229,7 @@ impl<'a> PostView<'a> {
 
                     if let Ok(res) = self.ndb.search_profile(txn, mention_str, 10) {
                         let hint_selection =
-                            SearchResultsView::new(self.img_cache, self.ndb, txn, &res)
+                            SearchResultsView::new(self.img_cache, self.gifs, self.ndb, txn, &res)
                                 .show_in_rect(hint_rect, ui);
 
                         if let Some(hint_index) = hint_selection {
@@ -299,6 +307,7 @@ impl<'a> PostView<'a> {
                                         self.ndb,
                                         self.note_cache,
                                         self.img_cache,
+                                        self.gifs,
                                         txn,
                                         id.bytes(),
                                         nostrdb::NoteKey::new(0),
@@ -642,6 +651,7 @@ mod preview {
     pub struct PostPreview {
         draft: Draft,
         poster: FullKeypair,
+        gifs: GifStateMap,
     }
 
     impl PostPreview {
@@ -670,6 +680,7 @@ mod preview {
             ));
             PostPreview {
                 draft,
+                gifs: Default::default(),
                 poster: FullKeypair::generate(),
             }
         }
@@ -684,6 +695,7 @@ mod preview {
                 PostType::New,
                 app.img_cache,
                 app.note_cache,
+                &mut self.gifs,
                 self.poster.to_filled(),
                 ui.available_rect_before_wrap(),
             )

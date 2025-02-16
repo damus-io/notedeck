@@ -16,6 +16,7 @@ pub use reply_description::reply_desc;
 
 use crate::{
     actionbar::NoteAction,
+    gif::GifStateMap,
     profile::get_display_name,
     timeline::{ThreadSelection, TimelineKind},
     ui::{self, View},
@@ -33,6 +34,7 @@ pub struct NoteView<'a> {
     ndb: &'a Ndb,
     note_cache: &'a mut NoteCache,
     img_cache: &'a mut ImageCache,
+    gifs: &'a mut GifStateMap,
     parent: Option<NoteKey>,
     note: &'a nostrdb::Note<'a>,
     flags: NoteOptions,
@@ -75,6 +77,7 @@ impl<'a> NoteView<'a> {
         ndb: &'a Ndb,
         note_cache: &'a mut NoteCache,
         img_cache: &'a mut ImageCache,
+        gifs: &'a mut GifStateMap,
         note: &'a nostrdb::Note<'a>,
     ) -> Self {
         let flags = NoteOptions::actionbar | NoteOptions::note_previews;
@@ -83,6 +86,7 @@ impl<'a> NoteView<'a> {
             ndb,
             note_cache,
             img_cache,
+            gifs,
             parent,
             note,
             flags,
@@ -180,6 +184,7 @@ impl<'a> NoteView<'a> {
                 self.ndb,
                 self.img_cache,
                 self.note_cache,
+                self.gifs,
                 txn,
                 self.note,
                 note_key,
@@ -229,14 +234,18 @@ impl<'a> NoteView<'a> {
                     anim_speed,
                 );
 
-                ui.put(rect, ui::ProfilePic::new(self.img_cache, pic).size(size))
-                    .on_hover_ui_at_pointer(|ui| {
-                        ui.set_max_width(300.0);
-                        ui.add(ui::ProfilePreview::new(
-                            profile.as_ref().unwrap(),
-                            self.img_cache,
-                        ));
-                    });
+                ui.put(
+                    rect,
+                    ui::ProfilePic::new(self.img_cache, self.gifs, pic).size(size),
+                )
+                .on_hover_ui_at_pointer(|ui| {
+                    ui.set_max_width(300.0);
+                    ui.add(ui::ProfilePreview::new(
+                        profile.as_ref().unwrap(),
+                        self.img_cache,
+                        self.gifs,
+                    ));
+                });
 
                 if resp.hovered() || resp.clicked() {
                     ui::show_pointer(ui);
@@ -246,7 +255,7 @@ impl<'a> NoteView<'a> {
             }
             None => ui
                 .add(
-                    ui::ProfilePic::new(self.img_cache, ui::ProfilePic::no_pfp_url())
+                    ui::ProfilePic::new(self.img_cache, self.gifs, ui::ProfilePic::no_pfp_url())
                         .size(pfp_size),
                 )
                 .interact(sense),
@@ -276,7 +285,7 @@ impl<'a> NoteView<'a> {
                     if let Ok(rec) = &profile {
                         resp.on_hover_ui_at_pointer(|ui| {
                             ui.set_max_width(300.0);
-                            ui.add(ui::ProfilePreview::new(rec, self.img_cache));
+                            ui.add(ui::ProfilePreview::new(rec, self.img_cache, self.gifs));
                         });
                     }
                     let color = ui.style().visuals.noninteractive().fg_stroke.color;
@@ -287,7 +296,14 @@ impl<'a> NoteView<'a> {
                             .text_style(style.text_style()),
                     );
                 });
-                NoteView::new(self.ndb, self.note_cache, self.img_cache, &note_to_repost).show(ui)
+                NoteView::new(
+                    self.ndb,
+                    self.note_cache,
+                    self.img_cache,
+                    self.gifs,
+                    &note_to_repost,
+                )
+                .show(ui)
             } else {
                 self.show_standard(ui)
             }
@@ -393,6 +409,7 @@ impl<'a> NoteView<'a> {
                                         self.ndb,
                                         self.img_cache,
                                         self.note_cache,
+                                        self.gifs,
                                     )
                                 })
                                 .inner;
@@ -408,6 +425,7 @@ impl<'a> NoteView<'a> {
                     self.ndb,
                     self.img_cache,
                     self.note_cache,
+                    self.gifs,
                     txn,
                     self.note,
                     note_key,
@@ -464,6 +482,7 @@ impl<'a> NoteView<'a> {
                                 self.ndb,
                                 self.img_cache,
                                 self.note_cache,
+                                self.gifs,
                             );
 
                             if action.is_some() {
@@ -476,6 +495,7 @@ impl<'a> NoteView<'a> {
                         self.ndb,
                         self.img_cache,
                         self.note_cache,
+                        self.gifs,
                         txn,
                         self.note,
                         note_key,

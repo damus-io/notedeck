@@ -13,7 +13,9 @@ use tracing::error;
 
 use crate::{
     actionbar::NoteAction,
-    colors, images,
+    colors,
+    gif::GifStateMap,
+    images,
     profile::get_display_name,
     timeline::{TimelineCache, TimelineKind},
     ui::{
@@ -34,6 +36,7 @@ pub struct ProfileView<'a> {
     ndb: &'a Ndb,
     note_cache: &'a mut NoteCache,
     img_cache: &'a mut ImageCache,
+    gifs: &'a mut GifStateMap,
     unknown_ids: &'a mut UnknownIds,
     is_muted: &'a MuteFun,
 }
@@ -53,6 +56,7 @@ impl<'a> ProfileView<'a> {
         ndb: &'a Ndb,
         note_cache: &'a mut NoteCache,
         img_cache: &'a mut ImageCache,
+        gifs: &'a mut GifStateMap,
         unknown_ids: &'a mut UnknownIds,
         is_muted: &'a MuteFun,
         note_options: NoteOptions,
@@ -65,6 +69,7 @@ impl<'a> ProfileView<'a> {
             ndb,
             note_cache,
             img_cache,
+            gifs,
             unknown_ids,
             note_options,
             is_muted,
@@ -117,6 +122,7 @@ impl<'a> ProfileView<'a> {
                     self.ndb,
                     self.note_cache,
                     self.img_cache,
+                    self.gifs,
                     self.is_muted,
                 )
                 .show(ui)
@@ -147,9 +153,10 @@ impl<'a> ProfileView<'a> {
                 let pfp_rect = pfp_rect.translate(egui::vec2(0.0, -(padding + 2.0 + (size / 2.0))));
 
                 ui.horizontal(|ui| {
+                    let url = get_profile_url(Some(&profile));
                     ui.put(
                         pfp_rect,
-                        ProfilePic::new(self.img_cache, get_profile_url(Some(&profile)))
+                        ProfilePic::new(self.img_cache, self.gifs, url)
                             .size(size)
                             .border(ProfilePic::border_stroke(ui)),
                     );

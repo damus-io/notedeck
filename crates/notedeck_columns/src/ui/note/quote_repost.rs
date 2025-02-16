@@ -2,7 +2,7 @@ use enostr::{FilledKeypair, NoteId};
 use nostrdb::Ndb;
 use notedeck::{ImageCache, NoteCache};
 
-use crate::{draft::Draft, ui};
+use crate::{draft::Draft, gif::GifStateMap, ui};
 
 use super::{PostResponse, PostType};
 
@@ -11,6 +11,7 @@ pub struct QuoteRepostView<'a> {
     poster: FilledKeypair<'a>,
     note_cache: &'a mut NoteCache,
     img_cache: &'a mut ImageCache,
+    gifs: &'a mut GifStateMap,
     draft: &'a mut Draft,
     quoting_note: &'a nostrdb::Note<'a>,
     id_source: Option<egui::Id>,
@@ -18,11 +19,13 @@ pub struct QuoteRepostView<'a> {
 }
 
 impl<'a> QuoteRepostView<'a> {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         ndb: &'a Ndb,
         poster: FilledKeypair<'a>,
         note_cache: &'a mut NoteCache,
         img_cache: &'a mut ImageCache,
+        gifs: &'a mut GifStateMap,
         draft: &'a mut Draft,
         quoting_note: &'a nostrdb::Note<'a>,
         inner_rect: egui::Rect,
@@ -33,6 +36,7 @@ impl<'a> QuoteRepostView<'a> {
             poster,
             note_cache,
             img_cache,
+            gifs,
             draft,
             quoting_note,
             id_source,
@@ -50,6 +54,7 @@ impl<'a> QuoteRepostView<'a> {
             PostType::Quote(NoteId::new(quoting_note_id.to_owned())),
             self.img_cache,
             self.note_cache,
+            self.gifs,
             self.poster,
             self.inner_rect,
         )

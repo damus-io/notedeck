@@ -1,4 +1,4 @@
-use crate::{actionbar::NoteAction, ui};
+use crate::{actionbar::NoteAction, gif::GifStateMap, ui};
 use egui::{Label, RichText, Sense};
 use nostrdb::{Ndb, Note, NoteReply, Transaction};
 use notedeck::{ImageCache, NoteCache};
@@ -11,6 +11,7 @@ pub fn reply_desc(
     ndb: &Ndb,
     img_cache: &mut ImageCache,
     note_cache: &mut NoteCache,
+    gifs: &mut GifStateMap,
 ) -> Option<NoteAction> {
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
@@ -26,6 +27,7 @@ pub fn reply_desc(
     let note_link = |ui: &mut egui::Ui,
                      note_cache: &mut NoteCache,
                      img_cache: &mut ImageCache,
+                     gifs: &mut GifStateMap,
                      text: &str,
                      note: &Note<'_>| {
         let r = ui.add(
@@ -41,7 +43,7 @@ pub fn reply_desc(
         if r.hovered() {
             r.on_hover_ui_at_pointer(|ui| {
                 ui.set_max_width(400.0);
-                ui::NoteView::new(ndb, note_cache, img_cache, note)
+                ui::NoteView::new(ndb, note_cache, img_cache, gifs, note)
                     .actionbar(false)
                     .wide(true)
                     .show(ui);
@@ -62,7 +64,7 @@ pub fn reply_desc(
 
     if note_reply.is_reply_to_root() {
         // We're replying to the root, let's show this
-        let action = ui::Mention::new(ndb, img_cache, txn, reply_note.pubkey())
+        let action = ui::Mention::new(ndb, img_cache, gifs, txn, reply_note.pubkey())
             .size(size)
             .selectable(selectable)
             .show(ui)
@@ -74,14 +76,14 @@ pub fn reply_desc(
 
         ui.add(Label::new(RichText::new("'s").size(size).color(color)).selectable(selectable));
 
-        note_link(ui, note_cache, img_cache, "thread", &reply_note);
+        note_link(ui, note_cache, img_cache, gifs, "thread", &reply_note);
     } else if let Some(root) = note_reply.root() {
         // replying to another post in a thread, not the root
 
         if let Ok(root_note) = ndb.get_note_by_id(txn, root.id) {
             if root_note.pubkey() == reply_note.pubkey() {
                 // simply "replying to bob's note" when replying to bob in his thread
-                let action = ui::Mention::new(ndb, img_cache, txn, reply_note.pubkey())
+                let action = ui::Mention::new(ndb, img_cache, gifs, txn, reply_note.pubkey())
                     .size(size)
                     .selectable(selectable)
                     .show(ui)
@@ -95,11 +97,11 @@ pub fn reply_desc(
                     Label::new(RichText::new("'s").size(size).color(color)).selectable(selectable),
                 );
 
-                note_link(ui, note_cache, img_cache, "note", &reply_note);
+                note_link(ui, note_cache, img_cache, gifs, "note", &reply_note);
             } else {
                 // replying to bob in alice's thread
 
-                let action = ui::Mention::new(ndb, img_cache, txn, reply_note.pubkey())
+                let action = ui::Mention::new(ndb, img_cache, gifs, txn, reply_note.pubkey())
                     .size(size)
                     .selectable(selectable)
                     .show(ui)
@@ -113,13 +115,13 @@ pub fn reply_desc(
                     Label::new(RichText::new("'s").size(size).color(color)).selectable(selectable),
                 );
 
-                note_link(ui, note_cache, img_cache, "note", &reply_note);
+                note_link(ui, note_cache, img_cache, gifs, "note", &reply_note);
 
                 ui.add(
                     Label::new(RichText::new("in").size(size).color(color)).selectable(selectable),
                 );
 
-                let action = ui::Mention::new(ndb, img_cache, txn, root_note.pubkey())
+                let action = ui::Mention::new(ndb, img_cache, gifs, txn, root_note.pubkey())
                     .size(size)
                     .selectable(selectable)
                     .show(ui)
@@ -133,10 +135,10 @@ pub fn reply_desc(
                     Label::new(RichText::new("'s").size(size).color(color)).selectable(selectable),
                 );
 
-                note_link(ui, note_cache, img_cache, "thread", &root_note);
+                note_link(ui, note_cache, img_cache, gifs, "thread", &root_note);
             }
         } else {
-            let action = ui::Mention::new(ndb, img_cache, txn, reply_note.pubkey())
+            let action = ui::Mention::new(ndb, img_cache, gifs, txn, reply_note.pubkey())
                 .size(size)
                 .selectable(selectable)
                 .show(ui)

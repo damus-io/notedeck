@@ -10,6 +10,7 @@ use crate::{
     app_style::DECK_ICON_SIZE,
     colors,
     decks::{DecksAction, DecksCache},
+    gif::GifStateMap,
     nav::SwitchingAction,
     route::Route,
     support::Support,
@@ -32,6 +33,7 @@ pub struct DesktopSidePanel<'a> {
     img_cache: &'a mut ImageCache,
     selected_account: Option<&'a UserAccount>,
     decks_cache: &'a DecksCache,
+    gifs_cache: &'a mut GifStateMap,
 }
 
 impl View for DesktopSidePanel<'_> {
@@ -73,12 +75,14 @@ impl<'a> DesktopSidePanel<'a> {
         img_cache: &'a mut ImageCache,
         selected_account: Option<&'a UserAccount>,
         decks_cache: &'a DecksCache,
+        gifs_cache: &'a mut GifStateMap,
     ) -> Self {
         Self {
             ndb,
             img_cache,
             selected_account,
             decks_cache,
+            gifs_cache,
         }
     }
 
@@ -266,7 +270,8 @@ impl<'a> DesktopSidePanel<'a> {
         let txn = nostrdb::Transaction::new(self.ndb).expect("should be able to create txn");
         let profile_url = get_account_url(&txn, self.ndb, self.selected_account);
 
-        let widget = ProfilePic::new(self.img_cache, profile_url).size(cur_pfp_size);
+        let widget =
+            ProfilePic::new(self.img_cache, self.gifs_cache, profile_url).size(cur_pfp_size);
 
         ui.put(helper.get_animation_rect(), widget);
 

@@ -1,4 +1,4 @@
-use crate::colors::PINK;
+use crate::{colors::PINK, gif::GifStateMap};
 use egui::{
     Align, Button, Frame, Image, InnerResponse, Layout, RichText, ScrollArea, Ui, UiBuilder, Vec2,
 };
@@ -11,6 +11,7 @@ pub struct AccountsView<'a> {
     ndb: &'a Ndb,
     accounts: &'a Accounts,
     img_cache: &'a mut ImageCache,
+    gifs: &'a mut GifStateMap,
 }
 
 #[derive(Clone, Debug)]
@@ -27,11 +28,17 @@ enum ProfilePreviewAction {
 }
 
 impl<'a> AccountsView<'a> {
-    pub fn new(ndb: &'a Ndb, accounts: &'a Accounts, img_cache: &'a mut ImageCache) -> Self {
+    pub fn new(
+        ndb: &'a Ndb,
+        accounts: &'a Accounts,
+        img_cache: &'a mut ImageCache,
+        gifs: &'a mut GifStateMap,
+    ) -> Self {
         AccountsView {
             ndb,
             accounts,
             img_cache,
+            gifs,
         }
     }
 
@@ -44,7 +51,7 @@ impl<'a> AccountsView<'a> {
             ui.add_space(8.0);
             scroll_area()
                 .show(ui, |ui| {
-                    Self::show_accounts(ui, self.accounts, self.ndb, self.img_cache)
+                    Self::show_accounts(ui, self.accounts, self.ndb, self.img_cache, self.gifs)
                 })
                 .inner
         })
@@ -55,6 +62,7 @@ impl<'a> AccountsView<'a> {
         accounts: &Accounts,
         ndb: &Ndb,
         img_cache: &mut ImageCache,
+        gifs: &mut GifStateMap,
     ) -> Option<AccountsViewResponse> {
         let mut return_op: Option<AccountsViewResponse> = None;
         ui.allocate_ui_with_layout(
@@ -85,8 +93,12 @@ impl<'a> AccountsView<'a> {
                         let max_size = egui::vec2(ui.available_width(), 77.0);
                         let resp = ui.allocate_response(max_size, egui::Sense::click());
                         ui.allocate_new_ui(UiBuilder::new().max_rect(resp.rect), |ui| {
-                            let preview =
-                                SimpleProfilePreview::new(profile.as_ref(), img_cache, has_nsec);
+                            let preview = SimpleProfilePreview::new(
+                                profile.as_ref(),
+                                img_cache,
+                                gifs,
+                                has_nsec,
+                            );
                             show_profile_card(ui, preview, max_size, is_selected, resp)
                         })
                         .inner

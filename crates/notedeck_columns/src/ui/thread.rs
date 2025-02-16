@@ -1,5 +1,6 @@
 use crate::{
     actionbar::NoteAction,
+    gif::GifStateMap,
     timeline::{ThreadSelection, TimelineCache, TimelineKind},
     ui::note::NoteOptions,
 };
@@ -14,6 +15,7 @@ pub struct ThreadView<'a> {
     timeline_cache: &'a mut TimelineCache,
     ndb: &'a Ndb,
     note_cache: &'a mut NoteCache,
+    gifs: &'a mut GifStateMap,
     unknown_ids: &'a mut UnknownIds,
     img_cache: &'a mut ImageCache,
     selected_note_id: &'a [u8; 32],
@@ -30,6 +32,7 @@ impl<'a> ThreadView<'a> {
         note_cache: &'a mut NoteCache,
         unknown_ids: &'a mut UnknownIds,
         img_cache: &'a mut ImageCache,
+        gifs: &'a mut GifStateMap,
         selected_note_id: &'a [u8; 32],
         textmode: bool,
         is_muted: &'a MuteFun,
@@ -41,6 +44,7 @@ impl<'a> ThreadView<'a> {
             note_cache,
             unknown_ids,
             img_cache,
+            gifs,
             selected_note_id,
             textmode,
             id_source,
@@ -114,6 +118,7 @@ impl<'a> ThreadView<'a> {
                     self.ndb,
                     self.note_cache,
                     self.img_cache,
+                    self.gifs,
                     self.is_muted,
                 )
                 .show(ui)

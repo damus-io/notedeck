@@ -4,6 +4,7 @@ use notedeck::{fonts::get_font_size, ImageCache, NotedeckTextStyle};
 use tracing::error;
 
 use crate::{
+    gif::GifStateMap,
     profile::get_display_name,
     ui::anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},
 };
@@ -14,12 +15,14 @@ pub struct SearchResultsView<'a> {
     ndb: &'a Ndb,
     txn: &'a Transaction,
     img_cache: &'a mut ImageCache,
+    gifs: &'a mut GifStateMap,
     results: &'a Vec<&'a [u8; 32]>,
 }
 
 impl<'a> SearchResultsView<'a> {
     pub fn new(
         img_cache: &'a mut ImageCache,
+        gifs: &'a mut GifStateMap,
         ndb: &'a Ndb,
         txn: &'a Transaction,
         results: &'a Vec<&'a [u8; 32]>,
@@ -28,6 +31,7 @@ impl<'a> SearchResultsView<'a> {
             ndb,
             txn,
             img_cache,
+            gifs,
             results,
         }
     }
@@ -45,7 +49,7 @@ impl<'a> SearchResultsView<'a> {
                 };
 
                 if ui
-                    .add(user_result(&profile, self.img_cache, i, width))
+                    .add(user_result(&profile, self.img_cache, self.gifs, i, width))
                     .clicked()
                 {
                     selection = Some(i)
@@ -85,6 +89,7 @@ impl<'a> SearchResultsView<'a> {
 fn user_result<'a>(
     profile: &'a ProfileRecord<'_>,
     cache: &'a mut ImageCache,
+    gifs: &'a mut GifStateMap,
     index: usize,
     width: f32,
 ) -> impl egui::Widget + use<'a> {
@@ -106,7 +111,7 @@ fn user_result<'a>(
 
         let pfp_resp = ui.put(
             icon_rect,
-            ProfilePic::new(cache, get_profile_url(Some(profile)))
+            ProfilePic::new(cache, gifs, get_profile_url(Some(profile)))
                 .size(helper.scale_1d_pos(min_img_size)),
         );
 

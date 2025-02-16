@@ -1,4 +1,5 @@
 use crate::draft::Draft;
+use crate::gif::GifStateMap;
 use crate::ui;
 use crate::ui::note::{PostResponse, PostType};
 use enostr::{FilledKeypair, NoteId};
@@ -11,6 +12,7 @@ pub struct PostReplyView<'a> {
     poster: FilledKeypair<'a>,
     note_cache: &'a mut NoteCache,
     img_cache: &'a mut ImageCache,
+    gifs: &'a mut GifStateMap,
     draft: &'a mut Draft,
     note: &'a nostrdb::Note<'a>,
     id_source: Option<egui::Id>,
@@ -18,12 +20,14 @@ pub struct PostReplyView<'a> {
 }
 
 impl<'a> PostReplyView<'a> {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         ndb: &'a Ndb,
         poster: FilledKeypair<'a>,
         draft: &'a mut Draft,
         note_cache: &'a mut NoteCache,
         img_cache: &'a mut ImageCache,
+        gifs: &'a mut GifStateMap,
         note: &'a nostrdb::Note<'a>,
         inner_rect: egui::Rect,
     ) -> Self {
@@ -35,6 +39,7 @@ impl<'a> PostReplyView<'a> {
             note,
             note_cache,
             img_cache,
+            gifs,
             id_source,
             inner_rect,
         }
@@ -67,11 +72,17 @@ impl<'a> PostReplyView<'a> {
             egui::Frame::none()
                 .outer_margin(egui::Margin::same(note_offset))
                 .show(ui, |ui| {
-                    ui::NoteView::new(self.ndb, self.note_cache, self.img_cache, self.note)
-                        .actionbar(false)
-                        .medium_pfp(true)
-                        .options_button(true)
-                        .show(ui);
+                    ui::NoteView::new(
+                        self.ndb,
+                        self.note_cache,
+                        self.img_cache,
+                        self.gifs,
+                        self.note,
+                    )
+                    .actionbar(false)
+                    .medium_pfp(true)
+                    .options_button(true)
+                    .show(ui);
                 });
 
             let id = self.id();
@@ -85,6 +96,7 @@ impl<'a> PostReplyView<'a> {
                     PostType::Reply(NoteId::new(*replying_to)),
                     self.img_cache,
                     self.note_cache,
+                    self.gifs,
                     self.poster,
                     self.inner_rect,
                 )
