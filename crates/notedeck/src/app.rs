@@ -1,7 +1,7 @@
 use crate::persist::{AppSizeHandler, ZoomHandler};
 use crate::urls::UrlCache;
 use crate::{
-    Accounts, AppContext, Args, DataPath, DataPathType, Directory, FileKeyStorage, ImageCache,
+    Accounts, AppContext, Args, DataPath, DataPathType, Directory, FileKeyStorage, MediaCache,
     KeyStorageType, NoteCache, RelayDebugView, ThemeHandler, UnknownIds, UrlMimes,
 };
 use egui::ThemePreference;
@@ -20,7 +20,7 @@ pub trait App {
 /// Main notedeck app framework
 pub struct Notedeck {
     ndb: Ndb,
-    img_cache: ImageCache,
+    img_cache: MediaCache,
     urls: UrlMimes,
     unknown_ids: UnknownIds,
     pool: RelayPool,
@@ -131,7 +131,7 @@ impl Notedeck {
 
         let _ = std::fs::create_dir_all(&dbpath_str);
 
-        let img_cache_dir = path.path(DataPathType::Cache).join(ImageCache::rel_dir());
+        let img_cache_dir = path.path(DataPathType::Cache).join(MediaCache::rel_dir());
         let _ = std::fs::create_dir_all(img_cache_dir.clone());
 
         let urls_dir = path.path(DataPathType::Cache).join(UrlCache::rel_dir());
@@ -188,7 +188,7 @@ impl Notedeck {
             }
         }
 
-        let img_cache = ImageCache::new(img_cache_dir);
+        let img_cache = MediaCache::new(img_cache_dir);
         let note_cache = NoteCache::default();
         let unknown_ids = UnknownIds::default();
         let zoom = ZoomHandler::new(&path);

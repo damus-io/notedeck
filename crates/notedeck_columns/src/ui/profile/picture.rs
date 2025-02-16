@@ -4,10 +4,10 @@ use egui::{vec2, Sense, Stroke, TextureHandle};
 use nostrdb::{Ndb, Transaction};
 use tracing::info;
 
-use notedeck::{AppContext, ImageCache, UrlMimes};
+use notedeck::{AppContext, MediaCache, UrlMimes};
 
 pub struct ProfilePic<'cache, 'url> {
-    cache: &'cache mut ImageCache,
+    cache: &'cache mut MediaCache,
     urls: &'cache mut UrlMimes,
     url: &'url str,
     size: f32,
@@ -21,7 +21,7 @@ impl egui::Widget for ProfilePic<'_, '_> {
 }
 
 impl<'cache, 'url> ProfilePic<'cache, 'url> {
-    pub fn new(cache: &'cache mut ImageCache, urls: &'cache mut UrlMimes, url: &'url str) -> Self {
+    pub fn new(cache: &'cache mut MediaCache, urls: &'cache mut UrlMimes, url: &'url str) -> Self {
         let size = Self::default_size();
         ProfilePic {
             cache,
@@ -37,7 +37,7 @@ impl<'cache, 'url> ProfilePic<'cache, 'url> {
     }
 
     pub fn from_profile(
-        cache: &'cache mut ImageCache,
+        cache: &'cache mut MediaCache,
         urls: &'cache mut UrlMimes,
         profile: &nostrdb::ProfileRecord<'url>,
     ) -> Option<Self> {
@@ -83,7 +83,7 @@ impl<'cache, 'url> ProfilePic<'cache, 'url> {
 
 fn render_pfp(
     ui: &mut egui::Ui,
-    img_cache: &mut ImageCache,
+    img_cache: &mut MediaCache,
     _urls: &mut UrlMimes,
     url: &str,
     ui_size: f32,

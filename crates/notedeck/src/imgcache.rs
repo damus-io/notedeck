@@ -13,15 +13,15 @@ use std::path;
 use std::path::PathBuf;
 use tracing::warn;
 
-pub type ImageCacheValue = Promise<Result<TextureHandle>>;
-pub type ImageCacheMap = HashMap<String, ImageCacheValue>;
+pub type MediaCacheValue = Promise<Result<TextureHandle>>;
+pub type MediaCacheMap = HashMap<String, MediaCacheValue>;
 
-pub struct ImageCache {
+pub struct MediaCache {
     pub cache_dir: path::PathBuf,
-    url_imgs: ImageCacheMap,
+    url_imgs: MediaCacheMap,
 }
 
-impl ImageCache {
+impl MediaCache {
     pub fn new(cache_dir: path::PathBuf) -> Self {
         Self {
             cache_dir,
@@ -118,11 +118,11 @@ impl ImageCache {
         Ok(())
     }
 
-    pub fn map(&self) -> &ImageCacheMap {
+    pub fn map(&self) -> &MediaCacheMap {
         &self.url_imgs
     }
 
-    pub fn map_mut(&mut self) -> &mut ImageCacheMap {
+    pub fn map_mut(&mut self) -> &mut MediaCacheMap {
         &mut self.url_imgs
     }
 }

@@ -17,7 +17,7 @@ use crate::{
     Damus,
 };
 
-use notedeck::{AppContext, ImageCache, NotedeckTextStyle, UrlMimes, UserAccount};
+use notedeck::{AppContext, MediaCache, NotedeckTextStyle, UrlMimes, UserAccount};
 use tokenator::{ParseError, TokenParser, TokenSerializable, TokenWriter};
 
 use super::{anim::AnimationHelper, padding, ProfilePreview};
@@ -163,7 +163,7 @@ impl AddColumnOption {
 pub struct AddColumnView<'a> {
     key_state_map: &'a mut HashMap<Id, AcquireKeyState>,
     ndb: &'a Ndb,
-    img_cache: &'a mut ImageCache,
+    img_cache: &'a mut MediaCache,
     urls: &'a mut UrlMimes,
     cur_account: Option<&'a UserAccount>,
 }
@@ -172,7 +172,7 @@ impl<'a> AddColumnView<'a> {
     pub fn new(
         key_state_map: &'a mut HashMap<Id, AcquireKeyState>,
         ndb: &'a Ndb,
-        img_cache: &'a mut ImageCache,
+        img_cache: &'a mut MediaCache,
         urls: &'a mut UrlMimes,
         cur_account: Option<&'a UserAccount>,
     ) -> Self {
