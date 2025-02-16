@@ -6,6 +6,8 @@ use egui::ColorImage;
 
 use std::collections::HashMap;
 use std::fs::{create_dir_all, File};
+use std::sync::mpsc::Receiver;
+use std::time::Duration;
 
 use hex::ToHex;
 use sha2::Digest;
@@ -15,6 +17,41 @@ use tracing::warn;
 
 pub type ImageCacheValue = Promise<Result<TextureHandle>>;
 pub type ImageCacheMap = HashMap<String, ImageCacheValue>;
+
+pub enum TexturedImage {
+    Static(TextureHandle),
+    Animated(Animation),
+}
+
+pub struct Animation {
+    pub first_frame: TextureFrame,
+    pub other_frames: Vec<TextureFrame>,
+    pub receiver: Option<Receiver<TextureFrame>>,
+}
+
+impl Animation {
+    pub fn get_frame(&self, index: usize) -> Option<&TextureFrame> {
+        if index == 0 {
+            Some(&self.first_frame)
+        } else {
+            self.other_frames.get(index - 1)
+        }
+    }
+
+    pub fn num_frames(&self) -> usize {
+        self.other_frames.len() + 1
+    }
+}
+
+pub struct TextureFrame {
+    pub delay: Duration,
+    pub texture: TextureHandle,
+}
+
+pub struct ImageFrame {
+    pub delay: Duration,
+    pub image: ColorImage,
+}
 
 pub struct ImageCache {
     pub cache_dir: path::PathBuf,
