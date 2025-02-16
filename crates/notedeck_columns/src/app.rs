@@ -464,7 +464,9 @@ impl Damus {
         let decks_cache = DecksCache::default();
 
         let path = DataPath::new(&data_path);
-        let imgcache_dir = path.path(DataPathType::Cache).join(MediaCache::rel_dir());
+        let imgcache_dir = path
+            .path(DataPathType::Cache)
+            .join(MediaCache::rel_dir(notedeck::MediaCacheType::Image));
         let _ = std::fs::create_dir_all(imgcache_dir.clone());
         let debug = true;
 

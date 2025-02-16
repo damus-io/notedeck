@@ -31,7 +31,7 @@ pub use context::AppContext;
 pub use error::{Error, FilterError};
 pub use filter::{FilterState, FilterStates, UnifiedSubscription};
 pub use fonts::NamedFontFamily;
-pub use imgcache::{get_texture, MediaCache, TexturedImage};
+pub use imgcache::{get_texture, MediaCache, MediaCacheType, TexturedImage};
 pub use muted::{MuteFun, Muted};
 pub use note::{NoteRef, RootIdError, RootNoteId, RootNoteIdBuf};
 pub use notecache::{CachedNote, NoteCache};
