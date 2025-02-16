@@ -31,7 +31,7 @@ pub use error::{Error, FilterError};
 pub use filter::{FilterState, FilterStates, UnifiedSubscription};
 pub use fonts::NamedFontFamily;
 pub use imgcache::{
-    Animation, ImageFrame, MediaCache, MediaCacheValue, TextureFrame, TexturedImage,
+    Animation, ImageFrame, MediaCache, MediaCacheType, MediaCacheValue, TextureFrame, TexturedImage,
 };
 pub use muted::{MuteFun, Muted};
 pub use note::{NoteRef, RootIdError, RootNoteId, RootNoteIdBuf};
