@@ -1,4 +1,5 @@
 use crate::gif::GifStateMap;
+use crate::gif::{handle_repaint, retrieve_latest_texture};
 use crate::images::ImageType;
 use crate::ui::{Preview, PreviewConfig};
 use egui::{vec2, Sense, Stroke, TextureHandle};
@@ -106,7 +107,7 @@ fn render_pfp(
         img_cache.map_mut().insert(url.to_owned(), res);
     }
 
-    match img_cache.map()[url].ready() {
+    match img_cache.map_mut().get_mut(url).and_then(|p| p.ready_mut()) {
         None => paint_circle(ui, ui_size, border),
 
         // Failed to fetch profile!
@@ -122,16 +123,24 @@ fn render_pfp(
                 img_cache.map_mut().insert(url.to_owned(), no_pfp);
             }
 
-            match img_cache.map().get(url).unwrap().ready() {
+            let resp = match img_cache.map_mut().get_mut(url).and_then(|p| p.ready_mut()) {
                 None => paint_circle(ui, ui_size, border),
                 Some(Err(_e)) => {
                     //error!("Image load error: {:?}", e);
                     paint_circle(ui, ui_size, border)
                 }
-                Some(Ok(img)) => pfp_image(ui, img, ui_size, border),
-            }
+                Some(Ok(img)) => {
+                    let texture = handle_repaint(ui, retrieve_latest_texture(url, gifs, img));
+                    pfp_image(ui, texture, ui_size, border)
+                }
+            };
+            resp
         }
-        Some(Ok(img)) => pfp_image(ui, img, ui_size, border),
+
+        Some(Ok(img)) => {
+            let texture = handle_repaint(ui, retrieve_latest_texture(url, gifs, img));
+            pfp_image(ui, texture, ui_size, border)
+        }
     }
 }
 

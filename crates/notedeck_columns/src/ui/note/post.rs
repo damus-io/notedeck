@@ -1,5 +1,6 @@
 use crate::draft::{Draft, Drafts, MentionHint};
 use crate::gif::GifStateMap;
+use crate::gif::{handle_repaint, retrieve_latest_texture};
 use crate::images::fetch_img;
 use crate::media_upload::{nostrbuild_nip96_upload, MediaPath};
 use crate::post::{downcast_post_buffer, MentionType, NewPost};
@@ -405,7 +406,12 @@ impl<'a> PostView<'a> {
                     .insert(media.url.to_owned(), promise);
             }
 
-            match self.img_cache.map()[&media.url].ready() {
+            match self
+                .img_cache
+                .map_mut()
+                .get_mut(&media.url)
+                .and_then(|p| p.ready_mut())
+            {
                 Some(Ok(texture)) => {
                     let media_size = vec2(width as f32, height as f32);
                     let max_size = vec2(300.0, 300.0);
@@ -415,6 +421,8 @@ impl<'a> PostView<'a> {
                         media_size
                     };
 
+                    let texture =
+                        handle_repaint(ui, retrieve_latest_texture(&media.url, self.gifs, texture));
                     let img_resp = ui.add(egui::Image::new(texture).max_size(size).rounding(12.0));
 
                     let remove_button_rect = {

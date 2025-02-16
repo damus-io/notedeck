@@ -1,15 +1,26 @@
-use egui::{pos2, Color32, ColorImage, Rect, Sense, SizeHint, TextureHandle};
+use egui::{pos2, Color32, ColorImage, Rect, Sense, SizeHint};
+use image::codecs::gif::GifDecoder;
 use image::imageops::FilterType;
+use image::AnimationDecoder;
+use image::DynamicImage;
+use image::FlatSamples;
+use image::Frame;
+use notedeck::Animation;
+use notedeck::ImageFrame;
 use notedeck::MediaCache;
 use notedeck::Result;
+use notedeck::TextureFrame;
+use notedeck::TexturedImage;
 use poll_promise::Promise;
+use std::collections::VecDeque;
+use std::io::Cursor;
 use std::path;
 use std::path::PathBuf;
+use std::sync::mpsc;
+use std::sync::mpsc::SyncSender;
+use std::thread;
+use std::time::Duration;
 use tokio::fs;
-
-//pub type ImageCacheKey = String;
-//pub type ImageCacheValue = Promise<Result<TextureHandle>>;
-//pub type ImageCache = HashMap<String, ImageCacheValue>;
 
 // NOTE(jb55): chatgpt wrote this because I was too dumb to
 pub fn aspect_fill(
@@ -102,7 +113,7 @@ pub fn round_image(image: &mut ColorImage) {
     }
 }
 
-fn process_pfp_bitmap(imgtyp: ImageType, image: &mut image::DynamicImage) -> ColorImage {
+fn process_pfp_bitmap(imgtyp: ImageType, mut image: image::DynamicImage) -> ColorImage {
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
 
@@ -125,10 +136,10 @@ fn process_pfp_bitmap(imgtyp: ImageType, image: &mut image::DynamicImage) -> Col
 
             if image.width() > smaller {
                 let excess = image.width() - smaller;
-                *image = image.crop_imm(excess / 2, 0, image.width() - excess, image.height());
+                image = image.crop_imm(excess / 2, 0, image.width() - excess, image.height());
             } else if image.height() > smaller {
                 let excess = image.height() - smaller;
-                *image = image.crop_imm(0, excess / 2, image.width(), image.height() - excess);
+                image = image.crop_imm(0, excess / 2, image.width(), image.height() - excess);
             }
             let image = image.resize(size, size, FilterType::CatmullRom); // DynamicImage
             let image_buffer = image.into_rgba8(); // RgbaImage (ImageBuffer)
@@ -166,8 +177,8 @@ fn parse_img_response(response: ehttp::Response, imgtyp: ImageType) -> Result<Co
     } else if content_type.starts_with("image/") {
         #[cfg(feature = "profiling")]
         puffin::profile_scope!("load_from_memory");
-        let mut dyn_image = image::load_from_memory(&response.bytes)?;
-        Ok(process_pfp_bitmap(imgtyp, &mut dyn_image))
+        let dyn_image = image::load_from_memory(&response.bytes)?;
+        Ok(process_pfp_bitmap(imgtyp, dyn_image))
     } else {
         Err(format!("Expected image, found content-type {:?}", content_type).into())
     }
@@ -177,26 +188,160 @@ fn fetch_img_from_disk(
     ctx: &egui::Context,
     url: &str,
     path: &path::Path,
-) -> Promise<Result<TextureHandle>> {
+) -> Promise<Result<TexturedImage>> {
+    // tracing::info!("Fetching from disk at path: {:?}", path);
     let ctx = ctx.clone();
     let url = url.to_owned();
     let path = path.to_owned();
     Promise::spawn_async(async move {
-        let data = fs::read(path).await?;
-        let image_buffer = image::load_from_memory(&data).map_err(notedeck::Error::Image)?;
+        if is_gif(&url) {
+            let gif_bytes = fs::read(path.clone()).await?; // Read entire file into a Vec<u8>
+            generate_gif(ctx, url, &path, gif_bytes, false, |i| {
+                buffer_to_color_image(i.as_flat_samples_u8(), i.width(), i.height())
+            })
+        } else {
+            let data = fs::read(path).await?;
+            let image_buffer = image::load_from_memory(&data).map_err(notedeck::Error::Image)?;
 
-        // TODO: remove unwrap here
-        let flat_samples = image_buffer.as_flat_samples_u8().unwrap();
-        let img = ColorImage::from_rgba_unmultiplied(
-            [
-                image_buffer.width() as usize,
-                image_buffer.height() as usize,
-            ],
-            flat_samples.as_slice(),
-        );
-
-        Ok(ctx.load_texture(&url, img, Default::default()))
+            let img = buffer_to_color_image(
+                image_buffer.as_flat_samples_u8(),
+                image_buffer.width(),
+                image_buffer.height(),
+            );
+            Ok(TexturedImage::Static(ctx.load_texture(
+                &url,
+                img,
+                Default::default(),
+            )))
+        }
     })
+}
+
+fn generate_gif(
+    ctx: egui::Context,
+    url: String,
+    path: &path::Path,
+    data: Vec<u8>,
+    write_to_disk: bool,
+    process_to_egui: impl Fn(DynamicImage) -> ColorImage + Send + Copy + 'static,
+) -> Result<TexturedImage> {
+    let decoder = {
+        let reader = Cursor::new(data.as_slice());
+        GifDecoder::new(reader)?
+    };
+    let (tex_input, tex_output) = mpsc::sync_channel(4);
+    let (maybe_encoder_input, maybe_encoder_output) = if write_to_disk {
+        let (inp, out) = mpsc::sync_channel(4);
+        (Some(inp), Some(out))
+    } else {
+        (None, None)
+    };
+
+    let mut frames: VecDeque<Frame> = decoder
+        .into_frames()
+        .collect::<std::result::Result<VecDeque<_>, image::ImageError>>()
+        .map_err(|e| notedeck::Error::Generic(e.to_string()))?;
+
+    let first_frame = frames.pop_front().map(|frame| {
+        generate_animation_frame(
+            &ctx,
+            &url,
+            0,
+            frame,
+            maybe_encoder_input.as_ref(),
+            process_to_egui,
+        )
+    });
+
+    let cur_url = url.clone();
+    thread::spawn(move || {
+        for (index, frame) in frames.into_iter().enumerate() {
+            let texture_frame = generate_animation_frame(
+                &ctx,
+                &cur_url,
+                index,
+                frame,
+                maybe_encoder_input.as_ref(),
+                process_to_egui,
+            );
+
+            if tex_input.send(texture_frame).is_err() {
+                tracing::error!("AnimationTextureFrame mpsc stopped abruptly");
+                break;
+            }
+        }
+    });
+
+    if let Some(encoder_output) = maybe_encoder_output {
+        let path = path.to_owned();
+
+        thread::spawn(move || {
+            let mut imgs = Vec::new();
+            while let Ok(img) = encoder_output.recv() {
+                imgs.push(img);
+            }
+
+            if let Err(e) = MediaCache::write_gif(&path, &url, imgs) {
+                tracing::error!("Could not write gif to disk: {e}");
+            }
+        });
+    }
+
+    first_frame.map_or_else(
+        || {
+            Err(notedeck::Error::Generic(
+                "first frame not found for gif".to_owned(),
+            ))
+        },
+        |first_frame| {
+            Ok(TexturedImage::Animated(Animation {
+                other_frames: Default::default(),
+                receiver: Some(tex_output),
+                first_frame,
+            }))
+        },
+    )
+}
+
+fn generate_animation_frame(
+    ctx: &egui::Context,
+    url: &str,
+    index: usize,
+    frame: image::Frame,
+    maybe_encoder_input: Option<&SyncSender<ImageFrame>>,
+    process_to_egui: impl Fn(DynamicImage) -> ColorImage + Send + 'static,
+) -> TextureFrame {
+    let delay = Duration::from(frame.delay());
+    let img = DynamicImage::ImageRgba8(frame.into_buffer());
+    let color_img = process_to_egui(img);
+
+    if let Some(sender) = maybe_encoder_input {
+        if let Err(e) = sender.send(ImageFrame {
+            delay,
+            image: color_img.clone(),
+        }) {
+            tracing::error!("ImageFrame mpsc unexpectedly closed: {e}");
+        }
+    }
+
+    TextureFrame {
+        delay,
+        texture: ctx.load_texture(format!("{}{}", url, index), color_img, Default::default()),
+    }
+}
+
+fn buffer_to_color_image(
+    samples: Option<FlatSamples<&[u8]>>,
+    width: u32,
+    height: u32,
+) -> ColorImage {
+    // TODO(jb55): remove unwrap here
+    let flat_samples = samples.unwrap();
+    ColorImage::from_rgba_unmultiplied([width as usize, height as usize], flat_samples.as_slice())
+}
+
+fn is_gif(url: &str) -> bool {
+    url.ends_with("gif")
 }
 
 pub fn fetch_binary_from_disk(path: PathBuf) -> Result<Vec<u8>> {
@@ -217,7 +362,7 @@ pub fn fetch_img(
     ctx: &egui::Context,
     url: &str,
     imgtyp: ImageType,
-) -> Promise<Result<TextureHandle>> {
+) -> Promise<Result<TexturedImage>> {
     let key = MediaCache::key(url);
     let path = img_cache.cache_dir.join(key);
 
@@ -235,28 +380,50 @@ fn fetch_img_from_net(
     ctx: &egui::Context,
     url: &str,
     imgtyp: ImageType,
-) -> Promise<Result<TextureHandle>> {
+) -> Promise<Result<TexturedImage>> {
     let (sender, promise) = Promise::new();
     let request = ehttp::Request::get(url);
     let ctx = ctx.clone();
     let cloned_url = url.to_owned();
     let cache_path = cache_path.to_owned();
     ehttp::fetch(request, move |response| {
-        let handle = response
-            .map_err(notedeck::Error::Generic)
-            .and_then(|resp| parse_img_response(resp, imgtyp))
-            .map(|img| {
-                let texture_handle = ctx.load_texture(&cloned_url, img.clone(), Default::default());
+        let handle = response.map_err(notedeck::Error::Generic).and_then(|resp| {
+            if is_ehttp_response_gif(&resp) {
+                let gif_bytes = resp.bytes;
+                generate_gif(
+                    ctx.clone(),
+                    cloned_url,
+                    &cache_path,
+                    gif_bytes,
+                    true,
+                    move |img| process_pfp_bitmap(imgtyp, img),
+                )
+            } else {
+                let img = parse_img_response(resp, imgtyp);
+                img.map(|img| {
+                    let texture_handle =
+                        ctx.load_texture(&cloned_url, img.clone(), Default::default());
 
-                // write to disk
-                std::thread::spawn(move || MediaCache::write(&cache_path, &cloned_url, img));
+                    // write to disk
+                    std::thread::spawn(move || MediaCache::write(&cache_path, &cloned_url, img));
 
-                texture_handle
-            });
+                    TexturedImage::Static(texture_handle)
+                })
+            }
+        });
 
         sender.send(handle); // send the results back to the UI thread.
         ctx.request_repaint();
     });
 
     promise
+}
+
+fn is_ehttp_response_gif(resp: &ehttp::Response) -> bool {
+    if let Some(content) = resp.content_type() {
+        tracing::info!("GOT GIF EHTTP");
+        content.starts_with("image/gif")
+    } else {
+        false
+    }
 }

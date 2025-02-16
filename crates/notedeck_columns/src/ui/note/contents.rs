@@ -1,4 +1,5 @@
 use crate::gif::GifStateMap;
+use crate::gif::{handle_repaint, retrieve_latest_texture};
 use crate::ui::{
     self,
     note::{NoteOptions, NoteResponse},
@@ -138,7 +139,7 @@ pub fn render_note_preview(
 }
 
 fn is_image_link(url: &str) -> bool {
-    url.ends_with("png") || url.ends_with("jpg") || url.ends_with("jpeg")
+    url.ends_with("png") || url.ends_with("jpg") || url.ends_with("jpeg") || url.ends_with("gif")
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -316,7 +317,11 @@ fn image_carousel(
                         }
 
                         // What is the state of the fetch?
-                        match img_cache.map()[&image].ready() {
+                        match img_cache
+                            .map_mut()
+                            .get_mut(&image)
+                            .and_then(|p| p.ready_mut())
+                        {
                             // Still waiting
                             None => {
                                 ui.allocate_space(egui::vec2(spinsz, spinsz));
@@ -338,12 +343,16 @@ fn image_carousel(
                             }
                             // Use the previously resolved image
                             Some(Ok(img)) => {
+                                let texture =
+                                    handle_repaint(ui, retrieve_latest_texture(&image, gifs, img));
+
                                 let img_resp = ui.add(
-                                    Image::new(img)
+                                    Image::new(texture)
                                         .max_height(height)
                                         .rounding(5.0)
                                         .fit_to_original_size(1.0),
                                 );
+
                                 img_resp.context_menu(|ui| {
                                     if ui.button("Copy Link").clicked() {
                                         ui.ctx().copy_text(image);

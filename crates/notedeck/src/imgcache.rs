@@ -1,5 +1,6 @@
 use crate::Result;
 use egui::TextureHandle;
+use image::{Delay, Frame};
 use poll_promise::Promise;
 
 use egui::ColorImage;
@@ -15,7 +16,7 @@ use std::path;
 use std::path::PathBuf;
 use tracing::warn;
 
-pub type MediaCacheValue = Promise<Result<TextureHandle>>;
+pub type MediaCacheValue = Promise<Result<TexturedImage>>;
 pub type MediaCacheMap = HashMap<String, MediaCacheValue>;
 
 pub enum TexturedImage {
@@ -94,15 +95,8 @@ impl MediaCache {
     */
 
     pub fn write(cache_dir: &path::Path, url: &str, data: ColorImage) -> Result<()> {
-        let file_path = cache_dir.join(Self::key(url));
-        if let Some(p) = file_path.parent() {
-            create_dir_all(p)?;
-        }
-        let file = File::options()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(file_path)?;
+        // tracing::info!("Writing static image");
+        let file = Self::create_file(cache_dir, url)?;
         let encoder = image::codecs::webp::WebPEncoder::new_lossless(file);
 
         encoder.encode(
@@ -111,6 +105,40 @@ impl MediaCache {
             data.size[1] as u32,
             image::ColorType::Rgba8.into(),
         )?;
+
+        Ok(())
+    }
+
+    fn create_file(cache_dir: &path::Path, url: &str) -> Result<File> {
+        let file_path = cache_dir.join(Self::key(url));
+        if let Some(p) = file_path.parent() {
+            // tracing::info!(
+            //     "creating new file... cache_dir: {:?}, path: {:?}, path without parent: {:?}",
+            //     cache_dir,
+            //     file_path,
+            //     p
+            // );
+            create_dir_all(p)?;
+        }
+        Ok(File::options()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(file_path)?)
+    }
+
+    pub fn write_gif(cache_dir: &path::Path, url: &str, data: Vec<ImageFrame>) -> Result<()> {
+        // tracing::info!("Writing new gif file");
+        let file = Self::create_file(cache_dir, url)?;
+
+        let mut encoder = image::codecs::gif::GifEncoder::new(file);
+        for img in data {
+            let buf = color_image_to_rgba(img.image);
+            let frame = Frame::from_parts(buf, 0, 0, Delay::from_saturating_duration(img.delay));
+            if let Err(e) = encoder.encode_frame(frame) {
+                tracing::error!("problem encoding frame: {e}");
+            }
+        }
 
         Ok(())
     }
@@ -170,4 +198,21 @@ impl MediaCache {
     pub fn map_mut(&mut self) -> &mut MediaCacheMap {
         &mut self.url_imgs
     }
+}
+
+// TODO(kernelkind): create test
+fn color_image_to_rgba(color_image: ColorImage) -> image::RgbaImage {
+    let width = color_image.width() as u32;
+    let height = color_image.height() as u32;
+
+    // Convert `Color32` pixels to raw RGBA bytes
+    let rgba_pixels: Vec<u8> = color_image
+        .pixels
+        .iter()
+        .flat_map(|color| color.to_array()) // Convert Color32 to `[u8; 4]`
+        .collect();
+
+    // Create RgbaImage from raw pixel data
+    image::RgbaImage::from_raw(width, height, rgba_pixels)
+        .expect("Failed to create RgbaImage from ColorImage")
 }
