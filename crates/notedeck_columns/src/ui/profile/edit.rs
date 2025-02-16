@@ -1,7 +1,7 @@
 use core::f32;
 
 use egui::{vec2, Button, Layout, Margin, RichText, Rounding, ScrollArea, TextEdit};
-use notedeck::{ImageCache, NotedeckTextStyle};
+use notedeck::{MediaCache, NotedeckTextStyle};
 
 use crate::{colors, profile_state::ProfileState};
 
@@ -9,11 +9,11 @@ use super::{banner, unwrap_profile_url, ProfilePic};
 
 pub struct EditProfileView<'a> {
     state: &'a mut ProfileState,
-    img_cache: &'a mut ImageCache,
+    img_cache: &'a mut MediaCache,
 }
 
 impl<'a> EditProfileView<'a> {
-    pub fn new(state: &'a mut ProfileState, img_cache: &'a mut ImageCache) -> Self {
+    pub fn new(state: &'a mut ProfileState, img_cache: &'a mut MediaCache) -> Self {
         Self { state, img_cache }
     }
 

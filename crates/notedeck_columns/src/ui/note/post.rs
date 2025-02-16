@@ -13,7 +13,7 @@ use egui::{vec2, Frame, Layout, Margin, Pos2, ScrollArea, Sense, TextBuffer};
 use enostr::{FilledKeypair, FullKeypair, NoteId, Pubkey, RelayPool};
 use nostrdb::{Ndb, Transaction};
 
-use notedeck::{ImageCache, NoteCache};
+use notedeck::{MediaCache, NoteCache};
 use tracing::error;
 
 use super::contents::render_note_preview;
@@ -22,7 +22,7 @@ pub struct PostView<'a> {
     ndb: &'a Ndb,
     draft: &'a mut Draft,
     post_type: PostType,
-    img_cache: &'a mut ImageCache,
+    img_cache: &'a mut MediaCache,
     note_cache: &'a mut NoteCache,
     poster: FilledKeypair<'a>,
     id_source: Option<egui::Id>,
@@ -88,7 +88,7 @@ impl<'a> PostView<'a> {
         ndb: &'a Ndb,
         draft: &'a mut Draft,
         post_type: PostType,
-        img_cache: &'a mut ImageCache,
+        img_cache: &'a mut MediaCache,
         note_cache: &'a mut NoteCache,
         poster: FilledKeypair<'a>,
         inner_rect: egui::Rect,

@@ -4,7 +4,7 @@ use crate::{
 };
 use egui::{Label, RichText, Sense};
 use nostrdb::{Ndb, Note, NoteReply, Transaction};
-use notedeck::{ImageCache, NoteCache};
+use notedeck::{MediaCache, NoteCache};
 
 #[must_use = "Please handle the resulting note action"]
 pub fn reply_desc(
@@ -12,7 +12,7 @@ pub fn reply_desc(
     txn: &Transaction,
     note_reply: &NoteReply,
     ndb: &Ndb,
-    img_cache: &mut ImageCache,
+    img_cache: &mut MediaCache,
     note_cache: &mut NoteCache,
     note_options: NoteOptions,
 ) -> Option<NoteAction> {
@@ -29,7 +29,7 @@ pub fn reply_desc(
     // note link renderer helper
     let note_link = |ui: &mut egui::Ui,
                      note_cache: &mut NoteCache,
-                     img_cache: &mut ImageCache,
+                     img_cache: &mut MediaCache,
                      text: &str,
                      note: &Note<'_>| {
         let r = ui.add(

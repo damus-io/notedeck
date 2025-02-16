@@ -8,11 +8,11 @@ use egui::{Color32, Hyperlink, Image, RichText};
 use nostrdb::{BlockType, Mention, Ndb, Note, NoteKey, Transaction};
 use tracing::warn;
 
-use notedeck::{ImageCache, NoteCache};
+use notedeck::{MediaCache, NoteCache};
 
 pub struct NoteContents<'a> {
     ndb: &'a Ndb,
-    img_cache: &'a mut ImageCache,
+    img_cache: &'a mut MediaCache,
     note_cache: &'a mut NoteCache,
     txn: &'a Transaction,
     note: &'a Note<'a>,
@@ -24,7 +24,7 @@ pub struct NoteContents<'a> {
 impl<'a> NoteContents<'a> {
     pub fn new(
         ndb: &'a Ndb,
-        img_cache: &'a mut ImageCache,
+        img_cache: &'a mut MediaCache,
         note_cache: &'a mut NoteCache,
         txn: &'a Transaction,
         note: &'a Note,
@@ -72,7 +72,7 @@ pub fn render_note_preview(
     ui: &mut egui::Ui,
     ndb: &Ndb,
     note_cache: &mut NoteCache,
-    img_cache: &mut ImageCache,
+    img_cache: &mut MediaCache,
     txn: &Transaction,
     id: &[u8; 32],
     parent: NoteKey,
@@ -134,7 +134,7 @@ fn is_image_link(url: &str) -> bool {
 fn render_note_contents(
     ui: &mut egui::Ui,
     ndb: &Ndb,
-    img_cache: &mut ImageCache,
+    img_cache: &mut MediaCache,
     note_cache: &mut NoteCache,
     txn: &Transaction,
     note: &Note,
@@ -279,7 +279,7 @@ fn rot13(input: &str) -> String {
 
 fn image_carousel(
     ui: &mut egui::Ui,
-    img_cache: &mut ImageCache,
+    img_cache: &mut MediaCache,
     images: Vec<String>,
     carousel_id: egui::Id,
 ) {

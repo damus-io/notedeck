@@ -12,7 +12,7 @@ use egui::{vec2, Direction, Layout, Pos2, Stroke};
 use egui_tabs::TabColor;
 use nostrdb::{Ndb, Transaction};
 use notedeck::note::root_note_id_from_selected_id;
-use notedeck::{ImageCache, MuteFun, NoteCache};
+use notedeck::{MediaCache, MuteFun, NoteCache};
 use tracing::{error, warn};
 
 use super::anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE};
@@ -22,7 +22,7 @@ pub struct TimelineView<'a> {
     timeline_cache: &'a mut TimelineCache,
     ndb: &'a Ndb,
     note_cache: &'a mut NoteCache,
-    img_cache: &'a mut ImageCache,
+    img_cache: &'a mut MediaCache,
     note_options: NoteOptions,
     reverse: bool,
     is_muted: &'a MuteFun,
@@ -34,7 +34,7 @@ impl<'a> TimelineView<'a> {
         timeline_cache: &'a mut TimelineCache,
         ndb: &'a Ndb,
         note_cache: &'a mut NoteCache,
-        img_cache: &'a mut ImageCache,
+        img_cache: &'a mut MediaCache,
         note_options: NoteOptions,
         is_muted: &'a MuteFun,
     ) -> TimelineView<'a> {
@@ -78,7 +78,7 @@ fn timeline_ui(
     timeline_id: &TimelineKind,
     timeline_cache: &mut TimelineCache,
     note_cache: &mut NoteCache,
-    img_cache: &mut ImageCache,
+    img_cache: &mut MediaCache,
     reversed: bool,
     note_options: NoteOptions,
     is_muted: &MuteFun,
@@ -321,7 +321,7 @@ pub struct TimelineTabView<'a> {
     txn: &'a Transaction,
     ndb: &'a Ndb,
     note_cache: &'a mut NoteCache,
-    img_cache: &'a mut ImageCache,
+    img_cache: &'a mut MediaCache,
     is_muted: &'a MuteFun,
 }
 
@@ -334,7 +334,7 @@ impl<'a> TimelineTabView<'a> {
         txn: &'a Transaction,
         ndb: &'a Ndb,
         note_cache: &'a mut NoteCache,
-        img_cache: &'a mut ImageCache,
+        img_cache: &'a mut MediaCache,
         is_muted: &'a MuteFun,
     ) -> Self {
         Self {

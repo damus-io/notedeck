@@ -1,6 +1,6 @@
 use enostr::{FilledKeypair, NoteId};
 use nostrdb::Ndb;
-use notedeck::{ImageCache, NoteCache};
+use notedeck::{MediaCache, NoteCache};
 
 use crate::{
     draft::Draft,
@@ -13,7 +13,7 @@ pub struct QuoteRepostView<'a> {
     ndb: &'a Ndb,
     poster: FilledKeypair<'a>,
     note_cache: &'a mut NoteCache,
-    img_cache: &'a mut ImageCache,
+    img_cache: &'a mut MediaCache,
     draft: &'a mut Draft,
     quoting_note: &'a nostrdb::Note<'a>,
     id_source: Option<egui::Id>,
@@ -27,7 +27,7 @@ impl<'a> QuoteRepostView<'a> {
         ndb: &'a Ndb,
         poster: FilledKeypair<'a>,
         note_cache: &'a mut NoteCache,
-        img_cache: &'a mut ImageCache,
+        img_cache: &'a mut MediaCache,
         draft: &'a mut Draft,
         quoting_note: &'a nostrdb::Note<'a>,
         inner_rect: egui::Rect,

@@ -3,14 +3,14 @@ use egui::{
     Align, Button, Frame, Image, InnerResponse, Layout, RichText, ScrollArea, Ui, UiBuilder, Vec2,
 };
 use nostrdb::{Ndb, Transaction};
-use notedeck::{Accounts, ImageCache};
+use notedeck::{Accounts, MediaCache};
 
 use super::profile::preview::SimpleProfilePreview;
 
 pub struct AccountsView<'a> {
     ndb: &'a Ndb,
     accounts: &'a Accounts,
-    img_cache: &'a mut ImageCache,
+    img_cache: &'a mut MediaCache,
 }
 
 #[derive(Clone, Debug)]
@@ -27,7 +27,7 @@ enum ProfilePreviewAction {
 }
 
 impl<'a> AccountsView<'a> {
-    pub fn new(ndb: &'a Ndb, accounts: &'a Accounts, img_cache: &'a mut ImageCache) -> Self {
+    pub fn new(ndb: &'a Ndb, accounts: &'a Accounts, img_cache: &'a mut MediaCache) -> Self {
         AccountsView {
             ndb,
             accounts,
@@ -54,7 +54,7 @@ impl<'a> AccountsView<'a> {
         ui: &mut Ui,
         accounts: &Accounts,
         ndb: &Ndb,
-        img_cache: &mut ImageCache,
+        img_cache: &mut MediaCache,
     ) -> Option<AccountsViewResponse> {
         let mut return_op: Option<AccountsViewResponse> = None;
         ui.allocate_ui_with_layout(
