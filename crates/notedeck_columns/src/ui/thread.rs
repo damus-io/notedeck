@@ -6,7 +6,7 @@ use crate::{
 };
 
 use nostrdb::{Ndb, Transaction};
-use notedeck::{ImageCache, MuteFun, NoteCache, RootNoteId, UnknownIds};
+use notedeck::{MediaCache, MuteFun, NoteCache, RootNoteId, UnknownIds};
 use tracing::error;
 
 use super::timeline::TimelineTabView;
@@ -17,7 +17,7 @@ pub struct ThreadView<'a> {
     note_cache: &'a mut NoteCache,
     gifs: &'a mut GifStateMap,
     unknown_ids: &'a mut UnknownIds,
-    img_cache: &'a mut ImageCache,
+    img_cache: &'a mut MediaCache,
     selected_note_id: &'a [u8; 32],
     textmode: bool,
     id_source: egui::Id,
@@ -31,7 +31,7 @@ impl<'a> ThreadView<'a> {
         ndb: &'a Ndb,
         note_cache: &'a mut NoteCache,
         unknown_ids: &'a mut UnknownIds,
-        img_cache: &'a mut ImageCache,
+        img_cache: &'a mut MediaCache,
         gifs: &'a mut GifStateMap,
         selected_note_id: &'a [u8; 32],
         textmode: bool,

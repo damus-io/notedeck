@@ -5,13 +5,13 @@ use crate::ui::note::{PostResponse, PostType};
 use enostr::{FilledKeypair, NoteId};
 use nostrdb::Ndb;
 
-use notedeck::{ImageCache, NoteCache};
+use notedeck::{MediaCache, NoteCache};
 
 pub struct PostReplyView<'a> {
     ndb: &'a Ndb,
     poster: FilledKeypair<'a>,
     note_cache: &'a mut NoteCache,
-    img_cache: &'a mut ImageCache,
+    img_cache: &'a mut MediaCache,
     gifs: &'a mut GifStateMap,
     draft: &'a mut Draft,
     note: &'a nostrdb::Note<'a>,
@@ -26,7 +26,7 @@ impl<'a> PostReplyView<'a> {
         poster: FilledKeypair<'a>,
         draft: &'a mut Draft,
         note_cache: &'a mut NoteCache,
-        img_cache: &'a mut ImageCache,
+        img_cache: &'a mut MediaCache,
         gifs: &'a mut GifStateMap,
         note: &'a nostrdb::Note<'a>,
         inner_rect: egui::Rect,

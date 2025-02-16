@@ -5,10 +5,10 @@ use egui::{vec2, Sense, Stroke, TextureHandle};
 use nostrdb::{Ndb, Transaction};
 use tracing::info;
 
-use notedeck::{AppContext, ImageCache};
+use notedeck::{AppContext, MediaCache};
 
 pub struct ProfilePic<'cache, 'url> {
-    cache: &'cache mut ImageCache,
+    cache: &'cache mut MediaCache,
     gifs: &'cache mut GifStateMap,
     url: &'url str,
     size: f32,
@@ -23,7 +23,7 @@ impl egui::Widget for ProfilePic<'_, '_> {
 
 impl<'cache, 'url> ProfilePic<'cache, 'url> {
     pub fn new(
-        cache: &'cache mut ImageCache,
+        cache: &'cache mut MediaCache,
         gifs: &'cache mut GifStateMap,
         url: &'url str,
     ) -> Self {
@@ -42,7 +42,7 @@ impl<'cache, 'url> ProfilePic<'cache, 'url> {
     }
 
     pub fn from_profile(
-        cache: &'cache mut ImageCache,
+        cache: &'cache mut MediaCache,
         gifs: &'cache mut GifStateMap,
         profile: &nostrdb::ProfileRecord<'url>,
     ) -> Option<Self> {
@@ -88,7 +88,7 @@ impl<'cache, 'url> ProfilePic<'cache, 'url> {
 
 fn render_pfp(
     ui: &mut egui::Ui,
-    img_cache: &mut ImageCache,
+    img_cache: &mut MediaCache,
     gifs: &mut GifStateMap,
     url: &str,
     ui_size: f32,

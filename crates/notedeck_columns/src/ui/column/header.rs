@@ -17,11 +17,11 @@ use egui::Margin;
 use egui::{RichText, Stroke, UiBuilder};
 use enostr::Pubkey;
 use nostrdb::{Ndb, Transaction};
-use notedeck::{ImageCache, NotedeckTextStyle};
+use notedeck::{MediaCache, NotedeckTextStyle};
 
 pub struct NavTitle<'a> {
     ndb: &'a Ndb,
-    img_cache: &'a mut ImageCache,
+    img_cache: &'a mut MediaCache,
     gifs: &'a mut GifStateMap,
     columns: &'a Columns,
     routes: &'a [Route],
@@ -31,7 +31,7 @@ pub struct NavTitle<'a> {
 impl<'a> NavTitle<'a> {
     pub fn new(
         ndb: &'a Ndb,
-        img_cache: &'a mut ImageCache,
+        img_cache: &'a mut MediaCache,
         gifs: &'a mut GifStateMap,
         columns: &'a Columns,
         routes: &'a [Route],

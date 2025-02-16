@@ -9,11 +9,11 @@ use egui::{Color32, Hyperlink, Image, RichText};
 use nostrdb::{BlockType, Mention, Ndb, Note, NoteKey, Transaction};
 use tracing::warn;
 
-use notedeck::{ImageCache, NoteCache};
+use notedeck::{MediaCache, NoteCache};
 
 pub struct NoteContents<'a> {
     ndb: &'a Ndb,
-    img_cache: &'a mut ImageCache,
+    img_cache: &'a mut MediaCache,
     note_cache: &'a mut NoteCache,
     gifs: &'a mut GifStateMap,
     txn: &'a Transaction,
@@ -27,7 +27,7 @@ impl<'a> NoteContents<'a> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         ndb: &'a Ndb,
-        img_cache: &'a mut ImageCache,
+        img_cache: &'a mut MediaCache,
         note_cache: &'a mut NoteCache,
         gifs: &'a mut GifStateMap,
         txn: &'a Transaction,
@@ -78,7 +78,7 @@ pub fn render_note_preview(
     ui: &mut egui::Ui,
     ndb: &Ndb,
     note_cache: &mut NoteCache,
-    img_cache: &mut ImageCache,
+    img_cache: &mut MediaCache,
     gifs: &mut GifStateMap,
     txn: &Transaction,
     id: &[u8; 32],
@@ -140,7 +140,7 @@ fn is_image_link(url: &str) -> bool {
 fn render_note_contents(
     ui: &mut egui::Ui,
     ndb: &Ndb,
-    img_cache: &mut ImageCache,
+    img_cache: &mut MediaCache,
     note_cache: &mut NoteCache,
     gifs: &mut GifStateMap,
     txn: &Transaction,
@@ -264,7 +264,7 @@ fn render_note_contents(
 
 fn image_carousel(
     ui: &mut egui::Ui,
-    img_cache: &mut ImageCache,
+    img_cache: &mut MediaCache,
     gifs: &mut GifStateMap,
     images: Vec<String>,
     carousel_id: egui::Id,

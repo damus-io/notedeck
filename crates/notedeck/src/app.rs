@@ -1,7 +1,7 @@
 use crate::persist::{AppSizeHandler, ZoomHandler};
 use crate::{
-    Accounts, AppContext, Args, DataPath, DataPathType, Directory, FileKeyStorage, ImageCache,
-    KeyStorageType, NoteCache, RelayDebugView, ThemeHandler, UnknownIds,
+    Accounts, AppContext, Args, DataPath, DataPathType, Directory, FileKeyStorage, KeyStorageType,
+    MediaCache, NoteCache, RelayDebugView, ThemeHandler, UnknownIds,
 };
 use egui::ThemePreference;
 use enostr::RelayPool;
@@ -19,7 +19,7 @@ pub trait App {
 /// Main notedeck app framework
 pub struct Notedeck {
     ndb: Ndb,
-    img_cache: ImageCache,
+    img_cache: MediaCache,
     unknown_ids: UnknownIds,
     pool: RelayPool,
     note_cache: NoteCache,
@@ -129,7 +129,7 @@ impl Notedeck {
 
         let _ = std::fs::create_dir_all(&dbpath_str);
 
-        let img_cache_dir = path.path(DataPathType::Cache).join(ImageCache::rel_dir());
+        let img_cache_dir = path.path(DataPathType::Cache).join(MediaCache::rel_dir());
         let _ = std::fs::create_dir_all(img_cache_dir.clone());
 
         let map_size = if cfg!(target_os = "windows") {
@@ -184,7 +184,7 @@ impl Notedeck {
             }
         }
 
-        let img_cache = ImageCache::new(img_cache_dir);
+        let img_cache = MediaCache::new(img_cache_dir);
         let note_cache = NoteCache::default();
         let unknown_ids = UnknownIds::default();
         let zoom = ZoomHandler::new(&path);

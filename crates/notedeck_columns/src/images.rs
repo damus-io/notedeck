@@ -1,6 +1,6 @@
 use egui::{pos2, Color32, ColorImage, Rect, Sense, SizeHint, TextureHandle};
 use image::imageops::FilterType;
-use notedeck::ImageCache;
+use notedeck::MediaCache;
 use notedeck::Result;
 use poll_promise::Promise;
 use std::path;
@@ -213,12 +213,12 @@ pub enum ImageType {
 }
 
 pub fn fetch_img(
-    img_cache: &ImageCache,
+    img_cache: &MediaCache,
     ctx: &egui::Context,
     url: &str,
     imgtyp: ImageType,
 ) -> Promise<Result<TextureHandle>> {
-    let key = ImageCache::key(url);
+    let key = MediaCache::key(url);
     let path = img_cache.cache_dir.join(key);
 
     if path.exists() {
@@ -249,7 +249,7 @@ fn fetch_img_from_net(
                 let texture_handle = ctx.load_texture(&cloned_url, img.clone(), Default::default());
 
                 // write to disk
-                std::thread::spawn(move || ImageCache::write(&cache_path, &cloned_url, img));
+                std::thread::spawn(move || MediaCache::write(&cache_path, &cloned_url, img));
 
                 texture_handle
             });
