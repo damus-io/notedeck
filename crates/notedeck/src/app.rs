@@ -131,7 +131,9 @@ impl Notedeck {
 
         let _ = std::fs::create_dir_all(&dbpath_str);
 
-        let img_cache_dir = path.path(DataPathType::Cache).join(MediaCache::rel_dir());
+        let img_cache_dir = path
+            .path(DataPathType::Cache)
+            .join(MediaCache::rel_dir(crate::imgcache::MediaCacheType::Image));
         let _ = std::fs::create_dir_all(img_cache_dir.clone());
 
         let urls_dir = path.path(DataPathType::Cache).join(UrlCache::rel_dir());

@@ -25,6 +25,11 @@ pub struct MediaCache {
     url_imgs: MediaCacheMap,
 }
 
+pub enum MediaCacheType {
+    Image,
+    Gif,
+}
+
 impl MediaCache {
     pub fn new(cache_dir: path::PathBuf) -> Self {
         Self {
@@ -33,8 +38,11 @@ impl MediaCache {
         }
     }
 
-    pub fn rel_dir() -> &'static str {
-        "img"
+    pub fn rel_dir(cache_type: MediaCacheType) -> &'static str {
+        match cache_type {
+            MediaCacheType::Image => "img",
+            MediaCacheType::Gif => "gif",
+        }
     }
 
     /*
