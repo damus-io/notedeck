@@ -1,5 +1,5 @@
-use crate::ui::ProfilePic;
 use crate::NostrName;
+use crate::{gif::GifStateMap, ui::ProfilePic};
 use egui::{Frame, Label, RichText, Widget};
 use egui_extras::Size;
 use nostrdb::ProfileRecord;
@@ -12,6 +12,7 @@ pub struct ProfilePreview<'a, 'cache> {
     profile: &'a ProfileRecord<'a>,
     cache: &'cache mut Images,
     urls: &'cache mut UrlMimes,
+    gifs: &'cache mut GifStateMap,
     banner_height: Size,
 }
 
@@ -20,12 +21,14 @@ impl<'a, 'cache> ProfilePreview<'a, 'cache> {
         profile: &'a ProfileRecord<'a>,
         cache: &'cache mut Images,
         urls: &'cache mut UrlMimes,
+        gifs: &'cache mut GifStateMap,
     ) -> Self {
         let banner_height = Size::exact(80.0);
         ProfilePreview {
             profile,
             cache,
             urls,
+            gifs,
             banner_height,
         }
     }
@@ -45,9 +48,14 @@ impl<'a, 'cache> ProfilePreview<'a, 'cache> {
 
             ui.put(
                 pfp_rect,
-                ProfilePic::new(self.cache, self.urls, get_profile_url(Some(self.profile)))
-                    .size(size)
-                    .border(ProfilePic::border_stroke(ui)),
+                ProfilePic::new(
+                    self.cache,
+                    self.urls,
+                    self.gifs,
+                    get_profile_url(Some(self.profile)),
+                )
+                .size(size)
+                .border(ProfilePic::border_stroke(ui)),
             );
             ui.add(display_name_widget(
                 get_display_name(Some(self.profile)),
@@ -77,6 +85,7 @@ pub struct SimpleProfilePreview<'a, 'cache> {
     profile: Option<&'a ProfileRecord<'a>>,
     cache: &'cache mut Images,
     urls: &'cache mut UrlMimes,
+    gifs: &'cache mut GifStateMap,
     is_nsec: bool,
 }
 
@@ -85,12 +94,14 @@ impl<'a, 'cache> SimpleProfilePreview<'a, 'cache> {
         profile: Option<&'a ProfileRecord<'a>>,
         cache: &'cache mut Images,
         urls: &'cache mut UrlMimes,
+        gifs: &'cache mut GifStateMap,
         is_nsec: bool,
     ) -> Self {
         SimpleProfilePreview {
             profile,
             cache,
             urls,
+            gifs,
             is_nsec,
         }
     }
@@ -101,8 +112,13 @@ impl egui::Widget for SimpleProfilePreview<'_, '_> {
         Frame::none()
             .show(ui, |ui| {
                 ui.add(
-                    ProfilePic::new(self.cache, self.urls, get_profile_url(self.profile))
-                        .size(48.0),
+                    ProfilePic::new(
+                        self.cache,
+                        self.urls,
+                        self.gifs,
+                        get_profile_url(self.profile),
+                    )
+                    .size(48.0),
                 );
                 ui.vertical(|ui| {
                     ui.add(display_name_widget(get_display_name(self.profile), true));
@@ -133,12 +149,16 @@ mod previews {
 
     pub struct ProfilePreviewPreview<'a> {
         profile: ProfileRecord<'a>,
+        gifs: GifStateMap,
     }
 
     impl ProfilePreviewPreview<'_> {
         pub fn new() -> Self {
             let profile = test_profile_record();
-            ProfilePreviewPreview { profile }
+            ProfilePreviewPreview {
+                profile,
+                gifs: Default::default(),
+            }
         }
     }
 
@@ -150,7 +170,7 @@ mod previews {
 
     impl App for ProfilePreviewPreview<'_> {
         fn update(&mut self, app: &mut AppContext<'_>, ui: &mut egui::Ui) {
-            ProfilePreview::new(&self.profile, app.img_cache, app.urls).ui(ui);
+            ProfilePreview::new(&self.profile, app.img_cache, app.urls, &mut self.gifs).ui(ui);
         }
     }
 

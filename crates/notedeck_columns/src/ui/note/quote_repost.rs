@@ -2,7 +2,7 @@ use enostr::{FilledKeypair, NoteId};
 use nostrdb::Ndb;
 use notedeck::{Images, NoteCache, UrlMimes};
 
-use crate::{draft::Draft, ui};
+use crate::{draft::Draft, gif::GifStateMap, ui};
 
 use super::{PostResponse, PostType};
 
@@ -12,6 +12,7 @@ pub struct QuoteRepostView<'a> {
     note_cache: &'a mut NoteCache,
     img_cache: &'a mut Images,
     urls: &'a mut UrlMimes,
+    gifs: &'a mut GifStateMap,
     draft: &'a mut Draft,
     quoting_note: &'a nostrdb::Note<'a>,
     id_source: Option<egui::Id>,
@@ -26,6 +27,7 @@ impl<'a> QuoteRepostView<'a> {
         note_cache: &'a mut NoteCache,
         img_cache: &'a mut Images,
         urls: &'a mut UrlMimes,
+        gifs: &'a mut GifStateMap,
         draft: &'a mut Draft,
         quoting_note: &'a nostrdb::Note<'a>,
         inner_rect: egui::Rect,
@@ -37,6 +39,7 @@ impl<'a> QuoteRepostView<'a> {
             note_cache,
             img_cache,
             urls,
+            gifs,
             draft,
             quoting_note,
             id_source,
@@ -55,6 +58,7 @@ impl<'a> QuoteRepostView<'a> {
             self.img_cache,
             self.urls,
             self.note_cache,
+            self.gifs,
             self.poster,
             self.inner_rect,
         )

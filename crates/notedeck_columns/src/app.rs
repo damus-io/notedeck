@@ -562,6 +562,7 @@ fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus, ctx: &mut App
                     ctx.urls,
                     ctx.accounts.get_selected_account(),
                     &app.decks_cache,
+                    &mut app.view_state.gifs,
                 )
                 .show(ui);
 

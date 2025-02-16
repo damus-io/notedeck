@@ -1,4 +1,5 @@
 use crate::draft::Draft;
+use crate::gif::GifStateMap;
 use crate::ui;
 use crate::ui::note::{PostResponse, PostType};
 use enostr::{FilledKeypair, NoteId};
@@ -12,6 +13,7 @@ pub struct PostReplyView<'a> {
     note_cache: &'a mut NoteCache,
     img_cache: &'a mut Images,
     urls: &'a mut UrlMimes,
+    gifs: &'a mut GifStateMap,
     draft: &'a mut Draft,
     note: &'a nostrdb::Note<'a>,
     id_source: Option<egui::Id>,
@@ -27,6 +29,7 @@ impl<'a> PostReplyView<'a> {
         note_cache: &'a mut NoteCache,
         img_cache: &'a mut Images,
         urls: &'a mut UrlMimes,
+        gifs: &'a mut GifStateMap,
         note: &'a nostrdb::Note<'a>,
         inner_rect: egui::Rect,
     ) -> Self {
@@ -39,6 +42,7 @@ impl<'a> PostReplyView<'a> {
             note_cache,
             img_cache,
             urls,
+            gifs,
             id_source,
             inner_rect,
         }
@@ -76,6 +80,7 @@ impl<'a> PostReplyView<'a> {
                         self.note_cache,
                         self.img_cache,
                         self.urls,
+                        self.gifs,
                         self.note,
                     )
                     .actionbar(false)
@@ -96,6 +101,7 @@ impl<'a> PostReplyView<'a> {
                     self.img_cache,
                     self.urls,
                     self.note_cache,
+                    self.gifs,
                     self.poster,
                     self.inner_rect,
                 )

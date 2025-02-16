@@ -1,3 +1,4 @@
+use crate::gif::GifStateMap;
 use crate::images::ImageType;
 use crate::ui::images::render_images;
 use crate::ui::{Preview, PreviewConfig};
@@ -10,6 +11,7 @@ use notedeck::{AppContext, Images, UrlMimes};
 pub struct ProfilePic<'cache, 'url> {
     cache: &'cache mut Images,
     urls: &'cache mut UrlMimes,
+    gifs: &'cache mut GifStateMap,
     url: &'url str,
     size: f32,
     border: Option<Stroke>,
@@ -17,16 +19,30 @@ pub struct ProfilePic<'cache, 'url> {
 
 impl egui::Widget for ProfilePic<'_, '_> {
     fn ui(self, ui: &mut egui::Ui) -> egui::Response {
-        render_pfp(ui, self.cache, self.urls, self.url, self.size, self.border)
+        render_pfp(
+            ui,
+            self.cache,
+            self.urls,
+            self.gifs,
+            self.url,
+            self.size,
+            self.border,
+        )
     }
 }
 
 impl<'cache, 'url> ProfilePic<'cache, 'url> {
-    pub fn new(cache: &'cache mut Images, urls: &'cache mut UrlMimes, url: &'url str) -> Self {
+    pub fn new(
+        cache: &'cache mut Images,
+        urls: &'cache mut UrlMimes,
+        gifs: &'cache mut GifStateMap,
+        url: &'url str,
+    ) -> Self {
         let size = Self::default_size();
         ProfilePic {
             cache,
             urls,
+            gifs,
             url,
             size,
             border: None,
@@ -40,13 +56,14 @@ impl<'cache, 'url> ProfilePic<'cache, 'url> {
     pub fn from_profile(
         cache: &'cache mut Images,
         urls: &'cache mut UrlMimes,
+        gifs: &'cache mut GifStateMap,
         profile: &nostrdb::ProfileRecord<'url>,
     ) -> Option<Self> {
         profile
             .record()
             .profile()
             .and_then(|p| p.picture())
-            .map(|url| ProfilePic::new(cache, urls, url))
+            .map(|url| ProfilePic::new(cache, urls, gifs, url))
     }
 
     #[inline]
@@ -86,6 +103,7 @@ fn render_pfp(
     ui: &mut egui::Ui,
     img_cache: &mut Images,
     _urls: &mut UrlMimes,
+    gifs: &mut GifStateMap,
     url: &str,
     ui_size: f32,
     border: Option<Stroke>,
@@ -159,11 +177,15 @@ mod preview {
 
     pub struct ProfilePicPreview {
         keys: Option<Vec<ProfileKey>>,
+        gifs: GifStateMap,
     }
 
     impl ProfilePicPreview {
         fn new() -> Self {
-            ProfilePicPreview { keys: None }
+            ProfilePicPreview {
+                keys: None,
+                gifs: Default::default(),
+            }
         }
 
         fn show(&mut self, app: &mut AppContext<'_>, ui: &mut egui::Ui) {
@@ -199,13 +221,18 @@ mod preview {
 
                         ui.put(
                             rect,
-                            ui::ProfilePic::new(app.img_cache, app.urls, url)
+                            ui::ProfilePic::new(app.img_cache, app.urls, &mut self.gifs, url)
                                 .size(size)
                                 .border(ui::ProfilePic::border_stroke(ui)),
                         )
                         .on_hover_ui_at_pointer(|ui| {
                             ui.set_max_width(300.0);
-                            ui.add(ui::ProfilePreview::new(&profile, app.img_cache, app.urls));
+                            ui.add(ui::ProfilePreview::new(
+                                &profile,
+                                app.img_cache,
+                                app.urls,
+                                &mut self.gifs,
+                            ));
                         });
                     }
                 });

@@ -10,6 +10,7 @@ use nostrdb::{Ndb, Transaction};
 use tracing::error;
 
 use crate::{
+    gif::GifStateMap,
     login_manager::AcquireKeyState,
     route::Route,
     timeline::{kind::ListKind, PubkeySource, TimelineKind},
@@ -165,6 +166,7 @@ pub struct AddColumnView<'a> {
     ndb: &'a Ndb,
     img_cache: &'a mut Images,
     urls: &'a mut UrlMimes,
+    gifs: &'a mut GifStateMap,
     cur_account: Option<&'a UserAccount>,
 }
 
@@ -174,6 +176,7 @@ impl<'a> AddColumnView<'a> {
         ndb: &'a Ndb,
         img_cache: &'a mut Images,
         urls: &'a mut UrlMimes,
+        gifs: &'a mut GifStateMap,
         cur_account: Option<&'a UserAccount>,
     ) -> Self {
         Self {
@@ -181,6 +184,7 @@ impl<'a> AddColumnView<'a> {
             ndb,
             img_cache,
             urls,
+            gifs,
             cur_account,
         }
     }
@@ -324,7 +328,8 @@ impl<'a> AddColumnView<'a> {
                                 bottom: 32.0,
                             })
                             .show(ui, |ui| {
-                                ProfilePreview::new(&profile, self.img_cache, self.urls).ui(ui);
+                                ProfilePreview::new(&profile, self.img_cache, self.urls, self.gifs)
+                                    .ui(ui);
                             });
                     }
                 }
@@ -601,6 +606,7 @@ pub fn render_add_column_routes(
         ctx.ndb,
         ctx.img_cache,
         ctx.urls,
+        &mut app.view_state.gifs,
         ctx.accounts.get_selected_account(),
     );
     let resp = match route {

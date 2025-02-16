@@ -251,6 +251,7 @@ fn render_nav_body(
             ctx.unknown_ids,
             ctx.note_cache,
             &mut app.timeline_cache,
+            &mut app.view_state.gifs,
             ctx.accounts,
             kind,
             col,
@@ -265,6 +266,7 @@ fn render_nav_body(
                 col,
                 ctx.img_cache,
                 ctx.urls,
+                &mut app.view_state.gifs,
                 ctx.accounts,
                 &mut app.decks_cache,
                 &mut app.view_state.login,
@@ -311,6 +313,7 @@ fn render_nav_body(
                         ctx.note_cache,
                         ctx.img_cache,
                         ctx.urls,
+                        &mut app.view_state.gifs,
                         &note,
                         inner_rect,
                     )
@@ -346,6 +349,7 @@ fn render_nav_body(
                     ctx.note_cache,
                     ctx.img_cache,
                     ctx.urls,
+                    &mut app.view_state.gifs,
                     draft,
                     &note,
                     inner_rect,
@@ -369,6 +373,7 @@ fn render_nav_body(
                 ctx.img_cache,
                 ctx.urls,
                 ctx.note_cache,
+                &mut app.view_state.gifs,
                 kp,
                 inner_rect,
             )
@@ -462,7 +467,9 @@ fn render_nav_body(
                             ProfileState::default()
                         }
                     });
-                if EditProfileView::new(state, ctx.img_cache, ctx.urls).ui(ui) {
+                if EditProfileView::new(state, ctx.img_cache, ctx.urls, &mut app.view_state.gifs)
+                    .ui(ui)
+                {
                     if let Some(taken_state) =
                         app.view_state.pubkey_to_profile_state.remove(kp.pubkey)
                     {
@@ -512,6 +519,7 @@ pub fn render_nav(
             ctx.ndb,
             ctx.img_cache,
             ctx.urls,
+            &mut app.view_state.gifs,
             get_active_columns_mut(ctx.accounts, &mut app.decks_cache),
             nav.routes(),
             col,

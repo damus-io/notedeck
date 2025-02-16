@@ -1,4 +1,4 @@
-use crate::colors::PINK;
+use crate::{colors::PINK, gif::GifStateMap};
 use egui::{
     Align, Button, Frame, Image, InnerResponse, Layout, RichText, ScrollArea, Ui, UiBuilder, Vec2,
 };
@@ -12,6 +12,7 @@ pub struct AccountsView<'a> {
     accounts: &'a Accounts,
     img_cache: &'a mut Images,
     urls: &'a mut UrlMimes,
+    gifs: &'a mut GifStateMap,
 }
 
 #[derive(Clone, Debug)]
@@ -33,12 +34,14 @@ impl<'a> AccountsView<'a> {
         accounts: &'a Accounts,
         img_cache: &'a mut Images,
         urls: &'a mut UrlMimes,
+        gifs: &'a mut GifStateMap,
     ) -> Self {
         AccountsView {
             ndb,
             accounts,
             img_cache,
             urls,
+            gifs,
         }
     }
 
@@ -51,7 +54,14 @@ impl<'a> AccountsView<'a> {
             ui.add_space(8.0);
             scroll_area()
                 .show(ui, |ui| {
-                    Self::show_accounts(ui, self.accounts, self.ndb, self.img_cache, self.urls)
+                    Self::show_accounts(
+                        ui,
+                        self.accounts,
+                        self.ndb,
+                        self.img_cache,
+                        self.urls,
+                        self.gifs,
+                    )
                 })
                 .inner
         })
@@ -63,6 +73,7 @@ impl<'a> AccountsView<'a> {
         ndb: &Ndb,
         img_cache: &mut Images,
         urls: &mut UrlMimes,
+        gifs: &mut GifStateMap,
     ) -> Option<AccountsViewResponse> {
         let mut return_op: Option<AccountsViewResponse> = None;
         ui.allocate_ui_with_layout(
@@ -97,6 +108,7 @@ impl<'a> AccountsView<'a> {
                                 profile.as_ref(),
                                 img_cache,
                                 urls,
+                                gifs,
                                 has_nsec,
                             );
                             show_profile_card(ui, preview, max_size, is_selected, resp)

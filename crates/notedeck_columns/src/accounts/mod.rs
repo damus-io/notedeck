@@ -8,6 +8,7 @@ use notedeck::{
 
 use crate::app::get_active_columns_mut;
 use crate::decks::DecksCache;
+use crate::gif::GifStateMap;
 use crate::{
     login_manager::AcquireKeyState,
     route::Route,
@@ -30,13 +31,14 @@ pub fn render_accounts_route(
     col: usize,
     img_cache: &mut Images,
     urls: &mut UrlMimes,
+    gifs: &mut GifStateMap,
     accounts: &mut Accounts,
     decks: &mut DecksCache,
     login_state: &mut AcquireKeyState,
     route: AccountsRoute,
 ) -> AddAccountAction {
     let resp = match route {
-        AccountsRoute::Accounts => AccountsView::new(ndb, accounts, img_cache, urls)
+        AccountsRoute::Accounts => AccountsView::new(ndb, accounts, img_cache, urls, gifs)
             .ui(ui)
             .inner
             .map(AccountsRouteResponse::Accounts),

@@ -3,6 +3,7 @@ use std::f32::consts::PI;
 use crate::actionbar::NoteAction;
 use crate::timeline::TimelineTab;
 use crate::{
+    gif::GifStateMap,
     timeline::{TimelineCache, TimelineKind, ViewFilter},
     ui,
     ui::note::NoteOptions,
@@ -24,6 +25,7 @@ pub struct TimelineView<'a> {
     note_cache: &'a mut NoteCache,
     img_cache: &'a mut Images,
     urls: &'a mut UrlMimes,
+    gifs: &'a mut GifStateMap,
     note_options: NoteOptions,
     reverse: bool,
     is_muted: &'a MuteFun,
@@ -38,6 +40,7 @@ impl<'a> TimelineView<'a> {
         note_cache: &'a mut NoteCache,
         img_cache: &'a mut Images,
         urls: &'a mut UrlMimes,
+        gifs: &'a mut GifStateMap,
         note_options: NoteOptions,
         is_muted: &'a MuteFun,
     ) -> TimelineView<'a> {
@@ -49,6 +52,7 @@ impl<'a> TimelineView<'a> {
             note_cache,
             img_cache,
             urls,
+            gifs,
             reverse,
             note_options,
             is_muted,
@@ -64,6 +68,7 @@ impl<'a> TimelineView<'a> {
             self.note_cache,
             self.img_cache,
             self.urls,
+            self.gifs,
             self.reverse,
             self.note_options,
             self.is_muted,
@@ -85,6 +90,7 @@ fn timeline_ui(
     note_cache: &mut NoteCache,
     img_cache: &mut Images,
     urls: &mut UrlMimes,
+    gifs: &mut GifStateMap,
     reversed: bool,
     note_options: NoteOptions,
     is_muted: &MuteFun,
@@ -166,6 +172,7 @@ fn timeline_ui(
             note_cache,
             img_cache,
             urls,
+            gifs,
             is_muted,
         )
         .show(ui)
@@ -330,6 +337,7 @@ pub struct TimelineTabView<'a> {
     note_cache: &'a mut NoteCache,
     img_cache: &'a mut Images,
     urls: &'a mut UrlMimes,
+    gifs: &'a mut GifStateMap,
     is_muted: &'a MuteFun,
 }
 
@@ -344,6 +352,7 @@ impl<'a> TimelineTabView<'a> {
         note_cache: &'a mut NoteCache,
         img_cache: &'a mut Images,
         urls: &'a mut UrlMimes,
+        gifs: &'a mut GifStateMap,
         is_muted: &'a MuteFun,
     ) -> Self {
         Self {
@@ -355,6 +364,7 @@ impl<'a> TimelineTabView<'a> {
             note_cache,
             img_cache,
             urls,
+            gifs,
             is_muted,
         }
     }
@@ -403,6 +413,7 @@ impl<'a> TimelineTabView<'a> {
                             self.note_cache,
                             self.img_cache,
                             self.urls,
+                            self.gifs,
                             &note,
                         )
                         .note_options(self.note_options)

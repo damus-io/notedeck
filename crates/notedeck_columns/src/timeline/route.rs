@@ -1,4 +1,5 @@
 use crate::{
+    gif::GifStateMap,
     nav::RenderNavAction,
     profile::ProfileAction,
     timeline::{TimelineCache, TimelineKind},
@@ -17,6 +18,7 @@ pub fn render_timeline_route(
     unknown_ids: &mut UnknownIds,
     note_cache: &mut NoteCache,
     timeline_cache: &mut TimelineCache,
+    gifs: &mut GifStateMap,
     accounts: &mut Accounts,
     kind: &TimelineKind,
     col: usize,
@@ -44,6 +46,7 @@ pub fn render_timeline_route(
                 note_cache,
                 img_cache,
                 urls,
+                gifs,
                 note_options,
                 &accounts.mutefun(),
             )
@@ -66,6 +69,7 @@ pub fn render_timeline_route(
                     col,
                     ui,
                     &accounts.mutefun(),
+                    gifs,
                 )
             } else {
                 // we render profiles like timelines if they are at the root
@@ -76,6 +80,7 @@ pub fn render_timeline_route(
                     note_cache,
                     img_cache,
                     urls,
+                    gifs,
                     note_options,
                     &accounts.mutefun(),
                 )
@@ -92,6 +97,7 @@ pub fn render_timeline_route(
             unknown_ids,
             img_cache,
             urls,
+            gifs,
             id.selected_or_root(),
             textmode,
             &accounts.mutefun(),
@@ -115,6 +121,7 @@ pub fn render_profile_route(
     col: usize,
     ui: &mut egui::Ui,
     is_muted: &MuteFun,
+    gifs: &mut GifStateMap,
 ) -> Option<RenderNavAction> {
     let action = ProfileView::new(
         pubkey,
@@ -125,6 +132,7 @@ pub fn render_profile_route(
         note_cache,
         img_cache,
         urls,
+        gifs,
         unknown_ids,
         is_muted,
         NoteOptions::default(),

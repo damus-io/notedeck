@@ -3,7 +3,7 @@ use core::f32;
 use egui::{vec2, Button, Layout, Margin, RichText, Rounding, ScrollArea, TextEdit};
 use notedeck::{Images, NotedeckTextStyle, UrlMimes};
 
-use crate::{colors, profile_state::ProfileState};
+use crate::{colors, gif::GifStateMap, profile_state::ProfileState};
 
 use super::{banner, unwrap_profile_url, ProfilePic};
 
@@ -11,6 +11,7 @@ pub struct EditProfileView<'a> {
     state: &'a mut ProfileState,
     img_cache: &'a mut Images,
     urls: &'a mut UrlMimes,
+    gifs: &'a mut GifStateMap,
 }
 
 impl<'a> EditProfileView<'a> {
@@ -18,11 +19,13 @@ impl<'a> EditProfileView<'a> {
         state: &'a mut ProfileState,
         img_cache: &'a mut Images,
         urls: &'a mut UrlMimes,
+        gifs: &'a mut GifStateMap,
     ) -> Self {
         Self {
             state,
             img_cache,
             urls,
+            gifs,
         }
     }
 
@@ -71,7 +74,7 @@ impl<'a> EditProfileView<'a> {
         });
         ui.put(
             pfp_rect,
-            ProfilePic::new(self.img_cache, self.urls, pfp_url)
+            ProfilePic::new(self.img_cache, self.urls, self.gifs, pfp_url)
                 .size(size)
                 .border(ProfilePic::border_stroke(ui)),
         );
@@ -181,6 +184,7 @@ mod preview {
     use notedeck::App;
 
     use crate::{
+        gif::GifStateMap,
         profile_state::ProfileState,
         test_data,
         ui::{Preview, PreviewConfig},
@@ -190,19 +194,21 @@ mod preview {
 
     pub struct EditProfilePreivew {
         state: ProfileState,
+        gifs: GifStateMap,
     }
 
     impl Default for EditProfilePreivew {
         fn default() -> Self {
             Self {
                 state: ProfileState::from_profile(&test_data::test_profile_record()),
+                gifs: Default::default(),
             }
         }
     }
 
     impl App for EditProfilePreivew {
         fn update(&mut self, ctx: &mut notedeck::AppContext<'_>, ui: &mut egui::Ui) {
-            EditProfileView::new(&mut self.state, ctx.img_cache, ctx.urls).ui(ui);
+            EditProfileView::new(&mut self.state, ctx.img_cache, ctx.urls, &mut self.gifs).ui(ui);
         }
     }
 

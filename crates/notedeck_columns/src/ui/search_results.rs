@@ -4,6 +4,7 @@ use notedeck::{fonts::get_font_size, Images, NotedeckTextStyle, UrlMimes};
 use tracing::error;
 
 use crate::{
+    gif::GifStateMap,
     profile::get_display_name,
     ui::anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},
 };
@@ -15,6 +16,7 @@ pub struct SearchResultsView<'a> {
     txn: &'a Transaction,
     img_cache: &'a mut Images,
     urls: &'a mut UrlMimes,
+    gifs: &'a mut GifStateMap,
     results: &'a Vec<&'a [u8; 32]>,
 }
 
@@ -22,6 +24,7 @@ impl<'a> SearchResultsView<'a> {
     pub fn new(
         img_cache: &'a mut Images,
         urls: &'a mut UrlMimes,
+        gifs: &'a mut GifStateMap,
         ndb: &'a Ndb,
         txn: &'a Transaction,
         results: &'a Vec<&'a [u8; 32]>,
@@ -31,6 +34,7 @@ impl<'a> SearchResultsView<'a> {
             txn,
             img_cache,
             urls,
+            gifs,
             results,
         }
     }
@@ -48,7 +52,14 @@ impl<'a> SearchResultsView<'a> {
                 };
 
                 if ui
-                    .add(user_result(&profile, self.img_cache, self.urls, i, width))
+                    .add(user_result(
+                        &profile,
+                        self.img_cache,
+                        self.urls,
+                        self.gifs,
+                        i,
+                        width,
+                    ))
                     .clicked()
                 {
                     selection = Some(i)
@@ -89,6 +100,7 @@ fn user_result<'a>(
     profile: &'a ProfileRecord<'_>,
     cache: &'a mut Images,
     urls: &'a mut UrlMimes,
+    gifs: &'a mut GifStateMap,
     index: usize,
     width: f32,
 ) -> impl egui::Widget + use<'a> {
@@ -110,7 +122,7 @@ fn user_result<'a>(
 
         let pfp_resp = ui.put(
             icon_rect,
-            ProfilePic::new(cache, urls, get_profile_url(Some(profile)))
+            ProfilePic::new(cache, urls, gifs, get_profile_url(Some(profile)))
                 .size(helper.scale_1d_pos(min_img_size)),
         );
 

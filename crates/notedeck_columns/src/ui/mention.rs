@@ -1,3 +1,4 @@
+use crate::gif::GifStateMap;
 use crate::ui;
 use crate::{actionbar::NoteAction, profile::get_display_name, timeline::TimelineKind};
 use egui::Sense;
@@ -9,6 +10,7 @@ pub struct Mention<'a> {
     ndb: &'a Ndb,
     img_cache: &'a mut Images,
     urls: &'a mut UrlMimes,
+    gifs: &'a mut GifStateMap,
     txn: &'a Transaction,
     pk: &'a [u8; 32],
     selectable: bool,
@@ -20,6 +22,7 @@ impl<'a> Mention<'a> {
         ndb: &'a Ndb,
         img_cache: &'a mut Images,
         urls: &'a mut UrlMimes,
+        gifs: &'a mut GifStateMap,
         txn: &'a Transaction,
         pk: &'a [u8; 32],
     ) -> Self {
@@ -29,6 +32,7 @@ impl<'a> Mention<'a> {
             ndb,
             img_cache,
             urls,
+            gifs,
             txn,
             pk,
             selectable,
@@ -51,6 +55,7 @@ impl<'a> Mention<'a> {
             self.ndb,
             self.img_cache,
             self.urls,
+            self.gifs,
             self.txn,
             self.pk,
             ui,
@@ -71,6 +76,7 @@ fn mention_ui(
     ndb: &Ndb,
     img_cache: &mut Images,
     urls: &mut UrlMimes,
+    gifs: &mut GifStateMap,
     txn: &Transaction,
     pk: &[u8; 32],
     ui: &mut egui::Ui,
@@ -108,7 +114,7 @@ fn mention_ui(
         if let Some(rec) = profile.as_ref() {
             resp.on_hover_ui_at_pointer(|ui| {
                 ui.set_max_width(300.0);
-                ui.add(ui::ProfilePreview::new(rec, img_cache, urls));
+                ui.add(ui::ProfilePreview::new(rec, img_cache, urls, gifs));
             });
         }
 

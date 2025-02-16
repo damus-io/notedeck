@@ -4,6 +4,7 @@ use crate::nav::RenderNavAction;
 use crate::nav::SwitchingAction;
 use crate::{
     column::Columns,
+    gif::GifStateMap,
     route::Route,
     timeline::{ColumnTitle, TimelineKind},
     ui::{
@@ -23,6 +24,7 @@ pub struct NavTitle<'a> {
     ndb: &'a Ndb,
     img_cache: &'a mut Images,
     urls: &'a mut UrlMimes,
+    gifs: &'a mut GifStateMap,
     columns: &'a Columns,
     routes: &'a [Route],
     col_id: usize,
@@ -33,6 +35,7 @@ impl<'a> NavTitle<'a> {
         ndb: &'a Ndb,
         img_cache: &'a mut Images,
         urls: &'a mut UrlMimes,
+        gifs: &'a mut GifStateMap,
         columns: &'a Columns,
         routes: &'a [Route],
         col_id: usize,
@@ -41,6 +44,7 @@ impl<'a> NavTitle<'a> {
             ndb,
             img_cache,
             urls,
+            gifs,
             columns,
             routes,
             col_id,
@@ -399,7 +403,10 @@ impl<'a> NavTitle<'a> {
             .as_ref()
             .ok()
             .and_then(move |p| {
-                Some(ui::ProfilePic::from_profile(self.img_cache, self.urls, p)?.size(pfp_size))
+                Some(
+                    ui::ProfilePic::from_profile(self.img_cache, self.urls, self.gifs, p)?
+                        .size(pfp_size),
+                )
             })
     }
 
@@ -413,8 +420,13 @@ impl<'a> NavTitle<'a> {
             ui.add(pfp);
         } else {
             ui.add(
-                ui::ProfilePic::new(self.img_cache, self.urls, ui::ProfilePic::no_pfp_url())
-                    .size(pfp_size),
+                ui::ProfilePic::new(
+                    self.img_cache,
+                    self.urls,
+                    self.gifs,
+                    ui::ProfilePic::no_pfp_url(),
+                )
+                .size(pfp_size),
             );
         }
     }
@@ -469,8 +481,13 @@ impl<'a> NavTitle<'a> {
             ui.add(pfp);
         } else {
             ui.add(
-                ui::ProfilePic::new(self.img_cache, self.urls, ui::ProfilePic::no_pfp_url())
-                    .size(pfp_size),
+                ui::ProfilePic::new(
+                    self.img_cache,
+                    self.urls,
+                    self.gifs,
+                    ui::ProfilePic::no_pfp_url(),
+                )
+                .size(pfp_size),
             );
         };
     }

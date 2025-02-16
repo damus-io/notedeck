@@ -1,4 +1,5 @@
 use crate::draft::{Draft, Drafts, MentionHint};
+use crate::gif::GifStateMap;
 use crate::media_upload::{nostrbuild_nip96_upload, MediaPath};
 use crate::post::{downcast_post_buffer, MentionType, NewPost};
 use crate::profile::get_display_name;
@@ -25,6 +26,7 @@ pub struct PostView<'a> {
     img_cache: &'a mut Images,
     urls: &'a mut UrlMimes,
     note_cache: &'a mut NoteCache,
+    gifs: &'a mut GifStateMap,
     poster: FilledKeypair<'a>,
     id_source: Option<egui::Id>,
     inner_rect: egui::Rect,
@@ -91,6 +93,7 @@ impl<'a> PostView<'a> {
         img_cache: &'a mut Images,
         urls: &'a mut UrlMimes,
         note_cache: &'a mut NoteCache,
+        gifs: &'a mut GifStateMap,
         poster: FilledKeypair<'a>,
         inner_rect: egui::Rect,
     ) -> Self {
@@ -101,6 +104,7 @@ impl<'a> PostView<'a> {
             img_cache,
             urls,
             note_cache,
+            gifs,
             poster,
             id_source,
             post_type,
@@ -125,15 +129,23 @@ impl<'a> PostView<'a> {
             .as_ref()
             .ok()
             .and_then(|p| {
-                Some(ui::ProfilePic::from_profile(self.img_cache, self.urls, p)?.size(pfp_size))
+                Some(
+                    ui::ProfilePic::from_profile(self.img_cache, self.urls, self.gifs, p)?
+                        .size(pfp_size),
+                )
             });
 
         if let Some(pfp) = poster_pfp {
             ui.add(pfp);
         } else {
             ui.add(
-                ui::ProfilePic::new(self.img_cache, self.urls, ui::ProfilePic::no_pfp_url())
-                    .size(pfp_size),
+                ui::ProfilePic::new(
+                    self.img_cache,
+                    self.urls,
+                    self.gifs,
+                    ui::ProfilePic::no_pfp_url(),
+                )
+                .size(pfp_size),
             );
         }
 
@@ -227,9 +239,15 @@ impl<'a> PostView<'a> {
                     };
 
                     if let Ok(res) = self.ndb.search_profile(txn, mention_str, 10) {
-                        let hint_selection =
-                            SearchResultsView::new(self.img_cache, self.urls, self.ndb, txn, &res)
-                                .show_in_rect(hint_rect, ui);
+                        let hint_selection = SearchResultsView::new(
+                            self.img_cache,
+                            self.urls,
+                            self.gifs,
+                            self.ndb,
+                            txn,
+                            &res,
+                        )
+                        .show_in_rect(hint_rect, ui);
 
                         if let Some(hint_index) = hint_selection {
                             if let Some(pk) = res.get(hint_index) {
@@ -307,6 +325,7 @@ impl<'a> PostView<'a> {
                                         self.note_cache,
                                         self.img_cache,
                                         self.urls,
+                                        self.gifs,
                                         txn,
                                         id.bytes(),
                                         nostrdb::NoteKey::new(0),
@@ -647,6 +666,7 @@ mod preview {
     pub struct PostPreview {
         draft: Draft,
         poster: FullKeypair,
+        gifs: GifStateMap,
     }
 
     impl PostPreview {
@@ -675,6 +695,7 @@ mod preview {
             ));
             PostPreview {
                 draft,
+                gifs: Default::default(),
                 poster: FullKeypair::generate(),
             }
         }
@@ -690,6 +711,7 @@ mod preview {
                 app.img_cache,
                 app.urls,
                 app.note_cache,
+                &mut self.gifs,
                 self.poster.to_filled(),
                 ui.available_rect_before_wrap(),
             )

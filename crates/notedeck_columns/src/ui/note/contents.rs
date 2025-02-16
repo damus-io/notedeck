@@ -1,3 +1,4 @@
+use crate::gif::GifStateMap;
 use crate::ui::images::render_images;
 use crate::ui::{
     self,
@@ -15,6 +16,7 @@ pub struct NoteContents<'a> {
     img_cache: &'a mut Images,
     note_cache: &'a mut NoteCache,
     urls: &'a mut UrlMimes,
+    gifs: &'a mut GifStateMap,
     txn: &'a Transaction,
     note: &'a Note<'a>,
     note_key: NoteKey,
@@ -29,6 +31,7 @@ impl<'a> NoteContents<'a> {
         img_cache: &'a mut Images,
         urls: &'a mut UrlMimes,
         note_cache: &'a mut NoteCache,
+        gifs: &'a mut GifStateMap,
         txn: &'a Transaction,
         note: &'a Note,
         note_key: NoteKey,
@@ -39,6 +42,7 @@ impl<'a> NoteContents<'a> {
             img_cache,
             note_cache,
             urls,
+            gifs,
             txn,
             note,
             note_key,
@@ -60,6 +64,7 @@ impl egui::Widget for &mut NoteContents<'_> {
             self.img_cache,
             self.urls,
             self.note_cache,
+            self.gifs,
             self.txn,
             self.note,
             self.note_key,
@@ -79,6 +84,7 @@ pub fn render_note_preview(
     note_cache: &mut NoteCache,
     img_cache: &mut Images,
     urls: &mut UrlMimes,
+    gifs: &mut GifStateMap,
     txn: &Transaction,
     id: &[u8; 32],
     parent: NoteKey,
@@ -119,7 +125,7 @@ pub fn render_note_preview(
             ui.visuals().noninteractive().bg_stroke.color,
         ))
         .show(ui, |ui| {
-            ui::NoteView::new(ndb, note_cache, img_cache, urls, &note)
+            ui::NoteView::new(ndb, note_cache, img_cache, urls, gifs, &note)
                 .actionbar(false)
                 .small_pfp(true)
                 .wide(true)
@@ -138,6 +144,7 @@ fn render_note_contents(
     img_cache: &mut Images,
     urls: &mut UrlMimes,
     note_cache: &mut NoteCache,
+    gifs: &mut GifStateMap,
     txn: &Transaction,
     note: &Note,
     note_key: NoteKey,
@@ -168,16 +175,17 @@ fn render_note_contents(
             match block.blocktype() {
                 BlockType::MentionBech32 => match block.as_mention().unwrap() {
                     Mention::Profile(profile) => {
-                        let act = ui::Mention::new(ndb, img_cache, urls, txn, profile.pubkey())
-                            .show(ui)
-                            .inner;
+                        let act =
+                            ui::Mention::new(ndb, img_cache, urls, gifs, txn, profile.pubkey())
+                                .show(ui)
+                                .inner;
                         if act.is_some() {
                             note_action = act;
                         }
                     }
 
                     Mention::Pubkey(npub) => {
-                        let act = ui::Mention::new(ndb, img_cache, urls, txn, npub.pubkey())
+                        let act = ui::Mention::new(ndb, img_cache, urls, gifs, txn, npub.pubkey())
                             .show(ui)
                             .inner;
                         if act.is_some() {
@@ -243,7 +251,10 @@ fn render_note_contents(
     });
 
     let preview_note_action = if let Some((id, _block_str)) = inline_note {
-        render_note_preview(ui, ndb, note_cache, img_cache, urls, txn, id, note_key).action
+        render_note_preview(
+            ui, ndb, note_cache, img_cache, urls, gifs, txn, id, note_key,
+        )
+        .action
     } else {
         None
     };
@@ -251,7 +262,7 @@ fn render_note_contents(
     if !images.is_empty() && !options.has_textmode() {
         ui.add_space(2.0);
         let carousel_id = egui::Id::new(("carousel", note.key().expect("expected tx note")));
-        image_carousel(ui, img_cache, images, carousel_id);
+        image_carousel(ui, img_cache, gifs, images, carousel_id);
         ui.add_space(2.0);
     }
 
@@ -263,6 +274,7 @@ fn render_note_contents(
 fn image_carousel(
     ui: &mut egui::Ui,
     img_cache: &mut Images,
+    gifs: &mut GifStateMap,
     images: Vec<String>,
     carousel_id: egui::Id,
 ) {
