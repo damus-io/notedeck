@@ -25,6 +25,7 @@ thiserror = { workspace = true }
 puffin = { workspace = true, optional = true }
 puffin_egui = { workspace = true, optional = true }
 sha2 = { workspace = true }
+bincode = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
