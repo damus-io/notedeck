@@ -21,6 +21,7 @@ mod timecache;
 mod timed_serializer;
 pub mod ui;
 mod unknowns;
+mod urls;
 mod user_account;
 
 pub use accounts::{AccountData, Accounts, AccountsAction, AddAccountAction, SwitchAccountAction};
