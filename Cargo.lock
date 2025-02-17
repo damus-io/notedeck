@@ -2738,6 +2738,7 @@ dependencies = [
  "dirs",
  "eframe",
  "egui",
+ "ehttp",
  "enostr",
  "hex",
  "image",
