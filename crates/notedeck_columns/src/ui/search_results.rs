@@ -1,6 +1,6 @@
 use egui::{vec2, FontId, Pos2, Rect, ScrollArea, Vec2b};
 use nostrdb::{Ndb, ProfileRecord, Transaction};
-use notedeck::{fonts::get_font_size, ImageCache, NotedeckTextStyle};
+use notedeck::{fonts::get_font_size, ImageCache, NotedeckTextStyle, UrlMimes};
 use tracing::error;
 
 use crate::{
@@ -14,12 +14,14 @@ pub struct SearchResultsView<'a> {
     ndb: &'a Ndb,
     txn: &'a Transaction,
     img_cache: &'a mut ImageCache,
+    urls: &'a mut UrlMimes,
     results: &'a Vec<&'a [u8; 32]>,
 }
 
 impl<'a> SearchResultsView<'a> {
     pub fn new(
         img_cache: &'a mut ImageCache,
+        urls: &'a mut UrlMimes,
         ndb: &'a Ndb,
         txn: &'a Transaction,
         results: &'a Vec<&'a [u8; 32]>,
@@ -28,6 +30,7 @@ impl<'a> SearchResultsView<'a> {
             ndb,
             txn,
             img_cache,
+            urls,
             results,
         }
     }
@@ -45,7 +48,7 @@ impl<'a> SearchResultsView<'a> {
                 };
 
                 if ui
-                    .add(user_result(&profile, self.img_cache, i, width))
+                    .add(user_result(&profile, self.img_cache, self.urls, i, width))
                     .clicked()
                 {
                     selection = Some(i)
@@ -85,6 +88,7 @@ impl<'a> SearchResultsView<'a> {
 fn user_result<'a>(
     profile: &'a ProfileRecord<'_>,
     cache: &'a mut ImageCache,
+    urls: &'a mut UrlMimes,
     index: usize,
     width: f32,
 ) -> impl egui::Widget + use<'a> {
@@ -106,7 +110,7 @@ fn user_result<'a>(
 
         let pfp_resp = ui.put(
             icon_rect,
-            ProfilePic::new(cache, get_profile_url(Some(profile)))
+            ProfilePic::new(cache, urls, get_profile_url(Some(profile)))
                 .size(helper.scale_1d_pos(min_img_size)),
         );
 

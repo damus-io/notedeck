@@ -12,7 +12,7 @@ use egui::{vec2, Direction, Layout, Pos2, Stroke};
 use egui_tabs::TabColor;
 use nostrdb::{Ndb, Transaction};
 use notedeck::note::root_note_id_from_selected_id;
-use notedeck::{ImageCache, MuteFun, NoteCache};
+use notedeck::{ImageCache, MuteFun, NoteCache, UrlMimes};
 use tracing::{error, warn};
 
 use super::anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE};
@@ -23,18 +23,21 @@ pub struct TimelineView<'a> {
     ndb: &'a Ndb,
     note_cache: &'a mut NoteCache,
     img_cache: &'a mut ImageCache,
+    urls: &'a mut UrlMimes,
     note_options: NoteOptions,
     reverse: bool,
     is_muted: &'a MuteFun,
 }
 
 impl<'a> TimelineView<'a> {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         timeline_id: &'a TimelineKind,
         timeline_cache: &'a mut TimelineCache,
         ndb: &'a Ndb,
         note_cache: &'a mut NoteCache,
         img_cache: &'a mut ImageCache,
+        urls: &'a mut UrlMimes,
         note_options: NoteOptions,
         is_muted: &'a MuteFun,
     ) -> TimelineView<'a> {
@@ -45,6 +48,7 @@ impl<'a> TimelineView<'a> {
             timeline_cache,
             note_cache,
             img_cache,
+            urls,
             reverse,
             note_options,
             is_muted,
@@ -59,6 +63,7 @@ impl<'a> TimelineView<'a> {
             self.timeline_cache,
             self.note_cache,
             self.img_cache,
+            self.urls,
             self.reverse,
             self.note_options,
             self.is_muted,
@@ -79,6 +84,7 @@ fn timeline_ui(
     timeline_cache: &mut TimelineCache,
     note_cache: &mut NoteCache,
     img_cache: &mut ImageCache,
+    urls: &mut UrlMimes,
     reversed: bool,
     note_options: NoteOptions,
     is_muted: &MuteFun,
@@ -159,6 +165,7 @@ fn timeline_ui(
             ndb,
             note_cache,
             img_cache,
+            urls,
             is_muted,
         )
         .show(ui)
@@ -322,6 +329,7 @@ pub struct TimelineTabView<'a> {
     ndb: &'a Ndb,
     note_cache: &'a mut NoteCache,
     img_cache: &'a mut ImageCache,
+    urls: &'a mut UrlMimes,
     is_muted: &'a MuteFun,
 }
 
@@ -335,6 +343,7 @@ impl<'a> TimelineTabView<'a> {
         ndb: &'a Ndb,
         note_cache: &'a mut NoteCache,
         img_cache: &'a mut ImageCache,
+        urls: &'a mut UrlMimes,
         is_muted: &'a MuteFun,
     ) -> Self {
         Self {
@@ -345,6 +354,7 @@ impl<'a> TimelineTabView<'a> {
             ndb,
             note_cache,
             img_cache,
+            urls,
             is_muted,
         }
     }
@@ -388,10 +398,15 @@ impl<'a> TimelineTabView<'a> {
 
                 if !muted {
                     ui::padding(8.0, ui, |ui| {
-                        let resp =
-                            ui::NoteView::new(self.ndb, self.note_cache, self.img_cache, &note)
-                                .note_options(self.note_options)
-                                .show(ui);
+                        let resp = ui::NoteView::new(
+                            self.ndb,
+                            self.note_cache,
+                            self.img_cache,
+                            self.urls,
+                            &note,
+                        )
+                        .note_options(self.note_options)
+                        .show(ui);
 
                         if let Some(note_action) = resp.action {
                             action = Some(note_action)

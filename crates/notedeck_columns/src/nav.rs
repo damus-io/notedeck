@@ -247,6 +247,7 @@ fn render_nav_body(
         Route::Timeline(kind) => render_timeline_route(
             ctx.ndb,
             ctx.img_cache,
+            ctx.urls,
             ctx.unknown_ids,
             ctx.note_cache,
             &mut app.timeline_cache,
@@ -263,6 +264,7 @@ fn render_nav_body(
                 ctx.ndb,
                 col,
                 ctx.img_cache,
+                ctx.urls,
                 ctx.accounts,
                 &mut app.decks_cache,
                 &mut app.view_state.login,
@@ -308,6 +310,7 @@ fn render_nav_body(
                         draft,
                         ctx.note_cache,
                         ctx.img_cache,
+                        ctx.urls,
                         &note,
                         inner_rect,
                     )
@@ -342,6 +345,7 @@ fn render_nav_body(
                     poster,
                     ctx.note_cache,
                     ctx.img_cache,
+                    ctx.urls,
                     draft,
                     &note,
                     inner_rect,
@@ -363,6 +367,7 @@ fn render_nav_body(
                 draft,
                 PostType::New,
                 ctx.img_cache,
+                ctx.urls,
                 ctx.note_cache,
                 kp,
                 inner_rect,
@@ -457,7 +462,7 @@ fn render_nav_body(
                             ProfileState::default()
                         }
                     });
-                if EditProfileView::new(state, ctx.img_cache).ui(ui) {
+                if EditProfileView::new(state, ctx.img_cache, ctx.urls).ui(ui) {
                     if let Some(taken_state) =
                         app.view_state.pubkey_to_profile_state.remove(kp.pubkey)
                     {
@@ -506,6 +511,7 @@ pub fn render_nav(
         NavUiType::Title => NavTitle::new(
             ctx.ndb,
             ctx.img_cache,
+            ctx.urls,
             get_active_columns_mut(ctx.accounts, &mut app.decks_cache),
             nav.routes(),
             col,

@@ -25,7 +25,7 @@ use egui::emath::{pos2, Vec2};
 use egui::{Id, Label, Pos2, Rect, Response, RichText, Sense};
 use enostr::{NoteId, Pubkey};
 use nostrdb::{Ndb, Note, NoteKey, Transaction};
-use notedeck::{CachedNote, ImageCache, NoteCache, NotedeckTextStyle};
+use notedeck::{CachedNote, ImageCache, NoteCache, NotedeckTextStyle, UrlMimes};
 
 use super::profile::preview::one_line_display_name_widget;
 
@@ -33,6 +33,7 @@ pub struct NoteView<'a> {
     ndb: &'a Ndb,
     note_cache: &'a mut NoteCache,
     img_cache: &'a mut ImageCache,
+    urls: &'a mut UrlMimes,
     parent: Option<NoteKey>,
     note: &'a nostrdb::Note<'a>,
     flags: NoteOptions,
@@ -75,6 +76,7 @@ impl<'a> NoteView<'a> {
         ndb: &'a Ndb,
         note_cache: &'a mut NoteCache,
         img_cache: &'a mut ImageCache,
+        urls: &'a mut UrlMimes,
         note: &'a nostrdb::Note<'a>,
     ) -> Self {
         let flags = NoteOptions::actionbar | NoteOptions::note_previews;
@@ -83,6 +85,7 @@ impl<'a> NoteView<'a> {
             ndb,
             note_cache,
             img_cache,
+            urls,
             parent,
             note,
             flags,
@@ -179,6 +182,7 @@ impl<'a> NoteView<'a> {
             ui.add(&mut NoteContents::new(
                 self.ndb,
                 self.img_cache,
+                self.urls,
                 self.note_cache,
                 txn,
                 self.note,
@@ -229,14 +233,18 @@ impl<'a> NoteView<'a> {
                     anim_speed,
                 );
 
-                ui.put(rect, ui::ProfilePic::new(self.img_cache, pic).size(size))
-                    .on_hover_ui_at_pointer(|ui| {
-                        ui.set_max_width(300.0);
-                        ui.add(ui::ProfilePreview::new(
-                            profile.as_ref().unwrap(),
-                            self.img_cache,
-                        ));
-                    });
+                ui.put(
+                    rect,
+                    ui::ProfilePic::new(self.img_cache, self.urls, pic).size(size),
+                )
+                .on_hover_ui_at_pointer(|ui| {
+                    ui.set_max_width(300.0);
+                    ui.add(ui::ProfilePreview::new(
+                        profile.as_ref().unwrap(),
+                        self.img_cache,
+                        self.urls,
+                    ));
+                });
 
                 if resp.hovered() || resp.clicked() {
                     ui::show_pointer(ui);
@@ -246,7 +254,7 @@ impl<'a> NoteView<'a> {
             }
             None => ui
                 .add(
-                    ui::ProfilePic::new(self.img_cache, ui::ProfilePic::no_pfp_url())
+                    ui::ProfilePic::new(self.img_cache, self.urls, ui::ProfilePic::no_pfp_url())
                         .size(pfp_size),
                 )
                 .interact(sense),
@@ -276,7 +284,7 @@ impl<'a> NoteView<'a> {
                     if let Ok(rec) = &profile {
                         resp.on_hover_ui_at_pointer(|ui| {
                             ui.set_max_width(300.0);
-                            ui.add(ui::ProfilePreview::new(rec, self.img_cache));
+                            ui.add(ui::ProfilePreview::new(rec, self.img_cache, self.urls));
                         });
                     }
                     let color = ui.style().visuals.noninteractive().fg_stroke.color;
@@ -287,7 +295,14 @@ impl<'a> NoteView<'a> {
                             .text_style(style.text_style()),
                     );
                 });
-                NoteView::new(self.ndb, self.note_cache, self.img_cache, &note_to_repost).show(ui)
+                NoteView::new(
+                    self.ndb,
+                    self.note_cache,
+                    self.img_cache,
+                    self.urls,
+                    &note_to_repost,
+                )
+                .show(ui)
             } else {
                 self.show_standard(ui)
             }
@@ -392,6 +407,7 @@ impl<'a> NoteView<'a> {
                                         &note_reply,
                                         self.ndb,
                                         self.img_cache,
+                                        self.urls,
                                         self.note_cache,
                                     )
                                 })
@@ -407,6 +423,7 @@ impl<'a> NoteView<'a> {
                 let mut contents = NoteContents::new(
                     self.ndb,
                     self.img_cache,
+                    self.urls,
                     self.note_cache,
                     txn,
                     self.note,
@@ -463,6 +480,7 @@ impl<'a> NoteView<'a> {
                                 &note_reply,
                                 self.ndb,
                                 self.img_cache,
+                                self.urls,
                                 self.note_cache,
                             );
 
@@ -475,6 +493,7 @@ impl<'a> NoteView<'a> {
                     let mut contents = NoteContents::new(
                         self.ndb,
                         self.img_cache,
+                        self.urls,
                         self.note_cache,
                         txn,
                         self.note,

@@ -557,6 +557,7 @@ fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus, ctx: &mut App
                 let side_panel = DesktopSidePanel::new(
                     ctx.ndb,
                     ctx.img_cache,
+                    ctx.urls,
                     ctx.accounts.get_selected_account(),
                     &app.decks_cache,
                 )

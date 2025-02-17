@@ -8,12 +8,13 @@ use egui::{Color32, Hyperlink, Image, RichText};
 use nostrdb::{BlockType, Mention, Ndb, Note, NoteKey, Transaction};
 use tracing::warn;
 
-use notedeck::{ImageCache, NoteCache};
+use notedeck::{ImageCache, NoteCache, UrlMimes};
 
 pub struct NoteContents<'a> {
     ndb: &'a Ndb,
     img_cache: &'a mut ImageCache,
     note_cache: &'a mut NoteCache,
+    urls: &'a mut UrlMimes,
     txn: &'a Transaction,
     note: &'a Note<'a>,
     note_key: NoteKey,
@@ -22,9 +23,11 @@ pub struct NoteContents<'a> {
 }
 
 impl<'a> NoteContents<'a> {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         ndb: &'a Ndb,
         img_cache: &'a mut ImageCache,
+        urls: &'a mut UrlMimes,
         note_cache: &'a mut NoteCache,
         txn: &'a Transaction,
         note: &'a Note,
@@ -35,6 +38,7 @@ impl<'a> NoteContents<'a> {
             ndb,
             img_cache,
             note_cache,
+            urls,
             txn,
             note,
             note_key,
@@ -54,6 +58,7 @@ impl egui::Widget for &mut NoteContents<'_> {
             ui,
             self.ndb,
             self.img_cache,
+            self.urls,
             self.note_cache,
             self.txn,
             self.note,
@@ -67,11 +72,13 @@ impl egui::Widget for &mut NoteContents<'_> {
 
 /// Render an inline note preview with a border. These are used when
 /// notes are references within a note
+#[allow(clippy::too_many_arguments)]
 pub fn render_note_preview(
     ui: &mut egui::Ui,
     ndb: &Ndb,
     note_cache: &mut NoteCache,
     img_cache: &mut ImageCache,
+    urls: &mut UrlMimes,
     txn: &Transaction,
     id: &[u8; 32],
     parent: NoteKey,
@@ -112,7 +119,7 @@ pub fn render_note_preview(
             ui.visuals().noninteractive().bg_stroke.color,
         ))
         .show(ui, |ui| {
-            ui::NoteView::new(ndb, note_cache, img_cache, &note)
+            ui::NoteView::new(ndb, note_cache, img_cache, urls, &note)
                 .actionbar(false)
                 .small_pfp(true)
                 .wide(true)
@@ -133,6 +140,7 @@ fn render_note_contents(
     ui: &mut egui::Ui,
     ndb: &Ndb,
     img_cache: &mut ImageCache,
+    urls: &mut UrlMimes,
     note_cache: &mut NoteCache,
     txn: &Transaction,
     note: &Note,
@@ -164,7 +172,7 @@ fn render_note_contents(
             match block.blocktype() {
                 BlockType::MentionBech32 => match block.as_mention().unwrap() {
                     Mention::Profile(profile) => {
-                        let act = ui::Mention::new(ndb, img_cache, txn, profile.pubkey())
+                        let act = ui::Mention::new(ndb, img_cache, urls, txn, profile.pubkey())
                             .show(ui)
                             .inner;
                         if act.is_some() {
@@ -173,7 +181,7 @@ fn render_note_contents(
                     }
 
                     Mention::Pubkey(npub) => {
-                        let act = ui::Mention::new(ndb, img_cache, txn, npub.pubkey())
+                        let act = ui::Mention::new(ndb, img_cache, urls, txn, npub.pubkey())
                             .show(ui)
                             .inner;
                         if act.is_some() {
@@ -236,7 +244,7 @@ fn render_note_contents(
     });
 
     let preview_note_action = if let Some((id, _block_str)) = inline_note {
-        render_note_preview(ui, ndb, note_cache, img_cache, txn, id, note_key).action
+        render_note_preview(ui, ndb, note_cache, img_cache, urls, txn, id, note_key).action
     } else {
         None
     };

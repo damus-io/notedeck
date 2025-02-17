@@ -3,11 +3,12 @@ use crate::{actionbar::NoteAction, profile::get_display_name, timeline::Timeline
 use egui::Sense;
 use enostr::Pubkey;
 use nostrdb::{Ndb, Transaction};
-use notedeck::ImageCache;
+use notedeck::{ImageCache, UrlMimes};
 
 pub struct Mention<'a> {
     ndb: &'a Ndb,
     img_cache: &'a mut ImageCache,
+    urls: &'a mut UrlMimes,
     txn: &'a Transaction,
     pk: &'a [u8; 32],
     selectable: bool,
@@ -18,6 +19,7 @@ impl<'a> Mention<'a> {
     pub fn new(
         ndb: &'a Ndb,
         img_cache: &'a mut ImageCache,
+        urls: &'a mut UrlMimes,
         txn: &'a Transaction,
         pk: &'a [u8; 32],
     ) -> Self {
@@ -26,6 +28,7 @@ impl<'a> Mention<'a> {
         Mention {
             ndb,
             img_cache,
+            urls,
             txn,
             pk,
             selectable,
@@ -47,6 +50,7 @@ impl<'a> Mention<'a> {
         mention_ui(
             self.ndb,
             self.img_cache,
+            self.urls,
             self.txn,
             self.pk,
             ui,
@@ -62,9 +66,11 @@ impl egui::Widget for Mention<'_> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn mention_ui(
     ndb: &Ndb,
     img_cache: &mut ImageCache,
+    urls: &mut UrlMimes,
     txn: &Transaction,
     pk: &[u8; 32],
     ui: &mut egui::Ui,
@@ -102,7 +108,7 @@ fn mention_ui(
         if let Some(rec) = profile.as_ref() {
             resp.on_hover_ui_at_pointer(|ui| {
                 ui.set_max_width(300.0);
-                ui.add(ui::ProfilePreview::new(rec, img_cache));
+                ui.add(ui::ProfilePreview::new(rec, img_cache, urls));
             });
         }
 

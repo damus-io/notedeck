@@ -4,22 +4,28 @@ use egui::{Frame, Label, RichText, Widget};
 use egui_extras::Size;
 use nostrdb::ProfileRecord;
 
-use notedeck::{ImageCache, NotedeckTextStyle, UserAccount};
+use notedeck::{ImageCache, NotedeckTextStyle, UrlMimes, UserAccount};
 
 use super::{about_section_widget, banner, display_name_widget, get_display_name, get_profile_url};
 
 pub struct ProfilePreview<'a, 'cache> {
     profile: &'a ProfileRecord<'a>,
     cache: &'cache mut ImageCache,
+    urls: &'cache mut UrlMimes,
     banner_height: Size,
 }
 
 impl<'a, 'cache> ProfilePreview<'a, 'cache> {
-    pub fn new(profile: &'a ProfileRecord<'a>, cache: &'cache mut ImageCache) -> Self {
+    pub fn new(
+        profile: &'a ProfileRecord<'a>,
+        cache: &'cache mut ImageCache,
+        urls: &'cache mut UrlMimes,
+    ) -> Self {
         let banner_height = Size::exact(80.0);
         ProfilePreview {
             profile,
             cache,
+            urls,
             banner_height,
         }
     }
@@ -39,7 +45,7 @@ impl<'a, 'cache> ProfilePreview<'a, 'cache> {
 
             ui.put(
                 pfp_rect,
-                ProfilePic::new(self.cache, get_profile_url(Some(self.profile)))
+                ProfilePic::new(self.cache, self.urls, get_profile_url(Some(self.profile)))
                     .size(size)
                     .border(ProfilePic::border_stroke(ui)),
             );
@@ -70,6 +76,7 @@ impl egui::Widget for ProfilePreview<'_, '_> {
 pub struct SimpleProfilePreview<'a, 'cache> {
     profile: Option<&'a ProfileRecord<'a>>,
     cache: &'cache mut ImageCache,
+    urls: &'cache mut UrlMimes,
     is_nsec: bool,
 }
 
@@ -77,11 +84,13 @@ impl<'a, 'cache> SimpleProfilePreview<'a, 'cache> {
     pub fn new(
         profile: Option<&'a ProfileRecord<'a>>,
         cache: &'cache mut ImageCache,
+        urls: &'cache mut UrlMimes,
         is_nsec: bool,
     ) -> Self {
         SimpleProfilePreview {
             profile,
             cache,
+            urls,
             is_nsec,
         }
     }
@@ -91,7 +100,10 @@ impl egui::Widget for SimpleProfilePreview<'_, '_> {
     fn ui(self, ui: &mut egui::Ui) -> egui::Response {
         Frame::none()
             .show(ui, |ui| {
-                ui.add(ProfilePic::new(self.cache, get_profile_url(self.profile)).size(48.0));
+                ui.add(
+                    ProfilePic::new(self.cache, self.urls, get_profile_url(self.profile))
+                        .size(48.0),
+                );
                 ui.vertical(|ui| {
                     ui.add(display_name_widget(get_display_name(self.profile), true));
                     if !self.is_nsec {
@@ -138,7 +150,7 @@ mod previews {
 
     impl App for ProfilePreviewPreview<'_> {
         fn update(&mut self, app: &mut AppContext<'_>, ui: &mut egui::Ui) {
-            ProfilePreview::new(&self.profile, app.img_cache).ui(ui);
+            ProfilePreview::new(&self.profile, app.img_cache, app.urls).ui(ui);
         }
     }
 

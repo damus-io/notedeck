@@ -3,6 +3,7 @@ use nostrdb::Ndb;
 
 use notedeck::{
     Accounts, AccountsAction, AddAccountAction, ImageCache, SingleUnkIdAction, SwitchAccountAction,
+    UrlMimes,
 };
 
 use crate::app::get_active_columns_mut;
@@ -28,13 +29,14 @@ pub fn render_accounts_route(
     ndb: &Ndb,
     col: usize,
     img_cache: &mut ImageCache,
+    urls: &mut UrlMimes,
     accounts: &mut Accounts,
     decks: &mut DecksCache,
     login_state: &mut AcquireKeyState,
     route: AccountsRoute,
 ) -> AddAccountAction {
     let resp = match route {
-        AccountsRoute::Accounts => AccountsView::new(ndb, accounts, img_cache)
+        AccountsRoute::Accounts => AccountsView::new(ndb, accounts, img_cache, urls)
             .ui(ui)
             .inner
             .map(AccountsRouteResponse::Accounts),

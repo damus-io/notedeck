@@ -4,13 +4,14 @@ use crate::ui::note::{PostResponse, PostType};
 use enostr::{FilledKeypair, NoteId};
 use nostrdb::Ndb;
 
-use notedeck::{ImageCache, NoteCache};
+use notedeck::{ImageCache, NoteCache, UrlMimes};
 
 pub struct PostReplyView<'a> {
     ndb: &'a Ndb,
     poster: FilledKeypair<'a>,
     note_cache: &'a mut NoteCache,
     img_cache: &'a mut ImageCache,
+    urls: &'a mut UrlMimes,
     draft: &'a mut Draft,
     note: &'a nostrdb::Note<'a>,
     id_source: Option<egui::Id>,
@@ -18,12 +19,14 @@ pub struct PostReplyView<'a> {
 }
 
 impl<'a> PostReplyView<'a> {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         ndb: &'a Ndb,
         poster: FilledKeypair<'a>,
         draft: &'a mut Draft,
         note_cache: &'a mut NoteCache,
         img_cache: &'a mut ImageCache,
+        urls: &'a mut UrlMimes,
         note: &'a nostrdb::Note<'a>,
         inner_rect: egui::Rect,
     ) -> Self {
@@ -35,6 +38,7 @@ impl<'a> PostReplyView<'a> {
             note,
             note_cache,
             img_cache,
+            urls,
             id_source,
             inner_rect,
         }
@@ -67,11 +71,17 @@ impl<'a> PostReplyView<'a> {
             egui::Frame::none()
                 .outer_margin(egui::Margin::same(note_offset))
                 .show(ui, |ui| {
-                    ui::NoteView::new(self.ndb, self.note_cache, self.img_cache, self.note)
-                        .actionbar(false)
-                        .medium_pfp(true)
-                        .options_button(true)
-                        .show(ui);
+                    ui::NoteView::new(
+                        self.ndb,
+                        self.note_cache,
+                        self.img_cache,
+                        self.urls,
+                        self.note,
+                    )
+                    .actionbar(false)
+                    .medium_pfp(true)
+                    .options_button(true)
+                    .show(ui);
                 });
 
             let id = self.id();
@@ -84,6 +94,7 @@ impl<'a> PostReplyView<'a> {
                     self.draft,
                     PostType::Reply(NoteId::new(*replying_to)),
                     self.img_cache,
+                    self.urls,
                     self.note_cache,
                     self.poster,
                     self.inner_rect,
