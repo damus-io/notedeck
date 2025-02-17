@@ -9,12 +9,13 @@ use egui::{Color32, Hyperlink, Image, RichText};
 use nostrdb::{BlockType, Mention, Ndb, Note, NoteKey, Transaction};
 use tracing::warn;
 
-use notedeck::{MediaCache, NoteCache};
+use notedeck::{MediaCache, NoteCache, UrlMimes};
 
 pub struct NoteContents<'a> {
     ndb: &'a Ndb,
     img_cache: &'a mut MediaCache,
     note_cache: &'a mut NoteCache,
+    urls: &'a mut UrlMimes,
     gifs: &'a mut GifStateMap,
     txn: &'a Transaction,
     note: &'a Note<'a>,
@@ -28,6 +29,7 @@ impl<'a> NoteContents<'a> {
     pub fn new(
         ndb: &'a Ndb,
         img_cache: &'a mut MediaCache,
+        urls: &'a mut UrlMimes,
         note_cache: &'a mut NoteCache,
         gifs: &'a mut GifStateMap,
         txn: &'a Transaction,
@@ -39,6 +41,7 @@ impl<'a> NoteContents<'a> {
             ndb,
             img_cache,
             note_cache,
+            urls,
             gifs,
             txn,
             note,
@@ -59,6 +62,7 @@ impl egui::Widget for &mut NoteContents<'_> {
             ui,
             self.ndb,
             self.img_cache,
+            self.urls,
             self.note_cache,
             self.gifs,
             self.txn,
@@ -79,6 +83,7 @@ pub fn render_note_preview(
     ndb: &Ndb,
     note_cache: &mut NoteCache,
     img_cache: &mut MediaCache,
+    urls: &mut UrlMimes,
     gifs: &mut GifStateMap,
     txn: &Transaction,
     id: &[u8; 32],
@@ -120,7 +125,7 @@ pub fn render_note_preview(
             ui.visuals().noninteractive().bg_stroke.color,
         ))
         .show(ui, |ui| {
-            ui::NoteView::new(ndb, note_cache, img_cache, gifs, &note)
+            ui::NoteView::new(ndb, note_cache, img_cache, urls, gifs, &note)
                 .actionbar(false)
                 .small_pfp(true)
                 .wide(true)
@@ -141,6 +146,7 @@ fn render_note_contents(
     ui: &mut egui::Ui,
     ndb: &Ndb,
     img_cache: &mut MediaCache,
+    urls: &mut UrlMimes,
     note_cache: &mut NoteCache,
     gifs: &mut GifStateMap,
     txn: &Transaction,
@@ -245,7 +251,10 @@ fn render_note_contents(
     });
 
     let preview_note_action = if let Some((id, _block_str)) = inline_note {
-        render_note_preview(ui, ndb, note_cache, img_cache, gifs, txn, id, note_key).action
+        render_note_preview(
+            ui, ndb, note_cache, img_cache, urls, gifs, txn, id, note_key,
+        )
+        .action
     } else {
         None
     };

@@ -1,6 +1,6 @@
 use enostr::{FilledKeypair, NoteId};
 use nostrdb::Ndb;
-use notedeck::{MediaCache, NoteCache};
+use notedeck::{MediaCache, NoteCache, UrlMimes};
 
 use crate::{draft::Draft, gif::GifStateMap, ui};
 
@@ -11,6 +11,7 @@ pub struct QuoteRepostView<'a> {
     poster: FilledKeypair<'a>,
     note_cache: &'a mut NoteCache,
     img_cache: &'a mut MediaCache,
+    urls: &'a mut UrlMimes,
     gifs: &'a mut GifStateMap,
     draft: &'a mut Draft,
     quoting_note: &'a nostrdb::Note<'a>,
@@ -25,6 +26,7 @@ impl<'a> QuoteRepostView<'a> {
         poster: FilledKeypair<'a>,
         note_cache: &'a mut NoteCache,
         img_cache: &'a mut MediaCache,
+        urls: &'a mut UrlMimes,
         gifs: &'a mut GifStateMap,
         draft: &'a mut Draft,
         quoting_note: &'a nostrdb::Note<'a>,
@@ -36,6 +38,7 @@ impl<'a> QuoteRepostView<'a> {
             poster,
             note_cache,
             img_cache,
+            urls,
             gifs,
             draft,
             quoting_note,
@@ -53,6 +56,7 @@ impl<'a> QuoteRepostView<'a> {
             self.draft,
             PostType::Quote(NoteId::new(quoting_note_id.to_owned())),
             self.img_cache,
+            self.urls,
             self.note_cache,
             self.gifs,
             self.poster,

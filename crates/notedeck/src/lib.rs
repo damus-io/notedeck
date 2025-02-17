@@ -49,6 +49,7 @@ pub use theme::ColorTheme;
 pub use time::time_ago_since;
 pub use timecache::TimeCached;
 pub use unknowns::{get_unknown_note_ids, NoteRefsUnkIdAction, SingleUnkIdAction, UnknownIds};
+pub use urls::UrlMimes;
 pub use user_account::UserAccount;
 
 // export libs

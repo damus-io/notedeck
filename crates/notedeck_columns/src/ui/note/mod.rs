@@ -26,7 +26,7 @@ use egui::emath::{pos2, Vec2};
 use egui::{Id, Label, Pos2, Rect, Response, RichText, Sense};
 use enostr::{NoteId, Pubkey};
 use nostrdb::{Ndb, Note, NoteKey, Transaction};
-use notedeck::{CachedNote, MediaCache, NoteCache, NotedeckTextStyle};
+use notedeck::{CachedNote, MediaCache, NoteCache, NotedeckTextStyle, UrlMimes};
 
 use super::profile::preview::one_line_display_name_widget;
 
@@ -34,6 +34,7 @@ pub struct NoteView<'a> {
     ndb: &'a Ndb,
     note_cache: &'a mut NoteCache,
     img_cache: &'a mut MediaCache,
+    urls: &'a mut UrlMimes,
     gifs: &'a mut GifStateMap,
     parent: Option<NoteKey>,
     note: &'a nostrdb::Note<'a>,
@@ -77,6 +78,7 @@ impl<'a> NoteView<'a> {
         ndb: &'a Ndb,
         note_cache: &'a mut NoteCache,
         img_cache: &'a mut MediaCache,
+        urls: &'a mut UrlMimes,
         gifs: &'a mut GifStateMap,
         note: &'a nostrdb::Note<'a>,
     ) -> Self {
@@ -86,6 +88,7 @@ impl<'a> NoteView<'a> {
             ndb,
             note_cache,
             img_cache,
+            urls,
             gifs,
             parent,
             note,
@@ -183,6 +186,7 @@ impl<'a> NoteView<'a> {
             ui.add(&mut NoteContents::new(
                 self.ndb,
                 self.img_cache,
+                self.urls,
                 self.note_cache,
                 self.gifs,
                 txn,
@@ -300,6 +304,7 @@ impl<'a> NoteView<'a> {
                     self.ndb,
                     self.note_cache,
                     self.img_cache,
+                    self.urls,
                     self.gifs,
                     &note_to_repost,
                 )
@@ -408,6 +413,7 @@ impl<'a> NoteView<'a> {
                                         &note_reply,
                                         self.ndb,
                                         self.img_cache,
+                                        self.urls,
                                         self.note_cache,
                                         self.gifs,
                                     )
@@ -424,6 +430,7 @@ impl<'a> NoteView<'a> {
                 let mut contents = NoteContents::new(
                     self.ndb,
                     self.img_cache,
+                    self.urls,
                     self.note_cache,
                     self.gifs,
                     txn,
@@ -481,6 +488,7 @@ impl<'a> NoteView<'a> {
                                 &note_reply,
                                 self.ndb,
                                 self.img_cache,
+                                self.urls,
                                 self.note_cache,
                                 self.gifs,
                             );
@@ -494,6 +502,7 @@ impl<'a> NoteView<'a> {
                     let mut contents = NoteContents::new(
                         self.ndb,
                         self.img_cache,
+                        self.urls,
                         self.note_cache,
                         self.gifs,
                         txn,

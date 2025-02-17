@@ -13,7 +13,7 @@ use egui::{vec2, Direction, Layout, Pos2, Stroke};
 use egui_tabs::TabColor;
 use nostrdb::{Ndb, Transaction};
 use notedeck::note::root_note_id_from_selected_id;
-use notedeck::{MediaCache, MuteFun, NoteCache};
+use notedeck::{MediaCache, MuteFun, NoteCache, UrlMimes};
 use tracing::{error, warn};
 
 use super::anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE};
@@ -24,6 +24,7 @@ pub struct TimelineView<'a> {
     ndb: &'a Ndb,
     note_cache: &'a mut NoteCache,
     img_cache: &'a mut MediaCache,
+    urls: &'a mut UrlMimes,
     gifs: &'a mut GifStateMap,
     note_options: NoteOptions,
     reverse: bool,
@@ -38,6 +39,7 @@ impl<'a> TimelineView<'a> {
         ndb: &'a Ndb,
         note_cache: &'a mut NoteCache,
         img_cache: &'a mut MediaCache,
+        urls: &'a mut UrlMimes,
         gifs: &'a mut GifStateMap,
         note_options: NoteOptions,
         is_muted: &'a MuteFun,
@@ -49,6 +51,7 @@ impl<'a> TimelineView<'a> {
             timeline_cache,
             note_cache,
             img_cache,
+            urls,
             gifs,
             reverse,
             note_options,
@@ -64,6 +67,7 @@ impl<'a> TimelineView<'a> {
             self.timeline_cache,
             self.note_cache,
             self.img_cache,
+            self.urls,
             self.gifs,
             self.reverse,
             self.note_options,
@@ -85,6 +89,7 @@ fn timeline_ui(
     timeline_cache: &mut TimelineCache,
     note_cache: &mut NoteCache,
     img_cache: &mut MediaCache,
+    urls: &mut UrlMimes,
     gifs: &mut GifStateMap,
     reversed: bool,
     note_options: NoteOptions,
@@ -166,6 +171,7 @@ fn timeline_ui(
             ndb,
             note_cache,
             img_cache,
+            urls,
             gifs,
             is_muted,
         )
@@ -330,6 +336,7 @@ pub struct TimelineTabView<'a> {
     ndb: &'a Ndb,
     note_cache: &'a mut NoteCache,
     img_cache: &'a mut MediaCache,
+    urls: &'a mut UrlMimes,
     gifs: &'a mut GifStateMap,
     is_muted: &'a MuteFun,
 }
@@ -344,6 +351,7 @@ impl<'a> TimelineTabView<'a> {
         ndb: &'a Ndb,
         note_cache: &'a mut NoteCache,
         img_cache: &'a mut MediaCache,
+        urls: &'a mut UrlMimes,
         gifs: &'a mut GifStateMap,
         is_muted: &'a MuteFun,
     ) -> Self {
@@ -355,6 +363,7 @@ impl<'a> TimelineTabView<'a> {
             ndb,
             note_cache,
             img_cache,
+            urls,
             gifs,
             is_muted,
         }
@@ -403,6 +412,7 @@ impl<'a> TimelineTabView<'a> {
                             self.ndb,
                             self.note_cache,
                             self.img_cache,
+                            self.urls,
                             self.gifs,
                             &note,
                         )

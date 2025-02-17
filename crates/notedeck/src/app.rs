@@ -1,7 +1,8 @@
 use crate::persist::{AppSizeHandler, ZoomHandler};
+use crate::urls::UrlCache;
 use crate::{
     Accounts, AppContext, Args, DataPath, DataPathType, Directory, FileKeyStorage, KeyStorageType,
-    MediaCache, NoteCache, RelayDebugView, ThemeHandler, UnknownIds,
+    MediaCache, NoteCache, RelayDebugView, ThemeHandler, UnknownIds, UrlMimes,
 };
 use egui::ThemePreference;
 use enostr::RelayPool;
@@ -20,6 +21,7 @@ pub trait App {
 pub struct Notedeck {
     ndb: Ndb,
     img_cache: MediaCache,
+    urls: UrlMimes,
     unknown_ids: UnknownIds,
     pool: RelayPool,
     note_cache: NoteCache,
@@ -134,6 +136,8 @@ impl Notedeck {
             .join(MediaCache::rel_dir(crate::imgcache::MediaCacheType::Image));
         let _ = std::fs::create_dir_all(img_cache_dir.clone());
 
+        let urls_dir = path.path(DataPathType::Cache);
+
         let map_size = if cfg!(target_os = "windows") {
             // 16 Gib on windows because it actually creates the file
             1024usize * 1024usize * 1024usize * 16usize
@@ -201,9 +205,12 @@ impl Notedeck {
             error!("error migrating image cache: {e}");
         }
 
+        let urls = UrlMimes::new(UrlCache::new(urls_dir));
+
         Self {
             ndb,
             img_cache,
+            urls,
             unknown_ids,
             pool,
             note_cache,
@@ -227,6 +234,7 @@ impl Notedeck {
         AppContext {
             ndb: &mut self.ndb,
             img_cache: &mut self.img_cache,
+            urls: &mut self.urls,
             unknown_ids: &mut self.unknown_ids,
             pool: &mut self.pool,
             note_cache: &mut self.note_cache,
