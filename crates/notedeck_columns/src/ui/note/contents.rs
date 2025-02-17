@@ -9,7 +9,7 @@ use egui::{Color32, Hyperlink, Image, RichText};
 use nostrdb::{BlockType, Mention, Ndb, Note, NoteKey, Transaction};
 use tracing::warn;
 
-use notedeck::{MediaCache, NoteCache, UrlMimes};
+use notedeck::{MediaCache, MediaCacheType, NoteCache, UrlMimes};
 
 pub struct NoteContents<'a> {
     ndb: &'a Ndb,
@@ -158,7 +158,7 @@ fn render_note_contents(
     puffin::profile_function!();
 
     let selectable = options.has_selectable_text();
-    let mut images: Vec<String> = vec![];
+    let mut images: Vec<(String, MediaCacheType)> = vec![];
     let mut note_action: Option<NoteAction> = None;
     let mut inline_note: Option<(&[u8; 32], &str)> = None;
     let hide_media = options.has_hide_media();
@@ -225,8 +225,21 @@ fn render_note_contents(
 
                 BlockType::Url => {
                     let lower_url = block.as_str().to_lowercase();
-                    if !hide_media && is_image_link(&lower_url) {
-                        images.push(block.as_str().to_string());
+                    if !hide_media {
+                        let url = block.as_str().to_string();
+                        if let Some(mime_type) = urls.get(&url) {
+                            let maybe_cache_type = if mime_type.eq("image/gif") {
+                                Some(MediaCacheType::Gif)
+                            } else if mime_type.starts_with("image") {
+                                Some(MediaCacheType::Image)
+                            } else {
+                                None
+                            };
+
+                            if let Some(cache_type) = maybe_cache_type {
+                                images.push((url, cache_type));
+                            }
+                        }
                     } else {
                         #[cfg(feature = "profiling")]
                         puffin::profile_scope!("url contents");
@@ -275,7 +288,7 @@ fn image_carousel(
     ui: &mut egui::Ui,
     img_cache: &mut MediaCache,
     gifs: &mut GifStateMap,
-    images: Vec<String>,
+    images: Vec<(String, MediaCacheType)>,
     carousel_id: egui::Id,
 ) {
     // let's make sure everything is within our area
@@ -289,7 +302,7 @@ fn image_carousel(
             .id_salt(carousel_id)
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    for image in images {
+                    for (image, cache_type) in images {
                         // If the cache is empty, initiate the fetch
                         let m_cached_promise = img_cache.map().get(&image);
                         if m_cached_promise.is_none() {
