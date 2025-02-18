@@ -59,6 +59,7 @@ pub struct MediaCache {
     url_imgs: MediaCacheMap,
 }
 
+#[derive(Clone)]
 pub enum MediaCacheType {
     Image,
     Gif,
@@ -216,3 +217,24 @@ fn color_image_to_rgba(color_image: ColorImage) -> image::RgbaImage {
     image::RgbaImage::from_raw(width, height, rgba_pixels)
         .expect("Failed to create RgbaImage from ColorImage")
 }
+
+pub struct Images {
+    pub static_imgs: MediaCache,
+    pub gifs: MediaCache,
+}
+
+impl Images {
+    /// path to directory to place [`MediaCache`]s
+    pub fn new(path: path::PathBuf) -> Self {
+        Self {
+            static_imgs: MediaCache::new(path.join(MediaCache::rel_dir(MediaCacheType::Image))),
+            gifs: MediaCache::new(path.join(MediaCache::rel_dir(MediaCacheType::Gif))),
+        }
+    }
+
+    pub fn migrate_v0(&self) -> Result<()> {
+        self.static_imgs.migrate_v0()?;
+        self.gifs.migrate_v0()
+    }
+}
+

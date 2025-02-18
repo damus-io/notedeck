@@ -26,14 +26,14 @@ use egui::emath::{pos2, Vec2};
 use egui::{Id, Label, Pos2, Rect, Response, RichText, Sense};
 use enostr::{NoteId, Pubkey};
 use nostrdb::{Ndb, Note, NoteKey, Transaction};
-use notedeck::{CachedNote, MediaCache, NoteCache, NotedeckTextStyle, UrlMimes};
+use notedeck::{CachedNote, Images, NoteCache, NotedeckTextStyle, UrlMimes};
 
 use super::profile::preview::one_line_display_name_widget;
 
 pub struct NoteView<'a> {
     ndb: &'a Ndb,
     note_cache: &'a mut NoteCache,
-    img_cache: &'a mut MediaCache,
+    img_cache: &'a mut Images,
     urls: &'a mut UrlMimes,
     gifs: &'a mut GifStateMap,
     parent: Option<NoteKey>,
@@ -77,7 +77,7 @@ impl<'a> NoteView<'a> {
     pub fn new(
         ndb: &'a Ndb,
         note_cache: &'a mut NoteCache,
-        img_cache: &'a mut MediaCache,
+        img_cache: &'a mut Images,
         urls: &'a mut UrlMimes,
         gifs: &'a mut GifStateMap,
         note: &'a nostrdb::Note<'a>,

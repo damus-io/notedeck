@@ -5,6 +5,7 @@ pub mod anim;
 pub mod column;
 pub mod configure_deck;
 pub mod edit_deck;
+pub mod images;
 pub mod mention;
 pub mod note;
 pub mod preview;

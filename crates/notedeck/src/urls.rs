@@ -89,7 +89,7 @@ fn read_from_disk(path: PathBuf) -> Promise<Option<UrlsToMime>> {
         match result {
             Ok(data) => sender.send(Some(data)),
             Err(e) => {
-                tracing::error!("problem deserializing UrlCache: {e}");
+                tracing::error!("problem deserializing UrlMimes: {e}");
                 sender.send(None)
             }
         }
@@ -111,13 +111,13 @@ fn save_to_disk(path: PathBuf, cache: Arc<RwLock<UrlsToMime>>) {
                 Ok(())
             } else {
                 Err(Error::Generic(
-                    "Could not read UrlCache behind RwLock".to_owned(),
+                    "Could not read UrlMimes behind RwLock".to_owned(),
                 ))
             }
         })();
 
         if let Err(e) = result {
-            tracing::error!("Failed to save UrlCache: {}", e);
+            tracing::error!("Failed to save UrlMimes: {}", e);
         }
     });
 }
@@ -137,7 +137,7 @@ fn ehttp_get_mime_type(url: &str, sender: poll_promise::Sender<String>) {
                 }
             }
             Err(err) => {
-                tracing::error!("failed ehttp for UrlCache: {err}");
+                tracing::error!("failed ehttp for UrlMimes: {err}");
             }
         },
     );

@@ -1,10 +1,10 @@
 use crate::draft::{Draft, Drafts, MentionHint};
 use crate::gif::GifStateMap;
 use crate::gif::{handle_repaint, retrieve_latest_texture};
-use crate::images::fetch_img;
 use crate::media_upload::{nostrbuild_nip96_upload, MediaPath};
 use crate::post::{downcast_post_buffer, MentionType, NewPost};
 use crate::profile::get_display_name;
+use crate::ui::images::render_images;
 use crate::ui::search_results::SearchResultsView;
 use crate::ui::{self, Preview, PreviewConfig};
 use crate::Result;
@@ -15,7 +15,7 @@ use egui::{vec2, Frame, Layout, Margin, Pos2, ScrollArea, Sense, TextBuffer};
 use enostr::{FilledKeypair, FullKeypair, NoteId, Pubkey, RelayPool};
 use nostrdb::{Ndb, Transaction};
 
-use notedeck::{MediaCache, NoteCache, UrlMimes};
+use notedeck::{Images, NoteCache, UrlMimes};
 use tracing::error;
 
 use super::contents::render_note_preview;
@@ -24,7 +24,7 @@ pub struct PostView<'a> {
     ndb: &'a Ndb,
     draft: &'a mut Draft,
     post_type: PostType,
-    img_cache: &'a mut MediaCache,
+    img_cache: &'a mut Images,
     urls: &'a mut UrlMimes,
     note_cache: &'a mut NoteCache,
     gifs: &'a mut GifStateMap,
@@ -91,7 +91,7 @@ impl<'a> PostView<'a> {
         ndb: &'a Ndb,
         draft: &'a mut Draft,
         post_type: PostType,
-        img_cache: &'a mut MediaCache,
+        img_cache: &'a mut Images,
         urls: &'a mut UrlMimes,
         note_cache: &'a mut NoteCache,
         gifs: &'a mut GifStateMap,
@@ -393,26 +393,21 @@ impl<'a> PostView<'a> {
             } else {
                 (300, 300)
             };
-            let m_cached_promise = self.img_cache.map().get(&media.url);
-            if m_cached_promise.is_none() {
-                let promise = fetch_img(
-                    self.img_cache,
-                    ui.ctx(),
-                    &media.url,
-                    crate::images::ImageType::Content(width, height),
-                );
-                self.img_cache
-                    .map_mut()
-                    .insert(media.url.to_owned(), promise);
-            }
 
-            match self
-                .img_cache
-                .map_mut()
-                .get_mut(&media.url)
-                .and_then(|p| p.ready_mut())
-            {
-                Some(Ok(texture)) => {
+            render_images(
+                ui,
+                &mut self.img_cache,
+                &media.url,
+                crate::images::ImageType::Content(width, height),
+                notedeck::MediaCacheType::Image,
+                |ui| {
+                    ui.spinner();
+                },
+                |_, e| {
+                    self.draft.upload_errors.push(e.to_string());
+                    error!("{e}");
+                },
+                |ui, _, renderable_media| {
                     let media_size = vec2(width as f32, height as f32);
                     let max_size = vec2(300.0, 300.0);
                     let size = if media_size.x > max_size.x || media_size.y > max_size.y {
@@ -421,8 +416,10 @@ impl<'a> PostView<'a> {
                         media_size
                     };
 
-                    let texture =
-                        handle_repaint(ui, retrieve_latest_texture(&media.url, self.gifs, texture));
+                    let texture = handle_repaint(
+                        ui,
+                        retrieve_latest_texture(&media.url, self.gifs, renderable_media),
+                    );
                     let img_resp = ui.add(egui::Image::new(texture).max_size(size).rounding(12.0));
 
                     let remove_button_rect = {
@@ -435,15 +432,59 @@ impl<'a> PostView<'a> {
                         to_remove.push(i);
                     }
                     ui.advance_cursor_after_rect(img_resp.rect);
-                }
-                Some(Err(e)) => {
-                    self.draft.upload_errors.push(e.to_string());
-                    error!("{e}");
-                }
-                None => {
-                    ui.spinner();
-                }
-            }
+                },
+            );
+            // let m_cached_promise = self.img_cache.map().get(&media.url);
+            // if m_cached_promise.is_none() {
+            //     let promise = fetch_img(
+            //         self.img_cache,
+            //         ui.ctx(),
+            //         &media.url,
+            //         crate::images::ImageType::Content(width, height),
+            //     );
+            //     self.img_cache
+            //         .map_mut()
+            //         .insert(media.url.to_owned(), promise);
+            // }
+
+            // match self
+            //     .img_cache
+            //     .map_mut()
+            //     .get_mut(&media.url)
+            //     .and_then(|p| p.ready_mut())
+            // {
+            //     Some(Ok(texture)) => {
+            //         let media_size = vec2(width as f32, height as f32);
+            //         let max_size = vec2(300.0, 300.0);
+            //         let size = if media_size.x > max_size.x || media_size.y > max_size.y {
+            //             max_size
+            //         } else {
+            //             media_size
+            //         };
+
+            //         let texture =
+            //             handle_repaint(ui, retrieve_latest_texture(&media.url, self.gifs, texture));
+            //         let img_resp = ui.add(egui::Image::new(texture).max_size(size).rounding(12.0));
+
+            //         let remove_button_rect = {
+            //             let top_left = img_resp.rect.left_top();
+            //             let spacing = 13.0;
+            //             let center = Pos2::new(top_left.x + spacing, top_left.y + spacing);
+            //             egui::Rect::from_center_size(center, egui::vec2(26.0, 26.0))
+            //         };
+            //         if show_remove_upload_button(ui, remove_button_rect).clicked() {
+            //             to_remove.push(i);
+            //         }
+            //         ui.advance_cursor_after_rect(img_resp.rect);
+            //     }
+            //     Some(Err(e)) => {
+            //         self.draft.upload_errors.push(e.to_string());
+            //         error!("{e}");
+            //     }
+            //     None => {
+            //         ui.spinner();
+            //     }
+            // }
         }
         to_remove.reverse();
         for i in to_remove {

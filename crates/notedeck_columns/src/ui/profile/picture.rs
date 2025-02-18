@@ -1,15 +1,16 @@
 use crate::gif::GifStateMap;
 use crate::gif::{handle_repaint, retrieve_latest_texture};
 use crate::images::ImageType;
+use crate::ui::images::render_images;
 use crate::ui::{Preview, PreviewConfig};
 use egui::{vec2, Sense, Stroke, TextureHandle};
 use nostrdb::{Ndb, Transaction};
 use tracing::info;
 
-use notedeck::{AppContext, MediaCache};
+use notedeck::{AppContext, Images};
 
 pub struct ProfilePic<'cache, 'url> {
-    cache: &'cache mut MediaCache,
+    cache: &'cache mut Images,
     gifs: &'cache mut GifStateMap,
     url: &'url str,
     size: f32,
@@ -23,11 +24,7 @@ impl egui::Widget for ProfilePic<'_, '_> {
 }
 
 impl<'cache, 'url> ProfilePic<'cache, 'url> {
-    pub fn new(
-        cache: &'cache mut MediaCache,
-        gifs: &'cache mut GifStateMap,
-        url: &'url str,
-    ) -> Self {
+    pub fn new(cache: &'cache mut Images, gifs: &'cache mut GifStateMap, url: &'url str) -> Self {
         let size = Self::default_size();
         ProfilePic {
             cache,
@@ -43,7 +40,7 @@ impl<'cache, 'url> ProfilePic<'cache, 'url> {
     }
 
     pub fn from_profile(
-        cache: &'cache mut MediaCache,
+        cache: &'cache mut Images,
         gifs: &'cache mut GifStateMap,
         profile: &nostrdb::ProfileRecord<'url>,
     ) -> Option<Self> {
@@ -89,7 +86,7 @@ impl<'cache, 'url> ProfilePic<'cache, 'url> {
 
 fn render_pfp(
     ui: &mut egui::Ui,
-    img_cache: &mut MediaCache,
+    img_cache: &mut Images,
     gifs: &mut GifStateMap,
     url: &str,
     ui_size: f32,
@@ -101,47 +98,64 @@ fn render_pfp(
     // We will want to downsample these so it's not blurry on hi res displays
     let img_size = 128u32;
 
-    let m_cached_promise = img_cache.map().get(url);
-    if m_cached_promise.is_none() {
-        let res = crate::images::fetch_img(img_cache, ui.ctx(), url, ImageType::Profile(img_size));
-        img_cache.map_mut().insert(url.to_owned(), res);
-    }
+    render_images(
+        ui,
+        img_cache,
+        url,
+        ImageType::Profile(img_size),
+        notedeck::MediaCacheType::Image,
+        |ui| {
+            paint_circle(ui, ui_size, border);
+        },
+        |ui, _| {
+            paint_circle(ui, ui_size, border);
+        },
+        |ui, url, media| {
+            let texture = handle_repaint(ui, retrieve_latest_texture(url, gifs, media));
+            pfp_image(ui, texture, ui_size, border);
+        },
+    )
+    // let m_cached_promise = img_cache.map().get(url);
+    // if m_cached_promise.is_none() {
+    //     let res = crate::images::fetch_img(img_cache, ui.ctx(), url, ImageType::Profile(img_size));
+    //     img_cache.map_mut().insert(url.to_owned(), res);
+    // }
 
-    match img_cache.map_mut().get_mut(url).and_then(|p| p.ready_mut()) {
-        None => paint_circle(ui, ui_size, border),
+    // match img_cache.map_mut().get_mut(url).and_then(|p| p.ready_mut()) {
+    //     None => paint_circle(ui, ui_size, border),
 
-        // Failed to fetch profile!
-        Some(Err(_err)) => {
-            let m_failed_promise = img_cache.map().get(url);
-            if m_failed_promise.is_none() {
-                let no_pfp = crate::images::fetch_img(
-                    img_cache,
-                    ui.ctx(),
-                    ProfilePic::no_pfp_url(),
-                    ImageType::Profile(img_size),
-                );
-                img_cache.map_mut().insert(url.to_owned(), no_pfp);
-            }
+    //     // Failed to fetch profile!
+    //     Some(Err(_err)) => {
+    //         let m_failed_promise = img_cache.map().get(url);
+    //         if m_failed_promise.is_none() {
+    //             let no_pfp = crate::images::fetch_img(
+    //                 img_cache,
+    //                 ui.ctx(),
+    //                 ProfilePic::no_pfp_url(),
+    //                 ImageType::Profile(img_size),
+    //             );
+    //             img_cache.map_mut().insert(url.to_owned(), no_pfp);
+    //         }
 
-            let resp = match img_cache.map_mut().get_mut(url).and_then(|p| p.ready_mut()) {
-                None => paint_circle(ui, ui_size, border),
-                Some(Err(_e)) => {
-                    //error!("Image load error: {:?}", e);
-                    paint_circle(ui, ui_size, border)
-                }
-                Some(Ok(img)) => {
-                    let texture = handle_repaint(ui, retrieve_latest_texture(url, gifs, img));
-                    pfp_image(ui, texture, ui_size, border)
-                }
-            };
-            resp
-        }
+    //         let resp = match img_cache.map_mut().get_mut(url).and_then(|p| p.ready_mut()) {
+    //             None => paint_circle(ui, ui_size, border),
+    //             Some(Err(_e)) => {
+    //                 //error!("Image load error: {:?}", e);
+    //                 paint_circle(ui, ui_size, border)
+    //             }
+    //             Some(Ok(img)) => {
+    //                 let texture = handle_repaint(ui, retrieve_latest_texture(url, gifs, img));
+    //                 pfp_image(ui, texture, ui_size, border)
+    //             }
+    //         };
+    //         resp
+    //     }
 
-        Some(Ok(img)) => {
-            let texture = handle_repaint(ui, retrieve_latest_texture(url, gifs, img));
-            pfp_image(ui, texture, ui_size, border)
-        }
-    }
+    //     Some(Ok(img)) => {
+    //         let texture = handle_repaint(ui, retrieve_latest_texture(url, gifs, img));
+    //         pfp_image(ui, texture, ui_size, border)
+    //     }
+    // }
 }
 
 fn pfp_image(

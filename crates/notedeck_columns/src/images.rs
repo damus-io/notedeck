@@ -8,6 +8,7 @@ use image::Frame;
 use notedeck::Animation;
 use notedeck::ImageFrame;
 use notedeck::MediaCache;
+use notedeck::MediaCacheType;
 use notedeck::Result;
 use notedeck::TextureFrame;
 use notedeck::TexturedImage;
@@ -188,31 +189,36 @@ fn fetch_img_from_disk(
     ctx: &egui::Context,
     url: &str,
     path: &path::Path,
+    cache_type: MediaCacheType,
 ) -> Promise<Result<TexturedImage>> {
     // tracing::info!("Fetching from disk at path: {:?}", path);
     let ctx = ctx.clone();
     let url = url.to_owned();
     let path = path.to_owned();
     Promise::spawn_async(async move {
-        if is_gif(&url) {
-            let gif_bytes = fs::read(path.clone()).await?; // Read entire file into a Vec<u8>
-            generate_gif(ctx, url, &path, gif_bytes, false, |i| {
-                buffer_to_color_image(i.as_flat_samples_u8(), i.width(), i.height())
-            })
-        } else {
-            let data = fs::read(path).await?;
-            let image_buffer = image::load_from_memory(&data).map_err(notedeck::Error::Image)?;
+        match cache_type {
+            MediaCacheType::Image => {
+                let data = fs::read(path).await?;
+                let image_buffer =
+                    image::load_from_memory(&data).map_err(notedeck::Error::Image)?;
 
-            let img = buffer_to_color_image(
-                image_buffer.as_flat_samples_u8(),
-                image_buffer.width(),
-                image_buffer.height(),
-            );
-            Ok(TexturedImage::Static(ctx.load_texture(
-                &url,
-                img,
-                Default::default(),
-            )))
+                let img = buffer_to_color_image(
+                    image_buffer.as_flat_samples_u8(),
+                    image_buffer.width(),
+                    image_buffer.height(),
+                );
+                Ok(TexturedImage::Static(ctx.load_texture(
+                    &url,
+                    img,
+                    Default::default(),
+                )))
+            }
+            MediaCacheType::Gif => {
+                let gif_bytes = fs::read(path.clone()).await?; // Read entire file into a Vec<u8>
+                generate_gif(ctx, url, &path, gif_bytes, false, |i| {
+                    buffer_to_color_image(i.as_flat_samples_u8(), i.width(), i.height())
+                })
+            }
         }
     })
 }
@@ -362,14 +368,15 @@ pub fn fetch_img(
     ctx: &egui::Context,
     url: &str,
     imgtyp: ImageType,
+    cache_type: MediaCacheType,
 ) -> Promise<Result<TexturedImage>> {
     let key = MediaCache::key(url);
     let path = img_cache.cache_dir.join(key);
 
     if path.exists() {
-        fetch_img_from_disk(ctx, url, &path)
+        fetch_img_from_disk(ctx, url, &path, cache_type)
     } else {
-        fetch_img_from_net(&img_cache.cache_dir, ctx, url, imgtyp)
+        fetch_img_from_net(&img_cache.cache_dir, ctx, url, imgtyp, cache_type)
     }
 
     // TODO: fetch image from local cache
@@ -380,6 +387,7 @@ fn fetch_img_from_net(
     ctx: &egui::Context,
     url: &str,
     imgtyp: ImageType,
+    cache_type: MediaCacheType,
 ) -> Promise<Result<TexturedImage>> {
     let (sender, promise) = Promise::new();
     let request = ehttp::Request::get(url);
@@ -388,27 +396,32 @@ fn fetch_img_from_net(
     let cache_path = cache_path.to_owned();
     ehttp::fetch(request, move |response| {
         let handle = response.map_err(notedeck::Error::Generic).and_then(|resp| {
-            if is_ehttp_response_gif(&resp) {
-                let gif_bytes = resp.bytes;
-                generate_gif(
-                    ctx.clone(),
-                    cloned_url,
-                    &cache_path,
-                    gif_bytes,
-                    true,
-                    move |img| process_pfp_bitmap(imgtyp, img),
-                )
-            } else {
-                let img = parse_img_response(resp, imgtyp);
-                img.map(|img| {
-                    let texture_handle =
-                        ctx.load_texture(&cloned_url, img.clone(), Default::default());
+            match cache_type {
+                MediaCacheType::Image => {
+                    let img = parse_img_response(resp, imgtyp);
+                    img.map(|img| {
+                        let texture_handle =
+                            ctx.load_texture(&cloned_url, img.clone(), Default::default());
 
-                    // write to disk
-                    std::thread::spawn(move || MediaCache::write(&cache_path, &cloned_url, img));
+                        // write to disk
+                        std::thread::spawn(move || {
+                            MediaCache::write(&cache_path, &cloned_url, img)
+                        });
 
-                    TexturedImage::Static(texture_handle)
-                })
+                        TexturedImage::Static(texture_handle)
+                    })
+                }
+                MediaCacheType::Gif => {
+                    let gif_bytes = resp.bytes;
+                    generate_gif(
+                        ctx.clone(),
+                        cloned_url,
+                        &cache_path,
+                        gif_bytes,
+                        true,
+                        move |img| process_pfp_bitmap(imgtyp, img),
+                    )
+                }
             }
         });
 
@@ -417,13 +430,4 @@ fn fetch_img_from_net(
     });
 
     promise
-}
-
-fn is_ehttp_response_gif(resp: &ehttp::Response) -> bool {
-    if let Some(content) = resp.content_type() {
-        tracing::info!("GOT GIF EHTTP");
-        content.starts_with("image/gif")
-    } else {
-        false
-    }
 }
