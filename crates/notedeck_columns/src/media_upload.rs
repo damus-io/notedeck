@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, path::PathBuf};
+use std::path::PathBuf;
 
 use base64::{prelude::BASE64_URL_SAFE, Engine};
 use ehttp::Request;
@@ -104,15 +104,13 @@ fn create_nip96_request(
     body.extend(file_contents);
     body.extend(format!("\r\n--{}--\r\n", boundary).as_bytes());
 
-    let headers = {
-        let mut map = BTreeMap::new();
-        map.insert(
-            "Content-Type".to_owned(),
-            format!("multipart/form-data; boundary={boundary}"),
-        );
-        map.insert("Authorization".to_owned(), format!("Nostr {nip98_base64}"));
-        map
-    };
+    let headers = ehttp::Headers::new(&[
+        (
+            "Content-Type",
+            format!("multipart/form-data; boundary={boundary}").as_str(),
+        ),
+        ("Authorization", format!("Nostr {nip98_base64}").as_str()),
+    ]);
 
     Request {
         method: "POST".to_string(),
