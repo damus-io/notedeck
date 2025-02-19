@@ -29,10 +29,10 @@ sha2 = { workspace = true }
 bincode = { workspace = true }
 ehttp = {workspace = true }
 mime_guess = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "fs"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-tokio = { workspace = true }
 nostr = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
