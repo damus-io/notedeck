@@ -78,7 +78,7 @@ impl eframe::App for Notedeck {
         puffin::GlobalProfiler::lock().new_frame();
 
         // handle account updates
-        self.accounts.update(&mut self.ndb, self.subman.pool(), ctx);
+        self.accounts.update(&mut self.subman, ctx);
 
         render_notedeck(self, ctx);
 
