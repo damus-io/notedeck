@@ -15,7 +15,7 @@ use crate::{
     support::Support,
 };
 
-use notedeck::{Accounts, MediaCache, NotedeckTextStyle, ThemeHandler, UserAccount};
+use notedeck::{Accounts, Images, NotedeckTextStyle, ThemeHandler, UserAccount};
 
 use super::{
     anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},
@@ -29,7 +29,7 @@ static ICON_WIDTH: f32 = 40.0;
 
 pub struct DesktopSidePanel<'a> {
     ndb: &'a nostrdb::Ndb,
-    img_cache: &'a mut MediaCache,
+    img_cache: &'a mut Images,
     selected_account: Option<&'a UserAccount>,
     decks_cache: &'a DecksCache,
 }
@@ -70,7 +70,7 @@ impl SidePanelResponse {
 impl<'a> DesktopSidePanel<'a> {
     pub fn new(
         ndb: &'a nostrdb::Ndb,
-        img_cache: &'a mut MediaCache,
+        img_cache: &'a mut Images,
         selected_account: Option<&'a UserAccount>,
         decks_cache: &'a DecksCache,
     ) -> Self {

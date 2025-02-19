@@ -1,4 +1,4 @@
-use notedeck::{Images, MediaCache, MediaCacheType, TexturedImage};
+use notedeck::{Images, MediaCache, TexturedImage};
 
 use crate::images::ImageType;
 
@@ -9,15 +9,11 @@ pub fn render_images(
     images: &mut Images,
     url: &str,
     img_type: ImageType,
-    cache_type: MediaCacheType,
     show_waiting: impl FnOnce(&mut egui::Ui),
     show_error: impl FnOnce(&mut egui::Ui, String),
     show_success: impl FnOnce(&mut egui::Ui, &str, &mut TexturedImage),
 ) -> egui::Response {
-    let cache = match cache_type.clone() {
-        MediaCacheType::Image => &mut images.static_imgs,
-        MediaCacheType::Gif => &mut images.gifs,
-    };
+    let cache = &mut images.static_imgs;
 
     render_media_cache(
         ui,

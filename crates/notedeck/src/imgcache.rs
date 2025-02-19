@@ -149,7 +149,6 @@ pub fn get_texture(textured_image: &TexturedImage) -> &TextureHandle {
     }
 }
 
-#[allow(dead_code)]
 pub struct Images {
     pub static_imgs: MediaCache,
     pub gifs: MediaCache,
@@ -158,7 +157,6 @@ pub struct Images {
 }
 
 impl Images {
-    #[allow(dead_code)]
     /// path to directory to place [`MediaCache`]s
     pub fn new(path: path::PathBuf) -> Self {
         Self {
@@ -169,7 +167,6 @@ impl Images {
         }
     }
 
-    #[allow(dead_code)]
     pub fn migrate_v0(&self) -> Result<()> {
         self.static_imgs.migrate_v0()?;
         self.gifs.migrate_v0()

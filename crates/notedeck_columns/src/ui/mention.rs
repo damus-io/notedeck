@@ -3,11 +3,11 @@ use crate::{actionbar::NoteAction, profile::get_display_name, timeline::Timeline
 use egui::Sense;
 use enostr::Pubkey;
 use nostrdb::{Ndb, Transaction};
-use notedeck::MediaCache;
+use notedeck::Images;
 
 pub struct Mention<'a> {
     ndb: &'a Ndb,
-    img_cache: &'a mut MediaCache,
+    img_cache: &'a mut Images,
     txn: &'a Transaction,
     pk: &'a [u8; 32],
     selectable: bool,
@@ -17,7 +17,7 @@ pub struct Mention<'a> {
 impl<'a> Mention<'a> {
     pub fn new(
         ndb: &'a Ndb,
-        img_cache: &'a mut MediaCache,
+        img_cache: &'a mut Images,
         txn: &'a Transaction,
         pk: &'a [u8; 32],
     ) -> Self {
@@ -62,9 +62,10 @@ impl egui::Widget for Mention<'_> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn mention_ui(
     ndb: &Ndb,
-    img_cache: &mut MediaCache,
+    img_cache: &mut Images,
     txn: &Transaction,
     pk: &[u8; 32],
     ui: &mut egui::Ui,

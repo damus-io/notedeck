@@ -7,12 +7,12 @@ use crate::{
 
 use enostr::Pubkey;
 use nostrdb::Ndb;
-use notedeck::{Accounts, MediaCache, MuteFun, NoteCache, UnknownIds};
+use notedeck::{Accounts, Images, MuteFun, NoteCache, UnknownIds};
 
 #[allow(clippy::too_many_arguments)]
 pub fn render_timeline_route(
     ndb: &Ndb,
-    img_cache: &mut MediaCache,
+    img_cache: &mut Images,
     unknown_ids: &mut UnknownIds,
     note_cache: &mut NoteCache,
     timeline_cache: &mut TimelineCache,
@@ -102,7 +102,7 @@ pub fn render_profile_route(
     accounts: &Accounts,
     ndb: &Ndb,
     timeline_cache: &mut TimelineCache,
-    img_cache: &mut MediaCache,
+    img_cache: &mut Images,
     note_cache: &mut NoteCache,
     unknown_ids: &mut UnknownIds,
     col: usize,

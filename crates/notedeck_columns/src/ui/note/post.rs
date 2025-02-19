@@ -2,7 +2,7 @@ use crate::draft::{Draft, Drafts, MentionHint};
 use crate::media_upload::{nostrbuild_nip96_upload, MediaPath};
 use crate::post::{downcast_post_buffer, MentionType, NewPost};
 use crate::profile::get_display_name;
-use crate::ui::images::render_media_cache;
+use crate::ui::images::render_images;
 use crate::ui::search_results::SearchResultsView;
 use crate::ui::{self, note::NoteOptions, Preview, PreviewConfig};
 use crate::Result;
@@ -13,7 +13,7 @@ use egui::{vec2, Frame, Layout, Margin, Pos2, ScrollArea, Sense, TextBuffer};
 use enostr::{FilledKeypair, FullKeypair, NoteId, Pubkey, RelayPool};
 use nostrdb::{Ndb, Transaction};
 
-use notedeck::{get_texture, MediaCache, NoteCache};
+use notedeck::{get_texture, Images, NoteCache};
 use tracing::error;
 
 use super::contents::render_note_preview;
@@ -22,7 +22,7 @@ pub struct PostView<'a> {
     ndb: &'a Ndb,
     draft: &'a mut Draft,
     post_type: PostType,
-    img_cache: &'a mut MediaCache,
+    img_cache: &'a mut Images,
     note_cache: &'a mut NoteCache,
     poster: FilledKeypair<'a>,
     id_source: Option<egui::Id>,
@@ -88,7 +88,7 @@ impl<'a> PostView<'a> {
         ndb: &'a Ndb,
         draft: &'a mut Draft,
         post_type: PostType,
-        img_cache: &'a mut MediaCache,
+        img_cache: &'a mut Images,
         note_cache: &'a mut NoteCache,
         poster: FilledKeypair<'a>,
         inner_rect: egui::Rect,
@@ -384,7 +384,8 @@ impl<'a> PostView<'a> {
             } else {
                 (300, 300)
             };
-            render_media_cache(
+
+            render_images(
                 ui,
                 self.img_cache,
                 &media.url,
@@ -393,7 +394,7 @@ impl<'a> PostView<'a> {
                     ui.spinner();
                 },
                 |_, e| {
-                    self.draft.upload_errors.push(e.clone());
+                    self.draft.upload_errors.push(e.to_string());
                     error!("{e}");
                 },
                 |ui, _, renderable_media| {

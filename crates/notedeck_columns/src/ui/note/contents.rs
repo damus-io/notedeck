@@ -1,6 +1,6 @@
+use crate::ui::images::render_images;
 use crate::ui::{
     self,
-    images::render_media_cache,
     note::{NoteOptions, NoteResponse},
 };
 use crate::{actionbar::NoteAction, images::ImageType, timeline::TimelineKind};
@@ -8,11 +8,11 @@ use egui::{Color32, Hyperlink, Image, RichText};
 use nostrdb::{BlockType, Mention, Ndb, Note, NoteKey, Transaction};
 use tracing::warn;
 
-use notedeck::{MediaCache, NoteCache};
+use notedeck::{Images, NoteCache};
 
 pub struct NoteContents<'a> {
     ndb: &'a Ndb,
-    img_cache: &'a mut MediaCache,
+    img_cache: &'a mut Images,
     note_cache: &'a mut NoteCache,
     txn: &'a Transaction,
     note: &'a Note<'a>,
@@ -22,9 +22,10 @@ pub struct NoteContents<'a> {
 }
 
 impl<'a> NoteContents<'a> {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         ndb: &'a Ndb,
-        img_cache: &'a mut MediaCache,
+        img_cache: &'a mut Images,
         note_cache: &'a mut NoteCache,
         txn: &'a Transaction,
         note: &'a Note,
@@ -72,7 +73,7 @@ pub fn render_note_preview(
     ui: &mut egui::Ui,
     ndb: &Ndb,
     note_cache: &mut NoteCache,
-    img_cache: &mut MediaCache,
+    img_cache: &mut Images,
     txn: &Transaction,
     id: &[u8; 32],
     parent: NoteKey,
@@ -134,7 +135,7 @@ fn is_image_link(url: &str) -> bool {
 fn render_note_contents(
     ui: &mut egui::Ui,
     ndb: &Ndb,
-    img_cache: &mut MediaCache,
+    img_cache: &mut Images,
     note_cache: &mut NoteCache,
     txn: &Transaction,
     note: &Note,
@@ -279,7 +280,7 @@ fn rot13(input: &str) -> String {
 
 fn image_carousel(
     ui: &mut egui::Ui,
-    img_cache: &mut MediaCache,
+    img_cache: &mut Images,
     images: Vec<String>,
     carousel_id: egui::Id,
 ) {
@@ -295,7 +296,7 @@ fn image_carousel(
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     for image in images {
-                        render_media_cache(
+                        render_images(
                             ui,
                             img_cache,
                             &image,

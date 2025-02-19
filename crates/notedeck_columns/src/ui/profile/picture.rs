@@ -1,14 +1,14 @@
 use crate::images::ImageType;
-use crate::ui::images::render_media_cache;
+use crate::ui::images::render_images;
 use crate::ui::{Preview, PreviewConfig};
 use egui::{vec2, Sense, Stroke, TextureHandle};
 use nostrdb::{Ndb, Transaction};
 use tracing::info;
 
-use notedeck::{AppContext, MediaCache};
+use notedeck::{AppContext, Images};
 
 pub struct ProfilePic<'cache, 'url> {
-    cache: &'cache mut MediaCache,
+    cache: &'cache mut Images,
     url: &'url str,
     size: f32,
     border: Option<Stroke>,
@@ -21,7 +21,7 @@ impl egui::Widget for ProfilePic<'_, '_> {
 }
 
 impl<'cache, 'url> ProfilePic<'cache, 'url> {
-    pub fn new(cache: &'cache mut MediaCache, url: &'url str) -> Self {
+    pub fn new(cache: &'cache mut Images, url: &'url str) -> Self {
         let size = Self::default_size();
         ProfilePic {
             cache,
@@ -36,7 +36,7 @@ impl<'cache, 'url> ProfilePic<'cache, 'url> {
     }
 
     pub fn from_profile(
-        cache: &'cache mut MediaCache,
+        cache: &'cache mut Images,
         profile: &nostrdb::ProfileRecord<'url>,
     ) -> Option<Self> {
         profile
@@ -81,7 +81,7 @@ impl<'cache, 'url> ProfilePic<'cache, 'url> {
 
 fn render_pfp(
     ui: &mut egui::Ui,
-    img_cache: &mut MediaCache,
+    img_cache: &mut Images,
     url: &str,
     ui_size: f32,
     border: Option<Stroke>,
@@ -92,7 +92,7 @@ fn render_pfp(
     // We will want to downsample these so it's not blurry on hi res displays
     let img_size = 128u32;
 
-    render_media_cache(
+    render_images(
         ui,
         img_cache,
         url,
