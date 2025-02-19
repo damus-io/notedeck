@@ -96,6 +96,15 @@ impl PoolRelay {
     }
 
     pub fn subscribe(&mut self, subid: String, filter: Vec<Filter>) -> Result<()> {
+        debug!(
+            "PoolRelay subscribe: sending sub {} {}: {:?}",
+            subid,
+            self.url(),
+            filter
+                .iter()
+                .map(|f| f.json().unwrap_or_default())
+                .collect::<Vec<_>>(),
+        );
         self.send(&ClientMessage::req(subid, filter))
     }
 
@@ -197,6 +206,7 @@ impl RelayPool {
             if let Some(debug) = &mut self.debug {
                 debug.send_cmd(relay.url().to_owned(), &cmd);
             }
+            debug!("RelayPool unsubscribe close {} {}", subid, relay.url());
             if let Err(err) = relay.send(&cmd) {
                 error!(
                     "error unsubscribing from {} on {}: {err}",
@@ -215,10 +225,57 @@ impl RelayPool {
                     &ClientMessage::req(subid.clone(), filter.clone()),
                 );
             }
-
+            debug!(
+                "RelayPool subscribe: sending sub {} {}: {:?}",
+                subid,
+                relay.url(),
+                filter
+                    .iter()
+                    .map(|f| f.json().unwrap_or_default())
+                    .collect::<Vec<_>>(),
+            );
             if let Err(err) = relay.send(&ClientMessage::req(subid.clone(), filter.clone())) {
                 error!("error subscribing to {}: {err}", relay.url());
             }
+        }
+    }
+
+    // if the relay is in the pool already send the subscription, otherwise add the
+    // relay to the pool and we'll send it on open.
+    pub fn subscribe_relay(
+        &mut self,
+        subid: String,
+        filter: Vec<Filter>,
+        relaystr: String,
+    ) -> bool {
+        if let Some(&mut ref mut relay) = self.relays.iter_mut().find(|r| r.url() == relaystr) {
+            if let Some(debug) = &mut self.debug {
+                debug.send_cmd(
+                    relay.url().to_owned(),
+                    &ClientMessage::req(subid.clone(), filter.clone()),
+                );
+            }
+            debug!(
+                "RelayPool subscribe_relay: sending sub {} {}: {:?}",
+                subid,
+                relay.url(),
+                filter
+                    .iter()
+                    .map(|f| f.json().unwrap_or_default())
+                    .collect::<Vec<_>>(),
+            );
+            if let Err(err) = relay.send(&ClientMessage::req(subid.clone(), filter.clone())) {
+                error!("error subscribing to {}: {err}", relay.url());
+            }
+            true
+        } else {
+            let wakeup = move || {
+                // ignore
+            };
+            if let Err(err) = self.add_url(relaystr.clone(), wakeup) {
+                error!("trouble adding url {}: {:?}", relaystr, err);
+            }
+            false
         }
     }
 

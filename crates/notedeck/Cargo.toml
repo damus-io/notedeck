@@ -26,10 +26,10 @@ thiserror = { workspace = true }
 puffin = { workspace = true, optional = true }
 puffin_egui = { workspace = true, optional = true }
 sha2 = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "fs"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-tokio = { workspace = true }
 nostr = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
