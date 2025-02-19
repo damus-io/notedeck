@@ -123,10 +123,18 @@ fn render_pfp(
                     //error!("Image load error: {:?}", e);
                     paint_circle(ui, ui_size, border)
                 }
-                Some(Ok(img)) => pfp_image(ui, img, ui_size, border),
+                Some(Ok(img)) => match img {
+                    notedeck::TexturedImage::Static(texture_handle) => {
+                        pfp_image(ui, texture_handle, ui_size, border)
+                    }
+                },
             }
         }
-        Some(Ok(img)) => pfp_image(ui, img, ui_size, border),
+        Some(Ok(img)) => match img {
+            notedeck::TexturedImage::Static(texture_handle) => {
+                pfp_image(ui, texture_handle, ui_size, border)
+            }
+        },
     }
 }
 

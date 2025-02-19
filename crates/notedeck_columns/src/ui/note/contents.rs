@@ -312,20 +312,22 @@ fn image_carousel(
                                 //ui.add(egui::Spinner::new().size(spinsz));
                             }
                             // Use the previously resolved image
-                            Some(Ok(img)) => {
-                                let img_resp = ui.add(
-                                    Image::new(img)
-                                        .max_height(height)
-                                        .rounding(5.0)
-                                        .fit_to_original_size(1.0),
-                                );
-                                img_resp.context_menu(|ui| {
-                                    if ui.button("Copy Link").clicked() {
-                                        ui.ctx().copy_text(image);
-                                        ui.close_menu();
-                                    }
-                                });
-                            }
+                            Some(Ok(img)) => match img {
+                                notedeck::TexturedImage::Static(texture_handle) => {
+                                    let img_resp = ui.add(
+                                        Image::new(texture_handle)
+                                            .max_height(height)
+                                            .rounding(5.0)
+                                            .fit_to_original_size(1.0),
+                                    );
+                                    img_resp.context_menu(|ui| {
+                                        if ui.button("Copy Link").clicked() {
+                                            ui.ctx().copy_text(image);
+                                            ui.close_menu();
+                                        }
+                                    });
+                                }
+                            },
                         }
                     }
                 })

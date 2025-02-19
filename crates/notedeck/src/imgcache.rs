@@ -13,8 +13,12 @@ use std::path;
 use std::path::PathBuf;
 use tracing::warn;
 
-pub type MediaCacheValue = Promise<Result<TextureHandle>>;
+pub type MediaCacheValue = Promise<Result<TexturedImage>>;
 pub type MediaCacheMap = HashMap<String, MediaCacheValue>;
+
+pub enum TexturedImage {
+    Static(TextureHandle),
+}
 
 pub struct MediaCache {
     pub cache_dir: path::PathBuf,

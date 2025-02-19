@@ -1,8 +1,8 @@
 use crate::persist::{AppSizeHandler, ZoomHandler};
 use crate::urls::UrlCache;
 use crate::{
-    Accounts, AppContext, Args, DataPath, DataPathType, Directory, FileKeyStorage, MediaCache,
-    KeyStorageType, NoteCache, RelayDebugView, ThemeHandler, UnknownIds, UrlMimes,
+    Accounts, AppContext, Args, DataPath, DataPathType, Directory, FileKeyStorage, KeyStorageType,
+    MediaCache, NoteCache, RelayDebugView, ThemeHandler, UnknownIds, UrlMimes,
 };
 use egui::ThemePreference;
 use enostr::RelayPool;
