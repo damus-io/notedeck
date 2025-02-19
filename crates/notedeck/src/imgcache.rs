@@ -130,3 +130,10 @@ impl MediaCache {
         &mut self.url_imgs
     }
 }
+
+// TODO: temporary...
+pub fn get_texture(textured_image: &TexturedImage) -> &TextureHandle {
+    match textured_image {
+        TexturedImage::Static(texture_handle) => texture_handle,
+    }
+}

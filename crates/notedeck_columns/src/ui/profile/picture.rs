@@ -1,4 +1,5 @@
 use crate::images::ImageType;
+use crate::ui::images::render_media_cache;
 use crate::ui::{Preview, PreviewConfig};
 use egui::{vec2, Sense, Stroke, TextureHandle};
 use nostrdb::{Ndb, Transaction};
@@ -95,47 +96,22 @@ fn render_pfp(
     // We will want to downsample these so it's not blurry on hi res displays
     let img_size = 128u32;
 
-    let m_cached_promise = img_cache.map().get(url);
-    if m_cached_promise.is_none() {
-        let res = crate::images::fetch_img(img_cache, ui.ctx(), url, ImageType::Profile(img_size));
-        img_cache.map_mut().insert(url.to_owned(), res);
-    }
-
-    match img_cache.map()[url].ready() {
-        None => paint_circle(ui, ui_size, border),
-
-        // Failed to fetch profile!
-        Some(Err(_err)) => {
-            let m_failed_promise = img_cache.map().get(url);
-            if m_failed_promise.is_none() {
-                let no_pfp = crate::images::fetch_img(
-                    img_cache,
-                    ui.ctx(),
-                    ProfilePic::no_pfp_url(),
-                    ImageType::Profile(img_size),
-                );
-                img_cache.map_mut().insert(url.to_owned(), no_pfp);
-            }
-
-            match img_cache.map().get(url).unwrap().ready() {
-                None => paint_circle(ui, ui_size, border),
-                Some(Err(_e)) => {
-                    //error!("Image load error: {:?}", e);
-                    paint_circle(ui, ui_size, border)
-                }
-                Some(Ok(img)) => match img {
-                    notedeck::TexturedImage::Static(texture_handle) => {
-                        pfp_image(ui, texture_handle, ui_size, border)
-                    }
-                },
-            }
-        }
-        Some(Ok(img)) => match img {
-            notedeck::TexturedImage::Static(texture_handle) => {
-                pfp_image(ui, texture_handle, ui_size, border)
-            }
+    render_media_cache(
+        ui,
+        img_cache,
+        url,
+        ImageType::Profile(img_size),
+        |ui| {
+            paint_circle(ui, ui_size, border);
         },
-    }
+        |ui, _| {
+            paint_circle(ui, ui_size, border);
+        },
+        |ui, _, renderable_media| {
+            let texture_handle = notedeck::get_texture(renderable_media);
+            pfp_image(ui, texture_handle, ui_size, border);
+        },
+    )
 }
 
 fn pfp_image(

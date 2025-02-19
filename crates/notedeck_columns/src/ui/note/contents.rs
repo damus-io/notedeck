@@ -1,7 +1,7 @@
 use crate::ui::{
     self,
+    images::render_media_cache,
     note::{NoteOptions, NoteResponse},
-    ProfilePic,
 };
 use crate::{actionbar::NoteAction, images::ImageType, timeline::TimelineKind};
 use egui::{Color32, Hyperlink, Image, RichText};
@@ -278,57 +278,32 @@ fn image_carousel(
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     for image in images {
-                        // If the cache is empty, initiate the fetch
-                        let m_cached_promise = img_cache.map().get(&image);
-                        if m_cached_promise.is_none() {
-                            let res = crate::images::fetch_img(
-                                img_cache,
-                                ui.ctx(),
-                                &image,
-                                ImageType::Content(width.round() as u32, height.round() as u32),
-                            );
-                            img_cache.map_mut().insert(image.to_owned(), res);
-                        }
-
-                        // What is the state of the fetch?
-                        match img_cache.map()[&image].ready() {
-                            // Still waiting
-                            None => {
+                        render_media_cache(
+                            ui,
+                            img_cache,
+                            &image,
+                            ImageType::Content(width.round() as u32, height.round() as u32),
+                            |ui| {
                                 ui.allocate_space(egui::vec2(spinsz, spinsz));
-                                //ui.add(egui::Spinner::new().size(spinsz));
-                            }
-                            // Failed to fetch image!
-                            Some(Err(_err)) => {
-                                // FIXME - use content-specific error instead
-                                let no_pfp = crate::images::fetch_img(
-                                    img_cache,
-                                    ui.ctx(),
-                                    ProfilePic::no_pfp_url(),
-                                    ImageType::Profile(128),
-                                );
-                                img_cache.map_mut().insert(image.to_owned(), no_pfp);
-                                // spin until next pass
-                                ui.allocate_space(egui::vec2(spinsz, spinsz));
-                                //ui.add(egui::Spinner::new().size(spinsz));
-                            }
-                            // Use the previously resolved image
-                            Some(Ok(img)) => match img {
-                                notedeck::TexturedImage::Static(texture_handle) => {
-                                    let img_resp = ui.add(
-                                        Image::new(texture_handle)
-                                            .max_height(height)
-                                            .rounding(5.0)
-                                            .fit_to_original_size(1.0),
-                                    );
-                                    img_resp.context_menu(|ui| {
-                                        if ui.button("Copy Link").clicked() {
-                                            ui.ctx().copy_text(image);
-                                            ui.close_menu();
-                                        }
-                                    });
-                                }
                             },
-                        }
+                            |ui, _| {
+                                ui.allocate_space(egui::vec2(spinsz, spinsz));
+                            },
+                            |ui, url, renderable_media| {
+                                let img_resp = ui.add(
+                                    Image::new(notedeck::get_texture(renderable_media))
+                                        .max_height(height)
+                                        .rounding(5.0)
+                                        .fit_to_original_size(1.0),
+                                );
+                                img_resp.context_menu(|ui| {
+                                    if ui.button("Copy Link").clicked() {
+                                        ui.ctx().copy_text(url.to_owned());
+                                        ui.close_menu();
+                                    }
+                                });
+                            },
+                        );
                     }
                 })
                 .response
