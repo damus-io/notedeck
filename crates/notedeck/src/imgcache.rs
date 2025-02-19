@@ -25,6 +25,7 @@ pub struct MediaCache {
     url_imgs: MediaCacheMap,
 }
 
+#[derive(Clone)]
 pub enum MediaCacheType {
     Image,
     Gif,
@@ -145,3 +146,24 @@ pub fn get_texture(textured_image: &TexturedImage) -> &TextureHandle {
         TexturedImage::Static(texture_handle) => texture_handle,
     }
 }
+
+pub struct Images {
+    pub static_imgs: MediaCache,
+    pub gifs: MediaCache,
+}
+
+impl Images {
+    /// path to directory to place [`MediaCache`]s
+    pub fn new(path: path::PathBuf) -> Self {
+        Self {
+            static_imgs: MediaCache::new(path.join(MediaCache::rel_dir(MediaCacheType::Image))),
+            gifs: MediaCache::new(path.join(MediaCache::rel_dir(MediaCacheType::Gif))),
+        }
+    }
+
+    pub fn migrate_v0(&self) -> Result<()> {
+        self.static_imgs.migrate_v0()?;
+        self.gifs.migrate_v0()
+    }
+}
+
