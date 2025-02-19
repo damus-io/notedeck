@@ -1,8 +1,34 @@
-use notedeck::{MediaCache, TexturedImage};
+use notedeck::{Images, MediaCache, MediaCacheType, TexturedImage};
 
 use crate::images::ImageType;
 
 use super::ProfilePic;
+
+pub fn render_images(
+    ui: &mut egui::Ui,
+    images: &mut Images,
+    url: &str,
+    img_type: ImageType,
+    cache_type: MediaCacheType,
+    show_waiting: impl FnOnce(&mut egui::Ui),
+    show_error: impl FnOnce(&mut egui::Ui, String),
+    show_success: impl FnOnce(&mut egui::Ui, &str, &mut TexturedImage),
+) -> egui::Response {
+    let cache = match cache_type.clone() {
+        MediaCacheType::Image => &mut images.static_imgs,
+        MediaCacheType::Gif => &mut images.gifs,
+    };
+
+    render_media_cache(
+        ui,
+        cache,
+        url,
+        img_type,
+        show_waiting,
+        show_error,
+        show_success,
+    )
+}
 
 pub fn render_media_cache(
     ui: &mut egui::Ui,
