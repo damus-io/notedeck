@@ -4,13 +4,13 @@ use egui::{Frame, Label, RichText, Widget};
 use egui_extras::Size;
 use nostrdb::ProfileRecord;
 
-use notedeck::{MediaCache, NotedeckTextStyle, UrlMimes, UserAccount};
+use notedeck::{Images, NotedeckTextStyle, UrlMimes, UserAccount};
 
 use super::{about_section_widget, banner, display_name_widget, get_display_name, get_profile_url};
 
 pub struct ProfilePreview<'a, 'cache> {
     profile: &'a ProfileRecord<'a>,
-    cache: &'cache mut MediaCache,
+    cache: &'cache mut Images,
     urls: &'cache mut UrlMimes,
     banner_height: Size,
 }
@@ -18,7 +18,7 @@ pub struct ProfilePreview<'a, 'cache> {
 impl<'a, 'cache> ProfilePreview<'a, 'cache> {
     pub fn new(
         profile: &'a ProfileRecord<'a>,
-        cache: &'cache mut MediaCache,
+        cache: &'cache mut Images,
         urls: &'cache mut UrlMimes,
     ) -> Self {
         let banner_height = Size::exact(80.0);
@@ -75,7 +75,7 @@ impl egui::Widget for ProfilePreview<'_, '_> {
 
 pub struct SimpleProfilePreview<'a, 'cache> {
     profile: Option<&'a ProfileRecord<'a>>,
-    cache: &'cache mut MediaCache,
+    cache: &'cache mut Images,
     urls: &'cache mut UrlMimes,
     is_nsec: bool,
 }
@@ -83,7 +83,7 @@ pub struct SimpleProfilePreview<'a, 'cache> {
 impl<'a, 'cache> SimpleProfilePreview<'a, 'cache> {
     pub fn new(
         profile: Option<&'a ProfileRecord<'a>>,
-        cache: &'cache mut MediaCache,
+        cache: &'cache mut Images,
         urls: &'cache mut UrlMimes,
         is_nsec: bool,
     ) -> Self {

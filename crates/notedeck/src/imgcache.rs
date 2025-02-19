@@ -166,4 +166,3 @@ impl Images {
         self.gifs.migrate_v0()
     }
 }
-

@@ -23,7 +23,7 @@ use crate::{
     NostrName,
 };
 
-use notedeck::{Accounts, MediaCache, MuteFun, NoteCache, NotedeckTextStyle, UnknownIds, UrlMimes};
+use notedeck::{Accounts, Images, MuteFun, NoteCache, NotedeckTextStyle, UnknownIds, UrlMimes};
 
 pub struct ProfileView<'a> {
     pubkey: &'a Pubkey,
@@ -33,7 +33,7 @@ pub struct ProfileView<'a> {
     note_options: NoteOptions,
     ndb: &'a Ndb,
     note_cache: &'a mut NoteCache,
-    img_cache: &'a mut MediaCache,
+    img_cache: &'a mut Images,
     urls: &'a mut UrlMimes,
     unknown_ids: &'a mut UnknownIds,
     is_muted: &'a MuteFun,
@@ -53,7 +53,7 @@ impl<'a> ProfileView<'a> {
         timeline_cache: &'a mut TimelineCache,
         ndb: &'a Ndb,
         note_cache: &'a mut NoteCache,
-        img_cache: &'a mut MediaCache,
+        img_cache: &'a mut Images,
         urls: &'a mut UrlMimes,
         unknown_ids: &'a mut UnknownIds,
         is_muted: &'a MuteFun,

@@ -1,6 +1,6 @@
+use crate::ui::images::render_images;
 use crate::ui::{
     self,
-    images::render_media_cache,
     note::{NoteOptions, NoteResponse},
 };
 use crate::{actionbar::NoteAction, images::ImageType, timeline::TimelineKind};
@@ -8,11 +8,11 @@ use egui::{Color32, Hyperlink, Image, RichText};
 use nostrdb::{BlockType, Mention, Ndb, Note, NoteKey, Transaction};
 use tracing::warn;
 
-use notedeck::{supported_mime_hosted_at_url, MediaCache, NoteCache, UrlMimes};
+use notedeck::{supported_mime_hosted_at_url, Images, NoteCache, UrlMimes};
 
 pub struct NoteContents<'a> {
     ndb: &'a Ndb,
-    img_cache: &'a mut MediaCache,
+    img_cache: &'a mut Images,
     note_cache: &'a mut NoteCache,
     urls: &'a mut UrlMimes,
     txn: &'a Transaction,
@@ -26,7 +26,7 @@ impl<'a> NoteContents<'a> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         ndb: &'a Ndb,
-        img_cache: &'a mut MediaCache,
+        img_cache: &'a mut Images,
         urls: &'a mut UrlMimes,
         note_cache: &'a mut NoteCache,
         txn: &'a Transaction,
@@ -77,7 +77,7 @@ pub fn render_note_preview(
     ui: &mut egui::Ui,
     ndb: &Ndb,
     note_cache: &mut NoteCache,
-    img_cache: &mut MediaCache,
+    img_cache: &mut Images,
     urls: &mut UrlMimes,
     txn: &Transaction,
     id: &[u8; 32],
@@ -135,7 +135,7 @@ pub fn render_note_preview(
 fn render_note_contents(
     ui: &mut egui::Ui,
     ndb: &Ndb,
-    img_cache: &mut MediaCache,
+    img_cache: &mut Images,
     urls: &mut UrlMimes,
     note_cache: &mut NoteCache,
     txn: &Transaction,
@@ -262,7 +262,7 @@ fn render_note_contents(
 
 fn image_carousel(
     ui: &mut egui::Ui,
-    img_cache: &mut MediaCache,
+    img_cache: &mut Images,
     images: Vec<String>,
     carousel_id: egui::Id,
 ) {
@@ -278,7 +278,7 @@ fn image_carousel(
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     for image in images {
-                        render_media_cache(
+                        render_images(
                             ui,
                             img_cache,
                             &image,

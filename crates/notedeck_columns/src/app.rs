@@ -13,7 +13,7 @@ use crate::{
     Result,
 };
 
-use notedeck::{Accounts, AppContext, DataPath, DataPathType, FilterState, MediaCache, UnknownIds};
+use notedeck::{Accounts, AppContext, DataPath, DataPathType, FilterState, UnknownIds};
 
 use enostr::{ClientMessage, Keypair, PoolRelay, Pubkey, RelayEvent, RelayMessage, RelayPool};
 use uuid::Uuid;
@@ -462,9 +462,7 @@ impl Damus {
         let decks_cache = DecksCache::default();
 
         let path = DataPath::new(&data_path);
-        let imgcache_dir = path
-            .path(DataPathType::Cache)
-            .join(MediaCache::rel_dir(notedeck::MediaCacheType::Image));
+        let imgcache_dir = path.path(DataPathType::Cache);
         let _ = std::fs::create_dir_all(imgcache_dir.clone());
         let debug = true;
 

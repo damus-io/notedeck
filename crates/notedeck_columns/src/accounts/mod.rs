@@ -2,7 +2,7 @@ use enostr::FullKeypair;
 use nostrdb::Ndb;
 
 use notedeck::{
-    Accounts, AccountsAction, AddAccountAction, MediaCache, SingleUnkIdAction, SwitchAccountAction,
+    Accounts, AccountsAction, AddAccountAction, Images, SingleUnkIdAction, SwitchAccountAction,
     UrlMimes,
 };
 
@@ -28,7 +28,7 @@ pub fn render_accounts_route(
     ui: &mut egui::Ui,
     ndb: &Ndb,
     col: usize,
-    img_cache: &mut MediaCache,
+    img_cache: &mut Images,
     urls: &mut UrlMimes,
     accounts: &mut Accounts,
     decks: &mut DecksCache,

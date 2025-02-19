@@ -1,6 +1,6 @@
 use egui::{vec2, FontId, Pos2, Rect, ScrollArea, Vec2b};
 use nostrdb::{Ndb, ProfileRecord, Transaction};
-use notedeck::{fonts::get_font_size, MediaCache, NotedeckTextStyle, UrlMimes};
+use notedeck::{fonts::get_font_size, Images, NotedeckTextStyle, UrlMimes};
 use tracing::error;
 
 use crate::{
@@ -13,14 +13,14 @@ use super::{profile::get_profile_url, ProfilePic};
 pub struct SearchResultsView<'a> {
     ndb: &'a Ndb,
     txn: &'a Transaction,
-    img_cache: &'a mut MediaCache,
+    img_cache: &'a mut Images,
     urls: &'a mut UrlMimes,
     results: &'a Vec<&'a [u8; 32]>,
 }
 
 impl<'a> SearchResultsView<'a> {
     pub fn new(
-        img_cache: &'a mut MediaCache,
+        img_cache: &'a mut Images,
         urls: &'a mut UrlMimes,
         ndb: &'a Ndb,
         txn: &'a Transaction,
@@ -87,7 +87,7 @@ impl<'a> SearchResultsView<'a> {
 
 fn user_result<'a>(
     profile: &'a ProfileRecord<'_>,
-    cache: &'a mut MediaCache,
+    cache: &'a mut Images,
     urls: &'a mut UrlMimes,
     index: usize,
     width: f32,
