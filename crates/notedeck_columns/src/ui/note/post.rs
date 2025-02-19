@@ -407,18 +407,26 @@ impl<'a> PostView<'a> {
                         media_size
                     };
 
-                    let img_resp = ui.add(egui::Image::new(texture).max_size(size).rounding(12.0));
+                    match texture {
+                        notedeck::TexturedImage::Static(texture_handle) => {
+                            let img_resp = ui.add(
+                                egui::Image::new(texture_handle)
+                                    .max_size(size)
+                                    .rounding(12.0),
+                            );
 
-                    let remove_button_rect = {
-                        let top_left = img_resp.rect.left_top();
-                        let spacing = 13.0;
-                        let center = Pos2::new(top_left.x + spacing, top_left.y + spacing);
-                        egui::Rect::from_center_size(center, egui::vec2(26.0, 26.0))
-                    };
-                    if show_remove_upload_button(ui, remove_button_rect).clicked() {
-                        to_remove.push(i);
+                            let remove_button_rect = {
+                                let top_left = img_resp.rect.left_top();
+                                let spacing = 13.0;
+                                let center = Pos2::new(top_left.x + spacing, top_left.y + spacing);
+                                egui::Rect::from_center_size(center, egui::vec2(26.0, 26.0))
+                            };
+                            if show_remove_upload_button(ui, remove_button_rect).clicked() {
+                                to_remove.push(i);
+                            }
+                            ui.advance_cursor_after_rect(img_resp.rect);
+                        }
                     }
-                    ui.advance_cursor_after_rect(img_resp.rect);
                 }
                 Some(Err(e)) => {
                     self.draft.upload_errors.push(e.to_string());

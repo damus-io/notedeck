@@ -1,7 +1,8 @@
-use egui::{pos2, Color32, ColorImage, Rect, Sense, SizeHint, TextureHandle};
+use egui::{pos2, Color32, ColorImage, Rect, Sense, SizeHint};
 use image::imageops::FilterType;
 use notedeck::MediaCache;
 use notedeck::Result;
+use notedeck::TexturedImage;
 use poll_promise::Promise;
 use std::path;
 use std::path::PathBuf;
@@ -177,7 +178,7 @@ fn fetch_img_from_disk(
     ctx: &egui::Context,
     url: &str,
     path: &path::Path,
-) -> Promise<Result<TextureHandle>> {
+) -> Promise<Result<TexturedImage>> {
     let ctx = ctx.clone();
     let url = url.to_owned();
     let path = path.to_owned();
@@ -195,7 +196,11 @@ fn fetch_img_from_disk(
             flat_samples.as_slice(),
         );
 
-        Ok(ctx.load_texture(&url, img, Default::default()))
+        Ok(TexturedImage::Static(ctx.load_texture(
+            &url,
+            img,
+            Default::default(),
+        )))
     })
 }
 
@@ -217,7 +222,7 @@ pub fn fetch_img(
     ctx: &egui::Context,
     url: &str,
     imgtyp: ImageType,
-) -> Promise<Result<TextureHandle>> {
+) -> Promise<Result<TexturedImage>> {
     let key = MediaCache::key(url);
     let path = img_cache.cache_dir.join(key);
 
@@ -235,7 +240,7 @@ fn fetch_img_from_net(
     ctx: &egui::Context,
     url: &str,
     imgtyp: ImageType,
-) -> Promise<Result<TextureHandle>> {
+) -> Promise<Result<TexturedImage>> {
     let (sender, promise) = Promise::new();
     let request = ehttp::Request::get(url);
     let ctx = ctx.clone();
@@ -251,7 +256,7 @@ fn fetch_img_from_net(
                 // write to disk
                 std::thread::spawn(move || MediaCache::write(&cache_path, &cloned_url, img));
 
-                texture_handle
+                TexturedImage::Static(texture_handle)
             });
 
         sender.send(handle); // send the results back to the UI thread.
