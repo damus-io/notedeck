@@ -192,15 +192,23 @@ fn try_process_event<'a>(
     }
 
     if app_ctx.unknown_ids.ready_to_send() {
-        unknown_id_send(app_ctx.unknown_ids, app_ctx.subman);
+        unknown_id_send(
+            app_ctx.unknown_ids,
+            app_ctx.subman,
+            &app_ctx.accounts.get_all_selected_account_relays(),
+        );
     }
 }
 
-fn unknown_id_send(unknown_ids: &mut UnknownIds, subman: &mut SubMan) {
+fn unknown_id_send(
+    unknown_ids: &mut UnknownIds,
+    subman: &mut SubMan,
+    default_relays: &[RelaySpec],
+) {
     info!("Getting {} unknown ids from relays", &unknown_ids.numids());
     for subspec in unknown_ids.generate_resolution_requests() {
         debug!("unknown_ids subscribe: {:?}", subspec);
-        match subman.subscribe(subspec) {
+        match subman.subscribe(subspec, default_relays) {
             Err(err) => error!("unknown_id_send subscribe failed: {:?}", err),
             Ok(mut rcvr) => {
                 tokio::spawn(async move {
@@ -263,6 +271,7 @@ fn do_handle_eose(
     unknown_ids: &mut UnknownIds,
     note_cache: &mut NoteCache,
 ) -> Result<()> {
+    debug!("app do_handle_eose {} {}", subid, relay_url);
     let sub_kind = if let Some(sub_kind) = subscriptions.subs.get(subid) {
         sub_kind
     } else {
@@ -286,6 +295,7 @@ fn do_handle_eose(
         // oneshot subs just close when they're done
         SubKind::OneShot => {
             let msg = ClientMessage::close(subid.to_string());
+            debug!("app do_handle_eose close {} {}", subid, relay_url);
             pool.send_to(&msg, relay_url);
         }
 

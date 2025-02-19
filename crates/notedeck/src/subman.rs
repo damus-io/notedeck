@@ -9,6 +9,8 @@ use uuid::Uuid;
 use enostr::{ClientMessage, Filter, PoolRelay, RelayEvent, RelayMessage, RelayPool};
 use nostrdb::{self, Ndb, Subscription, SubscriptionStream};
 
+use crate::RelaySpec;
+
 /// The Subscription Manager
 ///
 /// ```no_run
@@ -22,6 +24,7 @@ use nostrdb::{self, Ndb, Subscription, SubscriptionStream};
 /// async fn main() -> Result<(), Box<dyn Error>> {
 ///     let mut ndb = Ndb::new("the/db/path/", &Config::new())?;
 ///     let mut subman = SubMan::new(ndb.clone(), RelayPool::new());
+///     let default_relays = vec![];
 ///
 ///     // Define a filter and build the subscription specification
 ///     let filter = Filter::new().kinds(vec![1, 2, 3]).build();
@@ -31,7 +34,7 @@ use nostrdb::{self, Ndb, Subscription, SubscriptionStream};
 ///         .build();
 ///
 ///     // Subscribe and obtain a SubReceiver
-///     let mut receiver = subman.subscribe(spec)?;
+///     let mut receiver = subman.subscribe(spec, &default_relays)?;
 ///
 ///     // Process incoming note keys
 ///     loop {
@@ -330,8 +333,12 @@ impl SubMan {
         &mut self.pool
     }
 
-    pub fn subscribe(&mut self, spec: SubSpec) -> SubResult<SubReceiver> {
-        let (substate, subrcvr) = self.make_subscription(&spec)?;
+    pub fn subscribe(
+        &mut self,
+        spec: SubSpec,
+        default_relays: &[RelaySpec],
+    ) -> SubResult<SubReceiver> {
+        let (substate, subrcvr) = self.make_subscription(&spec, default_relays)?;
         let state = Rc::new(RefCell::new(substate));
         if let Some(local_id) = subrcvr.local_id() {
             self.local.insert(local_id, Rc::clone(&state));
@@ -419,7 +426,11 @@ impl SubMan {
         }
     }
 
-    fn make_subscription(&mut self, spec: &SubSpec) -> SubResult<(SubState, SubReceiver)> {
+    fn make_subscription(
+        &mut self,
+        spec: &SubSpec,
+        default_relays: &[RelaySpec],
+    ) -> SubResult<(SubState, SubReceiver)> {
         // Setup local ndb subscription state
         let (maybe_localstate, localsub) = if spec.is_onlyremote {
             (None, None)
@@ -442,23 +453,44 @@ impl SubMan {
             (None, None)
         } else {
             let (tx_ended, rx_ended) = mpsc::channel(1);
-            // FIXME - need to choose specific relays!
-            let relays: BTreeMap<String, RelaySubState> = self
-                .pool
-                .relays
+
+            // Determine which relays to use
+            let relays = if !spec.allowed_relays.is_empty() {
+                spec.allowed_relays.clone()
+            } else {
+                default_relays
+                    .iter()
+                    .filter(|rs| rs.is_readable())
+                    .map(|rs| rs.url.clone())
+                    .collect()
+            };
+
+            // create the state map, special case multicast and blocked
+            let states: BTreeMap<String, RelaySubState> = relays
                 .iter()
-                .map(|s| match s.url() {
-                    "multicast" => (s.url().to_string(), RelaySubState::Current),
-                    _ => (s.url().to_string(), RelaySubState::Syncing),
+                .map(|relay| {
+                    let rss = if spec.blocked_relays.contains(relay) {
+                        RelaySubState::Error("blocked".into())
+                    } else if self.pool.subscribe_relay(
+                        spec.remote_id.clone(),
+                        spec.filters.clone(),
+                        relay.clone(),
+                    ) {
+                        RelaySubState::Syncing
+                    } else {
+                        RelaySubState::Pending
+                    };
+
+                    (relay.clone(), rss)
                 })
                 .collect();
+
             let remote_id = spec.remote_id.clone();
-            self.pool
-                .subscribe(spec.remote_id.clone(), spec.filters.clone());
+
             (
                 Some(RemoteSubState {
                     remote_id: remote_id.clone(),
-                    relays,
+                    relays: states,
                     tx_ended,
                 }),
                 Some(RemoteSub {
@@ -482,9 +514,9 @@ impl SubMan {
     }
 
     fn close_relay_sub(pool: &mut RelayPool, sid: &str, url: &str) {
-        debug!("closing relay sub {} {}", sid, url);
         if let Some(relay) = pool.relays.iter_mut().find(|r| r.url() == url) {
             let cmd = ClientMessage::close(sid.to_string());
+            debug!("SubMan close_relay_sub close {} {}", sid, url);
             if let Err(err) = relay.send(&cmd) {
                 error!("trouble closing relay sub: {} {}: {:?}", sid, url, err);
             }
@@ -748,6 +780,7 @@ mod tests {
         // setup an ndb and subman to test
         let (_mndb, ndb) = ManagedNdb::setup(&testdbs_path_async!());
         let mut subman = SubMan::new(ndb.clone(), RelayPool::new());
+        let default_relays = vec![];
 
         // subscribe to some stuff
         let mut receiver = subman.subscribe(
@@ -755,6 +788,7 @@ mod tests {
                 .filters(vec![Filter::new().kinds(vec![1]).build()])
                 .constraint(SubConstraint::OnlyLocal)
                 .build(),
+            &default_relays,
         )?;
         let local_id = receiver.local_id().unwrap();
 
@@ -794,6 +828,7 @@ mod tests {
         // setup an ndb and subman to test
         let (_mndb, ndb) = ManagedNdb::setup(&testdbs_path_async!());
         let mut subman = SubMan::new(ndb.clone(), RelayPool::new());
+        let default_relays = vec![];
 
         // subscribe to some stuff
         let mut receiver = subman.subscribe(
@@ -801,6 +836,7 @@ mod tests {
                 .filters(vec![Filter::new().kinds(vec![1]).build()])
                 .constraint(SubConstraint::OnlyLocal)
                 .build(),
+            &default_relays,
         )?;
         let local_id = receiver.local_id().unwrap();
 
@@ -845,6 +881,7 @@ mod tests {
         // setup an ndb and subman to test
         let (_mndb, ndb) = ManagedNdb::setup(&testdbs_path_async!());
         let mut subman = SubMan::new(ndb.clone(), RelayPool::new());
+        let default_relays = vec![];
 
         // subscribe to some stuff
         let mut receiver = subman.subscribe(
@@ -852,6 +889,7 @@ mod tests {
                 .filters(vec![Filter::new().kinds(vec![1]).build()])
                 .constraint(SubConstraint::OnlyLocal)
                 .build(),
+            &default_relays,
         )?;
         let local_id = receiver.local_id().unwrap();
 

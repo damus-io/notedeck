@@ -1,7 +1,10 @@
 use tracing::{debug, error, info};
 
+use crate::subman::{RemoteId, SubSpecBuilder};
 use crate::{
-    AccountStorage, MuteFun, Muted, RelaySpec, SingleUnkIdAction, UnknownIds, UserAccount,
+    AccountStorage, KeyStorageResponse, KeyStorageType, MuteFun, MuteFun, Muted, Muted, RelaySpec,
+    RelaySpec, SingleUnkIdAction, SingleUnkIdAction, SubError, SubMan, UnknownIds, UnknownIds,
+    UserAccount, UserAccount,
 };
 use enostr::{ClientMessage, FilledKeypair, Keypair, Pubkey, RelayPool};
 use nostrdb::{Filter, Ndb, Note, NoteBuilder, NoteKey, Subscription, Transaction};
@@ -11,7 +14,7 @@ use url::Url;
 use uuid::Uuid;
 
 // TODO: remove this
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone)]
 pub struct SwitchAccountAction {
@@ -186,9 +189,8 @@ impl AccountRelayData {
 
 pub struct AccountMutedData {
     filter: Filter,
-    subid: Option<String>,
-    sub: Option<Subscription>,
-    muted: Arc<Muted>,
+    sub_remote_id: Option<RemoteId>,
+    muted: Arc<Mutex<Muted>>,
 }
 
 impl AccountMutedData {
@@ -214,46 +216,63 @@ impl AccountMutedData {
 
         AccountMutedData {
             filter,
-            subid: None,
-            sub: None,
-            muted: Arc::new(muted),
+            sub_remote_id: None,
+            muted: Arc::new(Mutex::new(muted)),
         }
     }
 
     // make this account the current selected account
-    pub fn activate(&mut self, ndb: &Ndb, pool: &mut RelayPool) {
-        debug!("activating muted sub {}", self.filter.json().unwrap());
-        assert_eq!(self.subid, None, "subid already exists");
-        assert_eq!(self.sub, None, "sub already exists");
-
-        // local subscription
-        let sub = ndb
-            .subscribe(&[self.filter.clone()])
-            .expect("ndb muted subscription");
-
-        // remote subscription
-        let subid = Uuid::new_v4().to_string();
-        pool.subscribe(subid.clone(), vec![self.filter.clone()]);
-
-        self.sub = Some(sub);
-        self.subid = Some(subid);
+    pub fn activate(&mut self, subman: &mut SubMan, default_relays: &[RelaySpec]) {
+        assert!(self.sub_remote_id.is_none(), "subscription already exists");
+        let ndb = subman.ndb();
+        let subspec = SubSpecBuilder::new()
+            .filters(vec![self.filter.clone()])
+            .build();
+        debug!(
+            "activating account muted sub {}: {}",
+            subspec.remote_id,
+            self.filter.json().unwrap()
+        );
+        if let Ok(mut rcvr) = subman.subscribe(subspec, default_relays) {
+            let idstr = rcvr.idstr();
+            self.sub_remote_id = rcvr.remote_id();
+            let mutedref = self.muted.clone();
+            tokio::spawn(async move {
+                loop {
+                    match rcvr.next().await {
+                        Err(SubError::StreamEnded) => {
+                            debug!("account muted: sub {} complete", idstr);
+                            break;
+                        }
+                        Err(err) => {
+                            error!("account muted: sub {}: error: {:?}", idstr, err);
+                            break;
+                        }
+                        Ok(nks) => {
+                            debug!("account muted: sub {}: note keys: {:?}", idstr, nks);
+                            let txn = Transaction::new(&ndb).expect("txn");
+                            let muted = AccountMutedData::harvest_nip51_muted(&ndb, &txn, &nks);
+                            debug!("updated muted {:?}", muted);
+                            *mutedref.lock().unwrap() = muted;
+                        }
+                    }
+                }
+            });
+        }
     }
 
     // this account is no longer the selected account
-    pub fn deactivate(&mut self, ndb: &mut Ndb, pool: &mut RelayPool) {
-        debug!("deactivating muted sub {}", self.filter.json().unwrap());
-        assert_ne!(self.subid, None, "subid doesn't exist");
-        assert_ne!(self.sub, None, "sub doesn't exist");
+    pub fn deactivate(&mut self, subman: &mut SubMan) {
+        assert!(self.sub_remote_id.is_some(), "subscription doesn't exist");
+        let remote_id = self.sub_remote_id.as_ref().unwrap();
+        debug!(
+            "deactivating account muted sub {}: {}",
+            remote_id,
+            self.filter.json().unwrap()
+        );
 
-        // remote subscription
-        pool.unsubscribe(self.subid.as_ref().unwrap().clone());
-
-        // local subscription
-        ndb.unsubscribe(self.sub.unwrap())
-            .expect("ndb muted unsubscribe");
-
-        self.sub = None;
-        self.subid = None;
+        subman.unsubscribe_remote_id(remote_id).ok();
+        self.sub_remote_id = None;
     }
 
     fn harvest_nip51_muted(ndb: &Ndb, txn: &Transaction, nks: &[NoteKey]) -> Muted {
@@ -504,7 +523,12 @@ impl Accounts {
             .map(|i| self.get_account(i))?
     }
 
-    pub fn get_selected_account_data(&mut self) -> Option<&mut AccountData> {
+    pub fn get_selected_account_data(&self) -> Option<&AccountData> {
+        let account_pubkey = *self.selected_account_pubkey_bytes()?;
+        self.account_data.get(&account_pubkey)
+    }
+
+    pub fn get_selected_account_data_mut(&mut self) -> Option<&mut AccountData> {
         let account_pubkey = *self.selected_account_pubkey_bytes()?;
         self.account_data.get_mut(&account_pubkey)
     }
@@ -534,7 +558,7 @@ impl Accounts {
             if let Some(account) = self.accounts.get(index) {
                 let pubkey = account.key.pubkey.bytes();
                 if let Some(account_data) = self.account_data.get(pubkey) {
-                    let muted = Arc::clone(&account_data.muted.muted);
+                    let muted = account_data.muted.muted.lock().unwrap().clone();
                     return Box::new(move |note: &Note, thread: &[u8; 32]| {
                         muted.is_muted(note, thread)
                     });
@@ -548,17 +572,18 @@ impl Accounts {
         for data in self.account_data.values() {
             // send the active account's relay list subscription
             if let Some(relay_subid) = &data.relay.subid {
-                pool.send_to(
-                    &ClientMessage::req(relay_subid.clone(), vec![data.relay.filter.clone()]),
+                let filters = vec![data.relay.filter.clone()];
+                debug!(
+                    "Account send_initial_filters: sending sub {} {}: {:?}",
+                    relay_subid,
                     relay_url,
+                    filters
+                        .iter()
+                        .map(|f| f.json().unwrap_or_default())
+                        .collect::<Vec<_>>(),
                 );
-            }
-            // send the active account's muted subscription
-            if let Some(muted_subid) = &data.muted.subid {
-                pool.send_to(
-                    &ClientMessage::req(muted_subid.clone(), vec![data.muted.filter.clone()]),
-                    relay_url,
-                );
+
+                pool.send_to(&ClientMessage::req(relay_subid.clone(), filters), relay_url);
             }
         }
     }
@@ -612,16 +637,6 @@ impl Accounts {
                         relays
                     );
                     data.relay.advertised = relays.into_iter().collect();
-                    changed = true;
-                }
-            }
-            if let Some(sub) = data.muted.sub {
-                let nks = ndb.poll_for_notes(sub, 1);
-                if !nks.is_empty() {
-                    let txn = Transaction::new(ndb).expect("txn");
-                    let muted = AccountMutedData::harvest_nip51_muted(ndb, &txn, &nks);
-                    debug!("pubkey {}: updated muted {:?}", hex::encode(pubkey), muted);
-                    data.muted.muted = Arc::new(muted);
                     changed = true;
                 }
             }
@@ -684,7 +699,46 @@ impl Accounts {
         debug!("current relays: {:?}", pool.urls());
     }
 
-    pub fn update(&mut self, ndb: &mut Ndb, pool: &mut RelayPool, ctx: &egui::Context) {
+    fn get_combined_relays(
+        &self,
+        data_option: Option<&AccountData>,
+        filter: impl Fn(&RelaySpec) -> bool,
+    ) -> Vec<RelaySpec> {
+        let mut relays = if let Some(data) = data_option {
+            data.relay
+                .advertised
+                .iter()
+                .filter(|&x| filter(x))
+                .cloned()
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        if relays.is_empty() {
+            relays.extend(self.bootstrap_relays.iter().filter(|&x| filter(x)).cloned());
+        }
+
+        relays
+    }
+
+    pub fn get_selected_account_readable_relays(&self) -> Vec<RelaySpec> {
+        self.get_combined_relays(self.get_selected_account_data(), |relay| {
+            relay.is_readable()
+        })
+    }
+
+    pub fn get_selected_account_writable_relays(&self) -> Vec<RelaySpec> {
+        self.get_combined_relays(self.get_selected_account_data(), |relay| {
+            relay.is_writable()
+        })
+    }
+
+    pub fn get_all_selected_account_relays(&self) -> Vec<RelaySpec> {
+        self.get_combined_relays(self.get_selected_account_data(), |_| true)
+    }
+
+    pub fn update(&mut self, subman: &mut SubMan, ctx: &egui::Context) {
         // IMPORTANT - This function is called in the UI update loop,
         // make sure it is fast when idle
 
@@ -703,20 +757,25 @@ impl Accounts {
                 if let Some(data) = self.account_data.get_mut(account.key.pubkey.bytes()) {
                     if data.relay.sub.is_some() {
                         // this account has relay subs, deactivate them
-                        data.relay.deactivate(ndb, pool);
+                        let mut ndb = subman.ndb().clone();
+                        let pool = subman.pool();
+                        data.relay.deactivate(&mut ndb, pool);
                     }
-                    if data.muted.sub.is_some() {
+                    if data.muted.sub_remote_id.is_some() {
                         // this account has muted subs, deactivate them
-                        data.muted.deactivate(ndb, pool);
+                        data.muted.deactivate(subman);
                     }
                 }
             }
         }
 
+        let ndb = subman.ndb().clone();
+        let pool = subman.pool();
+
         // Were any accounts added or removed?
         let (added, removed) = self.delta_accounts();
         for pk in added {
-            self.handle_added_account(ndb, &pk);
+            self.handle_added_account(&ndb, &pk);
             need_reconfig = true;
         }
         for pk in removed {
@@ -725,7 +784,7 @@ impl Accounts {
         }
 
         // Did any accounts receive updates (ie NIP-65 relay lists)
-        need_reconfig = self.poll_for_updates(ndb) || need_reconfig;
+        need_reconfig = self.poll_for_updates(&ndb) || need_reconfig;
 
         // If needed, update the relay configuration
         if need_reconfig {
@@ -734,14 +793,15 @@ impl Accounts {
         }
 
         // Do we need to activate account subs?
-        if let Some(data) = self.get_selected_account_data() {
+        let default_relays = self.get_all_selected_account_relays();
+        if let Some(data) = self.get_selected_account_data_mut() {
             if data.relay.sub.is_none() {
                 // the currently selected account doesn't have relay subs, activate them
-                data.relay.activate(ndb, pool);
+                data.relay.activate(&ndb, pool);
             }
-            if data.muted.sub.is_none() {
+            if data.muted.sub_remote_id.is_none() {
                 // the currently selected account doesn't have muted subs, activate them
-                data.muted.activate(ndb, pool);
+                data.muted.activate(subman, &default_relays);
             }
         }
     }

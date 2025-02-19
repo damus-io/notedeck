@@ -6,7 +6,7 @@ use std::collections::BTreeSet;
 // If the note is muted return a reason string, otherwise None
 pub type MuteFun = dyn Fn(&Note, &[u8; 32]) -> bool;
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Muted {
     // TODO - implement private mutes
     pub pubkeys: BTreeSet<[u8; 32]>,
