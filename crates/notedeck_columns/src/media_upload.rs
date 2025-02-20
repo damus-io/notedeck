@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use base64::{prelude::BASE64_URL_SAFE, Engine};
 use ehttp::Request;
 use nostrdb::{Note, NoteBuilder};
+use notedeck::SupportedMimeType;
 use poll_promise::Promise;
 use sha2::{Digest, Sha256};
 use url::Url;
@@ -232,13 +233,13 @@ fn find_nip94_ev_in_json(json: String) -> Result<Nip94Event, Error> {
 pub struct MediaPath {
     full_path: PathBuf,
     file_name: String,
-    media_type: SupportedMediaType,
+    media_type: SupportedMimeType,
 }
 
 impl MediaPath {
     pub fn new(path: PathBuf) -> Result<Self, Error> {
         if let Some(ex) = path.extension().and_then(|f| f.to_str()) {
-            let media_type = SupportedMediaType::from_extension(ex)?;
+            let media_type = SupportedMimeType::from_extension(ex)?;
             let file_name = path
                 .file_name()
                 .and_then(|name| name.to_str())
@@ -255,47 +256,6 @@ impl MediaPath {
                 "{:?} does not have an extension",
                 path
             )))
-        }
-    }
-}
-
-#[derive(Debug)]
-pub enum SupportedMediaType {
-    Png,
-    Jpeg,
-    Webp,
-}
-
-impl SupportedMediaType {
-    pub fn mime_extension(&self) -> &str {
-        match &self {
-            SupportedMediaType::Png => "png",
-            SupportedMediaType::Jpeg => "jpeg",
-            SupportedMediaType::Webp => "webp",
-        }
-    }
-
-    pub fn to_mime(&self) -> String {
-        format!("{}/{}", self.mime_type(), self.mime_extension())
-    }
-
-    fn mime_type(&self) -> String {
-        match &self {
-            SupportedMediaType::Png | SupportedMediaType::Jpeg | SupportedMediaType::Webp => {
-                "image"
-            }
-        }
-        .to_string()
-    }
-
-    fn from_extension(ext: &str) -> Result<Self, Error> {
-        match ext.to_lowercase().as_str() {
-            "jpeg" | "jpg" => Ok(SupportedMediaType::Jpeg),
-            "png" => Ok(SupportedMediaType::Png),
-            "webp" => Ok(SupportedMediaType::Webp),
-            unsupported_type => Err(Error::Generic(format!(
-                "{unsupported_type} is not a valid file type to upload."
-            ))),
         }
     }
 }

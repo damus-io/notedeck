@@ -214,7 +214,8 @@ impl UrlMimes {
     }
 }
 
-struct SupportedMimeType {
+#[derive(Debug)]
+pub struct SupportedMimeType {
     mime: mime_guess::Mime,
 }
 
@@ -238,7 +239,6 @@ impl SupportedMimeType {
         }
     }
 
-    #[allow(unused)]
     pub fn to_mime(&self) -> &str {
         self.mime.essence_str()
     }
