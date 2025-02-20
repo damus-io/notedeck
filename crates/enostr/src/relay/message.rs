@@ -103,7 +103,7 @@ impl<'a> RelayMessage<'a> {
                 let subid = &msg[start..subid_end].trim().trim_matches('"');
                 return Ok(Self::event(msg, subid));
             } else {
-                return Ok(Self::event(msg, "fixme"));
+                return Err(Error::DecodeFailed("Invalid EVENT format".into()));
             }
         }
 
