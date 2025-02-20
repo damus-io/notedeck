@@ -189,3 +189,30 @@ impl UrlMimes {
         }
     }
 }
+
+struct SupportedMimeType {
+    mime: mime_guess::Mime,
+}
+
+impl SupportedMimeType {
+    #[allow(unused)]
+    pub fn from_extension(extension: &str) -> Result<Self, Error> {
+        if let Some(mime) = mime_guess::from_ext(extension)
+            .first()
+            .filter(is_mime_supported)
+        {
+            Ok(Self { mime })
+        } else {
+            Err(Error::Generic("Unsupported mime type".to_owned()))
+        }
+    }
+
+    #[allow(unused)]
+    pub fn to_mime(&self) -> &str {
+        self.mime.essence_str()
+    }
+}
+
+fn is_mime_supported(mime: &mime_guess::Mime) -> bool {
+    mime.type_() == mime_guess::mime::IMAGE
+}
