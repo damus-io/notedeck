@@ -145,32 +145,98 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_handle_valid_notice() -> Result<()> {
-        let valid_notice_msg = r#"["NOTICE","Invalid event format!"]"#;
-        let handled_valid_notice_msg = RelayMessage::notice("Invalid event format!");
+    fn test_handle_various_messages() -> Result<()> {
+        let tests = vec![
+            // Valid cases
+            (
+                r#"["NOTICE","Invalid event format!"]"#,
+                Ok(RelayMessage::notice("Invalid event format!")),
+            ),
+            (
+                r#"["EVENT", "random_string", {"id":"example","content":"test"}]"#,
+                Ok(RelayMessage::event(
+                    r#"["EVENT", "random_string", {"id":"example","content":"test"}]"#,
+                    "random_string",
+                )),
+            ),
+            (
+                r#"["EOSE","random-subscription-id"]"#,
+                Ok(RelayMessage::eose("random-subscription-id")),
+            ),
+            (
+                r#"["EOSE", "random-subscription-id"]"#,
+                Ok(RelayMessage::eose("random-subscription-id")),
+            ),
+            (
+                r#"["EOSE", "random-subscription-id" ]"#,
+                Ok(RelayMessage::eose("random-subscription-id")),
+            ),
+            (
+                r#"["OK","b1a649ebe8b435ec71d3784793f3bbf4b93e64e17568a741aecd4c7ddeafce30",true,"pow: difficulty 25>=24"]"#,
+                Ok(RelayMessage::ok(
+                    "b1a649ebe8b435ec71d3784793f3bbf4b93e64e17568a741aecd4c7ddeafce30",
+                    true,
+                    "pow: difficulty 25>=24",
+                )),
+            ),
+            // Invalid cases
+            (
+                r#"["EVENT","random_string"]"#,
+                Err(Error::DecodeFailed("Invalid EVENT format".into())),
+            ),
+            (
+                r#"["EOSE"]"#,
+                Err(Error::DecodeFailed("unrecognized message type".into())),
+            ),
+            (
+                r#"["NOTICE"]"#,
+                Err(Error::DecodeFailed("unrecognized message type".into())),
+            ),
+            (
+                r#"["NOTICE": 404]"#,
+                Err(Error::DecodeFailed("unrecognized message type".into())),
+            ),
+            (
+                r#"["OK","event_id"]"#,
+                Err(Error::DecodeFailed("unrecognized message type".into())),
+            ),
+            (
+                r#"["OK","b1a649ebe8b435ec71d3784793f3bbf4b93e64e17568a741aecd4c7ddeafce30"]"#,
+                Err(Error::DecodeFailed("unrecognized message type".into())),
+            ),
+            (
+                r#"["OK","b1a649ebe8b435ec71d3784793f3bbf4b93e64e17568a741aecd4c7ddeafce30",hello,""]"#,
+                Err(Error::DecodeFailed("bad boolean value".into())),
+            ),
+            (
+                r#"["OK","b1a649ebe8b435ec71d3784793f3bbf4b93e64e17568a741aecd4c7ddeafce30",hello,404]"#,
+                Err(Error::DecodeFailed("bad boolean value".into())),
+            ),
+        ];
 
-        assert_eq!(
-            RelayMessage::from_json(valid_notice_msg)?,
-            handled_valid_notice_msg
-        );
-
+        for (input, expected) in tests {
+            match expected {
+                Ok(expected_msg) => {
+                    let result = RelayMessage::from_json(input);
+                    assert_eq!(
+                        result?, expected_msg,
+                        "Expected {:?} for input: {}",
+                        expected_msg, input
+                    );
+                }
+                Err(expected_err) => {
+                    let result = RelayMessage::from_json(input);
+                    assert!(
+                        matches!(result, Err(ref e) if *e.to_string() == expected_err.to_string()),
+                        "Expected error {:?} for input: {}, but got: {:?}",
+                        expected_err,
+                        input,
+                        result
+                    );
+                }
+            }
+        }
         Ok(())
-    }
-    #[test]
-    fn test_handle_invalid_notice() {
-        //Missing content
-        let invalid_notice_msg = r#"["NOTICE"]"#;
-        //The content is not string
-        let invalid_notice_msg_content = r#"["NOTICE": 404]"#;
-
-        assert!(matches!(
-            RelayMessage::from_json(invalid_notice_msg).unwrap_err(),
-            Error::DecodeFailed
-        ));
-        assert!(matches!(
-            RelayMessage::from_json(invalid_notice_msg_content).unwrap_err(),
-            Error::DecodeFailed
-        ));
     }
 
     /*
@@ -223,19 +289,6 @@ mod tests {
     }
     */
 
-    #[test]
-    fn test_handle_valid_eose() -> Result<()> {
-        let valid_eose_msg = r#"["EOSE","random-subscription-id"]"#;
-        let handled_valid_eose_msg = RelayMessage::eose("random-subscription-id");
-
-        assert_eq!(
-            RelayMessage::from_json(valid_eose_msg)?,
-            handled_valid_eose_msg
-        );
-
-        Ok(())
-    }
-
     // TODO: fix these tests
     /*
     #[test]
@@ -267,28 +320,4 @@ mod tests {
         Ok(())
     }
     */
-
-    #[test]
-    fn test_handle_invalid_ok() {
-        // Missing params
-        assert!(matches!(
-            RelayMessage::from_json(
-                r#"["OK","b1a649ebe8b435ec71d3784793f3bbf4b93e64e17568a741aecd4c7ddeafce30"]"#
-            )
-            .unwrap_err(),
-            Error::DecodeFailed
-        ));
-
-        // Invalid status
-        assert!(
-            matches!(RelayMessage::from_json(r#"["OK","b1a649ebe8b435ec71d3784793f3bbf4b93e64e17568a741aecd4c7ddeafce30",hello,""]"#).unwrap_err(),
-            Error::DecodeFailed)
-        );
-
-        // Invalid message
-        assert!(
-            matches!(RelayMessage::from_json(r#"["OK","b1a649ebe8b435ec71d3784793f3bbf4b93e64e17568a741aecd4c7ddeafce30",hello,404]"#).unwrap_err(),
-            Error::DecodeFailed)
-        );
-    }
 }
