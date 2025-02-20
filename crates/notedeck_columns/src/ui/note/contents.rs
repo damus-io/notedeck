@@ -1,3 +1,4 @@
+use crate::gif::{handle_repaint, retrieve_latest_texture};
 use crate::ui::images::render_images;
 use crate::ui::{
     self,
@@ -8,7 +9,7 @@ use egui::{Color32, Hyperlink, Image, RichText};
 use nostrdb::{BlockType, Mention, Ndb, Note, NoteKey, Transaction};
 use tracing::warn;
 
-use notedeck::{supported_mime_hosted_at_url, Images, NoteCache};
+use notedeck::{supported_mime_hosted_at_url, Images, MediaCacheType, NoteCache};
 
 pub struct NoteContents<'a> {
     ndb: &'a Ndb,
@@ -142,7 +143,7 @@ fn render_note_contents(
     puffin::profile_function!();
 
     let selectable = options.has_selectable_text();
-    let mut images: Vec<String> = vec![];
+    let mut images: Vec<(String, MediaCacheType)> = vec![];
     let mut note_action: Option<NoteAction> = None;
     let mut inline_note: Option<(&[u8; 32], &str)> = None;
     let hide_media = options.has_hide_media();
@@ -211,8 +212,10 @@ fn render_note_contents(
                     if !hide_media {
                         let url = block.as_str().to_string();
 
-                        if supported_mime_hosted_at_url(&mut img_cache.urls, &url) {
-                            images.push(url);
+                        if let Some(cache_type) =
+                            supported_mime_hosted_at_url(&mut img_cache.urls, &url)
+                        {
+                            images.push((url, cache_type));
                         }
                     } else {
                         #[cfg(feature = "profiling")]
@@ -280,7 +283,7 @@ fn rot13(input: &str) -> String {
 fn image_carousel(
     ui: &mut egui::Ui,
     img_cache: &mut Images,
-    images: Vec<String>,
+    images: Vec<(String, MediaCacheType)>,
     carousel_id: egui::Id,
 ) {
     // let's make sure everything is within our area
@@ -294,25 +297,31 @@ fn image_carousel(
             .id_salt(carousel_id)
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    for image in images {
+                    for (image, cache_type) in images {
                         render_images(
                             ui,
                             img_cache,
                             &image,
                             ImageType::Content(width.round() as u32, height.round() as u32),
+                            cache_type,
                             |ui| {
                                 ui.allocate_space(egui::vec2(spinsz, spinsz));
                             },
                             |ui, _| {
                                 ui.allocate_space(egui::vec2(spinsz, spinsz));
                             },
-                            |ui, url, renderable_media| {
+                            |ui, url, renderable_media, gifs| {
+                                let texture = handle_repaint(
+                                    ui,
+                                    retrieve_latest_texture(&image, gifs, renderable_media),
+                                );
                                 let img_resp = ui.add(
-                                    Image::new(notedeck::get_texture(renderable_media))
+                                    Image::new(texture)
                                         .max_height(height)
                                         .rounding(5.0)
                                         .fit_to_original_size(1.0),
                                 );
+
                                 img_resp.context_menu(|ui| {
                                     if ui.button("Copy Link").clicked() {
                                         ui.ctx().copy_text(url.to_owned());

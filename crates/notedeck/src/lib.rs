@@ -32,7 +32,8 @@ pub use error::{Error, FilterError};
 pub use filter::{FilterState, FilterStates, UnifiedSubscription};
 pub use fonts::NamedFontFamily;
 pub use imgcache::{
-    get_texture, GifState, GifStateMap, Images, MediaCache, MediaCacheType, TexturedImage,
+    Animation, GifState, GifStateMap, ImageFrame, Images, MediaCache, MediaCacheType,
+    MediaCacheValue, TextureFrame, TexturedImage,
 };
 pub use muted::{MuteFun, Muted};
 pub use note::{NoteRef, RootIdError, RootNoteId, RootNoteIdBuf};

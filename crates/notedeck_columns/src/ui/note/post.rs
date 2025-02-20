@@ -1,4 +1,5 @@
 use crate::draft::{Draft, Drafts, MentionHint};
+use crate::gif::{handle_repaint, retrieve_latest_texture};
 use crate::media_upload::{nostrbuild_nip96_upload, MediaPath};
 use crate::post::{downcast_post_buffer, MentionType, NewPost};
 use crate::profile::get_display_name;
@@ -13,7 +14,7 @@ use egui::{vec2, Frame, Layout, Margin, Pos2, ScrollArea, Sense, TextBuffer};
 use enostr::{FilledKeypair, FullKeypair, NoteId, Pubkey, RelayPool};
 use nostrdb::{Ndb, Transaction};
 
-use notedeck::{get_texture, Images, NoteCache};
+use notedeck::{Images, NoteCache};
 use tracing::error;
 
 use super::contents::render_note_preview;
@@ -390,6 +391,7 @@ impl<'a> PostView<'a> {
                 self.img_cache,
                 &media.url,
                 crate::images::ImageType::Content(width, height),
+                notedeck::MediaCacheType::Image, // TODO(kernelkind): support gifs in PostView
                 |ui| {
                     ui.spinner();
                 },
@@ -397,7 +399,7 @@ impl<'a> PostView<'a> {
                     self.draft.upload_errors.push(e.to_string());
                     error!("{e}");
                 },
-                |ui, _, renderable_media| {
+                |ui, url, renderable_media, gifs| {
                     let media_size = vec2(width as f32, height as f32);
                     let max_size = vec2(300.0, 300.0);
                     let size = if media_size.x > max_size.x || media_size.y > max_size.y {
@@ -406,7 +408,8 @@ impl<'a> PostView<'a> {
                         media_size
                     };
 
-                    let texture_handle = get_texture(renderable_media);
+                    let texture_handle =
+                        handle_repaint(ui, retrieve_latest_texture(url, gifs, renderable_media));
                     let img_resp = ui.add(
                         egui::Image::new(texture_handle)
                             .max_size(size)
