@@ -109,14 +109,18 @@ impl<'a> RelayMessage<'a> {
 
         // EOSE (NIP-15)
         // Relay response format: ["EOSE", <subscription_id>]
-        if &msg[0..=7] == "[\"EOSE\"," {
-            let start = if msg.as_bytes().get(8).copied() == Some(b' ') {
-                10
+        if &msg[0..=6] == "[\"EOSE\"" {
+            let mut start = 8;
+            while let Some(&b' ') = msg.as_bytes().get(start) {
+                start += 1; // Move past optional spaces
+            }
+            if let Some(endquote_index) = msg[start + 1..].find('"') {
+                let subid_end = start + 1 + endquote_index;
+                let subid = &msg[start..subid_end].trim().trim_matches('"');
+                return Ok(Self::eose(subid));
             } else {
-                9
-            };
-            let end = msg.len() - 2;
-            return Ok(Self::eose(&msg[start..end]));
+                return Ok(Self::eose("fixme"));
+            }
         }
 
         // OK (NIP-20)
