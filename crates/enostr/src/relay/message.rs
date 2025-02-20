@@ -111,12 +111,23 @@ impl<'a> RelayMessage<'a> {
         // Relay response format: ["EOSE", <subscription_id>]
         if &msg[0..=7] == "[\"EOSE\"," {
             let start = if msg.as_bytes().get(8).copied() == Some(b' ') {
-                10
+                10 // Skip space after the comma
             } else {
-                9
+                9 // Start immediately after the comma
             };
-            let end = msg.len() - 2;
-            return Ok(Self::eose(&msg[start..end]));
+
+            // Use rfind to locate the last quote
+            if let Some(end_bracket_index) = msg.rfind(']') {
+                let end = end_bracket_index - 1; // Account for space before bracket
+                if start < end {
+                    // Trim subscription id and remove extra spaces and quotes
+                    let subid = &msg[start..end].trim().trim_matches('"').trim();
+                    return Ok(RelayMessage::eose(subid));
+                }
+            }
+            return Err(Error::DecodeFailed(
+                "Invalid subscription ID or format".into(),
+            ));
         }
 
         // OK (NIP-20)
