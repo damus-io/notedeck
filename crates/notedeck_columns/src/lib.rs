@@ -15,6 +15,7 @@ mod deck_state;
 mod decks;
 mod draft;
 mod frame_history;
+mod gif;
 mod images;
 mod key_parsing;
 pub mod login_manager;
