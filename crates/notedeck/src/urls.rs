@@ -191,7 +191,8 @@ impl UrlMimes {
     }
 }
 
-struct SupportedMimeType {
+#[derive(Debug)]
+pub struct SupportedMimeType {
     mime: mime_guess::Mime,
 }
 
@@ -207,7 +208,14 @@ impl SupportedMimeType {
         }
     }
 
-    #[allow(unused)]
+    pub fn from_mime(mime: mime_guess::mime::Mime) -> Result<Self, Error> {
+        if is_mime_supported(&mime) {
+            Ok(Self { mime })
+        } else {
+            Err(Error::Generic("Unsupported mime type".to_owned()))
+        }
+    }
+
     pub fn to_mime(&self) -> &str {
         self.mime.essence_str()
     }
