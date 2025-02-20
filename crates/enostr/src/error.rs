@@ -7,8 +7,8 @@ pub enum Error {
     #[error("message is empty")]
     Empty,
 
-    #[error("decoding failed")]
-    DecodeFailed,
+    #[error("decoding failed: {0}")]
+    DecodeFailed(String),
 
     #[error("hex decoding failed")]
     HexDecodeFailed,

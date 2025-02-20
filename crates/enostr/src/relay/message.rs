@@ -130,13 +130,13 @@ impl<'a> RelayMessage<'a> {
             } else if booly == "false" {
                 false
             } else {
-                return Err(Error::DecodeFailed);
+                return Err(Error::DecodeFailed("bad boolean value".into()));
             };
 
             return Ok(Self::ok(event_id, status, "fixme"));
         }
 
-        Err(Error::DecodeFailed)
+        Err(Error::DecodeFailed("unrecognized message type".into()))
     }
 }
 

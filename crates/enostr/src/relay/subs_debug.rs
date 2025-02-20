@@ -225,13 +225,14 @@ fn calculate_ws_message_size(message: &WsMessage) -> usize {
 fn calculate_error_size(error: &Error) -> usize {
     match error {
         Error::Empty
-        | Error::DecodeFailed
         | Error::HexDecodeFailed
         | Error::InvalidBech32
         | Error::InvalidByteSize
         | Error::InvalidSignature
         | Error::Io(_)
         | Error::InvalidPublicKey => mem::size_of_val(error), // No heap usage
+
+        Error::DecodeFailed(string) => mem::size_of_val(error) + string.len(),
 
         Error::Json(json_err) => mem::size_of_val(error) + json_err.to_string().len(),
 
