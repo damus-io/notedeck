@@ -122,7 +122,6 @@ impl<'a> RelayMessage<'a> {
         // OK (NIP-20)
         // Relay response format: ["OK",<event_id>, <true|false>, <message>]
         if &msg[0..=5] == "[\"OK\"," && msg.len() >= 78 {
-            // TODO: fix this
             let event_id = &msg[7..71];
             let booly = &msg[73..77];
             let status: bool = if booly == "true" {
@@ -132,8 +131,9 @@ impl<'a> RelayMessage<'a> {
             } else {
                 return Err(Error::DecodeFailed("bad boolean value".into()));
             };
-
-            return Ok(Self::ok(event_id, status, "fixme"));
+            let message_start = msg.rfind(',').unwrap() + 1;
+            let message = &msg[message_start..msg.len() - 2].trim().trim_matches('"');
+            return Ok(Self::ok(event_id, status, message));
         }
 
         Err(Error::DecodeFailed("unrecognized message type".into()))
