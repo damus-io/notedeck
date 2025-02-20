@@ -11,7 +11,7 @@ use egui::TextBuffer;
 use poll_promise::Promise;
 use url::Url;
 
-use crate::Error;
+use crate::{Error, MediaCacheType};
 
 const FILE_NAME: &str = "urls.bin";
 const SAVE_INTERVAL: Duration = Duration::from_secs(60);
@@ -207,9 +207,25 @@ impl SupportedMimeType {
         }
     }
 
+    pub fn from_mime(mime: mime_guess::mime::Mime) -> Result<Self, Error> {
+        if is_mime_supported(&mime) {
+            Ok(Self { mime })
+        } else {
+            Err(Error::Generic("Unsupported mime type".to_owned()))
+        }
+    }
+
     #[allow(unused)]
     pub fn to_mime(&self) -> &str {
         self.mime.essence_str()
+    }
+
+    pub fn to_cache_type(&self) -> MediaCacheType {
+        if self.mime == mime_guess::mime::IMAGE_GIF {
+            MediaCacheType::Gif
+        } else {
+            MediaCacheType::Image
+        }
     }
 }
 
@@ -225,8 +241,8 @@ fn url_has_supported_mime(url: &str) -> MimeHostedAtUrl {
                     .extension()
                     .and_then(|ext| ext.to_str())
                 {
-                    if SupportedMimeType::from_extension(ext).is_ok() {
-                        return MimeHostedAtUrl::Yes;
+                    if let Ok(supported) = SupportedMimeType::from_extension(ext) {
+                        return MimeHostedAtUrl::Yes(supported.to_cache_type());
                     } else {
                         return MimeHostedAtUrl::No;
                     }
@@ -237,21 +253,23 @@ fn url_has_supported_mime(url: &str) -> MimeHostedAtUrl {
     MimeHostedAtUrl::Maybe
 }
 
-pub fn supported_mime_hosted_at_url(urls: &mut UrlMimes, url: &str) -> bool {
+pub fn supported_mime_hosted_at_url(urls: &mut UrlMimes, url: &str) -> Option<MediaCacheType> {
     match url_has_supported_mime(url) {
-        MimeHostedAtUrl::Yes => true,
+        MimeHostedAtUrl::Yes(cache_type) => Some(cache_type),
         MimeHostedAtUrl::Maybe => urls
             .get(url)
             .and_then(|s| s.parse::<mime_guess::mime::Mime>().ok())
-            .map_or(false, |mime: mime_guess::mime::Mime| {
-                is_mime_supported(&mime)
+            .and_then(|mime: mime_guess::mime::Mime| {
+                SupportedMimeType::from_mime(mime)
+                    .ok()
+                    .map(|s| s.to_cache_type())
             }),
-        MimeHostedAtUrl::No => false,
+        MimeHostedAtUrl::No => None,
     }
 }
 
 enum MimeHostedAtUrl {
-    Yes,
+    Yes(MediaCacheType),
     Maybe,
     No,
 }
