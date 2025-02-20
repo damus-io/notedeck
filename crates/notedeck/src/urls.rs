@@ -9,6 +9,7 @@ use std::{
 
 use egui::TextBuffer;
 use poll_promise::Promise;
+use url::Url;
 
 use crate::Error;
 
@@ -195,7 +196,6 @@ struct SupportedMimeType {
 }
 
 impl SupportedMimeType {
-    #[allow(unused)]
     pub fn from_extension(extension: &str) -> Result<Self, Error> {
         if let Some(mime) = mime_guess::from_ext(extension)
             .first()
@@ -215,4 +215,43 @@ impl SupportedMimeType {
 
 fn is_mime_supported(mime: &mime_guess::Mime) -> bool {
     mime.type_() == mime_guess::mime::IMAGE
+}
+
+fn url_has_supported_mime(url: &str) -> MimeHostedAtUrl {
+    if let Ok(url) = Url::parse(url) {
+        if let Some(path) = url.path_segments() {
+            if let Some(file_name) = path.last() {
+                if let Some(ext) = std::path::Path::new(file_name)
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                {
+                    if SupportedMimeType::from_extension(ext).is_ok() {
+                        return MimeHostedAtUrl::Yes;
+                    } else {
+                        return MimeHostedAtUrl::No;
+                    }
+                }
+            }
+        }
+    }
+    MimeHostedAtUrl::Maybe
+}
+
+pub fn supported_mime_hosted_at_url(urls: &mut UrlMimes, url: &str) -> bool {
+    match url_has_supported_mime(url) {
+        MimeHostedAtUrl::Yes => true,
+        MimeHostedAtUrl::Maybe => urls
+            .get(url)
+            .and_then(|s| s.parse::<mime_guess::mime::Mime>().ok())
+            .map_or(false, |mime: mime_guess::mime::Mime| {
+                is_mime_supported(&mime)
+            }),
+        MimeHostedAtUrl::No => false,
+    }
+}
+
+enum MimeHostedAtUrl {
+    Yes,
+    Maybe,
+    No,
 }
