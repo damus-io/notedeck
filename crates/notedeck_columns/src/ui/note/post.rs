@@ -14,7 +14,7 @@ use egui::{vec2, Frame, Layout, Margin, Pos2, ScrollArea, Sense, TextBuffer};
 use enostr::{FilledKeypair, FullKeypair, NoteId, Pubkey, RelayPool};
 use nostrdb::{Ndb, Transaction};
 
-use notedeck::{Images, NoteCache};
+use notedeck::{supported_mime_hosted_at_url, Images, NoteCache};
 use tracing::error;
 
 use super::contents::render_note_preview;
@@ -386,48 +386,59 @@ impl<'a> PostView<'a> {
                 (300, 300)
             };
 
-            render_images(
-                ui,
-                self.img_cache,
-                &media.url,
-                crate::images::ImageType::Content(width, height),
-                notedeck::MediaCacheType::Image, // TODO(kernelkind): support gifs in PostView
-                |ui| {
-                    ui.spinner();
-                },
-                |_, e| {
-                    self.draft.upload_errors.push(e.to_string());
-                    error!("{e}");
-                },
-                |ui, url, renderable_media, gifs| {
-                    let media_size = vec2(width as f32, height as f32);
-                    let max_size = vec2(300.0, 300.0);
-                    let size = if media_size.x > max_size.x || media_size.y > max_size.y {
-                        max_size
-                    } else {
-                        media_size
-                    };
+            if let Some(cache_type) =
+                supported_mime_hosted_at_url(&mut self.img_cache.urls, &media.url)
+            {
+                render_images(
+                    ui,
+                    self.img_cache,
+                    &media.url,
+                    crate::images::ImageType::Content(width, height),
+                    cache_type,
+                    |ui| {
+                        ui.spinner();
+                    },
+                    |_, e| {
+                        self.draft.upload_errors.push(e.to_string());
+                        error!("{e}");
+                    },
+                    |ui, url, renderable_media, gifs| {
+                        let media_size = vec2(width as f32, height as f32);
+                        let max_size = vec2(300.0, 300.0);
+                        let size = if media_size.x > max_size.x || media_size.y > max_size.y {
+                            max_size
+                        } else {
+                            media_size
+                        };
 
-                    let texture_handle =
-                        handle_repaint(ui, retrieve_latest_texture(url, gifs, renderable_media));
-                    let img_resp = ui.add(
-                        egui::Image::new(texture_handle)
-                            .max_size(size)
-                            .rounding(12.0),
-                    );
+                        let texture_handle = handle_repaint(
+                            ui,
+                            retrieve_latest_texture(url, gifs, renderable_media),
+                        );
+                        let img_resp = ui.add(
+                            egui::Image::new(texture_handle)
+                                .max_size(size)
+                                .rounding(12.0),
+                        );
 
-                    let remove_button_rect = {
-                        let top_left = img_resp.rect.left_top();
-                        let spacing = 13.0;
-                        let center = Pos2::new(top_left.x + spacing, top_left.y + spacing);
-                        egui::Rect::from_center_size(center, egui::vec2(26.0, 26.0))
-                    };
-                    if show_remove_upload_button(ui, remove_button_rect).clicked() {
-                        to_remove.push(i);
-                    }
-                    ui.advance_cursor_after_rect(img_resp.rect);
-                },
-            );
+                        let remove_button_rect = {
+                            let top_left = img_resp.rect.left_top();
+                            let spacing = 13.0;
+                            let center = Pos2::new(top_left.x + spacing, top_left.y + spacing);
+                            egui::Rect::from_center_size(center, egui::vec2(26.0, 26.0))
+                        };
+                        if show_remove_upload_button(ui, remove_button_rect).clicked() {
+                            to_remove.push(i);
+                        }
+                        ui.advance_cursor_after_rect(img_resp.rect);
+                    },
+                );
+            } else {
+                self.draft
+                    .upload_errors
+                    .push("Uploaded media is not supported.".to_owned());
+                error!("Unsupported mime type at url: {}", &media.url);
+            }
         }
         to_remove.reverse();
         for i in to_remove {
