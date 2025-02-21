@@ -12,6 +12,7 @@ pub struct AcquireKeyState {
     error: Option<AcquireKeyError>,
     key_on_error: Option<String>,
     should_create_new: bool,
+    show_password: bool,
 }
 
 impl<'a> AcquireKeyState {
@@ -114,6 +115,14 @@ impl<'a> AcquireKeyState {
         }
 
         ui.add_space(8.0);
+    }
+
+    pub fn toggle_password_visibility(&mut self) {
+        self.show_password = !self.show_password;
+    }
+
+    pub fn password_visible(&self) -> bool {
+        self.show_password
     }
 }
 

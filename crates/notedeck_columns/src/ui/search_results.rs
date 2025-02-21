@@ -87,7 +87,7 @@ fn user_result<'a>(
     cache: &'a mut ImageCache,
     index: usize,
     width: f32,
-) -> impl egui::Widget + use<'a> {
+) -> impl egui::Widget + 'a {
     move |ui: &mut egui::Ui| -> egui::Response {
         let min_img_size = 48.0;
         let max_image = min_img_size * ICON_EXPANSION_MULTIPLE;
