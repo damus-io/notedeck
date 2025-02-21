@@ -172,6 +172,8 @@ fn unknown_id_send(unknown_ids: &mut UnknownIds, pool: &mut RelayPool) {
 }
 
 fn update_damus(damus: &mut Damus, app_ctx: &mut AppContext<'_>, ctx: &egui::Context) {
+    app_ctx.urls.cache.handle_io();
+
     match damus.state {
         DamusState::Initializing => {
             damus.state = DamusState::Initialized;
@@ -557,6 +559,7 @@ fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus, ctx: &mut App
                 let side_panel = DesktopSidePanel::new(
                     ctx.ndb,
                     ctx.img_cache,
+                    ctx.urls,
                     ctx.accounts.get_selected_account(),
                     &app.decks_cache,
                 )

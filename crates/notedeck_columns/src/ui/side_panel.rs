@@ -15,7 +15,7 @@ use crate::{
     support::Support,
 };
 
-use notedeck::{Accounts, ImageCache, NotedeckTextStyle, ThemeHandler, UserAccount};
+use notedeck::{Accounts, ImageCache, NotedeckTextStyle, ThemeHandler, UrlMimes, UserAccount};
 
 use super::{
     anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},
@@ -30,6 +30,7 @@ static ICON_WIDTH: f32 = 40.0;
 pub struct DesktopSidePanel<'a> {
     ndb: &'a nostrdb::Ndb,
     img_cache: &'a mut ImageCache,
+    urls: &'a mut UrlMimes,
     selected_account: Option<&'a UserAccount>,
     decks_cache: &'a DecksCache,
 }
@@ -71,12 +72,14 @@ impl<'a> DesktopSidePanel<'a> {
     pub fn new(
         ndb: &'a nostrdb::Ndb,
         img_cache: &'a mut ImageCache,
+        urls: &'a mut UrlMimes,
         selected_account: Option<&'a UserAccount>,
         decks_cache: &'a DecksCache,
     ) -> Self {
         Self {
             ndb,
             img_cache,
+            urls,
             selected_account,
             decks_cache,
         }
@@ -266,7 +269,7 @@ impl<'a> DesktopSidePanel<'a> {
         let txn = nostrdb::Transaction::new(self.ndb).expect("should be able to create txn");
         let profile_url = get_account_url(&txn, self.ndb, self.selected_account);
 
-        let widget = ProfilePic::new(self.img_cache, profile_url).size(cur_pfp_size);
+        let widget = ProfilePic::new(self.img_cache, self.urls, profile_url).size(cur_pfp_size);
 
         ui.put(helper.get_animation_rect(), widget);
 

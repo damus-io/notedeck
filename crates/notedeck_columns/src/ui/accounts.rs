@@ -3,7 +3,7 @@ use egui::{
     Align, Button, Frame, Image, InnerResponse, Layout, RichText, ScrollArea, Ui, UiBuilder, Vec2,
 };
 use nostrdb::{Ndb, Transaction};
-use notedeck::{Accounts, ImageCache};
+use notedeck::{Accounts, ImageCache, UrlMimes};
 
 use super::profile::preview::SimpleProfilePreview;
 
@@ -11,6 +11,7 @@ pub struct AccountsView<'a> {
     ndb: &'a Ndb,
     accounts: &'a Accounts,
     img_cache: &'a mut ImageCache,
+    urls: &'a mut UrlMimes,
 }
 
 #[derive(Clone, Debug)]
@@ -27,11 +28,17 @@ enum ProfilePreviewAction {
 }
 
 impl<'a> AccountsView<'a> {
-    pub fn new(ndb: &'a Ndb, accounts: &'a Accounts, img_cache: &'a mut ImageCache) -> Self {
+    pub fn new(
+        ndb: &'a Ndb,
+        accounts: &'a Accounts,
+        img_cache: &'a mut ImageCache,
+        urls: &'a mut UrlMimes,
+    ) -> Self {
         AccountsView {
             ndb,
             accounts,
             img_cache,
+            urls,
         }
     }
 
@@ -44,7 +51,7 @@ impl<'a> AccountsView<'a> {
             ui.add_space(8.0);
             scroll_area()
                 .show(ui, |ui| {
-                    Self::show_accounts(ui, self.accounts, self.ndb, self.img_cache)
+                    Self::show_accounts(ui, self.accounts, self.ndb, self.img_cache, self.urls)
                 })
                 .inner
         })
@@ -55,6 +62,7 @@ impl<'a> AccountsView<'a> {
         accounts: &Accounts,
         ndb: &Ndb,
         img_cache: &mut ImageCache,
+        urls: &mut UrlMimes,
     ) -> Option<AccountsViewResponse> {
         let mut return_op: Option<AccountsViewResponse> = None;
         ui.allocate_ui_with_layout(
@@ -85,8 +93,12 @@ impl<'a> AccountsView<'a> {
                         let max_size = egui::vec2(ui.available_width(), 77.0);
                         let resp = ui.allocate_response(max_size, egui::Sense::click());
                         ui.allocate_new_ui(UiBuilder::new().max_rect(resp.rect), |ui| {
-                            let preview =
-                                SimpleProfilePreview::new(profile.as_ref(), img_cache, has_nsec);
+                            let preview = SimpleProfilePreview::new(
+                                profile.as_ref(),
+                                img_cache,
+                                urls,
+                                has_nsec,
+                            );
                             show_profile_card(ui, preview, max_size, is_selected, resp)
                         })
                         .inner

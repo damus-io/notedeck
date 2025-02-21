@@ -13,7 +13,7 @@ use egui::{vec2, Frame, Layout, Margin, Pos2, ScrollArea, Sense, TextBuffer};
 use enostr::{FilledKeypair, FullKeypair, NoteId, Pubkey, RelayPool};
 use nostrdb::{Ndb, Transaction};
 
-use notedeck::{ImageCache, NoteCache};
+use notedeck::{ImageCache, NoteCache, UrlMimes};
 use tracing::error;
 
 use super::contents::render_note_preview;
@@ -23,6 +23,7 @@ pub struct PostView<'a> {
     draft: &'a mut Draft,
     post_type: PostType,
     img_cache: &'a mut ImageCache,
+    urls: &'a mut UrlMimes,
     note_cache: &'a mut NoteCache,
     poster: FilledKeypair<'a>,
     id_source: Option<egui::Id>,
@@ -82,11 +83,13 @@ pub struct PostResponse {
 }
 
 impl<'a> PostView<'a> {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         ndb: &'a Ndb,
         draft: &'a mut Draft,
         post_type: PostType,
         img_cache: &'a mut ImageCache,
+        urls: &'a mut UrlMimes,
         note_cache: &'a mut NoteCache,
         poster: FilledKeypair<'a>,
         inner_rect: egui::Rect,
@@ -96,6 +99,7 @@ impl<'a> PostView<'a> {
             ndb,
             draft,
             img_cache,
+            urls,
             note_cache,
             poster,
             id_source,
@@ -120,13 +124,16 @@ impl<'a> PostView<'a> {
             .get_profile_by_pubkey(txn, self.poster.pubkey.bytes())
             .as_ref()
             .ok()
-            .and_then(|p| Some(ui::ProfilePic::from_profile(self.img_cache, p)?.size(pfp_size)));
+            .and_then(|p| {
+                Some(ui::ProfilePic::from_profile(self.img_cache, self.urls, p)?.size(pfp_size))
+            });
 
         if let Some(pfp) = poster_pfp {
             ui.add(pfp);
         } else {
             ui.add(
-                ui::ProfilePic::new(self.img_cache, ui::ProfilePic::no_pfp_url()).size(pfp_size),
+                ui::ProfilePic::new(self.img_cache, self.urls, ui::ProfilePic::no_pfp_url())
+                    .size(pfp_size),
             );
         }
 
@@ -221,7 +228,7 @@ impl<'a> PostView<'a> {
 
                     if let Ok(res) = self.ndb.search_profile(txn, mention_str, 10) {
                         let hint_selection =
-                            SearchResultsView::new(self.img_cache, self.ndb, txn, &res)
+                            SearchResultsView::new(self.img_cache, self.urls, self.ndb, txn, &res)
                                 .show_in_rect(hint_rect, ui);
 
                         if let Some(hint_index) = hint_selection {
@@ -299,6 +306,7 @@ impl<'a> PostView<'a> {
                                         self.ndb,
                                         self.note_cache,
                                         self.img_cache,
+                                        self.urls,
                                         txn,
                                         id.bytes(),
                                         nostrdb::NoteKey::new(0),
@@ -683,6 +691,7 @@ mod preview {
                 &mut self.draft,
                 PostType::New,
                 app.img_cache,
+                app.urls,
                 app.note_cache,
                 self.poster.to_filled(),
                 ui.available_rect_before_wrap(),

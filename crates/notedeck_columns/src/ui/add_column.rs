@@ -17,7 +17,7 @@ use crate::{
     Damus,
 };
 
-use notedeck::{AppContext, ImageCache, NotedeckTextStyle, UserAccount};
+use notedeck::{AppContext, ImageCache, NotedeckTextStyle, UrlMimes, UserAccount};
 use tokenator::{ParseError, TokenParser, TokenSerializable, TokenWriter};
 
 use super::{anim::AnimationHelper, padding, ProfilePreview};
@@ -164,6 +164,7 @@ pub struct AddColumnView<'a> {
     key_state_map: &'a mut HashMap<Id, AcquireKeyState>,
     ndb: &'a Ndb,
     img_cache: &'a mut ImageCache,
+    urls: &'a mut UrlMimes,
     cur_account: Option<&'a UserAccount>,
 }
 
@@ -172,12 +173,14 @@ impl<'a> AddColumnView<'a> {
         key_state_map: &'a mut HashMap<Id, AcquireKeyState>,
         ndb: &'a Ndb,
         img_cache: &'a mut ImageCache,
+        urls: &'a mut UrlMimes,
         cur_account: Option<&'a UserAccount>,
     ) -> Self {
         Self {
             key_state_map,
             ndb,
             img_cache,
+            urls,
             cur_account,
         }
     }
@@ -321,7 +324,7 @@ impl<'a> AddColumnView<'a> {
                                 bottom: 32.0,
                             })
                             .show(ui, |ui| {
-                                ProfilePreview::new(&profile, self.img_cache).ui(ui);
+                                ProfilePreview::new(&profile, self.img_cache, self.urls).ui(ui);
                             });
                     }
                 }
@@ -597,6 +600,7 @@ pub fn render_add_column_routes(
         &mut app.view_state.id_state_map,
         ctx.ndb,
         ctx.img_cache,
+        ctx.urls,
         ctx.accounts.get_selected_account(),
     );
     let resp = match route {

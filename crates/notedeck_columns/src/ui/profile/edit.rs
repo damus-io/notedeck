@@ -1,7 +1,7 @@
 use core::f32;
 
 use egui::{vec2, Button, Layout, Margin, RichText, Rounding, ScrollArea, TextEdit};
-use notedeck::{ImageCache, NotedeckTextStyle};
+use notedeck::{ImageCache, NotedeckTextStyle, UrlMimes};
 
 use crate::{colors, profile_state::ProfileState};
 
@@ -10,11 +10,20 @@ use super::{banner, unwrap_profile_url, ProfilePic};
 pub struct EditProfileView<'a> {
     state: &'a mut ProfileState,
     img_cache: &'a mut ImageCache,
+    urls: &'a mut UrlMimes,
 }
 
 impl<'a> EditProfileView<'a> {
-    pub fn new(state: &'a mut ProfileState, img_cache: &'a mut ImageCache) -> Self {
-        Self { state, img_cache }
+    pub fn new(
+        state: &'a mut ProfileState,
+        img_cache: &'a mut ImageCache,
+        urls: &'a mut UrlMimes,
+    ) -> Self {
+        Self {
+            state,
+            img_cache,
+            urls,
+        }
     }
 
     // return true to save
@@ -62,7 +71,7 @@ impl<'a> EditProfileView<'a> {
         });
         ui.put(
             pfp_rect,
-            ProfilePic::new(self.img_cache, pfp_url)
+            ProfilePic::new(self.img_cache, self.urls, pfp_url)
                 .size(size)
                 .border(ProfilePic::border_stroke(ui)),
         );
@@ -193,7 +202,7 @@ mod preview {
 
     impl App for EditProfilePreivew {
         fn update(&mut self, ctx: &mut notedeck::AppContext<'_>, ui: &mut egui::Ui) {
-            EditProfileView::new(&mut self.state, ctx.img_cache).ui(ui);
+            EditProfileView::new(&mut self.state, ctx.img_cache, ctx.urls).ui(ui);
         }
     }
 

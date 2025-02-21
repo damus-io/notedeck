@@ -23,7 +23,7 @@ use crate::{
     NostrName,
 };
 
-use notedeck::{Accounts, ImageCache, MuteFun, NoteCache, NotedeckTextStyle, UnknownIds};
+use notedeck::{Accounts, ImageCache, MuteFun, NoteCache, NotedeckTextStyle, UnknownIds, UrlMimes};
 
 pub struct ProfileView<'a> {
     pubkey: &'a Pubkey,
@@ -34,6 +34,7 @@ pub struct ProfileView<'a> {
     ndb: &'a Ndb,
     note_cache: &'a mut NoteCache,
     img_cache: &'a mut ImageCache,
+    urls: &'a mut UrlMimes,
     unknown_ids: &'a mut UnknownIds,
     is_muted: &'a MuteFun,
 }
@@ -53,6 +54,7 @@ impl<'a> ProfileView<'a> {
         ndb: &'a Ndb,
         note_cache: &'a mut NoteCache,
         img_cache: &'a mut ImageCache,
+        urls: &'a mut UrlMimes,
         unknown_ids: &'a mut UnknownIds,
         is_muted: &'a MuteFun,
         note_options: NoteOptions,
@@ -65,6 +67,7 @@ impl<'a> ProfileView<'a> {
             ndb,
             note_cache,
             img_cache,
+            urls,
             unknown_ids,
             note_options,
             is_muted,
@@ -117,6 +120,7 @@ impl<'a> ProfileView<'a> {
                     self.ndb,
                     self.note_cache,
                     self.img_cache,
+                    self.urls,
                     self.is_muted,
                 )
                 .show(ui)
@@ -149,7 +153,7 @@ impl<'a> ProfileView<'a> {
                 ui.horizontal(|ui| {
                     ui.put(
                         pfp_rect,
-                        ProfilePic::new(self.img_cache, get_profile_url(Some(&profile)))
+                        ProfilePic::new(self.img_cache, self.urls, get_profile_url(Some(&profile)))
                             .size(size)
                             .border(ProfilePic::border_stroke(ui)),
                     );
