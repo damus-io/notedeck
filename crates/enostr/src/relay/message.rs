@@ -78,6 +78,11 @@ impl<'a> RelayMessage<'a> {
             return Err(Error::Empty);
         }
 
+        // make sure we can inspect the begning of the message below ...
+        if msg.len() < 12 {
+            return Err(Error::DecodeFailed("message too short".into()));
+        }
+
         // Notice
         // Relay response format: ["NOTICE", <message>]
         if msg.len() >= 12 && &msg[0..=9] == "[\"NOTICE\"," {
@@ -160,6 +165,16 @@ mod tests {
         let tests = vec![
             // Valid cases
             (
+                // shortest valid message
+                r#"["EOSE","x"]"#,
+                Ok(RelayMessage::eose("x")),
+            ),
+            (
+                // also very short
+                r#"["NOTICE",""]"#,
+                Ok(RelayMessage::notice("")),
+            ),
+            (
                 r#"["NOTICE","Invalid event format!"]"#,
                 Ok(RelayMessage::notice("Invalid event format!")),
             ),
@@ -197,11 +212,11 @@ mod tests {
             ),
             (
                 r#"["EOSE"]"#,
-                Err(Error::DecodeFailed("unrecognized message type".into())),
+                Err(Error::DecodeFailed("message too short".into())),
             ),
             (
                 r#"["NOTICE"]"#,
-                Err(Error::DecodeFailed("unrecognized message type".into())),
+                Err(Error::DecodeFailed("message too short".into())),
             ),
             (
                 r#"["NOTICE": 404]"#,
