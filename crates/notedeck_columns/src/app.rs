@@ -7,7 +7,7 @@ use crate::{
     subscriptions::{SubKind, Subscriptions},
     support::Support,
     timeline::{self, TimelineCache},
-    ui::{self, DesktopSidePanel},
+    ui::{self, note::NoteOptions, DesktopSidePanel},
     unknowns,
     view_state::ViewState,
     Result,
@@ -50,10 +50,7 @@ pub struct Damus {
     pub tmp_columns: bool,
     pub debug: bool,
     pub since_optimize: bool,
-    pub textmode: bool,
-
-    /// Scramble text for development
-    pub scramble: bool,
+    pub note_options: NoteOptions,
 
     pub unrecognized_args: BTreeSet<String>,
 }
@@ -425,6 +422,10 @@ impl Damus {
 
         let debug = ctx.args.debug;
         let support = Support::new(ctx.path);
+        let mut note_options = NoteOptions::default();
+        note_options.set_textmode(parsed_args.textmode);
+        note_options.set_scramble_text(parsed_args.scramble);
+        note_options.set_hide_media(parsed_args.no_media);
 
         Self {
             subscriptions: Subscriptions::default(),
@@ -432,8 +433,7 @@ impl Damus {
             timeline_cache,
             drafts: Drafts::default(),
             state: DamusState::Initializing,
-            textmode: parsed_args.textmode,
-            scramble: parsed_args.scramble,
+            note_options,
             //frame_history: FrameHistory::default(),
             view_state: ViewState::default(),
             tmp_columns,
@@ -477,8 +477,7 @@ impl Damus {
             timeline_cache: TimelineCache::default(),
             drafts: Drafts::default(),
             state: DamusState::Initializing,
-            textmode: false,
-            scramble: false,
+            note_options: NoteOptions::default(),
             tmp_columns: true,
             //frame_history: FrameHistory::default(),
             view_state: ViewState::default(),

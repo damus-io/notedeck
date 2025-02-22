@@ -9,6 +9,7 @@ pub struct ColumnsArgs {
     pub since_optimize: bool,
     pub textmode: bool,
     pub scramble: bool,
+    pub no_media: bool,
 }
 
 impl ColumnsArgs {
@@ -19,6 +20,7 @@ impl ColumnsArgs {
             since_optimize: true,
             textmode: false,
             scramble: false,
+            no_media: false,
         };
 
         let mut i = 0;
@@ -32,6 +34,8 @@ impl ColumnsArgs {
                 res.since_optimize = false;
             } else if arg == "--scramble" {
                 res.scramble = true;
+            } else if arg == "--no-media" {
+                res.no_media = true;
             } else if arg == "--filter" {
                 i += 1;
                 let filter = if let Some(next_arg) = args.get(i) {
