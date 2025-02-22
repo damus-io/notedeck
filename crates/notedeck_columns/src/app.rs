@@ -52,6 +52,9 @@ pub struct Damus {
     pub since_optimize: bool,
     pub textmode: bool,
 
+    /// Scramble text for development
+    pub scramble: bool,
+
     pub unrecognized_args: BTreeSet<String>,
 }
 
@@ -430,6 +433,7 @@ impl Damus {
             drafts: Drafts::default(),
             state: DamusState::Initializing,
             textmode: parsed_args.textmode,
+            scramble: parsed_args.scramble,
             //frame_history: FrameHistory::default(),
             view_state: ViewState::default(),
             tmp_columns,
@@ -474,6 +478,7 @@ impl Damus {
             drafts: Drafts::default(),
             state: DamusState::Initializing,
             textmode: false,
+            scramble: false,
             tmp_columns: true,
             //frame_history: FrameHistory::default(),
             view_state: ViewState::default(),

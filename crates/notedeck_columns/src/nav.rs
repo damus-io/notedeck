@@ -16,7 +16,7 @@ use crate::{
         column::NavTitle,
         configure_deck::ConfigureDeckView,
         edit_deck::{EditDeckResponse, EditDeckView},
-        note::{PostAction, PostType},
+        note::{NoteOptions, PostAction, PostType},
         profile::EditProfileView,
         support::SupportView,
         RelayView, View,
@@ -243,6 +243,13 @@ fn render_nav_body(
     col: usize,
     inner_rect: egui::Rect,
 ) -> Option<RenderNavAction> {
+    let note_options = {
+        let mut options = NoteOptions::default();
+        options.set_textmode(app.textmode);
+        options.set_scramble_text(app.scramble);
+        options
+    };
+
     match top {
         Route::Timeline(kind) => render_timeline_route(
             ctx.ndb,
@@ -253,7 +260,7 @@ fn render_nav_body(
             ctx.accounts,
             kind,
             col,
-            app.textmode,
+            note_options,
             depth,
             ui,
         ),
@@ -310,6 +317,7 @@ fn render_nav_body(
                         ctx.img_cache,
                         &note,
                         inner_rect,
+                        note_options,
                     )
                     .id_source(id)
                     .show(ui)
@@ -345,6 +353,7 @@ fn render_nav_body(
                     draft,
                     &note,
                     inner_rect,
+                    note_options,
                 )
                 .id_source(id)
                 .show(ui)
@@ -366,6 +375,7 @@ fn render_nav_body(
                 ctx.note_cache,
                 kp,
                 inner_rect,
+                note_options,
             )
             .ui(&txn, ui);
 

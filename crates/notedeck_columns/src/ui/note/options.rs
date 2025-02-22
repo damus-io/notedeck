@@ -15,6 +15,9 @@ bitflags! {
         const textmode        = 0b0000000001000000;
         const options_button  = 0b0000000010000000;
         const hide_media      = 0b0000000100000000;
+
+        /// Scramble text so that its not distracting during development
+        const scramble_text   = 0b0000001000000000;
     }
 }
 
@@ -52,6 +55,7 @@ impl NoteOptions {
     create_bit_methods!(set_wide, has_wide, wide);
     create_bit_methods!(set_options_button, has_options_button, options_button);
     create_bit_methods!(set_hide_media, has_hide_media, hide_media);
+    create_bit_methods!(set_scramble_text, has_scramble_text, scramble_text);
 
     pub fn new(is_universe_timeline: bool) -> Self {
         let mut options = NoteOptions::default();

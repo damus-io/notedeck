@@ -19,15 +19,13 @@ pub fn render_timeline_route(
     accounts: &mut Accounts,
     kind: &TimelineKind,
     col: usize,
-    textmode: bool,
+    mut note_options: NoteOptions,
     depth: usize,
     ui: &mut egui::Ui,
 ) -> Option<RenderNavAction> {
-    let note_options = {
-        let mut options = NoteOptions::new(kind == &TimelineKind::Universe);
-        options.set_textmode(textmode);
-        options
-    };
+    if kind == &TimelineKind::Universe {
+        note_options.set_hide_media(true);
+    }
 
     match kind {
         TimelineKind::List(_)
@@ -63,6 +61,7 @@ pub fn render_timeline_route(
                     col,
                     ui,
                     &accounts.mutefun(),
+                    note_options,
                 )
             } else {
                 // we render profiles like timelines if they are at the root
@@ -88,7 +87,7 @@ pub fn render_timeline_route(
             unknown_ids,
             img_cache,
             id.selected_or_root(),
-            textmode,
+            note_options,
             &accounts.mutefun(),
         )
         .id_source(egui::Id::new(("threadscroll", col)))
@@ -109,6 +108,7 @@ pub fn render_profile_route(
     col: usize,
     ui: &mut egui::Ui,
     is_muted: &MuteFun,
+    note_options: NoteOptions,
 ) -> Option<RenderNavAction> {
     let action = ProfileView::new(
         pubkey,
@@ -120,7 +120,7 @@ pub fn render_profile_route(
         img_cache,
         unknown_ids,
         is_muted,
-        NoteOptions::default(),
+        note_options,
     )
     .ui(ui);
 

@@ -67,6 +67,7 @@ impl egui::Widget for &mut NoteContents<'_> {
 
 /// Render an inline note preview with a border. These are used when
 /// notes are references within a note
+#[allow(clippy::too_many_arguments)]
 pub fn render_note_preview(
     ui: &mut egui::Ui,
     ndb: &Ndb,
@@ -75,6 +76,7 @@ pub fn render_note_preview(
     txn: &Transaction,
     id: &[u8; 32],
     parent: NoteKey,
+    note_options: NoteOptions,
 ) -> NoteResponse {
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
@@ -112,7 +114,7 @@ pub fn render_note_preview(
             ui.visuals().noninteractive().bg_stroke.color,
         ))
         .show(ui, |ui| {
-            ui::NoteView::new(ndb, note_cache, img_cache, &note)
+            ui::NoteView::new(ndb, note_cache, img_cache, &note, note_options)
                 .actionbar(false)
                 .small_pfp(true)
                 .wide(true)
@@ -225,7 +227,11 @@ fn render_note_contents(
                 BlockType::Text => {
                     #[cfg(feature = "profiling")]
                     puffin::profile_scope!("text contents");
-                    ui.add(egui::Label::new(block.as_str()).selectable(selectable));
+                    if options.has_scramble_text() {
+                        ui.add(egui::Label::new(rot13(block.as_str())).selectable(selectable));
+                    } else {
+                        ui.add(egui::Label::new(block.as_str()).selectable(selectable));
+                    }
                 }
 
                 _ => {
@@ -236,7 +242,7 @@ fn render_note_contents(
     });
 
     let preview_note_action = if let Some((id, _block_str)) = inline_note {
-        render_note_preview(ui, ndb, note_cache, img_cache, txn, id, note_key).action
+        render_note_preview(ui, ndb, note_cache, img_cache, txn, id, note_key, options).action
     } else {
         None
     };
@@ -251,6 +257,24 @@ fn render_note_contents(
     let note_action = preview_note_action.or(note_action);
 
     NoteResponse::new(response.response).with_action(note_action)
+}
+
+fn rot13(input: &str) -> String {
+    input
+        .chars()
+        .map(|c| {
+            if c.is_ascii_lowercase() {
+                // Rotate lowercase letters
+                (((c as u8 - b'a' + 13) % 26) + b'a') as char
+            } else if c.is_ascii_uppercase() {
+                // Rotate uppercase letters
+                (((c as u8 - b'A' + 13) % 26) + b'A') as char
+            } else {
+                // Leave other characters unchanged
+                c
+            }
+        })
+        .collect()
 }
 
 fn image_carousel(

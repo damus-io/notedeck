@@ -8,6 +8,7 @@ pub struct ColumnsArgs {
     pub columns: Vec<ArgColumn>,
     pub since_optimize: bool,
     pub textmode: bool,
+    pub scramble: bool,
 }
 
 impl ColumnsArgs {
@@ -17,6 +18,7 @@ impl ColumnsArgs {
             columns: vec![],
             since_optimize: true,
             textmode: false,
+            scramble: false,
         };
 
         let mut i = 0;
@@ -28,6 +30,8 @@ impl ColumnsArgs {
                 res.textmode = true;
             } else if arg == "--no-since-optimize" {
                 res.since_optimize = false;
+            } else if arg == "--scramble" {
+                res.scramble = true;
             } else if arg == "--filter" {
                 i += 1;
                 let filter = if let Some(next_arg) = args.get(i) {
