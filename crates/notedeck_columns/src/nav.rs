@@ -253,7 +253,7 @@ fn render_nav_body(
             ctx.accounts,
             kind,
             col,
-            app.textmode,
+            app.note_options,
             depth,
             ui,
         ),
@@ -310,6 +310,7 @@ fn render_nav_body(
                         ctx.img_cache,
                         &note,
                         inner_rect,
+                        app.note_options,
                     )
                     .id_source(id)
                     .show(ui)
@@ -345,6 +346,7 @@ fn render_nav_body(
                     draft,
                     &note,
                     inner_rect,
+                    app.note_options,
                 )
                 .id_source(id)
                 .show(ui)
@@ -366,6 +368,7 @@ fn render_nav_body(
                 ctx.note_cache,
                 kp,
                 inner_rect,
+                app.note_options,
             )
             .ui(&txn, ui);
 

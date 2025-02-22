@@ -17,7 +17,7 @@ pub struct ThreadView<'a> {
     unknown_ids: &'a mut UnknownIds,
     img_cache: &'a mut ImageCache,
     selected_note_id: &'a [u8; 32],
-    textmode: bool,
+    note_options: NoteOptions,
     id_source: egui::Id,
     is_muted: &'a MuteFun,
 }
@@ -31,7 +31,7 @@ impl<'a> ThreadView<'a> {
         unknown_ids: &'a mut UnknownIds,
         img_cache: &'a mut ImageCache,
         selected_note_id: &'a [u8; 32],
-        textmode: bool,
+        note_options: NoteOptions,
         is_muted: &'a MuteFun,
     ) -> Self {
         let id_source = egui::Id::new("threadscroll_threadview");
@@ -42,7 +42,7 @@ impl<'a> ThreadView<'a> {
             unknown_ids,
             img_cache,
             selected_note_id,
-            textmode,
+            note_options,
             id_source,
             is_muted,
         }
@@ -101,15 +101,10 @@ impl<'a> ThreadView<'a> {
                     error!("error polling notes into thread timeline: {err}");
                 }
 
-                // This is threadview. We are not the universe view...
-                let is_universe = false;
-                let mut note_options = NoteOptions::new(is_universe);
-                note_options.set_textmode(self.textmode);
-
                 TimelineTabView::new(
                     thread_timeline.current_view(),
                     true,
-                    note_options,
+                    self.note_options,
                     &txn,
                     self.ndb,
                     self.note_cache,

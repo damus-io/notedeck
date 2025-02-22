@@ -4,7 +4,7 @@ use crate::media_upload::{nostrbuild_nip96_upload, MediaPath};
 use crate::post::{downcast_post_buffer, MentionType, NewPost};
 use crate::profile::get_display_name;
 use crate::ui::search_results::SearchResultsView;
-use crate::ui::{self, Preview, PreviewConfig};
+use crate::ui::{self, note::NoteOptions, Preview, PreviewConfig};
 use crate::Result;
 use egui::text::{CCursorRange, LayoutJob};
 use egui::text_edit::TextEditOutput;
@@ -27,6 +27,7 @@ pub struct PostView<'a> {
     poster: FilledKeypair<'a>,
     id_source: Option<egui::Id>,
     inner_rect: egui::Rect,
+    note_options: NoteOptions,
 }
 
 #[derive(Clone)]
@@ -82,6 +83,7 @@ pub struct PostResponse {
 }
 
 impl<'a> PostView<'a> {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         ndb: &'a Ndb,
         draft: &'a mut Draft,
@@ -90,6 +92,7 @@ impl<'a> PostView<'a> {
         note_cache: &'a mut NoteCache,
         poster: FilledKeypair<'a>,
         inner_rect: egui::Rect,
+        note_options: NoteOptions,
     ) -> Self {
         let id_source: Option<egui::Id> = None;
         PostView {
@@ -101,6 +104,7 @@ impl<'a> PostView<'a> {
             id_source,
             post_type,
             inner_rect,
+            note_options,
         }
     }
 
@@ -302,6 +306,7 @@ impl<'a> PostView<'a> {
                                         txn,
                                         id.bytes(),
                                         nostrdb::NoteKey::new(0),
+                                        self.note_options,
                                     );
                                 });
                             });
@@ -686,6 +691,7 @@ mod preview {
                 app.note_cache,
                 self.poster.to_filled(),
                 ui.available_rect_before_wrap(),
+                NoteOptions::default(),
             )
             .ui(&txn, ui);
         }

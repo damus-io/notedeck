@@ -76,8 +76,11 @@ impl<'a> NoteView<'a> {
         note_cache: &'a mut NoteCache,
         img_cache: &'a mut ImageCache,
         note: &'a nostrdb::Note<'a>,
+        mut flags: NoteOptions,
     ) -> Self {
-        let flags = NoteOptions::actionbar | NoteOptions::note_previews;
+        flags.set_actionbar(true);
+        flags.set_note_previews(true);
+
         let parent: Option<NoteKey> = None;
         Self {
             ndb,
@@ -87,11 +90,6 @@ impl<'a> NoteView<'a> {
             note,
             flags,
         }
-    }
-
-    pub fn note_options(mut self, options: NoteOptions) -> Self {
-        *self.options_mut() = options;
-        self
     }
 
     pub fn textmode(mut self, enable: bool) -> Self {
@@ -287,7 +285,14 @@ impl<'a> NoteView<'a> {
                             .text_style(style.text_style()),
                     );
                 });
-                NoteView::new(self.ndb, self.note_cache, self.img_cache, &note_to_repost).show(ui)
+                NoteView::new(
+                    self.ndb,
+                    self.note_cache,
+                    self.img_cache,
+                    &note_to_repost,
+                    self.flags,
+                )
+                .show(ui)
             } else {
                 self.show_standard(ui)
             }
@@ -393,6 +398,7 @@ impl<'a> NoteView<'a> {
                                         self.ndb,
                                         self.img_cache,
                                         self.note_cache,
+                                        self.flags,
                                     )
                                 })
                                 .inner;
@@ -464,6 +470,7 @@ impl<'a> NoteView<'a> {
                                 self.ndb,
                                 self.img_cache,
                                 self.note_cache,
+                                self.flags,
                             );
 
                             if action.is_some() {

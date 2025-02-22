@@ -1,6 +1,6 @@
 use crate::draft::Draft;
 use crate::ui;
-use crate::ui::note::{PostResponse, PostType};
+use crate::ui::note::{NoteOptions, PostResponse, PostType};
 use enostr::{FilledKeypair, NoteId};
 use nostrdb::Ndb;
 
@@ -15,9 +15,11 @@ pub struct PostReplyView<'a> {
     note: &'a nostrdb::Note<'a>,
     id_source: Option<egui::Id>,
     inner_rect: egui::Rect,
+    note_options: NoteOptions,
 }
 
 impl<'a> PostReplyView<'a> {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         ndb: &'a Ndb,
         poster: FilledKeypair<'a>,
@@ -26,6 +28,7 @@ impl<'a> PostReplyView<'a> {
         img_cache: &'a mut ImageCache,
         note: &'a nostrdb::Note<'a>,
         inner_rect: egui::Rect,
+        note_options: NoteOptions,
     ) -> Self {
         let id_source: Option<egui::Id> = None;
         PostReplyView {
@@ -37,6 +40,7 @@ impl<'a> PostReplyView<'a> {
             img_cache,
             id_source,
             inner_rect,
+            note_options,
         }
     }
 
@@ -67,11 +71,17 @@ impl<'a> PostReplyView<'a> {
             egui::Frame::none()
                 .outer_margin(egui::Margin::same(note_offset))
                 .show(ui, |ui| {
-                    ui::NoteView::new(self.ndb, self.note_cache, self.img_cache, self.note)
-                        .actionbar(false)
-                        .medium_pfp(true)
-                        .options_button(true)
-                        .show(ui);
+                    ui::NoteView::new(
+                        self.ndb,
+                        self.note_cache,
+                        self.img_cache,
+                        self.note,
+                        self.note_options,
+                    )
+                    .actionbar(false)
+                    .medium_pfp(true)
+                    .options_button(true)
+                    .show(ui);
                 });
 
             let id = self.id();
@@ -87,6 +97,7 @@ impl<'a> PostReplyView<'a> {
                     self.note_cache,
                     self.poster,
                     self.inner_rect,
+                    self.note_options,
                 )
                 .id_source(id)
                 .ui(self.note.txn().unwrap(), ui)

@@ -388,10 +388,14 @@ impl<'a> TimelineTabView<'a> {
 
                 if !muted {
                     ui::padding(8.0, ui, |ui| {
-                        let resp =
-                            ui::NoteView::new(self.ndb, self.note_cache, self.img_cache, &note)
-                                .note_options(self.note_options)
-                                .show(ui);
+                        let resp = ui::NoteView::new(
+                            self.ndb,
+                            self.note_cache,
+                            self.img_cache,
+                            &note,
+                            self.note_options,
+                        )
+                        .show(ui);
 
                         if let Some(note_action) = resp.action {
                             action = Some(note_action)

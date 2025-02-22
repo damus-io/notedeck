@@ -2,7 +2,10 @@ use enostr::{FilledKeypair, NoteId};
 use nostrdb::Ndb;
 use notedeck::{ImageCache, NoteCache};
 
-use crate::{draft::Draft, ui};
+use crate::{
+    draft::Draft,
+    ui::{self, note::NoteOptions},
+};
 
 use super::{PostResponse, PostType};
 
@@ -15,9 +18,11 @@ pub struct QuoteRepostView<'a> {
     quoting_note: &'a nostrdb::Note<'a>,
     id_source: Option<egui::Id>,
     inner_rect: egui::Rect,
+    note_options: NoteOptions,
 }
 
 impl<'a> QuoteRepostView<'a> {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         ndb: &'a Ndb,
         poster: FilledKeypair<'a>,
@@ -26,6 +31,7 @@ impl<'a> QuoteRepostView<'a> {
         draft: &'a mut Draft,
         quoting_note: &'a nostrdb::Note<'a>,
         inner_rect: egui::Rect,
+        note_options: NoteOptions,
     ) -> Self {
         let id_source: Option<egui::Id> = None;
         QuoteRepostView {
@@ -37,6 +43,7 @@ impl<'a> QuoteRepostView<'a> {
             quoting_note,
             id_source,
             inner_rect,
+            note_options,
         }
     }
 
@@ -52,6 +59,7 @@ impl<'a> QuoteRepostView<'a> {
             self.note_cache,
             self.poster,
             self.inner_rect,
+            self.note_options,
         )
         .id_source(id)
         .ui(self.quoting_note.txn().unwrap(), ui)

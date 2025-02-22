@@ -1,4 +1,7 @@
-use crate::{actionbar::NoteAction, ui};
+use crate::{
+    actionbar::NoteAction,
+    ui::{self, note::NoteOptions},
+};
 use egui::{Label, RichText, Sense};
 use nostrdb::{Ndb, Note, NoteReply, Transaction};
 use notedeck::{ImageCache, NoteCache};
@@ -11,6 +14,7 @@ pub fn reply_desc(
     ndb: &Ndb,
     img_cache: &mut ImageCache,
     note_cache: &mut NoteCache,
+    note_options: NoteOptions,
 ) -> Option<NoteAction> {
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
@@ -41,7 +45,7 @@ pub fn reply_desc(
         if r.hovered() {
             r.on_hover_ui_at_pointer(|ui| {
                 ui.set_max_width(400.0);
-                ui::NoteView::new(ndb, note_cache, img_cache, note)
+                ui::NoteView::new(ndb, note_cache, img_cache, note, note_options)
                     .actionbar(false)
                     .wide(true)
                     .show(ui);
