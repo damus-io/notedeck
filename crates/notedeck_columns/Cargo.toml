@@ -31,7 +31,6 @@ nostrdb = { workspace = true }
 open = { workspace = true }
 poll-promise = { workspace = true }
 puffin = { workspace = true, optional = true }
-puffin_egui = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_derive = { workspace = true }
 serde_json = { workspace = true }
@@ -46,6 +45,8 @@ urlencoding = { workspace = true }
 uuid = { workspace = true }
 sha2 = { workspace = true }
 base64 = { workspace = true }
+profiling = {workspace = true, optional = true }
+puffin_http = {workspace = true , optional = true }
 
 [target.'cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))'.dependencies]
 rfd = "0.15"
@@ -59,5 +60,5 @@ security-framework = "2.11.0"
 
 [features]
 default = []
-profiling = ["puffin", "puffin_egui", "eframe/puffin"]
+profiling = ["puffin", "dep:profiling", "dep:puffin_http", "eframe/puffin"]
 

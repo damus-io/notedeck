@@ -15,7 +15,8 @@ egui = { workspace = true }
 notedeck_columns = { workspace = true }
 notedeck = { workspace = true }
 puffin = { workspace = true, optional = true }
-puffin_egui = { workspace = true, optional = true }
+profiling = {workspace = true, optional = true }
+puffin_http = {workspace = true, optional = true}
 serde_json = { workspace = true }
 serde = { workspace = true }
 strum = { workspace = true }
@@ -40,7 +41,7 @@ path = "src/preview.rs"
 
 [features]
 default = []
-profiling = ["notedeck_columns/puffin", "puffin", "puffin_egui"]
+profiling = ["notedeck_columns/puffin", "puffin", "dep:profiling", "dep:puffin_http"]
 debug-widget-callstack = ["egui/callstack"]
 debug-interactive-widgets = []
 
