@@ -1194,13 +1194,13 @@ dependencies = [
  "parking_lot",
  "percent-encoding",
  "pollster 0.3.0",
- "puffin 0.19.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "puffin",
  "raw-window-handle 0.6.2",
  "static_assertions",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
- "web-time 1.1.0",
+ "web-time",
  "wgpu",
  "winapi",
  "windows-sys 0.52.0",
@@ -1219,7 +1219,7 @@ dependencies = [
  "epaint",
  "log",
  "nohash-hasher",
- "puffin 0.19.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "puffin",
  "serde",
 ]
 
@@ -1235,10 +1235,10 @@ dependencies = [
  "egui",
  "epaint",
  "log",
- "puffin 0.19.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "puffin",
  "thiserror 1.0.69",
  "type-map",
- "web-time 1.1.0",
+ "web-time",
  "wgpu",
  "winit",
 ]
@@ -1253,10 +1253,10 @@ dependencies = [
  "arboard",
  "egui",
  "log",
- "puffin 0.19.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "puffin",
  "raw-window-handle 0.6.2",
  "smithay-clipboard",
- "web-time 1.1.0",
+ "web-time",
  "webbrowser",
  "winit",
 ]
@@ -1274,8 +1274,8 @@ dependencies = [
  "image",
  "log",
  "mime_guess2",
+ "puffin",
  "resvg",
- "serde",
 ]
 
 [[package]]
@@ -1291,7 +1291,7 @@ dependencies = [
  "glow 0.14.2",
  "log",
  "memoffset",
- "puffin 0.19.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "puffin",
  "wasm-bindgen",
  "web-sys",
  "winit",
@@ -1323,7 +1323,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8191e9cbf6cc7b111655fc115725505fc09d7698c04c36897950c46d6e69521b"
 dependencies = [
  "egui",
- "web-time 1.1.0",
+ "web-time",
 ]
 
 [[package]]
@@ -1460,7 +1460,7 @@ dependencies = [
  "log",
  "nohash-hasher",
  "parking_lot",
- "puffin 0.19.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "puffin",
  "serde",
 ]
 
@@ -2191,7 +2191,6 @@ checksum = "62f822373a4fe84d4bb149bf54e584a7f4abec90e072ed49cda0edea5b95471f"
 dependencies = [
  "equivalent",
  "hashbrown 0.15.2",
- "serde",
 ]
 
 [[package]]
@@ -2580,12 +2579,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "natord"
-version = "1.0.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "308d96db8debc727c3fd9744aac51751243420e46edf401010908da7f8d5e57c"
-
-[[package]]
 name = "ndk"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2755,8 +2748,9 @@ dependencies = [
  "image",
  "nostrdb",
  "poll-promise",
- "puffin 0.19.1 (git+https://github.com/jb55/puffin?rev=70ff86d5503815219b01a009afd3669b7903a057)",
- "puffin_egui",
+ "profiling",
+ "puffin",
+ "puffin_http",
  "security-framework",
  "serde",
  "serde_json",
@@ -2781,8 +2775,9 @@ dependencies = [
  "log",
  "notedeck",
  "notedeck_columns",
- "puffin 0.19.1 (git+https://github.com/jb55/puffin?rev=70ff86d5503815219b01a009afd3669b7903a057)",
- "puffin_egui",
+ "profiling",
+ "puffin",
+ "puffin_http",
  "serde",
  "serde_json",
  "strum",
@@ -2818,8 +2813,9 @@ dependencies = [
  "open",
  "poll-promise",
  "pretty_assertions",
- "puffin 0.19.1 (git+https://github.com/jb55/puffin?rev=70ff86d5503815219b01a009afd3669b7903a057)",
- "puffin_egui",
+ "profiling",
+ "puffin",
+ "puffin_http",
  "rfd",
  "security-framework",
  "serde",
@@ -3514,6 +3510,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "afbdc74edc00b6f6a218ca6a5364d6226a259d4b8ea1af4a0ea063f27e179f4d"
 dependencies = [
  "profiling-procmacros",
+ "puffin",
 ]
 
 [[package]]
@@ -3533,19 +3530,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fa9dae7b05c02ec1a6bc9bcf20d8bc64a7dcbf57934107902a872014899b741f"
 dependencies = [
  "anyhow",
- "byteorder",
- "cfg-if",
- "itertools 0.10.5",
- "once_cell",
- "parking_lot",
-]
-
-[[package]]
-name = "puffin"
-version = "0.19.1"
-source = "git+https://github.com/jb55/puffin?rev=70ff86d5503815219b01a009afd3669b7903a057#70ff86d5503815219b01a009afd3669b7903a057"
-dependencies = [
- "anyhow",
  "bincode",
  "byteorder",
  "cfg-if",
@@ -3557,20 +3541,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "puffin_egui"
-version = "0.29.0"
-source = "git+https://github.com/jb55/puffin?rev=70ff86d5503815219b01a009afd3669b7903a057#70ff86d5503815219b01a009afd3669b7903a057"
+name = "puffin_http"
+version = "0.16.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "739a3c7f56604713b553d7addd7718c226e88d598979ae3450320800bd0e9810"
 dependencies = [
- "egui",
- "egui_extras",
- "indexmap",
- "natord",
- "once_cell",
+ "anyhow",
+ "crossbeam-channel",
+ "log",
  "parking_lot",
- "puffin 0.19.1 (git+https://github.com/jb55/puffin?rev=70ff86d5503815219b01a009afd3669b7903a057)",
- "time",
- "vec1",
- "web-time 0.2.4",
+ "puffin",
 ]
 
 [[package]]
@@ -4929,12 +4909,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "830b7e5d4d90034032940e4ace0d9a9a057e7a45cd94e6c007832e39edb82f6d"
 
 [[package]]
-name = "vec1"
-version = "1.12.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eab68b56840f69efb0fefbe3ab6661499217ffdc58e2eef7c3f6f69835386322"
-
-[[package]]
 name = "version-compare"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5143,16 +5117,6 @@ name = "web-sys"
 version = "0.3.76"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "04dd7223427d52553d3702c004d3b2fe07c148165faa56313cb00211e31c12bc"
-dependencies = [
- "js-sys",
- "wasm-bindgen",
-]
-
-[[package]]
-name = "web-time"
-version = "0.2.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aa30049b1c872b72c89866d458eae9f20380ab280ffd1b1e18df2d3e2d98cfe0"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
@@ -5631,7 +5595,7 @@ dependencies = [
  "wayland-protocols",
  "wayland-protocols-plasma",
  "web-sys",
- "web-time 1.1.0",
+ "web-time",
  "windows-sys 0.52.0",
  "x11-dl",
  "x11rb",

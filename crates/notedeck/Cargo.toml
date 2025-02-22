@@ -23,7 +23,8 @@ serde = { workspace = true }
 hex = { workspace = true }
 thiserror = { workspace = true }
 puffin = { workspace = true, optional = true }
-puffin_egui = { workspace = true, optional = true }
+profiling = {workspace = true , optional = true }
+puffin_http = {workspace = true , optional = true }
 sha2 = { workspace = true }
 
 [dev-dependencies]
@@ -33,4 +34,4 @@ tempfile = { workspace = true }
 security-framework = { workspace = true }
 
 [features]
-profiling = ["puffin", "puffin_egui"]
+profiling = ["puffin", "dep:profiling", "dep:puffin_http" ]

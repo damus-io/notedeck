@@ -67,9 +67,6 @@ fn main_panel(style: &egui::Style, narrow: bool) -> egui::CentralPanel {
 
 impl eframe::App for Notedeck {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        #[cfg(feature = "profiling")]
-        puffin::GlobalProfiler::lock().new_frame();
-
         // handle account updates
         self.accounts.update(&mut self.ndb, &mut self.pool, ctx);
 
@@ -93,9 +90,6 @@ impl eframe::App for Notedeck {
                 RelayDebugView::window(ctx, debug);
             }
         }
-
-        #[cfg(feature = "profiling")]
-        puffin_egui::profiler_window(ctx);
     }
 
     /// Called by the framework to save state before shutdown.
@@ -104,16 +98,8 @@ impl eframe::App for Notedeck {
     }
 }
 
-#[cfg(feature = "profiling")]
-fn setup_profiling() {
-    puffin::set_scopes_on(true); // tell puffin to collect data
-}
-
 impl Notedeck {
     pub fn new<P: AsRef<Path>>(ctx: &egui::Context, data_path: P, args: &[String]) -> Self {
-        #[cfg(feature = "profiling")]
-        setup_profiling();
-
         // Skip the first argument, which is the program name.
         let (parsed_args, unrecognized_args) = Args::parse(&args[1..]);
 
