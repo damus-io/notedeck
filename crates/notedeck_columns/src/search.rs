@@ -6,7 +6,7 @@ use tokenator::{ParseError, TokenParser, TokenSerializable, TokenWriter};
 #[derive(Debug, Eq, PartialEq, Clone, Hash)]
 pub struct SearchQuery {
     author: Option<Pubkey>,
-    search: String,
+    pub search: String,
 }
 
 impl TokenSerializable for SearchQuery {

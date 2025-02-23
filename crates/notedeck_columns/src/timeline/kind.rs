@@ -588,7 +588,9 @@ impl TimelineKind {
 
     pub fn to_title(&self) -> ColumnTitle<'_> {
         match self {
-            TimelineKind::Search(_query) => ColumnTitle::simple("Search"),
+            TimelineKind::Search(query) => {
+                ColumnTitle::formatted(format!("Search \"{}\"", query.search))
+            }
             TimelineKind::List(list_kind) => match list_kind {
                 ListKind::Contact(_pubkey_source) => ColumnTitle::simple("Contacts"),
             },
