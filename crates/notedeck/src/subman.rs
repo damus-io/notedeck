@@ -1,5 +1,5 @@
 use futures::{channel::mpsc, FutureExt, StreamExt};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::{cell::RefCell, cmp::Ordering, rc::Rc};
 use thiserror::Error;
@@ -526,6 +526,7 @@ impl SubMan {
     pub fn process_relays<H: LegacyRelayHandler>(
         &mut self,
         legacy_relay_handler: &mut H,
+        default_relays: &[RelaySpec],
     ) -> SubResult<()> {
         let wakeup = move || {
             // ignore
@@ -594,6 +595,9 @@ impl SubMan {
                 }
             }
         }
+
+        self.close_unneeded_relays(default_relays);
+
         Ok(())
     }
 
@@ -669,6 +673,41 @@ impl SubMan {
                 }
             }
         }
+    }
+
+    fn close_unneeded_relays(&mut self, default_relays: &[RelaySpec]) {
+        let current_relays: BTreeSet<String> = self.pool.urls();
+        let needed_relays: BTreeSet<String> = self.needed_relays(default_relays);
+        let unneeded_relays: BTreeSet<_> =
+            current_relays.difference(&needed_relays).cloned().collect();
+        if !unneeded_relays.is_empty() {
+            debug!("closing unneeded relays: {:?}", unneeded_relays);
+            self.pool.remove_urls(&unneeded_relays);
+        }
+    }
+
+    fn needed_relays(&self, default_relays: &[RelaySpec]) -> BTreeSet<String> {
+        let mut needed: BTreeSet<String> = default_relays.iter().map(|rs| rs.url.clone()).collect();
+        // for every remote subscription
+        for ssr in self.remote.values() {
+            // that has remote substate (all will)
+            if let Some(ref remotesubstate) = ssr.borrow().remote {
+                // for each subscription remote relay
+                for (relay, state) in &remotesubstate.relays {
+                    // include any that are in-play
+                    match state {
+                        RelaySubState::Error(_) | RelaySubState::Closed => {
+                            // these are terminal and we don't need this relay
+                        }
+                        _ => {
+                            // relays in all other states are needed
+                            _ = needed.insert(relay.clone());
+                        }
+                    }
+                }
+            }
+        }
+        needed
     }
 }
 
