@@ -1,5 +1,8 @@
-use crate::error::Error;
-use crate::timeline::{Timeline, TimelineTab};
+use crate::{
+    error::Error,
+    search::SearchQuery,
+    timeline::{Timeline, TimelineTab},
+};
 use enostr::{Filter, NoteId, Pubkey};
 use nostrdb::{Ndb, Transaction};
 use notedeck::{
@@ -197,6 +200,8 @@ impl Eq for ThreadSelection {}
 pub enum TimelineKind {
     List(ListKind),
 
+    Search(SearchQuery),
+
     /// The last not per pubkey
     Algo(AlgoTimeline),
 
@@ -263,6 +268,7 @@ impl Display for TimelineKind {
             TimelineKind::Universe => f.write_str("Universe"),
             TimelineKind::Hashtag(_) => f.write_str("Hashtag"),
             TimelineKind::Thread(_) => f.write_str("Thread"),
+            TimelineKind::Search(_) => f.write_str("Search"),
         }
     }
 }
@@ -278,6 +284,7 @@ impl TimelineKind {
             TimelineKind::Generic(_) => None,
             TimelineKind::Hashtag(_ht) => None,
             TimelineKind::Thread(_ht) => None,
+            TimelineKind::Search(query) => query.author(),
         }
     }
 
@@ -293,11 +300,15 @@ impl TimelineKind {
             TimelineKind::Generic(_) => true,
             TimelineKind::Hashtag(_ht) => true,
             TimelineKind::Thread(_ht) => true,
+            TimelineKind::Search(_q) => true,
         }
     }
 
+    // NOTE!!: if you just added a TimelineKind enum, make sure to update
+    //         the parser below as well
     pub fn serialize_tokens(&self, writer: &mut TokenWriter) {
         match self {
+            TimelineKind::Search(query) => query.serialize_tokens(writer),
             TimelineKind::List(list_kind) => list_kind.serialize_tokens(writer),
             TimelineKind::Algo(algo_timeline) => algo_timeline.serialize_tokens(writer),
             TimelineKind::Notifications(pk) => {
@@ -418,6 +429,8 @@ impl TimelineKind {
     // TODO: probably should set default limit here
     pub fn filters(&self, txn: &Transaction, ndb: &Ndb) -> FilterState {
         match self {
+            TimelineKind::Search(s) => FilterState::ready(search_filter(s)),
+
             TimelineKind::Universe => FilterState::ready(universe_filter()),
 
             TimelineKind::List(list_k) => match list_k {
@@ -468,6 +481,15 @@ impl TimelineKind {
 
     pub fn into_timeline(self, txn: &Transaction, ndb: &Ndb) -> Option<Timeline> {
         match self {
+            TimelineKind::Search(s) => {
+                let filter = FilterState::ready(search_filter(&s));
+                Some(Timeline::new(
+                    TimelineKind::Search(s),
+                    filter,
+                    TimelineTab::full_tabs(),
+                ))
+            }
+
             TimelineKind::Universe => Some(Timeline::new(
                 TimelineKind::Universe,
                 FilterState::ready(universe_filter()),
@@ -562,6 +584,7 @@ impl TimelineKind {
 
     pub fn to_title(&self) -> ColumnTitle<'_> {
         match self {
+            TimelineKind::Search(_query) => ColumnTitle::simple("Search"),
             TimelineKind::List(list_kind) => match list_kind {
                 ListKind::Contact(_pubkey_source) => ColumnTitle::simple("Contacts"),
             },
@@ -681,6 +704,10 @@ fn last_per_pubkey_filter_state(ndb: &Ndb, pk: &Pubkey) -> FilterState {
             Ok(filter) => FilterState::ready(filter),
         }
     }
+}
+
+fn search_filter(s: &SearchQuery) -> Vec<Filter> {
+    vec![s.filter().limit(default_limit()).build()]
 }
 
 fn universe_filter() -> Vec<Filter> {

@@ -322,6 +322,7 @@ impl fmt::Display for Route {
                 TimelineKind::Notifications(_) => write!(f, "Notifications"),
                 TimelineKind::Universe => write!(f, "Universe"),
                 TimelineKind::Generic(_) => write!(f, "Custom"),
+                TimelineKind::Search(_) => write!(f, "Search"),
                 TimelineKind::Hashtag(ht) => write!(f, "Hashtag ({})", ht),
                 TimelineKind::Thread(_id) => write!(f, "Thread"),
                 TimelineKind::Profile(_id) => write!(f, "Profile"),

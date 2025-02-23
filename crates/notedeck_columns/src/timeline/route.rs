@@ -29,6 +29,7 @@ pub fn render_timeline_route(
 
     match kind {
         TimelineKind::List(_)
+        | TimelineKind::Search(_)
         | TimelineKind::Algo(_)
         | TimelineKind::Notifications(_)
         | TimelineKind::Universe
