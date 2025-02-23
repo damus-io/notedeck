@@ -73,15 +73,27 @@ impl ColumnsArgs {
                         res.columns
                             .push(ArgColumn::Timeline(TimelineKind::contact_list(
                                 deck_author.to_owned(),
-                            )))
+                            )));
                     } else {
-                        panic!("No accounts available, could not handle implicit pubkey contacts column")
+                        panic!("No accounts available, could not handle implicit pubkey contacts column");
                     }
+                } else if column_name == "search" {
+                    i += 1;
+                    let search = if let Some(next_arg) = args.get(i) {
+                        next_arg
+                    } else {
+                        error!("search filter argument missing?");
+                        continue;
+                    };
+
+                    res.columns.push(ArgColumn::Timeline(TimelineKind::search(
+                        search.to_string(),
+                    )));
                 } else if let Some(notif_pk_str) = column_name.strip_prefix("notifications:") {
                     if let Ok(pubkey) = Pubkey::parse(notif_pk_str) {
                         info!("got notifications column for user {}", pubkey.hex());
                         res.columns
-                            .push(ArgColumn::Timeline(TimelineKind::notifications(pubkey)))
+                            .push(ArgColumn::Timeline(TimelineKind::notifications(pubkey)));
                     } else {
                         error!("error parsing notifications pubkey {}", notif_pk_str);
                         continue;

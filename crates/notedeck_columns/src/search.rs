@@ -24,6 +24,10 @@ impl TokenSerializable for SearchQuery {
 }
 
 impl SearchQuery {
+    pub fn new(search: String) -> Self {
+        let author: Option<Pubkey> = None;
+        Self { search, author }
+    }
     /// Convert the query to a filter-compatible MessagePack value
     fn to_msgpack_value(&self) -> Value {
         let mut values: Vec<(Value, Value)> = Vec::with_capacity(2);

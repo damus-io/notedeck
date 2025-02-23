@@ -406,6 +406,10 @@ impl TimelineKind {
         TimelineKind::List(ListKind::contact_list(pk))
     }
 
+    pub fn search(s: String) -> Self {
+        TimelineKind::Search(SearchQuery::new(s))
+    }
+
     pub fn is_contacts(&self) -> bool {
         matches!(self, TimelineKind::List(ListKind::Contact(_)))
     }
