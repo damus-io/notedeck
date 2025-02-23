@@ -487,8 +487,7 @@ fn compose_note_button(interactive: bool, dark_mode: bool) -> impl Widget {
     }
 }
 
-#[allow(unused)]
-fn search_button() -> impl Widget {
+pub fn search_button() -> impl Widget {
     |ui: &mut egui::Ui| -> egui::Response {
         let max_size = ICON_WIDTH * ICON_EXPANSION_MULTIPLE; // max size of the widget
         let min_line_width_circle = 1.5; // width of the magnifying glass

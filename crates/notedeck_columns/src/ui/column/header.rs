@@ -434,9 +434,14 @@ impl<'a> NavTitle<'a> {
                     // no pfp for threads
                 }
 
+                TimelineKind::Search(_sq) => {
+                    // TODO: show author pfp if author field set?
+
+                    ui.add(ui::side_panel::search_button());
+                }
+
                 TimelineKind::Universe
                 | TimelineKind::Algo(_)
-                | TimelineKind::Search(_)
                 | TimelineKind::Notifications(_)
                 | TimelineKind::Generic(_)
                 | TimelineKind::List(_) => {
