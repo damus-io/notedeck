@@ -27,6 +27,7 @@ mod profile;
 mod profile_state;
 pub mod relay_pool_manager;
 mod route;
+mod search;
 mod subscriptions;
 mod support;
 mod test_data;

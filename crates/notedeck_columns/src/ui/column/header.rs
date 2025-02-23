@@ -436,6 +436,7 @@ impl<'a> NavTitle<'a> {
 
                 TimelineKind::Universe
                 | TimelineKind::Algo(_)
+                | TimelineKind::Search(_)
                 | TimelineKind::Notifications(_)
                 | TimelineKind::Generic(_)
                 | TimelineKind::List(_) => {

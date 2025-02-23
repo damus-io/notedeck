@@ -11,6 +11,8 @@ description = "A tweetdeck-style notedeck app"
 crate-type = ["lib", "cdylib"]
 
 [dependencies]
+rmpv = { workspace = true }
+bech32 = { workspace = true }
 notedeck = { workspace = true }
 tokenator = { workspace = true }
 bitflags = { workspace = true }
