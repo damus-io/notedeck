@@ -155,6 +155,7 @@ fn try_process_event<'a>(
     ctx.input(|i| handle_key_events(i, current_columns));
 
     {
+        let default_relays = app_ctx.accounts.get_all_selected_account_relays();
         let mut relay_handler = RelayHandler::new(
             app_ctx.unknown_ids,
             app_ctx.note_cache,
@@ -163,7 +164,10 @@ fn try_process_event<'a>(
             &mut damus.timeline_cache,
             damus.since_optimize,
         );
-        app_ctx.subman.process_relays(&mut relay_handler).ok();
+        app_ctx
+            .subman
+            .process_relays(&mut relay_handler, &default_relays)
+            .ok();
     }
 
     for (_kind, timeline) in damus.timeline_cache.timelines.iter_mut() {
