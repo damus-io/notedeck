@@ -1,7 +1,7 @@
 use crate::persist::{AppSizeHandler, ZoomHandler};
 use crate::{
-    AccountStorage, Accounts, AppContext, Args, DataPath, DataPathType, Directory, FileKeyStorage,
-    Images, KeyStorageType, NoteCache, RelayDebugView, SubMan, ThemeHandler, UnknownIds,
+    AccountStorage, Accounts, AppContext, Args, DataPath, DataPathType, Directory, Images,
+    NoteCache, RelayDebugView, SubMan, ThemeHandler, UnknownIds,
 };
 use egui::ThemePreference;
 use egui_winit::clipboard::Clipboard;

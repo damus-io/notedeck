@@ -2,16 +2,14 @@ use tracing::{debug, error, info};
 
 use crate::subman::{RemoteId, SubSpecBuilder};
 use crate::{
-    AccountStorage, KeyStorageResponse, KeyStorageType, MuteFun, MuteFun, Muted, Muted, RelaySpec,
-    RelaySpec, SingleUnkIdAction, SingleUnkIdAction, SubError, SubMan, UnknownIds, UnknownIds,
-    UserAccount, UserAccount,
+    AccountStorage, MuteFun, Muted, RelaySpec, SingleUnkIdAction, SubError, SubMan, UnknownIds,
+    UserAccount,
 };
-use enostr::{ClientMessage, FilledKeypair, Keypair, Pubkey, RelayPool};
-use nostrdb::{Filter, Ndb, Note, NoteBuilder, NoteKey, Subscription, Transaction};
+use enostr::{FilledKeypair, Keypair, Pubkey, RelayPool};
+use nostrdb::{Filter, Ndb, Note, NoteBuilder, NoteKey, Transaction};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use url::Url;
-use uuid::Uuid;
 
 // TODO: remove this
 use std::sync::{Arc, Mutex};
@@ -39,10 +37,9 @@ pub enum AccountsAction {
 
 pub struct AccountRelayData {
     filter: Filter,
-    subid: Option<String>,
-    sub: Option<Subscription>,
-    local: BTreeSet<RelaySpec>,      // used locally but not advertised
-    advertised: BTreeSet<RelaySpec>, // advertised via NIP-65
+    sub_remote_id: Option<RemoteId>,
+    _local: BTreeSet<RelaySpec>, // used locally but not advertised
+    advertised: Arc<Mutex<BTreeSet<RelaySpec>>>, // advertised via NIP-65
 }
 
 #[derive(Default)]
@@ -84,47 +81,64 @@ impl AccountRelayData {
 
         AccountRelayData {
             filter,
-            subid: None,
-            sub: None,
-            local: BTreeSet::new(),
-            advertised: relays.into_iter().collect(),
+            sub_remote_id: None,
+            _local: BTreeSet::new(),
+            advertised: Arc::new(Mutex::new(relays.into_iter().collect())),
         }
     }
 
     // make this account the current selected account
-    pub fn activate(&mut self, ndb: &Ndb, pool: &mut RelayPool) {
+    pub fn activate(&mut self, subman: &mut SubMan, default_relays: &[RelaySpec]) {
         debug!("activating relay sub {}", self.filter.json().unwrap());
-        assert_eq!(self.subid, None, "subid already exists");
-        assert_eq!(self.sub, None, "sub already exists");
-
-        // local subscription
-        let sub = ndb
-            .subscribe(&[self.filter.clone()])
-            .expect("ndb relay list subscription");
-
-        // remote subscription
-        let subid = Uuid::new_v4().to_string();
-        pool.subscribe(subid.clone(), vec![self.filter.clone()]);
-
-        self.sub = Some(sub);
-        self.subid = Some(subid);
+        assert!(self.sub_remote_id.is_none(), "subscription already exists");
+        let ndb = subman.ndb();
+        let subspec = SubSpecBuilder::new()
+            .filters(vec![self.filter.clone()])
+            .build();
+        debug!(
+            "activating account relay sub {}: {}",
+            subspec.remote_id,
+            self.filter.json().unwrap()
+        );
+        if let Ok(mut rcvr) = subman.subscribe(subspec, default_relays) {
+            let idstr = rcvr.idstr();
+            self.sub_remote_id = rcvr.remote_id();
+            let advertisedref = self.advertised.clone();
+            tokio::spawn(async move {
+                loop {
+                    match rcvr.next().await {
+                        Err(SubError::StreamEnded) => {
+                            debug!("account relays: sub {} complete", idstr);
+                            break;
+                        }
+                        Err(err) => {
+                            error!("account relays: sub {}: error: {:?}", idstr, err);
+                            break;
+                        }
+                        Ok(nks) => {
+                            debug!("account relays: sub {}: note keys: {:?}", idstr, nks);
+                            let txn = Transaction::new(&ndb).expect("txn");
+                            let relays = Self::harvest_nip65_relays(&ndb, &txn, &nks);
+                            debug!("updated relays {:?}", relays);
+                            *advertisedref.lock().unwrap() = relays.into_iter().collect();
+                        }
+                    }
+                }
+            });
+        }
     }
 
     // this account is no longer the selected account
-    pub fn deactivate(&mut self, ndb: &mut Ndb, pool: &mut RelayPool) {
-        debug!("deactivating relay sub {}", self.filter.json().unwrap());
-        assert_ne!(self.subid, None, "subid doesn't exist");
-        assert_ne!(self.sub, None, "sub doesn't exist");
-
-        // remote subscription
-        pool.unsubscribe(self.subid.as_ref().unwrap().clone());
-
-        // local subscription
-        ndb.unsubscribe(self.sub.unwrap())
-            .expect("ndb relay list unsubscribe");
-
-        self.sub = None;
-        self.subid = None;
+    pub fn deactivate(&mut self, subman: &mut SubMan) {
+        assert!(self.sub_remote_id.is_some(), "subscription doesn't exist");
+        let remote_id = self.sub_remote_id.as_ref().unwrap();
+        debug!(
+            "deactivating account relays sub {}: {}",
+            remote_id,
+            self.filter.json().unwrap()
+        );
+        subman.unsubscribe_remote_id(remote_id).ok();
+        self.sub_remote_id = None;
     }
 
     // standardize the format (ie, trailing slashes) to avoid dups
@@ -174,7 +188,7 @@ impl AccountRelayData {
 
     pub fn publish_nip65_relays(&self, seckey: &[u8; 32], pool: &mut RelayPool) {
         let mut builder = NoteBuilder::new().kind(10002).content("");
-        for rs in &self.advertised {
+        for rs in self.advertised.lock().unwrap().iter() {
             builder = builder.start_tag().tag_str("r").tag_str(&rs.url);
             if rs.has_read_marker {
                 builder = builder.tag_str("read");
@@ -329,13 +343,13 @@ pub struct Accounts {
     accounts: Vec<UserAccount>,
     key_store: Option<AccountStorage>,
     account_data: BTreeMap<[u8; 32], AccountData>,
-    forced_relays: BTreeSet<RelaySpec>,
+    _forced_relays: BTreeSet<RelaySpec>,
     bootstrap_relays: BTreeSet<RelaySpec>,
     needs_relay_config: bool,
 }
 
 impl Accounts {
-    pub fn new(key_store: Option<AccountStorage>, forced_relays: Vec<String>) -> Self {
+    pub fn new(key_store: Option<AccountStorage>, _forced_relays: Vec<String>) -> Self {
         let accounts = match &key_store {
             Some(keystore) => match keystore.get_accounts() {
                 Ok(k) => k,
@@ -354,7 +368,7 @@ impl Accounts {
         };
 
         let account_data = BTreeMap::new();
-        let forced_relays: BTreeSet<RelaySpec> = forced_relays
+        let _forced_relays: BTreeSet<RelaySpec> = _forced_relays
             .into_iter()
             .map(|u| RelaySpec::new(AccountRelayData::canonicalize_url(&u), false, false))
             .collect();
@@ -375,7 +389,7 @@ impl Accounts {
             accounts,
             key_store,
             account_data,
-            forced_relays,
+            _forced_relays,
             bootstrap_relays,
             needs_relay_config: true,
         }
@@ -568,26 +582,6 @@ impl Accounts {
         Box::new(|_: &Note, _: &[u8; 32]| false)
     }
 
-    pub fn send_initial_filters(&mut self, pool: &mut RelayPool, relay_url: &str) {
-        for data in self.account_data.values() {
-            // send the active account's relay list subscription
-            if let Some(relay_subid) = &data.relay.subid {
-                let filters = vec![data.relay.filter.clone()];
-                debug!(
-                    "Account send_initial_filters: sending sub {} {}: {:?}",
-                    relay_subid,
-                    relay_url,
-                    filters
-                        .iter()
-                        .map(|f| f.json().unwrap_or_default())
-                        .collect::<Vec<_>>(),
-                );
-
-                pool.send_to(&ClientMessage::req(relay_subid.clone(), filters), relay_url);
-            }
-        }
-    }
-
     // Return accounts which have no account_data yet (added) and accounts
     // which have still data but are no longer in our account list (removed).
     fn delta_accounts(&self) -> (Vec<[u8; 32]>, Vec<[u8; 32]>) {
@@ -623,82 +617,6 @@ impl Accounts {
         self.account_data.remove(pubkey);
     }
 
-    fn poll_for_updates(&mut self, ndb: &Ndb) -> bool {
-        let mut changed = false;
-        for (pubkey, data) in &mut self.account_data {
-            if let Some(sub) = data.relay.sub {
-                let nks = ndb.poll_for_notes(sub, 1);
-                if !nks.is_empty() {
-                    let txn = Transaction::new(ndb).expect("txn");
-                    let relays = AccountRelayData::harvest_nip65_relays(ndb, &txn, &nks);
-                    debug!(
-                        "pubkey {}: updated relays {:?}",
-                        hex::encode(pubkey),
-                        relays
-                    );
-                    data.relay.advertised = relays.into_iter().collect();
-                    changed = true;
-                }
-            }
-        }
-        changed
-    }
-
-    fn update_relay_configuration(
-        &mut self,
-        pool: &mut RelayPool,
-        wakeup: impl Fn() + Send + Sync + Clone + 'static,
-    ) {
-        debug!(
-            "updating relay configuration for currently selected {:?}",
-            self.currently_selected_account
-                .map(|i| hex::encode(self.accounts.get(i).unwrap().key.pubkey.bytes()))
-        );
-
-        // If forced relays are set use them only
-        let mut desired_relays = self.forced_relays.clone();
-
-        // Compose the desired relay lists from the selected account
-        if desired_relays.is_empty() {
-            if let Some(data) = self.get_selected_account_data() {
-                desired_relays.extend(data.relay.local.iter().cloned());
-                desired_relays.extend(data.relay.advertised.iter().cloned());
-            }
-        }
-
-        // If no relays are specified at this point use the bootstrap list
-        if desired_relays.is_empty() {
-            desired_relays = self.bootstrap_relays.clone();
-        }
-
-        debug!("current relays: {:?}", pool.urls());
-        debug!("desired relays: {:?}", desired_relays);
-
-        let pool_specs = pool
-            .urls()
-            .iter()
-            .map(|url| RelaySpec::new(url.clone(), false, false))
-            .collect();
-        let add: BTreeSet<RelaySpec> = desired_relays.difference(&pool_specs).cloned().collect();
-        let mut sub: BTreeSet<RelaySpec> =
-            pool_specs.difference(&desired_relays).cloned().collect();
-        if !add.is_empty() {
-            debug!("configuring added relays: {:?}", add);
-            let _ = pool.add_urls(add.iter().map(|r| r.url.clone()).collect(), wakeup);
-        }
-        if !sub.is_empty() {
-            // certain relays are persistent like the multicast relay,
-            // although we should probably have a way to explicitly
-            // disable it
-            sub.remove(&RelaySpec::new("multicast", false, false));
-
-            debug!("removing unwanted relays: {:?}", sub);
-            pool.remove_urls(&sub.iter().map(|r| r.url.clone()).collect());
-        }
-
-        debug!("current relays: {:?}", pool.urls());
-    }
-
     fn get_combined_relays(
         &self,
         data_option: Option<&AccountData>,
@@ -707,6 +625,8 @@ impl Accounts {
         let mut relays = if let Some(data) = data_option {
             data.relay
                 .advertised
+                .lock()
+                .unwrap()
                 .iter()
                 .filter(|&x| filter(x))
                 .cloned()
@@ -738,28 +658,18 @@ impl Accounts {
         self.get_combined_relays(self.get_selected_account_data(), |_| true)
     }
 
-    pub fn update(&mut self, subman: &mut SubMan, ctx: &egui::Context) {
+    pub fn update(&mut self, subman: &mut SubMan, _ctx: &egui::Context) {
         // IMPORTANT - This function is called in the UI update loop,
         // make sure it is fast when idle
-
-        // On the initial update the relays need config even if nothing changes below
-        let mut need_reconfig = self.needs_relay_config;
-
-        let ctx2 = ctx.clone();
-        let wakeup = move || {
-            ctx2.request_repaint();
-        };
 
         // Do we need to deactivate any existing account subs?
         for (ndx, account) in self.accounts.iter().enumerate() {
             if Some(ndx) != self.currently_selected_account {
                 // this account is not currently selected
                 if let Some(data) = self.account_data.get_mut(account.key.pubkey.bytes()) {
-                    if data.relay.sub.is_some() {
+                    if data.relay.sub_remote_id.is_some() {
                         // this account has relay subs, deactivate them
-                        let mut ndb = subman.ndb().clone();
-                        let pool = subman.pool();
-                        data.relay.deactivate(&mut ndb, pool);
+                        data.relay.deactivate(subman);
                     }
                     if data.muted.sub_remote_id.is_some() {
                         // this account has muted subs, deactivate them
@@ -770,34 +680,22 @@ impl Accounts {
         }
 
         let ndb = subman.ndb().clone();
-        let pool = subman.pool();
 
         // Were any accounts added or removed?
         let (added, removed) = self.delta_accounts();
         for pk in added {
             self.handle_added_account(&ndb, &pk);
-            need_reconfig = true;
         }
         for pk in removed {
             self.handle_removed_account(&pk);
-            need_reconfig = true;
-        }
-
-        // Did any accounts receive updates (ie NIP-65 relay lists)
-        need_reconfig = self.poll_for_updates(&ndb) || need_reconfig;
-
-        // If needed, update the relay configuration
-        if need_reconfig {
-            self.update_relay_configuration(pool, wakeup);
-            self.needs_relay_config = false;
         }
 
         // Do we need to activate account subs?
         let default_relays = self.get_all_selected_account_relays();
         if let Some(data) = self.get_selected_account_data_mut() {
-            if data.relay.sub.is_none() {
+            if data.relay.sub_remote_id.is_none() {
                 // the currently selected account doesn't have relay subs, activate them
-                data.relay.activate(&ndb, pool);
+                data.relay.activate(subman, &default_relays);
             }
             if data.muted.sub_remote_id.is_none() {
                 // the currently selected account doesn't have muted subs, activate them
@@ -838,7 +736,7 @@ impl Accounts {
                     match self.account_data.get_mut(&key_bytes) {
                         None => error!("no account data found for the provided key."),
                         Some(account_data) => {
-                            let advertised = &mut account_data.relay.advertised;
+                            let advertised = &mut account_data.relay.advertised.lock().unwrap();
                             if advertised.is_empty() {
                                 // If the selected account has no advertised relays,
                                 // initialize with the bootstrapping set.

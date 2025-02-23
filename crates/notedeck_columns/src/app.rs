@@ -86,7 +86,6 @@ struct RelayHandler<'a> {
     // From AppContext
     unknown_ids: &'a mut UnknownIds,
     note_cache: &'a mut NoteCache,
-    accounts: &'a mut Accounts,
 
     // From Damus
     subscriptions: &'a mut Subscriptions,
@@ -99,14 +98,12 @@ impl<'a> RelayHandler<'a> {
     fn new(
         unknown_ids: &'a mut UnknownIds,
         note_cache: &'a mut NoteCache,
-        accounts: &'a mut Accounts,
         subscriptions: &'a mut Subscriptions,
         timeline_cache: &'a mut TimelineCache,
         since_optimize: bool,
     ) -> Self {
         RelayHandler {
             unknown_ids,
-            accounts,
             note_cache,
             subscriptions,
             timeline_cache,
@@ -118,7 +115,6 @@ impl<'a> RelayHandler<'a> {
 impl LegacyRelayHandler for RelayHandler<'_> {
     /// Handle relay opened
     fn handle_opened(&mut self, ndb: &mut Ndb, pool: &mut RelayPool, relay: &str) {
-        self.accounts.send_initial_filters(pool, relay);
         timeline::send_initial_timeline_filters(
             ndb,
             self.since_optimize,
@@ -158,7 +154,6 @@ fn try_process_event<'a>(
         let mut relay_handler = RelayHandler::new(
             app_ctx.unknown_ids,
             app_ctx.note_cache,
-            app_ctx.accounts,
             &mut damus.subscriptions,
             &mut damus.timeline_cache,
             damus.since_optimize,
