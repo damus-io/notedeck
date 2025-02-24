@@ -634,7 +634,7 @@ pub fn render_add_column_routes(
                     &mut timeline,
                     ctx.ndb,
                     &mut app.subscriptions,
-                    ctx.pool,
+                    ctx.subman.pool(),
                     ctx.note_cache,
                     app.since_optimize,
                 );
@@ -675,7 +675,7 @@ pub fn render_add_column_routes(
                             &mut timeline,
                             ctx.ndb,
                             &mut app.subscriptions,
-                            ctx.pool,
+                            ctx.subman.pool(),
                             ctx.note_cache,
                             app.since_optimize,
                         );
@@ -790,7 +790,7 @@ mod tests {
             let data_str = "column:algo_selection:last_per_pubkey";
             let data = &data_str.split(":").collect::<Vec<&str>>();
             let mut token_writer = TokenWriter::default();
-            let mut parser = TokenParser::new(&data);
+            let mut parser = TokenParser::new(data);
             let parsed = AddColumnRoute::parse_from_tokens(&mut parser).unwrap();
             let expected = AddColumnRoute::Algo(AddAlgoRoute::LastPerPubkey);
             parsed.serialize_tokens(&mut token_writer);

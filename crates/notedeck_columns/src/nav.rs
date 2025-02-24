@@ -72,7 +72,7 @@ impl SwitchingAction {
                     let kinds_to_pop =
                         get_active_columns_mut(ctx.accounts, decks_cache).delete_column(index);
                     for kind in &kinds_to_pop {
-                        if let Err(err) = timeline_cache.pop(kind, ctx.ndb, ctx.pool) {
+                        if let Err(err) = timeline_cache.pop(kind, ctx.ndb, ctx.subman.pool()) {
                             error!("error popping timeline: {err}");
                         }
                     }
@@ -144,7 +144,7 @@ impl RenderNavResponse {
                     let kinds_to_pop = app.columns_mut(ctx.accounts).delete_column(col);
 
                     for kind in &kinds_to_pop {
-                        if let Err(err) = app.timeline_cache.pop(kind, ctx.ndb, ctx.pool) {
+                        if let Err(err) = app.timeline_cache.pop(kind, ctx.ndb, ctx.subman.pool()) {
                             error!("error popping timeline: {err}");
                         }
                     }
@@ -154,7 +154,7 @@ impl RenderNavResponse {
 
                 RenderNavAction::PostAction(post_action) => {
                     let txn = Transaction::new(ctx.ndb).expect("txn");
-                    let _ = post_action.execute(ctx.ndb, &txn, ctx.pool, &mut app.drafts);
+                    let _ = post_action.execute(ctx.ndb, &txn, ctx.subman.pool(), &mut app.drafts);
                     get_active_columns_mut(ctx.accounts, &mut app.decks_cache)
                         .column_mut(col)
                         .router_mut()
@@ -170,7 +170,7 @@ impl RenderNavResponse {
                         col,
                         &mut app.timeline_cache,
                         ctx.note_cache,
-                        ctx.pool,
+                        ctx.subman.pool(),
                         &txn,
                         ctx.unknown_ids,
                     );
@@ -187,7 +187,7 @@ impl RenderNavResponse {
                     profile_action.process(
                         &mut app.view_state.pubkey_to_profile_state,
                         ctx.ndb,
-                        ctx.pool,
+                        ctx.subman.pool(),
                         get_active_columns_mut(ctx.accounts, &mut app.decks_cache)
                             .column_mut(col)
                             .router_mut(),
@@ -206,7 +206,7 @@ impl RenderNavResponse {
                         .pop();
 
                     if let Some(Route::Timeline(kind)) = &r {
-                        if let Err(err) = app.timeline_cache.pop(kind, ctx.ndb, ctx.pool) {
+                        if let Err(err) = app.timeline_cache.pop(kind, ctx.ndb, ctx.subman.pool()) {
                             error!("popping timeline had an error: {err} for {:?}", kind);
                         }
                     };
@@ -275,7 +275,7 @@ fn render_nav_body(
                 .map(|f| RenderNavAction::SwitchingAction(SwitchingAction::Accounts(f)))
         }
         Route::Relays => {
-            let manager = RelayPoolManager::new(ctx.pool);
+            let manager = RelayPoolManager::new(ctx.subman.pool());
             RelayView::new(ctx.accounts, manager, &mut app.view_state.id_string_map).ui(ui);
             None
         }
