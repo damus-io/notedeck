@@ -52,7 +52,7 @@ rfd = "0.15"
 
 [dev-dependencies]
 tempfile = { workspace = true }
-pretty_assertions = "1.4.1"
+pretty_assertions = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "2.11.0"
