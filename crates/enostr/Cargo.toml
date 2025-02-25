@@ -7,8 +7,8 @@ edition = "2021"
 
 [dependencies]
 ewebsock = { version = "0.8.0", features = ["tls"] }
-serde_derive = "1"
-serde = { version = "1", features = ["derive"] } # You only need this if you want app persistence
+serde_derive = { workspace = true }
+serde = { workspace = true, features = ["derive"] } # You only need this if you want app persistence
 serde_json = { workspace = true }
 nostr = { workspace = true }
 bech32 = { workspace = true }
