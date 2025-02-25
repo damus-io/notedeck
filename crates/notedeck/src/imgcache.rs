@@ -1,3 +1,4 @@
+use crate::urls::{UrlCache, UrlMimes};
 use crate::Result;
 use egui::TextureHandle;
 use poll_promise::Promise;
@@ -6,6 +7,7 @@ use egui::ColorImage;
 
 use std::collections::HashMap;
 use std::fs::{create_dir_all, File};
+use std::time::{Duration, Instant, SystemTime};
 
 use hex::ToHex;
 use sha2::Digest;
@@ -25,6 +27,7 @@ pub struct MediaCache {
     url_imgs: MediaCacheMap,
 }
 
+#[derive(Clone)]
 pub enum MediaCacheType {
     Image,
     Gif,
@@ -144,4 +147,40 @@ pub fn get_texture(textured_image: &TexturedImage) -> &TextureHandle {
     match textured_image {
         TexturedImage::Static(texture_handle) => texture_handle,
     }
+}
+
+#[allow(dead_code)]
+pub struct Images {
+    pub static_imgs: MediaCache,
+    pub gifs: MediaCache,
+    pub urls: UrlMimes,
+    pub gif_states: GifStateMap,
+}
+
+impl Images {
+    #[allow(dead_code)]
+    /// path to directory to place [`MediaCache`]s
+    pub fn new(path: path::PathBuf) -> Self {
+        Self {
+            static_imgs: MediaCache::new(path.join(MediaCache::rel_dir(MediaCacheType::Image))),
+            gifs: MediaCache::new(path.join(MediaCache::rel_dir(MediaCacheType::Gif))),
+            urls: UrlMimes::new(UrlCache::new(path.join(UrlCache::rel_dir()))),
+            gif_states: Default::default(),
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn migrate_v0(&self) -> Result<()> {
+        self.static_imgs.migrate_v0()?;
+        self.gifs.migrate_v0()
+    }
+}
+
+pub type GifStateMap = HashMap<String, GifState>;
+
+pub struct GifState {
+    pub last_frame_rendered: Instant,
+    pub last_frame_duration: Duration,
+    pub next_frame_time: Option<SystemTime>,
+    pub last_frame_index: usize,
 }
