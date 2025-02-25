@@ -341,8 +341,12 @@ impl PostBuffer {
             if let Some(info) = self.mentions.get(mention_ind) {
                 if let MentionType::Finalized(pk) = info.mention_type {
                     if let Some(bech) = pk.to_bech() {
-                        out.replace_range(info.start_index..*cur_end_ind, &format!("nostr:{bech}"));
-                        mentions.push(pk);
+                        if let Some(byte_range) =
+                            char_indices_to_byte(&out, info.start_index..*cur_end_ind)
+                        {
+                            out.replace_range(byte_range, &format!("nostr:{bech}"));
+                            mentions.push(pk);
+                        }
                     }
                 }
             }
