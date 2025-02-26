@@ -4,18 +4,18 @@ use egui::{Frame, Label, RichText, Widget};
 use egui_extras::Size;
 use nostrdb::ProfileRecord;
 
-use notedeck::{ImageCache, NotedeckTextStyle, UserAccount};
+use notedeck::{Images, NotedeckTextStyle, UserAccount};
 
 use super::{about_section_widget, banner, display_name_widget, get_display_name, get_profile_url};
 
 pub struct ProfilePreview<'a, 'cache> {
     profile: &'a ProfileRecord<'a>,
-    cache: &'cache mut ImageCache,
+    cache: &'cache mut Images,
     banner_height: Size,
 }
 
 impl<'a, 'cache> ProfilePreview<'a, 'cache> {
-    pub fn new(profile: &'a ProfileRecord<'a>, cache: &'cache mut ImageCache) -> Self {
+    pub fn new(profile: &'a ProfileRecord<'a>, cache: &'cache mut Images) -> Self {
         let banner_height = Size::exact(80.0);
         ProfilePreview {
             profile,
@@ -69,14 +69,14 @@ impl egui::Widget for ProfilePreview<'_, '_> {
 
 pub struct SimpleProfilePreview<'a, 'cache> {
     profile: Option<&'a ProfileRecord<'a>>,
-    cache: &'cache mut ImageCache,
+    cache: &'cache mut Images,
     is_nsec: bool,
 }
 
 impl<'a, 'cache> SimpleProfilePreview<'a, 'cache> {
     pub fn new(
         profile: Option<&'a ProfileRecord<'a>>,
-        cache: &'cache mut ImageCache,
+        cache: &'cache mut Images,
         is_nsec: bool,
     ) -> Self {
         SimpleProfilePreview {

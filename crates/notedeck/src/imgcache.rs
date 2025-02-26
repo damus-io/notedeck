@@ -1,11 +1,15 @@
+use crate::urls::{UrlCache, UrlMimes};
 use crate::Result;
 use egui::TextureHandle;
+use image::{Delay, Frame};
 use poll_promise::Promise;
 
 use egui::ColorImage;
 
 use std::collections::HashMap;
 use std::fs::{create_dir_all, File};
+use std::sync::mpsc::Receiver;
+use std::time::{Duration, Instant, SystemTime};
 
 use hex::ToHex;
 use sha2::Digest;
@@ -13,15 +17,56 @@ use std::path;
 use std::path::PathBuf;
 use tracing::warn;
 
-pub type ImageCacheValue = Promise<Result<TextureHandle>>;
-pub type ImageCacheMap = HashMap<String, ImageCacheValue>;
+pub type MediaCacheValue = Promise<Result<TexturedImage>>;
+pub type MediaCacheMap = HashMap<String, MediaCacheValue>;
 
-pub struct ImageCache {
-    pub cache_dir: path::PathBuf,
-    url_imgs: ImageCacheMap,
+pub enum TexturedImage {
+    Static(TextureHandle),
+    Animated(Animation),
 }
 
-impl ImageCache {
+pub struct Animation {
+    pub first_frame: TextureFrame,
+    pub other_frames: Vec<TextureFrame>,
+    pub receiver: Option<Receiver<TextureFrame>>,
+}
+
+impl Animation {
+    pub fn get_frame(&self, index: usize) -> Option<&TextureFrame> {
+        if index == 0 {
+            Some(&self.first_frame)
+        } else {
+            self.other_frames.get(index - 1)
+        }
+    }
+
+    pub fn num_frames(&self) -> usize {
+        self.other_frames.len() + 1
+    }
+}
+
+pub struct TextureFrame {
+    pub delay: Duration,
+    pub texture: TextureHandle,
+}
+
+pub struct ImageFrame {
+    pub delay: Duration,
+    pub image: ColorImage,
+}
+
+pub struct MediaCache {
+    pub cache_dir: path::PathBuf,
+    url_imgs: MediaCacheMap,
+}
+
+#[derive(Clone)]
+pub enum MediaCacheType {
+    Image,
+    Gif,
+}
+
+impl MediaCache {
     pub fn new(cache_dir: path::PathBuf) -> Self {
         Self {
             cache_dir,
@@ -29,35 +74,15 @@ impl ImageCache {
         }
     }
 
-    pub fn rel_dir() -> &'static str {
-        "img"
-    }
-
-    /*
-    pub fn fetch(image: &str) -> Result<Image> {
-        let m_cached_promise = img_cache.map().get(image);
-        if m_cached_promise.is_none() {
-            let res = crate::images::fetch_img(
-                img_cache,
-                ui.ctx(),
-                &image,
-                ImageType::Content(width.round() as u32, height.round() as u32),
-            );
-            img_cache.map_mut().insert(image.to_owned(), res);
+    pub fn rel_dir(cache_type: MediaCacheType) -> &'static str {
+        match cache_type {
+            MediaCacheType::Image => "img",
+            MediaCacheType::Gif => "gif",
         }
     }
-    */
 
     pub fn write(cache_dir: &path::Path, url: &str, data: ColorImage) -> Result<()> {
-        let file_path = cache_dir.join(Self::key(url));
-        if let Some(p) = file_path.parent() {
-            create_dir_all(p)?;
-        }
-        let file = File::options()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(file_path)?;
+        let file = Self::create_file(cache_dir, url)?;
         let encoder = image::codecs::webp::WebPEncoder::new_lossless(file);
 
         encoder.encode(
@@ -66,6 +91,33 @@ impl ImageCache {
             data.size[1] as u32,
             image::ColorType::Rgba8.into(),
         )?;
+
+        Ok(())
+    }
+
+    fn create_file(cache_dir: &path::Path, url: &str) -> Result<File> {
+        let file_path = cache_dir.join(Self::key(url));
+        if let Some(p) = file_path.parent() {
+            create_dir_all(p)?;
+        }
+        Ok(File::options()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(file_path)?)
+    }
+
+    pub fn write_gif(cache_dir: &path::Path, url: &str, data: Vec<ImageFrame>) -> Result<()> {
+        let file = Self::create_file(cache_dir, url)?;
+
+        let mut encoder = image::codecs::gif::GifEncoder::new(file);
+        for img in data {
+            let buf = color_image_to_rgba(img.image);
+            let frame = Frame::from_parts(buf, 0, 0, Delay::from_saturating_duration(img.delay));
+            if let Err(e) = encoder.encode_frame(frame) {
+                tracing::error!("problem encoding frame: {e}");
+            }
+        }
 
         Ok(())
     }
@@ -118,11 +170,58 @@ impl ImageCache {
         Ok(())
     }
 
-    pub fn map(&self) -> &ImageCacheMap {
+    pub fn map(&self) -> &MediaCacheMap {
         &self.url_imgs
     }
 
-    pub fn map_mut(&mut self) -> &mut ImageCacheMap {
+    pub fn map_mut(&mut self) -> &mut MediaCacheMap {
         &mut self.url_imgs
     }
+}
+
+fn color_image_to_rgba(color_image: ColorImage) -> image::RgbaImage {
+    let width = color_image.width() as u32;
+    let height = color_image.height() as u32;
+
+    let rgba_pixels: Vec<u8> = color_image
+        .pixels
+        .iter()
+        .flat_map(|color| color.to_array()) // Convert Color32 to `[u8; 4]`
+        .collect();
+
+    image::RgbaImage::from_raw(width, height, rgba_pixels)
+        .expect("Failed to create RgbaImage from ColorImage")
+}
+
+pub struct Images {
+    pub static_imgs: MediaCache,
+    pub gifs: MediaCache,
+    pub urls: UrlMimes,
+    pub gif_states: GifStateMap,
+}
+
+impl Images {
+    /// path to directory to place [`MediaCache`]s
+    pub fn new(path: path::PathBuf) -> Self {
+        Self {
+            static_imgs: MediaCache::new(path.join(MediaCache::rel_dir(MediaCacheType::Image))),
+            gifs: MediaCache::new(path.join(MediaCache::rel_dir(MediaCacheType::Gif))),
+            urls: UrlMimes::new(UrlCache::new(path.join(UrlCache::rel_dir()))),
+            gif_states: Default::default(),
+        }
+    }
+
+    pub fn migrate_v0(&self) -> Result<()> {
+        self.static_imgs.migrate_v0()?;
+        self.gifs.migrate_v0()
+    }
+}
+
+pub type GifStateMap = HashMap<String, GifState>;
+
+pub struct GifState {
+    pub last_frame_rendered: Instant,
+    pub last_frame_duration: Duration,
+    pub next_frame_time: Option<SystemTime>,
+    pub last_frame_index: usize,
 }

@@ -13,7 +13,7 @@ use crate::{
     Result,
 };
 
-use notedeck::{Accounts, AppContext, DataPath, DataPathType, FilterState, ImageCache, UnknownIds};
+use notedeck::{Accounts, AppContext, DataPath, DataPathType, FilterState, UnknownIds};
 
 use enostr::{ClientMessage, Keypair, PoolRelay, Pubkey, RelayEvent, RelayMessage, RelayPool};
 use uuid::Uuid;
@@ -172,6 +172,8 @@ fn unknown_id_send(unknown_ids: &mut UnknownIds, pool: &mut RelayPool) {
 }
 
 fn update_damus(damus: &mut Damus, app_ctx: &mut AppContext<'_>, ctx: &egui::Context) {
+    app_ctx.img_cache.urls.cache.handle_io();
+
     match damus.state {
         DamusState::Initializing => {
             damus.state = DamusState::Initialized;
@@ -464,7 +466,7 @@ impl Damus {
         let decks_cache = DecksCache::default();
 
         let path = DataPath::new(&data_path);
-        let imgcache_dir = path.path(DataPathType::Cache).join(ImageCache::rel_dir());
+        let imgcache_dir = path.path(DataPathType::Cache);
         let _ = std::fs::create_dir_all(imgcache_dir.clone());
         let debug = true;
 

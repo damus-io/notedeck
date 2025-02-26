@@ -21,6 +21,7 @@ mod timecache;
 mod timed_serializer;
 pub mod ui;
 mod unknowns;
+mod urls;
 mod user_account;
 
 pub use accounts::{AccountData, Accounts, AccountsAction, AddAccountAction, SwitchAccountAction};
@@ -30,7 +31,10 @@ pub use context::AppContext;
 pub use error::{Error, FilterError};
 pub use filter::{FilterState, FilterStates, UnifiedSubscription};
 pub use fonts::NamedFontFamily;
-pub use imgcache::ImageCache;
+pub use imgcache::{
+    Animation, GifState, GifStateMap, ImageFrame, Images, MediaCache, MediaCacheType,
+    MediaCacheValue, TextureFrame, TexturedImage,
+};
 pub use muted::{MuteFun, Muted};
 pub use note::{NoteRef, RootIdError, RootNoteId, RootNoteIdBuf};
 pub use notecache::{CachedNote, NoteCache};
@@ -46,6 +50,7 @@ pub use theme::ColorTheme;
 pub use time::time_ago_since;
 pub use timecache::TimeCached;
 pub use unknowns::{get_unknown_note_ids, NoteRefsUnkIdAction, SingleUnkIdAction, UnknownIds};
+pub use urls::{supported_mime_hosted_at_url, SupportedMimeType, UrlMimes};
 pub use user_account::UserAccount;
 
 // export libs

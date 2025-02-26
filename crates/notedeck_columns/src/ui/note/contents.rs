@@ -1,18 +1,19 @@
+use crate::gif::{handle_repaint, retrieve_latest_texture};
+use crate::ui::images::render_images;
 use crate::ui::{
     self,
     note::{NoteOptions, NoteResponse},
-    ProfilePic,
 };
 use crate::{actionbar::NoteAction, images::ImageType, timeline::TimelineKind};
 use egui::{Color32, Hyperlink, Image, RichText};
 use nostrdb::{BlockType, Mention, Ndb, Note, NoteKey, Transaction};
 use tracing::warn;
 
-use notedeck::{ImageCache, NoteCache};
+use notedeck::{supported_mime_hosted_at_url, Images, MediaCacheType, NoteCache};
 
 pub struct NoteContents<'a> {
     ndb: &'a Ndb,
-    img_cache: &'a mut ImageCache,
+    img_cache: &'a mut Images,
     note_cache: &'a mut NoteCache,
     txn: &'a Transaction,
     note: &'a Note<'a>,
@@ -22,9 +23,10 @@ pub struct NoteContents<'a> {
 }
 
 impl<'a> NoteContents<'a> {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         ndb: &'a Ndb,
-        img_cache: &'a mut ImageCache,
+        img_cache: &'a mut Images,
         note_cache: &'a mut NoteCache,
         txn: &'a Transaction,
         note: &'a Note,
@@ -72,7 +74,7 @@ pub fn render_note_preview(
     ui: &mut egui::Ui,
     ndb: &Ndb,
     note_cache: &mut NoteCache,
-    img_cache: &mut ImageCache,
+    img_cache: &mut Images,
     txn: &Transaction,
     id: &[u8; 32],
     parent: NoteKey,
@@ -126,15 +128,11 @@ pub fn render_note_preview(
         .inner
 }
 
-fn is_image_link(url: &str) -> bool {
-    url.ends_with("png") || url.ends_with("jpg") || url.ends_with("jpeg")
-}
-
 #[allow(clippy::too_many_arguments)]
 fn render_note_contents(
     ui: &mut egui::Ui,
     ndb: &Ndb,
-    img_cache: &mut ImageCache,
+    img_cache: &mut Images,
     note_cache: &mut NoteCache,
     txn: &Transaction,
     note: &Note,
@@ -145,7 +143,7 @@ fn render_note_contents(
     puffin::profile_function!();
 
     let selectable = options.has_selectable_text();
-    let mut images: Vec<String> = vec![];
+    let mut images: Vec<(String, MediaCacheType)> = vec![];
     let mut note_action: Option<NoteAction> = None;
     let mut inline_note: Option<(&[u8; 32], &str)> = None;
     let hide_media = options.has_hide_media();
@@ -211,9 +209,14 @@ fn render_note_contents(
                 }
 
                 BlockType::Url => {
-                    let lower_url = block.as_str().to_lowercase();
-                    if !hide_media && is_image_link(&lower_url) {
-                        images.push(block.as_str().to_string());
+                    if !hide_media {
+                        let url = block.as_str().to_string();
+
+                        if let Some(cache_type) =
+                            supported_mime_hosted_at_url(&mut img_cache.urls, &url)
+                        {
+                            images.push((url, cache_type));
+                        }
                     } else {
                         #[cfg(feature = "profiling")]
                         puffin::profile_scope!("url contents");
@@ -279,8 +282,8 @@ fn rot13(input: &str) -> String {
 
 fn image_carousel(
     ui: &mut egui::Ui,
-    img_cache: &mut ImageCache,
-    images: Vec<String>,
+    img_cache: &mut Images,
+    images: Vec<(String, MediaCacheType)>,
     carousel_id: egui::Id,
 ) {
     // let's make sure everything is within our area
@@ -294,56 +297,39 @@ fn image_carousel(
             .id_salt(carousel_id)
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    for image in images {
-                        // If the cache is empty, initiate the fetch
-                        let m_cached_promise = img_cache.map().get(&image);
-                        if m_cached_promise.is_none() {
-                            let res = crate::images::fetch_img(
-                                img_cache,
-                                ui.ctx(),
-                                &image,
-                                ImageType::Content(width.round() as u32, height.round() as u32),
-                            );
-                            img_cache.map_mut().insert(image.to_owned(), res);
-                        }
-
-                        // What is the state of the fetch?
-                        match img_cache.map()[&image].ready() {
-                            // Still waiting
-                            None => {
+                    for (image, cache_type) in images {
+                        render_images(
+                            ui,
+                            img_cache,
+                            &image,
+                            ImageType::Content(width.round() as u32, height.round() as u32),
+                            cache_type,
+                            |ui| {
                                 ui.allocate_space(egui::vec2(spinsz, spinsz));
-                                //ui.add(egui::Spinner::new().size(spinsz));
-                            }
-                            // Failed to fetch image!
-                            Some(Err(_err)) => {
-                                // FIXME - use content-specific error instead
-                                let no_pfp = crate::images::fetch_img(
-                                    img_cache,
-                                    ui.ctx(),
-                                    ProfilePic::no_pfp_url(),
-                                    ImageType::Profile(128),
+                            },
+                            |ui, _| {
+                                ui.allocate_space(egui::vec2(spinsz, spinsz));
+                            },
+                            |ui, url, renderable_media, gifs| {
+                                let texture = handle_repaint(
+                                    ui,
+                                    retrieve_latest_texture(&image, gifs, renderable_media),
                                 );
-                                img_cache.map_mut().insert(image.to_owned(), no_pfp);
-                                // spin until next pass
-                                ui.allocate_space(egui::vec2(spinsz, spinsz));
-                                //ui.add(egui::Spinner::new().size(spinsz));
-                            }
-                            // Use the previously resolved image
-                            Some(Ok(img)) => {
                                 let img_resp = ui.add(
-                                    Image::new(img)
+                                    Image::new(texture)
                                         .max_height(height)
                                         .rounding(5.0)
                                         .fit_to_original_size(1.0),
                                 );
+
                                 img_resp.context_menu(|ui| {
                                     if ui.button("Copy Link").clicked() {
-                                        ui.ctx().copy_text(image);
+                                        ui.ctx().copy_text(url.to_owned());
                                         ui.close_menu();
                                     }
                                 });
-                            }
-                        }
+                            },
+                        );
                     }
                 })
                 .response

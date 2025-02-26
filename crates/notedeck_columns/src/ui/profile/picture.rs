@@ -1,13 +1,15 @@
+use crate::gif::{handle_repaint, retrieve_latest_texture};
 use crate::images::ImageType;
+use crate::ui::images::render_images;
 use crate::ui::{Preview, PreviewConfig};
 use egui::{vec2, Sense, Stroke, TextureHandle};
 use nostrdb::{Ndb, Transaction};
 use tracing::info;
 
-use notedeck::{AppContext, ImageCache};
+use notedeck::{supported_mime_hosted_at_url, AppContext, Images};
 
 pub struct ProfilePic<'cache, 'url> {
-    cache: &'cache mut ImageCache,
+    cache: &'cache mut Images,
     url: &'url str,
     size: f32,
     border: Option<Stroke>,
@@ -20,7 +22,7 @@ impl egui::Widget for ProfilePic<'_, '_> {
 }
 
 impl<'cache, 'url> ProfilePic<'cache, 'url> {
-    pub fn new(cache: &'cache mut ImageCache, url: &'url str) -> Self {
+    pub fn new(cache: &'cache mut Images, url: &'url str) -> Self {
         let size = Self::default_size();
         ProfilePic {
             cache,
@@ -35,7 +37,7 @@ impl<'cache, 'url> ProfilePic<'cache, 'url> {
     }
 
     pub fn from_profile(
-        cache: &'cache mut ImageCache,
+        cache: &'cache mut Images,
         profile: &nostrdb::ProfileRecord<'url>,
     ) -> Option<Self> {
         profile
@@ -80,7 +82,7 @@ impl<'cache, 'url> ProfilePic<'cache, 'url> {
 
 fn render_pfp(
     ui: &mut egui::Ui,
-    img_cache: &mut ImageCache,
+    img_cache: &mut Images,
     url: &str,
     ui_size: f32,
     border: Option<Stroke>,
@@ -91,39 +93,27 @@ fn render_pfp(
     // We will want to downsample these so it's not blurry on hi res displays
     let img_size = 128u32;
 
-    let m_cached_promise = img_cache.map().get(url);
-    if m_cached_promise.is_none() {
-        let res = crate::images::fetch_img(img_cache, ui.ctx(), url, ImageType::Profile(img_size));
-        img_cache.map_mut().insert(url.to_owned(), res);
-    }
+    let cache_type = supported_mime_hosted_at_url(&mut img_cache.urls, url)
+        .unwrap_or(notedeck::MediaCacheType::Image);
 
-    match img_cache.map()[url].ready() {
-        None => paint_circle(ui, ui_size, border),
-
-        // Failed to fetch profile!
-        Some(Err(_err)) => {
-            let m_failed_promise = img_cache.map().get(url);
-            if m_failed_promise.is_none() {
-                let no_pfp = crate::images::fetch_img(
-                    img_cache,
-                    ui.ctx(),
-                    ProfilePic::no_pfp_url(),
-                    ImageType::Profile(img_size),
-                );
-                img_cache.map_mut().insert(url.to_owned(), no_pfp);
-            }
-
-            match img_cache.map().get(url).unwrap().ready() {
-                None => paint_circle(ui, ui_size, border),
-                Some(Err(_e)) => {
-                    //error!("Image load error: {:?}", e);
-                    paint_circle(ui, ui_size, border)
-                }
-                Some(Ok(img)) => pfp_image(ui, img, ui_size, border),
-            }
-        }
-        Some(Ok(img)) => pfp_image(ui, img, ui_size, border),
-    }
+    render_images(
+        ui,
+        img_cache,
+        url,
+        ImageType::Profile(img_size),
+        cache_type,
+        |ui| {
+            paint_circle(ui, ui_size, border);
+        },
+        |ui, _| {
+            paint_circle(ui, ui_size, border);
+        },
+        |ui, url, renderable_media, gifs| {
+            let texture_handle =
+                handle_repaint(ui, retrieve_latest_texture(url, gifs, renderable_media));
+            pfp_image(ui, texture_handle, ui_size, border);
+        },
+    )
 }
 
 fn pfp_image(
