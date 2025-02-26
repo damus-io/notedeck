@@ -209,15 +209,18 @@ fn render_note_contents(
                 }
 
                 BlockType::Url => {
-                    if !hide_media {
-                        let url = block.as_str().to_string();
-
+                    let mut found_supported = || -> bool {
+                        let url = block.as_str();
                         if let Some(cache_type) =
-                            supported_mime_hosted_at_url(&mut img_cache.urls, &url)
+                            supported_mime_hosted_at_url(&mut img_cache.urls, url)
                         {
-                            images.push((url, cache_type));
+                            images.push((url.to_string(), cache_type));
+                            true
+                        } else {
+                            false
                         }
-                    } else {
+                    };
+                    if hide_media || !found_supported() {
                         #[cfg(feature = "profiling")]
                         puffin::profile_scope!("url contents");
                         ui.add(Hyperlink::from_label_and_url(
