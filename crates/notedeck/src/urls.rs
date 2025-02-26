@@ -194,7 +194,7 @@ impl UrlMimes {
                     }
                     Err(HttpError::HttpFailure) => {
                         // allow retrying
-                        self.in_flight.remove(url);
+                        //self.in_flight.remove(url);
                         None
                     }
                     Err(HttpError::MissingHeader) => {
