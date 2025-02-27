@@ -587,9 +587,32 @@ impl SubMan {
                     }
                 }
                 // TODO: handle reconnects
-                RelayEvent::Closed => warn!("{} connection closed", &relay),
-                RelayEvent::Error(e) => error!("{}: {}", &relay, e),
-                RelayEvent::Other(msg) => trace!("other event {:?}", &msg),
+                RelayEvent::Closed => warn!("process_relays {}: connection closed", &relay),
+                RelayEvent::Error(e) => {
+                    error!("process_relays {} error: {}", &relay, e);
+                    for ssr in self.remote.values_mut() {
+                        let mut substate = ssr.borrow_mut();
+                        let remote_id = substate.spec.remote_id.clone();
+                        let filters = substate.spec.filters.clone();
+                        if let Some(remotesubstate) = &mut substate.remote {
+                            if let Some(ref mut rss) = remotesubstate.relays.get_mut(&relay) {
+                                debug!(
+                                    "SubMan handle Error {} {} {:?}: {:?}",
+                                    remote_id,
+                                    relay,
+                                    filters
+                                        .iter()
+                                        .map(|f| f.json().unwrap_or_default())
+                                        .collect::<Vec<_>>(),
+                                    e
+                                );
+                                **rss = RelaySubState::Error(format!("{:?}", e));
+                            }
+                        }
+                    }
+                }
+
+                RelayEvent::Other(msg) => trace!("process_relays other event {:?}", &msg),
                 RelayEvent::Message(msg) => {
                     self.process_message(legacy_relay_handler, &relay, &msg);
                 }
