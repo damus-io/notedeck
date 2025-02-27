@@ -190,6 +190,7 @@ fn goto_top_button(center: Pos2) -> impl egui::Widget {
         );
         let helper = AnimationHelper::new_from_rect(ui, "goto_top", {
             let painter = ui.painter();
+            #[allow(deprecated)]
             let center = painter.round_pos_to_pixel_center(center);
             egui::Rect::from_center_size(center, max_size)
         });
@@ -207,10 +208,13 @@ fn goto_top_button(center: Pos2) -> impl egui::Widget {
             Pos2 { x, y }
         };
 
+        #[allow(deprecated)]
         let left_pt =
             painter.round_pos_to_pixel_center(helper.scale_pos_from_center(create_pt(-PI)));
+        #[allow(deprecated)]
         let center_pt =
             painter.round_pos_to_pixel_center(helper.scale_pos_from_center(create_pt(-PI / 2.0)));
+        #[allow(deprecated)]
         let right_pt =
             painter.round_pos_to_pixel_center(helper.scale_pos_from_center(create_pt(0.0)));
 
@@ -257,6 +261,7 @@ pub fn tabs_ui(ui: &mut egui::Ui, selected: usize, views: &[TimelineTab]) -> usi
                 let rect = res.rect;
                 let underline =
                     shrink_range_to_width(rect.x_range(), get_label_width(ui, txt) * 1.15);
+                #[allow(deprecated)]
                 let underline_y = ui.painter().round_to_pixel(rect.bottom()) - 1.5;
                 return (underline, underline_y);
             }

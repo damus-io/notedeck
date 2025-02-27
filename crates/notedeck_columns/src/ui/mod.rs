@@ -57,6 +57,7 @@ pub fn padding<R>(
 pub fn hline(ui: &egui::Ui) {
     // pixel perfect horizontal line
     let rect = ui.available_rect_before_wrap();
+    #[allow(deprecated)]
     let resize_y = ui.painter().round_to_pixel(rect.top()) - 0.5;
     let stroke = ui.style().visuals.widgets.noninteractive.bg_stroke;
     ui.painter().hline(rect.x_range(), resize_y, stroke);
