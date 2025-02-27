@@ -242,12 +242,19 @@ impl<'a> NoteView<'a> {
 
                 resp
             }
-            None => ui
-                .add(
+            None => {
+                // This has to match the expand size from the above case to
+                // prevent bounciness
+                let size = pfp_size + ui::NoteView::expand_size();
+                let (rect, _response) = ui.allocate_exact_size(egui::vec2(size, size), sense);
+
+                ui.put(
+                    rect,
                     ui::ProfilePic::new(self.img_cache, ui::ProfilePic::no_pfp_url())
                         .size(pfp_size),
                 )
-                .interact(sense),
+                .interact(sense)
+            }
         }
     }
 
