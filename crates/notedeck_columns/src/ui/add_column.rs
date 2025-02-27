@@ -347,6 +347,7 @@ impl<'a> AddColumnView<'a> {
         let icon_padding = 8.0;
         let min_icon_width = 32.0;
         let height_padding = 12.0;
+        let inter_text_padding = 4.0; // Padding between title and description
         let max_width = ui.available_width();
         let title_style = NotedeckTextStyle::Body;
         let desc_style = NotedeckTextStyle::Button;
@@ -372,7 +373,6 @@ impl<'a> AddColumnView<'a> {
                     max_wrap_width,
                 )
             });
-
             let max_title_galley = ui.fonts(|f| {
                 f.layout(
                     data.title.to_string(),
@@ -384,7 +384,7 @@ impl<'a> AddColumnView<'a> {
 
             let desc_font_max_size = max_desc_galley.rect.height();
             let title_font_max_size = max_title_galley.rect.height();
-            title_font_max_size + desc_font_max_size + (2.0 * height_padding)
+            title_font_max_size + inter_text_padding + desc_font_max_size + (2.0 * height_padding)
         };
 
         let helper = AnimationHelper::new(ui, data.title, vec2(max_width, max_height));
@@ -394,13 +394,12 @@ impl<'a> AddColumnView<'a> {
         let painter = ui.painter_at(animation_rect);
 
         let cur_icon_size = vec2(cur_icon_width, cur_icon_width);
-        let cur_icon_x_pos = animation_rect.left() + (icon_padding) + (cur_icon_width / 2.0);
+        let cur_icon_x_pos = animation_rect.left() + icon_padding + (cur_icon_width / 2.0);
 
         let title_cur_font = FontId::new(
             helper.scale_1d_pos(title_min_font_size),
             title_style.font_family(),
         );
-
         let desc_cur_font = FontId::new(
             helper.scale_1d_pos(desc_min_font_size),
             desc_style.font_family(),
@@ -423,17 +422,17 @@ impl<'a> AddColumnView<'a> {
             wrap_width,
         );
 
-        let galley_heights = title_galley.rect.height() + desc_galley.rect.height();
-
-        let cur_height_padding = (animation_rect.height() - galley_heights) / 2.0;
+        let total_content_height =
+            title_galley.rect.height() + inter_text_padding + desc_galley.rect.height();
+        let cur_height_padding = (animation_rect.height() - total_content_height) / 2.0;
         let corner_x_pos = cur_icon_x_pos + (cur_icon_width / 2.0) + icon_padding;
         let title_corner_pos = Pos2::new(corner_x_pos, animation_rect.top() + cur_height_padding);
         let desc_corner_pos = Pos2::new(
             corner_x_pos,
-            title_corner_pos.y + title_galley.rect.height(),
+            title_corner_pos.y + title_galley.rect.height() + inter_text_padding,
         );
 
-        let icon_cur_y = animation_rect.top() + cur_height_padding + (galley_heights / 2.0);
+        let icon_cur_y = animation_rect.top() + cur_height_padding + (total_content_height / 2.0);
         let icon_img = egui::Image::new(data.icon).fit_to_exact_size(cur_icon_size);
         let icon_rect = Rect::from_center_size(pos2(cur_icon_x_pos, icon_cur_y), cur_icon_size);
 
