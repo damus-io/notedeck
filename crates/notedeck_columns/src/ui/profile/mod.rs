@@ -233,6 +233,7 @@ fn handle_lud16(ui: &mut egui::Ui, lud16: &str) {
 fn copy_key_widget(pfp_rect: &egui::Rect) -> impl egui::Widget + '_ {
     |ui: &mut egui::Ui| -> egui::Response {
         let painter = ui.painter();
+        #[allow(deprecated)]
         let copy_key_rect = painter.round_rect_to_pixels(egui::Rect::from_center_size(
             pfp_rect.center_bottom(),
             egui::vec2(48.0, 28.0),
@@ -262,6 +263,7 @@ fn copy_key_widget(pfp_rect: &egui::Rect) -> impl egui::Widget + '_ {
         ))
         .paint_at(
             ui,
+            #[allow(deprecated)]
             painter.round_rect_to_pixels(egui::Rect::from_center_size(
                 copy_key_rect.center(),
                 egui::vec2(16.0, 16.0),
@@ -276,6 +278,7 @@ fn edit_profile_button() -> impl egui::Widget + 'static {
     |ui: &mut egui::Ui| -> egui::Response {
         let (rect, resp) = ui.allocate_exact_size(vec2(124.0, 32.0), Sense::click());
         let painter = ui.painter_at(rect);
+        #[allow(deprecated)]
         let rect = painter.round_rect_to_pixels(rect);
 
         painter.rect_filled(
@@ -315,6 +318,7 @@ fn edit_profile_button() -> impl egui::Widget + 'static {
         let edit_icon_rect = {
             let mut center = galley_rect.left_center();
             center.x -= half_icon_size + space_between_icon_galley;
+            #[allow(deprecated)]
             painter.round_rect_to_pixels(Rect::from_center_size(
                 painter.round_pos_to_pixel_center(center),
                 edit_icon_size,
