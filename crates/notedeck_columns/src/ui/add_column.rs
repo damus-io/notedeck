@@ -368,7 +368,7 @@ impl<'a> AddColumnView<'a> {
                 f.layout(
                     data.description.to_string(),
                     desc_max_font,
-                    Color32::WHITE,
+                    ui.style().visuals.noninteractive().fg_stroke.color,
                     max_wrap_width,
                 )
             });
@@ -407,8 +407,8 @@ impl<'a> AddColumnView<'a> {
         );
 
         let wrap_width = max_width - (cur_icon_width + (icon_padding * 2.0));
-        let text_color = ui.ctx().style().visuals.text_color();
-        let fallback_color = ui.ctx().style().visuals.weak_text_color();
+        let text_color = ui.style().visuals.text_color();
+        let fallback_color = ui.style().visuals.noninteractive().fg_stroke.color;
 
         let title_galley = painter.layout(
             data.title.to_string(),
@@ -419,7 +419,7 @@ impl<'a> AddColumnView<'a> {
         let desc_galley = painter.layout(
             data.description.to_string(),
             desc_cur_font,
-            text_color,
+            fallback_color,
             wrap_width,
         );
 
@@ -438,7 +438,7 @@ impl<'a> AddColumnView<'a> {
         let icon_rect = Rect::from_center_size(pos2(cur_icon_x_pos, icon_cur_y), cur_icon_size);
 
         icon_img.paint_at(ui, icon_rect);
-        painter.galley(title_corner_pos, title_galley, fallback_color);
+        painter.galley(title_corner_pos, title_galley, text_color);
         painter.galley(desc_corner_pos, desc_galley, fallback_color);
 
         helper.take_animation_response()
