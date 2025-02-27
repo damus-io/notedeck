@@ -1144,7 +1144,7 @@ dependencies = [
 [[package]]
 name = "ecolor"
 version = "0.30.0"
-source = "git+https://github.com/jb55/egui?rev=03c769a3576920d5e33e01c06167e7c67d296625#03c769a3576920d5e33e01c06167e7c67d296625"
+source = "git+https://github.com/ksedgwic/egui?rev=153febd3bbe3812f69077d6f75f2d6d9e36ca405#153febd3bbe3812f69077d6f75f2d6d9e36ca405"
 dependencies = [
  "bytemuck",
  "emath 0.30.0",
@@ -1154,7 +1154,7 @@ dependencies = [
 [[package]]
 name = "eframe"
 version = "0.30.0"
-source = "git+https://github.com/jb55/egui?rev=03c769a3576920d5e33e01c06167e7c67d296625#03c769a3576920d5e33e01c06167e7c67d296625"
+source = "git+https://github.com/ksedgwic/egui?rev=153febd3bbe3812f69077d6f75f2d6d9e36ca405#153febd3bbe3812f69077d6f75f2d6d9e36ca405"
 dependencies = [
  "ahash",
  "bytemuck",
@@ -1204,7 +1204,7 @@ dependencies = [
 [[package]]
 name = "egui"
 version = "0.30.0"
-source = "git+https://github.com/jb55/egui?rev=03c769a3576920d5e33e01c06167e7c67d296625#03c769a3576920d5e33e01c06167e7c67d296625"
+source = "git+https://github.com/ksedgwic/egui?rev=153febd3bbe3812f69077d6f75f2d6d9e36ca405#153febd3bbe3812f69077d6f75f2d6d9e36ca405"
 dependencies = [
  "accesskit 0.17.1",
  "ahash",
@@ -1221,7 +1221,7 @@ dependencies = [
 [[package]]
 name = "egui-wgpu"
 version = "0.30.0"
-source = "git+https://github.com/jb55/egui?rev=03c769a3576920d5e33e01c06167e7c67d296625#03c769a3576920d5e33e01c06167e7c67d296625"
+source = "git+https://github.com/ksedgwic/egui?rev=153febd3bbe3812f69077d6f75f2d6d9e36ca405#153febd3bbe3812f69077d6f75f2d6d9e36ca405"
 dependencies = [
  "ahash",
  "bytemuck",
@@ -1240,7 +1240,7 @@ dependencies = [
 [[package]]
 name = "egui-winit"
 version = "0.30.0"
-source = "git+https://github.com/jb55/egui?rev=03c769a3576920d5e33e01c06167e7c67d296625#03c769a3576920d5e33e01c06167e7c67d296625"
+source = "git+https://github.com/ksedgwic/egui?rev=153febd3bbe3812f69077d6f75f2d6d9e36ca405#153febd3bbe3812f69077d6f75f2d6d9e36ca405"
 dependencies = [
  "ahash",
  "arboard",
@@ -1271,7 +1271,7 @@ dependencies = [
 [[package]]
 name = "egui_extras"
 version = "0.30.0"
-source = "git+https://github.com/jb55/egui?rev=03c769a3576920d5e33e01c06167e7c67d296625#03c769a3576920d5e33e01c06167e7c67d296625"
+source = "git+https://github.com/ksedgwic/egui?rev=153febd3bbe3812f69077d6f75f2d6d9e36ca405#153febd3bbe3812f69077d6f75f2d6d9e36ca405"
 dependencies = [
  "ahash",
  "egui 0.30.0",
@@ -1287,7 +1287,7 @@ dependencies = [
 [[package]]
 name = "egui_glow"
 version = "0.30.0"
-source = "git+https://github.com/jb55/egui?rev=03c769a3576920d5e33e01c06167e7c67d296625#03c769a3576920d5e33e01c06167e7c67d296625"
+source = "git+https://github.com/ksedgwic/egui?rev=153febd3bbe3812f69077d6f75f2d6d9e36ca405#153febd3bbe3812f69077d6f75f2d6d9e36ca405"
 dependencies = [
  "ahash",
  "bytemuck",
@@ -1361,7 +1361,7 @@ dependencies = [
 [[package]]
 name = "emath"
 version = "0.30.0"
-source = "git+https://github.com/jb55/egui?rev=03c769a3576920d5e33e01c06167e7c67d296625#03c769a3576920d5e33e01c06167e7c67d296625"
+source = "git+https://github.com/ksedgwic/egui?rev=153febd3bbe3812f69077d6f75f2d6d9e36ca405#153febd3bbe3812f69077d6f75f2d6d9e36ca405"
 dependencies = [
  "bytemuck",
  "serde",
@@ -1463,7 +1463,7 @@ dependencies = [
 [[package]]
 name = "epaint"
 version = "0.30.0"
-source = "git+https://github.com/jb55/egui?rev=03c769a3576920d5e33e01c06167e7c67d296625#03c769a3576920d5e33e01c06167e7c67d296625"
+source = "git+https://github.com/ksedgwic/egui?rev=153febd3bbe3812f69077d6f75f2d6d9e36ca405#153febd3bbe3812f69077d6f75f2d6d9e36ca405"
 dependencies = [
  "ab_glyph",
  "ahash",
@@ -1481,7 +1481,7 @@ dependencies = [
 [[package]]
 name = "epaint_default_fonts"
 version = "0.30.0"
-source = "git+https://github.com/jb55/egui?rev=03c769a3576920d5e33e01c06167e7c67d296625#03c769a3576920d5e33e01c06167e7c67d296625"
+source = "git+https://github.com/ksedgwic/egui?rev=153febd3bbe3812f69077d6f75f2d6d9e36ca405#153febd3bbe3812f69077d6f75f2d6d9e36ca405"
 
 [[package]]
 name = "equivalent"
@@ -2860,8 +2860,8 @@ dependencies = [
  "strum",
  "strum_macros",
  "tempfile",
- "tokenator",
  "thiserror 2.0.11",
+ "tokenator",
  "tokio",
  "tracing",
  "tracing-appender",

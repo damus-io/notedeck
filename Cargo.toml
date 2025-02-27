@@ -70,9 +70,8 @@ strip = true        # Strip symbols from binary*
 
 
 [patch.crates-io]
-egui = { git = "https://github.com/jb55/egui", rev = "03c769a3576920d5e33e01c06167e7c67d296625" }
-eframe = { git = "https://github.com/jb55/egui", rev = "03c769a3576920d5e33e01c06167e7c67d296625" }
-egui-winit = { git = "https://github.com/jb55/egui", rev = "03c769a3576920d5e33e01c06167e7c67d296625" }
-egui_extras = { git = "https://github.com/jb55/egui", rev = "03c769a3576920d5e33e01c06167e7c67d296625" }
-# on master was git = "https://github.com/damus-io/egui", branch = "update_layouter_0.29.1"
-epaint = { git = "https://github.com/jb55/egui", rev = "03c769a3576920d5e33e01c06167e7c67d296625" }
+egui = { git = "https://github.com/ksedgwic/egui", rev = "153febd3bbe3812f69077d6f75f2d6d9e36ca405" }
+eframe = { git = "https://github.com/ksedgwic/egui", rev = "153febd3bbe3812f69077d6f75f2d6d9e36ca405" }
+egui-winit = { git = "https://github.com/ksedgwic/egui", rev = "153febd3bbe3812f69077d6f75f2d6d9e36ca405" }
+egui_extras = { git = "https://github.com/ksedgwic/egui", rev = "153febd3bbe3812f69077d6f75f2d6d9e36ca405" }
+epaint = { git = "https://github.com/ksedgwic/egui", rev = "153febd3bbe3812f69077d6f75f2d6d9e36ca405" }
