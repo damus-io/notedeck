@@ -243,7 +243,7 @@ impl<'a> AddColumnView<'a> {
         let algo_option = ColumnOptionData {
             title: "Last Note per User",
             description: "Show the last note for each user from a list",
-            icon: egui::include_image!("../../../../assets/icons/universe_icon_dark_4x.png"),
+            icon: egui::include_image!("../../../../assets/icons/algo.png"),
             option: AddColumnOption::Algo(AlgoOption::LastPerPubkey(Decision::Undecided)),
         };
 
@@ -488,7 +488,7 @@ impl<'a> AddColumnView<'a> {
         vec.push(ColumnOptionData {
             title: "Algo",
             description: "Algorithmic feeds to aid in note discovery",
-            icon: egui::include_image!("../../../../assets/icons/plus_icon_4x.png"),
+            icon: egui::include_image!("../../../../assets/icons/algo.png"),
             option: AddColumnOption::Algo(AlgoOption::LastPerPubkey(Decision::Undecided)),
         });
 
