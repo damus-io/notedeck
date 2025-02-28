@@ -29,7 +29,7 @@ pub struct ColorTheme {
     pub inactive_weak_bg_fill: Color32,
 }
 
-const WIDGET_ROUNDING: Rounding = Rounding::same(8.0);
+const WIDGET_ROUNDING: Rounding = Rounding::same(8);
 
 pub fn create_themed_visuals(theme: ColorTheme, default: Visuals) -> Visuals {
     Visuals {
@@ -83,12 +83,12 @@ pub fn create_themed_visuals(theme: ColorTheme, default: Visuals) -> Visuals {
         },
         extreme_bg_color: theme.extreme_bg_color,
         error_fg_color: theme.err_fg_color,
-        window_rounding: Rounding::same(8.0),
+        window_rounding: Rounding::same(8),
         window_fill: theme.window_fill,
         window_shadow: Shadow {
-            offset: [0.0, 8.0].into(),
-            blur: 24.0,
-            spread: 0.0,
+            offset: [0, 8],
+            blur: 24,
+            spread: 0,
             color: egui::Color32::from_rgba_unmultiplied(0x6D, 0x6D, 0x6D, 0x14),
         },
         window_stroke: Stroke {

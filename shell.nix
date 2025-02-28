@@ -55,7 +55,7 @@ mkShell ({
         cmdline-tools-latest
         build-tools-34-0-0
         platform-tools
-        platforms-android-30
+        platforms-android-31
         ndk-27-2-12479018
         #ndk-24-0-8215888
       ] ++ lib.optional android_emulator [ emulator ]);
