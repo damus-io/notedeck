@@ -69,7 +69,7 @@ impl<'a> SearchResultsView<'a> {
             .constrain_to(rect)
             .show(ui.ctx(), |ui| {
                 let inner_margin_size = 8.0;
-                egui::Frame::none()
+                egui::Frame::NONE
                     .fill(ui.visuals().panel_fill)
                     .inner_margin(inner_margin_size)
                     .show(ui, |ui| {
