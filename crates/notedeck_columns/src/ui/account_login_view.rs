@@ -23,9 +23,7 @@ impl<'a> AccountLoginView<'a> {
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui) -> InnerResponse<Option<AccountLoginResponse>> {
-        Frame::none()
-            .outer_margin(12.0)
-            .show(ui, |ui| self.show(ui))
+        Frame::new().outer_margin(12.0).show(ui, |ui| self.show(ui))
     }
 
     fn show(&mut self, ui: &mut egui::Ui) -> Option<AccountLoginResponse> {
@@ -123,7 +121,7 @@ fn login_textedit(manager: &mut AcquireKeyState) -> TextEdit {
             )
             .vertical_align(Align::Center)
             .min_size(Vec2::new(0.0, 40.0))
-            .margin(Margin::same(12.0))
+            .margin(Margin::same(12))
     };
 
     let is_visible = manager.password_visible();

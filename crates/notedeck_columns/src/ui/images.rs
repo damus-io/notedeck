@@ -52,7 +52,7 @@ fn render_media_cache(
         cache.map_mut().insert(url.to_owned(), res);
     }
 
-    egui::Frame::none()
+    egui::Frame::NONE
         .show(ui, |ui| {
             match cache.map_mut().get_mut(url).and_then(|p| p.ready_mut()) {
                 None => show_waiting(ui),

@@ -83,7 +83,7 @@ impl<'a> DesktopSidePanel<'a> {
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui) -> SidePanelResponse {
-        let mut frame = egui::Frame::none().inner_margin(Margin::same(8.0));
+        let mut frame = egui::Frame::new().inner_margin(Margin::same(8));
 
         if !ui.visuals().dark_mode {
             frame = frame.fill(colors::ALMOST_WHITE);

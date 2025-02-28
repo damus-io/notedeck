@@ -33,30 +33,13 @@ pub struct Notedeck {
     unrecognized_args: BTreeSet<String>,
 }
 
-fn margin_top(narrow: bool) -> f32 {
-    #[cfg(target_os = "android")]
-    {
-        // FIXME - query the system bar height and adjust more precisely
-        let _ = narrow; // suppress compiler warning on android
-        40.0
-    }
-    #[cfg(not(target_os = "android"))]
-    {
-        if narrow {
-            50.0
-        } else {
-            0.0
-        }
-    }
-}
-
 /// Our chrome, which is basically nothing
-fn main_panel(style: &egui::Style, narrow: bool) -> egui::CentralPanel {
+fn main_panel(style: &egui::Style) -> egui::CentralPanel {
     let inner_margin = egui::Margin {
-        top: margin_top(narrow),
-        left: 0.0,
-        right: 0.0,
-        bottom: 0.0,
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
     };
     egui::CentralPanel::default().frame(egui::Frame {
         inner_margin,
@@ -73,7 +56,7 @@ impl eframe::App for Notedeck {
         // handle account updates
         self.accounts.update(&mut self.ndb, &mut self.pool, ctx);
 
-        main_panel(&ctx.style(), crate::ui::is_narrow(ctx)).show(ctx, |ui| {
+        main_panel(&ctx.style()).show(ctx, |ui| {
             // render app
             if let Some(app) = &self.app {
                 let app = app.clone();

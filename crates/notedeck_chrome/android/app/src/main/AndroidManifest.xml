@@ -18,14 +18,9 @@
 
             <meta-data
                 android:name="android.app.lib_name"
-                android:value="main" />
+                android:value="notedeck_chrome" />
         </activity>
     </application>
-
-[[package.metadata.android.uses_feature]]
-name = "android.hardware.vulkan.level"
-required = true
-version = 1
 
     <uses-feature android:name="android.hardware.vulkan.level"
                   android:required="true"

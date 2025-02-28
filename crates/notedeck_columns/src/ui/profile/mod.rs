@@ -155,14 +155,13 @@ impl<'a> ProfileView<'a> {
                     );
 
                     if ui.add(copy_key_widget(&pfp_rect)).clicked() {
-                        ui.output_mut(|w| {
-                            w.copied_text = if let Some(bech) = self.pubkey.to_bech() {
-                                bech
-                            } else {
-                                error!("Could not convert Pubkey to bech");
-                                String::new()
-                            }
-                        });
+                        let to_copy = if let Some(bech) = self.pubkey.to_bech() {
+                            bech
+                        } else {
+                            error!("Could not convert Pubkey to bech");
+                            String::new()
+                        };
+                        ui.ctx().copy_text(to_copy)
                     }
 
                     if self.accounts.contains_full_kp(self.pubkey) {
@@ -235,6 +234,7 @@ fn handle_lud16(ui: &mut egui::Ui, lud16: &str) {
 fn copy_key_widget(pfp_rect: &egui::Rect) -> impl egui::Widget + '_ {
     |ui: &mut egui::Ui| -> egui::Response {
         let painter = ui.painter();
+        #[allow(deprecated)]
         let copy_key_rect = painter.round_rect_to_pixels(egui::Rect::from_center_size(
             pfp_rect.center_bottom(),
             egui::vec2(48.0, 28.0),
@@ -245,7 +245,7 @@ fn copy_key_widget(pfp_rect: &egui::Rect) -> impl egui::Widget + '_ {
             Sense::click(),
         );
 
-        let copy_key_rounding = Rounding::same(100.0);
+        let copy_key_rounding = Rounding::same(100);
         let fill_color = if resp.hovered() {
             ui.visuals().widgets.inactive.weak_bg_fill
         } else {
@@ -264,6 +264,7 @@ fn copy_key_widget(pfp_rect: &egui::Rect) -> impl egui::Widget + '_ {
         ))
         .paint_at(
             ui,
+            #[allow(deprecated)]
             painter.round_rect_to_pixels(egui::Rect::from_center_size(
                 copy_key_rect.center(),
                 egui::vec2(16.0, 16.0),
@@ -278,11 +279,12 @@ fn edit_profile_button() -> impl egui::Widget + 'static {
     |ui: &mut egui::Ui| -> egui::Response {
         let (rect, resp) = ui.allocate_exact_size(vec2(124.0, 32.0), Sense::click());
         let painter = ui.painter_at(rect);
+        #[allow(deprecated)]
         let rect = painter.round_rect_to_pixels(rect);
 
         painter.rect_filled(
             rect,
-            Rounding::same(8.0),
+            Rounding::same(8),
             if resp.hovered() {
                 ui.visuals().widgets.active.bg_fill
             } else {
@@ -291,7 +293,7 @@ fn edit_profile_button() -> impl egui::Widget + 'static {
         );
         painter.rect_stroke(
             rect.shrink(1.0),
-            Rounding::same(8.0),
+            Rounding::same(8),
             if resp.hovered() {
                 ui.visuals().widgets.active.bg_stroke
             } else {
@@ -317,6 +319,7 @@ fn edit_profile_button() -> impl egui::Widget + 'static {
         let edit_icon_rect = {
             let mut center = galley_rect.left_center();
             center.x -= half_icon_size + space_between_icon_galley;
+            #[allow(deprecated)]
             painter.round_rect_to_pixels(Rect::from_center_size(
                 painter.round_pos_to_pixel_center(center),
                 edit_icon_size,
