@@ -92,6 +92,7 @@ Example android-config.json:
 ```
 {
   "args": [
+    "argv0-placeholder",
     "--npub",
     "npub1h50pnxqw9jg7dhr906fvy4mze2yzawf895jhnc3p7qmljdugm6gsrurqev",
     "-c",
@@ -119,6 +120,7 @@ fn get_app_args(app: AndroidApp) -> Vec<String> {
     let config_file = external_data_path.join("android-config.json");
 
     let default_args = vec![
+        "argv0-placeholder",
         "--pub",
         "32e1827635450ebb3c5a7d12c1f8e7b2b514439ac10a67eef3d9fd9c5c68e245",
         "-c",
