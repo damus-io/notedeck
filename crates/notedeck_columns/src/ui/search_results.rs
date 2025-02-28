@@ -63,7 +63,7 @@ impl<'a> SearchResultsView<'a> {
             .fixed_pos(rect.left_top())
             .constrain_to(rect)
             .show(ui.ctx(), |ui| {
-                egui::Frame::none()
+                egui::Frame::NONE
                     .fill(ui.visuals().panel_fill)
                     .inner_margin(8.0)
                     .show(ui, |ui| {
