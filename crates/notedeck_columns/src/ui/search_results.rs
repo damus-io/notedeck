@@ -63,11 +63,12 @@ impl<'a> SearchResultsView<'a> {
             .fixed_pos(rect.left_top())
             .constrain_to(rect)
             .show(ui.ctx(), |ui| {
+                let inner_margin_size = 8.0;
                 egui::Frame::none()
                     .fill(ui.visuals().panel_fill)
-                    .inner_margin(8.0)
+                    .inner_margin(inner_margin_size)
                     .show(ui, |ui| {
-                        let width = rect.width();
+                        let width = rect.width() - (2.0 * inner_margin_size);
                         let scroll_resp = ScrollArea::vertical()
                             .max_width(width)
                             .auto_shrink(Vec2b::FALSE)
