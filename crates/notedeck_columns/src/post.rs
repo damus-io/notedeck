@@ -541,7 +541,7 @@ impl TextBuffer for PostBuffer {
             }
         }
 
-        if first_is_desired_char(text, self.mention_indicator) {
+        if first_is_desired_char(&self.text_buffer, text, char_index, self.mention_indicator) {
             // if a mention already exists where we're inserting the delim, remove it
             let to_remove = self.get_mention(char_index).map(|old_mention| {
                 (
@@ -673,12 +673,16 @@ impl TextBuffer for PostBuffer {
     }
 }
 
-fn first_is_desired_char(text: &str, desired: char) -> bool {
-    if let Some(char) = text.chars().next() {
-        char == desired
-    } else {
-        false
-    }
+fn first_is_desired_char(
+    full_text: &str,
+    new_text: &str,
+    new_text_index: usize,
+    desired: char,
+) -> bool {
+    new_text.chars().next().map_or(false, |c| {
+        c == desired
+            && (new_text_index == 0 || full_text.chars().nth(new_text_index - 1) == Some(' '))
+    })
 }
 
 #[derive(Debug)]
@@ -905,15 +909,24 @@ mod tests {
     }
 
     #[test]
-    fn test_insert_mention_after() {
+    fn test_insert_mention_after_text() {
         let mut buf = PostBuffer::default();
         buf.insert_text("test text here", 0);
         buf.insert_text("@jb55", 4);
 
-        assert!(buf.get_mention(4).is_some());
+        assert!(buf.mentions.is_empty());
+    }
+
+    #[test]
+    fn test_insert_mention_with_space_after_text() {
+        let mut buf = PostBuffer::default();
+        buf.insert_text("test  text here", 0);
+        buf.insert_text("@jb55", 5);
+
+        assert!(buf.get_mention(5).is_some());
         assert_eq!(buf.mentions.len(), 1);
-        assert_eq!(buf.mentions.get(&0).unwrap().bounds(), 4..9);
-        assert_eq!("test@jb55 text here", buf.as_str());
+        assert_eq!(buf.mentions.get(&0).unwrap().bounds(), 5..10);
+        assert_eq!("test @jb55 text here", buf.as_str());
 
         buf.select_full_mention(0, JB55());
 
@@ -988,13 +1001,14 @@ mod tests {
         assert_eq!(mention.bounds(), 0..5);
         assert_eq!(mention.mention_type, MentionType::Finalized(JB55()));
 
-        buf.insert_text("@oops", 3);
-        assert_eq!(buf.as_str(), "@jb@oops55 test");
+        buf.insert_text(" ", 3);
+        buf.insert_text("@oops", 4);
+        assert_eq!(buf.as_str(), "@jb @oops55 test");
         assert_eq!(buf.mentions.len(), 1);
         assert_eq!(buf.mention_ends.len(), 1);
         assert_eq!(buf.mention_starts.len(), 1);
         let mention = buf.mentions.get(&1).unwrap();
-        assert_eq!(mention.bounds(), 3..8);
+        assert_eq!(mention.bounds(), 4..9);
         assert_eq!(mention.mention_type, MentionType::Pending);
     }
 
