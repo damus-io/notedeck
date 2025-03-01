@@ -17,6 +17,11 @@ pub struct SearchResultsView<'a> {
     results: &'a Vec<&'a [u8; 32]>,
 }
 
+pub enum SearchResultsResponse {
+    SelectResult(Option<usize>),
+    DeleteMention,
+}
+
 impl<'a> SearchResultsView<'a> {
     pub fn new(
         img_cache: &'a mut Images,
@@ -32,8 +37,8 @@ impl<'a> SearchResultsView<'a> {
         }
     }
 
-    fn show(&mut self, ui: &mut egui::Ui, width: f32) -> Option<usize> {
-        let mut selection = None;
+    fn show(&mut self, ui: &mut egui::Ui, width: f32) -> SearchResultsResponse {
+        let mut search_results_selection = None;
         ui.vertical(|ui| {
             for (i, res) in self.results.iter().enumerate() {
                 let profile = match self.ndb.get_profile_by_pubkey(self.txn, res) {
@@ -48,15 +53,15 @@ impl<'a> SearchResultsView<'a> {
                     .add(user_result(&profile, self.img_cache, i, width))
                     .clicked()
                 {
-                    selection = Some(i)
+                    search_results_selection = Some(i)
                 }
             }
         });
 
-        selection
+        SearchResultsResponse::SelectResult(search_results_selection)
     }
 
-    pub fn show_in_rect(&mut self, rect: egui::Rect, ui: &mut egui::Ui) -> Option<usize> {
+    pub fn show_in_rect(&mut self, rect: egui::Rect, ui: &mut egui::Ui) -> SearchResultsResponse {
         let widget_id = ui.id().with("search_results");
         let area_resp = egui::Area::new(widget_id)
             .order(egui::Order::Foreground)
@@ -70,7 +75,7 @@ impl<'a> SearchResultsView<'a> {
                     .show(ui, |ui| {
                         let width = rect.width() - (2.0 * inner_margin_size);
 
-                        let _close_button_resp = {
+                        let close_button_resp = {
                             let close_button_size = 16.0;
                             let (close_section_rect, _) = ui.allocate_exact_size(
                                 vec2(width, close_button_size),
@@ -96,7 +101,12 @@ impl<'a> SearchResultsView<'a> {
                             .auto_shrink(Vec2b::FALSE)
                             .show(ui, |ui| self.show(ui, width));
                         ui.advance_cursor_after_rect(rect);
-                        scroll_resp.inner
+
+                        if close_button_resp {
+                            SearchResultsResponse::DeleteMention
+                        } else {
+                            scroll_resp.inner
+                        }
                     })
                     .inner
             });

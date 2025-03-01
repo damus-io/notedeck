@@ -191,59 +191,76 @@ impl<'a> PostView<'a> {
         cursor_index: usize,
         textedit_output: &TextEditOutput,
     ) {
+        let mut delete_mention = None;
         if let Some(mention) = &self.draft.buffer.get_mention(cursor_index) {
             if mention.info.mention_type == MentionType::Pending {
-                let mention_str = self.draft.buffer.get_mention_string(mention);
+                if ui.ctx().input(|r| r.key_pressed(egui::Key::Escape)) {
+                    delete_mention = Some(mention.index);
+                } else {
+                    let mention_str = self.draft.buffer.get_mention_string(mention);
 
-                if !mention_str.is_empty() {
-                    if let Some(mention_hint) = &mut self.draft.cur_mention_hint {
-                        if mention_hint.index != mention.index {
-                            mention_hint.index = mention.index;
-                            mention_hint.pos = calculate_mention_hints_pos(
-                                textedit_output,
-                                mention.info.start_index,
-                            );
+                    if !mention_str.is_empty() {
+                        if let Some(mention_hint) = &mut self.draft.cur_mention_hint {
+                            if mention_hint.index != mention.index {
+                                mention_hint.index = mention.index;
+                                mention_hint.pos = calculate_mention_hints_pos(
+                                    textedit_output,
+                                    mention.info.start_index,
+                                );
+                            }
+                            mention_hint.text = mention_str.to_owned();
+                        } else {
+                            self.draft.cur_mention_hint = Some(MentionHint {
+                                index: mention.index,
+                                text: mention_str.to_owned(),
+                                pos: calculate_mention_hints_pos(
+                                    textedit_output,
+                                    mention.info.start_index,
+                                ),
+                            });
                         }
-                        mention_hint.text = mention_str.to_owned();
-                    } else {
-                        self.draft.cur_mention_hint = Some(MentionHint {
-                            index: mention.index,
-                            text: mention_str.to_owned(),
-                            pos: calculate_mention_hints_pos(
-                                textedit_output,
-                                mention.info.start_index,
-                            ),
-                        });
                     }
-                }
 
-                if let Some(hint) = &self.draft.cur_mention_hint {
-                    let hint_rect = {
-                        let mut hint_rect = self.inner_rect;
-                        hint_rect.set_top(hint.pos.y);
-                        hint_rect
-                    };
+                    if let Some(hint) = &self.draft.cur_mention_hint {
+                        let hint_rect = {
+                            let mut hint_rect = self.inner_rect;
+                            hint_rect.set_top(hint.pos.y);
+                            hint_rect
+                        };
 
-                    if let Ok(res) = self.ndb.search_profile(txn, mention_str, 10) {
-                        let hint_selection =
-                            SearchResultsView::new(self.img_cache, self.ndb, txn, &res)
+                        if let Ok(res) = self.ndb.search_profile(txn, mention_str, 10) {
+                            let resp = SearchResultsView::new(self.img_cache, self.ndb, txn, &res)
                                 .show_in_rect(hint_rect, ui);
 
-                        if let Some(hint_index) = hint_selection {
-                            if let Some(pk) = res.get(hint_index) {
-                                let record = self.ndb.get_profile_by_pubkey(txn, pk);
+                            match resp {
+                                ui::search_results::SearchResultsResponse::SelectResult(
+                                    selection,
+                                ) => {
+                                    if let Some(hint_index) = selection {
+                                        if let Some(pk) = res.get(hint_index) {
+                                            let record = self.ndb.get_profile_by_pubkey(txn, pk);
 
-                                self.draft.buffer.select_mention_and_replace_name(
-                                    mention.index,
-                                    get_display_name(record.ok().as_ref()).name(),
-                                    Pubkey::new(**pk),
-                                );
-                                self.draft.cur_mention_hint = None;
+                                            self.draft.buffer.select_mention_and_replace_name(
+                                                mention.index,
+                                                get_display_name(record.ok().as_ref()).name(),
+                                                Pubkey::new(**pk),
+                                            );
+                                            self.draft.cur_mention_hint = None;
+                                        }
+                                    }
+                                }
+                                ui::search_results::SearchResultsResponse::DeleteMention => {
+                                    self.draft.buffer.delete_mention(mention.index)
+                                }
                             }
                         }
                     }
                 }
             }
+        }
+
+        if let Some(mention_to_delete) = delete_mention {
+            self.draft.buffer.delete_mention(mention_to_delete);
         }
     }
 
