@@ -1,4 +1,4 @@
-use egui::{vec2, FontId, Pos2, Rect, ScrollArea, Vec2b};
+use egui::{vec2, FontId, Layout, Pos2, Rect, ScrollArea, Stroke, UiBuilder, Vec2b};
 use nostrdb::{Ndb, ProfileRecord, Transaction};
 use notedeck::{fonts::get_font_size, Images, NotedeckTextStyle};
 use tracing::error;
@@ -69,6 +69,28 @@ impl<'a> SearchResultsView<'a> {
                     .inner_margin(inner_margin_size)
                     .show(ui, |ui| {
                         let width = rect.width() - (2.0 * inner_margin_size);
+
+                        let _close_button_resp = {
+                            let close_button_size = 16.0;
+                            let (close_section_rect, _) = ui.allocate_exact_size(
+                                vec2(width, close_button_size),
+                                egui::Sense::hover(),
+                            );
+                            let (_, button_rect) = close_section_rect.split_left_right_at_x(
+                                close_section_rect.right() - close_button_size,
+                            );
+                            let button_resp = ui.allocate_rect(button_rect, egui::Sense::click());
+                            ui.allocate_new_ui(
+                                UiBuilder::new()
+                                    .max_rect(close_section_rect)
+                                    .layout(Layout::right_to_left(egui::Align::Center)),
+                                |ui| ui.add(close_button(button_resp.rect)).clicked(),
+                            )
+                            .inner
+                        };
+
+                        ui.add_space(8.0);
+
                         let scroll_resp = ScrollArea::vertical()
                             .max_width(width)
                             .auto_shrink(Vec2b::FALSE)
@@ -133,5 +155,33 @@ fn user_result<'a>(
         ui.advance_cursor_after_rect(helper.get_animation_rect());
 
         pfp_resp.union(helper.take_animation_response())
+    }
+}
+
+fn close_button(rect: egui::Rect) -> impl egui::Widget {
+    move |ui: &mut egui::Ui| -> egui::Response {
+        let max_width = rect.width();
+        let helper = AnimationHelper::new_from_rect(ui, "user_search_close", rect);
+
+        let fill_color = ui.visuals().text_color();
+
+        let radius = max_width / (2.0 * ICON_EXPANSION_MULTIPLE);
+
+        let painter = ui.painter();
+        let nw_edge = painter
+            .round_pos_to_pixel_center(helper.scale_pos_from_center(Pos2::new(-radius, radius)));
+        let se_edge = painter
+            .round_pos_to_pixel_center(helper.scale_pos_from_center(Pos2::new(radius, -radius)));
+        let sw_edge = painter
+            .round_pos_to_pixel_center(helper.scale_pos_from_center(Pos2::new(-radius, -radius)));
+        let ne_edge = painter
+            .round_pos_to_pixel_center(helper.scale_pos_from_center(Pos2::new(radius, radius)));
+
+        let line_width = helper.scale_1d_pos(2.0);
+
+        painter.line_segment([nw_edge, se_edge], Stroke::new(line_width, fill_color));
+        painter.line_segment([ne_edge, sw_edge], Stroke::new(line_width, fill_color));
+
+        helper.take_animation_response()
     }
 }
