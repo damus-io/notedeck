@@ -330,6 +330,14 @@ impl PostBuffer {
         }
     }
 
+    pub fn delete_mention(&mut self, mention_key: usize) {
+        if let Some(mention_info) = self.mentions.get(&mention_key) {
+            self.mention_starts.remove(&mention_info.start_index);
+            self.mention_ends.remove(&mention_info.end_index);
+            self.mentions.remove(&mention_key);
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
         self.text_buffer.is_empty()
     }
@@ -510,6 +518,7 @@ impl TextBuffer for PostBuffer {
             .map(|(&k, _)| k)
             .collect();
 
+        let mut break_mentions = Vec::new();
         for cur_end in pending_ends_to_update {
             let mention_key = if let Some(mention_key) = self.mention_ends.get(&cur_end) {
                 *mention_key
@@ -531,6 +540,13 @@ impl TextBuffer for PostBuffer {
                     self.mention_starts.insert(new_start, mention_key);
                     mention_info.start_index = new_start;
                 } else {
+                    if char_index == mention_info.end_index
+                        && first_is_desired_char(&self.text_buffer, text, char_index, ' ')
+                    {
+                        // if the user wrote a double space at the end of the mention, break it
+                        break_mentions.push(mention_key);
+                    }
+
                     // text is being inserted inside this mention. Make sure it is in the pending state
                     mention_info.mention_type = MentionType::Pending;
                 }
@@ -539,6 +555,10 @@ impl TextBuffer for PostBuffer {
             } else {
                 error!("Could not find mention at index {}", mention_key);
             }
+        }
+
+        for mention_key in break_mentions {
+            self.delete_mention(mention_key);
         }
 
         if first_is_desired_char(&self.text_buffer, text, char_index, self.mention_indicator) {
