@@ -1,6 +1,7 @@
 use futures::{channel::mpsc, FutureExt, StreamExt};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::time::{Duration, Instant};
 use std::{cell::RefCell, cmp::Ordering, rc::Rc};
 use thiserror::Error;
 use tracing::{debug, error, info, trace, warn};
@@ -312,6 +313,7 @@ pub struct SubMan {
     pool: RelayPool,
     local: BTreeMap<LocalId, SubStateRef>,
     remote: BTreeMap<RemoteId, SubStateRef>,
+    idle: BTreeMap<String, Instant>,
 }
 
 impl SubMan {
@@ -321,6 +323,7 @@ impl SubMan {
             pool,
             local: BTreeMap::new(),
             remote: BTreeMap::new(),
+            idle: BTreeMap::new(),
         }
     }
 
@@ -698,14 +701,40 @@ impl SubMan {
         }
     }
 
+    const IDLE_EXPIRATION_SECS: Duration = Duration::from_secs(20);
+
     fn close_unneeded_relays(&mut self, default_relays: &[RelaySpec]) {
         let current_relays: BTreeSet<String> = self.pool.urls();
         let needed_relays: BTreeSet<String> = self.needed_relays(default_relays);
         let unneeded_relays: BTreeSet<_> =
             current_relays.difference(&needed_relays).cloned().collect();
-        if !unneeded_relays.is_empty() {
-            debug!("closing unneeded relays: {:?}", unneeded_relays);
-            self.pool.remove_urls(&unneeded_relays);
+
+        // remove all needed relays from the idle collection
+        for r in needed_relays {
+            self.idle.remove(&r);
+        }
+
+        // manage idle relays
+        let mut expired = BTreeSet::new();
+        let now = Instant::now();
+        for r in unneeded_relays {
+            // could be a new entry, an entry that has only been idle
+            // a short time, or an expired entry
+            let entry = self.idle.entry(r.clone()).or_insert(now);
+            if now.duration_since(*entry) > Self::IDLE_EXPIRATION_SECS {
+                expired.insert(r.clone());
+            }
+        }
+
+        // close the expired relays
+        if !expired.is_empty() {
+            debug!("closing expired relays: {:?}", expired);
+            self.pool.remove_urls(&expired);
+        }
+
+        // remove the expired relays from the idle collection
+        for r in expired {
+            self.idle.remove(&r);
         }
     }
 
