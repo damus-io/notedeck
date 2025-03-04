@@ -271,10 +271,7 @@ fn image_carousel(
                 img_cache,
                 ui.ctx(),
                 image,
-                ImageType::Content(
-                    (width as f32).round() as u32,
-                    (height as f32).round() as u32,
-                ),
+                ImageType::Content(width.round() as u32, height.round() as u32),
             );
             img_cache.map_mut().insert(thumb_key.clone(), res);
         }

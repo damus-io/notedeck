@@ -102,23 +102,11 @@ pub fn round_image(image: &mut ColorImage) {
     }
 }
 
-fn process_pfp_bitmap(imgtyp: ImageType, image: &mut image::DynamicImage) -> ColorImage {
+fn process_image(imgtyp: ImageType, image: &mut image::DynamicImage) -> ColorImage {
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
 
     match imgtyp {
-        ImageType::Content(w, h) => {
-            let image = image.resize(w, h, FilterType::CatmullRom); // DynamicImage
-            let image_buffer = image.into_rgba8(); // RgbaImage (ImageBuffer)
-            let color_image = ColorImage::from_rgba_unmultiplied(
-                [
-                    image_buffer.width() as usize,
-                    image_buffer.height() as usize,
-                ],
-                image_buffer.as_flat_samples().as_slice(),
-            );
-            color_image
-        }
         ImageType::Profile(size) => {
             // Crop square
             let smaller = image.width().min(image.height());
@@ -130,8 +118,9 @@ fn process_pfp_bitmap(imgtyp: ImageType, image: &mut image::DynamicImage) -> Col
                 let excess = image.height() - smaller;
                 *image = image.crop_imm(0, excess / 2, image.width(), image.height() - excess);
             }
-            let image = image.resize(size, size, FilterType::CatmullRom); // DynamicImage
-            let image_buffer = image.into_rgba8(); // RgbaImage (ImageBuffer)
+
+            let image = image.resize(size, size, FilterType::CatmullRom);
+            let image_buffer = image.into_rgba8();
             let mut color_image = ColorImage::from_rgba_unmultiplied(
                 [
                     image_buffer.width() as usize,
@@ -142,16 +131,26 @@ fn process_pfp_bitmap(imgtyp: ImageType, image: &mut image::DynamicImage) -> Col
             round_image(&mut color_image);
             color_image
         }
-        ImageType::Original => {
-            let image_buffer = image.clone().into_rgba8(); // RgbaImage (ImageBuffer)
-            let color_image = ColorImage::from_rgba_unmultiplied(
+        ImageType::Content(w, h) => {
+            let image = image.resize(w, h, FilterType::CatmullRom);
+            let image_buffer = image.into_rgba8();
+            ColorImage::from_rgba_unmultiplied(
                 [
                     image_buffer.width() as usize,
                     image_buffer.height() as usize,
                 ],
                 image_buffer.as_flat_samples().as_slice(),
-            );
-            color_image
+            )
+        }
+        ImageType::Original => {
+            let image_buffer = image.clone().into_rgba8();
+            ColorImage::from_rgba_unmultiplied(
+                [
+                    image_buffer.width() as usize,
+                    image_buffer.height() as usize,
+                ],
+                image_buffer.as_flat_samples().as_slice(),
+            )
         }
     }
 }
@@ -179,7 +178,7 @@ fn parse_img_response(response: ehttp::Response, imgtyp: ImageType) -> Result<Co
         #[cfg(feature = "profiling")]
         puffin::profile_scope!("load_from_memory");
         let mut dyn_image = image::load_from_memory(&response.bytes)?;
-        Ok(process_pfp_bitmap(imgtyp, &mut dyn_image))
+        Ok(process_image(imgtyp, &mut dyn_image))
     } else {
         Err(format!("Expected image, found content-type {:?}", content_type).into())
     }
@@ -198,63 +197,7 @@ fn fetch_img_from_disk(
         let data = fs::read(path).await?;
         let mut image_buffer = image::load_from_memory(&data).map_err(notedeck::Error::Image)?;
 
-        let img = match imgtyp {
-            ImageType::Profile(size) => {
-                // Crop square
-                let smaller = image_buffer.width().min(image_buffer.height());
-
-                if image_buffer.width() > smaller {
-                    let excess = image_buffer.width() - smaller;
-                    image_buffer = image_buffer.crop_imm(
-                        excess / 2,
-                        0,
-                        image_buffer.width() - excess,
-                        image_buffer.height(),
-                    );
-                } else if image_buffer.height() > smaller {
-                    let excess = image_buffer.height() - smaller;
-                    image_buffer = image_buffer.crop_imm(
-                        0,
-                        excess / 2,
-                        image_buffer.width(),
-                        image_buffer.height() - excess,
-                    );
-                }
-
-                let image_buffer = image_buffer.resize(size, size, FilterType::CatmullRom);
-                let image_buffer = image_buffer.into_rgba8();
-                let mut color_image = ColorImage::from_rgba_unmultiplied(
-                    [
-                        image_buffer.width() as usize,
-                        image_buffer.height() as usize,
-                    ],
-                    image_buffer.as_flat_samples().as_slice(),
-                );
-                round_image(&mut color_image);
-                color_image
-            }
-            ImageType::Content(w, h) => {
-                let image_buffer = image_buffer.resize(w, h, FilterType::CatmullRom);
-                let image_buffer = image_buffer.into_rgba8();
-                ColorImage::from_rgba_unmultiplied(
-                    [
-                        image_buffer.width() as usize,
-                        image_buffer.height() as usize,
-                    ],
-                    image_buffer.as_flat_samples().as_slice(),
-                )
-            }
-            ImageType::Original => {
-                let image_buffer = image_buffer.into_rgba8();
-                ColorImage::from_rgba_unmultiplied(
-                    [
-                        image_buffer.width() as usize,
-                        image_buffer.height() as usize,
-                    ],
-                    image_buffer.as_flat_samples().as_slice(),
-                )
-            }
-        };
+        let img = process_image(imgtyp, &mut image_buffer);
 
         Ok(ctx.load_texture(&url, img, Default::default()))
     })
@@ -271,7 +214,7 @@ pub enum ImageType {
     Profile(u32),
     /// Content Image (width, height)
     Content(u32, u32),
-    /// Original Image (width, height)
+    /// Original Image
     Original,
 }
 
