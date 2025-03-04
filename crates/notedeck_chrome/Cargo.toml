@@ -87,6 +87,8 @@ label = "Notedeck"
 [package.metadata.deb]
 name = "notedeck"
 copyright = "2024 Damus, Nostr Inc."
+# Manually specify a libc dependency that works on Ubuntu 22.04:
+depends = ["libc6 (>= 2.35)"]
 
 [package.metadata.generate-rpm]
 name = "notedeck"
