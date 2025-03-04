@@ -658,6 +658,15 @@ impl Accounts {
         self.get_combined_relays(self.get_selected_account_data(), |_| true)
     }
 
+    // returns the active account's relays or empty set if there are none (no bootstrap)
+    pub fn get_advertised_relays(&self) -> BTreeSet<RelaySpec> {
+        if let Some(data) = self.get_selected_account_data() {
+            data.relay.advertised.lock().unwrap().clone()
+        } else {
+            BTreeSet::new()
+        }
+    }
+
     pub fn update(&mut self, subman: &mut SubMan, _ctx: &egui::Context) {
         // IMPORTANT - This function is called in the UI update loop,
         // make sure it is fast when idle
