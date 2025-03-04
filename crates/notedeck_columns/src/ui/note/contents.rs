@@ -1,10 +1,9 @@
 use crate::ui::{
     self,
     note::{NoteOptions, NoteResponse},
-    ProfilePic,
 };
 use crate::{actionbar::NoteAction, images::ImageType, timeline::TimelineKind};
-use egui::{Color32, Hyperlink, Image, RichText};
+use egui::{vec2, Button, Color32, Hyperlink, Image, Rect, RichText, Vec2, Window};
 use nostrdb::{BlockType, Mention, Ndb, Note, NoteKey, Transaction};
 use tracing::warn;
 
@@ -259,11 +258,43 @@ fn image_carousel(
     images: Vec<String>,
     carousel_id: egui::Id,
 ) {
-    // let's make sure everything is within our area
-
     let height = 360.0;
     let width = ui.available_size().x;
     let spinsz = if height > width { width } else { height };
+
+    for image in &images {
+        // Use a specific key for thumbnails
+        let thumb_key = format!("{}_thumb", image);
+        if !img_cache.map().contains_key(&thumb_key) {
+            tracing::info!("Loading thumbnail image: {}", image);
+            let res = crate::images::fetch_img(
+                img_cache,
+                ui.ctx(),
+                image,
+                ImageType::Content(
+                    (width as f32).round() as u32,
+                    (height as f32).round() as u32,
+                ),
+            );
+            img_cache.map_mut().insert(thumb_key.clone(), res);
+        }
+    }
+
+    let show_popup = ui.ctx().memory(|mem| {
+        mem.data
+            .get_temp(carousel_id.with("show_popup"))
+            .unwrap_or(false)
+    });
+
+    let current_image_opt = if show_popup {
+        Some(ui.ctx().memory(|mem| {
+            mem.data
+                .get_temp::<String>(carousel_id.with("current_image"))
+                .unwrap_or_else(|| images[0].clone())
+        }))
+    } else {
+        None
+    };
 
     ui.add_sized([width, height], |ui: &mut egui::Ui| {
         egui::ScrollArea::horizontal()
@@ -271,53 +302,50 @@ fn image_carousel(
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     for image in images {
-                        // If the cache is empty, initiate the fetch
-                        let m_cached_promise = img_cache.map().get(&image);
-                        if m_cached_promise.is_none() {
-                            let res = crate::images::fetch_img(
-                                img_cache,
-                                ui.ctx(),
-                                &image,
-                                ImageType::Content(width.round() as u32, height.round() as u32),
-                            );
-                            img_cache.map_mut().insert(image.to_owned(), res);
-                        }
-
-                        // What is the state of the fetch?
-                        match img_cache.map()[&image].ready() {
-                            // Still waiting
-                            None => {
-                                ui.allocate_space(egui::vec2(spinsz, spinsz));
-                                //ui.add(egui::Spinner::new().size(spinsz));
-                            }
-                            // Failed to fetch image!
-                            Some(Err(_err)) => {
-                                // FIXME - use content-specific error instead
-                                let no_pfp = crate::images::fetch_img(
-                                    img_cache,
-                                    ui.ctx(),
-                                    ProfilePic::no_pfp_url(),
-                                    ImageType::Profile(128),
-                                );
-                                img_cache.map_mut().insert(image.to_owned(), no_pfp);
-                                // spin until next pass
-                                ui.allocate_space(egui::vec2(spinsz, spinsz));
-                                //ui.add(egui::Spinner::new().size(spinsz));
-                            }
-                            // Use the previously resolved image
+                        let thumb_key = format!("{}_thumb", image);
+                        match img_cache.map().get(&thumb_key).and_then(|p| p.ready()) {
                             Some(Ok(img)) => {
                                 let img_resp = ui.add(
-                                    Image::new(img)
-                                        .max_height(height)
-                                        .rounding(5.0)
-                                        .fit_to_original_size(1.0),
+                                    Button::image(
+                                        Image::new(img)
+                                            .max_height(height)
+                                            .rounding(5.0)
+                                            .fit_to_original_size(1.0),
+                                    )
+                                    .frame(false),
                                 );
-                                img_resp.context_menu(|ui| {
-                                    if ui.button("Copy Link").clicked() {
-                                        ui.ctx().copy_text(image);
-                                        ui.close_menu();
+
+                                if img_resp.clicked() {
+                                    ui.ctx().memory_mut(|mem| {
+                                        mem.data.insert_temp(carousel_id.with("show_popup"), true);
+                                        mem.data.insert_temp(
+                                            carousel_id.with("current_image"),
+                                            image.clone(),
+                                        );
+                                    });
+
+                                    // Load full-res image with a distinct key
+                                    let full_res_key = format!("{}_fullres", image);
+                                    if !img_cache.map().contains_key(&full_res_key) {
+                                        tracing::info!("Loading full resolution image: {}", image);
+
+                                        let res = crate::images::fetch_img(
+                                            img_cache,
+                                            ui.ctx(),
+                                            &image,
+                                            ImageType::Original,
+                                        );
+                                        img_cache.map_mut().insert(full_res_key, res);
+                                    } else {
+                                        tracing::info!(
+                                            "Using cached full resolution image: {}",
+                                            image
+                                        );
                                     }
-                                });
+                                }
+                            }
+                            _ => {
+                                ui.allocate_space(egui::vec2(spinsz, spinsz));
                             }
                         }
                     }
@@ -326,4 +354,89 @@ fn image_carousel(
             })
             .inner
     });
+
+    if show_popup {
+        let current_image = current_image_opt.as_ref().unwrap();
+
+        let full_res_key = format!("{}_fullres", current_image);
+        let thumb_key = format!("{}_thumb", current_image);
+
+        // Use thumbnail as fallback
+        let thumbnail_img = img_cache
+            .map()
+            .get(&thumb_key)
+            .and_then(|p| p.ready())
+            .and_then(|r| r.as_ref().ok());
+
+        // Get from cache using the fullres key
+        let full_res_img = img_cache
+            .map()
+            .get(&full_res_key)
+            .and_then(|p| p.ready())
+            .and_then(|r| r.as_ref().ok())
+            .or(thumbnail_img);
+
+        if let Some(img) = full_res_img {
+            Window::new("image_popup")
+                .title_bar(false)
+                .fixed_size(ui.ctx().screen_rect().size())
+                .fixed_pos(ui.ctx().screen_rect().min)
+                .frame(egui::Frame::none())
+                .show(ui.ctx(), |ui| {
+                    let screen_rect = ui.ctx().screen_rect();
+
+                    // Escape key
+                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                        ui.ctx().memory_mut(|mem| {
+                            mem.data.insert_temp(carousel_id.with("show_popup"), false);
+                        });
+                    }
+
+                    // background
+                    let bg_response = ui.allocate_rect(screen_rect, egui::Sense::click());
+                    if bg_response.clicked() {
+                        ui.ctx().memory_mut(|mem| {
+                            mem.data.insert_temp(carousel_id.with("show_popup"), false);
+                        });
+                    }
+                    ui.painter()
+                        .rect_filled(screen_rect, 0.0, Color32::from_black_alpha(230));
+
+                    // Close button
+                    let close_btn = ui.put(
+                        Rect::from_min_size(
+                            screen_rect.right_top() + vec2(-50.0, 10.0),
+                            Vec2::new(40.0, 40.0),
+                        ),
+                        Button::new(RichText::new("✕").size(24.0).color(Color32::WHITE))
+                            .frame(false),
+                    );
+                    if close_btn.clicked() {
+                        ui.ctx().memory_mut(|mem| {
+                            mem.data.insert_temp(carousel_id.with("show_popup"), false);
+                        });
+                    }
+
+                    ui.centered_and_justified(|ui| {
+                        let base_size = img.size_vec2();
+                        let available_space = screen_rect.size() - Vec2::new(40.0, 40.0);
+                        let scale_x = available_space.x / base_size.x;
+                        let scale_y = available_space.y / base_size.y;
+                        let scale = scale_x.min(scale_y).min(1.0);
+                        let display_size = base_size * scale;
+
+                        let image_response = ui.add(
+                            Image::new(img)
+                                .fit_to_exact_size(display_size)
+                                .rounding(5.0),
+                        );
+
+                        // Prevent clicks on the image from closing the popup
+                        if image_response.clicked() {
+                            bg_response.clicked();
+                        }
+                    });
+                });
+        }
+    }
 }
