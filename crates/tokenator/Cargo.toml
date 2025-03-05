@@ -6,3 +6,4 @@ description = "A simple library for parsing a serializing string tokens"
 
 [dependencies]
 hex = { workspace = true }
+nostrdb = { workspace = true }
