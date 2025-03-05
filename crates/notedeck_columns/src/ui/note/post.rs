@@ -323,8 +323,9 @@ impl<'a> PostView<'a> {
                             context_selection = Frame::none()
                                 .show(ui, |ui| {
                                     ui.vertical(|ui| {
-                                        ui.set_max_width(avail_size.x * 0.8);
-                                        render_note_preview(
+                                        let set_width = avail_size.x * 0.8;
+                                        ui.set_max_width(set_width);
+                                        let resp = render_note_preview(
                                             ui,
                                             self.ndb,
                                             self.note_cache,
@@ -333,7 +334,8 @@ impl<'a> PostView<'a> {
                                             id.bytes(),
                                             nostrdb::NoteKey::new(0),
                                             self.note_options,
-                                        )
+                                        );
+                                        resp
                                     })
                                     .inner
                                     .context_selection

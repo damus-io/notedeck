@@ -51,7 +51,7 @@ impl<'a> QuoteRepostView<'a> {
         let id = self.id();
         let quoting_note_id = self.quoting_note.id();
 
-        ui::PostView::new(
+        let post_resp = ui::PostView::new(
             self.ndb,
             self.draft,
             PostType::Quote(NoteId::new(quoting_note_id.to_owned())),
@@ -62,7 +62,8 @@ impl<'a> QuoteRepostView<'a> {
             self.note_options,
         )
         .id_source(id)
-        .ui(self.quoting_note.txn().unwrap(), ui)
+        .ui(self.quoting_note.txn().unwrap(), ui);
+        post_resp
     }
 
     pub fn id_source(mut self, id: egui::Id) -> Self {

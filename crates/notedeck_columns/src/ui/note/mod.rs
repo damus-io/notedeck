@@ -310,36 +310,19 @@ impl<'a> NoteView<'a> {
         note_cache: &mut NoteCache,
         note: &Note,
         profile: &Result<nostrdb::ProfileRecord<'_>, nostrdb::Error>,
-        options: NoteOptions,
-        container_right: Pos2,
-    ) -> NoteResponse {
+    ) {
         #[cfg(feature = "profiling")]
         puffin::profile_function!();
 
         let note_key = note.key().unwrap();
 
-        let inner_response = ui.horizontal(|ui| {
+        ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
             ui.add(ui::Username::new(profile.as_ref().ok(), note.pubkey()).abbreviated(20));
 
             let cached_note = note_cache.cached_note_or_insert_mut(note_key, note);
             render_reltime(ui, cached_note, true);
-
-            if options.has_options_button() {
-                let context_pos = {
-                    let size = NoteContextButton::max_width();
-                    let min = Pos2::new(container_right.x - size, container_right.y);
-                    Rect::from_min_size(min, egui::vec2(size, size))
-                };
-
-                let resp = ui.add(NoteContextButton::new(note_key).place_at(context_pos));
-                NoteContextButton::menu(ui, resp.clone())
-            } else {
-                None
-            }
         });
-
-        NoteResponse::new(inner_response.response).select_option(inner_response.inner)
     }
 
     fn show_standard(&mut self, ui: &mut egui::Ui) -> NoteResponse {
@@ -354,12 +337,6 @@ impl<'a> NoteView<'a> {
         let hitbox_id = note_hitbox_id(note_key, self.options(), self.parent);
         let profile = self.ndb.get_profile_by_pubkey(txn, self.note.pubkey());
         let maybe_hitbox = maybe_note_hitbox(ui, hitbox_id);
-        let container_right = {
-            let r = ui.available_rect_before_wrap();
-            let x = r.max.x;
-            let y = r.min.y;
-            Pos2::new(x, y)
-        };
 
         // wide design
         let response = if self.options().has_wide() {
@@ -375,15 +352,7 @@ impl<'a> NoteView<'a> {
                     ui.vertical(|ui| {
                         ui.add_sized([size.x, self.options().pfp_size()], |ui: &mut egui::Ui| {
                             ui.horizontal_centered(|ui| {
-                                selected_option = NoteView::note_header(
-                                    ui,
-                                    self.note_cache,
-                                    self.note,
-                                    &profile,
-                                    self.options(),
-                                    container_right,
-                                )
-                                .context_selection;
+                                NoteView::note_header(ui, self.note_cache, self.note, &profile);
                             })
                             .response
                         });
@@ -449,15 +418,7 @@ impl<'a> NoteView<'a> {
                 };
 
                 ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
-                    selected_option = NoteView::note_header(
-                        ui,
-                        self.note_cache,
-                        self.note,
-                        &profile,
-                        self.options(),
-                        container_right,
-                    )
-                    .context_selection;
+                    NoteView::note_header(ui, self.note_cache, self.note, &profile);
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 2.0;
 
@@ -509,6 +470,18 @@ impl<'a> NoteView<'a> {
             })
             .response
         };
+
+        if self.options().has_options_button() {
+            let context_pos = {
+                let size = NoteContextButton::max_width();
+                let top_right = response.rect.right_top();
+                let min = Pos2::new(top_right.x - size, top_right.y);
+                Rect::from_min_size(min, egui::vec2(size, size))
+            };
+
+            let resp = ui.add(NoteContextButton::new(note_key).place_at(context_pos));
+            selected_option = NoteContextButton::menu(ui, resp.clone());
+        }
 
         let note_action = if note_hitbox_clicked(ui, hitbox_id, &response.rect, maybe_hitbox) {
             if let Ok(selection) = ThreadSelection::from_note_id(
