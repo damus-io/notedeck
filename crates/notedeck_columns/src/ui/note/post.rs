@@ -18,6 +18,7 @@ use notedeck::{supported_mime_hosted_at_url, Images, NoteCache};
 use tracing::error;
 
 use super::contents::render_note_preview;
+use super::NoteContextSelection;
 
 pub struct PostView<'a> {
     ndb: &'a Ndb,
@@ -81,6 +82,7 @@ impl PostAction {
 pub struct PostResponse {
     pub action: Option<PostAction>,
     pub edit_response: egui::Response,
+    pub context_selection: Option<NoteContextSelection>,
 }
 
 impl<'a> PostView<'a> {
@@ -313,25 +315,30 @@ impl<'a> PostView<'a> {
             .show(ui, |ui| {
                 ui.vertical(|ui| {
                     let edit_response = ui.horizontal(|ui| self.editbox(txn, ui)).inner;
+                    let mut context_selection = None;
 
                     if let PostType::Quote(id) = self.post_type {
                         let avail_size = ui.available_size_before_wrap();
                         ui.with_layout(Layout::left_to_right(egui::Align::TOP), |ui| {
-                            Frame::none().show(ui, |ui| {
-                                ui.vertical(|ui| {
-                                    ui.set_max_width(avail_size.x * 0.8);
-                                    render_note_preview(
-                                        ui,
-                                        self.ndb,
-                                        self.note_cache,
-                                        self.img_cache,
-                                        txn,
-                                        id.bytes(),
-                                        nostrdb::NoteKey::new(0),
-                                        self.note_options,
-                                    );
-                                });
-                            });
+                            context_selection = Frame::none()
+                                .show(ui, |ui| {
+                                    ui.vertical(|ui| {
+                                        ui.set_max_width(avail_size.x * 0.8);
+                                        render_note_preview(
+                                            ui,
+                                            self.ndb,
+                                            self.note_cache,
+                                            self.img_cache,
+                                            txn,
+                                            id.bytes(),
+                                            nostrdb::NoteKey::new(0),
+                                            self.note_options,
+                                        )
+                                    })
+                                    .inner
+                                    .context_selection
+                                })
+                                .inner;
                         });
                     }
 
@@ -393,6 +400,7 @@ impl<'a> PostView<'a> {
                     PostResponse {
                         action,
                         edit_response,
+                        context_selection,
                     }
                 })
                 .inner

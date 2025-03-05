@@ -304,22 +304,28 @@ fn render_nav_body(
             let action = {
                 let draft = app.drafts.reply_mut(note.id());
 
-                let response = egui::ScrollArea::vertical().show(ui, |ui| {
-                    ui::PostReplyView::new(
-                        ctx.ndb,
-                        poster,
-                        draft,
-                        ctx.note_cache,
-                        ctx.img_cache,
-                        &note,
-                        inner_rect,
-                        app.note_options,
-                    )
-                    .id_source(id)
-                    .show(ui)
-                });
+                let response = egui::ScrollArea::vertical()
+                    .show(ui, |ui| {
+                        ui::PostReplyView::new(
+                            ctx.ndb,
+                            poster,
+                            draft,
+                            ctx.note_cache,
+                            ctx.img_cache,
+                            &note,
+                            inner_rect,
+                            app.note_options,
+                        )
+                        .id_source(id)
+                        .show(ui)
+                    })
+                    .inner;
 
-                response.inner.action
+                if let Some(selection) = response.context_selection {
+                    selection.process(ui, &note);
+                }
+
+                response.action
             };
 
             action.map(Into::into)
@@ -340,22 +346,28 @@ fn render_nav_body(
             let poster = ctx.accounts.selected_or_first_nsec()?;
             let draft = app.drafts.quote_mut(note.id());
 
-            let response = egui::ScrollArea::vertical().show(ui, |ui| {
-                crate::ui::note::QuoteRepostView::new(
-                    ctx.ndb,
-                    poster,
-                    ctx.note_cache,
-                    ctx.img_cache,
-                    draft,
-                    &note,
-                    inner_rect,
-                    app.note_options,
-                )
-                .id_source(id)
-                .show(ui)
-            });
+            let response = egui::ScrollArea::vertical()
+                .show(ui, |ui| {
+                    crate::ui::note::QuoteRepostView::new(
+                        ctx.ndb,
+                        poster,
+                        ctx.note_cache,
+                        ctx.img_cache,
+                        draft,
+                        &note,
+                        inner_rect,
+                        app.note_options,
+                    )
+                    .id_source(id)
+                    .show(ui)
+                })
+                .inner;
 
-            response.inner.action.map(Into::into)
+            if let Some(selection) = response.context_selection {
+                selection.process(ui, &note);
+            }
+
+            response.action.map(Into::into)
         }
 
         Route::ComposeNote => {

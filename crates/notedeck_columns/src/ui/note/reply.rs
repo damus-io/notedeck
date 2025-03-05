@@ -68,7 +68,7 @@ impl<'a> PostReplyView<'a> {
                 - ui::ProfilePic::medium_size() / 2.0
                 - ui::NoteView::expand_size() / 2.0;
 
-            egui::Frame::none()
+            let selection = egui::Frame::none()
                 .outer_margin(egui::Margin::same(note_offset))
                 .show(ui, |ui| {
                     ui::NoteView::new(
@@ -81,14 +81,16 @@ impl<'a> PostReplyView<'a> {
                     .actionbar(false)
                     .medium_pfp(true)
                     .options_button(true)
-                    .show(ui);
-                });
+                    .show(ui)
+                })
+                .inner
+                .context_selection;
 
             let id = self.id();
             let replying_to = self.note.id();
             let rect_before_post = ui.min_rect();
 
-            let post_response = {
+            let mut post_response = {
                 ui::PostView::new(
                     self.ndb,
                     self.draft,
@@ -102,6 +104,8 @@ impl<'a> PostReplyView<'a> {
                 .id_source(id)
                 .ui(self.note.txn().unwrap(), ui)
             };
+
+            post_response.context_selection = selection;
 
             //
             // reply line
