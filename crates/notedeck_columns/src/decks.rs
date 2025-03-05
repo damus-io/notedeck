@@ -1,8 +1,9 @@
 use std::collections::{hash_map::ValuesMut, HashMap};
 
 use enostr::Pubkey;
-use nostrdb::Transaction;
+use nostrdb::{Note, NoteBuilder, Transaction};
 use notedeck::AppContext;
+use tokenator::{NoteTokenWriter, TokenBuffer, TokenWriter};
 use tracing::{error, info};
 
 use crate::{
@@ -300,6 +301,37 @@ impl Deck {
     pub fn edit(&mut self, changes: ConfigureDeckResponse) {
         self.name = changes.name;
         self.icon = changes.icon;
+    }
+
+    pub fn to_note(&self, seckey: &[u8; 32]) -> Note {
+        let mut builder = NoteBuilder::new();
+        builder = builder
+            .start_tag()
+            .tag_str("name")
+            .tag_str(&self.name)
+            .start_tag()
+            .tag_str("icon")
+            .tag_str(self.icon.to_string().as_str());
+
+        let mut column_writers = Vec::new();
+        for column in self.columns.columns() {
+            if let Some(route) = column.router().first().filter(|r| r.exportable_to_note()) {
+                let mut writer = TokenWriter::new(TokenBuffer::ToNote(NoteTokenWriter::default()));
+                route.serialize_tokens(&mut writer);
+                column_writers.push(writer);
+            }
+        }
+
+        for writer in &column_writers {
+            if let TokenBuffer::ToNote(buf) = &writer.buf {
+                builder = buf.to_builder(builder);
+            }
+        }
+
+        builder
+            .sign(seckey)
+            .build()
+            .expect("failed to build Deck note")
     }
 }
 
