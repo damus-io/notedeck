@@ -2,6 +2,7 @@ mod accounts;
 mod app;
 mod args;
 mod context;
+pub mod debouncer;
 mod error;
 pub mod filter;
 pub mod fonts;
