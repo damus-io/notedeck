@@ -11,6 +11,7 @@ mod app_style;
 mod args;
 mod colors;
 mod column;
+mod contacts;
 mod deck_state;
 mod decks;
 mod draft;
