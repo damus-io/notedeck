@@ -1,6 +1,7 @@
 pub mod anim;
 pub mod colors;
 pub mod constants;
+pub mod contacts;
 pub mod gif;
 pub mod icons;
 pub mod images;
