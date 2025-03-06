@@ -1,14 +1,13 @@
-use crate::{
-    error::Error,
-    search::SearchQuery,
-    timeline::{Timeline, TimelineTab},
-};
+use crate::error::Error;
+use crate::search::SearchQuery;
+use crate::timeline::{Timeline, TimelineTab};
 use enostr::{Filter, NoteId, Pubkey};
 use nostrdb::{Ndb, Transaction};
 use notedeck::{
     filter::{self, default_limit},
     FilterError, FilterState, NoteCache, RootIdError, RootNoteIdBuf,
 };
+use notedeck_ui::contacts::contacts_filter;
 use serde::{Deserialize, Serialize};
 use std::hash::{Hash, Hasher};
 use std::{borrow::Cow, fmt::Display};
@@ -666,11 +665,7 @@ impl<'a> ColumnTitle<'a> {
 }
 
 fn contact_filter_state(txn: &Transaction, ndb: &Ndb, pk: &Pubkey) -> FilterState {
-    let contact_filter = Filter::new()
-        .authors([pk.bytes()])
-        .kinds([3])
-        .limit(1)
-        .build();
+    let contact_filter = contacts_filter(pk);
 
     let results = ndb
         .query(txn, &[contact_filter.clone()], 1)
