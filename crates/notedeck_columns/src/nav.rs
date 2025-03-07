@@ -16,7 +16,7 @@ use crate::{
         column::NavTitle,
         configure_deck::ConfigureDeckView,
         edit_deck::{EditDeckResponse, EditDeckView},
-        note::{contents::NoteContentsDriller, PostAction, PostType},
+        note::{contents::NoteContext, PostAction, PostType},
         profile::EditProfileView,
         support::SupportView,
         RelayView, View,
@@ -243,7 +243,7 @@ fn render_nav_body(
     col: usize,
     inner_rect: egui::Rect,
 ) -> Option<RenderNavAction> {
-    let mut driller = NoteContentsDriller {
+    let mut note_context = NoteContext {
         ndb: ctx.ndb,
         img_cache: ctx.img_cache,
         note_cache: ctx.note_cache,
@@ -258,7 +258,7 @@ fn render_nav_body(
             col,
             depth,
             ui,
-            &mut driller,
+            &mut note_context,
         ),
         Route::Accounts(amr) => {
             let mut action = render_accounts_route(
@@ -305,7 +305,7 @@ fn render_nav_body(
                 let draft = app.drafts.reply_mut(note.id());
 
                 let response = egui::ScrollArea::vertical().show(ui, |ui| {
-                    ui::PostReplyView::new(&mut driller, poster, draft, &note, inner_rect)
+                    ui::PostReplyView::new(&mut note_context, poster, draft, &note, inner_rect)
                         .id_source(id)
                         .show(ui)
                 });
@@ -333,7 +333,7 @@ fn render_nav_body(
 
             let response = egui::ScrollArea::vertical().show(ui, |ui| {
                 crate::ui::note::QuoteRepostView::new(
-                    &mut driller,
+                    &mut note_context,
                     poster,
                     draft,
                     &note,
@@ -352,7 +352,7 @@ fn render_nav_body(
 
             let txn = Transaction::new(ctx.ndb).expect("txn");
             let post_response =
-                ui::PostView::new(&mut driller, draft, PostType::New, kp, inner_rect).ui(&txn, ui);
+                ui::PostView::new(&mut note_context, draft, PostType::New, kp, inner_rect).ui(&txn, ui);
 
             post_response.action.map(Into::into)
         }

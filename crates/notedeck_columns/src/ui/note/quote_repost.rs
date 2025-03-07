@@ -5,10 +5,10 @@ use crate::{
     ui::{self},
 };
 
-use super::{contents::NoteContentsDriller, PostResponse, PostType};
+use super::{contents::NoteContext, PostResponse, PostType};
 
 pub struct QuoteRepostView<'a, 'd> {
-    driller: &'a mut NoteContentsDriller<'d>,
+    note_context: &'a mut NoteContext<'d>,
     poster: FilledKeypair<'a>,
     draft: &'a mut Draft,
     quoting_note: &'a nostrdb::Note<'a>,
@@ -19,7 +19,7 @@ pub struct QuoteRepostView<'a, 'd> {
 impl<'a, 'd> QuoteRepostView<'a, 'd> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        driller: &'a mut NoteContentsDriller<'d>,
+        note_context: &'a mut NoteContext<'d>,
         poster: FilledKeypair<'a>,
         draft: &'a mut Draft,
         quoting_note: &'a nostrdb::Note<'a>,
@@ -27,7 +27,7 @@ impl<'a, 'd> QuoteRepostView<'a, 'd> {
     ) -> Self {
         let id_source: Option<egui::Id> = None;
         QuoteRepostView {
-            driller,
+            note_context,
             poster,
             draft,
             quoting_note,
@@ -41,7 +41,7 @@ impl<'a, 'd> QuoteRepostView<'a, 'd> {
         let quoting_note_id = self.quoting_note.id();
 
         ui::PostView::new(
-            self.driller,
+            self.note_context,
             self.draft,
             PostType::Quote(NoteId::new(quoting_note_id.to_owned())),
             self.poster,

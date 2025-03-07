@@ -22,7 +22,7 @@ use crate::{
 
 use notedeck::{Accounts, MuteFun, NotedeckTextStyle, UnknownIds};
 
-use super::note::contents::NoteContentsDriller;
+use super::note::contents::NoteContext;
 
 pub struct ProfileView<'a, 'd> {
     pubkey: &'a Pubkey,
@@ -31,7 +31,7 @@ pub struct ProfileView<'a, 'd> {
     timeline_cache: &'a mut TimelineCache,
     unknown_ids: &'a mut UnknownIds,
     is_muted: &'a MuteFun,
-    driller: &'a mut NoteContentsDriller<'d>,
+    note_context: &'a mut NoteContext<'d>,
 }
 
 pub enum ProfileViewAction {
@@ -48,7 +48,7 @@ impl<'a, 'd> ProfileView<'a, 'd> {
         timeline_cache: &'a mut TimelineCache,
         unknown_ids: &'a mut UnknownIds,
         is_muted: &'a MuteFun,
-        driller: &'a mut NoteContentsDriller<'d>,
+        note_context: &'a mut NoteContext<'d>,
     ) -> Self {
         ProfileView {
             pubkey,
@@ -57,7 +57,7 @@ impl<'a, 'd> ProfileView<'a, 'd> {
             timeline_cache,
             unknown_ids,
             is_muted,
-            driller,
+            note_context,
         }
     }
 
@@ -68,9 +68,9 @@ impl<'a, 'd> ProfileView<'a, 'd> {
             .id_salt(scroll_id)
             .show(ui, |ui| {
                 let mut action = None;
-                let txn = Transaction::new(self.driller.ndb).expect("txn");
+                let txn = Transaction::new(self.note_context.ndb).expect("txn");
                 if let Ok(profile) = self
-                    .driller
+                    .note_context
                     .ndb
                     .get_profile_by_pubkey(&txn, self.pubkey.bytes())
                 {
@@ -81,8 +81,8 @@ impl<'a, 'd> ProfileView<'a, 'd> {
                 let profile_timeline = self
                     .timeline_cache
                     .notes(
-                        self.driller.ndb,
-                        self.driller.note_cache,
+                        self.note_context.ndb,
+                        self.note_context.note_cache,
                         &txn,
                         &TimelineKind::Profile(*self.pubkey),
                     )
@@ -94,10 +94,10 @@ impl<'a, 'd> ProfileView<'a, 'd> {
                 let reversed = false;
                 // poll for new notes and insert them into our existing notes
                 if let Err(e) = profile_timeline.poll_notes_into_view(
-                    self.driller.ndb,
+                    self.note_context.ndb,
                     &txn,
                     self.unknown_ids,
-                    self.driller.note_cache,
+                    self.note_context.note_cache,
                     reversed,
                 ) {
                     error!("Profile::poll_notes_into_view: {e}");
@@ -108,7 +108,7 @@ impl<'a, 'd> ProfileView<'a, 'd> {
                     reversed,
                     &txn,
                     self.is_muted,
-                    self.driller,
+                    self.note_context,
                 )
                 .show(ui)
                 {
@@ -140,7 +140,7 @@ impl<'a, 'd> ProfileView<'a, 'd> {
                 ui.horizontal(|ui| {
                     ui.put(
                         pfp_rect,
-                        ProfilePic::new(self.driller.img_cache, get_profile_url(Some(&profile)))
+                        ProfilePic::new(self.note_context.img_cache, get_profile_url(Some(&profile)))
                             .size(size)
                             .border(ProfilePic::border_stroke(ui)),
                     );

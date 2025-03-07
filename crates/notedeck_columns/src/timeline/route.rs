@@ -2,7 +2,7 @@ use crate::{
     nav::RenderNavAction,
     profile::ProfileAction,
     timeline::{TimelineCache, TimelineKind},
-    ui::{self, note::contents::NoteContentsDriller, profile::ProfileView},
+    ui::{self, note::contents::NoteContext, profile::ProfileView},
 };
 
 use enostr::Pubkey;
@@ -17,10 +17,10 @@ pub fn render_timeline_route(
     col: usize,
     depth: usize,
     ui: &mut egui::Ui,
-    driller: &mut NoteContentsDriller,
+    note_context: &mut NoteContext,
 ) -> Option<RenderNavAction> {
     if kind == &TimelineKind::Universe {
-        driller.options.set_hide_media(true);
+        note_context.options.set_hide_media(true);
     }
 
     match kind {
@@ -31,7 +31,7 @@ pub fn render_timeline_route(
         | TimelineKind::Hashtag(_)
         | TimelineKind::Generic(_) => {
             let note_action =
-                ui::TimelineView::new(kind, timeline_cache, &accounts.mutefun(), driller).ui(ui);
+                ui::TimelineView::new(kind, timeline_cache, &accounts.mutefun(), note_context).ui(ui);
 
             note_action.map(RenderNavAction::NoteAction)
         }
@@ -46,12 +46,12 @@ pub fn render_timeline_route(
                     col,
                     ui,
                     &accounts.mutefun(),
-                    driller,
+                    note_context,
                 )
             } else {
                 // we render profiles like timelines if they are at the root
                 let note_action =
-                    ui::TimelineView::new(kind, timeline_cache, &accounts.mutefun(), driller)
+                    ui::TimelineView::new(kind, timeline_cache, &accounts.mutefun(), note_context)
                         .ui(ui);
 
                 note_action.map(RenderNavAction::NoteAction)
@@ -63,7 +63,7 @@ pub fn render_timeline_route(
             unknown_ids,
             id.selected_or_root(),
             &accounts.mutefun(),
-            driller,
+            note_context,
         )
         .id_source(egui::Id::new(("threadscroll", col)))
         .ui(ui)
@@ -80,7 +80,7 @@ pub fn render_profile_route(
     col: usize,
     ui: &mut egui::Ui,
     is_muted: &MuteFun,
-    driller: &mut NoteContentsDriller,
+    note_context: &mut NoteContext,
 ) -> Option<RenderNavAction> {
     let action = ProfileView::new(
         pubkey,
@@ -89,7 +89,7 @@ pub fn render_profile_route(
         timeline_cache,
         unknown_ids,
         is_muted,
-        driller,
+        note_context,
     )
     .ui(ui);
 

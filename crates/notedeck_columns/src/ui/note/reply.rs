@@ -3,10 +3,10 @@ use crate::ui;
 use crate::ui::note::{PostResponse, PostType};
 use enostr::{FilledKeypair, NoteId};
 
-use super::contents::NoteContentsDriller;
+use super::contents::NoteContext;
 
 pub struct PostReplyView<'a, 'd> {
-    driller: &'a mut NoteContentsDriller<'d>,
+    note_context: &'a mut NoteContext<'d>,
     poster: FilledKeypair<'a>,
     draft: &'a mut Draft,
     note: &'a nostrdb::Note<'a>,
@@ -17,7 +17,7 @@ pub struct PostReplyView<'a, 'd> {
 impl<'a, 'd> PostReplyView<'a, 'd> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        driller: &'a mut NoteContentsDriller<'d>,
+        note_context: &'a mut NoteContext<'d>,
         poster: FilledKeypair<'a>,
         draft: &'a mut Draft,
         note: &'a nostrdb::Note<'a>,
@@ -25,7 +25,7 @@ impl<'a, 'd> PostReplyView<'a, 'd> {
     ) -> Self {
         let id_source: Option<egui::Id> = None;
         PostReplyView {
-            driller,
+            note_context,
             poster,
             draft,
             note,
@@ -61,7 +61,7 @@ impl<'a, 'd> PostReplyView<'a, 'd> {
             egui::Frame::none()
                 .outer_margin(egui::Margin::same(note_offset))
                 .show(ui, |ui| {
-                    ui::NoteView::new(self.driller, self.note)
+                    ui::NoteView::new(self.note_context, self.note)
                         .actionbar(false)
                         .medium_pfp(true)
                         .options_button(true)
@@ -74,7 +74,7 @@ impl<'a, 'd> PostReplyView<'a, 'd> {
 
             let post_response = {
                 ui::PostView::new(
-                    self.driller,
+                    self.note_context,
                     self.draft,
                     PostType::Reply(NoteId::new(*replying_to)),
                     self.poster,

@@ -17,10 +17,10 @@ use nostrdb::{Ndb, Transaction};
 use notedeck::supported_mime_hosted_at_url;
 use tracing::error;
 
-use super::contents::{render_note_preview, NoteContentsDriller};
+use super::contents::{render_note_preview, NoteContext};
 
 pub struct PostView<'a, 'd> {
-    driller: &'a mut NoteContentsDriller<'d>,
+    note_context: &'a mut NoteContext<'d>,
     draft: &'a mut Draft,
     post_type: PostType,
     poster: FilledKeypair<'a>,
@@ -83,7 +83,7 @@ pub struct PostResponse {
 impl<'a, 'd> PostView<'a, 'd> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        driller: &'a mut NoteContentsDriller<'d>,
+        note_context: &'a mut NoteContext<'d>,
         draft: &'a mut Draft,
         post_type: PostType,
         poster: FilledKeypair<'a>,
@@ -91,7 +91,7 @@ impl<'a, 'd> PostView<'a, 'd> {
     ) -> Self {
         let id_source: Option<egui::Id> = None;
         PostView {
-            driller,
+            note_context,
             draft,
             poster,
             id_source,
@@ -112,20 +112,20 @@ impl<'a, 'd> PostView<'a, 'd> {
 
         // TODO: refactor pfp control to do all of this for us
         let poster_pfp = self
-            .driller
+            .note_context
             .ndb
             .get_profile_by_pubkey(txn, self.poster.pubkey.bytes())
             .as_ref()
             .ok()
             .and_then(|p| {
-                Some(ui::ProfilePic::from_profile(self.driller.img_cache, p)?.size(pfp_size))
+                Some(ui::ProfilePic::from_profile(self.note_context.img_cache, p)?.size(pfp_size))
             });
 
         if let Some(pfp) = poster_pfp {
             ui.add(pfp);
         } else {
             ui.add(
-                ui::ProfilePic::new(self.driller.img_cache, ui::ProfilePic::no_pfp_url())
+                ui::ProfilePic::new(self.note_context.img_cache, ui::ProfilePic::no_pfp_url())
                     .size(pfp_size),
             );
         }
@@ -223,10 +223,10 @@ impl<'a, 'd> PostView<'a, 'd> {
                             hint_rect
                         };
 
-                        if let Ok(res) = self.driller.ndb.search_profile(txn, mention_str, 10) {
+                        if let Ok(res) = self.note_context.ndb.search_profile(txn, mention_str, 10) {
                             let resp = SearchResultsView::new(
-                                self.driller.img_cache,
-                                self.driller.ndb,
+                                self.note_context.img_cache,
+                                self.note_context.ndb,
                                 txn,
                                 &res,
                             )
@@ -239,7 +239,7 @@ impl<'a, 'd> PostView<'a, 'd> {
                                     if let Some(hint_index) = selection {
                                         if let Some(pk) = res.get(hint_index) {
                                             let record =
-                                                self.driller.ndb.get_profile_by_pubkey(txn, pk);
+                                                self.note_context.ndb.get_profile_by_pubkey(txn, pk);
 
                                             self.draft.buffer.select_mention_and_replace_name(
                                                 mention.index,
@@ -319,7 +319,7 @@ impl<'a, 'd> PostView<'a, 'd> {
                                     ui.set_max_width(avail_size.x * 0.8);
                                     render_note_preview(
                                         ui,
-                                        self.driller,
+                                        self.note_context,
                                         txn,
                                         id.bytes(),
                                         nostrdb::NoteKey::new(0),
@@ -402,11 +402,11 @@ impl<'a, 'd> PostView<'a, 'd> {
             };
 
             if let Some(cache_type) =
-                supported_mime_hosted_at_url(&mut self.driller.img_cache.urls, &media.url)
+                supported_mime_hosted_at_url(&mut self.note_context.img_cache.urls, &media.url)
             {
                 render_images(
                     ui,
-                    self.driller.img_cache,
+                    self.note_context.img_cache,
                     &media.url,
                     crate::images::ImageType::Content(width, height),
                     cache_type,
@@ -709,7 +709,7 @@ mod preview {
     impl App for PostPreview {
         fn update(&mut self, app: &mut AppContext<'_>, ui: &mut egui::Ui) {
             let txn = Transaction::new(app.ndb).expect("txn");
-            let mut driller = NoteContentsDriller {
+            let mut note_context = NoteContext {
                 ndb: app.ndb,
                 img_cache: app.img_cache,
                 note_cache: app.note_cache,
@@ -717,7 +717,7 @@ mod preview {
             };
 
             PostView::new(
-                &mut driller,
+                &mut note_context,
                 &mut self.draft,
                 PostType::New,
                 self.poster.to_filled(),

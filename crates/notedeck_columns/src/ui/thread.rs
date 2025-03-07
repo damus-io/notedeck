@@ -7,7 +7,7 @@ use nostrdb::Transaction;
 use notedeck::{MuteFun, RootNoteId, UnknownIds};
 use tracing::error;
 
-use super::{note::contents::NoteContentsDriller, timeline::TimelineTabView};
+use super::{note::contents::NoteContext, timeline::TimelineTabView};
 
 pub struct ThreadView<'a, 'd> {
     timeline_cache: &'a mut TimelineCache,
@@ -15,7 +15,7 @@ pub struct ThreadView<'a, 'd> {
     selected_note_id: &'a [u8; 32],
     id_source: egui::Id,
     is_muted: &'a MuteFun,
-    driller: &'a mut NoteContentsDriller<'d>,
+    note_context: &'a mut NoteContext<'d>,
 }
 
 impl<'a, 'd> ThreadView<'a, 'd> {
@@ -25,7 +25,7 @@ impl<'a, 'd> ThreadView<'a, 'd> {
         unknown_ids: &'a mut UnknownIds,
         selected_note_id: &'a [u8; 32],
         is_muted: &'a MuteFun,
-        driller: &'a mut NoteContentsDriller<'d>,
+        note_context: &'a mut NoteContext<'d>,
     ) -> Self {
         let id_source = egui::Id::new("threadscroll_threadview");
         ThreadView {
@@ -34,7 +34,7 @@ impl<'a, 'd> ThreadView<'a, 'd> {
             selected_note_id,
             id_source,
             is_muted,
-            driller,
+            note_context,
         }
     }
 
@@ -44,7 +44,7 @@ impl<'a, 'd> ThreadView<'a, 'd> {
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui) -> Option<NoteAction> {
-        let txn = Transaction::new(self.driller.ndb).expect("txn");
+        let txn = Transaction::new(self.note_context.ndb).expect("txn");
 
         ui.label(
             egui::RichText::new("Threads ALPHA! It's not done. Things will be broken.")
@@ -58,8 +58,8 @@ impl<'a, 'd> ThreadView<'a, 'd> {
             .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
             .show(ui, |ui| {
                 let root_id = match RootNoteId::new(
-                    self.driller.ndb,
-                    self.driller.note_cache,
+                    self.note_context.ndb,
+                    self.note_context.note_cache,
                     &txn,
                     self.selected_note_id,
                 ) {
@@ -74,8 +74,8 @@ impl<'a, 'd> ThreadView<'a, 'd> {
                 let thread_timeline = self
                     .timeline_cache
                     .notes(
-                        self.driller.ndb,
-                        self.driller.note_cache,
+                        self.note_context.ndb,
+                        self.note_context.note_cache,
                         &txn,
                         &TimelineKind::Thread(ThreadSelection::from_root_id(root_id.to_owned())),
                     )
@@ -86,10 +86,10 @@ impl<'a, 'd> ThreadView<'a, 'd> {
                 let reversed = true;
                 // poll for new notes and insert them into our existing notes
                 if let Err(err) = thread_timeline.poll_notes_into_view(
-                    self.driller.ndb,
+                    self.note_context.ndb,
                     &txn,
                     self.unknown_ids,
-                    self.driller.note_cache,
+                    self.note_context.note_cache,
                     reversed,
                 ) {
                     error!("error polling notes into thread timeline: {err}");
@@ -100,7 +100,7 @@ impl<'a, 'd> ThreadView<'a, 'd> {
                     true,
                     &txn,
                     self.is_muted,
-                    self.driller,
+                    self.note_context,
                 )
                 .show(ui)
             })

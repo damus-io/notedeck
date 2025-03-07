@@ -15,14 +15,14 @@ use notedeck::MuteFun;
 use tracing::{error, warn};
 
 use super::anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE};
-use super::note::contents::NoteContentsDriller;
+use super::note::contents::NoteContext;
 
 pub struct TimelineView<'a, 'd> {
     timeline_id: &'a TimelineKind,
     timeline_cache: &'a mut TimelineCache,
     reverse: bool,
     is_muted: &'a MuteFun,
-    driller: &'a mut NoteContentsDriller<'d>,
+    note_context: &'a mut NoteContext<'d>,
 }
 
 impl<'a, 'd> TimelineView<'a, 'd> {
@@ -31,7 +31,7 @@ impl<'a, 'd> TimelineView<'a, 'd> {
         timeline_id: &'a TimelineKind,
         timeline_cache: &'a mut TimelineCache,
         is_muted: &'a MuteFun,
-        driller: &'a mut NoteContentsDriller<'d>,
+        note_context: &'a mut NoteContext<'d>,
     ) -> Self {
         let reverse = false;
         TimelineView {
@@ -39,7 +39,7 @@ impl<'a, 'd> TimelineView<'a, 'd> {
             timeline_cache,
             reverse,
             is_muted,
-            driller,
+            note_context,
         }
     }
 
@@ -50,7 +50,7 @@ impl<'a, 'd> TimelineView<'a, 'd> {
             self.timeline_cache,
             self.reverse,
             self.is_muted,
-            self.driller,
+            self.note_context,
         )
     }
 
@@ -67,7 +67,7 @@ fn timeline_ui(
     timeline_cache: &mut TimelineCache,
     reversed: bool,
     is_muted: &MuteFun,
-    driller: &mut NoteContentsDriller,
+    note_context: &mut NoteContext,
 ) -> Option<NoteAction> {
     //padding(4.0, ui, |ui| ui.heading("Notifications"));
     /*
@@ -136,9 +136,9 @@ fn timeline_ui(
             return None;
         };
 
-        let txn = Transaction::new(driller.ndb).expect("failed to create txn");
+        let txn = Transaction::new(note_context.ndb).expect("failed to create txn");
 
-        TimelineTabView::new(timeline.current_view(), reversed, &txn, is_muted, driller).show(ui)
+        TimelineTabView::new(timeline.current_view(), reversed, &txn, is_muted, note_context).show(ui)
     });
 
     let at_top_after_scroll = scroll_output.state.offset.y == 0.0;
@@ -296,7 +296,7 @@ pub struct TimelineTabView<'a, 'd> {
     reversed: bool,
     txn: &'a Transaction,
     is_muted: &'a MuteFun,
-    driller: &'a mut NoteContentsDriller<'d>,
+    note_context: &'a mut NoteContext<'d>,
 }
 
 impl<'a, 'd> TimelineTabView<'a, 'd> {
@@ -306,14 +306,14 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
         reversed: bool,
         txn: &'a Transaction,
         is_muted: &'a MuteFun,
-        driller: &'a mut NoteContentsDriller<'d>,
+        note_context: &'a mut NoteContext<'d>,
     ) -> Self {
         Self {
             tab,
             reversed,
             txn,
             is_muted,
-            driller,
+            note_context,
         }
     }
 
@@ -338,7 +338,7 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
 
                 let note_key = self.tab.notes[ind].key;
 
-                let note = if let Ok(note) = self.driller.ndb.get_note_by_key(self.txn, note_key) {
+                let note = if let Ok(note) = self.note_context.ndb.get_note_by_key(self.txn, note_key) {
                     note
                 } else {
                     warn!("failed to query note {:?}", note_key);
@@ -347,8 +347,8 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
 
                 // should we mute the thread? we might not have it!
                 let muted = if let Ok(root_id) = root_note_id_from_selected_id(
-                    self.driller.ndb,
-                    self.driller.note_cache,
+                    self.note_context.ndb,
+                    self.note_context.note_cache,
                     self.txn,
                     note.id(),
                 ) {
@@ -359,7 +359,7 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
 
                 if !muted {
                     ui::padding(8.0, ui, |ui| {
-                        let resp = ui::NoteView::new(self.driller, &note).show(ui);
+                        let resp = ui::NoteView::new(self.note_context, &note).show(ui);
 
                         if let Some(note_action) = resp.action {
                             action = Some(note_action)
