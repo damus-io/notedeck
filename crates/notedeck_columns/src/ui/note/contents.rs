@@ -11,33 +11,33 @@ use tracing::warn;
 
 use notedeck::{supported_mime_hosted_at_url, Images, MediaCacheType, NoteCache};
 
-/// Aggregates dependencies to reduce the number of parameters
-/// passed to inner UI elements, minimizing prop drilling.
-pub struct NoteContext<'d> {
-    pub ndb: &'d Ndb,
-    pub img_cache: &'d mut Images,
-    pub note_cache: &'d mut NoteCache,
-    pub options: NoteOptions,
-}
-
-pub struct NoteContents<'a, 'd> {
-    note_context: &'a mut NoteContext<'d>,
+pub struct NoteContents<'a> {
+    ndb: &'a Ndb,
+    img_cache: &'a mut Images,
+    note_cache: &'a mut NoteCache,
     txn: &'a Transaction,
     note: &'a Note<'a>,
+    options: NoteOptions,
     action: Option<NoteAction>,
 }
 
-impl<'a, 'd> NoteContents<'a, 'd> {
+impl<'a> NoteContents<'a> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        note_context: &'a mut NoteContext<'d>,
+        ndb: &'a Ndb,
+        img_cache: &'a mut Images,
+        note_cache: &'a mut NoteCache,
         txn: &'a Transaction,
         note: &'a Note,
+        options: ui::note::NoteOptions,
     ) -> Self {
         NoteContents {
-            note_context,
+            ndb,
+            img_cache,
+            note_cache,
             txn,
             note,
+            options,
             action: None,
         }
     }
@@ -47,9 +47,17 @@ impl<'a, 'd> NoteContents<'a, 'd> {
     }
 }
 
-impl egui::Widget for &mut NoteContents<'_, '_> {
+impl egui::Widget for &mut NoteContents<'_> {
     fn ui(self, ui: &mut egui::Ui) -> egui::Response {
-        let result = render_note_contents(ui, self.note_context, self.txn, self.note);
+        let result = render_note_contents(
+            ui,
+            self.ndb,
+            self.img_cache,
+            self.note_cache,
+            self.txn,
+            self.note,
+            self.options,
+        );
         self.action = result.action;
         result.response
     }
@@ -60,15 +68,18 @@ impl egui::Widget for &mut NoteContents<'_, '_> {
 #[allow(clippy::too_many_arguments)]
 pub fn render_note_preview(
     ui: &mut egui::Ui,
-    note_context: &mut NoteContext,
+    ndb: &Ndb,
+    note_cache: &mut NoteCache,
+    img_cache: &mut Images,
     txn: &Transaction,
     id: &[u8; 32],
     parent: NoteKey,
+    note_options: NoteOptions,
 ) -> NoteResponse {
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
 
-    let note = if let Ok(note) = note_context.ndb.get_note_by_id(txn, id) {
+    let note = if let Ok(note) = ndb.get_note_by_id(txn, id) {
         // TODO: support other preview kinds
         if note.kind() == 1 {
             note
@@ -101,7 +112,7 @@ pub fn render_note_preview(
             ui.visuals().noninteractive().bg_stroke.color,
         ))
         .show(ui, |ui| {
-            ui::NoteView::new(note_context, &note)
+            ui::NoteView::new(ndb, note_cache, img_cache, &note, note_options)
                 .actionbar(false)
                 .small_pfp(true)
                 .wide(true)
@@ -116,23 +127,26 @@ pub fn render_note_preview(
 #[allow(clippy::too_many_arguments)]
 fn render_note_contents(
     ui: &mut egui::Ui,
-    note_context: &mut NoteContext,
+    ndb: &Ndb,
+    img_cache: &mut Images,
+    note_cache: &mut NoteCache,
     txn: &Transaction,
     note: &Note,
+    options: NoteOptions,
 ) -> NoteResponse {
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
 
     let note_key = note.key().expect("todo: implement non-db notes");
-    let selectable = note_context.options.has_selectable_text();
+    let selectable = options.has_selectable_text();
     let mut images: Vec<(String, MediaCacheType)> = vec![];
     let mut note_action: Option<NoteAction> = None;
     let mut inline_note: Option<(&[u8; 32], &str)> = None;
-    let hide_media = note_context.options.has_hide_media();
+    let hide_media = options.has_hide_media();
     let link_color = ui.visuals().hyperlink_color;
 
     let response = ui.horizontal_wrapped(|ui| {
-        let blocks = if let Ok(blocks) = note_context.ndb.get_blocks_by_key(txn, note_key) {
+        let blocks = if let Ok(blocks) = ndb.get_blocks_by_key(txn, note_key) {
             blocks
         } else {
             warn!("missing note content blocks? '{}'", note.content());
@@ -146,38 +160,28 @@ fn render_note_contents(
             match block.blocktype() {
                 BlockType::MentionBech32 => match block.as_mention().unwrap() {
                     Mention::Profile(profile) => {
-                        let act = ui::Mention::new(
-                            note_context.ndb,
-                            note_context.img_cache,
-                            txn,
-                            profile.pubkey(),
-                        )
-                        .show(ui)
-                        .inner;
+                        let act = ui::Mention::new(ndb, img_cache, txn, profile.pubkey())
+                            .show(ui)
+                            .inner;
                         if act.is_some() {
                             note_action = act;
                         }
                     }
 
                     Mention::Pubkey(npub) => {
-                        let act = ui::Mention::new(
-                            note_context.ndb,
-                            note_context.img_cache,
-                            txn,
-                            npub.pubkey(),
-                        )
-                        .show(ui)
-                        .inner;
+                        let act = ui::Mention::new(ndb, img_cache, txn, npub.pubkey())
+                            .show(ui)
+                            .inner;
                         if act.is_some() {
                             note_action = act;
                         }
                     }
 
-                    Mention::Note(note) if note_context.options.has_note_previews() => {
+                    Mention::Note(note) if options.has_note_previews() => {
                         inline_note = Some((note.id(), block.as_str()));
                     }
 
-                    Mention::Event(note) if note_context.options.has_note_previews() => {
+                    Mention::Event(note) if options.has_note_previews() => {
                         inline_note = Some((note.id(), block.as_str()));
                     }
 
@@ -204,7 +208,7 @@ fn render_note_contents(
                     let mut found_supported = || -> bool {
                         let url = block.as_str();
                         if let Some(cache_type) =
-                            supported_mime_hosted_at_url(&mut note_context.img_cache.urls, url)
+                            supported_mime_hosted_at_url(&mut img_cache.urls, url)
                         {
                             images.push((url.to_string(), cache_type));
                             true
@@ -225,7 +229,7 @@ fn render_note_contents(
                 BlockType::Text => {
                     #[cfg(feature = "profiling")]
                     puffin::profile_scope!("text contents");
-                    if note_context.options.has_scramble_text() {
+                    if options.has_scramble_text() {
                         ui.add(egui::Label::new(rot13(block.as_str())).selectable(selectable));
                     } else {
                         ui.add(egui::Label::new(block.as_str()).selectable(selectable));
@@ -240,15 +244,15 @@ fn render_note_contents(
     });
 
     let preview_note_action = if let Some((id, _block_str)) = inline_note {
-        render_note_preview(ui, note_context, txn, id, note_key).action
+        render_note_preview(ui, ndb, note_cache, img_cache, txn, id, note_key, options).action
     } else {
         None
     };
 
-    if !images.is_empty() && !note_context.options.has_textmode() {
+    if !images.is_empty() && !options.has_textmode() {
         ui.add_space(2.0);
         let carousel_id = egui::Id::new(("carousel", note.key().expect("expected tx note")));
-        image_carousel(ui, note_context.img_cache, images, carousel_id);
+        image_carousel(ui, img_cache, images, carousel_id);
         ui.add_space(2.0);
     }
 

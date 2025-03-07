@@ -1,40 +1,50 @@
 use crate::{
     actionbar::NoteAction,
     timeline::{ThreadSelection, TimelineCache, TimelineKind},
+    ui::note::NoteOptions,
 };
 
-use nostrdb::Transaction;
-use notedeck::{MuteFun, RootNoteId, UnknownIds};
+use nostrdb::{Ndb, Transaction};
+use notedeck::{Images, MuteFun, NoteCache, RootNoteId, UnknownIds};
 use tracing::error;
 
-use super::{note::contents::NoteContext, timeline::TimelineTabView};
+use super::timeline::TimelineTabView;
 
-pub struct ThreadView<'a, 'd> {
+pub struct ThreadView<'a> {
     timeline_cache: &'a mut TimelineCache,
+    ndb: &'a Ndb,
+    note_cache: &'a mut NoteCache,
     unknown_ids: &'a mut UnknownIds,
+    img_cache: &'a mut Images,
     selected_note_id: &'a [u8; 32],
+    note_options: NoteOptions,
     id_source: egui::Id,
     is_muted: &'a MuteFun,
-    note_context: &'a mut NoteContext<'d>,
 }
 
-impl<'a, 'd> ThreadView<'a, 'd> {
+impl<'a> ThreadView<'a> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         timeline_cache: &'a mut TimelineCache,
+        ndb: &'a Ndb,
+        note_cache: &'a mut NoteCache,
         unknown_ids: &'a mut UnknownIds,
+        img_cache: &'a mut Images,
         selected_note_id: &'a [u8; 32],
+        note_options: NoteOptions,
         is_muted: &'a MuteFun,
-        note_context: &'a mut NoteContext<'d>,
     ) -> Self {
         let id_source = egui::Id::new("threadscroll_threadview");
         ThreadView {
             timeline_cache,
+            ndb,
+            note_cache,
             unknown_ids,
+            img_cache,
             selected_note_id,
+            note_options,
             id_source,
             is_muted,
-            note_context,
         }
     }
 
@@ -44,7 +54,7 @@ impl<'a, 'd> ThreadView<'a, 'd> {
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui) -> Option<NoteAction> {
-        let txn = Transaction::new(self.note_context.ndb).expect("txn");
+        let txn = Transaction::new(self.ndb).expect("txn");
 
         ui.label(
             egui::RichText::new("Threads ALPHA! It's not done. Things will be broken.")
@@ -57,25 +67,21 @@ impl<'a, 'd> ThreadView<'a, 'd> {
             .auto_shrink([false, false])
             .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
             .show(ui, |ui| {
-                let root_id = match RootNoteId::new(
-                    self.note_context.ndb,
-                    self.note_context.note_cache,
-                    &txn,
-                    self.selected_note_id,
-                ) {
-                    Ok(root_id) => root_id,
+                let root_id =
+                    match RootNoteId::new(self.ndb, self.note_cache, &txn, self.selected_note_id) {
+                        Ok(root_id) => root_id,
 
-                    Err(err) => {
-                        ui.label(format!("Error loading thread: {:?}", err));
-                        return None;
-                    }
-                };
+                        Err(err) => {
+                            ui.label(format!("Error loading thread: {:?}", err));
+                            return None;
+                        }
+                    };
 
                 let thread_timeline = self
                     .timeline_cache
                     .notes(
-                        self.note_context.ndb,
-                        self.note_context.note_cache,
+                        self.ndb,
+                        self.note_cache,
                         &txn,
                         &TimelineKind::Thread(ThreadSelection::from_root_id(root_id.to_owned())),
                     )
@@ -86,10 +92,10 @@ impl<'a, 'd> ThreadView<'a, 'd> {
                 let reversed = true;
                 // poll for new notes and insert them into our existing notes
                 if let Err(err) = thread_timeline.poll_notes_into_view(
-                    self.note_context.ndb,
+                    self.ndb,
                     &txn,
                     self.unknown_ids,
-                    self.note_context.note_cache,
+                    self.note_cache,
                     reversed,
                 ) {
                     error!("error polling notes into thread timeline: {err}");
@@ -98,9 +104,12 @@ impl<'a, 'd> ThreadView<'a, 'd> {
                 TimelineTabView::new(
                     thread_timeline.current_view(),
                     true,
+                    self.note_options,
                     &txn,
+                    self.ndb,
+                    self.note_cache,
+                    self.img_cache,
                     self.is_muted,
-                    self.note_context,
                 )
                 .show(ui)
             })

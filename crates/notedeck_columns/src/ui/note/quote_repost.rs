@@ -1,38 +1,49 @@
 use enostr::{FilledKeypair, NoteId};
+use nostrdb::Ndb;
+use notedeck::{Images, NoteCache};
 
 use crate::{
     draft::Draft,
-    ui::{self},
+    ui::{self, note::NoteOptions},
 };
 
-use super::{contents::NoteContext, PostResponse, PostType};
+use super::{PostResponse, PostType};
 
-pub struct QuoteRepostView<'a, 'd> {
-    note_context: &'a mut NoteContext<'d>,
+pub struct QuoteRepostView<'a> {
+    ndb: &'a Ndb,
     poster: FilledKeypair<'a>,
+    note_cache: &'a mut NoteCache,
+    img_cache: &'a mut Images,
     draft: &'a mut Draft,
     quoting_note: &'a nostrdb::Note<'a>,
     id_source: Option<egui::Id>,
     inner_rect: egui::Rect,
+    note_options: NoteOptions,
 }
 
-impl<'a, 'd> QuoteRepostView<'a, 'd> {
+impl<'a> QuoteRepostView<'a> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        note_context: &'a mut NoteContext<'d>,
+        ndb: &'a Ndb,
         poster: FilledKeypair<'a>,
+        note_cache: &'a mut NoteCache,
+        img_cache: &'a mut Images,
         draft: &'a mut Draft,
         quoting_note: &'a nostrdb::Note<'a>,
         inner_rect: egui::Rect,
+        note_options: NoteOptions,
     ) -> Self {
         let id_source: Option<egui::Id> = None;
         QuoteRepostView {
-            note_context,
+            ndb,
             poster,
+            note_cache,
+            img_cache,
             draft,
             quoting_note,
             id_source,
             inner_rect,
+            note_options,
         }
     }
 
@@ -41,11 +52,14 @@ impl<'a, 'd> QuoteRepostView<'a, 'd> {
         let quoting_note_id = self.quoting_note.id();
 
         ui::PostView::new(
-            self.note_context,
+            self.ndb,
             self.draft,
             PostType::Quote(NoteId::new(quoting_note_id.to_owned())),
+            self.img_cache,
+            self.note_cache,
             self.poster,
             self.inner_rect,
+            self.note_options,
         )
         .id_source(id)
         .ui(self.quoting_note.txn().unwrap(), ui)
