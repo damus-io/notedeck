@@ -17,7 +17,6 @@ pub struct NoteContents<'a> {
     note_cache: &'a mut NoteCache,
     txn: &'a Transaction,
     note: &'a Note<'a>,
-    note_key: NoteKey,
     options: NoteOptions,
     action: Option<NoteAction>,
 }
@@ -30,7 +29,6 @@ impl<'a> NoteContents<'a> {
         note_cache: &'a mut NoteCache,
         txn: &'a Transaction,
         note: &'a Note,
-        note_key: NoteKey,
         options: ui::note::NoteOptions,
     ) -> Self {
         NoteContents {
@@ -39,7 +37,6 @@ impl<'a> NoteContents<'a> {
             note_cache,
             txn,
             note,
-            note_key,
             options,
             action: None,
         }
@@ -59,7 +56,6 @@ impl egui::Widget for &mut NoteContents<'_> {
             self.note_cache,
             self.txn,
             self.note,
-            self.note_key,
             self.options,
         );
         self.action = result.action;
@@ -136,12 +132,12 @@ fn render_note_contents(
     note_cache: &mut NoteCache,
     txn: &Transaction,
     note: &Note,
-    note_key: NoteKey,
     options: NoteOptions,
 ) -> NoteResponse {
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
 
+    let note_key = note.key().expect("todo: implement non-db notes");
     let selectable = options.has_selectable_text();
     let mut images: Vec<(String, MediaCacheType)> = vec![];
     let mut note_action: Option<NoteAction> = None;

@@ -180,7 +180,6 @@ impl<'a> NoteView<'a> {
                 self.note_cache,
                 txn,
                 self.note,
-                note_key,
                 self.flags,
             ));
             //});
@@ -423,7 +422,6 @@ impl<'a> NoteView<'a> {
                     self.note_cache,
                     txn,
                     self.note,
-                    note_key,
                     self.options(),
                 );
 
@@ -492,7 +490,6 @@ impl<'a> NoteView<'a> {
                         self.note_cache,
                         txn,
                         self.note,
-                        note_key,
                         self.options(),
                     );
                     ui.add(&mut contents);
