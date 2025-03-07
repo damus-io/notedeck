@@ -699,7 +699,7 @@ fn first_is_desired_char(
     new_text_index: usize,
     desired: char,
 ) -> bool {
-    new_text.chars().next().map_or(false, |c| {
+    new_text.chars().next().is_some_and(|c| {
         c == desired
             && (new_text_index == 0 || full_text.chars().nth(new_text_index - 1) == Some(' '))
     })
