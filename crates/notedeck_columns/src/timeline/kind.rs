@@ -308,7 +308,10 @@ impl TimelineKind {
     //         the parser below as well
     pub fn serialize_tokens(&self, writer: &mut TokenWriter) {
         match self {
-            TimelineKind::Search(query) => query.serialize_tokens(writer),
+            TimelineKind::Search(query) => {
+                writer.write_token("search");
+                query.serialize_tokens(writer)
+            }
             TimelineKind::List(list_kind) => list_kind.serialize_tokens(writer),
             TimelineKind::Algo(algo_timeline) => algo_timeline.serialize_tokens(writer),
             TimelineKind::Notifications(pk) => {
@@ -393,6 +396,11 @@ impl TimelineKind {
                 |p| {
                     p.parse_token("hashtag")?;
                     Ok(TimelineKind::Hashtag(p.pull_token()?.to_string()))
+                },
+                |p| {
+                    p.parse_token("search")?;
+                    let search_query = SearchQuery::parse_from_tokens(p)?;
+                    Ok(TimelineKind::Search(search_query))
                 },
             ],
         )

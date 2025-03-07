@@ -18,6 +18,7 @@ use crate::{
         edit_deck::{EditDeckResponse, EditDeckView},
         note::{PostAction, PostType},
         profile::EditProfileView,
+        search::SearchView,
         support::SupportView,
         RelayView, View,
     },
@@ -387,6 +388,26 @@ fn render_nav_body(
             SupportView::new(&mut app.support).show(ui);
             None
         }
+
+        Route::Search => {
+            let id = ui.id().with(("search", depth, col));
+            let search_buffer = app.view_state.searches.entry(id).or_default();
+            let txn = Transaction::new(ctx.ndb).expect("txn");
+
+            SearchView::new(
+                ctx.ndb,
+                &txn,
+                ctx.note_cache,
+                ctx.img_cache,
+                &ctx.accounts.mutefun(),
+                app.note_options,
+                search_buffer,
+            )
+            .show(ui);
+
+            None
+        }
+
         Route::NewDeck => {
             let id = ui.id().with("new-deck");
             let new_deck_state = app.view_state.id_to_deck_state.entry(id).or_default();

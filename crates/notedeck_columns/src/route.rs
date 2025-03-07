@@ -25,6 +25,8 @@ pub enum Route {
     EditProfile(Pubkey),
     Support,
     NewDeck,
+    /// Search screen
+    Search,
     EditDeck(usize),
 }
 
@@ -74,6 +76,7 @@ impl Route {
             Route::Timeline(timeline_kind) => timeline_kind.serialize_tokens(writer),
             Route::Accounts(routes) => routes.serialize_tokens(writer),
             Route::AddColumn(routes) => routes.serialize_tokens(writer),
+            Route::Search => writer.write_token("search"),
             Route::Reply(note_id) => {
                 writer.write_token("reply");
                 writer.write_token(&note_id.hex());
@@ -181,6 +184,12 @@ impl Route {
                         Ok(Route::NewDeck)
                     })
                 },
+                |p| {
+                    p.parse_all(|p| {
+                        p.parse_token("search")?;
+                        Ok(Route::Search)
+                    })
+                },
             ],
         )
     }
@@ -223,6 +232,7 @@ impl Route {
             Route::NewDeck => ColumnTitle::simple("Add Deck"),
             Route::EditDeck(_) => ColumnTitle::simple("Edit Deck"),
             Route::EditProfile(_) => ColumnTitle::simple("Edit Profile"),
+            Route::Search => ColumnTitle::simple("Search"),
         }
     }
 }
@@ -344,6 +354,7 @@ impl fmt::Display for Route {
             Route::NewDeck => write!(f, "Add Deck"),
             Route::EditDeck(_) => write!(f, "Edit Deck"),
             Route::EditProfile(_) => write!(f, "Edit Profile"),
+            Route::Search => write!(f, "Search"),
         }
     }
 }

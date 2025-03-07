@@ -461,6 +461,9 @@ impl<'a> NavTitle<'a> {
             Route::EditProfile(pubkey) => {
                 self.show_profile(ui, pubkey, pfp_size);
             }
+            Route::Search => {
+                ui.add(ui::side_panel::search_button());
+            }
         }
     }
 
