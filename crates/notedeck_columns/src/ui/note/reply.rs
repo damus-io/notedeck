@@ -1,46 +1,36 @@
 use crate::draft::Draft;
 use crate::ui;
-use crate::ui::note::{NoteOptions, PostResponse, PostType};
+use crate::ui::note::{PostResponse, PostType};
 use enostr::{FilledKeypair, NoteId};
-use nostrdb::Ndb;
 
-use notedeck::{Images, NoteCache};
+use super::contents::NoteContentsDriller;
 
-pub struct PostReplyView<'a> {
-    ndb: &'a Ndb,
+pub struct PostReplyView<'a, 'd> {
+    driller: &'a mut NoteContentsDriller<'d>,
     poster: FilledKeypair<'a>,
-    note_cache: &'a mut NoteCache,
-    img_cache: &'a mut Images,
     draft: &'a mut Draft,
     note: &'a nostrdb::Note<'a>,
     id_source: Option<egui::Id>,
     inner_rect: egui::Rect,
-    note_options: NoteOptions,
 }
 
-impl<'a> PostReplyView<'a> {
+impl<'a, 'd> PostReplyView<'a, 'd> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        ndb: &'a Ndb,
+        driller: &'a mut NoteContentsDriller<'d>,
         poster: FilledKeypair<'a>,
         draft: &'a mut Draft,
-        note_cache: &'a mut NoteCache,
-        img_cache: &'a mut Images,
         note: &'a nostrdb::Note<'a>,
         inner_rect: egui::Rect,
-        note_options: NoteOptions,
     ) -> Self {
         let id_source: Option<egui::Id> = None;
         PostReplyView {
-            ndb,
+            driller,
             poster,
             draft,
             note,
-            note_cache,
-            img_cache,
             id_source,
             inner_rect,
-            note_options,
         }
     }
 
@@ -71,17 +61,11 @@ impl<'a> PostReplyView<'a> {
             egui::Frame::none()
                 .outer_margin(egui::Margin::same(note_offset))
                 .show(ui, |ui| {
-                    ui::NoteView::new(
-                        self.ndb,
-                        self.note_cache,
-                        self.img_cache,
-                        self.note,
-                        self.note_options,
-                    )
-                    .actionbar(false)
-                    .medium_pfp(true)
-                    .options_button(true)
-                    .show(ui);
+                    ui::NoteView::new(self.driller, self.note)
+                        .actionbar(false)
+                        .medium_pfp(true)
+                        .options_button(true)
+                        .show(ui);
                 });
 
             let id = self.id();
@@ -90,14 +74,11 @@ impl<'a> PostReplyView<'a> {
 
             let post_response = {
                 ui::PostView::new(
-                    self.ndb,
+                    self.driller,
                     self.draft,
                     PostType::Reply(NoteId::new(*replying_to)),
-                    self.img_cache,
-                    self.note_cache,
                     self.poster,
                     self.inner_rect,
-                    self.note_options,
                 )
                 .id_source(id)
                 .ui(self.note.txn().unwrap(), ui)

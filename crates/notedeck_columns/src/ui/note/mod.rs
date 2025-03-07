@@ -7,6 +7,7 @@ pub mod reply;
 pub mod reply_description;
 
 pub use contents::NoteContents;
+use contents::NoteContentsDriller;
 pub use context::{NoteContextButton, NoteContextSelection};
 pub use options::NoteOptions;
 pub use post::{PostAction, PostResponse, PostType, PostView};
@@ -25,17 +26,14 @@ use egui::emath::{pos2, Vec2};
 use egui::{Id, Label, Pos2, Rect, Response, RichText, Sense};
 use enostr::{NoteId, Pubkey};
 use nostrdb::{Ndb, Note, NoteKey, Transaction};
-use notedeck::{CachedNote, Images, NoteCache, NotedeckTextStyle};
+use notedeck::{CachedNote, NoteCache, NotedeckTextStyle};
 
 use super::profile::preview::one_line_display_name_widget;
 
-pub struct NoteView<'a> {
-    ndb: &'a Ndb,
-    note_cache: &'a mut NoteCache,
-    img_cache: &'a mut Images,
+pub struct NoteView<'a, 'd> {
+    driller: &'a mut NoteContentsDriller<'d>,
     parent: Option<NoteKey>,
     note: &'a nostrdb::Note<'a>,
-    flags: NoteOptions,
 }
 
 pub struct NoteResponse {
@@ -64,31 +62,22 @@ impl NoteResponse {
     }
 }
 
-impl View for NoteView<'_> {
+impl View for NoteView<'_, '_> {
     fn ui(&mut self, ui: &mut egui::Ui) {
         self.show(ui);
     }
 }
 
-impl<'a> NoteView<'a> {
-    pub fn new(
-        ndb: &'a Ndb,
-        note_cache: &'a mut NoteCache,
-        img_cache: &'a mut Images,
-        note: &'a nostrdb::Note<'a>,
-        mut flags: NoteOptions,
-    ) -> Self {
-        flags.set_actionbar(true);
-        flags.set_note_previews(true);
+impl<'a, 'd> NoteView<'a, 'd> {
+    pub fn new(driller: &'a mut NoteContentsDriller<'d>, note: &'a nostrdb::Note<'a>) -> Self {
+        driller.options.set_actionbar(true);
+        driller.options.set_note_previews(true);
 
         let parent: Option<NoteKey> = None;
         Self {
-            ndb,
-            note_cache,
-            img_cache,
+            driller,
             parent,
             note,
-            flags,
         }
     }
 
@@ -133,11 +122,11 @@ impl<'a> NoteView<'a> {
     }
 
     pub fn options(&self) -> NoteOptions {
-        self.flags
+        self.driller.options
     }
 
     pub fn options_mut(&mut self) -> &mut NoteOptions {
-        &mut self.flags
+        &mut self.driller.options
     }
 
     pub fn parent(mut self, parent: NoteKey) -> Self {
@@ -150,12 +139,16 @@ impl<'a> NoteView<'a> {
         let txn = self.note.txn().expect("todo: implement non-db notes");
 
         ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
-            let profile = self.ndb.get_profile_by_pubkey(txn, self.note.pubkey());
+            let profile = self
+                .driller
+                .ndb
+                .get_profile_by_pubkey(txn, self.note.pubkey());
 
             //ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
 
             let cached_note = self
+                .driller
                 .note_cache
                 .cached_note_or_insert_mut(note_key, self.note);
 
@@ -174,14 +167,7 @@ impl<'a> NoteView<'a> {
                 )
             });
 
-            ui.add(&mut NoteContents::new(
-                self.ndb,
-                self.img_cache,
-                self.note_cache,
-                txn,
-                self.note,
-                self.flags,
-            ));
+            ui.add(&mut NoteContents::new(self.driller, txn, self.note));
             //});
         })
         .response
@@ -226,14 +212,17 @@ impl<'a> NoteView<'a> {
                     anim_speed,
                 );
 
-                ui.put(rect, ui::ProfilePic::new(self.img_cache, pic).size(size))
-                    .on_hover_ui_at_pointer(|ui| {
-                        ui.set_max_width(300.0);
-                        ui.add(ui::ProfilePreview::new(
-                            profile.as_ref().unwrap(),
-                            self.img_cache,
-                        ));
-                    });
+                ui.put(
+                    rect,
+                    ui::ProfilePic::new(self.driller.img_cache, pic).size(size),
+                )
+                .on_hover_ui_at_pointer(|ui| {
+                    ui.set_max_width(300.0);
+                    ui.add(ui::ProfilePreview::new(
+                        profile.as_ref().unwrap(),
+                        self.driller.img_cache,
+                    ));
+                });
 
                 if resp.hovered() || resp.clicked() {
                     ui::show_pointer(ui);
@@ -249,7 +238,7 @@ impl<'a> NoteView<'a> {
 
                 ui.put(
                     rect,
-                    ui::ProfilePic::new(self.img_cache, ui::ProfilePic::no_pfp_url())
+                    ui::ProfilePic::new(self.driller.img_cache, ui::ProfilePic::no_pfp_url())
                         .size(pfp_size),
                 )
                 .interact(sense)
@@ -262,8 +251,11 @@ impl<'a> NoteView<'a> {
             NoteResponse::new(self.textmode_ui(ui))
         } else {
             let txn = self.note.txn().expect("txn");
-            if let Some(note_to_repost) = get_reposted_note(self.ndb, txn, self.note) {
-                let profile = self.ndb.get_profile_by_pubkey(txn, self.note.pubkey());
+            if let Some(note_to_repost) = get_reposted_note(self.driller.ndb, txn, self.note) {
+                let profile = self
+                    .driller
+                    .ndb
+                    .get_profile_by_pubkey(txn, self.note.pubkey());
 
                 let style = NotedeckTextStyle::Small;
                 ui.horizontal(|ui| {
@@ -280,7 +272,7 @@ impl<'a> NoteView<'a> {
                     if let Ok(rec) = &profile {
                         resp.on_hover_ui_at_pointer(|ui| {
                             ui.set_max_width(300.0);
-                            ui.add(ui::ProfilePreview::new(rec, self.img_cache));
+                            ui.add(ui::ProfilePreview::new(rec, self.driller.img_cache));
                         });
                     }
                     let color = ui.style().visuals.noninteractive().fg_stroke.color;
@@ -291,14 +283,7 @@ impl<'a> NoteView<'a> {
                             .text_style(style.text_style()),
                     );
                 });
-                NoteView::new(
-                    self.ndb,
-                    self.note_cache,
-                    self.img_cache,
-                    &note_to_repost,
-                    self.flags,
-                )
-                .show(ui)
+                NoteView::new(self.driller, &note_to_repost).show(ui)
             } else {
                 self.show_standard(ui)
             }
@@ -352,7 +337,10 @@ impl<'a> NoteView<'a> {
         let mut selected_option: Option<NoteContextSelection> = None;
 
         let hitbox_id = note_hitbox_id(note_key, self.options(), self.parent);
-        let profile = self.ndb.get_profile_by_pubkey(txn, self.note.pubkey());
+        let profile = self
+            .driller
+            .ndb
+            .get_profile_by_pubkey(txn, self.note.pubkey());
         let maybe_hitbox = maybe_note_hitbox(ui, hitbox_id);
         let container_right = {
             let r = ui.available_rect_before_wrap();
@@ -377,7 +365,7 @@ impl<'a> NoteView<'a> {
                             ui.horizontal_centered(|ui| {
                                 selected_option = NoteView::note_header(
                                     ui,
-                                    self.note_cache,
+                                    self.driller.note_cache,
                                     self.note,
                                     &profile,
                                     self.options(),
@@ -389,6 +377,7 @@ impl<'a> NoteView<'a> {
                         });
 
                         let note_reply = self
+                            .driller
                             .note_cache
                             .cached_note_or_insert_mut(note_key, self.note)
                             .reply
@@ -396,17 +385,7 @@ impl<'a> NoteView<'a> {
 
                         if note_reply.reply().is_some() {
                             let action = ui
-                                .horizontal(|ui| {
-                                    reply_desc(
-                                        ui,
-                                        txn,
-                                        &note_reply,
-                                        self.ndb,
-                                        self.img_cache,
-                                        self.note_cache,
-                                        self.flags,
-                                    )
-                                })
+                                .horizontal(|ui| reply_desc(ui, txn, &note_reply, self.driller))
                                 .inner;
 
                             if action.is_some() {
@@ -416,14 +395,7 @@ impl<'a> NoteView<'a> {
                     });
                 });
 
-                let mut contents = NoteContents::new(
-                    self.ndb,
-                    self.img_cache,
-                    self.note_cache,
-                    txn,
-                    self.note,
-                    self.options(),
-                );
+                let mut contents = NoteContents::new(self.driller, txn, self.note);
 
                 ui.add(&mut contents);
 
@@ -451,7 +423,7 @@ impl<'a> NoteView<'a> {
                 ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
                     selected_option = NoteView::note_header(
                         ui,
-                        self.note_cache,
+                        self.driller.note_cache,
                         self.note,
                         &profile,
                         self.options(),
@@ -462,21 +434,14 @@ impl<'a> NoteView<'a> {
                         ui.spacing_mut().item_spacing.x = 2.0;
 
                         let note_reply = self
+                            .driller
                             .note_cache
                             .cached_note_or_insert_mut(note_key, self.note)
                             .reply
                             .borrow(self.note.tags());
 
                         if note_reply.reply().is_some() {
-                            let action = reply_desc(
-                                ui,
-                                txn,
-                                &note_reply,
-                                self.ndb,
-                                self.img_cache,
-                                self.note_cache,
-                                self.flags,
-                            );
+                            let action = reply_desc(ui, txn, &note_reply, self.driller);
 
                             if action.is_some() {
                                 note_action = action;
@@ -484,14 +449,7 @@ impl<'a> NoteView<'a> {
                         }
                     });
 
-                    let mut contents = NoteContents::new(
-                        self.ndb,
-                        self.img_cache,
-                        self.note_cache,
-                        txn,
-                        self.note,
-                        self.options(),
-                    );
+                    let mut contents = NoteContents::new(self.driller, txn, self.note);
                     ui.add(&mut contents);
 
                     if let Some(action) = contents.action() {
@@ -512,8 +470,8 @@ impl<'a> NoteView<'a> {
 
         let note_action = if note_hitbox_clicked(ui, hitbox_id, &response.rect, maybe_hitbox) {
             if let Ok(selection) = ThreadSelection::from_note_id(
-                self.ndb,
-                self.note_cache,
+                self.driller.ndb,
+                self.driller.note_cache,
                 self.note.txn().unwrap(),
                 NoteId::new(*self.note.id()),
             ) {

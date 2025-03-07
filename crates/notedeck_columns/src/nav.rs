@@ -16,7 +16,7 @@ use crate::{
         column::NavTitle,
         configure_deck::ConfigureDeckView,
         edit_deck::{EditDeckResponse, EditDeckView},
-        note::{PostAction, PostType},
+        note::{contents::NoteContentsDriller, PostAction, PostType},
         profile::EditProfileView,
         support::SupportView,
         RelayView, View,
@@ -243,19 +243,22 @@ fn render_nav_body(
     col: usize,
     inner_rect: egui::Rect,
 ) -> Option<RenderNavAction> {
+    let mut driller = NoteContentsDriller {
+        ndb: ctx.ndb,
+        img_cache: ctx.img_cache,
+        note_cache: ctx.note_cache,
+        options: app.note_options,
+    };
     match top {
         Route::Timeline(kind) => render_timeline_route(
-            ctx.ndb,
-            ctx.img_cache,
             ctx.unknown_ids,
-            ctx.note_cache,
             &mut app.timeline_cache,
             ctx.accounts,
             kind,
             col,
-            app.note_options,
             depth,
             ui,
+            &mut driller,
         ),
         Route::Accounts(amr) => {
             let mut action = render_accounts_route(
@@ -302,18 +305,9 @@ fn render_nav_body(
                 let draft = app.drafts.reply_mut(note.id());
 
                 let response = egui::ScrollArea::vertical().show(ui, |ui| {
-                    ui::PostReplyView::new(
-                        ctx.ndb,
-                        poster,
-                        draft,
-                        ctx.note_cache,
-                        ctx.img_cache,
-                        &note,
-                        inner_rect,
-                        app.note_options,
-                    )
-                    .id_source(id)
-                    .show(ui)
+                    ui::PostReplyView::new(&mut driller, poster, draft, &note, inner_rect)
+                        .id_source(id)
+                        .show(ui)
                 });
 
                 response.inner.action
@@ -339,14 +333,11 @@ fn render_nav_body(
 
             let response = egui::ScrollArea::vertical().show(ui, |ui| {
                 crate::ui::note::QuoteRepostView::new(
-                    ctx.ndb,
+                    &mut driller,
                     poster,
-                    ctx.note_cache,
-                    ctx.img_cache,
                     draft,
                     &note,
                     inner_rect,
-                    app.note_options,
                 )
                 .id_source(id)
                 .show(ui)
@@ -360,17 +351,8 @@ fn render_nav_body(
             let draft = app.drafts.compose_mut();
 
             let txn = Transaction::new(ctx.ndb).expect("txn");
-            let post_response = ui::PostView::new(
-                ctx.ndb,
-                draft,
-                PostType::New,
-                ctx.img_cache,
-                ctx.note_cache,
-                kp,
-                inner_rect,
-                app.note_options,
-            )
-            .ui(&txn, ui);
+            let post_response =
+                ui::PostView::new(&mut driller, draft, PostType::New, kp, inner_rect).ui(&txn, ui);
 
             post_response.action.map(Into::into)
         }

@@ -2,29 +2,25 @@ use crate::{
     nav::RenderNavAction,
     profile::ProfileAction,
     timeline::{TimelineCache, TimelineKind},
-    ui::{self, note::NoteOptions, profile::ProfileView},
+    ui::{self, note::contents::NoteContentsDriller, profile::ProfileView},
 };
 
 use enostr::Pubkey;
-use nostrdb::Ndb;
-use notedeck::{Accounts, Images, MuteFun, NoteCache, UnknownIds};
+use notedeck::{Accounts, MuteFun, UnknownIds};
 
 #[allow(clippy::too_many_arguments)]
 pub fn render_timeline_route(
-    ndb: &Ndb,
-    img_cache: &mut Images,
     unknown_ids: &mut UnknownIds,
-    note_cache: &mut NoteCache,
     timeline_cache: &mut TimelineCache,
     accounts: &mut Accounts,
     kind: &TimelineKind,
     col: usize,
-    mut note_options: NoteOptions,
     depth: usize,
     ui: &mut egui::Ui,
+    driller: &mut NoteContentsDriller,
 ) -> Option<RenderNavAction> {
     if kind == &TimelineKind::Universe {
-        note_options.set_hide_media(true);
+        driller.options.set_hide_media(true);
     }
 
     match kind {
@@ -34,16 +30,8 @@ pub fn render_timeline_route(
         | TimelineKind::Universe
         | TimelineKind::Hashtag(_)
         | TimelineKind::Generic(_) => {
-            let note_action = ui::TimelineView::new(
-                kind,
-                timeline_cache,
-                ndb,
-                note_cache,
-                img_cache,
-                note_options,
-                &accounts.mutefun(),
-            )
-            .ui(ui);
+            let note_action =
+                ui::TimelineView::new(kind, timeline_cache, &accounts.mutefun(), driller).ui(ui);
 
             note_action.map(RenderNavAction::NoteAction)
         }
@@ -53,28 +41,18 @@ pub fn render_timeline_route(
                 render_profile_route(
                     pubkey,
                     accounts,
-                    ndb,
                     timeline_cache,
-                    img_cache,
-                    note_cache,
                     unknown_ids,
                     col,
                     ui,
                     &accounts.mutefun(),
-                    note_options,
+                    driller,
                 )
             } else {
                 // we render profiles like timelines if they are at the root
-                let note_action = ui::TimelineView::new(
-                    kind,
-                    timeline_cache,
-                    ndb,
-                    note_cache,
-                    img_cache,
-                    note_options,
-                    &accounts.mutefun(),
-                )
-                .ui(ui);
+                let note_action =
+                    ui::TimelineView::new(kind, timeline_cache, &accounts.mutefun(), driller)
+                        .ui(ui);
 
                 note_action.map(RenderNavAction::NoteAction)
             }
@@ -82,13 +60,10 @@ pub fn render_timeline_route(
 
         TimelineKind::Thread(id) => ui::ThreadView::new(
             timeline_cache,
-            ndb,
-            note_cache,
             unknown_ids,
-            img_cache,
             id.selected_or_root(),
-            note_options,
             &accounts.mutefun(),
+            driller,
         )
         .id_source(egui::Id::new(("threadscroll", col)))
         .ui(ui)
@@ -100,27 +75,21 @@ pub fn render_timeline_route(
 pub fn render_profile_route(
     pubkey: &Pubkey,
     accounts: &Accounts,
-    ndb: &Ndb,
     timeline_cache: &mut TimelineCache,
-    img_cache: &mut Images,
-    note_cache: &mut NoteCache,
     unknown_ids: &mut UnknownIds,
     col: usize,
     ui: &mut egui::Ui,
     is_muted: &MuteFun,
-    note_options: NoteOptions,
+    driller: &mut NoteContentsDriller,
 ) -> Option<RenderNavAction> {
     let action = ProfileView::new(
         pubkey,
         accounts,
         col,
         timeline_cache,
-        ndb,
-        note_cache,
-        img_cache,
         unknown_ids,
         is_muted,
-        note_options,
+        driller,
     )
     .ui(ui);
 
