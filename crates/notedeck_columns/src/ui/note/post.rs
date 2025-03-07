@@ -366,11 +366,13 @@ impl<'a> PostView<'a> {
                                     )
                                     .clicked();
 
-                                let ctrl_enter_pressed = ui
-                                    .input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::Enter));
+                                let shortcut_pressed = ui.input(|i| {
+                                    (i.modifiers.ctrl || i.modifiers.command)
+                                        && i.key_pressed(egui::Key::Enter)
+                                });
 
                                 if post_button_clicked
-                                    || (!self.draft.buffer.is_empty() && ctrl_enter_pressed)
+                                    || (!self.draft.buffer.is_empty() && shortcut_pressed)
                                 {
                                     let output = self.draft.buffer.output();
                                     let new_post = NewPost::new(
