@@ -423,6 +423,7 @@ fn render_nav_body(
                 app.note_options,
                 search_buffer,
                 &mut note_context,
+                ctx.accounts.get_selected_account().map(|s| &s.pubkey),
             )
             .show(ui)
             .map(RenderNavAction::NoteAction)

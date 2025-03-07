@@ -1,4 +1,5 @@
 use egui::{vec2, Align, Color32, RichText, Rounding, Stroke, TextEdit};
+use enostr::Pubkey;
 
 use super::{note::contents::NoteContext, padding};
 use crate::{
@@ -20,6 +21,7 @@ pub struct SearchView<'a, 'd> {
     txn: &'a Transaction,
     is_muted: &'a MuteFun,
     note_context: &'a mut NoteContext<'d>,
+    selected_pk: Option<&'a Pubkey>,
 }
 
 impl<'a, 'd> SearchView<'a, 'd> {
@@ -29,6 +31,7 @@ impl<'a, 'd> SearchView<'a, 'd> {
         note_options: NoteOptions,
         query: &'a mut SearchQueryState,
         note_context: &'a mut NoteContext<'d>,
+        selected_pk: Option<&'a Pubkey>,
     ) -> Self {
         Self {
             txn,
@@ -36,6 +39,7 @@ impl<'a, 'd> SearchView<'a, 'd> {
             query,
             note_options,
             note_context,
+            selected_pk,
         }
     }
 
@@ -74,6 +78,7 @@ impl<'a, 'd> SearchView<'a, 'd> {
                             self.txn,
                             self.is_muted,
                             self.note_context,
+                            self.selected_pk,
                         )
                         .show(ui)
                     })
