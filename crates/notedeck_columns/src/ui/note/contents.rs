@@ -119,6 +119,7 @@ pub fn render_note_preview(
                 .note_previews(false)
                 .options_button(true)
                 .parent(parent)
+                .is_preview(true)
                 .show(ui)
         })
         .inner
@@ -144,6 +145,11 @@ fn render_note_contents(
     let mut inline_note: Option<(&[u8; 32], &str)> = None;
     let hide_media = options.has_hide_media();
     let link_color = ui.visuals().hyperlink_color;
+
+    if !options.has_is_preview() {
+        // need this for the rect to take the full width of the column
+        let _ = ui.allocate_at_least(egui::vec2(ui.available_width(), 0.0), egui::Sense::click());
+    }
 
     let response = ui.horizontal_wrapped(|ui| {
         let blocks = if let Ok(blocks) = ndb.get_blocks_by_key(txn, note_key) {

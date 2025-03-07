@@ -145,6 +145,11 @@ impl<'a> NoteView<'a> {
         self
     }
 
+    pub fn is_preview(mut self, is_preview: bool) -> Self {
+        self.options_mut().set_is_preview(is_preview);
+        self
+    }
+
     fn textmode_ui(&mut self, ui: &mut egui::Ui) -> egui::Response {
         let note_key = self.note.key().expect("todo: implement non-db notes");
         let txn = self.note.txn().expect("todo: implement non-db notes");

@@ -48,6 +48,7 @@ pub fn reply_desc(
                 ui::NoteView::new(ndb, note_cache, img_cache, note, note_options)
                     .actionbar(false)
                     .wide(true)
+                    .is_preview(true)
                     .show(ui);
             });
         }
