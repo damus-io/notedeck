@@ -257,6 +257,7 @@ fn render_nav_body(
             depth,
             ui,
         ),
+
         Route::Accounts(amr) => {
             let mut action = render_accounts_route(
                 ui,
@@ -274,6 +275,7 @@ fn render_nav_body(
                 .accounts_action
                 .map(|f| RenderNavAction::SwitchingAction(SwitchingAction::Accounts(f)))
         }
+
         Route::Relays => {
             let manager = RelayPoolManager::new(ctx.pool);
             RelayView::new(ctx.accounts, manager, &mut app.view_state.id_string_map).ui(ui);
@@ -374,11 +376,13 @@ fn render_nav_body(
 
             post_response.action.map(Into::into)
         }
+
         Route::AddColumn(route) => {
             render_add_column_routes(ui, app, ctx, col, route);
 
             None
         }
+
         Route::Support => {
             SupportView::new(&mut app.support).show(ui);
             None
