@@ -61,11 +61,16 @@ pub fn reply_desc(
 
     if note_reply.is_reply_to_root() {
         // We're replying to the root, let's show this
-        let action = ui::Mention::new(note_context.ndb, note_context.img_cache, txn, reply_note.pubkey())
-            .size(size)
-            .selectable(selectable)
-            .show(ui)
-            .inner;
+        let action = ui::Mention::new(
+            note_context.ndb,
+            note_context.img_cache,
+            txn,
+            reply_note.pubkey(),
+        )
+        .size(size)
+        .selectable(selectable)
+        .show(ui)
+        .inner;
 
         if action.is_some() {
             note_action = action;
@@ -80,12 +85,16 @@ pub fn reply_desc(
         if let Ok(root_note) = note_context.ndb.get_note_by_id(txn, root.id) {
             if root_note.pubkey() == reply_note.pubkey() {
                 // simply "replying to bob's note" when replying to bob in his thread
-                let action =
-                    ui::Mention::new(note_context.ndb, note_context.img_cache, txn, reply_note.pubkey())
-                        .size(size)
-                        .selectable(selectable)
-                        .show(ui)
-                        .inner;
+                let action = ui::Mention::new(
+                    note_context.ndb,
+                    note_context.img_cache,
+                    txn,
+                    reply_note.pubkey(),
+                )
+                .size(size)
+                .selectable(selectable)
+                .show(ui)
+                .inner;
 
                 if action.is_some() {
                     note_action = action;
@@ -99,12 +108,16 @@ pub fn reply_desc(
             } else {
                 // replying to bob in alice's thread
 
-                let action =
-                    ui::Mention::new(note_context.ndb, note_context.img_cache, txn, reply_note.pubkey())
-                        .size(size)
-                        .selectable(selectable)
-                        .show(ui)
-                        .inner;
+                let action = ui::Mention::new(
+                    note_context.ndb,
+                    note_context.img_cache,
+                    txn,
+                    reply_note.pubkey(),
+                )
+                .size(size)
+                .selectable(selectable)
+                .show(ui)
+                .inner;
 
                 if action.is_some() {
                     note_action = action;
@@ -120,12 +133,16 @@ pub fn reply_desc(
                     Label::new(RichText::new("in").size(size).color(color)).selectable(selectable),
                 );
 
-                let action =
-                    ui::Mention::new(note_context.ndb, note_context.img_cache, txn, root_note.pubkey())
-                        .size(size)
-                        .selectable(selectable)
-                        .show(ui)
-                        .inner;
+                let action = ui::Mention::new(
+                    note_context.ndb,
+                    note_context.img_cache,
+                    txn,
+                    root_note.pubkey(),
+                )
+                .size(size)
+                .selectable(selectable)
+                .show(ui)
+                .inner;
 
                 if action.is_some() {
                     note_action = action;
@@ -138,11 +155,16 @@ pub fn reply_desc(
                 note_link(ui, note_context, "thread", &root_note);
             }
         } else {
-            let action = ui::Mention::new(note_context.ndb, note_context.img_cache, txn, reply_note.pubkey())
-                .size(size)
-                .selectable(selectable)
-                .show(ui)
-                .inner;
+            let action = ui::Mention::new(
+                note_context.ndb,
+                note_context.img_cache,
+                txn,
+                reply_note.pubkey(),
+            )
+            .size(size)
+            .selectable(selectable)
+            .show(ui)
+            .inner;
 
             if action.is_some() {
                 note_action = action;

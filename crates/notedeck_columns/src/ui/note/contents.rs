@@ -146,20 +146,28 @@ fn render_note_contents(
             match block.blocktype() {
                 BlockType::MentionBech32 => match block.as_mention().unwrap() {
                     Mention::Profile(profile) => {
-                        let act =
-                            ui::Mention::new(note_context.ndb, note_context.img_cache, txn, profile.pubkey())
-                                .show(ui)
-                                .inner;
+                        let act = ui::Mention::new(
+                            note_context.ndb,
+                            note_context.img_cache,
+                            txn,
+                            profile.pubkey(),
+                        )
+                        .show(ui)
+                        .inner;
                         if act.is_some() {
                             note_action = act;
                         }
                     }
 
                     Mention::Pubkey(npub) => {
-                        let act =
-                            ui::Mention::new(note_context.ndb, note_context.img_cache, txn, npub.pubkey())
-                                .show(ui)
-                                .inner;
+                        let act = ui::Mention::new(
+                            note_context.ndb,
+                            note_context.img_cache,
+                            txn,
+                            npub.pubkey(),
+                        )
+                        .show(ui)
+                        .inner;
                         if act.is_some() {
                             note_action = act;
                         }

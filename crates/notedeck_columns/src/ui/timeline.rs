@@ -138,7 +138,14 @@ fn timeline_ui(
 
         let txn = Transaction::new(note_context.ndb).expect("failed to create txn");
 
-        TimelineTabView::new(timeline.current_view(), reversed, &txn, is_muted, note_context).show(ui)
+        TimelineTabView::new(
+            timeline.current_view(),
+            reversed,
+            &txn,
+            is_muted,
+            note_context,
+        )
+        .show(ui)
     });
 
     let at_top_after_scroll = scroll_output.state.offset.y == 0.0;
@@ -338,12 +345,13 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
 
                 let note_key = self.tab.notes[ind].key;
 
-                let note = if let Ok(note) = self.note_context.ndb.get_note_by_key(self.txn, note_key) {
-                    note
-                } else {
-                    warn!("failed to query note {:?}", note_key);
-                    return 0;
-                };
+                let note =
+                    if let Ok(note) = self.note_context.ndb.get_note_by_key(self.txn, note_key) {
+                        note
+                    } else {
+                        warn!("failed to query note {:?}", note_key);
+                        return 0;
+                    };
 
                 // should we mute the thread? we might not have it!
                 let muted = if let Ok(root_id) = root_note_id_from_selected_id(

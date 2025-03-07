@@ -223,7 +223,8 @@ impl<'a, 'd> PostView<'a, 'd> {
                             hint_rect
                         };
 
-                        if let Ok(res) = self.note_context.ndb.search_profile(txn, mention_str, 10) {
+                        if let Ok(res) = self.note_context.ndb.search_profile(txn, mention_str, 10)
+                        {
                             let resp = SearchResultsView::new(
                                 self.note_context.img_cache,
                                 self.note_context.ndb,
@@ -238,8 +239,10 @@ impl<'a, 'd> PostView<'a, 'd> {
                                 ) => {
                                     if let Some(hint_index) = selection {
                                         if let Some(pk) = res.get(hint_index) {
-                                            let record =
-                                                self.note_context.ndb.get_profile_by_pubkey(txn, pk);
+                                            let record = self
+                                                .note_context
+                                                .ndb
+                                                .get_profile_by_pubkey(txn, pk);
 
                                             self.draft.buffer.select_mention_and_replace_name(
                                                 mention.index,

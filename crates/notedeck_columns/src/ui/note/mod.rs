@@ -385,7 +385,9 @@ impl<'a, 'd> NoteView<'a, 'd> {
 
                         if note_reply.reply().is_some() {
                             let action = ui
-                                .horizontal(|ui| reply_desc(ui, txn, &note_reply, self.note_context))
+                                .horizontal(|ui| {
+                                    reply_desc(ui, txn, &note_reply, self.note_context)
+                                })
                                 .inner;
 
                             if action.is_some() {

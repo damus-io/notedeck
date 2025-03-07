@@ -140,9 +140,12 @@ impl<'a, 'd> ProfileView<'a, 'd> {
                 ui.horizontal(|ui| {
                     ui.put(
                         pfp_rect,
-                        ProfilePic::new(self.note_context.img_cache, get_profile_url(Some(&profile)))
-                            .size(size)
-                            .border(ProfilePic::border_stroke(ui)),
+                        ProfilePic::new(
+                            self.note_context.img_cache,
+                            get_profile_url(Some(&profile)),
+                        )
+                        .size(size)
+                        .border(ProfilePic::border_stroke(ui)),
                     );
 
                     if ui.add(copy_key_widget(&pfp_rect)).clicked() {

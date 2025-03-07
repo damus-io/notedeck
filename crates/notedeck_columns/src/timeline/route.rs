@@ -31,7 +31,8 @@ pub fn render_timeline_route(
         | TimelineKind::Hashtag(_)
         | TimelineKind::Generic(_) => {
             let note_action =
-                ui::TimelineView::new(kind, timeline_cache, &accounts.mutefun(), note_context).ui(ui);
+                ui::TimelineView::new(kind, timeline_cache, &accounts.mutefun(), note_context)
+                    .ui(ui);
 
             note_action.map(RenderNavAction::NoteAction)
         }

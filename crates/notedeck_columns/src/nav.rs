@@ -352,7 +352,8 @@ fn render_nav_body(
 
             let txn = Transaction::new(ctx.ndb).expect("txn");
             let post_response =
-                ui::PostView::new(&mut note_context, draft, PostType::New, kp, inner_rect).ui(&txn, ui);
+                ui::PostView::new(&mut note_context, draft, PostType::New, kp, inner_rect)
+                    .ui(&txn, ui);
 
             post_response.action.map(Into::into)
         }
