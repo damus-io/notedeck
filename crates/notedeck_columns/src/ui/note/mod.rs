@@ -127,6 +127,11 @@ impl<'a, 'd> NoteView<'a, 'd> {
         self
     }
 
+    pub fn trusted_media(mut self, enable: bool) -> Self {
+        self.options_mut().set_trusted_media(enable);
+        self
+    }
+
     pub fn options(&self) -> NoteOptions {
         self.flags
     }
