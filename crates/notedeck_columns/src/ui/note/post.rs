@@ -5,7 +5,7 @@ use crate::post::{downcast_post_buffer, MentionType, NewPost};
 use crate::profile::get_display_name;
 use crate::ui::images::render_images;
 use crate::ui::search_results::SearchResultsView;
-use crate::ui::{self, note::NoteOptions, Preview, PreviewConfig};
+use crate::ui::{self, Preview, PreviewConfig};
 use crate::Result;
 use egui::text::{CCursorRange, LayoutJob};
 use egui::text_edit::TextEditOutput;
@@ -14,18 +14,17 @@ use egui::{vec2, Frame, Layout, Margin, Pos2, ScrollArea, Sense, TextBuffer};
 use enostr::{FilledKeypair, FullKeypair, NoteId, Pubkey, RelayPool};
 use nostrdb::{Ndb, Transaction};
 
-use notedeck::{supported_mime_hosted_at_url, Images, NoteCache};
+use notedeck::supported_mime_hosted_at_url;
 use tracing::error;
 
-use super::contents::render_note_preview;
+use super::contents::{render_note_preview, NoteContext};
 use super::NoteContextSelection;
+use super::NoteOptions;
 
-pub struct PostView<'a> {
-    ndb: &'a Ndb,
+pub struct PostView<'a, 'd> {
+    note_context: &'a mut NoteContext<'d>,
     draft: &'a mut Draft,
     post_type: PostType,
-    img_cache: &'a mut Images,
-    note_cache: &'a mut NoteCache,
     poster: FilledKeypair<'a>,
     id_source: Option<egui::Id>,
     inner_rect: egui::Rect,
@@ -85,24 +84,20 @@ pub struct PostResponse {
     pub context_selection: Option<NoteContextSelection>,
 }
 
-impl<'a> PostView<'a> {
+impl<'a, 'd> PostView<'a, 'd> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        ndb: &'a Ndb,
+        note_context: &'a mut NoteContext<'d>,
         draft: &'a mut Draft,
         post_type: PostType,
-        img_cache: &'a mut Images,
-        note_cache: &'a mut NoteCache,
         poster: FilledKeypair<'a>,
         inner_rect: egui::Rect,
         note_options: NoteOptions,
     ) -> Self {
         let id_source: Option<egui::Id> = None;
         PostView {
-            ndb,
+            note_context,
             draft,
-            img_cache,
-            note_cache,
             poster,
             id_source,
             post_type,
@@ -123,17 +118,21 @@ impl<'a> PostView<'a> {
 
         // TODO: refactor pfp control to do all of this for us
         let poster_pfp = self
+            .note_context
             .ndb
             .get_profile_by_pubkey(txn, self.poster.pubkey.bytes())
             .as_ref()
             .ok()
-            .and_then(|p| Some(ui::ProfilePic::from_profile(self.img_cache, p)?.size(pfp_size)));
+            .and_then(|p| {
+                Some(ui::ProfilePic::from_profile(self.note_context.img_cache, p)?.size(pfp_size))
+            });
 
         if let Some(pfp) = poster_pfp {
             ui.add(pfp);
         } else {
             ui.add(
-                ui::ProfilePic::new(self.img_cache, ui::ProfilePic::no_pfp_url()).size(pfp_size),
+                ui::ProfilePic::new(self.note_context.img_cache, ui::ProfilePic::no_pfp_url())
+                    .size(pfp_size),
             );
         }
 
@@ -239,20 +238,25 @@ impl<'a> PostView<'a> {
             hint_rect
         };
 
-        let res = if let Ok(res) = self.ndb.search_profile(txn, mention_str, 10) {
+        let res = if let Ok(res) = self.note_context.ndb.search_profile(txn, mention_str, 10) {
             res
         } else {
             return;
         };
 
-        let resp =
-            SearchResultsView::new(self.img_cache, self.ndb, txn, &res).show_in_rect(hint_rect, ui);
+        let resp = SearchResultsView::new(
+            self.note_context.img_cache,
+            self.note_context.ndb,
+            txn,
+            &res,
+        )
+        .show_in_rect(hint_rect, ui);
 
         match resp {
             ui::search_results::SearchResultsResponse::SelectResult(selection) => {
                 if let Some(hint_index) = selection {
                     if let Some(pk) = res.get(hint_index) {
-                        let record = self.ndb.get_profile_by_pubkey(txn, pk);
+                        let record = self.note_context.ndb.get_profile_by_pubkey(txn, pk);
 
                         self.draft.buffer.select_mention_and_replace_name(
                             mention.index,
@@ -327,9 +331,7 @@ impl<'a> PostView<'a> {
                                         ui.set_max_width(set_width);
                                         let resp = render_note_preview(
                                             ui,
-                                            self.ndb,
-                                            self.note_cache,
-                                            self.img_cache,
+                                            self.note_context,
                                             txn,
                                             id.bytes(),
                                             nostrdb::NoteKey::new(0),
@@ -420,11 +422,11 @@ impl<'a> PostView<'a> {
             };
 
             if let Some(cache_type) =
-                supported_mime_hosted_at_url(&mut self.img_cache.urls, &media.url)
+                supported_mime_hosted_at_url(&mut self.note_context.img_cache.urls, &media.url)
             {
                 render_images(
                     ui,
-                    self.img_cache,
+                    self.note_context.img_cache,
                     &media.url,
                     crate::images::ImageType::Content(width, height),
                     cache_type,
@@ -727,12 +729,16 @@ mod preview {
     impl App for PostPreview {
         fn update(&mut self, app: &mut AppContext<'_>, ui: &mut egui::Ui) {
             let txn = Transaction::new(app.ndb).expect("txn");
+            let mut note_context = NoteContext {
+                ndb: app.ndb,
+                img_cache: app.img_cache,
+                note_cache: app.note_cache,
+            };
+
             PostView::new(
-                app.ndb,
+                &mut note_context,
                 &mut self.draft,
                 PostType::New,
-                app.img_cache,
-                app.note_cache,
                 self.poster.to_filled(),
                 ui.available_rect_before_wrap(),
                 NoteOptions::default(),
@@ -741,7 +747,7 @@ mod preview {
         }
     }
 
-    impl Preview for PostView<'_> {
+    impl Preview for PostView<'_, '_> {
         type Prev = PostPreview;
 
         fn preview(_cfg: PreviewConfig) -> Self::Prev {

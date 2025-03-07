@@ -1,12 +1,12 @@
 use egui::{vec2, Align, Color32, RichText, Rounding, Stroke, TextEdit};
 
-use super::padding;
+use super::{note::contents::NoteContext, padding};
 use crate::{
     actionbar::NoteAction,
     ui::{note::NoteOptions, timeline::TimelineTabView},
 };
-use nostrdb::{Filter, Ndb, Transaction};
-use notedeck::{Images, MuteFun, NoteCache, NoteRef};
+use nostrdb::{Filter, Transaction};
+use notedeck::{MuteFun, NoteRef};
 use std::time::{Duration, Instant};
 use tracing::{error, info, warn};
 
@@ -14,34 +14,28 @@ mod state;
 
 pub use state::{FocusState, SearchQueryState, SearchState};
 
-pub struct SearchView<'a> {
+pub struct SearchView<'a, 'd> {
     query: &'a mut SearchQueryState,
-    ndb: &'a Ndb,
     note_options: NoteOptions,
     txn: &'a Transaction,
-    note_cache: &'a mut NoteCache,
-    img_cache: &'a mut Images,
     is_muted: &'a MuteFun,
+    note_context: &'a mut NoteContext<'d>,
 }
 
-impl<'a> SearchView<'a> {
+impl<'a, 'd> SearchView<'a, 'd> {
     pub fn new(
-        ndb: &'a Ndb,
         txn: &'a Transaction,
-        note_cache: &'a mut NoteCache,
-        img_cache: &'a mut Images,
         is_muted: &'a MuteFun,
         note_options: NoteOptions,
         query: &'a mut SearchQueryState,
+        note_context: &'a mut NoteContext<'d>,
     ) -> Self {
         Self {
-            ndb,
             txn,
-            note_cache,
-            img_cache,
             is_muted,
             query,
             note_options,
+            note_context,
         }
     }
 
@@ -78,10 +72,8 @@ impl<'a> SearchView<'a> {
                             reversed,
                             self.note_options,
                             self.txn,
-                            self.ndb,
-                            self.note_cache,
-                            self.img_cache,
                             self.is_muted,
+                            self.note_context,
                         )
                         .show(ui)
                     })
@@ -105,7 +97,10 @@ impl<'a> SearchView<'a> {
         // TODO: execute in thread
 
         let before = Instant::now();
-        let qrs = self.ndb.query(self.txn, &[filter], max_results as i32);
+        let qrs = self
+            .note_context
+            .ndb
+            .query(self.txn, &[filter], max_results as i32);
         let after = Instant::now();
         let duration = after - before;
 
