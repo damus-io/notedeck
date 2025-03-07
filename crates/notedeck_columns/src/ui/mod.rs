@@ -11,6 +11,7 @@ pub mod note;
 pub mod preview;
 pub mod profile;
 pub mod relay;
+pub mod search;
 pub mod search_results;
 pub mod side_panel;
 pub mod support;
