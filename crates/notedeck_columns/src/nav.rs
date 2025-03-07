@@ -403,9 +403,8 @@ fn render_nav_body(
                 app.note_options,
                 search_buffer,
             )
-            .show(ui);
-
-            None
+            .show(ui)
+            .map(RenderNavAction::NoteAction)
         }
 
         Route::NewDeck => {

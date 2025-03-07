@@ -1,7 +1,10 @@
 use egui::{vec2, Align, Color32, RichText, Rounding, Stroke, TextEdit};
 
 use super::padding;
-use crate::ui::{note::NoteOptions, timeline::TimelineTabView};
+use crate::{
+    actionbar::NoteAction,
+    ui::{note::NoteOptions, timeline::TimelineTabView},
+};
 use nostrdb::{Filter, Ndb, Transaction};
 use notedeck::{Images, MuteFun, NoteCache, NoteRef};
 use std::time::{Duration, Instant};
@@ -42,13 +45,11 @@ impl<'a> SearchView<'a> {
         }
     }
 
-    pub fn show(&mut self, ui: &mut egui::Ui) {
-        padding(8.0, ui, |ui| {
-            self.show_impl(ui);
-        });
+    pub fn show(&mut self, ui: &mut egui::Ui) -> Option<NoteAction> {
+        padding(8.0, ui, |ui| self.show_impl(ui)).inner
     }
 
-    pub fn show_impl(&mut self, ui: &mut egui::Ui) {
+    pub fn show_impl(&mut self, ui: &mut egui::Ui) -> Option<NoteAction> {
         ui.spacing_mut().item_spacing = egui::vec2(0.0, 12.0);
 
         if search_box(self.query, ui) {
@@ -56,7 +57,7 @@ impl<'a> SearchView<'a> {
         }
 
         match self.query.state {
-            SearchState::New => {}
+            SearchState::New => None,
 
             SearchState::Searched | SearchState::Typing => {
                 if self.query.state == SearchState::Typing {
@@ -69,20 +70,22 @@ impl<'a> SearchView<'a> {
                     ));
                 }
 
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    let reversed = false;
-                    TimelineTabView::new(
-                        &self.query.notes,
-                        reversed,
-                        self.note_options,
-                        self.txn,
-                        self.ndb,
-                        self.note_cache,
-                        self.img_cache,
-                        self.is_muted,
-                    )
-                    .show(ui);
-                });
+                egui::ScrollArea::vertical()
+                    .show(ui, |ui| {
+                        let reversed = false;
+                        TimelineTabView::new(
+                            &self.query.notes,
+                            reversed,
+                            self.note_options,
+                            self.txn,
+                            self.ndb,
+                            self.note_cache,
+                            self.img_cache,
+                            self.is_muted,
+                        )
+                        .show(ui)
+                    })
+                    .inner
             }
         }
     }
