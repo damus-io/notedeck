@@ -3,6 +3,7 @@ use crate::{
     actionbar::NoteAction,
     app::{get_active_columns_mut, get_decks_mut},
     column::ColumnsAction,
+    contacts::trust_media_from_pk2,
     deck_state::DeckState,
     decks::{Deck, DecksAction, DecksCache},
     profile::{ProfileAction, SaveProfileChanges},
@@ -309,13 +310,18 @@ fn render_nav_body(
 
                 let response = egui::ScrollArea::vertical()
                     .show(ui, |ui| {
+                        let mut note_options = app.note_options;
+                        if trust_media_from_pk2(ctx.ndb, &txn, Some(poster.pubkey), note.pubkey()) {
+                            note_options.set_trusted_media(true);
+                        }
+
                         ui::PostReplyView::new(
                             &mut note_context,
                             poster,
                             draft,
                             &note,
                             inner_rect,
-                            app.note_options,
+                            note_options,
                         )
                         .id_source(id)
                         .show(ui)
@@ -349,13 +355,18 @@ fn render_nav_body(
 
             let response = egui::ScrollArea::vertical()
                 .show(ui, |ui| {
+                    let mut note_options = app.note_options;
+                    if trust_media_from_pk2(ctx.ndb, &txn, Some(poster.pubkey), note.pubkey()) {
+                        note_options.set_trusted_media(true);
+                    }
+
                     crate::ui::note::QuoteRepostView::new(
                         &mut note_context,
                         poster,
                         draft,
                         &note,
                         inner_rect,
-                        app.note_options,
+                        note_options,
                     )
                     .id_source(id)
                     .show(ui)

@@ -1,6 +1,5 @@
 use nostrdb::{Filter, Ndb, Note, Transaction};
 
-#[allow(dead_code)]
 fn pk1_is_following_pk2(
     ndb: &Ndb,
     txn: &Transaction,
@@ -12,7 +11,6 @@ fn pk1_is_following_pk2(
     Some(note_follows(note, pk2))
 }
 
-#[allow(dead_code)]
 pub fn trust_media_from_pk2(
     ndb: &Ndb,
     txn: &Transaction,
