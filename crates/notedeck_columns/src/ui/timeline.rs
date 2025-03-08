@@ -1,6 +1,7 @@
 use std::f32::consts::PI;
 
 use crate::actionbar::NoteAction;
+use crate::contacts::trust_media_from_pk2;
 use crate::timeline::TimelineTab;
 use crate::{
     timeline::{TimelineCache, TimelineKind, ViewFilter},
@@ -324,7 +325,6 @@ pub struct TimelineTabView<'a, 'd> {
     txn: &'a Transaction,
     is_muted: &'a MuteFun,
     note_context: &'a mut NoteContext<'d>,
-    #[allow(dead_code)]
     selected_pk: Option<&'a Pubkey>,
 }
 
@@ -393,8 +393,18 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
 
                 if !muted {
                     ui::padding(8.0, ui, |ui| {
-                        let resp =
-                            ui::NoteView::new(self.note_context, &note, self.note_options).show(ui);
+                        let blurred_default = trust_media_from_pk2(
+                            self.note_context.ndb,
+                            self.txn,
+                            self.selected_pk.map(Pubkey::bytes),
+                            note.pubkey(),
+                        );
+
+                        let mut note_view =
+                            ui::NoteView::new(self.note_context, &note, self.note_options)
+                                .trusted_media(blurred_default);
+
+                        let resp = note_view.show(ui);
 
                         if let Some(note_action) = resp.action {
                             action = Some(note_action)
