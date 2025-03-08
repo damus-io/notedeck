@@ -16,7 +16,7 @@ use crate::{
         column::NavTitle,
         configure_deck::ConfigureDeckView,
         edit_deck::{EditDeckResponse, EditDeckView},
-        note::{PostAction, PostType},
+        note::{contents::NoteContext, PostAction, PostType},
         profile::EditProfileView,
         search::{FocusState, SearchView},
         support::SupportView,
@@ -244,12 +244,14 @@ fn render_nav_body(
     col: usize,
     inner_rect: egui::Rect,
 ) -> Option<RenderNavAction> {
+    let mut note_context = NoteContext {
+        ndb: ctx.ndb,
+        img_cache: ctx.img_cache,
+        note_cache: ctx.note_cache,
+    };
     match top {
         Route::Timeline(kind) => render_timeline_route(
-            ctx.ndb,
-            ctx.img_cache,
             ctx.unknown_ids,
-            ctx.note_cache,
             &mut app.timeline_cache,
             ctx.accounts,
             kind,
@@ -257,6 +259,7 @@ fn render_nav_body(
             app.note_options,
             depth,
             ui,
+            &mut note_context,
         ),
 
         Route::Accounts(amr) => {
@@ -307,11 +310,9 @@ fn render_nav_body(
                 let response = egui::ScrollArea::vertical()
                     .show(ui, |ui| {
                         ui::PostReplyView::new(
-                            ctx.ndb,
+                            &mut note_context,
                             poster,
                             draft,
-                            ctx.note_cache,
-                            ctx.img_cache,
                             &note,
                             inner_rect,
                             app.note_options,
@@ -349,10 +350,8 @@ fn render_nav_body(
             let response = egui::ScrollArea::vertical()
                 .show(ui, |ui| {
                     crate::ui::note::QuoteRepostView::new(
-                        ctx.ndb,
+                        &mut note_context,
                         poster,
-                        ctx.note_cache,
-                        ctx.img_cache,
                         draft,
                         &note,
                         inner_rect,
@@ -376,11 +375,9 @@ fn render_nav_body(
 
             let txn = Transaction::new(ctx.ndb).expect("txn");
             let post_response = ui::PostView::new(
-                ctx.ndb,
+                &mut note_context,
                 draft,
                 PostType::New,
-                ctx.img_cache,
-                ctx.note_cache,
                 kp,
                 inner_rect,
                 app.note_options,
@@ -421,13 +418,11 @@ fn render_nav_body(
             }
 
             SearchView::new(
-                ctx.ndb,
                 &txn,
-                ctx.note_cache,
-                ctx.img_cache,
                 &ctx.accounts.mutefun(),
                 app.note_options,
                 search_buffer,
+                &mut note_context,
             )
             .show(ui)
             .map(RenderNavAction::NoteAction)

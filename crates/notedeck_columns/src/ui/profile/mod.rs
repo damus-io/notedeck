@@ -6,7 +6,7 @@ pub use edit::EditProfileView;
 use egui::load::TexturePoll;
 use egui::{vec2, Color32, Label, Layout, Rect, RichText, Rounding, ScrollArea, Sense, Stroke};
 use enostr::Pubkey;
-use nostrdb::{Ndb, ProfileRecord, Transaction};
+use nostrdb::{ProfileRecord, Transaction};
 pub use picture::ProfilePic;
 pub use preview::ProfilePreview;
 use tracing::error;
@@ -16,26 +16,24 @@ use crate::{
     colors, images,
     profile::get_display_name,
     timeline::{TimelineCache, TimelineKind},
-    ui::{
-        note::NoteOptions,
-        timeline::{tabs_ui, TimelineTabView},
-    },
+    ui::timeline::{tabs_ui, TimelineTabView},
     NostrName,
 };
 
-use notedeck::{Accounts, Images, MuteFun, NoteCache, NotedeckTextStyle, UnknownIds};
+use notedeck::{Accounts, MuteFun, NotedeckTextStyle, UnknownIds};
 
-pub struct ProfileView<'a> {
+use super::note::contents::NoteContext;
+use super::note::NoteOptions;
+
+pub struct ProfileView<'a, 'd> {
     pubkey: &'a Pubkey,
     accounts: &'a Accounts,
     col_id: usize,
     timeline_cache: &'a mut TimelineCache,
     note_options: NoteOptions,
-    ndb: &'a Ndb,
-    note_cache: &'a mut NoteCache,
-    img_cache: &'a mut Images,
     unknown_ids: &'a mut UnknownIds,
     is_muted: &'a MuteFun,
+    note_context: &'a mut NoteContext<'d>,
 }
 
 pub enum ProfileViewAction {
@@ -43,31 +41,27 @@ pub enum ProfileViewAction {
     Note(NoteAction),
 }
 
-impl<'a> ProfileView<'a> {
+impl<'a, 'd> ProfileView<'a, 'd> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         pubkey: &'a Pubkey,
         accounts: &'a Accounts,
         col_id: usize,
         timeline_cache: &'a mut TimelineCache,
-        ndb: &'a Ndb,
-        note_cache: &'a mut NoteCache,
-        img_cache: &'a mut Images,
+        note_options: NoteOptions,
         unknown_ids: &'a mut UnknownIds,
         is_muted: &'a MuteFun,
-        note_options: NoteOptions,
+        note_context: &'a mut NoteContext<'d>,
     ) -> Self {
         ProfileView {
             pubkey,
             accounts,
             col_id,
             timeline_cache,
-            ndb,
-            note_cache,
-            img_cache,
-            unknown_ids,
             note_options,
+            unknown_ids,
             is_muted,
+            note_context,
         }
     }
 
@@ -78,8 +72,12 @@ impl<'a> ProfileView<'a> {
             .id_salt(scroll_id)
             .show(ui, |ui| {
                 let mut action = None;
-                let txn = Transaction::new(self.ndb).expect("txn");
-                if let Ok(profile) = self.ndb.get_profile_by_pubkey(&txn, self.pubkey.bytes()) {
+                let txn = Transaction::new(self.note_context.ndb).expect("txn");
+                if let Ok(profile) = self
+                    .note_context
+                    .ndb
+                    .get_profile_by_pubkey(&txn, self.pubkey.bytes())
+                {
                     if self.profile_body(ui, profile) {
                         action = Some(ProfileViewAction::EditProfile);
                     }
@@ -87,8 +85,8 @@ impl<'a> ProfileView<'a> {
                 let profile_timeline = self
                     .timeline_cache
                     .notes(
-                        self.ndb,
-                        self.note_cache,
+                        self.note_context.ndb,
+                        self.note_context.note_cache,
                         &txn,
                         &TimelineKind::Profile(*self.pubkey),
                     )
@@ -100,10 +98,10 @@ impl<'a> ProfileView<'a> {
                 let reversed = false;
                 // poll for new notes and insert them into our existing notes
                 if let Err(e) = profile_timeline.poll_notes_into_view(
-                    self.ndb,
+                    self.note_context.ndb,
                     &txn,
                     self.unknown_ids,
-                    self.note_cache,
+                    self.note_context.note_cache,
                     reversed,
                 ) {
                     error!("Profile::poll_notes_into_view: {e}");
@@ -114,10 +112,8 @@ impl<'a> ProfileView<'a> {
                     reversed,
                     self.note_options,
                     &txn,
-                    self.ndb,
-                    self.note_cache,
-                    self.img_cache,
                     self.is_muted,
+                    self.note_context,
                 )
                 .show(ui)
                 {
@@ -149,9 +145,12 @@ impl<'a> ProfileView<'a> {
                 ui.horizontal(|ui| {
                     ui.put(
                         pfp_rect,
-                        ProfilePic::new(self.img_cache, get_profile_url(Some(&profile)))
-                            .size(size)
-                            .border(ProfilePic::border_stroke(ui)),
+                        ProfilePic::new(
+                            self.note_context.img_cache,
+                            get_profile_url(Some(&profile)),
+                        )
+                        .size(size)
+                        .border(ProfilePic::border_stroke(ui)),
                     );
 
                     if ui.add(copy_key_widget(&pfp_rect)).clicked() {

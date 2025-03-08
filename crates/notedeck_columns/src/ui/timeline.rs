@@ -5,64 +5,57 @@ use crate::timeline::TimelineTab;
 use crate::{
     timeline::{TimelineCache, TimelineKind, ViewFilter},
     ui,
-    ui::note::NoteOptions,
 };
 use egui::containers::scroll_area::ScrollBarVisibility;
 use egui::{vec2, Direction, Layout, Pos2, Stroke};
 use egui_tabs::TabColor;
-use nostrdb::{Ndb, Transaction};
+use nostrdb::Transaction;
 use notedeck::note::root_note_id_from_selected_id;
-use notedeck::{Images, MuteFun, NoteCache};
+use notedeck::MuteFun;
 use tracing::{error, warn};
 
 use super::anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE};
+use super::note::contents::NoteContext;
+use super::note::NoteOptions;
 
-pub struct TimelineView<'a> {
+pub struct TimelineView<'a, 'd> {
     timeline_id: &'a TimelineKind,
     timeline_cache: &'a mut TimelineCache,
-    ndb: &'a Ndb,
-    note_cache: &'a mut NoteCache,
-    img_cache: &'a mut Images,
     note_options: NoteOptions,
     reverse: bool,
     is_muted: &'a MuteFun,
+    note_context: &'a mut NoteContext<'d>,
 }
 
-impl<'a> TimelineView<'a> {
+impl<'a, 'd> TimelineView<'a, 'd> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         timeline_id: &'a TimelineKind,
         timeline_cache: &'a mut TimelineCache,
-        ndb: &'a Ndb,
-        note_cache: &'a mut NoteCache,
-        img_cache: &'a mut Images,
-        note_options: NoteOptions,
         is_muted: &'a MuteFun,
-    ) -> TimelineView<'a> {
+        note_context: &'a mut NoteContext<'d>,
+        note_options: NoteOptions,
+    ) -> Self {
         let reverse = false;
         TimelineView {
-            ndb,
             timeline_id,
             timeline_cache,
-            note_cache,
-            img_cache,
-            reverse,
             note_options,
+            reverse,
             is_muted,
+            note_context,
         }
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui) -> Option<NoteAction> {
         timeline_ui(
             ui,
-            self.ndb,
             self.timeline_id,
             self.timeline_cache,
-            self.note_cache,
-            self.img_cache,
             self.reverse,
             self.note_options,
             self.is_muted,
+            self.note_context,
         )
     }
 
@@ -75,14 +68,12 @@ impl<'a> TimelineView<'a> {
 #[allow(clippy::too_many_arguments)]
 fn timeline_ui(
     ui: &mut egui::Ui,
-    ndb: &Ndb,
     timeline_id: &TimelineKind,
     timeline_cache: &mut TimelineCache,
-    note_cache: &mut NoteCache,
-    img_cache: &mut Images,
     reversed: bool,
     note_options: NoteOptions,
     is_muted: &MuteFun,
+    note_context: &mut NoteContext,
 ) -> Option<NoteAction> {
     //padding(4.0, ui, |ui| ui.heading("Notifications"));
     /*
@@ -151,16 +142,15 @@ fn timeline_ui(
             return None;
         };
 
-        let txn = Transaction::new(ndb).expect("failed to create txn");
+        let txn = Transaction::new(note_context.ndb).expect("failed to create txn");
+
         TimelineTabView::new(
             timeline.current_view(),
             reversed,
             note_options,
             &txn,
-            ndb,
-            note_cache,
-            img_cache,
             is_muted,
+            note_context,
         )
         .show(ui)
     });
@@ -315,38 +305,32 @@ fn shrink_range_to_width(range: egui::Rangef, width: f32) -> egui::Rangef {
     egui::Rangef::new(min, max)
 }
 
-pub struct TimelineTabView<'a> {
+pub struct TimelineTabView<'a, 'd> {
     tab: &'a TimelineTab,
     reversed: bool,
     note_options: NoteOptions,
     txn: &'a Transaction,
-    ndb: &'a Ndb,
-    note_cache: &'a mut NoteCache,
-    img_cache: &'a mut Images,
     is_muted: &'a MuteFun,
+    note_context: &'a mut NoteContext<'d>,
 }
 
-impl<'a> TimelineTabView<'a> {
+impl<'a, 'd> TimelineTabView<'a, 'd> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         tab: &'a TimelineTab,
         reversed: bool,
         note_options: NoteOptions,
         txn: &'a Transaction,
-        ndb: &'a Ndb,
-        note_cache: &'a mut NoteCache,
-        img_cache: &'a mut Images,
         is_muted: &'a MuteFun,
+        note_context: &'a mut NoteContext<'d>,
     ) -> Self {
         Self {
             tab,
             reversed,
-            txn,
             note_options,
-            ndb,
-            note_cache,
-            img_cache,
+            txn,
             is_muted,
+            note_context,
         }
     }
 
@@ -371,17 +355,21 @@ impl<'a> TimelineTabView<'a> {
 
                 let note_key = self.tab.notes[ind].key;
 
-                let note = if let Ok(note) = self.ndb.get_note_by_key(self.txn, note_key) {
-                    note
-                } else {
-                    warn!("failed to query note {:?}", note_key);
-                    return 0;
-                };
+                let note =
+                    if let Ok(note) = self.note_context.ndb.get_note_by_key(self.txn, note_key) {
+                        note
+                    } else {
+                        warn!("failed to query note {:?}", note_key);
+                        return 0;
+                    };
 
                 // should we mute the thread? we might not have it!
-                let muted = if let Ok(root_id) =
-                    root_note_id_from_selected_id(self.ndb, self.note_cache, self.txn, note.id())
-                {
+                let muted = if let Ok(root_id) = root_note_id_from_selected_id(
+                    self.note_context.ndb,
+                    self.note_context.note_cache,
+                    self.txn,
+                    note.id(),
+                ) {
                     is_muted(&note, root_id.bytes())
                 } else {
                     false
@@ -389,14 +377,8 @@ impl<'a> TimelineTabView<'a> {
 
                 if !muted {
                     ui::padding(8.0, ui, |ui| {
-                        let resp = ui::NoteView::new(
-                            self.ndb,
-                            self.note_cache,
-                            self.img_cache,
-                            &note,
-                            self.note_options,
-                        )
-                        .show(ui);
+                        let resp =
+                            ui::NoteView::new(self.note_context, &note, self.note_options).show(ui);
 
                         if let Some(note_action) = resp.action {
                             action = Some(note_action)
