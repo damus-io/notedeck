@@ -5,7 +5,7 @@ use crate::ui::{
     note::{NoteOptions, NoteResponse},
 };
 use crate::{actionbar::NoteAction, images::ImageType, timeline::TimelineKind};
-use egui::{Color32, Hyperlink, Image, RichText};
+use egui::{Button, Color32, Hyperlink, Image, Response, RichText, Sense, Window};
 use nostrdb::{BlockType, Mention, Ndb, Note, NoteKey, Transaction};
 use tracing::warn;
 
@@ -295,6 +295,20 @@ fn image_carousel(
     let width = ui.available_size().x;
     let spinsz = if height > width { width } else { height };
 
+    let show_popup = ui.ctx().memory(|mem| {
+        mem.data
+            .get_temp(carousel_id.with("show_popup"))
+            .unwrap_or(false)
+    });
+
+    let current_image = show_popup.then(|| {
+        ui.ctx().memory(|mem| {
+            mem.data
+                .get_temp::<(String, MediaCacheType)>(carousel_id.with("current_image"))
+                .unwrap_or_else(|| (images[0].0.clone(), images[0].1.clone()))
+        })
+    });
+
     ui.add_sized([width, height], |ui: &mut egui::Ui| {
         egui::ScrollArea::horizontal()
             .id_salt(carousel_id)
@@ -306,7 +320,7 @@ fn image_carousel(
                             img_cache,
                             &image,
                             ImageType::Content(width.round() as u32, height.round() as u32),
-                            cache_type,
+                            cache_type.clone(),
                             |ui| {
                                 ui.allocate_space(egui::vec2(spinsz, spinsz));
                             },
@@ -319,18 +333,26 @@ fn image_carousel(
                                     retrieve_latest_texture(&image, gifs, renderable_media),
                                 );
                                 let img_resp = ui.add(
-                                    Image::new(texture)
-                                        .max_height(height)
-                                        .rounding(5.0)
-                                        .fit_to_original_size(1.0),
+                                    Button::image(
+                                        Image::new(texture)
+                                            .max_height(height)
+                                            .rounding(5.0)
+                                            .fit_to_original_size(1.0),
+                                    )
+                                    .frame(false),
                                 );
 
-                                img_resp.context_menu(|ui| {
-                                    if ui.button("Copy Link").clicked() {
-                                        ui.ctx().copy_text(url.to_owned());
-                                        ui.close_menu();
-                                    }
-                                });
+                                if img_resp.clicked() {
+                                    ui.ctx().memory_mut(|mem| {
+                                        mem.data.insert_temp(carousel_id.with("show_popup"), true);
+                                        mem.data.insert_temp(
+                                            carousel_id.with("current_image"),
+                                            (image.clone(), cache_type.clone()),
+                                        );
+                                    });
+                                }
+
+                                copy_link(url, img_resp);
                             },
                         );
                     }
@@ -338,5 +360,83 @@ fn image_carousel(
                 .response
             })
             .inner
+    });
+
+    if show_popup {
+        let current_image = current_image
+            .as_ref()
+            .expect("the image was actually clicked");
+        let image = current_image.clone().0;
+        let cache_type = current_image.clone().1;
+
+        Window::new("image_popup")
+            .title_bar(false)
+            .fixed_size(ui.ctx().screen_rect().size())
+            .frame(egui::Frame::none())
+            .show(ui.ctx(), |ui| {
+                let screen_rect = ui.ctx().screen_rect();
+
+                // escape
+                if ui.input(|i| i.key_pressed(egui::Key::Escape))
+                    || (ui.input(|i| i.pointer.any_click()))
+                {
+                    ui.ctx().memory_mut(|mem| {
+                        mem.data.insert_temp(carousel_id.with("show_popup"), false);
+                    });
+                }
+
+                // background
+                ui.painter()
+                    .rect_filled(screen_rect, 0.0, Color32::from_black_alpha(230));
+
+                ui.vertical_centered(|ui| {
+                    render_images(
+                        ui,
+                        img_cache,
+                        &image,
+                        ImageType::Content(width.round() as u32, height.round() as u32),
+                        cache_type.clone(),
+                        |ui| {
+                            ui.allocate_space(egui::vec2(spinsz, spinsz));
+                        },
+                        |ui, _| {
+                            ui.allocate_space(egui::vec2(spinsz, spinsz));
+                        },
+                        |ui, url, renderable_media, gifs| {
+                            let texture = handle_repaint(
+                                ui,
+                                retrieve_latest_texture(&image, gifs, renderable_media),
+                            );
+
+                            // top margin because ui.vertical_centered pushes the img to the top
+                            // and ui.centered_and_justified takes up all the screen
+                            ui.add_space((screen_rect.height() - texture.size_vec2().y) / 2.0);
+
+                            let img_resp = ui.add(
+                                Image::new(texture)
+                                    .fit_to_original_size(1.0)
+                                    .sense(Sense::click()),
+                            );
+
+                            if img_resp.clicked() || img_resp.secondary_clicked() {
+                                ui.memory_mut(|mem| {
+                                    mem.data.insert_temp(carousel_id.with("show_popup"), true);
+                                });
+                            }
+
+                            copy_link(url, img_resp);
+                        },
+                    );
+                });
+            });
+    }
+}
+
+fn copy_link(url: &str, img_resp: Response) {
+    img_resp.context_menu(|ui| {
+        if ui.button("Copy Link").clicked() {
+            ui.ctx().copy_text(url.to_owned());
+            ui.close_menu();
+        }
     });
 }
