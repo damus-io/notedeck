@@ -18,7 +18,7 @@ use crate::{
         edit_deck::{EditDeckResponse, EditDeckView},
         note::{PostAction, PostType},
         profile::EditProfileView,
-        search::SearchView,
+        search::{FocusState, SearchView},
         support::SupportView,
         RelayView, View,
     },
@@ -403,8 +403,22 @@ fn render_nav_body(
 
         Route::Search => {
             let id = ui.id().with(("search", depth, col));
+            let navigating = app
+                .columns_mut(ctx.accounts)
+                .column(col)
+                .router()
+                .navigating;
             let search_buffer = app.view_state.searches.entry(id).or_default();
             let txn = Transaction::new(ctx.ndb).expect("txn");
+
+            if navigating {
+                search_buffer.focus_state = FocusState::Navigating
+            } else if search_buffer.focus_state == FocusState::Navigating {
+                // we're not navigating but our last search buffer state
+                // says we were navigating. This means that navigating has
+                // stopped. Let's make sure to focus the input field
+                search_buffer.focus_state = FocusState::ShouldRequestFocus;
+            }
 
             SearchView::new(
                 ctx.ndb,

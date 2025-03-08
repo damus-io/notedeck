@@ -324,7 +324,6 @@ impl<'a> DesktopSidePanel<'a> {
             }
             SidePanelAction::Search => {
                 // TODO
-                info!("Clicked search button");
                 if router.top() == &Route::Search {
                     router.go_back();
                 } else {

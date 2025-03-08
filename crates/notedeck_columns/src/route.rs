@@ -25,7 +25,6 @@ pub enum Route {
     EditProfile(Pubkey),
     Support,
     NewDeck,
-    /// Search screen
     Search,
     EditDeck(usize),
 }

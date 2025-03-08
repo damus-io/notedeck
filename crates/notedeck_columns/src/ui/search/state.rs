@@ -6,7 +6,20 @@ use std::time::Duration;
 pub enum SearchState {
     Typing,
     Searched,
+    Navigating,
     New,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub enum FocusState {
+    /// Get ready to focus
+    Navigating,
+
+    /// We should request focus when we stop navigating
+    ShouldRequestFocus,
+
+    /// We already focused, we don't need to do that again
+    RequestedFocus,
 }
 
 /// Search query state that exists between frames
@@ -19,6 +32,10 @@ pub struct SearchQueryState {
     /// our state as searchd. This will make sure we don't try to search
     /// again next frames
     pub state: SearchState,
+
+    /// A bit of context to know if we're navigating to the view. We
+    /// can use this to know when to request focus on the textedit
+    pub focus_state: FocusState,
 
     /// When was the input updated? We use this to debounce searches
     pub debouncer: Debouncer,
@@ -39,6 +56,7 @@ impl SearchQueryState {
             string: "".to_string(),
             state: SearchState::New,
             notes: TimelineTab::default(),
+            focus_state: FocusState::Navigating,
             debouncer: Debouncer::new(Duration::from_millis(200)),
         }
     }

@@ -12,7 +12,7 @@ use tracing::{error, info, warn};
 
 mod state;
 
-pub use state::{SearchQueryState, SearchState};
+pub use state::{FocusState, SearchQueryState, SearchState};
 
 pub struct SearchView<'a> {
     query: &'a mut SearchQueryState,
@@ -57,7 +57,7 @@ impl<'a> SearchView<'a> {
         }
 
         match self.query.state {
-            SearchState::New => None,
+            SearchState::New | SearchState::Navigating => None,
 
             SearchState::Searched | SearchState::Typing => {
                 if self.query.state == SearchState::Typing {
@@ -163,7 +163,7 @@ fn search_box(query: &mut SearchQueryState, ui: &mut egui::Ui) -> bool {
 
                     // Search input field
                     //let font_size = notedeck::fonts::get_font_size(ui.ctx(), &NotedeckTextStyle::Body);
-                    ui.add_sized(
+                    let response = ui.add_sized(
                         [ui.available_width(), search_height],
                         TextEdit::singleline(&mut query.string)
                             .hint_text(RichText::new("Search notes...").weak())
@@ -172,6 +172,11 @@ fn search_box(query: &mut SearchQueryState, ui: &mut egui::Ui) -> bool {
                             .margin(vec2(0.0, 8.0))
                             .frame(false),
                     );
+
+                    if query.focus_state == FocusState::ShouldRequestFocus {
+                        response.request_focus();
+                        query.focus_state = FocusState::RequestedFocus;
+                    }
 
                     let after_len = query.string.len();
 
