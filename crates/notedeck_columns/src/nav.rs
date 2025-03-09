@@ -249,6 +249,7 @@ fn render_nav_body(
         ndb: ctx.ndb,
         img_cache: ctx.img_cache,
         note_cache: ctx.note_cache,
+        jobs: ctx.jobs,
     };
     match top {
         Route::Timeline(kind) => render_timeline_route(
