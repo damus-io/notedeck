@@ -13,7 +13,7 @@ use crate::{
 };
 
 use notedeck::{Accounts, AppAction, AppContext, DataPath, DataPathType, FilterState, UnknownIds};
-use notedeck_ui::NoteOptions;
+use notedeck_ui::{jobs::JobsCache, NoteOptions};
 
 use enostr::{ClientMessage, Keypair, PoolRelay, Pubkey, RelayEvent, RelayMessage, RelayPool};
 use uuid::Uuid;
@@ -42,6 +42,7 @@ pub struct Damus {
     pub timeline_cache: TimelineCache,
     pub subscriptions: Subscriptions,
     pub support: Support,
+    pub jobs: JobsCache,
 
     //frame_history: crate::frame_history::FrameHistory,
 
@@ -430,6 +431,8 @@ impl Damus {
         note_options.set_scramble_text(parsed_args.scramble);
         note_options.set_hide_media(parsed_args.no_media);
 
+        let jobs = JobsCache::default();
+
         Self {
             subscriptions: Subscriptions::default(),
             since_optimize: parsed_args.since_optimize,
@@ -444,6 +447,7 @@ impl Damus {
             decks_cache,
             debug,
             unrecognized_args,
+            jobs,
         }
     }
 
@@ -487,6 +491,7 @@ impl Damus {
             support,
             decks_cache,
             unrecognized_args: BTreeSet::default(),
+            jobs: JobsCache::default(),
         }
     }
 
