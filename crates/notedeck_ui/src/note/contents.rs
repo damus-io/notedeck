@@ -540,3 +540,17 @@ fn copy_link(url: &str, img_resp: Response) {
         }
     });
 }
+
+pub fn generate_blurhash_texturehandle(
+    ctx: &egui::Context,
+    blurhash: &str,
+    url: &str,
+    width: u32,
+    height: u32,
+) -> notedeck::Result<egui::TextureHandle> {
+    let bytes = blurhash::decode(blurhash, width, height, 1.0)
+        .map_err(|e| notedeck::Error::Generic(e.to_string()))?;
+
+    let img = egui::ColorImage::from_rgba_unmultiplied([width as usize, height as usize], &bytes);
+    Ok(ctx.load_texture(url, img, Default::default()))
+}
