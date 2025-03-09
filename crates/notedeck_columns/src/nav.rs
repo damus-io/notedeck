@@ -249,6 +249,7 @@ fn render_nav_body(
         ndb: ctx.ndb,
         img_cache: ctx.img_cache,
         note_cache: ctx.note_cache,
+        jobs: &mut app.jobs,
     };
     match top {
         Route::Timeline(kind) => render_timeline_route(
@@ -411,8 +412,7 @@ fn render_nav_body(
 
         Route::Search => {
             let id = ui.id().with(("search", depth, col));
-            let navigating = app
-                .columns_mut(ctx.accounts)
+            let navigating = get_active_columns_mut(ctx.accounts, &mut app.decks_cache)
                 .column(col)
                 .router()
                 .navigating;
