@@ -18,6 +18,7 @@ mod draft;
 mod frame_history;
 mod gif;
 mod images;
+mod jobs;
 mod key_parsing;
 pub mod login_manager;
 mod media_upload;

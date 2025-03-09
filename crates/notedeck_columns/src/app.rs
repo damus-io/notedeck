@@ -3,6 +3,7 @@ use crate::{
     column::Columns,
     decks::{Decks, DecksCache, FALLBACK_PUBKEY},
     draft::Drafts,
+    jobs::Jobs,
     nav, storage,
     subscriptions::{SubKind, Subscriptions},
     support::Support,
@@ -41,6 +42,7 @@ pub struct Damus {
     pub timeline_cache: TimelineCache,
     pub subscriptions: Subscriptions,
     pub support: Support,
+    pub jobs: Jobs,
 
     //frame_history: crate::frame_history::FrameHistory,
 
@@ -429,6 +431,8 @@ impl Damus {
         note_options.set_scramble_text(parsed_args.scramble);
         note_options.set_hide_media(parsed_args.no_media);
 
+        let jobs = Jobs::default();
+
         Self {
             subscriptions: Subscriptions::default(),
             since_optimize: parsed_args.since_optimize,
@@ -443,6 +447,7 @@ impl Damus {
             decks_cache,
             debug,
             unrecognized_args,
+            jobs,
         }
     }
 
@@ -486,6 +491,7 @@ impl Damus {
             support,
             decks_cache,
             unrecognized_args: BTreeSet::default(),
+            jobs: Jobs::default(),
         }
     }
 
