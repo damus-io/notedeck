@@ -106,7 +106,7 @@ fn render_pfp(
         |ui, _| {
             paint_circle(ui, ui_size, border);
         },
-        |ui, url, renderable_media, gifs| {
+        |ui, url, renderable_media, gifs, _| {
             let texture_handle =
                 handle_repaint(ui, retrieve_latest_texture(url, gifs, renderable_media));
             pfp_image(ui, texture_handle, ui_size, border);
