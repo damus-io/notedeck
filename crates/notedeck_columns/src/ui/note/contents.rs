@@ -17,6 +17,7 @@ pub struct NoteContext<'d> {
     pub ndb: &'d Ndb,
     pub img_cache: &'d mut Images,
     pub note_cache: &'d mut NoteCache,
+    pub jobs: &'d mut notedeck::jobs::Jobs,
 }
 
 pub struct NoteContents<'a, 'd> {
