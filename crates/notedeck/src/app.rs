@@ -1,3 +1,4 @@
+use crate::jobs::Jobs;
 use crate::persist::{AppSizeHandler, ZoomHandler};
 use crate::{
     AccountStorage, Accounts, AppContext, Args, DataPath, DataPathType, Directory, Images,
@@ -33,6 +34,7 @@ pub struct Notedeck {
     app_size: AppSizeHandler,
     unrecognized_args: BTreeSet<String>,
     clipboard: Clipboard,
+    jobs: Jobs,
 }
 
 /// Our chrome, which is basically nothing
@@ -202,6 +204,8 @@ impl Notedeck {
             error!("error migrating image cache: {e}");
         }
 
+        let jobs = Jobs::default();
+
         Self {
             ndb,
             img_cache,
@@ -217,6 +221,7 @@ impl Notedeck {
             app_size,
             unrecognized_args,
             clipboard: Clipboard::new(None),
+            jobs,
         }
     }
 
@@ -237,6 +242,7 @@ impl Notedeck {
             args: &self.args,
             theme: &mut self.theme,
             clipboard: &mut self.clipboard,
+            jobs: &mut self.jobs,
         }
     }
 
