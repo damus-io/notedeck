@@ -2,13 +2,11 @@ use std::collections::HashMap;
 
 use nostrdb::Note;
 
-#[allow(dead_code)]
 pub struct Blur<'a> {
     pub blurhash: &'a str,
     pub dimensions: Option<(u32, u32)>, // width and height in pixels
 }
 
-#[allow(dead_code)]
 pub fn imeta_blurhashes<'a>(note: &'a Note) -> HashMap<&'a str, Blur<'a>> {
     let mut blurs = HashMap::new();
 
