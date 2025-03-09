@@ -7,6 +7,7 @@ mod error;
 pub mod filter;
 pub mod fonts;
 mod imgcache;
+pub mod jobs;
 mod muted;
 pub mod note;
 mod notecache;
@@ -37,6 +38,7 @@ pub use imgcache::{
     Animation, GifState, GifStateMap, ImageFrame, Images, MediaCache, MediaCacheType,
     MediaCacheValue, TextureFrame, TexturedImage,
 };
+pub use jobs::{Job, JobId, Jobs};
 pub use muted::{MuteFun, Muted};
 pub use note::{NoteRef, RootIdError, RootNoteId, RootNoteIdBuf};
 pub use notecache::{CachedNote, NoteCache};

@@ -1,4 +1,4 @@
-use crate::{Accounts, Args, DataPath, Images, NoteCache, ThemeHandler, UnknownIds};
+use crate::{jobs::Jobs, Accounts, Args, DataPath, Images, NoteCache, ThemeHandler, UnknownIds};
 
 use enostr::RelayPool;
 use nostrdb::Ndb;
@@ -15,4 +15,5 @@ pub struct AppContext<'a> {
     pub path: &'a DataPath,
     pub args: &'a Args,
     pub theme: &'a mut ThemeHandler,
+    pub jobs: &'a mut Jobs,
 }
