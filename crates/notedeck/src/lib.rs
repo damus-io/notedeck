@@ -7,6 +7,7 @@ mod error;
 pub mod filter;
 pub mod fonts;
 mod imgcache;
+pub mod jobs;
 mod muted;
 pub mod note;
 mod notecache;
