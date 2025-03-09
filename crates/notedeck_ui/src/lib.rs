@@ -1,4 +1,5 @@
 pub mod anim;
+pub mod blur;
 pub mod colors;
 pub mod constants;
 pub mod contacts;
