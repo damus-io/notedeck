@@ -221,6 +221,21 @@ fn fetch_img_from_disk(
     })
 }
 
+#[allow(dead_code)]
+pub fn generate_blurhash_texturehandle(
+    ctx: &egui::Context,
+    blurhash: &str,
+    url: &str,
+    width: u32,
+    height: u32,
+) -> Result<egui::TextureHandle> {
+    let bytes = blurhash::decode(blurhash, width, height, 1.0)
+        .map_err(|e| notedeck::Error::Generic(e.to_string()))?;
+
+    let img = ColorImage::from_rgba_unmultiplied([width as usize, height as usize], &bytes);
+    Ok(ctx.load_texture(url, img, Default::default()))
+}
+
 fn generate_gif(
     ctx: egui::Context,
     url: String,
