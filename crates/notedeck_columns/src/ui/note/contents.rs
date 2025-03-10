@@ -32,7 +32,7 @@ pub struct NoteContents<'a, 'd> {
     txn: &'a Transaction,
     note: &'a Note<'a>,
     options: NoteOptions,
-    action: Option<NoteAction>,
+    response: NoteContentsResponse,
 }
 
 impl<'a, 'd> NoteContents<'a, 'd> {
@@ -48,20 +48,25 @@ impl<'a, 'd> NoteContents<'a, 'd> {
             txn,
             note,
             options,
-            action: None,
+            response: Default::default(),
         }
     }
 
     pub fn action(&self) -> &Option<NoteAction> {
-        &self.action
+        &self.response.note_action
+    }
+
+    pub fn media_action(&self) -> &Option<MediaAction> {
+        &self.response.media_action
     }
 }
 
 impl egui::Widget for &mut NoteContents<'_, '_> {
     fn ui(self, ui: &mut egui::Ui) -> egui::Response {
-        let result = render_note_contents(ui, self.note_context, self.txn, self.note, self.options);
-        self.action = result.action;
-        result.response
+        let (resp, result) =
+            render_note_contents(ui, self.note_context, self.txn, self.note, self.options);
+        self.response = result;
+        resp
     }
 }
 
@@ -125,6 +130,12 @@ pub fn render_note_preview(
         .inner
 }
 
+#[derive(Default)]
+struct NoteContentsResponse {
+    pub note_action: Option<NoteAction>,
+    pub media_action: Option<MediaAction>,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn render_note_contents(
     ui: &mut egui::Ui,
@@ -132,7 +143,7 @@ fn render_note_contents(
     txn: &Transaction,
     note: &Note,
     options: NoteOptions,
-) -> NoteResponse {
+) -> (egui::Response, NoteContentsResponse) {
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
 
@@ -275,11 +286,12 @@ fn render_note_contents(
         None
     };
 
+    let mut media_action = None;
     if !supported_medias.is_empty() && !options.has_textmode() {
         ui.add_space(2.0);
         let carousel_id = egui::Id::new(("carousel", note.key().expect("expected tx note")));
 
-        image_carousel(
+        media_action = image_carousel(
             ui,
             note_context.img_cache,
             note_context.jobs,
@@ -291,7 +303,12 @@ fn render_note_contents(
 
     let note_action = preview_note_action.or(note_action);
 
-    NoteResponse::new(response.response).with_action(note_action)
+    let contents_response = NoteContentsResponse {
+        note_action,
+        media_action,
+    };
+
+    (response.response, contents_response)
 }
 
 fn find_supported_media_type<'a>(
@@ -374,7 +391,7 @@ fn image_carousel(
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     for media in medias {
-                        action = render_media(
+                        if let Some(cur_action) = render_media(
                             ui,
                             img_cache,
                             jobs,
@@ -383,11 +400,9 @@ fn image_carousel(
                             height,
                             spinsz,
                             carousel_id,
-                        );
-
-                        // match action {
-                        //     RenderMediaAction::Unblur(url) => send_unblur_signal(ui.ctx(), &url),
-                        // }
+                        ) {
+                            action = Some(cur_action)
+                        }
                     }
                 })
                 .response
@@ -581,8 +596,17 @@ fn copy_link(url: &str, img_resp: Response) {
     });
 }
 
+#[derive(Clone)]
 pub enum MediaAction {
     Unblur(String),
+}
+
+impl MediaAction {
+    pub fn process(&self, ui: &egui::Ui) {
+        match &self {
+            MediaAction::Unblur(url) => send_unblur_signal(ui.ctx(), url),
+        }
+    }
 }
 
 fn render_media(
@@ -620,7 +644,6 @@ fn render_media(
     }
 }
 
-#[allow(dead_code)]
 fn send_unblur_signal(ctx: &egui::Context, url: &str) {
     let id = egui::Id::new(("blur", url));
     ctx.data_mut(|d| d.insert_temp(id, false))
