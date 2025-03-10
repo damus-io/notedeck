@@ -126,7 +126,7 @@ impl UnknownIds {
         self.ids = HashMap::default();
     }
 
-    pub fn generate_resolution_requests(&self) -> Vec<SubSpec> {
+    pub fn generate_resolution_requests(&self, is_forced_relays: bool) -> Vec<SubSpec> {
         // 1. resolve as many ids per request as possible
         // 2. each request only has one filter (https://github.com/nostr-protocol/nips/pull/1645)
         // 3. each request is limited to MAX_CHUNK_IDS
@@ -135,10 +135,16 @@ impl UnknownIds {
         // Collect the unknown ids by relay
         let mut ids_by_relay: BTreeMap<RelayUrl, (Vec<Pubkey>, Vec<NoteId>)> = BTreeMap::new();
         for (unknown_id, relay_hints) in self.ids.iter() {
-            // 1. use default relays (empty RelayUrl) if no hints are available
+            // 1. use default relays (signified by an empty RelayUrl) if no hints are available
             // 2. query the default relays even when hints are available
+            // 3. if overriding relays from the CLI (is_forced_relays) ignore relay_hints
+            let use_hints = if is_forced_relays {
+                &HashSet::new()
+            } else {
+                relay_hints
+            };
             for relay in std::iter::once("".to_string())
-                .chain(relay_hints.iter().map(|relay| relay.to_string()))
+                .chain(use_hints.iter().map(|relay| relay.to_string()))
             {
                 match unknown_id {
                     UnknownId::Pubkey(pk) => {

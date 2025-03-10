@@ -195,6 +195,7 @@ fn try_process_event<'a>(
             app_ctx.unknown_ids,
             app_ctx.subman,
             &app_ctx.accounts.get_all_selected_account_relays(),
+            app_ctx.accounts.is_forced_relays(),
         );
     }
 }
@@ -203,9 +204,10 @@ fn unknown_id_send(
     unknown_ids: &mut UnknownIds,
     subman: &mut SubMan,
     default_relays: &[RelaySpec],
+    is_forced_relays: bool, // the default_relays are forced
 ) {
     info!("Getting {} unknown ids from relays", &unknown_ids.numids());
-    for subspec in unknown_ids.generate_resolution_requests() {
+    for subspec in unknown_ids.generate_resolution_requests(is_forced_relays) {
         debug!("unknown_ids subscribe: {:?}", subspec);
         match subman.subscribe(subspec, default_relays) {
             Err(err) => error!("unknown_id_send subscribe failed: {:?}", err),
