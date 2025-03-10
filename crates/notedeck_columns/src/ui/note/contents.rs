@@ -4,18 +4,24 @@ use std::collections::HashMap;
 use crate::blur::{imeta_blurhashes, Blur};
 use crate::gif::{handle_repaint, retrieve_latest_texture};
 use crate::images::generate_blurhash_texturehandle;
+use crate::ui::anim::AnimationHelper;
 use crate::ui::images::render_images;
 use crate::ui::{
     self,
     note::{NoteOptions, NoteResponse},
 };
 use crate::{actionbar::NoteAction, images::ImageType, timeline::TimelineKind};
-use egui::{Button, Color32, Hyperlink, Image, Response, RichText, Sense, Spinner, Window};
+use egui::{
+    Button, Color32, FontId, Hyperlink, Image, Rect, Response, RichText, Rounding, Sense, Spinner,
+    Window,
+};
 use nostrdb::{BlockType, Mention, Ndb, Note, NoteKey, Transaction};
+use notedeck::fonts::get_font_size;
 use tracing::warn;
 
 use notedeck::{
-    supported_mime_hosted_at_url, Images, Job, JobId, Jobs, MediaCacheType, NoteCache, UrlMimes,
+    supported_mime_hosted_at_url, Images, Job, JobId, Jobs, MediaCacheType, NoteCache,
+    NotedeckTextStyle, UrlMimes,
 };
 
 /// Aggregates dependencies to reduce the number of parameters
@@ -321,8 +327,11 @@ fn find_supported_media_type<'a>(
     let media_type = supported_mime_hosted_at_url(urls, url)?;
 
     if blur_media(ui, url, media_trusted) {
-        let blur = blurhashes.get(url)?;
-        Some(MediaRenderType::Untrusted(RenderableBlur { url, blur }))
+        let blur_type = match blurhashes.get(url) {
+            Some(blur) => BlurType::Blurhash(RenderableBlur { url, blur }),
+            None => BlurType::Default(url),
+        };
+        Some(MediaRenderType::Untrusted(blur_type))
     } else {
         Some(MediaRenderType::Trusted(RenderableMedia {
             url,
@@ -632,16 +641,70 @@ fn render_media(
             );
             None
         }
-        MediaRenderType::Untrusted(renderable_blur) => {
-            let pixel_sizes = if let Some(media_size) = renderable_blur.blur.dimensions {
-                to_pixel_sizes(width, height, media_size.0, media_size.1)
-            } else {
-                (width.round() as u32, height.round() as u32)
-            };
+        MediaRenderType::Untrusted(blur_type) => match blur_type {
+            BlurType::Blurhash(renderable_blur) => {
+                let pixel_sizes = if let Some(media_size) = renderable_blur.blur.dimensions {
+                    to_pixel_sizes(width, height, media_size.0, media_size.1)
+                } else {
+                    (width.round() as u32, height.round() as u32)
+                };
 
-            render_blurhash(ui, jobs, &renderable_blur, pixel_sizes)
-        }
+                render_blurhash(ui, jobs, &renderable_blur, pixel_sizes)
+            }
+            BlurType::Default(url) => {
+                let resp = render_default_blur(ui, height, url);
+
+                if resp.clicked() {
+                    Some(MediaAction::Unblur(url.to_owned()))
+                } else {
+                    None
+                }
+            }
+        },
     }
+}
+
+fn render_default_blur(ui: &mut egui::Ui, height: f32, url: &str) -> egui::Response {
+    let helper = AnimationHelper::new(ui, ("show_media", url), egui::vec2(height, height));
+
+    let painter = ui.painter_at(helper.get_animation_rect());
+
+    painter.rect_filled(
+        helper.get_animation_rect(),
+        Rounding::same(8),
+        crate::colors::MID_GRAY,
+    );
+
+    let text_style = NotedeckTextStyle::Heading2;
+
+    let fontid = FontId::new(
+        helper.scale_1d_pos(get_font_size(ui.ctx(), &text_style)),
+        text_style.font_family(),
+    );
+    let galley = painter.layout_no_wrap("Show".to_owned(), fontid, ui.visuals().text_color());
+
+    let galley_pos = {
+        let mut pos = helper.get_animation_rect().center();
+        pos.x -= galley.rect.width() / 2.0;
+        pos.y -= galley.rect.height() / 2.0;
+        pos
+    };
+
+    let border_rect =
+        Rect::from_center_size(helper.get_animation_rect().center(), galley.rect.size())
+            .expand(helper.scale_1d_pos(16.0));
+
+    painter.rect_filled(
+        border_rect,
+        helper.scale_1d_pos(24.0),
+        ui.visuals().widgets.inactive.bg_stroke.color,
+    );
+
+    painter.galley(galley_pos, galley, egui::Color32::GRAY);
+
+    helper
+        .take_animation_response()
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 fn send_unblur_signal(ctx: &egui::Context, url: &str) {
@@ -736,9 +799,14 @@ struct RenderableBlur<'a> {
     pub blur: &'a Blur<'a>,
 }
 
+enum BlurType<'a> {
+    Blurhash(RenderableBlur<'a>),
+    Default(&'a str),
+}
+
 enum MediaRenderType<'a> {
     Trusted(RenderableMedia<'a>),
-    Untrusted(RenderableBlur<'a>),
+    Untrusted(BlurType<'a>),
 }
 
 fn render_image(
