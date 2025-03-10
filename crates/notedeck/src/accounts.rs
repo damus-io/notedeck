@@ -343,13 +343,13 @@ pub struct Accounts {
     accounts: Vec<UserAccount>,
     key_store: KeyStorageType,
     account_data: BTreeMap<[u8; 32], AccountData>,
-    _forced_relays: BTreeSet<RelaySpec>,
+    forced_relays: BTreeSet<RelaySpec>,
     bootstrap_relays: BTreeSet<RelaySpec>,
     needs_relay_config: bool,
 }
 
 impl Accounts {
-    pub fn new(key_store: KeyStorageType, _forced_relays: Vec<String>) -> Self {
+    pub fn new(key_store: KeyStorageType, forced_relays: Vec<String>) -> Self {
         let accounts = if let KeyStorageResponse::ReceivedResult(res) = key_store.get_keys() {
             res.unwrap_or_default()
         } else {
@@ -358,7 +358,7 @@ impl Accounts {
 
         let currently_selected_account = get_selected_index(&accounts, &key_store);
         let account_data = BTreeMap::new();
-        let _forced_relays: BTreeSet<RelaySpec> = _forced_relays
+        let forced_relays: BTreeSet<RelaySpec> = forced_relays
             .into_iter()
             .map(|u| RelaySpec::new(AccountRelayData::canonicalize_url(&u), false, false))
             .collect();
@@ -379,7 +379,7 @@ impl Accounts {
             accounts,
             key_store,
             account_data,
-            _forced_relays,
+            forced_relays,
             bootstrap_relays,
             needs_relay_config: true,
         }
@@ -592,11 +592,22 @@ impl Accounts {
         self.account_data.remove(pubkey);
     }
 
+    // true if get_combined_relays is returning forced relays
+    pub fn is_forced_relays(&self) -> bool {
+        !self.forced_relays.is_empty()
+    }
+
     fn get_combined_relays(
         &self,
         data_option: Option<&AccountData>,
         filter: impl Fn(&RelaySpec) -> bool,
     ) -> Vec<RelaySpec> {
+        // relays specified on the command line override everything
+        if !self.forced_relays.is_empty() {
+            return self.forced_relays.iter().cloned().collect();
+        }
+
+        // is there a currently selected account?
         let mut relays = if let Some(data) = data_option {
             data.relay
                 .advertised
@@ -607,6 +618,7 @@ impl Accounts {
                 .cloned()
                 .collect()
         } else {
+            // no selected account
             Vec::new()
         };
 
