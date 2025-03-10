@@ -7,7 +7,7 @@ pub mod reply;
 pub mod reply_description;
 
 pub use contents::NoteContents;
-use contents::NoteContext;
+use contents::{MediaAction, NoteContext};
 pub use context::{NoteContextButton, NoteContextSelection};
 pub use options::NoteOptions;
 pub use post::{PostAction, PostResponse, PostType, PostView};
@@ -41,6 +41,7 @@ pub struct NoteResponse {
     pub response: egui::Response,
     pub context_selection: Option<NoteContextSelection>,
     pub action: Option<NoteAction>,
+    pub media_action: Option<MediaAction>,
 }
 
 impl NoteResponse {
@@ -49,11 +50,17 @@ impl NoteResponse {
             response,
             context_selection: None,
             action: None,
+            media_action: None,
         }
     }
 
     pub fn with_action(mut self, action: Option<NoteAction>) -> Self {
         self.action = action;
+        self
+    }
+
+    pub fn with_media_action(mut self, media_action: Option<MediaAction>) -> Self {
+        self.media_action = media_action;
         self
     }
 
