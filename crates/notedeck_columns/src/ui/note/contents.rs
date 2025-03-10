@@ -370,6 +370,7 @@ fn image_carousel(
         let cache_type = current_image.clone().1;
 
         Window::new("image_popup")
+            .order(egui::Order::Foreground)
             .title_bar(false)
             .fixed_size(ui.ctx().screen_rect().size())
             .frame(egui::Frame::none())
