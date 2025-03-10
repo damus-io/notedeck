@@ -413,6 +413,10 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
                         if let Some(context) = resp.context_selection {
                             context.process(ui, &note);
                         }
+
+                        if let Some(media_action) = resp.media_action {
+                            media_action.process(ui);
+                        }
                     });
 
                     ui::hline(ui);
