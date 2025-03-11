@@ -1,3 +1,4 @@
+use egui::emath::GuiRounding;
 use egui::{vec2, FontId, Layout, Pos2, Rect, ScrollArea, Stroke, UiBuilder, Vec2b};
 use nostrdb::{Ndb, ProfileRecord, Transaction};
 use notedeck::{fonts::get_font_size, Images, NotedeckTextStyle};
@@ -178,14 +179,19 @@ fn close_button(rect: egui::Rect) -> impl egui::Widget {
         let radius = max_width / (2.0 * ICON_EXPANSION_MULTIPLE);
 
         let painter = ui.painter();
-        let nw_edge = painter
-            .round_pos_to_pixel_center(helper.scale_pos_from_center(Pos2::new(-radius, radius)));
-        let se_edge = painter
-            .round_pos_to_pixel_center(helper.scale_pos_from_center(Pos2::new(radius, -radius)));
-        let sw_edge = painter
-            .round_pos_to_pixel_center(helper.scale_pos_from_center(Pos2::new(-radius, -radius)));
-        let ne_edge = painter
-            .round_pos_to_pixel_center(helper.scale_pos_from_center(Pos2::new(radius, radius)));
+        let ppp = ui.ctx().pixels_per_point();
+        let nw_edge = helper
+            .scale_pos_from_center(Pos2::new(-radius, radius))
+            .round_to_pixel_center(ppp);
+        let se_edge = helper
+            .scale_pos_from_center(Pos2::new(radius, -radius))
+            .round_to_pixel_center(ppp);
+        let sw_edge = helper
+            .scale_pos_from_center(Pos2::new(-radius, -radius))
+            .round_to_pixel_center(ppp);
+        let ne_edge = helper
+            .scale_pos_from_center(Pos2::new(radius, radius))
+            .round_to_pixel_center(ppp);
 
         let line_width = helper.scale_1d_pos(2.0);
 
