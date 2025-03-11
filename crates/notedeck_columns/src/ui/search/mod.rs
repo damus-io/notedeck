@@ -136,9 +136,9 @@ fn search_box(query: &mut SearchQueryState, ui: &mut egui::Ui) -> bool {
     ui.horizontal(|ui| {
         // Container for search input and icon
         let search_container = egui::Frame {
-            inner_margin: egui::Margin::symmetric(8.0, 0.0),
+            inner_margin: egui::Margin::symmetric(8, 0),
             outer_margin: egui::Margin::ZERO,
-            rounding: Rounding::same(18.0), // More rounded corners
+            rounding: Rounding::same(18), // More rounded corners
             shadow: Default::default(),
             fill: Color32::from_rgb(30, 30, 30), // Darker background to match screenshot
             stroke: Stroke::new(1.0, Color32::from_rgb(60, 60, 60)),

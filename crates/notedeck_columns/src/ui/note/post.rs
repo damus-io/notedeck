@@ -324,7 +324,7 @@ impl<'a, 'd> PostView<'a, 'd> {
                     if let PostType::Quote(id) = self.post_type {
                         let avail_size = ui.available_size_before_wrap();
                         ui.with_layout(Layout::left_to_right(egui::Align::TOP), |ui| {
-                            context_selection = Frame::none()
+                            context_selection = Frame::NONE
                                 .show(ui, |ui| {
                                     ui.vertical(|ui| {
                                         ui.set_max_width(avail_size.x * 0.8);

@@ -250,7 +250,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
             None => {
                 // This has to match the expand size from the above case to
                 // prevent bounciness
-                let size = pfp_size + ui::NoteView::expand_size();
+                let size = (pfp_size + ui::NoteView::expand_size()) as f32;
                 let (rect, _response) = ui.allocate_exact_size(egui::vec2(size, size), sense);
 
                 ui.put(
@@ -355,17 +355,20 @@ impl<'a, 'd> NoteView<'a, 'd> {
 
                     let size = ui.available_size();
                     ui.vertical(|ui| {
-                        ui.add_sized([size.x, self.options().pfp_size() as f32], |ui: &mut egui::Ui| {
-                            ui.horizontal_centered(|ui| {
-                                NoteView::note_header(
-                                    ui,
-                                    self.note_context.note_cache,
-                                    self.note,
-                                    &profile,
-                                );
-                            })
-                            .response
-                        });
+                        ui.add_sized(
+                            [size.x, self.options().pfp_size() as f32],
+                            |ui: &mut egui::Ui| {
+                                ui.horizontal_centered(|ui| {
+                                    NoteView::note_header(
+                                        ui,
+                                        self.note_context.note_cache,
+                                        self.note,
+                                        &profile,
+                                    );
+                                })
+                                .response
+                            },
+                        );
 
                         let note_reply = self
                             .note_context

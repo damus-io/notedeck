@@ -61,7 +61,7 @@ impl<'a, 'd> PostReplyView<'a, 'd> {
             let note_offset: i8 =
                 pfp_offset - ui::ProfilePic::medium_size() / 2 - ui::NoteView::expand_size() / 2;
 
-            let selection = egui::Frame::none()
+            let selection = egui::Frame::NONE
                 .outer_margin(egui::Margin::same(note_offset))
                 .show(ui, |ui| {
                     ui::NoteView::new(self.note_context, self.note, self.note_options)
