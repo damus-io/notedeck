@@ -3,7 +3,9 @@ use crate::{
     column::Columns,
     decks::{Decks, DecksCache, FALLBACK_PUBKEY},
     draft::Drafts,
-    nav, storage,
+    nav,
+    route::Route,
+    storage,
     subscriptions::{SubKind, Subscriptions},
     support::Support,
     timeline::{self, TimelineCache},
@@ -512,12 +514,33 @@ fn circle_icon(ui: &mut egui::Ui, openness: f32, response: &egui::Response) {
 fn render_damus_mobile(app: &mut Damus, app_ctx: &mut AppContext<'_>, ui: &mut egui::Ui) {
     //let routes = app.timelines[0].routes.clone();
 
+    let mut rect = ui.available_rect_before_wrap();
+
     if !app.columns(app_ctx.accounts).columns().is_empty()
         && nav::render_nav(0, ui.available_rect_before_wrap(), app, app_ctx, ui)
             .process_render_nav_response(app, app_ctx, ui)
         && !app.tmp_columns
     {
         storage::save_decks_cache(app_ctx.path, &app.decks_cache);
+    }
+
+    rect.min.x = rect.max.x - 100.0;
+    rect.min.y = rect.max.y - 100.0;
+
+    let interactive = true;
+    let darkmode = ui.ctx().style().visuals.dark_mode;
+
+    if ui
+        .put(rect, ui::post::compose_note_button(interactive, darkmode))
+        .clicked()
+        && !app.columns(app_ctx.accounts).columns().is_empty()
+    {
+        let router = app.columns_mut(app_ctx.accounts).columns_mut()[0].router_mut();
+        if router.top() == &Route::ComposeNote {
+            router.go_back();
+        } else {
+            router.route_to(Route::ComposeNote);
+        }
     }
 }
 
