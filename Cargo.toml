@@ -72,8 +72,9 @@ strip = true        # Strip symbols from binary*
 
 
 [patch.crates-io]
-egui = { git = "https://github.com/ksedgwic/egui", rev = "153febd3bbe3812f69077d6f75f2d6d9e36ca405" }
-eframe = { git = "https://github.com/ksedgwic/egui", rev = "153febd3bbe3812f69077d6f75f2d6d9e36ca405" }
-egui-winit = { git = "https://github.com/ksedgwic/egui", rev = "153febd3bbe3812f69077d6f75f2d6d9e36ca405" }
-egui_extras = { git = "https://github.com/ksedgwic/egui", rev = "153febd3bbe3812f69077d6f75f2d6d9e36ca405" }
-epaint = { git = "https://github.com/ksedgwic/egui", rev = "153febd3bbe3812f69077d6f75f2d6d9e36ca405" }
+egui = { git = "https://github.com/damus-io/egui", rev = "732f783a560a807a7e3381c119223c1d7dbfca06" }
+eframe = { git = "https://github.com/damus-io/egui", rev = "732f783a560a807a7e3381c119223c1d7dbfca06" }
+egui-winit = { git = "https://github.com/damus-io/egui", rev = "732f783a560a807a7e3381c119223c1d7dbfca06" }
+egui_extras = { git = "https://github.com/damus-io/egui", rev = "732f783a560a807a7e3381c119223c1d7dbfca06" }
+epaint = { git = "https://github.com/damus-io/egui", rev = "732f783a560a807a7e3381c119223c1d7dbfca06" }
+android-activity = { path = "/home/jb55/dev/github/rust-mobile/android-activity/android-activity" }

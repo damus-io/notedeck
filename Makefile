@@ -18,4 +18,4 @@ apk: jni
 android: jni
 	cd $(ANDROID_DIR) && ./gradlew installDebug
 	adb shell am start -n com.damus.notedeck/.MainActivity
-	adb logcat -v color -s notedeck RustStdoutStderr
+	adb logcat -v color | tee logcat.txt

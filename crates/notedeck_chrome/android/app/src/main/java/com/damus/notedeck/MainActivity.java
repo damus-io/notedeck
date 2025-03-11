@@ -11,6 +11,7 @@ import androidx.core.view.DisplayCutoutCompat;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowCompat;
 import androidx.core.view.WindowInsetsCompat;
+import androidx.core.view.WindowInsetsControllerCompat;
 
 import com.google.androidgamesdk.GameActivity;
 
@@ -39,6 +40,23 @@ public class MainActivity extends GameActivity {
 
       WindowCompat.setDecorFitsSystemWindows(getWindow(), true);
 
+      //WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
+      
+      /*
+      WindowInsetsControllerCompat controller =
+          WindowCompat.getInsetsController(getWindow(), getWindow().getDecorView());
+      if (controller != null) {
+          controller.setSystemBarsBehavior(
+      	WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+          );
+          controller.hide(WindowInsetsCompat.Type.systemBars());
+      }
+      */
+
+      content.setFocusable(true);
+      content.setFocusableInTouchMode(true);
+      content.requestFocus();
+      
       super.onCreate(savedInstanceState);
   }
 

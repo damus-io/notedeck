@@ -95,8 +95,6 @@ checksum = "4aa90d7ce82d4be67b64039a3d588d38dbcc6736577de4a847025ce5b0c468d1"
 [[package]]
 name = "android-activity"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ef6978589202a00cd7e118380c448a08b6ed394c3a8df3a430d0898e3a42d046"
 dependencies = [
  "android-properties",
  "bitflags 2.8.0",
@@ -1144,7 +1142,7 @@ dependencies = [
 [[package]]
 name = "ecolor"
 version = "0.30.0"
-source = "git+https://github.com/ksedgwic/egui?rev=153febd3bbe3812f69077d6f75f2d6d9e36ca405#153febd3bbe3812f69077d6f75f2d6d9e36ca405"
+source = "git+https://github.com/damus-io/egui?rev=732f783a560a807a7e3381c119223c1d7dbfca06#732f783a560a807a7e3381c119223c1d7dbfca06"
 dependencies = [
  "bytemuck",
  "emath 0.30.0",
@@ -1154,7 +1152,7 @@ dependencies = [
 [[package]]
 name = "eframe"
 version = "0.30.0"
-source = "git+https://github.com/ksedgwic/egui?rev=153febd3bbe3812f69077d6f75f2d6d9e36ca405#153febd3bbe3812f69077d6f75f2d6d9e36ca405"
+source = "git+https://github.com/damus-io/egui?rev=732f783a560a807a7e3381c119223c1d7dbfca06#732f783a560a807a7e3381c119223c1d7dbfca06"
 dependencies = [
  "ahash",
  "bytemuck",
@@ -1204,7 +1202,7 @@ dependencies = [
 [[package]]
 name = "egui"
 version = "0.30.0"
-source = "git+https://github.com/ksedgwic/egui?rev=153febd3bbe3812f69077d6f75f2d6d9e36ca405#153febd3bbe3812f69077d6f75f2d6d9e36ca405"
+source = "git+https://github.com/damus-io/egui?rev=732f783a560a807a7e3381c119223c1d7dbfca06#732f783a560a807a7e3381c119223c1d7dbfca06"
 dependencies = [
  "accesskit 0.17.1",
  "ahash",
@@ -1221,7 +1219,7 @@ dependencies = [
 [[package]]
 name = "egui-wgpu"
 version = "0.30.0"
-source = "git+https://github.com/ksedgwic/egui?rev=153febd3bbe3812f69077d6f75f2d6d9e36ca405#153febd3bbe3812f69077d6f75f2d6d9e36ca405"
+source = "git+https://github.com/damus-io/egui?rev=732f783a560a807a7e3381c119223c1d7dbfca06#732f783a560a807a7e3381c119223c1d7dbfca06"
 dependencies = [
  "ahash",
  "bytemuck",
@@ -1240,7 +1238,7 @@ dependencies = [
 [[package]]
 name = "egui-winit"
 version = "0.30.0"
-source = "git+https://github.com/ksedgwic/egui?rev=153febd3bbe3812f69077d6f75f2d6d9e36ca405#153febd3bbe3812f69077d6f75f2d6d9e36ca405"
+source = "git+https://github.com/damus-io/egui?rev=732f783a560a807a7e3381c119223c1d7dbfca06#732f783a560a807a7e3381c119223c1d7dbfca06"
 dependencies = [
  "ahash",
  "arboard",
@@ -1271,7 +1269,7 @@ dependencies = [
 [[package]]
 name = "egui_extras"
 version = "0.30.0"
-source = "git+https://github.com/ksedgwic/egui?rev=153febd3bbe3812f69077d6f75f2d6d9e36ca405#153febd3bbe3812f69077d6f75f2d6d9e36ca405"
+source = "git+https://github.com/damus-io/egui?rev=732f783a560a807a7e3381c119223c1d7dbfca06#732f783a560a807a7e3381c119223c1d7dbfca06"
 dependencies = [
  "ahash",
  "egui 0.30.0",
@@ -1287,7 +1285,7 @@ dependencies = [
 [[package]]
 name = "egui_glow"
 version = "0.30.0"
-source = "git+https://github.com/ksedgwic/egui?rev=153febd3bbe3812f69077d6f75f2d6d9e36ca405#153febd3bbe3812f69077d6f75f2d6d9e36ca405"
+source = "git+https://github.com/damus-io/egui?rev=732f783a560a807a7e3381c119223c1d7dbfca06#732f783a560a807a7e3381c119223c1d7dbfca06"
 dependencies = [
  "ahash",
  "bytemuck",
@@ -1361,7 +1359,7 @@ dependencies = [
 [[package]]
 name = "emath"
 version = "0.30.0"
-source = "git+https://github.com/ksedgwic/egui?rev=153febd3bbe3812f69077d6f75f2d6d9e36ca405#153febd3bbe3812f69077d6f75f2d6d9e36ca405"
+source = "git+https://github.com/damus-io/egui?rev=732f783a560a807a7e3381c119223c1d7dbfca06#732f783a560a807a7e3381c119223c1d7dbfca06"
 dependencies = [
  "bytemuck",
  "serde",
@@ -1463,7 +1461,7 @@ dependencies = [
 [[package]]
 name = "epaint"
 version = "0.30.0"
-source = "git+https://github.com/ksedgwic/egui?rev=153febd3bbe3812f69077d6f75f2d6d9e36ca405#153febd3bbe3812f69077d6f75f2d6d9e36ca405"
+source = "git+https://github.com/damus-io/egui?rev=732f783a560a807a7e3381c119223c1d7dbfca06#732f783a560a807a7e3381c119223c1d7dbfca06"
 dependencies = [
  "ab_glyph",
  "ahash",
@@ -1481,7 +1479,7 @@ dependencies = [
 [[package]]
 name = "epaint_default_fonts"
 version = "0.30.0"
-source = "git+https://github.com/ksedgwic/egui?rev=153febd3bbe3812f69077d6f75f2d6d9e36ca405#153febd3bbe3812f69077d6f75f2d6d9e36ca405"
+source = "git+https://github.com/damus-io/egui?rev=732f783a560a807a7e3381c119223c1d7dbfca06#732f783a560a807a7e3381c119223c1d7dbfca06"
 
 [[package]]
 name = "equivalent"
@@ -5204,9 +5202,9 @@ dependencies = [
 
 [[package]]
 name = "wgpu-core"
-version = "24.0.0"
+version = "24.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "82a39b8842dc9ffcbe34346e3ab6d496b32a47f6497e119d762c97fcaae3cb37"
+checksum = "671c25545d479b47d3f0a8e373aceb2060b67c6eb841b24ac8c32348151c7a0c"
 dependencies = [
  "arrayvec",
  "bit-vec",
@@ -5229,9 +5227,9 @@ dependencies = [
 
 [[package]]
 name = "wgpu-hal"
-version = "24.0.0"
+version = "24.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a782e5056b060b0b4010881d1decddd059e44f2ecd01e2db2971b48ad3627e5"
+checksum = "4317a17171dc20e6577bf606796794580accae0716a69edbc7388c86a3ec9f23"
 dependencies = [
  "android_system_properties",
  "arrayvec",
