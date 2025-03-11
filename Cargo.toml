@@ -73,9 +73,17 @@ strip = true        # Strip symbols from binary*
 
 
 [patch.crates-io]
-egui = { git = "https://github.com/damus-io/egui", rev = "732f783a560a807a7e3381c119223c1d7dbfca06" }
-eframe = { git = "https://github.com/damus-io/egui", rev = "732f783a560a807a7e3381c119223c1d7dbfca06" }
-egui-winit = { git = "https://github.com/damus-io/egui", rev = "732f783a560a807a7e3381c119223c1d7dbfca06" }
-egui_extras = { git = "https://github.com/damus-io/egui", rev = "732f783a560a807a7e3381c119223c1d7dbfca06" }
-epaint = { git = "https://github.com/damus-io/egui", rev = "732f783a560a807a7e3381c119223c1d7dbfca06" }
+#egui = { path = "/home/jb55/dev/github/emilk/egui/crates/egui" }
+#eframe = { path = "/home/jb55/dev/github/emilk/egui/crates/eframe" }
+#egui-winit = { path = "/home/jb55/dev/github/emilk/egui/crates/egui-winit" }
+#egui_extras = { path = "/home/jb55/dev/github/emilk/egui/crates/egui_extras" }
+#epaint = { path = "/home/jb55/dev/github/emilk/egui/crates/epaint" }
+
+egui = { git = "https://github.com/damus-io/egui", rev = "515d34dc9f578ec25228126678472bd50359fcf5" }
+eframe = { git = "https://github.com/damus-io/egui", rev = "515d34dc9f578ec25228126678472bd50359fcf5" }
+egui-winit = { git = "https://github.com/damus-io/egui", rev = "515d34dc9f578ec25228126678472bd50359fcf5" }
+egui_extras = { git = "https://github.com/damus-io/egui", rev = "515d34dc9f578ec25228126678472bd50359fcf5" }
+epaint = { git = "https://github.com/damus-io/egui", rev = "515d34dc9f578ec25228126678472bd50359fcf5" }
+winit = { git = "https://github.com/damus-io/winit", rev = "14d61a74bee0c9863abe7ef28efae2c4d8bd3743" }
+#winit = { path = "/home/jb55/dev/github/rust-windowing/winit" }
 android-activity = { git = "https://github.com/damus-io/android-activity", rev = "cd44ea0f1018f030bb3ef5ed738d5f5b174f3b59" }
