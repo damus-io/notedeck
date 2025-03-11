@@ -95,6 +95,7 @@ checksum = "4aa90d7ce82d4be67b64039a3d588d38dbcc6736577de4a847025ce5b0c468d1"
 [[package]]
 name = "android-activity"
 version = "0.6.0"
+source = "git+https://github.com/damus-io/android-activity?rev=cd44ea0f1018f030bb3ef5ed738d5f5b174f3b59#cd44ea0f1018f030bb3ef5ed738d5f5b174f3b59"
 dependencies = [
  "android-properties",
  "bitflags 2.8.0",

@@ -78,4 +78,4 @@ eframe = { git = "https://github.com/damus-io/egui", rev = "732f783a560a807a7e33
 egui-winit = { git = "https://github.com/damus-io/egui", rev = "732f783a560a807a7e3381c119223c1d7dbfca06" }
 egui_extras = { git = "https://github.com/damus-io/egui", rev = "732f783a560a807a7e3381c119223c1d7dbfca06" }
 epaint = { git = "https://github.com/damus-io/egui", rev = "732f783a560a807a7e3381c119223c1d7dbfca06" }
-android-activity = { path = "/home/jb55/dev/github/rust-mobile/android-activity/android-activity" }
+android-activity = { git = "https://github.com/damus-io/android-activity", rev = "cd44ea0f1018f030bb3ef5ed738d5f5b174f3b59" }
