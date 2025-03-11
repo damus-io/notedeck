@@ -5,7 +5,7 @@ use egui_winit::winit::platform::android::activity::AndroidApp;
 use notedeck_columns::Damus;
 use notedeck_dave::Dave;
 
-use crate::{chrome::Chrome, setup::setup_chrome};
+use crate::{app::NotedeckApp, chrome::Chrome, setup::setup_chrome};
 use notedeck::Notedeck;
 use serde_json::Value;
 use std::fs;
@@ -18,7 +18,12 @@ pub async fn android_main(app: AndroidApp) {
     use tracing_subscriber::{prelude::*, EnvFilter};
 
     std::env::set_var("RUST_BACKTRACE", "full");
-    std::env::set_var("RUST_LOG", "egui=debug,egui-winit=debug,notedeck=debug,notedeck_columns=debug,notedeck_chrome=debug,enostr=debug,android_activity=debug");
+    //std::env::set_var("DAVE_ENDPOINT", "http://ollama.jb55.com/v1");
+    //std::env::set_var("DAVE_MODEL", "hhao/qwen2.5-coder-tools:latest");
+    std::env::set_var(
+        "RUST_LOG",
+        "egui=debug,egui-winit=debug,notedeck=debug,notedeck_columns=debug,notedeck_chrome=debug,enostr=debug,android_activity=debug",
+    );
 
     //std::env::set_var(
     //    "RUST_LOG",
@@ -84,8 +89,8 @@ pub async fn android_main(app: AndroidApp) {
                 completely_unrecognized
             );
 
-            chrome.add_app(columns);
-            chrome.add_app(dave);
+            chrome.add_app(NotedeckApp::Columns(columns));
+            chrome.add_app(NotedeckApp::Dave(dave));
 
             // test dav
             chrome.set_active(1);
