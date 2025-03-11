@@ -1,0 +1,14 @@
+{
+  "args": [
+    "argv0-placeholder",
+    "--npub",
+    "npub1xtscya34g58tk0z605fvr788k263gsu6cy9x0mhnm87echrgufzsevkk5s",
+    "-c",
+    "contacts",
+    "-c",
+    "notifications",
+    "-c",
+    "notifications:npub18m76awca3y37hkvuneavuw6pjj4525fw90necxmadrvjg0sdy6qsngq955"
+  ]
+}
+

@@ -61,6 +61,14 @@ The app should appear on the emulator
 
 [direnv]: https://direnv.net/
 
+## Android Config
+
+You can load custom views onto an android device for testing:
+
+1. Copy `example-android-config.json` to `android-config.json`
+
+2. Run `make push-android-config` to copy it to your device
+
 ## Previews
 
 You can preview individual widgets and views by running the preview script:

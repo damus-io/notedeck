@@ -1,4 +1,5 @@
 .buildcmd
+android-config.json
 build.log
 perf.data
 rusty-tags.vi
