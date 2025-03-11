@@ -48,6 +48,30 @@ fn main_panel(style: &egui::Style) -> egui::CentralPanel {
     })
 }
 
+fn render_notedeck(notedeck: &mut Notedeck, ctx: &egui::Context) {
+    main_panel(&ctx.style()).show(ctx, |ui| {
+        // render app
+        let Some(app) = &notedeck.app else {
+            return;
+        };
+
+        let app = app.clone();
+        app.borrow_mut().update(&mut notedeck.app_context(), ui);
+
+        // Move the screen up when we have a virtual keyboard
+        // NOTE: actually, we only want to do this if the keyboard is covering the focused element?
+        /*
+        let keyboard_height = crate::platform::virtual_keyboard_height() as f32;
+        if keyboard_height > 0.0 {
+            ui.ctx().transform_layer_shapes(
+                ui.layer_id(),
+                egui::emath::TSTransform::from_translation(egui::Vec2::new(0.0, -(keyboard_height/2.0))),
+            );
+        }
+        */
+    });
+}
+
 impl eframe::App for Notedeck {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         #[cfg(feature = "profiling")]
@@ -56,13 +80,7 @@ impl eframe::App for Notedeck {
         // handle account updates
         self.accounts.update(&mut self.ndb, &mut self.pool, ctx);
 
-        main_panel(&ctx.style()).show(ctx, |ui| {
-            // render app
-            if let Some(app) = &self.app {
-                let app = app.clone();
-                app.borrow_mut().update(&mut self.app_context(), ui);
-            }
-        });
+        render_notedeck(self, ctx);
 
         self.zoom.try_save_zoom_factor(ctx);
         self.app_size.try_save_app_size(ctx);
