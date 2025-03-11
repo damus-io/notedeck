@@ -2783,6 +2783,7 @@ dependencies = [
  "enostr",
  "hex",
  "image",
+ "jni",
  "mime_guess",
  "nostrdb",
  "poll-promise",

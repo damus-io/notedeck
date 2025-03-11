@@ -6,6 +6,7 @@ description = "The APIs and data structures used by notedeck apps"
 
 [dependencies]
 nostrdb = { workspace = true }
+jni = { workspace = true }
 url = { workspace = true }
 strum = { workspace = true }
 strum_macros = { workspace = true }
@@ -34,6 +35,9 @@ tempfile = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = { workspace = true }
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni = { workspace = true }
 
 [features]
 profiling = ["puffin", "puffin_egui"]

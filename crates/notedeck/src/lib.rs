@@ -11,6 +11,7 @@ mod muted;
 pub mod note;
 mod notecache;
 mod persist;
+pub mod platform;
 pub mod relay_debug;
 pub mod relayspec;
 mod result;
