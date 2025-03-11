@@ -12,10 +12,19 @@ tags: fake
 jni: fake
 	cargo ndk --target arm64-v8a -o $(ANDROID_DIR)/app/src/main/jniLibs/ build --profile release
 
+jni-check: fake
+	cargo ndk --target arm64-v8a -o $(ANDROID_DIR)/app/src/main/jniLibs/ check --profile release
+
 apk: jni
 	cd $(ANDROID_DIR) && ./gradlew build
+
+gradle:
+	cd $(ANDROID_DIR) && ./gradlew build
+
+push-android-config:
+	adb push android-config.json /sdcard/Android/data/com.damus.notedeck/files/android-config.json
 
 android: jni
 	cd $(ANDROID_DIR) && ./gradlew installDebug
 	adb shell am start -n com.damus.notedeck/.MainActivity
-	adb logcat -v color | tee logcat.txt
+	adb logcat -v color -s RustStdoutStderr | tee logcat.txt
