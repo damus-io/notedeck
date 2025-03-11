@@ -13,7 +13,7 @@ jni: fake
 	cargo ndk --target arm64-v8a -o $(ANDROID_DIR)/app/src/main/jniLibs/ build --profile release
 
 jni-check: fake
-	cargo ndk --target arm64-v8a -o $(ANDROID_DIR)/app/src/main/jniLibs/ check --profile release
+	cargo ndk --target arm64-v8a -o $(ANDROID_DIR)/app/src/main/jniLibs/ check
 
 apk: jni
 	cd $(ANDROID_DIR) && ./gradlew build
@@ -27,4 +27,4 @@ push-android-config:
 android: jni
 	cd $(ANDROID_DIR) && ./gradlew installDebug
 	adb shell am start -n com.damus.notedeck/.MainActivity
-	adb logcat -v color -s RustStdoutStderr | tee logcat.txt
+	adb logcat -v color -s RustStdoutStderr -s threaded_app | tee logcat.txt
