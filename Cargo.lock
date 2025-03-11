@@ -1326,9 +1326,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f25c0e292a7ca6d6498557ff1df68f32c99850012b6ea401cf8daf771f22ff53"
 
 [[package]]
+name = "dpi"
+version = "0.1.1"
+source = "git+https://github.com/damus-io/winit?rev=14d61a74bee0c9863abe7ef28efae2c4d8bd3743#14d61a74bee0c9863abe7ef28efae2c4d8bd3743"
+
+[[package]]
 name = "ecolor"
 version = "0.31.1"
-source = "git+https://github.com/damus-io/egui?rev=93cd1cedc1e8eed2b055e317226838e37a845aad#93cd1cedc1e8eed2b055e317226838e37a845aad"
+source = "git+https://github.com/damus-io/egui?rev=f822dc6ca6aa045eb2b0901a524eb77226e541d9#f822dc6ca6aa045eb2b0901a524eb77226e541d9"
 dependencies = [
  "bytemuck",
  "emath",
@@ -1338,7 +1343,7 @@ dependencies = [
 [[package]]
 name = "eframe"
 version = "0.31.1"
-source = "git+https://github.com/damus-io/egui?rev=93cd1cedc1e8eed2b055e317226838e37a845aad#93cd1cedc1e8eed2b055e317226838e37a845aad"
+source = "git+https://github.com/damus-io/egui?rev=f822dc6ca6aa045eb2b0901a524eb77226e541d9#f822dc6ca6aa045eb2b0901a524eb77226e541d9"
 dependencies = [
  "ahash",
  "bytemuck",
@@ -1368,13 +1373,13 @@ dependencies = [
  "wgpu",
  "winapi",
  "windows-sys 0.59.0",
- "winit",
+ "winit 0.30.8",
 ]
 
 [[package]]
 name = "egui"
 version = "0.31.1"
-source = "git+https://github.com/damus-io/egui?rev=93cd1cedc1e8eed2b055e317226838e37a845aad#93cd1cedc1e8eed2b055e317226838e37a845aad"
+source = "git+https://github.com/damus-io/egui?rev=f822dc6ca6aa045eb2b0901a524eb77226e541d9#f822dc6ca6aa045eb2b0901a524eb77226e541d9"
 dependencies = [
  "accesskit",
  "ahash",
@@ -1391,7 +1396,7 @@ dependencies = [
 [[package]]
 name = "egui-wgpu"
 version = "0.31.1"
-source = "git+https://github.com/damus-io/egui?rev=93cd1cedc1e8eed2b055e317226838e37a845aad#93cd1cedc1e8eed2b055e317226838e37a845aad"
+source = "git+https://github.com/damus-io/egui?rev=f822dc6ca6aa045eb2b0901a524eb77226e541d9#f822dc6ca6aa045eb2b0901a524eb77226e541d9"
 dependencies = [
  "ahash",
  "bytemuck",
@@ -1404,13 +1409,13 @@ dependencies = [
  "type-map",
  "web-time 1.1.0",
  "wgpu",
- "winit",
+ "winit 0.30.8",
 ]
 
 [[package]]
 name = "egui-winit"
 version = "0.31.1"
-source = "git+https://github.com/damus-io/egui?rev=93cd1cedc1e8eed2b055e317226838e37a845aad#93cd1cedc1e8eed2b055e317226838e37a845aad"
+source = "git+https://github.com/damus-io/egui?rev=f822dc6ca6aa045eb2b0901a524eb77226e541d9#f822dc6ca6aa045eb2b0901a524eb77226e541d9"
 dependencies = [
  "ahash",
  "arboard",
@@ -1422,13 +1427,13 @@ dependencies = [
  "smithay-clipboard",
  "web-time 1.1.0",
  "webbrowser",
- "winit",
+ "winit 0.30.8",
 ]
 
 [[package]]
 name = "egui_extras"
 version = "0.31.1"
-source = "git+https://github.com/damus-io/egui?rev=93cd1cedc1e8eed2b055e317226838e37a845aad#93cd1cedc1e8eed2b055e317226838e37a845aad"
+source = "git+https://github.com/damus-io/egui?rev=f822dc6ca6aa045eb2b0901a524eb77226e541d9#f822dc6ca6aa045eb2b0901a524eb77226e541d9"
 dependencies = [
  "ahash",
  "egui",
@@ -1445,7 +1450,7 @@ dependencies = [
 [[package]]
 name = "egui_glow"
 version = "0.31.1"
-source = "git+https://github.com/damus-io/egui?rev=93cd1cedc1e8eed2b055e317226838e37a845aad#93cd1cedc1e8eed2b055e317226838e37a845aad"
+source = "git+https://github.com/damus-io/egui?rev=f822dc6ca6aa045eb2b0901a524eb77226e541d9#f822dc6ca6aa045eb2b0901a524eb77226e541d9"
 dependencies = [
  "ahash",
  "bytemuck",
@@ -1456,7 +1461,7 @@ dependencies = [
  "profiling",
  "wasm-bindgen",
  "web-sys",
- "winit",
+ "winit 0.30.8",
 ]
 
 [[package]]
@@ -1509,7 +1514,7 @@ checksum = "48c757948c5ede0e46177b7add2e67155f70e33c07fea8284df6576da70b3719"
 [[package]]
 name = "emath"
 version = "0.31.1"
-source = "git+https://github.com/damus-io/egui?rev=93cd1cedc1e8eed2b055e317226838e37a845aad#93cd1cedc1e8eed2b055e317226838e37a845aad"
+source = "git+https://github.com/damus-io/egui?rev=f822dc6ca6aa045eb2b0901a524eb77226e541d9#f822dc6ca6aa045eb2b0901a524eb77226e541d9"
 dependencies = [
  "bytemuck",
  "serde",
@@ -1597,7 +1602,7 @@ dependencies = [
 [[package]]
 name = "epaint"
 version = "0.31.1"
-source = "git+https://github.com/damus-io/egui?rev=93cd1cedc1e8eed2b055e317226838e37a845aad#93cd1cedc1e8eed2b055e317226838e37a845aad"
+source = "git+https://github.com/damus-io/egui?rev=f822dc6ca6aa045eb2b0901a524eb77226e541d9#f822dc6ca6aa045eb2b0901a524eb77226e541d9"
 dependencies = [
  "ab_glyph",
  "ahash",
@@ -1615,7 +1620,7 @@ dependencies = [
 [[package]]
 name = "epaint_default_fonts"
 version = "0.31.1"
-source = "git+https://github.com/damus-io/egui?rev=93cd1cedc1e8eed2b055e317226838e37a845aad#93cd1cedc1e8eed2b055e317226838e37a845aad"
+source = "git+https://github.com/damus-io/egui?rev=f822dc6ca6aa045eb2b0901a524eb77226e541d9#f822dc6ca6aa045eb2b0901a524eb77226e541d9"
 
 [[package]]
 name = "equivalent"
@@ -2036,7 +2041,7 @@ dependencies = [
  "cfg_aliases",
  "glutin",
  "raw-window-handle",
- "winit",
+ "winit 0.30.9",
 ]
 
 [[package]]
@@ -6610,6 +6615,57 @@ checksum = "271414315aff87387382ec3d271b52d7ae78726f5d44ac98b4f4030c91880486"
 
 [[package]]
 name = "winit"
+version = "0.30.8"
+source = "git+https://github.com/damus-io/winit?rev=14d61a74bee0c9863abe7ef28efae2c4d8bd3743#14d61a74bee0c9863abe7ef28efae2c4d8bd3743"
+dependencies = [
+ "ahash",
+ "android-activity",
+ "atomic-waker",
+ "bitflags 2.9.0",
+ "block2 0.5.1",
+ "bytemuck",
+ "calloop",
+ "cfg_aliases",
+ "concurrent-queue",
+ "core-foundation 0.9.4",
+ "core-graphics",
+ "cursor-icon",
+ "dpi 0.1.1 (git+https://github.com/damus-io/winit?rev=14d61a74bee0c9863abe7ef28efae2c4d8bd3743)",
+ "js-sys",
+ "libc",
+ "memmap2",
+ "ndk",
+ "objc2 0.5.2",
+ "objc2-app-kit 0.2.2",
+ "objc2-foundation 0.2.2",
+ "objc2-ui-kit",
+ "orbclient",
+ "percent-encoding",
+ "pin-project",
+ "raw-window-handle",
+ "redox_syscall 0.4.1",
+ "rustix 0.38.44",
+ "sctk-adwaita",
+ "smithay-client-toolkit",
+ "smol_str",
+ "tracing",
+ "unicode-segmentation",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-protocols",
+ "wayland-protocols-plasma",
+ "web-sys",
+ "web-time 1.1.0",
+ "windows-sys 0.52.0",
+ "x11-dl",
+ "x11rb",
+ "xkbcommon-dl",
+]
+
+[[package]]
+name = "winit"
 version = "0.30.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a809eacf18c8eca8b6635091543f02a5a06ddf3dad846398795460e6e0ae3cc0"
@@ -6626,7 +6682,7 @@ dependencies = [
  "core-foundation 0.9.4",
  "core-graphics",
  "cursor-icon",
- "dpi",
+ "dpi 0.1.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "js-sys",
  "libc",
  "memmap2",
@@ -6641,7 +6697,6 @@ dependencies = [
  "raw-window-handle",
  "redox_syscall 0.4.1",
  "rustix 0.38.44",
- "sctk-adwaita",
  "smithay-client-toolkit",
  "smol_str",
  "tracing",
