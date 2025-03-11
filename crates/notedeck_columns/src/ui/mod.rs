@@ -8,6 +8,7 @@ pub mod edit_deck;
 pub mod images;
 pub mod mention;
 pub mod note;
+pub mod post;
 pub mod preview;
 pub mod profile;
 pub mod relay;
