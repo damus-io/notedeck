@@ -284,10 +284,10 @@ impl Deck {
 
     pub fn new_with_notifications(icon: char, name: String, pubkey: Pubkey) -> Self {
         let mut columns = Columns::default();
+        columns.new_column_picker();
         columns.add_column(Column::new(vec![Route::Timeline(
             TimelineKind::Notifications(pubkey),
         )]));
-        columns.new_column_picker();
         Self {
             icon,
             name,
