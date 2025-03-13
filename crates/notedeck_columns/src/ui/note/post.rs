@@ -427,7 +427,7 @@ impl<'a, 'd> PostView<'a, 'd> {
                     ui,
                     self.note_context.img_cache,
                     &media.url,
-                    crate::images::ImageType::Content(width, height),
+                    crate::images::ImageType::Content,
                     cache_type,
                     |ui| {
                         ui.spinner();

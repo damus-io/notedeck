@@ -119,9 +119,8 @@ fn process_pfp_bitmap(imgtyp: ImageType, mut image: image::DynamicImage) -> Colo
     puffin::profile_function!();
 
     match imgtyp {
-        ImageType::Content(w, h) => {
-            let image = image.resize(w, h, FilterType::CatmullRom); // DynamicImage
-            let image_buffer = image.into_rgba8(); // RgbaImage (ImageBuffer)
+        ImageType::Content => {
+            let image_buffer = image.clone().into_rgba8();
             let color_image = ColorImage::from_rgba_unmultiplied(
                 [
                     image_buffer.width() as usize,
@@ -164,7 +163,7 @@ fn parse_img_response(response: ehttp::Response, imgtyp: ImageType) -> Result<Co
     let content_type = response.content_type().unwrap_or_default();
     let size_hint = match imgtyp {
         ImageType::Profile(size) => SizeHint::Size(size, size),
-        ImageType::Content(w, h) => SizeHint::Size(w, h),
+        ImageType::Content => SizeHint::default(),
     };
 
     if content_type.starts_with("image/svg") {
@@ -354,8 +353,8 @@ pub fn fetch_binary_from_disk(path: PathBuf) -> Result<Vec<u8>> {
 pub enum ImageType {
     /// Profile Image (size)
     Profile(u32),
-    /// Content Image (width, height)
-    Content(u32, u32),
+    /// Content Image
+    Content,
 }
 
 pub fn fetch_img(

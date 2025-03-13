@@ -110,7 +110,7 @@ fn timeline_ui(
     let goto_top_resp = if show_top_button {
         let top_button_pos = ui.available_rect_before_wrap().right_top() - vec2(48.0, -24.0);
         egui::Area::new(ui.id().with("foreground_area"))
-            .order(egui::Order::Foreground)
+            .order(egui::Order::Middle)
             .fixed_pos(top_button_pos)
             .show(ui.ctx(), |ui| Some(ui.add(goto_top_button(top_button_pos))))
             .inner
