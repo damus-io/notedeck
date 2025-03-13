@@ -23,6 +23,23 @@ pub enum Error {
 
     #[error("generic error: {0}")]
     Generic(String),
+
+    #[error("zaps error: {0}")]
+    Zap(#[from] ZapError),
+}
+
+#[derive(Debug, thiserror::Error, Clone)]
+pub enum ZapError {
+    #[error("invalid lud16")]
+    InvalidLud16(String),
+    #[error("invalid endpoint response")]
+    EndpointError(String),
+    #[error("bech encoding/decoding error")]
+    Bech(String),
+    #[error("serialization/deserialization problem")]
+    Serialization(String),
+    #[error("nwc error")]
+    NWC(String),
 }
 
 impl From<String> for Error {

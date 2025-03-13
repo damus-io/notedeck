@@ -2848,6 +2848,7 @@ name = "notedeck"
 version = "0.3.1"
 dependencies = [
  "base32",
+ "bech32",
  "bincode",
  "dirs",
  "eframe",

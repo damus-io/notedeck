@@ -35,9 +35,11 @@ tokenator = { workspace = true }
 profiling = { workspace = true }
 nwc = { workspace = true }
 tokio = { workspace = true }
+bech32 = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+tokio = { workspace = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = { workspace = true }
