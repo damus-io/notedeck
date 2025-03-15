@@ -63,10 +63,8 @@ impl hashbrown::Equivalent<JobIdOwned> for JobId<'_> {
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 enum JobIdOwned {
-    Blurhash(String), // image URL
-    #[allow(dead_code)]
+    Blurhash(String),   // image URL
     NWCBalance(String), // Wallet's URI
-    #[allow(dead_code)]
     NWCInvoice(String), // LN invoice
 }
 
