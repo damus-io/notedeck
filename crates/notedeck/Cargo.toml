@@ -35,6 +35,7 @@ tokenator = { workspace = true }
 hashbrown = { workspace = true }
 tokio = { workspace = true }
 crossbeam = { workspace = true }
+nwc = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
