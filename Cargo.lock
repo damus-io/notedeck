@@ -2739,7 +2739,6 @@ dependencies = [
  "poll-promise",
  "puffin",
  "puffin_egui",
- "security-framework",
  "serde",
  "serde_json",
  "sha2",
