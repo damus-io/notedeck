@@ -35,9 +35,6 @@ egui-winit = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 
-[target.'cfg(target_os = "macos")'.dependencies]
-security-framework = { workspace = true }
-
 [target.'cfg(target_os = "android")'.dependencies]
 jni = { workspace = true }
 

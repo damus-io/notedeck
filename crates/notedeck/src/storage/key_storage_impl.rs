@@ -3,15 +3,10 @@ use enostr::{Keypair, Pubkey};
 use super::file_key_storage::FileKeyStorage;
 use crate::Result;
 
-#[cfg(target_os = "macos")]
-use super::security_framework_key_storage::SecurityFrameworkKeyStorage;
-
 #[derive(Debug, PartialEq)]
 pub enum KeyStorageType {
     None,
     FileSystem(FileKeyStorage),
-    #[cfg(target_os = "macos")]
-    SecurityFramework(SecurityFrameworkKeyStorage),
 }
 
 #[allow(dead_code)]
@@ -43,8 +38,6 @@ impl KeyStorageType {
         match self {
             Self::None => KeyStorageResponse::ReceivedResult(Ok(Vec::new())),
             Self::FileSystem(f) => f.get_keys(),
-            #[cfg(target_os = "macos")]
-            Self::SecurityFramework(f) => f.get_keys(),
         }
     }
 
@@ -53,8 +46,6 @@ impl KeyStorageType {
         match self {
             Self::None => KeyStorageResponse::ReceivedResult(Ok(())),
             Self::FileSystem(f) => f.add_key(key),
-            #[cfg(target_os = "macos")]
-            Self::SecurityFramework(f) => f.add_key(key),
         }
     }
 
@@ -63,8 +54,6 @@ impl KeyStorageType {
         match self {
             Self::None => KeyStorageResponse::ReceivedResult(Ok(())),
             Self::FileSystem(f) => f.remove_key(key),
-            #[cfg(target_os = "macos")]
-            Self::SecurityFramework(f) => f.remove_key(key),
         }
     }
 
@@ -72,8 +61,6 @@ impl KeyStorageType {
         match self {
             Self::None => KeyStorageResponse::ReceivedResult(Ok(None)),
             Self::FileSystem(f) => f.get_selected_key(),
-            #[cfg(target_os = "macos")]
-            Self::SecurityFramework(_) => unimplemented!(),
         }
     }
 
@@ -81,8 +68,6 @@ impl KeyStorageType {
         match self {
             Self::None => KeyStorageResponse::ReceivedResult(Ok(())),
             Self::FileSystem(f) => f.select_key(key),
-            #[cfg(target_os = "macos")]
-            Self::SecurityFramework(_) => unimplemented!(),
         }
     }
 }
