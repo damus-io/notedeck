@@ -17,7 +17,7 @@ impl WalletAction {
         &self,
         accounts: &mut Accounts,
         global_wallet: &mut GlobalWallet,
-        _router: &mut Router<Route>,
+        router: &mut Router<Route>,
     ) {
         match &self {
             WalletAction::SaveURI => {
@@ -53,7 +53,7 @@ impl WalletAction {
                 }
             }
             WalletAction::AddLocalOnly => {
-                // router.route_to(Route::Wallet(notedeck::WalletType::Local));
+                router.route_to(Route::Wallet(notedeck::WalletType::Local));
                 global_wallet.ui_state.for_local_only = true;
             }
             WalletAction::Delete => {

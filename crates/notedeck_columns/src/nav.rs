@@ -20,6 +20,7 @@ use crate::{
         profile::EditProfileView,
         search::{FocusState, SearchView},
         support::SupportView,
+        wallet::{WalletAction, WalletView},
         RelayView, View,
     },
     Damus,
@@ -27,7 +28,7 @@ use crate::{
 
 use egui_nav::{Nav, NavAction, NavResponse, NavUiType};
 use nostrdb::Transaction;
-use notedeck::{AccountsAction, AppContext};
+use notedeck::{AccountsAction, AppContext, WalletState};
 use tracing::error;
 
 #[allow(clippy::enum_variant_names)]
@@ -38,6 +39,7 @@ pub enum RenderNavAction {
     NoteAction(NoteAction),
     ProfileAction(ProfileAction),
     SwitchingAction(SwitchingAction),
+    WalletAction(WalletAction),
 }
 
 pub enum SwitchingAction {
@@ -193,6 +195,12 @@ impl RenderNavResponse {
                             .column_mut(col)
                             .router_mut(),
                     );
+                }
+                RenderNavAction::WalletAction(wallet_action) => {
+                    let router = get_active_columns_mut(ctx.accounts, &mut app.decks_cache)
+                        .column_mut(col)
+                        .router_mut();
+                    wallet_action.process(ctx.accounts, ctx.global_wallet, router)
                 }
             }
         }
@@ -514,6 +522,55 @@ fn render_nav_body(
                 error!("Pubkey in EditProfile route did not have an nsec attached in Accounts");
             }
             action
+        }
+        Route::Wallet(wallet_type) => {
+            let state = match wallet_type {
+                notedeck::WalletType::Auto => 's: {
+                    if let Some(cur_acc) = ctx.accounts.get_selected_account_mut() {
+                        if let Some(wallet) = &mut cur_acc.wallet {
+                            break 's WalletState::Wallet {
+                                wallet,
+                                can_create_local_wallet: false,
+                            };
+                        }
+                    }
+
+                    let Some(wallet) = &mut ctx.global_wallet.wallet else {
+                        break 's WalletState::NoWallet {
+                            state: &mut ctx.global_wallet.ui_state,
+                            show_local_only: true,
+                        };
+                    };
+
+                    WalletState::Wallet {
+                        wallet,
+                        can_create_local_wallet: true,
+                    }
+                }
+                notedeck::WalletType::Local => 's: {
+                    let Some(cur_acc) = ctx.accounts.get_selected_account_mut() else {
+                        break 's WalletState::NoWallet {
+                            state: &mut ctx.global_wallet.ui_state,
+                            show_local_only: false,
+                        };
+                    };
+                    let Some(wallet) = &mut cur_acc.wallet else {
+                        break 's WalletState::NoWallet {
+                            state: &mut ctx.global_wallet.ui_state,
+                            show_local_only: false,
+                        };
+                    };
+
+                    WalletState::Wallet {
+                        wallet,
+                        can_create_local_wallet: false,
+                    }
+                }
+            };
+
+            WalletView::new(state)
+                .ui(ui)
+                .map(RenderNavAction::WalletAction)
         }
     }
 }

@@ -464,6 +464,7 @@ impl<'a> NavTitle<'a> {
             Route::Search => {
                 ui.add(ui::side_panel::search_button());
             }
+            Route::Wallet(_) => {}
         }
     }
 
