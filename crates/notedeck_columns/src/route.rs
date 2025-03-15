@@ -27,6 +27,7 @@ pub enum Route {
     NewDeck,
     Search,
     EditDeck(usize),
+    Wallet,
 }
 
 impl Route {
@@ -106,6 +107,9 @@ impl Route {
             Route::NewDeck => {
                 writer.write_token("deck");
                 writer.write_token("new");
+            }
+            Route::Wallet => {
+                writer.write_token("wallet");
             }
         }
     }
@@ -232,6 +236,7 @@ impl Route {
             Route::EditDeck(_) => ColumnTitle::simple("Edit Deck"),
             Route::EditProfile(_) => ColumnTitle::simple("Edit Profile"),
             Route::Search => ColumnTitle::simple("Search"),
+            Route::Wallet => ColumnTitle::simple("Wallet"),
         }
     }
 }
@@ -354,6 +359,7 @@ impl fmt::Display for Route {
             Route::EditDeck(_) => write!(f, "Edit Deck"),
             Route::EditProfile(_) => write!(f, "Edit Profile"),
             Route::Search => write!(f, "Search"),
+            Route::Wallet => write!(f, "Wallet"),
         }
     }
 }
