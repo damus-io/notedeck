@@ -54,6 +54,7 @@ pub enum SidePanelAction {
     SwitchDeck(usize),
     EditDeck(usize),
     SaveTheme(ThemePreference),
+    Wallet,
 }
 
 pub struct SidePanelResponse {
@@ -215,6 +216,8 @@ impl<'a> DesktopSidePanel<'a> {
 
                         let support_resp = ui.add(support_button());
 
+                        let wallet_resp = ui.add(wallet_button());
+
                         let optional_inner = if pfp_resp.clicked() {
                             Some(egui::InnerResponse::new(
                                 SidePanelAction::Account,
@@ -234,6 +237,11 @@ impl<'a> DesktopSidePanel<'a> {
                             Some(egui::InnerResponse::new(
                                 SidePanelAction::SaveTheme(theme),
                                 resp,
+                            ))
+                        } else if wallet_resp.clicked() {
+                            Some(egui::InnerResponse::new(
+                                SidePanelAction::Wallet,
+                                wallet_resp,
                             ))
                         } else {
                             None
@@ -376,6 +384,14 @@ impl<'a> DesktopSidePanel<'a> {
             }
             SidePanelAction::SaveTheme(theme) => {
                 theme_handler.save(theme);
+            }
+            SidePanelAction::Wallet => 's: {
+                if router.routes().iter().any(|r| r == &Route::Wallet) {
+                    router.go_back();
+                    break 's;
+                }
+
+                router.route_to(Route::Wallet);
             }
         }
         switching_response
@@ -579,6 +595,33 @@ fn add_deck_button() -> impl Widget {
         let img = egui::Image::new(img_data).max_width(img_size);
 
         let helper = AnimationHelper::new(ui, "new-deck-icon", vec2(max_size, max_size));
+
+        let cur_img_size = helper.scale_1d_pos(img_size);
+        img.paint_at(
+            ui,
+            helper
+                .get_animation_rect()
+                .shrink((max_size - cur_img_size) / 2.0),
+        );
+
+        helper.take_animation_response()
+    }
+}
+
+fn wallet_button() -> impl Widget {
+    |ui: &mut egui::Ui| -> egui::Response {
+        let img_size = 24.0;
+
+        let max_size = img_size * ICON_EXPANSION_MULTIPLE;
+        let img_data = egui::include_image!("../../../../assets/icons/wallet-icon.svg");
+
+        let mut img = egui::Image::new(img_data).max_width(img_size);
+
+        if !ui.visuals().dark_mode {
+            img = img.tint(egui::Color32::BLACK);
+        }
+
+        let helper = AnimationHelper::new(ui, "wallet-icon", vec2(max_size, max_size));
 
         let cur_img_size = helper.scale_1d_pos(img_size);
         img.paint_at(
