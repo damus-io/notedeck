@@ -21,6 +21,9 @@ bitflags! {
 
         /// Whether the current note is a preview
         const is_preview      = 0b0000010000000000;
+
+        /// Do not need to blur media by default in this note
+        const trusted_media   = 0b0000100000000000;
     }
 }
 
@@ -60,6 +63,7 @@ impl NoteOptions {
     create_bit_methods!(set_hide_media, has_hide_media, hide_media);
     create_bit_methods!(set_scramble_text, has_scramble_text, scramble_text);
     create_bit_methods!(set_is_preview, has_is_preview, is_preview);
+    create_bit_methods!(set_trusted_media, has_trusted_media, trusted_media);
 
     pub fn new(is_universe_timeline: bool) -> Self {
         let mut options = NoteOptions::default();
