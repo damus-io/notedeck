@@ -34,6 +34,7 @@ egui-winit = { workspace = true }
 tokenator = { workspace = true }
 profiling = { workspace = true }
 nwc = { workspace = true }
+tokio = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
