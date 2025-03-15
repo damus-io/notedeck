@@ -1,10 +1,7 @@
 use crate::Result;
 use enostr::{Keypair, Pubkey, SerializableKeypair};
 
-use super::{
-    file_storage::{delete_file, write_file, Directory},
-    key_storage_impl::KeyStorageResponse,
-};
+use super::file_storage::{delete_file, write_file, Directory};
 
 static SELECTED_PUBKEY_FILE_NAME: &str = "selected_pubkey";
 
@@ -23,7 +20,7 @@ impl FileKeyStorage {
         }
     }
 
-    fn add_key_internal(&self, key: &Keypair) -> Result<()> {
+    pub fn add_key(&self, key: &Keypair) -> Result<()> {
         write_file(
             &self.keys_directory.file_path,
             key.pubkey.hex(),
@@ -31,7 +28,7 @@ impl FileKeyStorage {
         )
     }
 
-    fn get_keys_internal(&self) -> Result<Vec<Keypair>> {
+    pub fn get_keys(&self) -> Result<Vec<Keypair>> {
         let keys = self
             .keys_directory
             .get_files()?
@@ -42,11 +39,11 @@ impl FileKeyStorage {
         Ok(keys)
     }
 
-    fn remove_key_internal(&self, key: &Keypair) -> Result<()> {
+    pub fn remove_key(&self, key: &Keypair) -> Result<()> {
         delete_file(&self.keys_directory.file_path, key.pubkey.hex())
     }
 
-    fn get_selected_pubkey(&self) -> Result<Option<Pubkey>> {
+    pub fn get_selected_key(&self) -> Result<Option<Pubkey>> {
         match self
             .selected_key_directory
             .get_file(SELECTED_PUBKEY_FILE_NAME.to_owned())
@@ -57,7 +54,7 @@ impl FileKeyStorage {
         }
     }
 
-    fn select_pubkey(&self, pubkey: Option<Pubkey>) -> Result<()> {
+    pub fn select_key(&self, pubkey: Option<Pubkey>) -> Result<()> {
         if let Some(pubkey) = pubkey {
             write_file(
                 &self.selected_key_directory.file_path,
@@ -77,28 +74,6 @@ impl FileKeyStorage {
         } else {
             Ok(())
         }
-    }
-}
-
-impl FileKeyStorage {
-    pub fn get_keys(&self) -> KeyStorageResponse<Vec<enostr::Keypair>> {
-        KeyStorageResponse::ReceivedResult(self.get_keys_internal())
-    }
-
-    pub fn add_key(&self, key: &enostr::Keypair) -> KeyStorageResponse<()> {
-        KeyStorageResponse::ReceivedResult(self.add_key_internal(key))
-    }
-
-    pub fn remove_key(&self, key: &enostr::Keypair) -> KeyStorageResponse<()> {
-        KeyStorageResponse::ReceivedResult(self.remove_key_internal(key))
-    }
-
-    pub fn get_selected_key(&self) -> KeyStorageResponse<Option<Pubkey>> {
-        KeyStorageResponse::ReceivedResult(self.get_selected_pubkey())
-    }
-
-    pub fn select_key(&self, key: Option<Pubkey>) -> KeyStorageResponse<()> {
-        KeyStorageResponse::ReceivedResult(self.select_pubkey(key))
     }
 }
 
@@ -128,26 +103,20 @@ mod tests {
         let storage = FileKeyStorage::mock().unwrap();
         let resp = storage.add_key(&kp);
 
-        assert_eq!(resp, KeyStorageResponse::ReceivedResult(Ok(())));
+        assert!(resp.is_ok());
         assert_num_storage(&storage.get_keys(), 1);
 
-        assert_eq!(
-            storage.remove_key(&kp),
-            KeyStorageResponse::ReceivedResult(Ok(()))
-        );
+        assert!(storage.remove_key(&kp).is_ok());
         assert_num_storage(&storage.get_keys(), 0);
     }
 
-    fn assert_num_storage(keys_response: &KeyStorageResponse<Vec<Keypair>>, n: usize) {
+    fn assert_num_storage(keys_response: &Result<Vec<Keypair>>, n: usize) {
         match keys_response {
-            KeyStorageResponse::ReceivedResult(Ok(keys)) => {
+            Ok(keys) => {
                 assert_eq!(keys.len(), n);
             }
-            KeyStorageResponse::ReceivedResult(Err(_e)) => {
+            Err(_e) => {
                 panic!("could not get keys");
-            }
-            KeyStorageResponse::Waiting => {
-                panic!("did not receive result");
             }
         }
     }
@@ -160,10 +129,10 @@ mod tests {
         let _ = storage.add_key(&kp);
         assert_num_storage(&storage.get_keys(), 1);
 
-        let resp = storage.select_pubkey(Some(kp.pubkey));
+        let resp = storage.select_key(Some(kp.pubkey));
         assert!(resp.is_ok());
 
-        let resp = storage.get_selected_pubkey();
+        let resp = storage.get_selected_key();
 
         assert!(resp.is_ok());
     }
@@ -174,7 +143,7 @@ mod tests {
 
         // Should return Ok(None) when no key has been selected
         match storage.get_selected_key() {
-            KeyStorageResponse::ReceivedResult(Ok(None)) => (), // This is what we expect
+            Ok(None) => (), // This is what we expect
             other => panic!("Expected Ok(None), got {:?}", other),
         }
     }
