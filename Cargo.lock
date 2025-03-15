@@ -2875,6 +2875,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.12",
  "tokenator",
+ "tokio",
  "tracing",
  "url",
  "uuid",
