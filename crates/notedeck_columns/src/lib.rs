@@ -35,6 +35,7 @@ mod timeline;
 pub mod ui;
 mod unknowns;
 mod view_state;
+mod zaps;
 
 #[cfg(test)]
 #[macro_use]
