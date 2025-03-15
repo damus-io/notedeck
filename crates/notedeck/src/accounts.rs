@@ -1,8 +1,7 @@
 use tracing::{debug, error, info};
 
 use crate::{
-    KeyStorageResponse, KeyStorageType, MuteFun, Muted, RelaySpec, SingleUnkIdAction, UnknownIds,
-    UserAccount,
+    FileKeyStorage, MuteFun, Muted, RelaySpec, SingleUnkIdAction, UnknownIds, UserAccount,
 };
 use enostr::{ClientMessage, FilledKeypair, Keypair, RelayPool};
 use nostrdb::{Filter, Ndb, Note, NoteBuilder, NoteKey, Subscription, Transaction};
@@ -309,7 +308,7 @@ pub struct AccountData {
 pub struct Accounts {
     currently_selected_account: Option<usize>,
     accounts: Vec<UserAccount>,
-    key_store: KeyStorageType,
+    key_store: Option<FileKeyStorage>,
     account_data: BTreeMap<[u8; 32], AccountData>,
     forced_relays: BTreeSet<RelaySpec>,
     bootstrap_relays: BTreeSet<RelaySpec>,
@@ -317,14 +316,24 @@ pub struct Accounts {
 }
 
 impl Accounts {
-    pub fn new(key_store: KeyStorageType, forced_relays: Vec<String>) -> Self {
-        let accounts = if let KeyStorageResponse::ReceivedResult(res) = key_store.get_keys() {
-            res.unwrap_or_default()
-        } else {
-            Vec::new()
+    pub fn new(key_store: Option<FileKeyStorage>, forced_relays: Vec<String>) -> Self {
+        let accounts = match &key_store {
+            Some(keystore) => match keystore.get_keys() {
+                Ok(k) => k,
+                Err(e) => {
+                    tracing::error!("could not get keys: {e}");
+                    Vec::new()
+                }
+            },
+            None => Vec::new(),
         };
 
-        let currently_selected_account = get_selected_index(&accounts, &key_store);
+        let currently_selected_account = if let Some(key_store) = &key_store {
+            get_selected_index(&accounts, key_store)
+        } else {
+            None
+        };
+
         let account_data = BTreeMap::new();
         let forced_relays: BTreeSet<RelaySpec> = forced_relays
             .into_iter()
@@ -367,7 +376,12 @@ impl Accounts {
 
     pub fn remove_account(&mut self, index: usize) {
         if let Some(account) = self.accounts.get(index) {
-            let _ = self.key_store.remove_key(account);
+            if let Some(key_store) = &self.key_store {
+                if let Err(e) = key_store.remove_key(account) {
+                    tracing::error!("Could not remove account at index {index}: {e}");
+                }
+            }
+
             self.accounts.remove(index);
 
             if let Some(selected_index) = self.currently_selected_account {
@@ -426,7 +440,12 @@ impl Accounts {
                     "user provided nsec, but we already have npub {}. Upgrading to nsec",
                     pubkey
                 );
-                let _ = self.key_store.add_key(&account);
+
+                if let Some(key_store) = &self.key_store {
+                    if let Err(e) = key_store.add_key(&account) {
+                        tracing::error!("Could not add key for {:?}: {e}", account.pubkey);
+                    }
+                }
 
                 self.accounts[contains_acc.index] = account;
             } else {
@@ -435,7 +454,11 @@ impl Accounts {
             contains_acc.index
         } else {
             info!("adding new account {}", pubkey);
-            let _ = self.key_store.add_key(&account);
+            if let Some(key_store) = &self.key_store {
+                if let Err(e) = key_store.add_key(&account) {
+                    tracing::error!("Could not add key for {:?}: {e}", account.pubkey);
+                }
+            }
             self.accounts.push(account);
             self.accounts.len() - 1
         };
@@ -493,13 +516,21 @@ impl Accounts {
     pub fn select_account(&mut self, index: usize) {
         if let Some(account) = self.accounts.get(index) {
             self.currently_selected_account = Some(index);
-            self.key_store.select_key(Some(account.pubkey));
+            if let Some(key_store) = &self.key_store {
+                if let Err(e) = key_store.select_key(Some(account.pubkey)) {
+                    tracing::error!("Could not select key {:?}: {e}", account.pubkey);
+                }
+            }
         }
     }
 
     pub fn clear_selected_account(&mut self) {
         self.currently_selected_account = None;
-        self.key_store.select_key(None);
+        if let Some(key_store) = &self.key_store {
+            if let Err(e) = key_store.select_key(None) {
+                tracing::error!("Could not select None key: {e}");
+            }
+        }
     }
 
     pub fn mutefun(&self) -> Box<MuteFun> {
@@ -794,14 +825,13 @@ enum RelayAction {
     Remove,
 }
 
-fn get_selected_index(accounts: &[UserAccount], keystore: &KeyStorageType) -> Option<usize> {
+fn get_selected_index(accounts: &[UserAccount], keystore: &FileKeyStorage) -> Option<usize> {
     match keystore.get_selected_key() {
-        KeyStorageResponse::ReceivedResult(Ok(Some(pubkey))) => {
+        Ok(Some(pubkey)) => {
             return accounts.iter().position(|account| account.pubkey == pubkey);
         }
-
-        KeyStorageResponse::ReceivedResult(Err(e)) => error!("Error getting selected key: {}", e),
-        KeyStorageResponse::Waiting | KeyStorageResponse::ReceivedResult(Ok(None)) => {}
+        Ok(None) => {}
+        Err(e) => error!("Error getting selected key: {}", e),
     };
 
     None

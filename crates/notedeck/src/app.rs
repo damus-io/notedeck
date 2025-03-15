@@ -1,7 +1,7 @@
 use crate::persist::{AppSizeHandler, ZoomHandler};
 use crate::{
     Accounts, AppContext, Args, DataPath, DataPathType, Directory, FileKeyStorage, Images,
-    KeyStorageType, NoteCache, RelayDebugView, ThemeHandler, UnknownIds,
+    NoteCache, RelayDebugView, ThemeHandler, UnknownIds,
 };
 use egui::ThemePreference;
 use egui_winit::clipboard::Clipboard;
@@ -149,12 +149,12 @@ impl Notedeck {
         let keystore = if parsed_args.use_keystore {
             let keys_path = path.path(DataPathType::Keys);
             let selected_key_path = path.path(DataPathType::SelectedKey);
-            KeyStorageType::FileSystem(FileKeyStorage::new(
+            Some(FileKeyStorage::new(
                 Directory::new(keys_path),
                 Directory::new(selected_key_path),
             ))
         } else {
-            KeyStorageType::None
+            None
         };
 
         let mut accounts = Accounts::new(keystore, parsed_args.relays.clone());
