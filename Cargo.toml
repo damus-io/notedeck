@@ -32,7 +32,7 @@ indexmap = "2.6.0"
 log = "0.4.17"
 nostr = { version = "0.37.0", default-features = false, features = ["std", "nip49"] }
 mio = { version = "1.0.3", features = ["os-poll", "net"] }
-nostrdb = { git = "https://github.com/damus-io/nostrdb-rs", rev = "413d7f7e52937774cfc3a0356c8a7788437eecf8" }
+nostrdb = { git = "https://github.com/damus-io/nostrdb-rs", rev = "22fa1cc57ee1b4ce10e726ab284bc124461c8871" }
 #nostrdb = "0.5.2"
 notedeck = { path = "crates/notedeck" }
 notedeck_chrome = { path = "crates/notedeck_chrome" }
