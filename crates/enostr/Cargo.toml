@@ -19,3 +19,4 @@ thiserror = { workspace = true }
 url = { workspace = true }
 mio = { workspace = true }
 tokio = { workspace = true }
+tokenator = { workspace = true }
