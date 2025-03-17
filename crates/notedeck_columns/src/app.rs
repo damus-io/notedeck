@@ -362,19 +362,10 @@ impl Damus {
     pub fn new(ctx: &mut AppContext<'_>, args: &[String]) -> Self {
         // arg parsing
 
-        let (parsed_args, unrecognized_args) = ColumnsArgs::parse(
-            args,
-            ctx.accounts
-                .get_selected_account()
-                .as_ref()
-                .map(|kp| &kp.pubkey),
-        );
+        let (parsed_args, unrecognized_args) =
+            ColumnsArgs::parse(args, ctx.accounts.selected_account_pubkey());
 
-        let account = ctx
-            .accounts
-            .get_selected_account()
-            .as_ref()
-            .map(|a| a.pubkey.bytes());
+        let account = ctx.accounts.selected_account_pubkey_bytes();
 
         let mut timeline_cache = TimelineCache::default();
         let tmp_columns = !parsed_args.columns.is_empty();
@@ -415,7 +406,7 @@ impl Damus {
             info!("DecksCache: creating new with demo configuration");
             let mut cache = DecksCache::new_with_demo_config(&mut timeline_cache, ctx);
             for account in ctx.accounts.get_accounts() {
-                cache.add_deck_default(account.pubkey);
+                cache.add_deck_default(account.key.pubkey);
             }
             set_demo(&mut cache, ctx.ndb, ctx.accounts, ctx.unknown_ids);
 
@@ -647,11 +638,9 @@ pub fn get_active_columns<'a>(accounts: &Accounts, decks_cache: &'a DecksCache) 
 }
 
 pub fn get_decks<'a>(accounts: &Accounts, decks_cache: &'a DecksCache) -> &'a Decks {
-    let key = if let Some(acc) = accounts.get_selected_account() {
-        &acc.pubkey
-    } else {
-        decks_cache.get_fallback_pubkey()
-    };
+    let key = accounts
+        .selected_account_pubkey()
+        .unwrap_or_else(|| decks_cache.get_fallback_pubkey());
     decks_cache.decks(key)
 }
 
@@ -665,10 +654,9 @@ pub fn get_active_columns_mut<'a>(
 }
 
 pub fn get_decks_mut<'a>(accounts: &Accounts, decks_cache: &'a mut DecksCache) -> &'a mut Decks {
-    if let Some(acc) = accounts.get_selected_account() {
-        decks_cache.decks_mut(&acc.pubkey)
-    } else {
-        decks_cache.fallback_mut()
+    match accounts.selected_account_pubkey() {
+        Some(acc) => decks_cache.decks_mut(acc),
+        None => decks_cache.fallback_mut(),
     }
 }
 

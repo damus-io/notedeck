@@ -143,18 +143,18 @@ impl AddColumnOption {
             AddColumnOption::Algo(algo_option) => AddColumnResponse::Algo(algo_option),
             AddColumnOption::Universe => AddColumnResponse::Timeline(TimelineKind::Universe),
             AddColumnOption::Notification(pubkey) => AddColumnResponse::Timeline(
-                TimelineKind::Notifications(*pubkey.as_pubkey(&cur_account.pubkey)),
+                TimelineKind::Notifications(*pubkey.as_pubkey(&cur_account.key.pubkey)),
             ),
             AddColumnOption::UndecidedNotification => AddColumnResponse::UndecidedNotification,
             AddColumnOption::Contacts(pk_src) => AddColumnResponse::Timeline(
-                TimelineKind::contact_list(*pk_src.as_pubkey(&cur_account.pubkey)),
+                TimelineKind::contact_list(*pk_src.as_pubkey(&cur_account.key.pubkey)),
             ),
             AddColumnOption::ExternalNotification => AddColumnResponse::ExternalNotification,
             AddColumnOption::UndecidedHashtag => AddColumnResponse::Hashtag,
             AddColumnOption::UndecidedIndividual => AddColumnResponse::UndecidedIndividual,
             AddColumnOption::ExternalIndividual => AddColumnResponse::ExternalIndividual,
             AddColumnOption::Individual(pubkey_source) => AddColumnResponse::Timeline(
-                TimelineKind::profile(*pubkey_source.as_pubkey(&cur_account.pubkey)),
+                TimelineKind::profile(*pubkey_source.as_pubkey(&cur_account.key.pubkey)),
             ),
         }
     }
@@ -453,10 +453,10 @@ impl<'a> AddColumnView<'a> {
         });
 
         if let Some(acc) = self.cur_account {
-            let source = if acc.secret_key.is_some() {
+            let source = if acc.key.secret_key.is_some() {
                 PubkeySource::DeckAuthor
             } else {
-                PubkeySource::Explicit(acc.pubkey)
+                PubkeySource::Explicit(acc.key.pubkey)
             };
 
             vec.push(ColumnOptionData {
@@ -498,10 +498,10 @@ impl<'a> AddColumnView<'a> {
         let mut vec = Vec::new();
 
         if let Some(acc) = self.cur_account {
-            let source = if acc.secret_key.is_some() {
+            let source = if acc.key.secret_key.is_some() {
                 PubkeySource::DeckAuthor
             } else {
-                PubkeySource::Explicit(acc.pubkey)
+                PubkeySource::Explicit(acc.key.pubkey)
             };
 
             vec.push(ColumnOptionData {
@@ -528,10 +528,10 @@ impl<'a> AddColumnView<'a> {
         let mut vec = Vec::new();
 
         if let Some(acc) = self.cur_account {
-            let source = if acc.secret_key.is_some() {
+            let source = if acc.key.secret_key.is_some() {
                 PubkeySource::DeckAuthor
             } else {
-                PubkeySource::Explicit(acc.pubkey)
+                PubkeySource::Explicit(acc.key.pubkey)
             };
 
             vec.push(ColumnOptionData {
@@ -606,7 +606,7 @@ pub fn render_add_column_routes(
             AddAlgoRoute::Base => add_column_view.algo_ui(ui),
             AddAlgoRoute::LastPerPubkey => {
                 if let Some(deck_author) = ctx.accounts.get_selected_account() {
-                    add_column_view.algo_last_per_pk_ui(ui, deck_author.pubkey)
+                    add_column_view.algo_last_per_pk_ui(ui, deck_author.key.pubkey)
                 } else {
                     None
                 }

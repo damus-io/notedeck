@@ -111,7 +111,7 @@ impl<'a> DesktopSidePanel<'a> {
                         ui.add_space(16.0);
                         let is_interactive = self
                             .selected_account
-                            .is_some_and(|s| s.secret_key.is_some());
+                            .is_some_and(|s| s.key.secret_key.is_some());
                         let compose_resp = ui.add(compose_note_button(is_interactive, dark_mode));
                         let compose_resp = if is_interactive {
                             compose_resp
@@ -599,7 +599,7 @@ fn show_decks<'a>(
 ) -> InnerResponse<Option<usize>> {
     let show_decks_id = ui.id().with("show-decks");
     let account_id = if let Some(acc) = selected_account {
-        acc.pubkey
+        acc.key.pubkey
     } else {
         *decks_cache.get_fallback_pubkey()
     };

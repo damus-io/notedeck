@@ -1,9 +1,11 @@
 use enostr::Keypair;
 
-//pub struct UserAccount {
-//pub key: Keypair,
-//pub relays: RelayPool,
-//pub relays: Vec<String>,
-//}
+pub struct UserAccount {
+    pub key: Keypair,
+}
 
-pub type UserAccount = Keypair;
+impl UserAccount {
+    pub fn new(key: Keypair) -> Self {
+        Self { key }
+    }
+}
