@@ -370,7 +370,7 @@ fn render_nav_body(
         }
 
         Route::ComposeNote => {
-            let kp = ctx.accounts.get_selected_account()?.to_full()?;
+            let kp = ctx.accounts.get_selected_account()?.key.to_full()?;
             let draft = app.drafts.compose_mut();
 
             let txn = Transaction::new(ctx.ndb).expect("txn");
@@ -433,11 +433,9 @@ fn render_nav_body(
             let new_deck_state = app.view_state.id_to_deck_state.entry(id).or_default();
             let mut resp = None;
             if let Some(config_resp) = ConfigureDeckView::new(new_deck_state).ui(ui) {
-                if let Some(cur_acc) = ctx.accounts.get_selected_account() {
-                    app.decks_cache.add_deck(
-                        cur_acc.pubkey,
-                        Deck::new(config_resp.icon, config_resp.name),
-                    );
+                if let Some(cur_acc) = ctx.accounts.selected_account_pubkey() {
+                    app.decks_cache
+                        .add_deck(*cur_acc, Deck::new(config_resp.icon, config_resp.name));
 
                     // set new deck as active
                     let cur_index = get_decks_mut(ctx.accounts, &mut app.decks_cache)
@@ -462,11 +460,9 @@ fn render_nav_body(
                 .decks_mut()
                 .get_mut(*index)
                 .expect("index wasn't valid");
-            let id = ui.id().with((
-                "edit-deck",
-                ctx.accounts.get_selected_account().map(|k| k.pubkey),
-                index,
-            ));
+            let id = ui
+                .id()
+                .with(("edit-deck", ctx.accounts.selected_account_pubkey(), index));
             let deck_state = app
                 .view_state
                 .id_to_deck_state
