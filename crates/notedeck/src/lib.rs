@@ -44,7 +44,7 @@ pub use persist::*;
 pub use relay_debug::RelayDebugView;
 pub use relayspec::RelaySpec;
 pub use result::Result;
-pub use storage::{DataPath, DataPathType, Directory, FileKeyStorage};
+pub use storage::{AccountStorage, DataPath, DataPathType, Directory};
 pub use style::NotedeckTextStyle;
 pub use theme::ColorTheme;
 pub use time::time_ago_since;

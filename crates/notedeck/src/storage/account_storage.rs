@@ -1,4 +1,4 @@
-use crate::Result;
+use crate::{Result, UserAccount};
 use enostr::{Keypair, Pubkey, SerializableKeypair};
 use tokenator::{TokenParser, TokenSerializable, TokenWriter};
 
@@ -8,41 +8,42 @@ static SELECTED_PUBKEY_FILE_NAME: &str = "selected_pubkey";
 
 /// An OS agnostic file key storage implementation
 #[derive(Debug, PartialEq)]
-pub struct FileKeyStorage {
-    keys_directory: Directory,
+pub struct AccountStorage {
+    accounts_directory: Directory,
     selected_key_directory: Directory,
 }
 
-impl FileKeyStorage {
-    pub fn new(keys_directory: Directory, selected_key_directory: Directory) -> Self {
+impl AccountStorage {
+    pub fn new(accounts_directory: Directory, selected_key_directory: Directory) -> Self {
         Self {
-            keys_directory,
+            accounts_directory,
             selected_key_directory,
         }
     }
 
-    pub fn add_key(&self, key: &Keypair) -> Result<()> {
+    pub fn write_account(&self, account: &UserAccount) -> Result<()> {
         let mut writer = TokenWriter::new("\t");
-        key.serialize_tokens(&mut writer);
+        account.serialize_tokens(&mut writer);
         write_file(
-            &self.keys_directory.file_path,
-            key.pubkey.hex(),
+            &self.accounts_directory.file_path,
+            account.key.pubkey.hex(),
             writer.str(),
         )
     }
 
-    pub fn get_keys(&self) -> Result<Vec<Keypair>> {
+    pub fn get_accounts(&self) -> Result<Vec<UserAccount>> {
         let keys = self
-            .keys_directory
+            .accounts_directory
             .get_files()?
             .values()
             .filter_map(|str_key| deserialize_kp(str_key).ok())
+            .map(UserAccount::new)
             .collect();
         Ok(keys)
     }
 
     pub fn remove_key(&self, key: &Keypair) -> Result<()> {
-        delete_file(&self.keys_directory.file_path, key.pubkey.hex())
+        delete_file(&self.accounts_directory.file_path, key.pubkey.hex())
     }
 
     pub fn get_selected_key(&self) -> Result<Option<Pubkey>> {
@@ -97,14 +98,13 @@ mod tests {
     use super::Result;
     use super::*;
 
-    use enostr::Keypair;
     static CREATE_TMP_DIR: fn() -> Result<PathBuf> =
         || Ok(tempfile::TempDir::new()?.path().to_path_buf());
 
-    impl FileKeyStorage {
+    impl AccountStorage {
         fn mock() -> Result<Self> {
             Ok(Self {
-                keys_directory: Directory::new(CREATE_TMP_DIR()?),
+                accounts_directory: Directory::new(CREATE_TMP_DIR()?),
                 selected_key_directory: Directory::new(CREATE_TMP_DIR()?),
             })
         }
@@ -113,17 +113,17 @@ mod tests {
     #[test]
     fn test_basic() {
         let kp = enostr::FullKeypair::generate().to_keypair();
-        let storage = FileKeyStorage::mock().unwrap();
-        let resp = storage.add_key(&kp);
+        let storage = AccountStorage::mock().unwrap();
+        let resp = storage.write_account(&UserAccount::new(kp.clone()));
 
         assert!(resp.is_ok());
-        assert_num_storage(&storage.get_keys(), 1);
+        assert_num_storage(&storage.get_accounts(), 1);
 
         assert!(storage.remove_key(&kp).is_ok());
-        assert_num_storage(&storage.get_keys(), 0);
+        assert_num_storage(&storage.get_accounts(), 0);
     }
 
-    fn assert_num_storage(keys_response: &Result<Vec<Keypair>>, n: usize) {
+    fn assert_num_storage(keys_response: &Result<Vec<UserAccount>>, n: usize) {
         match keys_response {
             Ok(keys) => {
                 assert_eq!(keys.len(), n);
@@ -138,9 +138,9 @@ mod tests {
     fn test_select_key() {
         let kp = enostr::FullKeypair::generate().to_keypair();
 
-        let storage = FileKeyStorage::mock().unwrap();
-        let _ = storage.add_key(&kp);
-        assert_num_storage(&storage.get_keys(), 1);
+        let storage = AccountStorage::mock().unwrap();
+        let _ = storage.write_account(&UserAccount::new(kp.clone()));
+        assert_num_storage(&storage.get_accounts(), 1);
 
         let resp = storage.select_key(Some(kp.pubkey));
         assert!(resp.is_ok());
@@ -152,7 +152,7 @@ mod tests {
 
     #[test]
     fn test_get_selected_key_when_no_file() {
-        let storage = FileKeyStorage::mock().unwrap();
+        let storage = AccountStorage::mock().unwrap();
 
         // Should return Ok(None) when no key has been selected
         match storage.get_selected_key() {

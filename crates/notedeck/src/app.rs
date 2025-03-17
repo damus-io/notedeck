@@ -1,6 +1,6 @@
 use crate::persist::{AppSizeHandler, ZoomHandler};
 use crate::{
-    Accounts, AppContext, Args, DataPath, DataPathType, Directory, FileKeyStorage, Images,
+    AccountStorage, Accounts, AppContext, Args, DataPath, DataPathType, Directory, Images,
     NoteCache, RelayDebugView, ThemeHandler, UnknownIds,
 };
 use egui::ThemePreference;
@@ -147,7 +147,7 @@ impl Notedeck {
         let keystore = if parsed_args.use_keystore {
             let keys_path = path.path(DataPathType::Keys);
             let selected_key_path = path.path(DataPathType::SelectedKey);
-            Some(FileKeyStorage::new(
+            Some(AccountStorage::new(
                 Directory::new(keys_path),
                 Directory::new(selected_key_path),
             ))

@@ -1,7 +1,7 @@
 use tracing::{debug, error, info};
 
 use crate::{
-    FileKeyStorage, MuteFun, Muted, RelaySpec, SingleUnkIdAction, UnknownIds, UserAccount,
+    AccountStorage, MuteFun, Muted, RelaySpec, SingleUnkIdAction, UnknownIds, UserAccount,
 };
 use enostr::{ClientMessage, FilledKeypair, Keypair, Pubkey, RelayPool};
 use nostrdb::{Filter, Ndb, Note, NoteBuilder, NoteKey, Subscription, Transaction};
@@ -308,7 +308,7 @@ pub struct AccountData {
 pub struct Accounts {
     currently_selected_account: Option<usize>,
     accounts: Vec<UserAccount>,
-    key_store: Option<FileKeyStorage>,
+    key_store: Option<AccountStorage>,
     account_data: BTreeMap<[u8; 32], AccountData>,
     forced_relays: BTreeSet<RelaySpec>,
     bootstrap_relays: BTreeSet<RelaySpec>,
@@ -316,10 +316,10 @@ pub struct Accounts {
 }
 
 impl Accounts {
-    pub fn new(key_store: Option<FileKeyStorage>, forced_relays: Vec<String>) -> Self {
+    pub fn new(key_store: Option<AccountStorage>, forced_relays: Vec<String>) -> Self {
         let accounts = match &key_store {
-            Some(keystore) => match keystore.get_keys() {
-                Ok(k) => k.into_iter().map(|key| UserAccount { key }).collect(),
+            Some(keystore) => match keystore.get_accounts() {
+                Ok(k) => k,
                 Err(e) => {
                     tracing::error!("could not get keys: {e}");
                     Vec::new()
@@ -434,22 +434,22 @@ impl Accounts {
     }
 
     #[must_use = "UnknownIdAction's must be handled. Use .process_unknown_id_action()"]
-    pub fn add_account(&mut self, account: Keypair) -> AddAccountAction {
-        let pubkey = account.pubkey;
+    pub fn add_account(&mut self, key: Keypair) -> AddAccountAction {
+        let pubkey = key.pubkey;
         let switch_to_index = if let Some(contains_acc) = self.contains_account(pubkey.bytes()) {
-            if account.secret_key.is_some() && !contains_acc.has_nsec {
+            if key.secret_key.is_some() && !contains_acc.has_nsec {
                 info!(
                     "user provided nsec, but we already have npub {}. Upgrading to nsec",
                     pubkey
                 );
 
                 if let Some(key_store) = &self.key_store {
-                    if let Err(e) = key_store.add_key(&account) {
-                        tracing::error!("Could not add key for {:?}: {e}", account.pubkey);
+                    if let Err(e) = key_store.write_account(&UserAccount::new(key.clone())) {
+                        tracing::error!("Could not add key for {:?}: {e}", key.pubkey);
                     }
                 }
 
-                self.accounts[contains_acc.index].key = account;
+                self.accounts[contains_acc.index].key = key;
             } else {
                 info!("already have account, not adding {}", pubkey);
             }
@@ -457,11 +457,11 @@ impl Accounts {
         } else {
             info!("adding new account {}", pubkey);
             if let Some(key_store) = &self.key_store {
-                if let Err(e) = key_store.add_key(&account) {
-                    tracing::error!("Could not add key for {:?}: {e}", account.pubkey);
+                if let Err(e) = key_store.write_account(&UserAccount::new(key.clone())) {
+                    tracing::error!("Could not add key for {:?}: {e}", key.pubkey);
                 }
             }
-            self.accounts.push(UserAccount::new(account));
+            self.accounts.push(UserAccount::new(key));
             self.accounts.len() - 1
         };
 
@@ -821,7 +821,7 @@ enum RelayAction {
     Remove,
 }
 
-fn get_selected_index(accounts: &[UserAccount], keystore: &FileKeyStorage) -> Option<usize> {
+fn get_selected_index(accounts: &[UserAccount], keystore: &AccountStorage) -> Option<usize> {
     match keystore.get_selected_key() {
         Ok(Some(pubkey)) => {
             return accounts
