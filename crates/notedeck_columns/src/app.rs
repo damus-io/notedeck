@@ -549,12 +549,10 @@ fn render_damus_desktop(app: &mut Damus, app_ctx: &mut AppContext<'_>, ui: &mut 
 }
 
 fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus, ctx: &mut AppContext<'_>) {
+    let num_cols = get_active_columns(ctx.accounts, &app.decks_cache).num_columns();
     StripBuilder::new(ui)
         .size(Size::exact(ui::side_panel::SIDE_PANEL_WIDTH))
-        .sizes(
-            sizes,
-            get_active_columns(ctx.accounts, &app.decks_cache).num_columns(),
-        )
+        .sizes(sizes, num_cols)
         .clip(true)
         .horizontal(|mut strip| {
             let mut side_panel_action: Option<nav::SwitchingAction> = None;
@@ -588,13 +586,6 @@ fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus, ctx: &mut App
                 );
             });
 
-            let mut save_cols = false;
-            if let Some(action) = side_panel_action {
-                save_cols =
-                    save_cols || action.process(&mut app.timeline_cache, &mut app.decks_cache, ctx);
-            }
-
-            let num_cols = app.columns(ctx.accounts).num_columns();
             let mut responses = Vec::with_capacity(num_cols);
             for col_index in 0..num_cols {
                 strip.cell(|ui| {
@@ -613,6 +604,14 @@ fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus, ctx: &mut App
                 });
 
                 //strip.cell(|ui| timeline::timeline_view(ui, app, timeline_ind));
+            }
+
+            // process the side panel action after so we don't change the number of columns during
+            // StripBuilder rendering
+            let mut save_cols = false;
+            if let Some(action) = side_panel_action {
+                save_cols =
+                    save_cols || action.process(&mut app.timeline_cache, &mut app.decks_cache, ctx);
             }
 
             for response in responses {
