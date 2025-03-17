@@ -85,18 +85,22 @@ impl Columns {
         self.columns.push(Column::new(routes));
     }
 
+    #[inline]
     pub fn add_column_at(&mut self, column: Column, index: u32) {
         self.columns.insert(index as usize, column);
     }
 
+    #[inline]
     pub fn add_column(&mut self, column: Column) {
         self.columns.push(column);
     }
 
+    #[inline]
     pub fn columns_mut(&mut self) -> &mut Vec<Column> {
         &mut self.columns
     }
 
+    #[inline]
     pub fn num_columns(&self) -> usize {
         self.columns.len()
     }
@@ -110,18 +114,22 @@ impl Columns {
         self.columns[0].router_mut()
     }
 
+    #[inline]
     pub fn column(&self, ind: usize) -> &Column {
         &self.columns[ind]
     }
 
+    #[inline]
     pub fn columns(&self) -> &[Column] {
         &self.columns
     }
 
+    #[inline]
     pub fn selected(&mut self) -> &mut Column {
         &mut self.columns[self.selected as usize]
     }
 
+    #[inline]
     pub fn column_mut(&mut self, ind: usize) -> &mut Column {
         &mut self.columns[ind]
     }
