@@ -29,6 +29,7 @@ sha2 = { workspace = true }
 bincode = { workspace = true }
 ehttp = {workspace = true }
 mime_guess = { workspace = true }
+tokenator = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
