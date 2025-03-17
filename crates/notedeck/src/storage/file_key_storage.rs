@@ -1,5 +1,6 @@
 use crate::Result;
 use enostr::{Keypair, Pubkey, SerializableKeypair};
+use tokenator::{TokenParser, TokenSerializable, TokenWriter};
 
 use super::file_storage::{delete_file, write_file, Directory};
 
@@ -21,10 +22,12 @@ impl FileKeyStorage {
     }
 
     pub fn add_key(&self, key: &Keypair) -> Result<()> {
+        let mut writer = TokenWriter::new("\t");
+        key.serialize_tokens(&mut writer);
         write_file(
             &self.keys_directory.file_path,
             key.pubkey.hex(),
-            &serde_json::to_string(&SerializableKeypair::from_keypair(key, "", 7))?,
+            writer.str(),
         )
     }
 
@@ -33,8 +36,7 @@ impl FileKeyStorage {
             .keys_directory
             .get_files()?
             .values()
-            .filter_map(|str_key| serde_json::from_str::<SerializableKeypair>(str_key).ok())
-            .map(|serializable_keypair| serializable_keypair.to_keypair(""))
+            .filter_map(|str_key| deserialize_kp(str_key).ok())
             .collect();
         Ok(keys)
     }
@@ -75,6 +77,17 @@ impl FileKeyStorage {
             Ok(())
         }
     }
+}
+
+fn deserialize_kp(serialized: &str) -> Result<Keypair> {
+    let data = serialized.split("\t").collect::<Vec<&str>>();
+    let mut parser = TokenParser::new(&data);
+
+    if let Ok(kp) = Keypair::parse_from_tokens(&mut parser) {
+        return Ok(kp);
+    }
+
+    Ok(serde_json::from_str::<SerializableKeypair>(serialized)?.to_keypair(""))
 }
 
 #[cfg(test)]
