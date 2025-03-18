@@ -98,7 +98,7 @@ pub fn render_note_preview(
         .fill(ui.visuals().noninteractive().weak_bg_fill)
         .inner_margin(egui::Margin::same(8))
         .outer_margin(egui::Margin::symmetric(0, 8))
-        .rounding(egui::Rounding::same(10))
+        .corner_radius(egui::CornerRadius::same(10))
         .stroke(egui::Stroke::new(
             1.0,
             ui.visuals().noninteractive().bg_stroke.color,
@@ -338,7 +338,7 @@ fn image_carousel(
                                     Button::image(
                                         Image::new(texture)
                                             .max_height(height)
-                                            .rounding(5.0)
+                                            .corner_radius(5.0)
                                             .fit_to_original_size(1.0),
                                     )
                                     .frame(false),
