@@ -1,6 +1,6 @@
 use core::f32;
 
-use egui::{vec2, Button, Layout, Margin, RichText, Rounding, ScrollArea, TextEdit};
+use egui::{vec2, Button, CornerRadius, Layout, Margin, RichText, ScrollArea, TextEdit};
 use notedeck::{Images, NotedeckTextStyle};
 
 use crate::{colors, profile_state::ProfileState};
@@ -164,7 +164,7 @@ fn in_frame(ui: &mut egui::Ui, contents: impl FnOnce(&mut egui::Ui)) {
 
 fn button(text: &str, width: f32) -> egui::Button<'static> {
     Button::new(text)
-        .rounding(Rounding::same(8))
+        .corner_radius(CornerRadius::same(8))
         .min_size(vec2(width, 40.0))
 }
 

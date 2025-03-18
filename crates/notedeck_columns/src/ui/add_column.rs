@@ -573,7 +573,9 @@ pub(crate) fn sized_button(text: &str) -> impl Widget + '_ {
 
         ui.add_sized(
             galley.rect.expand2(vec2(16.0, 8.0)).size(),
-            Button::new(galley).rounding(8.0).fill(crate::colors::PINK),
+            Button::new(galley)
+                .corner_radius(8.0)
+                .fill(crate::colors::PINK),
         )
     }
 }

@@ -143,7 +143,7 @@ fn show_profile_card(
             frame = frame.stroke(ui.visuals().noninteractive().fg_stroke);
         }
         frame
-            .rounding(8.0)
+            .corner_radius(8.0)
             .inner_margin(8.0)
             .show(ui, |ui| {
                 ui.horizontal(|ui| {

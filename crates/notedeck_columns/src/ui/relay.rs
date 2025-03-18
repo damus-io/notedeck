@@ -3,7 +3,9 @@ use std::collections::HashMap;
 use crate::colors::PINK;
 use crate::relay_pool_manager::{RelayPoolManager, RelayStatus};
 use crate::ui::{Preview, PreviewConfig, View};
-use egui::{Align, Button, Frame, Id, Image, Layout, Margin, Rgba, RichText, Rounding, Ui, Vec2};
+use egui::{
+    Align, Button, CornerRadius, Frame, Id, Image, Layout, Margin, Rgba, RichText, Ui, Vec2,
+};
 
 use enostr::RelayPool;
 use notedeck::{Accounts, NotedeckTextStyle};
@@ -225,7 +227,7 @@ fn delete_button(_dark_mode: bool) -> egui::Button<'static> {
 fn relay_frame(ui: &mut Ui) -> Frame {
     Frame::new()
         .inner_margin(Margin::same(8))
-        .rounding(ui.style().noninteractive().rounding)
+        .corner_radius(ui.style().noninteractive().corner_radius)
         .stroke(ui.style().visuals.noninteractive().bg_stroke)
 }
 
@@ -244,7 +246,7 @@ fn show_connection_status(ui: &mut Ui, status: RelayStatus) {
     };
 
     let frame = Frame::new()
-        .rounding(Rounding::same(100))
+        .corner_radius(CornerRadius::same(100))
         .fill(bg_color)
         .inner_margin(Margin::symmetric(12, 4));
 

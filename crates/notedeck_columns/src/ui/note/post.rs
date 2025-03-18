@@ -304,7 +304,7 @@ impl<'a, 'd> PostView<'a, 'd> {
             .outer_margin(egui::Margin::same(PostView::outer_margin()))
             .fill(ui.visuals().extreme_bg_color)
             .stroke(stroke)
-            .rounding(12.0);
+            .corner_radius(12.0);
 
         if focused {
             frame = frame.shadow(egui::epaint::Shadow {
@@ -452,7 +452,7 @@ impl<'a, 'd> PostView<'a, 'd> {
                         let img_resp = ui.add(
                             egui::Image::new(texture_handle)
                                 .max_size(size)
-                                .rounding(12.0),
+                                .corner_radius(12.0),
                         );
 
                         let remove_button_rect = {
@@ -591,7 +591,7 @@ fn media_upload_button() -> impl egui::Widget {
         };
 
         painter.rect_filled(resp.rect, 8.0, fill_color);
-        painter.rect_stroke(resp.rect, 8.0, stroke);
+        painter.rect_stroke(resp.rect, 8.0, stroke, egui::StrokeKind::Middle);
         egui::Image::new(egui::include_image!(
             "../../../../../assets/icons/media_upload_dark_4x.png"
         ))

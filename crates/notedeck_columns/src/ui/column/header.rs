@@ -293,7 +293,7 @@ impl<'a> NavTitle<'a> {
     ) -> Vec<(egui::Response, f32)> {
         let y_margin: i8 = 4;
         let item_frame = egui::Frame::new()
-            .rounding(egui::Rounding::same(8))
+            .corner_radius(egui::CornerRadius::same(8))
             .inner_margin(Margin::symmetric(8, y_margin));
 
         (0..self.columns.num_columns())

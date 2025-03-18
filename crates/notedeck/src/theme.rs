@@ -1,6 +1,6 @@
 use egui::{
     style::{Selection, WidgetVisuals, Widgets},
-    Color32, Rounding, Shadow, Stroke, Visuals,
+    Color32, CornerRadius, Shadow, Stroke, Visuals,
 };
 
 pub struct ColorTheme {
@@ -29,7 +29,7 @@ pub struct ColorTheme {
     pub inactive_weak_bg_fill: Color32,
 }
 
-const WIDGET_ROUNDING: Rounding = Rounding::same(8);
+const WIDGET_CORNER_RADIUS: CornerRadius = CornerRadius::same(8);
 
 pub fn create_themed_visuals(theme: ColorTheme, default: Visuals) -> Visuals {
     Visuals {
@@ -56,7 +56,6 @@ pub fn create_themed_visuals(theme: ColorTheme, default: Visuals) -> Visuals {
                     width: 1.0,
                     color: theme.noninteractive_fg_stroke_color,
                 },
-                rounding: WIDGET_ROUNDING,
                 ..default.widgets.noninteractive
             },
             inactive: WidgetVisuals {
@@ -66,15 +65,15 @@ pub fn create_themed_visuals(theme: ColorTheme, default: Visuals) -> Visuals {
                     width: 1.0,
                     color: theme.inactive_bg_stroke_color,
                 },
-                rounding: WIDGET_ROUNDING,
+                corner_radius: WIDGET_CORNER_RADIUS,
                 ..default.widgets.inactive
             },
             hovered: WidgetVisuals {
-                rounding: WIDGET_ROUNDING,
+                corner_radius: WIDGET_CORNER_RADIUS,
                 ..default.widgets.hovered
             },
             active: WidgetVisuals {
-                rounding: WIDGET_ROUNDING,
+                corner_radius: WIDGET_CORNER_RADIUS,
                 ..default.widgets.active
             },
             open: WidgetVisuals {
@@ -83,7 +82,6 @@ pub fn create_themed_visuals(theme: ColorTheme, default: Visuals) -> Visuals {
         },
         extreme_bg_color: theme.extreme_bg_color,
         error_fg_color: theme.err_fg_color,
-        window_rounding: Rounding::same(8),
         window_fill: theme.window_fill,
         window_shadow: Shadow {
             offset: [0, 8],

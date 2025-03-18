@@ -4,7 +4,7 @@ pub mod preview;
 
 pub use edit::EditProfileView;
 use egui::load::TexturePoll;
-use egui::{vec2, Color32, Label, Layout, Rect, RichText, Rounding, ScrollArea, Sense, Stroke};
+use egui::{vec2, Color32, CornerRadius, Label, Layout, Rect, RichText, ScrollArea, Sense, Stroke};
 use enostr::Pubkey;
 use nostrdb::{ProfileRecord, Transaction};
 pub use picture::ProfilePic;
@@ -244,7 +244,7 @@ fn copy_key_widget(pfp_rect: &egui::Rect) -> impl egui::Widget + '_ {
             Sense::click(),
         );
 
-        let copy_key_rounding = Rounding::same(100);
+        let copy_key_rounding = CornerRadius::same(100);
         let fill_color = if resp.hovered() {
             ui.visuals().widgets.inactive.weak_bg_fill
         } else {
@@ -257,6 +257,7 @@ fn copy_key_widget(pfp_rect: &egui::Rect) -> impl egui::Widget + '_ {
             copy_key_rect.shrink(1.0),
             copy_key_rounding,
             Stroke::new(1.0, stroke_color),
+            egui::StrokeKind::Outside,
         );
         egui::Image::new(egui::include_image!(
             "../../../../../assets/icons/key_4x.png"
@@ -283,7 +284,7 @@ fn edit_profile_button() -> impl egui::Widget + 'static {
 
         painter.rect_filled(
             rect,
-            Rounding::same(8),
+            CornerRadius::same(8),
             if resp.hovered() {
                 ui.visuals().widgets.active.bg_fill
             } else {
@@ -292,12 +293,13 @@ fn edit_profile_button() -> impl egui::Widget + 'static {
         );
         painter.rect_stroke(
             rect.shrink(1.0),
-            Rounding::same(8),
+            CornerRadius::same(8),
             if resp.hovered() {
                 ui.visuals().widgets.active.bg_stroke
             } else {
                 ui.visuals().widgets.inactive.bg_stroke
             },
+            egui::StrokeKind::Outside,
         );
 
         let edit_icon_size = vec2(16.0, 16.0);
