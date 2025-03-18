@@ -102,8 +102,7 @@ checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 [[package]]
 name = "android-activity"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ef6978589202a00cd7e118380c448a08b6ed394c3a8df3a430d0898e3a42d046"
+source = "git+https://github.com/damus-io/android-activity?rev=da17773852312a58c3445422dfe477162f2f1265#da17773852312a58c3445422dfe477162f2f1265"
 dependencies = [
  "android-properties",
  "bitflags 2.9.0",
