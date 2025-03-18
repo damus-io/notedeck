@@ -100,5 +100,5 @@ puffin = { git = "https://github.com/jb55/puffin", package = "puffin", rev = "c6
 puffin_egui = { git = "https://github.com/jb55/puffin", package = "puffin_egui", rev = "c6a6242adaf90b6292c0f462d2acd34d96d224d2" }
 #winit = { git = "https://github.com/damus-io/winit", rev = "14d61a74bee0c9863abe7ef28efae2c4d8bd3743" }
 #winit = { path = "/home/jb55/dev/github/rust-windowing/winit" }
-#android-activity = { git = "https://github.com/damus-io/android-activity", rev = "da17773852312a58c3445422dfe477162f2f1265" }
+android-activity = { git = "https://github.com/damus-io/android-activity", rev = "da17773852312a58c3445422dfe477162f2f1265" }
 #android-activity = { path = "/home/jb55/dev/github/rust-mobile/android-activity/android-activity" }
