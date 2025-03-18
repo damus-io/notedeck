@@ -21,31 +21,36 @@ pub struct RelayView<'a> {
 
 impl View for RelayView<'_> {
     fn ui(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(24.0);
-
-        ui.horizontal(|ui| {
-            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                ui.label(
-                    RichText::new("Relays").text_style(NotedeckTextStyle::Heading2.text_style()),
-                );
-            });
-        });
-
-        ui.add_space(8.0);
-
-        egui::ScrollArea::vertical()
-            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
-            .auto_shrink([false; 2])
+        Frame::new()
+            .inner_margin(Margin::symmetric(10, 0))
             .show(ui, |ui| {
-                if let Some(relay_to_remove) = self.show_relays(ui) {
-                    self.accounts
-                        .remove_advertised_relay(&relay_to_remove, self.manager.pool);
-                }
+                ui.add_space(24.0);
+
+                ui.horizontal(|ui| {
+                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                        ui.label(
+                            RichText::new("Relays")
+                                .text_style(NotedeckTextStyle::Heading2.text_style()),
+                        );
+                    });
+                });
+
                 ui.add_space(8.0);
-                if let Some(relay_to_add) = self.show_add_relay_ui(ui) {
-                    self.accounts
-                        .add_advertised_relay(&relay_to_add, self.manager.pool);
-                }
+
+                egui::ScrollArea::vertical()
+                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                    .auto_shrink([false; 2])
+                    .show(ui, |ui| {
+                        if let Some(relay_to_remove) = self.show_relays(ui) {
+                            self.accounts
+                                .remove_advertised_relay(&relay_to_remove, self.manager.pool);
+                        }
+                        ui.add_space(8.0);
+                        if let Some(relay_to_add) = self.show_add_relay_ui(ui) {
+                            self.accounts
+                                .add_advertised_relay(&relay_to_add, self.manager.pool);
+                        }
+                    });
             });
     }
 }
