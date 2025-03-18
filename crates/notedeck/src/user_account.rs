@@ -1,13 +1,19 @@
+use crate::WalletState;
 use enostr::Keypair;
 use tokenator::TokenSerializable;
 
+#[derive(Debug)]
 pub struct UserAccount {
     pub key: Keypair,
+    pub wallet_state: WalletState,
 }
 
 impl UserAccount {
     pub fn new(key: Keypair) -> Self {
-        Self { key }
+        Self {
+            key,
+            wallet_state: WalletState::default(),
+        }
     }
 }
 
