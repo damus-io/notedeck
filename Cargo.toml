@@ -87,5 +87,5 @@ egui_extras = { git = "https://github.com/damus-io/egui", rev = "f822dc6ca6aa045
 epaint = { git = "https://github.com/damus-io/egui", rev = "f822dc6ca6aa045eb2b0901a524eb77226e541d9" }
 #winit = { git = "https://github.com/damus-io/winit", rev = "14d61a74bee0c9863abe7ef28efae2c4d8bd3743" }
 #winit = { path = "/home/jb55/dev/github/rust-windowing/winit" }
-#android-activity = { git = "https://github.com/damus-io/android-activity", rev = "da17773852312a58c3445422dfe477162f2f1265" }
+android-activity = { git = "https://github.com/damus-io/android-activity", rev = "da17773852312a58c3445422dfe477162f2f1265" }
 #android-activity = { path = "/home/jb55/dev/github/rust-mobile/android-activity/android-activity" }
