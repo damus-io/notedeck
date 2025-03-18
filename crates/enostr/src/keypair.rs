@@ -1,6 +1,11 @@
+use nostr::nips::nip19::FromBech32;
+use nostr::nips::nip19::ToBech32;
 use nostr::nips::nip49::EncryptedSecretKey;
 use serde::Deserialize;
 use serde::Serialize;
+use tokenator::ParseError;
+use tokenator::TokenParser;
+use tokenator::TokenSerializable;
 
 use crate::Pubkey;
 use crate::SecretKey;
@@ -135,5 +140,129 @@ impl SerializableKeypair {
             self.encrypted_secret_key
                 .and_then(|e| e.to_secret_key(pass).ok()),
         )
+    }
+}
+
+impl TokenSerializable for Pubkey {
+    fn parse_from_tokens<'a>(parser: &mut TokenParser<'a>) -> Result<Self, ParseError<'a>> {
+        parser.parse_token(PUBKEY_TOKEN)?;
+        let raw = parser.pull_token()?;
+        let pubkey =
+            Pubkey::try_from_bech32_string(raw, true).map_err(|_| ParseError::DecodeFailed)?;
+        Ok(pubkey)
+    }
+
+    fn serialize_tokens(&self, writer: &mut tokenator::TokenWriter) {
+        writer.write_token(PUBKEY_TOKEN);
+
+        let Some(bech) = self.to_bech() else {
+            tracing::error!("Could not convert pubkey to bech: {}", self.hex());
+            return;
+        };
+
+        writer.write_token(&bech);
+    }
+}
+
+impl TokenSerializable for Keypair {
+    fn parse_from_tokens<'a>(parser: &mut TokenParser<'a>) -> Result<Self, ParseError<'a>> {
+        TokenParser::alt(
+            parser,
+            &[
+                |p| Ok(Keypair::only_pubkey(Pubkey::parse_from_tokens(p)?)),
+                |p| Ok(Keypair::from_secret(parse_seckey(p)?)),
+            ],
+        )
+    }
+
+    fn serialize_tokens(&self, writer: &mut tokenator::TokenWriter) {
+        if let Some(seckey) = &self.secret_key {
+            writer.write_token(ESECKEY_TOKEN);
+            let maybe_eseckey = EncryptedSecretKey::new(
+                seckey,
+                ESECKEY_PASS,
+                7,
+                nostr::nips::nip49::KeySecurity::Unknown,
+            );
+
+            let Ok(eseckey) = maybe_eseckey else {
+                tracing::error!("Could not convert seckey to EncryptedSecretKey");
+                return;
+            };
+            let Ok(serialized) = eseckey.to_bech32() else {
+                tracing::error!("Could not serialize ncryptsec");
+                return;
+            };
+
+            writer.write_token(&serialized);
+        } else {
+            self.pubkey.serialize_tokens(writer);
+        }
+    }
+}
+
+const ESECKEY_TOKEN: &str = "eseckey";
+const ESECKEY_PASS: &str = "notedeck";
+const PUBKEY_TOKEN: &str = "pubkey";
+
+fn parse_seckey<'a>(parser: &mut TokenParser<'a>) -> Result<SecretKey, ParseError<'a>> {
+    parser.parse_token(ESECKEY_TOKEN)?;
+
+    let raw = parser.pull_token()?;
+
+    let eseckey = EncryptedSecretKey::from_bech32(raw).map_err(|_| ParseError::DecodeFailed)?;
+
+    let seckey = eseckey
+        .to_secret_key(ESECKEY_PASS)
+        .map_err(|_| ParseError::DecodeFailed)?;
+
+    Ok(seckey)
+}
+
+#[cfg(test)]
+mod tests {
+
+    use tokenator::{TokenParser, TokenSerializable, TokenWriter};
+
+    use super::{FullKeypair, Keypair};
+
+    #[test]
+    fn test_token_eseckey_serialize_deserialize() {
+        let kp = FullKeypair::generate();
+
+        let mut writer = TokenWriter::new("\t");
+        kp.clone().to_keypair().serialize_tokens(&mut writer);
+
+        let serialized = writer.str();
+
+        let data = &serialized.split("\t").collect::<Vec<&str>>();
+
+        let mut parser = TokenParser::new(data);
+        let m_new_kp = Keypair::parse_from_tokens(&mut parser);
+        assert!(m_new_kp.is_ok());
+
+        let new_kp = m_new_kp.unwrap();
+
+        assert_eq!(kp, new_kp.to_full().unwrap().to_full());
+    }
+
+    #[test]
+    fn test_token_pubkey_serialize_deserialize() {
+        let kp = Keypair::only_pubkey(FullKeypair::generate().pubkey);
+
+        let mut writer = TokenWriter::new("\t");
+        kp.clone().serialize_tokens(&mut writer);
+
+        let serialized = writer.str();
+
+        let data = &serialized.split("\t").collect::<Vec<&str>>();
+
+        let mut parser = TokenParser::new(data);
+        let m_new_kp = Keypair::parse_from_tokens(&mut parser);
+        assert!(m_new_kp.is_ok());
+
+        let new_kp = m_new_kp.unwrap();
+
+        assert_eq!(kp, new_kp);
     }
 }
