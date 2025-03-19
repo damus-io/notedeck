@@ -36,8 +36,7 @@ impl AccountStorage {
             .accounts_directory
             .get_files()?
             .values()
-            .filter_map(|str_key| deserialize_kp(str_key).ok())
-            .map(UserAccount::new)
+            .filter_map(|serialized| deserialize_storage(serialized).ok())
             .collect();
         Ok(keys)
     }
@@ -80,14 +79,19 @@ impl AccountStorage {
     }
 }
 
-fn deserialize_kp(serialized: &str) -> Result<Keypair> {
+fn deserialize_storage(serialized: &str) -> Result<UserAccount> {
     let data = serialized.split("\t").collect::<Vec<&str>>();
     let mut parser = TokenParser::new(&data);
 
-    if let Ok(kp) = Keypair::parse_from_tokens(&mut parser) {
-        return Ok(kp);
+    if let Ok(acc) = UserAccount::parse_from_tokens(&mut parser) {
+        return Ok(acc);
     }
 
+    // try old deserialization way
+    Ok(UserAccount::new(old_deserialization(serialized)?))
+}
+
+fn old_deserialization(serialized: &str) -> Result<Keypair> {
     Ok(serde_json::from_str::<SerializableKeypair>(serialized)?.to_keypair(""))
 }
 
