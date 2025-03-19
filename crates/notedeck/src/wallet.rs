@@ -6,8 +6,9 @@ use nwc::{
 };
 use tokio::sync::RwLock;
 
-use crate::jobs::{
-    Job, JobError, JobId, JobParams, JobParamsOwned, JobState, Jobs, NWCInvoiceParams,
+use crate::{
+    jobs::{Job, JobError, JobId, JobParams, JobParamsOwned, JobState, Jobs, NWCInvoiceParams},
+    Accounts,
 };
 
 #[derive(Debug)]
@@ -123,6 +124,32 @@ pub enum WalletAction {
     SaveURI,
 }
 
+impl WalletAction {
+    pub fn process(&self, accounts: &mut Accounts) {
+        match &self {
+            WalletAction::SaveURI => {
+                save_uri(accounts);
+            }
+        }
+    }
+}
+
+fn save_uri(accounts: &mut Accounts) {
+    accounts.update_current_account(|acc| {
+        let WalletState::NoWallet(no_wallet) = &mut acc.wallet_state else {
+            return;
+        };
+
+        let uri = &no_wallet.buf;
+
+        let Ok(wallet) = Wallet::new(uri.to_owned()) else {
+            no_wallet.error_msg = Some(WalletError::InvalidURI);
+            return;
+        };
+
+        acc.wallet_state = WalletState::Wallet(wallet);
+    });
+}
 #[cfg(test)]
 mod tests {
     use crate::Wallet;
