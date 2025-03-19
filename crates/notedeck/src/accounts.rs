@@ -370,9 +370,19 @@ impl Accounts {
         self.accounts.get(ind)
     }
 
+    pub fn get_account_mut(&mut self, ind: usize) -> Option<&mut UserAccount> {
+        self.accounts.get_mut(ind)
+    }
+
     pub fn find_account(&self, pk: &[u8; 32]) -> Option<&UserAccount> {
         self.accounts
             .iter()
+            .find(|acc| acc.key.pubkey.bytes() == pk)
+    }
+
+    pub fn find_account_mut(&mut self, pk: &[u8; 32]) -> Option<&mut UserAccount> {
+        self.accounts
+            .iter_mut()
             .find(|acc| acc.key.pubkey.bytes() == pk)
     }
 
@@ -475,6 +485,28 @@ impl Accounts {
         }
     }
 
+    pub fn update_current_account(&mut self, update: impl FnOnce(&mut UserAccount)) {
+        {
+            let Some(cur_account) = self.get_selected_account_mut() else {
+                return;
+            };
+
+            update(cur_account);
+        }
+
+        let Some(cur_acc) = self.get_selected_account() else {
+            return;
+        };
+
+        let Some(key_store) = &self.key_store else {
+            return;
+        };
+
+        if let Err(err) = key_store.write_account(cur_acc) {
+            tracing::error!("Could not add account {:?} to storage: {err}", cur_acc.key);
+        }
+    }
+
     pub fn num_accounts(&self) -> usize {
         self.accounts.len()
     }
@@ -502,6 +534,22 @@ impl Accounts {
     pub fn get_selected_account(&self) -> Option<&UserAccount> {
         self.currently_selected_account
             .map(|i| self.get_account(i))?
+    }
+
+    pub fn get_selected_account_mut(&mut self) -> Option<&mut UserAccount> {
+        self.currently_selected_account
+            .map(|i| self.get_account_mut(i))?
+    }
+
+    pub fn get_account_mut_optimized(&mut self, pk: &[u8; 32]) -> Option<&mut UserAccount> {
+        if let Some(ind) = self.currently_selected_account {
+            if ind < self.accounts.len() {
+                return Some(&mut self.accounts[ind]);
+            }
+        }
+        self.accounts
+            .iter_mut()
+            .find(|acc| acc.key.pubkey.bytes() == pk)
     }
 
     pub fn get_selected_account_data(&mut self) -> Option<&mut AccountData> {
