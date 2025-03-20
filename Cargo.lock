@@ -3295,6 +3295,7 @@ dependencies = [
  "egui_extras",
  "ehttp",
  "enostr",
+ "hashbrown",
  "image",
  "nostrdb",
  "notedeck",

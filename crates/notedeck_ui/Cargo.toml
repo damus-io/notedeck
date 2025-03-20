@@ -16,3 +16,4 @@ notedeck = { workspace = true }
 image = { workspace = true }
 bitflags = { workspace = true }
 enostr = { workspace = true }
+hashbrown = { workspace = true }
