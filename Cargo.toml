@@ -66,6 +66,7 @@ jni = "0.21.1"
 profiling = "1.0"
 lightning-invoice = "0.33.1"
 secp256k1 = "0.30.0"
+hashbrown = "0.15.2"
 
 [profile.small]
 inherits = 'release'
