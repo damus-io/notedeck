@@ -63,6 +63,7 @@ mime_guess = "2.0.5"
 pretty_assertions = "1.4.1"
 jni = "0.21.1"
 profiling = "1.0"
+hashbrown = "0.15.2"
 
 [profile.small]
 inherits = 'release'
