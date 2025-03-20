@@ -30,6 +30,7 @@ bincode = { workspace = true }
 ehttp = {workspace = true }
 mime_guess = { workspace = true }
 tokenator = { workspace = true }
+hashbrown = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
