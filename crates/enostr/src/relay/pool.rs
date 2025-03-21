@@ -1,5 +1,5 @@
 use crate::relay::{setup_multicast_relay, MulticastRelay, Relay, RelayStatus};
-use crate::{ClientMessage, Result};
+use crate::{ClientMessage, Error, Result};
 use nostrdb::Filter;
 
 use std::collections::BTreeSet;
@@ -50,7 +50,7 @@ pub struct WebsocketRelay {
 impl PoolRelay {
     pub fn url(&self) -> &str {
         match self {
-            Self::Websocket(wsr) => &wsr.relay.url,
+            Self::Websocket(wsr) => wsr.relay.url.as_str(),
             Self::Multicast(_wsr) => "multicast",
         }
     }
@@ -315,7 +315,10 @@ impl RelayPool {
         if self.has(&url) {
             return Ok(());
         }
-        let relay = Relay::new(url, wakeup)?;
+        let relay = Relay::new(
+            nostr::RelayUrl::parse(url).map_err(|_| Error::InvalidRelayUrl)?,
+            wakeup,
+        )?;
         let pool_relay = PoolRelay::websocket(relay);
 
         self.relays.push(pool_relay);

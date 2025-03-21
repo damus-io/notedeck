@@ -5,6 +5,7 @@ use crate::{
 };
 
 use enostr::{Filter, NoteId, Pubkey};
+use nostr::RelayUrl;
 use nostrdb::{BlockType, Mention, Ndb, Note, NoteKey, Transaction};
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
@@ -77,8 +78,6 @@ impl SingleUnkIdAction {
         }
     }
 }
-
-type RelayUrl = String;
 
 /// Unknown Id searcher
 #[derive(Default, Debug)]
@@ -300,7 +299,7 @@ pub fn get_unknown_note_ids<'a>(
                     let id = UnknownId::Pubkey(Pubkey::new(*nprofile.pubkey()));
                     let relays = nprofile
                         .relays_iter()
-                        .map(String::from)
+                        .filter_map(|s| RelayUrl::parse(s).ok())
                         .collect::<HashSet<RelayUrl>>();
                     ids.entry(id).or_default().extend(relays);
                 }
@@ -308,7 +307,7 @@ pub fn get_unknown_note_ids<'a>(
             Mention::Event(ev) => {
                 let relays = ev
                     .relays_iter()
-                    .map(String::from)
+                    .filter_map(|s| RelayUrl::parse(s).ok())
                     .collect::<HashSet<RelayUrl>>();
                 match ndb.get_note_by_id(txn, ev.id()) {
                     Err(_) => {

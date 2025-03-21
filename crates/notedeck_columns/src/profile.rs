@@ -119,7 +119,10 @@ impl ProfileAction {
             ProfileAction::SaveChanges(changes) => {
                 let raw_msg = format!("[\"EVENT\",{}]", changes.to_note().json().unwrap());
 
-                let _ = ndb.process_client_event(raw_msg.as_str());
+                let _ = ndb.process_event_with(
+                    raw_msg.as_str(),
+                    nostrdb::IngestMetadata::new().client(true),
+                );
                 let _ = state_map.remove_entry(&changes.kp.pubkey);
 
                 info!("sending {}", raw_msg);

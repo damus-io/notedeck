@@ -149,7 +149,7 @@ pub fn setup_multicast_relay(
 }
 
 pub struct Relay {
-    pub url: String,
+    pub url: nostr::RelayUrl,
     pub status: RelayStatus,
     pub sender: WsSender,
     pub receiver: WsReceiver,
@@ -180,9 +180,10 @@ impl PartialEq for Relay {
 impl Eq for Relay {}
 
 impl Relay {
-    pub fn new(url: String, wakeup: impl Fn() + Send + Sync + 'static) -> Result<Self> {
+    pub fn new(url: nostr::RelayUrl, wakeup: impl Fn() + Send + Sync + 'static) -> Result<Self> {
         let status = RelayStatus::Connecting;
-        let (sender, receiver) = ewebsock::connect_with_wakeup(&url, Options::default(), wakeup)?;
+        let (sender, receiver) =
+            ewebsock::connect_with_wakeup(url.as_str(), Options::default(), wakeup)?;
 
         Ok(Self {
             url,
@@ -210,7 +211,7 @@ impl Relay {
 
     pub fn connect(&mut self, wakeup: impl Fn() + Send + Sync + 'static) -> Result<()> {
         let (sender, receiver) =
-            ewebsock::connect_with_wakeup(&self.url, Options::default(), wakeup)?;
+            ewebsock::connect_with_wakeup(self.url.as_str(), Options::default(), wakeup)?;
         self.status = RelayStatus::Connecting;
         self.sender = sender;
         self.receiver = receiver;

@@ -456,11 +456,14 @@ impl TimelineKind {
                 .limit(default_limit())
                 .build()]),
 
-            TimelineKind::Hashtag(hashtag) => FilterState::ready(vec![Filter::new()
-                .kinds([1])
-                .limit(filter::default_limit())
-                .tags([hashtag.to_lowercase()], 't')
-                .build()]),
+            TimelineKind::Hashtag(hashtag) => {
+                let url: &str = &hashtag.to_lowercase();
+                FilterState::ready(vec![Filter::new()
+                    .kinds([1])
+                    .limit(filter::default_limit())
+                    .tags([url], 't')
+                    .build()])
+            }
 
             TimelineKind::Algo(algo_timeline) => match algo_timeline {
                 AlgoTimeline::LastPerPubkey(list_k) => match list_k {

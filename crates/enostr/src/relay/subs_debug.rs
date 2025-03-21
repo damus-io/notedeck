@@ -229,6 +229,7 @@ fn calculate_error_size(error: &Error) -> usize {
         | Error::InvalidBech32
         | Error::InvalidByteSize
         | Error::InvalidSignature
+        | Error::InvalidRelayUrl
         | Error::Io(_)
         | Error::InvalidPublicKey => mem::size_of_val(error), // No heap usage
 

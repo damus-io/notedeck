@@ -12,6 +12,7 @@ strum = { workspace = true }
 strum_macros = { workspace = true }
 dirs = { workspace = true }
 enostr = { workspace = true }
+nostr = { workspace = true }
 egui = { workspace = true }
 eframe = { workspace = true }
 image = { workspace = true }

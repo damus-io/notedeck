@@ -299,13 +299,23 @@ fn process_message(damus: &mut Damus, ctx: &mut AppContext<'_>, relay: &str, msg
             match relay {
                 PoolRelay::Websocket(_) => {
                     //info!("processing event {}", event);
-                    if let Err(err) = ctx.ndb.process_event(ev) {
+                    if let Err(err) = ctx.ndb.process_event_with(
+                        ev,
+                        nostrdb::IngestMetadata::new()
+                            .client(false)
+                            .relay(relay.url()),
+                    ) {
                         error!("error processing event {ev}: {err}");
                     }
                 }
                 PoolRelay::Multicast(_) => {
                     // multicast events are client events
-                    if let Err(err) = ctx.ndb.process_client_event(ev) {
+                    if let Err(err) = ctx.ndb.process_event_with(
+                        ev,
+                        nostrdb::IngestMetadata::new()
+                            .client(true)
+                            .relay(relay.url()),
+                    ) {
                         error!("error processing multicast event {ev}: {err}");
                     }
                 }

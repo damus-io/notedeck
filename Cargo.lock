@@ -2706,8 +2706,9 @@ dependencies = [
 
 [[package]]
 name = "nostrdb"
-version = "0.5.1"
-source = "git+https://github.com/damus-io/nostrdb-rs?rev=22fa1cc57ee1b4ce10e726ab284bc124461c8871#22fa1cc57ee1b4ce10e726ab284bc124461c8871"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "593e342d6df5ea9ea74de29f484cc77377a4f1d4d6322c741fc465699ee76809"
 dependencies = [
  "bindgen",
  "cc",
@@ -2717,7 +2718,6 @@ dependencies = [
  "thiserror 2.0.12",
  "tokio",
  "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -2735,6 +2735,7 @@ dependencies = [
  "image",
  "jni",
  "mime_guess",
+ "nostr",
  "nostrdb",
  "poll-promise",
  "puffin",

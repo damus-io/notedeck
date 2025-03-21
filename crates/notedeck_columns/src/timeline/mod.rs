@@ -244,10 +244,12 @@ impl Timeline {
     }
 
     pub fn hashtag(hashtag: String) -> Self {
+        let hashtag = hashtag.to_lowercase();
+        let htag: &str = &hashtag;
         let filter = Filter::new()
             .kinds([1])
             .limit(filter::default_limit())
-            .tags([hashtag.to_lowercase()], 't')
+            .tags([htag], 't')
             .build();
 
         Timeline::new(

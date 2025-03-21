@@ -25,6 +25,9 @@ pub enum Error {
     #[error("invalid public key")]
     InvalidPublicKey,
 
+    #[error("invalid relay url")]
+    InvalidRelayUrl,
+
     // Secp(secp256k1::Error),
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
