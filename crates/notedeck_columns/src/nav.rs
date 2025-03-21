@@ -424,7 +424,7 @@ fn render_nav_body(
                 search_buffer,
                 &mut note_context,
             )
-            .show(ui)
+            .show(ui, ctx.clipboard)
             .map(RenderNavAction::NoteAction)
         }
 

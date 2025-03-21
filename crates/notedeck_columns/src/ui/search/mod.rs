@@ -5,6 +5,7 @@ use crate::{
     actionbar::NoteAction,
     ui::{note::NoteOptions, timeline::TimelineTabView},
 };
+use egui_winit::clipboard::Clipboard;
 use nostrdb::{Filter, Transaction};
 use notedeck::{MuteFun, NoteRef};
 use std::time::{Duration, Instant};
@@ -39,14 +40,18 @@ impl<'a, 'd> SearchView<'a, 'd> {
         }
     }
 
-    pub fn show(&mut self, ui: &mut egui::Ui) -> Option<NoteAction> {
-        padding(8.0, ui, |ui| self.show_impl(ui)).inner
+    pub fn show(&mut self, ui: &mut egui::Ui, clipboard: &mut Clipboard) -> Option<NoteAction> {
+        padding(8.0, ui, |ui| self.show_impl(ui, clipboard)).inner
     }
 
-    pub fn show_impl(&mut self, ui: &mut egui::Ui) -> Option<NoteAction> {
+    pub fn show_impl(
+        &mut self,
+        ui: &mut egui::Ui,
+        clipboard: &mut Clipboard,
+    ) -> Option<NoteAction> {
         ui.spacing_mut().item_spacing = egui::vec2(0.0, 12.0);
 
-        if search_box(self.query, ui) {
+        if search_box(self.query, ui, clipboard) {
             self.execute_search(ui.ctx());
         }
 
@@ -132,7 +137,7 @@ impl<'a, 'd> SearchView<'a, 'd> {
     }
 }
 
-fn search_box(query: &mut SearchQueryState, ui: &mut egui::Ui) -> bool {
+fn search_box(query: &mut SearchQueryState, ui: &mut egui::Ui, clipboard: &mut Clipboard) -> bool {
     ui.horizontal(|ui| {
         // Container for search input and icon
         let search_container = egui::Frame {
@@ -167,6 +172,22 @@ fn search_box(query: &mut SearchQueryState, ui: &mut egui::Ui) -> bool {
                             .margin(vec2(0.0, 8.0))
                             .frame(false),
                     );
+
+                    response.context_menu(|ui| {
+                        if ui.button("paste").clicked() {
+                            if let Some(text) = clipboard.get() {
+                                query.string.clear();
+                                query.string.push_str(&text);
+                            }
+                        }
+                    });
+
+                    if response.middle_clicked() {
+                        if let Some(text) = clipboard.get() {
+                            query.string.clear();
+                            query.string.push_str(&text);
+                        }
+                    }
 
                     if query.focus_state == FocusState::ShouldRequestFocus {
                         response.request_focus();
