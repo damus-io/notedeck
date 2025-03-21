@@ -4,6 +4,7 @@ use crate::{
     KeyStorageType, NoteCache, RelayDebugView, ThemeHandler, UnknownIds,
 };
 use egui::ThemePreference;
+use egui_winit::clipboard::Clipboard;
 use enostr::RelayPool;
 use nostrdb::{Config, Ndb, Transaction};
 use std::cell::RefCell;
@@ -31,6 +32,7 @@ pub struct Notedeck {
     zoom: ZoomHandler,
     app_size: AppSizeHandler,
     unrecognized_args: BTreeSet<String>,
+    clipboard: Clipboard,
 }
 
 /// Our chrome, which is basically nothing
@@ -214,6 +216,7 @@ impl Notedeck {
             zoom,
             app_size,
             unrecognized_args,
+            clipboard: Clipboard::new(None),
         }
     }
 
@@ -233,6 +236,7 @@ impl Notedeck {
             path: &self.path,
             args: &self.args,
             theme: &mut self.theme,
+            clipboard: &mut self.clipboard,
         }
     }
 

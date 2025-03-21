@@ -1,4 +1,5 @@
 use crate::{Accounts, Args, DataPath, Images, NoteCache, ThemeHandler, UnknownIds};
+use egui_winit::clipboard::Clipboard;
 
 use enostr::RelayPool;
 use nostrdb::Ndb;
@@ -15,4 +16,5 @@ pub struct AppContext<'a> {
     pub path: &'a DataPath,
     pub args: &'a Args,
     pub theme: &'a mut ThemeHandler,
+    pub clipboard: &'a mut Clipboard,
 }
