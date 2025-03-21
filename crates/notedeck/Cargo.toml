@@ -32,6 +32,8 @@ ehttp = {workspace = true }
 mime_guess = { workspace = true }
 egui-winit = { workspace = true }
 hashbrown = { workspace = true }
+tokio = { workspace = true }
+crossbeam = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
