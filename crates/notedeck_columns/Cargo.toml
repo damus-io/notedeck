@@ -51,6 +51,7 @@ base64 = { workspace = true }
 egui-winit = { workspace = true }
 profiling = { workspace = true }
 hashbrown = { workspace = true }
+crossbeam = { workspace = true }
 
 [target.'cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))'.dependencies]
 rfd = "0.15"
