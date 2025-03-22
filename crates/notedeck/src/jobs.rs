@@ -35,10 +35,12 @@ struct CompletedJob {
 #[derive(Debug)]
 pub enum JobParams<'a> {
     Blurhash(BlurhashParams<'a>),
+    NWCInvoice(NWCInvoiceParams<'a>),
 }
 
 pub enum JobParamsOwned {
     Blurhash(BlurhashParamsOwned),
+    NWCInvoice(NWCInvoiceParamsOwned),
 }
 
 impl<'a> From<BlurhashParams<'a>> for BlurhashParamsOwned {
@@ -55,6 +57,9 @@ impl<'a> From<JobParams<'a>> for JobParamsOwned {
     fn from(params: JobParams<'a>) -> Self {
         match params {
             JobParams::Blurhash(bp) => JobParamsOwned::Blurhash(bp.into()),
+            JobParams::NWCInvoice(nwcinvoice_params) => {
+                JobParamsOwned::NWCInvoice(nwcinvoice_params.into())
+            }
         }
     }
 }
@@ -70,6 +75,23 @@ pub struct BlurhashParamsOwned {
     pub blurhash: String,
     pub url: String,
     pub ctx: egui::Context,
+}
+
+#[derive(Debug)]
+pub struct NWCInvoiceParams<'a> {
+    pub invoice: &'a str,
+}
+
+impl<'a> From<NWCInvoiceParams<'a>> for NWCInvoiceParamsOwned {
+    fn from(value: NWCInvoiceParams<'a>) -> Self {
+        Self {
+            invoice: value.invoice.into(),
+        }
+    }
+}
+
+pub struct NWCInvoiceParamsOwned {
+    pub invoice: String,
 }
 
 impl Jobs {
@@ -174,10 +196,8 @@ impl hashbrown::Equivalent<JobIdOwned> for JobId<'_> {
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 enum JobIdOwned {
-    Blurhash(String), // image URL
-    #[allow(dead_code)]
+    Blurhash(String),   // image URL
     NWCBalance(String), // Wallet's URI
-    #[allow(dead_code)]
     NWCInvoice(String), // LN invoice
 }
 
