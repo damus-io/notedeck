@@ -7,6 +7,7 @@ mod error;
 pub mod filter;
 pub mod fonts;
 mod imgcache;
+pub mod jobs;
 mod muted;
 pub mod note;
 mod notecache;
@@ -25,6 +26,7 @@ pub mod ui;
 mod unknowns;
 mod urls;
 mod user_account;
+mod wallet;
 
 pub use accounts::{AccountData, Accounts, AccountsAction, AddAccountAction, SwitchAccountAction};
 pub use app::{App, Notedeck};
@@ -44,9 +46,7 @@ pub use persist::*;
 pub use relay_debug::RelayDebugView;
 pub use relayspec::RelaySpec;
 pub use result::Result;
-pub use storage::{
-    DataPath, DataPathType, Directory, FileKeyStorage, KeyStorageResponse, KeyStorageType,
-};
+pub use storage::{AccountStorage, DataPath, DataPathType, Directory};
 pub use style::NotedeckTextStyle;
 pub use theme::ColorTheme;
 pub use time::time_ago_since;
@@ -54,6 +54,7 @@ pub use timecache::TimeCached;
 pub use unknowns::{get_unknown_note_ids, NoteRefsUnkIdAction, SingleUnkIdAction, UnknownIds};
 pub use urls::{supported_mime_hosted_at_url, SupportedMimeType, UrlMimes};
 pub use user_account::UserAccount;
+pub use wallet::{NoWallet, Wallet, WalletAction, WalletError, WalletState};
 
 // export libs
 pub use enostr;

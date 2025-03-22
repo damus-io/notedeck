@@ -69,7 +69,7 @@ impl<'a> AccountsView<'a> {
 
                 for i in 0..accounts.num_accounts() {
                     let (account_pubkey, has_nsec) = match accounts.get_account(i) {
-                        Some(acc) => (acc.pubkey.bytes(), acc.secret_key.is_some()),
+                        Some(acc) => (acc.key.pubkey.bytes(), acc.key.secret_key.is_some()),
                         None => continue,
                     };
 

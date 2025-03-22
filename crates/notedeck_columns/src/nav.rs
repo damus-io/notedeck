@@ -20,6 +20,7 @@ use crate::{
         profile::EditProfileView,
         search::{FocusState, SearchView},
         support::SupportView,
+        wallet::WalletView,
         RelayView, View,
     },
     Damus,
@@ -27,7 +28,7 @@ use crate::{
 
 use egui_nav::{Nav, NavAction, NavResponse, NavUiType};
 use nostrdb::Transaction;
-use notedeck::{AccountsAction, AppContext};
+use notedeck::{AccountsAction, AppContext, WalletAction};
 use tracing::error;
 
 #[allow(clippy::enum_variant_names)]
@@ -38,6 +39,7 @@ pub enum RenderNavAction {
     NoteAction(NoteAction),
     ProfileAction(ProfileAction),
     SwitchingAction(SwitchingAction),
+    WalletAction(WalletAction),
 }
 
 pub enum SwitchingAction {
@@ -194,6 +196,7 @@ impl RenderNavResponse {
                             .router_mut(),
                     );
                 }
+                RenderNavAction::WalletAction(wallet_action) => wallet_action.process(ctx.accounts),
             }
         }
 
@@ -370,7 +373,7 @@ fn render_nav_body(
         }
 
         Route::ComposeNote => {
-            let kp = ctx.accounts.get_selected_account()?.to_full()?;
+            let kp = ctx.accounts.get_selected_account()?.key.to_full()?;
             let draft = app.drafts.compose_mut();
 
             let txn = Transaction::new(ctx.ndb).expect("txn");
@@ -433,11 +436,9 @@ fn render_nav_body(
             let new_deck_state = app.view_state.id_to_deck_state.entry(id).or_default();
             let mut resp = None;
             if let Some(config_resp) = ConfigureDeckView::new(new_deck_state).ui(ui) {
-                if let Some(cur_acc) = ctx.accounts.get_selected_account() {
-                    app.decks_cache.add_deck(
-                        cur_acc.pubkey,
-                        Deck::new(config_resp.icon, config_resp.name),
-                    );
+                if let Some(cur_acc) = ctx.accounts.selected_account_pubkey() {
+                    app.decks_cache
+                        .add_deck(*cur_acc, Deck::new(config_resp.icon, config_resp.name));
 
                     // set new deck as active
                     let cur_index = get_decks_mut(ctx.accounts, &mut app.decks_cache)
@@ -462,11 +463,9 @@ fn render_nav_body(
                 .decks_mut()
                 .get_mut(*index)
                 .expect("index wasn't valid");
-            let id = ui.id().with((
-                "edit-deck",
-                ctx.accounts.get_selected_account().map(|k| k.pubkey),
-                index,
-            ));
+            let id = ui
+                .id()
+                .with(("edit-deck", ctx.accounts.selected_account_pubkey(), index));
             let deck_state = app
                 .view_state
                 .id_to_deck_state
@@ -518,6 +517,16 @@ fn render_nav_body(
                 error!("Pubkey in EditProfile route did not have an nsec attached in Accounts");
             }
             action
+        }
+        Route::Wallet => 's: {
+            let Some(cur_state) = ctx.accounts.get_selected_account_mut() else {
+                tracing::error!("User is trying to open the wallet without selecting an account");
+                break 's None;
+            };
+
+            WalletView::new(&mut cur_state.wallet_state, ctx.jobs)
+                .ui(ui)
+                .map(RenderNavAction::WalletAction)
         }
     }
 }

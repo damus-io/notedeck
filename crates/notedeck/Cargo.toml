@@ -31,12 +31,14 @@ bincode = { workspace = true }
 ehttp = {workspace = true }
 mime_guess = { workspace = true }
 egui-winit = { workspace = true }
+tokenator = { workspace = true }
+hashbrown = { workspace = true }
+tokio = { workspace = true }
+crossbeam = { workspace = true }
+nwc = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-
-[target.'cfg(target_os = "macos")'.dependencies]
-security-framework = { workspace = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = { workspace = true }

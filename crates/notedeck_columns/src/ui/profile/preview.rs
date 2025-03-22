@@ -166,7 +166,7 @@ pub fn get_account_url<'a>(
     account: Option<&UserAccount>,
 ) -> &'a str {
     if let Some(selected_account) = account {
-        if let Ok(profile) = ndb.get_profile_by_pubkey(txn, selected_account.pubkey.bytes()) {
+        if let Ok(profile) = ndb.get_profile_by_pubkey(txn, selected_account.key.pubkey.bytes()) {
             get_profile_url_owned(Some(profile))
         } else {
             get_profile_url_owned(None)
