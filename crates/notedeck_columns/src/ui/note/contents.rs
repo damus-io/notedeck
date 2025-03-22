@@ -1,15 +1,30 @@
+use std::cell::OnceCell;
+use std::collections::HashMap;
+
+use crate::blur::{imeta_blurhashes, Blur};
 use crate::gif::{handle_repaint, retrieve_latest_texture};
+use crate::images::generate_blurhash_texturehandle;
+use crate::ui::anim::AnimationHelper;
 use crate::ui::images::render_images;
 use crate::ui::{
     self,
     note::{NoteOptions, NoteResponse},
 };
 use crate::{actionbar::NoteAction, images::ImageType, timeline::TimelineKind};
-use egui::{Button, Color32, Hyperlink, Image, Response, RichText, Sense, Window};
+use egui::{
+    Button, Color32, CornerRadius, FontId, Hyperlink, Image, Rect, Response, RichText, Sense,
+    Spinner, Window,
+};
 use nostrdb::{BlockType, Mention, Ndb, Note, NoteKey, Transaction};
+use notedeck::fonts::get_font_size;
+use notedeck::jobs::{
+    BlurhashParams, Job, JobError, JobId, JobParams, JobParamsOwned, JobState, Jobs,
+};
 use tracing::warn;
 
-use notedeck::{supported_mime_hosted_at_url, Images, MediaCacheType, NoteCache};
+use notedeck::{
+    supported_mime_hosted_at_url, Images, MediaCacheType, NoteCache, NotedeckTextStyle, UrlMimes,
+};
 
 /// Aggregates dependencies to reduce the number of parameters
 /// passed to inner UI elements, minimizing prop drilling.
@@ -17,6 +32,7 @@ pub struct NoteContext<'d> {
     pub ndb: &'d Ndb,
     pub img_cache: &'d mut Images,
     pub note_cache: &'d mut NoteCache,
+    pub jobs: &'d mut notedeck::jobs::Jobs,
 }
 
 pub struct NoteContents<'a, 'd> {
@@ -24,7 +40,7 @@ pub struct NoteContents<'a, 'd> {
     txn: &'a Transaction,
     note: &'a Note<'a>,
     options: NoteOptions,
-    action: Option<NoteAction>,
+    response: NoteContentsResponse,
 }
 
 impl<'a, 'd> NoteContents<'a, 'd> {
@@ -40,20 +56,25 @@ impl<'a, 'd> NoteContents<'a, 'd> {
             txn,
             note,
             options,
-            action: None,
+            response: Default::default(),
         }
     }
 
     pub fn action(&self) -> &Option<NoteAction> {
-        &self.action
+        &self.response.note_action
+    }
+
+    pub fn media_action(&self) -> &Option<MediaAction> {
+        &self.response.media_action
     }
 }
 
 impl egui::Widget for &mut NoteContents<'_, '_> {
     fn ui(self, ui: &mut egui::Ui) -> egui::Response {
-        let result = render_note_contents(ui, self.note_context, self.txn, self.note, self.options);
-        self.action = result.action;
-        result.response
+        let (resp, result) =
+            render_note_contents(ui, self.note_context, self.txn, self.note, self.options);
+        self.response = result;
+        resp
     }
 }
 
@@ -117,6 +138,12 @@ pub fn render_note_preview(
         .inner
 }
 
+#[derive(Default)]
+struct NoteContentsResponse {
+    pub note_action: Option<NoteAction>,
+    pub media_action: Option<MediaAction>,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn render_note_contents(
     ui: &mut egui::Ui,
@@ -124,13 +151,12 @@ fn render_note_contents(
     txn: &Transaction,
     note: &Note,
     options: NoteOptions,
-) -> NoteResponse {
+) -> (egui::Response, NoteContentsResponse) {
     #[cfg(feature = "profiling")]
     puffin::profile_function!();
 
     let note_key = note.key().expect("todo: implement non-db notes");
     let selectable = options.has_selectable_text();
-    let mut images: Vec<(String, MediaCacheType)> = vec![];
     let mut note_action: Option<NoteAction> = None;
     let mut inline_note: Option<(&[u8; 32], &str)> = None;
     let hide_media = options.has_hide_media();
@@ -141,6 +167,9 @@ fn render_note_contents(
         let _ = ui.allocate_at_least(egui::vec2(ui.available_width(), 0.0), egui::Sense::click());
     }
 
+    let mut supported_medias: Vec<MediaRenderType> = vec![];
+    let blurhashes = OnceCell::new();
+
     let response = ui.horizontal_wrapped(|ui| {
         let blocks = if let Ok(blocks) = note_context.ndb.get_blocks_by_key(txn, note_key) {
             blocks
@@ -149,6 +178,8 @@ fn render_note_contents(
             ui.weak(note.content());
             return;
         };
+
+        let media_trusted = options.has_trusted_media();
 
         ui.spacing_mut().item_spacing.x = 0.0;
 
@@ -213,15 +244,23 @@ fn render_note_contents(
                 BlockType::Url => {
                     let mut found_supported = || -> bool {
                         let url = block.as_str();
-                        if let Some(cache_type) =
-                            supported_mime_hosted_at_url(&mut note_context.img_cache.urls, url)
-                        {
-                            images.push((url.to_string(), cache_type));
-                            true
-                        } else {
-                            false
-                        }
+
+                        let blurs = blurhashes.get_or_init(|| imeta_blurhashes(note));
+
+                        let Some(media_type) = find_supported_media_type(
+                            ui,
+                            &mut note_context.img_cache.urls,
+                            blurs,
+                            media_trusted,
+                            url,
+                        ) else {
+                            return false;
+                        };
+
+                        supported_medias.push(media_type);
+                        true
                     };
+
                     if hide_media || !found_supported() {
                         #[cfg(feature = "profiling")]
                         puffin::profile_scope!("url contents");
@@ -255,16 +294,52 @@ fn render_note_contents(
         None
     };
 
-    if !images.is_empty() && !options.has_textmode() {
+    let mut media_action = None;
+    if !supported_medias.is_empty() && !options.has_textmode() {
         ui.add_space(2.0);
         let carousel_id = egui::Id::new(("carousel", note.key().expect("expected tx note")));
-        image_carousel(ui, note_context.img_cache, images, carousel_id);
+
+        media_action = image_carousel(
+            ui,
+            note_context.img_cache,
+            note_context.jobs,
+            supported_medias,
+            carousel_id,
+        );
         ui.add_space(2.0);
     }
 
     let note_action = preview_note_action.or(note_action);
 
-    NoteResponse::new(response.response).with_action(note_action)
+    let contents_response = NoteContentsResponse {
+        note_action,
+        media_action,
+    };
+
+    (response.response, contents_response)
+}
+
+fn find_supported_media_type<'a>(
+    ui: &mut egui::Ui,
+    urls: &mut UrlMimes,
+    blurhashes: &'a HashMap<&'a str, Blur<'a>>,
+    media_trusted: bool,
+    url: &'a str,
+) -> Option<MediaRenderType<'a>> {
+    let media_type = supported_mime_hosted_at_url(urls, url)?;
+
+    if blur_media(ui, url, media_trusted) {
+        let blur_type = match blurhashes.get(url) {
+            Some(blur) => BlurType::Blurhash(RenderableBlur { url, blur }),
+            None => BlurType::Default(url),
+        };
+        Some(MediaRenderType::Untrusted(blur_type))
+    } else {
+        Some(MediaRenderType::Trusted(RenderableMedia {
+            url,
+            media_type,
+        }))
+    }
 }
 
 fn rot13(input: &str) -> String {
@@ -288,9 +363,10 @@ fn rot13(input: &str) -> String {
 fn image_carousel(
     ui: &mut egui::Ui,
     img_cache: &mut Images,
-    images: Vec<(String, MediaCacheType)>,
+    jobs: &mut Jobs,
+    medias: Vec<MediaRenderType>,
     carousel_id: egui::Id,
-) {
+) -> Option<MediaAction> {
     // let's make sure everything is within our area
 
     let height = 360.0;
@@ -303,60 +379,41 @@ fn image_carousel(
             .unwrap_or(false)
     });
 
-    let current_image = show_popup.then(|| {
-        ui.ctx().memory(|mem| {
+    let current_image = 'scope: {
+        if !show_popup {
+            break 'scope None;
+        }
+
+        let MediaRenderType::Trusted(media) = &medias[0] else {
+            break 'scope None;
+        };
+
+        Some(ui.ctx().memory(|mem| {
             mem.data
                 .get_temp::<(String, MediaCacheType)>(carousel_id.with("current_image"))
-                .unwrap_or_else(|| (images[0].0.clone(), images[0].1.clone()))
-        })
-    });
+                .unwrap_or_else(|| (media.url.to_owned(), media.media_type.clone()))
+        }))
+    };
+    let mut action = None;
 
     ui.add_sized([width, height], |ui: &mut egui::Ui| {
         egui::ScrollArea::horizontal()
             .id_salt(carousel_id)
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    for (image, cache_type) in images {
-                        render_images(
+                    for media in medias {
+                        if let Some(cur_action) = render_media(
                             ui,
                             img_cache,
-                            &image,
-                            ImageType::Content,
-                            cache_type.clone(),
-                            |ui| {
-                                ui.allocate_space(egui::vec2(spinsz, spinsz));
-                            },
-                            |ui, _| {
-                                ui.allocate_space(egui::vec2(spinsz, spinsz));
-                            },
-                            |ui, url, renderable_media, gifs| {
-                                let texture = handle_repaint(
-                                    ui,
-                                    retrieve_latest_texture(&image, gifs, renderable_media),
-                                );
-                                let img_resp = ui.add(
-                                    Button::image(
-                                        Image::new(texture)
-                                            .max_height(height)
-                                            .corner_radius(5.0)
-                                            .fit_to_original_size(1.0),
-                                    )
-                                    .frame(false),
-                                );
-
-                                if img_resp.clicked() {
-                                    ui.ctx().memory_mut(|mem| {
-                                        mem.data.insert_temp(carousel_id.with("show_popup"), true);
-                                        mem.data.insert_temp(
-                                            carousel_id.with("current_image"),
-                                            (image.clone(), cache_type.clone()),
-                                        );
-                                    });
-                                }
-
-                                copy_link(url, img_resp);
-                            },
-                        );
+                            jobs,
+                            media,
+                            width,
+                            height,
+                            spinsz,
+                            carousel_id,
+                        ) {
+                            action = Some(cur_action)
+                        }
                     }
                 })
                 .response
@@ -434,7 +491,7 @@ fn image_carousel(
                         |ui, _| {
                             ui.allocate_space(egui::vec2(spinsz, spinsz));
                         },
-                        |ui, url, renderable_media, gifs| {
+                        |ui, url, renderable_media, gifs, _| {
                             let texture = handle_repaint(
                                 ui,
                                 retrieve_latest_texture(&image, gifs, renderable_media),
@@ -538,6 +595,7 @@ fn image_carousel(
                 });
             });
     }
+    action
 }
 
 fn copy_link(url: &str, img_resp: Response) {
@@ -547,4 +605,283 @@ fn copy_link(url: &str, img_resp: Response) {
             ui.close_menu();
         }
     });
+}
+
+#[derive(Clone)]
+pub enum MediaAction {
+    Unblur(String),
+}
+
+impl MediaAction {
+    pub fn process(&self, ui: &egui::Ui) {
+        match &self {
+            MediaAction::Unblur(url) => send_unblur_signal(ui.ctx(), url),
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_media(
+    ui: &mut egui::Ui,
+    img_cache: &mut Images,
+    jobs: &mut Jobs,
+    media_type: MediaRenderType,
+    width: f32,
+    height: f32,
+    spinsz: f32,
+    carousel_id: egui::Id,
+) -> Option<MediaAction> {
+    match media_type {
+        MediaRenderType::Trusted(renderable_media) => {
+            render_image(
+                ui,
+                img_cache,
+                renderable_media.url,
+                renderable_media.media_type,
+                height,
+                spinsz,
+                carousel_id,
+            );
+            None
+        }
+        MediaRenderType::Untrusted(blur_type) => match blur_type {
+            BlurType::Blurhash(renderable_blur) => {
+                let pixel_sizes = if let Some(media_size) = renderable_blur.blur.dimensions {
+                    to_pixel_sizes(width, height, media_size.0, media_size.1)
+                } else {
+                    (width.round() as u32, height.round() as u32)
+                };
+
+                render_blurhash(ui, jobs, &renderable_blur, pixel_sizes)
+            }
+            BlurType::Default(url) => {
+                let resp = render_default_blur(ui, height, url);
+
+                if resp.clicked() {
+                    Some(MediaAction::Unblur(url.to_owned()))
+                } else {
+                    None
+                }
+            }
+        },
+    }
+}
+
+fn render_default_blur(ui: &mut egui::Ui, height: f32, url: &str) -> egui::Response {
+    let helper = AnimationHelper::new(ui, ("show_media", url), egui::vec2(height, height));
+
+    let painter = ui.painter_at(helper.get_animation_rect());
+
+    painter.rect_filled(
+        helper.get_animation_rect(),
+        CornerRadius::same(8),
+        crate::colors::MID_GRAY,
+    );
+
+    let text_style = NotedeckTextStyle::Heading2;
+
+    let fontid = FontId::new(
+        helper.scale_1d_pos(get_font_size(ui.ctx(), &text_style)),
+        text_style.font_family(),
+    );
+    let galley = painter.layout_no_wrap("Show".to_owned(), fontid, ui.visuals().text_color());
+
+    let galley_pos = {
+        let mut pos = helper.get_animation_rect().center();
+        pos.x -= galley.rect.width() / 2.0;
+        pos.y -= galley.rect.height() / 2.0;
+        pos
+    };
+
+    let border_rect =
+        Rect::from_center_size(helper.get_animation_rect().center(), galley.rect.size())
+            .expand(helper.scale_1d_pos(16.0));
+
+    painter.rect_filled(
+        border_rect,
+        helper.scale_1d_pos(24.0),
+        ui.visuals().widgets.inactive.bg_stroke.color,
+    );
+
+    painter.galley(galley_pos, galley, egui::Color32::GRAY);
+
+    helper
+        .take_animation_response()
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+fn send_unblur_signal(ctx: &egui::Context, url: &str) {
+    let id = egui::Id::new(("blur", url));
+    ctx.data_mut(|d| d.insert_temp(id, false))
+}
+
+fn blur_media(ui: &mut egui::Ui, url: &str, media_trusted: bool) -> bool {
+    !media_trusted && {
+        let id = egui::Id::new(("blur", url));
+        ui.ctx().data(|d| d.get_temp(id)).unwrap_or_else(|| {
+            ui.ctx().data_mut(|d| d.insert_temp(id, true));
+            true
+        })
+    }
+}
+
+fn to_pixel_sizes(
+    window_width: f32,
+    window_height: f32,
+    media_width: u32,
+    media_height: u32,
+) -> (u32, u32) {
+    let scale_x = window_width / media_width as f32;
+    let scale_y = window_height / media_height as f32;
+    let scale = scale_x.min(scale_y); // Use the smaller scale factor
+
+    let new_width = (media_width as f32 * scale) as u32;
+    let new_height = (media_height as f32 * scale) as u32;
+
+    (new_width, new_height)
+}
+
+fn render_blurhash(
+    ui: &mut egui::Ui,
+    jobs: &mut Jobs,
+    renderable_blur: &RenderableBlur,
+    dims: (u32, u32),
+) -> Option<MediaAction> {
+    let params = BlurhashParams {
+        blurhash: renderable_blur.blur.blurhash,
+        url: renderable_blur.url,
+        ctx: ui.ctx(),
+    };
+
+    let job_state = jobs.get_or_insert_with(
+        &JobId::Blurhash(renderable_blur.url),
+        Some(JobParams::Blurhash(params)),
+        move |params| async move { compute_blurhash(params, dims) },
+    );
+
+    let JobState::Completed(m_blur_job) = job_state else {
+        return None;
+    };
+
+    #[allow(irrefutable_let_patterns)]
+    let Job::ProcessBlurhash(m_texture_handle) = m_blur_job
+    else {
+        tracing::error!("Did not get the correct job type: {:?}", m_blur_job);
+        return None;
+    };
+
+    let Some(texture_handle) = &m_texture_handle else {
+        return None;
+    };
+
+    let resp = ui.add(
+        Image::new(texture_handle)
+            .max_height(dims.1 as f32)
+            .corner_radius(5.0)
+            .fit_to_original_size(1.0),
+    );
+
+    // need click sense
+    if ui
+        .allocate_rect(resp.rect, egui::Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .clicked()
+    {
+        Some(MediaAction::Unblur(renderable_blur.url.to_owned()))
+    } else {
+        None
+    }
+}
+
+fn compute_blurhash(params: Option<JobParamsOwned>, dims: (u32, u32)) -> Result<Job, JobError> {
+    #[allow(irrefutable_let_patterns)]
+    let Some(JobParamsOwned::Blurhash(params)) = params
+    else {
+        return Err(JobError::InvalidParameters);
+    };
+
+    let maybe_handle = match generate_blurhash_texturehandle(
+        &params.ctx,
+        &params.blurhash,
+        &params.url,
+        dims.0,
+        dims.1,
+    ) {
+        Ok(tex) => Some(tex),
+        Err(e) => {
+            tracing::error!("failed to render blurhash: {e}");
+            None
+        }
+    };
+
+    Ok(Job::ProcessBlurhash(maybe_handle))
+}
+
+struct RenderableMedia<'a> {
+    url: &'a str,
+    media_type: MediaCacheType,
+}
+
+struct RenderableBlur<'a> {
+    pub url: &'a str,
+    pub blur: &'a Blur<'a>,
+}
+
+enum BlurType<'a> {
+    Blurhash(RenderableBlur<'a>),
+    Default(&'a str),
+}
+
+enum MediaRenderType<'a> {
+    Trusted(RenderableMedia<'a>),
+    Untrusted(BlurType<'a>),
+}
+
+fn render_image(
+    ui: &mut egui::Ui,
+    img_cache: &mut Images,
+    image: &str,
+    cache_type: MediaCacheType,
+    height: f32,
+    spinsz: f32,
+    carousel_id: egui::Id,
+) {
+    render_images(
+        ui,
+        img_cache,
+        image,
+        ImageType::Content,
+        cache_type,
+        |ui| {
+            ui.add(Spinner::new().size(spinsz));
+        },
+        |ui, _| {
+            ui.allocate_space(egui::vec2(spinsz, spinsz));
+        },
+        |ui, url, renderable_media, gifs, cache_type| {
+            let texture =
+                handle_repaint(ui, retrieve_latest_texture(image, gifs, renderable_media));
+            let img_resp = ui.add(
+                Button::image(
+                    Image::new(texture)
+                        .max_height(height)
+                        .corner_radius(5.0)
+                        .fit_to_original_size(1.0),
+                )
+                .frame(false),
+            );
+
+            if img_resp.clicked() {
+                ui.ctx().memory_mut(|mem| {
+                    mem.data.insert_temp(carousel_id.with("show_popup"), true);
+                    mem.data.insert_temp(
+                        carousel_id.with("current_image"),
+                        (url.to_owned(), cache_type.clone()),
+                    );
+                });
+            }
+
+            copy_link(url, img_resp);
+        },
+    );
 }

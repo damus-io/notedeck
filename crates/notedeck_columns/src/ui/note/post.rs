@@ -436,7 +436,7 @@ impl<'a, 'd> PostView<'a, 'd> {
                         self.draft.upload_errors.push(e.to_string());
                         error!("{e}");
                     },
-                    |ui, url, renderable_media, gifs| {
+                    |ui, url, renderable_media, gifs, _| {
                         let media_size = vec2(width as f32, height as f32);
                         let max_size = vec2(300.0, 300.0);
                         let size = if media_size.x > max_size.x || media_size.y > max_size.y {
@@ -732,6 +732,7 @@ mod preview {
                 ndb: app.ndb,
                 img_cache: app.img_cache,
                 note_cache: app.note_cache,
+                jobs: app.jobs,
             };
 
             PostView::new(

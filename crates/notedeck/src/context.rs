@@ -1,4 +1,4 @@
-use crate::{Accounts, Args, DataPath, Images, NoteCache, ThemeHandler, UnknownIds};
+use crate::{jobs::Jobs, Accounts, Args, DataPath, Images, NoteCache, ThemeHandler, UnknownIds};
 use egui_winit::clipboard::Clipboard;
 
 use enostr::RelayPool;
@@ -17,4 +17,5 @@ pub struct AppContext<'a> {
     pub args: &'a Args,
     pub theme: &'a mut ThemeHandler,
     pub clipboard: &'a mut Clipboard,
+    pub jobs: &'a mut Jobs,
 }
