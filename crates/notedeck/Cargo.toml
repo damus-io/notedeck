@@ -15,6 +15,7 @@ enostr = { workspace = true }
 nostr = { workspace = true }
 egui = { workspace = true }
 eframe = { workspace = true }
+futures = { workspace = true }
 image = { workspace = true }
 base32 = { workspace = true }
 poll-promise = { workspace = true }
@@ -32,9 +33,11 @@ ehttp = {workspace = true }
 mime_guess = { workspace = true }
 egui-winit = { workspace = true }
 tokenator = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "fs"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+nostr = { workspace = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = { workspace = true }

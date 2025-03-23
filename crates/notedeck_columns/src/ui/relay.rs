@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use crate::colors::PINK;
 use crate::relay_pool_manager::{RelayPoolManager, RelayStatus};
@@ -76,6 +76,12 @@ impl<'a> RelayView<'a> {
 
     /// Show the current relays and return a relay the user selected to delete
     fn show_relays(&'a self, ui: &mut Ui) -> Option<String> {
+        let advertised_relays: BTreeSet<String> = self
+            .accounts
+            .get_advertised_relays()
+            .into_iter()
+            .map(|rs| rs.url)
+            .collect();
         let mut relay_to_remove = None;
         for (index, relay_info) in self.manager.get_relay_infos().iter().enumerate() {
             ui.add_space(8.0);
@@ -113,10 +119,13 @@ impl<'a> RelayView<'a> {
                         });
 
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if ui.add(delete_button(ui.visuals().dark_mode)).clicked() {
-                                relay_to_remove = Some(relay_info.relay_url.to_string());
-                            };
-
+                            if advertised_relays.contains(relay_info.relay_url) {
+                                if ui.add(delete_button(ui.visuals().dark_mode)).clicked() {
+                                    relay_to_remove = Some(relay_info.relay_url.to_string());
+                                };
+                            } else {
+                                ui.add_space(16.0);
+                            }
                             show_connection_status(ui, relay_info.status);
                         });
                     });
