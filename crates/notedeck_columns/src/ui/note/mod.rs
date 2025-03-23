@@ -307,15 +307,13 @@ impl<'a, 'd> NoteView<'a, 'd> {
         }
     }
 
+    #[profiling::function]
     fn note_header(
         ui: &mut egui::Ui,
         note_cache: &mut NoteCache,
         note: &Note,
         profile: &Result<nostrdb::ProfileRecord<'_>, nostrdb::Error>,
     ) {
-        #[cfg(feature = "profiling")]
-        puffin::profile_function!();
-
         let note_key = note.key().unwrap();
 
         ui.horizontal(|ui| {
@@ -327,9 +325,8 @@ impl<'a, 'd> NoteView<'a, 'd> {
         });
     }
 
+    #[profiling::function]
     fn show_standard(&mut self, ui: &mut egui::Ui) -> NoteResponse {
-        #[cfg(feature = "profiling")]
-        puffin::profile_function!();
         let note_key = self.note.key().expect("todo: support non-db notes");
         let txn = self.note.txn().expect("todo: support non-db notes");
 
@@ -563,14 +560,12 @@ fn note_hitbox_clicked(
     }
 }
 
+#[profiling::function]
 fn render_note_actionbar(
     ui: &mut egui::Ui,
     note_id: &[u8; 32],
     note_key: NoteKey,
 ) -> egui::InnerResponse<Option<NoteAction>> {
-    #[cfg(feature = "profiling")]
-    puffin::profile_function!();
-
     ui.horizontal(|ui| {
         let reply_resp = reply_button(ui, note_key);
         let quote_resp = quote_repost_button(ui, note_key);
@@ -590,14 +585,12 @@ fn secondary_label(ui: &mut egui::Ui, s: impl Into<String>) {
     ui.add(Label::new(RichText::new(s).size(10.0).color(color)));
 }
 
+#[profiling::function]
 fn render_reltime(
     ui: &mut egui::Ui,
     note_cache: &mut CachedNote,
     before: bool,
 ) -> egui::InnerResponse<()> {
-    #[cfg(feature = "profiling")]
-    puffin::profile_function!();
-
     ui.horizontal(|ui| {
         if before {
             secondary_label(ui, "⋅");

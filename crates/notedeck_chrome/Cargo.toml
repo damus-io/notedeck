@@ -23,6 +23,7 @@ tokio = { workspace = true }
 tracing-appender = { workspace = true }
 tracing-subscriber = { workspace = true }
 tracing = { workspace = true }
+profiling = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
@@ -40,7 +41,7 @@ path = "src/preview.rs"
 
 [features]
 default = []
-profiling = ["notedeck_columns/puffin", "puffin", "puffin_egui"]
+puffin = ["profiling/profile-with-puffin", "dep:puffin"]
 debug-widget-callstack = ["egui/callstack"]
 debug-interactive-widgets = []
 

@@ -97,10 +97,8 @@ impl NoteContextButton {
         Self::max_distance_between_circles() / Self::expansion_multiple()
     }
 
+    #[profiling::function]
     pub fn show(ui: &mut egui::Ui, note_key: NoteKey, put_at: Rect) -> egui::Response {
-        #[cfg(feature = "profiling")]
-        puffin::profile_function!();
-
         let id = ui.id().with(("more_options_anim", note_key));
 
         let min_radius = Self::min_radius();
@@ -138,13 +136,11 @@ impl NoteContextButton {
         response
     }
 
+    #[profiling::function]
     pub fn menu(
         ui: &mut egui::Ui,
         button_response: egui::Response,
     ) -> Option<NoteContextSelection> {
-        #[cfg(feature = "profiling")]
-        puffin::profile_function!();
-
         let mut context_selection: Option<NoteContextSelection> = None;
 
         stationary_arbitrary_menu_button(ui, button_response, |ui| {

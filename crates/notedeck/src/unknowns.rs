@@ -246,6 +246,7 @@ impl UnknownId {
 /// We return all of this in a HashSet so that we can fetch these from
 /// remote relays.
 ///
+#[profiling::function]
 pub fn get_unknown_note_ids<'a>(
     ndb: &Ndb,
     cached_note: &CachedNote,
@@ -253,9 +254,6 @@ pub fn get_unknown_note_ids<'a>(
     note: &Note<'a>,
     ids: &mut HashMap<UnknownId, HashSet<RelayUrl>>,
 ) -> Result<()> {
-    #[cfg(feature = "profiling")]
-    puffin::profile_function!();
-
     // the author pubkey
     if ndb.get_profile_by_pubkey(txn, note.pubkey()).is_err() {
         ids.entry(UnknownId::Pubkey(Pubkey::new(*note.pubkey())))

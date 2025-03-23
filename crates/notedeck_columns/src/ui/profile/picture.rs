@@ -80,6 +80,7 @@ impl<'cache, 'url> ProfilePic<'cache, 'url> {
     }
 }
 
+#[profiling::function]
 fn render_pfp(
     ui: &mut egui::Ui,
     img_cache: &mut Images,
@@ -87,9 +88,6 @@ fn render_pfp(
     ui_size: f32,
     border: Option<Stroke>,
 ) -> egui::Response {
-    #[cfg(feature = "profiling")]
-    puffin::profile_function!();
-
     // We will want to downsample these so it's not blurry on hi res displays
     let img_size = 128u32;
 
@@ -116,15 +114,13 @@ fn render_pfp(
     )
 }
 
+#[profiling::function]
 fn pfp_image(
     ui: &mut egui::Ui,
     img: &TextureHandle,
     size: f32,
     border: Option<Stroke>,
 ) -> egui::Response {
-    #[cfg(feature = "profiling")]
-    puffin::profile_function!();
-
     let (rect, response) = ui.allocate_at_least(vec2(size, size), Sense::hover());
     if let Some(stroke) = border {
         draw_bg_border(ui, rect.center(), size, stroke);

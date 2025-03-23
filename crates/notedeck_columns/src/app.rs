@@ -507,10 +507,8 @@ fn circle_icon(ui: &mut egui::Ui, openness: f32, response: &egui::Response) {
 }
 */
 
+#[profiling::function]
 fn render_damus_mobile(app: &mut Damus, app_ctx: &mut AppContext<'_>, ui: &mut egui::Ui) {
-    #[cfg(feature = "profiling")]
-    puffin::profile_function!();
-
     //let routes = app.timelines[0].routes.clone();
 
     if !app.columns(app_ctx.accounts).columns().is_empty()
@@ -522,10 +520,8 @@ fn render_damus_mobile(app: &mut Damus, app_ctx: &mut AppContext<'_>, ui: &mut e
     }
 }
 
+#[profiling::function]
 fn render_damus_desktop(app: &mut Damus, app_ctx: &mut AppContext<'_>, ui: &mut egui::Ui) {
-    #[cfg(feature = "profiling")]
-    puffin::profile_function!();
-
     let screen_size = ui.ctx().screen_rect().width();
     let calc_panel_width = (screen_size
         / get_active_columns(app_ctx.accounts, &app.decks_cache).num_columns() as f32)

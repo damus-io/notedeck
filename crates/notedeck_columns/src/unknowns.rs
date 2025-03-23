@@ -25,6 +25,7 @@ pub fn update_from_columns(
     }
 }
 
+#[profiling::function]
 pub fn get_unknown_ids(
     txn: &Transaction,
     unknown_ids: &mut UnknownIds,
@@ -32,9 +33,6 @@ pub fn get_unknown_ids(
     ndb: &Ndb,
     note_cache: &mut NoteCache,
 ) -> Result<()> {
-    #[cfg(feature = "profiling")]
-    puffin::profile_function!();
-
     let mut new_cached_notes: Vec<(NoteKey, CachedNote)> = vec![];
 
     for (_kind, timeline) in timeline_cache.timelines.iter() {

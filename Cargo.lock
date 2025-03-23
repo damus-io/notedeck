@@ -2740,6 +2740,7 @@ dependencies = [
  "nostr",
  "nostrdb",
  "poll-promise",
+ "profiling",
  "puffin",
  "puffin_egui",
  "serde",
@@ -2765,6 +2766,7 @@ dependencies = [
  "egui_extras",
  "notedeck",
  "notedeck_columns",
+ "profiling",
  "puffin",
  "puffin_egui",
  "serde",
@@ -2803,6 +2805,7 @@ dependencies = [
  "open",
  "poll-promise",
  "pretty_assertions",
+ "profiling",
  "puffin",
  "puffin_egui",
  "rfd",
@@ -3487,6 +3490,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "afbdc74edc00b6f6a218ca6a5364d6226a259d4b8ea1af4a0ea063f27e179f4d"
 dependencies = [
  "profiling-procmacros",
+ "puffin",
 ]
 
 [[package]]

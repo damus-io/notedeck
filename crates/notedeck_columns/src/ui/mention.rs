@@ -63,6 +63,7 @@ impl egui::Widget for Mention<'_> {
 }
 
 #[allow(clippy::too_many_arguments)]
+#[profiling::function]
 fn mention_ui(
     ndb: &Ndb,
     img_cache: &mut Images,
@@ -72,9 +73,6 @@ fn mention_ui(
     size: f32,
     selectable: bool,
 ) -> egui::InnerResponse<Option<NoteAction>> {
-    #[cfg(feature = "profiling")]
-    puffin::profile_function!();
-
     let link_color = ui.visuals().hyperlink_color;
 
     ui.horizontal(|ui| {

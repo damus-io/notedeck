@@ -49,6 +49,7 @@ uuid = { workspace = true }
 sha2 = { workspace = true }
 base64 = { workspace = true }
 egui-winit = { workspace = true }
+profiling = { workspace = true }
 
 [target.'cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))'.dependencies]
 rfd = "0.15"
@@ -62,5 +63,5 @@ security-framework = "2.11.0"
 
 [features]
 default = []
-profiling = ["puffin", "puffin_egui"]
+puffin = ["dep:puffin", "profiling/profile-with-puffin"]
 

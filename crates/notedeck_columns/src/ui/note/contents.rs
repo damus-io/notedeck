@@ -60,6 +60,7 @@ impl egui::Widget for &mut NoteContents<'_, '_> {
 /// Render an inline note preview with a border. These are used when
 /// notes are references within a note
 #[allow(clippy::too_many_arguments)]
+#[profiling::function]
 pub fn render_note_preview(
     ui: &mut egui::Ui,
     note_context: &mut NoteContext,
@@ -68,9 +69,6 @@ pub fn render_note_preview(
     parent: NoteKey,
     note_options: NoteOptions,
 ) -> NoteResponse {
-    #[cfg(feature = "profiling")]
-    puffin::profile_function!();
-
     let note = if let Ok(note) = note_context.ndb.get_note_by_id(txn, id) {
         // TODO: support other preview kinds
         if note.kind() == 1 {
@@ -118,6 +116,7 @@ pub fn render_note_preview(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[profiling::function]
 fn render_note_contents(
     ui: &mut egui::Ui,
     note_context: &mut NoteContext,
@@ -125,9 +124,6 @@ fn render_note_contents(
     note: &Note,
     options: NoteOptions,
 ) -> NoteResponse {
-    #[cfg(feature = "profiling")]
-    puffin::profile_function!();
-
     let note_key = note.key().expect("todo: implement non-db notes");
     let selectable = options.has_selectable_text();
     let mut images: Vec<(String, MediaCacheType)> = vec![];
@@ -197,8 +193,6 @@ fn render_note_contents(
                 },
 
                 BlockType::Hashtag => {
-                    #[cfg(feature = "profiling")]
-                    puffin::profile_scope!("hashtag contents");
                     let resp = ui.colored_label(link_color, format!("#{}", block.as_str()));
 
                     if resp.clicked() {
@@ -223,8 +217,6 @@ fn render_note_contents(
                         }
                     };
                     if hide_media || !found_supported() {
-                        #[cfg(feature = "profiling")]
-                        puffin::profile_scope!("url contents");
                         ui.add(Hyperlink::from_label_and_url(
                             RichText::new(block.as_str()).color(link_color),
                             block.as_str(),
@@ -233,8 +225,6 @@ fn render_note_contents(
                 }
 
                 BlockType::Text => {
-                    #[cfg(feature = "profiling")]
-                    puffin::profile_scope!("text contents");
                     if options.has_scramble_text() {
                         ui.add(egui::Label::new(rot13(block.as_str())).selectable(selectable));
                     } else {

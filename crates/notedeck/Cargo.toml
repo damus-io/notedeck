@@ -32,6 +32,7 @@ ehttp = {workspace = true }
 mime_guess = { workspace = true }
 egui-winit = { workspace = true }
 tokenator = { workspace = true }
+profiling = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
@@ -40,4 +41,4 @@ tempfile = { workspace = true }
 jni = { workspace = true }
 
 [features]
-profiling = ["puffin", "puffin_egui"]
+puffin = ["puffin_egui", "dep:puffin"]

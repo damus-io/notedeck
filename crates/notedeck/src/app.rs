@@ -76,8 +76,7 @@ fn render_notedeck(notedeck: &mut Notedeck, ctx: &egui::Context) {
 
 impl eframe::App for Notedeck {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        #[cfg(feature = "profiling")]
-        puffin::GlobalProfiler::lock().new_frame();
+        profiling::finish_frame!();
 
         // handle account updates
         self.accounts.update(&mut self.ndb, &mut self.pool, ctx);
@@ -97,7 +96,7 @@ impl eframe::App for Notedeck {
             }
         }
 
-        #[cfg(feature = "profiling")]
+        #[cfg(feature = "puffin")]
         puffin_egui::profiler_window(ctx);
     }
 
@@ -107,15 +106,16 @@ impl eframe::App for Notedeck {
     }
 }
 
-#[cfg(feature = "profiling")]
-fn setup_profiling() {
+#[cfg(feature = "puffin")]
+fn setup_puffin() {
+    info!("setting up puffin");
     puffin::set_scopes_on(true); // tell puffin to collect data
 }
 
 impl Notedeck {
     pub fn new<P: AsRef<Path>>(ctx: &egui::Context, data_path: P, args: &[String]) -> Self {
-        #[cfg(feature = "profiling")]
-        setup_profiling();
+        #[cfg(feature = "puffin")]
+        setup_puffin();
 
         // Skip the first argument, which is the program name.
         let (parsed_args, unrecognized_args) = Args::parse(&args[1..]);

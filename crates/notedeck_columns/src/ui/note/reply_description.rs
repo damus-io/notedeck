@@ -8,6 +8,7 @@ use nostrdb::{Note, NoteReply, Transaction};
 use super::{contents::NoteContext, NoteOptions};
 
 #[must_use = "Please handle the resulting note action"]
+#[profiling::function]
 pub fn reply_desc(
     ui: &mut egui::Ui,
     txn: &Transaction,
@@ -15,9 +16,6 @@ pub fn reply_desc(
     note_context: &mut NoteContext,
     note_options: NoteOptions,
 ) -> Option<NoteAction> {
-    #[cfg(feature = "profiling")]
-    puffin::profile_function!();
-
     let mut note_action: Option<NoteAction> = None;
     let size = 10.0;
     let selectable = false;
