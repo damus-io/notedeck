@@ -1,6 +1,6 @@
 use egui::{
     style::{Selection, WidgetVisuals, Widgets},
-    Color32, CornerRadius, Shadow, Stroke, Visuals,
+    Color32, CornerRadius, Stroke, Visuals,
 };
 
 pub struct ColorTheme {
@@ -82,17 +82,6 @@ pub fn create_themed_visuals(theme: ColorTheme, default: Visuals) -> Visuals {
         },
         extreme_bg_color: theme.extreme_bg_color,
         error_fg_color: theme.err_fg_color,
-        window_fill: theme.window_fill,
-        window_shadow: Shadow {
-            offset: [0, 8],
-            blur: 24,
-            spread: 0,
-            color: egui::Color32::from_rgba_unmultiplied(0x6D, 0x6D, 0x6D, 0x14),
-        },
-        window_stroke: Stroke {
-            width: 1.0,
-            color: theme.window_stroke_color,
-        },
         image_loading_spinners: false,
         ..default
     }

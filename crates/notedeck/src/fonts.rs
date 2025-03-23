@@ -22,8 +22,8 @@ impl NamedFontFamily {
 
 pub fn desktop_font_size(text_style: &NotedeckTextStyle) -> f32 {
     match text_style {
-        NotedeckTextStyle::Heading => 48.0,
-        NotedeckTextStyle::Heading2 => 24.0,
+        NotedeckTextStyle::Heading => 24.0,
+        NotedeckTextStyle::Heading2 => 22.0,
         NotedeckTextStyle::Heading3 => 20.0,
         NotedeckTextStyle::Heading4 => 14.0,
         NotedeckTextStyle::Body => 16.0,
@@ -37,8 +37,8 @@ pub fn desktop_font_size(text_style: &NotedeckTextStyle) -> f32 {
 pub fn mobile_font_size(text_style: &NotedeckTextStyle) -> f32 {
     // TODO: tweak text sizes for optimal mobile viewing
     match text_style {
-        NotedeckTextStyle::Heading => 48.0,
-        NotedeckTextStyle::Heading2 => 24.0,
+        NotedeckTextStyle::Heading => 24.0,
+        NotedeckTextStyle::Heading2 => 22.0,
         NotedeckTextStyle::Heading3 => 20.0,
         NotedeckTextStyle::Heading4 => 14.0,
         NotedeckTextStyle::Body => 13.0,
