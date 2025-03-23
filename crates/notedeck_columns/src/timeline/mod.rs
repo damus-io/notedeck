@@ -119,7 +119,7 @@ impl TimelineTab {
         let selection = 0i32;
         let mut list = VirtualList::new();
         list.hide_on_resize(None);
-        list.over_scan(1000.0);
+        list.over_scan(50.0);
         let list = Rc::new(RefCell::new(list));
         let notes: Vec<NoteRef> = Vec::with_capacity(cap);
 
