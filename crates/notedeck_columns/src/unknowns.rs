@@ -1,3 +1,4 @@
+/*
 use crate::{timeline::TimelineCache, Result};
 use nostrdb::{Ndb, NoteKey, Transaction};
 use notedeck::{CachedNote, NoteCache, UnknownIds};
@@ -67,3 +68,4 @@ pub fn get_unknown_ids(
 
     Ok(())
 }
+*/

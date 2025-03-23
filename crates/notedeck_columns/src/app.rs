@@ -8,7 +8,6 @@ use crate::{
     support::Support,
     timeline::{self, TimelineCache},
     ui::{self, note::NoteOptions, DesktopSidePanel},
-    unknowns,
     view_state::ViewState,
     Result,
 };
@@ -221,18 +220,18 @@ fn handle_eose(
             // eose on timeline? whatevs
         }
         SubKind::Initial => {
-            let txn = Transaction::new(ctx.ndb)?;
-            unknowns::update_from_columns(
-                &txn,
-                ctx.unknown_ids,
-                timeline_cache,
-                ctx.ndb,
-                ctx.note_cache,
-            );
-            // this is possible if this is the first time
-            if ctx.unknown_ids.ready_to_send() {
-                unknown_id_send(ctx.unknown_ids, ctx.pool);
-            }
+            //let txn = Transaction::new(ctx.ndb)?;
+            //unknowns::update_from_columns(
+            //    &txn,
+            //    ctx.unknown_ids,
+            //    timeline_cache,
+            //    ctx.ndb,
+            //    ctx.note_cache,
+            //);
+            //// this is possible if this is the first time
+            //if ctx.unknown_ids.ready_to_send() {
+            //    unknown_id_send(ctx.unknown_ids, ctx.pool);
+            //}
         }
 
         // oneshot subs just close when they're done
