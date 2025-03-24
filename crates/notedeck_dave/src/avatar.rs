@@ -143,6 +143,7 @@ impl DaveAvatar {
                 r#"
 struct Uniforms {
     model_view_proj: mat4x4<f32>,
+    model: mat4x4<f32>,    // Added model matrix for correct normal transformation
 };
 
 @group(0) @binding(0)
@@ -150,7 +151,8 @@ var<uniform> uniforms: Uniforms;
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
-    @location(0) color: vec4<f32>,
+    @location(0) normal: vec3<f32>,
+    @location(1) world_pos: vec3<f32>,
 };
 
 @vertex
@@ -183,14 +185,14 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
         2, 6, 3, 3, 6, 7
     );
     
-    // Define colors for each face
-    var face_colors = array<vec4<f32>, 6>(
-        vec4<f32>(1.0, 0.0, 0.0, 1.0),  // back: red
-        vec4<f32>(0.0, 1.0, 0.0, 1.0),  // front: green
-        vec4<f32>(0.0, 0.0, 1.0, 1.0),  // left: blue
-        vec4<f32>(1.0, 1.0, 0.0, 1.0),  // right: yellow
-        vec4<f32>(1.0, 0.0, 1.0, 1.0),  // bottom: magenta
-        vec4<f32>(0.0, 1.0, 1.0, 1.0)   // top: cyan
+    // Define normals for each face
+    var face_normals = array<vec3<f32>, 6>(
+        vec3<f32>(0.0, 0.0, -1.0),  // back face (Z-)
+        vec3<f32>(0.0, 0.0, 1.0),   // front face (Z+)
+        vec3<f32>(-1.0, 0.0, 0.0),  // left face (X-)
+        vec3<f32>(1.0, 0.0, 0.0),   // right face (X+)
+        vec3<f32>(0.0, -1.0, 0.0),  // bottom face (Y-)
+        vec3<f32>(0.0, 1.0, 0.0)    // top face (Y+)
     );
 
     var output: VertexOutput;
@@ -202,28 +204,69 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
     // Determine which face this vertex belongs to
     let face_index = vertex_index / 6u;
     
-    // Apply model-view-projection matrix
+    // Apply transformations
     output.position = uniforms.model_view_proj * vec4<f32>(position, 1.0);
     
-    // Set color based on face
-    output.color = face_colors[face_index];
+    // Transform normal to world space
+    // Extract the 3x3 rotation part from the 4x4 model matrix
+    let normal_matrix = mat3x3<f32>(
+        uniforms.model[0].xyz,
+        uniforms.model[1].xyz,
+        uniforms.model[2].xyz
+    );
+    output.normal = normalize(normal_matrix * face_normals[face_index]);
+    
+    // Pass world position for lighting calculations
+    output.world_pos = (uniforms.model * vec4<f32>(position, 1.0)).xyz;
     
     return output;
 }
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    return in.color;
+    // Material properties
+    let material_color = vec3<f32>(1.0, 1.0, 1.0);  // White color
+    let ambient_strength = 0.2;
+    let diffuse_strength = 0.7;
+    let specular_strength = 0.2;
+    let shininess = 20.0;
+    
+    // Light properties
+    let light_pos = vec3<f32>(2.0, 2.0, 2.0);  // Light positioned diagonally above and to the right
+    let light_color = vec3<f32>(1.0, 1.0, 1.0); // White light
+    
+    // View position (camera)
+    let view_pos = vec3<f32>(0.0, 0.0, 3.0);   // Camera position
+    
+    // Calculate ambient lighting
+    let ambient = ambient_strength * light_color;
+    
+    // Calculate diffuse lighting
+    let normal = normalize(in.normal);  // Renormalize the interpolated normal
+    let light_dir = normalize(light_pos - in.world_pos);
+    let diff = max(dot(normal, light_dir), 0.0);
+    let diffuse = diffuse_strength * diff * light_color;
+    
+    // Calculate specular lighting
+    let view_dir = normalize(view_pos - in.world_pos);
+    let reflect_dir = reflect(-light_dir, normal);
+    let spec = pow(max(dot(view_dir, reflect_dir), 0.0), shininess);
+    let specular = specular_strength * spec * light_color;
+    
+    // Combine lighting components
+    let result = (ambient + diffuse + specular) * material_color;
+    
+    return vec4<f32>(result, 1.0);
 }
 "#
                 .into(),
             ),
         });
 
-        // Create uniform buffer for MVP matrix
+        // Create uniform buffer for MVP matrix and model matrix
         let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("cube_uniform_buffer"),
-            size: 64, // 4x4 matrix of f32 (16 * 4 bytes)
+            size: 128, // Two 4x4 matrices of f32 (2 * 16 * 4 bytes)
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -237,7 +280,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
-                    min_binding_size: NonZeroU64::new(64),
+                    min_binding_size: NonZeroU64::new(128),
                 },
                 count: None,
             }],
@@ -361,7 +404,10 @@ impl DaveAvatar {
         // Add paint callback
         ui.painter().add(egui_wgpu::Callback::new_paint_callback(
             rect,
-            CubeCallback { mvp_matrix },
+            CubeCallback {
+                mvp_matrix,
+                model_matrix,
+            },
         ));
 
         response
@@ -370,7 +416,8 @@ impl DaveAvatar {
 
 // Callback implementation
 struct CubeCallback {
-    mvp_matrix: [f32; 16], // Model-View-Projection matrix
+    mvp_matrix: [f32; 16],   // Model-View-Projection matrix
+    model_matrix: [f32; 16], // Model matrix for lighting calculations
 }
 
 impl egui_wgpu::CallbackTrait for CubeCallback {
@@ -384,11 +431,20 @@ impl egui_wgpu::CallbackTrait for CubeCallback {
     ) -> Vec<wgpu::CommandBuffer> {
         let resources: &CubeRenderResources = resources.get().unwrap();
 
-        // Update uniform buffer with MVP matrix
+        // Create a combined uniform buffer with both matrices
+        let mut uniform_data = [0.0f32; 32]; // Space for two 4x4 matrices
+
+        // Copy MVP matrix to first 16 floats
+        uniform_data[0..16].copy_from_slice(&self.mvp_matrix);
+
+        // Copy model matrix to next 16 floats
+        uniform_data[16..32].copy_from_slice(&self.model_matrix);
+
+        // Update uniform buffer with both matrices
         queue.write_buffer(
             &resources.uniform_buffer,
             0,
-            bytemuck::cast_slice(&self.mvp_matrix),
+            bytemuck::cast_slice(&uniform_data),
         );
 
         Vec::new()
