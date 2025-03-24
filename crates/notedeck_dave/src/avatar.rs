@@ -5,6 +5,7 @@ use egui::{Rect, Response};
 
 pub struct DaveAvatar {
     rotation: Quaternion,
+    rot_dir: egui::Vec2,
 }
 
 // A simple quaternion implementation
@@ -357,6 +358,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
         Self {
             rotation: Quaternion::identity(),
+            rot_dir: egui::Vec2::ZERO,
         }
     }
 }
@@ -368,17 +370,21 @@ impl DaveAvatar {
         // Update rotation based on drag or animation
         if response.dragged() {
             // Create rotation quaternions based on drag
-            let x_rotation =
-                Quaternion::from_axis_angle([1.0, 0.0, 0.0], response.drag_delta().y * 0.01);
-            let y_rotation =
-                Quaternion::from_axis_angle([0.0, 1.0, 0.0], response.drag_delta().x * 0.01);
+            let dx = response.drag_delta().x;
+            let dy = response.drag_delta().y;
+            let x_rotation = Quaternion::from_axis_angle([1.0, 0.0, 0.0], dy * 0.01);
+            let y_rotation = Quaternion::from_axis_angle([0.0, 1.0, 0.0], dx * 0.01);
+
+            self.rot_dir = egui::Vec2::new(dx, dy);
 
             // Apply rotations (order matters)
             self.rotation = y_rotation.multiply(&x_rotation).multiply(&self.rotation);
         } else {
             // Continuous rotation - reduced speed and simplified axis
-            let continuous_rotation = Quaternion::from_axis_angle([0.0, 1.0, 0.0], 0.005);
-            self.rotation = continuous_rotation.multiply(&self.rotation);
+            let x_rotation = Quaternion::from_axis_angle([1.0, 0.0, 0.0], self.rot_dir.y * 0.01);
+            let y_rotation = Quaternion::from_axis_angle([0.0, 1.0, 0.0], self.rot_dir.x * 0.01);
+
+            self.rotation = y_rotation.multiply(&x_rotation).multiply(&self.rotation);
         }
 
         // Create model matrix from rotation quaternion
