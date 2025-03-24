@@ -4,12 +4,45 @@ use notedeck_chrome::setup::{generate_native_options, setup_chrome};
 
 use notedeck::{DataPath, DataPathType, Notedeck};
 use notedeck_columns::Damus;
+use notedeck_dave::Dave;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::EnvFilter;
 
 // Entry point for wasm
 //#[cfg(target_arch = "wasm32")]
 //use wasm_bindgen::prelude::*;
+
+struct Chrome {
+    active: i32,
+    apps: Vec<Box<dyn notedeck::App>>,
+}
+
+impl Chrome {
+    pub fn new() -> Self {
+        Chrome {
+            active: 0,
+            apps: vec![],
+        }
+    }
+
+    pub fn add_app(&mut self, app: impl notedeck::App + 'static) {
+        self.apps.push(Box::new(app));
+    }
+
+    pub fn set_active(&mut self, app: i32) {
+        self.active = app;
+    }
+}
+
+impl notedeck::App for Chrome {
+    fn update(&mut self, ctx: &mut notedeck::AppContext, ui: &mut egui::Ui) {
+        let active = self.active;
+        self.apps[active as usize].update(ctx, ui);
+        //for i in 0..self.apps.len() {
+        //    self.apps[i].update(ctx, ui);
+        //}
+    }
+}
 
 fn setup_logging(path: &DataPath) -> Option<WorkerGuard> {
     #[allow(unused_variables)] // need guard to live for lifetime of program
@@ -78,15 +111,19 @@ async fn main() {
         Box::new(|cc| {
             let args: Vec<String> = std::env::args().collect();
             let ctx = &cc.egui_ctx;
-            let mut notedeck = Notedeck::new(ctx, base_path, &args);
-            setup_chrome(ctx, notedeck.args(), notedeck.theme());
 
-            let damus = Damus::new(&mut notedeck.app_context(), &args);
+            let mut notedeck = Notedeck::new(ctx, base_path, &args);
+
+            let mut chrome = Chrome::new();
+            let columns = Damus::new(&mut notedeck.app_context(), &args);
+            let dave = Dave::new(cc.wgpu_render_state.as_ref());
+
+            setup_chrome(ctx, notedeck.args(), notedeck.theme());
 
             // ensure we recognized all the arguments
             let completely_unrecognized: Vec<String> = notedeck
                 .unrecognized_args()
-                .intersection(damus.unrecognized_args())
+                .intersection(columns.unrecognized_args())
                 .cloned()
                 .collect();
             assert!(
@@ -95,8 +132,13 @@ async fn main() {
                 completely_unrecognized
             );
 
-            // TODO: move "chrome" frame over Damus app somehow
-            notedeck.set_app(damus);
+            chrome.add_app(columns);
+            chrome.add_app(dave);
+
+            // test dav
+            chrome.set_active(1);
+
+            notedeck.set_app(chrome);
 
             Ok(Box::new(notedeck))
         }),

@@ -65,6 +65,8 @@ pub fn generate_native_options(paths: DataPath) -> NativeOptions {
     });
 
     eframe::NativeOptions {
+        // for 3d widgets
+        depth_buffer: 24,
         window_builder: Some(window_builder),
         viewport: egui::ViewportBuilder::default().with_icon(std::sync::Arc::new(
             eframe::icon_data::from_png_bytes(app_icon()).expect("icon"),
@@ -80,6 +82,8 @@ fn generate_native_options_with_builder_modifiers(
         Box::new(move |builder: egui::ViewportBuilder| apply_builder_modifiers(builder));
 
     eframe::NativeOptions {
+        // for 3d widgets
+        depth_buffer: 24,
         window_builder: Some(window_builder),
         ..Default::default()
     }

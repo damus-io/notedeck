@@ -13,6 +13,7 @@ eframe = { workspace = true }
 egui_extras = { workspace = true }
 egui = { workspace = true }
 notedeck_columns = { workspace = true }
+notedeck_dave = { workspace = true }
 notedeck = { workspace = true }
 puffin = { workspace = true, optional = true }
 puffin_egui = { workspace = true, optional = true }

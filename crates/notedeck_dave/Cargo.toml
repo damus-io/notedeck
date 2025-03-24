@@ -1,0 +1,16 @@
+[package]
+name = "notedeck_dave"
+edition = "2021"
+version.workspace = true
+
+[dependencies]
+async-openai = "0.28.0"
+egui = { workspace = true }
+notedeck = { workspace = true }
+eframe = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+egui-wgpu = { workspace = true }
+bytemuck = "1.22.0"
+futures = "0.3.31"
+reqwest = "0.12.15"

@@ -5,8 +5,9 @@ members = [
     "crates/notedeck",
     "crates/notedeck_chrome",
     "crates/notedeck_columns",
+    "crates/notedeck_dave",
 
-    "crates/enostr", "crates/tokenator",
+    "crates/enostr", "crates/tokenator", "crates/notedeck_dave",
 ]
 
 [workspace.dependencies]
@@ -18,6 +19,7 @@ bitflags = "2.5.0"
 dirs = "5.0.1"
 eframe = { version = "0.31.1", default-features = false, features = [ "wgpu", "wayland", "x11", "android-game-activity" ] }
 egui = { version = "0.31.1", features = ["serde"] }
+egui-wgpu = "0.31.1"
 egui_extras = { version = "0.31.1", features = ["all_loaders"] }
 egui-winit = { version = "0.31.1", features = ["android-game-activity", "clipboard"] }
 egui_nav = { git = "https://github.com/damus-io/egui-nav", rev = "5e816ac95e20f31dbb243a0d76179eab329a8ac0" }
@@ -39,6 +41,7 @@ nostrdb = { git = "https://github.com/damus-io/nostrdb-rs", rev = "7a6af440c12e7
 notedeck = { path = "crates/notedeck" }
 notedeck_chrome = { path = "crates/notedeck_chrome" }
 notedeck_columns = { path = "crates/notedeck_columns" }
+notedeck_dave = { path = "crates/notedeck_dave" }
 tokenator = { path = "crates/tokenator" }
 open = "5.3.0"
 poll-promise = { version = "0.3.0", features = ["tokio"] }
@@ -67,6 +70,7 @@ profiling = "1.0"
 lightning-invoice = "0.33.1"
 secp256k1 = "0.30.0"
 hashbrown = "0.15.2"
+openai-api-rs = "6.0.3"
 
 [profile.small]
 inherits = 'release'
@@ -87,6 +91,7 @@ strip = true        # Strip symbols from binary*
 egui = { git = "https://github.com/damus-io/egui", rev = "93cd1cedc1e8eed2b055e317226838e37a845aad" }
 eframe = { git = "https://github.com/damus-io/egui", rev = "93cd1cedc1e8eed2b055e317226838e37a845aad" }
 egui-winit = { git = "https://github.com/damus-io/egui", rev = "93cd1cedc1e8eed2b055e317226838e37a845aad" }
+egui-wgpu = { git = "https://github.com/damus-io/egui", rev = "93cd1cedc1e8eed2b055e317226838e37a845aad" }
 egui_extras = { git = "https://github.com/damus-io/egui", rev = "93cd1cedc1e8eed2b055e317226838e37a845aad" }
 epaint = { git = "https://github.com/damus-io/egui", rev = "93cd1cedc1e8eed2b055e317226838e37a845aad" }
 puffin = { git = "https://github.com/jb55/puffin", package = "puffin", rev = "c6a6242adaf90b6292c0f462d2acd34d96d224d2" }
