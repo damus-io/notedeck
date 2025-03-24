@@ -7,7 +7,7 @@ pub mod reply;
 pub mod reply_description;
 
 pub use contents::NoteContents;
-use contents::NoteContext;
+use contents::{MediaAction, NoteContext};
 pub use context::{NoteContextButton, NoteContextSelection};
 pub use options::NoteOptions;
 pub use post::{PostAction, PostResponse, PostType, PostView};
@@ -41,6 +41,7 @@ pub struct NoteResponse {
     pub response: egui::Response,
     pub context_selection: Option<NoteContextSelection>,
     pub action: Option<NoteAction>,
+    pub media_action: Option<MediaAction>,
 }
 
 impl NoteResponse {
@@ -49,11 +50,17 @@ impl NoteResponse {
             response,
             context_selection: None,
             action: None,
+            media_action: None,
         }
     }
 
     pub fn with_action(mut self, action: Option<NoteAction>) -> Self {
         self.action = action;
+        self
+    }
+
+    pub fn with_media_action(mut self, media_action: Option<MediaAction>) -> Self {
+        self.media_action = media_action;
         self
     }
 
@@ -124,6 +131,11 @@ impl<'a, 'd> NoteView<'a, 'd> {
 
     pub fn options_button(mut self, enable: bool) -> Self {
         self.options_mut().set_options_button(enable);
+        self
+    }
+
+    pub fn trusted_media(mut self, enable: bool) -> Self {
+        self.options_mut().set_trusted_media(enable);
         self
     }
 
@@ -332,6 +344,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
 
         let mut note_action: Option<NoteAction> = None;
         let mut selected_option: Option<NoteContextSelection> = None;
+        let mut media_action: Option<MediaAction> = None;
 
         let hitbox_id = note_hitbox_id(note_key, self.options(), self.parent);
         let profile = self
@@ -396,6 +409,10 @@ impl<'a, 'd> NoteView<'a, 'd> {
                     note_action = Some(action.clone());
                 }
 
+                if let Some(action) = contents.media_action() {
+                    media_action = Some(action.clone());
+                }
+
                 if self.options().has_actionbar() {
                     if let Some(action) = render_note_actionbar(ui, self.note.id(), note_key).inner
                     {
@@ -443,6 +460,10 @@ impl<'a, 'd> NoteView<'a, 'd> {
                         note_action = Some(action.clone());
                     }
 
+                    if let Some(action) = contents.media_action() {
+                        media_action = Some(action.clone());
+                    }
+
                     if self.options().has_actionbar() {
                         if let Some(action) =
                             render_note_actionbar(ui, self.note.id(), note_key).inner
@@ -484,6 +505,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
 
         NoteResponse::new(response)
             .with_action(note_action)
+            .with_media_action(media_action)
             .select_option(selected_option)
     }
 }

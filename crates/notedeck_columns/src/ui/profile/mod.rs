@@ -114,6 +114,7 @@ impl<'a, 'd> ProfileView<'a, 'd> {
                     &txn,
                     self.is_muted,
                     self.note_context,
+                    self.accounts.get_selected_account().map(|s| &s.key.pubkey),
                 )
                 .show(ui)
                 {

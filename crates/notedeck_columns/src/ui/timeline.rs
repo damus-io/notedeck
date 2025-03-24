@@ -1,6 +1,7 @@
 use std::f32::consts::PI;
 
 use crate::actionbar::NoteAction;
+use crate::contacts::trust_media_from_pk2;
 use crate::timeline::TimelineTab;
 use crate::{
     timeline::{TimelineCache, TimelineKind, ViewFilter},
@@ -9,6 +10,7 @@ use crate::{
 use egui::containers::scroll_area::ScrollBarVisibility;
 use egui::{vec2, Direction, Layout, Pos2, Stroke};
 use egui_tabs::TabColor;
+use enostr::Pubkey;
 use nostrdb::Transaction;
 use notedeck::note::root_note_id_from_selected_id;
 use notedeck::MuteFun;
@@ -25,6 +27,7 @@ pub struct TimelineView<'a, 'd> {
     reverse: bool,
     is_muted: &'a MuteFun,
     note_context: &'a mut NoteContext<'d>,
+    selected_pk: Option<&'a Pubkey>,
 }
 
 impl<'a, 'd> TimelineView<'a, 'd> {
@@ -35,6 +38,7 @@ impl<'a, 'd> TimelineView<'a, 'd> {
         is_muted: &'a MuteFun,
         note_context: &'a mut NoteContext<'d>,
         note_options: NoteOptions,
+        selected_pk: Option<&'a Pubkey>,
     ) -> Self {
         let reverse = false;
         TimelineView {
@@ -44,6 +48,7 @@ impl<'a, 'd> TimelineView<'a, 'd> {
             reverse,
             is_muted,
             note_context,
+            selected_pk,
         }
     }
 
@@ -56,6 +61,7 @@ impl<'a, 'd> TimelineView<'a, 'd> {
             self.note_options,
             self.is_muted,
             self.note_context,
+            self.selected_pk,
         )
     }
 
@@ -74,6 +80,7 @@ fn timeline_ui(
     note_options: NoteOptions,
     is_muted: &MuteFun,
     note_context: &mut NoteContext,
+    selected_pk: Option<&Pubkey>,
 ) -> Option<NoteAction> {
     //padding(4.0, ui, |ui| ui.heading("Notifications"));
     /*
@@ -151,6 +158,7 @@ fn timeline_ui(
             &txn,
             is_muted,
             note_context,
+            selected_pk,
         )
         .show(ui)
     });
@@ -317,6 +325,7 @@ pub struct TimelineTabView<'a, 'd> {
     txn: &'a Transaction,
     is_muted: &'a MuteFun,
     note_context: &'a mut NoteContext<'d>,
+    selected_pk: Option<&'a Pubkey>,
 }
 
 impl<'a, 'd> TimelineTabView<'a, 'd> {
@@ -328,6 +337,7 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
         txn: &'a Transaction,
         is_muted: &'a MuteFun,
         note_context: &'a mut NoteContext<'d>,
+        selected_pk: Option<&'a Pubkey>,
     ) -> Self {
         Self {
             tab,
@@ -336,6 +346,7 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
             txn,
             is_muted,
             note_context,
+            selected_pk,
         }
     }
 
@@ -382,8 +393,18 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
 
                 if !muted {
                     ui::padding(8.0, ui, |ui| {
-                        let resp =
-                            ui::NoteView::new(self.note_context, &note, self.note_options).show(ui);
+                        let blurred_default = trust_media_from_pk2(
+                            self.note_context.ndb,
+                            self.txn,
+                            self.selected_pk.map(Pubkey::bytes),
+                            note.pubkey(),
+                        );
+
+                        let mut note_view =
+                            ui::NoteView::new(self.note_context, &note, self.note_options)
+                                .trusted_media(blurred_default);
+
+                        let resp = note_view.show(ui);
 
                         if let Some(note_action) = resp.action {
                             action = Some(note_action)
@@ -391,6 +412,10 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
 
                         if let Some(context) = resp.context_selection {
                             context.process(ui, &note);
+                        }
+
+                        if let Some(media_action) = resp.media_action {
+                            media_action.process(ui);
                         }
                     });
 

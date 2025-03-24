@@ -436,7 +436,7 @@ impl<'a, 'd> PostView<'a, 'd> {
                         self.draft.upload_errors.push(e.to_string());
                         error!("{e}");
                     },
-                    |ui, url, renderable_media, gifs| {
+                    |ui, url, renderable_media, gifs, _| {
                         let media_size = vec2(width as f32, height as f32);
                         let max_size = vec2(300.0, 300.0);
                         let size = if media_size.x > max_size.x || media_size.y > max_size.y {
@@ -684,7 +684,7 @@ fn text_edit_default_layout(ui: &egui::Ui, text: String, wrap_width: f32) -> Lay
 
 mod preview {
 
-    use crate::media_upload::Nip94Event;
+    use crate::{jobs::Jobs, media_upload::Nip94Event};
 
     use super::*;
     use notedeck::{App, AppContext};
@@ -692,6 +692,7 @@ mod preview {
     pub struct PostPreview {
         draft: Draft,
         poster: FullKeypair,
+        jobs: Jobs,
     }
 
     impl PostPreview {
@@ -721,6 +722,7 @@ mod preview {
             PostPreview {
                 draft,
                 poster: FullKeypair::generate(),
+                jobs: Default::default(),
             }
         }
     }
@@ -732,6 +734,7 @@ mod preview {
                 ndb: app.ndb,
                 img_cache: app.img_cache,
                 note_cache: app.note_cache,
+                jobs: &mut self.jobs,
             };
 
             PostView::new(
