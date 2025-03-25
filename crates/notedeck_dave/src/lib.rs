@@ -66,10 +66,11 @@ pub struct Dave {
 
 impl Dave {
     pub fn new(render_state: Option<&RenderState>) -> Self {
-        let mut config = OpenAIConfig::new();
+        let mut config = OpenAIConfig::new().with_api_base("http://ollama.jb55.com/v1");
         if let Ok(api_key) = std::env::var("OPENAI_API_KEY") {
             config = config.with_api_key(api_key);
         }
+
         let client = Client::with_config(config);
 
         let input = "".to_string();
@@ -174,7 +175,8 @@ impl Dave {
             let mut token_stream = match client
                 .chat()
                 .create_stream(CreateChatCompletionRequest {
-                    model: "gpt-4o".to_string(),
+                    //model: "gpt-4o".to_string(),
+                    model: "llama3.1:latest".to_string(),
                     stream: Some(true),
                     messages,
                     user: Some(pubkey),
