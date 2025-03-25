@@ -147,7 +147,13 @@ impl Dave {
 
     fn user_chat(&self, msg: &str, ui: &mut egui::Ui) {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
-            ui.label(msg);
+            egui::Frame::new()
+                .inner_margin(10.0)
+                .corner_radius(10.0)
+                .fill(ui.visuals().extreme_bg_color)
+                .show(ui, |ui| {
+                    ui.label(msg);
+                })
         });
     }
 
