@@ -3304,6 +3304,8 @@ dependencies = [
  "futures",
  "notedeck",
  "reqwest",
+ "serde",
+ "serde_json",
  "tokio",
  "tracing",
 ]
