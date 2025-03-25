@@ -30,7 +30,7 @@ pub use accounts::{AccountData, Accounts, AccountsAction, AddAccountAction, Swit
 pub use app::{App, Notedeck};
 pub use args::Args;
 pub use context::AppContext;
-pub use error::{Error, FilterError};
+pub use error::{Error, FilterError, ZapError};
 pub use filter::{FilterState, FilterStates, UnifiedSubscription};
 pub use fonts::NamedFontFamily;
 pub use imgcache::{
