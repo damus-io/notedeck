@@ -2,7 +2,8 @@ use async_openai::{
     config::OpenAIConfig,
     types::{
         ChatCompletionRequestAssistantMessage, ChatCompletionRequestAssistantMessageContent,
-        ChatCompletionRequestMessage, ChatCompletionRequestUserMessage,
+        ChatCompletionRequestMessage, ChatCompletionRequestSystemMessage,
+        ChatCompletionRequestSystemMessageContent, ChatCompletionRequestUserMessage,
         ChatCompletionRequestUserMessageContent, CreateChatCompletionRequest,
     },
     Client,
@@ -21,6 +22,7 @@ mod avatar;
 pub enum Message {
     User(String),
     Assistant(String),
+    System(String),
 }
 
 impl Message {
@@ -38,6 +40,13 @@ impl Message {
                     content: Some(ChatCompletionRequestAssistantMessageContent::Text(
                         msg.clone(),
                     )),
+                    ..Default::default()
+                })
+            }
+
+            Message::System(msg) => {
+                ChatCompletionRequestMessage::System(ChatCompletionRequestSystemMessage {
+                    content: ChatCompletionRequestSystemMessageContent::Text(msg.clone()),
                     ..Default::default()
                 })
             }
@@ -74,9 +83,7 @@ impl Dave {
             incoming_tokens: None,
             input,
             chat: vec![
-                Message::User("how do I computer".to_string()),
-                Message::Assistant("Seriously?".to_string()),
-                Message::User("ye".to_string()),
+                Message::System("You are an ai agent for the nostr protocol. You have access to tools that can query the network, so you can help find content for users".to_string()),
             ],
         }
     }
@@ -85,7 +92,7 @@ impl Dave {
         if let Some(recvr) = &self.incoming_tokens {
             if let Ok(token) = recvr.try_recv() {
                 match self.chat.last_mut() {
-                    Some(Message::Assistant(msg)) => *msg = msg.clone() + " " + &token,
+                    Some(Message::Assistant(msg)) => *msg = msg.clone() + &token,
                     Some(_) => self.chat.push(Message::Assistant(token)),
                     None => {}
                 }
@@ -118,7 +125,11 @@ impl Dave {
         for message in &self.chat {
             match message {
                 Message::User(msg) => self.user_chat(msg, ui),
-                Message::Assistant(msg) => self.system_chat(msg, ui),
+                Message::Assistant(msg) => self.assistant_chat(msg, ui),
+                Message::System(_msg) => {
+                    // system prompt is not rendered. Maybe we could
+                    // have a debug option to show this
+                }
             }
         }
     }
@@ -127,6 +138,7 @@ impl Dave {
         ui.horizontal(|ui| {
             ui.add(egui::TextEdit::multiline(&mut self.input));
             if ui.button("Sned").clicked() {
+                self.chat.push(Message::User(self.input.clone()));
                 self.send_user_message(ui.ctx());
                 self.input.clear();
             }
@@ -139,8 +151,8 @@ impl Dave {
         });
     }
 
-    fn system_chat(&self, msg: &str, ui: &mut egui::Ui) {
-        ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
+    fn assistant_chat(&self, msg: &str, ui: &mut egui::Ui) {
+        ui.horizontal_wrapped(|ui| {
             ui.label(msg);
         });
     }
@@ -188,7 +200,6 @@ impl Dave {
                 let Some(content) = &choice.delta.content else {
                     return;
                 };
-                tracing::debug!("got token: {content}");
 
                 tx.send(content.to_owned()).unwrap();
                 ctx.request_repaint();
