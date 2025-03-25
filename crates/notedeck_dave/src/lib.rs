@@ -84,7 +84,7 @@ impl Dave {
             incoming_tokens: None,
             input,
             chat: vec![
-                Message::System("You are an ai agent for the nostr protocol. You have access to tools that can query the network, so you can help find content for users".to_string()),
+                Message::System("You are an ai agent for the nostr protocol. You have access to tools that can query the network, so you can help find content for users (TODO: actually implement this)".to_string()),
             ],
         }
     }
