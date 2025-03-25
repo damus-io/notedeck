@@ -363,6 +363,15 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     }
 }
 
+#[inline]
+fn apply_friction(val: f32, friction: f32, clamp: f32) -> f32 {
+    if val < clamp {
+        return 0.0;
+    } else {
+        return val * friction;
+    }
+}
+
 impl DaveAvatar {
     pub fn render(&mut self, rect: Rect, ui: &mut egui::Ui) -> Response {
         let response = ui.allocate_rect(rect, egui::Sense::drag());
@@ -381,10 +390,22 @@ impl DaveAvatar {
             self.rotation = y_rotation.multiply(&x_rotation).multiply(&self.rotation);
         } else {
             // Continuous rotation - reduced speed and simplified axis
-            let x_rotation = Quaternion::from_axis_angle([1.0, 0.0, 0.0], self.rot_dir.y * 0.01);
-            let y_rotation = Quaternion::from_axis_angle([0.0, 1.0, 0.0], self.rot_dir.x * 0.01);
+            let friction = 0.95;
+            let clamp = 0.1;
+            self.rot_dir.x = apply_friction(self.rot_dir.x, friction, clamp);
+            self.rot_dir.y = apply_friction(self.rot_dir.y, friction, clamp);
 
-            self.rotation = y_rotation.multiply(&x_rotation).multiply(&self.rotation);
+            // we only need to render if we're still spinning
+            if self.rot_dir.x > clamp || self.rot_dir.y > clamp {
+                let x_rotation =
+                    Quaternion::from_axis_angle([1.0, 0.0, 0.0], self.rot_dir.y * 0.01);
+                let y_rotation =
+                    Quaternion::from_axis_angle([0.0, 1.0, 0.0], self.rot_dir.x * 0.01);
+
+                self.rotation = y_rotation.multiply(&x_rotation).multiply(&self.rotation);
+
+                ui.ctx().request_repaint();
+            }
         }
 
         // Create model matrix from rotation quaternion
@@ -403,9 +424,6 @@ impl DaveAvatar {
         // Combine matrices: projection * view * model
         let mv_matrix = matrix_multiply(&view_matrix, &model_matrix);
         let mvp_matrix = matrix_multiply(&projection, &mv_matrix);
-
-        // Request continuous rendering
-        ui.ctx().request_repaint();
 
         // Add paint callback
         ui.painter().add(egui_wgpu::Callback::new_paint_callback(
