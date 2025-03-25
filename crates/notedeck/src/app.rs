@@ -151,7 +151,7 @@ impl Notedeck {
         };
 
         let theme = ThemeHandler::new(&path);
-        let config = Config::new().set_ingester_threads(4).set_mapsize(map_size);
+        let config = Config::new().set_ingester_threads(2).set_mapsize(map_size);
 
         let keystore = if parsed_args.use_keystore {
             let keys_path = path.path(DataPathType::Keys);
