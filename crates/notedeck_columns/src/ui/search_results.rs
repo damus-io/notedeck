@@ -8,8 +8,8 @@ use crate::{
     ui::anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},
 };
 
-use super::widgets::x_button;
-use super::{profile::get_profile_url, ProfilePic};
+use super::{widgets::x_button, ProfilePic};
+use notedeck_ui::profile::get_profile_url;
 
 pub struct SearchResultsView<'a> {
     ndb: &'a Ndb,

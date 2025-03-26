@@ -1,5 +1,4 @@
 pub mod edit;
-pub mod picture;
 pub mod preview;
 
 pub use edit::EditProfileView;
@@ -7,13 +6,11 @@ use egui::load::TexturePoll;
 use egui::{vec2, Color32, CornerRadius, Label, Layout, Rect, RichText, ScrollArea, Sense, Stroke};
 use enostr::Pubkey;
 use nostrdb::{ProfileRecord, Transaction};
-pub use picture::ProfilePic;
 pub use preview::ProfilePreview;
 use tracing::error;
 
 use crate::{
     actionbar::NoteAction,
-    colors, images,
     profile::get_display_name,
     timeline::{TimelineCache, TimelineKind},
     ui::timeline::{tabs_ui, TimelineTabView},
@@ -21,6 +18,7 @@ use crate::{
 };
 
 use notedeck::{Accounts, MuteFun, NotedeckTextStyle, UnknownIds};
+use notedeck_ui::{images, profile::get_profile_url, ProfilePic};
 
 use super::note::contents::NoteContext;
 use super::note::NoteOptions;
@@ -215,7 +213,7 @@ fn handle_link(ui: &mut egui::Ui, website_url: &str) {
         "../../../../../assets/icons/links_4x.png"
     ));
     if ui
-        .label(RichText::new(website_url).color(colors::PINK))
+        .label(RichText::new(website_url).color(notedeck_ui::colors::PINK))
         .on_hover_cursor(egui::CursorIcon::PointingHand)
         .interact(Sense::click())
         .clicked()
@@ -231,7 +229,7 @@ fn handle_lud16(ui: &mut egui::Ui, lud16: &str) {
         "../../../../../assets/icons/zap_4x.png"
     ));
 
-    let _ = ui.label(RichText::new(lud16).color(colors::PINK));
+    let _ = ui.label(RichText::new(lud16).color(notedeck_ui::colors::PINK));
 }
 
 fn copy_key_widget(pfp_rect: &egui::Rect) -> impl egui::Widget + '_ {
@@ -360,7 +358,7 @@ fn display_name_widget(name: NostrName<'_>, add_placeholder_space: bool) -> impl
                         Label::new(
                             RichText::new(format!("@{}", username))
                                 .size(16.0)
-                                .color(colors::MID_GRAY),
+                                .color(notedeck_ui::colors::MID_GRAY),
                         )
                         .selectable(false),
                     )
@@ -371,7 +369,9 @@ fn display_name_widget(name: NostrName<'_>, add_placeholder_space: bool) -> impl
                         "../../../../../assets/icons/verified_4x.png"
                     ));
                     ui.add(Label::new(
-                        RichText::new(nip05).size(16.0).color(colors::TEAL),
+                        RichText::new(nip05)
+                            .size(16.0)
+                            .color(notedeck_ui::colors::TEAL),
                     ))
                 });
 
@@ -393,18 +393,6 @@ fn display_name_widget(name: NostrName<'_>, add_placeholder_space: bool) -> impl
         }
 
         resp
-    }
-}
-
-pub fn get_profile_url<'a>(profile: Option<&ProfileRecord<'a>>) -> &'a str {
-    unwrap_profile_url(profile.and_then(|pr| pr.record().profile().and_then(|p| p.picture())))
-}
-
-pub fn unwrap_profile_url(maybe_url: Option<&str>) -> &str {
-    if let Some(url) = maybe_url {
-        url
-    } else {
-        ProfilePic::no_pfp_url()
     }
 }
 

@@ -8,7 +8,8 @@ use poll_promise::Promise;
 use sha2::{Digest, Sha256};
 use url::Url;
 
-use crate::{images::fetch_binary_from_disk, Error};
+use crate::Error;
+use notedeck_ui::images::fetch_binary_from_disk;
 
 pub const NOSTR_BUILD_URL: fn() -> Url = || Url::parse("http://nostr.build").unwrap();
 const NIP96_WELL_KNOWN: &str = ".well-known/nostr/nip96.json";

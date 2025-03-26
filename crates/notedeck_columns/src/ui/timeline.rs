@@ -193,7 +193,7 @@ fn goto_top_button(center: Pos2) -> impl egui::Widget {
         });
 
         let painter = ui.painter();
-        painter.circle_filled(center, helper.scale_1d_pos(radius), crate::colors::PINK);
+        painter.circle_filled(center, helper.scale_1d_pos(radius), notedeck_ui::colors::PINK);
 
         let create_pt = |angle: f32| {
             let side = radius / 2.0;

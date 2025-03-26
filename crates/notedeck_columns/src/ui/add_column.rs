@@ -554,12 +554,33 @@ impl<'a> AddColumnView<'a> {
 }
 
 fn find_user_button() -> impl Widget {
-    styled_button("Find User", crate::colors::PINK)
+    styled_button("Find User", notedeck_ui::colors::PINK)
 }
 
 fn add_column_button() -> impl Widget {
-    styled_button("Add", crate::colors::PINK)
+    styled_button("Add", notedeck_ui::colors::PINK)
 }
+
+/*
+pub(crate) fn sized_button(text: &str) -> impl Widget + '_ {
+    move |ui: &mut egui::Ui| -> egui::Response {
+        let painter = ui.painter();
+        let galley = painter.layout(
+            text.to_owned(),
+            NotedeckTextStyle::Body.get_font_id(ui.ctx()),
+            Color32::WHITE,
+            ui.available_width(),
+        );
+
+        ui.add_sized(
+            galley.rect.expand2(vec2(16.0, 8.0)).size(),
+            egui::Button::new(galley)
+                .corner_radius(8.0)
+                .fill(notedeck_ui::colors::PINK),
+        )
+    }
+}
+*/
 
 struct ColumnOptionData {
     title: &'static str,

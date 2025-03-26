@@ -369,7 +369,7 @@ impl PostBuffer {
 
     pub fn to_layout_job(&self, ui: &egui::Ui) -> LayoutJob {
         let mut job = LayoutJob::default();
-        let colored_fmt = default_text_format_colored(ui, crate::colors::PINK);
+        let colored_fmt = default_text_format_colored(ui, notedeck_ui::colors::PINK);
 
         let mut prev_text_char_index = 0;
         let mut prev_text_byte_index = 0;

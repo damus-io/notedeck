@@ -25,12 +25,12 @@ use avatar::DaveAvatar;
 use egui::{Rect, Vec2};
 use egui_wgpu::RenderState;
 
-pub use vec3::Vec3;
 pub use quaternion::Quaternion;
+pub use vec3::Vec3;
 
 mod avatar;
-mod vec3;
 mod quaternion;
+mod vec3;
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -608,7 +608,7 @@ impl notedeck::App for Dave {
 #[derive(Debug, Clone)]
 enum ArgType {
     String,
-    Number,
+    //Number,
     Enum(Vec<&'static str>),
 }
 
@@ -616,7 +616,7 @@ impl ArgType {
     pub fn type_string(&self) -> &'static str {
         match self {
             Self::String => "string",
-            Self::Number => "number",
+            //Self::Number => "number",
             Self::Enum(_) => "string",
         }
     }

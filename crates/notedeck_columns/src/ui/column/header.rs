@@ -1,4 +1,3 @@
-use crate::colors;
 use crate::column::ColumnsAction;
 use crate::nav::RenderNavAction;
 use crate::nav::SwitchingAction;
@@ -302,7 +301,7 @@ impl<'a> NavTitle<'a> {
                 let col_resp = if col == self.col_id {
                     ui.dnd_drag_source(item_id, col, |ui| {
                         item_frame
-                            .stroke(egui::Stroke::new(2.0, colors::PINK))
+                            .stroke(egui::Stroke::new(2.0, notedeck_ui::colors::PINK))
                             .fill(ui.visuals().widgets.noninteractive.bg_stroke.color)
                             .show(ui, |ui| self.move_tooltip_col_presentation(ui, col));
                     })

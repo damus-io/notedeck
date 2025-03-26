@@ -156,7 +156,7 @@ fn show_no_wallet(
     }
 
     ui.with_layout(Layout::top_down(egui::Align::Center), |ui| {
-        ui.add(styled_button("Add Wallet", crate::colors::PINK))
+        ui.add(styled_button("Add Wallet", notedeck_ui::colors::PINK))
             .clicked()
             .then_some(WalletAction::SaveURI)
     })

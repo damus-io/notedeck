@@ -4,7 +4,7 @@ use notedeck_columns::ui::configure_deck::ConfigureDeckView;
 use notedeck_columns::ui::edit_deck::EditDeckView;
 use notedeck_columns::ui::profile::EditProfileView;
 use notedeck_columns::ui::{
-    account_login_view::AccountLoginView, PostView, Preview, PreviewApp, PreviewConfig, ProfilePic,
+    account_login_view::AccountLoginView, PostView, Preview, PreviewApp, PreviewConfig,
     ProfilePreview, RelayView,
 };
 use std::env;
@@ -99,7 +99,6 @@ async fn main() {
         RelayView,
         AccountLoginView,
         ProfilePreview,
-        ProfilePic,
         PostView,
         ConfigureDeckView,
         EditDeckView,

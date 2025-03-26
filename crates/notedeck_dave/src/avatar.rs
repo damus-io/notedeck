@@ -1,6 +1,6 @@
 use std::num::NonZeroU64;
 
-use crate::{Vec3, Quaternion};
+use crate::{Quaternion, Vec3};
 use eframe::egui_wgpu::{self, wgpu};
 use egui::{Rect, Response};
 use rand::Rng;

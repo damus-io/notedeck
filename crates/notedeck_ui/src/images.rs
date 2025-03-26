@@ -1,17 +1,12 @@
+use crate::ProfilePic;
 use egui::{pos2, Color32, ColorImage, Rect, Sense, SizeHint};
 use image::codecs::gif::GifDecoder;
 use image::imageops::FilterType;
-use image::AnimationDecoder;
-use image::DynamicImage;
-use image::FlatSamples;
-use image::Frame;
-use notedeck::Animation;
-use notedeck::ImageFrame;
-use notedeck::MediaCache;
-use notedeck::MediaCacheType;
-use notedeck::Result;
-use notedeck::TextureFrame;
-use notedeck::TexturedImage;
+use image::{AnimationDecoder, DynamicImage, FlatSamples, Frame};
+use notedeck::{
+    Animation, GifStateMap, ImageFrame, Images, MediaCache, MediaCacheType, TextureFrame,
+    TexturedImage,
+};
 use poll_promise::Promise;
 use std::collections::VecDeque;
 use std::io::Cursor;
@@ -153,7 +148,10 @@ fn process_pfp_bitmap(imgtyp: ImageType, mut image: image::DynamicImage) -> Colo
 }
 
 #[profiling::function]
-fn parse_img_response(response: ehttp::Response, imgtyp: ImageType) -> Result<ColorImage> {
+fn parse_img_response(
+    response: ehttp::Response,
+    imgtyp: ImageType,
+) -> Result<ColorImage, notedeck::Error> {
     let content_type = response.content_type().unwrap_or_default();
     let size_hint = match imgtyp {
         ImageType::Profile(size) => SizeHint::Size(size, size),
@@ -181,10 +179,11 @@ fn fetch_img_from_disk(
     url: &str,
     path: &path::Path,
     cache_type: MediaCacheType,
-) -> Promise<Result<TexturedImage>> {
+) -> Promise<Result<TexturedImage, notedeck::Error>> {
     let ctx = ctx.clone();
     let url = url.to_owned();
     let path = path.to_owned();
+
     Promise::spawn_async(async move {
         match cache_type {
             MediaCacheType::Image => {
@@ -220,7 +219,7 @@ fn generate_gif(
     data: Vec<u8>,
     write_to_disk: bool,
     process_to_egui: impl Fn(DynamicImage) -> ColorImage + Send + Copy + 'static,
-) -> Result<TexturedImage> {
+) -> Result<TexturedImage, notedeck::Error> {
     let decoder = {
         let reader = Cursor::new(data.as_slice());
         GifDecoder::new(reader)?
@@ -336,7 +335,7 @@ fn buffer_to_color_image(
     ColorImage::from_rgba_unmultiplied([width as usize, height as usize], flat_samples.as_slice())
 }
 
-pub fn fetch_binary_from_disk(path: PathBuf) -> Result<Vec<u8>> {
+pub fn fetch_binary_from_disk(path: PathBuf) -> Result<Vec<u8>, notedeck::Error> {
     std::fs::read(path).map_err(|e| notedeck::Error::Generic(e.to_string()))
 }
 
@@ -355,7 +354,7 @@ pub fn fetch_img(
     url: &str,
     imgtyp: ImageType,
     cache_type: MediaCacheType,
-) -> Promise<Result<TexturedImage>> {
+) -> Promise<Result<TexturedImage, notedeck::Error>> {
     let key = MediaCache::key(url);
     let path = img_cache.cache_dir.join(key);
 
@@ -374,7 +373,7 @@ fn fetch_img_from_net(
     url: &str,
     imgtyp: ImageType,
     cache_type: MediaCacheType,
-) -> Promise<Result<TexturedImage>> {
+) -> Promise<Result<TexturedImage, notedeck::Error>> {
     let (sender, promise) = Promise::new();
     let request = ehttp::Request::get(url);
     let ctx = ctx.clone();
@@ -416,4 +415,74 @@ fn fetch_img_from_net(
     });
 
     promise
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn render_images(
+    ui: &mut egui::Ui,
+    images: &mut Images,
+    url: &str,
+    img_type: ImageType,
+    cache_type: MediaCacheType,
+    show_waiting: impl FnOnce(&mut egui::Ui),
+    show_error: impl FnOnce(&mut egui::Ui, String),
+    show_success: impl FnOnce(&mut egui::Ui, &str, &mut TexturedImage, &mut GifStateMap),
+) -> egui::Response {
+    let cache = match cache_type {
+        MediaCacheType::Image => &mut images.static_imgs,
+        MediaCacheType::Gif => &mut images.gifs,
+    };
+
+    render_media_cache(
+        ui,
+        cache,
+        &mut images.gif_states,
+        url,
+        img_type,
+        cache_type,
+        show_waiting,
+        show_error,
+        show_success,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_media_cache(
+    ui: &mut egui::Ui,
+    cache: &mut MediaCache,
+    gif_states: &mut GifStateMap,
+    url: &str,
+    img_type: ImageType,
+    cache_type: MediaCacheType,
+    show_waiting: impl FnOnce(&mut egui::Ui),
+    show_error: impl FnOnce(&mut egui::Ui, String),
+    show_success: impl FnOnce(&mut egui::Ui, &str, &mut TexturedImage, &mut GifStateMap),
+) -> egui::Response {
+    let m_cached_promise = cache.map().get(url);
+
+    if m_cached_promise.is_none() {
+        let res = crate::images::fetch_img(cache, ui.ctx(), url, img_type, cache_type.clone());
+        cache.map_mut().insert(url.to_owned(), res);
+    }
+
+    egui::Frame::NONE
+        .show(ui, |ui| {
+            match cache.map_mut().get_mut(url).and_then(|p| p.ready_mut()) {
+                None => show_waiting(ui),
+                Some(Err(err)) => {
+                    let err = err.to_string();
+                    let no_pfp = crate::images::fetch_img(
+                        cache,
+                        ui.ctx(),
+                        ProfilePic::no_pfp_url(),
+                        ImageType::Profile(128),
+                        cache_type,
+                    );
+                    cache.map_mut().insert(url.to_owned(), no_pfp);
+                    show_error(ui, err)
+                }
+                Some(Ok(renderable_media)) => show_success(ui, url, renderable_media, gif_states),
+            }
+        })
+        .response
 }

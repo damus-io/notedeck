@@ -554,25 +554,32 @@ fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus, ctx: &mut App
             let mut side_panel_action: Option<nav::SwitchingAction> = None;
             strip.cell(|ui| {
                 let rect = ui.available_rect_before_wrap();
-                let side_panel = DesktopSidePanel::new(
-                    ctx.ndb,
-                    ctx.img_cache,
-                    ctx.accounts.get_selected_account(),
-                    &app.decks_cache,
-                )
-                .show(ui);
+                let side_panel =
+                    DesktopSidePanel::new(ctx.accounts.get_selected_account(), &app.decks_cache)
+                        .show(ui);
 
-                if side_panel.response.clicked() || side_panel.response.secondary_clicked() {
-                    if let Some(action) = DesktopSidePanel::perform_action(
-                        &mut app.decks_cache,
-                        ctx.accounts,
-                        &mut app.support,
-                        ctx.theme,
-                        side_panel.action,
-                    ) {
-                        side_panel_action = Some(action);
+                if let Some(side_panel) = side_panel {
+                    if side_panel.response.clicked() || side_panel.response.secondary_clicked() {
+                        if let Some(action) = DesktopSidePanel::perform_action(
+                            &mut app.decks_cache,
+                            ctx.accounts,
+                            side_panel.action,
+                        ) {
+                            side_panel_action = Some(action);
+                        }
                     }
                 }
+
+                // debug
+                /*
+                ui.painter().rect(
+                    rect,
+                    0,
+                    egui::Color32::RED,
+                    egui::Stroke::new(1.0, egui::Color32::BLUE),
+                    egui::StrokeKind::Inside,
+                );
+                */
 
                 // vertical sidebar line
                 ui.painter().vline(

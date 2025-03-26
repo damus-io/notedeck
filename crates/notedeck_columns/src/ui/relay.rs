@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::colors::PINK;
+use notedeck_ui::colors::PINK;
 use crate::relay_pool_manager::{RelayPoolManager, RelayStatus};
 use crate::ui::{Preview, PreviewConfig, View};
 use egui::{
@@ -197,7 +197,7 @@ fn add_relay_button() -> Button<'static> {
 
 fn add_relay_button2(is_enabled: bool) -> impl egui::Widget + 'static {
     move |ui: &mut egui::Ui| -> egui::Response {
-        let button_widget = styled_button("Add", crate::colors::PINK);
+        let button_widget = styled_button("Add", notedeck_ui::colors::PINK);
         ui.add_enabled(is_enabled, button_widget)
     }
 }

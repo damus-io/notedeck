@@ -1,13 +1,16 @@
-use crate::gif::{handle_repaint, retrieve_latest_texture};
-use crate::ui::images::render_images;
 use crate::ui::{
     self,
     note::{NoteOptions, NoteResponse},
 };
-use crate::{actionbar::NoteAction, images::ImageType, timeline::TimelineKind};
+use crate::{actionbar::NoteAction, timeline::TimelineKind};
 use egui::{Button, Color32, Hyperlink, Image, Response, RichText, Sense, Window};
 use enostr::KeypairUnowned;
 use nostrdb::{BlockType, Mention, Ndb, Note, NoteKey, Transaction};
+use notedeck_ui::images::ImageType;
+use notedeck_ui::{
+    gif::{handle_repaint, retrieve_latest_texture},
+    images::render_images,
+};
 use tracing::warn;
 
 use notedeck::{supported_mime_hosted_at_url, Images, MediaCacheType, NoteCache, Zaps};

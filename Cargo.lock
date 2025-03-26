@@ -3148,9 +3148,11 @@ dependencies = [
  "egui",
  "egui-winit",
  "egui_extras",
+ "nostrdb",
  "notedeck",
  "notedeck_columns",
  "notedeck_dave",
+ "notedeck_ui",
  "profiling",
  "puffin",
  "puffin_egui",
@@ -3188,6 +3190,7 @@ dependencies = [
  "indexmap",
  "nostrdb",
  "notedeck",
+ "notedeck_ui",
  "open",
  "poll-promise",
  "pretty_assertions",
@@ -3232,6 +3235,22 @@ dependencies = [
  "serde",
  "serde_json",
  "time",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "notedeck_ui"
+version = "0.3.1"
+dependencies = [
+ "egui",
+ "egui_extras",
+ "ehttp",
+ "image",
+ "nostrdb",
+ "notedeck",
+ "poll-promise",
+ "profiling",
  "tokio",
  "tracing",
 ]

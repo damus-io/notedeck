@@ -3,9 +3,11 @@ use core::f32;
 use egui::{vec2, Button, CornerRadius, Layout, Margin, RichText, ScrollArea, TextEdit};
 use notedeck::{Images, NotedeckTextStyle};
 
-use crate::{colors, profile_state::ProfileState};
+use crate::profile_state::ProfileState;
 
-use super::{banner, unwrap_profile_url, ProfilePic};
+use super::banner;
+
+use notedeck_ui::{profile::unwrap_profile_url, ProfilePic};
 
 pub struct EditProfileView<'a> {
     state: &'a mut ProfileState,
@@ -34,7 +36,7 @@ impl<'a> EditProfileView<'a> {
                 crate::ui::padding(padding, ui, |ui| {
                     ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui
-                            .add(button("Save changes", 119.0).fill(colors::PINK))
+                            .add(button("Save changes", 119.0).fill(notedeck_ui::colors::PINK))
                             .clicked()
                         {
                             save = true;

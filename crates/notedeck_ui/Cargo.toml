@@ -1,0 +1,16 @@
+[package]
+name = "notedeck_ui"
+edition = "2021"
+version.workspace = true
+
+[dependencies]
+egui = { workspace = true }
+egui_extras = { workspace = true }
+ehttp = { workspace = true }
+nostrdb = { workspace = true }
+tracing = { workspace = true }
+poll-promise = { workspace = true }
+profiling = { workspace = true }
+tokio = { workspace = true }
+notedeck = { workspace = true }
+image = { workspace = true }

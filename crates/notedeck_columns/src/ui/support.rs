@@ -1,7 +1,8 @@
 use egui::{vec2, Button, Label, Layout, RichText};
 use tracing::error;
 
-use crate::{colors::PINK, support::Support};
+use crate::support::Support;
+use notedeck_ui::colors::PINK;
 
 use super::padding;
 use notedeck::{NamedFontFamily, NotedeckTextStyle};

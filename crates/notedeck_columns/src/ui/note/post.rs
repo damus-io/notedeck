@@ -1,9 +1,7 @@
 use crate::draft::{Draft, Drafts, MentionHint};
-use crate::gif::{handle_repaint, retrieve_latest_texture};
 use crate::media_upload::{nostrbuild_nip96_upload, MediaPath};
 use crate::post::{downcast_post_buffer, MentionType, NewPost};
 use crate::profile::get_display_name;
-use crate::ui::images::render_images;
 use crate::ui::search_results::SearchResultsView;
 use crate::ui::{self, Preview, PreviewConfig};
 use crate::Result;
@@ -13,6 +11,10 @@ use egui::widgets::text_edit::TextEdit;
 use egui::{vec2, Frame, Layout, Margin, Pos2, ScrollArea, Sense, TextBuffer};
 use enostr::{FilledKeypair, FullKeypair, NoteId, Pubkey, RelayPool};
 use nostrdb::{Ndb, Transaction};
+use notedeck_ui::{
+    gif::{handle_repaint, retrieve_latest_texture},
+    images::render_images,
+};
 
 use notedeck::supported_mime_hosted_at_url;
 use tracing::error;
@@ -428,7 +430,7 @@ impl<'a, 'd> PostView<'a, 'd> {
                     ui,
                     self.note_context.img_cache,
                     &media.url,
-                    crate::images::ImageType::Content,
+                    notedeck_ui::images::ImageType::Content,
                     cache_type,
                     |ui| {
                         ui.spinner();

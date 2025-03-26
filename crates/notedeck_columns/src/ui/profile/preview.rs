@@ -4,9 +4,10 @@ use egui::{Frame, Label, RichText, Widget};
 use egui_extras::Size;
 use nostrdb::ProfileRecord;
 
-use notedeck::{Images, NotedeckTextStyle, UserAccount};
+use notedeck::{Images, NotedeckTextStyle};
 
-use super::{about_section_widget, banner, display_name_widget, get_display_name, get_profile_url};
+use super::{about_section_widget, banner, display_name_widget, get_display_name};
+use notedeck_ui::profile::get_profile_url;
 
 pub struct ProfilePreview<'a, 'cache> {
     profile: &'a ProfileRecord<'a>,
@@ -149,30 +150,6 @@ mod previews {
         fn preview(_cfg: PreviewConfig) -> Self::Prev {
             ProfilePreviewPreview::new()
         }
-    }
-}
-
-pub fn get_profile_url_owned(profile: Option<ProfileRecord<'_>>) -> &str {
-    if let Some(url) = profile.and_then(|pr| pr.record().profile().and_then(|p| p.picture())) {
-        url
-    } else {
-        ProfilePic::no_pfp_url()
-    }
-}
-
-pub fn get_account_url<'a>(
-    txn: &'a nostrdb::Transaction,
-    ndb: &nostrdb::Ndb,
-    account: Option<&UserAccount>,
-) -> &'a str {
-    if let Some(selected_account) = account {
-        if let Ok(profile) = ndb.get_profile_by_pubkey(txn, selected_account.key.pubkey.bytes()) {
-            get_profile_url_owned(Some(profile))
-        } else {
-            get_profile_url_owned(None)
-        }
-    } else {
-        get_profile_url(None)
     }
 }
 

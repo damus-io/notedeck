@@ -1,6 +1,7 @@
-use crate::{app_style::deck_icon_font_sized, colors::PINK, deck_state::DeckState};
+use crate::{app_style::deck_icon_font_sized, deck_state::DeckState};
 use egui::{vec2, Button, Color32, Label, RichText, Stroke, Ui, Widget};
 use notedeck::{NamedFontFamily, NotedeckTextStyle};
+use notedeck_ui::colors::PINK;
 
 use super::{
     anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},

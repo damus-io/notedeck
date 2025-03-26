@@ -1,4 +1,4 @@
-use crate::colors::PINK;
+use notedeck_ui::colors::PINK;
 use egui::{
     Align, Button, Frame, Image, InnerResponse, Layout, RichText, ScrollArea, Ui, UiBuilder, Vec2,
 };
