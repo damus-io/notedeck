@@ -18,6 +18,7 @@ pub mod support;
 pub mod thread;
 pub mod timeline;
 pub mod username;
+pub mod wallet;
 
 pub use accounts::AccountsView;
 pub use mention::Mention;

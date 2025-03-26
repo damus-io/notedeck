@@ -25,6 +25,7 @@ pub mod ui;
 mod unknowns;
 mod urls;
 mod user_account;
+mod wallet;
 
 pub use accounts::{AccountData, Accounts, AccountsAction, AddAccountAction, SwitchAccountAction};
 pub use app::{App, Notedeck};
@@ -52,6 +53,7 @@ pub use timecache::TimeCached;
 pub use unknowns::{get_unknown_note_ids, NoteRefsUnkIdAction, SingleUnkIdAction, UnknownIds};
 pub use urls::{supported_mime_hosted_at_url, SupportedMimeType, UrlMimes};
 pub use user_account::UserAccount;
+pub use wallet::{NoWallet, Wallet, WalletAction, WalletError, WalletState};
 
 // export libs
 pub use enostr;
