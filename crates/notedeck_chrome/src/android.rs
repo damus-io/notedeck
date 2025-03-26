@@ -5,7 +5,7 @@ use egui_winit::winit::platform::android::activity::AndroidApp;
 use notedeck_columns::Damus;
 use notedeck_dave::Dave;
 
-use crate::{setup::setup_chrome, chrome::Chrome};
+use crate::{chrome::Chrome, setup::setup_chrome};
 use notedeck::Notedeck;
 use serde_json::Value;
 use std::fs;
@@ -26,7 +26,7 @@ pub async fn android_main(app: AndroidApp) {
     //);
 
     //let writer =
-        //LogcatMakeWriter::new(LogcatTag::Target).expect("Failed to initialize logcat writer");
+    //LogcatMakeWriter::new(LogcatTag::Target).expect("Failed to initialize logcat writer");
 
     let fmt_layer = tracing_subscriber::fmt::layer()
         .with_level(false)
@@ -43,7 +43,11 @@ pub async fn android_main(app: AndroidApp) {
         .init();
 
     let path = app.internal_data_path().expect("data path");
-    let mut options = eframe::NativeOptions::default();
+    let mut options = eframe::NativeOptions {
+        depth_buffer: 24,
+        ..eframe::NativeOptions::default()
+    };
+
     options.renderer = eframe::Renderer::Wgpu;
     // Clone `app` to use it both in the closure and later in the function
     //let app_clone_for_event_loop = app.clone();
