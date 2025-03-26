@@ -1,11 +1,13 @@
 use std::num::NonZeroU64;
 
+use crate::vec3::Vec3;
 use eframe::egui_wgpu::{self, wgpu};
 use egui::{Rect, Response};
+use rand::Rng;
 
 pub struct DaveAvatar {
     rotation: Quaternion,
-    rot_dir: egui::Vec2,
+    rot_dir: Vec3,
 }
 
 // A simple quaternion implementation
@@ -28,13 +30,13 @@ impl Quaternion {
     }
 
     // Create from axis-angle representation
-    fn from_axis_angle(axis: [f32; 3], angle: f32) -> Self {
+    fn from_axis_angle(axis: &Vec3, angle: f32) -> Self {
         let half_angle = angle * 0.5;
         let s = half_angle.sin();
         Self {
-            x: axis[0] * s,
-            y: axis[1] * s,
-            z: axis[2] * s,
+            x: axis.x * s,
+            y: axis.y * s,
+            z: axis.z * s,
             w: half_angle.cos(),
         }
     }
@@ -358,7 +360,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
         Self {
             rotation: Quaternion::identity(),
-            rot_dir: egui::Vec2::ZERO,
+            rot_dir: Vec3::new(0.0, 0.0, 0.0),
         }
     }
 }
@@ -373,6 +375,21 @@ fn apply_friction(val: f32, friction: f32, clamp: f32) -> f32 {
 }
 
 impl DaveAvatar {
+    pub fn random_nudge(&mut self) {
+        let mut rng = rand::rng();
+
+        let nudge = Vec3::new(
+            rng.random::<f32>(),
+            rng.random::<f32>(),
+            rng.random::<f32>(),
+        )
+        .normalize();
+
+        self.rot_dir.x += nudge.x;
+        self.rot_dir.y += nudge.y;
+        self.rot_dir.z += nudge.z;
+    }
+
     pub fn render(&mut self, rect: Rect, ui: &mut egui::Ui) -> Response {
         let response = ui.allocate_rect(rect, egui::Sense::drag());
 
@@ -381,10 +398,10 @@ impl DaveAvatar {
             // Create rotation quaternions based on drag
             let dx = response.drag_delta().x;
             let dy = response.drag_delta().y;
-            let x_rotation = Quaternion::from_axis_angle([1.0, 0.0, 0.0], dy * 0.01);
-            let y_rotation = Quaternion::from_axis_angle([0.0, 1.0, 0.0], dx * 0.01);
+            let x_rotation = Quaternion::from_axis_angle(&Vec3::new(1.0, 0.0, 0.0), dy * 0.01);
+            let y_rotation = Quaternion::from_axis_angle(&Vec3::new(0.0, 1.0, 0.0), dx * 0.01);
 
-            self.rot_dir = egui::Vec2::new(dx, dy);
+            self.rot_dir = Vec3::new(dx, dy, 0.0);
 
             // Apply rotations (order matters)
             self.rotation = y_rotation.multiply(&x_rotation).multiply(&self.rotation);
@@ -394,15 +411,21 @@ impl DaveAvatar {
             let clamp = 0.1;
             self.rot_dir.x = apply_friction(self.rot_dir.x, friction, clamp);
             self.rot_dir.y = apply_friction(self.rot_dir.y, friction, clamp);
+            self.rot_dir.z = apply_friction(self.rot_dir.y, friction, clamp);
 
             // we only need to render if we're still spinning
-            if self.rot_dir.x > clamp || self.rot_dir.y > clamp {
+            if self.rot_dir.x > clamp || self.rot_dir.y > clamp || self.rot_dir.z > clamp {
                 let x_rotation =
-                    Quaternion::from_axis_angle([1.0, 0.0, 0.0], self.rot_dir.y * 0.01);
+                    Quaternion::from_axis_angle(&Vec3::new(1.0, 0.0, 0.0), self.rot_dir.y * 0.01);
                 let y_rotation =
-                    Quaternion::from_axis_angle([0.0, 1.0, 0.0], self.rot_dir.x * 0.01);
+                    Quaternion::from_axis_angle(&Vec3::new(0.0, 1.0, 0.0), self.rot_dir.x * 0.01);
+                let z_rotation =
+                    Quaternion::from_axis_angle(&Vec3::new(0.0, 0.0, 1.0), self.rot_dir.z * 0.01);
 
-                self.rotation = y_rotation.multiply(&x_rotation).multiply(&self.rotation);
+                self.rotation = y_rotation
+                    .multiply(&x_rotation)
+                    .multiply(&z_rotation)
+                    .multiply(&self.rotation);
 
                 ui.ctx().request_repaint();
             }

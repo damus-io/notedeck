@@ -26,6 +26,7 @@ use egui::{Rect, Vec2};
 use egui_wgpu::RenderState;
 
 mod avatar;
+mod vec3;
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -331,8 +332,12 @@ impl Dave {
     }
 
     fn render(&mut self, app_ctx: &AppContext, ui: &mut egui::Ui) {
+        let mut should_send = false;
         if let Some(recvr) = &self.incoming_tokens {
             while let Ok(res) = recvr.try_recv() {
+                if let Some(avatar) = &mut self.avatar {
+                    avatar.random_nudge();
+                }
                 match res {
                     DaveResponse::Token(token) => match self.chat.last_mut() {
                         Some(Message::Assistant(msg)) => *msg = msg.clone() + &token,
@@ -357,30 +362,43 @@ impl Dave {
                                 }
                             }
                         }
+
+                        should_send = true;
                     }
                 }
             }
         }
 
         // Scroll area for chat messages
-        egui::Frame::new().inner_margin(10.0).show(ui, |ui| {
-            egui::ScrollArea::vertical()
-                .stick_to_bottom(true)
-                .auto_shrink([false; 2])
-                .show(ui, |ui| {
-                    ui.vertical(|ui| {
-                        self.render_chat(ui);
+        egui::Frame::new()
+            .outer_margin(egui::Margin {
+                top: 100,
+                ..Default::default()
+            })
+            .inner_margin(10.0)
+            .show(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .stick_to_bottom(true)
+                    .auto_shrink([false; 2])
+                    .show(ui, |ui| {
+                        ui.vertical(|ui| {
+                            self.render_chat(ui);
 
-                        self.inputbox(app_ctx, ui);
-                    })
-                });
-        });
+                            self.inputbox(app_ctx, ui);
+                        })
+                    });
+            });
 
         if let Some(avatar) = &mut self.avatar {
-            let avatar_size = Vec2::splat(200.0);
-            let pos = Vec2::splat(100.0).to_pos2();
+            let avatar_size = Vec2::splat(100.0);
+            let pos = Vec2::splat(10.0).to_pos2();
             let pos = Rect::from_min_max(pos, pos + avatar_size);
             avatar.render(pos, ui);
+        }
+
+        // send again
+        if should_send {
+            self.send_user_message(app_ctx, ui.ctx());
         }
     }
 
@@ -441,7 +459,7 @@ impl Dave {
             egui::Frame::new()
                 .inner_margin(10.0)
                 .corner_radius(10.0)
-                .fill(ui.visuals().extreme_bg_color)
+                .fill(ui.visuals().widgets.inactive.weak_bg_fill)
                 .show(ui, |ui| {
                     ui.label(msg);
                 })
