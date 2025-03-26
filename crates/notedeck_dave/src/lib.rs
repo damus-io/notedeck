@@ -14,6 +14,7 @@ use async_openai::{
 use futures::StreamExt;
 use nostrdb::{Ndb, NoteKey, Transaction};
 use notedeck::AppContext;
+use notedeck_ui::icons::search_icon;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -378,11 +379,12 @@ impl Dave {
 
         // Scroll area for chat messages
         egui::Frame::new()
-            .outer_margin(egui::Margin {
-                top: 100,
-                ..Default::default()
+            .inner_margin(egui::Margin {
+                left: 50,
+                right: 50,
+                top: 50,
+                bottom: 50,
             })
-            .inner_margin(10.0)
             .show(ui, |ui| {
                 egui::ScrollArea::vertical()
                     .stick_to_bottom(true)
@@ -439,13 +441,24 @@ impl Dave {
                 match &call.typ {
                     ToolCalls::Search(search_call) => {
                         ui.horizontal(|ui| {
-                            let context = match search_call.context {
-                                SearchContext::Profile => "profile ",
-                                SearchContext::Any => " ",
-                                SearchContext::Home => "home ",
-                            };
+                            egui::Frame::new()
+                                .inner_margin(10.0)
+                                .corner_radius(10.0)
+                                .fill(ui.visuals().widgets.inactive.weak_bg_fill)
+                                .show(ui, |ui| {
+                                    ui.add(search_icon(16.0, 16.0));
+                                    ui.add_space(8.0);
+                                    let context = match search_call.context {
+                                        SearchContext::Profile => "profile ",
+                                        SearchContext::Any => "",
+                                        SearchContext::Home => "home ",
+                                    };
 
-                            ui.label(format!("Searching {}for '{}'", context, search_call.query));
+                                    ui.label(format!(
+                                        "Searching {}for '{}'",
+                                        context, search_call.query
+                                    ));
+                                })
                         });
                     }
                 }
@@ -478,7 +491,7 @@ impl Dave {
 
     fn assistant_chat(&self, msg: &str, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
-            ui.label(msg);
+            ui.add(egui::Label::new(msg).wrap_mode(egui::TextWrapMode::Wrap));
         });
     }
 

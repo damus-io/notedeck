@@ -7,6 +7,7 @@ version.workspace = true
 async-openai = "0.28.0"
 egui = { workspace = true }
 notedeck = { workspace = true }
+notedeck_ui = { workspace = true }
 eframe = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

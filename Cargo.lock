@@ -3231,6 +3231,7 @@ dependencies = [
  "hex",
  "nostrdb",
  "notedeck",
+ "notedeck_ui",
  "rand 0.9.0",
  "serde",
  "serde_json",
