@@ -276,8 +276,15 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                 uniform_buffer,
             });
 
+        let initial_rot = {
+            let x_rotation = Quaternion::from_axis_angle(&Vec3::new(1.0, 0.0, 0.0), 0.5);
+            let y_rotation = Quaternion::from_axis_angle(&Vec3::new(0.0, 1.0, 0.0), 0.5);
+
+            // Apply rotations (order matters)
+            y_rotation.multiply(&x_rotation)
+        };
         Self {
-            rotation: Quaternion::identity(),
+            rotation: initial_rot,
             rot_dir: Vec3::new(0.0, 0.0, 0.0),
         }
     }

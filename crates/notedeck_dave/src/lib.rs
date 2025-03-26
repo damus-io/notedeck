@@ -22,7 +22,6 @@ use std::sync::Arc;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 pub use avatar::DaveAvatar;
-use egui::{Rect, Vec2};
 use egui_wgpu::RenderState;
 
 pub use quaternion::Quaternion;
