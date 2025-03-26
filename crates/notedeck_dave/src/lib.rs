@@ -25,8 +25,12 @@ use avatar::DaveAvatar;
 use egui::{Rect, Vec2};
 use egui_wgpu::RenderState;
 
+pub use vec3::Vec3;
+pub use quaternion::Quaternion;
+
 mod avatar;
 mod vec3;
+mod quaternion;
 
 #[derive(Debug, Clone)]
 pub enum Message {
