@@ -4,7 +4,7 @@
 use notedeck::{DataPath, DataPathType, Notedeck};
 use notedeck_chrome::{
     setup::{generate_native_options, setup_chrome},
-    Chrome,
+    Chrome, NotedeckApp,
 };
 use notedeck_columns::Damus;
 use notedeck_dave::Dave;
@@ -99,8 +99,8 @@ async fn main() {
                 completely_unrecognized
             );
 
-            chrome.add_app(columns);
-            chrome.add_app(dave);
+            chrome.add_app(NotedeckApp::Columns(columns));
+            chrome.add_app(NotedeckApp::Dave(dave));
 
             // test dav
             chrome.set_active(1);

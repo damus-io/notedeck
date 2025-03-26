@@ -1,10 +1,12 @@
 // Entry point for wasm
 //#[cfg(target_arch = "wasm32")]
 //use wasm_bindgen::prelude::*;
-use egui::{Button, Label, Layout, RichText, ThemePreference, Widget};
+use crate::app::NotedeckApp;
+use egui::{vec2, Button, Label, Layout, RichText, ThemePreference, Widget};
 use egui_extras::{Size, StripBuilder};
 use nostrdb::{ProfileRecord, Transaction};
-use notedeck::{AppContext, NotedeckTextStyle, UserAccount};
+use notedeck::{App, AppContext, NotedeckTextStyle, UserAccount};
+use notedeck_dave::{Dave, DaveAvatar};
 use notedeck_ui::{profile::get_profile_url, AnimationHelper, ProfilePic};
 
 static ICON_WIDTH: f32 = 40.0;
@@ -13,7 +15,7 @@ pub static ICON_EXPANSION_MULTIPLE: f32 = 1.2;
 #[derive(Default)]
 pub struct Chrome {
     active: i32,
-    apps: Vec<Box<dyn notedeck::App>>,
+    apps: Vec<NotedeckApp>,
 }
 
 pub enum ChromePanelAction {
@@ -28,8 +30,18 @@ impl Chrome {
         Chrome::default()
     }
 
-    pub fn add_app(&mut self, app: impl notedeck::App + 'static) {
-        self.apps.push(Box::new(app));
+    pub fn add_app(&mut self, app: NotedeckApp) {
+        self.apps.push(app);
+    }
+
+    fn get_dave(&mut self) -> Option<&mut Dave> {
+        for app in &mut self.apps {
+            if let NotedeckApp::Dave(dave) = app {
+                return Some(dave);
+            }
+        }
+
+        None
     }
 
     pub fn set_active(&mut self, app: i32) {
@@ -44,7 +56,7 @@ impl Chrome {
     fn show(&mut self, ctx: &mut AppContext, ui: &mut egui::Ui) {
         ui.spacing_mut().item_spacing.x = 0.0;
 
-        let side_panel_width: f32 = 68.0;
+        let side_panel_width: f32 = 70.0;
         StripBuilder::new(ui)
             .size(Size::exact(side_panel_width)) // collapsible sidebar
             .size(Size::remainder()) // the main app contents
@@ -103,9 +115,10 @@ impl Chrome {
         ctx: &mut AppContext,
         ui: &mut egui::Ui,
     ) -> Option<ChromePanelAction> {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        ui.add_space(8.0);
+
         let pfp_resp = self.pfp_button(ctx, ui);
-        let settings_resp = ui.add(settings_button(dark_mode));
+        let settings_resp = settings_button(ui);
 
         let theme_action = match ui.ctx().theme() {
             egui::Theme::Dark => {
@@ -130,7 +143,7 @@ impl Chrome {
             }
         };
 
-        if ui.add(support_button()).clicked() {
+        if support_button(ui).clicked() {
             return Some(ChromePanelAction::Support);
         }
 
@@ -179,7 +192,15 @@ impl Chrome {
         ui.add(milestone_name());
         ui.add_space(16.0);
         //let dark_mode = ui.ctx().style().visuals.dark_mode;
-        //ui.add(add_column_button(dark_mode))
+        if columns_button(ui).clicked() {
+            self.active = 0;
+        }
+        ui.add_space(32.0);
+        if let Some(dave) = self.get_dave() {
+            if dave_button(dave.avatar_mut(), ui).clicked() {
+                self.active = 1;
+            }
+        }
     }
 }
 
@@ -222,54 +243,69 @@ fn expand_side_panel_button() -> impl Widget {
     }
 }
 
-fn support_button() -> impl Widget {
-    |ui: &mut egui::Ui| -> egui::Response {
-        let img_size = 16.0;
+fn expanding_button(
+    name: &'static str,
+    img_size: f32,
+    light_img: &egui::ImageSource,
+    dark_img: &egui::ImageSource,
+    ui: &mut egui::Ui,
+) -> egui::Response {
+    let max_size = ICON_WIDTH * ICON_EXPANSION_MULTIPLE; // max size of the widget
+    let img_data = if ui.visuals().dark_mode {
+        dark_img
+    } else {
+        light_img
+    };
+    let img = egui::Image::new(img_data.clone()).max_width(img_size);
 
-        let max_size = ICON_WIDTH * ICON_EXPANSION_MULTIPLE; // max size of the widget
-        let img_data = if ui.visuals().dark_mode {
-            egui::include_image!("../../../assets/icons/help_icon_dark_4x.png")
-        } else {
-            egui::include_image!("../../../assets/icons/help_icon_inverted_4x.png")
-        };
-        let img = egui::Image::new(img_data).max_width(img_size);
+    let helper = AnimationHelper::new(ui, name, egui::vec2(max_size, max_size));
 
-        let helper = AnimationHelper::new(ui, "help-button", egui::vec2(max_size, max_size));
+    let cur_img_size = helper.scale_1d_pos(img_size);
+    img.paint_at(
+        ui,
+        helper
+            .get_animation_rect()
+            .shrink((max_size - cur_img_size) / 2.0),
+    );
 
-        let cur_img_size = helper.scale_1d_pos(img_size);
-        img.paint_at(
-            ui,
-            helper
-                .get_animation_rect()
-                .shrink((max_size - cur_img_size) / 2.0),
-        );
-
-        helper.take_animation_response()
-    }
+    helper.take_animation_response()
 }
 
-fn settings_button(dark_mode: bool) -> impl Widget {
-    move |ui: &mut egui::Ui| {
-        let img_size = 24.0;
-        let max_size = ICON_WIDTH * ICON_EXPANSION_MULTIPLE; // max size of the widget
-        let img_data = if dark_mode {
-            egui::include_image!("../../../assets/icons/settings_dark_4x.png")
-        } else {
-            egui::include_image!("../../../assets/icons/settings_light_4x.png")
-        };
-        let img = egui::Image::new(img_data).max_width(img_size);
+fn support_button(ui: &mut egui::Ui) -> egui::Response {
+    expanding_button(
+        "help-button",
+        16.0,
+        &egui::include_image!("../../../assets/icons/help_icon_inverted_4x.png"),
+        &egui::include_image!("../../../assets/icons/help_icon_dark_4x.png"),
+        ui,
+    )
+}
 
-        let helper = AnimationHelper::new(ui, "settings-button", egui::vec2(max_size, max_size));
+fn settings_button(ui: &mut egui::Ui) -> egui::Response {
+    expanding_button(
+        "settings-button",
+        32.0,
+        &egui::include_image!("../../../assets/icons/settings_light_4x.png"),
+        &egui::include_image!("../../../assets/icons/settings_dark_4x.png"),
+        ui,
+    )
+}
 
-        let cur_img_size = helper.scale_1d_pos(img_size);
-        img.paint_at(
-            ui,
-            helper
-                .get_animation_rect()
-                .shrink((max_size - cur_img_size) / 2.0),
-        );
+fn columns_button(ui: &mut egui::Ui) -> egui::Response {
+    let btn = egui::include_image!("../../../assets/icons/columns_80.png");
+    expanding_button("columns-button", 40.0, &btn, &btn, ui)
+}
 
-        helper.take_animation_response()
+fn dave_button(avatar: Option<&mut DaveAvatar>, ui: &mut egui::Ui) -> egui::Response {
+    if let Some(avatar) = avatar {
+        let size = vec2(60.0, 60.0);
+        let available = ui.available_rect_before_wrap();
+        let center_x = available.center().x;
+        let rect = egui::Rect::from_center_size(egui::pos2(center_x, available.top()), size);
+        avatar.render(rect, ui)
+    } else {
+        // plain icon if wgpu device not available??
+        ui.label("fixme")
     }
 }
 

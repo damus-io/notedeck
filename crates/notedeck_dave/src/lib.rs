@@ -21,7 +21,7 @@ use std::sync::mpsc::{self, Receiver};
 use std::sync::Arc;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
-use avatar::DaveAvatar;
+pub use avatar::DaveAvatar;
 use egui::{Rect, Vec2};
 use egui_wgpu::RenderState;
 
@@ -306,6 +306,10 @@ pub struct Dave {
 }
 
 impl Dave {
+    pub fn avatar_mut(&mut self) -> Option<&mut DaveAvatar> {
+        self.avatar.as_mut()
+    }
+
     pub fn new(render_state: Option<&RenderState>) -> Self {
         let mut config = OpenAIConfig::new(); //.with_api_base("http://ollama.jb55.com/v1");
         if let Ok(api_key) = std::env::var("OPENAI_API_KEY") {
@@ -393,12 +397,15 @@ impl Dave {
                     });
             });
 
+        /*
+        // he lives in the sidebar now
         if let Some(avatar) = &mut self.avatar {
             let avatar_size = Vec2::splat(300.0);
             let pos = Vec2::splat(100.0).to_pos2();
             let pos = Rect::from_min_max(pos, pos + avatar_size);
             avatar.render(pos, ui);
         }
+        */
 
         // send again
         if should_send {
