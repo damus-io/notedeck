@@ -266,7 +266,7 @@ impl SearchCall {
             .limit(limit as u64)
             .build();
         let notes = {
-            if let Ok(results) = ndb.query(&txn, &[filter], limit) {
+            if let Ok(results) = ndb.query(txn, &[filter], limit) {
                 results.into_iter().map(|r| r.note_key.as_u64()).collect()
             } else {
                 vec![]
@@ -395,7 +395,7 @@ impl Dave {
                     // have a debug option to show this
                 }
                 Message::ToolCalls(toolcalls) => {
-                    Self::tool_call_ui(&toolcalls, ui);
+                    Self::tool_call_ui(toolcalls, ui);
                 }
             }
         }
@@ -526,7 +526,7 @@ impl Dave {
                                 entry
                                     .arguments
                                     .get_or_insert_with(String::new)
-                                    .push_str(&argchunk);
+                                    .push_str(argchunk);
                             }
                         }
                     }
@@ -539,7 +539,7 @@ impl Dave {
             }
 
             let mut parsed_tool_calls = vec![];
-            for (_index, partial) in &all_tool_calls {
+            for (_index, partial) in all_tool_calls {
                 let Some(unknown_tool_call) = partial.complete() else {
                     tracing::error!("could not complete partial tool call: {:?}", partial);
                     continue;
@@ -652,7 +652,7 @@ impl Tool {
                     "enum".to_string(),
                     Value::Array(
                         enums
-                            .into_iter()
+                            .iter()
                             .map(|s| Value::String((*s).to_owned()))
                             .collect(),
                     ),

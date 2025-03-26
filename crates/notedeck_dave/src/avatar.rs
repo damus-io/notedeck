@@ -366,9 +366,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 #[inline]
 fn apply_friction(val: f32, friction: f32, clamp: f32) -> f32 {
     if val < clamp {
-        return 0.0;
+        0.0
     } else {
-        return val * friction;
+        val * friction
     }
 }
 
