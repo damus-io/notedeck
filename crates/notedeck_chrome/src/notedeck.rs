@@ -1,48 +1,15 @@
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+//#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 // hide console window on Windows in release
-use notedeck_chrome::setup::{generate_native_options, setup_chrome};
 
 use notedeck::{DataPath, DataPathType, Notedeck};
+use notedeck_chrome::{
+    setup::{generate_native_options, setup_chrome},
+    Chrome,
+};
 use notedeck_columns::Damus;
 use notedeck_dave::Dave;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::EnvFilter;
-
-// Entry point for wasm
-//#[cfg(target_arch = "wasm32")]
-//use wasm_bindgen::prelude::*;
-
-struct Chrome {
-    active: i32,
-    apps: Vec<Box<dyn notedeck::App>>,
-}
-
-impl Chrome {
-    pub fn new() -> Self {
-        Chrome {
-            active: 0,
-            apps: vec![],
-        }
-    }
-
-    pub fn add_app(&mut self, app: impl notedeck::App + 'static) {
-        self.apps.push(Box::new(app));
-    }
-
-    pub fn set_active(&mut self, app: i32) {
-        self.active = app;
-    }
-}
-
-impl notedeck::App for Chrome {
-    fn update(&mut self, ctx: &mut notedeck::AppContext, ui: &mut egui::Ui) {
-        let active = self.active;
-        self.apps[active as usize].update(ctx, ui);
-        //for i in 0..self.apps.len() {
-        //    self.apps[i].update(ctx, ui);
-        //}
-    }
-}
 
 fn setup_logging(path: &DataPath) -> Option<WorkerGuard> {
     #[allow(unused_variables)] // need guard to live for lifetime of program

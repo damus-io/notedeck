@@ -3,8 +3,9 @@
 
 use egui_winit::winit::platform::android::activity::AndroidApp;
 use notedeck_columns::Damus;
+use notedeck_dave::Dave;
 
-use crate::setup::setup_chrome;
+use crate::{setup::setup_chrome, chrome::Chrome};
 use notedeck::Notedeck;
 use serde_json::Value;
 use std::fs;
@@ -13,7 +14,7 @@ use std::path::PathBuf;
 #[no_mangle]
 #[tokio::main]
 pub async fn android_main(app: AndroidApp) {
-    use tracing_logcat::{LogcatMakeWriter, LogcatTag};
+    //use tracing_logcat::{LogcatMakeWriter, LogcatTag};
     use tracing_subscriber::{prelude::*, EnvFilter};
 
     std::env::set_var("RUST_BACKTRACE", "full");
@@ -24,8 +25,8 @@ pub async fn android_main(app: AndroidApp) {
     //    "enostr=debug,notedeck_columns=debug,notedeck_chrome=debug",
     //);
 
-    let writer =
-        LogcatMakeWriter::new(LogcatTag::Target).expect("Failed to initialize logcat writer");
+    //let writer =
+        //LogcatMakeWriter::new(LogcatTag::Target).expect("Failed to initialize logcat writer");
 
     let fmt_layer = tracing_subscriber::fmt::layer()
         .with_level(false)
@@ -62,12 +63,15 @@ pub async fn android_main(app: AndroidApp) {
             let mut notedeck = Notedeck::new(ctx, path, &app_args);
             setup_chrome(ctx, &notedeck.args(), notedeck.theme());
 
-            let damus = Damus::new(&mut notedeck.app_context(), &app_args);
+            let context = &mut notedeck.app_context();
+            let dave = Dave::new(cc.wgpu_render_state.as_ref());
+            let columns = Damus::new(context, &app_args);
+            let mut chrome = Chrome::new();
 
             // ensure we recognized all the arguments
             let completely_unrecognized: Vec<String> = notedeck
                 .unrecognized_args()
-                .intersection(damus.unrecognized_args())
+                .intersection(columns.unrecognized_args())
                 .cloned()
                 .collect();
             assert!(
@@ -76,7 +80,13 @@ pub async fn android_main(app: AndroidApp) {
                 completely_unrecognized
             );
 
-            notedeck.set_app(damus);
+            chrome.add_app(columns);
+            chrome.add_app(dave);
+
+            // test dav
+            chrome.set_active(1);
+
+            notedeck.set_app(chrome);
 
             Ok(Box::new(notedeck))
         }),

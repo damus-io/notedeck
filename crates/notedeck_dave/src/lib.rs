@@ -394,8 +394,8 @@ impl Dave {
             });
 
         if let Some(avatar) = &mut self.avatar {
-            let avatar_size = Vec2::splat(100.0);
-            let pos = Vec2::splat(10.0).to_pos2();
+            let avatar_size = Vec2::splat(300.0);
+            let pos = Vec2::splat(100.0).to_pos2();
             let pos = Rect::from_min_max(pos, pos + avatar_size);
             avatar.render(pos, ui);
         }

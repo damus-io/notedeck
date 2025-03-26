@@ -3,7 +3,7 @@ name = "notedeck_chrome"
 version = { workspace = true }
 authors = ["William Casarin <jb55@jb55.com>", "kernelkind <kernelkind@gmail.com>"]
 edition = "2021"
-default-run = "notedeck"
+#default-run = "notedeck"
 #rust-version = "1.60"
 license = "GPLv3"
 description = "The nostr browser"
