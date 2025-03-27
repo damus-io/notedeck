@@ -435,6 +435,18 @@ impl Dave {
         ui.label(format!("tool_response: {:?}", tool_response));
     }
 
+    fn search_call_ui(search_call: &SearchCall, ui: &mut egui::Ui) {
+        ui.add(search_icon(16.0, 16.0));
+        ui.add_space(8.0);
+        let context = match search_call.context {
+            SearchContext::Profile => "profile ",
+            SearchContext::Any => "",
+            SearchContext::Home => "home ",
+        };
+
+        ui.label(format!("Searching {}for '{}'", context, search_call.query));
+    }
+
     fn tool_call_ui(toolcalls: &[ToolCall], ui: &mut egui::Ui) {
         ui.vertical(|ui| {
             for call in toolcalls {
@@ -446,18 +458,7 @@ impl Dave {
                                 .corner_radius(10.0)
                                 .fill(ui.visuals().widgets.inactive.weak_bg_fill)
                                 .show(ui, |ui| {
-                                    ui.add(search_icon(16.0, 16.0));
-                                    ui.add_space(8.0);
-                                    let context = match search_call.context {
-                                        SearchContext::Profile => "profile ",
-                                        SearchContext::Any => "",
-                                        SearchContext::Home => "home ",
-                                    };
-
-                                    ui.label(format!(
-                                        "Searching {}for '{}'",
-                                        context, search_call.query
-                                    ));
+                                    Self::search_call_ui(search_call, ui);
                                 })
                         });
                     }
