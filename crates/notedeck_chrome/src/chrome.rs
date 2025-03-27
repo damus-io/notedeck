@@ -25,6 +25,34 @@ pub enum ChromePanelAction {
     SaveTheme(ThemePreference),
 }
 
+impl ChromePanelAction {
+    fn process(&self, ui: &mut egui::Ui) {
+        match self {
+            Self::SaveTheme(theme) => {
+                tracing::info!("Switching theme to {:?}", theme);
+                ui.ctx().options_mut(|o| {
+                    o.theme_preference = *theme;
+                });
+            }
+
+            Self::Support => {
+                tracing::info!("Support selected");
+                // open support view
+            }
+
+            Self::Account => {
+                tracing::info!("Accounts view selected");
+                // open account
+            }
+
+            Self::Settings => {
+                tracing::info!("Settings view selected");
+                // open account
+            }
+        }
+    }
+}
+
 impl Chrome {
     pub fn new() -> Self {
         Chrome::default()
@@ -53,10 +81,12 @@ impl Chrome {
     ///
     /// The side menu should hover over the screen, while the side bar
     /// is collapsible but persistent on the screen.
-    fn show(&mut self, ctx: &mut AppContext, ui: &mut egui::Ui) {
+    fn show(&mut self, ctx: &mut AppContext, ui: &mut egui::Ui) -> Option<ChromePanelAction> {
         ui.spacing_mut().item_spacing.x = 0.0;
 
+        let mut got_action: Option<ChromePanelAction> = None;
         let side_panel_width: f32 = 70.0;
+
         StripBuilder::new(ui)
             .size(Size::exact(side_panel_width)) // collapsible sidebar
             .size(Size::remainder()) // the main app contents
@@ -80,7 +110,9 @@ impl Chrome {
                     });
 
                     ui.with_layout(Layout::bottom_up(egui::Align::Center), |ui| {
-                        self.bottomup_sidebar(ctx, ui);
+                        if let Some(action) = self.bottomup_sidebar(ctx, ui) {
+                            got_action = Some(action);
+                        }
                     });
 
                     // vertical sidebar line
@@ -106,6 +138,8 @@ impl Chrome {
                     self.apps[self.active as usize].update(ctx, ui);
                 });
             });
+
+        got_action
     }
 
     /// The section of the chrome sidebar that starts at the
@@ -136,7 +170,7 @@ impl Chrome {
                     .add(Button::new("🌙").frame(false))
                     .on_hover_text("Switch to dark mode");
                 if resp.clicked() {
-                    Some(ChromePanelAction::SaveTheme(ThemePreference::Light))
+                    Some(ChromePanelAction::SaveTheme(ThemePreference::Dark))
                 } else {
                     None
                 }
@@ -153,7 +187,7 @@ impl Chrome {
 
         if pfp_resp.clicked() {
             Some(ChromePanelAction::Account)
-        } else if settings_resp.clicked() || settings_resp.hovered() {
+        } else if settings_resp.clicked() {
             Some(ChromePanelAction::Settings)
         } else {
             None
@@ -206,7 +240,9 @@ impl Chrome {
 
 impl notedeck::App for Chrome {
     fn update(&mut self, ctx: &mut notedeck::AppContext, ui: &mut egui::Ui) {
-        self.show(ctx, ui);
+        if let Some(action) = self.show(ctx, ui) {
+            action.process(ui);
+        }
         // TODO: unify this constant with the columns side panel width. ui crate?
     }
 }
