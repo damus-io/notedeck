@@ -2,7 +2,7 @@ use futures::{channel::mpsc, FutureExt, StreamExt};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::time::{Duration, Instant};
-use std::{cell::RefCell, cmp::Ordering, rc::Rc};
+use std::{cmp::Ordering, rc::Rc};
 use thiserror::Error;
 use tracing::{debug, error, info, trace, warn};
 use uuid::Uuid;
@@ -300,7 +300,19 @@ pub struct SubState {
     local: Option<LocalSubState>,
     remote: Option<RemoteSubState>,
 }
-pub type SubStateRef = Rc<RefCell<SubState>>;
+
+use std::cell::UnsafeCell;
+pub type SubStateRef = Rc<UnsafeCell<SubState>>;
+
+impl SubState {
+    pub fn get(ssref: &SubStateRef) -> &SubState {
+        unsafe { &*ssref.get() }
+    }
+
+    pub fn get_mut(ssref: &SubStateRef) -> &mut SubState {
+        unsafe { &mut *ssref.get() }
+    }
+}
 
 impl Drop for SubState {
     fn drop(&mut self) {
@@ -342,7 +354,7 @@ impl SubMan {
         default_relays: &[RelaySpec],
     ) -> SubResult<SubReceiver> {
         let (substate, subrcvr) = self.make_subscription(&spec, default_relays)?;
-        let state = Rc::new(RefCell::new(substate));
+        let state = Rc::new(UnsafeCell::new(substate));
         if let Some(local_id) = subrcvr.local_id() {
             self.local.insert(local_id, Rc::clone(&state));
         }
@@ -361,7 +373,7 @@ impl SubMan {
                     local_id
                 )))
             }
-            Some(ssref) => ssref.clone(), // clone to drop the borrow on the map
+            Some(ssref) => ssref.clone(),
         };
         self.unsubscribe_substate(&ssref)
     }
@@ -375,13 +387,13 @@ impl SubMan {
                     remote_id
                 )))
             }
-            Some(ssref) => ssref.clone(), // clone to drop the borrow on the map
+            Some(ssref) => ssref.clone(),
         };
         self.unsubscribe_substate(&ssref)
     }
 
     fn unsubscribe_substate(&mut self, ssref: &SubStateRef) -> SubResult<()> {
-        let mut substate = ssref.borrow_mut();
+        let substate = SubState::get_mut(ssref);
         if let Some(&mut ref mut remotesubstate) = substate.remote.as_mut() {
             let remote_id = remotesubstate.remote_id.clone();
             // unsubscribe from all remote relays
@@ -414,7 +426,7 @@ impl SubMan {
     pub fn remove_substate_remote_id(&mut self, remote_id: &RemoteId) -> SubResult<()> {
         // remove from the local sub index if needed
         if let Some(ssref) = self.remote.get(remote_id) {
-            let substate = ssref.borrow();
+            let substate = SubState::get(&ssref);
             if let Some(localsubstate) = &substate.local {
                 self.local.remove(&localsubstate.local_id);
             }
@@ -556,7 +568,7 @@ impl SubMan {
 
                     // send our remote subscriptions for this relay
                     for ssr in self.remote.values_mut() {
-                        let mut substate = ssr.borrow_mut();
+                        let substate = SubState::get_mut(&ssr);
                         let remote_id = substate.spec.remote_id.clone();
                         let filters = substate.spec.filters.clone();
                         if let Some(remotesubstate) = &mut substate.remote {
@@ -594,7 +606,7 @@ impl SubMan {
                 RelayEvent::Error(e) => {
                     error!("process_relays {} error: {}", &relay, e);
                     for ssr in self.remote.values_mut() {
-                        let mut substate = ssr.borrow_mut();
+                        let substate = SubState::get_mut(&ssr);
                         let remote_id = substate.spec.remote_id.clone();
                         let filters = substate.spec.filters.clone();
                         if let Some(remotesubstate) = &mut substate.remote {
@@ -675,8 +687,8 @@ impl SubMan {
                 let mut substate_finished = false;
                 // do we have this sub in the subman remote subscriptions?
                 if let Some(ss) = self.remote.get_mut(*sid) {
-                    let is_oneshot = ss.borrow().spec.is_oneshot;
-                    let mut substate = ss.borrow_mut();
+                    let substate: &mut SubState = SubState::get_mut(&ss);
+                    let is_oneshot = substate.spec.is_oneshot;
                     if let Some(remotesubstate) = &mut substate.remote {
                         remotesubstate.update_rss(relay, RelaySubState::Current);
 
@@ -743,7 +755,7 @@ impl SubMan {
         // for every remote subscription
         for ssr in self.remote.values() {
             // that has remote substate (all will)
-            if let Some(ref remotesubstate) = ssr.borrow().remote {
+            if let Some(ref remotesubstate) = SubState::get(&ssr).remote {
                 // for each subscription remote relay
                 for (relay, state) in &remotesubstate.relays {
                     // include any that are in-play
