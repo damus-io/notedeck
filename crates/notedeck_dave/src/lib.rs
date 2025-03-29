@@ -307,6 +307,7 @@ pub struct Dave {
     model_config: ModelConfig,
 }
 
+#[derive(Debug)]
 pub struct ModelConfig {
     endpoint: Option<String>,
     model: String,
@@ -732,13 +733,14 @@ impl Tool {
                 "type".to_string(),
                 Value::String(arg.typ.type_string().to_string()),
             );
-            if let Some(default) = &arg.default {
-                props.insert("default".to_string(), default.clone());
-            }
-            props.insert(
-                "description".to_string(),
-                Value::String(arg.description.to_owned()),
-            );
+
+            let description = if let Some(default) = &arg.default {
+                format!("{} (Default: {default}))", arg.description)
+            } else {
+                arg.description.to_owned()
+            };
+
+            props.insert("description".to_string(), Value::String(description));
             if let ArgType::Enum(enums) = &arg.typ {
                 props.insert(
                     "enum".to_string(),
