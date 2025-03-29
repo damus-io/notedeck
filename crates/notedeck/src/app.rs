@@ -2,8 +2,8 @@ use crate::persist::{AppSizeHandler, ZoomHandler};
 use crate::wallet::GlobalWallet;
 use crate::zaps::Zaps;
 use crate::{
-    AccountStorage, Accounts, AppContext, Args, DataPath, DataPathType, Directory, Images,
-    NoteCache, RelayDebugView, ThemeHandler, UnknownIds,
+    frame_history::FrameHistory, AccountStorage, Accounts, AppContext, Args, DataPath,
+    DataPathType, Directory, Images, NoteCache, RelayDebugView, ThemeHandler, UnknownIds,
 };
 use egui::ThemePreference;
 use egui_winit::clipboard::Clipboard;
@@ -37,6 +37,7 @@ pub struct Notedeck {
     unrecognized_args: BTreeSet<String>,
     clipboard: Clipboard,
     zaps: Zaps,
+    frame_history: FrameHistory,
 }
 
 /// Our chrome, which is basically nothing
@@ -79,8 +80,10 @@ fn render_notedeck(notedeck: &mut Notedeck, ctx: &egui::Context) {
 }
 
 impl eframe::App for Notedeck {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         profiling::finish_frame!();
+        self.frame_history
+            .on_new_frame(ctx.input(|i| i.time), frame.info().cpu_usage);
 
         // handle account updates
         self.accounts.update(&mut self.ndb, &mut self.pool, ctx);
@@ -227,6 +230,7 @@ impl Notedeck {
             zoom,
             app_size,
             unrecognized_args,
+            frame_history: FrameHistory::default(),
             clipboard: Clipboard::new(None),
             zaps,
         }
@@ -251,6 +255,7 @@ impl Notedeck {
             theme: &mut self.theme,
             clipboard: &mut self.clipboard,
             zaps: &mut self.zaps,
+            frame_history: &mut self.frame_history,
         }
     }
 

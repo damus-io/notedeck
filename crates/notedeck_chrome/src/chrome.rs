@@ -177,18 +177,24 @@ impl Chrome {
             }
         };
 
-        if support_button(ui).clicked() {
-            return Some(ChromePanelAction::Support);
-        }
+        let support_resp = support_button(ui);
 
-        if theme_action.is_some() {
-            return theme_action;
+        if ctx.args.debug {
+            ui.weak(format!("{}", ctx.frame_history.fps() as i32));
+            ui.weak(format!(
+                "{:10.1}",
+                ctx.frame_history.mean_frame_time() * 1e3
+            ));
         }
 
         if pfp_resp.clicked() {
             Some(ChromePanelAction::Account)
         } else if settings_resp.clicked() {
             Some(ChromePanelAction::Settings)
+        } else if theme_action.is_some() {
+            theme_action
+        } else if support_resp.clicked() {
+            Some(ChromePanelAction::Support)
         } else {
             None
         }

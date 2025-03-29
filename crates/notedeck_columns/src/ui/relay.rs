@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 
-use notedeck_ui::colors::PINK;
 use crate::relay_pool_manager::{RelayPoolManager, RelayStatus};
 use crate::ui::{Preview, PreviewConfig, View};
 use egui::{
     Align, Button, CornerRadius, Frame, Id, Image, Layout, Margin, Rgba, RichText, Ui, Vec2,
 };
+use notedeck_ui::colors::PINK;
 
 use enostr::RelayPool;
 use notedeck::{Accounts, NotedeckTextStyle};

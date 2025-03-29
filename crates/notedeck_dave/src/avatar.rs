@@ -352,6 +352,7 @@ impl DaveAvatar {
                     .multiply(&z_rotation)
                     .multiply(&self.rotation);
 
+                tracing::trace!("repainting due to avatar rotation");
                 ui.ctx().request_repaint();
             }
         }

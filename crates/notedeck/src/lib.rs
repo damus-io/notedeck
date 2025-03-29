@@ -6,6 +6,7 @@ pub mod debouncer;
 mod error;
 pub mod filter;
 pub mod fonts;
+mod frame_history;
 mod imgcache;
 mod muted;
 pub mod note;

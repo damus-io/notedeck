@@ -1,9 +1,9 @@
-use notedeck_ui::colors::PINK;
 use egui::{
     Align, Button, Frame, Image, InnerResponse, Layout, RichText, ScrollArea, Ui, UiBuilder, Vec2,
 };
 use nostrdb::{Ndb, Transaction};
 use notedeck::{Accounts, Images};
+use notedeck_ui::colors::PINK;
 
 use super::profile::preview::SimpleProfilePreview;
 
