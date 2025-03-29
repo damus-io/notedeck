@@ -512,7 +512,8 @@ impl Dave {
     fn inputbox(&mut self, app_ctx: &AppContext, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.add(egui::TextEdit::multiline(&mut self.input));
-            if ui.button("Sned").clicked() {
+            ui.add_space(8.0);
+            if ui.button("Send").clicked() {
                 self.chat.push(Message::User(self.input.clone()));
                 self.send_user_message(app_ctx, ui.ctx());
                 self.input.clear();
