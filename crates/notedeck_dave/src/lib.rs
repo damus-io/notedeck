@@ -43,7 +43,7 @@ pub enum Message {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchResponse {
-    context: SearchContext,
+    //context: SearchContext,
     notes: Vec<u64>,
 }
 
@@ -259,7 +259,8 @@ pub enum SearchContext {
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct SearchCall {
-    context: SearchContext,
+    //context: SearchContext,
+    limit: i32,
     query: String,
 }
 
@@ -278,7 +279,7 @@ impl SearchCall {
             }
         };
         SearchResponse {
-            context: self.context.clone(),
+            //context: self.context.clone(),
             notes,
         }
     }
@@ -438,13 +439,16 @@ impl Dave {
     fn search_call_ui(search_call: &SearchCall, ui: &mut egui::Ui) {
         ui.add(search_icon(16.0, 16.0));
         ui.add_space(8.0);
-        let context = match search_call.context {
-            SearchContext::Profile => "profile ",
-            SearchContext::Any => "",
-            SearchContext::Home => "home ",
-        };
+        //let context = match search_call.context {
+        //    SearchContext::Profile => "profile ",
+        //    SearchContext::Any => "",
+        //    SearchContext::Home => "home ",
+        //};
 
-        ui.label(format!("Searching {}for '{}'", context, search_call.query));
+        ui.label(format!(
+            "Searching for '{}'",
+            /*context,*/ search_call.query
+        ));
     }
 
     fn tool_call_ui(toolcalls: &[ToolCall], ui: &mut egui::Ui) {
@@ -497,13 +501,14 @@ impl Dave {
     }
 
     fn send_user_message(&mut self, app_ctx: &AppContext, ctx: &egui::Context) {
-        let messages = {
+        let messages: Vec<ChatCompletionRequestMessage> = {
             let txn = Transaction::new(app_ctx.ndb).expect("txn");
             self.chat
                 .iter()
                 .map(|c| c.to_api_msg(&txn, app_ctx.ndb))
                 .collect()
         };
+        tracing::debug!("sending messages, latest: {:?}", messages.last().unwrap());
         let pubkey = self.pubkey.clone();
         let ctx = ctx.clone();
         let client = self.client.clone();
@@ -574,7 +579,9 @@ impl Dave {
                     }
 
                     if let Some(content) = &resp.content {
-                        tx.send(DaveResponse::Token(content.to_owned())).unwrap();
+                        if let Err(err) = tx.send(DaveResponse::Token(content.to_owned())) {
+                            tracing::error!("failed to send dave response token to ui: {err}");
+                        }
                         ctx.request_repaint();
                     }
                 }
@@ -628,7 +635,7 @@ impl notedeck::App for Dave {
 #[derive(Debug, Clone)]
 enum ArgType {
     String,
-    //Number,
+    Number,
     Enum(Vec<&'static str>),
 }
 
@@ -636,7 +643,7 @@ impl ArgType {
     pub fn type_string(&self) -> &'static str {
         match self {
             Self::String => "string",
-            //Self::Number => "number",
+            Self::Number => "number",
             Self::Enum(_) => "string",
         }
     }
@@ -648,6 +655,7 @@ struct ToolArg {
     name: &'static str,
     required: bool,
     description: &'static str,
+    default: Option<Value>,
 }
 
 #[derive(Debug, Clone)]
@@ -685,6 +693,9 @@ impl Tool {
                 "type".to_string(),
                 Value::String(arg.typ.type_string().to_string()),
             );
+            if let Some(default) = &arg.default {
+                props.insert("default".to_string(), default.clone());
+            }
             props.insert(
                 "description".to_string(),
                 Value::String(arg.description.to_owned()),
@@ -726,13 +737,30 @@ fn search_tool() -> Tool {
     Tool {
         name: "search",
         parse_call: SearchCall::parse,
-        description: "Full-text search functionality. Used for finding individual notes with specific terms. Queries with multiple words will only return results with notes that have all of those words.",
+        description: "Full-text search functionality. Used for finding individual notes with specific terms in the contents.",
         arguments: vec![
             ToolArg {
                 name: "query",
                 typ: ArgType::String,
                 required: true,
-                description: "The search query",
+                default: None,
+                description: "The fulltext search query. Queries with multiple words will only return results with notes that have all of those words. Don't include 'and', 'punctuation', etc if you don't need to.",
+            },
+
+            ToolArg {
+                name: "limit",
+                typ: ArgType::Number,
+                required: true,
+                default: Some(Value::Number(serde_json::Number::from_i128(10).unwrap())),
+                description: "The number of results to return.",
+            },
+
+            /*
+            ToolArg {
+                name: "kind",
+                typ: ArgType::Enum(vec!["microblog", "longform"]),
+                required: true,
+                description: "The kind of note. microblogs are short snippets of texts (aka tweets, this is what you want to search by default). Longform are blog posts/articles.",
             },
 
             ToolArg {
@@ -741,6 +769,7 @@ fn search_tool() -> Tool {
                 required: true,
                 description: "The context in which the search is occuring. valid options are 'home', 'profile', 'any'",
             }
+            */
         ]
     }
 }
