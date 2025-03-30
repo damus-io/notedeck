@@ -176,6 +176,9 @@ impl RenderNavResponse {
                         ctx.pool,
                         &txn,
                         ctx.unknown_ids,
+                        ctx.accounts,
+                        ctx.global_wallet,
+                        ctx.zaps,
                     );
                 }
 

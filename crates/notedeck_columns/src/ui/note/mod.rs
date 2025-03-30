@@ -16,7 +16,7 @@ pub use reply::PostReplyView;
 pub use reply_description::reply_desc;
 
 use crate::{
-    actionbar::NoteAction,
+    actionbar::{NoteAction, ZapAction},
     profile::get_display_name,
     timeline::{ThreadSelection, TimelineKind},
     ui::{self, View},
@@ -26,9 +26,12 @@ use egui::emath::{pos2, Vec2};
 use egui::{Id, Label, Pos2, Rect, Response, RichText, Sense};
 use enostr::{KeypairUnowned, NoteId, Pubkey};
 use nostrdb::{Ndb, Note, NoteKey, Transaction};
-use notedeck::{CachedNote, NoteCache, NotedeckTextStyle};
+use notedeck::{
+    AnyZapState, CachedNote, NoteCache, NoteZapTarget, NoteZapTargetOwned, NotedeckTextStyle,
+    ZapTarget, Zaps,
+};
 
-use super::profile::preview::one_line_display_name_widget;
+use super::{profile::preview::one_line_display_name_widget, widgets::x_button};
 
 pub struct NoteView<'a, 'd> {
     note_context: &'a mut NoteContext<'d>,
@@ -409,7 +412,15 @@ impl<'a, 'd> NoteView<'a, 'd> {
                 }
 
                 if self.options().has_actionbar() {
-                    if let Some(action) = render_note_actionbar(ui, self.note.id(), note_key).inner
+                    if let Some(action) = render_note_actionbar(
+                        ui,
+                        self.note_context.zaps,
+                        self.cur_acc.as_ref(),
+                        self.note.id(),
+                        self.note.pubkey(),
+                        note_key,
+                    )
+                    .inner
                     {
                         note_action = Some(action);
                     }
@@ -467,8 +478,15 @@ impl<'a, 'd> NoteView<'a, 'd> {
                     }
 
                     if self.options().has_actionbar() {
-                        if let Some(action) =
-                            render_note_actionbar(ui, self.note.id(), note_key).inner
+                        if let Some(action) = render_note_actionbar(
+                            ui,
+                            self.note_context.zaps,
+                            self.cur_acc.as_ref(),
+                            self.note.id(),
+                            self.note.pubkey(),
+                            note_key,
+                        )
+                        .inner
                         {
                             note_action = Some(action);
                         }
@@ -586,20 +604,67 @@ fn note_hitbox_clicked(
 #[profiling::function]
 fn render_note_actionbar(
     ui: &mut egui::Ui,
+    zaps: &Zaps,
+    cur_acc: Option<&KeypairUnowned>,
     note_id: &[u8; 32],
+    note_pubkey: &[u8; 32],
     note_key: NoteKey,
 ) -> egui::InnerResponse<Option<NoteAction>> {
-    ui.horizontal(|ui| {
+    ui.horizontal(|ui| 's: {
         let reply_resp = reply_button(ui, note_key);
         let quote_resp = quote_repost_button(ui, note_key);
 
+        let zap_target = ZapTarget::Note(NoteZapTarget {
+            note_id,
+            zap_recipient: note_pubkey,
+        });
+
+        let zap_state = cur_acc.map_or_else(
+            || AnyZapState::None,
+            |kp| zaps.any_zap_state_for(kp.pubkey.bytes(), zap_target),
+        );
+        let zap_resp = cur_acc
+            .filter(|k| k.secret_key.is_some())
+            .map(|_| match &zap_state {
+                AnyZapState::None => ui.add(zap_button(false)),
+                AnyZapState::Pending => ui.spinner(),
+                AnyZapState::LocalOnly | AnyZapState::Confirmed => ui.add(zap_button(true)),
+                AnyZapState::Error(zapping_error) => {
+                    let (rect, _) =
+                        ui.allocate_at_least(egui::vec2(10.0, 10.0), egui::Sense::click());
+                    ui.add(x_button(rect))
+                        .on_hover_text(format!("{zapping_error}"))
+                }
+            });
+
+        let to_noteid = |id: &[u8; 32]| NoteId::new(*id);
+
         if reply_resp.clicked() {
-            Some(NoteAction::Reply(NoteId::new(*note_id)))
-        } else if quote_resp.clicked() {
-            Some(NoteAction::Quote(NoteId::new(*note_id)))
-        } else {
-            None
+            break 's Some(NoteAction::Reply(to_noteid(note_id)));
         }
+
+        if quote_resp.clicked() {
+            break 's Some(NoteAction::Quote(to_noteid(note_id)));
+        }
+
+        let Some(zap_resp) = zap_resp else {
+            break 's None;
+        };
+
+        if !zap_resp.clicked() {
+            break 's None;
+        }
+
+        let target = NoteZapTargetOwned {
+            note_id: to_noteid(note_id),
+            zap_recipient: Pubkey::new(*note_pubkey),
+        };
+
+        if matches!(zap_state, AnyZapState::Error(_)) {
+            break 's Some(NoteAction::Zap(ZapAction::ClearError(target)));
+        }
+
+        Some(NoteAction::Zap(ZapAction::Send(target)))
     })
 }
 
@@ -668,4 +733,30 @@ fn quote_repost_button(ui: &mut egui::Ui, note_key: NoteKey) -> egui::Response {
     let put_resp = ui.put(rect, repost_icon(ui.visuals().dark_mode).max_width(size));
 
     resp.union(put_resp)
+}
+
+fn zap_button(colored: bool) -> impl egui::Widget {
+    move |ui: &mut egui::Ui| -> egui::Response {
+        let img_data = egui::include_image!("../../../../../assets/icons/zap_4x.png");
+
+        let (rect, size, resp) = ui::anim::hover_expand_small(ui, ui.id().with("zap"));
+
+        let mut img = egui::Image::new(img_data).max_width(size);
+
+        if colored {
+            img = img.tint(egui::Color32::from_rgb(0xFF, 0xB7, 0x57));
+        }
+
+        if !colored && !ui.visuals().dark_mode {
+            img = img.tint(egui::Color32::BLACK);
+        }
+
+        // align rect to note contents
+        let expand_size = 5.0; // from hover_expand_small
+        let rect = rect.translate(egui::vec2(-(expand_size / 2.0), 0.0));
+
+        let put_resp = ui.put(rect, img);
+
+        resp.union(put_resp)
+    }
 }

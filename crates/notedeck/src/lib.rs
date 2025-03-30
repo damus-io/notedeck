@@ -57,6 +57,7 @@ pub use user_account::UserAccount;
 pub use wallet::{
     get_wallet_for_mut, GlobalWallet, Wallet, WalletError, WalletState, WalletType, WalletUIState,
 };
+pub use zaps::{AnyZapState, NoteZapTarget, NoteZapTargetOwned, ZapTarget, ZappingError};
 
 // export libs
 pub use enostr;

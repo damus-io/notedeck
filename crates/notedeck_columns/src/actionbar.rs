@@ -4,9 +4,12 @@ use crate::{
     timeline::{TimelineCache, TimelineKind},
 };
 
-use enostr::{NoteId, RelayPool};
+use enostr::{NoteId, Pubkey, RelayPool};
 use nostrdb::{Ndb, NoteKey, Transaction};
-use notedeck::{NoteCache, UnknownIds};
+use notedeck::{
+    get_wallet_for_mut, Accounts, GlobalWallet, NoteCache, NoteZapTargetOwned, UnknownIds,
+    ZapTarget, ZappingError, Zaps,
+};
 use tracing::error;
 
 #[derive(Debug, Eq, PartialEq, Clone)]
@@ -14,6 +17,13 @@ pub enum NoteAction {
     Reply(NoteId),
     Quote(NoteId),
     OpenTimeline(TimelineKind),
+    Zap(ZapAction),
+}
+
+#[derive(Debug, Eq, PartialEq, Clone)]
+pub enum ZapAction {
+    Send(NoteZapTargetOwned),
+    ClearError(NoteZapTargetOwned),
 }
 
 pub struct NewNotes {
@@ -35,6 +45,9 @@ impl NoteAction {
         note_cache: &mut NoteCache,
         pool: &mut RelayPool,
         txn: &Transaction,
+        accounts: &mut Accounts,
+        global_wallet: &mut GlobalWallet,
+        zaps: &mut Zaps,
     ) -> Option<TimelineOpenResult> {
         match self {
             NoteAction::Reply(note_id) => {
@@ -49,6 +62,31 @@ impl NoteAction {
 
             NoteAction::Quote(note_id) => {
                 router.route_to(Route::quote(*note_id));
+                None
+            }
+
+            NoteAction::Zap(zap_action) => 's: {
+                let Some(cur_acc) = accounts.get_selected_account_mut() else {
+                    break 's None;
+                };
+
+                let sender = cur_acc.key.pubkey;
+
+                match zap_action {
+                    ZapAction::Send(target) => {
+                        if get_wallet_for_mut(accounts, global_wallet, sender.bytes()).is_some() {
+                            send_zap(&sender, zaps, pool, target)
+                        } else {
+                            zaps.send_error(
+                                sender.bytes(),
+                                ZapTarget::Note(target.into()),
+                                ZappingError::SenderNoWallet,
+                            );
+                        }
+                    }
+                    ZapAction::ClearError(target) => clear_zap_error(&sender, zaps, target),
+                }
+
                 None
             }
         }
@@ -66,12 +104,37 @@ impl NoteAction {
         pool: &mut RelayPool,
         txn: &Transaction,
         unknown_ids: &mut UnknownIds,
+        accounts: &mut Accounts,
+        global_wallet: &mut GlobalWallet,
+        zaps: &mut Zaps,
     ) {
         let router = columns.column_mut(col).router_mut();
-        if let Some(br) = self.execute(ndb, router, timeline_cache, note_cache, pool, txn) {
+        if let Some(br) = self.execute(
+            ndb,
+            router,
+            timeline_cache,
+            note_cache,
+            pool,
+            txn,
+            accounts,
+            global_wallet,
+            zaps,
+        ) {
             br.process(ndb, note_cache, txn, timeline_cache, unknown_ids);
         }
     }
+}
+
+fn send_zap(sender: &Pubkey, zaps: &mut Zaps, pool: &RelayPool, target: &NoteZapTargetOwned) {
+    let default_zap_msats = 10_000; // TODO(kernelkind): allow the user to set this default
+    let zap_target = ZapTarget::Note(target.into());
+
+    let sender_relays: Vec<String> = pool.relays.iter().map(|r| r.url().to_string()).collect();
+    zaps.send_zap(sender.bytes(), sender_relays, zap_target, default_zap_msats);
+}
+
+fn clear_zap_error(sender: &Pubkey, zaps: &mut Zaps, target: &NoteZapTargetOwned) {
+    zaps.clear_error_for(sender.bytes(), ZapTarget::Note(target.into()));
 }
 
 impl TimelineOpenResult {
