@@ -1,18 +1,29 @@
 use enostr::Keypair;
 use tokenator::{ParseError, TokenParser, TokenSerializable};
 
+use crate::Wallet;
+
 pub struct UserAccount {
     pub key: Keypair,
+    pub wallet: Option<Wallet>,
 }
 
 impl UserAccount {
     pub fn new(key: Keypair) -> Self {
-        Self { key }
+        Self { key, wallet: None }
+    }
+
+    pub fn new_with_wallet(key: Keypair, wallet: Wallet) -> Self {
+        Self {
+            key,
+            wallet: Some(wallet),
+        }
     }
 }
 
 enum UserAccountRoute {
     Key(Keypair),
+    Wallet(Wallet),
 }
 
 impl TokenSerializable for UserAccount {
@@ -20,20 +31,25 @@ impl TokenSerializable for UserAccount {
         parser: &mut tokenator::TokenParser<'a>,
     ) -> Result<Self, tokenator::ParseError<'a>> {
         let mut m_key = None;
+        let mut m_wallet = None;
 
         loop {
             let res = TokenParser::alt(
                 parser,
-                &[|p| Ok(UserAccountRoute::Key(Keypair::parse_from_tokens(p)?))],
+                &[
+                    |p| Ok(UserAccountRoute::Key(Keypair::parse_from_tokens(p)?)),
+                    |p| Ok(UserAccountRoute::Wallet(Wallet::parse_from_tokens(p)?)),
+                ],
             );
 
             match res {
                 Ok(UserAccountRoute::Key(key)) => m_key = Some(key),
+                Ok(UserAccountRoute::Wallet(wallet)) => m_wallet = Some(wallet),
                 Err(ParseError::AltAllFailed) => break,
                 Err(_) => {}
             }
 
-            if m_key.is_some() {
+            if m_key.is_some() && m_wallet.is_some() {
                 break;
             }
         }
@@ -42,11 +58,23 @@ impl TokenSerializable for UserAccount {
             return Err(ParseError::DecodeFailed);
         };
 
-        Ok(UserAccount { key })
+        let user_acc = if let Some(wallet) = m_wallet {
+            UserAccount::new_with_wallet(key, wallet)
+        } else {
+            UserAccount::new(key)
+        };
+
+        Ok(user_acc)
     }
 
     fn serialize_tokens(&self, writer: &mut tokenator::TokenWriter) {
         self.key.serialize_tokens(writer);
+
+        let Some(wallet) = &self.wallet else {
+            return;
+        };
+
+        wallet.serialize_tokens(writer);
     }
 }
 
@@ -55,14 +83,17 @@ mod tests {
     use enostr::FullKeypair;
     use tokenator::{TokenParser, TokenSerializable, TokenWriter};
 
+    use crate::Wallet;
+
     use super::UserAccount;
+
+    const URI: &str = "nostr+walletconnect://b889ff5b1513b641e2a139f661a661364979c5beee91842f8f0ef42ab558e9d4?relay=wss%3A%2F%2Frelay.damus.io&secret=71a8c14c1407c113601079c4302dab36460f0ccd0ad506f1f2dc73b5100e4f3c&lud16=nostr%40nostr.com";
 
     #[test]
     fn test_user_account_serialize_deserialize() {
         let kp = FullKeypair::generate();
-        let acc = UserAccount {
-            key: kp.to_keypair(),
-        };
+        let acc =
+            UserAccount::new_with_wallet(kp.to_keypair(), Wallet::new(URI.to_owned()).unwrap());
 
         let mut writer = TokenWriter::new("\t");
         acc.serialize_tokens(&mut writer);
@@ -77,5 +108,11 @@ mod tests {
         let new_acc = m_new_acc.unwrap();
 
         assert_eq!(acc.key, new_acc.key);
+
+        let Some(wallet) = new_acc.wallet else {
+            panic!();
+        };
+
+        assert_eq!(wallet.uri, URI);
     }
 }
