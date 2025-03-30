@@ -16,7 +16,7 @@ serde_json = { workspace = true }
 serde = { workspace = true }
 nostrdb = { workspace = true }
 hex = { workspace = true }
-time = "0.3.41"
+chrono = "0.4.40"
 rand = "0.9.0"
 bytemuck = "1.22.0"
 futures = "0.3.31"

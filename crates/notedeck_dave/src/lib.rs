@@ -11,6 +11,7 @@ use async_openai::{
     },
     Client,
 };
+use chrono::{DateTime, Duration, Local};
 use futures::StreamExt;
 use nostrdb::{Ndb, NoteKey, Transaction};
 use notedeck::AppContext;
@@ -20,7 +21,6 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver};
 use std::sync::Arc;
-use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 pub use avatar::DaveAvatar;
 use egui_wgpu::RenderState;
@@ -42,14 +42,14 @@ pub enum Message {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SearchResponse {
-    //context: SearchContext,
+pub struct QueryResponse {
+    context: QueryContext,
     notes: Vec<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ToolResponses {
-    Search(SearchResponse),
+    Query(QueryResponse),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -114,7 +114,7 @@ impl ToolCall {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ToolCalls {
-    Search(SearchCall),
+    Query(QueryCall),
 }
 
 impl ToolCalls {
@@ -127,13 +127,13 @@ impl ToolCalls {
 
     fn name(&self) -> &'static str {
         match self {
-            Self::Search(_) => "search",
+            Self::Query(_) => "search",
         }
     }
 
     fn arguments(&self) -> String {
         match self {
-            Self::Search(search) => serde_json::to_string(search).unwrap(),
+            Self::Query(search) => serde_json::to_string(search).unwrap(),
         }
     }
 }
@@ -209,7 +209,7 @@ fn note_kind_desc(kind: u64) -> String {
 /// it can interepret it and take further action
 fn format_tool_response_for_ai(txn: &Transaction, ndb: &Ndb, resp: &ToolResponses) -> String {
     match resp {
-        ToolResponses::Search(search_r) => {
+        ToolResponses::Query(search_r) => {
             let simple_notes: Vec<SimpleNote> = search_r
                 .notes
                 .iter()
@@ -229,10 +229,12 @@ fn format_tool_response_for_ai(txn: &Transaction, ndb: &Ndb, resp: &ToolResponse
                     let content = note.content().to_owned();
                     let pubkey = hex::encode(note.pubkey());
                     let note_kind = note_kind_desc(note.kind() as u64);
-                    let created_at = OffsetDateTime::from_unix_timestamp(note.created_at() as i64)
-                        .unwrap()
-                        .format(&Rfc3339)
-                        .unwrap();
+
+                    let created_at = {
+                        let datetime =
+                            DateTime::from_timestamp(note.created_at() as i64, 0).unwrap();
+                        datetime.format("%Y-%m-%d %H:%M:%S").to_string()
+                    };
 
                     Some(SimpleNote {
                         pubkey,
@@ -251,42 +253,69 @@ fn format_tool_response_for_ai(txn: &Transaction, ndb: &Ndb, resp: &ToolResponse
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "lowercase")]
-pub enum SearchContext {
+pub enum QueryContext {
     Home,
     Profile,
     Any,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct SearchCall {
-    //context: SearchContext,
-    limit: i32,
-    query: String,
+pub struct QueryCall {
+    context: Option<QueryContext>,
+    limit: Option<u64>,
+    since: Option<u64>,
+    kind: Option<u64>,
+    until: Option<u64>,
+    author: Option<String>,
+    search: Option<String>,
 }
 
-impl SearchCall {
-    pub fn execute(&self, txn: &Transaction, ndb: &Ndb) -> SearchResponse {
-        let limit = 10i32;
-        let filter = nostrdb::Filter::new()
-            .search(&self.query)
-            .limit(limit as u64)
-            .build();
+impl QueryCall {
+    pub fn to_filter(&self) -> nostrdb::Filter {
+        let mut filter = nostrdb::Filter::new()
+            .limit(self.limit())
+            .kinds([self.kind.unwrap_or(1)]);
+
+        if let Some(search) = &self.search {
+            filter = filter.search(search);
+        }
+
+        if let Some(until) = self.until {
+            filter = filter.until(until);
+        }
+
+        if let Some(since) = self.since {
+            filter = filter.since(since);
+        }
+
+        filter.build()
+    }
+
+    fn limit(&self) -> u64 {
+        self.limit.unwrap_or(10)
+    }
+
+    fn context(&self) -> QueryContext {
+        self.context.clone().unwrap_or(QueryContext::Any)
+    }
+
+    pub fn execute(&self, txn: &Transaction, ndb: &Ndb) -> QueryResponse {
         let notes = {
-            if let Ok(results) = ndb.query(txn, &[filter], limit) {
+            if let Ok(results) = ndb.query(txn, &[self.to_filter()], self.limit() as i32) {
                 results.into_iter().map(|r| r.note_key.as_u64()).collect()
             } else {
                 vec![]
             }
         };
-        SearchResponse {
-            //context: self.context.clone(),
+        QueryResponse {
+            context: self.context.clone().unwrap_or(QueryContext::Any),
             notes,
         }
     }
 
     pub fn parse(args: &str) -> Result<ToolCalls, ToolCallError> {
-        match serde_json::from_str::<SearchCall>(args) {
-            Ok(call) => Ok(ToolCalls::Search(call)),
+        match serde_json::from_str::<QueryCall>(args) {
+            Ok(call) => Ok(ToolCalls::Query(call)),
             Err(e) => Err(ToolCallError::ArgParseFailure(format!(
                 "Failed to parse args: '{}', error: {}",
                 args, e
@@ -365,7 +394,28 @@ impl Dave {
             tools.insert(tool.name.to_string(), tool);
         }
 
-        let system_prompt = Message::System(format!("You are an ai agent for the nostr protocol. You have access to tools that can query the network, so you can help find and summarize content for users. The current user's pubkey is {}.", &pubkey).to_string());
+        let now = Local::now();
+        let yesterday = now - Duration::hours(24);
+        let date = now.format("%Y-%m-%d %H:%M:%S");
+        let timestamp = now.timestamp();
+        let yesterday_timestamp = yesterday.timestamp();
+
+        let system_prompt = Message::System(format!(
+            r#"
+You are an AI agent for the nostr protocol called Dave, created by Damus. nostr is a decentralized social media and internet communications protocol. You are embedded in a nostr browser called 'Damus Notedeck'. The returned note results are formatted into clickable note widgets. This happens when a nostr-uri is detected (ie: nostr:neventnevent1y4mvl8046gjsvdvztnp7jvs7w29pxcmkyj5p58m7t0dmjc8qddzsje0zmj). When referencing notes, ensure that this uri is included in the response so notes can be rendered inline.
+
+- The current date is {date} ({timestamp} unix timestamp if needed for queries).
+
+- Yesterday (-24hrs) was {yesterday_timestamp}. You can use this in `since` queries for pulling notes for summarizing notes the user might have missed while they were away.
+
+- The current users pubkey is {pubkey}
+
+# Response Guidelines
+
+- Use plaintext formatting for all responses (not markdown).
+- Include note references when referring to notes
+"#
+        ));
 
         Dave {
             client,
@@ -401,11 +451,11 @@ impl Dave {
                         for call in &toolcalls {
                             // execute toolcall
                             match &call.typ {
-                                ToolCalls::Search(search_call) => {
+                                ToolCalls::Query(search_call) => {
                                     let resp = search_call.execute(&txn, app_ctx.ndb);
                                     self.chat.push(Message::ToolResponse(ToolResponse {
                                         id: call.id.clone(),
-                                        typ: ToolResponses::Search(resp),
+                                        typ: ToolResponses::Query(resp),
                                     }))
                                 }
                             }
@@ -471,30 +521,32 @@ impl Dave {
         }
     }
 
-    fn tool_response_ui(tool_response: &ToolResponse, ui: &mut egui::Ui) {
-        ui.label(format!("tool_response: {:?}", tool_response));
+    fn tool_response_ui(_tool_response: &ToolResponse, _ui: &mut egui::Ui) {
+        //ui.label(format!("tool_response: {:?}", tool_response));
     }
 
-    fn search_call_ui(search_call: &SearchCall, ui: &mut egui::Ui) {
+    fn search_call_ui(query_call: &QueryCall, ui: &mut egui::Ui) {
         ui.add(search_icon(16.0, 16.0));
         ui.add_space(8.0);
-        //let context = match search_call.context {
-        //    SearchContext::Profile => "profile ",
-        //    SearchContext::Any => "",
-        //    SearchContext::Home => "home ",
-        //};
+        let context = match query_call.context() {
+            QueryContext::Profile => "profile ",
+            QueryContext::Any => "",
+            QueryContext::Home => "home ",
+        };
 
-        ui.label(format!(
-            "Searching for '{}'",
-            /*context,*/ search_call.query
-        ));
+        //TODO: fix this to support any query
+        if let Some(search) = &query_call.search {
+            ui.label(format!("Querying {context}for '{search}'"));
+        } else {
+            ui.label(format!("Querying {:?}", &query_call));
+        }
     }
 
     fn tool_call_ui(toolcalls: &[ToolCall], ui: &mut egui::Ui) {
         ui.vertical(|ui| {
             for call in toolcalls {
                 match &call.typ {
-                    ToolCalls::Search(search_call) => {
+                    ToolCalls::Query(search_call) => {
                         ui.horizontal(|ui| {
                             egui::Frame::new()
                                 .inner_margin(10.0)
@@ -761,7 +813,7 @@ impl Tool {
         FunctionObject {
             name: self.name.to_owned(),
             description: Some(self.description.to_owned()),
-            strict: Some(true),
+            strict: Some(false),
             parameters: Some(Value::Object(parameters)),
         }
     }
@@ -774,18 +826,18 @@ impl Tool {
     }
 }
 
-fn search_tool() -> Tool {
+fn query_tool() -> Tool {
     Tool {
-        name: "search",
-        parse_call: SearchCall::parse,
-        description: "Full-text search functionality. Used for finding individual notes with specific terms in the contents.",
+        name: "query",
+        parse_call: QueryCall::parse,
+        description: "Note query functionality. Used for finding notes using full-text search terms, scoped by different contexts. You can use a combination of limit, since, and until to pull notes from any time range.",
         arguments: vec![
             ToolArg {
-                name: "query",
+                name: "search",
                 typ: ArgType::String,
-                required: true,
+                required: false,
                 default: None,
-                description: "The fulltext search query. Queries with multiple words will only return results with notes that have all of those words. Don't include 'and', 'punctuation', etc if you don't need to.",
+                description: "A fulltext search query. Queries with multiple words will only return results with notes that have all of those words. Don't include filler words/symbols like 'and', punctuation, etc",
             },
 
             ToolArg {
@@ -796,21 +848,53 @@ fn search_tool() -> Tool {
                 description: "The number of results to return.",
             },
 
-            /*
+            ToolArg {
+                name: "since",
+                typ: ArgType::Number,
+                required: false,
+                default: None,
+                description: "Only pull notes after this unix timestamp",
+            },
+
+            ToolArg {
+                name: "until",
+                typ: ArgType::Number,
+                required: false,
+                default: None,
+                description: "Only pull notes up until this unix timestamp",
+            },
+
             ToolArg {
                 name: "kind",
-                typ: ArgType::Enum(vec!["microblog", "longform"]),
-                required: true,
-                description: "The kind of note. microblogs are short snippets of texts (aka tweets, this is what you want to search by default). Longform are blog posts/articles.",
+                typ: ArgType::Number,
+                required: false,
+                default: Some(Value::Number(serde_json::Number::from_i128(1).unwrap())),
+                description: r#"The kind of note. Kind list:
+                - 0: profiles
+                - 1: microblogs/\"tweets\"/posts
+                - 6: reposts of kind 1 notes
+                - 7: emoji reactions/likes
+                - 9735: zaps (bitcoin micropayment receipts)
+                - 30023: longform articles, blog posts, etc
+
+                "#,
+            },
+
+            ToolArg {
+                name: "author",
+                typ: ArgType::String,
+                required: false,
+                default: None,
+                description: "An author *pubkey* to constrain the query on. Can be used to search for notes from individual users. If unsure what pubkey to use, you can query for kind 0 profiles with the search argument.",
             },
 
             ToolArg {
                 name: "context",
                 typ: ArgType::Enum(vec!["home", "profile", "any"]),
-                required: true,
+                required: false,
+                default: Some(Value::String("any".to_string())),
                 description: "The context in which the search is occuring. valid options are 'home', 'profile', 'any'",
             }
-            */
         ]
     }
 }
@@ -824,5 +908,5 @@ pub enum ToolCallError {
 }
 
 fn dave_tools() -> Vec<Tool> {
-    vec![search_tool()]
+    vec![query_tool()]
 }
