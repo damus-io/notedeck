@@ -36,6 +36,8 @@ profiling = { workspace = true }
 nwc = { workspace = true }
 tokio = { workspace = true }
 bech32 = { workspace = true }
+lightning-invoice = { workspace = true }
+secp256k1 = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

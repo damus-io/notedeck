@@ -575,7 +575,7 @@ dependencies = [
  "bitcoin_hashes 0.14.0",
  "hex-conservative 0.2.1",
  "hex_lit",
- "secp256k1",
+ "secp256k1 0.29.1",
  "serde",
 ]
 
@@ -2450,6 +2450,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "lightning-invoice"
+version = "0.33.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d4254e7d05961a3728bc90737c522e7091735ba6f2f71014096d4b3eb4ee5d89"
+dependencies = [
+ "bech32",
+ "bitcoin",
+ "lightning-types",
+]
+
+[[package]]
+name = "lightning-types"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f2cd84d4e71472035903e43caded8ecc123066ce466329ccd5ae537a8d5488c7"
+dependencies = [
+ "bitcoin",
+]
+
+[[package]]
 name = "linux-raw-sys"
 version = "0.4.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2794,7 +2814,7 @@ dependencies = [
  "getrandom 0.2.15",
  "instant",
  "scrypt",
- "secp256k1",
+ "secp256k1 0.29.1",
  "serde",
  "serde_json",
  "unicode-normalization",
@@ -2859,6 +2879,7 @@ dependencies = [
  "hex",
  "image",
  "jni",
+ "lightning-invoice",
  "mime_guess",
  "nostr 0.37.0",
  "nostrdb",
@@ -2867,6 +2888,7 @@ dependencies = [
  "profiling",
  "puffin",
  "puffin_egui",
+ "secp256k1 0.30.0",
  "serde",
  "serde_json",
  "sha2",
@@ -4177,6 +4199,17 @@ dependencies = [
  "rand 0.8.5",
  "secp256k1-sys",
  "serde",
+]
+
+[[package]]
+name = "secp256k1"
+version = "0.30.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b50c5943d326858130af85e049f2661ba3c78b26589b8ab98e65e80ae44a1252"
+dependencies = [
+ "bitcoin_hashes 0.14.0",
+ "rand 0.8.5",
+ "secp256k1-sys",
 ]
 
 [[package]]
