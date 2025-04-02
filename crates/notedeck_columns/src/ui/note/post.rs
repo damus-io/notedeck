@@ -732,6 +732,7 @@ mod preview {
                 ndb: app.ndb,
                 img_cache: app.img_cache,
                 note_cache: app.note_cache,
+                zaps: app.zaps,
             };
 
             PostView::new(

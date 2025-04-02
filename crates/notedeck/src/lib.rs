@@ -61,3 +61,5 @@ pub use wallet::{
 // export libs
 pub use enostr;
 pub use nostrdb;
+
+pub use zaps::Zaps;

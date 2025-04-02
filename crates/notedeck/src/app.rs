@@ -1,5 +1,6 @@
 use crate::persist::{AppSizeHandler, ZoomHandler};
 use crate::wallet::GlobalWallet;
+use crate::zaps::Zaps;
 use crate::{
     AccountStorage, Accounts, AppContext, Args, DataPath, DataPathType, Directory, Images,
     NoteCache, RelayDebugView, ThemeHandler, UnknownIds,
@@ -35,6 +36,7 @@ pub struct Notedeck {
     app_size: AppSizeHandler,
     unrecognized_args: BTreeSet<String>,
     clipboard: Clipboard,
+    zaps: Zaps,
 }
 
 /// Our chrome, which is basically nothing
@@ -205,6 +207,7 @@ impl Notedeck {
         }
 
         let global_wallet = GlobalWallet::new(&path);
+        let zaps = Zaps::default();
 
         Self {
             ndb,
@@ -222,6 +225,7 @@ impl Notedeck {
             app_size,
             unrecognized_args,
             clipboard: Clipboard::new(None),
+            zaps,
         }
     }
 
@@ -243,6 +247,7 @@ impl Notedeck {
             args: &self.args,
             theme: &mut self.theme,
             clipboard: &mut self.clipboard,
+            zaps: &mut self.zaps,
         }
     }
 

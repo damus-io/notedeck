@@ -14,6 +14,7 @@ use super::{
 type ZapId = u32;
 
 #[allow(dead_code)]
+#[derive(Default)]
 pub struct Zaps {
     next_id: ZapId,
     zap_keys: hashbrown::HashMap<ZapKeyOwned, Vec<ZapId>>,

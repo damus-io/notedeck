@@ -9,7 +9,7 @@ use egui::{Button, Color32, Hyperlink, Image, Response, RichText, Sense, Window}
 use nostrdb::{BlockType, Mention, Ndb, Note, NoteKey, Transaction};
 use tracing::warn;
 
-use notedeck::{supported_mime_hosted_at_url, Images, MediaCacheType, NoteCache};
+use notedeck::{supported_mime_hosted_at_url, Images, MediaCacheType, NoteCache, Zaps};
 
 /// Aggregates dependencies to reduce the number of parameters
 /// passed to inner UI elements, minimizing prop drilling.
@@ -17,6 +17,7 @@ pub struct NoteContext<'d> {
     pub ndb: &'d Ndb,
     pub img_cache: &'d mut Images,
     pub note_cache: &'d mut NoteCache,
+    pub zaps: &'d mut Zaps,
 }
 
 pub struct NoteContents<'a, 'd> {
