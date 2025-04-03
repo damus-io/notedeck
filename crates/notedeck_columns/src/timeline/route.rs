@@ -105,7 +105,7 @@ pub fn render_profile_route(
     note_options: NoteOptions,
     note_context: &mut NoteContext,
 ) -> Option<RenderNavAction> {
-    let action = ProfileView::new(
+    let mut profile_view = ProfileView::new(
         pubkey,
         accounts,
         col,
@@ -114,8 +114,9 @@ pub fn render_profile_route(
         unknown_ids,
         is_muted,
         note_context,
-    )
-    .ui(ui);
+    );
+
+    let action = profile_view.ui(ui);
 
     if let Some(action) = action {
         match action {
@@ -125,6 +126,12 @@ pub fn render_profile_route(
             ui::profile::ProfileViewAction::Note(note_action) => {
                 Some(RenderNavAction::NoteAction(note_action))
             }
+            ui::profile::ProfileViewAction::Follow(keypair, target_key) => Some(
+                RenderNavAction::ProfileAction(ProfileAction::Follow(keypair, target_key)),
+            ),
+            ui::profile::ProfileViewAction::Unfollow(keypair, target_key) => Some(
+                RenderNavAction::ProfileAction(ProfileAction::Unfollow(keypair, target_key)),
+            ),
         }
     } else {
         None
