@@ -8,9 +8,9 @@ pub use picture::ProfilePic;
 pub use preview::ProfilePreview;
 
 use egui::{load::TexturePoll, Label, RichText};
-use notedeck::{NostrName, NotedeckTextStyle};
+use notedeck::{IsFollowing, NostrName, NotedeckTextStyle};
 
-use crate::app_images;
+use crate::{app_images, colors, widgets::styled_button_toggleable};
 
 pub fn display_name_widget<'a>(
     name: &'a NostrName<'a>,
@@ -114,4 +114,17 @@ pub fn banner(ui: &mut egui::Ui, banner_url: Option<&str>, height: f32) -> egui:
             })
             .unwrap_or_else(|| ui.label(""))
     })
+}
+
+pub fn follow_button(following: IsFollowing) -> impl egui::Widget + 'static {
+    move |ui: &mut egui::Ui| -> egui::Response {
+        let (bg_color, text) = match following {
+            IsFollowing::Unknown => (ui.visuals().noninteractive().bg_fill, "Unknown"),
+            IsFollowing::Yes => (ui.visuals().widgets.inactive.bg_fill, "Unfollow"),
+            IsFollowing::No => (colors::PINK, "Follow"),
+        };
+
+        let enabled = following != IsFollowing::Unknown;
+        ui.add(styled_button_toggleable(text, bg_color, enabled))
+    }
 }
