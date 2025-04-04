@@ -8,7 +8,6 @@ use nostrdb::{Note, NoteBuilder, NoteReply};
 use std::{
     any::TypeId,
     collections::{BTreeMap, HashMap, HashSet},
-    hash::{DefaultHasher, Hash, Hasher},
     ops::Range,
 };
 use tracing::error;
@@ -479,11 +478,7 @@ fn char_indices_to_byte(text: &str, char_range: Range<usize>) -> Option<Range<us
 }
 
 pub fn downcast_post_buffer(buffer: &dyn TextBuffer) -> Option<&PostBuffer> {
-    let mut hasher = DefaultHasher::new();
-    TypeId::of::<PostBuffer>().hash(&mut hasher);
-    let post_id = hasher.finish() as usize;
-
-    if buffer.type_id() == post_id {
+    if buffer.type_id() == TypeId::of::<PostBuffer>() {
         unsafe { Some(&*(buffer as *const dyn TextBuffer as *const PostBuffer)) }
     } else {
         None
@@ -720,10 +715,8 @@ impl TextBuffer for PostBuffer {
         }
     }
 
-    fn type_id(&self) -> usize {
-        let mut hasher = DefaultHasher::new();
-        TypeId::of::<PostBuffer>().hash(&mut hasher);
-        hasher.finish() as usize
+    fn type_id(&self) -> std::any::TypeId {
+        std::any::TypeId::of::<Self>()
     }
 }
 
