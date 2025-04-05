@@ -1,7 +1,6 @@
+use enostr::{FullKeypair, Keypair, Pubkey, RelayPool};
+use nostrdb::{Filter, Ndb, Note, NoteBuildOptions, NoteBuilder, ProfileRecord, Tag, Transaction};
 use std::collections::HashMap;
-
-use enostr::{FullKeypair, Pubkey, RelayPool};
-use nostrdb::{Ndb, Note, NoteBuildOptions, NoteBuilder, ProfileRecord};
 
 use tracing::info;
 
@@ -72,6 +71,33 @@ pub fn get_display_name<'a>(record: Option<&ProfileRecord<'a>>) -> NostrName<'a>
     }
 }
 
+pub fn is_following(ndb: &Ndb, txn: &Transaction, own_key: Pubkey, target_key: Pubkey) -> bool {
+    ndb.query(txn, &[follows_filter(own_key)], 1)
+        .ok()
+        .map_or(false, |results| {
+            results.first().map_or(false, |result| {
+                result.note.tags().iter().filter(p_tags()).any(|tag| {
+                    tag.get_unchecked(1)
+                        .variant()
+                        .id()
+                        .map_or(false, |tag_key| tag_key == target_key.bytes())
+                })
+            })
+        })
+}
+
+fn p_tags() -> fn(&Tag) -> bool {
+    |tag| tag.count() > 0 && tag.get_unchecked(0).variant().str() == Some("p")
+}
+
+fn follows_filter(pubkey: Pubkey) -> Filter {
+    Filter::new()
+        .authors([pubkey.bytes()])
+        .kinds([3])
+        .limit(1)
+        .build()
+}
+
 pub struct SaveProfileChanges {
     pub kp: FullKeypair,
     pub state: ProfileState,
@@ -102,6 +128,8 @@ fn add_client_tag(builder: NoteBuilder<'_>) -> NoteBuilder<'_> {
 pub enum ProfileAction {
     Edit(FullKeypair),
     SaveChanges(SaveProfileChanges),
+    Follow(Keypair, Pubkey),
+    Unfollow(Keypair, Pubkey),
 }
 
 impl ProfileAction {
@@ -130,6 +158,81 @@ impl ProfileAction {
 
                 router.go_back();
             }
+            ProfileAction::Follow(keypair, target_key) => {
+                Self::send_follow_user_event(ndb, pool, keypair, target_key);
+            }
+            ProfileAction::Unfollow(keypair, target_key) => {
+                Self::send_unfollow_user_event(ndb, pool, keypair, target_key);
+            }
         }
+    }
+
+    fn send_follow_user_event(
+        ndb: &Ndb,
+        pool: &mut RelayPool,
+        keypair: &Keypair,
+        target_key: &Pubkey,
+    ) {
+        Self::send_kind_3_event(ndb, pool, keypair, target_key, true);
+    }
+
+    fn send_unfollow_user_event(
+        ndb: &Ndb,
+        pool: &mut RelayPool,
+        keypair: &Keypair,
+        target_key: &Pubkey,
+    ) {
+        Self::send_kind_3_event(ndb, pool, keypair, target_key, false);
+    }
+
+    fn send_kind_3_event(
+        ndb: &Ndb,
+        pool: &mut RelayPool,
+        keypair: &Keypair,
+        target_key: &Pubkey,
+        is_follow: bool,
+    ) {
+        let txn = Transaction::new(ndb).expect("txn");
+        let follows_filter = follows_filter(keypair.pubkey);
+        let mut following_list = Vec::new();
+        if let Ok(results) = ndb.query(&txn, &[follows_filter], 1) {
+            if let Some(result) = results.first() {
+                result
+                    .note
+                    .tags()
+                    .iter()
+                    .filter(p_tags())
+                    .map(|tag| tag.get_unchecked(1).variant().id().unwrap())
+                    .for_each(|key| following_list.push(key));
+            }
+        }
+        if is_follow {
+            following_list.push(target_key.bytes());
+        } else if let Some(index) = following_list
+            .iter()
+            .position(|key| *key == target_key.bytes())
+        {
+            following_list.remove(index);
+        }
+
+        let mut builder = NoteBuilder::new().kind(3);
+        for pk in following_list {
+            builder = builder.start_tag().tag_str("p").tag_str(&hex::encode(pk));
+        }
+
+        let note = builder
+            .content("")
+            .sign(&keypair.secret_key.clone().unwrap().to_secret_bytes())
+            .build()
+            .expect("build note");
+
+        let raw_msg = format!("[\"EVENT\",{}]", note.json().unwrap());
+
+        let _ = ndb.process_event_with(
+            raw_msg.as_str(),
+            nostrdb::IngestMetadata::new().client(true),
+        );
+        info!("sending {}", raw_msg);
+        pool.send(&enostr::ClientMessage::raw(raw_msg));
     }
 }

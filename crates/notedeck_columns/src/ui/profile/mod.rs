@@ -5,8 +5,8 @@ pub mod preview;
 pub use edit::EditProfileView;
 use egui::load::TexturePoll;
 use egui::{vec2, Color32, CornerRadius, Label, Layout, Rect, RichText, ScrollArea, Sense, Stroke};
-use enostr::{FullKeypair, Pubkey};
-use nostrdb::{Filter, Ndb, ProfileRecord, Transaction};
+use enostr::{Keypair, Pubkey};
+use nostrdb::{ProfileRecord, Transaction};
 pub use picture::ProfilePic;
 pub use preview::ProfilePreview;
 use tracing::error;
@@ -15,16 +15,15 @@ use crate::{
     actionbar::NoteAction,
     colors, images,
     profile::get_display_name,
+    profile::is_following,
     timeline::{TimelineCache, TimelineKind},
     ui::timeline::{tabs_ui, TimelineTabView},
     NostrName,
 };
 
-use notedeck::{Accounts, MuteFun, NotedeckTextStyle, UnknownIds};
-use crate::timeline::kind;
-use crate::timeline::kind::ListKind;
 use super::note::contents::NoteContext;
 use super::note::NoteOptions;
+use notedeck::{Accounts, MuteFun, NotedeckTextStyle, UnknownIds};
 
 pub struct ProfileView<'a, 'd> {
     pubkey: &'a Pubkey,
@@ -40,6 +39,8 @@ pub struct ProfileView<'a, 'd> {
 pub enum ProfileViewAction {
     EditProfile,
     Note(NoteAction),
+    Unfollow(Keypair, Pubkey),
+    Follow(Keypair, Pubkey),
 }
 
 impl<'a, 'd> ProfileView<'a, 'd> {
@@ -79,8 +80,8 @@ impl<'a, 'd> ProfileView<'a, 'd> {
                     .ndb
                     .get_profile_by_pubkey(&txn, self.pubkey.bytes())
                 {
-                    if self.profile_body(ui, &txn, profile) {
-                        action = Some(ProfileViewAction::EditProfile);
+                    if let Some(profile_view_action) = self.profile_body(ui, &txn, profile) {
+                        return Some(profile_view_action);
                     }
                 }
                 let profile_timeline = self
@@ -126,33 +127,13 @@ impl<'a, 'd> ProfileView<'a, 'd> {
             .inner
     }
 
-    fn is_following(&self, ndb: &Ndb, txn: &Transaction) -> bool {
-        let contact_filter = Filter::new()
-            .authors([self.accounts.get_selected_account().unwrap().key.pubkey.bytes()])
-            .kinds([3])
-            .limit(1)
-            .build();
-        
-        ndb.query(&txn, &[contact_filter], 1)
-            .map(|results| {
-                if results.is_empty() {
-                    return false;
-                }
-
-                let note = &results[0].note;
-                note.tags()
-                    .iter()
-                    .filter(|tag| tag.count() >= 2 && tag.get_unchecked(0).variant().str() == Some("p"))
-                    .any(|tag| {
-                        tag.get_unchecked(1).variant().id()
-                            .map_or(false, |tag_pubkey| tag_pubkey == self.pubkey.bytes())
-                    })
-            })
-            .unwrap_or(false)
-    }
-
-    fn profile_body(&mut self, ui: &mut egui::Ui, txn: &Transaction, profile: ProfileRecord<'_>) -> bool {
-        let mut action = false;
+    fn profile_body(
+        &mut self,
+        ui: &mut egui::Ui,
+        txn: &Transaction,
+        profile: ProfileRecord<'_>,
+    ) -> Option<ProfileViewAction> {
+        let mut action = None;
         ui.vertical(|ui| {
             banner(
                 ui,
@@ -191,17 +172,33 @@ impl<'a, 'd> ProfileView<'a, 'd> {
 
                     ui.with_layout(Layout::right_to_left(egui::Align::RIGHT), |ui| {
                         ui.add_space(24.0);
-                        let is_following = self.is_following(self.note_context.ndb, txn);
+
+                        let own_keypair = self
+                            .accounts
+                            .get_selected_account()
+                            .expect("account")
+                            .key
+                            .clone();
+                        let target_key = *self.pubkey;
+                        let is_following = is_following(
+                            self.note_context.ndb,
+                            txn,
+                            own_keypair.pubkey,
+                            target_key,
+                        );
 
                         if ui.add(follow_button(is_following)).clicked() {
-                            println!("follow");
-                            todo!("follow");
+                            action = if is_following {
+                                Some(ProfileViewAction::Unfollow(own_keypair, target_key))
+                            } else {
+                                Some(ProfileViewAction::Follow(own_keypair, target_key))
+                            };
                         }
 
-                        if self.accounts.contains_full_kp(self.pubkey) {
-                            if ui.add(edit_profile_button()).clicked() {
-                                action = true;
-                            }
+                        if self.accounts.contains_full_kp(self.pubkey)
+                            && ui.add(edit_profile_button()).clicked()
+                        {
+                            action = Some(ProfileViewAction::EditProfile);
                         }
                     });
                 });
@@ -494,9 +491,9 @@ fn follow_button(following: bool) -> impl egui::Widget + 'static {
         let rect = painter.round_rect_to_pixels(rect);
 
         let (bg_color, text) = if following {
-            (Color32::from_rgb(0, 0, 0), "Unfollow")
+            (Color32::default(), "Unfollow")
         } else {
-            (Color32::from_rgb(248, 105, 182), "Follow")
+            (colors::PINK, "Follow")
         };
 
         painter.rect_filled(rect, CornerRadius::same(8), bg_color);
@@ -505,7 +502,7 @@ fn follow_button(following: bool) -> impl egui::Widget + 'static {
             painter.rect_stroke(
                 rect,
                 CornerRadius::same(8),
-                Stroke::new(1.0, Color32::WHITE),
+                Stroke::new(0.5, Color32::WHITE),
                 egui::StrokeKind::Inside,
             );
         }
