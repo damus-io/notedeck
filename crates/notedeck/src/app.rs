@@ -1,4 +1,5 @@
 use crate::persist::{AppSizeHandler, ZoomHandler};
+use crate::wallet::GlobalWallet;
 use crate::{
     AccountStorage, Accounts, AppContext, Args, DataPath, DataPathType, Directory, Images,
     NoteCache, RelayDebugView, ThemeHandler, UnknownIds,
@@ -25,6 +26,7 @@ pub struct Notedeck {
     pool: RelayPool,
     note_cache: NoteCache,
     accounts: Accounts,
+    global_wallet: GlobalWallet,
     path: DataPath,
     args: Args,
     theme: ThemeHandler,
@@ -202,6 +204,8 @@ impl Notedeck {
             error!("error migrating image cache: {e}");
         }
 
+        let global_wallet = GlobalWallet::new(&path);
+
         Self {
             ndb,
             img_cache,
@@ -209,6 +213,7 @@ impl Notedeck {
             pool,
             note_cache,
             accounts,
+            global_wallet,
             path: path.clone(),
             args: parsed_args,
             theme,
@@ -233,6 +238,7 @@ impl Notedeck {
             pool: &mut self.pool,
             note_cache: &mut self.note_cache,
             accounts: &mut self.accounts,
+            global_wallet: &mut self.global_wallet,
             path: &self.path,
             args: &self.args,
             theme: &mut self.theme,

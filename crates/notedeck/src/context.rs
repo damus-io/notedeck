@@ -1,4 +1,6 @@
-use crate::{Accounts, Args, DataPath, Images, NoteCache, ThemeHandler, UnknownIds};
+use crate::{
+    wallet::GlobalWallet, Accounts, Args, DataPath, Images, NoteCache, ThemeHandler, UnknownIds,
+};
 use egui_winit::clipboard::Clipboard;
 
 use enostr::RelayPool;
@@ -13,6 +15,7 @@ pub struct AppContext<'a> {
     pub pool: &'a mut RelayPool,
     pub note_cache: &'a mut NoteCache,
     pub accounts: &'a mut Accounts,
+    pub global_wallet: &'a mut GlobalWallet,
     pub path: &'a DataPath,
     pub args: &'a Args,
     pub theme: &'a mut ThemeHandler,
