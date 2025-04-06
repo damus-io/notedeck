@@ -5,6 +5,12 @@ pub struct UnexpectedToken<'fnd, 'exp> {
 }
 
 #[derive(Debug, Clone)]
+pub struct UnexpectedTokenOwned {
+    pub expected: String,
+    pub found: String,
+}
+
+#[derive(Debug, Clone)]
 pub enum ParseError<'a> {
     /// Not done parsing yet
     Incomplete,
@@ -22,6 +28,34 @@ pub enum ParseError<'a> {
 
     /// No more tokens
     EOF,
+}
+
+#[derive(Debug, Clone)]
+pub enum ParseErrorOwned {
+    Incomplete,
+    AltAllFailed,
+    DecodeFailed,
+    HexDecodeFailed,
+    UnexpectedToken(UnexpectedTokenOwned),
+    EOF,
+}
+
+impl From<ParseError<'_>> for ParseErrorOwned {
+    fn from(value: ParseError) -> Self {
+        match value {
+            ParseError::Incomplete => Self::Incomplete,
+            ParseError::AltAllFailed => Self::AltAllFailed,
+            ParseError::DecodeFailed => Self::DecodeFailed,
+            ParseError::HexDecodeFailed => Self::HexDecodeFailed,
+            ParseError::UnexpectedToken(unexpected_token) => {
+                Self::UnexpectedToken(UnexpectedTokenOwned {
+                    expected: unexpected_token.expected.to_owned(),
+                    found: unexpected_token.found.to_owned(),
+                })
+            }
+            ParseError::EOF => Self::EOF,
+        }
+    }
 }
 
 pub struct TokenWriter {
