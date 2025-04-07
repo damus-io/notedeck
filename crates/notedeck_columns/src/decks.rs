@@ -36,6 +36,17 @@ impl Default for DecksCache {
 }
 
 impl DecksCache {
+    /// Gets the first column in the currently active user's active deck
+    pub fn first_column_mut(&mut self, accounts: &notedeck::Accounts) -> Option<&mut Column> {
+        let Some(account) = accounts.get_selected_account() else {
+            return None;
+        };
+
+        self.decks_mut(&account.key.pubkey)
+            .active_deck_mut()
+            .and_then(|ad| ad.columns_mut().columns_mut().first_mut())
+    }
+
     pub fn new(mut account_to_decks: HashMap<Pubkey, Decks>) -> Self {
         let fallback_pubkey = FALLBACK_PUBKEY();
         account_to_decks.entry(fallback_pubkey).or_default();
@@ -177,6 +188,19 @@ impl Decks {
 
     pub fn decks(&self) -> &Vec<Deck> {
         &self.decks
+    }
+
+    pub fn active_deck_mut(&mut self) -> Option<&mut Deck> {
+        if self.decks.is_empty() {
+            return None;
+        }
+
+        let active = self.active_index();
+        if active > (self.decks.len() - 1) {
+            return None;
+        }
+
+        Some(&mut self.decks[active])
     }
 
     pub fn decks_mut(&mut self) -> &mut Vec<Deck> {

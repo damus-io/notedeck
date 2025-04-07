@@ -41,5 +41,6 @@ pub mod storage;
 pub use app::Damus;
 pub use error::Error;
 pub use profile::NostrName;
+pub use route::Route;
 
 pub type Result<T> = std::result::Result<T, error::Error>;

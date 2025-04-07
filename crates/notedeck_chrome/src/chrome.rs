@@ -6,6 +6,7 @@ use egui::{vec2, Button, Label, Layout, RichText, ThemePreference, Widget};
 use egui_extras::{Size, StripBuilder};
 use nostrdb::{ProfileRecord, Transaction};
 use notedeck::{App, AppContext, NotedeckTextStyle, UserAccount};
+use notedeck_columns::Damus;
 use notedeck_dave::{Dave, DaveAvatar};
 use notedeck_ui::{profile::get_profile_url, AnimationHelper, ProfilePic};
 
@@ -26,7 +27,7 @@ pub enum ChromePanelAction {
 }
 
 impl ChromePanelAction {
-    fn process(&self, ui: &mut egui::Ui) {
+    fn process(&self, ctx: &AppContext, chrome: &mut Chrome, ui: &mut egui::Ui) {
         match self {
             Self::SaveTheme(theme) => {
                 tracing::info!("Switching theme to {:?}", theme);
@@ -47,6 +48,23 @@ impl ChromePanelAction {
 
             Self::Settings => {
                 tracing::info!("Settings view selected");
+                chrome.switch_to_columns();
+                if let Some(c) = chrome
+                    .get_columns()
+                    .and_then(|columns| columns.decks_cache.first_column_mut(ctx.accounts))
+                {
+                    if c.router()
+                        .routes()
+                        .iter()
+                        .any(|r| r == &notedeck_columns::Route::Relays)
+                    {
+                        // return if we are already routing to accounts
+                        //router.go_back();
+                    } else {
+                        c.router_mut().route_to(notedeck_columns::Route::relays());
+                        //c..route_to(Route::relays());
+                    }
+                };
                 // open account
             }
         }
@@ -62,6 +80,16 @@ impl Chrome {
         self.apps.push(app);
     }
 
+    fn get_columns(&mut self) -> Option<&mut Damus> {
+        for app in &mut self.apps {
+            if let NotedeckApp::Columns(cols) = app {
+                return Some(cols);
+            }
+        }
+
+        None
+    }
+
     fn get_dave(&mut self) -> Option<&mut Dave> {
         for app in &mut self.apps {
             if let NotedeckApp::Dave(dave) = app {
@@ -70,6 +98,14 @@ impl Chrome {
         }
 
         None
+    }
+
+    fn switch_to_columns(&mut self) {
+        for (i, app) in self.apps.iter().enumerate() {
+            if let NotedeckApp::Columns(_) = app {
+                self.active = i as i32;
+            }
+        }
     }
 
     pub fn set_active(&mut self, app: i32) {
@@ -236,6 +272,7 @@ impl Chrome {
             self.active = 0;
         }
         ui.add_space(32.0);
+
         if let Some(dave) = self.get_dave() {
             if dave_button(dave.avatar_mut(), ui).clicked() {
                 self.active = 1;
@@ -247,7 +284,7 @@ impl Chrome {
 impl notedeck::App for Chrome {
     fn update(&mut self, ctx: &mut notedeck::AppContext, ui: &mut egui::Ui) {
         if let Some(action) = self.show(ctx, ui) {
-            action.process(ui);
+            action.process(ctx, self, ui);
         }
         // TODO: unify this constant with the columns side panel width. ui crate?
     }
