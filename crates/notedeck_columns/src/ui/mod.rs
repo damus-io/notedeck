@@ -19,6 +19,7 @@ pub mod thread;
 pub mod timeline;
 pub mod username;
 pub mod wallet;
+pub mod widgets;
 
 pub use accounts::AccountsView;
 pub use mention::Mention;
