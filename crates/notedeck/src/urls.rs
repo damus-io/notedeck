@@ -113,7 +113,7 @@ fn save_to_disk(path: PathBuf, cache: Arc<RwLock<UrlsToMime>>) {
                 let mut file = File::create(&path)?;
                 file.write_all(&encoded)?;
                 file.sync_all()?;
-                tracing::info!("Saved UrlCache to disk.");
+                tracing::debug!("Saved UrlCache to disk.");
                 Ok(())
             } else {
                 Err(Error::Generic(
