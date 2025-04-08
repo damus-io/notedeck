@@ -85,6 +85,9 @@ impl eframe::App for Notedeck {
         // handle account updates
         self.accounts.update(&mut self.ndb, &mut self.pool, ctx);
 
+        self.zaps
+            .process(&mut self.accounts, &mut self.global_wallet, &self.ndb);
+
         render_notedeck(self, ctx);
 
         self.zoom.try_save_zoom_factor(ctx);
