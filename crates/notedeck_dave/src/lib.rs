@@ -356,7 +356,7 @@ impl Default for ModelConfig {
 impl ModelConfig {
     pub fn ollama() -> Self {
         ModelConfig {
-            endpoint: std::env::var("OLLAMA_HOST").ok(),
+            endpoint: std::env::var("OLLAMA_HOST").ok().map(|h| h + "/v1"),
             model: "hhao/qwen2.5-coder-tools:latest".to_string(),
             api_key: None,
         }
@@ -382,8 +382,8 @@ impl Dave {
     }
 
     pub fn new(render_state: Option<&RenderState>) -> Self {
-        //let mut config = OpenAIConfig::new(); //.with_api_base("http://ollama.jb55.com/v1");
         let model_config = ModelConfig::default();
+        //let model_config = ModelConfig::ollama();
         let client = Client::with_config(model_config.to_api());
 
         let input = "".to_string();
