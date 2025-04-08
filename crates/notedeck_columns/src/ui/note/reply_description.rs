@@ -3,6 +3,7 @@ use crate::{
     ui::{self},
 };
 use egui::{Label, RichText, Sense};
+use enostr::KeypairUnowned;
 use nostrdb::{Note, NoteReply, Transaction};
 
 use super::{contents::NoteContext, NoteOptions};
@@ -11,6 +12,7 @@ use super::{contents::NoteContext, NoteOptions};
 #[profiling::function]
 pub fn reply_desc(
     ui: &mut egui::Ui,
+    cur_acc: &Option<KeypairUnowned>,
     txn: &Transaction,
     note_reply: &NoteReply,
     note_context: &mut NoteContext,
@@ -39,7 +41,7 @@ pub fn reply_desc(
             if r.hovered() {
                 r.on_hover_ui_at_pointer(|ui| {
                     ui.set_max_width(400.0);
-                    ui::NoteView::new(note_context, note, note_options)
+                    ui::NoteView::new(note_context, cur_acc, note, note_options)
                         .actionbar(false)
                         .wide(true)
                         .show(ui);

@@ -3,6 +3,7 @@ use crate::{
     timeline::{ThreadSelection, TimelineCache, TimelineKind},
 };
 
+use enostr::KeypairUnowned;
 use nostrdb::Transaction;
 use notedeck::{MuteFun, RootNoteId, UnknownIds};
 use tracing::error;
@@ -20,6 +21,7 @@ pub struct ThreadView<'a, 'd> {
     id_source: egui::Id,
     is_muted: &'a MuteFun,
     note_context: &'a mut NoteContext<'d>,
+    cur_acc: &'a Option<KeypairUnowned<'a>>,
 }
 
 impl<'a, 'd> ThreadView<'a, 'd> {
@@ -31,6 +33,7 @@ impl<'a, 'd> ThreadView<'a, 'd> {
         note_options: NoteOptions,
         is_muted: &'a MuteFun,
         note_context: &'a mut NoteContext<'d>,
+        cur_acc: &'a Option<KeypairUnowned<'a>>,
     ) -> Self {
         let id_source = egui::Id::new("threadscroll_threadview");
         ThreadView {
@@ -41,6 +44,7 @@ impl<'a, 'd> ThreadView<'a, 'd> {
             id_source,
             is_muted,
             note_context,
+            cur_acc,
         }
     }
 
@@ -108,6 +112,7 @@ impl<'a, 'd> ThreadView<'a, 'd> {
                     &txn,
                     self.is_muted,
                     self.note_context,
+                    self.cur_acc,
                 )
                 .show(ui)
             })

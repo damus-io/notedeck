@@ -331,6 +331,7 @@ impl<'a, 'd> PostView<'a, 'd> {
                                         let resp = render_note_preview(
                                             ui,
                                             self.note_context,
+                                            &Some(self.poster.into()),
                                             txn,
                                             id.bytes(),
                                             nostrdb::NoteKey::new(0),

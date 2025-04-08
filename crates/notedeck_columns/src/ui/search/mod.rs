@@ -1,4 +1,5 @@
 use egui::{vec2, Align, Color32, CornerRadius, RichText, Stroke, TextEdit};
+use enostr::KeypairUnowned;
 
 use super::{note::contents::NoteContext, padding};
 use crate::{
@@ -21,6 +22,7 @@ pub struct SearchView<'a, 'd> {
     txn: &'a Transaction,
     is_muted: &'a MuteFun,
     note_context: &'a mut NoteContext<'d>,
+    cur_acc: &'a Option<KeypairUnowned<'a>>,
 }
 
 impl<'a, 'd> SearchView<'a, 'd> {
@@ -30,6 +32,7 @@ impl<'a, 'd> SearchView<'a, 'd> {
         note_options: NoteOptions,
         query: &'a mut SearchQueryState,
         note_context: &'a mut NoteContext<'d>,
+        cur_acc: &'a Option<KeypairUnowned<'a>>,
     ) -> Self {
         Self {
             txn,
@@ -37,6 +40,7 @@ impl<'a, 'd> SearchView<'a, 'd> {
             query,
             note_options,
             note_context,
+            cur_acc,
         }
     }
 
@@ -79,6 +83,7 @@ impl<'a, 'd> SearchView<'a, 'd> {
                             self.txn,
                             self.is_muted,
                             self.note_context,
+                            self.cur_acc,
                         )
                         .show(ui)
                     })

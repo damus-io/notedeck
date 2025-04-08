@@ -9,6 +9,7 @@ use crate::{
 use egui::containers::scroll_area::ScrollBarVisibility;
 use egui::{vec2, Direction, Layout, Pos2, Stroke};
 use egui_tabs::TabColor;
+use enostr::KeypairUnowned;
 use nostrdb::Transaction;
 use notedeck::note::root_note_id_from_selected_id;
 use notedeck::MuteFun;
@@ -25,6 +26,7 @@ pub struct TimelineView<'a, 'd> {
     reverse: bool,
     is_muted: &'a MuteFun,
     note_context: &'a mut NoteContext<'d>,
+    cur_acc: &'a Option<KeypairUnowned<'a>>,
 }
 
 impl<'a, 'd> TimelineView<'a, 'd> {
@@ -35,6 +37,7 @@ impl<'a, 'd> TimelineView<'a, 'd> {
         is_muted: &'a MuteFun,
         note_context: &'a mut NoteContext<'d>,
         note_options: NoteOptions,
+        cur_acc: &'a Option<KeypairUnowned<'a>>,
     ) -> Self {
         let reverse = false;
         TimelineView {
@@ -44,6 +47,7 @@ impl<'a, 'd> TimelineView<'a, 'd> {
             reverse,
             is_muted,
             note_context,
+            cur_acc,
         }
     }
 
@@ -56,6 +60,7 @@ impl<'a, 'd> TimelineView<'a, 'd> {
             self.note_options,
             self.is_muted,
             self.note_context,
+            self.cur_acc,
         )
     }
 
@@ -74,6 +79,7 @@ fn timeline_ui(
     note_options: NoteOptions,
     is_muted: &MuteFun,
     note_context: &mut NoteContext,
+    cur_acc: &Option<KeypairUnowned>,
 ) -> Option<NoteAction> {
     //padding(4.0, ui, |ui| ui.heading("Notifications"));
     /*
@@ -151,6 +157,7 @@ fn timeline_ui(
             &txn,
             is_muted,
             note_context,
+            cur_acc,
         )
         .show(ui)
     });
@@ -317,6 +324,7 @@ pub struct TimelineTabView<'a, 'd> {
     txn: &'a Transaction,
     is_muted: &'a MuteFun,
     note_context: &'a mut NoteContext<'d>,
+    cur_acc: &'a Option<KeypairUnowned<'a>>,
 }
 
 impl<'a, 'd> TimelineTabView<'a, 'd> {
@@ -328,6 +336,7 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
         txn: &'a Transaction,
         is_muted: &'a MuteFun,
         note_context: &'a mut NoteContext<'d>,
+        cur_acc: &'a Option<KeypairUnowned<'a>>,
     ) -> Self {
         Self {
             tab,
@@ -336,6 +345,7 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
             txn,
             is_muted,
             note_context,
+            cur_acc,
         }
     }
 
@@ -382,8 +392,13 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
 
                 if !muted {
                     ui::padding(8.0, ui, |ui| {
-                        let resp =
-                            ui::NoteView::new(self.note_context, &note, self.note_options).show(ui);
+                        let resp = ui::NoteView::new(
+                            self.note_context,
+                            self.cur_acc,
+                            &note,
+                            self.note_options,
+                        )
+                        .show(ui);
 
                         if let Some(note_action) = resp.action {
                             action = Some(note_action)

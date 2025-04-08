@@ -42,6 +42,7 @@ pub fn render_timeline_route(
                 &accounts.mutefun(),
                 note_context,
                 note_options,
+                &accounts.get_selected_account().map(|a| (&a.key).into()),
             )
             .ui(ui);
 
@@ -69,6 +70,7 @@ pub fn render_timeline_route(
                     &accounts.mutefun(),
                     note_context,
                     note_options,
+                    &accounts.get_selected_account().map(|a| (&a.key).into()),
                 )
                 .ui(ui);
 
@@ -83,6 +85,7 @@ pub fn render_timeline_route(
             note_options,
             &accounts.mutefun(),
             note_context,
+            &accounts.get_selected_account().map(|a| (&a.key).into()),
         )
         .id_source(egui::Id::new(("threadscroll", col)))
         .ui(ui)

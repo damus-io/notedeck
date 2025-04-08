@@ -16,6 +16,20 @@ pub struct Keypair {
     pub secret_key: Option<SecretKey>,
 }
 
+pub struct KeypairUnowned<'a> {
+    pub pubkey: &'a Pubkey,
+    pub secret_key: Option<&'a SecretKey>,
+}
+
+impl<'a> From<&'a Keypair> for KeypairUnowned<'a> {
+    fn from(value: &'a Keypair) -> Self {
+        Self {
+            pubkey: &value.pubkey,
+            secret_key: value.secret_key.as_ref(),
+        }
+    }
+}
+
 impl Keypair {
     pub fn from_secret(secret_key: SecretKey) -> Self {
         let cloned_secret_key = secret_key.clone();
@@ -66,6 +80,15 @@ impl<'a> FilledKeypair<'a> {
         FullKeypair {
             pubkey: self.pubkey.to_owned(),
             secret_key: self.secret_key.to_owned(),
+        }
+    }
+}
+
+impl<'a> From<FilledKeypair<'a>> for KeypairUnowned<'a> {
+    fn from(value: FilledKeypair<'a>) -> Self {
+        Self {
+            pubkey: value.pubkey,
+            secret_key: Some(value.secret_key),
         }
     }
 }

@@ -24,7 +24,7 @@ use crate::{
 
 use egui::emath::{pos2, Vec2};
 use egui::{Id, Label, Pos2, Rect, Response, RichText, Sense};
-use enostr::{NoteId, Pubkey};
+use enostr::{KeypairUnowned, NoteId, Pubkey};
 use nostrdb::{Ndb, Note, NoteKey, Transaction};
 use notedeck::{CachedNote, NoteCache, NotedeckTextStyle};
 
@@ -32,6 +32,7 @@ use super::profile::preview::one_line_display_name_widget;
 
 pub struct NoteView<'a, 'd> {
     note_context: &'a mut NoteContext<'d>,
+    cur_acc: &'a Option<KeypairUnowned<'a>>,
     parent: Option<NoteKey>,
     note: &'a nostrdb::Note<'a>,
     flags: NoteOptions,
@@ -72,6 +73,7 @@ impl View for NoteView<'_, '_> {
 impl<'a, 'd> NoteView<'a, 'd> {
     pub fn new(
         note_context: &'a mut NoteContext<'d>,
+        cur_acc: &'a Option<KeypairUnowned<'a>>,
         note: &'a nostrdb::Note<'a>,
         mut flags: NoteOptions,
     ) -> Self {
@@ -81,6 +83,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
         let parent: Option<NoteKey> = None;
         Self {
             note_context,
+            cur_acc,
             parent,
             note,
             flags,
@@ -180,6 +183,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
 
             ui.add(&mut NoteContents::new(
                 self.note_context,
+                self.cur_acc,
                 txn,
                 self.note,
                 self.flags,
@@ -300,7 +304,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
                             .text_style(style.text_style()),
                     );
                 });
-                NoteView::new(self.note_context, &note_to_repost, self.flags).show(ui)
+                NoteView::new(self.note_context, self.cur_acc, &note_to_repost, self.flags).show(ui)
             } else {
                 self.show_standard(ui)
             }
@@ -377,7 +381,14 @@ impl<'a, 'd> NoteView<'a, 'd> {
                         if note_reply.reply().is_some() {
                             let action = ui
                                 .horizontal(|ui| {
-                                    reply_desc(ui, txn, &note_reply, self.note_context, self.flags)
+                                    reply_desc(
+                                        ui,
+                                        self.cur_acc,
+                                        txn,
+                                        &note_reply,
+                                        self.note_context,
+                                        self.flags,
+                                    )
                                 })
                                 .inner;
 
@@ -388,7 +399,8 @@ impl<'a, 'd> NoteView<'a, 'd> {
                     });
                 });
 
-                let mut contents = NoteContents::new(self.note_context, txn, self.note, self.flags);
+                let mut contents =
+                    NoteContents::new(self.note_context, self.cur_acc, txn, self.note, self.flags);
 
                 ui.add(&mut contents);
 
@@ -426,8 +438,14 @@ impl<'a, 'd> NoteView<'a, 'd> {
                             .borrow(self.note.tags());
 
                         if note_reply.reply().is_some() {
-                            let action =
-                                reply_desc(ui, txn, &note_reply, self.note_context, self.flags);
+                            let action = reply_desc(
+                                ui,
+                                self.cur_acc,
+                                txn,
+                                &note_reply,
+                                self.note_context,
+                                self.flags,
+                            );
 
                             if action.is_some() {
                                 note_action = action;
@@ -435,8 +453,13 @@ impl<'a, 'd> NoteView<'a, 'd> {
                         }
                     });
 
-                    let mut contents =
-                        NoteContents::new(self.note_context, txn, self.note, self.flags);
+                    let mut contents = NoteContents::new(
+                        self.note_context,
+                        self.cur_acc,
+                        txn,
+                        self.note,
+                        self.flags,
+                    );
                     ui.add(&mut contents);
 
                     if let Some(action) = contents.action() {

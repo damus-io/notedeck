@@ -6,6 +6,7 @@ use crate::ui::{
 };
 use crate::{actionbar::NoteAction, images::ImageType, timeline::TimelineKind};
 use egui::{Button, Color32, Hyperlink, Image, Response, RichText, Sense, Window};
+use enostr::KeypairUnowned;
 use nostrdb::{BlockType, Mention, Ndb, Note, NoteKey, Transaction};
 use tracing::warn;
 
@@ -22,6 +23,7 @@ pub struct NoteContext<'d> {
 
 pub struct NoteContents<'a, 'd> {
     note_context: &'a mut NoteContext<'d>,
+    cur_acc: &'a Option<KeypairUnowned<'a>>,
     txn: &'a Transaction,
     note: &'a Note<'a>,
     options: NoteOptions,
@@ -32,12 +34,14 @@ impl<'a, 'd> NoteContents<'a, 'd> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         note_context: &'a mut NoteContext<'d>,
+        cur_acc: &'a Option<KeypairUnowned<'a>>,
         txn: &'a Transaction,
         note: &'a Note,
         options: ui::note::NoteOptions,
     ) -> Self {
         NoteContents {
             note_context,
+            cur_acc,
             txn,
             note,
             options,
@@ -52,7 +56,14 @@ impl<'a, 'd> NoteContents<'a, 'd> {
 
 impl egui::Widget for &mut NoteContents<'_, '_> {
     fn ui(self, ui: &mut egui::Ui) -> egui::Response {
-        let result = render_note_contents(ui, self.note_context, self.txn, self.note, self.options);
+        let result = render_note_contents(
+            ui,
+            self.note_context,
+            self.cur_acc,
+            self.txn,
+            self.note,
+            self.options,
+        );
         self.action = result.action;
         result.response
     }
@@ -65,6 +76,7 @@ impl egui::Widget for &mut NoteContents<'_, '_> {
 pub fn render_note_preview(
     ui: &mut egui::Ui,
     note_context: &mut NoteContext,
+    cur_acc: &Option<KeypairUnowned>,
     txn: &Transaction,
     id: &[u8; 32],
     parent: NoteKey,
@@ -103,7 +115,7 @@ pub fn render_note_preview(
             ui.visuals().noninteractive().bg_stroke.color,
         ))
         .show(ui, |ui| {
-            ui::NoteView::new(note_context, &note, note_options)
+            ui::NoteView::new(note_context, cur_acc, &note, note_options)
                 .actionbar(false)
                 .small_pfp(true)
                 .wide(true)
@@ -121,6 +133,7 @@ pub fn render_note_preview(
 fn render_note_contents(
     ui: &mut egui::Ui,
     note_context: &mut NoteContext,
+    cur_acc: &Option<KeypairUnowned>,
     txn: &Transaction,
     note: &Note,
     options: NoteOptions,
@@ -241,7 +254,7 @@ fn render_note_contents(
     });
 
     let preview_note_action = if let Some((id, _block_str)) = inline_note {
-        render_note_preview(ui, note_context, txn, id, note_key, options).action
+        render_note_preview(ui, note_context, cur_acc, txn, id, note_key, options).action
     } else {
         None
     };

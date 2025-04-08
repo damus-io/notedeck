@@ -64,11 +64,16 @@ impl<'a, 'd> PostReplyView<'a, 'd> {
             let selection = egui::Frame::NONE
                 .outer_margin(egui::Margin::same(note_offset))
                 .show(ui, |ui| {
-                    ui::NoteView::new(self.note_context, self.note, self.note_options)
-                        .actionbar(false)
-                        .medium_pfp(true)
-                        .options_button(true)
-                        .show(ui)
+                    ui::NoteView::new(
+                        self.note_context,
+                        &Some(self.poster.into()),
+                        self.note,
+                        self.note_options,
+                    )
+                    .actionbar(false)
+                    .medium_pfp(true)
+                    .options_button(true)
+                    .show(ui)
                 })
                 .inner
                 .context_selection;
