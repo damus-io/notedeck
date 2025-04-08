@@ -27,6 +27,23 @@ pub enum ChromePanelAction {
 }
 
 impl ChromePanelAction {
+    fn columns_navigate(ctx: &AppContext, chrome: &mut Chrome, route: notedeck_columns::Route) {
+        chrome.switch_to_columns();
+
+        if let Some(c) = chrome
+            .get_columns()
+            .and_then(|columns| columns.decks_cache.first_column_mut(ctx.accounts))
+        {
+            if c.router().routes().iter().any(|r| r == &route) {
+                // return if we are already routing to accounts
+                c.router_mut().go_back();
+            } else {
+                c.router_mut().route_to(route);
+                //c..route_to(Route::relays());
+            }
+        };
+    }
+
     fn process(&self, ctx: &AppContext, chrome: &mut Chrome, ui: &mut egui::Ui) {
         match self {
             Self::SaveTheme(theme) => {
@@ -37,35 +54,15 @@ impl ChromePanelAction {
             }
 
             Self::Support => {
-                tracing::info!("Support selected");
-                // open support view
+                Self::columns_navigate(ctx, chrome, notedeck_columns::Route::Support);
             }
 
             Self::Account => {
-                tracing::info!("Accounts view selected");
-                // open account
+                Self::columns_navigate(ctx, chrome, notedeck_columns::Route::accounts());
             }
 
             Self::Settings => {
-                tracing::info!("Settings view selected");
-                chrome.switch_to_columns();
-                if let Some(c) = chrome
-                    .get_columns()
-                    .and_then(|columns| columns.decks_cache.first_column_mut(ctx.accounts))
-                {
-                    if c.router()
-                        .routes()
-                        .iter()
-                        .any(|r| r == &notedeck_columns::Route::Relays)
-                    {
-                        // return if we are already routing to accounts
-                        //router.go_back();
-                    } else {
-                        c.router_mut().route_to(notedeck_columns::Route::relays());
-                        //c..route_to(Route::relays());
-                    }
-                };
-                // open account
+                Self::columns_navigate(ctx, chrome, notedeck_columns::Route::Relays);
             }
         }
     }
