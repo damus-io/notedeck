@@ -2,8 +2,8 @@ use core::f32;
 use std::collections::HashMap;
 
 use egui::{
-    pos2, vec2, Align, Button, Color32, FontId, Id, ImageSource, Margin, Pos2, Rect, RichText,
-    Separator, Ui, Vec2, Widget,
+    pos2, vec2, Align, Color32, FontId, Id, ImageSource, Margin, Pos2, Rect, RichText, Separator,
+    Ui, Vec2, Widget,
 };
 use enostr::Pubkey;
 use nostrdb::{Ndb, Transaction};
@@ -20,7 +20,7 @@ use crate::{
 use notedeck::{AppContext, Images, NotedeckTextStyle, UserAccount};
 use tokenator::{ParseError, TokenParser, TokenSerializable, TokenWriter};
 
-use super::{anim::AnimationHelper, padding, ProfilePreview};
+use super::{anim::AnimationHelper, padding, widgets::styled_button, ProfilePreview};
 
 pub enum AddColumnResponse {
     Timeline(TimelineKind),
@@ -554,30 +554,11 @@ impl<'a> AddColumnView<'a> {
 }
 
 fn find_user_button() -> impl Widget {
-    sized_button("Find User")
+    styled_button("Find User", crate::colors::PINK)
 }
 
 fn add_column_button() -> impl Widget {
-    sized_button("Add")
-}
-
-pub(crate) fn sized_button(text: &str) -> impl Widget + '_ {
-    move |ui: &mut egui::Ui| -> egui::Response {
-        let painter = ui.painter();
-        let galley = painter.layout(
-            text.to_owned(),
-            NotedeckTextStyle::Body.get_font_id(ui.ctx()),
-            Color32::WHITE,
-            ui.available_width(),
-        );
-
-        ui.add_sized(
-            galley.rect.expand2(vec2(16.0, 8.0)).size(),
-            Button::new(galley)
-                .corner_radius(8.0)
-                .fill(crate::colors::PINK),
-        )
-    }
+    styled_button("Add", crate::colors::PINK)
 }
 
 struct ColumnOptionData {

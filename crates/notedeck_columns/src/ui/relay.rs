@@ -12,8 +12,8 @@ use notedeck::{Accounts, NotedeckTextStyle};
 
 use tracing::debug;
 
-use super::add_column::sized_button;
 use super::padding;
+use super::widgets::styled_button;
 
 pub struct RelayView<'a> {
     accounts: &'a mut Accounts,
@@ -197,7 +197,7 @@ fn add_relay_button() -> Button<'static> {
 
 fn add_relay_button2(is_enabled: bool) -> impl egui::Widget + 'static {
     move |ui: &mut egui::Ui| -> egui::Response {
-        let button_widget = sized_button("Add");
+        let button_widget = styled_button("Add", crate::colors::PINK);
         ui.add_enabled(is_enabled, button_widget)
     }
 }
