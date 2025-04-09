@@ -8,7 +8,7 @@ use poll_promise::Promise;
 use tokenator::TokenSerializable;
 use tokio::sync::RwLock;
 
-use crate::{DataPath, TokenHandler};
+use crate::{Accounts, DataPath, TokenHandler};
 
 #[derive(Debug)]
 pub enum WalletState<'a> {
@@ -20,6 +20,21 @@ pub enum WalletState<'a> {
         state: &'a mut WalletUIState,
         show_local_only: bool,
     },
+}
+
+#[allow(dead_code)]
+pub fn get_wallet_for_mut<'a>(
+    accounts: &'a mut Accounts,
+    global_wallet: &'a mut GlobalWallet,
+    account_pk: &'a [u8; 32],
+) -> Option<&'a mut Wallet> {
+    let cur_acc = accounts.get_account_mut_optimized(account_pk)?;
+
+    if let Some(wallet) = &mut cur_acc.wallet {
+        return Some(wallet);
+    }
+
+    global_wallet.wallet.as_mut()
 }
 
 #[derive(Clone, Eq, PartialEq, Debug)]
