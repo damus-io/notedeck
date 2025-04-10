@@ -9,6 +9,7 @@ pub mod filter;
 pub mod fonts;
 mod frame_history;
 mod imgcache;
+mod job_pool;
 mod muted;
 pub mod name;
 pub mod note;
@@ -43,6 +44,7 @@ pub use imgcache::{
     Animation, GifState, GifStateMap, ImageFrame, Images, MediaCache, MediaCacheType,
     MediaCacheValue, TextureFrame, TexturedImage,
 };
+pub use job_pool::JobPool;
 pub use muted::{MuteFun, Muted};
 pub use name::NostrName;
 pub use note::{
