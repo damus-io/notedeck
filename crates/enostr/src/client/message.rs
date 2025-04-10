@@ -28,10 +28,14 @@ pub enum ClientMessage {
 }
 
 impl ClientMessage {
-    pub fn event(note: Note) -> Result<Self, Error> {
+    pub fn event(note: &Note) -> Result<Self, Error> {
         Ok(ClientMessage::Event(EventClientMessage {
             note_json: note.json()?,
         }))
+    }
+
+    pub fn event_json(note_json: String) -> Result<Self, Error> {
+        Ok(ClientMessage::Event(EventClientMessage { note_json }))
     }
 
     pub fn raw(raw: String) -> Self {

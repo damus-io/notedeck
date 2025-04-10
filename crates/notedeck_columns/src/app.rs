@@ -513,7 +513,7 @@ fn render_damus_mobile(app: &mut Damus, app_ctx: &mut AppContext<'_>, ui: &mut e
 
     if !app.columns(app_ctx.accounts).columns().is_empty()
         && nav::render_nav(0, ui.available_rect_before_wrap(), app, app_ctx, ui)
-            .process_render_nav_response(app, app_ctx)
+            .process_render_nav_response(app, app_ctx, ui)
         && !app.tmp_columns
     {
         storage::save_decks_cache(app_ctx.path, &app.decks_cache);
@@ -546,12 +546,14 @@ fn render_damus_desktop(app: &mut Damus, app_ctx: &mut AppContext<'_>, ui: &mut 
 
 fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus, ctx: &mut AppContext<'_>) {
     let num_cols = get_active_columns(ctx.accounts, &app.decks_cache).num_columns();
+    let mut side_panel_action: Option<nav::SwitchingAction> = None;
+    let mut responses = Vec::with_capacity(num_cols);
+
     StripBuilder::new(ui)
         .size(Size::exact(ui::side_panel::SIDE_PANEL_WIDTH))
         .sizes(sizes, num_cols)
         .clip(true)
         .horizontal(|mut strip| {
-            let mut side_panel_action: Option<nav::SwitchingAction> = None;
             strip.cell(|ui| {
                 let rect = ui.available_rect_before_wrap();
                 let side_panel =
@@ -589,7 +591,6 @@ fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus, ctx: &mut App
                 );
             });
 
-            let mut responses = Vec::with_capacity(num_cols);
             for col_index in 0..num_cols {
                 strip.cell(|ui| {
                     let rect = ui.available_rect_before_wrap();
@@ -604,32 +605,36 @@ fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus, ctx: &mut App
                     // vertical line
                     ui.painter()
                         .vline(rect.right(), rect.y_range(), v_line_stroke);
+
+                    // we need borrow ui context for processing, so proces
+                    // responses in the last cell
+
+                    if col_index == num_cols - 1 {}
                 });
 
                 //strip.cell(|ui| timeline::timeline_view(ui, app, timeline_ind));
             }
-
-            // process the side panel action after so we don't change the number of columns during
-            // StripBuilder rendering
-            let mut save_cols = false;
-            if let Some(action) = side_panel_action {
-                save_cols =
-                    save_cols || action.process(&mut app.timeline_cache, &mut app.decks_cache, ctx);
-            }
-
-            for response in responses {
-                let save = response.process_render_nav_response(app, ctx);
-                save_cols = save_cols || save;
-            }
-
-            if app.tmp_columns {
-                save_cols = false;
-            }
-
-            if save_cols {
-                storage::save_decks_cache(ctx.path, &app.decks_cache);
-            }
         });
+
+    // process the side panel action after so we don't change the number of columns during
+    // StripBuilder rendering
+    let mut save_cols = false;
+    if let Some(action) = side_panel_action {
+        save_cols = save_cols || action.process(&mut app.timeline_cache, &mut app.decks_cache, ctx);
+    }
+
+    for response in responses {
+        let save = response.process_render_nav_response(app, ctx, ui);
+        save_cols = save_cols || save;
+    }
+
+    if app.tmp_columns {
+        save_cols = false;
+    }
+
+    if save_cols {
+        storage::save_decks_cache(ctx.path, &app.decks_cache);
+    }
 }
 
 impl notedeck::App for Damus {

@@ -1,6 +1,6 @@
 use crate::draft::Draft;
 use crate::ui;
-use crate::ui::note::{PostResponse, PostType};
+use crate::ui::note::{PostAction, PostResponse, PostType};
 use enostr::{FilledKeypair, NoteId};
 
 use super::contents::NoteContext;
@@ -61,7 +61,7 @@ impl<'a, 'd> PostReplyView<'a, 'd> {
             let note_offset: i8 =
                 pfp_offset - ui::ProfilePic::medium_size() / 2 - ui::NoteView::expand_size() / 2;
 
-            let selection = egui::Frame::NONE
+            let quoted_note = egui::Frame::NONE
                 .outer_margin(egui::Margin::same(note_offset))
                 .show(ui, |ui| {
                     ui::NoteView::new(
@@ -75,8 +75,7 @@ impl<'a, 'd> PostReplyView<'a, 'd> {
                     .options_button(true)
                     .show(ui)
                 })
-                .inner
-                .context_selection;
+                .inner;
 
             let id = self.id();
             let replying_to = self.note.id();
@@ -95,7 +94,9 @@ impl<'a, 'd> PostReplyView<'a, 'd> {
                 .ui(self.note.txn().unwrap(), ui)
             };
 
-            post_response.context_selection = selection;
+            post_response.action = post_response
+                .action
+                .or(quoted_note.action.map(PostAction::QuotedNoteAction));
 
             //
             // reply line

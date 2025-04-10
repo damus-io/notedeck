@@ -1,3 +1,4 @@
+use crate::actionbar::NoteAction;
 use crate::draft::{Draft, Drafts, MentionHint};
 use crate::media_upload::{nostrbuild_nip96_upload, MediaPath};
 use crate::post::{downcast_post_buffer, MentionType, NewPost};
@@ -20,7 +21,6 @@ use notedeck::supported_mime_hosted_at_url;
 use tracing::error;
 
 use super::contents::{render_note_preview, NoteContext};
-use super::NoteContextSelection;
 use super::NoteOptions;
 
 pub struct PostView<'a, 'd> {
@@ -40,14 +40,22 @@ pub enum PostType {
     Reply(NoteId),
 }
 
-pub struct PostAction {
+pub enum PostAction {
+    /// The NoteAction on a note you are replying to.
+    QuotedNoteAction(NoteAction),
+
+    /// The reply/new post action
+    NewPostAction(NewPostAction),
+}
+
+pub struct NewPostAction {
     post_type: PostType,
     post: NewPost,
 }
 
-impl PostAction {
+impl NewPostAction {
     pub fn new(post_type: PostType, post: NewPost) -> Self {
-        PostAction { post_type, post }
+        NewPostAction { post_type, post }
     }
 
     pub fn execute(
@@ -73,7 +81,7 @@ impl PostAction {
             }
         };
 
-        pool.send(&enostr::ClientMessage::event(note)?);
+        pool.send(&enostr::ClientMessage::event(&note)?);
         drafts.get_from_post_type(&self.post_type).clear();
 
         Ok(())
@@ -83,7 +91,6 @@ impl PostAction {
 pub struct PostResponse {
     pub action: Option<PostAction>,
     pub edit_response: egui::Response,
-    pub context_selection: Option<NoteContextSelection>,
 }
 
 impl<'a, 'd> PostView<'a, 'd> {
@@ -321,32 +328,34 @@ impl<'a, 'd> PostView<'a, 'd> {
             .show(ui, |ui| {
                 ui.vertical(|ui| {
                     let edit_response = ui.horizontal(|ui| self.editbox(txn, ui)).inner;
-                    let mut context_selection = None;
 
-                    if let PostType::Quote(id) = self.post_type {
+                    let note_response = if let PostType::Quote(id) = self.post_type {
                         let avail_size = ui.available_size_before_wrap();
-                        ui.with_layout(Layout::left_to_right(egui::Align::TOP), |ui| {
-                            context_selection = Frame::NONE
-                                .show(ui, |ui| {
-                                    ui.vertical(|ui| {
-                                        ui.set_max_width(avail_size.x * 0.8);
-                                        let resp = render_note_preview(
-                                            ui,
-                                            self.note_context,
-                                            &Some(self.poster.into()),
-                                            txn,
-                                            id.bytes(),
-                                            nostrdb::NoteKey::new(0),
-                                            self.note_options,
-                                        );
-                                        resp
+                        Some(
+                            ui.with_layout(Layout::left_to_right(egui::Align::TOP), |ui| {
+                                Frame::NONE
+                                    .show(ui, |ui| {
+                                        ui.vertical(|ui| {
+                                            ui.set_max_width(avail_size.x * 0.8);
+                                            render_note_preview(
+                                                ui,
+                                                self.note_context,
+                                                &Some(self.poster.into()),
+                                                txn,
+                                                id.bytes(),
+                                                nostrdb::NoteKey::new(0),
+                                                self.note_options,
+                                            )
+                                        })
+                                        .inner
                                     })
                                     .inner
-                                    .context_selection
-                                })
-                                .inner;
-                        });
-                    }
+                            })
+                            .inner,
+                        )
+                    } else {
+                        None
+                    };
 
                     Frame::new()
                         .inner_margin(Margin::symmetric(0, 8))
@@ -362,7 +371,7 @@ impl<'a, 'd> PostView<'a, 'd> {
                     self.transfer_uploads(ui);
                     self.show_upload_errors(ui);
 
-                    let action = ui
+                    let post_action = ui
                         .horizontal(|ui| {
                             ui.with_layout(
                                 egui::Layout::left_to_right(egui::Align::BOTTOM),
@@ -394,7 +403,7 @@ impl<'a, 'd> PostView<'a, 'd> {
                                         self.draft.uploaded_media.clone(),
                                         output.mentions,
                                     );
-                                    Some(PostAction::new(self.post_type.clone(), new_post))
+                                    Some(NewPostAction::new(self.post_type.clone(), new_post))
                                 } else {
                                     None
                                 }
@@ -403,10 +412,13 @@ impl<'a, 'd> PostView<'a, 'd> {
                         })
                         .inner;
 
+                    let action = note_response
+                        .and_then(|nr| nr.action.map(PostAction::QuotedNoteAction))
+                        .or(post_action.map(PostAction::NewPostAction));
+
                     PostResponse {
                         action,
                         edit_response,
-                        context_selection,
                     }
                 })
                 .inner
@@ -736,6 +748,7 @@ mod preview {
                 img_cache: app.img_cache,
                 note_cache: app.note_cache,
                 zaps: app.zaps,
+                pool: app.pool,
             };
 
             PostView::new(

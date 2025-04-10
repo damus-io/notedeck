@@ -16,7 +16,7 @@ use crate::{
         column::NavTitle,
         configure_deck::ConfigureDeckView,
         edit_deck::{EditDeckResponse, EditDeckView},
-        note::{contents::NoteContext, PostAction, PostType},
+        note::{contents::NoteContext, NewPostAction, PostAction, PostType},
         profile::EditProfileView,
         search::{FocusState, SearchView},
         support::SupportView,
@@ -35,7 +35,7 @@ use tracing::error;
 pub enum RenderNavAction {
     Back,
     RemoveColumn,
-    PostAction(PostAction),
+    PostAction(NewPostAction),
     NoteAction(NoteAction),
     ProfileAction(ProfileAction),
     SwitchingAction(SwitchingAction),
@@ -100,6 +100,15 @@ impl SwitchingAction {
 
 impl From<PostAction> for RenderNavAction {
     fn from(post_action: PostAction) -> Self {
+        match post_action {
+            PostAction::QuotedNoteAction(note_action) => Self::NoteAction(note_action),
+            PostAction::NewPostAction(new_post) => Self::PostAction(new_post),
+        }
+    }
+}
+
+impl From<NewPostAction> for RenderNavAction {
+    fn from(post_action: NewPostAction) -> Self {
         Self::PostAction(post_action)
     }
 }
@@ -124,7 +133,12 @@ impl RenderNavResponse {
     }
 
     #[must_use = "Make sure to save columns if result is true"]
-    pub fn process_render_nav_response(&self, app: &mut Damus, ctx: &mut AppContext<'_>) -> bool {
+    pub fn process_render_nav_response(
+        &self,
+        app: &mut Damus,
+        ctx: &mut AppContext<'_>,
+        ui: &mut egui::Ui,
+    ) -> bool {
         let mut switching_occured: bool = false;
         let col = self.column;
 
@@ -155,9 +169,12 @@ impl RenderNavResponse {
                     switching_occured = true;
                 }
 
-                RenderNavAction::PostAction(post_action) => {
+                RenderNavAction::PostAction(new_post_action) => {
                     let txn = Transaction::new(ctx.ndb).expect("txn");
-                    let _ = post_action.execute(ctx.ndb, &txn, ctx.pool, &mut app.drafts);
+                    match new_post_action.execute(ctx.ndb, &txn, ctx.pool, &mut app.drafts) {
+                        Err(err) => tracing::error!("Error executing post action: {err}"),
+                        Ok(_) => tracing::debug!("Post action executed"),
+                    }
                     get_active_columns_mut(ctx.accounts, &mut app.decks_cache)
                         .column_mut(col)
                         .router_mut()
@@ -179,6 +196,7 @@ impl RenderNavResponse {
                         ctx.accounts,
                         ctx.global_wallet,
                         ctx.zaps,
+                        ui,
                     );
                 }
 
@@ -260,6 +278,7 @@ fn render_nav_body(
         img_cache: ctx.img_cache,
         note_cache: ctx.note_cache,
         zaps: ctx.zaps,
+        pool: ctx.pool,
     };
     match top {
         Route::Timeline(kind) => render_timeline_route(
@@ -334,10 +353,6 @@ fn render_nav_body(
                     })
                     .inner;
 
-                if let Some(selection) = response.context_selection {
-                    selection.process(ui, &note);
-                }
-
                 response.action
             };
 
@@ -373,10 +388,6 @@ fn render_nav_body(
                     .show(ui)
                 })
                 .inner;
-
-            if let Some(selection) = response.context_selection {
-                selection.process(ui, &note);
-            }
 
             response.action.map(Into::into)
         }

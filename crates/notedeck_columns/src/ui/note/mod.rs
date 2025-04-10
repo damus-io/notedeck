@@ -10,13 +10,13 @@ pub use contents::NoteContents;
 use contents::NoteContext;
 pub use context::{NoteContextButton, NoteContextSelection};
 pub use options::NoteOptions;
-pub use post::{PostAction, PostResponse, PostType, PostView};
+pub use post::{NewPostAction, PostAction, PostResponse, PostType, PostView};
 pub use quote_repost::QuoteRepostView;
 pub use reply::PostReplyView;
 pub use reply_description::reply_desc;
 
 use crate::{
-    actionbar::{NoteAction, ZapAction},
+    actionbar::{ContextSelection, NoteAction, ZapAction},
     profile::get_display_name,
     timeline::{ThreadSelection, TimelineKind},
     ui::{self, View},
@@ -43,7 +43,6 @@ pub struct NoteView<'a, 'd> {
 
 pub struct NoteResponse {
     pub response: egui::Response,
-    pub context_selection: Option<NoteContextSelection>,
     pub action: Option<NoteAction>,
 }
 
@@ -51,18 +50,12 @@ impl NoteResponse {
     pub fn new(response: egui::Response) -> Self {
         Self {
             response,
-            context_selection: None,
             action: None,
         }
     }
 
     pub fn with_action(mut self, action: Option<NoteAction>) -> Self {
         self.action = action;
-        self
-    }
-
-    pub fn select_option(mut self, context_selection: Option<NoteContextSelection>) -> Self {
-        self.context_selection = context_selection;
         self
     }
 }
@@ -338,7 +331,6 @@ impl<'a, 'd> NoteView<'a, 'd> {
         let txn = self.note.txn().expect("todo: support non-db notes");
 
         let mut note_action: Option<NoteAction> = None;
-        let mut selected_option: Option<NoteContextSelection> = None;
 
         let hitbox_id = note_hitbox_id(note_key, self.options(), self.parent);
         let profile = self
@@ -505,7 +497,9 @@ impl<'a, 'd> NoteView<'a, 'd> {
             };
 
             let resp = ui.add(NoteContextButton::new(note_key).place_at(context_pos));
-            selected_option = NoteContextButton::menu(ui, resp.clone());
+            if let Some(action) = NoteContextButton::menu(ui, resp.clone()) {
+                note_action = Some(NoteAction::Context(ContextSelection { note_key, action }));
+            }
         }
 
         let note_action = if note_hitbox_clicked(ui, hitbox_id, &response.rect, maybe_hitbox) {
@@ -523,9 +517,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
             note_action
         };
 
-        NoteResponse::new(response)
-            .with_action(note_action)
-            .select_option(selected_option)
+        NoteResponse::new(response).with_action(note_action)
     }
 }
 

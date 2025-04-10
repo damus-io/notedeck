@@ -407,10 +407,6 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
                         if let Some(note_action) = resp.action {
                             action = Some(note_action)
                         }
-
-                        if let Some(context) = resp.context_selection {
-                            context.process(ui, &note);
-                        }
                     });
 
                     ui::hline(ui);

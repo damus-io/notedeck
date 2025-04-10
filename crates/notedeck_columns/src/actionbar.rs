@@ -2,6 +2,7 @@ use crate::{
     column::Columns,
     route::{Route, Router},
     timeline::{TimelineCache, TimelineKind},
+    ui::note::NoteContextSelection,
 };
 
 use enostr::{NoteId, Pubkey, RelayPool};
@@ -13,10 +14,17 @@ use notedeck::{
 use tracing::error;
 
 #[derive(Debug, Eq, PartialEq, Clone)]
+pub struct ContextSelection {
+    pub note_key: NoteKey,
+    pub action: NoteContextSelection,
+}
+
+#[derive(Debug, Eq, PartialEq, Clone)]
 pub enum NoteAction {
     Reply(NoteId),
     Quote(NoteId),
     OpenTimeline(TimelineKind),
+    Context(ContextSelection),
     Zap(ZapAction),
 }
 
@@ -48,6 +56,7 @@ impl NoteAction {
         accounts: &mut Accounts,
         global_wallet: &mut GlobalWallet,
         zaps: &mut Zaps,
+        ui: &mut egui::Ui,
     ) -> Option<TimelineOpenResult> {
         match self {
             NoteAction::Reply(note_id) => {
@@ -89,6 +98,16 @@ impl NoteAction {
 
                 None
             }
+
+            NoteAction::Context(context) => {
+                match ndb.get_note_by_key(txn, context.note_key) {
+                    Err(err) => tracing::error!("{err}"),
+                    Ok(note) => {
+                        context.action.process(ui, &note, pool);
+                    }
+                }
+                None
+            }
         }
     }
 
@@ -107,6 +126,7 @@ impl NoteAction {
         accounts: &mut Accounts,
         global_wallet: &mut GlobalWallet,
         zaps: &mut Zaps,
+        ui: &mut egui::Ui,
     ) {
         let router = columns.column_mut(col).router_mut();
         if let Some(br) = self.execute(
@@ -119,6 +139,7 @@ impl NoteAction {
             accounts,
             global_wallet,
             zaps,
+            ui,
         ) {
             br.process(ndb, note_cache, txn, timeline_cache, unknown_ids);
         }

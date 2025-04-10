@@ -180,7 +180,7 @@ impl AccountRelayData {
             }
         }
         let note = builder.sign(seckey).build().expect("note build");
-        pool.send(&enostr::ClientMessage::event(note).expect("note client message"));
+        pool.send(&enostr::ClientMessage::event(&note).expect("note client message"));
     }
 }
 

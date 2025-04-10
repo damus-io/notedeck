@@ -4,7 +4,7 @@ use crate::ui::{
 };
 use crate::{actionbar::NoteAction, timeline::TimelineKind};
 use egui::{Button, Color32, Hyperlink, Image, Response, RichText, Sense, Window};
-use enostr::KeypairUnowned;
+use enostr::{KeypairUnowned, RelayPool};
 use nostrdb::{BlockType, Mention, Ndb, Note, NoteKey, Transaction};
 use notedeck_ui::images::ImageType;
 use notedeck_ui::{
@@ -22,6 +22,7 @@ pub struct NoteContext<'d> {
     pub img_cache: &'d mut Images,
     pub note_cache: &'d mut NoteCache,
     pub zaps: &'d mut Zaps,
+    pub pool: &'d mut RelayPool,
 }
 
 pub struct NoteContents<'a, 'd> {

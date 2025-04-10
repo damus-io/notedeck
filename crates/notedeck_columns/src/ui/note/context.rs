@@ -1,20 +1,25 @@
 use egui::{Rect, Vec2};
-use enostr::{NoteId, Pubkey};
+use enostr::{ClientMessage, NoteId, Pubkey, RelayPool};
 use nostrdb::{Note, NoteKey};
 use tracing::error;
 
-#[derive(Clone)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 #[allow(clippy::enum_variant_names)]
 pub enum NoteContextSelection {
     CopyText,
     CopyPubkey,
     CopyNoteId,
     CopyNoteJSON,
+    Broadcast,
 }
 
 impl NoteContextSelection {
-    pub fn process(&self, ui: &mut egui::Ui, note: &Note<'_>) {
+    pub fn process(&self, ui: &mut egui::Ui, note: &Note<'_>, pool: &mut RelayPool) {
         match self {
+            NoteContextSelection::Broadcast => {
+                tracing::info!("Broadcasting note {}", hex::encode(note.id()));
+                pool.send(&ClientMessage::event(note).unwrap());
+            }
             NoteContextSelection::CopyText => {
                 ui.ctx().copy_text(note.content().to_string());
             }
@@ -159,6 +164,10 @@ impl NoteContextButton {
             }
             if ui.button("Copy note json").clicked() {
                 context_selection = Some(NoteContextSelection::CopyNoteJSON);
+                ui.close_menu();
+            }
+            if ui.button("Broadcast").clicked() {
+                context_selection = Some(NoteContextSelection::Broadcast);
                 ui.close_menu();
             }
         });
