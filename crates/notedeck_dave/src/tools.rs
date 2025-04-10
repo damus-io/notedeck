@@ -1,6 +1,6 @@
 use async_openai::types::*;
 use chrono::DateTime;
-use nostrdb::{Ndb, NoteKey, Transaction};
+use nostrdb::{Ndb, Note, NoteKey, Transaction};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -291,10 +291,33 @@ pub struct QueryCall {
     search: Option<String>,
 }
 
+fn is_reply(note: Note) -> bool {
+    for tag in note.tags() {
+        if tag.count() < 4 {
+            continue;
+        }
+
+        let Some("e") = tag.get_str(0) else {
+            continue;
+        };
+
+        let Some(s) = tag.get_str(3) else {
+            continue;
+        };
+
+        if s == "root" || s == "reply" {
+            return true;
+        }
+    }
+
+    false
+}
+
 impl QueryCall {
     pub fn to_filter(&self) -> nostrdb::Filter {
         let mut filter = nostrdb::Filter::new()
             .limit(self.limit())
+            .custom(|n| !is_reply(n))
             .kinds([self.kind.unwrap_or(1)]);
 
         if let Some(search) = &self.search {
@@ -432,7 +455,7 @@ fn query_tool() -> Tool {
                 name: "limit",
                 typ: ArgType::Number,
                 required: true,
-                default: Some(Value::Number(serde_json::Number::from_i128(10).unwrap())),
+                default: Some(Value::Number(serde_json::Number::from_i128(50).unwrap())),
                 description: "The number of results to return.",
             },
 
