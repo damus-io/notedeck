@@ -1,5 +1,5 @@
-use crate::ZapError;
-use enostr::{NoteId, Pubkey};
+use crate::{zaps::ZapTargetOwned, ZapError};
+use enostr::NoteId;
 use nostrdb::NoteBuilder;
 use poll_promise::Promise;
 use serde::Deserialize;
@@ -60,14 +60,14 @@ fn lud16_to_lnurl(lud16: &str) -> Result<String, ZapError> {
 fn make_kind_9734<'a>(
     lnurl: &str,
     msats: u64,
+    comment: &str,
     sender_nsec: &[u8; 32],
     relays: Vec<String>,
-    recipient: &Pubkey,
-    event_id: Option<&NoteId>,
+    target: ZapTargetOwned,
 ) -> nostrdb::Note<'a> {
     let mut builder = NoteBuilder::new().kind(9734);
 
-    builder = builder.start_tag().tag_str("relays");
+    builder = builder.content(comment).start_tag().tag_str("relays");
 
     for relay in relays {
         builder = builder.tag_str(&relay)
@@ -80,10 +80,21 @@ fn make_kind_9734<'a>(
 
     builder = builder.start_tag().tag_str("lnurl").tag_str(lnurl);
 
-    builder = builder.start_tag().tag_str("p").tag_str(&recipient.hex());
+    match target {
+        ZapTargetOwned::Profile(pubkey) => {
+            builder = builder.start_tag().tag_str("p").tag_str(&pubkey.hex());
+        }
 
-    if let Some(id) = event_id {
-        builder = builder.start_tag().tag_str("e").tag_str(&id.hex());
+        ZapTargetOwned::Note(note_target) => {
+            builder = builder
+                .start_tag()
+                .tag_str("p")
+                .tag_str(&note_target.zap_recipient.hex());
+            builder = builder
+                .start_tag()
+                .tag_str("e")
+                .tag_str(&note_target.note_id.hex());
+        }
     }
 
     builder.sign(sender_nsec).build().expect("note")
@@ -137,11 +148,11 @@ pub fn fetch_invoice_lud16(
     lud16: String,
     msats: u64,
     sender_nsec: [u8; 32],
-    event_id: Option<NoteId>,
+    target: ZapTargetOwned,
     relays: Vec<String>,
 ) -> FetchingInvoice {
     Promise::spawn_async(tokio::spawn(async move {
-        fetch_invoice_lud16_async(&lud16, msats, &sender_nsec, event_id.as_ref(), relays).await
+        fetch_invoice_lud16_async(&lud16, msats, &sender_nsec, target, relays).await
     }))
 }
 
@@ -150,7 +161,7 @@ pub fn fetch_invoice_lnurl(
     lnurl: String,
     msats: u64,
     sender_nsec: [u8; 32],
-    event_id: Option<NoteId>,
+    target: ZapTargetOwned,
     relays: Vec<String>,
 ) -> FetchingInvoice {
     Promise::spawn_async(tokio::spawn(async move {
@@ -159,15 +170,7 @@ pub fn fetch_invoice_lnurl(
             Err(e) => return Err(e),
         };
 
-        fetch_invoice_lnurl_async(
-            &lnurl,
-            &pay_req,
-            msats,
-            &sender_nsec,
-            event_id.as_ref(),
-            relays,
-        )
-        .await
+        fetch_invoice_lnurl_async(&lnurl, &pay_req, msats, &sender_nsec, relays, target).await
     }))
 }
 
@@ -195,17 +198,18 @@ async fn fetch_invoice_lnurl_async(
     pay_req: &LNUrlPayRequest,
     msats: u64,
     sender_nsec: &[u8; 32],
-    event_id: Option<&NoteId>,
     relays: Vec<String>,
+    target: ZapTargetOwned,
 ) -> Result<FetchedInvoice, ZapError> {
-    let recipient = Pubkey::from_hex(&pay_req.nostr_pubkey)
-        .map_err(|e| ZapError::EndpointError(format!("invalid pubkey hex from endpoint: {e}")))?;
+    //let recipient = Pubkey::from_hex(&pay_req.nostr_pubkey)
+    //.map_err(|e| ZapError::EndpointError(format!("invalid pubkey hex from endpoint: {e}")))?;
 
     let mut base_url = Url::parse(&pay_req.callback_url)
         .map_err(|e| ZapError::EndpointError(format!("invalid callback url from endpoint: {e}")))?;
 
     let (query, noteid) = {
-        let note = make_kind_9734(lnurl, msats, sender_nsec, relays, &recipient, event_id);
+        let comment: &str = "";
+        let note = make_kind_9734(lnurl, msats, comment, sender_nsec, relays, target);
         let noteid = NoteId::new(*note.id());
         let query = endpoint_query_for_invoice(&mut base_url, msats, lnurl, note)?;
         (query, noteid)
@@ -222,14 +226,14 @@ async fn fetch_invoice_lud16_async(
     lud16: &str,
     msats: u64,
     sender_nsec: &[u8; 32],
-    event_id: Option<&NoteId>,
+    target: ZapTargetOwned,
     relays: Vec<String>,
 ) -> Result<FetchedInvoice, ZapError> {
     let pay_req = fetch_pay_req_from_lud16(lud16).await?;
 
     let lnurl = lud16_to_lnurl(lud16)?;
 
-    fetch_invoice_lnurl_async(&lnurl, &pay_req, msats, sender_nsec, event_id, relays).await
+    fetch_invoice_lnurl_async(&lnurl, &pay_req, msats, sender_nsec, relays, target).await
 }
 
 async fn fetch_invoice(req: &Url) -> Result<LNInvoice, ZapError> {

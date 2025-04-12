@@ -129,16 +129,20 @@ fn process_new_zap_event(
 fn send_note_zap(
     ndb: &Ndb,
     txn: &Transaction,
-    target: NoteZapTargetOwned,
+    note_target: NoteZapTargetOwned,
     msats: u64,
     nsec: &[u8; 32],
     relays: Vec<String>,
 ) -> Option<FetchingInvoice> {
-    let address = get_users_zap_endpoint(txn, ndb, &target.zap_recipient)?;
+    let address = get_users_zap_endpoint(txn, ndb, &note_target.zap_recipient)?;
 
     let promise = match address {
-        ZapAddress::Lud16(s) => fetch_invoice_lud16(s, msats, *nsec, Some(target.note_id), relays),
-        ZapAddress::Lud06(s) => fetch_invoice_lnurl(s, msats, *nsec, Some(target.note_id), relays),
+        ZapAddress::Lud16(s) => {
+            fetch_invoice_lud16(s, msats, *nsec, ZapTargetOwned::Note(note_target), relays)
+        }
+        ZapAddress::Lud06(s) => {
+            fetch_invoice_lnurl(s, msats, *nsec, ZapTargetOwned::Note(note_target), relays)
+        }
     };
     Some(promise)
 }
@@ -551,7 +555,7 @@ impl PromiseResponse {
 
 #[allow(dead_code)]
 #[derive(Debug, PartialEq, Eq, Clone, Hash)]
-enum ZapTargetOwned {
+pub enum ZapTargetOwned {
     Profile(Pubkey),
     Note(NoteZapTargetOwned),
 }
