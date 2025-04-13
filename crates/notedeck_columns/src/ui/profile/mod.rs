@@ -5,7 +5,7 @@ pub mod preview;
 pub use edit::EditProfileView;
 use egui::load::TexturePoll;
 use egui::{vec2, Color32, CornerRadius, Label, Layout, Rect, RichText, ScrollArea, Sense, Stroke};
-use enostr::Pubkey;
+use enostr::{Keypair, Pubkey};
 use nostrdb::{ProfileRecord, Transaction};
 pub use picture::ProfilePic;
 pub use preview::ProfilePreview;
@@ -15,15 +15,15 @@ use crate::{
     actionbar::NoteAction,
     colors, images,
     profile::get_display_name,
+    profile::is_following,
     timeline::{TimelineCache, TimelineKind},
     ui::timeline::{tabs_ui, TimelineTabView},
     NostrName,
 };
 
-use notedeck::{Accounts, MuteFun, NotedeckTextStyle, UnknownIds};
-
 use super::note::contents::NoteContext;
 use super::note::NoteOptions;
+use notedeck::{Accounts, MuteFun, NotedeckTextStyle, UnknownIds};
 
 pub struct ProfileView<'a, 'd> {
     pubkey: &'a Pubkey,
@@ -39,6 +39,8 @@ pub struct ProfileView<'a, 'd> {
 pub enum ProfileViewAction {
     EditProfile,
     Note(NoteAction),
+    Unfollow(Keypair, Pubkey),
+    Follow(Keypair, Pubkey),
 }
 
 impl<'a, 'd> ProfileView<'a, 'd> {
@@ -78,8 +80,8 @@ impl<'a, 'd> ProfileView<'a, 'd> {
                     .ndb
                     .get_profile_by_pubkey(&txn, self.pubkey.bytes())
                 {
-                    if self.profile_body(ui, profile) {
-                        action = Some(ProfileViewAction::EditProfile);
+                    if let Some(profile_view_action) = self.profile_body(ui, &txn, profile) {
+                        return Some(profile_view_action);
                     }
                 }
                 let profile_timeline = self
@@ -129,8 +131,13 @@ impl<'a, 'd> ProfileView<'a, 'd> {
             .inner
     }
 
-    fn profile_body(&mut self, ui: &mut egui::Ui, profile: ProfileRecord<'_>) -> bool {
-        let mut action = false;
+    fn profile_body(
+        &mut self,
+        ui: &mut egui::Ui,
+        txn: &Transaction,
+        profile: ProfileRecord<'_>,
+    ) -> Option<ProfileViewAction> {
+        let mut action = None;
         ui.vertical(|ui| {
             banner(
                 ui,
@@ -167,13 +174,37 @@ impl<'a, 'd> ProfileView<'a, 'd> {
                         ui.ctx().copy_text(to_copy)
                     }
 
-                    if self.accounts.contains_full_kp(self.pubkey) {
-                        ui.with_layout(Layout::right_to_left(egui::Align::Max), |ui| {
-                            if ui.add(edit_profile_button()).clicked() {
-                                action = true;
-                            }
-                        });
-                    }
+                    ui.with_layout(Layout::right_to_left(egui::Align::RIGHT), |ui| {
+                        ui.add_space(24.0);
+
+                        let own_keypair = self
+                            .accounts
+                            .get_selected_account()
+                            .expect("account")
+                            .key
+                            .clone();
+                        let target_key = *self.pubkey;
+                        let is_following = is_following(
+                            self.note_context.ndb,
+                            txn,
+                            own_keypair.pubkey,
+                            target_key,
+                        );
+
+                        if ui.add(follow_button(is_following)).clicked() {
+                            action = if is_following {
+                                Some(ProfileViewAction::Unfollow(own_keypair, target_key))
+                            } else {
+                                Some(ProfileViewAction::Follow(own_keypair, target_key))
+                            };
+                        }
+
+                        if self.accounts.contains_full_kp(self.pubkey)
+                            && ui.add(edit_profile_button()).clicked()
+                        {
+                            action = Some(ProfileViewAction::EditProfile);
+                        }
+                    });
                 });
 
                 ui.add_space(18.0);
@@ -454,4 +485,44 @@ fn banner(ui: &mut egui::Ui, banner_url: Option<&str>, height: f32) -> egui::Res
             })
             .unwrap_or_else(|| ui.label(""))
     })
+}
+
+fn follow_button(following: bool) -> impl egui::Widget + 'static {
+    move |ui: &mut egui::Ui| -> egui::Response {
+        let (rect, resp) = ui.allocate_exact_size(vec2(72.0, 32.0), Sense::click());
+        let painter = ui.painter_at(rect);
+        #[allow(deprecated)]
+        let rect = painter.round_rect_to_pixels(rect);
+
+        let (bg_color, text) = if following {
+            (Color32::default(), "Unfollow")
+        } else {
+            (colors::PINK, "Follow")
+        };
+
+        painter.rect_filled(rect, CornerRadius::same(8), bg_color);
+
+        if following {
+            painter.rect_stroke(
+                rect,
+                CornerRadius::same(8),
+                Stroke::new(0.5, Color32::WHITE),
+                egui::StrokeKind::Inside,
+            );
+        }
+
+        let text_color = Color32::WHITE;
+
+        let galley = painter.layout(
+            text.to_owned(),
+            NotedeckTextStyle::Button.get_font_id(ui.ctx()),
+            text_color,
+            rect.width(),
+        );
+
+        let text_pos = rect.center() - (galley.rect.size() / 2.0);
+        painter.galley(text_pos, galley, text_color);
+
+        resp
+    }
 }
