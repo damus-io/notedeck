@@ -295,7 +295,7 @@ fn generate_endpoint_url(lud16: &str) -> Result<Url, ZapError> {
 
 #[cfg(test)]
 mod tests {
-    use enostr::FullKeypair;
+    use enostr::{FullKeypair, NoteId};
 
     use crate::zaps::networking::convert_lnurl_to_endpoint_url;
 
@@ -343,12 +343,16 @@ mod tests {
     fn test_generate_invoice() {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create runtime");
 
+        let kp = FullKeypair::generate();
         let maybe_invoice = rt.block_on(async {
             fetch_invoice_lud16(
                 "jb55@sendsats.lol".to_owned(),
                 1000,
                 FullKeypair::generate().secret_key.to_secret_bytes(),
-                None,
+                crate::zaps::ZapTargetOwned::Note(crate::NoteZapTargetOwned {
+                    note_id: NoteId::new([0; 32]),
+                    zap_recipient: kp.pubkey,
+                }),
                 vec!["wss://relay.damus.io".to_owned()],
             )
             .block_and_take()
@@ -377,15 +381,19 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create runtime");
         let lnurl =
             "lnurl1dp68gurn8ghj7um9dej8xct5wvhxcmmv9uh8wetvdskkkmn0wahz7mrww4excup0df3r2dg3mj444";
-        let kp = FullKeypair::generate();
         let relay = "wss://relay.damus.io";
+
+        let kp = FullKeypair::generate();
 
         let maybe_invoice = rt.block_on(async {
             fetch_invoice_lnurl(
                 lnurl.to_owned(),
                 1000,
                 kp.secret_key.to_secret_bytes(),
-                None,
+                crate::zaps::ZapTargetOwned::Note(crate::NoteZapTargetOwned {
+                    note_id: NoteId::new([0; 32]),
+                    zap_recipient: kp.pubkey,
+                }),
                 [relay.to_owned()].to_vec(),
             )
             .block_and_take()
