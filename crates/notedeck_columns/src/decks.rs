@@ -38,9 +38,7 @@ impl Default for DecksCache {
 impl DecksCache {
     /// Gets the first column in the currently active user's active deck
     pub fn first_column_mut(&mut self, accounts: &notedeck::Accounts) -> Option<&mut Column> {
-        let Some(account) = accounts.get_selected_account() else {
-            return None;
-        };
+        let account = accounts.get_selected_account()?;
 
         self.decks_mut(&account.key.pubkey)
             .active_deck_mut()
