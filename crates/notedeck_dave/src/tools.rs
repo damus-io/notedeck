@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
+/// A tool
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCall {
     id: String,
@@ -29,6 +30,9 @@ impl ToolCall {
     }
 }
 
+/// On streaming APIs, tool calls are incremental. We use this
+/// to represent tool calls that are in the process of returning.
+/// These eventually just become [`ToolCall`]'s
 #[derive(Default, Debug, Clone)]
 pub struct PartialToolCall {
     id: Option<String>,
@@ -97,6 +101,10 @@ impl PartialToolCall {
     }
 }
 
+/// An enumeration of the possible tool calls that
+/// can be parsed from Dave responses. When adding
+/// new tools, this needs to be updated so that we can
+/// handle tool call responses.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ToolCalls {
     Query(QueryCall),
@@ -271,7 +279,7 @@ pub enum QueryContext {
     Any,
 }
 
-/// The parsed query that dave wants to use to satisfy a request
+/// The parsed nostrdb query that dave wants to use to satisfy a request
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct QueryCall {
     context: Option<QueryContext>,
