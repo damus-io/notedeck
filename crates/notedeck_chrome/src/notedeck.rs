@@ -102,8 +102,7 @@ async fn main() {
             chrome.add_app(NotedeckApp::Columns(columns));
             chrome.add_app(NotedeckApp::Dave(dave));
 
-            // test dav
-            chrome.set_active(1);
+            chrome.set_active(0);
 
             notedeck.set_app(chrome);
 
