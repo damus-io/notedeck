@@ -320,12 +320,12 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                             let entry = all_tool_calls.entry(tool.index).or_default();
 
                             if let Some(id) = &tool.id {
-                                entry.id().get_or_insert(id);
+                                entry.id_mut().get_or_insert(id.clone());
                             }
 
                             if let Some(name) = tool.function.as_ref().and_then(|f| f.name.as_ref())
                             {
-                                entry.name().get_or_insert(name);
+                                entry.name_mut().get_or_insert(name.to_string());
                             }
 
                             if let Some(argchunk) =

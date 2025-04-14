@@ -45,8 +45,16 @@ impl PartialToolCall {
         self.id.as_deref()
     }
 
+    pub fn id_mut(&mut self) -> &mut Option<String> {
+        &mut self.id
+    }
+
     pub fn name(&self) -> Option<&str> {
         self.name.as_deref()
+    }
+
+    pub fn name_mut(&mut self) -> &mut Option<String> {
+        &mut self.name
     }
 
     pub fn arguments(&self) -> Option<&str> {
