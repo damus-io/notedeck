@@ -4,21 +4,35 @@ use nostrdb::{Note, NoteKey};
 use tracing::error;
 
 #[derive(Debug, Clone, Eq, PartialEq)]
+pub enum BroadcastContext {
+    LocalNetwork,
+    Everywhere,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
 #[allow(clippy::enum_variant_names)]
 pub enum NoteContextSelection {
     CopyText,
     CopyPubkey,
     CopyNoteId,
     CopyNoteJSON,
-    Broadcast,
+    Broadcast(BroadcastContext),
 }
 
 impl NoteContextSelection {
     pub fn process(&self, ui: &mut egui::Ui, note: &Note<'_>, pool: &mut RelayPool) {
         match self {
-            NoteContextSelection::Broadcast => {
+            NoteContextSelection::Broadcast(context) => {
                 tracing::info!("Broadcasting note {}", hex::encode(note.id()));
-                pool.send(&ClientMessage::event(note).unwrap());
+                match context {
+                    BroadcastContext::LocalNetwork => {
+                        pool.send_to(&ClientMessage::event(note).unwrap(), "multicast");
+                    }
+
+                    BroadcastContext::Everywhere => {
+                        pool.send(&ClientMessage::event(note).unwrap());
+                    }
+                }
             }
             NoteContextSelection::CopyText => {
                 ui.ctx().copy_text(note.content().to_string());
@@ -167,7 +181,15 @@ impl NoteContextButton {
                 ui.close_menu();
             }
             if ui.button("Broadcast").clicked() {
-                context_selection = Some(NoteContextSelection::Broadcast);
+                context_selection = Some(NoteContextSelection::Broadcast(
+                    BroadcastContext::Everywhere,
+                ));
+                ui.close_menu();
+            }
+            if ui.button("Broadcast to local network").clicked() {
+                context_selection = Some(NoteContextSelection::Broadcast(
+                    BroadcastContext::LocalNetwork,
+                ));
                 ui.close_menu();
             }
         });
