@@ -242,7 +242,10 @@ fn get_zap_tags(ev: nostrdb::Note) -> Option<ZapTags> {
 
 #[cfg(test)]
 mod tests {
-    use enostr::Pubkey;
+    use enostr::{NoteId, Pubkey};
+
+    use nostrdb::{Config, Filter, IngestMetadata, Ndb, Transaction};
+    use tempfile::TempDir;
 
     use crate::zaps::zap::{valid_zap_request, Zap};
 
@@ -258,34 +261,35 @@ mod tests {
         assert!(valid_zap_request(note));
     }
 
-    fn enostr_note_to_nostrdb_note<'a>(note: &'a enostr::Note) -> Option<nostrdb::Note<'a>> {
-        let mut n = nostrdb::NoteBuilder::new()
-            .pubkey(&note.pubkey)
-            .created_at(note.created_at)
-            .kind(note.kind.try_into().ok()?)
-            .content(&note.content);
-
-        for tag in &note.tags {
-            n = n.start_tag();
-
-            for tag_ind in tag {
-                n = n.tag_str(&tag_ind);
-            }
-        }
-
-        n.build()
-    }
-
-    #[test]
-    fn test_zap_event() {
+    #[tokio::test]
+    async fn test_zap_event() {
         let pk =
             Pubkey::from_hex("be1d89794bf92de5dd64c1e60f6a2c70c140abac9932418fee30c5c637fe9479")
                 .unwrap();
 
-        let note = enostr::Note::from_json(ZAP_RECEIPT).unwrap();
-        let nostrdb_note = enostr_note_to_nostrdb_note(&note).unwrap();
+        let tmp_dir = TempDir::new().unwrap();
+        let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &Config::new()).unwrap();
 
-        let zap = Zap::from_zap_event(nostrdb_note, &pk);
+        let ev = format!(r#"["EVENT", "random_string", {ZAP_RECEIPT}]"#);
+        let filter = Filter::new().authors([pk.bytes()]).build();
+        let sub_id = ndb.subscribe(&[filter]).unwrap();
+        let res = ndb.process_event_with(&ev, IngestMetadata::new());
+        assert!(res.is_ok());
+
+        let note_key = ndb.wait_for_notes(sub_id, 1).await.unwrap()[0];
+        let txn = Transaction::new(&ndb).unwrap();
+        let note = ndb.get_note_by_key(&txn, note_key).unwrap();
+
+        assert!(
+            note.id()
+                == NoteId::from_hex(
+                    "c8a5767f33cd73716cf670c9615a73ec50cb91c373100f6c0d5cc160237b58dc"
+                )
+                .unwrap()
+                .bytes()
+        );
+
+        let zap = Zap::from_zap_event(note, &pk);
 
         assert!(zap.is_some());
     }
