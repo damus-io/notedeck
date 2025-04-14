@@ -12,6 +12,7 @@ use async_openai::{
     Client,
 };
 use chrono::{DateTime, Duration, Local};
+use egui_wgpu::RenderState;
 use futures::StreamExt;
 use nostrdb::{Ndb, NoteKey, Transaction};
 use notedeck::AppContext;
@@ -23,12 +24,12 @@ use std::sync::mpsc::{self, Receiver};
 use std::sync::Arc;
 
 pub use avatar::DaveAvatar;
-use egui_wgpu::RenderState;
-
+pub use config::ModelConfig;
 pub use quaternion::Quaternion;
 pub use vec3::Vec3;
 
 mod avatar;
+mod config;
 mod quaternion;
 mod vec3;
 
@@ -336,46 +337,6 @@ pub struct Dave {
     model_config: ModelConfig,
 }
 
-#[derive(Debug)]
-pub struct ModelConfig {
-    endpoint: Option<String>,
-    model: String,
-    api_key: Option<String>,
-}
-
-impl Default for ModelConfig {
-    fn default() -> Self {
-        ModelConfig {
-            endpoint: None,
-            model: "gpt-4o".to_string(),
-            api_key: std::env::var("OPENAI_API_KEY").ok(),
-        }
-    }
-}
-
-impl ModelConfig {
-    pub fn ollama() -> Self {
-        ModelConfig {
-            endpoint: std::env::var("OLLAMA_HOST").ok().map(|h| h + "/v1"),
-            model: "hhao/qwen2.5-coder-tools:latest".to_string(),
-            api_key: None,
-        }
-    }
-
-    pub fn to_api(&self) -> OpenAIConfig {
-        let mut cfg = OpenAIConfig::new();
-        if let Some(endpoint) = &self.endpoint {
-            cfg = cfg.with_api_base(endpoint.to_owned());
-        }
-
-        if let Some(api_key) = &self.api_key {
-            cfg = cfg.with_api_key(api_key.to_owned());
-        }
-
-        cfg
-    }
-}
-
 impl Dave {
     pub fn avatar_mut(&mut self) -> Option<&mut DaveAvatar> {
         self.avatar.as_mut()
@@ -608,7 +569,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         let ctx = ctx.clone();
         let client = self.client.clone();
         let tools = self.tools.clone();
-        let model_name = self.model_config.model.clone();
+        let model_name = self.model_config.model().to_owned();
 
         let (tx, rx) = mpsc::channel();
         self.incoming_tokens = Some(rx);

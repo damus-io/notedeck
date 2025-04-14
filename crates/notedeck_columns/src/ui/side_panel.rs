@@ -444,7 +444,7 @@ fn add_deck_button() -> impl Widget {
     }
 }
 
-fn wallet_button() -> impl Widget {
+fn _wallet_button() -> impl Widget {
     |ui: &mut egui::Ui| -> egui::Response {
         let img_size = 24.0;
 
