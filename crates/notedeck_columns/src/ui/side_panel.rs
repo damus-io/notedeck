@@ -444,33 +444,6 @@ fn add_deck_button() -> impl Widget {
     }
 }
 
-fn _wallet_button() -> impl Widget {
-    |ui: &mut egui::Ui| -> egui::Response {
-        let img_size = 24.0;
-
-        let max_size = img_size * ICON_EXPANSION_MULTIPLE;
-        let img_data = egui::include_image!("../../../../assets/icons/wallet-icon.svg");
-
-        let mut img = egui::Image::new(img_data).max_width(img_size);
-
-        if !ui.visuals().dark_mode {
-            img = img.tint(egui::Color32::BLACK);
-        }
-
-        let helper = AnimationHelper::new(ui, "wallet-icon", vec2(max_size, max_size));
-
-        let cur_img_size = helper.scale_1d_pos(img_size);
-        img.paint_at(
-            ui,
-            helper
-                .get_animation_rect()
-                .shrink((max_size - cur_img_size) / 2.0),
-        );
-
-        helper.take_animation_response()
-    }
-}
-
 fn show_decks<'a>(
     ui: &mut egui::Ui,
     decks_cache: &'a DecksCache,

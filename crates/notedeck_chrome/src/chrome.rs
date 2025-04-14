@@ -5,7 +5,7 @@ use crate::app::NotedeckApp;
 use egui::{vec2, Button, Label, Layout, RichText, ThemePreference, Widget};
 use egui_extras::{Size, StripBuilder};
 use nostrdb::{ProfileRecord, Transaction};
-use notedeck::{App, AppContext, NotedeckTextStyle, UserAccount};
+use notedeck::{App, AppContext, NotedeckTextStyle, UserAccount, WalletType};
 use notedeck_columns::Damus;
 use notedeck_dave::{Dave, DaveAvatar};
 use notedeck_ui::{profile::get_profile_url, AnimationHelper, ProfilePic};
@@ -23,6 +23,7 @@ pub enum ChromePanelAction {
     Support,
     Settings,
     Account,
+    Wallet,
     SaveTheme(ThemePreference),
 }
 
@@ -63,6 +64,14 @@ impl ChromePanelAction {
 
             Self::Settings => {
                 Self::columns_navigate(ctx, chrome, notedeck_columns::Route::Relays);
+            }
+
+            Self::Wallet => {
+                Self::columns_navigate(
+                    ctx,
+                    chrome,
+                    notedeck_columns::Route::Wallet(WalletType::Auto),
+                );
             }
         }
     }
@@ -212,6 +221,8 @@ impl Chrome {
 
         let support_resp = support_button(ui);
 
+        let wallet_resp = ui.add(wallet_button());
+
         if ctx.args.debug {
             ui.weak(format!("{}", ctx.frame_history.fps() as i32));
             ui.weak(format!(
@@ -228,6 +239,8 @@ impl Chrome {
             theme_action
         } else if support_resp.clicked() {
             Some(ChromePanelAction::Support)
+        } else if wallet_resp.clicked() {
+            Some(ChromePanelAction::Wallet)
         } else {
             None
         }
@@ -406,5 +419,32 @@ pub fn get_account_url<'a>(
         }
     } else {
         get_profile_url(None)
+    }
+}
+
+fn wallet_button() -> impl Widget {
+    |ui: &mut egui::Ui| -> egui::Response {
+        let img_size = 24.0;
+
+        let max_size = img_size * ICON_EXPANSION_MULTIPLE;
+        let img_data = egui::include_image!("../../../assets/icons/wallet-icon.svg");
+
+        let mut img = egui::Image::new(img_data).max_width(img_size);
+
+        if !ui.visuals().dark_mode {
+            img = img.tint(egui::Color32::BLACK);
+        }
+
+        let helper = AnimationHelper::new(ui, "wallet-icon", vec2(max_size, max_size));
+
+        let cur_img_size = helper.scale_1d_pos(img_size);
+        img.paint_at(
+            ui,
+            helper
+                .get_animation_rect()
+                .shrink((max_size - cur_img_size) / 2.0),
+        );
+
+        helper.take_animation_response()
     }
 }
