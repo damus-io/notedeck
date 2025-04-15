@@ -66,7 +66,8 @@ impl<'a> DesktopSidePanel<'a> {
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui) -> Option<SidePanelResponse> {
-        let frame = egui::Frame::new().inner_margin(Margin::same(8));
+        let frame =
+            egui::Frame::new().inner_margin(Margin::same(notedeck_ui::constants::FRAME_MARGIN));
 
         if !ui.visuals().dark_mode {
             let rect = ui.available_rect_before_wrap();

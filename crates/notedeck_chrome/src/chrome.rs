@@ -268,6 +268,9 @@ impl Chrome {
         // minimize/close buttons
         if cfg!(target_os = "macos") {
             ui.add_space(28.0);
+        } else {
+            // we still want *some* padding so that it aligns with the + button regardless
+            ui.add_space(notedeck_ui::constants::FRAME_MARGIN.into());
         }
 
         if ui.add(expand_side_panel_button()).clicked() {
