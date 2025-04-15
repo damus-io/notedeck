@@ -612,22 +612,25 @@ fn render_note_actionbar(
         });
 
         let zap_state = cur_acc.map_or_else(
-            || AnyZapState::None,
+            || Ok(AnyZapState::None),
             |kp| zaps.any_zap_state_for(kp.pubkey.bytes(), zap_target),
         );
-        let zap_resp = cur_acc
-            .filter(|k| k.secret_key.is_some())
-            .map(|_| match &zap_state {
-                AnyZapState::None => ui.add(zap_button(false)),
-                AnyZapState::Pending => ui.spinner(),
-                AnyZapState::LocalOnly | AnyZapState::Confirmed => ui.add(zap_button(true)),
-                AnyZapState::Error(zapping_error) => {
-                    let (rect, _) =
-                        ui.allocate_at_least(egui::vec2(10.0, 10.0), egui::Sense::click());
-                    ui.add(x_button(rect))
-                        .on_hover_text(format!("{zapping_error}"))
-                }
-            });
+        let zap_resp =
+            cur_acc
+                .filter(|k| k.secret_key.is_some())
+                .map(|_| match zap_state.clone() {
+                    Ok(any_zap_state) => match any_zap_state {
+                        AnyZapState::None => ui.add(zap_button(false)),
+                        AnyZapState::Pending => ui.spinner(),
+                        AnyZapState::LocalOnly | AnyZapState::Confirmed => ui.add(zap_button(true)),
+                    },
+                    Err(zapping_error) => {
+                        let (rect, _) =
+                            ui.allocate_at_least(egui::vec2(10.0, 10.0), egui::Sense::click());
+                        ui.add(x_button(rect))
+                            .on_hover_text(format!("{zapping_error}"))
+                    }
+                });
 
         let to_noteid = |id: &[u8; 32]| NoteId::new(*id);
 
@@ -652,7 +655,7 @@ fn render_note_actionbar(
             zap_recipient: Pubkey::new(*note_pubkey),
         };
 
-        if matches!(zap_state, AnyZapState::Error(_)) {
+        if zap_state.is_err() {
             break 's Some(NoteAction::Zap(ZapAction::ClearError(target)));
         }
 

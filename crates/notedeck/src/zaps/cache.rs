@@ -340,10 +340,10 @@ impl Zaps {
         &'a self,
         sender: &[u8; 32],
         target: ZapTarget<'a>,
-    ) -> AnyZapState {
+    ) -> Result<AnyZapState, ZappingError> {
         let key = ZapKey { sender, target };
         let Some(ids) = self.zap_keys.get(&key) else {
-            return AnyZapState::None;
+            return Ok(AnyZapState::None);
         };
 
         let mut has_confirmed = false;
@@ -363,21 +363,21 @@ impl Zaps {
                 }
                 ZapState::Pending(p) => {
                     if let Err(e) = p {
-                        return AnyZapState::Error(e.to_owned());
+                        return Err(e.to_owned());
                     }
-                    return AnyZapState::Pending;
+                    return Ok(AnyZapState::Pending);
                 }
             }
         }
 
         if has_local_confirmed {
-            return AnyZapState::LocalOnly;
+            return Ok(AnyZapState::LocalOnly);
         }
 
         if has_confirmed {
-            AnyZapState::Confirmed
+            Ok(AnyZapState::Confirmed)
         } else {
-            AnyZapState::None
+            Ok(AnyZapState::None)
         }
     }
 
@@ -397,11 +397,10 @@ impl Zaps {
     }
 }
 
+#[derive(Clone)]
 pub enum AnyZapState {
     None,
     Pending,
-    #[allow(dead_code)]
-    Error(ZappingError),
     LocalOnly,
     Confirmed,
 }
