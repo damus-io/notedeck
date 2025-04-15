@@ -1,5 +1,5 @@
 use enostr::{FullKeypair, Keypair, Pubkey, RelayPool};
-use nostrdb::{Filter, Ndb, Note, NoteBuildOptions, NoteBuilder, ProfileRecord, Tag, Transaction};
+use nostrdb::{Filter, Ndb, Note, NoteBuildOptions, NoteBuilder, ProfileRecord, Transaction};
 use std::collections::HashMap;
 
 use tracing::info;
@@ -71,26 +71,26 @@ pub fn get_display_name<'a>(record: Option<&ProfileRecord<'a>>) -> NostrName<'a>
     }
 }
 
-pub fn is_following(ndb: &Ndb, txn: &Transaction, own_key: Pubkey, target_key: Pubkey) -> bool {
-    ndb.query(txn, &[follows_filter(own_key)], 1)
-        .ok()
-        .map_or(false, |results| {
-            results.first().map_or(false, |result| {
-                result.note.tags().iter().filter(p_tags()).any(|tag| {
-                    tag.get_unchecked(1)
-                        .variant()
-                        .id()
-                        .map_or(false, |tag_key| tag_key == target_key.bytes())
-                })
-            })
-        })
+/// Is this contact list following the target pubkey?
+pub fn _note_has_pubkey(note: &Note, target_key: Pubkey) -> bool {
+    for tag in note.tags() {
+        let Some("p") = tag.get_str(0) else {
+            continue;
+        };
+
+        let Some(tag_key) = tag.get_id(1) else {
+            continue;
+        };
+
+        if target_key.bytes() == tag_key {
+            return true;
+        }
+    }
+
+    false
 }
 
-fn p_tags() -> fn(&Tag) -> bool {
-    |tag| tag.count() > 0 && tag.get_unchecked(0).variant().str() == Some("p")
-}
-
-fn follows_filter(pubkey: Pubkey) -> Filter {
+fn contact_list_filter(pubkey: &Pubkey) -> Filter {
     Filter::new()
         .authors([pubkey.bytes()])
         .kinds([3])
@@ -130,6 +130,47 @@ pub enum ProfileAction {
     SaveChanges(SaveProfileChanges),
     Follow(Keypair, Pubkey),
     Unfollow(Keypair, Pubkey),
+}
+
+#[derive(Eq, PartialEq, Debug, Clone, Copy)]
+pub enum IsFollowing {
+    /// We don't have the contact list, so we don't know
+    Unknown,
+
+    /// We are follow
+    Yes,
+
+    No,
+}
+
+pub fn is_following(
+    ndb: &Ndb,
+    txn: &Transaction,
+    user: &Pubkey,
+    is_following: &Pubkey,
+) -> IsFollowing {
+    let results = ndb.query(txn, &[contact_list_filter(user)], 1).ok();
+    let Some(contact_list) = results.as_ref().and_then(|notes| notes.first()) else {
+        return IsFollowing::Unknown;
+    };
+
+    if contact_list
+        .note
+        .tags()
+        .iter()
+        .find(|t| {
+            t.count() >= 2 && t.get_str(0) == Some("p") && t.get_id(1) == Some(is_following.bytes())
+        })
+        .is_some()
+    {
+        IsFollowing::Yes
+    } else {
+        IsFollowing::No
+    }
+}
+
+fn is_p_tag(tag: &nostrdb::Tag) -> bool {
+    tag.count() > 0 && tag.get_unchecked(0).variant().str() == Some("p")
 }
 
 impl ProfileAction {
@@ -193,19 +234,23 @@ impl ProfileAction {
         is_follow: bool,
     ) {
         let txn = Transaction::new(ndb).expect("txn");
-        let follows_filter = follows_filter(keypair.pubkey);
+        let follows_filter = contact_list_filter(&keypair.pubkey);
         let mut following_list = Vec::new();
-        if let Ok(results) = ndb.query(&txn, &[follows_filter], 1) {
-            if let Some(result) = results.first() {
-                result
-                    .note
-                    .tags()
-                    .iter()
-                    .filter(p_tags())
-                    .map(|tag| tag.get_unchecked(1).variant().id().unwrap())
-                    .for_each(|key| following_list.push(key));
-            }
+        if let Some(result) = ndb
+            .query(&txn, &[follows_filter], 1)
+            .ok()
+            .as_ref()
+            .and_then(|rs| rs.first())
+        {
+            result
+                .note
+                .tags()
+                .iter()
+                .filter(|t| is_p_tag(&t))
+                .filter_map(|tag| tag.get_id(1))
+                .for_each(|key| following_list.push(key));
         }
+
         if is_follow {
             following_list.push(target_key.bytes());
         } else if let Some(index) = following_list

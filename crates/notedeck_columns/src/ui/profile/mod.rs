@@ -11,8 +11,7 @@ use tracing::error;
 
 use crate::{
     actionbar::NoteAction,
-    profile::get_display_name,
-    profile::is_following,
+    profile::{get_display_name, is_following, IsFollowing},
     timeline::{TimelineCache, TimelineKind},
     ui::timeline::{tabs_ui, TimelineTabView},
     NostrName,
@@ -182,19 +181,32 @@ impl<'a, 'd> ProfileView<'a, 'd> {
                             .expect("account")
                             .key
                             .clone();
-                        let target_key = *self.pubkey;
+                        let target_key = self.pubkey;
+
+                        // TODO: replace with follow cache
                         let is_following = is_following(
                             self.note_context.ndb,
                             txn,
-                            own_keypair.pubkey,
+                            &own_keypair.pubkey,
                             target_key,
                         );
 
                         if ui.add(follow_button(is_following)).clicked() {
-                            action = if is_following {
-                                Some(ProfileViewAction::Unfollow(own_keypair, target_key))
-                            } else {
-                                Some(ProfileViewAction::Follow(own_keypair, target_key))
+                            action = match is_following {
+                                IsFollowing::Unknown => {
+                                    // don't do anything, we don't have contact list
+                                    None
+                                }
+
+                                IsFollowing::Yes => Some(ProfileViewAction::Unfollow(
+                                    own_keypair,
+                                    target_key.to_owned(),
+                                )),
+
+                                IsFollowing::No => Some(ProfileViewAction::Follow(
+                                    own_keypair,
+                                    target_key.to_owned(),
+                                )),
                             };
                         }
 
@@ -476,22 +488,22 @@ fn banner(ui: &mut egui::Ui, banner_url: Option<&str>, height: f32) -> egui::Res
     })
 }
 
-fn follow_button(following: bool) -> impl egui::Widget + 'static {
+fn follow_button(following: IsFollowing) -> impl egui::Widget + 'static {
     move |ui: &mut egui::Ui| -> egui::Response {
         let (rect, resp) = ui.allocate_exact_size(vec2(72.0, 32.0), Sense::click());
         let painter = ui.painter_at(rect);
         #[allow(deprecated)]
         let rect = painter.round_rect_to_pixels(rect);
 
-        let (bg_color, text) = if following {
-            (Color32::default(), "Unfollow")
-        } else {
-            (notedeck_ui::colors::PINK, "Follow")
+        let (bg_color, text) = match following {
+            IsFollowing::Unknown => (Color32::default(), "Unknown"),
+            IsFollowing::Yes => (Color32::default(), "Unfollow"),
+            IsFollowing::No => (notedeck_ui::colors::PINK, "Follow"),
         };
 
         painter.rect_filled(rect, CornerRadius::same(8), bg_color);
 
-        if following {
+        if following == IsFollowing::Yes {
             painter.rect_stroke(
                 rect,
                 CornerRadius::same(8),
