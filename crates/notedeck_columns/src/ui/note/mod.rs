@@ -9,6 +9,7 @@ pub mod reply_description;
 pub use contents::NoteContents;
 use contents::NoteContext;
 pub use context::{NoteContextButton, NoteContextSelection};
+use notedeck_ui::ImagePulseTint;
 pub use options::NoteOptions;
 pub use post::{NewPostAction, PostAction, PostResponse, PostType, PostView};
 pub use quote_repost::QuoteRepostView;
@@ -615,22 +616,17 @@ fn render_note_actionbar(
             || Ok(AnyZapState::None),
             |kp| zaps.any_zap_state_for(kp.pubkey.bytes(), zap_target),
         );
-        let zap_resp =
-            cur_acc
-                .filter(|k| k.secret_key.is_some())
-                .map(|_| match zap_state.clone() {
-                    Ok(any_zap_state) => match any_zap_state {
-                        AnyZapState::None => ui.add(zap_button(false)),
-                        AnyZapState::Pending => ui.spinner(),
-                        AnyZapState::LocalOnly | AnyZapState::Confirmed => ui.add(zap_button(true)),
-                    },
-                    Err(zapping_error) => {
-                        let (rect, _) =
-                            ui.allocate_at_least(egui::vec2(10.0, 10.0), egui::Sense::click());
-                        ui.add(x_button(rect))
-                            .on_hover_text(format!("{zapping_error}"))
-                    }
-                });
+        let zap_resp = cur_acc
+            .filter(|k| k.secret_key.is_some())
+            .map(|_| match &zap_state {
+                Ok(any_zap_state) => ui.add(zap_button(any_zap_state.clone(), note_id)),
+                Err(zapping_error) => {
+                    let (rect, _) =
+                        ui.allocate_at_least(egui::vec2(10.0, 10.0), egui::Sense::click());
+                    ui.add(x_button(rect))
+                        .on_hover_text(format!("{zapping_error}"))
+                }
+            });
 
         let to_noteid = |id: &[u8; 32]| NoteId::new(*id);
 
@@ -730,20 +726,32 @@ fn quote_repost_button(ui: &mut egui::Ui, note_key: NoteKey) -> egui::Response {
     resp.union(put_resp)
 }
 
-fn zap_button(colored: bool) -> impl egui::Widget {
+fn zap_button(state: AnyZapState, noteid: &[u8; 32]) -> impl egui::Widget + use<'_> {
     move |ui: &mut egui::Ui| -> egui::Response {
         let img_data = egui::include_image!("../../../../../assets/icons/zap_4x.png");
 
         let (rect, size, resp) = ui::anim::hover_expand_small(ui, ui.id().with("zap"));
 
         let mut img = egui::Image::new(img_data).max_width(size);
+        let id = ui.id().with(("pulse", noteid));
+        let ctx = ui.ctx().clone();
 
-        if colored {
-            img = img.tint(egui::Color32::from_rgb(0xFF, 0xB7, 0x57));
-        }
-
-        if !colored && !ui.visuals().dark_mode {
-            img = img.tint(egui::Color32::BLACK);
+        match state {
+            AnyZapState::None => {
+                if !ui.visuals().dark_mode {
+                    img = img.tint(egui::Color32::BLACK);
+                }
+            }
+            AnyZapState::Pending => {
+                let alpha_min = if ui.visuals().dark_mode { 50 } else { 180 };
+                img = ImagePulseTint::new(&ctx, id, img, &[0xFF, 0xB7, 0x57], alpha_min, 255)
+                    .with_speed(0.35)
+                    .animate();
+            }
+            AnyZapState::LocalOnly => {
+                img = img.tint(egui::Color32::from_rgb(0xFF, 0xB7, 0x57));
+            }
+            AnyZapState::Confirmed => {}
         }
 
         // align rect to note contents
