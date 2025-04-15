@@ -6,5 +6,5 @@ pub mod icons;
 pub mod images;
 pub mod profile;
 
-pub use anim::AnimationHelper;
+pub use anim::{AnimationHelper, ImagePulseTint};
 pub use profile::ProfilePic;
