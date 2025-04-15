@@ -37,7 +37,7 @@ log = "0.4.17"
 nostr = { version = "0.37.0", default-features = false, features = ["std", "nip49"] }
 nwc = "0.39.0"
 mio = { version = "1.0.3", features = ["os-poll", "net"] }
-nostrdb = { git = "https://github.com/damus-io/nostrdb-rs", rev = "f0b8dcd69672d612d692acc9849df8695c7361de" }
+nostrdb = { git = "https://github.com/damus-io/nostrdb-rs", rev = "5de4351dc0ebf93e57c22fd2e6a4b64a9fceb9f0" }
 #nostrdb = "0.6.1"
 notedeck = { path = "crates/notedeck" }
 notedeck_chrome = { path = "crates/notedeck_chrome" }

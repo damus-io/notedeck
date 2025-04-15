@@ -3131,7 +3131,7 @@ dependencies = [
 [[package]]
 name = "nostrdb"
 version = "0.6.1"
-source = "git+https://github.com/damus-io/nostrdb-rs?rev=f0b8dcd69672d612d692acc9849df8695c7361de#f0b8dcd69672d612d692acc9849df8695c7361de"
+source = "git+https://github.com/damus-io/nostrdb-rs?rev=5de4351dc0ebf93e57c22fd2e6a4b64a9fceb9f0#5de4351dc0ebf93e57c22fd2e6a4b64a9fceb9f0"
 dependencies = [
  "bindgen",
  "cc",
