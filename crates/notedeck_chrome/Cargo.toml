@@ -38,9 +38,9 @@ crate-type = ["lib", "cdylib"]
 name = "notedeck"
 path = "src/notedeck.rs"
 
-[[bin]]
-name = "ui_preview"
-path = "src/preview.rs"
+#[[bin]]
+#name = "ui_preview"
+#path = "src/preview.rs"
 
 [features]
 default = []
