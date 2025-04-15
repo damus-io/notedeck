@@ -56,11 +56,6 @@ impl<'a, 'd> ThreadView<'a, 'd> {
     pub fn ui(&mut self, ui: &mut egui::Ui) -> Option<NoteAction> {
         let txn = Transaction::new(self.note_context.ndb).expect("txn");
 
-        ui.label(
-            egui::RichText::new("Threads ALPHA! It's not done. Things will be broken.")
-                .color(egui::Color32::RED),
-        );
-
         egui::ScrollArea::vertical()
             .id_salt(self.id_source)
             .animated(false)
