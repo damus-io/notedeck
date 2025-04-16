@@ -7,8 +7,8 @@ use crate::{
 use enostr::{Pubkey, RelayPool};
 use nostrdb::{Ndb, NoteKey, Transaction};
 use notedeck::{
-    get_wallet_for_mut, Accounts, GlobalWallet, NoteAction, NoteCache, NoteZapTargetOwned,
-    UnknownIds, ZapAction, ZapTarget, ZappingError, Zaps,
+    get_wallet_for_mut, note::ZapTargetAmount, Accounts, GlobalWallet, NoteAction, NoteCache,
+    NoteZapTargetOwned, UnknownIds, ZapAction, ZapTarget, ZappingError, Zaps,
 };
 use tracing::error;
 
@@ -88,7 +88,7 @@ fn execute_note_action(
                     } else {
                         zaps.send_error(
                             sender.bytes(),
-                            ZapTarget::Note(target.into()),
+                            ZapTarget::Note((&target.target).into()),
                             ZappingError::SenderNoWallet,
                         );
                     }
@@ -146,12 +146,13 @@ pub fn execute_and_process_note_action(
     }
 }
 
-fn send_zap(sender: &Pubkey, zaps: &mut Zaps, pool: &RelayPool, target: &NoteZapTargetOwned) {
-    let default_zap_msats = 10_000; // TODO(kernelkind): allow the user to set this default
-    let zap_target = ZapTarget::Note(target.into());
+fn send_zap(sender: &Pubkey, zaps: &mut Zaps, pool: &RelayPool, target_amount: &ZapTargetAmount) {
+    let zap_target = ZapTarget::Note((&target_amount.target).into());
+
+    let msats = target_amount.specified_msats.unwrap_or(10_000);
 
     let sender_relays: Vec<String> = pool.relays.iter().map(|r| r.url().to_string()).collect();
-    zaps.send_zap(sender.bytes(), sender_relays, zap_target, default_zap_msats);
+    zaps.send_zap(sender.bytes(), sender_relays, zap_target, msats);
 }
 
 fn clear_zap_error(sender: &Pubkey, zaps: &mut Zaps, target: &NoteZapTargetOwned) {

@@ -10,6 +10,7 @@ use crate::{
 
 pub use contents::{render_note_contents, render_note_preview, NoteContents};
 pub use context::NoteContextButton;
+use notedeck::note::ZapTargetAmount;
 pub use options::NoteOptions;
 pub use reply_description::reply_desc;
 
@@ -680,7 +681,10 @@ fn render_note_actionbar(
             break 's Some(NoteAction::Zap(ZapAction::ClearError(target)));
         }
 
-        Some(NoteAction::Zap(ZapAction::Send(target)))
+        Some(NoteAction::Zap(ZapAction::Send(ZapTargetAmount {
+            target,
+            specified_msats: None,
+        })))
     })
 }
 

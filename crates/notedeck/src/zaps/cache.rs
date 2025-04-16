@@ -606,6 +606,17 @@ impl From<&ZapTarget<'_>> for ZapTargetOwned {
     }
 }
 
+impl<'a> From<&'a ZapTargetOwned> for ZapTarget<'a> {
+    fn from(value: &'a ZapTargetOwned) -> Self {
+        match value {
+            ZapTargetOwned::Profile(pubkey) => ZapTarget::Profile(pubkey.bytes()),
+            ZapTargetOwned::Note(note_zap_target_owned) => {
+                ZapTarget::Note(note_zap_target_owned.into())
+            }
+        }
+    }
+}
+
 impl From<&ZapKey<'_>> for ZapKeyOwned {
     fn from(value: &ZapKey) -> Self {
         Self {

@@ -28,6 +28,12 @@ pub enum NoteAction {
 
 #[derive(Debug, Eq, PartialEq, Clone)]
 pub enum ZapAction {
-    Send(NoteZapTargetOwned),
+    Send(ZapTargetAmount),
     ClearError(NoteZapTargetOwned),
+}
+
+#[derive(Debug, Eq, PartialEq, Clone)]
+pub struct ZapTargetAmount {
+    pub target: NoteZapTargetOwned,
+    pub specified_msats: Option<u64>, // if None use default amount
 }
