@@ -13,7 +13,6 @@ use super::{
 
 type ZapId = u32;
 
-#[allow(dead_code)]
 #[derive(Default)]
 pub struct Zaps {
     next_id: ZapId,
@@ -26,7 +25,6 @@ pub struct Zaps {
     events: Vec<EventResponse>,
 }
 
-#[allow(dead_code)]
 fn process_event(
     id: ZapId,
     event: ZapEvent,
@@ -125,7 +123,6 @@ fn process_new_zap_event(
     NextState::Transition(promise)
 }
 
-#[allow(dead_code)]
 fn send_note_zap(
     ndb: &Ndb,
     txn: &Transaction,
@@ -208,7 +205,6 @@ struct EventResponse {
     event: Result<ZapEvent, ZappingError>,
 }
 
-#[allow(dead_code)]
 impl Zaps {
     fn get_next_id(&mut self) -> ZapId {
         let next = self.next_id;
@@ -405,7 +401,6 @@ pub enum AnyZapState {
     Confirmed,
 }
 
-#[allow(dead_code)]
 #[derive(Debug)]
 pub enum ZapState {
     Confirm(Zap),
@@ -446,7 +441,6 @@ pub struct ZapCtx {
     msats: u64,
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub enum ZapEvent {
     FetchInvoice {
@@ -464,7 +458,6 @@ pub enum ZapEvent {
     },
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub enum ZappingError {
     InvoiceFetchFailed(ZapError),
@@ -552,22 +545,20 @@ impl PromiseResponse {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Debug, PartialEq, Eq, Clone, Hash)]
 pub enum ZapTargetOwned {
     Profile(Pubkey),
     Note(NoteZapTargetOwned),
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Hash)]
 pub enum ZapTarget<'a> {
     Profile(&'a [u8; 32]),
     Note(NoteZapTarget<'a>),
 }
 
-#[allow(dead_code)]
 impl ZapTargetOwned {
+    #[allow(dead_code)]
     pub fn pubkey(&self) -> &Pubkey {
         match &self {
             ZapTargetOwned::Profile(pubkey) => pubkey,
@@ -576,7 +567,6 @@ impl ZapTargetOwned {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Debug, PartialEq, Eq, Clone, Hash)]
 pub struct NoteZapTargetOwned {
     pub note_id: NoteId,

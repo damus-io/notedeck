@@ -6,7 +6,6 @@ use serde::Deserialize;
 use tokio::task::JoinError;
 use url::Url;
 
-#[allow(dead_code)]
 pub struct FetchedInvoice {
     pub invoice: String,
     pub request_noteid: NoteId, // note id of kind 9734 request
@@ -100,21 +99,24 @@ fn make_kind_9734<'a>(
     builder.sign(sender_nsec).build().expect("note")
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct LNUrlPayRequest {
+    #[allow(dead_code)]
     #[serde(rename = "allowsNostr")]
     allow_nostr: bool,
 
+    #[allow(dead_code)]
     #[serde(rename = "nostrPubkey")]
     nostr_pubkey: String,
 
     #[serde(rename = "callback")]
     callback_url: String,
 
+    #[allow(dead_code)]
     #[serde(rename = "minSendable")]
     min_sendable: u64,
 
+    #[allow(dead_code)]
     #[serde(rename = "maxSendable")]
     max_sendable: u64,
 }
@@ -143,7 +145,6 @@ fn endpoint_query_for_invoice<'a>(
         .finish())
 }
 
-#[allow(dead_code)]
 pub fn fetch_invoice_lud16(
     lud16: String,
     msats: u64,
@@ -156,7 +157,6 @@ pub fn fetch_invoice_lud16(
     }))
 }
 
-#[allow(dead_code)]
 pub fn fetch_invoice_lnurl(
     lnurl: String,
     msats: u64,

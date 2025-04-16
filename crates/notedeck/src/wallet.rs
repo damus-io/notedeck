@@ -22,7 +22,6 @@ pub enum WalletState<'a> {
     },
 }
 
-#[allow(dead_code)]
 pub fn get_wallet_for_mut<'a>(
     accounts: &'a mut Accounts,
     global_wallet: &'a mut GlobalWallet,
@@ -151,14 +150,12 @@ impl TokenSerializable for Wallet {
     }
 }
 
-#[allow(dead_code)]
 pub struct GlobalWallet {
     pub wallet: Option<Wallet>,
     pub ui_state: WalletUIState,
     wallet_handler: TokenHandler,
 }
 
-#[allow(dead_code)]
 impl GlobalWallet {
     pub fn new(path: &DataPath) -> Self {
         let wallet_handler =
