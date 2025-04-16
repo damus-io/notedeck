@@ -13,11 +13,9 @@ impl UserAccount {
         Self { key, wallet: None }
     }
 
-    pub fn new_with_wallet(key: Keypair, wallet: Wallet) -> Self {
-        Self {
-            key,
-            wallet: Some(wallet),
-        }
+    pub fn with_wallet(mut self, wallet: Wallet) -> Self {
+        self.wallet = Some(wallet);
+        self
     }
 }
 
@@ -58,10 +56,10 @@ impl TokenSerializable for UserAccount {
             return Err(ParseError::DecodeFailed);
         };
 
-        let user_acc = if let Some(wallet) = m_wallet {
-            UserAccount::new_with_wallet(key, wallet)
-        } else {
-            UserAccount::new(key)
+        let mut user_acc = UserAccount::new(key);
+
+        if let Some(wallet) = m_wallet {
+            user_acc = user_acc.with_wallet(wallet);
         };
 
         Ok(user_acc)
@@ -93,7 +91,7 @@ mod tests {
     fn test_user_account_serialize_deserialize() {
         let kp = FullKeypair::generate();
         let acc =
-            UserAccount::new_with_wallet(kp.to_keypair(), Wallet::new(URI.to_owned()).unwrap());
+            UserAccount::new(kp.to_keypair()).with_wallet(Wallet::new(URI.to_owned()).unwrap());
 
         let mut writer = TokenWriter::new("\t");
         acc.serialize_tokens(&mut writer);
