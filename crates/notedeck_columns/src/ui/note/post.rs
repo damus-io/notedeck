@@ -201,9 +201,7 @@ impl<'a, 'd> PostView<'a, 'd> {
         cursor_index: usize,
         textedit_output: &TextEditOutput,
     ) {
-        let mention = if let Some(mention) = self.draft.buffer.get_mention(cursor_index) {
-            mention
-        } else {
+        let Some(mention) = self.draft.buffer.get_mention(cursor_index) else {
             return;
         };
 
@@ -247,9 +245,7 @@ impl<'a, 'd> PostView<'a, 'd> {
             hint_rect
         };
 
-        let res = if let Ok(res) = self.note_context.ndb.search_profile(txn, mention_str, 10) {
-            res
-        } else {
+        let Ok(res) = self.note_context.ndb.search_profile(txn, mention_str, 10) else {
             return;
         };
 
