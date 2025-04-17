@@ -4,6 +4,7 @@ use async_openai::{
     Client,
 };
 use chrono::{Duration, Local};
+use egui::{Align, Key, KeyboardShortcut, Layout, Modifiers};
 use egui_wgpu::RenderState;
 use futures::StreamExt;
 use nostrdb::Transaction;
@@ -140,27 +141,57 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         should_send
     }
 
+    fn chat_margin(ctx: &egui::Context) -> i8 {
+        if notedeck::ui::is_narrow(ctx) {
+            20
+        } else {
+            100
+        }
+    }
+
+    fn chat_frame(ctx: &egui::Context) -> egui::Frame {
+        let margin = Self::chat_margin(ctx);
+        egui::Frame::new().inner_margin(egui::Margin {
+            left: margin,
+            right: margin,
+            top: 50,
+            bottom: 0,
+        })
+    }
+
     fn render(&mut self, app_ctx: &AppContext, ui: &mut egui::Ui) {
         // Scroll area for chat messages
-        egui::Frame::new()
-            .inner_margin(egui::Margin {
-                left: 50,
-                right: 50,
-                top: 50,
-                bottom: 50,
-            })
-            .show(ui, |ui| {
+        egui::Frame::NONE.show(ui, |ui| {
+            ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
+                let margin = Self::chat_margin(ui.ctx());
+
+                egui::Frame::new()
+                    .outer_margin(egui::Margin {
+                        left: margin,
+                        right: margin,
+                        top: 0,
+                        bottom: 100,
+                    })
+                    .inner_margin(egui::Margin::same(8))
+                    .fill(ui.visuals().extreme_bg_color)
+                    //.stroke(stroke)
+                    .corner_radius(12.0)
+                    .show(ui, |ui| {
+                        self.inputbox(app_ctx, ui);
+                    });
+
                 egui::ScrollArea::vertical()
                     .stick_to_bottom(true)
                     .auto_shrink([false; 2])
                     .show(ui, |ui| {
-                        ui.vertical(|ui| {
-                            self.render_chat(ui);
-                        })
+                        Self::chat_frame(ui.ctx()).show(ui, |ui| {
+                            ui.vertical(|ui| {
+                                self.render_chat(ui);
+                            });
+                        });
                     });
-
-                self.inputbox(app_ctx, ui);
             });
+        });
     }
 
     fn render_chat(&self, ui: &mut egui::Ui) {
@@ -221,15 +252,34 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         });
     }
 
+    fn handle_send(&mut self, app_ctx: &AppContext, ui: &egui::Ui) {
+        self.chat.push(Message::User(self.input.clone()));
+        self.send_user_message(app_ctx, ui.ctx());
+        self.input.clear();
+    }
+
     fn inputbox(&mut self, app_ctx: &AppContext, ui: &mut egui::Ui) {
+        //ui.add_space(Self::chat_margin(ui.ctx()) as f32);
         ui.horizontal(|ui| {
-            ui.add(egui::TextEdit::multiline(&mut self.input));
-            ui.add_space(8.0);
-            if ui.button("Send").clicked() {
-                self.chat.push(Message::User(self.input.clone()));
-                self.send_user_message(app_ctx, ui.ctx());
-                self.input.clear();
-            }
+            ui.with_layout(Layout::right_to_left(Align::Max), |ui| {
+                let r = ui.add(
+                    egui::TextEdit::multiline(&mut self.input)
+                        .desired_width(f32::INFINITY)
+                        .return_key(KeyboardShortcut::new(
+                            Modifiers {
+                                shift: true,
+                                ..Default::default()
+                            },
+                            Key::Enter,
+                        ))
+                        .hint_text(egui::RichText::new("Ask dave anything...").weak())
+                        .frame(false),
+                );
+
+                if r.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    self.handle_send(app_ctx, ui);
+                }
+            });
         });
     }
 
