@@ -296,7 +296,7 @@ impl<'a, 'd> PostView<'a, 'd> {
         12
     }
 
-    pub fn ui(&mut self, txn: &nostrdb::Transaction, ui: &mut egui::Ui) -> PostResponse {
+    pub fn ui(&mut self, txn: &Transaction, ui: &mut egui::Ui) -> PostResponse {
         let focused = self.focused(ui);
         let stroke = if focused {
             ui.visuals().selection.stroke
@@ -321,66 +321,65 @@ impl<'a, 'd> PostView<'a, 'd> {
         }
 
         frame
-            .show(ui, |ui| {
-                ui.vertical(|ui| {
-                    let edit_response = ui.horizontal(|ui| self.editbox(txn, ui)).inner;
-
-                    let note_response = if let PostType::Quote(id) = self.post_type {
-                        let avail_size = ui.available_size_before_wrap();
-                        Some(
-                            ui.with_layout(Layout::left_to_right(egui::Align::TOP), |ui| {
-                                Frame::NONE
-                                    .show(ui, |ui| {
-                                        ui.vertical(|ui| {
-                                            ui.set_max_width(avail_size.x * 0.8);
-                                            render_note_preview(
-                                                ui,
-                                                self.note_context,
-                                                &Some(self.poster.into()),
-                                                txn,
-                                                id.bytes(),
-                                                nostrdb::NoteKey::new(0),
-                                                self.note_options,
-                                            )
-                                        })
-                                        .inner
-                                    })
-                                    .inner
-                            })
-                            .inner,
-                        )
-                    } else {
-                        None
-                    };
-
-                    Frame::new()
-                        .inner_margin(Margin::symmetric(0, 8))
-                        .show(ui, |ui| {
-                            ScrollArea::horizontal().show(ui, |ui| {
-                                ui.with_layout(Layout::left_to_right(egui::Align::Min), |ui| {
-                                    ui.add_space(4.0);
-                                    self.show_media(ui);
-                                });
-                            });
-                        });
-
-                    self.transfer_uploads(ui);
-                    self.show_upload_errors(ui);
-
-                    let post_action = ui.horizontal(|ui| self.input_buttons(ui)).inner;
-
-                    let action = note_response
-                        .and_then(|nr| nr.action.map(PostAction::QuotedNoteAction))
-                        .or(post_action.map(PostAction::NewPostAction));
-
-                    PostResponse {
-                        action,
-                        edit_response,
-                    }
-                })
-                .inner
-            })
+            .show(ui, |ui| ui.vertical(|ui| self.input_ui(txn, ui)).inner)
             .inner
+    }
+
+    fn input_ui(&mut self, txn: &Transaction, ui: &mut egui::Ui) -> PostResponse {
+        let edit_response = ui.horizontal(|ui| self.editbox(txn, ui)).inner;
+
+        let note_response = if let PostType::Quote(id) = self.post_type {
+            let avail_size = ui.available_size_before_wrap();
+            Some(
+                ui.with_layout(Layout::left_to_right(egui::Align::TOP), |ui| {
+                    Frame::NONE
+                        .show(ui, |ui| {
+                            ui.vertical(|ui| {
+                                ui.set_max_width(avail_size.x * 0.8);
+                                render_note_preview(
+                                    ui,
+                                    self.note_context,
+                                    &Some(self.poster.into()),
+                                    txn,
+                                    id.bytes(),
+                                    nostrdb::NoteKey::new(0),
+                                    self.note_options,
+                                )
+                            })
+                            .inner
+                        })
+                        .inner
+                })
+                .inner,
+            )
+        } else {
+            None
+        };
+
+        Frame::new()
+            .inner_margin(Margin::symmetric(0, 8))
+            .show(ui, |ui| {
+                ScrollArea::horizontal().show(ui, |ui| {
+                    ui.with_layout(Layout::left_to_right(egui::Align::Min), |ui| {
+                        ui.add_space(4.0);
+                        self.show_media(ui);
+                    });
+                });
+            });
+
+        self.transfer_uploads(ui);
+        self.show_upload_errors(ui);
+
+        let post_action = ui.horizontal(|ui| self.input_buttons(ui)).inner;
+
+        let action = note_response
+            .and_then(|nr| nr.action.map(PostAction::QuotedNoteAction))
+            .or(post_action.map(PostAction::NewPostAction));
+
+        PostResponse {
+            action,
+            edit_response,
+        }
     }
 
     fn input_buttons(&mut self, ui: &mut egui::Ui) -> Option<NewPostAction> {
