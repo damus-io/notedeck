@@ -1,6 +1,5 @@
 use crate::{
     accounts::render_accounts_route,
-    actionbar::NoteAction,
     app::{get_active_columns_mut, get_decks_mut},
     column::ColumnsAction,
     deck_state::DeckState,
@@ -16,19 +15,20 @@ use crate::{
         column::NavTitle,
         configure_deck::ConfigureDeckView,
         edit_deck::{EditDeckResponse, EditDeckView},
-        note::{contents::NoteContext, NewPostAction, PostAction, PostType},
+        note::{NewPostAction, PostAction, PostType},
         profile::EditProfileView,
         search::{FocusState, SearchView},
         support::SupportView,
         wallet::{WalletAction, WalletView},
-        RelayView, View,
+        RelayView,
     },
     Damus,
 };
 
 use egui_nav::{Nav, NavAction, NavResponse, NavUiType};
 use nostrdb::Transaction;
-use notedeck::{AccountsAction, AppContext, WalletState};
+use notedeck::{AccountsAction, AppContext, NoteAction, NoteContext, WalletState};
+use notedeck_ui::View;
 use tracing::error;
 
 #[allow(clippy::enum_variant_names)]
@@ -184,7 +184,8 @@ impl RenderNavResponse {
                 RenderNavAction::NoteAction(note_action) => {
                     let txn = Transaction::new(ctx.ndb).expect("txn");
 
-                    note_action.execute_and_process_result(
+                    crate::actionbar::execute_and_process_note_action(
+                        note_action,
                         ctx.ndb,
                         get_active_columns_mut(ctx.accounts, &mut app.decks_cache),
                         col,

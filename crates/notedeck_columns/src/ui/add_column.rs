@@ -13,14 +13,15 @@ use crate::{
     login_manager::AcquireKeyState,
     route::Route,
     timeline::{kind::ListKind, PubkeySource, TimelineKind},
-    ui::anim::ICON_EXPANSION_MULTIPLE,
     Damus,
 };
 
 use notedeck::{AppContext, Images, NotedeckTextStyle, UserAccount};
+use notedeck_ui::anim::ICON_EXPANSION_MULTIPLE;
 use tokenator::{ParseError, TokenParser, TokenSerializable, TokenWriter};
 
-use super::{anim::AnimationHelper, padding, widgets::styled_button, ProfilePreview};
+use crate::ui::widgets::styled_button;
+use notedeck_ui::{anim::AnimationHelper, padding, ProfilePreview};
 
 pub enum AddColumnResponse {
     Timeline(TimelineKind),

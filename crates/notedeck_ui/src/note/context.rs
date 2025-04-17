@@ -1,59 +1,6 @@
 use egui::{Rect, Vec2};
-use enostr::{ClientMessage, NoteId, Pubkey, RelayPool};
-use nostrdb::{Note, NoteKey};
-use tracing::error;
-
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub enum BroadcastContext {
-    LocalNetwork,
-    Everywhere,
-}
-
-#[derive(Debug, Clone, Eq, PartialEq)]
-#[allow(clippy::enum_variant_names)]
-pub enum NoteContextSelection {
-    CopyText,
-    CopyPubkey,
-    CopyNoteId,
-    CopyNoteJSON,
-    Broadcast(BroadcastContext),
-}
-
-impl NoteContextSelection {
-    pub fn process(&self, ui: &mut egui::Ui, note: &Note<'_>, pool: &mut RelayPool) {
-        match self {
-            NoteContextSelection::Broadcast(context) => {
-                tracing::info!("Broadcasting note {}", hex::encode(note.id()));
-                match context {
-                    BroadcastContext::LocalNetwork => {
-                        pool.send_to(&ClientMessage::event(note).unwrap(), "multicast");
-                    }
-
-                    BroadcastContext::Everywhere => {
-                        pool.send(&ClientMessage::event(note).unwrap());
-                    }
-                }
-            }
-            NoteContextSelection::CopyText => {
-                ui.ctx().copy_text(note.content().to_string());
-            }
-            NoteContextSelection::CopyPubkey => {
-                if let Some(bech) = Pubkey::new(*note.pubkey()).to_bech() {
-                    ui.ctx().copy_text(bech);
-                }
-            }
-            NoteContextSelection::CopyNoteId => {
-                if let Some(bech) = NoteId::new(*note.id()).to_bech() {
-                    ui.ctx().copy_text(bech);
-                }
-            }
-            NoteContextSelection::CopyNoteJSON => match note.json() {
-                Ok(json) => ui.ctx().copy_text(json),
-                Err(err) => error!("error copying note json: {err}"),
-            },
-        }
-    }
-}
+use nostrdb::NoteKey;
+use notedeck::{BroadcastContext, NoteContextSelection};
 
 pub struct NoteContextButton {
     put_at: Option<Rect>,

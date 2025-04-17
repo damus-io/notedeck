@@ -1,29 +1,15 @@
-use crate::ui::{
-    self,
-    note::{NoteOptions, NoteResponse},
-};
-use crate::{actionbar::NoteAction, timeline::TimelineKind};
-use egui::{Button, Color32, Hyperlink, Image, Response, RichText, Sense, Window};
-use enostr::{KeypairUnowned, RelayPool};
-use nostrdb::{BlockType, Mention, Ndb, Note, NoteKey, Transaction};
-use notedeck_ui::images::ImageType;
-use notedeck_ui::{
+use crate::{
     gif::{handle_repaint, retrieve_latest_texture},
-    images::render_images,
+    images::{render_images, ImageType},
+    note::{NoteAction, NoteOptions, NoteResponse, NoteView},
 };
+
+use egui::{Button, Color32, Hyperlink, Image, Response, RichText, Sense, Window};
+use enostr::KeypairUnowned;
+use nostrdb::{BlockType, Mention, Note, NoteKey, Transaction};
 use tracing::warn;
 
-use notedeck::{supported_mime_hosted_at_url, Images, MediaCacheType, NoteCache, Zaps};
-
-/// Aggregates dependencies to reduce the number of parameters
-/// passed to inner UI elements, minimizing prop drilling.
-pub struct NoteContext<'d> {
-    pub ndb: &'d Ndb,
-    pub img_cache: &'d mut Images,
-    pub note_cache: &'d mut NoteCache,
-    pub zaps: &'d mut Zaps,
-    pub pool: &'d mut RelayPool,
-}
+use notedeck::{supported_mime_hosted_at_url, Images, MediaCacheType, NoteContext};
 
 pub struct NoteContents<'a, 'd> {
     note_context: &'a mut NoteContext<'d>,
@@ -41,7 +27,7 @@ impl<'a, 'd> NoteContents<'a, 'd> {
         cur_acc: &'a Option<KeypairUnowned<'a>>,
         txn: &'a Transaction,
         note: &'a Note,
-        options: ui::note::NoteOptions,
+        options: NoteOptions,
     ) -> Self {
         NoteContents {
             note_context,
@@ -119,7 +105,7 @@ pub fn render_note_preview(
             ui.visuals().noninteractive().bg_stroke.color,
         ))
         .show(ui, |ui| {
-            ui::NoteView::new(note_context, cur_acc, &note, note_options)
+            NoteView::new(note_context, cur_acc, &note, note_options)
                 .actionbar(false)
                 .small_pfp(true)
                 .wide(true)
@@ -134,7 +120,7 @@ pub fn render_note_preview(
 
 #[allow(clippy::too_many_arguments)]
 #[profiling::function]
-fn render_note_contents(
+pub fn render_note_contents(
     ui: &mut egui::Ui,
     note_context: &mut NoteContext,
     cur_acc: &Option<KeypairUnowned>,
@@ -170,7 +156,7 @@ fn render_note_contents(
             match block.blocktype() {
                 BlockType::MentionBech32 => match block.as_mention().unwrap() {
                     Mention::Profile(profile) => {
-                        let act = ui::Mention::new(
+                        let act = crate::Mention::new(
                             note_context.ndb,
                             note_context.img_cache,
                             txn,
@@ -184,7 +170,7 @@ fn render_note_contents(
                     }
 
                     Mention::Pubkey(npub) => {
-                        let act = ui::Mention::new(
+                        let act = crate::Mention::new(
                             note_context.ndb,
                             note_context.img_cache,
                             txn,
@@ -214,11 +200,9 @@ fn render_note_contents(
                     let resp = ui.colored_label(link_color, format!("#{}", block.as_str()));
 
                     if resp.clicked() {
-                        note_action = Some(NoteAction::OpenTimeline(TimelineKind::Hashtag(
-                            block.as_str().to_string(),
-                        )));
+                        note_action = Some(NoteAction::Hashtag(block.as_str().to_string()));
                     } else if resp.hovered() {
-                        ui::show_pointer(ui);
+                        crate::show_pointer(ui);
                     }
                 }
 

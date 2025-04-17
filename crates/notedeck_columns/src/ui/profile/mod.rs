@@ -1,27 +1,23 @@
 pub mod edit;
-pub mod preview;
 
 pub use edit::EditProfileView;
-use egui::load::TexturePoll;
-use egui::{vec2, Color32, CornerRadius, Label, Layout, Rect, RichText, ScrollArea, Sense, Stroke};
+use egui::{vec2, Color32, CornerRadius, Layout, Rect, RichText, ScrollArea, Sense, Stroke};
 use enostr::Pubkey;
 use nostrdb::{ProfileRecord, Transaction};
-pub use preview::ProfilePreview;
 use tracing::error;
 
 use crate::{
-    actionbar::NoteAction,
-    profile::get_display_name,
     timeline::{TimelineCache, TimelineKind},
     ui::timeline::{tabs_ui, TimelineTabView},
-    NostrName,
 };
-
-use notedeck::{Accounts, MuteFun, NotedeckTextStyle, UnknownIds};
-use notedeck_ui::{images, profile::get_profile_url, ProfilePic};
-
-use super::note::contents::NoteContext;
-use super::note::NoteOptions;
+use notedeck::{
+    name::get_display_name, profile::get_profile_url, Accounts, MuteFun, NoteAction, NoteContext,
+    NotedeckTextStyle, UnknownIds,
+};
+use notedeck_ui::{
+    profile::{about_section_widget, banner, display_name_widget},
+    NoteOptions, ProfilePic,
+};
 
 pub struct ProfileView<'a, 'd> {
     pubkey: &'a Pubkey,
@@ -137,7 +133,7 @@ impl<'a, 'd> ProfileView<'a, 'd> {
             );
 
             let padding = 12.0;
-            crate::ui::padding(padding, ui, |ui| {
+            notedeck_ui::padding(padding, ui, |ui| {
                 let mut pfp_rect = ui.available_rect_before_wrap();
                 let size = 80.0;
                 pfp_rect.set_width(size);
@@ -341,111 +337,4 @@ fn edit_profile_button() -> impl egui::Widget + 'static {
 
         resp
     }
-}
-
-fn display_name_widget<'a>(
-    name: &'a NostrName<'a>,
-    add_placeholder_space: bool,
-) -> impl egui::Widget + 'a {
-    move |ui: &mut egui::Ui| -> egui::Response {
-        let disp_resp = name.display_name.map(|disp_name| {
-            ui.add(
-                Label::new(
-                    RichText::new(disp_name).text_style(NotedeckTextStyle::Heading3.text_style()),
-                )
-                .selectable(false),
-            )
-        });
-
-        let (username_resp, nip05_resp) = ui
-            .horizontal(|ui| {
-                let username_resp = name.username.map(|username| {
-                    ui.add(
-                        Label::new(
-                            RichText::new(format!("@{}", username))
-                                .size(16.0)
-                                .color(notedeck_ui::colors::MID_GRAY),
-                        )
-                        .selectable(false),
-                    )
-                });
-
-                let nip05_resp = name.nip05.map(|nip05| {
-                    ui.image(egui::include_image!(
-                        "../../../../../assets/icons/verified_4x.png"
-                    ));
-                    ui.add(Label::new(
-                        RichText::new(nip05)
-                            .size(16.0)
-                            .color(notedeck_ui::colors::TEAL),
-                    ))
-                });
-
-                (username_resp, nip05_resp)
-            })
-            .inner;
-
-        let resp = match (disp_resp, username_resp, nip05_resp) {
-            (Some(disp), Some(username), Some(nip05)) => disp.union(username).union(nip05),
-            (Some(disp), Some(username), None) => disp.union(username),
-            (Some(disp), None, None) => disp,
-            (None, Some(username), Some(nip05)) => username.union(nip05),
-            (None, Some(username), None) => username,
-            _ => ui.add(Label::new(RichText::new(name.name()))),
-        };
-
-        if add_placeholder_space {
-            ui.add_space(16.0);
-        }
-
-        resp
-    }
-}
-
-fn about_section_widget<'a, 'b>(profile: &'b ProfileRecord<'a>) -> impl egui::Widget + 'b
-where
-    'b: 'a,
-{
-    move |ui: &mut egui::Ui| {
-        if let Some(about) = profile.record().profile().and_then(|p| p.about()) {
-            let resp = ui.label(about);
-            ui.add_space(8.0);
-            resp
-        } else {
-            // need any Response so we dont need an Option
-            ui.allocate_response(egui::Vec2::ZERO, egui::Sense::hover())
-        }
-    }
-}
-
-fn banner_texture(ui: &mut egui::Ui, banner_url: &str) -> Option<egui::load::SizedTexture> {
-    // TODO: cache banner
-    if !banner_url.is_empty() {
-        let texture_load_res =
-            egui::Image::new(banner_url).load_for_size(ui.ctx(), ui.available_size());
-        if let Ok(texture_poll) = texture_load_res {
-            match texture_poll {
-                TexturePoll::Pending { .. } => {}
-                TexturePoll::Ready { texture, .. } => return Some(texture),
-            }
-        }
-    }
-
-    None
-}
-
-fn banner(ui: &mut egui::Ui, banner_url: Option<&str>, height: f32) -> egui::Response {
-    ui.add_sized([ui.available_size().x, height], |ui: &mut egui::Ui| {
-        banner_url
-            .and_then(|url| banner_texture(ui, url))
-            .map(|texture| {
-                images::aspect_fill(
-                    ui,
-                    Sense::hover(),
-                    texture.id,
-                    texture.size.x / texture.size.y,
-                )
-            })
-            .unwrap_or_else(|| ui.label(""))
-    })
 }

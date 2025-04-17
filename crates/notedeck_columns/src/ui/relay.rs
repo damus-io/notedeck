@@ -1,18 +1,15 @@
 use std::collections::HashMap;
 
 use crate::relay_pool_manager::{RelayPoolManager, RelayStatus};
-use crate::ui::{Preview, PreviewConfig, View};
+use crate::ui::{Preview, PreviewConfig};
 use egui::{
     Align, Button, CornerRadius, Frame, Id, Image, Layout, Margin, Rgba, RichText, Ui, Vec2,
 };
-use notedeck_ui::colors::PINK;
-
 use enostr::RelayPool;
 use notedeck::{Accounts, NotedeckTextStyle};
-
+use notedeck_ui::{colors::PINK, padding, View};
 use tracing::debug;
 
-use super::padding;
 use super::widgets::styled_button;
 
 pub struct RelayView<'a> {

@@ -5,7 +5,7 @@ use nostrdb::{Ndb, Transaction};
 use notedeck::{Accounts, Images};
 use notedeck_ui::colors::PINK;
 
-use super::profile::preview::SimpleProfilePreview;
+use notedeck_ui::profile::preview::SimpleProfilePreview;
 
 pub struct AccountsView<'a> {
     ndb: &'a Ndb,

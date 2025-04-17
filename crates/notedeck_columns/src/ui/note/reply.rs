@@ -1,10 +1,12 @@
 use crate::draft::Draft;
-use crate::ui;
-use crate::ui::note::{PostAction, PostResponse, PostType};
-use enostr::{FilledKeypair, NoteId};
+use crate::ui::{
+    self,
+    note::{PostAction, PostResponse, PostType},
+};
 
-use super::contents::NoteContext;
-use super::NoteOptions;
+use enostr::{FilledKeypair, NoteId};
+use notedeck::NoteContext;
+use notedeck_ui::{NoteOptions, NoteView, ProfilePic};
 
 pub struct PostReplyView<'a, 'd> {
     note_context: &'a mut NoteContext<'d>,
@@ -56,15 +58,15 @@ impl<'a, 'd> PostReplyView<'a, 'd> {
             // to indent things so that the reply line is aligned
             let pfp_offset: i8 = ui::PostView::outer_margin()
                 + ui::PostView::inner_margin()
-                + ui::ProfilePic::small_size() / 2;
+                + ProfilePic::small_size() / 2;
 
             let note_offset: i8 =
-                pfp_offset - ui::ProfilePic::medium_size() / 2 - ui::NoteView::expand_size() / 2;
+                pfp_offset - ProfilePic::medium_size() / 2 - NoteView::expand_size() / 2;
 
             let quoted_note = egui::Frame::NONE
                 .outer_margin(egui::Margin::same(note_offset))
                 .show(ui, |ui| {
-                    ui::NoteView::new(
+                    NoteView::new(
                         self.note_context,
                         &Some(self.poster.into()),
                         self.note,
@@ -113,9 +115,9 @@ impl<'a, 'd> PostReplyView<'a, 'd> {
             // honestly don't know what the fuck I'm doing here. just trying
             // to get the line under the profile picture
             rect.min.y = avail_rect.min.y
-                + (ui::ProfilePic::medium_size() as f32 / 2.0
-                    + ui::ProfilePic::medium_size() as f32
-                    + ui::NoteView::expand_size() as f32 * 2.0)
+                + (ProfilePic::medium_size() as f32 / 2.0
+                    + ProfilePic::medium_size() as f32
+                    + NoteView::expand_size() as f32 * 2.0)
                 + 1.0;
 
             // For some reason we need to nudge the reply line's height a

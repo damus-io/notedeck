@@ -1,11 +1,12 @@
-use enostr::{FilledKeypair, NoteId};
-
+use super::{PostResponse, PostType};
 use crate::{
     draft::Draft,
     ui::{self},
 };
 
-use super::{contents::NoteContext, NoteOptions, PostResponse, PostType};
+use enostr::{FilledKeypair, NoteId};
+use notedeck::NoteContext;
+use notedeck_ui::NoteOptions;
 
 pub struct QuoteRepostView<'a, 'd> {
     note_context: &'a mut NoteContext<'d>,

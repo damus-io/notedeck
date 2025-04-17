@@ -1,23 +1,17 @@
-use std::f32::consts::PI;
-
-use crate::actionbar::NoteAction;
-use crate::timeline::TimelineTab;
-use crate::{
-    timeline::{TimelineCache, TimelineKind, ViewFilter},
-    ui,
-};
 use egui::containers::scroll_area::ScrollBarVisibility;
 use egui::{vec2, Direction, Layout, Pos2, Stroke};
 use egui_tabs::TabColor;
 use enostr::KeypairUnowned;
 use nostrdb::Transaction;
-use notedeck::note::root_note_id_from_selected_id;
-use notedeck::MuteFun;
+use std::f32::consts::PI;
 use tracing::{error, warn};
 
-use super::anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE};
-use super::note::contents::NoteContext;
-use super::note::NoteOptions;
+use crate::timeline::{TimelineCache, TimelineKind, TimelineTab, ViewFilter};
+use notedeck::{note::root_note_id_from_selected_id, MuteFun, NoteAction, NoteContext};
+use notedeck_ui::{
+    anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},
+    show_pointer, NoteOptions, NoteView,
+};
 
 pub struct TimelineView<'a, 'd> {
     timeline_id: &'a TimelineKind,
@@ -134,7 +128,7 @@ fn timeline_ui(
         if goto_top_resp.clicked() {
             scroll_area = scroll_area.vertical_scroll_offset(0.0);
         } else if goto_top_resp.hovered() {
-            ui::show_pointer(ui);
+            show_pointer(ui);
         }
     }
 
@@ -271,7 +265,7 @@ pub fn tabs_ui(ui: &mut egui::Ui, selected: usize, views: &[TimelineTab]) -> usi
         });
 
     //ui.add_space(0.5);
-    ui::hline(ui);
+    notedeck_ui::hline(ui);
 
     let sel = tab_res.selected().unwrap_or_default();
 
@@ -395,8 +389,8 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
                 };
 
                 if !muted {
-                    ui::padding(8.0, ui, |ui| {
-                        let resp = ui::NoteView::new(
+                    notedeck_ui::padding(8.0, ui, |ui| {
+                        let resp = NoteView::new(
                             self.note_context,
                             self.cur_acc,
                             &note,
@@ -409,7 +403,7 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
                         }
                     });
 
-                    ui::hline(ui);
+                    notedeck_ui::hline(ui);
                 }
 
                 1

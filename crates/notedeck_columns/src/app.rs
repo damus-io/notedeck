@@ -7,12 +7,13 @@ use crate::{
     subscriptions::{SubKind, Subscriptions},
     support::Support,
     timeline::{self, TimelineCache},
-    ui::{self, note::NoteOptions, DesktopSidePanel},
+    ui::{self, DesktopSidePanel},
     view_state::ViewState,
     Result,
 };
 
 use notedeck::{Accounts, AppContext, DataPath, DataPathType, FilterState, UnknownIds};
+use notedeck_ui::NoteOptions;
 
 use enostr::{ClientMessage, Keypair, PoolRelay, Pubkey, RelayEvent, RelayMessage, RelayPool};
 use uuid::Uuid;

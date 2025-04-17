@@ -1,13 +1,11 @@
-use crate::ui::ProfilePic;
-use crate::NostrName;
-use egui::{Frame, Label, RichText, Widget};
+use crate::ProfilePic;
+use egui::{Frame, Label, RichText};
 use egui_extras::Size;
 use nostrdb::ProfileRecord;
 
-use notedeck::{Images, NotedeckTextStyle};
+use notedeck::{name::get_display_name, profile::get_profile_url, Images, NotedeckTextStyle};
 
-use super::{about_section_widget, banner, display_name_widget, get_display_name};
-use notedeck_ui::profile::get_profile_url;
+use super::{about_section_widget, banner, display_name_widget};
 
 pub struct ProfilePreview<'a, 'cache> {
     profile: &'a ProfileRecord<'a>,
@@ -31,7 +29,7 @@ impl<'a, 'cache> ProfilePreview<'a, 'cache> {
 
     fn body(self, ui: &mut egui::Ui) {
         let padding = 12.0;
-        crate::ui::padding(padding, ui, |ui| {
+        crate::padding(padding, ui, |ui| {
             let mut pfp_rect = ui.available_rect_before_wrap();
             let size = 80.0;
             pfp_rect.set_width(size);
@@ -111,61 +109,5 @@ impl egui::Widget for SimpleProfilePreview<'_, '_> {
                 });
             })
             .response
-    }
-}
-
-mod previews {
-    use super::*;
-    use crate::test_data::test_profile_record;
-    use crate::ui::{Preview, PreviewConfig};
-    use notedeck::{App, AppContext};
-
-    pub struct ProfilePreviewPreview<'a> {
-        profile: ProfileRecord<'a>,
-    }
-
-    impl ProfilePreviewPreview<'_> {
-        pub fn new() -> Self {
-            let profile = test_profile_record();
-            ProfilePreviewPreview { profile }
-        }
-    }
-
-    impl Default for ProfilePreviewPreview<'_> {
-        fn default() -> Self {
-            ProfilePreviewPreview::new()
-        }
-    }
-
-    impl App for ProfilePreviewPreview<'_> {
-        fn update(&mut self, app: &mut AppContext<'_>, ui: &mut egui::Ui) {
-            ProfilePreview::new(&self.profile, app.img_cache).ui(ui);
-        }
-    }
-
-    impl<'a> Preview for ProfilePreview<'a, '_> {
-        /// A preview of the profile preview :D
-        type Prev = ProfilePreviewPreview<'a>;
-
-        fn preview(_cfg: PreviewConfig) -> Self::Prev {
-            ProfilePreviewPreview::new()
-        }
-    }
-}
-
-pub fn one_line_display_name_widget<'a>(
-    visuals: &egui::Visuals,
-    display_name: NostrName<'a>,
-    style: NotedeckTextStyle,
-) -> impl egui::Widget + 'a {
-    let text_style = style.text_style();
-    let color = visuals.noninteractive().fg_stroke.color;
-
-    move |ui: &mut egui::Ui| -> egui::Response {
-        ui.label(
-            RichText::new(display_name.name())
-                .text_style(text_style)
-                .color(color),
-        )
     }
 }

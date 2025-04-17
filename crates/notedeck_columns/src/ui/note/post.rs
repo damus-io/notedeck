@@ -1,27 +1,28 @@
-use crate::actionbar::NoteAction;
 use crate::draft::{Draft, Drafts, MentionHint};
 use crate::media_upload::{nostrbuild_nip96_upload, MediaPath};
 use crate::post::{downcast_post_buffer, MentionType, NewPost};
-use crate::profile::get_display_name;
 use crate::ui::search_results::SearchResultsView;
 use crate::ui::{self, Preview, PreviewConfig};
 use crate::Result;
-use egui::text::{CCursorRange, LayoutJob};
-use egui::text_edit::TextEditOutput;
-use egui::widgets::text_edit::TextEdit;
-use egui::{vec2, Frame, Layout, Margin, Pos2, ScrollArea, Sense, TextBuffer};
+
+use egui::{
+    text::{CCursorRange, LayoutJob},
+    text_edit::TextEditOutput,
+    vec2,
+    widgets::text_edit::TextEdit,
+    Frame, Layout, Margin, Pos2, ScrollArea, Sense, TextBuffer,
+};
 use enostr::{FilledKeypair, FullKeypair, NoteId, Pubkey, RelayPool};
 use nostrdb::{Ndb, Transaction};
 use notedeck_ui::{
     gif::{handle_repaint, retrieve_latest_texture},
     images::render_images,
+    note::render_note_preview,
+    NoteOptions, ProfilePic,
 };
 
-use notedeck::supported_mime_hosted_at_url;
+use notedeck::{name::get_display_name, supported_mime_hosted_at_url, NoteAction, NoteContext};
 use tracing::error;
-
-use super::contents::{render_note_preview, NoteContext};
-use super::NoteOptions;
 
 pub struct PostView<'a, 'd> {
     note_context: &'a mut NoteContext<'d>,
@@ -133,14 +134,14 @@ impl<'a, 'd> PostView<'a, 'd> {
             .as_ref()
             .ok()
             .and_then(|p| {
-                Some(ui::ProfilePic::from_profile(self.note_context.img_cache, p)?.size(pfp_size))
+                Some(ProfilePic::from_profile(self.note_context.img_cache, p)?.size(pfp_size))
             });
 
         if let Some(pfp) = poster_pfp {
             ui.add(pfp);
         } else {
             ui.add(
-                ui::ProfilePic::new(self.note_context.img_cache, ui::ProfilePic::no_pfp_url())
+                ProfilePic::new(self.note_context.img_cache, notedeck::profile::no_pfp_url())
                     .size(pfp_size),
             );
         }

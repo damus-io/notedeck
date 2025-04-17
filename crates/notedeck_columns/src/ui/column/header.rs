@@ -5,10 +5,7 @@ use crate::{
     column::Columns,
     route::Route,
     timeline::{ColumnTitle, TimelineKind},
-    ui::{
-        self,
-        anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},
-    },
+    ui::{self},
 };
 
 use egui::Margin;
@@ -16,6 +13,10 @@ use egui::{RichText, Stroke, UiBuilder};
 use enostr::Pubkey;
 use nostrdb::{Ndb, Transaction};
 use notedeck::{Images, NotedeckTextStyle};
+use notedeck_ui::{
+    anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},
+    ProfilePic,
+};
 
 pub struct NavTitle<'a> {
     ndb: &'a Ndb,
@@ -43,7 +44,7 @@ impl<'a> NavTitle<'a> {
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui) -> Option<RenderNavAction> {
-        ui::padding(8.0, ui, |ui| {
+        notedeck_ui::padding(8.0, ui, |ui| {
             let mut rect = ui.available_rect_before_wrap();
             rect.set_height(48.0);
 
@@ -72,7 +73,7 @@ impl<'a> NavTitle<'a> {
 
         if let Some(back_resp) = &back_button_resp {
             if back_resp.hovered() || back_resp.clicked() {
-                ui::show_pointer(ui);
+                notedeck_ui::show_pointer(ui);
             }
         } else {
             // add some space where chevron would have been. this makes the ui
@@ -220,7 +221,7 @@ impl<'a> NavTitle<'a> {
                 }
             });
         } else if move_resp.hovered() {
-            ui::show_pointer(ui);
+            notedeck_ui::show_pointer(ui);
         }
 
         ui.data(|d| d.get_temp(cur_id)).and_then(|val| {
@@ -388,14 +389,12 @@ impl<'a> NavTitle<'a> {
         txn: &'txn Transaction,
         pubkey: &[u8; 32],
         pfp_size: f32,
-    ) -> Option<ui::ProfilePic<'me, 'txn>> {
+    ) -> Option<ProfilePic<'me, 'txn>> {
         self.ndb
             .get_profile_by_pubkey(txn, pubkey)
             .as_ref()
             .ok()
-            .and_then(move |p| {
-                Some(ui::ProfilePic::from_profile(self.img_cache, p)?.size(pfp_size))
-            })
+            .and_then(move |p| Some(ProfilePic::from_profile(self.img_cache, p)?.size(pfp_size)))
     }
 
     fn timeline_pfp(&mut self, ui: &mut egui::Ui, id: &TimelineKind, pfp_size: f32) {
@@ -407,9 +406,7 @@ impl<'a> NavTitle<'a> {
         {
             ui.add(pfp);
         } else {
-            ui.add(
-                ui::ProfilePic::new(self.img_cache, ui::ProfilePic::no_pfp_url()).size(pfp_size),
-            );
+            ui.add(ProfilePic::new(self.img_cache, notedeck::profile::no_pfp_url()).size(pfp_size));
         }
     }
 
@@ -472,9 +469,7 @@ impl<'a> NavTitle<'a> {
         if let Some(pfp) = self.pubkey_pfp(&txn, pubkey.bytes(), pfp_size) {
             ui.add(pfp);
         } else {
-            ui.add(
-                ui::ProfilePic::new(self.img_cache, ui::ProfilePic::no_pfp_url()).size(pfp_size),
-            );
+            ui.add(ProfilePic::new(self.img_cache, notedeck::profile::no_pfp_url()).size(pfp_size));
         };
     }
 

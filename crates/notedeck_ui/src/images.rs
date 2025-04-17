@@ -1,4 +1,3 @@
-use crate::ProfilePic;
 use egui::{pos2, Color32, ColorImage, Rect, Sense, SizeHint};
 use image::codecs::gif::GifDecoder;
 use image::imageops::FilterType;
@@ -474,7 +473,7 @@ fn render_media_cache(
                     let no_pfp = crate::images::fetch_img(
                         cache,
                         ui.ctx(),
-                        ProfilePic::no_pfp_url(),
+                        notedeck::profile::no_pfp_url(),
                         ImageType::Profile(128),
                         cache_type,
                     );

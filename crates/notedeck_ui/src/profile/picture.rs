@@ -59,11 +59,6 @@ impl<'cache, 'url> ProfilePic<'cache, 'url> {
     }
 
     #[inline]
-    pub fn no_pfp_url() -> &'static str {
-        "https://damus.io/img/no-profile.svg"
-    }
-
-    #[inline]
     pub fn size(mut self, size: f32) -> Self {
         self.size = size;
         self

@@ -3288,9 +3288,11 @@ dependencies = [
 name = "notedeck_ui"
 version = "0.3.1"
 dependencies = [
+ "bitflags 2.9.0",
  "egui",
  "egui_extras",
  "ehttp",
+ "enostr",
  "image",
  "nostrdb",
  "notedeck",

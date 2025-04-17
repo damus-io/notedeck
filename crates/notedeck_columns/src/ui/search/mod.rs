@@ -1,15 +1,11 @@
 use egui::{vec2, Align, Color32, CornerRadius, RichText, Stroke, TextEdit};
 use enostr::KeypairUnowned;
 
-use super::{note::contents::NoteContext, padding};
-use crate::{
-    actionbar::NoteAction,
-    ui::{note::NoteOptions, timeline::TimelineTabView},
-};
+use crate::ui::timeline::TimelineTabView;
 use egui_winit::clipboard::Clipboard;
 use nostrdb::{Filter, Transaction};
-use notedeck::{MuteFun, NoteRef};
-use notedeck_ui::icons::search_icon;
+use notedeck::{MuteFun, NoteAction, NoteContext, NoteRef};
+use notedeck_ui::{icons::search_icon, padding, NoteOptions};
 use std::time::{Duration, Instant};
 use tracing::{error, info, warn};
 

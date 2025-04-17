@@ -14,3 +14,5 @@ profiling = { workspace = true }
 tokio = { workspace = true }
 notedeck = { workspace = true }
 image = { workspace = true }
+bitflags = { workspace = true }
+enostr = { workspace = true }

@@ -1,13 +1,9 @@
 use core::f32;
 
-use egui::{vec2, Button, CornerRadius, Layout, Margin, RichText, ScrollArea, TextEdit};
-use notedeck::{Images, NotedeckTextStyle};
-
 use crate::profile_state::ProfileState;
-
-use super::banner;
-
-use notedeck_ui::{profile::unwrap_profile_url, ProfilePic};
+use egui::{vec2, Button, CornerRadius, Layout, Margin, RichText, ScrollArea, TextEdit};
+use notedeck::{profile::unwrap_profile_url, Images, NotedeckTextStyle};
+use notedeck_ui::{profile::banner, ProfilePic};
 
 pub struct EditProfileView<'a> {
     state: &'a mut ProfileState,
@@ -26,14 +22,14 @@ impl<'a> EditProfileView<'a> {
                 banner(ui, Some(&self.state.banner), 188.0);
 
                 let padding = 24.0;
-                crate::ui::padding(padding, ui, |ui| {
+                notedeck_ui::padding(padding, ui, |ui| {
                     self.inner(ui, padding);
                 });
 
                 ui.separator();
 
                 let mut save = false;
-                crate::ui::padding(padding, ui, |ui| {
+                notedeck_ui::padding(padding, ui, |ui| {
                     ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui
                             .add(button("Save changes", 119.0).fill(notedeck_ui::colors::PINK))

@@ -5,10 +5,12 @@ use crate::app::NotedeckApp;
 use egui::{vec2, Button, Label, Layout, RichText, ThemePreference, Widget};
 use egui_extras::{Size, StripBuilder};
 use nostrdb::{ProfileRecord, Transaction};
-use notedeck::{App, AppContext, NotedeckTextStyle, UserAccount, WalletType};
+use notedeck::{
+    profile::get_profile_url, App, AppContext, NotedeckTextStyle, UserAccount, WalletType,
+};
 use notedeck_columns::Damus;
 use notedeck_dave::{Dave, DaveAvatar};
-use notedeck_ui::{profile::get_profile_url, AnimationHelper, ProfilePic};
+use notedeck_ui::{AnimationHelper, ProfilePic};
 
 static ICON_WIDTH: f32 = 40.0;
 pub static ICON_EXPANSION_MULTIPLE: f32 = 1.2;
@@ -405,7 +407,7 @@ pub fn get_profile_url_owned(profile: Option<ProfileRecord<'_>>) -> &str {
     if let Some(url) = profile.and_then(|pr| pr.record().profile().and_then(|p| p.picture())) {
         url
     } else {
-        ProfilePic::no_pfp_url()
+        notedeck::profile::no_pfp_url()
     }
 }
 

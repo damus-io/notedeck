@@ -1,9 +1,25 @@
-use crate::notecache::NoteCache;
-use enostr::NoteId;
+mod action;
+mod context;
+
+pub use action::{NoteAction, ZapAction};
+pub use context::{BroadcastContext, ContextSelection, NoteContextSelection};
+
+use crate::{notecache::NoteCache, zaps::Zaps, Images};
+use enostr::{NoteId, RelayPool};
 use nostrdb::{Ndb, Note, NoteKey, QueryResult, Transaction};
 use std::borrow::Borrow;
 use std::cmp::Ordering;
 use std::fmt;
+
+/// Aggregates dependencies to reduce the number of parameters
+/// passed to inner UI elements, minimizing prop drilling.
+pub struct NoteContext<'d> {
+    pub ndb: &'d Ndb,
+    pub img_cache: &'d mut Images,
+    pub note_cache: &'d mut NoteCache,
+    pub zaps: &'d mut Zaps,
+    pub pool: &'d mut RelayPool,
+}
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone, Hash)]
 pub struct NoteRef {

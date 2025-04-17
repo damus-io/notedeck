@@ -1,9 +1,8 @@
-use crate::ui;
-use crate::{actionbar::NoteAction, profile::get_display_name, timeline::TimelineKind};
+use crate::{show_pointer, ProfilePreview};
 use egui::Sense;
 use enostr::Pubkey;
 use nostrdb::{Ndb, Transaction};
-use notedeck::Images;
+use notedeck::{name::get_display_name, Images, NoteAction};
 
 pub struct Mention<'a> {
     ndb: &'a Ndb,
@@ -87,12 +86,10 @@ fn mention_ui(
         );
 
         let note_action = if resp.clicked() {
-            ui::show_pointer(ui);
-            Some(NoteAction::OpenTimeline(TimelineKind::profile(
-                Pubkey::new(*pk),
-            )))
+            show_pointer(ui);
+            Some(NoteAction::Profile(Pubkey::new(*pk)))
         } else if resp.hovered() {
-            ui::show_pointer(ui);
+            show_pointer(ui);
             None
         } else {
             None
@@ -101,7 +98,7 @@ fn mention_ui(
         if let Some(rec) = profile.as_ref() {
             resp.on_hover_ui_at_pointer(|ui| {
                 ui.set_max_width(300.0);
-                ui.add(ui::ProfilePreview::new(rec, img_cache));
+                ui.add(ProfilePreview::new(rec, img_cache));
             });
         }
 

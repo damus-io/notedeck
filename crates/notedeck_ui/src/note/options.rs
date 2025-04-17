@@ -1,4 +1,4 @@
-use crate::ui::ProfilePic;
+use crate::ProfilePic;
 use bitflags::bitflags;
 
 bitflags! {

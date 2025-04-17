@@ -76,7 +76,7 @@ fn colored_name(name: &str, color: Option<Color32>) -> RichText {
 fn ui_abbreviate_name(ui: &mut egui::Ui, name: &str, len: usize, color: Option<Color32>) {
     let should_abbrev = name.len() > len;
     let name = if should_abbrev {
-        let closest = crate::abbrev::floor_char_boundary(name, len);
+        let closest = notedeck::abbrev::floor_char_boundary(name, len);
         &name[..closest]
     } else {
         name

@@ -1,3 +1,4 @@
+pub mod abbrev;
 mod accounts;
 mod app;
 mod args;
@@ -9,10 +10,12 @@ pub mod fonts;
 mod frame_history;
 mod imgcache;
 mod muted;
+pub mod name;
 pub mod note;
 mod notecache;
 mod persist;
 pub mod platform;
+pub mod profile;
 pub mod relay_debug;
 pub mod relayspec;
 mod result;
@@ -41,9 +44,14 @@ pub use imgcache::{
     MediaCacheValue, TextureFrame, TexturedImage,
 };
 pub use muted::{MuteFun, Muted};
-pub use note::{NoteRef, RootIdError, RootNoteId, RootNoteIdBuf};
+pub use name::NostrName;
+pub use note::{
+    BroadcastContext, ContextSelection, NoteAction, NoteContext, NoteContextSelection, NoteRef,
+    RootIdError, RootNoteId, RootNoteIdBuf, ZapAction,
+};
 pub use notecache::{CachedNote, NoteCache};
 pub use persist::*;
+pub use profile::get_profile_url;
 pub use relay_debug::RelayDebugView;
 pub use relayspec::RelaySpec;
 pub use result::Result;

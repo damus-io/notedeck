@@ -2,10 +2,8 @@ use egui::Widget;
 
 use crate::deck_state::DeckState;
 
-use super::{
-    configure_deck::{ConfigureDeckResponse, ConfigureDeckView},
-    padding,
-};
+use super::configure_deck::{ConfigureDeckResponse, ConfigureDeckView};
+use notedeck_ui::padding;
 
 pub struct EditDeckView<'a> {
     config_view: ConfigureDeckView<'a>,

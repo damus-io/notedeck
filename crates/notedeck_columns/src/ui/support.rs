@@ -1,11 +1,9 @@
 use egui::{vec2, Button, Label, Layout, RichText};
+use notedeck::{NamedFontFamily, NotedeckTextStyle};
+use notedeck_ui::{colors::PINK, padding};
 use tracing::error;
 
 use crate::support::Support;
-use notedeck_ui::colors::PINK;
-
-use super::padding;
-use notedeck::{NamedFontFamily, NotedeckTextStyle};
 
 pub struct SupportView<'a> {
     support: &'a mut Support,

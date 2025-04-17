@@ -12,13 +12,12 @@ use crate::{
 };
 
 use notedeck::{Accounts, UserAccount};
-use notedeck_ui::colors;
-
-use super::{
+use notedeck_ui::{
     anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},
-    configure_deck::deck_icon,
-    View,
+    colors, View,
 };
+
+use super::configure_deck::deck_icon;
 
 pub static SIDE_PANEL_WIDTH: f32 = 68.0;
 static ICON_WIDTH: f32 = 40.0;

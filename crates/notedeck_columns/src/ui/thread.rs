@@ -1,17 +1,11 @@
-use crate::{
-    actionbar::NoteAction,
-    timeline::{ThreadSelection, TimelineCache, TimelineKind},
-};
-
 use enostr::KeypairUnowned;
 use nostrdb::Transaction;
-use notedeck::{MuteFun, RootNoteId, UnknownIds};
+use notedeck::{MuteFun, NoteAction, NoteContext, RootNoteId, UnknownIds};
+use notedeck_ui::NoteOptions;
 use tracing::error;
 
-use super::{
-    note::{contents::NoteContext, NoteOptions},
-    timeline::TimelineTabView,
-};
+use crate::timeline::{ThreadSelection, TimelineCache, TimelineKind};
+use crate::ui::timeline::TimelineTabView;
 
 pub struct ThreadView<'a, 'd> {
     timeline_cache: &'a mut TimelineCache,

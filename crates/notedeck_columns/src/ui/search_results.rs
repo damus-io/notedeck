@@ -1,15 +1,15 @@
 use egui::{vec2, FontId, Layout, Pos2, Rect, ScrollArea, UiBuilder, Vec2b};
 use nostrdb::{Ndb, ProfileRecord, Transaction};
-use notedeck::{fonts::get_font_size, Images, NotedeckTextStyle};
-use tracing::error;
-
-use crate::{
-    profile::get_display_name,
-    ui::anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},
+use notedeck::{
+    fonts::get_font_size, name::get_display_name, profile::get_profile_url, Images,
+    NotedeckTextStyle,
 };
-
-use super::{widgets::x_button, ProfilePic};
-use notedeck_ui::profile::get_profile_url;
+use notedeck_ui::{
+    anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},
+    widgets::x_button,
+    ProfilePic,
+};
+use tracing::error;
 
 pub struct SearchResultsView<'a> {
     ndb: &'a Ndb,

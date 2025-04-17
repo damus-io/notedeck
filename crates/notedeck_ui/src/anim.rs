@@ -1,6 +1,5 @@
 use egui::{Pos2, Rect, Response, Sense};
 
-/*
 pub fn hover_expand(
     ui: &mut egui::Ui,
     id: egui::Id,
@@ -28,7 +27,6 @@ pub fn hover_expand_small(ui: &mut egui::Ui, id: egui::Id) -> (egui::Rect, f32, 
 
     hover_expand(ui, id, size, expand_size, anim_speed)
 }
-*/
 
 pub static ICON_EXPANSION_MULTIPLE: f32 = 1.2;
 pub static ANIM_SPEED: f32 = 0.05;

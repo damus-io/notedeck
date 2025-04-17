@@ -634,7 +634,7 @@ impl<'a> TitleNeedsDb<'a> {
             let m_name = profile
                 .as_ref()
                 .ok()
-                .map(|p| crate::profile::get_display_name(Some(p)).name());
+                .map(|p| notedeck::name::get_display_name(Some(p)).name());
 
             m_name.unwrap_or("Profile")
         } else {

@@ -3,7 +3,6 @@ mod app;
 mod error;
 //mod note;
 //mod block;
-mod abbrev;
 pub mod accounts;
 mod actionbar;
 pub mod app_creation;
@@ -40,7 +39,6 @@ pub mod storage;
 
 pub use app::Damus;
 pub use error::Error;
-pub use profile::NostrName;
 pub use route::Route;
 
 pub type Result<T> = std::result::Result<T, error::Error>;

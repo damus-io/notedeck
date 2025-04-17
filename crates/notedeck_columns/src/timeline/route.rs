@@ -2,15 +2,12 @@ use crate::{
     nav::RenderNavAction,
     profile::ProfileAction,
     timeline::{TimelineCache, TimelineKind},
-    ui::{
-        self,
-        note::{contents::NoteContext, NoteOptions},
-        profile::ProfileView,
-    },
+    ui::{self, ProfileView},
 };
 
 use enostr::Pubkey;
-use notedeck::{Accounts, MuteFun, UnknownIds};
+use notedeck::{Accounts, MuteFun, NoteContext, UnknownIds};
+use notedeck_ui::NoteOptions;
 
 #[allow(clippy::too_many_arguments)]
 pub fn render_timeline_route(
