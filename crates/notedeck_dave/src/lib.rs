@@ -97,44 +97,52 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         }
     }
 
-    fn render(&mut self, app_ctx: &AppContext, ui: &mut egui::Ui) {
+    /// Process incoming tokens from the ai backend
+    fn process_events(&mut self, app_ctx: &AppContext) -> bool {
         let mut should_send = false;
-        if let Some(recvr) = &self.incoming_tokens {
-            while let Ok(res) = recvr.try_recv() {
-                if let Some(avatar) = &mut self.avatar {
-                    avatar.random_nudge();
-                }
-                match res {
-                    DaveResponse::Token(token) => match self.chat.last_mut() {
-                        Some(Message::Assistant(msg)) => *msg = msg.clone() + &token,
-                        Some(_) => self.chat.push(Message::Assistant(token)),
-                        None => {}
-                    },
 
-                    DaveResponse::ToolCalls(toolcalls) => {
-                        tracing::info!("got tool calls: {:?}", toolcalls);
-                        self.chat.push(Message::ToolCalls(toolcalls.clone()));
+        let Some(recvr) = &self.incoming_tokens else {
+            return should_send;
+        };
 
-                        let txn = Transaction::new(app_ctx.ndb).unwrap();
-                        for call in &toolcalls {
-                            // execute toolcall
-                            match call.calls() {
-                                ToolCalls::Query(search_call) => {
-                                    let resp = search_call.execute(&txn, app_ctx.ndb);
-                                    self.chat.push(Message::ToolResponse(ToolResponse::new(
-                                        call.id().to_owned(),
-                                        ToolResponses::Query(resp),
-                                    )))
-                                }
+        while let Ok(res) = recvr.try_recv() {
+            if let Some(avatar) = &mut self.avatar {
+                avatar.random_nudge();
+            }
+            match res {
+                DaveResponse::Token(token) => match self.chat.last_mut() {
+                    Some(Message::Assistant(msg)) => *msg = msg.clone() + &token,
+                    Some(_) => self.chat.push(Message::Assistant(token)),
+                    None => {}
+                },
+
+                DaveResponse::ToolCalls(toolcalls) => {
+                    tracing::info!("got tool calls: {:?}", toolcalls);
+                    self.chat.push(Message::ToolCalls(toolcalls.clone()));
+
+                    let txn = Transaction::new(app_ctx.ndb).unwrap();
+                    for call in &toolcalls {
+                        // execute toolcall
+                        match call.calls() {
+                            ToolCalls::Query(search_call) => {
+                                let resp = search_call.execute(&txn, app_ctx.ndb);
+                                self.chat.push(Message::ToolResponse(ToolResponse::new(
+                                    call.id().to_owned(),
+                                    ToolResponses::Query(resp),
+                                )))
                             }
                         }
-
-                        should_send = true;
                     }
+
+                    should_send = true;
                 }
             }
         }
 
+        should_send
+    }
+
+    fn render(&mut self, app_ctx: &AppContext, ui: &mut egui::Ui) {
         // Scroll area for chat messages
         egui::Frame::new()
             .inner_margin(egui::Margin {
@@ -150,26 +158,11 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     .show(ui, |ui| {
                         ui.vertical(|ui| {
                             self.render_chat(ui);
-
-                            self.inputbox(app_ctx, ui);
                         })
                     });
+
+                self.inputbox(app_ctx, ui);
             });
-
-        /*
-        // he lives in the sidebar now
-        if let Some(avatar) = &mut self.avatar {
-            let avatar_size = Vec2::splat(300.0);
-            let pos = Vec2::splat(100.0).to_pos2();
-            let pos = Rect::from_min_max(pos, pos + avatar_size);
-            avatar.render(pos, ui);
-        }
-        */
-
-        // send again
-        if should_send {
-            self.send_user_message(app_ctx, ui.ctx());
-        }
     }
 
     fn render_chat(&self, ui: &mut egui::Ui) {
@@ -388,6 +381,10 @@ impl notedeck::App for Dave {
         */
 
         //update_dave(self, ctx, ui.ctx());
+        let should_send = self.process_events(ctx);
         self.render(ctx, ui);
+        if should_send {
+            self.send_user_message(ctx, ui.ctx());
+        }
     }
 }
