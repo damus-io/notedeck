@@ -151,6 +151,8 @@ pub enum ToolCallError {
 enum ArgType {
     String,
     Number,
+
+    #[allow(dead_code)]
     Enum(Vec<&'static str>),
 }
 
@@ -295,7 +297,6 @@ pub struct QueryCall {
     since: Option<u64>,
     kind: Option<u64>,
     until: Option<u64>,
-    author: Option<String>,
     search: Option<String>,
 }
 
@@ -499,21 +500,6 @@ fn query_tool() -> Tool {
                 "#,
             },
 
-            ToolArg {
-                name: "author",
-                typ: ArgType::String,
-                required: false,
-                default: None,
-                description: "An author *pubkey* to constrain the query on. Can be used to search for notes from individual users. If unsure what pubkey to use, you can query for kind 0 profiles with the search argument.",
-            },
-
-            ToolArg {
-                name: "context",
-                typ: ArgType::Enum(vec!["home", "profile", "any"]),
-                required: false,
-                default: Some(Value::String("any".to_string())),
-                description: "The context in which the search is occuring. valid options are 'home', 'profile', 'any'",
-            }
         ]
     }
 }
