@@ -367,46 +367,7 @@ impl<'a, 'd> PostView<'a, 'd> {
                     self.transfer_uploads(ui);
                     self.show_upload_errors(ui);
 
-                    let post_action = ui
-                        .horizontal(|ui| {
-                            ui.with_layout(
-                                egui::Layout::left_to_right(egui::Align::BOTTOM),
-                                |ui| {
-                                    self.show_upload_media_button(ui);
-                                },
-                            );
-
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::BOTTOM), |ui| {
-                                let post_button_clicked = ui
-                                    .add_sized(
-                                        [91.0, 32.0],
-                                        post_button(!self.draft.buffer.is_empty()),
-                                    )
-                                    .clicked();
-
-                                let shortcut_pressed = ui.input(|i| {
-                                    (i.modifiers.ctrl || i.modifiers.command)
-                                        && i.key_pressed(egui::Key::Enter)
-                                });
-
-                                if post_button_clicked
-                                    || (!self.draft.buffer.is_empty() && shortcut_pressed)
-                                {
-                                    let output = self.draft.buffer.output();
-                                    let new_post = NewPost::new(
-                                        output.text,
-                                        self.poster.to_full(),
-                                        self.draft.uploaded_media.clone(),
-                                        output.mentions,
-                                    );
-                                    Some(NewPostAction::new(self.post_type.clone(), new_post))
-                                } else {
-                                    None
-                                }
-                            })
-                            .inner
-                        })
-                        .inner;
+                    let post_action = ui.horizontal(|ui| self.input_buttons(ui)).inner;
 
                     let action = note_response
                         .and_then(|nr| nr.action.map(PostAction::QuotedNoteAction))
@@ -420,6 +381,36 @@ impl<'a, 'd> PostView<'a, 'd> {
                 .inner
             })
             .inner
+    }
+
+    fn input_buttons(&mut self, ui: &mut egui::Ui) -> Option<NewPostAction> {
+        ui.with_layout(egui::Layout::left_to_right(egui::Align::BOTTOM), |ui| {
+            self.show_upload_media_button(ui);
+        });
+
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::BOTTOM), |ui| {
+            let post_button_clicked = ui
+                .add_sized([91.0, 32.0], post_button(!self.draft.buffer.is_empty()))
+                .clicked();
+
+            let shortcut_pressed = ui.input(|i| {
+                (i.modifiers.ctrl || i.modifiers.command) && i.key_pressed(egui::Key::Enter)
+            });
+
+            if post_button_clicked || (!self.draft.buffer.is_empty() && shortcut_pressed) {
+                let output = self.draft.buffer.output();
+                let new_post = NewPost::new(
+                    output.text,
+                    self.poster.to_full(),
+                    self.draft.uploaded_media.clone(),
+                    output.mentions,
+                );
+                Some(NewPostAction::new(self.post_type.clone(), new_post))
+            } else {
+                None
+            }
+        })
+        .inner
     }
 
     fn show_media(&mut self, ui: &mut egui::Ui) {
