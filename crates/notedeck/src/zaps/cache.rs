@@ -51,7 +51,7 @@ fn process_event(
                 });
             };
 
-            let promise = wallet.pay_invoice(&invoice);
+            let promise = wallet.wallet.pay_invoice(&invoice);
 
             let ctx = SendingNWCInvoiceContext {
                 request_noteid: req_noteid,

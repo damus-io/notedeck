@@ -14,7 +14,7 @@ pub fn get_wallet_for_mut<'a>(
     accounts: &'a mut Accounts,
     global_wallet: &'a mut GlobalWallet,
     account_pk: &'a [u8; 32],
-) -> Option<&'a mut Wallet> {
+) -> Option<&'a mut ZapWallet> {
     let cur_acc = accounts.get_account_mut_optimized(account_pk)?;
 
     if let Some(wallet) = &mut cur_acc.wallet {
@@ -137,7 +137,7 @@ impl TokenSerializable for Wallet {
 }
 
 pub struct GlobalWallet {
-    pub wallet: Option<Wallet>,
+    pub wallet: Option<ZapWallet>,
     pub ui_state: WalletUIState,
     wallet_handler: TokenHandler,
 }
@@ -172,8 +172,8 @@ impl GlobalWallet {
     }
 }
 
-fn construct_global_wallet(wallet_handler: &TokenHandler) -> Option<Wallet> {
-    let Ok(res) = wallet_handler.load::<Wallet>("\t") else {
+fn construct_global_wallet(wallet_handler: &TokenHandler) -> Option<ZapWallet> {
+    let Ok(res) = wallet_handler.load::<ZapWallet>("\t") else {
         return None;
     };
 

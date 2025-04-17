@@ -546,7 +546,7 @@ fn render_nav_body(
                     if let Some(cur_acc) = ctx.accounts.get_selected_account_mut() {
                         if let Some(wallet) = &mut cur_acc.wallet {
                             break 's WalletState::Wallet {
-                                wallet,
+                                wallet: &mut wallet.wallet,
                                 can_create_local_wallet: false,
                             };
                         }
@@ -560,7 +560,7 @@ fn render_nav_body(
                     };
 
                     WalletState::Wallet {
-                        wallet,
+                        wallet: &mut wallet.wallet,
                         can_create_local_wallet: true,
                     }
                 }
@@ -579,7 +579,7 @@ fn render_nav_body(
                     };
 
                     WalletState::Wallet {
-                        wallet,
+                        wallet: &mut wallet.wallet,
                         can_create_local_wallet: false,
                     }
                 }

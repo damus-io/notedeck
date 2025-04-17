@@ -49,7 +49,7 @@ impl WalletAction {
                     };
 
                     accounts.update_current_account(move |acc| {
-                        acc.wallet = Some(wallet);
+                        acc.wallet = Some(wallet.into());
                     });
                 } else {
                     if global_wallet.wallet.is_some() {
@@ -60,7 +60,7 @@ impl WalletAction {
                         return;
                     };
 
-                    global_wallet.wallet = Some(wallet);
+                    global_wallet.wallet = Some(wallet.into());
                     global_wallet.save_wallet();
                 }
             }

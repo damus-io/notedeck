@@ -1,11 +1,11 @@
 use enostr::Keypair;
 use tokenator::{ParseError, TokenParser, TokenSerializable};
 
-use crate::Wallet;
+use crate::wallet::ZapWallet;
 
 pub struct UserAccount {
     pub key: Keypair,
-    pub wallet: Option<Wallet>,
+    pub wallet: Option<ZapWallet>,
 }
 
 impl UserAccount {
@@ -13,7 +13,7 @@ impl UserAccount {
         Self { key, wallet: None }
     }
 
-    pub fn with_wallet(mut self, wallet: Wallet) -> Self {
+    pub fn with_wallet(mut self, wallet: ZapWallet) -> Self {
         self.wallet = Some(wallet);
         self
     }
@@ -21,7 +21,7 @@ impl UserAccount {
 
 enum UserAccountRoute {
     Key(Keypair),
-    Wallet(Wallet),
+    Wallet(ZapWallet),
 }
 
 impl TokenSerializable for UserAccount {
@@ -36,7 +36,7 @@ impl TokenSerializable for UserAccount {
                 parser,
                 &[
                     |p| Ok(UserAccountRoute::Key(Keypair::parse_from_tokens(p)?)),
-                    |p| Ok(UserAccountRoute::Wallet(Wallet::parse_from_tokens(p)?)),
+                    |p| Ok(UserAccountRoute::Wallet(ZapWallet::parse_from_tokens(p)?)),
                 ],
             );
 
@@ -90,8 +90,8 @@ mod tests {
     #[test]
     fn test_user_account_serialize_deserialize() {
         let kp = FullKeypair::generate();
-        let acc =
-            UserAccount::new(kp.to_keypair()).with_wallet(Wallet::new(URI.to_owned()).unwrap());
+        let acc = UserAccount::new(kp.to_keypair())
+            .with_wallet(Wallet::new(URI.to_owned()).unwrap().into());
 
         let mut writer = TokenWriter::new("\t");
         acc.serialize_tokens(&mut writer);
@@ -111,6 +111,6 @@ mod tests {
             panic!();
         };
 
-        assert_eq!(wallet.uri, URI);
+        assert_eq!(wallet.wallet.uri, URI);
     }
 }
