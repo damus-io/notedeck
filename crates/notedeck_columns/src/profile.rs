@@ -41,34 +41,35 @@ fn is_empty(s: &str) -> bool {
 }
 
 pub fn get_display_name<'a>(record: Option<&ProfileRecord<'a>>) -> NostrName<'a> {
-    if let Some(record) = record {
-        if let Some(profile) = record.record().profile() {
-            let display_name = profile.display_name().filter(|n| !is_empty(n));
-            let username = profile.name().filter(|n| !is_empty(n));
-            let nip05 = if let Some(raw_nip05) = profile.nip05() {
-                if let Some(at_pos) = raw_nip05.find('@') {
-                    if raw_nip05.starts_with('_') {
-                        raw_nip05.get(at_pos + 1..)
-                    } else {
-                        Some(raw_nip05)
-                    }
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
+    let Some(record) = record else {
+        return NostrName::unknown();
+    };
 
-            NostrName {
-                username,
-                display_name,
-                nip05,
+    let Some(profile) = record.record().profile() else {
+        return NostrName::unknown();
+    };
+
+    let display_name = profile.display_name().filter(|n| !is_empty(n));
+    let username = profile.name().filter(|n| !is_empty(n));
+
+    let nip05 = if let Some(raw_nip05) = profile.nip05() {
+        if let Some(at_pos) = raw_nip05.find('@') {
+            if raw_nip05.starts_with('_') {
+                raw_nip05.get(at_pos + 1..)
+            } else {
+                Some(raw_nip05)
             }
         } else {
-            NostrName::unknown()
+            None
         }
     } else {
-        NostrName::unknown()
+        None
+    };
+
+    NostrName {
+        username,
+        display_name,
+        nip05,
     }
 }
 
