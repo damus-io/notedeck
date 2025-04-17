@@ -132,16 +132,14 @@ impl TokenSerializable for Wallet {
     fn parse_from_tokens<'a>(
         parser: &mut tokenator::TokenParser<'a>,
     ) -> Result<Self, tokenator::ParseError<'a>> {
-        parser.parse_all(|p| {
-            p.parse_token("nwc_uri")?;
+        parser.parse_token("nwc_uri")?;
 
-            let raw_uri = p.pull_token()?;
+        let raw_uri = parser.pull_token()?;
 
-            let wallet =
-                Wallet::new(raw_uri.to_owned()).map_err(|_| tokenator::ParseError::DecodeFailed)?;
+        let wallet =
+            Wallet::new(raw_uri.to_owned()).map_err(|_| tokenator::ParseError::DecodeFailed)?;
 
-            Ok(wallet)
-        })
+        Ok(wallet)
     }
 
     fn serialize_tokens(&self, writer: &mut tokenator::TokenWriter) {
