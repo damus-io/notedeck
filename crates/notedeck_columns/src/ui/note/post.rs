@@ -396,7 +396,9 @@ impl<'a, 'd> PostView<'a, 'd> {
                 (i.modifiers.ctrl || i.modifiers.command) && i.key_pressed(egui::Key::Enter)
             });
 
-            if post_button_clicked || (!self.draft.buffer.is_empty() && shortcut_pressed) {
+            if post_button_clicked
+                || (!self.draft.buffer.is_empty() && shortcut_pressed && self.focused(ui))
+            {
                 let output = self.draft.buffer.output();
                 let new_post = NewPost::new(
                     output.text,
