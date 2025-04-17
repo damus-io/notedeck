@@ -7,4 +7,4 @@ pub use cache::{
     AnyZapState, NoteZapTarget, NoteZapTargetOwned, ZapTarget, ZapTargetOwned, ZappingError, Zaps,
 };
 
-pub use default_zap::{DefaultZapError, DefaultZapMsats, PendingDefaultZapState};
+pub use default_zap::{DefaultZapError, DefaultZapMsats, PendingDefaultZapState, UserZapMsats};

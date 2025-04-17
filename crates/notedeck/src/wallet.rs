@@ -5,10 +5,10 @@ use nwc::{
     NWC,
 };
 use poll_promise::Promise;
-use tokenator::TokenSerializable;
+use tokenator::{ParseError, TokenParser, TokenSerializable};
 use tokio::sync::RwLock;
 
-use crate::{Accounts, DataPath, TokenHandler};
+use crate::{zaps::UserZapMsats, Accounts, DataPath, DefaultZapMsats, TokenHandler};
 
 pub fn get_wallet_for_mut<'a>(
     accounts: &'a mut Accounts,
@@ -188,11 +188,97 @@ fn construct_global_wallet(wallet_handler: &TokenHandler) -> Option<Wallet> {
     Some(wallet)
 }
 
+#[derive(Debug)]
+pub struct ZapWallet {
+    pub wallet: Wallet,
+    pub default_zap: DefaultZapMsats,
+}
+
+enum ZapWalletRoute {
+    Wallet(Wallet),
+    DefaultZapMsats(UserZapMsats),
+}
+
+impl TokenSerializable for ZapWallet {
+    fn parse_from_tokens<'a>(
+        parser: &mut tokenator::TokenParser<'a>,
+    ) -> Result<Self, tokenator::ParseError<'a>> {
+        let mut m_wallet = None;
+        let mut m_default_zap = None;
+        loop {
+            let res = TokenParser::alt(
+                parser,
+                &[
+                    |p| Ok(ZapWalletRoute::Wallet(Wallet::parse_from_tokens(p)?)),
+                    |p| {
+                        Ok(ZapWalletRoute::DefaultZapMsats(
+                            UserZapMsats::parse_from_tokens(p)?,
+                        ))
+                    },
+                ],
+            );
+
+            match res {
+                Ok(ZapWalletRoute::Wallet(wallet)) => m_wallet = Some(wallet),
+                Ok(ZapWalletRoute::DefaultZapMsats(msats)) => m_default_zap = Some(msats),
+                Err(ParseError::AltAllFailed) => break,
+                Err(_) => {}
+            }
+
+            if m_wallet.is_some() && m_default_zap.is_some() {
+                break;
+            }
+        }
+
+        let Some(wallet) = m_wallet else {
+            return Err(ParseError::DecodeFailed);
+        };
+
+        let mut zap_wallet = ZapWallet::new(wallet);
+
+        let default_zap = DefaultZapMsats::from_user(m_default_zap);
+
+        zap_wallet.default_zap = default_zap;
+
+        Ok(zap_wallet)
+    }
+
+    fn serialize_tokens(&self, writer: &mut tokenator::TokenWriter) {
+        self.wallet.serialize_tokens(writer);
+
+        if let Some(user_zap_msats) = self.default_zap.try_into_user() {
+            user_zap_msats.serialize_tokens(writer);
+        }
+    }
+}
+
+impl ZapWallet {
+    pub fn new(wallet: Wallet) -> Self {
+        Self {
+            wallet,
+            default_zap: DefaultZapMsats::default(),
+        }
+    }
+
+    pub fn with_default_zap_msats(mut self, msats: u64) -> Self {
+        self.default_zap.set_user_selection(msats);
+        self
+    }
+}
+
+impl From<Wallet> for ZapWallet {
+    fn from(value: Wallet) -> Self {
+        ZapWallet::new(value)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use tokenator::{TokenParser, TokenSerializable, TokenWriter};
 
     use crate::Wallet;
+
+    use super::ZapWallet;
 
     const URI: &str = "nostr+walletconnect://b889ff5b1513b641e2a139f661a661364979c5beee91842f8f0ef42ab558e9d4?relay=wss%3A%2F%2Frelay.damus.io&secret=71a8c14c1407c113601079c4302dab36460f0ccd0ad506f1f2dc73b5100e4f3c&lud16=nostr%40nostr.com";
 
@@ -219,5 +305,28 @@ mod tests {
         let new_wallet = m_new_wallet.unwrap();
 
         assert_eq!(wallet.uri, new_wallet.uri);
+    }
+
+    #[test]
+    fn test_zap_wallet_serialize_deserialize() {
+        const MSATS: u64 = 64_000;
+        let zap_wallet =
+            ZapWallet::new(Wallet::new(URI.to_owned()).unwrap()).with_default_zap_msats(MSATS);
+
+        let mut writer = TokenWriter::new("\t");
+        zap_wallet.serialize_tokens(&mut writer);
+        let serialized = writer.str();
+
+        let data = &serialized.split("\t").collect::<Vec<&str>>();
+        let mut parser = TokenParser::new(data);
+
+        let m_new_zap_wallet = ZapWallet::parse_from_tokens(&mut parser);
+
+        assert!(m_new_zap_wallet.is_ok());
+
+        let new_zap_wallet = m_new_zap_wallet.unwrap();
+
+        assert_eq!(zap_wallet.wallet.uri, new_zap_wallet.wallet.uri);
+        assert_eq!(new_zap_wallet.default_zap.get_default_zap_msats(), MSATS);
     }
 }
