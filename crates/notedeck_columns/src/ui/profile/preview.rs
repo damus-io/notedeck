@@ -45,7 +45,7 @@ impl<'a, 'cache> ProfilePreview<'a, 'cache> {
                     .border(ProfilePic::border_stroke(ui)),
             );
             ui.add(display_name_widget(
-                get_display_name(Some(self.profile)),
+                &get_display_name(Some(self.profile)),
                 false,
             ));
             ui.add(about_section_widget(self.profile));
@@ -94,7 +94,7 @@ impl egui::Widget for SimpleProfilePreview<'_, '_> {
             .show(ui, |ui| {
                 ui.add(ProfilePic::new(self.cache, get_profile_url(self.profile)).size(48.0));
                 ui.vertical(|ui| {
-                    ui.add(display_name_widget(get_display_name(self.profile), true));
+                    ui.add(display_name_widget(&get_display_name(self.profile), true));
                     if !self.is_nsec {
                         ui.add(
                             Label::new(

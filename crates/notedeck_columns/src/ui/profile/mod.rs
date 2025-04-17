@@ -176,7 +176,10 @@ impl<'a, 'd> ProfileView<'a, 'd> {
 
                 ui.add_space(18.0);
 
-                ui.add(display_name_widget(get_display_name(Some(&profile)), false));
+                ui.add(display_name_widget(
+                    &get_display_name(Some(&profile)),
+                    false,
+                ));
 
                 ui.add_space(8.0);
 
@@ -340,7 +343,10 @@ fn edit_profile_button() -> impl egui::Widget + 'static {
     }
 }
 
-fn display_name_widget(name: NostrName<'_>, add_placeholder_space: bool) -> impl egui::Widget + '_ {
+fn display_name_widget<'a>(
+    name: &'a NostrName<'a>,
+    add_placeholder_space: bool,
+) -> impl egui::Widget + 'a {
     move |ui: &mut egui::Ui| -> egui::Response {
         let disp_resp = name.display_name.map(|disp_name| {
             ui.add(
