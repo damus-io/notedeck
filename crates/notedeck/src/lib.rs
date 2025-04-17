@@ -67,7 +67,8 @@ pub use wallet::{
     get_wallet_for_mut, GlobalWallet, Wallet, WalletError, WalletType, WalletUIState,
 };
 pub use zaps::{
-    AnyZapState, NoteZapTarget, NoteZapTargetOwned, ZapTarget, ZapTargetOwned, ZappingError,
+    AnyZapState, DefaultZapError, DefaultZapMsats, NoteZapTarget, NoteZapTargetOwned,
+    PendingDefaultZapState, ZapTarget, ZapTargetOwned, ZappingError,
 };
 
 // export libs
