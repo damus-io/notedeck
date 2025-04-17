@@ -19,7 +19,7 @@ use crate::{
         profile::EditProfileView,
         search::{FocusState, SearchView},
         support::SupportView,
-        wallet::{WalletAction, WalletView},
+        wallet::{WalletAction, WalletState, WalletView},
         RelayView,
     },
     Damus,
@@ -27,7 +27,7 @@ use crate::{
 
 use egui_nav::{Nav, NavAction, NavResponse, NavUiType};
 use nostrdb::Transaction;
-use notedeck::{AccountsAction, AppContext, NoteAction, NoteContext, WalletState};
+use notedeck::{AccountsAction, AppContext, NoteAction, NoteContext};
 use notedeck_ui::View;
 use tracing::error;
 

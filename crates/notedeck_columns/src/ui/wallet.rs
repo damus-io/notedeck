@@ -1,9 +1,21 @@
 use egui::Layout;
-use notedeck::{Accounts, GlobalWallet, Wallet, WalletError, WalletState, WalletUIState};
+use notedeck::{Accounts, GlobalWallet, Wallet, WalletError, WalletUIState};
 
 use crate::route::{Route, Router};
 
 use super::widgets::styled_button;
+
+#[derive(Debug)]
+pub enum WalletState<'a> {
+    Wallet {
+        wallet: &'a mut Wallet,
+        can_create_local_wallet: bool,
+    },
+    NoWallet {
+        state: &'a mut WalletUIState,
+        show_local_only: bool,
+    },
+}
 
 #[derive(Debug)]
 pub enum WalletAction {

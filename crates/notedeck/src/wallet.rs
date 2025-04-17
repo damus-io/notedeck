@@ -10,18 +10,6 @@ use tokio::sync::RwLock;
 
 use crate::{Accounts, DataPath, TokenHandler};
 
-#[derive(Debug)]
-pub enum WalletState<'a> {
-    Wallet {
-        wallet: &'a mut Wallet,
-        can_create_local_wallet: bool,
-    },
-    NoWallet {
-        state: &'a mut WalletUIState,
-        show_local_only: bool,
-    },
-}
-
 pub fn get_wallet_for_mut<'a>(
     accounts: &'a mut Accounts,
     global_wallet: &'a mut GlobalWallet,
