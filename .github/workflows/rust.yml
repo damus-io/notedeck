@@ -12,7 +12,7 @@ on:
 jobs:
   lint: 
     name: Rustfmt + Clippy
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -26,7 +26,7 @@ jobs:
     name: Test (Linux)
     uses: ./.github/workflows/build-and-test.yml
     with:
-      os: ubuntu-20.04
+      os: ubuntu-22.04
       additional-setup: |
         sudo apt-get install libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libspeechd-dev libxkbcommon-dev libssl-dev
 
@@ -44,7 +44,7 @@ jobs:
 
   packaging:
     name: rpm/deb
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
     needs: linux-test
     if: github.ref_name == 'master' || github.ref_name == 'ci'
 
@@ -255,7 +255,7 @@ jobs:
 
   upload-artifacts:
     name: Upload Artifacts to Server
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
     needs: [packaging, macos-dmg, windows-installer]
     if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/ci'
 
