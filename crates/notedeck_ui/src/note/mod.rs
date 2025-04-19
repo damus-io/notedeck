@@ -29,6 +29,7 @@ pub struct NoteView<'a, 'd> {
     cur_acc: &'a Option<KeypairUnowned<'a>>,
     parent: Option<NoteKey>,
     note: &'a nostrdb::Note<'a>,
+    framed: bool,
     flags: NoteOptions,
 }
 
@@ -68,6 +69,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
     ) -> Self {
         flags.set_actionbar(true);
         flags.set_note_previews(true);
+        let framed = false;
 
         let parent: Option<NoteKey> = None;
         Self {
@@ -76,7 +78,18 @@ impl<'a, 'd> NoteView<'a, 'd> {
             parent,
             note,
             flags,
+            framed,
         }
+    }
+
+    pub fn preview_style(self) -> Self {
+        self.actionbar(false)
+            .small_pfp(true)
+            .frame(true)
+            .wide(true)
+            .note_previews(false)
+            .options_button(true)
+            .is_preview(true)
     }
 
     pub fn textmode(mut self, enable: bool) -> Self {
@@ -86,6 +99,11 @@ impl<'a, 'd> NoteView<'a, 'd> {
 
     pub fn actionbar(mut self, enable: bool) -> Self {
         self.options_mut().set_actionbar(enable);
+        self
+    }
+
+    pub fn frame(mut self, enable: bool) -> Self {
+        self.framed = enable;
         self
     }
 
@@ -256,47 +274,63 @@ impl<'a, 'd> NoteView<'a, 'd> {
         }
     }
 
+    pub fn show_impl(&mut self, ui: &mut egui::Ui) -> NoteResponse {
+        let txn = self.note.txn().expect("txn");
+        if let Some(note_to_repost) = get_reposted_note(self.note_context.ndb, txn, self.note) {
+            let profile = self
+                .note_context
+                .ndb
+                .get_profile_by_pubkey(txn, self.note.pubkey());
+
+            let style = NotedeckTextStyle::Small;
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    ui.add_space(2.0);
+                    ui.add_sized([20.0, 20.0], repost_icon(ui.visuals().dark_mode));
+                });
+                ui.add_space(6.0);
+                let resp = ui.add(one_line_display_name_widget(
+                    ui.visuals(),
+                    get_display_name(profile.as_ref().ok()),
+                    style,
+                ));
+                if let Ok(rec) = &profile {
+                    resp.on_hover_ui_at_pointer(|ui| {
+                        ui.set_max_width(300.0);
+                        ui.add(ProfilePreview::new(rec, self.note_context.img_cache));
+                    });
+                }
+                let color = ui.style().visuals.noninteractive().fg_stroke.color;
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new("Reposted")
+                        .color(color)
+                        .text_style(style.text_style()),
+                );
+            });
+            NoteView::new(self.note_context, self.cur_acc, &note_to_repost, self.flags).show(ui)
+        } else {
+            self.show_standard(ui)
+        }
+    }
+
     pub fn show(&mut self, ui: &mut egui::Ui) -> NoteResponse {
         if self.options().has_textmode() {
             NoteResponse::new(self.textmode_ui(ui))
+        } else if self.framed {
+            egui::Frame::new()
+                .fill(ui.visuals().noninteractive().weak_bg_fill)
+                .inner_margin(egui::Margin::same(8))
+                .outer_margin(egui::Margin::symmetric(0, 8))
+                .corner_radius(egui::CornerRadius::same(10))
+                .stroke(egui::Stroke::new(
+                    1.0,
+                    ui.visuals().noninteractive().bg_stroke.color,
+                ))
+                .show(ui, |ui| self.show_impl(ui))
+                .inner
         } else {
-            let txn = self.note.txn().expect("txn");
-            if let Some(note_to_repost) = get_reposted_note(self.note_context.ndb, txn, self.note) {
-                let profile = self
-                    .note_context
-                    .ndb
-                    .get_profile_by_pubkey(txn, self.note.pubkey());
-
-                let style = NotedeckTextStyle::Small;
-                ui.horizontal(|ui| {
-                    ui.vertical(|ui| {
-                        ui.add_space(2.0);
-                        ui.add_sized([20.0, 20.0], repost_icon(ui.visuals().dark_mode));
-                    });
-                    ui.add_space(6.0);
-                    let resp = ui.add(one_line_display_name_widget(
-                        ui.visuals(),
-                        get_display_name(profile.as_ref().ok()),
-                        style,
-                    ));
-                    if let Ok(rec) = &profile {
-                        resp.on_hover_ui_at_pointer(|ui| {
-                            ui.set_max_width(300.0);
-                            ui.add(ProfilePreview::new(rec, self.note_context.img_cache));
-                        });
-                    }
-                    let color = ui.style().visuals.noninteractive().fg_stroke.color;
-                    ui.add_space(4.0);
-                    ui.label(
-                        RichText::new("Reposted")
-                            .color(color)
-                            .text_style(style.text_style()),
-                    );
-                });
-                NoteView::new(self.note_context, self.cur_acc, &note_to_repost, self.flags).show(ui)
-            } else {
-                self.show_standard(ui)
-            }
+            self.show_impl(ui)
         }
     }
 

@@ -3272,6 +3272,7 @@ dependencies = [
  "eframe",
  "egui",
  "egui-wgpu",
+ "enostr",
  "futures",
  "hex",
  "nostrdb",

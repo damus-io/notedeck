@@ -10,6 +10,7 @@ notedeck = { workspace = true }
 notedeck_ui = { workspace = true }
 eframe = { workspace = true }
 tokio = { workspace = true }
+enostr = { workspace = true }
 tracing = { workspace = true }
 egui-wgpu = { workspace = true }
 serde_json = { workspace = true }

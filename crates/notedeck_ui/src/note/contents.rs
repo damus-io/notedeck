@@ -95,27 +95,10 @@ pub fn render_note_preview(
             */
     };
 
-    egui::Frame::new()
-        .fill(ui.visuals().noninteractive().weak_bg_fill)
-        .inner_margin(egui::Margin::same(8))
-        .outer_margin(egui::Margin::symmetric(0, 8))
-        .corner_radius(egui::CornerRadius::same(10))
-        .stroke(egui::Stroke::new(
-            1.0,
-            ui.visuals().noninteractive().bg_stroke.color,
-        ))
-        .show(ui, |ui| {
-            NoteView::new(note_context, cur_acc, &note, note_options)
-                .actionbar(false)
-                .small_pfp(true)
-                .wide(true)
-                .note_previews(false)
-                .options_button(true)
-                .parent(parent)
-                .is_preview(true)
-                .show(ui)
-        })
-        .inner
+    NoteView::new(note_context, cur_acc, &note, note_options)
+        .preview_style()
+        .parent(parent)
+        .show(ui)
 }
 
 #[allow(clippy::too_many_arguments)]

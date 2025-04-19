@@ -8,8 +8,8 @@ use egui::{Align, Key, KeyboardShortcut, Layout, Modifiers};
 use egui_wgpu::RenderState;
 use futures::StreamExt;
 use nostrdb::Transaction;
-use notedeck::AppContext;
-use notedeck_ui::icons::search_icon;
+use notedeck::{AppContext, NoteContext};
+use notedeck_ui::{icons::search_icon, NoteOptions};
 use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver};
 use std::sync::Arc;
@@ -69,7 +69,7 @@ impl Dave {
 
         let system_prompt = Message::System(format!(
             r#"
-You are an AI agent for the nostr protocol called Dave, created by Damus. nostr is a decentralized social media and internet communications protocol. You are embedded in a nostr browser called 'Damus Notedeck'. The returned note results are formatted into clickable note widgets. This happens when a nostr-uri is detected (ie: nostr:neventnevent1y4mvl8046gjsvdvztnp7jvs7w29pxcmkyj5p58m7t0dmjc8qddzsje0zmj). When referencing notes, ensure that this uri is included in the response so notes can be rendered inline.
+You are an AI agent for the nostr protocol called Dave, created by Damus. nostr is a decentralized social media and internet communications protocol. You are embedded in a nostr browser called 'Damus Notedeck'.
 
 - The current date is {date} ({timestamp} unix timestamp if needed for queries).
 
@@ -79,8 +79,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
 # Response Guidelines
 
-- You *MUST* include nostr:nevent references when referring to notes
-- When a user asks for a digest instead of specific query terms, make sure to include both `since` and `until` to pull notes for the correct range.
+- You *MUST* call the present_notes tool with a list of comma-separated nevent references when referring to notes so that the UI can display them. Do *NOT* include nevent references in the text response, but you *SHOULD* use ^1, ^2, etc to reference note indices passed to present_notes.
+- When a user asks for a digest instead of specific query terms, make sure to include both since and until to pull notes for the correct range.
+- When tasked with open-ended queries such as looking for interesting notes or summarizing the day, make sure to add enough notes to the context (limit: 100-200) so that it returns enough data for summarization.
 "#
         ));
 
@@ -123,6 +124,13 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     for call in &toolcalls {
                         // execute toolcall
                         match call.calls() {
+                            ToolCalls::PresentNotes(_note_ids) => {
+                                self.chat.push(Message::ToolResponse(ToolResponse::new(
+                                    call.id().to_owned(),
+                                    ToolResponses::PresentNotes,
+                                )))
+                            }
+
                             ToolCalls::Query(search_call) => {
                                 let resp = search_call.execute(&txn, app_ctx.ndb);
                                 self.chat.push(Message::ToolResponse(ToolResponse::new(
@@ -159,7 +167,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         })
     }
 
-    fn render(&mut self, app_ctx: &AppContext, ui: &mut egui::Ui) {
+    fn render(&mut self, app_ctx: &mut AppContext, ui: &mut egui::Ui) {
         // Scroll area for chat messages
         egui::Frame::NONE.show(ui, |ui| {
             ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
@@ -186,7 +194,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     .show(ui, |ui| {
                         Self::chat_frame(ui.ctx()).show(ui, |ui| {
                             ui.vertical(|ui| {
-                                self.render_chat(ui);
+                                self.render_chat(app_ctx, ui);
                             });
                         });
                     });
@@ -194,7 +202,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         });
     }
 
-    fn render_chat(&self, ui: &mut egui::Ui) {
+    fn render_chat(&self, ctx: &mut AppContext, ui: &mut egui::Ui) {
         for message in &self.chat {
             match message {
                 Message::User(msg) => self.user_chat(msg, ui),
@@ -205,7 +213,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     // have a debug option to show this
                 }
                 Message::ToolCalls(toolcalls) => {
-                    Self::tool_call_ui(toolcalls, ui);
+                    Self::tool_call_ui(ctx, toolcalls, ui);
                 }
             }
         }
@@ -232,10 +240,44 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         }
     }
 
-    fn tool_call_ui(toolcalls: &[ToolCall], ui: &mut egui::Ui) {
+    fn tool_call_ui(ctx: &mut AppContext, toolcalls: &[ToolCall], ui: &mut egui::Ui) {
         ui.vertical(|ui| {
             for call in toolcalls {
                 match call.calls() {
+                    ToolCalls::PresentNotes(call) => {
+                        let mut note_context = NoteContext {
+                            ndb: ctx.ndb,
+                            img_cache: ctx.img_cache,
+                            note_cache: ctx.note_cache,
+                            zaps: ctx.zaps,
+                            pool: ctx.pool,
+                        };
+
+                        let txn = Transaction::new(note_context.ndb).unwrap();
+
+                        egui::ScrollArea::horizontal().show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                for note_id in &call.note_ids {
+                                    let Ok(note) =
+                                        note_context.ndb.get_note_by_id(&txn, note_id.bytes())
+                                    else {
+                                        continue;
+                                    };
+
+                                    // TODO: remove current account thing, just add to note context
+                                    notedeck_ui::NoteView::new(
+                                        &mut note_context,
+                                        &None,
+                                        &note,
+                                        NoteOptions::default(),
+                                    )
+                                    .preview_style()
+                                    .show(ui);
+                                }
+                            });
+                        });
+                    }
+
                     ToolCalls::Query(search_call) => {
                         ui.horizontal(|ui| {
                             egui::Frame::new()

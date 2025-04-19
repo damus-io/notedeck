@@ -1,5 +1,6 @@
 use async_openai::types::*;
 use chrono::DateTime;
+use enostr::NoteId;
 use nostrdb::{Ndb, Note, NoteKey, Transaction};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -76,6 +77,7 @@ pub struct QueryResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ToolResponses {
     Query(QueryResponse),
+    PresentNotes,
 }
 
 #[derive(Debug, Clone)]
@@ -116,6 +118,7 @@ impl PartialToolCall {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ToolCalls {
     Query(QueryCall),
+    PresentNotes(PresentNotesCall),
 }
 
 impl ToolCalls {
@@ -129,12 +132,14 @@ impl ToolCalls {
     fn name(&self) -> &'static str {
         match self {
             Self::Query(_) => "search",
+            Self::PresentNotes(_) => "present",
         }
     }
 
     fn arguments(&self) -> String {
         match self {
             Self::Query(search) => serde_json::to_string(search).unwrap(),
+            Self::PresentNotes(call) => serde_json::to_string(&call.to_simple()).unwrap(),
         }
     }
 }
@@ -289,6 +294,51 @@ pub enum QueryContext {
     Any,
 }
 
+/// Called by dave when he wants to display notes on the screen
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct PresentNotesCall {
+    pub note_ids: Vec<NoteId>,
+}
+
+impl PresentNotesCall {
+    fn to_simple(&self) -> PresentNotesCallSimple {
+        let note_ids = self
+            .note_ids
+            .iter()
+            .map(|nid| hex::encode(nid.bytes()))
+            .collect::<Vec<_>>()
+            .join(",");
+
+        PresentNotesCallSimple { note_ids }
+    }
+}
+
+/// Called by dave when he wants to display notes on the screen
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct PresentNotesCallSimple {
+    note_ids: String,
+}
+
+impl PresentNotesCall {
+    fn parse(args: &str) -> Result<ToolCalls, ToolCallError> {
+        match serde_json::from_str::<PresentNotesCallSimple>(args) {
+            Ok(call) => {
+                let note_ids = call
+                    .note_ids
+                    .split(",")
+                    .filter_map(|n| NoteId::from_hex(n).ok())
+                    .collect();
+
+                Ok(ToolCalls::PresentNotes(PresentNotesCall { note_ids }))
+            }
+            Err(e) => Err(ToolCallError::ArgParseFailure(format!(
+                "Failed to parse args: '{}', error: {}",
+                args, e
+            ))),
+        }
+    }
+}
+
 /// The parsed nostrdb query that dave wants to use to satisfy a request
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct QueryCall {
@@ -385,17 +435,20 @@ impl QueryCall {
 /// tool responses
 #[derive(Debug, Serialize)]
 struct SimpleNote {
+    note_id: String,
     pubkey: String,
     name: String,
     content: String,
     created_at: String,
-    note_kind: String, // todo: add replying to
+    note_kind: u64, // todo: add replying to
 }
 
 /// Take the result of a tool response and present it to the ai so that
 /// it can interepret it and take further action
 fn format_tool_response_for_ai(txn: &Transaction, ndb: &Ndb, resp: &ToolResponses) -> String {
     match resp {
+        ToolResponses::PresentNotes => "".to_string(),
+
         ToolResponses::Query(search_r) => {
             let simple_notes: Vec<SimpleNote> = search_r
                 .notes
@@ -415,7 +468,8 @@ fn format_tool_response_for_ai(txn: &Transaction, ndb: &Ndb, resp: &ToolResponse
 
                     let content = note.content().to_owned();
                     let pubkey = hex::encode(note.pubkey());
-                    let note_kind = note_kind_desc(note.kind() as u64);
+                    let note_kind = note.kind() as u64;
+                    let note_id = hex::encode(note.id());
 
                     let created_at = {
                         let datetime =
@@ -424,6 +478,7 @@ fn format_tool_response_for_ai(txn: &Transaction, ndb: &Ndb, resp: &ToolResponse
                     };
 
                     Some(SimpleNote {
+                        note_id,
                         pubkey,
                         name,
                         content,
@@ -438,11 +493,28 @@ fn format_tool_response_for_ai(txn: &Transaction, ndb: &Ndb, resp: &ToolResponse
     }
 }
 
-fn note_kind_desc(kind: u64) -> String {
+fn _note_kind_desc(kind: u64) -> String {
     match kind {
         1 => "microblog".to_string(),
         0 => "profile".to_string(),
         _ => kind.to_string(),
+    }
+}
+
+fn present_tool() -> Tool {
+    Tool {
+        name: "present_notes",
+        parse_call: PresentNotesCall::parse,
+        description: "A tool for presenting notes to the user for display. Should be called at the end of a response so that the UI can present the notes referred to in the previous message.",
+        arguments: vec![
+            ToolArg {
+                name: "note_ids",
+                description: "A comma-separated list of hex note ids",
+                typ: ArgType::String,
+                required: true,
+                default: None
+            }
+        ]
     }
 }
 
@@ -505,5 +577,5 @@ fn query_tool() -> Tool {
 }
 
 pub fn dave_tools() -> Vec<Tool> {
-    vec![query_tool()]
+    vec![query_tool(), present_tool()]
 }
