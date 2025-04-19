@@ -1,10 +1,10 @@
-use egui::{pos2, Color32, ColorImage, Rect, Sense, SizeHint};
+use egui::{pos2, Color32, ColorImage, Context, Rect, Sense, SizeHint};
 use image::codecs::gif::GifDecoder;
 use image::imageops::FilterType;
 use image::{AnimationDecoder, DynamicImage, FlatSamples, Frame};
 use notedeck::{
-    Animation, GifStateMap, ImageFrame, Images, MediaCache, MediaCacheType, TextureFrame,
-    TexturedImage,
+    Animation, GifStateMap, ImageFrame, Images, LoadableTextureState, MediaCache, MediaCacheType,
+    TextureFrame, TextureState, TexturedImage,
 };
 use poll_promise::Promise;
 use std::collections::VecDeque;
@@ -424,77 +424,47 @@ fn fetch_img_from_net(
     promise
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn render_images(
-    ui: &mut egui::Ui,
-    images: &mut Images,
+pub fn get_render_state<'a>(
+    ctx: &Context,
+    images: &'a mut Images,
+    cache_type: MediaCacheType,
     url: &str,
     img_type: ImageType,
-    cache_type: MediaCacheType,
-    show_waiting: impl FnOnce(&mut egui::Ui),
-    show_error: impl FnOnce(&mut egui::Ui, String),
-    show_success: impl FnOnce(&mut egui::Ui, &str, &mut TexturedImage, &mut GifStateMap),
-) -> egui::Response {
+) -> RenderState<'a> {
     let cache = match cache_type {
         MediaCacheType::Image => &mut images.static_imgs,
         MediaCacheType::Gif => &mut images.gifs,
     };
 
-    render_media_cache(
-        ui,
-        cache,
-        &mut images.gif_states,
-        url,
-        img_type,
-        cache_type,
-        show_waiting,
-        show_error,
-        show_success,
-    )
+    let cur_state = cache.textures_cache.handle_and_get_or_insert(url, || {
+        crate::images::fetch_img(&cache.cache_dir, ctx, url, img_type, cache_type)
+    });
+
+    RenderState {
+        texture_state: cur_state,
+        gifs: &mut images.gif_states,
+    }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn render_media_cache(
-    ui: &mut egui::Ui,
-    cache: &mut MediaCache,
-    gif_states: &mut GifStateMap,
-    url: &str,
-    img_type: ImageType,
-    cache_type: MediaCacheType,
-    show_waiting: impl FnOnce(&mut egui::Ui),
-    show_error: impl FnOnce(&mut egui::Ui, String),
-    show_success: impl FnOnce(&mut egui::Ui, &str, &mut TexturedImage, &mut GifStateMap),
-) -> egui::Response {
-    let m_cached_promise = cache.map().get(url);
+pub struct LoadableRenderState<'a> {
+    pub texture_state: LoadableTextureState<'a>,
+    pub gifs: &'a mut GifStateMap,
+}
 
-    if m_cached_promise.is_none() {
-        let res = crate::images::fetch_img(&cache.cache_dir, ui.ctx(), url, img_type, cache_type);
-        cache.map_mut().insert(url.to_owned(), res);
-    }
+pub struct RenderState<'a> {
+    pub texture_state: TextureState<'a>,
+    pub gifs: &'a mut GifStateMap,
+}
 
-    egui::Frame::NONE
-        .show(ui, |ui| {
-            match cache.map_mut().get_mut(url).and_then(|p| p.ready_mut()) {
-                None => show_waiting(ui),
-                Some(Some(Err(err))) => {
-                    let err = err.to_string();
-                    let no_pfp = crate::images::fetch_img(
-                        &cache.cache_dir,
-                        ui.ctx(),
-                        notedeck::profile::no_pfp_url(),
-                        ImageType::Profile(128),
-                        cache_type,
-                    );
-                    cache.map_mut().insert(url.to_owned(), no_pfp);
-                    show_error(ui, err)
-                }
-                Some(Some(Ok(renderable_media))) => {
-                    show_success(ui, url, renderable_media, gif_states)
-                }
-                Some(None) => {
-                    tracing::error!("Promise already taken");
-                }
-            }
-        })
-        .response
+pub fn fetch_no_pfp_promise(
+    ctx: &Context,
+    cache: &MediaCache,
+) -> Promise<Option<Result<TexturedImage, notedeck::Error>>> {
+    crate::images::fetch_img(
+        &cache.cache_dir,
+        ctx,
+        notedeck::profile::no_pfp_url(),
+        ImageType::Profile(128),
+        MediaCacheType::Image,
+    )
 }

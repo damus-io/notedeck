@@ -8,17 +8,16 @@ use crate::Result;
 use egui::{
     text::{CCursorRange, LayoutJob},
     text_edit::TextEditOutput,
-    vec2,
     widgets::text_edit::TextEdit,
     Frame, Layout, Margin, Pos2, ScrollArea, Sense, TextBuffer,
 };
 use enostr::{FilledKeypair, FullKeypair, NoteId, Pubkey, RelayPool};
 use nostrdb::{Ndb, Transaction};
-use notedeck::{Images, MediaCacheType};
+use notedeck_ui::blur::PixelDimensions;
+use notedeck_ui::images::{get_render_state, RenderState};
 use notedeck_ui::jobs::JobsCache;
 use notedeck_ui::{
     gif::{handle_repaint, retrieve_latest_texture},
-    images::render_images,
     note::render_note_preview,
     NoteOptions, ProfilePic,
 };
@@ -441,6 +440,14 @@ impl<'a, 'd> PostView<'a, 'd> {
             };
 
             let url = &media.url;
+            let cur_state = get_render_state(
+                ui.ctx(),
+                self.note_context.img_cache,
+                cache_type,
+                url,
+                notedeck_ui::images::ImageType::Content,
+            );
+
             render_post_view_media(
                 ui,
                 &mut self.draft.upload_errors,
@@ -448,10 +455,9 @@ impl<'a, 'd> PostView<'a, 'd> {
                 i,
                 width,
                 height,
-                self.note_context.img_cache,
-                cache_type,
+                cur_state,
                 url,
-            );
+            )
         }
         to_remove.reverse();
         for i in to_remove {
@@ -539,34 +545,34 @@ fn render_post_view_media(
     cur_index: usize,
     width: u32,
     height: u32,
-    images: &mut Images,
-    cache_type: MediaCacheType,
+    render_state: RenderState,
     url: &str,
 ) {
-    render_images(
-        ui,
-        images,
-        url,
-        notedeck_ui::images::ImageType::Content,
-        cache_type,
-        |ui| {
+    match render_state.texture_state {
+        notedeck::TextureState::Pending => {
             ui.spinner();
-        },
-        |_, e| {
+        }
+        notedeck::TextureState::Error(e) => {
             upload_errors.push(e.to_string());
             error!("{e}");
-        },
-        |ui, url, renderable_media, gifs| {
-            let media_size = vec2(width as f32, height as f32);
-            let max_size = vec2(300.0, 300.0);
-            let size = if media_size.x > max_size.x || media_size.y > max_size.y {
-                max_size
+        }
+        notedeck::TextureState::Loaded(renderable_media) => {
+            let max_size = 300;
+            let size = if width > max_size || height > max_size {
+                PixelDimensions { x: 300, y: 300 }
             } else {
-                media_size
-            };
+                PixelDimensions {
+                    x: width,
+                    y: height,
+                }
+            }
+            .to_points(ui.pixels_per_point())
+            .to_vec();
 
-            let texture_handle =
-                handle_repaint(ui, retrieve_latest_texture(url, gifs, renderable_media));
+            let texture_handle = handle_repaint(
+                ui,
+                retrieve_latest_texture(url, render_state.gifs, renderable_media),
+            );
             let img_resp = ui.add(
                 egui::Image::new(texture_handle)
                     .max_size(size)
@@ -583,8 +589,8 @@ fn render_post_view_media(
                 to_remove.push(cur_index);
             }
             ui.advance_cursor_after_rect(img_resp.rect);
-        },
-    );
+        }
+    }
 }
 
 fn post_button(interactive: bool) -> impl egui::Widget {

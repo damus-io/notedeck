@@ -34,7 +34,7 @@ fn execute_note_action(
     accounts: &mut Accounts,
     global_wallet: &mut GlobalWallet,
     zaps: &mut Zaps,
-    _images: &mut Images,
+    images: &mut Images,
     ui: &mut egui::Ui,
 ) -> Option<TimelineOpenResult> {
     match action {
@@ -42,13 +42,11 @@ fn execute_note_action(
             router.route_to(Route::reply(note_id));
             None
         }
-
         NoteAction::Profile(pubkey) => {
             let kind = TimelineKind::Profile(pubkey);
             router.route_to(Route::Timeline(kind.clone()));
             timeline_cache.open(ndb, note_cache, txn, pool, &kind)
         }
-
         NoteAction::Note(note_id) => 'ex: {
             let Ok(thread_selection) = ThreadSelection::from_note_id(ndb, note_cache, txn, note_id)
             else {
@@ -62,18 +60,15 @@ fn execute_note_action(
 
             timeline_cache.open(ndb, note_cache, txn, pool, &kind)
         }
-
         NoteAction::Hashtag(htag) => {
             let kind = TimelineKind::Hashtag(htag.clone());
             router.route_to(Route::Timeline(kind.clone()));
             timeline_cache.open(ndb, note_cache, txn, pool, &kind)
         }
-
         NoteAction::Quote(note_id) => {
             router.route_to(Route::quote(note_id));
             None
         }
-
         NoteAction::Zap(zap_action) => 's: {
             let Some(cur_acc) = accounts.get_selected_account_mut() else {
                 break 's None;
@@ -106,7 +101,6 @@ fn execute_note_action(
 
             None
         }
-
         NoteAction::Context(context) => {
             match ndb.get_note_by_key(txn, context.note_key) {
                 Err(err) => tracing::error!("{err}"),
@@ -114,6 +108,10 @@ fn execute_note_action(
                     context.action.process(ui, &note, pool);
                 }
             }
+            None
+        }
+        NoteAction::Media(media_action) => {
+            media_action.process(images);
             None
         }
     }

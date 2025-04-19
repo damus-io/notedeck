@@ -1,7 +1,7 @@
 mod action;
 mod context;
 
-pub use action::{NoteAction, ZapAction, ZapTargetAmount};
+pub use action::{MediaAction, NoteAction, ZapAction, ZapTargetAmount};
 pub use context::{BroadcastContext, ContextSelection, NoteContextSelection};
 
 use crate::JobPool;
