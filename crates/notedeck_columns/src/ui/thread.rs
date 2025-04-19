@@ -1,6 +1,7 @@
 use enostr::KeypairUnowned;
 use nostrdb::Transaction;
 use notedeck::{MuteFun, NoteAction, NoteContext, RootNoteId, UnknownIds};
+use notedeck_ui::jobs::JobsCache;
 use notedeck_ui::NoteOptions;
 use tracing::error;
 
@@ -16,6 +17,7 @@ pub struct ThreadView<'a, 'd> {
     is_muted: &'a MuteFun,
     note_context: &'a mut NoteContext<'d>,
     cur_acc: &'a Option<KeypairUnowned<'a>>,
+    jobs: &'a mut JobsCache,
 }
 
 impl<'a, 'd> ThreadView<'a, 'd> {
@@ -28,6 +30,7 @@ impl<'a, 'd> ThreadView<'a, 'd> {
         is_muted: &'a MuteFun,
         note_context: &'a mut NoteContext<'d>,
         cur_acc: &'a Option<KeypairUnowned<'a>>,
+        jobs: &'a mut JobsCache,
     ) -> Self {
         let id_source = egui::Id::new("threadscroll_threadview");
         ThreadView {
@@ -39,6 +42,7 @@ impl<'a, 'd> ThreadView<'a, 'd> {
             is_muted,
             note_context,
             cur_acc,
+            jobs,
         }
     }
 
@@ -102,6 +106,7 @@ impl<'a, 'd> ThreadView<'a, 'd> {
                     self.is_muted,
                     self.note_context,
                     self.cur_acc,
+                    self.jobs,
                 )
                 .show(ui)
             })

@@ -1,9 +1,12 @@
 pub mod anim;
+mod blur;
 pub mod colors;
 pub mod constants;
+pub mod contacts;
 pub mod gif;
 pub mod icons;
 pub mod images;
+pub mod jobs;
 pub mod mention;
 pub mod note;
 pub mod profile;

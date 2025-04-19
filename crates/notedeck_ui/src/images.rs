@@ -425,7 +425,13 @@ pub fn render_images(
     cache_type: MediaCacheType,
     show_waiting: impl FnOnce(&mut egui::Ui),
     show_error: impl FnOnce(&mut egui::Ui, String),
-    show_success: impl FnOnce(&mut egui::Ui, &str, &mut TexturedImage, &mut GifStateMap),
+    show_success: impl FnOnce(
+        &mut egui::Ui,
+        &str,
+        &mut TexturedImage,
+        &mut GifStateMap,
+        &MediaCacheType,
+    ),
 ) -> egui::Response {
     let cache = match cache_type {
         MediaCacheType::Image => &mut images.static_imgs,
@@ -455,7 +461,13 @@ fn render_media_cache(
     cache_type: MediaCacheType,
     show_waiting: impl FnOnce(&mut egui::Ui),
     show_error: impl FnOnce(&mut egui::Ui, String),
-    show_success: impl FnOnce(&mut egui::Ui, &str, &mut TexturedImage, &mut GifStateMap),
+    show_success: impl FnOnce(
+        &mut egui::Ui,
+        &str,
+        &mut TexturedImage,
+        &mut GifStateMap,
+        &MediaCacheType,
+    ),
 ) -> egui::Response {
     let m_cached_promise = cache.map().get(url);
 
@@ -480,7 +492,9 @@ fn render_media_cache(
                     cache.map_mut().insert(url.to_owned(), no_pfp);
                     show_error(ui, err)
                 }
-                Some(Ok(renderable_media)) => show_success(ui, url, renderable_media, gif_states),
+                Some(Ok(renderable_media)) => {
+                    show_success(ui, url, renderable_media, gif_states, &cache_type)
+                }
             }
         })
         .response
