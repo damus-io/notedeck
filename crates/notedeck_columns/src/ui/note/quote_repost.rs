@@ -6,7 +6,7 @@ use crate::{
 
 use enostr::{FilledKeypair, NoteId};
 use notedeck::NoteContext;
-use notedeck_ui::NoteOptions;
+use notedeck_ui::{jobs::JobsCache, NoteOptions};
 
 pub struct QuoteRepostView<'a, 'd> {
     note_context: &'a mut NoteContext<'d>,
@@ -16,6 +16,7 @@ pub struct QuoteRepostView<'a, 'd> {
     id_source: Option<egui::Id>,
     inner_rect: egui::Rect,
     note_options: NoteOptions,
+    jobs: &'a mut JobsCache,
 }
 
 impl<'a, 'd> QuoteRepostView<'a, 'd> {
@@ -27,6 +28,7 @@ impl<'a, 'd> QuoteRepostView<'a, 'd> {
         quoting_note: &'a nostrdb::Note<'a>,
         inner_rect: egui::Rect,
         note_options: NoteOptions,
+        jobs: &'a mut JobsCache,
     ) -> Self {
         let id_source: Option<egui::Id> = None;
         QuoteRepostView {
@@ -37,6 +39,7 @@ impl<'a, 'd> QuoteRepostView<'a, 'd> {
             id_source,
             inner_rect,
             note_options,
+            jobs,
         }
     }
 
@@ -51,6 +54,7 @@ impl<'a, 'd> QuoteRepostView<'a, 'd> {
             self.poster,
             self.inner_rect,
             self.note_options,
+            self.jobs,
         )
         .id_source(id)
         .ui(self.quoting_note.txn().unwrap(), ui);

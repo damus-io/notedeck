@@ -9,6 +9,7 @@ use enostr::KeypairUnowned;
 use futures::StreamExt;
 use nostrdb::Transaction;
 use notedeck::{AppAction, AppContext};
+use notedeck_ui::jobs::JobsCache;
 use std::collections::HashMap;
 use std::string::ToString;
 use std::sync::mpsc::{self, Receiver};
@@ -42,6 +43,7 @@ pub struct Dave {
     client: async_openai::Client<OpenAIConfig>,
     incoming_tokens: Option<Receiver<DaveApiResponse>>,
     model_config: ModelConfig,
+    jobs: JobsCache,
 }
 
 /// Calculate an anonymous user_id from a keypair
@@ -106,6 +108,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             input,
             model_config,
             chat: vec![],
+            jobs: JobsCache::default(),
         }
     }
 
@@ -177,7 +180,11 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     }
 
     fn ui(&mut self, app_ctx: &mut AppContext, ui: &mut egui::Ui) -> DaveResponse {
-        DaveUi::new(self.model_config.trial, &self.chat, &mut self.input).ui(app_ctx, ui)
+        DaveUi::new(self.model_config.trial, &self.chat, &mut self.input).ui(
+            app_ctx,
+            &mut self.jobs,
+            ui,
+        )
     }
 
     fn handle_new_chat(&mut self) {

@@ -14,6 +14,7 @@ use egui::{
 };
 use enostr::{FilledKeypair, FullKeypair, NoteId, Pubkey, RelayPool};
 use nostrdb::{Ndb, Transaction};
+use notedeck_ui::jobs::JobsCache;
 use notedeck_ui::{
     gif::{handle_repaint, retrieve_latest_texture},
     images::render_images,
@@ -32,6 +33,7 @@ pub struct PostView<'a, 'd> {
     id_source: Option<egui::Id>,
     inner_rect: egui::Rect,
     note_options: NoteOptions,
+    jobs: &'a mut JobsCache,
 }
 
 #[derive(Clone)]
@@ -103,6 +105,7 @@ impl<'a, 'd> PostView<'a, 'd> {
         poster: FilledKeypair<'a>,
         inner_rect: egui::Rect,
         note_options: NoteOptions,
+        jobs: &'a mut JobsCache,
     ) -> Self {
         let id_source: Option<egui::Id> = None;
         PostView {
@@ -113,6 +116,7 @@ impl<'a, 'd> PostView<'a, 'd> {
             post_type,
             inner_rect,
             note_options,
+            jobs,
         }
     }
 
@@ -345,6 +349,7 @@ impl<'a, 'd> PostView<'a, 'd> {
                                     id.bytes(),
                                     nostrdb::NoteKey::new(0),
                                     self.note_options,
+                                    self.jobs,
                                 )
                             })
                             .inner
@@ -696,6 +701,7 @@ mod preview {
     pub struct PostPreview {
         draft: Draft,
         poster: FullKeypair,
+        jobs: JobsCache,
     }
 
     impl PostPreview {
@@ -725,6 +731,7 @@ mod preview {
             PostPreview {
                 draft,
                 poster: FullKeypair::generate(),
+                jobs: Default::default(),
             }
         }
     }
@@ -738,6 +745,7 @@ mod preview {
                 note_cache: app.note_cache,
                 zaps: app.zaps,
                 pool: app.pool,
+                job_pool: app.job_pool,
             };
 
             PostView::new(
@@ -747,6 +755,7 @@ mod preview {
                 self.poster.to_filled(),
                 ui.available_rect_before_wrap(),
                 NoteOptions::default(),
+                &mut self.jobs,
             )
             .ui(&txn, ui);
 
