@@ -3,6 +3,7 @@ use egui::{vec2, Direction, Layout, Pos2, Stroke};
 use egui_tabs::TabColor;
 use enostr::KeypairUnowned;
 use nostrdb::Transaction;
+use notedeck_ui::jobs::JobsCache;
 use std::f32::consts::PI;
 use tracing::{error, warn};
 
@@ -21,6 +22,7 @@ pub struct TimelineView<'a, 'd> {
     is_muted: &'a MuteFun,
     note_context: &'a mut NoteContext<'d>,
     cur_acc: &'a Option<KeypairUnowned<'a>>,
+    jobs: &'a mut JobsCache,
 }
 
 impl<'a, 'd> TimelineView<'a, 'd> {
@@ -32,6 +34,7 @@ impl<'a, 'd> TimelineView<'a, 'd> {
         note_context: &'a mut NoteContext<'d>,
         note_options: NoteOptions,
         cur_acc: &'a Option<KeypairUnowned<'a>>,
+        jobs: &'a mut JobsCache,
     ) -> Self {
         let reverse = false;
         TimelineView {
@@ -42,6 +45,7 @@ impl<'a, 'd> TimelineView<'a, 'd> {
             is_muted,
             note_context,
             cur_acc,
+            jobs,
         }
     }
 
@@ -55,6 +59,7 @@ impl<'a, 'd> TimelineView<'a, 'd> {
             self.is_muted,
             self.note_context,
             self.cur_acc,
+            self.jobs,
         )
     }
 
@@ -74,6 +79,7 @@ fn timeline_ui(
     is_muted: &MuteFun,
     note_context: &mut NoteContext,
     cur_acc: &Option<KeypairUnowned>,
+    jobs: &mut JobsCache,
 ) -> Option<NoteAction> {
     //padding(4.0, ui, |ui| ui.heading("Notifications"));
     /*
@@ -152,6 +158,7 @@ fn timeline_ui(
             is_muted,
             note_context,
             cur_acc,
+            jobs,
         )
         .show(ui)
     });
@@ -323,6 +330,7 @@ pub struct TimelineTabView<'a, 'd> {
     is_muted: &'a MuteFun,
     note_context: &'a mut NoteContext<'d>,
     cur_acc: &'a Option<KeypairUnowned<'a>>,
+    jobs: &'a mut JobsCache,
 }
 
 impl<'a, 'd> TimelineTabView<'a, 'd> {
@@ -335,6 +343,7 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
         is_muted: &'a MuteFun,
         note_context: &'a mut NoteContext<'d>,
         cur_acc: &'a Option<KeypairUnowned<'a>>,
+        jobs: &'a mut JobsCache,
     ) -> Self {
         Self {
             tab,
@@ -344,6 +353,7 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
             is_muted,
             note_context,
             cur_acc,
+            jobs,
         }
     }
 
@@ -395,6 +405,7 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
                             self.cur_acc,
                             &note,
                             self.note_options,
+                            self.jobs,
                         )
                         .show(ui);
 

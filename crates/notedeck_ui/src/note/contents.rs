@@ -1,6 +1,7 @@
 use crate::{
     gif::{handle_repaint, retrieve_latest_texture},
     images::{render_images, ImageType},
+    jobs::JobsCache,
     note::{NoteAction, NoteOptions, NoteResponse, NoteView},
 };
 
@@ -18,6 +19,7 @@ pub struct NoteContents<'a, 'd> {
     note: &'a Note<'a>,
     options: NoteOptions,
     action: Option<NoteAction>,
+    jobs: &'a mut JobsCache,
 }
 
 impl<'a, 'd> NoteContents<'a, 'd> {
@@ -28,6 +30,7 @@ impl<'a, 'd> NoteContents<'a, 'd> {
         txn: &'a Transaction,
         note: &'a Note,
         options: NoteOptions,
+        jobs: &'a mut JobsCache,
     ) -> Self {
         NoteContents {
             note_context,
@@ -36,6 +39,7 @@ impl<'a, 'd> NoteContents<'a, 'd> {
             note,
             options,
             action: None,
+            jobs,
         }
     }
 
@@ -53,6 +57,7 @@ impl egui::Widget for &mut NoteContents<'_, '_> {
             self.txn,
             self.note,
             self.options,
+            self.jobs,
         );
         self.action = result.action;
         result.response
@@ -71,6 +76,7 @@ pub fn render_note_preview(
     id: &[u8; 32],
     parent: NoteKey,
     note_options: NoteOptions,
+    jobs: &mut JobsCache,
 ) -> NoteResponse {
     let note = if let Ok(note) = note_context.ndb.get_note_by_id(txn, id) {
         // TODO: support other preview kinds
@@ -105,7 +111,7 @@ pub fn render_note_preview(
             ui.visuals().noninteractive().bg_stroke.color,
         ))
         .show(ui, |ui| {
-            NoteView::new(note_context, cur_acc, &note, note_options)
+            NoteView::new(note_context, cur_acc, &note, note_options, jobs)
                 .actionbar(false)
                 .small_pfp(true)
                 .wide(true)
@@ -127,6 +133,7 @@ pub fn render_note_contents(
     txn: &Transaction,
     note: &Note,
     options: NoteOptions,
+    jobs: &mut JobsCache,
 ) -> NoteResponse {
     let note_key = note.key().expect("todo: implement non-db notes");
     let selectable = options.has_selectable_text();
@@ -242,7 +249,7 @@ pub fn render_note_contents(
     });
 
     let preview_note_action = if let Some((id, _block_str)) = inline_note {
-        render_note_preview(ui, note_context, cur_acc, txn, id, note_key, options).action
+        render_note_preview(ui, note_context, cur_acc, txn, id, note_key, options, jobs).action
     } else {
         None
     };

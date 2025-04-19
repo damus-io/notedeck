@@ -15,6 +15,7 @@ use notedeck::{
     NotedeckTextStyle, UnknownIds,
 };
 use notedeck_ui::{
+    jobs::JobsCache,
     profile::{about_section_widget, banner, display_name_widget},
     NoteOptions, ProfilePic,
 };
@@ -28,6 +29,7 @@ pub struct ProfileView<'a, 'd> {
     unknown_ids: &'a mut UnknownIds,
     is_muted: &'a MuteFun,
     note_context: &'a mut NoteContext<'d>,
+    jobs: &'a mut JobsCache,
 }
 
 pub enum ProfileViewAction {
@@ -46,6 +48,7 @@ impl<'a, 'd> ProfileView<'a, 'd> {
         unknown_ids: &'a mut UnknownIds,
         is_muted: &'a MuteFun,
         note_context: &'a mut NoteContext<'d>,
+        jobs: &'a mut JobsCache,
     ) -> Self {
         ProfileView {
             pubkey,
@@ -56,6 +59,7 @@ impl<'a, 'd> ProfileView<'a, 'd> {
             unknown_ids,
             is_muted,
             note_context,
+            jobs,
         }
     }
 
@@ -112,6 +116,7 @@ impl<'a, 'd> ProfileView<'a, 'd> {
                         .accounts
                         .get_selected_account()
                         .map(|a| (&a.key).into()),
+                    self.jobs,
                 )
                 .show(ui)
                 {
