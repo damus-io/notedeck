@@ -1,7 +1,7 @@
 mod action;
 mod context;
 
-pub use action::{NoteAction, ZapAction};
+pub use action::{MediaAction, NoteAction, ZapAction};
 pub use context::{BroadcastContext, ContextSelection, NoteContextSelection};
 
 use crate::{notecache::NoteCache, zaps::Zaps, Images};
