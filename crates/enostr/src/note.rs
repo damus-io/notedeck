@@ -29,7 +29,7 @@ impl NoteId {
     }
 
     pub fn from_hex(hex_str: &str) -> Result<Self, Error> {
-        let evid = NoteId(hex::decode(hex_str)?.as_slice().try_into().unwrap());
+        let evid = NoteId(hex::decode(hex_str)?.as_slice().try_into()?);
         Ok(evid)
     }
 
