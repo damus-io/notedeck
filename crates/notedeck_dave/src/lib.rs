@@ -255,27 +255,32 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
                         let txn = Transaction::new(note_context.ndb).unwrap();
 
-                        egui::ScrollArea::horizontal().show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                for note_id in &call.note_ids {
-                                    let Ok(note) =
-                                        note_context.ndb.get_note_by_id(&txn, note_id.bytes())
-                                    else {
-                                        continue;
-                                    };
+                        egui::ScrollArea::horizontal()
+                            .max_height(400.0)
+                            .show(ui, |ui| {
+                                ui.with_layout(Layout::left_to_right(Align::Min), |ui| {
+                                    ui.spacing_mut().item_spacing.x = 10.0;
 
-                                    // TODO: remove current account thing, just add to note context
-                                    notedeck_ui::NoteView::new(
-                                        &mut note_context,
-                                        &None,
-                                        &note,
-                                        NoteOptions::default(),
-                                    )
-                                    .preview_style()
-                                    .show(ui);
-                                }
+                                    for note_id in &call.note_ids {
+                                        let Ok(note) =
+                                            note_context.ndb.get_note_by_id(&txn, note_id.bytes())
+                                        else {
+                                            continue;
+                                        };
+
+                                        let mut note_view = notedeck_ui::NoteView::new(
+                                            &mut note_context,
+                                            &None,
+                                            &note,
+                                            NoteOptions::default(),
+                                        )
+                                        .preview_style();
+
+                                        // TODO: remove current account thing, just add to note context
+                                        ui.add_sized([400.0, 400.0], &mut note_view);
+                                    }
+                                });
                             });
-                        });
                     }
 
                     ToolCalls::Query(search_call) => {

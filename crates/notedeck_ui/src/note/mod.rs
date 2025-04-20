@@ -60,6 +60,12 @@ impl View for NoteView<'_, '_> {
 }
 */
 
+impl egui::Widget for &mut NoteView<'_, '_> {
+    fn ui(self, ui: &mut egui::Ui) -> egui::Response {
+        self.show(ui).response
+    }
+}
+
 impl<'a, 'd> NoteView<'a, 'd> {
     pub fn new(
         note_context: &'a mut NoteContext<'d>,
@@ -69,9 +75,10 @@ impl<'a, 'd> NoteView<'a, 'd> {
     ) -> Self {
         flags.set_actionbar(true);
         flags.set_note_previews(true);
-        let framed = false;
 
+        let framed = false;
         let parent: Option<NoteKey> = None;
+
         Self {
             note_context,
             cur_acc,

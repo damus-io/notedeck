@@ -211,9 +211,17 @@ pub fn render_note_contents(
 
                 BlockType::Text => {
                     if options.has_scramble_text() {
-                        ui.add(egui::Label::new(rot13(block.as_str())).selectable(selectable));
+                        ui.add(
+                            egui::Label::new(rot13(block.as_str()))
+                                .wrap()
+                                .selectable(selectable),
+                        );
                     } else {
-                        ui.add(egui::Label::new(block.as_str()).selectable(selectable));
+                        ui.add(
+                            egui::Label::new(block.as_str())
+                                .wrap()
+                                .selectable(selectable),
+                        );
                     }
                 }
 
