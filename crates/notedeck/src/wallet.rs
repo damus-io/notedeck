@@ -24,6 +24,21 @@ pub fn get_wallet_for_mut<'a>(
     global_wallet.wallet.as_mut()
 }
 
+pub fn get_current_wallet<'a>(
+    accounts: &'a mut Accounts,
+    global_wallet: &'a mut GlobalWallet,
+) -> Option<&'a mut ZapWallet> {
+    let Some(acc) = accounts.get_selected_account_mut() else {
+        return global_wallet.wallet.as_mut();
+    };
+
+    let Some(wallet) = &mut acc.wallet else {
+        return global_wallet.wallet.as_mut();
+    };
+
+    Some(wallet)
+}
+
 #[derive(Clone, Eq, PartialEq, Debug)]
 pub enum WalletType {
     Auto,

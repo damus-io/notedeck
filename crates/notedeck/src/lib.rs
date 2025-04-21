@@ -64,7 +64,8 @@ pub use unknowns::{get_unknown_note_ids, NoteRefsUnkIdAction, SingleUnkIdAction,
 pub use urls::{supported_mime_hosted_at_url, SupportedMimeType, UrlMimes};
 pub use user_account::UserAccount;
 pub use wallet::{
-    get_wallet_for_mut, GlobalWallet, Wallet, WalletError, WalletType, WalletUIState, ZapWallet,
+    get_current_wallet, get_wallet_for_mut, GlobalWallet, Wallet, WalletError, WalletType,
+    WalletUIState, ZapWallet,
 };
 pub use zaps::{
     AnyZapState, DefaultZapError, DefaultZapMsats, NoteZapTarget, NoteZapTargetOwned,
