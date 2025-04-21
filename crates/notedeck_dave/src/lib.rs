@@ -4,24 +4,23 @@ use async_openai::{
     Client,
 };
 use chrono::{Duration, Local};
-use egui::{Align, Key, KeyboardShortcut, Layout, Modifiers};
 use egui_wgpu::RenderState;
 use futures::StreamExt;
 use nostrdb::Transaction;
-use notedeck::{AppContext, NoteContext};
-use notedeck_ui::{icons::search_icon, NoteOptions};
+use notedeck::AppContext;
 use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver};
 use std::sync::Arc;
 
 pub use avatar::DaveAvatar;
 pub use config::ModelConfig;
-pub use messages::{DaveResponse, Message};
+pub use messages::{DaveApiResponse, Message};
 pub use quaternion::Quaternion;
 pub use tools::{
     PartialToolCall, QueryCall, QueryContext, QueryResponse, Tool, ToolCall, ToolCalls,
     ToolResponse, ToolResponses,
 };
+pub use ui::{DaveAction, DaveResponse, DaveUi};
 pub use vec3::Vec3;
 
 mod avatar;
@@ -29,6 +28,7 @@ mod config;
 mod messages;
 mod quaternion;
 mod tools;
+mod ui;
 mod vec3;
 
 pub struct Dave {
@@ -39,7 +39,7 @@ pub struct Dave {
     pubkey: String,
     tools: Arc<HashMap<String, Tool>>,
     client: async_openai::Client<OpenAIConfig>,
-    incoming_tokens: Option<Receiver<DaveResponse>>,
+    incoming_tokens: Option<Receiver<DaveApiResponse>>,
     model_config: ModelConfig,
 }
 
@@ -79,7 +79,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
 # Response Guidelines
 
-- You *MUST* call the present_notes tool with a list of comma-separated nevent references when referring to notes so that the UI can display them. Do *NOT* include nevent references in the text response, but you *SHOULD* use ^1, ^2, etc to reference note indices passed to present_notes.
+- You *MUST* call the present_notes tool with a list of comma-separated note id references when referring to notes so that the UI can display them. Do *NOT* include note id references in the text response, but you *SHOULD* use ^1, ^2, etc to reference note indices passed to present_notes.
 - When a user asks for a digest instead of specific query terms, make sure to include both since and until to pull notes for the correct range.
 - When tasked with open-ended queries such as looking for interesting notes or summarizing the day, make sure to add enough notes to the context (limit: 100-200) so that it returns enough data for summarization.
 "#
@@ -99,6 +99,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
     /// Process incoming tokens from the ai backend
     fn process_events(&mut self, app_ctx: &AppContext) -> bool {
+        // Should we continue sending requests? Set this to true if
+        // we have tool responses to send back to the ai
         let mut should_send = false;
 
         let Some(recvr) = &self.incoming_tokens else {
@@ -110,13 +112,13 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 avatar.random_nudge();
             }
             match res {
-                DaveResponse::Token(token) => match self.chat.last_mut() {
+                DaveApiResponse::Token(token) => match self.chat.last_mut() {
                     Some(Message::Assistant(msg)) => *msg = msg.clone() + &token,
                     Some(_) => self.chat.push(Message::Assistant(token)),
                     None => {}
                 },
 
-                DaveResponse::ToolCalls(toolcalls) => {
+                DaveApiResponse::ToolCalls(toolcalls) => {
                     tracing::info!("got tool calls: {:?}", toolcalls);
                     self.chat.push(Message::ToolCalls(toolcalls.clone()));
 
@@ -128,10 +130,14 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                                 self.chat.push(Message::ToolResponse(ToolResponse::new(
                                     call.id().to_owned(),
                                     ToolResponses::PresentNotes,
-                                )))
+                                )));
+
+                                should_send = true;
                             }
 
                             ToolCalls::Query(search_call) => {
+                                should_send = true;
+
                                 let resp = search_call.execute(&txn, app_ctx.ndb);
                                 self.chat.push(Message::ToolResponse(ToolResponse::new(
                                     call.id().to_owned(),
@@ -140,8 +146,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                             }
                         }
                     }
-
-                    should_send = true;
                 }
             }
         }
@@ -149,203 +153,15 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         should_send
     }
 
-    fn chat_margin(ctx: &egui::Context) -> i8 {
-        if notedeck::ui::is_narrow(ctx) {
-            20
-        } else {
-            100
-        }
+    fn ui(&mut self, app_ctx: &mut AppContext, ui: &mut egui::Ui) -> DaveResponse {
+        DaveUi::new(&self.chat, &mut self.input).ui(app_ctx, ui)
     }
 
-    fn chat_frame(ctx: &egui::Context) -> egui::Frame {
-        let margin = Self::chat_margin(ctx);
-        egui::Frame::new().inner_margin(egui::Margin {
-            left: margin,
-            right: margin,
-            top: 50,
-            bottom: 0,
-        })
-    }
-
-    fn render(&mut self, app_ctx: &mut AppContext, ui: &mut egui::Ui) {
-        // Scroll area for chat messages
-        egui::Frame::NONE.show(ui, |ui| {
-            ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
-                let margin = Self::chat_margin(ui.ctx());
-
-                egui::Frame::new()
-                    .outer_margin(egui::Margin {
-                        left: margin,
-                        right: margin,
-                        top: 0,
-                        bottom: 100,
-                    })
-                    .inner_margin(egui::Margin::same(8))
-                    .fill(ui.visuals().extreme_bg_color)
-                    //.stroke(stroke)
-                    .corner_radius(12.0)
-                    .show(ui, |ui| {
-                        self.inputbox(app_ctx, ui);
-                    });
-
-                egui::ScrollArea::vertical()
-                    .stick_to_bottom(true)
-                    .auto_shrink([false; 2])
-                    .show(ui, |ui| {
-                        Self::chat_frame(ui.ctx()).show(ui, |ui| {
-                            ui.vertical(|ui| {
-                                self.render_chat(app_ctx, ui);
-                            });
-                        });
-                    });
-            });
-        });
-    }
-
-    fn render_chat(&self, ctx: &mut AppContext, ui: &mut egui::Ui) {
-        for message in &self.chat {
-            match message {
-                Message::User(msg) => self.user_chat(msg, ui),
-                Message::Assistant(msg) => self.assistant_chat(msg, ui),
-                Message::ToolResponse(msg) => Self::tool_response_ui(msg, ui),
-                Message::System(_msg) => {
-                    // system prompt is not rendered. Maybe we could
-                    // have a debug option to show this
-                }
-                Message::ToolCalls(toolcalls) => {
-                    Self::tool_call_ui(ctx, toolcalls, ui);
-                }
-            }
-        }
-    }
-
-    fn tool_response_ui(_tool_response: &ToolResponse, _ui: &mut egui::Ui) {
-        //ui.label(format!("tool_response: {:?}", tool_response));
-    }
-
-    fn search_call_ui(query_call: &QueryCall, ui: &mut egui::Ui) {
-        ui.add(search_icon(16.0, 16.0));
-        ui.add_space(8.0);
-        let context = match query_call.context() {
-            QueryContext::Profile => "profile ",
-            QueryContext::Any => "",
-            QueryContext::Home => "home ",
-        };
-
-        //TODO: fix this to support any query
-        if let Some(search) = query_call.search() {
-            ui.label(format!("Querying {context}for '{search}'"));
-        } else {
-            ui.label(format!("Querying {:?}", &query_call));
-        }
-    }
-
-    fn tool_call_ui(ctx: &mut AppContext, toolcalls: &[ToolCall], ui: &mut egui::Ui) {
-        ui.vertical(|ui| {
-            for call in toolcalls {
-                match call.calls() {
-                    ToolCalls::PresentNotes(call) => {
-                        let mut note_context = NoteContext {
-                            ndb: ctx.ndb,
-                            img_cache: ctx.img_cache,
-                            note_cache: ctx.note_cache,
-                            zaps: ctx.zaps,
-                            pool: ctx.pool,
-                        };
-
-                        let txn = Transaction::new(note_context.ndb).unwrap();
-
-                        egui::ScrollArea::horizontal()
-                            .max_height(400.0)
-                            .show(ui, |ui| {
-                                ui.with_layout(Layout::left_to_right(Align::Min), |ui| {
-                                    ui.spacing_mut().item_spacing.x = 10.0;
-
-                                    for note_id in &call.note_ids {
-                                        let Ok(note) =
-                                            note_context.ndb.get_note_by_id(&txn, note_id.bytes())
-                                        else {
-                                            continue;
-                                        };
-
-                                        let mut note_view = notedeck_ui::NoteView::new(
-                                            &mut note_context,
-                                            &None,
-                                            &note,
-                                            NoteOptions::default(),
-                                        )
-                                        .preview_style();
-
-                                        // TODO: remove current account thing, just add to note context
-                                        ui.add_sized([400.0, 400.0], &mut note_view);
-                                    }
-                                });
-                            });
-                    }
-
-                    ToolCalls::Query(search_call) => {
-                        ui.horizontal(|ui| {
-                            egui::Frame::new()
-                                .inner_margin(10.0)
-                                .corner_radius(10.0)
-                                .fill(ui.visuals().widgets.inactive.weak_bg_fill)
-                                .show(ui, |ui| {
-                                    Self::search_call_ui(search_call, ui);
-                                })
-                        });
-                    }
-                }
-            }
-        });
-    }
-
-    fn handle_send(&mut self, app_ctx: &AppContext, ui: &egui::Ui) {
+    /// Handle a user send action triggered by the ui
+    fn handle_user_send(&mut self, app_ctx: &AppContext, ui: &egui::Ui) {
         self.chat.push(Message::User(self.input.clone()));
         self.send_user_message(app_ctx, ui.ctx());
         self.input.clear();
-    }
-
-    fn inputbox(&mut self, app_ctx: &AppContext, ui: &mut egui::Ui) {
-        //ui.add_space(Self::chat_margin(ui.ctx()) as f32);
-        ui.horizontal(|ui| {
-            ui.with_layout(Layout::right_to_left(Align::Max), |ui| {
-                let r = ui.add(
-                    egui::TextEdit::multiline(&mut self.input)
-                        .desired_width(f32::INFINITY)
-                        .return_key(KeyboardShortcut::new(
-                            Modifiers {
-                                shift: true,
-                                ..Default::default()
-                            },
-                            Key::Enter,
-                        ))
-                        .hint_text(egui::RichText::new("Ask dave anything...").weak())
-                        .frame(false),
-                );
-
-                if r.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                    self.handle_send(app_ctx, ui);
-                }
-            });
-        });
-    }
-
-    fn user_chat(&self, msg: &str, ui: &mut egui::Ui) {
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
-            egui::Frame::new()
-                .inner_margin(10.0)
-                .corner_radius(10.0)
-                .fill(ui.visuals().widgets.inactive.weak_bg_fill)
-                .show(ui, |ui| {
-                    ui.label(msg);
-                })
-        });
-    }
-
-    fn assistant_chat(&self, msg: &str, ui: &mut egui::Ui) {
-        ui.horizontal_wrapped(|ui| {
-            ui.add(egui::Label::new(msg).wrap_mode(egui::TextWrapMode::Wrap));
-        });
     }
 
     fn send_user_message(&mut self, app_ctx: &AppContext, ctx: &egui::Context) {
@@ -427,7 +243,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     }
 
                     if let Some(content) = &resp.content {
-                        if let Err(err) = tx.send(DaveResponse::Token(content.to_owned())) {
+                        if let Err(err) = tx.send(DaveApiResponse::Token(content.to_owned())) {
                             tracing::error!("failed to send dave response token to ui: {err}");
                         }
                         ctx.request_repaint();
@@ -458,7 +274,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             }
 
             if !parsed_tool_calls.is_empty() {
-                tx.send(DaveResponse::ToolCalls(parsed_tool_calls)).unwrap();
+                tx.send(DaveApiResponse::ToolCalls(parsed_tool_calls))
+                    .unwrap();
                 ctx.request_repaint();
             }
 
@@ -477,7 +294,13 @@ impl notedeck::App for Dave {
 
         //update_dave(self, ctx, ui.ctx());
         let should_send = self.process_events(ctx);
-        self.render(ctx, ui);
+        if let Some(action) = self.ui(ctx, ui).action {
+            match action {
+                DaveAction::Send => {
+                    self.handle_user_send(ctx, ui);
+                }
+            }
+        }
         if should_send {
             self.send_user_message(ctx, ui.ctx());
         }

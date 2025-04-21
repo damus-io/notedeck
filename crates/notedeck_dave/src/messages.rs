@@ -4,16 +4,16 @@ use nostrdb::{Ndb, Transaction};
 
 #[derive(Debug, Clone)]
 pub enum Message {
+    System(String),
     User(String),
     Assistant(String),
-    System(String),
     ToolCalls(Vec<ToolCall>),
     ToolResponse(ToolResponse),
 }
 
 /// The ai backends response. Since we are using streaming APIs these are
 /// represented as individual tokens or tool calls
-pub enum DaveResponse {
+pub enum DaveApiResponse {
     ToolCalls(Vec<ToolCall>),
     Token(String),
 }
