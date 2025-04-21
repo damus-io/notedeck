@@ -7,17 +7,21 @@ use nostrdb::Transaction;
 use notedeck::{AppContext, NoteContext};
 use notedeck_ui::{icons::search_icon, NoteOptions};
 
+/// DaveUi holds all of the data it needs to render itself
 pub struct DaveUi<'a> {
     chat: &'a [Message],
     input: &'a mut String,
 }
 
+/// The response the app generates. The response contains an optional
+/// action to take.
 #[derive(Default, Clone, Debug)]
 pub struct DaveResponse {
     pub action: Option<DaveAction>,
 }
 
 impl DaveResponse {
+    /// Generate a send response to the controller
     fn send() -> Self {
         DaveResponse {
             action: Some(DaveAction::Send),
@@ -29,8 +33,12 @@ impl DaveResponse {
     }
 }
 
+/// The actions the app generates. No default action is specfied in the
+/// UI code. This is handled by the app logic, however it chooses to
+/// process this message.
 #[derive(Clone, Debug)]
 pub enum DaveAction {
+    /// The action generated when the user sends a message to dave
     Send,
 }
 
@@ -57,6 +65,7 @@ impl<'a> DaveUi<'a> {
         })
     }
 
+    /// The main render function. Call this to render Dave
     pub fn ui(&mut self, app_ctx: &mut AppContext, ui: &mut egui::Ui) -> DaveResponse {
         // Scroll area for chat messages
         egui::Frame::NONE
@@ -96,6 +105,7 @@ impl<'a> DaveUi<'a> {
             .inner
     }
 
+    /// Render a chat message (user, assistant, tool call/response, etc)
     fn render_chat(&self, ctx: &mut AppContext, ui: &mut egui::Ui) {
         for message in self.chat {
             match message {
