@@ -1,7 +1,7 @@
-use egui::Layout;
+use egui::{vec2, CornerRadius, Layout};
 use notedeck::{
-    Accounts, DefaultZapMsats, GlobalWallet, PendingDefaultZapState, Wallet, WalletError,
-    WalletUIState,
+    get_current_wallet, Accounts, DefaultZapMsats, GlobalWallet, NotedeckTextStyle,
+    PendingDefaultZapState, Wallet, WalletError, WalletUIState, ZapWallet,
 };
 
 use crate::route::{Route, Router};
@@ -46,6 +46,8 @@ pub enum WalletAction {
     SaveURI,
     AddLocalOnly,
     Delete,
+    SetDefaultZapSats(String), // in sats
+    EditDefaultZaps,
 }
 
 impl WalletAction {
@@ -105,6 +107,51 @@ impl WalletAction {
                 global_wallet.wallet = None;
                 global_wallet.save_wallet();
             }
+            WalletAction::SetDefaultZapSats(new_default) => 's: {
+                let sats = {
+                    let Some(wallet) = get_current_wallet(accounts, global_wallet) else {
+                        break 's;
+                    };
+
+                    let Ok(sats) = new_default.parse::<u64>() else {
+                        wallet.default_zap.pending.error_message =
+                            Some(notedeck::DefaultZapError::InvalidUserInput);
+                        break 's;
+                    };
+                    sats
+                };
+
+                let update_wallet = |wallet: &mut ZapWallet| {
+                    wallet.default_zap.set_user_selection(sats * 1000);
+                    wallet.default_zap.pending = PendingDefaultZapState::default();
+                };
+
+                if accounts.selected_account_has_wallet()
+                    && accounts.update_current_account(|acc| {
+                        if let Some(wallet) = &mut acc.wallet {
+                            update_wallet(wallet);
+                        }
+                    })
+                {
+                    break 's;
+                }
+
+                let Some(wallet) = &mut global_wallet.wallet else {
+                    break 's;
+                };
+
+                update_wallet(wallet);
+                global_wallet.save_wallet();
+            }
+            WalletAction::EditDefaultZaps => 's: {
+                let Some(wallet) = get_current_wallet(accounts, global_wallet) else {
+                    break 's;
+                };
+
+                wallet.default_zap.pending.is_rewriting = true;
+                wallet.default_zap.pending.amount_sats =
+                    (wallet.default_zap.get_default_zap_msats() / 1000).to_string();
+            }
         }
     }
 }
@@ -129,9 +176,9 @@ impl<'a> WalletView<'a> {
         match &mut self.state {
             WalletState::Wallet {
                 wallet,
-                default_zap_state: _,
+                default_zap_state,
                 can_create_local_wallet,
-            } => show_with_wallet(ui, wallet, *can_create_local_wallet),
+            } => show_with_wallet(ui, wallet, default_zap_state, *can_create_local_wallet),
             WalletState::NoWallet {
                 state,
                 show_local_only,
@@ -175,11 +222,11 @@ fn show_no_wallet(
             break 's;
         };
 
-        match error_msg {
-            WalletError::InvalidURI => {
-                ui.colored_label(ui.visuals().warn_fg_color, "Invalid NWC URI")
-            }
+        let error_str = match error_msg {
+            WalletError::InvalidURI => "Invalid NWC URI",
+            WalletError::NoWallet => "Add a wallet to continue",
         };
+        ui.colored_label(ui.visuals().warn_fg_color, error_str);
     });
 
     ui.add_space(8.0);
@@ -203,6 +250,7 @@ fn show_no_wallet(
 fn show_with_wallet(
     ui: &mut egui::Ui,
     wallet: &mut Wallet,
+    default_zap_state: &mut DefaultZapState,
     can_create_local_wallet: bool,
 ) -> Option<WalletAction> {
     ui.horizontal_wrapped(|ui| {
@@ -221,12 +269,15 @@ fn show_with_wallet(
         }
     });
 
+    let mut action = show_default_zap(ui, default_zap_state);
+
     ui.with_layout(Layout::bottom_up(egui::Align::Min), |ui| 's: {
         if ui
             .add(styled_button("Delete Wallet", ui.visuals().window_fill))
             .clicked()
         {
-            break 's Some(WalletAction::Delete);
+            action = Some(WalletAction::Delete);
+            break 's;
         }
 
         ui.add_space(12.0);
@@ -238,12 +289,11 @@ fn show_with_wallet(
                 )
                 .clicked()
         {
-            break 's Some(WalletAction::AddLocalOnly);
+            action = Some(WalletAction::AddLocalOnly);
         }
+    });
 
-        None
-    })
-    .inner
+    action
 }
 
 fn show_balance(ui: &mut egui::Ui, msats: u64) -> egui::Response {
@@ -255,4 +305,116 @@ fn show_balance(ui: &mut egui::Ui, msats: u64) -> egui::Response {
         ui.label(egui::RichText::new(format!("{sats} sats")).size(48.0))
     })
     .inner
+}
+
+fn show_default_zap(ui: &mut egui::Ui, state: &mut DefaultZapState) -> Option<WalletAction> {
+    let mut action = None;
+    ui.allocate_ui_with_layout(
+        vec2(ui.available_width(), 50.0),
+        egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true),
+        |ui| {
+            ui.label("Default amount per zap: ");
+            match state {
+                DefaultZapState::Pending(pending_default_zap_state) => {
+                    let text = &mut pending_default_zap_state.amount_sats;
+
+                    let font = NotedeckTextStyle::Body.get_font_id(ui.ctx());
+                    let desired_width = {
+                        let painter = ui.painter();
+                        let galley = painter.layout_no_wrap(
+                            text.clone(),
+                            font.clone(),
+                            ui.visuals().text_color(),
+                        );
+                        let rect_width = galley.rect.width();
+                        if rect_width < 5.0 {
+                            10.0
+                        } else {
+                            rect_width
+                        }
+                    };
+
+                    let id = ui.id().with("default_zap_amount");
+                    ui.add(
+                        egui::TextEdit::singleline(text)
+                            .desired_width(desired_width)
+                            .margin(egui::Margin::same(8))
+                            .font(font)
+                            .id(id),
+                    );
+
+                    ui.memory_mut(|m| m.request_focus(id));
+
+                    ui.label(" sats");
+
+                    if ui
+                        .add(styled_button("Save", ui.visuals().widgets.active.bg_fill))
+                        .clicked()
+                    {
+                        action = Some(WalletAction::SetDefaultZapSats(text.to_string()));
+                    }
+                }
+                DefaultZapState::Valid(msats) => {
+                    if let Some(wallet_action) = show_valid_msats(ui, **msats) {
+                        action = Some(wallet_action);
+                    }
+                    ui.label(" sats");
+                }
+            }
+
+            if let DefaultZapState::Pending(pending) = state {
+                if let Some(error_message) = &pending.error_message {
+                    let msg_str = match error_message {
+                        notedeck::DefaultZapError::InvalidUserInput => "Invalid amount",
+                    };
+
+                    ui.colored_label(ui.visuals().warn_fg_color, msg_str);
+                }
+            }
+        },
+    );
+
+    action
+}
+
+fn show_valid_msats(ui: &mut egui::Ui, msats: u64) -> Option<WalletAction> {
+    let galley = {
+        let painter = ui.painter();
+
+        let sats_str = (msats / 1000).to_string();
+        painter.layout_no_wrap(
+            sats_str,
+            NotedeckTextStyle::Body.get_font_id(ui.ctx()),
+            ui.visuals().text_color(),
+        )
+    };
+
+    let (rect, resp) = ui.allocate_exact_size(galley.rect.expand(8.0).size(), egui::Sense::click());
+
+    let resp = resp
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text_at_pointer("Click to edit");
+
+    let painter = ui.painter_at(resp.rect);
+
+    painter.rect_filled(
+        rect,
+        CornerRadius::same(8),
+        ui.visuals().noninteractive().bg_fill,
+    );
+
+    let galley_pos = {
+        let mut next_pos = rect.left_top();
+        next_pos.x += 8.0;
+        next_pos.y += 8.0;
+        next_pos
+    };
+
+    painter.galley(galley_pos, galley, notedeck_ui::colors::MID_GRAY);
+
+    if resp.clicked() {
+        Some(WalletAction::EditDefaultZaps)
+    } else {
+        None
+    }
 }
