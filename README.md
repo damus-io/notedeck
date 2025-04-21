@@ -1,104 +1,127 @@
-# Damus Notedeck
+# Notedeck
 
 [![CI](https://github.com/damus-io/notedeck/actions/workflows/rust.yml/badge.svg)](https://github.com/damus-io/notedeck/actions/workflows/rust.yml)
 
-A multiplatform nostr client. Works on android and desktop
+A modern, multiplatform Nostr client built with Rust. Notedeck provides a feature-rich experience for interacting with the Nostr protocol on both desktop and Android platforms.
 
-The desktop client is called notedeck:
+<p align="center">
+  <img src="https://cdn.jb55.com/s/6130555f03db55b2.png" alt="Notedeck Desktop Screenshot" width="700">
+</p>
 
-![notedeck](https://cdn.jb55.com/s/6130555f03db55b2.png)
+## ✨ Features
 
-## Android
+- **Multi-column Layout**: TweetDeck-style interface for viewing different Nostr content
+- **Dave AI Assistant**: AI-powered assistant that can search and analyze Nostr content
+- **Profile Management**: View and edit Nostr profiles
+- **Media Support**: View and upload images with GIF support
+- **Lightning Integration**: Zap (tip) content creators with Bitcoin Lightning
+- **Cross-platform**: Works on desktop (Linux, macOS, Windows) and Android
 
-Look it actually runs on android!
+## 📱 Mobile Support
 
-<img src="https://cdn.jb55.com/s/bebeeadf7001fae1.png" height="500px" />
+Notedeck runs smoothly on Android devices with a responsive interface:
 
-## Usage
+<p align="center">
+  <img src="https://cdn.jb55.com/s/bebeeadf7001fae1.png" alt="Notedeck Android Screenshot" height="500px">
+</p>
+
+## 🏗️ Project Structure
+
+```
+notedeck
+├── crates
+│   ├── notedeck           - Core library with shared functionality
+│   ├── notedeck_chrome    - UI container and navigation framework
+│   ├── notedeck_columns   - TweetDeck-style column interface
+│   ├── notedeck_dave      - AI assistant for Nostr
+│   ├── notedeck_ui        - Shared UI components
+│   └── tokenator          - String token parsing library
+```
+
+## 🚀 Getting Started
+
+### Desktop
+
+To run on desktop platforms:
 
 ```bash
-$ ./target/release/notedeck
+# Development build
+cargo run -- --debug
+
+# Release build
+cargo run --release
 ```
 
-# Developer Setup
+### Android
 
-## Desktop (Linux/MacOS, Windows?)
-
-If you're running debian-based machine like Ubuntu or ElementaryOS, all you need is to install [rustup] and run `sudo apt install build-essential`.
+For Android devices:
 
 ```bash
-$ cargo run --release 
-```
+# Install required target
+rustup target add aarch64-linux-android
 
-## Android
-
-The dev shell should also have all of the android-sdk dependencies needed for development, but you still need the `aarch64-linux-android` rustup target installed:
-
-```
-$ rustup target add aarch64-linux-android
-```
-
-To run on a real device, just type:
-
-```bash
-$ cargo apk run --release -p notedeck_chrome
-```
-
-## Android Emulator
-
-- Install [Android Studio](https://developer.android.com/studio)
-- Open 'Device Manager' in Android Studio
-- Add a new device with API level `34` and ABI `arm64-v8a` (even though the app uses 30, the 30 emulator can't find the vulkan adapter, but 34 works fine)
-- Start up the emulator
-
-while the emulator is running, run:
-
-```bash
+# Build and install on connected device
 cargo apk run --release -p notedeck_chrome
 ```
 
-The app should appear on the emulator
+### Android Emulator
 
-[direnv]: https://direnv.net/
+1. Install [Android Studio](https://developer.android.com/studio)
+2. Open 'Device Manager' and create a device with API level `34` and ABI `arm64-v8a`
+3. Start the emulator
+4. Run: `cargo apk run --release -p notedeck_chrome`
 
-## Android Config
+## 🧪 Development
 
-You can load custom views onto an android device for testing:
+### Android Configuration
+
+Customize Android views for testing:
 
 1. Copy `example-android-config.json` to `android-config.json`
+2. Run `make push-android-config` to deploy to your device
 
-2. Run `make push-android-config` to copy it to your device
-
-## Previews
-
-You can preview individual widgets and views by running the preview script:
-
-```bash
-./preview RelayView
-./preview ProfilePreview
-# ... etc
-```
-
-When adding new previews you need to implement the Preview trait for your
-view/widget and then add it to the `src/ui_preview/main.rs` bin:
-
-```rust
-previews!(runner, name,
-    RelayView,
-    AccountLoginView,
-    ProfilePreview,
-);
-```
-
-
-## Contributing
-
-Configure the developer environment:
+### Setting Up Developer Environment
 
 ```bash
 ./scripts/dev_setup.sh
 ```
 
-This will add the pre-commit hook to your local repository to suggest proper formatting before commits.
+This adds pre-commit hooks for proper code formatting.
 
-[rustup]: https://rustup.rs/
+## 📚 Documentation
+
+Detailed developer documentation is available in each crate:
+
+- [Notedeck Core](./crates/notedeck/DEVELOPER.md)
+- [Notedeck Chrome](./crates/notedeck_chrome/DEVELOPER.md)
+- [Notedeck Columns](./crates/notedeck_columns/DEVELOPER.md)
+- [Dave AI Assistant](./crates/notedeck_dave/docs/README.md)
+- [UI Components](./crates/notedeck_ui/docs/components.md)
+
+## 🔄 Release Status
+
+Notedeck is currently in **ALPHA** status. For the latest changes, see the [CHANGELOG](./CHANGELOG.md).
+
+## 🤝 Contributing
+
+Contributions are welcome! Please check the developer documentation and follow these guidelines:
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
+
+## 🔒 Security
+
+For security issues, please refer to our [Security Policy](./SECURITY.md).
+
+## 📄 License
+
+This project is licensed under the GPL - see license information in individual crates.
+
+## 👥 Authors
+
+- William Casarin <jb55@jb55.com>
+- kernelkind <kernelkind@gmail.com>
+- And [contributors](https://github.com/damus-io/notedeck/graphs/contributors)
