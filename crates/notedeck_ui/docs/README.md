@@ -160,25 +160,6 @@ if ui.visuals().dark_mode {
 }
 ```
 
-## Testing Components
-
-To test UI components, use the EGUI test infrastructure:
-
-```rust
-#[test]
-fn test_profile_pic() {
-    let ctx = egui::Context::default();
-    let mut cache = Images::new();
-
-    ctx.run(|ctx| {
-        egui::CentralPanel::default().show(ctx, |ui| {
-            let response = ui.add(ProfilePic::new(&mut cache, "test_url"));
-            assert!(response.clicked() == false);
-        });
-    });
-}
-```
-
 ## Debugging Tips
 
 1. **EGUI Inspector**: Use `ctx.debug_painter()` to visualize layout bounds
