@@ -43,6 +43,19 @@ impl<'cache, 'url> ProfilePic<'cache, 'url> {
             .map(|url| ProfilePic::new(cache, url))
     }
 
+    pub fn from_profile_or_default(
+        cache: &'cache mut Images,
+        profile: Option<&nostrdb::ProfileRecord<'url>>,
+    ) -> Self {
+        let url = profile
+            .map(|p| p.record())
+            .and_then(|p| p.profile())
+            .and_then(|p| p.picture())
+            .unwrap_or(notedeck::profile::no_pfp_url());
+
+        ProfilePic::new(cache, url)
+    }
+
     #[inline]
     pub fn default_size() -> i8 {
         38
