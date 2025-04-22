@@ -485,26 +485,31 @@ impl Accounts {
         }
     }
 
-    pub fn update_current_account(&mut self, update: impl FnOnce(&mut UserAccount)) {
+    /// Update the `UserAccount` via callback and save the result to disk.
+    /// return true if the update was successful
+    pub fn update_current_account(&mut self, update: impl FnOnce(&mut UserAccount)) -> bool {
         {
             let Some(cur_account) = self.get_selected_account_mut() else {
-                return;
+                return false;
             };
 
             update(cur_account);
         }
 
         let Some(cur_acc) = self.get_selected_account() else {
-            return;
+            return false;
         };
 
         let Some(key_store) = &self.key_store else {
-            return;
+            return false;
         };
 
         if let Err(err) = key_store.write_account(cur_acc) {
             tracing::error!("Could not add account {:?} to storage: {err}", cur_acc.key);
+            return false;
         }
+
+        true
     }
 
     pub fn num_accounts(&self) -> usize {
@@ -534,6 +539,14 @@ impl Accounts {
     pub fn get_selected_account(&self) -> Option<&UserAccount> {
         self.currently_selected_account
             .map(|i| self.get_account(i))?
+    }
+
+    pub fn selected_account_has_wallet(&self) -> bool {
+        if let Some(acc) = self.get_selected_account() {
+            return acc.wallet.is_some();
+        }
+
+        false
     }
 
     pub fn get_selected_account_mut(&mut self) -> Option<&mut UserAccount> {
