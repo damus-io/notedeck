@@ -138,6 +138,7 @@ pub fn main() {
 #[cfg(test)]
 mod tests {
     use super::{Damus, Notedeck};
+    use notedeck_columns::timeline::TimelineKind;
     use std::path::{Path, PathBuf};
 
     fn create_tmp_dir() -> PathBuf {
@@ -157,11 +158,11 @@ mod tests {
         let datapath = create_tmp_dir();
         let dbpath = create_tmp_dir();
         let args: Vec<String> = [
-            "--testrunner",
-            "--datapath",
-            &datapath.to_str().unwrap(),
-            "--dbpath",
-            &dbpath.to_str().unwrap(),
+            "notedeck",
+            "--datadir",
+            datapath.to_str().unwrap(),
+            "--db",
+            dbpath.to_str().unwrap(),
         ]
         .iter()
         .map(|s| s.to_string())
@@ -232,8 +233,11 @@ mod tests {
             .unwrap();
 
         assert_eq!(app.timeline_cache.timelines.len(), 2);
-        assert!(app.timeline_cache.timelines.get(&tl1).is_some());
-        assert!(app.timeline_cache.timelines.get(&tl2).is_some());
+        assert!(app.timeline_cache.timelines.contains_key(tl1));
+        assert!(app.timeline_cache.timelines.contains_key(tl2));
+        let mut keys: Vec<TimelineKind> = app.timeline_cache.timelines.keys().cloned().collect();
+        keys.sort();
+        assert_eq!(keys, vec![tl1.clone(), tl2.clone()]);
 
         rmrf(tmpdir);
     }

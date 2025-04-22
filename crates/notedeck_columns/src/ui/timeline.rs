@@ -3,7 +3,6 @@ use egui::{vec2, Direction, Layout, Pos2, Stroke};
 use egui_tabs::TabColor;
 use enostr::KeypairUnowned;
 use nostrdb::Transaction;
-use notedeck_ui::jobs::JobsCache;
 use std::f32::consts::PI;
 use tracing::{error, warn};
 
@@ -11,6 +10,7 @@ use crate::timeline::{TimelineCache, TimelineKind, TimelineTab, ViewFilter};
 use notedeck::{note::root_note_id_from_selected_id, MuteFun, NoteAction, NoteContext};
 use notedeck_ui::{
     anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},
+    jobs::JobsCache,
     show_pointer, NoteOptions, NoteView,
 };
 
@@ -22,7 +22,6 @@ pub struct TimelineView<'a, 'd> {
     is_muted: &'a MuteFun,
     note_context: &'a mut NoteContext<'d>,
     cur_acc: &'a Option<KeypairUnowned<'a>>,
-    jobs: &'a mut JobsCache,
 }
 
 impl<'a, 'd> TimelineView<'a, 'd> {
@@ -34,18 +33,15 @@ impl<'a, 'd> TimelineView<'a, 'd> {
         note_context: &'a mut NoteContext<'d>,
         note_options: NoteOptions,
         cur_acc: &'a Option<KeypairUnowned<'a>>,
-        jobs: &'a mut JobsCache,
     ) -> Self {
-        let reverse = false;
-        TimelineView {
+        Self {
             timeline_id,
             timeline_cache,
-            note_options,
-            reverse,
             is_muted,
             note_context,
+            note_options,
+            reverse: false,
             cur_acc,
-            jobs,
         }
     }
 
@@ -59,7 +55,6 @@ impl<'a, 'd> TimelineView<'a, 'd> {
             self.is_muted,
             self.note_context,
             self.cur_acc,
-            self.jobs,
         )
     }
 
@@ -79,32 +74,38 @@ fn timeline_ui(
     is_muted: &MuteFun,
     note_context: &mut NoteContext,
     cur_acc: &Option<KeypairUnowned>,
-    jobs: &mut JobsCache,
 ) -> Option<NoteAction> {
-    //padding(4.0, ui, |ui| ui.heading("Notifications"));
-    /*
-    let font_id = egui::TextStyle::Body.resolve(ui.style());
-    let row_height = ui.fonts(|f| f.row_height(&font_id)) + ui.spacing().item_spacing.y;
-
-    */
-
-    let scroll_id = {
-        let timeline = if let Some(timeline) = timeline_cache.timelines.get_mut(timeline_id) {
-            timeline
-        } else {
-            error!("tried to render timeline in column, but timeline was missing");
-            // TODO (jb55): render error when timeline is missing?
-            // this shouldn't happen...
-            return None;
-        };
-
-        timeline.selected_view = tabs_ui(ui, timeline.selected_view, &timeline.views);
-
-        // need this for some reason??
-        ui.add_space(3.0);
-
-        egui::Id::new(("tlscroll", timeline.view_id()))
+    let note_action: Option<NoteAction> = None;
+    let txn = Transaction::new(note_context.ndb).expect("txn");
+    let timeline = if let Some(timeline) = timeline_cache.timelines.get_mut(timeline_id) {
+        timeline
+    } else {
+        error!("tried to render timeline in column, but timeline was missing");
+        return None;
     };
+
+    timeline.selected_view = tabs_ui(ui, timeline.selected_view, &timeline.views);
+    ui.add_space(3.0);
+
+    if !timeline.pending_notes.is_empty() {
+        ui.vertical_centered(|ui| {
+            let button_text = format!("Load {} new notes", timeline.pending_notes.len());
+            let button = egui::Button::new(button_text).fill(ui.visuals().widgets.active.bg_fill);
+            if ui.add(button).clicked() {
+                if let Err(e) = timeline.apply_pending_notes(
+                    note_context.ndb,
+                    &txn,
+                    note_context.unknown_ids,
+                    note_context.note_cache,
+                ) {
+                    error!("Failed to apply pending notes: {}", e);
+                }
+            }
+        });
+        ui.add_space(5.0);
+    }
+
+    let scroll_id = egui::Id::new(("tlscroll", timeline.view_id()));
 
     let show_top_button_id = ui.id().with((scroll_id, "at_top"));
 
@@ -149,12 +150,10 @@ fn timeline_ui(
             timeline
         } else {
             error!("tried to render timeline in column, but timeline was missing");
-            // TODO (jb55): render error when timeline is missing?
-            // this shouldn't happen...
             return None;
         };
 
-        let txn = Transaction::new(note_context.ndb).expect("failed to create txn");
+        let mut jobs = JobsCache::default();
 
         TimelineTabView::new(
             timeline.current_view(),
@@ -164,7 +163,7 @@ fn timeline_ui(
             is_muted,
             note_context,
             cur_acc,
-            jobs,
+            &mut jobs,
         )
         .show(ui)
     });
@@ -184,7 +183,7 @@ fn timeline_ui(
             .data_mut(|d| d.insert_temp(show_top_button_id, true));
     }
 
-    scroll_output.inner
+    scroll_output.inner.or(note_action)
 }
 
 fn goto_top_button(center: Pos2) -> impl egui::Widget {
@@ -366,7 +365,7 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui) -> Option<NoteAction> {
-        let mut action: Option<NoteAction> = None;
+        let mut note_action: Option<NoteAction> = None;
         let len = self.tab.notes.len();
 
         let is_muted = self.is_muted;
@@ -391,7 +390,7 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
                         note
                     } else {
                         warn!("failed to query note {:?}", note_key);
-                        return 0;
+                        return 1;
                     };
 
                 // should we mute the thread? we might not have it!
@@ -423,8 +422,8 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
                         )
                         .show(ui);
 
-                        if let Some(note_action) = resp.action {
-                            action = Some(note_action)
+                        if let Some(na) = resp.action {
+                            note_action = Some(na);
                         }
                     });
 
@@ -434,6 +433,6 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
                 1
             });
 
-        action
+        note_action
     }
 }
