@@ -7,10 +7,12 @@ pub struct NostrName<'a> {
 }
 
 impl<'a> NostrName<'a> {
+    /// Our nostr name is usually our display_name, if we don't have
+    /// that then its just the username
     pub fn name(&self) -> &'a str {
-        if let Some(name) = self.username {
+        if let Some(name) = self.display_name {
             name
-        } else if let Some(name) = self.display_name {
+        } else if let Some(name) = self.username {
             name
         } else {
             self.nip05.unwrap_or("??")
