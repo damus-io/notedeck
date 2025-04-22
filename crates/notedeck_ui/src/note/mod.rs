@@ -114,6 +114,11 @@ impl<'a, 'd> NoteView<'a, 'd> {
         self
     }
 
+    pub fn truncate(mut self, enable: bool) -> Self {
+        self.options_mut().set_truncate(enable);
+        self
+    }
+
     pub fn small_pfp(mut self, enable: bool) -> Self {
         self.options_mut().set_small_pfp(enable);
         self

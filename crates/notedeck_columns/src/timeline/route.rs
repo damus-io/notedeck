@@ -75,18 +75,24 @@ pub fn render_timeline_route(
             }
         }
 
-        TimelineKind::Thread(id) => ui::ThreadView::new(
-            timeline_cache,
-            unknown_ids,
-            id.selected_or_root(),
-            note_options,
-            &accounts.mutefun(),
-            note_context,
-            &accounts.get_selected_account().map(|a| (&a.key).into()),
-        )
-        .id_source(egui::Id::new(("threadscroll", col)))
-        .ui(ui)
-        .map(Into::into),
+        TimelineKind::Thread(id) => {
+            // don't truncate thread notes for now, since they are
+            // default truncated everywher eelse
+            note_options.set_truncate(false);
+
+            ui::ThreadView::new(
+                timeline_cache,
+                unknown_ids,
+                id.selected_or_root(),
+                note_options,
+                &accounts.mutefun(),
+                note_context,
+                &accounts.get_selected_account().map(|a| (&a.key).into()),
+            )
+            .id_source(egui::Id::new(("threadscroll", col)))
+            .ui(ui)
+            .map(Into::into)
+        }
     }
 }
 

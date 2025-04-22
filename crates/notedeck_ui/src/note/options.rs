@@ -21,12 +21,19 @@ bitflags! {
 
         /// Whether the current note is a preview
         const is_preview      = 0b0000010000000000;
+
+        /// Is the content truncated? If the length is over a certain size it
+        /// will end with a ... and a "Show more" button.
+        const truncate        = 0b0000100000000000;
     }
 }
 
 impl Default for NoteOptions {
     fn default() -> NoteOptions {
-        NoteOptions::options_button | NoteOptions::note_previews | NoteOptions::actionbar
+        NoteOptions::options_button
+            | NoteOptions::note_previews
+            | NoteOptions::actionbar
+            | NoteOptions::truncate
     }
 }
 
@@ -60,6 +67,7 @@ impl NoteOptions {
     create_bit_methods!(set_hide_media, has_hide_media, hide_media);
     create_bit_methods!(set_scramble_text, has_scramble_text, scramble_text);
     create_bit_methods!(set_is_preview, has_is_preview, is_preview);
+    create_bit_methods!(set_truncate, has_truncate, truncate);
 
     pub fn new(is_universe_timeline: bool) -> Self {
         let mut options = NoteOptions::default();

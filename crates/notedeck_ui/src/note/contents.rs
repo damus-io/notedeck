@@ -119,6 +119,10 @@ pub fn render_note_contents(
     let hide_media = options.has_hide_media();
     let link_color = ui.visuals().hyperlink_color;
 
+    // The current length of the rendered blocks. Used in trucation logic
+    let mut current_len: usize = 0;
+    let truncate_len = 280;
+
     if !options.has_is_preview() {
         // need this for the rect to take the full width of the column
         let _ = ui.allocate_at_least(egui::vec2(ui.available_width(), 0.0), egui::Sense::click());
@@ -210,18 +214,39 @@ pub fn render_note_contents(
                 }
 
                 BlockType::Text => {
+                    // truncate logic
+                    let mut truncate = false;
+                    let block_str = if options.has_truncate()
+                        && (current_len + block.as_str().len() > truncate_len)
+                    {
+                        truncate = true;
+                        // The current block goes over the truncate length,
+                        // we'll need to truncate this block
+                        let block_str = block.as_str();
+                        let closest = notedeck::abbrev::floor_char_boundary(
+                            block_str,
+                            truncate_len - current_len,
+                        );
+                        &(block_str[..closest].to_string() + "…")
+                    } else {
+                        let block_str = block.as_str();
+                        current_len += block_str.len();
+                        block_str
+                    };
+
                     if options.has_scramble_text() {
                         ui.add(
-                            egui::Label::new(rot13(block.as_str()))
+                            egui::Label::new(rot13(block_str))
                                 .wrap()
                                 .selectable(selectable),
                         );
                     } else {
-                        ui.add(
-                            egui::Label::new(block.as_str())
-                                .wrap()
-                                .selectable(selectable),
-                        );
+                        ui.add(egui::Label::new(block_str).wrap().selectable(selectable));
+                    }
+
+                    // don't render any more blocks
+                    if truncate {
+                        break;
                     }
                 }
 
