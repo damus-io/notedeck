@@ -10,9 +10,13 @@ pub struct ModelConfig {
 impl Default for ModelConfig {
     fn default() -> Self {
         ModelConfig {
-            endpoint: None,
-            model: "gpt-4o".to_string(),
-            api_key: std::env::var("OPENAI_API_KEY").ok(),
+            endpoint: std::env::var("DAVE_ENDPOINT").ok(),
+            model: std::env::var("DAVE_MODEL")
+                .ok()
+                .unwrap_or("gpt-4o".to_string()),
+            api_key: std::env::var("DAVE_API_KEY")
+                .ok()
+                .or(std::env::var("OPENAI_API_KEY").ok()),
         }
     }
 }
