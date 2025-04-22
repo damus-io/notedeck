@@ -19,6 +19,10 @@ pub enum DaveApiResponse {
 }
 
 impl Message {
+    pub fn tool_error(id: String, msg: String) -> Self {
+        Self::ToolResponse(ToolResponse::error(id, msg))
+    }
+
     pub fn to_api_msg(&self, txn: &Transaction, ndb: &Ndb) -> ChatCompletionRequestMessage {
         match self {
             Message::User(msg) => {

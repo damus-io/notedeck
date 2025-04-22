@@ -204,6 +204,9 @@ impl<'a> DaveUi<'a> {
             for call in toolcalls {
                 match call.calls() {
                     ToolCalls::PresentNotes(call) => Self::present_notes_ui(ctx, call, ui),
+                    ToolCalls::Invalid(err) => {
+                        ui.label(format!("invalid tool call: {:?}", err));
+                    }
                     ToolCalls::Query(search_call) => {
                         ui.allocate_ui_with_layout(
                             egui::vec2(ui.available_size().x, 32.0),

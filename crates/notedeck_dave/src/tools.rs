@@ -4,7 +4,7 @@ use enostr::{NoteId, Pubkey};
 use nostrdb::{Ndb, Note, NoteKey, Transaction};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::{collections::HashMap, fmt};
 
 /// A tool
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -16,6 +16,22 @@ pub struct ToolCall {
 impl ToolCall {
     pub fn id(&self) -> &str {
         &self.id
+    }
+
+    pub fn invalid(
+        id: String,
+        name: Option<String>,
+        arguments: Option<String>,
+        error: String,
+    ) -> Self {
+        Self {
+            id,
+            typ: ToolCalls::Invalid(InvalidToolCall {
+                name,
+                arguments,
+                error,
+            }),
+        }
     }
 
     pub fn calls(&self) -> &ToolCalls {
@@ -34,11 +50,11 @@ impl ToolCall {
 /// On streaming APIs, tool calls are incremental. We use this
 /// to represent tool calls that are in the process of returning.
 /// These eventually just become [`ToolCall`]'s
-#[derive(Default, Debug, Clone)]
+#[derive(Default, Debug, Clone, Serialize, Deserialize)]
 pub struct PartialToolCall {
-    id: Option<String>,
-    name: Option<String>,
-    arguments: Option<String>,
+    pub id: Option<String>,
+    pub name: Option<String>,
+    pub arguments: Option<String>,
 }
 
 impl PartialToolCall {
@@ -75,6 +91,7 @@ pub struct QueryResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ToolResponses {
+    Error(String),
     Query(QueryResponse),
     PresentNotes,
 }
@@ -110,6 +127,13 @@ impl PartialToolCall {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InvalidToolCall {
+    pub error: String,
+    pub name: Option<String>,
+    pub arguments: Option<String>,
+}
+
 /// An enumeration of the possible tool calls that
 /// can be parsed from Dave responses. When adding
 /// new tools, this needs to be updated so that we can
@@ -118,6 +142,12 @@ impl PartialToolCall {
 pub enum ToolCalls {
     Query(QueryCall),
     PresentNotes(PresentNotesCall),
+    Invalid(InvalidToolCall),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ErrorCall {
+    error: String,
 }
 
 impl ToolCalls {
@@ -131,6 +161,7 @@ impl ToolCalls {
     fn name(&self) -> &'static str {
         match self {
             Self::Query(_) => "search",
+            Self::Invalid(_) => "error",
             Self::PresentNotes(_) => "present",
         }
     }
@@ -138,6 +169,7 @@ impl ToolCalls {
     fn arguments(&self) -> String {
         match self {
             Self::Query(search) => serde_json::to_string(search).unwrap(),
+            Self::Invalid(partial) => serde_json::to_string(partial).unwrap(),
             Self::PresentNotes(call) => serde_json::to_string(&call.to_simple()).unwrap(),
         }
     }
@@ -149,6 +181,19 @@ pub enum ToolCallError {
     EmptyArgs,
     NotFound(String),
     ArgParseFailure(String),
+}
+
+impl fmt::Display for ToolCallError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ToolCallError::EmptyName => write!(f, "the tool name was empty"),
+            ToolCallError::EmptyArgs => write!(f, "no arguments were provided"),
+            ToolCallError::NotFound(ref name) => write!(f, "tool '{}' not found", name),
+            ToolCallError::ArgParseFailure(ref msg) => {
+                write!(f, "failed to parse arguments: {}", msg)
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -276,6 +321,13 @@ impl ToolResponse {
         Self { id, typ: responses }
     }
 
+    pub fn error(id: String, msg: String) -> Self {
+        Self {
+            id,
+            typ: ToolResponses::Error(msg),
+        }
+    }
+
     pub fn responses(&self) -> &ToolResponses {
         &self.typ
     }
@@ -323,7 +375,7 @@ impl PresentNotesCall {
                 Ok(ToolCalls::PresentNotes(PresentNotesCall { note_ids }))
             }
             Err(e) => Err(ToolCallError::ArgParseFailure(format!(
-                "Failed to parse args: '{}', error: {}",
+                "{}, error: {}",
                 args, e
             ))),
         }
@@ -424,7 +476,7 @@ impl QueryCall {
         match serde_json::from_str::<QueryCall>(args) {
             Ok(call) => Ok(ToolCalls::Query(call)),
             Err(e) => Err(ToolCallError::ArgParseFailure(format!(
-                "Failed to parse args: '{}', error: {}",
+                "{}, error: {}",
                 args, e
             ))),
         }
@@ -448,6 +500,7 @@ struct SimpleNote {
 fn format_tool_response_for_ai(txn: &Transaction, ndb: &Ndb, resp: &ToolResponses) -> String {
     match resp {
         ToolResponses::PresentNotes => "".to_string(),
+        ToolResponses::Error(s) => format!("error: {}", &s),
 
         ToolResponses::Query(search_r) => {
             let simple_notes: Vec<SimpleNote> = search_r

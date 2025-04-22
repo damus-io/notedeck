@@ -9,6 +9,7 @@ use futures::StreamExt;
 use nostrdb::Transaction;
 use notedeck::AppContext;
 use std::collections::HashMap;
+use std::string::ToString;
 use std::sync::mpsc::{self, Receiver};
 use std::sync::Arc;
 
@@ -135,6 +136,15 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                                 )));
 
                                 should_send = true;
+                            }
+
+                            ToolCalls::Invalid(invalid) => {
+                                should_send = true;
+
+                                self.chat.push(Message::tool_error(
+                                    call.id().to_string(),
+                                    invalid.error.clone(),
+                                ));
                             }
 
                             ToolCalls::Query(search_call) => {
@@ -270,12 +280,23 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         parsed_tool_calls.push(tool_call);
                     }
                     Err(err) => {
+                        // TODO: we should be
                         tracing::error!(
-                            "failed to parse tool call {:?}: {:?}",
+                            "failed to parse tool call {:?}: {}",
                             unknown_tool_call,
                             err,
                         );
-                        // TODO: return error to user
+
+                        if let Some(id) = partial.id() {
+                            // we have an id, so we can communicate the error
+                            // back to the ai
+                            parsed_tool_calls.push(ToolCall::invalid(
+                                id.to_string(),
+                                partial.name,
+                                partial.arguments,
+                                err.to_string(),
+                            ));
+                        }
                     }
                 };
             }
