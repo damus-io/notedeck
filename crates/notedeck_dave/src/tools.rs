@@ -93,7 +93,7 @@ pub struct QueryResponse {
 pub enum ToolResponses {
     Error(String),
     Query(QueryResponse),
-    PresentNotes,
+    PresentNotes(i32),
 }
 
 #[derive(Debug, Clone)]
@@ -499,7 +499,7 @@ struct SimpleNote {
 /// it can interepret it and take further action
 fn format_tool_response_for_ai(txn: &Transaction, ndb: &Ndb, resp: &ToolResponses) -> String {
     match resp {
-        ToolResponses::PresentNotes => "".to_string(),
+        ToolResponses::PresentNotes(n) => format!("{n} notes presented to the user"),
         ToolResponses::Error(s) => format!("error: {}", &s),
 
         ToolResponses::Query(search_r) => {

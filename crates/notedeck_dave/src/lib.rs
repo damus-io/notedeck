@@ -129,10 +129,10 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     for call in &toolcalls {
                         // execute toolcall
                         match call.calls() {
-                            ToolCalls::PresentNotes(_note_ids) => {
+                            ToolCalls::PresentNotes(present) => {
                                 self.chat.push(Message::ToolResponse(ToolResponse::new(
                                     call.id().to_owned(),
-                                    ToolResponses::PresentNotes,
+                                    ToolResponses::PresentNotes(present.note_ids.len() as i32),
                                 )));
 
                                 should_send = true;
