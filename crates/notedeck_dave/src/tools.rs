@@ -1,6 +1,6 @@
 use async_openai::types::*;
 use chrono::DateTime;
-use enostr::NoteId;
+use enostr::{NoteId, Pubkey};
 use nostrdb::{Ndb, Note, NoteKey, Transaction};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -70,7 +70,6 @@ impl PartialToolCall {
 /// The query response from nostrdb for a given context
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueryResponse {
-    context: QueryContext,
     notes: Vec<u64>,
 }
 
@@ -286,14 +285,6 @@ impl ToolResponse {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
-#[serde(rename_all = "lowercase")]
-pub enum QueryContext {
-    Home,
-    Profile,
-    Any,
-}
-
 /// Called by dave when he wants to display notes on the screen
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct PresentNotesCall {
@@ -342,12 +333,12 @@ impl PresentNotesCall {
 /// The parsed nostrdb query that dave wants to use to satisfy a request
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct QueryCall {
-    context: Option<QueryContext>,
-    limit: Option<u64>,
-    since: Option<u64>,
-    kind: Option<u64>,
-    until: Option<u64>,
-    search: Option<String>,
+    pub author: Option<Pubkey>,
+    pub limit: Option<u64>,
+    pub since: Option<u64>,
+    pub kind: Option<u64>,
+    pub until: Option<u64>,
+    pub search: Option<String>,
 }
 
 fn is_reply(note: Note) -> bool {
@@ -379,6 +370,10 @@ impl QueryCall {
             .custom(|n| !is_reply(n))
             .kinds([self.kind.unwrap_or(1)]);
 
+        if let Some(author) = &self.author {
+            filter = filter.authors([author.bytes()]);
+        }
+
         if let Some(search) = &self.search {
             filter = filter.search(search);
         }
@@ -398,12 +393,20 @@ impl QueryCall {
         self.limit.unwrap_or(10)
     }
 
-    pub fn search(&self) -> Option<&str> {
-        self.search.as_deref()
+    pub fn author(&self) -> Option<&Pubkey> {
+        self.author.as_ref()
     }
 
-    pub fn context(&self) -> QueryContext {
-        self.context.clone().unwrap_or(QueryContext::Any)
+    pub fn since(&self) -> Option<u64> {
+        self.since
+    }
+
+    pub fn until(&self) -> Option<u64> {
+        self.until
+    }
+
+    pub fn search(&self) -> Option<&str> {
+        self.search.as_deref()
     }
 
     pub fn execute(&self, txn: &Transaction, ndb: &Ndb) -> QueryResponse {
@@ -414,10 +417,7 @@ impl QueryCall {
                 vec![]
             }
         };
-        QueryResponse {
-            context: self.context.clone().unwrap_or(QueryContext::Any),
-            notes,
-        }
+        QueryResponse { notes }
     }
 
     pub fn parse(args: &str) -> Result<ToolCalls, ToolCallError> {
@@ -554,6 +554,15 @@ fn query_tool() -> Tool {
                 required: false,
                 default: None,
                 description: "Only pull notes up until this unix timestamp. Always include this when searching notes within some date range (yesterday, last week, etc).",
+            },
+
+            ToolArg {
+                name: "author",
+                typ: ArgType::String,
+                required: false,
+                default: None,
+                description: "An author *pubkey* to constrain the query on. Can be used to search for notes from individual users. If unsure what pubkey to u
+se, you can query for kind 0 profiles with the search argument.",
             },
 
             ToolArg {

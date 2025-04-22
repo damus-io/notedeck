@@ -17,8 +17,8 @@ pub use config::ModelConfig;
 pub use messages::{DaveApiResponse, Message};
 pub use quaternion::Quaternion;
 pub use tools::{
-    PartialToolCall, QueryCall, QueryContext, QueryResponse, Tool, ToolCall, ToolCalls,
-    ToolResponse, ToolResponses,
+    PartialToolCall, QueryCall, QueryResponse, Tool, ToolCall, ToolCalls, ToolResponse,
+    ToolResponses,
 };
 pub use ui::{DaveAction, DaveResponse, DaveUi};
 pub use vec3::Vec3;

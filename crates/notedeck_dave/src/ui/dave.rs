@@ -1,11 +1,11 @@
 use crate::{
     messages::Message,
-    tools::{PresentNotesCall, QueryCall, QueryContext, ToolCall, ToolCalls, ToolResponse},
+    tools::{PresentNotesCall, QueryCall, ToolCall, ToolCalls, ToolResponse},
 };
 use egui::{Align, Key, KeyboardShortcut, Layout, Modifiers};
-use nostrdb::Transaction;
+use nostrdb::{Ndb, Transaction};
 use notedeck::{AppContext, NoteContext};
-use notedeck_ui::{icons::search_icon, NoteOptions};
+use notedeck_ui::{icons::search_icon, NoteOptions, ProfilePic};
 
 /// DaveUi holds all of the data it needs to render itself
 pub struct DaveUi<'a> {
@@ -153,21 +153,11 @@ impl<'a> DaveUi<'a> {
         //ui.label(format!("tool_response: {:?}", tool_response));
     }
 
-    fn search_call_ui(query_call: &QueryCall, ui: &mut egui::Ui) {
+    fn search_call_ui(ctx: &mut AppContext, query_call: &QueryCall, ui: &mut egui::Ui) {
         ui.add(search_icon(16.0, 16.0));
         ui.add_space(8.0);
-        let context = match query_call.context() {
-            QueryContext::Profile => "profile ",
-            QueryContext::Any => "",
-            QueryContext::Home => "home ",
-        };
 
-        //TODO: fix this to support any query
-        if let Some(search) = query_call.search() {
-            ui.label(format!("Querying {context}for '{search}'"));
-        } else {
-            ui.label(format!("Querying {:?}", &query_call));
-        }
+        query_call_ui(ctx.img_cache, ctx.ndb, query_call, ui);
     }
 
     /// The ai has asked us to render some notes, so we do that here
@@ -215,15 +205,13 @@ impl<'a> DaveUi<'a> {
                 match call.calls() {
                     ToolCalls::PresentNotes(call) => Self::present_notes_ui(ctx, call, ui),
                     ToolCalls::Query(search_call) => {
-                        ui.horizontal(|ui| {
-                            egui::Frame::new()
-                                .inner_margin(10.0)
-                                .corner_radius(10.0)
-                                .fill(ui.visuals().widgets.inactive.weak_bg_fill)
-                                .show(ui, |ui| {
-                                    Self::search_call_ui(search_call, ui);
-                                })
-                        });
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(ui.available_size().x, 32.0),
+                            Layout::left_to_right(Align::Center),
+                            |ui| {
+                                Self::search_call_ui(ctx, search_call, ui);
+                            },
+                        );
                     }
                 }
             }
@@ -302,4 +290,82 @@ fn new_chat_button() -> impl egui::Widget {
 
         helper.take_animation_response()
     }
+}
+
+fn query_call_ui(cache: &mut notedeck::Images, ndb: &Ndb, query: &QueryCall, ui: &mut egui::Ui) {
+    ui.spacing_mut().item_spacing.x = 8.0;
+    if let Some(pubkey) = query.author() {
+        let txn = Transaction::new(ndb).unwrap();
+        pill_label_ui(
+            "author",
+            move |ui| {
+                ui.add(
+                    ProfilePic::from_profile_or_default(
+                        cache,
+                        ndb.get_profile_by_pubkey(&txn, pubkey.bytes())
+                            .ok()
+                            .as_ref(),
+                    )
+                    .size(ProfilePic::small_size() as f32),
+                );
+            },
+            ui,
+        );
+    }
+
+    if let Some(limit) = query.limit {
+        pill_label("limit", &limit.to_string(), ui);
+    }
+
+    if let Some(since) = query.since {
+        pill_label("since", &since.to_string(), ui);
+    }
+
+    if let Some(kind) = query.kind {
+        pill_label("kind", &kind.to_string(), ui);
+    }
+
+    if let Some(until) = query.until {
+        pill_label("until", &until.to_string(), ui);
+    }
+
+    if let Some(search) = query.search.as_ref() {
+        pill_label("search", search, ui);
+    }
+}
+
+fn pill_label(name: &str, value: &str, ui: &mut egui::Ui) {
+    pill_label_ui(
+        name,
+        move |ui| {
+            ui.label(value);
+        },
+        ui,
+    );
+}
+
+fn pill_label_ui(name: &str, mut value: impl FnMut(&mut egui::Ui), ui: &mut egui::Ui) {
+    egui::Frame::new()
+        .fill(ui.visuals().noninteractive().bg_fill)
+        .inner_margin(egui::Margin::same(4))
+        .corner_radius(egui::CornerRadius::same(10))
+        .stroke(egui::Stroke::new(
+            1.0,
+            ui.visuals().noninteractive().bg_stroke.color,
+        ))
+        .show(ui, |ui| {
+            egui::Frame::new()
+                .fill(ui.visuals().noninteractive().weak_bg_fill)
+                .inner_margin(egui::Margin::same(4))
+                .corner_radius(egui::CornerRadius::same(10))
+                .stroke(egui::Stroke::new(
+                    1.0,
+                    ui.visuals().noninteractive().bg_stroke.color,
+                ))
+                .show(ui, |ui| {
+                    ui.label(name);
+                });
+
+            value(ui);
+        });
 }
