@@ -157,6 +157,11 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         DaveUi::new(&self.chat, &mut self.input).ui(app_ctx, ui)
     }
 
+    fn handle_new_chat(&mut self) {
+        self.chat = vec![];
+        self.input.clear();
+    }
+
     /// Handle a user send action triggered by the ui
     fn handle_user_send(&mut self, app_ctx: &AppContext, ui: &egui::Ui) {
         self.chat.push(Message::User(self.input.clone()));
@@ -296,6 +301,9 @@ impl notedeck::App for Dave {
         let should_send = self.process_events(ctx);
         if let Some(action) = self.ui(ctx, ui).action {
             match action {
+                DaveAction::NewChat => {
+                    self.handle_new_chat();
+                }
                 DaveAction::Send => {
                     self.handle_user_send(ctx, ui);
                 }

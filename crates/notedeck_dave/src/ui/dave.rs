@@ -21,11 +21,21 @@ pub struct DaveResponse {
 }
 
 impl DaveResponse {
+    fn new(action: DaveAction) -> Self {
+        DaveResponse {
+            action: Some(action),
+        }
+    }
+
+    fn or(self, r: DaveResponse) -> DaveResponse {
+        DaveResponse {
+            action: self.action.or(r.action),
+        }
+    }
+
     /// Generate a send response to the controller
     fn send() -> Self {
-        DaveResponse {
-            action: Some(DaveAction::Send),
-        }
+        Self::new(DaveAction::Send)
     }
 
     fn none() -> Self {
@@ -40,6 +50,7 @@ impl DaveResponse {
 pub enum DaveAction {
     /// The action generated when the user sends a message to dave
     Send,
+    NewChat,
 }
 
 impl<'a> DaveUi<'a> {
@@ -67,7 +78,22 @@ impl<'a> DaveUi<'a> {
 
     /// The main render function. Call this to render Dave
     pub fn ui(&mut self, app_ctx: &mut AppContext, ui: &mut egui::Ui) -> DaveResponse {
+        let mut action: Option<DaveAction> = None;
         // Scroll area for chat messages
+        let new_resp = {
+            let mut rect = ui.available_rect_before_wrap();
+            rect = rect.translate(egui::vec2(20.0, 20.0));
+            rect.set_width(32.0);
+            rect.set_height(32.0);
+            ui.put(rect, new_chat_button())
+        };
+
+        if new_resp.clicked() {
+            action = Some(DaveAction::NewChat);
+        } else if new_resp.hovered() {
+            notedeck_ui::show_pointer(ui);
+        }
+
         egui::Frame::NONE
             .show(ui, |ui| {
                 ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
@@ -82,7 +108,6 @@ impl<'a> DaveUi<'a> {
                         })
                         .inner_margin(egui::Margin::same(8))
                         .fill(ui.visuals().extreme_bg_color)
-                        //.stroke(stroke)
                         .corner_radius(12.0)
                         .show(ui, |ui| self.inputbox(ui))
                         .inner;
@@ -103,6 +128,7 @@ impl<'a> DaveUi<'a> {
                 .inner
             })
             .inner
+            .or(DaveResponse { action })
     }
 
     /// Render a chat message (user, assistant, tool call/response, etc)
@@ -249,5 +275,31 @@ impl<'a> DaveUi<'a> {
         ui.horizontal_wrapped(|ui| {
             ui.add(egui::Label::new(msg).wrap_mode(egui::TextWrapMode::Wrap));
         });
+    }
+}
+
+fn new_chat_button() -> impl egui::Widget {
+    move |ui: &mut egui::Ui| {
+        let img_size = 24.0;
+        let max_size = 32.0;
+
+        let img_data = egui::include_image!("../../../../assets/icons/newmessage_64.png");
+        let img = egui::Image::new(img_data).max_width(img_size);
+
+        let helper = notedeck_ui::anim::AnimationHelper::new(
+            ui,
+            "new-chat-button",
+            egui::vec2(max_size, max_size),
+        );
+
+        let cur_img_size = helper.scale_1d_pos(img_size);
+        img.paint_at(
+            ui,
+            helper
+                .get_animation_rect()
+                .shrink((max_size - cur_img_size) / 2.0),
+        );
+
+        helper.take_animation_response()
     }
 }
