@@ -115,7 +115,7 @@ impl Pubkey {
         }
     }
 
-    pub fn to_bech(&self) -> Option<String> {
+    pub fn npub(&self) -> Option<String> {
         bech32::encode::<bech32::Bech32>(HRP_NPUB, &self.0).ok()
     }
 }

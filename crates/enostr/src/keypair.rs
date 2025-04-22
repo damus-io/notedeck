@@ -178,7 +178,7 @@ impl TokenSerializable for Pubkey {
     fn serialize_tokens(&self, writer: &mut tokenator::TokenWriter) {
         writer.write_token(PUBKEY_TOKEN);
 
-        let Some(bech) = self.to_bech() else {
+        let Some(bech) = self.npub() else {
             tracing::error!("Could not convert pubkey to bech: {}", self.hex());
             return;
         };

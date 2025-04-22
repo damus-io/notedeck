@@ -348,7 +348,7 @@ impl PostBuffer {
         for (cur_end_ind, mention_ind) in self.mention_ends.iter().rev() {
             if let Some(info) = self.mentions.get(mention_ind) {
                 if let MentionType::Finalized(pk) = info.mention_type {
-                    if let Some(bech) = pk.to_bech() {
+                    if let Some(bech) = pk.npub() {
                         if let Some(byte_range) =
                             char_indices_to_byte(&out, info.start_index..*cur_end_ind)
                         {

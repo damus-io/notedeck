@@ -45,7 +45,7 @@ impl NoteContextSelection {
                 ui.ctx().copy_text(note.content().to_string());
             }
             NoteContextSelection::CopyPubkey => {
-                if let Some(bech) = Pubkey::new(*note.pubkey()).to_bech() {
+                if let Some(bech) = Pubkey::new(*note.pubkey()).npub() {
                     ui.ctx().copy_text(bech);
                 }
             }

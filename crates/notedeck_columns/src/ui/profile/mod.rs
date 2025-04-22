@@ -152,7 +152,7 @@ impl<'a, 'd> ProfileView<'a, 'd> {
                     );
 
                     if ui.add(copy_key_widget(&pfp_rect)).clicked() {
-                        let to_copy = if let Some(bech) = self.pubkey.to_bech() {
+                        let to_copy = if let Some(bech) = self.pubkey.npub() {
                             bech
                         } else {
                             error!("Could not convert Pubkey to bech");
