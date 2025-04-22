@@ -48,26 +48,15 @@ impl Dave {
         self.avatar.as_mut()
     }
 
-    pub fn new(render_state: Option<&RenderState>) -> Self {
-        let model_config = ModelConfig::default();
-        //let model_config = ModelConfig::ollama();
-        let client = Client::with_config(model_config.to_api());
-
-        let input = "".to_string();
+    fn system_prompt() -> Message {
         let pubkey = "32e1827635450ebb3c5a7d12c1f8e7b2b514439ac10a67eef3d9fd9c5c68e245".to_string();
-        let avatar = render_state.map(DaveAvatar::new);
-        let mut tools: HashMap<String, Tool> = HashMap::new();
-        for tool in tools::dave_tools() {
-            tools.insert(tool.name().to_string(), tool);
-        }
-
         let now = Local::now();
         let yesterday = now - Duration::hours(24);
         let date = now.format("%Y-%m-%d %H:%M:%S");
         let timestamp = now.timestamp();
         let yesterday_timestamp = yesterday.timestamp();
 
-        let system_prompt = Message::System(format!(
+        Message::System(format!(
             r#"
 You are an AI agent for the nostr protocol called Dave, created by Damus. nostr is a decentralized social media and internet communications protocol. You are embedded in a nostr browser called 'Damus Notedeck'.
 
@@ -83,17 +72,30 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 - When a user asks for a digest instead of specific query terms, make sure to include both since and until to pull notes for the correct range.
 - When tasked with open-ended queries such as looking for interesting notes or summarizing the day, make sure to add enough notes to the context (limit: 100-200) so that it returns enough data for summarization.
 "#
-        ));
+        ))
+    }
 
+    pub fn new(render_state: Option<&RenderState>) -> Self {
+        let model_config = ModelConfig::default();
+        //let model_config = ModelConfig::ollama();
+        let client = Client::with_config(model_config.to_api());
+
+        let input = "".to_string();
+        let avatar = render_state.map(DaveAvatar::new);
+        let mut tools: HashMap<String, Tool> = HashMap::new();
+        let pubkey = "32e1827635450ebb3c5a7d12c1f8e7b2b514439ac10a67eef3d9fd9c5c68e245".to_string();
+        for tool in tools::dave_tools() {
+            tools.insert(tool.name().to_string(), tool);
+        }
         Dave {
             client,
-            pubkey,
+            pubkey: pubkey.clone(),
             avatar,
             incoming_tokens: None,
             tools: Arc::new(tools),
             input,
             model_config,
-            chat: vec![system_prompt],
+            chat: vec![Self::system_prompt()],
         }
     }
 
@@ -158,7 +160,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     }
 
     fn handle_new_chat(&mut self) {
-        self.chat = vec![];
+        self.chat = vec![Self::system_prompt()];
         self.input.clear();
     }
 
