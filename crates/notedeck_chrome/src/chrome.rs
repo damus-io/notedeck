@@ -6,13 +6,10 @@ use egui::{vec2, Button, Label, Layout, RichText, ThemePreference, Widget};
 use egui_extras::{Size, StripBuilder};
 use nostrdb::{ProfileRecord, Transaction};
 use notedeck::{
-    profile::get_profile_url, App, AppAction, AppContext, NoteAction, NotedeckTextStyle,
-    UserAccount, WalletType,
+    profile::get_profile_url, App, AppAction, AppContext, NotedeckTextStyle, UserAccount,
+    WalletType,
 };
-use notedeck_columns::{
-    timeline::{ThreadSelection, TimelineKind},
-    Damus, Route,
-};
+use notedeck_columns::Damus;
 use notedeck_dave::{Dave, DaveAvatar};
 use notedeck_ui::{AnimationHelper, ProfilePic};
 
@@ -468,54 +465,32 @@ fn chrome_handle_app_action(
     ui: &mut egui::Ui,
 ) {
     match action {
-        AppAction::Note(note_action) => match note_action {
-            NoteAction::Hashtag(hashtag) => {
-                ChromePanelAction::columns_navigate(
-                    ctx,
-                    chrome,
-                    Route::Timeline(TimelineKind::Hashtag(hashtag)),
-                );
-            }
+        AppAction::Note(note_action) => {
+            chrome.switch_to_columns();
+            let Some(columns) = chrome.get_columns() else {
+                return;
+            };
 
-            NoteAction::Reply(note_id) => {
-                ChromePanelAction::columns_navigate(ctx, chrome, Route::Reply(note_id));
-            }
+            let txn = Transaction::new(ctx.ndb).unwrap();
 
-            NoteAction::Zap(_) => {
-                todo!("implement note zaps in chrome");
-            }
-
-            NoteAction::Context(context) => 'brk: {
-                let txn = Transaction::new(ctx.ndb).unwrap();
-                let Some(note) = ctx.ndb.get_note_by_key(&txn, context.note_key).ok() else {
-                    break 'brk;
-                };
-
-                context.action.process(ui, &note, ctx.pool);
-            }
-
-            NoteAction::Quote(note_id) => {
-                ChromePanelAction::columns_navigate(ctx, chrome, Route::Quote(note_id));
-            }
-
-            NoteAction::Profile(pubkey) => {
-                ChromePanelAction::columns_navigate(
-                    ctx,
-                    chrome,
-                    Route::Timeline(TimelineKind::Profile(pubkey)),
-                );
-            }
-
-            NoteAction::Note(note_id) => {
-                let txn = Transaction::new(ctx.ndb).unwrap();
-                let thread = ThreadSelection::from_note_id(ctx.ndb, ctx.note_cache, &txn, note_id);
-
-                match thread {
-                    Ok(t) => ChromePanelAction::columns_navigate(ctx, chrome, Route::thread(t)),
-
-                    Err(err) => tracing::error!("{:?}", err),
-                }
-            }
-        },
+            notedeck_columns::actionbar::execute_and_process_note_action(
+                &note_action,
+                ctx.ndb,
+                columns
+                    .decks_cache
+                    .active_columns_mut(ctx.accounts)
+                    .unwrap(),
+                0,
+                &mut columns.timeline_cache,
+                ctx.note_cache,
+                ctx.pool,
+                &txn,
+                ctx.unknown_ids,
+                ctx.accounts,
+                ctx.global_wallet,
+                ctx.zaps,
+                ui,
+            );
+        }
     }
 }
