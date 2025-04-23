@@ -82,16 +82,24 @@ fn execute_note_action(
             let sender = cur_acc.key.pubkey;
 
             match zap_action {
-                ZapAction::Send(target) => {
-                    if get_wallet_for_mut(accounts, global_wallet, sender.bytes()).is_some() {
-                        send_zap(&sender, zaps, pool, target)
-                    } else {
+                ZapAction::Send(target) => 'a: {
+                    let Some(wallet) = get_wallet_for_mut(accounts, global_wallet, sender.bytes())
+                    else {
                         zaps.send_error(
                             sender.bytes(),
                             ZapTarget::Note((&target.target).into()),
                             ZappingError::SenderNoWallet,
                         );
-                    }
+                        break 'a;
+                    };
+
+                    send_zap(
+                        &sender,
+                        zaps,
+                        pool,
+                        target,
+                        wallet.default_zap.get_default_zap_msats(),
+                    )
                 }
                 ZapAction::ClearError(target) => clear_zap_error(&sender, zaps, target),
             }
@@ -146,10 +154,16 @@ pub fn execute_and_process_note_action(
     }
 }
 
-fn send_zap(sender: &Pubkey, zaps: &mut Zaps, pool: &RelayPool, target_amount: &ZapTargetAmount) {
+fn send_zap(
+    sender: &Pubkey,
+    zaps: &mut Zaps,
+    pool: &RelayPool,
+    target_amount: &ZapTargetAmount,
+    default_msats: u64,
+) {
     let zap_target = ZapTarget::Note((&target_amount.target).into());
 
-    let msats = target_amount.specified_msats.unwrap_or(10_000);
+    let msats = target_amount.specified_msats.unwrap_or(default_msats);
 
     let sender_relays: Vec<String> = pool.relays.iter().map(|r| r.url().to_string()).collect();
     zaps.send_zap(sender.bytes(), sender_relays, zap_target, msats);
