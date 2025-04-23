@@ -301,7 +301,7 @@ mod preview {
     };
 
     use super::ConfigureDeckView;
-    use notedeck::{App, AppContext};
+    use notedeck::{App, AppAction, AppContext};
 
     pub struct ConfigureDeckPreview {
         state: DeckState,
@@ -316,8 +316,14 @@ mod preview {
     }
 
     impl App for ConfigureDeckPreview {
-        fn update(&mut self, _app_ctx: &mut AppContext<'_>, ui: &mut egui::Ui) {
+        fn update(
+            &mut self,
+            _app_ctx: &mut AppContext<'_>,
+            ui: &mut egui::Ui,
+        ) -> Option<AppAction> {
             ConfigureDeckView::new(&mut self.state).ui(ui);
+
+            None
         }
     }
 

@@ -7,7 +7,7 @@ use chrono::{Duration, Local};
 use egui_wgpu::RenderState;
 use futures::StreamExt;
 use nostrdb::Transaction;
-use notedeck::AppContext;
+use notedeck::{AppAction, AppContext};
 use std::collections::HashMap;
 use std::string::ToString;
 use std::sync::mpsc::{self, Receiver};
@@ -313,17 +313,21 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 }
 
 impl notedeck::App for Dave {
-    fn update(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) {
+    fn update(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> Option<AppAction> {
         /*
         self.app
             .frame_history
             .on_new_frame(ctx.input(|i| i.time), frame.info().cpu_usage);
         */
+        let mut app_action: Option<AppAction> = None;
 
         //update_dave(self, ctx, ui.ctx());
         let should_send = self.process_events(ctx);
         if let Some(action) = self.ui(ctx, ui).action {
             match action {
+                DaveAction::Note(n) => {
+                    app_action = Some(AppAction::Note(n));
+                }
                 DaveAction::NewChat => {
                     self.handle_new_chat();
                 }
@@ -332,8 +336,11 @@ impl notedeck::App for Dave {
                 }
             }
         }
+
         if should_send {
             self.send_user_message(ctx, ui.ctx());
         }
+
+        app_action
     }
 }

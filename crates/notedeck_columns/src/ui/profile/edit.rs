@@ -167,7 +167,7 @@ fn button(text: &str, width: f32) -> egui::Button<'static> {
 }
 
 mod preview {
-    use notedeck::App;
+    use notedeck::{App, AppAction};
 
     use crate::{
         profile_state::ProfileState,
@@ -190,8 +190,13 @@ mod preview {
     }
 
     impl App for EditProfilePreivew {
-        fn update(&mut self, ctx: &mut notedeck::AppContext<'_>, ui: &mut egui::Ui) {
+        fn update(
+            &mut self,
+            ctx: &mut notedeck::AppContext<'_>,
+            ui: &mut egui::Ui,
+        ) -> Option<AppAction> {
             EditProfileView::new(&mut self.state, ctx.img_cache).ui(ui);
+            None
         }
     }
 

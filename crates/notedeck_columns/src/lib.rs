@@ -26,7 +26,7 @@ mod search;
 mod subscriptions;
 mod support;
 mod test_data;
-mod timeline;
+pub mod timeline;
 pub mod ui;
 mod unknowns;
 mod view_state;

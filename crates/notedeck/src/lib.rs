@@ -33,7 +33,7 @@ mod wallet;
 mod zaps;
 
 pub use accounts::{AccountData, Accounts, AccountsAction, AddAccountAction, SwitchAccountAction};
-pub use app::{App, Notedeck};
+pub use app::{App, AppAction, Notedeck};
 pub use args::Args;
 pub use context::AppContext;
 pub use error::{Error, FilterError, ZapError};

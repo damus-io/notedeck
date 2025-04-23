@@ -3,7 +3,8 @@ use crate::wallet::GlobalWallet;
 use crate::zaps::Zaps;
 use crate::{
     frame_history::FrameHistory, AccountStorage, Accounts, AppContext, Args, DataPath,
-    DataPathType, Directory, Images, NoteCache, RelayDebugView, ThemeHandler, UnknownIds,
+    DataPathType, Directory, Images, NoteAction, NoteCache, RelayDebugView, ThemeHandler,
+    UnknownIds,
 };
 use egui::ThemePreference;
 use egui_winit::clipboard::Clipboard;
@@ -15,8 +16,12 @@ use std::path::Path;
 use std::rc::Rc;
 use tracing::{error, info};
 
+pub enum AppAction {
+    Note(NoteAction),
+}
+
 pub trait App {
-    fn update(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui);
+    fn update(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> Option<AppAction>;
 }
 
 /// Main notedeck app framework

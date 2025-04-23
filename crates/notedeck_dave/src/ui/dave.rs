@@ -4,7 +4,7 @@ use crate::{
 };
 use egui::{Align, Key, KeyboardShortcut, Layout, Modifiers};
 use nostrdb::{Ndb, Transaction};
-use notedeck::{AppContext, NoteContext};
+use notedeck::{AppContext, NoteAction, NoteContext};
 use notedeck_ui::{icons::search_icon, NoteOptions, ProfilePic};
 
 /// DaveUi holds all of the data it needs to render itself
@@ -25,6 +25,10 @@ impl DaveResponse {
         DaveResponse {
             action: Some(action),
         }
+    }
+
+    fn note(action: NoteAction) -> DaveResponse {
+        Self::new(DaveAction::Note(action))
     }
 
     fn or(self, r: DaveResponse) -> DaveResponse {
@@ -51,6 +55,7 @@ pub enum DaveAction {
     /// The action generated when the user sends a message to dave
     Send,
     NewChat,
+    Note(NoteAction),
 }
 
 impl<'a> DaveUi<'a> {
@@ -112,18 +117,23 @@ impl<'a> DaveUi<'a> {
                         .show(ui, |ui| self.inputbox(ui))
                         .inner;
 
-                    egui::ScrollArea::vertical()
+                    let note_action = egui::ScrollArea::vertical()
                         .stick_to_bottom(true)
                         .auto_shrink([false; 2])
                         .show(ui, |ui| {
-                            Self::chat_frame(ui.ctx()).show(ui, |ui| {
-                                ui.vertical(|ui| {
-                                    self.render_chat(app_ctx, ui);
-                                });
-                            });
-                        });
+                            Self::chat_frame(ui.ctx())
+                                .show(ui, |ui| {
+                                    ui.vertical(|ui| self.render_chat(app_ctx, ui)).inner
+                                })
+                                .inner
+                        })
+                        .inner;
 
-                    r
+                    if let Some(action) = note_action {
+                        DaveResponse::note(action)
+                    } else {
+                        r
+                    }
                 })
                 .inner
             })
@@ -132,21 +142,36 @@ impl<'a> DaveUi<'a> {
     }
 
     /// Render a chat message (user, assistant, tool call/response, etc)
-    fn render_chat(&self, ctx: &mut AppContext, ui: &mut egui::Ui) {
+    fn render_chat(&self, ctx: &mut AppContext, ui: &mut egui::Ui) -> Option<NoteAction> {
+        let mut action: Option<NoteAction> = None;
         for message in self.chat {
-            match message {
-                Message::User(msg) => self.user_chat(msg, ui),
-                Message::Assistant(msg) => self.assistant_chat(msg, ui),
-                Message::ToolResponse(msg) => Self::tool_response_ui(msg, ui),
+            let r = match message {
+                Message::User(msg) => {
+                    self.user_chat(msg, ui);
+                    None
+                }
+                Message::Assistant(msg) => {
+                    self.assistant_chat(msg, ui);
+                    None
+                }
+                Message::ToolResponse(msg) => {
+                    Self::tool_response_ui(msg, ui);
+                    None
+                }
                 Message::System(_msg) => {
                     // system prompt is not rendered. Maybe we could
                     // have a debug option to show this
+                    None
                 }
-                Message::ToolCalls(toolcalls) => {
-                    Self::tool_calls_ui(ctx, toolcalls, ui);
-                }
+                Message::ToolCalls(toolcalls) => Self::tool_calls_ui(ctx, toolcalls, ui),
+            };
+
+            if r.is_some() {
+                action = r;
             }
         }
+
+        action
     }
 
     fn tool_response_ui(_tool_response: &ToolResponse, _ui: &mut egui::Ui) {
@@ -161,7 +186,11 @@ impl<'a> DaveUi<'a> {
     }
 
     /// The ai has asked us to render some notes, so we do that here
-    fn present_notes_ui(ctx: &mut AppContext, call: &PresentNotesCall, ui: &mut egui::Ui) {
+    fn present_notes_ui(
+        ctx: &mut AppContext,
+        call: &PresentNotesCall,
+        ui: &mut egui::Ui,
+    ) -> Option<NoteAction> {
         let mut note_context = NoteContext {
             ndb: ctx.ndb,
             img_cache: ctx.img_cache,
@@ -177,6 +206,7 @@ impl<'a> DaveUi<'a> {
             .show(ui, |ui| {
                 ui.with_layout(Layout::left_to_right(Align::Min), |ui| {
                     ui.spacing_mut().item_spacing.x = 10.0;
+                    let mut action: Option<NoteAction> = None;
 
                     for note_id in &call.note_ids {
                         let Ok(note) = note_context.ndb.get_note_by_id(&txn, note_id.bytes())
@@ -184,26 +214,51 @@ impl<'a> DaveUi<'a> {
                             continue;
                         };
 
-                        let mut note_view = notedeck_ui::NoteView::new(
-                            &mut note_context,
-                            &None,
-                            &note,
-                            NoteOptions::default(),
-                        )
-                        .preview_style();
+                        let r = ui
+                            .allocate_ui_with_layout(
+                                [400.0, 400.0].into(),
+                                Layout::centered_and_justified(ui.layout().main_dir()),
+                                |ui| {
+                                    notedeck_ui::NoteView::new(
+                                        &mut note_context,
+                                        &None,
+                                        &note,
+                                        NoteOptions::default(),
+                                    )
+                                    .preview_style()
+                                    .show(ui)
+                                },
+                            )
+                            .inner;
 
-                        // TODO: remove current account thing, just add to note context
-                        ui.add_sized([400.0, 400.0], &mut note_view);
+                        if r.action.is_some() {
+                            action = r.action;
+                        }
                     }
-                });
-            });
+
+                    action
+                })
+                .inner
+            })
+            .inner
     }
 
-    fn tool_calls_ui(ctx: &mut AppContext, toolcalls: &[ToolCall], ui: &mut egui::Ui) {
+    fn tool_calls_ui(
+        ctx: &mut AppContext,
+        toolcalls: &[ToolCall],
+        ui: &mut egui::Ui,
+    ) -> Option<NoteAction> {
+        let mut note_action: Option<NoteAction> = None;
+
         ui.vertical(|ui| {
             for call in toolcalls {
                 match call.calls() {
-                    ToolCalls::PresentNotes(call) => Self::present_notes_ui(ctx, call, ui),
+                    ToolCalls::PresentNotes(call) => {
+                        let r = Self::present_notes_ui(ctx, call, ui);
+                        if r.is_some() {
+                            note_action = r;
+                        }
+                    }
                     ToolCalls::Invalid(err) => {
                         ui.label(format!("invalid tool call: {:?}", err));
                     }
@@ -219,6 +274,8 @@ impl<'a> DaveUi<'a> {
                 }
             }
         });
+
+        note_action
     }
 
     fn inputbox(&mut self, ui: &mut egui::Ui) -> DaveResponse {

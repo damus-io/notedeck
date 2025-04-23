@@ -691,7 +691,7 @@ mod preview {
     use crate::media_upload::Nip94Event;
 
     use super::*;
-    use notedeck::{App, AppContext};
+    use notedeck::{App, AppAction, AppContext};
 
     pub struct PostPreview {
         draft: Draft,
@@ -730,7 +730,7 @@ mod preview {
     }
 
     impl App for PostPreview {
-        fn update(&mut self, app: &mut AppContext<'_>, ui: &mut egui::Ui) {
+        fn update(&mut self, app: &mut AppContext<'_>, ui: &mut egui::Ui) -> Option<AppAction> {
             let txn = Transaction::new(app.ndb).expect("txn");
             let mut note_context = NoteContext {
                 ndb: app.ndb,
@@ -749,6 +749,8 @@ mod preview {
                 NoteOptions::default(),
             )
             .ui(&txn, ui);
+
+            None
         }
     }
 

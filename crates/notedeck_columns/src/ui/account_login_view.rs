@@ -5,8 +5,7 @@ use egui::{
 };
 use egui::{Layout, TextEdit};
 use enostr::Keypair;
-use notedeck::fonts::get_font_size;
-use notedeck::NotedeckTextStyle;
+use notedeck::{fonts::get_font_size, AppAction, NotedeckTextStyle};
 
 pub struct AccountLoginView<'a> {
     manager: &'a mut AcquireKeyState,
@@ -155,8 +154,14 @@ mod preview {
     }
 
     impl App for AccountLoginPreview {
-        fn update(&mut self, _app_ctx: &mut AppContext<'_>, ui: &mut egui::Ui) {
+        fn update(
+            &mut self,
+            _app_ctx: &mut AppContext<'_>,
+            ui: &mut egui::Ui,
+        ) -> Option<AppAction> {
             AccountLoginView::new(&mut self.manager).ui(ui);
+
+            None
         }
     }
 

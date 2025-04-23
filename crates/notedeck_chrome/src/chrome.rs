@@ -6,9 +6,13 @@ use egui::{vec2, Button, Label, Layout, RichText, ThemePreference, Widget};
 use egui_extras::{Size, StripBuilder};
 use nostrdb::{ProfileRecord, Transaction};
 use notedeck::{
-    profile::get_profile_url, App, AppContext, NotedeckTextStyle, UserAccount, WalletType,
+    profile::get_profile_url, App, AppAction, AppContext, NoteAction, NotedeckTextStyle,
+    UserAccount, WalletType,
 };
-use notedeck_columns::Damus;
+use notedeck_columns::{
+    timeline::{ThreadSelection, TimelineKind},
+    Damus, Route,
+};
 use notedeck_dave::{Dave, DaveAvatar};
 use notedeck_ui::{AnimationHelper, ProfilePic};
 
@@ -179,7 +183,9 @@ impl Chrome {
                     );
                     */
 
-                    self.apps[self.active as usize].update(ctx, ui);
+                    if let Some(action) = self.apps[self.active as usize].update(ctx, ui) {
+                        chrome_handle_app_action(self, ctx, action, ui);
+                    }
                 });
             });
 
@@ -297,11 +303,12 @@ impl Chrome {
 }
 
 impl notedeck::App for Chrome {
-    fn update(&mut self, ctx: &mut notedeck::AppContext, ui: &mut egui::Ui) {
+    fn update(&mut self, ctx: &mut notedeck::AppContext, ui: &mut egui::Ui) -> Option<AppAction> {
         if let Some(action) = self.show(ctx, ui) {
             action.process(ctx, self, ui);
         }
         // TODO: unify this constant with the columns side panel width. ui crate?
+        None
     }
 }
 
@@ -451,5 +458,64 @@ fn wallet_button() -> impl Widget {
         );
 
         helper.take_animation_response()
+    }
+}
+
+fn chrome_handle_app_action(
+    chrome: &mut Chrome,
+    ctx: &mut AppContext,
+    action: AppAction,
+    ui: &mut egui::Ui,
+) {
+    match action {
+        AppAction::Note(note_action) => match note_action {
+            NoteAction::Hashtag(hashtag) => {
+                ChromePanelAction::columns_navigate(
+                    ctx,
+                    chrome,
+                    Route::Timeline(TimelineKind::Hashtag(hashtag)),
+                );
+            }
+
+            NoteAction::Reply(note_id) => {
+                ChromePanelAction::columns_navigate(ctx, chrome, Route::Reply(note_id));
+            }
+
+            NoteAction::Zap(_) => {
+                todo!("implement note zaps in chrome");
+            }
+
+            NoteAction::Context(context) => 'brk: {
+                let txn = Transaction::new(ctx.ndb).unwrap();
+                let Some(note) = ctx.ndb.get_note_by_key(&txn, context.note_key).ok() else {
+                    break 'brk;
+                };
+
+                context.action.process(ui, &note, ctx.pool);
+            }
+
+            NoteAction::Quote(note_id) => {
+                ChromePanelAction::columns_navigate(ctx, chrome, Route::Quote(note_id));
+            }
+
+            NoteAction::Profile(pubkey) => {
+                ChromePanelAction::columns_navigate(
+                    ctx,
+                    chrome,
+                    Route::Timeline(TimelineKind::Profile(pubkey)),
+                );
+            }
+
+            NoteAction::Note(note_id) => {
+                let txn = Transaction::new(ctx.ndb).unwrap();
+                let thread = ThreadSelection::from_note_id(ctx.ndb, ctx.note_cache, &txn, note_id);
+
+                match thread {
+                    Ok(t) => ChromePanelAction::columns_navigate(ctx, chrome, Route::thread(t)),
+
+                    Err(err) => tracing::error!("{:?}", err),
+                }
+            }
+        },
     }
 }

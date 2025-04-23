@@ -12,7 +12,7 @@ use crate::{
     Result,
 };
 
-use notedeck::{Accounts, AppContext, DataPath, DataPathType, FilterState, UnknownIds};
+use notedeck::{Accounts, AppAction, AppContext, DataPath, DataPathType, FilterState, UnknownIds};
 use notedeck_ui::NoteOptions;
 
 use enostr::{ClientMessage, Keypair, PoolRelay, Pubkey, RelayEvent, RelayMessage, RelayPool};
@@ -639,7 +639,7 @@ fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus, ctx: &mut App
 }
 
 impl notedeck::App for Damus {
-    fn update(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) {
+    fn update(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> Option<AppAction> {
         /*
         self.app
             .frame_history
@@ -648,6 +648,8 @@ impl notedeck::App for Damus {
 
         update_damus(self, ctx, ui.ctx());
         render_damus(self, ctx, ui);
+
+        None
     }
 }
 

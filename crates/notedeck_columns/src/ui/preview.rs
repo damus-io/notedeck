@@ -1,3 +1,5 @@
+use notedeck::AppAction;
+
 pub struct PreviewConfig {
     pub is_mobile: bool,
 }
@@ -20,7 +22,12 @@ impl PreviewApp {
 }
 
 impl notedeck::App for PreviewApp {
-    fn update(&mut self, app_ctx: &mut notedeck::AppContext<'_>, ui: &mut egui::Ui) {
+    fn update(
+        &mut self,
+        app_ctx: &mut notedeck::AppContext<'_>,
+        ui: &mut egui::Ui,
+    ) -> Option<AppAction> {
         self.view.update(app_ctx, ui);
+        None
     }
 }

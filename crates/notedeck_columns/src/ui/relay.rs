@@ -274,7 +274,7 @@ fn get_connection_icon(status: RelayStatus) -> egui::Image<'static> {
 mod preview {
     use super::*;
     use crate::test_data::sample_pool;
-    use notedeck::{App, AppContext};
+    use notedeck::{App, AppAction, AppContext};
 
     pub struct RelayViewPreview {
         pool: RelayPool,
@@ -289,7 +289,7 @@ mod preview {
     }
 
     impl App for RelayViewPreview {
-        fn update(&mut self, app: &mut AppContext<'_>, ui: &mut egui::Ui) {
+        fn update(&mut self, app: &mut AppContext<'_>, ui: &mut egui::Ui) -> Option<AppAction> {
             self.pool.try_recv();
             let mut id_string_map = HashMap::new();
             RelayView::new(
@@ -298,6 +298,7 @@ mod preview {
                 &mut id_string_map,
             )
             .ui(ui);
+            None
         }
     }
 
