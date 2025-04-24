@@ -88,7 +88,7 @@ fn execute_note_action(
             });
         }
         NoteAction::Hashtag(htag) => {
-            let kind = TimelineKind::Hashtag(htag.clone());
+            let kind = TimelineKind::Hashtag(vec![htag.clone()]);
             router_action = Some(RouterAction::route_to(Route::Timeline(kind.clone())));
             timeline_res = timeline_cache
                 .open(ndb, note_cache, txn, pool, &kind)

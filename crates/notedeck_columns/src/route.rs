@@ -461,7 +461,7 @@ impl fmt::Display for Route {
                 TimelineKind::Universe => write!(f, "Universe"),
                 TimelineKind::Generic(_) => write!(f, "Custom"),
                 TimelineKind::Search(_) => write!(f, "Search"),
-                TimelineKind::Hashtag(ht) => write!(f, "Hashtag ({})", ht),
+                TimelineKind::Hashtag(ht) => write!(f, "Hashtags ({})", ht.join(" ")),
                 TimelineKind::Profile(_id) => write!(f, "Profile"),
             },
             Route::Thread(_) => write!(f, "Thread"),

@@ -474,7 +474,7 @@ impl<'a> AddColumnView<'a> {
             option: AddColumnOption::UndecidedNotification,
         });
         vec.push(ColumnOptionData {
-            title: "Hashtag",
+            title: "Hashtags",
             description: "Stay up to date with a certain hashtag",
             icon: egui::include_image!("../../../../assets/icons/hashtag_icon_4x.png"),
             option: AddColumnOption::UndecidedHashtag,
@@ -754,7 +754,7 @@ pub fn hashtag_ui(
 
         let text_edit = egui::TextEdit::singleline(text_buffer)
             .hint_text(
-                RichText::new("Enter the desired hashtag here")
+                RichText::new("Enter the desired hashtags here (for multiple space-separated)")
                     .text_style(NotedeckTextStyle::Body.text_style()),
             )
             .vertical_align(Align::Center)
@@ -775,8 +775,13 @@ pub fn hashtag_ui(
         }
 
         if handle_user_input && !text_buffer.is_empty() {
-            let resp =
-                AddColumnResponse::Timeline(TimelineKind::Hashtag(sanitize_hashtag(text_buffer)));
+            let resp = AddColumnResponse::Timeline(TimelineKind::Hashtag(
+                sanitize_hashtag(text_buffer)
+                    .split_whitespace()
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_lowercase().to_string())
+                    .collect::<Vec<_>>(),
+            ));
             id_string_map.remove(&id);
             Some(resp)
         } else {
