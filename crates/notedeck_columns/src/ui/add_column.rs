@@ -753,7 +753,7 @@ pub fn hashtag_ui(
 
         let text_edit = egui::TextEdit::singleline(text_buffer)
             .hint_text(
-                RichText::new("Enter the desired hashtag here")
+                RichText::new("Enter the desired hashtags here (for multiple space-separated)")
                     .text_style(NotedeckTextStyle::Body.text_style()),
             )
             .vertical_align(Align::Center)
@@ -767,8 +767,13 @@ pub fn hashtag_ui(
             .add_sized(egui::vec2(50.0, 40.0), add_column_button())
             .clicked()
         {
-            let resp =
-                AddColumnResponse::Timeline(TimelineKind::Hashtag(sanitize_hashtag(text_buffer)));
+            let resp = AddColumnResponse::Timeline(TimelineKind::Hashtag(
+                sanitize_hashtag(text_buffer)
+                    .split_whitespace()
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>(),
+            ));
             id_string_map.remove(&id);
             Some(resp)
         } else {
