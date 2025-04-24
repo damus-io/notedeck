@@ -245,11 +245,11 @@ impl Timeline {
 
     pub fn hashtag(hashtag: String) -> Self {
         let hashtag = hashtag.to_lowercase();
-        let htag: &str = &hashtag;
+        let htag: Vec<&str> = hashtag.split(" ").filter(|t| !t.is_empty()).collect();
         let filter = Filter::new()
             .kinds([1])
             .limit(filter::default_limit())
-            .tags([htag], 't')
+            .tags(htag, 't')
             .build();
 
         Timeline::new(
