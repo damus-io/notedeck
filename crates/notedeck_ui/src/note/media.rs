@@ -98,50 +98,6 @@ pub(crate) fn image_carousel(
             .fixed_pos(ui.ctx().screen_rect().min)
             .frame(egui::Frame::NONE)
             .show(ui.ctx(), |ui| {
-                let screen_rect = ui.ctx().screen_rect();
-
-                // escape
-                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                    ui.ctx().memory_mut(|mem| {
-                        mem.data.insert_temp(carousel_id.with("show_popup"), false);
-                    });
-                }
-
-                // background
-                ui.painter()
-                    .rect_filled(screen_rect, 0.0, Color32::from_black_alpha(230));
-
-                // zoom init
-                let zoom_id = carousel_id.with("zoom_level");
-                let mut zoom = ui
-                    .ctx()
-                    .memory(|mem| mem.data.get_temp(zoom_id).unwrap_or(1.0_f32));
-
-                // pan init
-                let pan_id = carousel_id.with("pan_offset");
-                let mut pan_offset = ui
-                    .ctx()
-                    .memory(|mem| mem.data.get_temp(pan_id).unwrap_or(egui::Vec2::ZERO));
-
-                // zoom & scroll
-                if ui.input(|i| i.pointer.hover_pos()).is_some() {
-                    let scroll_delta = ui.input(|i| i.smooth_scroll_delta);
-                    if scroll_delta.y != 0.0 {
-                        let zoom_factor = if scroll_delta.y > 0.0 { 1.05 } else { 0.95 };
-                        zoom *= zoom_factor;
-                        zoom = zoom.clamp(0.1, 5.0);
-
-                        if zoom <= 1.0 {
-                            pan_offset = egui::Vec2::ZERO;
-                        }
-
-                        ui.ctx().memory_mut(|mem| {
-                            mem.data.insert_temp(zoom_id, zoom);
-                            mem.data.insert_temp(pan_id, pan_offset);
-                        });
-                    }
-                }
-
                 ui.centered_and_justified(|ui| {
                     render_images(
                         ui,
@@ -149,13 +105,57 @@ pub(crate) fn image_carousel(
                         &image,
                         ImageType::Content,
                         cache_type,
-                        |ui| {
-                            ui.allocate_space(egui::vec2(spinsz, spinsz));
-                        },
-                        |ui, _| {
-                            ui.allocate_space(egui::vec2(spinsz, spinsz));
-                        },
+                        |_| {},
+                        |_, _| {},
                         |ui, url, renderable_media, gifs| {
+                            let screen_rect = ui.ctx().screen_rect();
+
+                            // escape
+                            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                                ui.ctx().memory_mut(|mem| {
+                                    mem.data.insert_temp(carousel_id.with("show_popup"), false);
+                                });
+                            }
+
+                            // background
+                            ui.painter().rect_filled(
+                                screen_rect,
+                                0.0,
+                                Color32::from_black_alpha(230),
+                            );
+
+                            // zoom init
+                            let zoom_id = carousel_id.with("zoom_level");
+                            let mut zoom = ui
+                                .ctx()
+                                .memory(|mem| mem.data.get_temp(zoom_id).unwrap_or(1.0_f32));
+
+                            // pan init
+                            let pan_id = carousel_id.with("pan_offset");
+                            let mut pan_offset = ui.ctx().memory(|mem| {
+                                mem.data.get_temp(pan_id).unwrap_or(egui::Vec2::ZERO)
+                            });
+
+                            // zoom & scroll
+                            if ui.input(|i| i.pointer.hover_pos()).is_some() {
+                                let scroll_delta = ui.input(|i| i.smooth_scroll_delta);
+                                if scroll_delta.y != 0.0 {
+                                    let zoom_factor =
+                                        if scroll_delta.y > 0.0 { 1.05 } else { 0.95 };
+                                    zoom *= zoom_factor;
+                                    zoom = zoom.clamp(0.1, 5.0);
+
+                                    if zoom <= 1.0 {
+                                        pan_offset = egui::Vec2::ZERO;
+                                    }
+
+                                    ui.ctx().memory_mut(|mem| {
+                                        mem.data.insert_temp(zoom_id, zoom);
+                                        mem.data.insert_temp(pan_id, pan_offset);
+                                    });
+                                }
+                            }
+
                             let texture = handle_repaint(
                                 ui,
                                 retrieve_latest_texture(&image, gifs, renderable_media),
