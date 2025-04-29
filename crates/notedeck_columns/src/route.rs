@@ -330,10 +330,14 @@ impl fmt::Display for Route {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Route::Timeline(kind) => match kind {
-                TimelineKind::List(ListKind::Contact(_pk)) => write!(f, "Contacts"),
-                TimelineKind::Algo(AlgoTimeline::LastPerPubkey(ListKind::Contact(_))) => {
-                    write!(f, "Last Per Pubkey (Contact)")
-                }
+                TimelineKind::List(list_kind) => match list_kind {
+                    ListKind::Contact(_) => write!(f, "Contacts"),
+                    ListKind::FollowPack(_) => write!(f, "Follow Pack"),
+                },
+                TimelineKind::Algo(AlgoTimeline::LastPerPubkey(list_kind)) => match list_kind {
+                    ListKind::Contact(_) => write!(f, "Last Per Pubkey (Contacts)"),
+                    ListKind::FollowPack(_) => write!(f, "Last Per Pubkey (Follow Pack)"),
+                },
                 TimelineKind::Notifications(_) => write!(f, "Notifications"),
                 TimelineKind::Universe => write!(f, "Universe"),
                 TimelineKind::Generic(_) => write!(f, "Custom"),

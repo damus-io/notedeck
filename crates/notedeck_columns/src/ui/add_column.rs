@@ -671,7 +671,8 @@ pub fn render_add_column_routes(
                 AlgoOption::LastPerPubkey(Decision::Decided(list_kind)) => {
                     let maybe_timeline = {
                         let txn = Transaction::new(ctx.ndb).unwrap();
-                        TimelineKind::last_per_pubkey(list_kind).into_timeline(&txn, ctx.ndb)
+                        TimelineKind::last_per_pubkey(list_kind.clone())
+                            .into_timeline(&txn, ctx.ndb)
                     };
 
                     if let Some(mut timeline) = maybe_timeline {
@@ -698,7 +699,7 @@ pub fn render_add_column_routes(
 
                         // TODO: spin off the list search here instead
 
-                        ui.label(format!("error: could not find {:?}", list_kind));
+                        ui.label(format!("error: could not find {:?}", &list_kind));
                     }
                 }
             },

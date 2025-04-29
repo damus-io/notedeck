@@ -201,13 +201,13 @@ pub struct Timeline {
 
 impl Timeline {
     /// Create a timeline from a contact list
-    pub fn contact_list(contact_list: &Note, pubkey: &[u8; 32]) -> Result<Self> {
+    pub fn contact_list(contact_list: &Note, pubkey: Pubkey) -> Result<Self> {
         let with_hashtags = false;
-        let filter = filter::filter_from_tags(contact_list, Some(pubkey), with_hashtags)?
+        let filter = filter::filter_from_tags(contact_list, Some(pubkey.as_ref()), with_hashtags)?
             .into_follow_filter();
 
         Ok(Timeline::new(
-            TimelineKind::contact_list(Pubkey::new(*pubkey)),
+            TimelineKind::contact_list(pubkey),
             FilterState::ready(filter),
             TimelineTab::full_tabs(),
         ))
@@ -231,13 +231,13 @@ impl Timeline {
         )
     }
 
-    pub fn last_per_pubkey(list: &Note, list_kind: &ListKind) -> Result<Self> {
+    pub fn last_per_pubkey(list: &Note, list_kind: ListKind) -> Result<Self> {
         let kind = 1;
         let notes_per_pk = 1;
         let filter = filter::last_n_per_pubkey_from_tags(list, kind, notes_per_pk)?;
 
         Ok(Timeline::new(
-            TimelineKind::last_per_pubkey(*list_kind),
+            TimelineKind::last_per_pubkey(list_kind),
             FilterState::ready(filter),
             TimelineTab::only_notes_and_replies(),
         ))
@@ -358,7 +358,10 @@ impl Timeline {
             let note = if let Ok(note) = ndb.get_note_by_key(txn, *key) {
                 note
             } else {
-                error!("hit race condition in poll_notes_into_view: https://github.com/damus-io/nostrdb/issues/35 note {:?} was not added to timeline", key);
+                error!(
+                    "hit race condition in poll_notes_into_view: https://github.com/damus-io/nostrdb/issues/35 note {:?} was not added to timeline",
+                    key
+                );
                 continue;
             };
 
@@ -681,7 +684,7 @@ fn setup_timeline_nostrdb_sub(
     let filter_state = timeline
         .filter
         .get_any_ready()
-        .ok_or(Error::App(notedeck::Error::empty_contact_list()))?
+        .ok_or(Error::App(notedeck::Error::empty_follow_list()))?
         .to_owned();
 
     setup_initial_timeline(ndb, timeline, note_cache, &filter_state)?;
@@ -730,7 +733,7 @@ pub fn is_timeline_ready(
     let filter = {
         let txn = Transaction::new(ndb).expect("txn");
         let note = ndb.get_note_by_key(&txn, note_key).expect("note");
-        let add_pk = timeline.kind.pubkey().map(|pk| pk.bytes());
+        let add_pk = timeline.kind.pubkey();
         filter::filter_from_tags(&note, add_pk, with_hashtags).map(|f| f.into_follow_filter())
     };
 
@@ -747,7 +750,7 @@ pub fn is_timeline_ready(
             error!("got broken when building filter {err}");
             timeline
                 .filter
-                .set_relay_state(relay_id, FilterState::broken(FilterError::EmptyContactList));
+                .set_relay_state(relay_id, FilterState::broken(FilterError::EmptyFollowList));
             false
         }
         Ok(filter) => {

@@ -1,4 +1,4 @@
-use enostr::Pubkey;
+use enostr::{Pubkey, PubkeyRef};
 use nostrdb::{Filter, FilterBuilder};
 use rmpv::Value;
 use tokenator::{ParseError, TokenParser, TokenSerializable, TokenWriter};
@@ -120,8 +120,8 @@ impl SearchQuery {
         Self::decode_value(&value)
     }
 
-    pub fn author(&self) -> Option<&Pubkey> {
-        self.author.as_ref()
+    pub fn author(&self) -> Option<PubkeyRef> {
+        self.author.as_ref().map(|pk| pk.as_ref())
     }
 }
 

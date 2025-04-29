@@ -1,5 +1,6 @@
 use crate::error::{Error, FilterError};
 use crate::note::NoteRef;
+use enostr::PubkeyRef;
 use nostrdb::{Filter, FilterBuilder, Note, Subscription};
 use std::collections::HashMap;
 use tracing::{debug, warn};
@@ -247,7 +248,7 @@ pub fn last_n_per_pubkey_from_tags(
 /// from a contact list
 pub fn filter_from_tags(
     note: &Note,
-    add_pubkey: Option<&[u8; 32]>,
+    add_pubkey: Option<PubkeyRef>,
     with_hashtags: bool,
 ) -> Result<FilteredTags, Error> {
     let mut author_filter = Filter::new();
@@ -282,7 +283,7 @@ pub fn filter_from_tags(
             };
 
             if let Some(pk) = add_pubkey {
-                if author == pk {
+                if author == pk.bytes() {
                     // we don't need to add it afterwards
                     has_added_pubkey = true;
                 }
@@ -305,7 +306,7 @@ pub fn filter_from_tags(
     // some additional ad-hoc logic for adding a pubkey
     if let Some(pk) = add_pubkey {
         if !has_added_pubkey {
-            author_filter.add_id_element(pk)?;
+            author_filter.add_id_element(pk.bytes())?;
             author_count += 1;
         }
     }
@@ -314,12 +315,12 @@ pub fn filter_from_tags(
     hashtag_filter.end_field();
 
     if author_count == 0 && hashtag_count == 0 {
-        warn!("no authors or hashtags found in contact list");
-        return Err(Error::empty_contact_list());
+        warn!("no authors or hashtags found in follow list");
+        return Err(Error::empty_follow_list());
     }
 
     debug!(
-        "adding {} authors and {} hashtags to contact filter",
+        "adding {} authors and {} hashtags to follow filter",
         author_count, hashtag_count
     );
 

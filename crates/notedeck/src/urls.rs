@@ -258,8 +258,8 @@ fn is_mime_supported(mime: &mime_guess::Mime) -> bool {
 
 fn url_has_supported_mime(url: &str) -> MimeHostedAtUrl {
     if let Ok(url) = Url::parse(url) {
-        if let Some(path) = url.path_segments() {
-            if let Some(file_name) = path.last() {
+        if let Some(mut path) = url.path_segments() {
+            if let Some(file_name) = path.next_back() {
                 if let Some(ext) = std::path::Path::new(file_name)
                     .extension()
                     .and_then(|ext| ext.to_str())
