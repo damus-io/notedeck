@@ -9,8 +9,8 @@ use notedeck::{
 use poll_promise::Promise;
 use std::collections::VecDeque;
 use std::io::Cursor;
-use std::path;
 use std::path::PathBuf;
+use std::path::{self, Path};
 use std::sync::mpsc;
 use std::sync::mpsc::SyncSender;
 use std::thread;
@@ -356,19 +356,19 @@ pub enum ImageType {
 }
 
 pub fn fetch_img(
-    img_cache: &MediaCache,
+    img_cache_path: &Path,
     ctx: &egui::Context,
     url: &str,
     imgtyp: ImageType,
     cache_type: MediaCacheType,
 ) -> Promise<Result<TexturedImage, notedeck::Error>> {
     let key = MediaCache::key(url);
-    let path = img_cache.cache_dir.join(key);
+    let path = img_cache_path.join(key);
 
     if path.exists() {
         fetch_img_from_disk(ctx, url, &path, cache_type)
     } else {
-        fetch_img_from_net(&img_cache.cache_dir, ctx, url, imgtyp, cache_type)
+        fetch_img_from_net(img_cache_path, ctx, url, imgtyp, cache_type)
     }
 
     // TODO: fetch image from local cache
@@ -468,7 +468,7 @@ fn render_media_cache(
     let m_cached_promise = cache.map().get(url);
 
     if m_cached_promise.is_none() {
-        let res = crate::images::fetch_img(cache, ui.ctx(), url, img_type, cache_type);
+        let res = crate::images::fetch_img(&cache.cache_dir, ui.ctx(), url, img_type, cache_type);
         cache.map_mut().insert(url.to_owned(), res);
     }
 
@@ -479,7 +479,7 @@ fn render_media_cache(
                 Some(Err(err)) => {
                     let err = err.to_string();
                     let no_pfp = crate::images::fetch_img(
-                        cache,
+                        &cache.cache_dir,
                         ui.ctx(),
                         notedeck::profile::no_pfp_url(),
                         ImageType::Profile(128),
