@@ -82,3 +82,13 @@ impl Error {
         Error::Filter(FilterError::EmptyContactList)
     }
 }
+
+pub fn show_one_error_message(ui: &mut egui::Ui, message: &str) {
+    let id = ui.id().with(("error", message));
+    let res: Option<()> = ui.ctx().data(|d| d.get_temp(id));
+
+    if res.is_none() {
+        ui.ctx().data_mut(|d| d.insert_temp(id, ()));
+        tracing::error!(message);
+    }
+}
