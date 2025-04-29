@@ -14,6 +14,7 @@ use egui::{
 };
 use enostr::{FilledKeypair, FullKeypair, NoteId, Pubkey, RelayPool};
 use nostrdb::{Ndb, Transaction};
+use notedeck::{Images, MediaCacheType};
 use notedeck_ui::jobs::JobsCache;
 use notedeck_ui::{
     gif::{handle_repaint, retrieve_latest_texture},
@@ -429,59 +430,28 @@ impl<'a, 'd> PostView<'a, 'd> {
                 (300, 300)
             };
 
-            if let Some(cache_type) =
+            let Some(cache_type) =
                 supported_mime_hosted_at_url(&mut self.note_context.img_cache.urls, &media.url)
-            {
-                render_images(
-                    ui,
-                    self.note_context.img_cache,
-                    &media.url,
-                    notedeck_ui::images::ImageType::Content,
-                    cache_type,
-                    |ui| {
-                        ui.spinner();
-                    },
-                    |_, e| {
-                        self.draft.upload_errors.push(e.to_string());
-                        error!("{e}");
-                    },
-                    |ui, url, renderable_media, gifs| {
-                        let media_size = vec2(width as f32, height as f32);
-                        let max_size = vec2(300.0, 300.0);
-                        let size = if media_size.x > max_size.x || media_size.y > max_size.y {
-                            max_size
-                        } else {
-                            media_size
-                        };
-
-                        let texture_handle = handle_repaint(
-                            ui,
-                            retrieve_latest_texture(url, gifs, renderable_media),
-                        );
-                        let img_resp = ui.add(
-                            egui::Image::new(texture_handle)
-                                .max_size(size)
-                                .corner_radius(12.0),
-                        );
-
-                        let remove_button_rect = {
-                            let top_left = img_resp.rect.left_top();
-                            let spacing = 13.0;
-                            let center = Pos2::new(top_left.x + spacing, top_left.y + spacing);
-                            egui::Rect::from_center_size(center, egui::vec2(26.0, 26.0))
-                        };
-                        if show_remove_upload_button(ui, remove_button_rect).clicked() {
-                            to_remove.push(i);
-                        }
-                        ui.advance_cursor_after_rect(img_resp.rect);
-                    },
-                );
-            } else {
+            else {
                 self.draft
                     .upload_errors
                     .push("Uploaded media is not supported.".to_owned());
                 error!("Unsupported mime type at url: {}", &media.url);
-            }
+                continue;
+            };
+
+            let url = &media.url;
+            render_post_view_media(
+                ui,
+                &mut self.draft.upload_errors,
+                &mut to_remove,
+                i,
+                width,
+                height,
+                self.note_context.img_cache,
+                cache_type,
+                url,
+            );
         }
         to_remove.reverse();
         for i in to_remove {
@@ -559,6 +529,62 @@ impl<'a, 'd> PostView<'a, 'd> {
             self.draft.upload_errors.remove(i);
         }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_post_view_media(
+    ui: &mut egui::Ui,
+    upload_errors: &mut Vec<String>,
+    to_remove: &mut Vec<usize>,
+    cur_index: usize,
+    width: u32,
+    height: u32,
+    images: &mut Images,
+    cache_type: MediaCacheType,
+    url: &str,
+) {
+    render_images(
+        ui,
+        images,
+        url,
+        notedeck_ui::images::ImageType::Content,
+        cache_type,
+        |ui| {
+            ui.spinner();
+        },
+        |_, e| {
+            upload_errors.push(e.to_string());
+            error!("{e}");
+        },
+        |ui, url, renderable_media, gifs| {
+            let media_size = vec2(width as f32, height as f32);
+            let max_size = vec2(300.0, 300.0);
+            let size = if media_size.x > max_size.x || media_size.y > max_size.y {
+                max_size
+            } else {
+                media_size
+            };
+
+            let texture_handle =
+                handle_repaint(ui, retrieve_latest_texture(url, gifs, renderable_media));
+            let img_resp = ui.add(
+                egui::Image::new(texture_handle)
+                    .max_size(size)
+                    .corner_radius(12.0),
+            );
+
+            let remove_button_rect = {
+                let top_left = img_resp.rect.left_top();
+                let spacing = 13.0;
+                let center = Pos2::new(top_left.x + spacing, top_left.y + spacing);
+                egui::Rect::from_center_size(center, egui::vec2(26.0, 26.0))
+            };
+            if show_remove_upload_button(ui, remove_button_rect).clicked() {
+                to_remove.push(cur_index);
+            }
+            ui.advance_cursor_after_rect(img_resp.rect);
+        },
+    );
 }
 
 fn post_button(interactive: bool) -> impl egui::Widget {
