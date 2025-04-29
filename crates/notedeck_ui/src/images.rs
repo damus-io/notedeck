@@ -468,7 +468,7 @@ fn render_media_cache(
     let m_cached_promise = cache.map().get(url);
 
     if m_cached_promise.is_none() {
-        let res = crate::images::fetch_img(cache, ui.ctx(), url, img_type, cache_type.clone());
+        let res = crate::images::fetch_img(cache, ui.ctx(), url, img_type, cache_type);
         cache.map_mut().insert(url.to_owned(), res);
     }
 

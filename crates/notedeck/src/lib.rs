@@ -41,8 +41,8 @@ pub use error::{Error, FilterError, ZapError};
 pub use filter::{FilterState, FilterStates, UnifiedSubscription};
 pub use fonts::NamedFontFamily;
 pub use imgcache::{
-    Animation, GifState, GifStateMap, ImageFrame, Images, MediaCache, MediaCacheType,
-    MediaCacheValue, TextureFrame, TexturedImage,
+    Animation, GifState, GifStateMap, ImageFrame, Images, LoadableTextureState, MediaCache,
+    MediaCacheType, TextureFrame, TextureState, TexturedImage, TexturesCache,
 };
 pub use job_pool::JobPool;
 pub use muted::{MuteFun, Muted};

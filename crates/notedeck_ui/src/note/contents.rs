@@ -318,7 +318,7 @@ fn image_carousel(
         ui.ctx().memory(|mem| {
             mem.data
                 .get_temp::<(String, MediaCacheType)>(carousel_id.with("current_image"))
-                .unwrap_or_else(|| (images[0].0.clone(), images[0].1.clone()))
+                .unwrap_or_else(|| (images[0].0.clone(), images[0].1))
         })
     });
 
@@ -333,7 +333,7 @@ fn image_carousel(
                             img_cache,
                             &image,
                             ImageType::Content,
-                            cache_type.clone(),
+                            cache_type,
                             |ui| {
                                 ui.allocate_space(egui::vec2(spinsz, spinsz));
                             },
@@ -360,7 +360,7 @@ fn image_carousel(
                                         mem.data.insert_temp(carousel_id.with("show_popup"), true);
                                         mem.data.insert_temp(
                                             carousel_id.with("current_image"),
-                                            (image.clone(), cache_type.clone()),
+                                            (image.clone(), cache_type),
                                         );
                                     });
                                 }
@@ -438,7 +438,7 @@ fn image_carousel(
                         img_cache,
                         &image,
                         ImageType::Content,
-                        cache_type.clone(),
+                        cache_type,
                         |ui| {
                             ui.allocate_space(egui::vec2(spinsz, spinsz));
                         },
