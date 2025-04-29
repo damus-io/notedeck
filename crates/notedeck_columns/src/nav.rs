@@ -134,7 +134,7 @@ impl RenderNavResponse {
 
     #[must_use = "Make sure to save columns if result is true"]
     pub fn process_render_nav_response(
-        &self,
+        self,
         app: &mut Damus,
         ctx: &mut AppContext<'_>,
         ui: &mut egui::Ui,
@@ -142,12 +142,7 @@ impl RenderNavResponse {
         let mut switching_occured: bool = false;
         let col = self.column;
 
-        if let Some(action) = self
-            .response
-            .response
-            .as_ref()
-            .or(self.response.title_response.as_ref())
-        {
+        if let Some(action) = self.response.response.or(self.response.title_response) {
             // start returning when we're finished posting
             match action {
                 RenderNavAction::Back => {

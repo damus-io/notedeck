@@ -501,7 +501,7 @@ fn chrome_handle_app_action(
             let txn = Transaction::new(ctx.ndb).unwrap();
 
             notedeck_columns::actionbar::execute_and_process_note_action(
-                &note_action,
+                note_action,
                 ctx.ndb,
                 columns
                     .decks_cache

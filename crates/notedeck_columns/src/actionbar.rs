@@ -24,7 +24,7 @@ pub enum TimelineOpenResult {
 /// The note action executor for notedeck_columns
 #[allow(clippy::too_many_arguments)]
 fn execute_note_action(
-    action: &NoteAction,
+    action: NoteAction,
     ndb: &Ndb,
     router: &mut Router<Route>,
     timeline_cache: &mut TimelineCache,
@@ -38,19 +38,18 @@ fn execute_note_action(
 ) -> Option<TimelineOpenResult> {
     match action {
         NoteAction::Reply(note_id) => {
-            router.route_to(Route::reply(*note_id));
+            router.route_to(Route::reply(note_id));
             None
         }
 
         NoteAction::Profile(pubkey) => {
-            let kind = TimelineKind::Profile(*pubkey);
+            let kind = TimelineKind::Profile(pubkey);
             router.route_to(Route::Timeline(kind.clone()));
             timeline_cache.open(ndb, note_cache, txn, pool, &kind)
         }
 
         NoteAction::Note(note_id) => 'ex: {
-            let Ok(thread_selection) =
-                ThreadSelection::from_note_id(ndb, note_cache, txn, *note_id)
+            let Ok(thread_selection) = ThreadSelection::from_note_id(ndb, note_cache, txn, note_id)
             else {
                 tracing::error!("No thread selection for {}?", hex::encode(note_id.bytes()));
                 break 'ex None;
@@ -70,7 +69,7 @@ fn execute_note_action(
         }
 
         NoteAction::Quote(note_id) => {
-            router.route_to(Route::quote(*note_id));
+            router.route_to(Route::quote(note_id));
             None
         }
 
@@ -81,7 +80,7 @@ fn execute_note_action(
 
             let sender = cur_acc.key.pubkey;
 
-            match zap_action {
+            match &zap_action {
                 ZapAction::Send(target) => 'a: {
                     let Some(wallet) = get_wallet_for_mut(accounts, global_wallet, sender.bytes())
                     else {
@@ -122,7 +121,7 @@ fn execute_note_action(
 /// Execute a NoteAction and process the result
 #[allow(clippy::too_many_arguments)]
 pub fn execute_and_process_note_action(
-    action: &NoteAction,
+    action: NoteAction,
     ndb: &Ndb,
     columns: &mut Columns,
     col: usize,
