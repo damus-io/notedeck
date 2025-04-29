@@ -178,14 +178,14 @@ fn fetch_img_from_disk(
     url: &str,
     path: &path::Path,
     cache_type: MediaCacheType,
-) -> Promise<Result<TexturedImage, notedeck::Error>> {
+) -> Promise<Option<Result<TexturedImage, notedeck::Error>>> {
     let ctx = ctx.clone();
     let url = url.to_owned();
     let path = path.to_owned();
 
-    Promise::spawn_async(
-        async move { async_fetch_img_from_disk(ctx, url, &path, cache_type).await },
-    )
+    Promise::spawn_async(async move {
+        Some(async_fetch_img_from_disk(ctx, url, &path, cache_type).await)
+    })
 }
 
 async fn async_fetch_img_from_disk(
@@ -361,7 +361,7 @@ pub fn fetch_img(
     url: &str,
     imgtyp: ImageType,
     cache_type: MediaCacheType,
-) -> Promise<Result<TexturedImage, notedeck::Error>> {
+) -> Promise<Option<Result<TexturedImage, notedeck::Error>>> {
     let key = MediaCache::key(url);
     let path = img_cache_path.join(key);
 
@@ -380,7 +380,7 @@ fn fetch_img_from_net(
     url: &str,
     imgtyp: ImageType,
     cache_type: MediaCacheType,
-) -> Promise<Result<TexturedImage, notedeck::Error>> {
+) -> Promise<Option<Result<TexturedImage, notedeck::Error>>> {
     let (sender, promise) = Promise::new();
     let request = ehttp::Request::get(url);
     let ctx = ctx.clone();
@@ -417,7 +417,7 @@ fn fetch_img_from_net(
             }
         });
 
-        sender.send(handle); // send the results back to the UI thread.
+        sender.send(Some(handle)); // send the results back to the UI thread.
         ctx.request_repaint();
     });
 
@@ -476,7 +476,7 @@ fn render_media_cache(
         .show(ui, |ui| {
             match cache.map_mut().get_mut(url).and_then(|p| p.ready_mut()) {
                 None => show_waiting(ui),
-                Some(Err(err)) => {
+                Some(Some(Err(err))) => {
                     let err = err.to_string();
                     let no_pfp = crate::images::fetch_img(
                         &cache.cache_dir,
@@ -488,7 +488,12 @@ fn render_media_cache(
                     cache.map_mut().insert(url.to_owned(), no_pfp);
                     show_error(ui, err)
                 }
-                Some(Ok(renderable_media)) => show_success(ui, url, renderable_media, gif_states),
+                Some(Some(Ok(renderable_media))) => {
+                    show_success(ui, url, renderable_media, gif_states)
+                }
+                Some(None) => {
+                    tracing::error!("Promise already taken");
+                }
             }
         })
         .response

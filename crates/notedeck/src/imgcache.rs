@@ -17,7 +17,7 @@ use std::path::{self};
 use std::path::{Path, PathBuf};
 use tracing::warn;
 
-pub type MediaCacheValue = Promise<Result<TexturedImage>>;
+pub type MediaCacheValue = Promise<Option<Result<TexturedImage>>>;
 pub type MediaCacheMap = HashMap<String, MediaCacheValue>;
 
 #[derive(Default)]
