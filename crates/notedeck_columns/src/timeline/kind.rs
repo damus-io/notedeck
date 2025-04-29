@@ -646,14 +646,14 @@ impl TimelineKind {
             }
             TimelineKind::List(list_kind) => match list_kind {
                 ListKind::Contact(_pubkey_source) => ColumnTitle::simple("Contacts"),
-                ListKind::FollowPack(_naddr) => ColumnTitle::simple("Follow Pack"),
+                ListKind::FollowPack(naddr) => ColumnTitle::follow_pack(naddr),
             },
             TimelineKind::Algo(AlgoTimeline::LastPerPubkey(list_kind)) => match list_kind {
                 ListKind::Contact(_pubkey_source) => ColumnTitle::simple("Contacts (last notes)"),
                 ListKind::FollowPack(_naddr) => ColumnTitle::simple("Follow Pack (last notes)"),
             },
             TimelineKind::Notifications(_pubkey_source) => ColumnTitle::simple("Notifications"),
-            TimelineKind::Profile(_pubkey_source) => ColumnTitle::needs_db(self),
+            TimelineKind::Profile(pk) => ColumnTitle::profile(pk.as_ref()),
             TimelineKind::Thread(_root_id) => ColumnTitle::simple("Thread"),
             TimelineKind::Universe => ColumnTitle::simple("Universe"),
             TimelineKind::Generic(_) => ColumnTitle::simple("Custom"),
@@ -663,26 +663,45 @@ impl TimelineKind {
 }
 
 #[derive(Debug)]
-pub struct TitleNeedsDb<'a> {
-    kind: &'a TimelineKind,
+pub enum TitleNeedsDb<'a> {
+    Profile(PubkeyRef<'a>),
+    FollowPack(&'a Nip19Coordinate),
 }
 
-impl<'a> TitleNeedsDb<'a> {
-    pub fn new(kind: &'a TimelineKind) -> Self {
-        TitleNeedsDb { kind }
-    }
-
+impl TitleNeedsDb<'_> {
     pub fn title<'txn>(&self, txn: &'txn Transaction, ndb: &Ndb) -> &'txn str {
-        if let TimelineKind::Profile(pubkey) = self.kind {
-            let profile = ndb.get_profile_by_pubkey(txn, pubkey);
-            let m_name = profile
-                .as_ref()
-                .ok()
-                .map(|p| notedeck::name::get_display_name(Some(p)).name());
+        match self {
+            TitleNeedsDb::Profile(pubkey) => {
+                let profile = ndb.get_profile_by_pubkey(txn, pubkey.bytes());
+                let m_name = profile
+                    .as_ref()
+                    .ok()
+                    .map(|p| notedeck::name::get_display_name(Some(p)).name());
 
-            m_name.unwrap_or("Profile")
-        } else {
-            "Unknown"
+                m_name.unwrap_or("Profile")
+            }
+
+            TitleNeedsDb::FollowPack(naddr) => {
+                let filter = coord_to_filter(&naddr.coordinate);
+
+                let Some(pack) = ndb
+                    .query(txn, &[filter], 1)
+                    .ok()
+                    .and_then(|qrs| qrs.into_iter().next().map(|qr| qr.note))
+                else {
+                    return "Follow Pack";
+                };
+
+                for tag in pack.tags() {
+                    let (Some("title"), Some(t2)) = (tag.get_str(0), tag.get_str(1)) else {
+                        continue;
+                    };
+
+                    return t2;
+                }
+
+                "Follow Pack"
+            }
         }
     }
 }
@@ -704,8 +723,12 @@ impl<'a> ColumnTitle<'a> {
         Self::Simple(Cow::Owned(title))
     }
 
-    pub fn needs_db(kind: &'a TimelineKind) -> ColumnTitle<'a> {
-        Self::NeedsDb(TitleNeedsDb::new(kind))
+    pub fn profile(pubkey_ref: PubkeyRef<'a>) -> Self {
+        Self::NeedsDb(TitleNeedsDb::Profile(pubkey_ref))
+    }
+
+    pub fn follow_pack(coord: &'a Nip19Coordinate) -> Self {
+        Self::NeedsDb(TitleNeedsDb::FollowPack(coord))
     }
 }
 
@@ -736,9 +759,7 @@ fn naddr_list_filter_state(txn: &Transaction, ndb: &Ndb, naddr: &Nip19Coordinate
             error!("Error getting follow pack filter state: {err}");
             FilterState::Broken(FilterError::EmptyFollowList)
         }
-        Ok(filter) => FilterState::ready(
-            filter.into_filter([naddr.coordinate.kind.as_u16() as u64], default_limit()),
-        ),
+        Ok(filter) => FilterState::ready(filter.into_follow_filter()),
     }
 }
 

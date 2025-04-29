@@ -2,6 +2,7 @@ use std::collections::BTreeSet;
 
 use crate::timeline::TimelineKind;
 use enostr::{Filter, Pubkey};
+use nostr::nips::nip19::{FromBech32, Nip19Coordinate};
 use tracing::{debug, error, info};
 
 pub struct ColumnsArgs {
@@ -68,6 +69,15 @@ impl ColumnsArgs {
                         error!("error parsing contacts pubkey {}", rest);
                         continue;
                     }
+                } else if let Some(rest) = column_name.strip_prefix("follow_pack:") {
+                    if let Ok(naddr) = Nip19Coordinate::from_bech32(rest) {
+                        info!("added follow pack column");
+                        res.columns
+                            .push(ArgColumn::Timeline(TimelineKind::follow_pack(naddr)))
+                    } else {
+                        error!("error parsing follow pack naddr {}", rest);
+                        continue;
+                    }
                 } else if column_name == "contacts" {
                     if let Some(deck_author) = deck_author {
                         res.columns
@@ -75,7 +85,9 @@ impl ColumnsArgs {
                                 deck_author.to_owned(),
                             )));
                     } else {
-                        panic!("No accounts available, could not handle implicit pubkey contacts column");
+                        panic!(
+                            "No accounts available, could not handle implicit pubkey contacts column"
+                        );
                     }
                 } else if column_name == "search" {
                     i += 1;
