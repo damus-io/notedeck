@@ -5,8 +5,8 @@ pub mod reply_description;
 
 use crate::jobs::JobsCache;
 use crate::{
-    profile::name::one_line_display_name_widget, widgets::x_button, ImagePulseTint, ProfilePic,
-    ProfilePreview, Username,
+    profile::name::one_line_display_name_widget, widgets::x_button, ProfilePic, ProfilePreview,
+    PulseAlpha, Username,
 };
 
 pub use contents::{render_note_contents, render_note_preview, NoteContents};
@@ -807,9 +807,12 @@ fn zap_button(state: AnyZapState, noteid: &[u8; 32]) -> impl egui::Widget + use<
             }
             AnyZapState::Pending => {
                 let alpha_min = if ui.visuals().dark_mode { 50 } else { 180 };
-                img = ImagePulseTint::new(&ctx, id, img, &[0xFF, 0xB7, 0x57], alpha_min, 255)
+                let cur_alpha = PulseAlpha::new(&ctx, id, alpha_min, 255)
                     .with_speed(0.35)
                     .animate();
+
+                let cur_color = egui::Color32::from_rgba_unmultiplied(0xFF, 0xB7, 0x57, cur_alpha);
+                img = img.tint(cur_color);
             }
             AnyZapState::LocalOnly => {
                 img = img.tint(egui::Color32::from_rgb(0xFF, 0xB7, 0x57));
