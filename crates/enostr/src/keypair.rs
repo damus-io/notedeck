@@ -105,7 +105,7 @@ impl FullKeypair {
     pub fn generate() -> Self {
         let mut rng = nostr::secp256k1::rand::rngs::OsRng;
         let (secret_key, _) = &nostr::SECP256K1.generate_keypair(&mut rng);
-        let (xopk, _) = secret_key.x_only_public_key(&nostr::SECP256K1);
+        let (xopk, _) = secret_key.x_only_public_key(nostr::SECP256K1);
         let secret_key = nostr::SecretKey::from(*secret_key);
         FullKeypair {
             pubkey: Pubkey::new(xopk.serialize()),
@@ -160,8 +160,7 @@ impl SerializableKeypair {
     pub fn to_keypair(&self, pass: &str) -> Keypair {
         Keypair::new(
             self.pubkey,
-            self.encrypted_secret_key
-                .and_then(|e| e.to_secret_key(pass).ok()),
+            self.encrypted_secret_key.and_then(|e| e.decrypt(pass).ok()),
         )
     }
 }
@@ -236,7 +235,7 @@ fn parse_seckey<'a>(parser: &mut TokenParser<'a>) -> Result<SecretKey, ParseErro
     let eseckey = EncryptedSecretKey::from_bech32(raw).map_err(|_| ParseError::DecodeFailed)?;
 
     let seckey = eseckey
-        .to_secret_key(ESECKEY_PASS)
+        .decrypt(ESECKEY_PASS)
         .map_err(|_| ParseError::DecodeFailed)?;
 
     Ok(seckey)

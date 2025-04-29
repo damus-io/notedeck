@@ -50,8 +50,8 @@ impl From<String> for Error {
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, thiserror::Error)]
 pub enum FilterError {
-    #[error("empty contact list")]
-    EmptyContactList,
+    #[error("empty follow list")]
+    EmptyFollowList,
 
     #[error("filter not ready")]
     FilterNotReady,
@@ -78,8 +78,8 @@ impl Error {
         Error::SubscriptionError(SubscriptionError::NoActive)
     }
 
-    pub fn empty_contact_list() -> Self {
-        Error::Filter(FilterError::EmptyContactList)
+    pub fn empty_follow_list() -> Self {
+        Error::Filter(FilterError::EmptyFollowList)
     }
 }
 

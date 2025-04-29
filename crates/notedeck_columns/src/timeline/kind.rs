@@ -1,7 +1,11 @@
-use crate::error::Error;
-use crate::search::SearchQuery;
-use crate::timeline::{Timeline, TimelineTab};
-use enostr::{Filter, NoteId, Pubkey};
+use crate::{
+    error::Error,
+    search::SearchQuery,
+    timeline::{Timeline, TimelineTab},
+};
+use enostr::{Filter, NoteId, Pubkey, PubkeyRef};
+use nostr::nips::nip01::Coordinate;
+use nostr::nips::nip19::{FromBech32, Nip19Coordinate, ToBech32};
 use nostrdb::{Ndb, Transaction};
 use notedeck::{
     filter::{self, default_limit},
@@ -21,15 +25,19 @@ pub enum PubkeySource {
     DeckAuthor,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Hash, Eq)]
+#[derive(Debug, Clone, PartialEq, Hash, Eq)]
 pub enum ListKind {
     Contact(Pubkey),
+
+    /// kind 39089 follow packs (https://following.space)
+    FollowPack(Nip19Coordinate),
 }
 
 impl ListKind {
-    pub fn pubkey(&self) -> Option<&Pubkey> {
+    pub fn pubkey(&self) -> Option<PubkeyRef> {
         match self {
-            Self::Contact(pk) => Some(pk),
+            Self::Contact(pk) => Some(pk.as_ref()),
+            Self::FollowPack(coord) => Some(PubkeyRef::new(coord.public_key.as_bytes())),
         }
     }
 }
@@ -88,30 +96,31 @@ impl ListKind {
         ListKind::Contact(pk)
     }
 
+    pub fn follow_pack(naddr: Nip19Coordinate) -> Self {
+        ListKind::FollowPack(naddr)
+    }
+
     pub fn parse<'a>(
         parser: &mut TokenParser<'a>,
         deck_author: &Pubkey,
     ) -> Result<Self, ParseError<'a>> {
-        parser.parse_all(|p| {
+        let r = parser.parse_all(|p| {
             p.parse_token("contact")?;
             let pk_src = PubkeySource::parse_from_tokens(p)?;
             Ok(ListKind::Contact(*pk_src.as_pubkey(deck_author)))
-        })
+        });
 
-        /* here for u when you need more things to parse
-        TokenParser::alt(
-            parser,
-            &[|p| {
-                p.parse_all(|p| {
-                    p.parse_token("contact")?;
-                    let pk_src = PubkeySource::parse_from_tokens(p)?;
-                    Ok(ListKind::Contact(pk_src))
-                });
-            },|p| {
-                // more cases...
-            }],
-        )
-        */
+        if r.is_ok() {
+            return r;
+        }
+
+        parser.parse_all(move |p| {
+            p.parse_token("follow_pack")?;
+            let token = p.pull_token()?;
+            let naddr =
+                Nip19Coordinate::from_bech32(token).map_err(|_| ParseError::DecodeFailed)?;
+            Ok(ListKind::FollowPack(naddr))
+        })
     }
 
     pub fn serialize_tokens(&self, writer: &mut TokenWriter) {
@@ -119,6 +128,11 @@ impl ListKind {
             ListKind::Contact(pk) => {
                 writer.write_token("contact");
                 PubkeySource::pubkey(*pk).serialize_tokens(writer);
+            }
+
+            ListKind::FollowPack(naddr) => {
+                writer.write_token("follow_pack");
+                writer.write_token(&naddr.to_bech32().unwrap());
             }
         }
     }
@@ -222,7 +236,7 @@ const NOTIFS_TOKEN_DEPRECATED: &str = "notifs";
 const NOTIFS_TOKEN: &str = "notifications";
 
 /// Hardcoded algo timelines
-#[derive(Debug, Hash, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Hash, Clone, PartialEq, Eq)]
 pub enum AlgoTimeline {
     /// LastPerPubkey: a special nostr query that fetches the last N
     /// notes for each pubkey on the list
@@ -259,7 +273,10 @@ impl AlgoTimeline {
 impl Display for TimelineKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            TimelineKind::List(ListKind::Contact(_src)) => f.write_str("Contacts"),
+            TimelineKind::List(list_kind) => match list_kind {
+                ListKind::FollowPack(_) => f.write_str("Follow Pack"),
+                ListKind::Contact(_) => f.write_str("Contacts"),
+            },
             TimelineKind::Algo(AlgoTimeline::LastPerPubkey(_lk)) => f.write_str("Last Notes"),
             TimelineKind::Generic(_) => f.write_str("Timeline"),
             TimelineKind::Notifications(_) => f.write_str("Notifications"),
@@ -273,12 +290,16 @@ impl Display for TimelineKind {
 }
 
 impl TimelineKind {
-    pub fn pubkey(&self) -> Option<&Pubkey> {
+    pub fn follow_pack(naddr: Nip19Coordinate) -> Self {
+        TimelineKind::List(ListKind::FollowPack(naddr))
+    }
+
+    pub fn pubkey(&self) -> Option<PubkeyRef> {
         match self {
             TimelineKind::List(list_kind) => list_kind.pubkey(),
             TimelineKind::Algo(AlgoTimeline::LastPerPubkey(list_kind)) => list_kind.pubkey(),
-            TimelineKind::Notifications(pk) => Some(pk),
-            TimelineKind::Profile(pk) => Some(pk),
+            TimelineKind::Notifications(pk) => Some(pk.as_ref()),
+            TimelineKind::Profile(pk) => Some(pk.as_ref()),
             TimelineKind::Universe => None,
             TimelineKind::Generic(_) => None,
             TimelineKind::Hashtag(_ht) => None,
@@ -446,6 +467,7 @@ impl TimelineKind {
 
             TimelineKind::List(list_k) => match list_k {
                 ListKind::Contact(pubkey) => contact_filter_state(txn, ndb, pubkey),
+                ListKind::FollowPack(naddr) => naddr_list_filter_state(txn, ndb, naddr),
             },
 
             // TODO: still need to update this to fetch likes, zaps, etc
@@ -467,6 +489,9 @@ impl TimelineKind {
             TimelineKind::Algo(algo_timeline) => match algo_timeline {
                 AlgoTimeline::LastPerPubkey(list_k) => match list_k {
                     ListKind::Contact(pubkey) => last_per_pubkey_filter_state(ndb, pubkey),
+                    ListKind::FollowPack(_naddr) => {
+                        todo!("follow pack last per pubkey algo filter state")
+                    } //naddr_list_filter_state(txn, ndb, naddr),
                 },
             },
 
@@ -518,45 +543,49 @@ impl TimelineKind {
                 None
             }
 
-            TimelineKind::Algo(AlgoTimeline::LastPerPubkey(ListKind::Contact(pk))) => {
-                let contact_filter = Filter::new()
-                    .authors([pk.bytes()])
-                    .kinds([3])
-                    .limit(1)
-                    .build();
+            TimelineKind::Algo(AlgoTimeline::LastPerPubkey(list_kind)) => match list_kind {
+                ListKind::FollowPack(_naddr) => todo!("follow pack last per pubkey algo impl"),
 
-                let results = ndb
-                    .query(txn, &[contact_filter.clone()], 1)
-                    .expect("contact query failed?");
+                ListKind::Contact(pk) => {
+                    let contact_filter = Filter::new()
+                        .authors([pk.bytes()])
+                        .kinds([3])
+                        .limit(1)
+                        .build();
 
-                let kind_fn = TimelineKind::last_per_pubkey;
-                let tabs = TimelineTab::only_notes_and_replies();
+                    let results = ndb
+                        .query(txn, &[contact_filter.clone()], 1)
+                        .expect("contact query failed?");
 
-                if results.is_empty() {
-                    return Some(Timeline::new(
-                        kind_fn(ListKind::contact_list(pk)),
-                        FilterState::needs_remote(vec![contact_filter.clone()]),
-                        tabs,
-                    ));
-                }
+                    let kind_fn = TimelineKind::last_per_pubkey;
+                    let tabs = TimelineTab::only_notes_and_replies();
 
-                let list_kind = ListKind::contact_list(pk);
-
-                match Timeline::last_per_pubkey(&results[0].note, &list_kind) {
-                    Err(Error::App(notedeck::Error::Filter(FilterError::EmptyContactList))) => {
-                        Some(Timeline::new(
-                            kind_fn(list_kind),
-                            FilterState::needs_remote(vec![contact_filter]),
+                    if results.is_empty() {
+                        return Some(Timeline::new(
+                            kind_fn(ListKind::contact_list(pk)),
+                            FilterState::needs_remote(vec![contact_filter.clone()]),
                             tabs,
-                        ))
+                        ));
                     }
-                    Err(e) => {
-                        error!("Unexpected error: {e}");
-                        None
+
+                    let list_kind = ListKind::contact_list(pk);
+
+                    match Timeline::last_per_pubkey(&results[0].note, list_kind.clone()) {
+                        Err(Error::App(notedeck::Error::Filter(FilterError::EmptyFollowList))) => {
+                            Some(Timeline::new(
+                                kind_fn(list_kind),
+                                FilterState::needs_remote(vec![contact_filter]),
+                                tabs,
+                            ))
+                        }
+                        Err(e) => {
+                            error!("Unexpected error: {e}");
+                            None
+                        }
+                        Ok(tl) => Some(tl),
                     }
-                    Ok(tl) => Some(tl),
                 }
-            }
+            },
 
             TimelineKind::Profile(pk) => {
                 let filter = Filter::new()
@@ -588,11 +617,25 @@ impl TimelineKind {
 
             TimelineKind::Hashtag(hashtag) => Some(Timeline::hashtag(hashtag)),
 
-            TimelineKind::List(ListKind::Contact(pk)) => Some(Timeline::new(
-                TimelineKind::contact_list(pk),
-                contact_filter_state(txn, ndb, &pk),
-                TimelineTab::full_tabs(),
-            )),
+            TimelineKind::List(list_kind) => match list_kind {
+                ListKind::Contact(pk) => {
+                    let filter_state = contact_filter_state(txn, ndb, &pk);
+                    Some(Timeline::new(
+                        TimelineKind::contact_list(pk),
+                        filter_state,
+                        TimelineTab::full_tabs(),
+                    ))
+                }
+
+                ListKind::FollowPack(naddr) => {
+                    let filter_state = naddr_list_filter_state(txn, ndb, &naddr);
+                    Some(Timeline::new(
+                        TimelineKind::follow_pack(naddr),
+                        filter_state,
+                        TimelineTab::full_tabs(),
+                    ))
+                }
+            },
         }
     }
 
@@ -603,9 +646,11 @@ impl TimelineKind {
             }
             TimelineKind::List(list_kind) => match list_kind {
                 ListKind::Contact(_pubkey_source) => ColumnTitle::simple("Contacts"),
+                ListKind::FollowPack(_naddr) => ColumnTitle::simple("Follow Pack"),
             },
             TimelineKind::Algo(AlgoTimeline::LastPerPubkey(list_kind)) => match list_kind {
                 ListKind::Contact(_pubkey_source) => ColumnTitle::simple("Contacts (last notes)"),
+                ListKind::FollowPack(_naddr) => ColumnTitle::simple("Follow Pack (last notes)"),
             },
             TimelineKind::Notifications(_pubkey_source) => ColumnTitle::simple("Notifications"),
             TimelineKind::Profile(_pubkey_source) => ColumnTitle::needs_db(self),
@@ -664,6 +709,39 @@ impl<'a> ColumnTitle<'a> {
     }
 }
 
+fn coord_to_filter(coord: &Coordinate) -> Filter {
+    Filter::new()
+        .authors([coord.public_key.as_bytes()])
+        .kinds([coord.kind.as_u16() as u64]) // TODO: WTF?
+        .limit(1)
+        .build()
+}
+
+fn naddr_list_filter_state(txn: &Transaction, ndb: &Ndb, naddr: &Nip19Coordinate) -> FilterState {
+    let naddr_filter = coord_to_filter(&naddr.coordinate);
+    let results = ndb
+        .query(txn, &[naddr_filter.clone()], 1)
+        .expect("follow pack query failed?");
+
+    if results.is_empty() {
+        return FilterState::needs_remote(vec![naddr_filter]);
+    }
+
+    let with_hashtags = false;
+    match filter::filter_from_tags(&results[0].note, None, with_hashtags) {
+        Err(notedeck::Error::Filter(FilterError::EmptyFollowList)) => {
+            FilterState::needs_remote(vec![naddr_filter])
+        }
+        Err(err) => {
+            error!("Error getting follow pack filter state: {err}");
+            FilterState::Broken(FilterError::EmptyFollowList)
+        }
+        Ok(filter) => FilterState::ready(
+            filter.into_filter([naddr.coordinate.kind.as_u16() as u64], default_limit()),
+        ),
+    }
+}
+
 fn contact_filter_state(txn: &Transaction, ndb: &Ndb, pk: &Pubkey) -> FilterState {
     let contact_filter = contacts_filter(pk);
 
@@ -672,19 +750,19 @@ fn contact_filter_state(txn: &Transaction, ndb: &Ndb, pk: &Pubkey) -> FilterStat
         .expect("contact query failed?");
 
     if results.is_empty() {
-        FilterState::needs_remote(vec![contact_filter.clone()])
-    } else {
-        let with_hashtags = false;
-        match filter::filter_from_tags(&results[0].note, Some(pk.bytes()), with_hashtags) {
-            Err(notedeck::Error::Filter(FilterError::EmptyContactList)) => {
-                FilterState::needs_remote(vec![contact_filter])
-            }
-            Err(err) => {
-                error!("Error getting contact filter state: {err}");
-                FilterState::Broken(FilterError::EmptyContactList)
-            }
-            Ok(filter) => FilterState::ready(filter.into_follow_filter()),
+        return FilterState::needs_remote(vec![contact_filter.clone()]);
+    };
+
+    let with_hashtags = false;
+    match filter::filter_from_tags(&results[0].note, Some(pk.as_ref()), with_hashtags) {
+        Err(notedeck::Error::Filter(FilterError::EmptyFollowList)) => {
+            FilterState::needs_remote(vec![contact_filter])
         }
+        Err(err) => {
+            error!("Error getting contact filter state: {err}");
+            FilterState::Broken(FilterError::EmptyFollowList)
+        }
+        Ok(filter) => FilterState::ready(filter.into_follow_filter()),
     }
 }
 
@@ -706,12 +784,12 @@ fn last_per_pubkey_filter_state(ndb: &Ndb, pk: &Pubkey) -> FilterState {
         let kind = 1;
         let notes_per_pk = 1;
         match filter::last_n_per_pubkey_from_tags(&results[0].note, kind, notes_per_pk) {
-            Err(notedeck::Error::Filter(FilterError::EmptyContactList)) => {
+            Err(notedeck::Error::Filter(FilterError::EmptyFollowList)) => {
                 FilterState::needs_remote(vec![contact_filter])
             }
             Err(err) => {
                 error!("Error getting contact filter state: {err}");
-                FilterState::Broken(FilterError::EmptyContactList)
+                FilterState::Broken(FilterError::EmptyFollowList)
             }
             Ok(filter) => FilterState::ready(filter),
         }
