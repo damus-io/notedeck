@@ -11,7 +11,7 @@ pub struct ProfilePic<'cache, 'url> {
     border: Option<Stroke>,
 }
 
-impl egui::Widget for ProfilePic<'_, '_> {
+impl egui::Widget for &mut ProfilePic<'_, '_> {
     fn ui(self, ui: &mut egui::Ui) -> egui::Response {
         render_pfp(ui, self.cache, self.url, self.size, self.border)
     }

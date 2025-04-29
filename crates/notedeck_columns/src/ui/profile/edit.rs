@@ -60,7 +60,7 @@ impl<'a> EditProfileView<'a> {
         });
         ui.put(
             pfp_rect,
-            ProfilePic::new(self.img_cache, pfp_url)
+            &mut ProfilePic::new(self.img_cache, pfp_url)
                 .size(size)
                 .border(ProfilePic::border_stroke(ui)),
         );

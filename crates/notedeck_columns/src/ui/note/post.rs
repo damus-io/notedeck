@@ -142,11 +142,11 @@ impl<'a, 'd> PostView<'a, 'd> {
                 Some(ProfilePic::from_profile(self.note_context.img_cache, p)?.size(pfp_size))
             });
 
-        if let Some(pfp) = poster_pfp {
-            ui.add(pfp);
+        if let Some(mut pfp) = poster_pfp {
+            ui.add(&mut pfp);
         } else {
             ui.add(
-                ProfilePic::new(self.note_context.img_cache, notedeck::profile::no_pfp_url())
+                &mut ProfilePic::new(self.note_context.img_cache, notedeck::profile::no_pfp_url())
                     .size(pfp_size),
             );
         }

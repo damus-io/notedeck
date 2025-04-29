@@ -395,7 +395,7 @@ fn query_call_ui(cache: &mut notedeck::Images, ndb: &Ndb, query: &QueryCall, ui:
             "author",
             move |ui| {
                 ui.add(
-                    ProfilePic::from_profile_or_default(
+                    &mut ProfilePic::from_profile_or_default(
                         cache,
                         ndb.get_profile_by_pubkey(&txn, pubkey.bytes())
                             .ok()

@@ -265,7 +265,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
 
                 ui.put(
                     rect,
-                    ProfilePic::new(self.note_context.img_cache, pic).size(size),
+                    &mut ProfilePic::new(self.note_context.img_cache, pic).size(size),
                 )
                 .on_hover_ui_at_pointer(|ui| {
                     ui.set_max_width(300.0);
@@ -290,8 +290,11 @@ impl<'a, 'd> NoteView<'a, 'd> {
 
                 ui.put(
                     rect,
-                    ProfilePic::new(self.note_context.img_cache, notedeck::profile::no_pfp_url())
-                        .size(pfp_size as f32),
+                    &mut ProfilePic::new(
+                        self.note_context.img_cache,
+                        notedeck::profile::no_pfp_url(),
+                    )
+                    .size(pfp_size as f32),
                 )
                 .interact(sense)
             }

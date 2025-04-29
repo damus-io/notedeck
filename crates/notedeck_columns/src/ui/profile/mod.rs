@@ -148,7 +148,7 @@ impl<'a, 'd> ProfileView<'a, 'd> {
                 ui.horizontal(|ui| {
                     ui.put(
                         pfp_rect,
-                        ProfilePic::new(
+                        &mut ProfilePic::new(
                             self.note_context.img_cache,
                             get_profile_url(Some(&profile)),
                         )

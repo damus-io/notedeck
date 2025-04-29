@@ -140,7 +140,7 @@ fn user_result<'a>(
 
         let pfp_resp = ui.put(
             icon_rect,
-            ProfilePic::new(cache, get_profile_url(Some(profile)))
+            &mut ProfilePic::new(cache, get_profile_url(Some(profile)))
                 .size(helper.scale_1d_pos(min_img_size)),
         );
 
