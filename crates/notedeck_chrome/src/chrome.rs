@@ -516,6 +516,7 @@ fn chrome_handle_app_action(
                 ctx.accounts,
                 ctx.global_wallet,
                 ctx.zaps,
+                ctx.img_cache,
                 ui,
             );
         }

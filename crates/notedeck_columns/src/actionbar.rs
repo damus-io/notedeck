@@ -7,8 +7,8 @@ use crate::{
 use enostr::{Pubkey, RelayPool};
 use nostrdb::{Ndb, NoteKey, Transaction};
 use notedeck::{
-    get_wallet_for_mut, note::ZapTargetAmount, Accounts, GlobalWallet, NoteAction, NoteCache,
-    NoteZapTargetOwned, UnknownIds, ZapAction, ZapTarget, ZappingError, Zaps,
+    get_wallet_for_mut, note::ZapTargetAmount, Accounts, GlobalWallet, Images, NoteAction,
+    NoteCache, NoteZapTargetOwned, UnknownIds, ZapAction, ZapTarget, ZappingError, Zaps,
 };
 use tracing::error;
 
@@ -34,6 +34,7 @@ fn execute_note_action(
     accounts: &mut Accounts,
     global_wallet: &mut GlobalWallet,
     zaps: &mut Zaps,
+    _images: &mut Images,
     ui: &mut egui::Ui,
 ) -> Option<TimelineOpenResult> {
     match action {
@@ -133,6 +134,7 @@ pub fn execute_and_process_note_action(
     accounts: &mut Accounts,
     global_wallet: &mut GlobalWallet,
     zaps: &mut Zaps,
+    images: &mut Images,
     ui: &mut egui::Ui,
 ) {
     let router = columns.column_mut(col).router_mut();
@@ -147,6 +149,7 @@ pub fn execute_and_process_note_action(
         accounts,
         global_wallet,
         zaps,
+        images,
         ui,
     ) {
         br.process(ndb, note_cache, txn, timeline_cache, unknown_ids);

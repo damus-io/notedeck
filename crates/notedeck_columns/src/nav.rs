@@ -192,6 +192,7 @@ impl RenderNavResponse {
                         ctx.accounts,
                         ctx.global_wallet,
                         ctx.zaps,
+                        ctx.img_cache,
                         ui,
                     );
                 }
