@@ -183,32 +183,40 @@ fn fetch_img_from_disk(
     let url = url.to_owned();
     let path = path.to_owned();
 
-    Promise::spawn_async(async move {
-        match cache_type {
-            MediaCacheType::Image => {
-                let data = fs::read(path).await?;
-                let image_buffer =
-                    image::load_from_memory(&data).map_err(notedeck::Error::Image)?;
+    Promise::spawn_async(
+        async move { async_fetch_img_from_disk(ctx, url, &path, cache_type).await },
+    )
+}
 
-                let img = buffer_to_color_image(
-                    image_buffer.as_flat_samples_u8(),
-                    image_buffer.width(),
-                    image_buffer.height(),
-                );
-                Ok(TexturedImage::Static(ctx.load_texture(
-                    &url,
-                    img,
-                    Default::default(),
-                )))
-            }
-            MediaCacheType::Gif => {
-                let gif_bytes = fs::read(path.clone()).await?; // Read entire file into a Vec<u8>
-                generate_gif(ctx, url, &path, gif_bytes, false, |i| {
-                    buffer_to_color_image(i.as_flat_samples_u8(), i.width(), i.height())
-                })
-            }
+async fn async_fetch_img_from_disk(
+    ctx: egui::Context,
+    url: String,
+    path: &path::Path,
+    cache_type: MediaCacheType,
+) -> Result<TexturedImage, notedeck::Error> {
+    match cache_type {
+        MediaCacheType::Image => {
+            let data = fs::read(path).await?;
+            let image_buffer = image::load_from_memory(&data).map_err(notedeck::Error::Image)?;
+
+            let img = buffer_to_color_image(
+                image_buffer.as_flat_samples_u8(),
+                image_buffer.width(),
+                image_buffer.height(),
+            );
+            Ok(TexturedImage::Static(ctx.load_texture(
+                &url,
+                img,
+                Default::default(),
+            )))
         }
-    })
+        MediaCacheType::Gif => {
+            let gif_bytes = fs::read(path).await?; // Read entire file into a Vec<u8>
+            generate_gif(ctx, url, path, gif_bytes, false, |i| {
+                buffer_to_color_image(i.as_flat_samples_u8(), i.width(), i.height())
+            })
+        }
+    }
 }
 
 fn generate_gif(
