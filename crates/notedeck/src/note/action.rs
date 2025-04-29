@@ -2,7 +2,7 @@ use super::context::ContextSelection;
 use crate::zaps::NoteZapTargetOwned;
 use enostr::{NoteId, Pubkey};
 
-#[derive(Debug, Eq, PartialEq, Clone)]
+#[derive(Debug)]
 pub enum NoteAction {
     /// User has clicked the quote reply action
     Reply(NoteId),

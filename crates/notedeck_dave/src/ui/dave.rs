@@ -16,7 +16,7 @@ pub struct DaveUi<'a> {
 
 /// The response the app generates. The response contains an optional
 /// action to take.
-#[derive(Default, Clone, Debug)]
+#[derive(Default, Debug)]
 pub struct DaveResponse {
     pub action: Option<DaveAction>,
 }
@@ -51,7 +51,7 @@ impl DaveResponse {
 /// The actions the app generates. No default action is specfied in the
 /// UI code. This is handled by the app logic, however it chooses to
 /// process this message.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub enum DaveAction {
     /// The action generated when the user sends a message to dave
     Send,

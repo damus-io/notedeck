@@ -17,7 +17,7 @@ pub struct NoteContents<'a, 'd> {
     txn: &'a Transaction,
     note: &'a Note<'a>,
     options: NoteOptions,
-    action: Option<NoteAction>,
+    pub action: Option<NoteAction>,
 }
 
 impl<'a, 'd> NoteContents<'a, 'd> {
@@ -37,10 +37,6 @@ impl<'a, 'd> NoteContents<'a, 'd> {
             options,
             action: None,
         }
-    }
-
-    pub fn action(&self) -> &Option<NoteAction> {
-        &self.action
     }
 }
 
