@@ -3,7 +3,7 @@ use std::{collections::HashMap, fmt, str::FromStr};
 use enostr::Pubkey;
 use nostrdb::{Ndb, Transaction};
 use serde::{Deserialize, Serialize};
-use tracing::{error, info};
+use tracing::{debug, error};
 
 use crate::{
     column::{Columns, IntermediaryRoute},
@@ -66,7 +66,7 @@ pub fn save_decks_cache(path: &DataPath, decks_cache: &DecksCache) {
             DECKS_CACHE_FILE, e
         );
     } else {
-        info!("Successfully wrote decks cache to {}", DECKS_CACHE_FILE);
+        debug!("Successfully wrote decks cache to {}", DECKS_CACHE_FILE);
     }
 }
 
