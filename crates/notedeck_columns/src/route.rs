@@ -213,6 +213,7 @@ impl Route {
             Route::ComposeNote => ColumnTitle::simple("Compose Note"),
             Route::AddColumn(c) => match c {
                 AddColumnRoute::Base => ColumnTitle::simple("Add Column"),
+                AddColumnRoute::FollowPack => ColumnTitle::simple("Add Follow Pack Column"),
                 AddColumnRoute::Algo(r) => match r {
                     AddAlgoRoute::Base => ColumnTitle::simple("Add Algo Column"),
                     AddAlgoRoute::LastPerPubkey => ColumnTitle::simple("Add Last Notes Column"),
