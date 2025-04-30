@@ -24,13 +24,14 @@ use crate::ui::widgets::styled_button;
 use notedeck_ui::{anim::AnimationHelper, padding, ProfilePreview};
 
 pub enum AddColumnResponse {
-    Timeline(TimelineKind),
-    UndecidedNotification,
-    ExternalNotification,
-    Hashtag,
     Algo(AlgoOption),
-    UndecidedIndividual,
     ExternalIndividual,
+    ExternalNotification,
+    Timeline(TimelineKind),
+    UndecidedFollowPack,
+    UndecidedHashtag,
+    UndecidedIndividual,
+    UndecidedNotification,
 }
 
 pub enum NotificationColumnType {
@@ -56,7 +57,8 @@ enum AddColumnOption {
     ExternalNotification,
     Algo(AlgoOption),
     Notification(PubkeySource),
-    Contacts(PubkeySource),
+    Contact(PubkeySource),
+    UndecidedFollowPack,
     UndecidedHashtag,
     UndecidedIndividual,
     ExternalIndividual,
@@ -76,6 +78,7 @@ pub enum AddColumnRoute {
     UndecidedNotification,
     ExternalNotification,
     Hashtag,
+    FollowPack,
     Algo(AddAlgoRoute),
     UndecidedIndividual,
     ExternalIndividual,
@@ -100,6 +103,7 @@ impl AddColumnRoute {
         match self {
             Self::Base => &["column"],
             Self::UndecidedNotification => &["column", "notification_selection"],
+            Self::FollowPack => &["column", "follow_pack"],
             Self::ExternalNotification => &["column", "external_notif_selection"],
             Self::UndecidedIndividual => &["column", "individual_selection"],
             Self::ExternalIndividual => &["column", "external_individual_selection"],
@@ -147,11 +151,12 @@ impl AddColumnOption {
                 TimelineKind::Notifications(*pubkey.as_pubkey(&cur_account.key.pubkey)),
             ),
             AddColumnOption::UndecidedNotification => AddColumnResponse::UndecidedNotification,
-            AddColumnOption::Contacts(pk_src) => AddColumnResponse::Timeline(
-                TimelineKind::contact_list(*pk_src.as_pubkey(&cur_account.key.pubkey)),
+            AddColumnOption::Contact(pk) => AddColumnResponse::Timeline(
+                TimelineKind::contact_list(*pk.as_pubkey(&cur_account.key.pubkey)),
             ),
             AddColumnOption::ExternalNotification => AddColumnResponse::ExternalNotification,
-            AddColumnOption::UndecidedHashtag => AddColumnResponse::Hashtag,
+            AddColumnOption::UndecidedHashtag => AddColumnResponse::UndecidedHashtag,
+            AddColumnOption::UndecidedFollowPack => AddColumnResponse::UndecidedFollowPack,
             AddColumnOption::UndecidedIndividual => AddColumnResponse::UndecidedIndividual,
             AddColumnOption::ExternalIndividual => AddColumnResponse::ExternalIndividual,
             AddColumnOption::Individual(pubkey_source) => AddColumnResponse::Timeline(
@@ -558,6 +563,10 @@ fn find_user_button() -> impl Widget {
     styled_button("Find User", notedeck_ui::colors::PINK)
 }
 
+fn find_follow_pack_button() -> impl Widget {
+    styled_button("Find Follow Pack", notedeck_ui::colors::PINK)
+}
+
 fn add_column_button() -> impl Widget {
     styled_button("Add", notedeck_ui::colors::PINK)
 }
@@ -592,7 +601,7 @@ struct ColumnOptionData {
 
 pub fn render_add_column_routes(
     ui: &mut egui::Ui,
-    app: &mut Damus,
+    view_state: &mut ViewState,
     ctx: &mut AppContext<'_>,
     col: usize,
     route: &AddColumnRoute,
@@ -605,6 +614,7 @@ pub fn render_add_column_routes(
     );
     let resp = match route {
         AddColumnRoute::Base => add_column_view.ui(ui),
+        AddColumnRoute::FollowPack => follow_pack_ui(ui, &mut view_state.id_string_map),
         AddColumnRoute::Algo(r) => match r {
             AddAlgoRoute::Base => add_column_view.algo_ui(ui),
             AddAlgoRoute::LastPerPubkey => {
@@ -617,7 +627,7 @@ pub fn render_add_column_routes(
         },
         AddColumnRoute::UndecidedNotification => add_column_view.notifications_ui(ui),
         AddColumnRoute::ExternalNotification => add_column_view.external_notification_ui(ui),
-        AddColumnRoute::Hashtag => hashtag_ui(ui, &mut app.view_state.id_string_map),
+        AddColumnRoute::Hashtag => hashtag_ui(ui, &mut view_state.id_string_map),
         AddColumnRoute::UndecidedIndividual => add_column_view.individual_ui(ui),
         AddColumnRoute::ExternalIndividual => add_column_view.external_individual_ui(ui),
     };
@@ -718,6 +728,13 @@ pub fn render_add_column_routes(
                         AddColumnRoute::ExternalNotification,
                     ));
             }
+            AddColumnResponse::FollowPack => {
+                app.columns_mut(ctx.accounts)
+                    .column_mut(col)
+                    .router_mut()
+                    .route_to(crate::route::Route::AddColumn(AddColumnRoute::FollowPack));
+            }
+
             AddColumnResponse::Hashtag => {
                 app.columns_mut(ctx.accounts)
                     .column_mut(col)
@@ -742,6 +759,89 @@ pub fn render_add_column_routes(
             }
         };
     }
+}
+
+#[derive(Debug)]
+enum FollowPackState {
+    Ready,
+    Fetching,
+    Retrieved(NoteKey),
+}
+
+struct FollowPackUiState {
+    state: FollowPackState,
+    rx: Option<Receiver<FollowPackState>>,
+}
+
+fn follow_pack_ui(
+    ui: &mut Ui,
+    state: &mut FollowPackUiState,
+    ndb: &Ndb,
+) -> Option<AddColumnResponse> {
+    padding(16.0, ui, |ui| {
+        let key_state = self.key_state_map.entry(id).or_default();
+
+        let text_edit = key_state.get_acquire_textedit(|text| {
+            egui::TextEdit::singleline(text)
+                .hint_text(
+                    RichText::new("Enter the follow pack id (d-tag, naddr1..) here..")
+                        .text_style(NotedeckTextStyle::Body.text_style()),
+                )
+                .vertical_align(Align::Center)
+                .desired_width(f32::INFINITY)
+                .min_size(Vec2::new(0.0, 40.0))
+                .margin(Margin::same(12))
+        });
+
+        ui.add(text_edit);
+
+        key_state.handle_input_change_after_acquire();
+        key_state.loading_and_error_ui(ui);
+
+        if ui.add(find_follow_pack_button()).clicked() && state.state == FollowPackstate::Ready {
+            let (tx, rx) = tokio::sync::oneshot();
+            state.state = FollowPackState::Fetching;
+            state.rx = Some(rx);
+            let ndb = ndb.clone();
+            let ctx = ui.ctx().clone();
+
+            tokio::spawn(async move { ctx.request_repaint() })
+        }
+
+        if let Some(rx) = state.rx.and_then(|recv| recv.try_recv()) {}
+
+        let resp = if let Poll::Ready(new_state) = futures::poll!(state.rx) {
+            {
+                let txn = Transaction::new(self.ndb).expect("txn");
+                if let Ok(profile) = self.ndb.get_profile_by_pubkey(&txn, keypair.pubkey.bytes()) {
+                    egui::Frame::window(ui.style())
+                        .outer_margin(Margin {
+                            left: 4,
+                            right: 4,
+                            top: 12,
+                            bottom: 32,
+                        })
+                        .show(ui, |ui| {
+                            ProfilePreview::new(&profile, self.img_cache).ui(ui);
+                        });
+                }
+            }
+
+            if ui.add(add_column_button()).clicked() {
+                self.cur_account
+                    .map(|acc| to_option(keypair.pubkey).take_as_response(acc))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        if resp.is_some() {
+            self.key_state_map.remove(&id);
+        };
+        resp
+    })
+    .inner
 }
 
 pub fn hashtag_ui(
