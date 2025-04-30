@@ -2,6 +2,8 @@
 
 Dave is an AI-powered assistant for the Nostr protocol, built as a Notedeck application. It provides a conversational interface that can search, analyze, and present Nostr notes to users.
 
+<img src="https://cdn.jb55.com/s/73ebab8f43804da8.png" width="%50"/>
+
 ## Overview
 
 Dave demonstrates how to build a feature-rich application on the Notedeck platform that interacts with Nostr content. It serves both as a useful tool for Nostr users and as a reference implementation for developers building Notedeck apps.
