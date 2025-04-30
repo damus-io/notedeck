@@ -72,6 +72,7 @@ impl<'a, 'd> PostReplyView<'a, 'd> {
                         self.note,
                         self.note_options,
                     )
+                    .truncate(false)
                     .actionbar(false)
                     .medium_pfp(true)
                     .options_button(true)
