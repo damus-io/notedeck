@@ -77,7 +77,10 @@ fn mention_ui(
     ui.horizontal(|ui| {
         let profile = ndb.get_profile_by_pubkey(txn, pk).ok();
 
-        let name: String = format!("@{}", get_display_name(profile.as_ref()).name());
+        let name: String = format!(
+            "@{}",
+            get_display_name(profile.as_ref()).username_or_displayname()
+        );
 
         let resp = ui.add(
             egui::Label::new(egui::RichText::new(name).color(link_color).size(size))
