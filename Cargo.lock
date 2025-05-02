@@ -3281,6 +3281,7 @@ dependencies = [
  "rand 0.9.0",
  "serde",
  "serde_json",
+ "sha2",
  "tokio",
  "tracing",
 ]
