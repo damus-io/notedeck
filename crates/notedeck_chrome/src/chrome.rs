@@ -51,10 +51,10 @@ impl ChromePanelAction {
     fn process(&self, ctx: &AppContext, chrome: &mut Chrome, ui: &mut egui::Ui) {
         match self {
             Self::SaveTheme(theme) => {
-                tracing::info!("Switching theme to {:?}", theme);
                 ui.ctx().options_mut(|o| {
                     o.theme_preference = *theme;
                 });
+                ctx.theme.save(*theme);
             }
 
             Self::Support => {
