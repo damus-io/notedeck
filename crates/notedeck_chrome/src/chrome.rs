@@ -279,7 +279,8 @@ impl Chrome {
         }
 
         if ui.add(expand_side_panel_button()).clicked() {
-            self.active = (self.active + 1) % (self.apps.len() as i32);
+            //self.active = (self.active + 1) % (self.apps.len() as i32);
+            // TODO: collapse sidebar ?
         }
 
         ui.add_space(4.0);

@@ -316,7 +316,7 @@ impl DaveAvatar {
     }
 
     pub fn render(&mut self, rect: Rect, ui: &mut egui::Ui) -> Response {
-        let response = ui.allocate_rect(rect, egui::Sense::drag());
+        let response = ui.allocate_rect(rect, egui::Sense::CLICK | egui::Sense::DRAG);
 
         // Update rotation based on drag or animation
         if response.dragged() {
@@ -330,6 +330,8 @@ impl DaveAvatar {
 
             // Apply rotations (order matters)
             self.rotation = y_rotation.multiply(&x_rotation).multiply(&self.rotation);
+        } else if response.clicked() {
+            self.random_nudge();
         } else {
             // Continuous rotation - reduced speed and simplified axis
             let friction = 0.95;
