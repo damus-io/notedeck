@@ -246,6 +246,7 @@ impl<'a> DaveUi<'a> {
                                         NoteOptions::default(),
                                     )
                                     .preview_style()
+                                    .hide_media(true)
                                     .show(ui)
                                 },
                             )

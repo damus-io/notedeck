@@ -110,6 +110,11 @@ impl<'a, 'd> NoteView<'a, 'd> {
         self
     }
 
+    pub fn hide_media(mut self, enable: bool) -> Self {
+        self.options_mut().set_hide_media(enable);
+        self
+    }
+
     pub fn frame(mut self, enable: bool) -> Self {
         self.framed = enable;
         self
