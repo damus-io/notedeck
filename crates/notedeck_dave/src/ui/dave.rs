@@ -10,6 +10,7 @@ use notedeck_ui::{icons::search_icon, NoteOptions, ProfilePic};
 /// DaveUi holds all of the data it needs to render itself
 pub struct DaveUi<'a> {
     chat: &'a [Message],
+    trial: bool,
     input: &'a mut String,
 }
 
@@ -59,8 +60,8 @@ pub enum DaveAction {
 }
 
 impl<'a> DaveUi<'a> {
-    pub fn new(chat: &'a [Message], input: &'a mut String) -> Self {
-        DaveUi { chat, input }
+    pub fn new(trial: bool, chat: &'a [Message], input: &'a mut String) -> Self {
+        DaveUi { trial, chat, input }
     }
 
     fn chat_margin(ctx: &egui::Context) -> i8 {
@@ -141,11 +142,30 @@ impl<'a> DaveUi<'a> {
             .or(DaveResponse { action })
     }
 
+    fn error_chat(&self, err: &str, ui: &mut egui::Ui) {
+        if self.trial {
+            ui.add(egui::Label::new(
+                egui::RichText::new(
+                    "The Dave Nostr AI assistant trial has ended :(. Thanks for testing! Zap-enabled Dave coming soon!",
+                )
+                .weak(),
+            ));
+        } else {
+            ui.add(egui::Label::new(
+                egui::RichText::new(format!("An error occured: {err}")).weak(),
+            ));
+        }
+    }
+
     /// Render a chat message (user, assistant, tool call/response, etc)
     fn render_chat(&self, ctx: &mut AppContext, ui: &mut egui::Ui) -> Option<NoteAction> {
         let mut action: Option<NoteAction> = None;
         for message in self.chat {
             let r = match message {
+                Message::Error(err) => {
+                    self.error_chat(err, ui);
+                    None
+                }
                 Message::User(msg) => {
                     self.user_chat(msg, ui);
                     None

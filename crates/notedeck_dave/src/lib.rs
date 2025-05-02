@@ -124,6 +124,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 avatar.random_nudge();
             }
             match res {
+                DaveApiResponse::Failed(err) => self.chat.push(Message::Error(err)),
+
                 DaveApiResponse::Token(token) => match self.chat.last_mut() {
                     Some(Message::Assistant(msg)) => *msg = msg.clone() + &token,
                     Some(_) => self.chat.push(Message::Assistant(token)),
@@ -175,7 +177,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     }
 
     fn ui(&mut self, app_ctx: &mut AppContext, ui: &mut egui::Ui) -> DaveResponse {
-        DaveUi::new(&self.chat, &mut self.input).ui(app_ctx, ui)
+        DaveUi::new(self.model_config.trial, &self.chat, &mut self.input).ui(app_ctx, ui)
     }
 
     fn handle_new_chat(&mut self) {
@@ -195,7 +197,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             let txn = Transaction::new(app_ctx.ndb).expect("txn");
             self.chat
                 .iter()
-                .map(|c| c.to_api_msg(&txn, app_ctx.ndb))
+                .filter_map(|c| c.to_api_msg(&txn, app_ctx.ndb))
                 .collect()
         };
         tracing::debug!("sending messages, latest: {:?}", messages.last().unwrap());
@@ -242,6 +244,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     Ok(token) => token,
                     Err(err) => {
                         tracing::error!("failed to get token: {err}");
+                        let _ = tx.send(DaveApiResponse::Failed(err.to_string()));
                         return;
                     }
                 };
