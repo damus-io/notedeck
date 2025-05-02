@@ -301,12 +301,16 @@ fn apply_friction(val: f32, friction: f32, clamp: f32) -> f32 {
 
 impl DaveAvatar {
     pub fn random_nudge(&mut self) {
+        self.random_nudge_with(1.0);
+    }
+
+    pub fn random_nudge_with(&mut self, force: f32) {
         let mut rng = rand::rng();
 
         let nudge = Vec3::new(
-            rng.random::<f32>(),
-            rng.random::<f32>(),
-            rng.random::<f32>(),
+            rng.random::<f32>() * force,
+            rng.random::<f32>() * force,
+            rng.random::<f32>() * force,
         )
         .normalize();
 
@@ -331,7 +335,7 @@ impl DaveAvatar {
             // Apply rotations (order matters)
             self.rotation = y_rotation.multiply(&x_rotation).multiply(&self.rotation);
         } else if response.clicked() {
-            self.random_nudge();
+            self.random_nudge_with(1.0);
         } else {
             // Continuous rotation - reduced speed and simplified axis
             let friction = 0.95;
@@ -343,11 +347,11 @@ impl DaveAvatar {
             // we only need to render if we're still spinning
             if self.rot_dir.x > clamp || self.rot_dir.y > clamp || self.rot_dir.z > clamp {
                 let x_rotation =
-                    Quaternion::from_axis_angle(&Vec3::new(1.0, 0.0, 0.0), self.rot_dir.y * 0.01);
+                    Quaternion::from_axis_angle(&Vec3::new(1.0, 0.0, 0.0), self.rot_dir.y * 0.03);
                 let y_rotation =
-                    Quaternion::from_axis_angle(&Vec3::new(0.0, 1.0, 0.0), self.rot_dir.x * 0.01);
+                    Quaternion::from_axis_angle(&Vec3::new(0.0, 1.0, 0.0), self.rot_dir.x * 0.03);
                 let z_rotation =
-                    Quaternion::from_axis_angle(&Vec3::new(0.0, 0.0, 1.0), self.rot_dir.z * 0.01);
+                    Quaternion::from_axis_angle(&Vec3::new(0.0, 0.0, 1.0), self.rot_dir.z * 0.03);
 
                 self.rotation = y_rotation
                     .multiply(&x_rotation)
