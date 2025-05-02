@@ -663,15 +663,23 @@ fn render_note_actionbar(
 
         if reply_resp.clicked() {
             break 's Some(NoteAction::Reply(to_noteid(note_id)));
+        } else if reply_resp.hovered() {
+            crate::show_pointer(ui);
         }
 
         if quote_resp.clicked() {
             break 's Some(NoteAction::Quote(to_noteid(note_id)));
+        } else if quote_resp.hovered() {
+            crate::show_pointer(ui);
         }
 
         let Some(zap_resp) = zap_resp else {
             break 's None;
         };
+
+        if zap_resp.hovered() {
+            crate::show_pointer(ui);
+        }
 
         if !zap_resp.clicked() {
             break 's None;

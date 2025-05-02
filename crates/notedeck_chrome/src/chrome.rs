@@ -206,6 +206,9 @@ impl Chrome {
                 let resp = ui
                     .add(Button::new("☀").frame(false))
                     .on_hover_text("Switch to light mode");
+                if resp.hovered() {
+                    notedeck_ui::show_pointer(ui);
+                }
                 if resp.clicked() {
                     Some(ChromePanelAction::SaveTheme(ThemePreference::Light))
                 } else {
@@ -216,6 +219,9 @@ impl Chrome {
                 let resp = ui
                     .add(Button::new("🌙").frame(false))
                     .on_hover_text("Switch to dark mode");
+                if resp.hovered() {
+                    notedeck_ui::show_pointer(ui);
+                }
                 if resp.clicked() {
                     Some(ChromePanelAction::SaveTheme(ThemePreference::Dark))
                 } else {
@@ -234,6 +240,14 @@ impl Chrome {
                 "{:10.1}",
                 ctx.frame_history.mean_frame_time() * 1e3
             ));
+        }
+
+        if pfp_resp.hovered()
+            || settings_resp.hovered()
+            || support_resp.hovered()
+            || wallet_resp.hovered()
+        {
+            notedeck_ui::show_pointer(ui);
         }
 
         if pfp_resp.clicked() {
@@ -287,14 +301,22 @@ impl Chrome {
         ui.add(milestone_name());
         ui.add_space(16.0);
         //let dark_mode = ui.ctx().style().visuals.dark_mode;
-        if columns_button(ui).clicked() {
-            self.active = 0;
+        {
+            let col_resp = columns_button(ui);
+            if col_resp.clicked() {
+                self.active = 0;
+            } else if col_resp.hovered() {
+                notedeck_ui::show_pointer(ui);
+            }
         }
         ui.add_space(32.0);
 
         if let Some(dave) = self.get_dave() {
-            if dave_button(dave.avatar_mut(), ui).clicked() {
+            let dave_resp = dave_button(dave.avatar_mut(), ui);
+            if dave_resp.clicked() {
                 self.active = 1;
+            } else if dave_resp.hovered() {
+                notedeck_ui::show_pointer(ui);
             }
         }
     }
