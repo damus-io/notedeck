@@ -313,19 +313,23 @@ fn milestone_name() -> impl Widget {
     |ui: &mut egui::Ui| -> egui::Response {
         ui.vertical_centered(|ui| {
             let font = egui::FontId::new(
-                notedeck::fonts::get_font_size(
-                    ui.ctx(),
-                    &NotedeckTextStyle::Tiny,
-                ),
+                notedeck::fonts::get_font_size(ui.ctx(), &NotedeckTextStyle::Tiny),
                 egui::FontFamily::Name(notedeck::fonts::NamedFontFamily::Bold.as_str().into()),
             );
-            ui.add(Label::new(
-                RichText::new("ALPHA")
-                    .color( ui.style().visuals.noninteractive().fg_stroke.color)
-                    .font(font),
-            ).selectable(false)).on_hover_text("Notedeck is an alpha product. Expect bugs and contact us when you run into issues.").on_hover_cursor(egui::CursorIcon::Help)
+            ui.add(
+                Label::new(
+                    RichText::new("BETA")
+                        .color(ui.style().visuals.noninteractive().fg_stroke.color)
+                        .font(font),
+                )
+                .selectable(false),
+            )
+            .on_hover_text(
+                "Notedeck is a beta product. Expect bugs and contact us when you run into issues.",
+            )
+            .on_hover_cursor(egui::CursorIcon::Help)
         })
-            .inner
+        .inner
     }
 }
 
