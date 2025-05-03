@@ -3145,7 +3145,7 @@ dependencies = [
 
 [[package]]
 name = "notedeck"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "base32",
  "bech32",
@@ -3186,7 +3186,7 @@ dependencies = [
 
 [[package]]
 name = "notedeck_chrome"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "eframe",
  "egui",
@@ -3213,7 +3213,7 @@ dependencies = [
 
 [[package]]
 name = "notedeck_columns"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "base64 0.22.1",
  "bech32",
@@ -3264,7 +3264,7 @@ dependencies = [
 
 [[package]]
 name = "notedeck_dave"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "async-openai",
  "bytemuck",
@@ -3288,7 +3288,7 @@ dependencies = [
 
 [[package]]
 name = "notedeck_ui"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "bitflags 2.9.0",
  "egui",
