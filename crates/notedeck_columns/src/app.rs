@@ -136,16 +136,16 @@ fn try_process_event(
         if is_ready {
             let txn = Transaction::new(app_ctx.ndb).expect("txn");
             // only thread timelines are reversed
-            let reversed = false;
+            //let reversed = false; // No longer needed here
 
-            if let Err(err) = timeline.poll_notes_into_view(
+            if let Err(err) = timeline.poll_notes_into_pending(
                 app_ctx.ndb,
                 &txn,
                 app_ctx.unknown_ids,
                 app_ctx.note_cache,
-                reversed,
+                //reversed, // Removed
             ) {
-                error!("poll_notes_into_view: {err}");
+                error!("poll_notes_into_pending: {err}");
             }
         } else {
             // TODO: show loading?

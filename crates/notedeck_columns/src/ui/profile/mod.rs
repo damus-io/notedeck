@@ -76,46 +76,47 @@ impl<'a, 'd> ProfileView<'a, 'd> {
                         action = Some(ProfileViewAction::EditProfile);
                     }
                 }
-                let profile_timeline = self
+
+                let kind = TimelineKind::Profile(*self.pubkey);
+                let profile_timeline_opt = self
                     .timeline_cache
-                    .notes(
+                    .timelines
+                    .get_mut(&kind);
+
+                if let Some(profile_timeline) = profile_timeline_opt {
+                    // poll timeline to add notes *before* getting the immutable reference for the view
+                    if let Err(e) = profile_timeline.poll_notes_into_pending(
                         self.note_context.ndb,
-                        self.note_context.note_cache,
                         &txn,
-                        &TimelineKind::Profile(*self.pubkey),
+                        self.unknown_ids,
+                        self.note_context.note_cache,
+                    ) {
+                        error!("Profile::poll_notes_into_pending: {e}");
+                    }
+
+                    // Now we can use the (implicitly reborrowed) timeline for the view
+                    profile_timeline.selected_view =
+                        tabs_ui(ui, profile_timeline.selected_view, &profile_timeline.views);
+
+                    if let Some(note_action) = TimelineTabView::new(
+                        profile_timeline.current_view(),
+                        false, // reversed
+                        self.note_options,
+                        &txn,
+                        self.is_muted,
+                        self.note_context,
+                        &self
+                            .accounts
+                            .get_selected_account()
+                            .map(|a| (&a.key).into()),
                     )
-                    .get_ptr();
-
-                profile_timeline.selected_view =
-                    tabs_ui(ui, profile_timeline.selected_view, &profile_timeline.views);
-
-                let reversed = false;
-                // poll for new notes and insert them into our existing notes
-                if let Err(e) = profile_timeline.poll_notes_into_view(
-                    self.note_context.ndb,
-                    &txn,
-                    self.unknown_ids,
-                    self.note_context.note_cache,
-                    reversed,
-                ) {
-                    error!("Profile::poll_notes_into_view: {e}");
-                }
-
-                if let Some(note_action) = TimelineTabView::new(
-                    profile_timeline.current_view(),
-                    reversed,
-                    self.note_options,
-                    &txn,
-                    self.is_muted,
-                    self.note_context,
-                    &self
-                        .accounts
-                        .get_selected_account()
-                        .map(|a| (&a.key).into()),
-                )
-                .show(ui)
-                {
-                    action = Some(ProfileViewAction::Note(note_action));
+                    .show(ui)
+                    {
+                        action = Some(ProfileViewAction::Note(note_action));
+                    }
+                } else {
+                    // Handle case where timeline doesn't exist yet (maybe show loading?)
+                    ui.label("Loading profile timeline...");
                 }
 
                 action

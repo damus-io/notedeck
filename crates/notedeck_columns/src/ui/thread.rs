@@ -63,47 +63,44 @@ impl<'a, 'd> ThreadView<'a, 'd> {
                     self.selected_note_id,
                 ) {
                     Ok(root_id) => root_id,
-
                     Err(err) => {
                         ui.label(format!("Error loading thread: {:?}", err));
                         return None;
                     }
                 };
 
-                let thread_timeline = self
-                    .timeline_cache
-                    .notes(
+                let kind = TimelineKind::Thread(ThreadSelection::from_root_id(root_id.to_owned()));
+
+                // Get mutable reference ONCE
+                let thread_timeline_opt = self.timeline_cache.timelines.get_mut(&kind);
+
+                if let Some(thread_timeline) = thread_timeline_opt {
+                    // poll timeline to add notes
+                    if let Err(err) = thread_timeline.poll_notes_into_pending(
                         self.note_context.ndb,
-                        self.note_context.note_cache,
                         &txn,
-                        &TimelineKind::Thread(ThreadSelection::from_root_id(root_id.to_owned())),
+                        self.unknown_ids,
+                        self.note_context.note_cache,
+                    ) {
+                        error!("ThreadView::poll_notes_into_pending: {err}");
+                    }
+
+                    // Use the same mutable reference (reborrowed implicitly) for the view
+                    TimelineTabView::new(
+                        thread_timeline.current_view(),
+                        true, // reversed for threads
+                        self.note_options,
+                        &txn,
+                        self.is_muted,
+                        self.note_context,
+                        self.cur_acc,
                     )
-                    .get_ptr();
-
-                // TODO(jb55): skip poll if ThreadResult is fresh?
-
-                let reversed = true;
-                // poll for new notes and insert them into our existing notes
-                if let Err(err) = thread_timeline.poll_notes_into_view(
-                    self.note_context.ndb,
-                    &txn,
-                    self.unknown_ids,
-                    self.note_context.note_cache,
-                    reversed,
-                ) {
-                    error!("error polling notes into thread timeline: {err}");
+                    .show(ui)
+                } else {
+                    // Handle case where timeline doesn't exist yet (maybe show loading?)
+                    ui.label("Loading thread timeline...");
+                    None
                 }
-
-                TimelineTabView::new(
-                    thread_timeline.current_view(),
-                    true,
-                    self.note_options,
-                    &txn,
-                    self.is_muted,
-                    self.note_context,
-                    self.cur_acc,
-                )
-                .show(ui)
             })
             .inner
     }

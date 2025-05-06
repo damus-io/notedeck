@@ -7,7 +7,7 @@ use std::f32::consts::PI;
 use tracing::{error, warn};
 
 use crate::timeline::{TimelineCache, TimelineKind, TimelineTab, ViewFilter};
-use notedeck::{note::root_note_id_from_selected_id, MuteFun, NoteAction, NoteContext};
+use notedeck::{note::root_note_id_from_selected_id, MuteFun, NoteAction, NoteContext, UnknownIds};
 use notedeck_ui::{
     anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},
     show_pointer, NoteOptions, NoteView,
@@ -21,6 +21,7 @@ pub struct TimelineView<'a, 'd> {
     is_muted: &'a MuteFun,
     note_context: &'a mut NoteContext<'d>,
     cur_acc: &'a Option<KeypairUnowned<'a>>,
+    unknown_ids: &'a mut UnknownIds,
 }
 
 impl<'a, 'd> TimelineView<'a, 'd> {
@@ -32,6 +33,7 @@ impl<'a, 'd> TimelineView<'a, 'd> {
         note_context: &'a mut NoteContext<'d>,
         note_options: NoteOptions,
         cur_acc: &'a Option<KeypairUnowned<'a>>,
+        unknown_ids: &'a mut UnknownIds,
     ) -> Self {
         let reverse = false;
         TimelineView {
@@ -42,6 +44,7 @@ impl<'a, 'd> TimelineView<'a, 'd> {
             is_muted,
             note_context,
             cur_acc,
+            unknown_ids,
         }
     }
 
@@ -55,6 +58,7 @@ impl<'a, 'd> TimelineView<'a, 'd> {
             self.is_muted,
             self.note_context,
             self.cur_acc,
+            self.unknown_ids,
         )
     }
 
@@ -74,31 +78,46 @@ fn timeline_ui(
     is_muted: &MuteFun,
     note_context: &mut NoteContext,
     cur_acc: &Option<KeypairUnowned>,
+    unknown_ids: &mut UnknownIds,
 ) -> Option<NoteAction> {
-    //padding(4.0, ui, |ui| ui.heading("Notifications"));
-    /*
-    let font_id = egui::TextStyle::Body.resolve(ui.style());
-    let row_height = ui.fonts(|f| f.row_height(&font_id)) + ui.spacing().item_spacing.y;
+    let mut note_action: Option<NoteAction> = None;
 
-    */
-
-    let scroll_id = {
-        let timeline = if let Some(timeline) = timeline_cache.timelines.get_mut(timeline_id) {
-            timeline
-        } else {
-            error!("tried to render timeline in column, but timeline was missing");
-            // TODO (jb55): render error when timeline is missing?
-            // this shouldn't happen...
-            return None;
-        };
-
-        timeline.selected_view = tabs_ui(ui, timeline.selected_view, &timeline.views);
-
-        // need this for some reason??
-        ui.add_space(3.0);
-
-        egui::Id::new(("tlscroll", timeline.view_id()))
+    let timeline = if let Some(timeline) = timeline_cache.timelines.get_mut(timeline_id) {
+        timeline
+    } else {
+        error!("tried to render timeline in column, but timeline was missing");
+        return None;
     };
+
+    timeline.selected_view = tabs_ui(ui, timeline.selected_view, &timeline.views);
+    ui.add_space(3.0);
+
+    if !timeline.pending_notes.is_empty() {
+        ui.vertical_centered(|ui| {
+            let button_text = format!("Load {} new notes", timeline.pending_notes.len());
+            let button = egui::Button::new(button_text).fill(ui.visuals().widgets.active.bg_fill);
+            if ui.add(button).clicked() {
+                match Transaction::new(note_context.ndb) {
+                    Ok(txn) => {
+                        if let Err(e) = timeline.apply_pending_notes(
+                            note_context.ndb,
+                            &txn,
+                            unknown_ids,
+                            note_context.note_cache,
+                        ) {
+                            error!("Failed to apply pending notes: {}", e);
+                        }
+                    }
+                    Err(e) => {
+                        error!("Failed to create transaction for applying notes: {}", e);
+                    }
+                }
+            }
+        });
+        ui.add_space(5.0);
+    }
+
+    let scroll_id = egui::Id::new(("tlscroll", timeline.view_id()));
 
     let show_top_button_id = ui.id().with((scroll_id, "at_top"));
 
@@ -137,8 +156,6 @@ fn timeline_ui(
             timeline
         } else {
             error!("tried to render timeline in column, but timeline was missing");
-            // TODO (jb55): render error when timeline is missing?
-            // this shouldn't happen...
             return None;
         };
 
@@ -169,7 +186,7 @@ fn timeline_ui(
             .data_mut(|d| d.insert_temp(show_top_button_id, true));
     }
 
-    scroll_output.inner
+    scroll_output.inner.or(note_action)
 }
 
 fn goto_top_button(center: Pos2) -> impl egui::Widget {

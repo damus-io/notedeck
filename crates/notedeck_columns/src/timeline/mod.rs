@@ -15,6 +15,7 @@ use enostr::{PoolRelay, Pubkey, RelayPool};
 use nostrdb::{Filter, Ndb, Note, NoteKey, Transaction};
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::collections::HashSet;
 
 use tracing::{debug, error, info, warn};
 
@@ -195,6 +196,8 @@ pub struct Timeline {
     pub filter: FilterStates,
     pub views: Vec<TimelineTab>,
     pub selected_view: usize,
+    /// Notes polled from the database but not yet shown in the UI.
+    pub pending_notes: Vec<NoteRef>,
 
     pub subscription: Option<MultiSubscriber>,
 }
@@ -268,16 +271,13 @@ impl Timeline {
     }
 
     pub fn new(kind: TimelineKind, filter_state: FilterState, views: Vec<TimelineTab>) -> Self {
-        let filter = FilterStates::new(filter_state);
-        let subscription: Option<MultiSubscriber> = None;
-        let selected_view = 0;
-
-        Timeline {
+        Self {
             kind,
-            filter,
+            filter: FilterStates::new(filter_state),
             views,
-            subscription,
-            selected_view,
+            selected_view: 0,
+            pending_notes: Vec::new(),
+            subscription: None,
         }
     }
 
@@ -402,17 +402,18 @@ impl Timeline {
         Ok(())
     }
 
-    pub fn poll_notes_into_view(
+    /// Adds newly polled notes to the `pending_notes` list.
+    /// Returns true if new notes were added.
+    pub fn poll_notes_into_pending(
         &mut self,
         ndb: &Ndb,
         txn: &Transaction,
         unknown_ids: &mut UnknownIds,
         note_cache: &mut NoteCache,
-        reversed: bool,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         if !self.kind.should_subscribe_locally() {
             // don't need to poll for timelines that don't have local subscriptions
-            return Ok(());
+            return Ok(false);
         }
 
         let sub = self
@@ -423,12 +424,109 @@ impl Timeline {
 
         let new_note_ids = ndb.poll_for_notes(sub, 500);
         if new_note_ids.is_empty() {
-            return Ok(());
+            return Ok(false);
         } else {
             debug!("{} new notes! {:?}", new_note_ids.len(), new_note_ids);
         }
 
-        self.insert(&new_note_ids, ndb, txn, unknown_ids, note_cache, reversed)
+        // Fetch NoteRefs for the new NoteKeys and add to pending_notes
+        let mut new_refs: Vec<NoteRef> = Vec::with_capacity(new_note_ids.len());
+        for key in new_note_ids {
+            let note = match ndb.get_note_by_key(txn, key) {
+                Ok(note) => note,
+                Err(_) => {
+                    error!(
+                        "hit race condition in poll_notes_into_pending: note {:?} not found",
+                        key
+                    );
+                    continue;
+                }
+            };
+
+            // Ensure that unknown ids are captured (needed for profile info etc.)
+            UnknownIds::update_from_note(txn, ndb, unknown_ids, note_cache, &note);
+
+            let created_at = note.created_at();
+            new_refs.push(NoteRef {
+                key,
+                created_at,
+            });
+        }
+
+        // Add to pending, ensuring no duplicates and maintaining order (newest first)
+        // We assume poll_for_notes returns newest first.
+        let mut existing_pending_keys: HashSet<_> = self.pending_notes.iter().map(|nr| nr.key).collect();
+        let mut added = false;
+        for new_ref in new_refs.into_iter().rev() { // Iterate reversed to prepend correctly
+            if existing_pending_keys.insert(new_ref.key) {
+                self.pending_notes.insert(0, new_ref); // Prepend to keep newest first
+                added = true;
+            }
+        }
+
+        Ok(added)
+    }
+
+    /// Applies the notes currently in `pending_notes` to the visible timeline views.
+    pub fn apply_pending_notes(
+        &mut self,
+        ndb: &Ndb,
+        txn: &Transaction,
+        unknown_ids: &mut UnknownIds,
+        note_cache: &mut NoteCache,
+    ) -> Result<()> {
+        if self.pending_notes.is_empty() {
+            return Ok(());
+        }
+
+        let notes_to_apply = std::mem::take(&mut self.pending_notes);
+        let reversed = matches!(self.kind, TimelineKind::Thread(_)); // Apply reversed logic if needed
+
+        // Fetch full notes for applying filters (slightly inefficient but necessary for Notes filter)
+        let mut fetched_notes: Vec<(Note, NoteRef)> = Vec::with_capacity(notes_to_apply.len());
+        for key_ref in &notes_to_apply {
+             let note = match ndb.get_note_by_key(txn, key_ref.key) {
+                Ok(note) => note,
+                Err(_) => {
+                    // Note might have been deleted between polling and applying
+                    error!(
+                        "Failed to fetch note {:?} while applying pending notes",
+                        key_ref.key
+                    );
+                    continue;
+                }
+            };
+            // Re-check unknown IDs just in case?
+            UnknownIds::update_from_note(txn, ndb, unknown_ids, note_cache, &note);
+            fetched_notes.push((note, *key_ref));
+        }
+
+
+        for view in &mut self.views {
+            match view.filter {
+                ViewFilter::NotesAndReplies => {
+                    // For this view, we just need the NoteRefs
+                    let refs_to_insert: Vec<NoteRef> = notes_to_apply.iter().copied().collect();
+                     if !refs_to_insert.is_empty() {
+                        view.insert(&refs_to_insert, reversed);
+                    }
+                }
+                ViewFilter::Notes => {
+                    let mut filtered_refs = Vec::with_capacity(fetched_notes.len());
+                    for (note, nr) in &fetched_notes {
+                        let cached_note = note_cache.cached_note_or_insert(nr.key, note);
+                        if ViewFilter::filter_notes(cached_note, note) {
+                            filtered_refs.push(*nr);
+                        }
+                    }
+                     if !filtered_refs.is_empty() {
+                        view.insert(&filtered_refs, reversed);
+                    }
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 

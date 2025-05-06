@@ -40,6 +40,7 @@ pub fn render_timeline_route(
                 note_context,
                 note_options,
                 &accounts.get_selected_account().map(|a| (&a.key).into()),
+                unknown_ids,
             )
             .ui(ui);
 
@@ -68,6 +69,7 @@ pub fn render_timeline_route(
                     note_context,
                     note_options,
                     &accounts.get_selected_account().map(|a| (&a.key).into()),
+                    unknown_ids,
                 )
                 .ui(ui);
 
