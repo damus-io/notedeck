@@ -19,6 +19,7 @@ pub struct NoteContext<'d> {
     pub note_cache: &'d mut NoteCache,
     pub zaps: &'d mut Zaps,
     pub pool: &'d mut RelayPool,
+    pub current_account_has_wallet: bool,
 }
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone, Hash)]

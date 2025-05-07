@@ -27,7 +27,7 @@ use crate::{
 
 use egui_nav::{Nav, NavAction, NavResponse, NavUiType};
 use nostrdb::Transaction;
-use notedeck::{AccountsAction, AppContext, NoteAction, NoteContext};
+use notedeck::{get_current_wallet, AccountsAction, AppContext, NoteAction, NoteContext};
 use notedeck_ui::View;
 use tracing::error;
 
@@ -280,6 +280,7 @@ fn render_nav_body(
         note_cache: ctx.note_cache,
         zaps: ctx.zaps,
         pool: ctx.pool,
+        current_account_has_wallet: get_current_wallet(ctx.accounts, ctx.global_wallet).is_some(),
     };
     match top {
         Route::Timeline(kind) => render_timeline_route(

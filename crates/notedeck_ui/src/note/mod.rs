@@ -27,7 +27,7 @@ use notedeck::{
 
 pub struct NoteView<'a, 'd> {
     note_context: &'a mut NoteContext<'d>,
-    cur_acc: &'a Option<KeypairUnowned<'a>>,
+    zapping_acc: Option<&'a KeypairUnowned<'a>>,
     parent: Option<NoteKey>,
     note: &'a nostrdb::Note<'a>,
     framed: bool,
@@ -70,7 +70,7 @@ impl egui::Widget for &mut NoteView<'_, '_> {
 impl<'a, 'd> NoteView<'a, 'd> {
     pub fn new(
         note_context: &'a mut NoteContext<'d>,
-        cur_acc: &'a Option<KeypairUnowned<'a>>,
+        zapping_acc: Option<&'a KeypairUnowned<'a>>,
         note: &'a nostrdb::Note<'a>,
         mut flags: NoteOptions,
     ) -> Self {
@@ -82,7 +82,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
 
         Self {
             note_context,
-            cur_acc,
+            zapping_acc,
             parent,
             note,
             flags,
@@ -208,7 +208,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
 
             ui.add(&mut NoteContents::new(
                 self.note_context,
-                self.cur_acc,
+                self.zapping_acc,
                 txn,
                 self.note,
                 self.flags,
@@ -326,7 +326,13 @@ impl<'a, 'd> NoteView<'a, 'd> {
                         .text_style(style.text_style()),
                 );
             });
-            NoteView::new(self.note_context, self.cur_acc, &note_to_repost, self.flags).show(ui)
+            NoteView::new(
+                self.note_context,
+                self.zapping_acc,
+                &note_to_repost,
+                self.flags,
+            )
+            .show(ui)
         } else {
             self.show_standard(ui)
         }
@@ -421,7 +427,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
                                 .horizontal(|ui| {
                                     reply_desc(
                                         ui,
-                                        self.cur_acc,
+                                        self.zapping_acc,
                                         txn,
                                         &note_reply,
                                         self.note_context,
@@ -437,8 +443,13 @@ impl<'a, 'd> NoteView<'a, 'd> {
                     });
                 });
 
-                let mut contents =
-                    NoteContents::new(self.note_context, self.cur_acc, txn, self.note, self.flags);
+                let mut contents = NoteContents::new(
+                    self.note_context,
+                    self.zapping_acc,
+                    txn,
+                    self.note,
+                    self.flags,
+                );
 
                 ui.add(&mut contents);
 
@@ -449,8 +460,10 @@ impl<'a, 'd> NoteView<'a, 'd> {
                 if self.options().has_actionbar() {
                     if let Some(action) = render_note_actionbar(
                         ui,
-                        self.note_context.zaps,
-                        self.cur_acc.as_ref(),
+                        self.zapping_acc.as_ref().map(|c| Zapper {
+                            zaps: self.note_context.zaps,
+                            cur_acc: c,
+                        }),
                         self.note.id(),
                         self.note.pubkey(),
                         note_key,
@@ -484,7 +497,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
                         if note_reply.reply().is_some() {
                             let action = reply_desc(
                                 ui,
-                                self.cur_acc,
+                                self.zapping_acc,
                                 txn,
                                 &note_reply,
                                 self.note_context,
@@ -499,7 +512,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
 
                     let mut contents = NoteContents::new(
                         self.note_context,
-                        self.cur_acc,
+                        self.zapping_acc,
                         txn,
                         self.note,
                         self.flags,
@@ -513,8 +526,10 @@ impl<'a, 'd> NoteView<'a, 'd> {
                     if self.options().has_actionbar() {
                         if let Some(action) = render_note_actionbar(
                             ui,
-                            self.note_context.zaps,
-                            self.cur_acc.as_ref(),
+                            self.zapping_acc.as_ref().map(|c| Zapper {
+                                zaps: self.note_context.zaps,
+                                cur_acc: c,
+                            }),
                             self.note.id(),
                             self.note.pubkey(),
                             note_key,
@@ -625,11 +640,15 @@ fn note_hitbox_clicked(
     }
 }
 
+struct Zapper<'a> {
+    zaps: &'a Zaps,
+    cur_acc: &'a KeypairUnowned<'a>,
+}
+
 #[profiling::function]
 fn render_note_actionbar(
     ui: &mut egui::Ui,
-    zaps: &Zaps,
-    cur_acc: Option<&KeypairUnowned>,
+    zapper: Option<Zapper>,
     note_id: &[u8; 32],
     note_pubkey: &[u8; 32],
     note_key: NoteKey,
@@ -638,29 +657,7 @@ fn render_note_actionbar(
         let reply_resp = reply_button(ui, note_key);
         let quote_resp = quote_repost_button(ui, note_key);
 
-        let zap_target = ZapTarget::Note(NoteZapTarget {
-            note_id,
-            zap_recipient: note_pubkey,
-        });
-
-        let zap_state = cur_acc.map_or_else(
-            || Ok(AnyZapState::None),
-            |kp| zaps.any_zap_state_for(kp.pubkey.bytes(), zap_target),
-        );
-        let zap_resp = cur_acc
-            .filter(|k| k.secret_key.is_some())
-            .map(|_| match &zap_state {
-                Ok(any_zap_state) => ui.add(zap_button(any_zap_state.clone(), note_id)),
-                Err(zapping_error) => {
-                    let (rect, _) =
-                        ui.allocate_at_least(egui::vec2(10.0, 10.0), egui::Sense::click());
-                    ui.add(x_button(rect))
-                        .on_hover_text(format!("{zapping_error}"))
-                }
-            });
-
         let to_noteid = |id: &[u8; 32]| NoteId::new(*id);
-
         if reply_resp.clicked() {
             break 's Some(NoteAction::Reply(to_noteid(note_id)));
         } else if reply_resp.hovered() {
@@ -673,17 +670,16 @@ fn render_note_actionbar(
             crate::show_pointer(ui);
         }
 
-        let Some(zap_resp) = zap_resp else {
+        let Some(Zapper { zaps, cur_acc }) = zapper else {
             break 's None;
         };
 
-        if zap_resp.hovered() {
-            crate::show_pointer(ui);
-        }
+        let zap_target = ZapTarget::Note(NoteZapTarget {
+            note_id,
+            zap_recipient: note_pubkey,
+        });
 
-        if !zap_resp.clicked() {
-            break 's None;
-        }
+        let zap_state = zaps.any_zap_state_for(cur_acc.pubkey.bytes(), zap_target);
 
         let target = NoteZapTargetOwned {
             note_id: to_noteid(note_id),
@@ -692,6 +688,27 @@ fn render_note_actionbar(
 
         if zap_state.is_err() {
             break 's Some(NoteAction::Zap(ZapAction::ClearError(target)));
+        }
+
+        let zap_resp = {
+            cur_acc.secret_key.as_ref()?;
+
+            match zap_state {
+                Ok(any_zap_state) => ui.add(zap_button(any_zap_state, note_id)),
+                Err(err) => {
+                    let (rect, _) =
+                        ui.allocate_at_least(egui::vec2(10.0, 10.0), egui::Sense::click());
+                    ui.add(x_button(rect)).on_hover_text(err.to_string())
+                }
+            }
+        };
+
+        if zap_resp.hovered() {
+            crate::show_pointer(ui);
+        }
+
+        if !zap_resp.clicked() {
+            break 's None;
         }
 
         Some(NoteAction::Zap(ZapAction::Send(ZapTargetAmount {
