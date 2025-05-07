@@ -4,7 +4,7 @@ use crate::ui::{
     note::{PostAction, PostResponse, PostType},
 };
 
-use enostr::{FilledKeypair, NoteId};
+use enostr::{FilledKeypair, KeypairUnowned, NoteId};
 use notedeck::NoteContext;
 use notedeck_ui::jobs::JobsCache;
 use notedeck_ui::{NoteOptions, NoteView, ProfilePic};
@@ -67,12 +67,17 @@ impl<'a, 'd> PostReplyView<'a, 'd> {
             let note_offset: i8 =
                 pfp_offset - ProfilePic::medium_size() / 2 - NoteView::expand_size() / 2;
 
+            let zapping_acc = self
+                .note_context
+                .current_account_has_wallet
+                .then(|| KeypairUnowned::from(&self.poster));
+
             let quoted_note = egui::Frame::NONE
                 .outer_margin(egui::Margin::same(note_offset))
                 .show(ui, |ui| {
                     NoteView::new(
                         self.note_context,
-                        &Some(self.poster.into()),
+                        zapping_acc.as_ref(),
                         self.note,
                         self.note_options,
                         self.jobs,

@@ -84,8 +84,8 @@ impl<'a> FilledKeypair<'a> {
     }
 }
 
-impl<'a> From<FilledKeypair<'a>> for KeypairUnowned<'a> {
-    fn from(value: FilledKeypair<'a>) -> Self {
+impl<'a> From<&'a FilledKeypair<'a>> for KeypairUnowned<'a> {
+    fn from(value: &'a FilledKeypair<'a>) -> Self {
         Self {
             pubkey: value.pubkey,
             secret_key: Some(value.secret_key),

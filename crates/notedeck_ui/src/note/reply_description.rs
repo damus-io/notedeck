@@ -10,7 +10,7 @@ use notedeck::{NoteAction, NoteContext};
 #[profiling::function]
 pub fn reply_desc(
     ui: &mut egui::Ui,
-    cur_acc: &Option<KeypairUnowned>,
+    cur_acc: Option<&KeypairUnowned>,
     txn: &Transaction,
     note_reply: &NoteReply,
     note_context: &mut NoteContext,
