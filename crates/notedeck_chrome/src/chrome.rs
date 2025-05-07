@@ -275,9 +275,9 @@ impl Chrome {
         let txn = Transaction::new(ctx.ndb).expect("should be able to create txn");
         let profile_url = get_account_url(&txn, ctx.ndb, ctx.accounts.get_selected_account());
 
-        let widget = ProfilePic::new(ctx.img_cache, profile_url).size(cur_pfp_size);
+        let mut widget = ProfilePic::new(ctx.img_cache, profile_url).size(cur_pfp_size);
 
-        ui.put(helper.get_animation_rect(), widget);
+        ui.put(helper.get_animation_rect(), &mut widget);
 
         helper.take_animation_response()
     }
@@ -501,7 +501,7 @@ fn chrome_handle_app_action(
             let txn = Transaction::new(ctx.ndb).unwrap();
 
             notedeck_columns::actionbar::execute_and_process_note_action(
-                &note_action,
+                note_action,
                 ctx.ndb,
                 columns
                     .decks_cache
@@ -516,6 +516,7 @@ fn chrome_handle_app_action(
                 ctx.accounts,
                 ctx.global_wallet,
                 ctx.zaps,
+                ctx.img_cache,
                 ui,
             );
         }

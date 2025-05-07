@@ -1,9 +1,10 @@
 mod action;
 mod context;
 
-pub use action::{NoteAction, ZapAction, ZapTargetAmount};
+pub use action::{MediaAction, NoteAction, ZapAction, ZapTargetAmount};
 pub use context::{BroadcastContext, ContextSelection, NoteContextSelection};
 
+use crate::JobPool;
 use crate::{notecache::NoteCache, zaps::Zaps, Images};
 use enostr::{NoteId, RelayPool};
 use nostrdb::{Ndb, Note, NoteKey, QueryResult, Transaction};
@@ -19,6 +20,7 @@ pub struct NoteContext<'d> {
     pub note_cache: &'d mut NoteCache,
     pub zaps: &'d mut Zaps,
     pub pool: &'d mut RelayPool,
+    pub job_pool: &'d mut JobPool,
 }
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone, Hash)]

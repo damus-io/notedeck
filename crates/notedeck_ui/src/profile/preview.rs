@@ -38,7 +38,7 @@ impl<'a, 'cache> ProfilePreview<'a, 'cache> {
 
             ui.put(
                 pfp_rect,
-                ProfilePic::new(self.cache, get_profile_url(Some(self.profile)))
+                &mut ProfilePic::new(self.cache, get_profile_url(Some(self.profile)))
                     .size(size)
                     .border(ProfilePic::border_stroke(ui)),
             );
@@ -90,7 +90,7 @@ impl egui::Widget for SimpleProfilePreview<'_, '_> {
     fn ui(self, ui: &mut egui::Ui) -> egui::Response {
         Frame::new()
             .show(ui, |ui| {
-                ui.add(ProfilePic::new(self.cache, get_profile_url(self.profile)).size(48.0));
+                ui.add(&mut ProfilePic::new(self.cache, get_profile_url(self.profile)).size(48.0));
                 ui.vertical(|ui| {
                     ui.add(display_name_widget(&get_display_name(self.profile), true));
                     if !self.is_nsec {

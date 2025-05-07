@@ -400,13 +400,16 @@ impl<'a> NavTitle<'a> {
     fn timeline_pfp(&mut self, ui: &mut egui::Ui, id: &TimelineKind, pfp_size: f32) {
         let txn = Transaction::new(self.ndb).unwrap();
 
-        if let Some(pfp) = id
+        if let Some(mut pfp) = id
             .pubkey()
             .and_then(|pk| self.pubkey_pfp(&txn, pk.bytes(), pfp_size))
         {
-            ui.add(pfp);
+            ui.add(&mut pfp);
         } else {
-            ui.add(ProfilePic::new(self.img_cache, notedeck::profile::no_pfp_url()).size(pfp_size));
+            ui.add(
+                &mut ProfilePic::new(self.img_cache, notedeck::profile::no_pfp_url())
+                    .size(pfp_size),
+            );
         }
     }
 
@@ -466,10 +469,13 @@ impl<'a> NavTitle<'a> {
 
     fn show_profile(&mut self, ui: &mut egui::Ui, pubkey: &Pubkey, pfp_size: f32) {
         let txn = Transaction::new(self.ndb).unwrap();
-        if let Some(pfp) = self.pubkey_pfp(&txn, pubkey.bytes(), pfp_size) {
-            ui.add(pfp);
+        if let Some(mut pfp) = self.pubkey_pfp(&txn, pubkey.bytes(), pfp_size) {
+            ui.add(&mut pfp);
         } else {
-            ui.add(ProfilePic::new(self.img_cache, notedeck::profile::no_pfp_url()).size(pfp_size));
+            ui.add(
+                &mut ProfilePic::new(self.img_cache, notedeck::profile::no_pfp_url())
+                    .size(pfp_size),
+            );
         };
     }
 

@@ -8,15 +8,16 @@ use crate::Result;
 use egui::{
     text::{CCursorRange, LayoutJob},
     text_edit::TextEditOutput,
-    vec2,
     widgets::text_edit::TextEdit,
     Frame, Layout, Margin, Pos2, ScrollArea, Sense, TextBuffer,
 };
 use enostr::{FilledKeypair, FullKeypair, NoteId, Pubkey, RelayPool};
 use nostrdb::{Ndb, Transaction};
+use notedeck_ui::blur::PixelDimensions;
+use notedeck_ui::images::{get_render_state, RenderState};
+use notedeck_ui::jobs::JobsCache;
 use notedeck_ui::{
     gif::{handle_repaint, retrieve_latest_texture},
-    images::render_images,
     note::render_note_preview,
     NoteOptions, ProfilePic,
 };
@@ -32,6 +33,7 @@ pub struct PostView<'a, 'd> {
     id_source: Option<egui::Id>,
     inner_rect: egui::Rect,
     note_options: NoteOptions,
+    jobs: &'a mut JobsCache,
 }
 
 #[derive(Clone)]
@@ -103,6 +105,7 @@ impl<'a, 'd> PostView<'a, 'd> {
         poster: FilledKeypair<'a>,
         inner_rect: egui::Rect,
         note_options: NoteOptions,
+        jobs: &'a mut JobsCache,
     ) -> Self {
         let id_source: Option<egui::Id> = None;
         PostView {
@@ -113,6 +116,7 @@ impl<'a, 'd> PostView<'a, 'd> {
             post_type,
             inner_rect,
             note_options,
+            jobs,
         }
     }
 
@@ -137,11 +141,11 @@ impl<'a, 'd> PostView<'a, 'd> {
                 Some(ProfilePic::from_profile(self.note_context.img_cache, p)?.size(pfp_size))
             });
 
-        if let Some(pfp) = poster_pfp {
-            ui.add(pfp);
+        if let Some(mut pfp) = poster_pfp {
+            ui.add(&mut pfp);
         } else {
             ui.add(
-                ProfilePic::new(self.note_context.img_cache, notedeck::profile::no_pfp_url())
+                &mut ProfilePic::new(self.note_context.img_cache, notedeck::profile::no_pfp_url())
                     .size(pfp_size),
             );
         }
@@ -345,6 +349,7 @@ impl<'a, 'd> PostView<'a, 'd> {
                                     id.bytes(),
                                     nostrdb::NoteKey::new(0),
                                     self.note_options,
+                                    self.jobs,
                                 )
                             })
                             .inner
@@ -424,59 +429,35 @@ impl<'a, 'd> PostView<'a, 'd> {
                 (300, 300)
             };
 
-            if let Some(cache_type) =
+            let Some(cache_type) =
                 supported_mime_hosted_at_url(&mut self.note_context.img_cache.urls, &media.url)
-            {
-                render_images(
-                    ui,
-                    self.note_context.img_cache,
-                    &media.url,
-                    notedeck_ui::images::ImageType::Content,
-                    cache_type,
-                    |ui| {
-                        ui.spinner();
-                    },
-                    |_, e| {
-                        self.draft.upload_errors.push(e.to_string());
-                        error!("{e}");
-                    },
-                    |ui, url, renderable_media, gifs| {
-                        let media_size = vec2(width as f32, height as f32);
-                        let max_size = vec2(300.0, 300.0);
-                        let size = if media_size.x > max_size.x || media_size.y > max_size.y {
-                            max_size
-                        } else {
-                            media_size
-                        };
-
-                        let texture_handle = handle_repaint(
-                            ui,
-                            retrieve_latest_texture(url, gifs, renderable_media),
-                        );
-                        let img_resp = ui.add(
-                            egui::Image::new(texture_handle)
-                                .max_size(size)
-                                .corner_radius(12.0),
-                        );
-
-                        let remove_button_rect = {
-                            let top_left = img_resp.rect.left_top();
-                            let spacing = 13.0;
-                            let center = Pos2::new(top_left.x + spacing, top_left.y + spacing);
-                            egui::Rect::from_center_size(center, egui::vec2(26.0, 26.0))
-                        };
-                        if show_remove_upload_button(ui, remove_button_rect).clicked() {
-                            to_remove.push(i);
-                        }
-                        ui.advance_cursor_after_rect(img_resp.rect);
-                    },
-                );
-            } else {
+            else {
                 self.draft
                     .upload_errors
                     .push("Uploaded media is not supported.".to_owned());
                 error!("Unsupported mime type at url: {}", &media.url);
-            }
+                continue;
+            };
+
+            let url = &media.url;
+            let cur_state = get_render_state(
+                ui.ctx(),
+                self.note_context.img_cache,
+                cache_type,
+                url,
+                notedeck_ui::images::ImageType::Content,
+            );
+
+            render_post_view_media(
+                ui,
+                &mut self.draft.upload_errors,
+                &mut to_remove,
+                i,
+                width,
+                height,
+                cur_state,
+                url,
+            )
         }
         to_remove.reverse();
         for i in to_remove {
@@ -552,6 +533,62 @@ impl<'a, 'd> PostView<'a, 'd> {
 
         for i in to_remove {
             self.draft.upload_errors.remove(i);
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_post_view_media(
+    ui: &mut egui::Ui,
+    upload_errors: &mut Vec<String>,
+    to_remove: &mut Vec<usize>,
+    cur_index: usize,
+    width: u32,
+    height: u32,
+    render_state: RenderState,
+    url: &str,
+) {
+    match render_state.texture_state {
+        notedeck::TextureState::Pending => {
+            ui.spinner();
+        }
+        notedeck::TextureState::Error(e) => {
+            upload_errors.push(e.to_string());
+            error!("{e}");
+        }
+        notedeck::TextureState::Loaded(renderable_media) => {
+            let max_size = 300;
+            let size = if width > max_size || height > max_size {
+                PixelDimensions { x: 300, y: 300 }
+            } else {
+                PixelDimensions {
+                    x: width,
+                    y: height,
+                }
+            }
+            .to_points(ui.pixels_per_point())
+            .to_vec();
+
+            let texture_handle = handle_repaint(
+                ui,
+                retrieve_latest_texture(url, render_state.gifs, renderable_media),
+            );
+            let img_resp = ui.add(
+                egui::Image::new(texture_handle)
+                    .max_size(size)
+                    .corner_radius(12.0),
+            );
+
+            let remove_button_rect = {
+                let top_left = img_resp.rect.left_top();
+                let spacing = 13.0;
+                let center = Pos2::new(top_left.x + spacing, top_left.y + spacing);
+                egui::Rect::from_center_size(center, egui::vec2(26.0, 26.0))
+            };
+            if show_remove_upload_button(ui, remove_button_rect).clicked() {
+                to_remove.push(cur_index);
+            }
+            ui.advance_cursor_after_rect(img_resp.rect);
         }
     }
 }
@@ -696,6 +733,7 @@ mod preview {
     pub struct PostPreview {
         draft: Draft,
         poster: FullKeypair,
+        jobs: JobsCache,
     }
 
     impl PostPreview {
@@ -725,6 +763,7 @@ mod preview {
             PostPreview {
                 draft,
                 poster: FullKeypair::generate(),
+                jobs: Default::default(),
             }
         }
     }
@@ -738,6 +777,7 @@ mod preview {
                 note_cache: app.note_cache,
                 zaps: app.zaps,
                 pool: app.pool,
+                job_pool: app.job_pool,
             };
 
             PostView::new(
@@ -747,6 +787,7 @@ mod preview {
                 self.poster.to_filled(),
                 ui.available_rect_before_wrap(),
                 NoteOptions::default(),
+                &mut self.jobs,
             )
             .ui(&txn, ui);
 

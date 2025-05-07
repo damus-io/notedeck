@@ -134,7 +134,7 @@ impl RenderNavResponse {
 
     #[must_use = "Make sure to save columns if result is true"]
     pub fn process_render_nav_response(
-        &self,
+        self,
         app: &mut Damus,
         ctx: &mut AppContext<'_>,
         ui: &mut egui::Ui,
@@ -142,12 +142,7 @@ impl RenderNavResponse {
         let mut switching_occured: bool = false;
         let col = self.column;
 
-        if let Some(action) = self
-            .response
-            .response
-            .as_ref()
-            .or(self.response.title_response.as_ref())
-        {
+        if let Some(action) = self.response.response.or(self.response.title_response) {
             // start returning when we're finished posting
             match action {
                 RenderNavAction::Back => {
@@ -197,6 +192,7 @@ impl RenderNavResponse {
                         ctx.accounts,
                         ctx.global_wallet,
                         ctx.zaps,
+                        ctx.img_cache,
                         ui,
                     );
                 }
@@ -280,6 +276,7 @@ fn render_nav_body(
         note_cache: ctx.note_cache,
         zaps: ctx.zaps,
         pool: ctx.pool,
+        job_pool: ctx.job_pool,
     };
     match top {
         Route::Timeline(kind) => render_timeline_route(
@@ -292,6 +289,7 @@ fn render_nav_body(
             depth,
             ui,
             &mut note_context,
+            &mut app.jobs,
         ),
 
         Route::Accounts(amr) => {
@@ -348,6 +346,7 @@ fn render_nav_body(
                             &note,
                             inner_rect,
                             app.note_options,
+                            &mut app.jobs,
                         )
                         .id_source(id)
                         .show(ui)
@@ -384,6 +383,7 @@ fn render_nav_body(
                         &note,
                         inner_rect,
                         app.note_options,
+                        &mut app.jobs,
                     )
                     .id_source(id)
                     .show(ui)
@@ -405,6 +405,7 @@ fn render_nav_body(
                 kp,
                 inner_rect,
                 app.note_options,
+                &mut app.jobs,
             )
             .ui(&txn, ui);
 
@@ -424,8 +425,7 @@ fn render_nav_body(
 
         Route::Search => {
             let id = ui.id().with(("search", depth, col));
-            let navigating = app
-                .columns_mut(ctx.accounts)
+            let navigating = get_active_columns_mut(ctx.accounts, &mut app.decks_cache)
                 .column(col)
                 .router()
                 .navigating;
@@ -448,6 +448,7 @@ fn render_nav_body(
                 search_buffer,
                 &mut note_context,
                 &ctx.accounts.get_selected_account().map(|a| (&a.key).into()),
+                &mut app.jobs,
             )
             .show(ui, ctx.clipboard)
             .map(RenderNavAction::NoteAction)

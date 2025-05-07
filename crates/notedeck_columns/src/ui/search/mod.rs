@@ -5,7 +5,7 @@ use crate::ui::timeline::TimelineTabView;
 use egui_winit::clipboard::Clipboard;
 use nostrdb::{Filter, Transaction};
 use notedeck::{MuteFun, NoteAction, NoteContext, NoteRef};
-use notedeck_ui::{icons::search_icon, padding, NoteOptions};
+use notedeck_ui::{icons::search_icon, jobs::JobsCache, padding, NoteOptions};
 use std::time::{Duration, Instant};
 use tracing::{error, info, warn};
 
@@ -20,6 +20,7 @@ pub struct SearchView<'a, 'd> {
     is_muted: &'a MuteFun,
     note_context: &'a mut NoteContext<'d>,
     cur_acc: &'a Option<KeypairUnowned<'a>>,
+    jobs: &'a mut JobsCache,
 }
 
 impl<'a, 'd> SearchView<'a, 'd> {
@@ -30,6 +31,7 @@ impl<'a, 'd> SearchView<'a, 'd> {
         query: &'a mut SearchQueryState,
         note_context: &'a mut NoteContext<'d>,
         cur_acc: &'a Option<KeypairUnowned<'a>>,
+        jobs: &'a mut JobsCache,
     ) -> Self {
         Self {
             txn,
@@ -38,6 +40,7 @@ impl<'a, 'd> SearchView<'a, 'd> {
             note_options,
             note_context,
             cur_acc,
+            jobs,
         }
     }
 
@@ -81,6 +84,7 @@ impl<'a, 'd> SearchView<'a, 'd> {
                             self.is_muted,
                             self.note_context,
                             self.cur_acc,
+                            self.jobs,
                         )
                         .show(ui)
                     })

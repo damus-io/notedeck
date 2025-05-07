@@ -6,6 +6,7 @@ use crate::ui::{
 
 use enostr::{FilledKeypair, NoteId};
 use notedeck::NoteContext;
+use notedeck_ui::jobs::JobsCache;
 use notedeck_ui::{NoteOptions, NoteView, ProfilePic};
 
 pub struct PostReplyView<'a, 'd> {
@@ -16,6 +17,7 @@ pub struct PostReplyView<'a, 'd> {
     id_source: Option<egui::Id>,
     inner_rect: egui::Rect,
     note_options: NoteOptions,
+    jobs: &'a mut JobsCache,
 }
 
 impl<'a, 'd> PostReplyView<'a, 'd> {
@@ -27,6 +29,7 @@ impl<'a, 'd> PostReplyView<'a, 'd> {
         note: &'a nostrdb::Note<'a>,
         inner_rect: egui::Rect,
         note_options: NoteOptions,
+        jobs: &'a mut JobsCache,
     ) -> Self {
         let id_source: Option<egui::Id> = None;
         PostReplyView {
@@ -37,6 +40,7 @@ impl<'a, 'd> PostReplyView<'a, 'd> {
             id_source,
             inner_rect,
             note_options,
+            jobs,
         }
     }
 
@@ -71,6 +75,7 @@ impl<'a, 'd> PostReplyView<'a, 'd> {
                         &Some(self.poster.into()),
                         self.note,
                         self.note_options,
+                        self.jobs,
                     )
                     .truncate(false)
                     .selectable_text(true)
@@ -93,6 +98,7 @@ impl<'a, 'd> PostReplyView<'a, 'd> {
                     self.poster,
                     self.inner_rect,
                     self.note_options,
+                    self.jobs,
                 )
                 .id_source(id)
                 .ui(self.note.txn().unwrap(), ui)
