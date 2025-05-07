@@ -13,7 +13,7 @@ use notedeck::{supported_mime_hosted_at_url, Images, MediaCacheType, NoteContext
 
 pub struct NoteContents<'a, 'd> {
     note_context: &'a mut NoteContext<'d>,
-    cur_acc: &'a Option<KeypairUnowned<'a>>,
+    cur_acc: Option<&'a KeypairUnowned<'a>>,
     txn: &'a Transaction,
     note: &'a Note<'a>,
     options: NoteOptions,
@@ -24,7 +24,7 @@ impl<'a, 'd> NoteContents<'a, 'd> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         note_context: &'a mut NoteContext<'d>,
-        cur_acc: &'a Option<KeypairUnowned<'a>>,
+        cur_acc: Option<&'a KeypairUnowned<'a>>,
         txn: &'a Transaction,
         note: &'a Note,
         options: NoteOptions,
@@ -66,7 +66,7 @@ impl egui::Widget for &mut NoteContents<'_, '_> {
 pub fn render_note_preview(
     ui: &mut egui::Ui,
     note_context: &mut NoteContext,
-    cur_acc: &Option<KeypairUnowned>,
+    cur_acc: Option<&KeypairUnowned>,
     txn: &Transaction,
     id: &[u8; 32],
     parent: NoteKey,
@@ -106,7 +106,7 @@ pub fn render_note_preview(
 pub fn render_note_contents(
     ui: &mut egui::Ui,
     note_context: &mut NoteContext,
-    cur_acc: &Option<KeypairUnowned>,
+    cur_acc: Option<&KeypairUnowned>,
     txn: &Transaction,
     note: &Note,
     options: NoteOptions,
