@@ -59,18 +59,21 @@ impl From<ParseError<'_>> for ParseErrorOwned {
 }
 
 pub struct TokenWriter {
-    delim: &'static str,
-    tokens_written: usize,
-    buf: Vec<u8>,
+    pub buf: TokenBuffer,
 }
 
-impl Default for TokenWriter {
-    fn default() -> Self {
-        Self::new(":")
-    }
+pub enum TokenBuffer {
+    ToString(StrTokenWriter),
+    ToNote(NoteTokenWriter),
 }
 
-impl TokenWriter {
+pub struct StrTokenWriter {
+    pub delim: &'static str,
+    pub tokens_written: usize,
+    pub buf: Vec<u8>,
+}
+
+impl StrTokenWriter {
     pub fn new(delim: &'static str) -> Self {
         let buf = vec![];
         let tokens_written = 0;
@@ -97,6 +100,81 @@ impl TokenWriter {
 
     pub fn buffer(&self) -> &[u8] {
         &self.buf
+    }
+}
+
+const DELIM: &str = ":";
+
+pub struct NoteTokenWriter {
+    pub delim: &'static str,
+    pub buf: Vec<String>,
+}
+
+impl Default for NoteTokenWriter {
+    fn default() -> Self {
+        Self {
+            delim: DELIM,
+            buf: Default::default(),
+        }
+    }
+}
+
+impl Default for StrTokenWriter {
+    fn default() -> Self {
+        Self::new(DELIM)
+    }
+}
+
+impl Default for TokenWriter {
+    fn default() -> Self {
+        Self::new(TokenBuffer::ToString(StrTokenWriter::default()))
+    }
+}
+
+impl TokenWriter {
+    pub fn new(buf: TokenBuffer) -> Self {
+        Self { buf }
+    }
+
+    pub fn write_token(&mut self, token: &str) {
+        match &mut self.buf {
+            TokenBuffer::ToString(string_token_writer) => string_token_writer.write_token(token),
+            TokenBuffer::ToNote(note_token_writer) => note_token_writer.write_token(token),
+        }
+    }
+
+    pub fn str(&self) -> String {
+        match &self.buf {
+            TokenBuffer::ToString(string_token_writer) => string_token_writer.str().to_owned(),
+            TokenBuffer::ToNote(note_token_writer) => note_token_writer.to_string(),
+        }
+    }
+}
+
+impl NoteTokenWriter {
+    pub fn write_token(&mut self, token: &str) {
+        self.buf.push(token.to_owned());
+    }
+
+    pub fn to_builder<'a>(
+        &self,
+        mut builder: nostrdb::NoteBuilder<'a>,
+    ) -> nostrdb::NoteBuilder<'a> {
+        if !self.buf.is_empty() {
+            builder = builder.start_tag().tag_str("col");
+
+            for token in &self.buf {
+                builder = builder.tag_str(token);
+            }
+        }
+
+        builder
+    }
+}
+
+impl std::fmt::Display for NoteTokenWriter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.buf.join(self.delim))
     }
 }
 
