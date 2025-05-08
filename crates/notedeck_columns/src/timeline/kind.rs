@@ -457,11 +457,13 @@ impl TimelineKind {
                 .build()]),
 
             TimelineKind::Hashtag(hashtag) => {
-                let url: &str = &hashtag.to_lowercase();
+                let lowerht = hashtag.to_lowercase();
+                let htag: Vec<&str> = lowerht.split(" ").filter(|t| !t.is_empty()).collect();
+
                 FilterState::ready(vec![Filter::new()
                     .kinds([1])
                     .limit(filter::default_limit())
-                    .tags([url], 't')
+                    .tags(htag, 't')
                     .build()])
             }
 
