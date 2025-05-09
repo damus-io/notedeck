@@ -728,6 +728,10 @@ fn render_note_actionbar(
             crate::show_pointer(ui);
         }
 
+        if zap_resp.secondary_clicked() {
+            break 's Some(NoteAction::Zap(ZapAction::CustomizeAmount(target)));
+        }
+
         if !zap_resp.clicked() {
             break 's None;
         }

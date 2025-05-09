@@ -15,7 +15,7 @@ use crate::{
         column::NavTitle,
         configure_deck::ConfigureDeckView,
         edit_deck::{EditDeckResponse, EditDeckView},
-        note::{NewPostAction, PostAction, PostType},
+        note::{custom_zap::CustomZapView, NewPostAction, PostAction, PostType},
         profile::EditProfileView,
         search::{FocusState, SearchView},
         support::SupportView,
@@ -27,7 +27,10 @@ use crate::{
 
 use egui_nav::{Nav, NavAction, NavResponse, NavUiType};
 use nostrdb::Transaction;
-use notedeck::{get_current_wallet, AccountsAction, AppContext, NoteAction, NoteContext};
+use notedeck::{
+    get_current_default_msats, get_current_wallet, AccountsAction, AppContext, NoteAction,
+    NoteContext,
+};
 use notedeck_ui::View;
 use tracing::error;
 
@@ -292,7 +295,6 @@ fn render_nav_body(
             &mut note_context,
             &mut app.jobs,
         ),
-
         Route::Accounts(amr) => {
             let mut action = render_accounts_route(
                 ui,
@@ -310,13 +312,11 @@ fn render_nav_body(
                 .accounts_action
                 .map(|f| RenderNavAction::SwitchingAction(SwitchingAction::Accounts(f)))
         }
-
         Route::Relays => {
             let manager = RelayPoolManager::new(ctx.pool);
             RelayView::new(ctx.accounts, manager, &mut app.view_state.id_string_map).ui(ui);
             None
         }
-
         Route::Reply(id) => {
             let txn = if let Ok(txn) = Transaction::new(ctx.ndb) {
                 txn
@@ -359,7 +359,6 @@ fn render_nav_body(
 
             action.map(Into::into)
         }
-
         Route::Quote(id) => {
             let txn = Transaction::new(ctx.ndb).expect("txn");
 
@@ -393,7 +392,6 @@ fn render_nav_body(
 
             response.action.map(Into::into)
         }
-
         Route::ComposeNote => {
             let kp = ctx.accounts.get_selected_account()?.key.to_full()?;
             let draft = app.drafts.compose_mut();
@@ -412,18 +410,15 @@ fn render_nav_body(
 
             post_response.action.map(Into::into)
         }
-
         Route::AddColumn(route) => {
             render_add_column_routes(ui, app, ctx, col, route);
 
             None
         }
-
         Route::Support => {
             SupportView::new(&mut app.support).show(ui);
             None
         }
-
         Route::Search => {
             let id = ui.id().with(("search", depth, col));
             let navigating = get_active_columns_mut(ctx.accounts, &mut app.decks_cache)
@@ -454,7 +449,6 @@ fn render_nav_body(
             .show(ui, ctx.clipboard)
             .map(RenderNavAction::NoteAction)
         }
-
         Route::NewDeck => {
             let id = ui.id().with("new-deck");
             let new_deck_state = app.view_state.id_to_deck_state.entry(id).or_default();
@@ -596,6 +590,30 @@ fn render_nav_body(
             WalletView::new(state)
                 .ui(ui)
                 .map(RenderNavAction::WalletAction)
+        }
+        Route::CustomizeZapAmount(target) => {
+            let txn = Transaction::new(ctx.ndb).expect("txn");
+            let default_msats = get_current_default_msats(ctx.accounts, ctx.global_wallet);
+            CustomZapView::new(
+                ctx.img_cache,
+                ctx.ndb,
+                &txn,
+                &target.zap_recipient,
+                default_msats,
+            )
+            .ui(ui)
+            .map(|msats| {
+                get_active_columns_mut(ctx.accounts, &mut app.decks_cache)
+                    .column_mut(col)
+                    .router_mut()
+                    .go_back();
+                RenderNavAction::NoteAction(NoteAction::Zap(notedeck::ZapAction::Send(
+                    notedeck::note::ZapTargetAmount {
+                        target: target.clone(),
+                        specified_msats: Some(msats),
+                    },
+                )))
+            })
         }
     }
 }

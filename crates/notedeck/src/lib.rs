@@ -70,8 +70,8 @@ pub use wallet::{
     WalletUIState, ZapWallet,
 };
 pub use zaps::{
-    AnyZapState, DefaultZapError, DefaultZapMsats, NoteZapTarget, NoteZapTargetOwned,
-    PendingDefaultZapState, ZapTarget, ZapTargetOwned, ZappingError,
+    get_current_default_msats, AnyZapState, DefaultZapError, DefaultZapMsats, NoteZapTarget,
+    NoteZapTargetOwned, PendingDefaultZapState, ZapTarget, ZapTargetOwned, ZappingError,
 };
 
 // export libs

@@ -1,5 +1,5 @@
 use enostr::{NoteId, Pubkey};
-use notedeck::WalletType;
+use notedeck::{NoteZapTargetOwned, WalletType};
 use std::fmt::{self};
 
 use crate::{
@@ -29,6 +29,7 @@ pub enum Route {
     Search,
     EditDeck(usize),
     Wallet(WalletType),
+    CustomizeZapAmount(NoteZapTargetOwned),
 }
 
 impl Route {
@@ -112,6 +113,7 @@ impl Route {
             Route::Wallet(_) => {
                 writer.write_token("wallet");
             }
+            Route::CustomizeZapAmount(_) => writer.write_token("customize zap amount"),
         }
     }
 
@@ -201,12 +203,9 @@ impl Route {
     pub fn title(&self) -> ColumnTitle<'_> {
         match self {
             Route::Timeline(kind) => kind.to_title(),
-
             Route::Reply(_id) => ColumnTitle::simple("Reply"),
             Route::Quote(_id) => ColumnTitle::simple("Quote"),
-
             Route::Relays => ColumnTitle::simple("Relays"),
-
             Route::Accounts(amr) => match amr {
                 AccountsRoute::Accounts => ColumnTitle::simple("Accounts"),
                 AccountsRoute::AddAccount => ColumnTitle::simple("Add Account"),
@@ -238,6 +237,7 @@ impl Route {
             Route::EditProfile(_) => ColumnTitle::simple("Edit Profile"),
             Route::Search => ColumnTitle::simple("Search"),
             Route::Wallet(_) => ColumnTitle::simple("Wallet"),
+            Route::CustomizeZapAmount(_) => ColumnTitle::simple("Customize Zap Amount"),
         }
     }
 }
@@ -342,18 +342,14 @@ impl fmt::Display for Route {
                 TimelineKind::Thread(_id) => write!(f, "Thread"),
                 TimelineKind::Profile(_id) => write!(f, "Profile"),
             },
-
             Route::Reply(_id) => write!(f, "Reply"),
             Route::Quote(_id) => write!(f, "Quote"),
-
             Route::Relays => write!(f, "Relays"),
-
             Route::Accounts(amr) => match amr {
                 AccountsRoute::Accounts => write!(f, "Accounts"),
                 AccountsRoute::AddAccount => write!(f, "Add Account"),
             },
             Route::ComposeNote => write!(f, "Compose Note"),
-
             Route::AddColumn(_) => write!(f, "Add Column"),
             Route::Support => write!(f, "Support"),
             Route::NewDeck => write!(f, "Add Deck"),
@@ -361,6 +357,7 @@ impl fmt::Display for Route {
             Route::EditProfile(_) => write!(f, "Edit Profile"),
             Route::Search => write!(f, "Search"),
             Route::Wallet(_) => write!(f, "Wallet"),
+            Route::CustomizeZapAmount(_) => write!(f, "Customize Zap Amount"),
         }
     }
 }
