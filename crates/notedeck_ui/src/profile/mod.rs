@@ -25,7 +25,7 @@ pub fn display_name_widget<'a>(
         });
 
         let (username_resp, nip05_resp) = ui
-            .horizontal(|ui| {
+            .horizontal_wrapped(|ui| {
                 let username_resp = name.username.map(|username| {
                     ui.add(
                         Label::new(
