@@ -65,7 +65,7 @@ mod tests {
         let data_str = "accounts:show";
         let data = &data_str.split(":").collect::<Vec<&str>>();
         let mut token_writer = TokenWriter::default();
-        let mut parser = TokenParser::new(&data);
+        let mut parser = TokenParser::new(data);
         let parsed = AccountsRoute::parse_from_tokens(&mut parser).unwrap();
         let expected = AccountsRoute::Accounts;
         parsed.serialize_tokens(&mut token_writer);
