@@ -5,7 +5,7 @@ use egui_winit::winit::platform::android::activity::AndroidApp;
 use notedeck_columns::Damus;
 use notedeck_dave::Dave;
 
-use crate::{chrome::Chrome, setup::setup_chrome};
+use crate::{chrome::Chrome, setup::setup_chrome, NotedeckApp};
 use notedeck::Notedeck;
 use serde_json::Value;
 use std::fs;
@@ -84,8 +84,8 @@ pub async fn android_main(app: AndroidApp) {
                 completely_unrecognized
             );
 
-            chrome.add_app(columns);
-            chrome.add_app(dave);
+            chrome.add_app(NotedeckApp::Columns(columns));
+            chrome.add_app(NotedeckApp::Dave(dave));
 
             // test dav
             chrome.set_active(1);
