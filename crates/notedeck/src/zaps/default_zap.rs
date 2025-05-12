@@ -1,5 +1,7 @@
 use tokenator::{ParseError, TokenParser, TokenSerializable};
 
+use crate::get_current_wallet;
+
 const DEFAULT_ZAP_MSATS: u64 = 10_000;
 
 #[derive(Debug, Default)]
@@ -101,4 +103,13 @@ fn msats_to_sats_string(msats: u64) -> String {
 #[derive(Debug)]
 pub enum DefaultZapError {
     InvalidUserInput,
+}
+
+pub fn get_current_default_msats<'a>(
+    accounts: &'a mut crate::Accounts,
+    global_wallet: &'a mut crate::GlobalWallet,
+) -> u64 {
+    get_current_wallet(accounts, global_wallet)
+        .map(|w| w.default_zap.get_default_zap_msats())
+        .unwrap_or_else(|| crate::zaps::default_zap::DEFAULT_ZAP_MSATS)
 }
