@@ -1,3 +1,5 @@
+#![cfg_attr(target_os = "android", allow(dead_code, unused_variables))]
+
 use std::path::PathBuf;
 
 use base64::{prelude::BASE64_URL_SAFE, Engine};
