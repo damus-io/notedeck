@@ -1,16 +1,19 @@
 pub mod anim;
+pub mod blur;
 pub mod colors;
 pub mod constants;
+pub mod contacts;
 pub mod gif;
 pub mod icons;
 pub mod images;
+pub mod jobs;
 pub mod mention;
 pub mod note;
 pub mod profile;
 mod username;
 pub mod widgets;
 
-pub use anim::{AnimationHelper, ImagePulseTint};
+pub use anim::{AnimationHelper, PulseAlpha};
 pub use mention::Mention;
 pub use note::{NoteContents, NoteOptions, NoteView};
 pub use profile::{ProfilePic, ProfilePreview};

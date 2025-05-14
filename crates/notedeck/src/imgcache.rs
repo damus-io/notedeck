@@ -13,16 +13,177 @@ use std::time::{Duration, Instant, SystemTime};
 
 use hex::ToHex;
 use sha2::Digest;
-use std::path;
 use std::path::PathBuf;
+use std::path::{self, Path};
 use tracing::warn;
 
-pub type MediaCacheValue = Promise<Result<TexturedImage>>;
-pub type MediaCacheMap = HashMap<String, MediaCacheValue>;
+#[derive(Default)]
+pub struct TexturesCache {
+    cache: hashbrown::HashMap<String, TextureStateInternal>,
+}
+
+impl TexturesCache {
+    pub fn handle_and_get_or_insert_loadable(
+        &mut self,
+        url: &str,
+        closure: impl FnOnce() -> Promise<Option<Result<TexturedImage>>>,
+    ) -> LoadableTextureState {
+        let internal = self.handle_and_get_state_internal(url, true, closure);
+
+        internal.into()
+    }
+
+    pub fn handle_and_get_or_insert(
+        &mut self,
+        url: &str,
+        closure: impl FnOnce() -> Promise<Option<Result<TexturedImage>>>,
+    ) -> TextureState {
+        let internal = self.handle_and_get_state_internal(url, false, closure);
+
+        internal.into()
+    }
+
+    fn handle_and_get_state_internal(
+        &mut self,
+        url: &str,
+        use_loading: bool,
+        closure: impl FnOnce() -> Promise<Option<Result<TexturedImage>>>,
+    ) -> &mut TextureStateInternal {
+        let state = match self.cache.raw_entry_mut().from_key(url) {
+            hashbrown::hash_map::RawEntryMut::Occupied(entry) => {
+                let state = entry.into_mut();
+                handle_occupied(state, use_loading);
+
+                state
+            }
+            hashbrown::hash_map::RawEntryMut::Vacant(entry) => {
+                let res = closure();
+                let (_, state) = entry.insert(url.to_owned(), TextureStateInternal::Pending(res));
+
+                state
+            }
+        };
+
+        state
+    }
+
+    pub fn insert_pending(&mut self, url: &str, promise: Promise<Option<Result<TexturedImage>>>) {
+        self.cache
+            .insert(url.to_owned(), TextureStateInternal::Pending(promise));
+    }
+
+    pub fn move_to_loaded(&mut self, url: &str) {
+        let hashbrown::hash_map::RawEntryMut::Occupied(entry) =
+            self.cache.raw_entry_mut().from_key(url)
+        else {
+            return;
+        };
+
+        entry.replace_entry_with(|_, v| {
+            let TextureStateInternal::Loading(textured) = v else {
+                return None;
+            };
+
+            Some(TextureStateInternal::Loaded(textured))
+        });
+    }
+
+    pub fn get_and_handle(&mut self, url: &str) -> Option<LoadableTextureState> {
+        self.cache.get_mut(url).map(|state| {
+            handle_occupied(state, true);
+            state.into()
+        })
+    }
+}
+
+fn handle_occupied(state: &mut TextureStateInternal, use_loading: bool) {
+    let TextureStateInternal::Pending(promise) = state else {
+        return;
+    };
+
+    let Some(res) = promise.ready_mut() else {
+        return;
+    };
+
+    let Some(res) = res.take() else {
+        tracing::error!("Failed to take the promise");
+        *state =
+            TextureStateInternal::Error(crate::Error::Generic("Promise already taken".to_owned()));
+        return;
+    };
+
+    match res {
+        Ok(textured) => {
+            *state = if use_loading {
+                TextureStateInternal::Loading(textured)
+            } else {
+                TextureStateInternal::Loaded(textured)
+            }
+        }
+        Err(e) => *state = TextureStateInternal::Error(e),
+    }
+}
+
+pub enum LoadableTextureState<'a> {
+    Pending,
+    Error(&'a crate::Error),
+    Loading {
+        actual_image_tex: &'a mut TexturedImage,
+    }, // the texture is in the loading state, for transitioning between the pending and loaded states
+    Loaded(&'a mut TexturedImage),
+}
+
+pub enum TextureState<'a> {
+    Pending,
+    Error(&'a crate::Error),
+    Loaded(&'a mut TexturedImage),
+}
+
+impl<'a> From<&'a mut TextureStateInternal> for TextureState<'a> {
+    fn from(value: &'a mut TextureStateInternal) -> Self {
+        match value {
+            TextureStateInternal::Pending(_) => TextureState::Pending,
+            TextureStateInternal::Error(error) => TextureState::Error(error),
+            TextureStateInternal::Loading(textured_image) => TextureState::Loaded(textured_image),
+            TextureStateInternal::Loaded(textured_image) => TextureState::Loaded(textured_image),
+        }
+    }
+}
+
+pub enum TextureStateInternal {
+    Pending(Promise<Option<Result<TexturedImage>>>),
+    Error(crate::Error),
+    Loading(TexturedImage), // the image is in the loading state, for transitioning between blur and image
+    Loaded(TexturedImage),
+}
+
+impl<'a> From<&'a mut TextureStateInternal> for LoadableTextureState<'a> {
+    fn from(value: &'a mut TextureStateInternal) -> Self {
+        match value {
+            TextureStateInternal::Pending(_) => LoadableTextureState::Pending,
+            TextureStateInternal::Error(error) => LoadableTextureState::Error(error),
+            TextureStateInternal::Loading(textured_image) => LoadableTextureState::Loading {
+                actual_image_tex: textured_image,
+            },
+            TextureStateInternal::Loaded(textured_image) => {
+                LoadableTextureState::Loaded(textured_image)
+            }
+        }
+    }
+}
 
 pub enum TexturedImage {
     Static(TextureHandle),
     Animated(Animation),
+}
+
+impl TexturedImage {
+    pub fn get_first_texture(&self) -> &TextureHandle {
+        match self {
+            TexturedImage::Static(texture_handle) => texture_handle,
+            TexturedImage::Animated(animation) => &animation.first_frame.texture,
+        }
+    }
 }
 
 pub struct Animation {
@@ -57,20 +218,23 @@ pub struct ImageFrame {
 
 pub struct MediaCache {
     pub cache_dir: path::PathBuf,
-    url_imgs: MediaCacheMap,
+    pub textures_cache: TexturesCache,
+    pub cache_type: MediaCacheType,
 }
 
-#[derive(Clone)]
+#[derive(Debug, Eq, PartialEq, Clone, Copy)]
 pub enum MediaCacheType {
     Image,
     Gif,
 }
 
 impl MediaCache {
-    pub fn new(cache_dir: path::PathBuf) -> Self {
+    pub fn new(parent_dir: &Path, cache_type: MediaCacheType) -> Self {
+        let cache_dir = parent_dir.join(Self::rel_dir(cache_type));
         Self {
             cache_dir,
-            url_imgs: HashMap::new(),
+            textures_cache: TexturesCache::default(),
+            cache_type,
         }
     }
 
@@ -169,14 +333,6 @@ impl MediaCache {
         }
         Ok(())
     }
-
-    pub fn map(&self) -> &MediaCacheMap {
-        &self.url_imgs
-    }
-
-    pub fn map_mut(&mut self) -> &mut MediaCacheMap {
-        &mut self.url_imgs
-    }
 }
 
 fn color_image_to_rgba(color_image: ColorImage) -> image::RgbaImage {
@@ -204,8 +360,8 @@ impl Images {
     /// path to directory to place [`MediaCache`]s
     pub fn new(path: path::PathBuf) -> Self {
         Self {
-            static_imgs: MediaCache::new(path.join(MediaCache::rel_dir(MediaCacheType::Image))),
-            gifs: MediaCache::new(path.join(MediaCache::rel_dir(MediaCacheType::Gif))),
+            static_imgs: MediaCache::new(&path, MediaCacheType::Image),
+            gifs: MediaCache::new(&path, MediaCacheType::Gif),
             urls: UrlMimes::new(UrlCache::new(path.join(UrlCache::rel_dir()))),
             gif_states: Default::default(),
         }
@@ -214,6 +370,20 @@ impl Images {
     pub fn migrate_v0(&self) -> Result<()> {
         self.static_imgs.migrate_v0()?;
         self.gifs.migrate_v0()
+    }
+
+    pub fn get_cache(&self, cache_type: MediaCacheType) -> &MediaCache {
+        match cache_type {
+            MediaCacheType::Image => &self.static_imgs,
+            MediaCacheType::Gif => &self.gifs,
+        }
+    }
+
+    pub fn get_cache_mut(&mut self, cache_type: MediaCacheType) -> &mut MediaCache {
+        match cache_type {
+            MediaCacheType::Image => &mut self.static_imgs,
+            MediaCacheType::Gif => &mut self.gifs,
+        }
     }
 }
 

@@ -137,33 +137,24 @@ impl AnimationHelper {
     }
 }
 
-pub struct ImagePulseTint<'a> {
+pub struct PulseAlpha<'a> {
     ctx: &'a egui::Context,
     id: egui::Id,
-    image: egui::Image<'a>,
-    color_unmultiplied: &'a [u8; 3],
     alpha_min: u8,
     alpha_max: u8,
     animation_speed: f32,
+    start_max_alpha: bool,
 }
 
-impl<'a> ImagePulseTint<'a> {
-    pub fn new(
-        ctx: &'a egui::Context,
-        id: egui::Id,
-        image: egui::Image<'a>,
-        color_unmultiplied: &'a [u8; 3],
-        alpha_min: u8,
-        alpha_max: u8,
-    ) -> Self {
+impl<'a> PulseAlpha<'a> {
+    pub fn new(ctx: &'a egui::Context, id: egui::Id, alpha_min: u8, alpha_max: u8) -> Self {
         Self {
             ctx,
             id,
-            image,
-            color_unmultiplied,
             alpha_min,
             alpha_max,
             animation_speed: ANIM_SPEED,
+            start_max_alpha: false,
         }
     }
 
@@ -172,12 +163,19 @@ impl<'a> ImagePulseTint<'a> {
         self
     }
 
-    pub fn animate(self) -> egui::Image<'a> {
+    pub fn start_max_alpha(mut self) -> Self {
+        self.start_max_alpha = true;
+        self
+    }
+
+    // returns the current alpha value for the frame
+    pub fn animate(self) -> u8 {
         let pulse_direction = if let Some(pulse_dir) = self.ctx.data(|d| d.get_temp(self.id)) {
             pulse_dir
         } else {
-            self.ctx.data_mut(|d| d.insert_temp(self.id, false));
-            false
+            self.ctx
+                .data_mut(|d| d.insert_temp(self.id, self.start_max_alpha));
+            self.start_max_alpha
         };
 
         let alpha_min_f32 = self.alpha_min as f32;
@@ -196,14 +194,6 @@ impl<'a> ImagePulseTint<'a> {
                 .data_mut(|d| d.insert_temp(self.id, !pulse_direction));
         }
 
-        let alpha =
-            (cur_val + alpha_min_f32).clamp(self.alpha_min as f32, self.alpha_max as f32) as u8;
-
-        self.image.tint(egui::Color32::from_rgba_unmultiplied(
-            self.color_unmultiplied[0],
-            self.color_unmultiplied[1],
-            self.color_unmultiplied[2],
-            alpha,
-        ))
+        (cur_val + alpha_min_f32).clamp(self.alpha_min as f32, self.alpha_max as f32) as u8
     }
 }

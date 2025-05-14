@@ -9,6 +9,7 @@ pub mod filter;
 pub mod fonts;
 mod frame_history;
 mod imgcache;
+mod job_pool;
 mod muted;
 pub mod name;
 pub mod note;
@@ -36,13 +37,14 @@ pub use accounts::{AccountData, Accounts, AccountsAction, AddAccountAction, Swit
 pub use app::{App, AppAction, Notedeck};
 pub use args::Args;
 pub use context::AppContext;
-pub use error::{Error, FilterError, ZapError};
+pub use error::{show_one_error_message, Error, FilterError, ZapError};
 pub use filter::{FilterState, FilterStates, UnifiedSubscription};
 pub use fonts::NamedFontFamily;
 pub use imgcache::{
-    Animation, GifState, GifStateMap, ImageFrame, Images, MediaCache, MediaCacheType,
-    MediaCacheValue, TextureFrame, TexturedImage,
+    Animation, GifState, GifStateMap, ImageFrame, Images, LoadableTextureState, MediaCache,
+    MediaCacheType, TextureFrame, TextureState, TexturedImage, TexturesCache,
 };
+pub use job_pool::JobPool;
 pub use muted::{MuteFun, Muted};
 pub use name::NostrName;
 pub use note::{

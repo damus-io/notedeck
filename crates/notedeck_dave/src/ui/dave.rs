@@ -5,7 +5,7 @@ use crate::{
 use egui::{Align, Key, KeyboardShortcut, Layout, Modifiers};
 use nostrdb::{Ndb, Transaction};
 use notedeck::{AppContext, NoteAction, NoteContext};
-use notedeck_ui::{icons::search_icon, NoteOptions, ProfilePic};
+use notedeck_ui::{icons::search_icon, jobs::JobsCache, NoteOptions, ProfilePic};
 
 /// DaveUi holds all of the data it needs to render itself
 pub struct DaveUi<'a> {
@@ -16,7 +16,7 @@ pub struct DaveUi<'a> {
 
 /// The response the app generates. The response contains an optional
 /// action to take.
-#[derive(Default, Clone, Debug)]
+#[derive(Default, Debug)]
 pub struct DaveResponse {
     pub action: Option<DaveAction>,
 }
@@ -51,7 +51,7 @@ impl DaveResponse {
 /// The actions the app generates. No default action is specfied in the
 /// UI code. This is handled by the app logic, however it chooses to
 /// process this message.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub enum DaveAction {
     /// The action generated when the user sends a message to dave
     Send,
@@ -83,7 +83,12 @@ impl<'a> DaveUi<'a> {
     }
 
     /// The main render function. Call this to render Dave
-    pub fn ui(&mut self, app_ctx: &mut AppContext, ui: &mut egui::Ui) -> DaveResponse {
+    pub fn ui(
+        &mut self,
+        app_ctx: &mut AppContext,
+        jobs: &mut JobsCache,
+        ui: &mut egui::Ui,
+    ) -> DaveResponse {
         let mut action: Option<DaveAction> = None;
         // Scroll area for chat messages
         let new_resp = {
@@ -124,7 +129,7 @@ impl<'a> DaveUi<'a> {
                         .show(ui, |ui| {
                             Self::chat_frame(ui.ctx())
                                 .show(ui, |ui| {
-                                    ui.vertical(|ui| self.render_chat(app_ctx, ui)).inner
+                                    ui.vertical(|ui| self.render_chat(app_ctx, jobs, ui)).inner
                                 })
                                 .inner
                         })
@@ -158,7 +163,12 @@ impl<'a> DaveUi<'a> {
     }
 
     /// Render a chat message (user, assistant, tool call/response, etc)
-    fn render_chat(&self, ctx: &mut AppContext, ui: &mut egui::Ui) -> Option<NoteAction> {
+    fn render_chat(
+        &self,
+        ctx: &mut AppContext,
+        jobs: &mut JobsCache,
+        ui: &mut egui::Ui,
+    ) -> Option<NoteAction> {
         let mut action: Option<NoteAction> = None;
         for message in self.chat {
             let r = match message {
@@ -183,7 +193,7 @@ impl<'a> DaveUi<'a> {
                     // have a debug option to show this
                     None
                 }
-                Message::ToolCalls(toolcalls) => Self::tool_calls_ui(ctx, toolcalls, ui),
+                Message::ToolCalls(toolcalls) => Self::tool_calls_ui(ctx, jobs, toolcalls, ui),
             };
 
             if r.is_some() {
@@ -208,6 +218,7 @@ impl<'a> DaveUi<'a> {
     /// The ai has asked us to render some notes, so we do that here
     fn present_notes_ui(
         ctx: &mut AppContext,
+        jobs: &mut JobsCache,
         call: &PresentNotesCall,
         ui: &mut egui::Ui,
     ) -> Option<NoteAction> {
@@ -217,6 +228,7 @@ impl<'a> DaveUi<'a> {
             note_cache: ctx.note_cache,
             zaps: ctx.zaps,
             pool: ctx.pool,
+            job_pool: ctx.job_pool,
         };
 
         let txn = Transaction::new(note_context.ndb).unwrap();
@@ -244,6 +256,7 @@ impl<'a> DaveUi<'a> {
                                         &None,
                                         &note,
                                         NoteOptions::default(),
+                                        jobs,
                                     )
                                     .preview_style()
                                     .hide_media(true)
@@ -266,6 +279,7 @@ impl<'a> DaveUi<'a> {
 
     fn tool_calls_ui(
         ctx: &mut AppContext,
+        jobs: &mut JobsCache,
         toolcalls: &[ToolCall],
         ui: &mut egui::Ui,
     ) -> Option<NoteAction> {
@@ -275,7 +289,7 @@ impl<'a> DaveUi<'a> {
             for call in toolcalls {
                 match call.calls() {
                     ToolCalls::PresentNotes(call) => {
-                        let r = Self::present_notes_ui(ctx, call, ui);
+                        let r = Self::present_notes_ui(ctx, jobs, call, ui);
                         if r.is_some() {
                             note_action = r;
                         }
@@ -381,7 +395,7 @@ fn query_call_ui(cache: &mut notedeck::Images, ndb: &Ndb, query: &QueryCall, ui:
             "author",
             move |ui| {
                 ui.add(
-                    ProfilePic::from_profile_or_default(
+                    &mut ProfilePic::from_profile_or_default(
                         cache,
                         ndb.get_profile_by_pubkey(&txn, pubkey.bytes())
                             .ok()

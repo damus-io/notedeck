@@ -2,7 +2,7 @@ use egui::{Label, RichText, Sense};
 use nostrdb::{Note, NoteReply, Transaction};
 
 use super::NoteOptions;
-use crate::{note::NoteView, Mention};
+use crate::{jobs::JobsCache, note::NoteView, Mention};
 use enostr::KeypairUnowned;
 use notedeck::{NoteAction, NoteContext};
 
@@ -15,6 +15,7 @@ pub fn reply_desc(
     note_reply: &NoteReply,
     note_context: &mut NoteContext,
     note_options: NoteOptions,
+    jobs: &mut JobsCache,
 ) -> Option<NoteAction> {
     let mut note_action: Option<NoteAction> = None;
     let size = 10.0;
@@ -24,28 +25,31 @@ pub fn reply_desc(
     let link_color = visuals.hyperlink_color;
 
     // note link renderer helper
-    let note_link =
-        |ui: &mut egui::Ui, note_context: &mut NoteContext, text: &str, note: &Note<'_>| {
-            let r = ui.add(
-                Label::new(RichText::new(text).size(size).color(link_color))
-                    .sense(Sense::click())
-                    .selectable(selectable),
-            );
+    let note_link = |ui: &mut egui::Ui,
+                     note_context: &mut NoteContext,
+                     text: &str,
+                     note: &Note<'_>,
+                     jobs: &mut JobsCache| {
+        let r = ui.add(
+            Label::new(RichText::new(text).size(size).color(link_color))
+                .sense(Sense::click())
+                .selectable(selectable),
+        );
 
-            if r.clicked() {
-                // TODO: jump to note
-            }
+        if r.clicked() {
+            // TODO: jump to note
+        }
 
-            if r.hovered() {
-                r.on_hover_ui_at_pointer(|ui| {
-                    ui.set_max_width(400.0);
-                    NoteView::new(note_context, cur_acc, note, note_options)
-                        .actionbar(false)
-                        .wide(true)
-                        .show(ui);
-                });
-            }
-        };
+        if r.hovered() {
+            r.on_hover_ui_at_pointer(|ui| {
+                ui.set_max_width(400.0);
+                NoteView::new(note_context, cur_acc, note, note_options, jobs)
+                    .actionbar(false)
+                    .wide(true)
+                    .show(ui);
+            });
+        }
+    };
 
     ui.add(Label::new(RichText::new("replying to").size(size).color(color)).selectable(selectable));
 
@@ -77,7 +81,7 @@ pub fn reply_desc(
 
         ui.add(Label::new(RichText::new("'s").size(size).color(color)).selectable(selectable));
 
-        note_link(ui, note_context, "thread", &reply_note);
+        note_link(ui, note_context, "thread", &reply_note, jobs);
     } else if let Some(root) = note_reply.root() {
         // replying to another post in a thread, not the root
 
@@ -103,7 +107,7 @@ pub fn reply_desc(
                     Label::new(RichText::new("'s").size(size).color(color)).selectable(selectable),
                 );
 
-                note_link(ui, note_context, "note", &reply_note);
+                note_link(ui, note_context, "note", &reply_note, jobs);
             } else {
                 // replying to bob in alice's thread
 
@@ -126,7 +130,7 @@ pub fn reply_desc(
                     Label::new(RichText::new("'s").size(size).color(color)).selectable(selectable),
                 );
 
-                note_link(ui, note_context, "note", &reply_note);
+                note_link(ui, note_context, "note", &reply_note, jobs);
 
                 ui.add(
                     Label::new(RichText::new("in").size(size).color(color)).selectable(selectable),
@@ -151,7 +155,7 @@ pub fn reply_desc(
                     Label::new(RichText::new("'s").size(size).color(color)).selectable(selectable),
                 );
 
-                note_link(ui, note_context, "thread", &root_note);
+                note_link(ui, note_context, "thread", &root_note, jobs);
             }
         } else {
             let action = Mention::new(

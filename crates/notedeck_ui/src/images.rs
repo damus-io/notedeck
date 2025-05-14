@@ -1,16 +1,16 @@
-use egui::{pos2, Color32, ColorImage, Rect, Sense, SizeHint};
+use egui::{pos2, Color32, ColorImage, Context, Rect, Sense, SizeHint};
 use image::codecs::gif::GifDecoder;
 use image::imageops::FilterType;
 use image::{AnimationDecoder, DynamicImage, FlatSamples, Frame};
 use notedeck::{
-    Animation, GifStateMap, ImageFrame, Images, MediaCache, MediaCacheType, TextureFrame,
-    TexturedImage,
+    Animation, GifStateMap, ImageFrame, Images, LoadableTextureState, MediaCache, MediaCacheType,
+    TextureFrame, TextureState, TexturedImage,
 };
 use poll_promise::Promise;
 use std::collections::VecDeque;
 use std::io::Cursor;
-use std::path;
 use std::path::PathBuf;
+use std::path::{self, Path};
 use std::sync::mpsc;
 use std::sync::mpsc::SyncSender;
 use std::thread;
@@ -178,37 +178,45 @@ fn fetch_img_from_disk(
     url: &str,
     path: &path::Path,
     cache_type: MediaCacheType,
-) -> Promise<Result<TexturedImage, notedeck::Error>> {
+) -> Promise<Option<Result<TexturedImage, notedeck::Error>>> {
     let ctx = ctx.clone();
     let url = url.to_owned();
     let path = path.to_owned();
 
     Promise::spawn_async(async move {
-        match cache_type {
-            MediaCacheType::Image => {
-                let data = fs::read(path).await?;
-                let image_buffer =
-                    image::load_from_memory(&data).map_err(notedeck::Error::Image)?;
-
-                let img = buffer_to_color_image(
-                    image_buffer.as_flat_samples_u8(),
-                    image_buffer.width(),
-                    image_buffer.height(),
-                );
-                Ok(TexturedImage::Static(ctx.load_texture(
-                    &url,
-                    img,
-                    Default::default(),
-                )))
-            }
-            MediaCacheType::Gif => {
-                let gif_bytes = fs::read(path.clone()).await?; // Read entire file into a Vec<u8>
-                generate_gif(ctx, url, &path, gif_bytes, false, |i| {
-                    buffer_to_color_image(i.as_flat_samples_u8(), i.width(), i.height())
-                })
-            }
-        }
+        Some(async_fetch_img_from_disk(ctx, url, &path, cache_type).await)
     })
+}
+
+async fn async_fetch_img_from_disk(
+    ctx: egui::Context,
+    url: String,
+    path: &path::Path,
+    cache_type: MediaCacheType,
+) -> Result<TexturedImage, notedeck::Error> {
+    match cache_type {
+        MediaCacheType::Image => {
+            let data = fs::read(path).await?;
+            let image_buffer = image::load_from_memory(&data).map_err(notedeck::Error::Image)?;
+
+            let img = buffer_to_color_image(
+                image_buffer.as_flat_samples_u8(),
+                image_buffer.width(),
+                image_buffer.height(),
+            );
+            Ok(TexturedImage::Static(ctx.load_texture(
+                &url,
+                img,
+                Default::default(),
+            )))
+        }
+        MediaCacheType::Gif => {
+            let gif_bytes = fs::read(path).await?; // Read entire file into a Vec<u8>
+            generate_gif(ctx, url, path, gif_bytes, false, |i| {
+                buffer_to_color_image(i.as_flat_samples_u8(), i.width(), i.height())
+            })
+        }
+    }
 }
 
 fn generate_gif(
@@ -348,19 +356,19 @@ pub enum ImageType {
 }
 
 pub fn fetch_img(
-    img_cache: &MediaCache,
+    img_cache_path: &Path,
     ctx: &egui::Context,
     url: &str,
     imgtyp: ImageType,
     cache_type: MediaCacheType,
-) -> Promise<Result<TexturedImage, notedeck::Error>> {
+) -> Promise<Option<Result<TexturedImage, notedeck::Error>>> {
     let key = MediaCache::key(url);
-    let path = img_cache.cache_dir.join(key);
+    let path = img_cache_path.join(key);
 
     if path.exists() {
         fetch_img_from_disk(ctx, url, &path, cache_type)
     } else {
-        fetch_img_from_net(&img_cache.cache_dir, ctx, url, imgtyp, cache_type)
+        fetch_img_from_net(img_cache_path, ctx, url, imgtyp, cache_type)
     }
 
     // TODO: fetch image from local cache
@@ -372,7 +380,7 @@ fn fetch_img_from_net(
     url: &str,
     imgtyp: ImageType,
     cache_type: MediaCacheType,
-) -> Promise<Result<TexturedImage, notedeck::Error>> {
+) -> Promise<Option<Result<TexturedImage, notedeck::Error>>> {
     let (sender, promise) = Promise::new();
     let request = ehttp::Request::get(url);
     let ctx = ctx.clone();
@@ -409,79 +417,54 @@ fn fetch_img_from_net(
             }
         });
 
-        sender.send(handle); // send the results back to the UI thread.
+        sender.send(Some(handle)); // send the results back to the UI thread.
         ctx.request_repaint();
     });
 
     promise
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn render_images(
-    ui: &mut egui::Ui,
-    images: &mut Images,
+pub fn get_render_state<'a>(
+    ctx: &Context,
+    images: &'a mut Images,
+    cache_type: MediaCacheType,
     url: &str,
     img_type: ImageType,
-    cache_type: MediaCacheType,
-    show_waiting: impl FnOnce(&mut egui::Ui),
-    show_error: impl FnOnce(&mut egui::Ui, String),
-    show_success: impl FnOnce(&mut egui::Ui, &str, &mut TexturedImage, &mut GifStateMap),
-) -> egui::Response {
+) -> RenderState<'a> {
     let cache = match cache_type {
         MediaCacheType::Image => &mut images.static_imgs,
         MediaCacheType::Gif => &mut images.gifs,
     };
 
-    render_media_cache(
-        ui,
-        cache,
-        &mut images.gif_states,
-        url,
-        img_type,
-        cache_type,
-        show_waiting,
-        show_error,
-        show_success,
-    )
+    let cur_state = cache.textures_cache.handle_and_get_or_insert(url, || {
+        crate::images::fetch_img(&cache.cache_dir, ctx, url, img_type, cache_type)
+    });
+
+    RenderState {
+        texture_state: cur_state,
+        gifs: &mut images.gif_states,
+    }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn render_media_cache(
-    ui: &mut egui::Ui,
-    cache: &mut MediaCache,
-    gif_states: &mut GifStateMap,
-    url: &str,
-    img_type: ImageType,
-    cache_type: MediaCacheType,
-    show_waiting: impl FnOnce(&mut egui::Ui),
-    show_error: impl FnOnce(&mut egui::Ui, String),
-    show_success: impl FnOnce(&mut egui::Ui, &str, &mut TexturedImage, &mut GifStateMap),
-) -> egui::Response {
-    let m_cached_promise = cache.map().get(url);
+pub struct LoadableRenderState<'a> {
+    pub texture_state: LoadableTextureState<'a>,
+    pub gifs: &'a mut GifStateMap,
+}
 
-    if m_cached_promise.is_none() {
-        let res = crate::images::fetch_img(cache, ui.ctx(), url, img_type, cache_type.clone());
-        cache.map_mut().insert(url.to_owned(), res);
-    }
+pub struct RenderState<'a> {
+    pub texture_state: TextureState<'a>,
+    pub gifs: &'a mut GifStateMap,
+}
 
-    egui::Frame::NONE
-        .show(ui, |ui| {
-            match cache.map_mut().get_mut(url).and_then(|p| p.ready_mut()) {
-                None => show_waiting(ui),
-                Some(Err(err)) => {
-                    let err = err.to_string();
-                    let no_pfp = crate::images::fetch_img(
-                        cache,
-                        ui.ctx(),
-                        notedeck::profile::no_pfp_url(),
-                        ImageType::Profile(128),
-                        cache_type,
-                    );
-                    cache.map_mut().insert(url.to_owned(), no_pfp);
-                    show_error(ui, err)
-                }
-                Some(Ok(renderable_media)) => show_success(ui, url, renderable_media, gif_states),
-            }
-        })
-        .response
+pub fn fetch_no_pfp_promise(
+    ctx: &Context,
+    cache: &MediaCache,
+) -> Promise<Option<Result<TexturedImage, notedeck::Error>>> {
+    crate::images::fetch_img(
+        &cache.cache_dir,
+        ctx,
+        notedeck::profile::no_pfp_url(),
+        ImageType::Profile(128),
+        MediaCacheType::Image,
+    )
 }

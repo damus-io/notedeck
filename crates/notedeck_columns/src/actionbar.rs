@@ -7,8 +7,8 @@ use crate::{
 use enostr::{Pubkey, RelayPool};
 use nostrdb::{Ndb, NoteKey, Transaction};
 use notedeck::{
-    get_wallet_for_mut, note::ZapTargetAmount, Accounts, GlobalWallet, NoteAction, NoteCache,
-    NoteZapTargetOwned, UnknownIds, ZapAction, ZapTarget, ZappingError, Zaps,
+    get_wallet_for_mut, note::ZapTargetAmount, Accounts, GlobalWallet, Images, NoteAction,
+    NoteCache, NoteZapTargetOwned, UnknownIds, ZapAction, ZapTarget, ZappingError, Zaps,
 };
 use tracing::error;
 
@@ -24,7 +24,7 @@ pub enum TimelineOpenResult {
 /// The note action executor for notedeck_columns
 #[allow(clippy::too_many_arguments)]
 fn execute_note_action(
-    action: &NoteAction,
+    action: NoteAction,
     ndb: &Ndb,
     router: &mut Router<Route>,
     timeline_cache: &mut TimelineCache,
@@ -34,23 +34,21 @@ fn execute_note_action(
     accounts: &mut Accounts,
     global_wallet: &mut GlobalWallet,
     zaps: &mut Zaps,
+    images: &mut Images,
     ui: &mut egui::Ui,
 ) -> Option<TimelineOpenResult> {
     match action {
         NoteAction::Reply(note_id) => {
-            router.route_to(Route::reply(*note_id));
+            router.route_to(Route::reply(note_id));
             None
         }
-
         NoteAction::Profile(pubkey) => {
-            let kind = TimelineKind::Profile(*pubkey);
+            let kind = TimelineKind::Profile(pubkey);
             router.route_to(Route::Timeline(kind.clone()));
             timeline_cache.open(ndb, note_cache, txn, pool, &kind)
         }
-
         NoteAction::Note(note_id) => 'ex: {
-            let Ok(thread_selection) =
-                ThreadSelection::from_note_id(ndb, note_cache, txn, *note_id)
+            let Ok(thread_selection) = ThreadSelection::from_note_id(ndb, note_cache, txn, note_id)
             else {
                 tracing::error!("No thread selection for {}?", hex::encode(note_id.bytes()));
                 break 'ex None;
@@ -62,18 +60,15 @@ fn execute_note_action(
 
             timeline_cache.open(ndb, note_cache, txn, pool, &kind)
         }
-
         NoteAction::Hashtag(htag) => {
             let kind = TimelineKind::Hashtag(htag.clone());
             router.route_to(Route::Timeline(kind.clone()));
             timeline_cache.open(ndb, note_cache, txn, pool, &kind)
         }
-
         NoteAction::Quote(note_id) => {
-            router.route_to(Route::quote(*note_id));
+            router.route_to(Route::quote(note_id));
             None
         }
-
         NoteAction::Zap(zap_action) => 's: {
             let Some(cur_acc) = accounts.get_selected_account_mut() else {
                 break 's None;
@@ -81,7 +76,7 @@ fn execute_note_action(
 
             let sender = cur_acc.key.pubkey;
 
-            match zap_action {
+            match &zap_action {
                 ZapAction::Send(target) => 'a: {
                     let Some(wallet) = get_wallet_for_mut(accounts, global_wallet, sender.bytes())
                     else {
@@ -106,7 +101,6 @@ fn execute_note_action(
 
             None
         }
-
         NoteAction::Context(context) => {
             match ndb.get_note_by_key(txn, context.note_key) {
                 Err(err) => tracing::error!("{err}"),
@@ -116,13 +110,17 @@ fn execute_note_action(
             }
             None
         }
+        NoteAction::Media(media_action) => {
+            media_action.process(images);
+            None
+        }
     }
 }
 
 /// Execute a NoteAction and process the result
 #[allow(clippy::too_many_arguments)]
 pub fn execute_and_process_note_action(
-    action: &NoteAction,
+    action: NoteAction,
     ndb: &Ndb,
     columns: &mut Columns,
     col: usize,
@@ -134,6 +132,7 @@ pub fn execute_and_process_note_action(
     accounts: &mut Accounts,
     global_wallet: &mut GlobalWallet,
     zaps: &mut Zaps,
+    images: &mut Images,
     ui: &mut egui::Ui,
 ) {
     let router = columns.column_mut(col).router_mut();
@@ -148,6 +147,7 @@ pub fn execute_and_process_note_action(
         accounts,
         global_wallet,
         zaps,
+        images,
         ui,
     ) {
         br.process(ndb, note_cache, txn, timeline_cache, unknown_ids);
