@@ -22,10 +22,6 @@ pub fn render_timeline_route(
     note_context: &mut NoteContext,
     jobs: &mut JobsCache,
 ) -> Option<RenderNavAction> {
-    if kind == &TimelineKind::Universe {
-        note_options.set_hide_media(true);
-    }
-
     match kind {
         TimelineKind::List(_)
         | TimelineKind::Search(_)
