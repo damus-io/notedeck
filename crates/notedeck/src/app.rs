@@ -93,7 +93,8 @@ impl eframe::App for Notedeck {
             .on_new_frame(ctx.input(|i| i.time), frame.info().cpu_usage);
 
         // handle account updates
-        self.accounts.update(&mut self.ndb, &mut self.pool, ctx);
+        self.accounts
+            .update(&mut self.ndb, &mut self.pool, ctx, &mut self.unknown_ids);
 
         self.zaps
             .process(&mut self.accounts, &mut self.global_wallet, &self.ndb);

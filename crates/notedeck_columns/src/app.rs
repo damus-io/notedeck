@@ -433,6 +433,8 @@ impl Damus {
 
         let jobs = JobsCache::default();
 
+        ctx.accounts.with_fallback(FALLBACK_PUBKEY());
+
         Self {
             subscriptions: Subscriptions::default(),
             since_optimize: parsed_args.since_optimize,
