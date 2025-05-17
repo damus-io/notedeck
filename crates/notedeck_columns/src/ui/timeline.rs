@@ -399,10 +399,15 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
                 };
 
                 if !muted {
+                    let zapping_acc = self
+                        .cur_acc
+                        .as_ref()
+                        .filter(|_| self.note_context.current_account_has_wallet);
+
                     notedeck_ui::padding(8.0, ui, |ui| {
                         let resp = NoteView::new(
                             self.note_context,
-                            self.cur_acc,
+                            zapping_acc,
                             &note,
                             self.note_options,
                             self.jobs,

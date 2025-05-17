@@ -1,3 +1,4 @@
+pub mod custom_zap;
 pub mod post;
 pub mod quote_repost;
 pub mod reply;

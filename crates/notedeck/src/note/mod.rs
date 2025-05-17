@@ -21,6 +21,7 @@ pub struct NoteContext<'d> {
     pub zaps: &'d mut Zaps,
     pub pool: &'d mut RelayPool,
     pub job_pool: &'d mut JobPool,
+    pub current_account_has_wallet: bool,
 }
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone, Hash)]

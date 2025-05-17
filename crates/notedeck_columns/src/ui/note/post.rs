@@ -11,7 +11,7 @@ use egui::{
     widgets::text_edit::TextEdit,
     Frame, Layout, Margin, Pos2, ScrollArea, Sense, TextBuffer,
 };
-use enostr::{FilledKeypair, FullKeypair, NoteId, Pubkey, RelayPool};
+use enostr::{FilledKeypair, FullKeypair, KeypairUnowned, NoteId, Pubkey, RelayPool};
 use nostrdb::{Ndb, Transaction};
 use notedeck_ui::blur::PixelDimensions;
 use notedeck_ui::images::{get_render_state, RenderState};
@@ -341,10 +341,16 @@ impl<'a, 'd> PostView<'a, 'd> {
                         .show(ui, |ui| {
                             ui.vertical(|ui| {
                                 ui.set_max_width(avail_size.x * 0.8);
+
+                                let zapping_acc = self
+                                    .note_context
+                                    .current_account_has_wallet
+                                    .then(|| KeypairUnowned::from(&self.poster));
+
                                 render_note_preview(
                                     ui,
                                     self.note_context,
-                                    &Some(self.poster.into()),
+                                    zapping_acc.as_ref(),
                                     txn,
                                     id.bytes(),
                                     nostrdb::NoteKey::new(0),
@@ -778,6 +784,7 @@ mod preview {
                 zaps: app.zaps,
                 pool: app.pool,
                 job_pool: app.job_pool,
+                current_account_has_wallet: false,
             };
 
             PostView::new(

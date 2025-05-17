@@ -33,6 +33,7 @@ pub enum NoteAction {
 #[derive(Debug, Eq, PartialEq, Clone)]
 pub enum ZapAction {
     Send(ZapTargetAmount),
+    CustomizeAmount(NoteZapTargetOwned),
     ClearError(NoteZapTargetOwned),
 }
 

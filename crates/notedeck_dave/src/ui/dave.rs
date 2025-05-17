@@ -229,6 +229,7 @@ impl<'a> DaveUi<'a> {
             zaps: ctx.zaps,
             pool: ctx.pool,
             job_pool: ctx.job_pool,
+            current_account_has_wallet: false,
         };
 
         let txn = Transaction::new(note_context.ndb).unwrap();
@@ -253,7 +254,7 @@ impl<'a> DaveUi<'a> {
                                 |ui| {
                                     notedeck_ui::NoteView::new(
                                         &mut note_context,
-                                        &None,
+                                        None,
                                         &note,
                                         NoteOptions::default(),
                                         jobs,

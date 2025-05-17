@@ -97,6 +97,9 @@ fn execute_note_action(
                     )
                 }
                 ZapAction::ClearError(target) => clear_zap_error(&sender, zaps, target),
+                ZapAction::CustomizeAmount(target) => {
+                    router.route_to(Route::CustomizeZapAmount(target.to_owned()))
+                }
             }
 
             None
