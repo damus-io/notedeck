@@ -313,6 +313,7 @@ pub struct Accounts {
     forced_relays: BTreeSet<RelaySpec>,
     bootstrap_relays: BTreeSet<RelaySpec>,
     needs_relay_config: bool,
+    fallback: Option<Pubkey>,
 }
 
 impl Accounts {
@@ -359,6 +360,7 @@ impl Accounts {
             forced_relays,
             bootstrap_relays,
             needs_relay_config: true,
+            fallback: None,
         }
     }
 
@@ -384,6 +386,10 @@ impl Accounts {
         self.accounts
             .iter_mut()
             .find(|acc| acc.key.pubkey.bytes() == pk)
+    }
+
+    pub fn with_fallback(&mut self, fallback: Pubkey) {
+        self.fallback = Some(fallback);
     }
 
     pub fn remove_account(&mut self, index: usize) {
@@ -659,6 +665,14 @@ impl Accounts {
         self.account_data.remove(pubkey);
     }
 
+    fn handle_no_accounts(&mut self, unknown_ids: &mut UnknownIds, ndb: &Ndb, txn: &Transaction) {
+        if let Some(fallback) = self.fallback {
+            self.add_account(Keypair::new(fallback, None))
+                .process_action(unknown_ids, ndb, txn);
+            self.select_account(self.num_accounts() - 1);
+        }
+    }
+
     fn poll_for_updates(&mut self, ndb: &Ndb) -> bool {
         let mut changed = false;
         for (pubkey, data) in &mut self.account_data {
@@ -745,7 +759,13 @@ impl Accounts {
         debug!("current relays: {:?}", pool.urls());
     }
 
-    pub fn update(&mut self, ndb: &mut Ndb, pool: &mut RelayPool, ctx: &egui::Context) {
+    pub fn update(
+        &mut self,
+        ndb: &mut Ndb,
+        pool: &mut RelayPool,
+        ctx: &egui::Context,
+        unknown_ids: &mut UnknownIds,
+    ) {
         // IMPORTANT - This function is called in the UI update loop,
         // make sure it is fast when idle
 
@@ -785,6 +805,10 @@ impl Accounts {
             need_reconfig = true;
         }
 
+        if self.accounts.is_empty() {
+            let txn = Transaction::new(ndb).unwrap();
+            self.handle_no_accounts(unknown_ids, ndb, &txn);
+        }
         // Did any accounts receive updates (ie NIP-65 relay lists)
         need_reconfig = self.poll_for_updates(ndb) || need_reconfig;
 
