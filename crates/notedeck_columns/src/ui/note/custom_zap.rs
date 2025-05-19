@@ -125,7 +125,7 @@ impl<'a> CustomZapView<'a> {
 }
 
 fn is_valid_zap(amount: Option<u64>) -> bool {
-    amount.map_or(false, |sats| sats > 0)
+    amount.is_some_and(|sats| sats > 0)
 }
 
 fn show_title(ui: &mut egui::Ui) {
