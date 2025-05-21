@@ -72,8 +72,7 @@ pub fn reply_desc(
         )
         .size(size)
         .selectable(selectable)
-        .show(ui)
-        .inner;
+        .show(ui);
 
         if action.is_some() {
             note_action = action;
@@ -96,8 +95,7 @@ pub fn reply_desc(
                 )
                 .size(size)
                 .selectable(selectable)
-                .show(ui)
-                .inner;
+                .show(ui);
 
                 if action.is_some() {
                     note_action = action;
@@ -119,8 +117,7 @@ pub fn reply_desc(
                 )
                 .size(size)
                 .selectable(selectable)
-                .show(ui)
-                .inner;
+                .show(ui);
 
                 if action.is_some() {
                     note_action = action;
@@ -144,8 +141,7 @@ pub fn reply_desc(
                 )
                 .size(size)
                 .selectable(selectable)
-                .show(ui)
-                .inner;
+                .show(ui);
 
                 if action.is_some() {
                     note_action = action;
@@ -166,8 +162,7 @@ pub fn reply_desc(
             )
             .size(size)
             .selectable(selectable)
-            .show(ui)
-            .inner;
+            .show(ui);
 
             if action.is_some() {
                 note_action = action;

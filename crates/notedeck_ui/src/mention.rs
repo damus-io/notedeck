@@ -42,7 +42,7 @@ impl<'a> Mention<'a> {
         self
     }
 
-    pub fn show(self, ui: &mut egui::Ui) -> egui::InnerResponse<Option<NoteAction>> {
+    pub fn show(self, ui: &mut egui::Ui) -> Option<NoteAction> {
         mention_ui(
             self.ndb,
             self.img_cache,
@@ -52,12 +52,6 @@ impl<'a> Mention<'a> {
             self.size,
             self.selectable,
         )
-    }
-}
-
-impl egui::Widget for Mention<'_> {
-    fn ui(self, ui: &mut egui::Ui) -> egui::Response {
-        self.show(ui).response
     }
 }
 
@@ -71,40 +65,38 @@ fn mention_ui(
     ui: &mut egui::Ui,
     size: f32,
     selectable: bool,
-) -> egui::InnerResponse<Option<NoteAction>> {
+) -> Option<NoteAction> {
     let link_color = ui.visuals().hyperlink_color;
 
-    ui.horizontal(|ui| {
-        let profile = ndb.get_profile_by_pubkey(txn, pk).ok();
+    let profile = ndb.get_profile_by_pubkey(txn, pk).ok();
 
-        let name: String = format!(
-            "@{}",
-            get_display_name(profile.as_ref()).username_or_displayname()
-        );
+    let name: String = format!(
+        "@{}",
+        get_display_name(profile.as_ref()).username_or_displayname()
+    );
 
-        let resp = ui.add(
-            egui::Label::new(egui::RichText::new(name).color(link_color).size(size))
-                .sense(Sense::click())
-                .selectable(selectable),
-        );
+    let resp = ui.add(
+        egui::Label::new(egui::RichText::new(name).color(link_color).size(size))
+            .sense(Sense::click())
+            .selectable(selectable),
+    );
 
-        let note_action = if resp.clicked() {
-            show_pointer(ui);
-            Some(NoteAction::Profile(Pubkey::new(*pk)))
-        } else if resp.hovered() {
-            show_pointer(ui);
-            None
-        } else {
-            None
-        };
+    let note_action = if resp.clicked() {
+        show_pointer(ui);
+        Some(NoteAction::Profile(Pubkey::new(*pk)))
+    } else if resp.hovered() {
+        show_pointer(ui);
+        None
+    } else {
+        None
+    };
 
-        if let Some(rec) = profile.as_ref() {
-            resp.on_hover_ui_at_pointer(|ui| {
-                ui.set_max_width(300.0);
-                ui.add(ProfilePreview::new(rec, img_cache));
-            });
-        }
+    if let Some(rec) = profile.as_ref() {
+        resp.on_hover_ui_at_pointer(|ui| {
+            ui.set_max_width(300.0);
+            ui.add(ProfilePreview::new(rec, img_cache));
+        });
+    }
 
-        note_action
-    })
+    note_action
 }

@@ -158,8 +158,8 @@ pub fn render_note_contents(
                             txn,
                             profile.pubkey(),
                         )
-                        .show(ui)
-                        .inner;
+                        .show(ui);
+
                         if act.is_some() {
                             note_action = act;
                         }
@@ -172,8 +172,8 @@ pub fn render_note_contents(
                             txn,
                             npub.pubkey(),
                         )
-                        .show(ui)
-                        .inner;
+                        .show(ui);
+
                         if act.is_some() {
                             note_action = act;
                         }
