@@ -142,51 +142,60 @@ impl RenderNavResponse {
         ctx: &mut AppContext<'_>,
         ui: &mut egui::Ui,
     ) -> bool {
-        let mut switching_occured: bool = false;
-        let col = self.column;
-
-        if let Some(action) = self.response.response.or(self.response.title_response) {
-            // start returning when we're finished posting
-
-            switching_occured = process_render_nav_action(app, ctx, ui, col, action);
-        }
-
-        if let Some(action) = self.response.action {
-            match action {
-                NavAction::Returned => {
-                    let r = app
-                        .columns_mut(ctx.accounts)
-                        .column_mut(col)
-                        .router_mut()
-                        .pop();
-
-                    if let Some(Route::Timeline(kind)) = &r {
-                        if let Err(err) = app.timeline_cache.pop(kind, ctx.ndb, ctx.pool) {
-                            error!("popping timeline had an error: {err} for {:?}", kind);
-                        }
-                    };
-
-                    switching_occured = true;
-                }
-
-                NavAction::Navigated => {
-                    let cur_router = app.columns_mut(ctx.accounts).column_mut(col).router_mut();
-                    cur_router.navigating = false;
-                    if cur_router.is_replacing() {
-                        cur_router.remove_previous_routes();
-                    }
-                    switching_occured = true;
-                }
-
-                NavAction::Dragging => {}
-                NavAction::Returning => {}
-                NavAction::Resetting => {}
-                NavAction::Navigating => {}
-            }
-        }
-
-        switching_occured
+        process_nav_resp(app, ctx, ui, self.response, self.column)
     }
+}
+
+fn process_nav_resp(
+    app: &mut Damus,
+    ctx: &mut AppContext<'_>,
+    ui: &mut egui::Ui,
+    response: NavResponse<Option<RenderNavAction>>,
+    col: usize,
+) -> bool {
+    let mut switching_occured: bool = false;
+
+    if let Some(action) = response.response.or(response.title_response) {
+        // start returning when we're finished posting
+
+        switching_occured = process_render_nav_action(app, ctx, ui, col, action);
+    }
+
+    if let Some(action) = response.action {
+        match action {
+            NavAction::Returned => {
+                let r = app
+                    .columns_mut(ctx.accounts)
+                    .column_mut(col)
+                    .router_mut()
+                    .pop();
+
+                if let Some(Route::Timeline(kind)) = &r {
+                    if let Err(err) = app.timeline_cache.pop(kind, ctx.ndb, ctx.pool) {
+                        error!("popping timeline had an error: {err} for {:?}", kind);
+                    }
+                };
+
+                switching_occured = true;
+            }
+
+            NavAction::Navigated => {
+                let cur_router = app.columns_mut(ctx.accounts).column_mut(col).router_mut();
+                cur_router.navigating = false;
+                if cur_router.is_replacing() {
+                    cur_router.remove_previous_routes();
+                }
+                switching_occured = true;
+            }
+
+            NavAction::Dragging => {}
+            NavAction::Returning => {}
+            NavAction::Resetting => {}
+            NavAction::Navigating => {}
+        }
+    }
+
+    switching_occured
 }
 
 fn process_render_nav_action(
