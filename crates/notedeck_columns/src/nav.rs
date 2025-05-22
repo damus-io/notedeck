@@ -7,7 +7,7 @@ use crate::{
     profile::{ProfileAction, SaveProfileChanges},
     profile_state::ProfileState,
     relay_pool_manager::RelayPoolManager,
-    route::Route,
+    route::{Route, Router},
     timeline::{route::render_timeline_route, TimelineCache},
     ui::{
         self,
@@ -198,6 +198,31 @@ fn process_nav_resp(
     switching_occured
 }
 
+pub enum RouterAction {
+    GoBack,
+    RouteTo(Route, RouterType),
+}
+
+pub enum RouterType {
+    Stack,
+}
+
+impl RouterAction {
+    pub fn process(self, stack_router: &mut Router<Route>) {
+        match self {
+            RouterAction::GoBack => {
+                stack_router.go_back();
+            }
+            RouterAction::RouteTo(route, router_type) => match router_type {
+                RouterType::Stack => stack_router.route_to(route),
+            },
+        }
+    }
+    pub fn route_to(route: Route) -> Self {
+        RouterAction::RouteTo(route, RouterType::Stack)
+    }
+}
+
 fn process_render_nav_action(
     app: &mut Damus,
     ctx: &mut AppContext<'_>,
@@ -205,13 +230,8 @@ fn process_render_nav_action(
     col: usize,
     action: RenderNavAction,
 ) -> bool {
-    match action {
-        RenderNavAction::Back => {
-            app.columns_mut(ctx.accounts)
-                .column_mut(col)
-                .router_mut()
-                .go_back();
-        }
+    let router_action = match action {
+        RenderNavAction::Back => Some(RouterAction::GoBack),
 
         RenderNavAction::RemoveColumn => {
             let kinds_to_pop = app.columns_mut(ctx.accounts).delete_column(col);
@@ -231,10 +251,8 @@ fn process_render_nav_action(
                 Err(err) => tracing::error!("Error executing post action: {err}"),
                 Ok(_) => tracing::debug!("Post action executed"),
             }
-            get_active_columns_mut(ctx.accounts, &mut app.decks_cache)
-                .column_mut(col)
-                .router_mut()
-                .go_back();
+
+            Some(RouterAction::GoBack)
         }
 
         RenderNavAction::NoteAction(note_action) => {
@@ -255,28 +273,26 @@ fn process_render_nav_action(
                 ctx.zaps,
                 ctx.img_cache,
                 ui,
-            );
+            )
         }
 
         RenderNavAction::SwitchingAction(switching_action) => {
             return switching_action.process(&mut app.timeline_cache, &mut app.decks_cache, ctx);
         }
-        RenderNavAction::ProfileAction(profile_action) => {
-            profile_action.process(
-                &mut app.view_state.pubkey_to_profile_state,
-                ctx.ndb,
-                ctx.pool,
-                get_active_columns_mut(ctx.accounts, &mut app.decks_cache)
-                    .column_mut(col)
-                    .router_mut(),
-            );
-        }
+        RenderNavAction::ProfileAction(profile_action) => profile_action.process(
+            &mut app.view_state.pubkey_to_profile_state,
+            ctx.ndb,
+            ctx.pool,
+        ),
         RenderNavAction::WalletAction(wallet_action) => {
-            let router = get_active_columns_mut(ctx.accounts, &mut app.decks_cache)
-                .column_mut(col)
-                .router_mut();
-            wallet_action.process(ctx.accounts, ctx.global_wallet, router)
+            wallet_action.process(ctx.accounts, ctx.global_wallet)
         }
+    };
+
+    if let Some(action) = router_action {
+        let cols = get_active_columns_mut(ctx.accounts, &mut app.decks_cache).column_mut(col);
+        let router = cols.router_mut();
+        action.process(router);
     }
 
     false

@@ -5,10 +5,7 @@ use nostrdb::{Ndb, Note, NoteBuildOptions, NoteBuilder};
 
 use tracing::info;
 
-use crate::{
-    profile_state::ProfileState,
-    route::{Route, Router},
-};
+use crate::{nav::RouterAction, profile_state::ProfileState, route::Route};
 
 pub struct SaveProfileChanges {
     pub kp: FullKeypair,
@@ -48,12 +45,9 @@ impl ProfileAction {
         state_map: &mut HashMap<Pubkey, ProfileState>,
         ndb: &Ndb,
         pool: &mut RelayPool,
-        router: &mut Router<Route>,
-    ) {
+    ) -> Option<RouterAction> {
         match self {
-            ProfileAction::Edit(kp) => {
-                router.route_to(Route::EditProfile(kp.pubkey));
-            }
+            ProfileAction::Edit(kp) => Some(RouterAction::route_to(Route::EditProfile(kp.pubkey))),
             ProfileAction::SaveChanges(changes) => {
                 let raw_msg = format!("[\"EVENT\",{}]", changes.to_note().json().unwrap());
 
@@ -66,7 +60,7 @@ impl ProfileAction {
                 info!("sending {}", raw_msg);
                 pool.send(&enostr::ClientMessage::raw(raw_msg));
 
-                router.go_back();
+                Some(RouterAction::GoBack)
             }
         }
     }

@@ -500,13 +500,14 @@ fn chrome_handle_app_action(
 
             let txn = Transaction::new(ctx.ndb).unwrap();
 
-            notedeck_columns::actionbar::execute_and_process_note_action(
+            let cols = columns
+                .decks_cache
+                .active_columns_mut(ctx.accounts)
+                .unwrap();
+            let m_action = notedeck_columns::actionbar::execute_and_process_note_action(
                 note_action,
                 ctx.ndb,
-                columns
-                    .decks_cache
-                    .active_columns_mut(ctx.accounts)
-                    .unwrap(),
+                cols,
                 0,
                 &mut columns.timeline_cache,
                 ctx.note_cache,
@@ -519,6 +520,12 @@ fn chrome_handle_app_action(
                 ctx.img_cache,
                 ui,
             );
+
+            if let Some(action) = m_action {
+                let col = cols.column_mut(0);
+
+                action.process(col.router_mut());
+            }
         }
     }
 }
