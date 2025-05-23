@@ -54,62 +54,72 @@ impl<'a, 'd> ThreadView<'a, 'd> {
     pub fn ui(&mut self, ui: &mut egui::Ui) -> Option<NoteAction> {
         let txn = Transaction::new(self.note_context.ndb).expect("txn");
 
-        egui::ScrollArea::vertical()
+        let mut scroll_area = egui::ScrollArea::vertical()
             .id_salt(self.id_source)
             .animated(false)
             .auto_shrink([false, false])
-            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
-            .show(ui, |ui| {
-                let root_id = match RootNoteId::new(
-                    self.note_context.ndb,
-                    self.note_context.note_cache,
-                    &txn,
-                    self.selected_note_id,
-                ) {
-                    Ok(root_id) => root_id,
+            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible);
 
-                    Err(err) => {
-                        ui.label(format!("Error loading thread: {:?}", err));
-                        return None;
-                    }
-                };
+        let offset_id = self.id_source.with("scroll_offset");
 
-                let thread_timeline = self
-                    .timeline_cache
-                    .notes(
-                        self.note_context.ndb,
-                        self.note_context.note_cache,
-                        &txn,
-                        &TimelineKind::Thread(ThreadSelection::from_root_id(root_id.to_owned())),
-                    )
-                    .get_ptr();
+        if let Some(offset) = ui.data(|i| i.get_temp::<f32>(offset_id)) {
+            scroll_area = scroll_area.vertical_scroll_offset(offset);
+        }
 
-                // TODO(jb55): skip poll if ThreadResult is fresh?
+        let output = scroll_area.show(ui, |ui| {
+            let root_id = match RootNoteId::new(
+                self.note_context.ndb,
+                self.note_context.note_cache,
+                &txn,
+                self.selected_note_id,
+            ) {
+                Ok(root_id) => root_id,
 
-                let reversed = true;
-                // poll for new notes and insert them into our existing notes
-                if let Err(err) = thread_timeline.poll_notes_into_view(
-                    self.note_context.ndb,
-                    &txn,
-                    self.unknown_ids,
-                    self.note_context.note_cache,
-                    reversed,
-                ) {
-                    error!("error polling notes into thread timeline: {err}");
+                Err(err) => {
+                    ui.label(format!("Error loading thread: {:?}", err));
+                    return None;
                 }
+            };
 
-                TimelineTabView::new(
-                    thread_timeline.current_view(),
-                    true,
-                    self.note_options,
+            let thread_timeline = self
+                .timeline_cache
+                .notes(
+                    self.note_context.ndb,
+                    self.note_context.note_cache,
                     &txn,
-                    self.is_muted,
-                    self.note_context,
-                    self.cur_acc,
-                    self.jobs,
+                    &TimelineKind::Thread(ThreadSelection::from_root_id(root_id.to_owned())),
                 )
-                .show(ui)
-            })
-            .inner
+                .get_ptr();
+
+            // TODO(jb55): skip poll if ThreadResult is fresh?
+
+            let reversed = true;
+            // poll for new notes and insert them into our existing notes
+            if let Err(err) = thread_timeline.poll_notes_into_view(
+                self.note_context.ndb,
+                &txn,
+                self.unknown_ids,
+                self.note_context.note_cache,
+                reversed,
+            ) {
+                error!("error polling notes into thread timeline: {err}");
+            }
+
+            TimelineTabView::new(
+                thread_timeline.current_view(),
+                true,
+                self.note_options,
+                &txn,
+                self.is_muted,
+                self.note_context,
+                self.cur_acc,
+                self.jobs,
+            )
+            .show(ui)
+        });
+
+        ui.data_mut(|d| d.insert_temp(offset_id, output.state.offset.y));
+
+        output.inner
     }
 }
