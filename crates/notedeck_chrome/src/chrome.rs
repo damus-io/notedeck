@@ -524,7 +524,7 @@ fn chrome_handle_app_action(
             if let Some(action) = m_action {
                 let col = cols.column_mut(0);
 
-                action.process(col.router_mut());
+                action.process(&mut col.router, &mut col.sheet_router);
             }
         }
     }

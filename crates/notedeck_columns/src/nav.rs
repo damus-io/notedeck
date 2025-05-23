@@ -7,7 +7,7 @@ use crate::{
     profile::{ProfileAction, SaveProfileChanges},
     profile_state::ProfileState,
     relay_pool_manager::RelayPoolManager,
-    route::{Route, Router},
+    route::{Route, Router, SingletonRouter},
     timeline::{route::render_timeline_route, TimelineCache},
     ui::{
         self,
@@ -25,7 +25,7 @@ use crate::{
     Damus,
 };
 
-use egui_nav::{Nav, NavAction, NavResponse, NavUiType};
+use egui_nav::{Nav, NavAction, NavResponse, NavUiType, Percent, PopupResponse, PopupSheet};
 use nostrdb::Transaction;
 use notedeck::{
     get_current_default_msats, get_current_wallet, AccountsAction, AppContext, NoteAction,
@@ -122,7 +122,10 @@ impl From<NoteAction> for RenderNavAction {
     }
 }
 
-pub type NotedeckNavResponse = NavResponse<Option<RenderNavAction>>;
+enum NotedeckNavResponse {
+    Popup(PopupResponse<Option<RenderNavAction>>),
+    Nav(NavResponse<Option<RenderNavAction>>),
+}
 
 pub struct RenderNavResponse {
     column: usize,
@@ -142,8 +145,39 @@ impl RenderNavResponse {
         ctx: &mut AppContext<'_>,
         ui: &mut egui::Ui,
     ) -> bool {
-        process_nav_resp(app, ctx, ui, self.response, self.column)
+        match self.response {
+            NotedeckNavResponse::Popup(nav_action) => {
+                process_popup_resp(nav_action, app, ctx, ui, self.column);
+                false
+            }
+            NotedeckNavResponse::Nav(nav_response) => {
+                process_nav_resp(app, ctx, ui, nav_response, self.column)
+            }
+        }
     }
+}
+
+fn process_popup_resp(
+    action: PopupResponse<Option<RenderNavAction>>,
+    app: &mut Damus,
+    ctx: &mut AppContext<'_>,
+    ui: &mut egui::Ui,
+    col: usize,
+) -> bool {
+    let mut switching_occured = false;
+    if let Some(nav_action) = action.response {
+        switching_occured = process_render_nav_action(app, ctx, ui, col, nav_action);
+    }
+
+    if let Some(NavAction::Returned) = action.action {
+        let column = app.columns_mut(ctx.accounts).column_mut(col);
+        column.sheet_router.clear();
+    } else if let Some(NavAction::Navigating) = action.action {
+        let column = app.columns_mut(ctx.accounts).column_mut(col);
+        column.sheet_router.navigating = false;
+    }
+
+    switching_occured
 }
 
 fn process_nav_resp(
@@ -204,22 +238,37 @@ pub enum RouterAction {
 }
 
 pub enum RouterType {
+    Sheet,
     Stack,
 }
 
 impl RouterAction {
-    pub fn process(self, stack_router: &mut Router<Route>) {
+    pub fn process(
+        self,
+        stack_router: &mut Router<Route>,
+        sheet_router: &mut SingletonRouter<Route>,
+    ) {
         match self {
             RouterAction::GoBack => {
-                stack_router.go_back();
+                if sheet_router.route().is_some() {
+                    sheet_router.go_back();
+                } else {
+                    stack_router.go_back();
+                }
             }
             RouterAction::RouteTo(route, router_type) => match router_type {
+                RouterType::Sheet => sheet_router.route_to(route),
                 RouterType::Stack => stack_router.route_to(route),
             },
         }
     }
+
     pub fn route_to(route: Route) -> Self {
         RouterAction::RouteTo(route, RouterType::Stack)
+    }
+
+    pub fn route_to_sheet(route: Route) -> Self {
+        RouterAction::RouteTo(route, RouterType::Sheet)
     }
 }
 
@@ -291,8 +340,9 @@ fn process_render_nav_action(
 
     if let Some(action) = router_action {
         let cols = get_active_columns_mut(ctx.accounts, &mut app.decks_cache).column_mut(col);
-        let router = cols.router_mut();
-        action.process(router);
+        let router = &mut cols.router;
+        let sheet_router = &mut cols.sheet_router;
+        action.process(router, sheet_router);
     }
 
     false
@@ -660,6 +710,48 @@ pub fn render_nav(
     ctx: &mut AppContext<'_>,
     ui: &mut egui::Ui,
 ) -> RenderNavResponse {
+    if let Some(sheet_route) = app
+        .columns(ctx.accounts)
+        .column(col)
+        .sheet_router
+        .route()
+        .clone()
+    {
+        let navigating = app
+            .columns(ctx.accounts)
+            .column(col)
+            .sheet_router
+            .navigating;
+        let returning = app.columns(ctx.accounts).column(col).sheet_router.returning;
+        let bg_route = app
+            .columns(ctx.accounts)
+            .column(col)
+            .router()
+            .routes()
+            .last()
+            .cloned();
+        if let Some(bg_route) = bg_route {
+            let resp = PopupSheet::new(&bg_route, &sheet_route)
+                .id_source(egui::Id::new(("nav", col)))
+                .navigating(navigating)
+                .returning(returning)
+                .with_split_percent_from_top(Percent::new(35).expect("35 <= 100"))
+                .show_mut(ui, |ui, typ, route| match typ {
+                    NavUiType::Title => NavTitle::new(
+                        ctx.ndb,
+                        ctx.img_cache,
+                        get_active_columns_mut(ctx.accounts, &mut app.decks_cache),
+                        &[route.clone()],
+                        col,
+                    )
+                    .show(ui),
+                    NavUiType::Body => render_nav_body(ui, app, ctx, route, 1, col, inner_rect),
+                });
+
+            return RenderNavResponse::new(col, NotedeckNavResponse::Popup(resp));
+        }
+    };
+
     let nav_response = Nav::new(
         &app.columns(ctx.accounts)
             .column(col)
@@ -698,5 +790,5 @@ pub fn render_nav(
         }
     });
 
-    RenderNavResponse::new(col, nav_response)
+    RenderNavResponse::new(col, NotedeckNavResponse::Nav(nav_response))
 }

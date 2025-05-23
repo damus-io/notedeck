@@ -40,6 +40,7 @@ fn execute_note_action(
     global_wallet: &mut GlobalWallet,
     zaps: &mut Zaps,
     images: &mut Images,
+    router_type: RouterType,
     ui: &mut egui::Ui,
 ) -> NoteActionResponse {
     let mut timeline_res = None;
@@ -94,6 +95,10 @@ fn execute_note_action(
                         break 'a;
                     };
 
+                    if let RouterType::Sheet = router_type {
+                        router_action = Some(RouterAction::GoBack);
+                    }
+
                     send_zap(
                         &sender,
                         zaps,
@@ -105,7 +110,7 @@ fn execute_note_action(
                 ZapAction::ClearError(target) => clear_zap_error(&sender, zaps, target),
                 ZapAction::CustomizeAmount(target) => {
                     let route = Route::CustomizeZapAmount(target.to_owned());
-                    router_action = Some(RouterAction::route_to(route));
+                    router_action = Some(RouterAction::route_to_sheet(route));
                 }
             }
         }
@@ -131,8 +136,8 @@ fn execute_note_action(
 pub fn execute_and_process_note_action(
     action: NoteAction,
     ndb: &Ndb,
-    _columns: &mut Columns,
-    _col: usize,
+    columns: &mut Columns,
+    col: usize,
     timeline_cache: &mut TimelineCache,
     note_cache: &mut NoteCache,
     pool: &mut RelayPool,
@@ -144,6 +149,16 @@ pub fn execute_and_process_note_action(
     images: &mut Images,
     ui: &mut egui::Ui,
 ) -> Option<RouterAction> {
+    let router_type = {
+        let sheet_router = &mut columns.column_mut(col).sheet_router;
+
+        if sheet_router.route().is_some() {
+            RouterType::Sheet
+        } else {
+            RouterType::Stack
+        }
+    };
+
     let resp = execute_note_action(
         action,
         ndb,
@@ -155,6 +170,7 @@ pub fn execute_and_process_note_action(
         global_wallet,
         zaps,
         images,
+        router_type,
         ui,
     );
 
