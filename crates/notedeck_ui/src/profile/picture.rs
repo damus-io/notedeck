@@ -3,7 +3,7 @@ use crate::images::{fetch_no_pfp_promise, get_render_state, ImageType};
 use egui::{vec2, InnerResponse, Sense, Stroke, TextureHandle};
 
 use notedeck::note::MediaAction;
-use notedeck::{supported_mime_hosted_at_url, Images};
+use notedeck::{show_one_error_message, supported_mime_hosted_at_url, Images};
 
 pub struct ProfilePic<'cache, 'url> {
     cache: &'cache mut Images,
@@ -121,7 +121,7 @@ fn render_pfp(
             }
             notedeck::TextureState::Error(e) => {
                 paint_circle(ui, ui_size, border);
-                tracing::error!("Failed to fetch profile at url {url}: {e}");
+                show_one_error_message(ui, &format!("Failed to fetch profile at url {url}: {e}"));
                 Some(MediaAction::FetchImage {
                     url: url.to_owned(),
                     cache_type,
