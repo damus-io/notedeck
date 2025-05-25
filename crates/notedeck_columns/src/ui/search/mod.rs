@@ -1,9 +1,9 @@
 use egui::{vec2, Align, Color32, CornerRadius, RichText, Stroke, TextEdit};
-use enostr::KeypairUnowned;
+use enostr::{KeypairUnowned, NoteId, Pubkey};
 
 use crate::ui::timeline::TimelineTabView;
 use egui_winit::clipboard::Clipboard;
-use nostrdb::{Filter, Transaction};
+use nostrdb::{Filter, Ndb, Transaction};
 use notedeck::{MuteFun, NoteAction, NoteContext, NoteRef};
 use notedeck_ui::{icons::search_icon, jobs::JobsCache, padding, NoteOptions};
 use std::time::{Duration, Instant};
@@ -220,4 +220,121 @@ fn search_box(query: &mut SearchQueryState, ui: &mut egui::Ui, clipboard: &mut C
             .inner
     })
     .inner
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub enum SearchType {
+    String,
+    NoteId(NoteId),
+    Profile(Pubkey),
+    Hashtag(String),
+}
+
+impl SearchType {
+    fn get_type(query: &str) -> Self {
+        if query.len() == 63 && query.starts_with("note1") {
+            if let Some(noteid) = NoteId::from_bech(query) {
+                return SearchType::NoteId(noteid);
+            }
+        } else if query.len() == 63 && query.starts_with("npub1") {
+            if let Ok(pk) = Pubkey::try_from_bech32_string(query, false) {
+                return SearchType::Profile(pk);
+            }
+        } else if query.chars().nth(0).is_some_and(|c| c == '#') {
+            if let Some(hashtag) = query.get(1..) {
+                return SearchType::Hashtag(hashtag.to_string());
+            }
+        }
+
+        SearchType::String
+    }
+
+    fn search(
+        &self,
+        raw_query: &String,
+        ndb: &Ndb,
+        txn: &Transaction,
+        max_results: u64,
+    ) -> Option<Vec<NoteRef>> {
+        match self {
+            SearchType::String => search_string(raw_query, ndb, txn, max_results),
+            SearchType::NoteId(noteid) => search_note(noteid, ndb, txn).map(|n| vec![n]),
+            SearchType::Profile(pk) => search_pk(pk, ndb, txn, max_results),
+            SearchType::Hashtag(hashtag) => search_hashtag(hashtag, ndb, txn, max_results),
+        }
+    }
+}
+
+fn search_string(
+    query: &String,
+    ndb: &Ndb,
+    txn: &Transaction,
+    max_results: u64,
+) -> Option<Vec<NoteRef>> {
+    let filter = Filter::new()
+        .search(query)
+        .kinds([1])
+        .limit(max_results)
+        .build();
+
+    // TODO: execute in thread
+
+    let before = Instant::now();
+    let qrs = ndb.query(txn, &[filter], max_results as i32);
+    let after = Instant::now();
+    let duration = after - before;
+
+    if duration > Duration::from_millis(20) {
+        warn!(
+            "query took {:?}... let's update this to use a thread!",
+            after - before
+        );
+    }
+
+    match qrs {
+        Ok(qrs) => {
+            info!("queried '{}' and got {} results", query, qrs.len());
+
+            return Some(qrs.into_iter().map(NoteRef::from_query_result).collect());
+        }
+
+        Err(err) => {
+            error!("fulltext query failed: {err}")
+        }
+    }
+
+    None
+}
+
+fn search_note(noteid: &NoteId, ndb: &Ndb, txn: &Transaction) -> Option<NoteRef> {
+    ndb.get_note_by_id(txn, noteid.bytes())
+        .ok()
+        .map(|n| NoteRef::from_note(&n))
+}
+
+fn search_pk(pk: &Pubkey, ndb: &Ndb, txn: &Transaction, max_results: u64) -> Option<Vec<NoteRef>> {
+    let filter = Filter::new()
+        .authors([pk.bytes()])
+        .kinds([1])
+        .limit(max_results)
+        .build();
+
+    let qrs = ndb.query(txn, &[filter], max_results as i32).ok()?;
+    Some(qrs.into_iter().map(NoteRef::from_query_result).collect())
+}
+
+fn search_hashtag(
+    hashtag_name: &str,
+    ndb: &Ndb,
+    txn: &Transaction,
+    max_results: u64,
+) -> Option<Vec<NoteRef>> {
+    let filter = Filter::new()
+        .kinds([1])
+        .limit(max_results)
+        .tags([hashtag_name], 't')
+        .build();
+
+    let qrs = ndb.query(txn, &[filter], max_results as i32).ok()?;
+    Some(qrs.into_iter().map(NoteRef::from_query_result).collect())
 }
