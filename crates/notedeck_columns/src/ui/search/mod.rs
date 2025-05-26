@@ -1,7 +1,8 @@
 use egui::{vec2, Align, Color32, CornerRadius, RichText, Stroke, TextEdit};
 use enostr::{KeypairUnowned, NoteId, Pubkey};
+use state::TypingType;
 
-use crate::ui::timeline::TimelineTabView;
+use crate::{timeline::TimelineTab, ui::timeline::TimelineTabView};
 use egui_winit::clipboard::Clipboard;
 use nostrdb::{Filter, Ndb, Transaction};
 use notedeck::{MuteFun, NoteAction, NoteContext, NoteRef};
@@ -12,6 +13,8 @@ use tracing::{error, info, warn};
 mod state;
 
 pub use state::{FocusState, SearchQueryState, SearchState};
+
+use super::search_results::{SearchResultsResponse, SearchResultsView};
 
 pub struct SearchView<'a, 'd> {
     query: &'a mut SearchQueryState,
@@ -55,95 +58,201 @@ impl<'a, 'd> SearchView<'a, 'd> {
     ) -> Option<NoteAction> {
         ui.spacing_mut().item_spacing = egui::vec2(0.0, 12.0);
 
-        if search_box(self.query, ui, clipboard) {
-            self.execute_search(ui.ctx());
-        }
+        let search_resp = search_box(
+            &mut self.query.string,
+            self.query.focus_state.clone(),
+            ui,
+            clipboard,
+        );
 
-        match self.query.state {
-            SearchState::New | SearchState::Navigating => None,
+        search_resp.process(self.query);
 
-            SearchState::Searched | SearchState::Typing => {
-                if self.query.state == SearchState::Typing {
-                    ui.label(format!("Searching for '{}'", &self.query.string));
-                } else {
-                    ui.label(format!(
-                        "Got {} results for '{}'",
-                        self.query.notes.notes.len(),
-                        &self.query.string
-                    ));
-                }
+        let mut search_action = None;
+        let mut note_action = None;
+        match &self.query.state {
+            SearchState::New | SearchState::Navigating => {}
+            SearchState::Typing(TypingType::Mention(mention_name)) => 's: {
+                let Ok(results) = self
+                    .note_context
+                    .ndb
+                    .search_profile(self.txn, mention_name, 10)
+                else {
+                    break 's;
+                };
 
-                egui::ScrollArea::vertical()
-                    .show(ui, |ui| {
-                        let reversed = false;
-                        TimelineTabView::new(
-                            &self.query.notes,
-                            reversed,
-                            self.note_options,
-                            self.txn,
-                            self.is_muted,
-                            self.note_context,
-                            self.cur_acc,
-                            self.jobs,
-                        )
-                        .show(ui)
-                    })
-                    .inner
+                let search_res = SearchResultsView::new(
+                    self.note_context.img_cache,
+                    self.note_context.ndb,
+                    self.txn,
+                    &results,
+                )
+                .show_in_rect(ui.available_rect_before_wrap(), ui);
+
+                search_action = match search_res {
+                    SearchResultsResponse::SelectResult(Some(index)) => {
+                        let Some(pk_bytes) = results.get(index) else {
+                            break 's;
+                        };
+
+                        let username = self
+                            .note_context
+                            .ndb
+                            .get_profile_by_pubkey(self.txn, pk_bytes)
+                            .ok()
+                            .and_then(|p| p.record().profile().and_then(|p| p.name()))
+                            .unwrap_or(&self.query.string);
+
+                        Some(SearchAction::NewSearch {
+                            search_type: SearchType::Profile(Pubkey::new(**pk_bytes)),
+                            new_search_text: format!("@{username}"),
+                        })
+                    }
+                    SearchResultsResponse::DeleteMention => Some(SearchAction::CloseMention),
+                    SearchResultsResponse::SelectResult(None) => break 's,
+                };
             }
+            SearchState::PerformSearch(search_type) => {
+                execute_search(
+                    ui.ctx(),
+                    search_type,
+                    &self.query.string,
+                    self.note_context.ndb,
+                    self.txn,
+                    &mut self.query.notes,
+                );
+                search_action = Some(SearchAction::Searched);
+                note_action = self.show_search_results(ui);
+            }
+            SearchState::Searched => {
+                ui.label(format!(
+                    "Got {} results for '{}'",
+                    self.query.notes.notes.len(),
+                    &self.query.string
+                ));
+                note_action = self.show_search_results(ui);
+            }
+            SearchState::Typing(TypingType::AutoSearch) => {
+                ui.label(format!("Searching for '{}'", &self.query.string));
+
+                note_action = self.show_search_results(ui);
+            }
+        };
+
+        if let Some(resp) = search_action {
+            resp.process(self.query);
         }
+
+        note_action
     }
 
-    fn execute_search(&mut self, ctx: &egui::Context) {
-        if self.query.string.is_empty() {
+    fn show_search_results(&mut self, ui: &mut egui::Ui) -> Option<NoteAction> {
+        egui::ScrollArea::vertical()
+            .show(ui, |ui| {
+                let reversed = false;
+                TimelineTabView::new(
+                    &self.query.notes,
+                    reversed,
+                    self.note_options,
+                    self.txn,
+                    self.is_muted,
+                    self.note_context,
+                    self.cur_acc,
+                    self.jobs,
+                )
+                .show(ui)
+            })
+            .inner
+    }
+}
+
+fn execute_search(
+    ctx: &egui::Context,
+    search_type: &SearchType,
+    raw_input: &String,
+    ndb: &Ndb,
+    txn: &Transaction,
+    tab: &mut TimelineTab,
+) {
+    if raw_input.is_empty() {
+        return;
+    }
+
+    let max_results = 500;
+
+    let Some(note_refs) = search_type.search(raw_input, ndb, txn, max_results) else {
+        return;
+    };
+
+    tab.notes = note_refs;
+    tab.list.borrow_mut().reset();
+    ctx.request_repaint();
+}
+
+enum SearchAction {
+    NewSearch {
+        search_type: SearchType,
+        new_search_text: String,
+    },
+    Searched,
+    CloseMention,
+}
+
+impl SearchAction {
+    fn process(self, state: &mut SearchQueryState) {
+        match self {
+            SearchAction::NewSearch {
+                search_type,
+                new_search_text,
+            } => {
+                state.state = SearchState::PerformSearch(search_type);
+                state.string = new_search_text;
+            }
+            SearchAction::CloseMention => state.state = SearchState::New,
+            SearchAction::Searched => state.state = SearchState::Searched,
+        }
+    }
+}
+
+struct SearchResponse {
+    requested_focus: bool,
+    input_changed: bool,
+}
+
+impl SearchResponse {
+    fn process(self, state: &mut SearchQueryState) {
+        if self.requested_focus {
+            state.focus_state = FocusState::RequestedFocus;
+        }
+
+        if state.string.chars().nth(0) != Some('@') {
+            if self.input_changed {
+                state.state = SearchState::Typing(TypingType::AutoSearch);
+                state.debouncer.bounce();
+            }
+
+            if state.state == SearchState::Typing(TypingType::AutoSearch)
+                && state.debouncer.should_act()
+            {
+                state.state = SearchState::PerformSearch(SearchType::get_type(&state.string));
+            }
+
             return;
         }
 
-        let max_results = 500;
-        let filter = Filter::new()
-            .search(&self.query.string)
-            .kinds([1])
-            .limit(max_results)
-            .build();
-
-        // TODO: execute in thread
-
-        let before = Instant::now();
-        let qrs = self
-            .note_context
-            .ndb
-            .query(self.txn, &[filter], max_results as i32);
-        let after = Instant::now();
-        let duration = after - before;
-
-        if duration > Duration::from_millis(20) {
-            warn!(
-                "query took {:?}... let's update this to use a thread!",
-                after - before
-            );
-        }
-
-        match qrs {
-            Ok(qrs) => {
-                info!(
-                    "queried '{}' and got {} results",
-                    self.query.string,
-                    qrs.len()
-                );
-
-                let note_refs = qrs.into_iter().map(NoteRef::from_query_result).collect();
-                self.query.notes.notes = note_refs;
-                self.query.notes.list.borrow_mut().reset();
-                ctx.request_repaint();
-            }
-
-            Err(err) => {
-                error!("fulltext query failed: {err}")
+        if self.input_changed {
+            if let Some(mention_text) = state.string.get(1..) {
+                state.state = SearchState::Typing(TypingType::Mention(mention_text.to_owned()));
             }
         }
     }
 }
 
-fn search_box(query: &mut SearchQueryState, ui: &mut egui::Ui, clipboard: &mut Clipboard) -> bool {
+fn search_box(
+    input: &mut String,
+    focus_state: FocusState,
+    ui: &mut egui::Ui,
+    clipboard: &mut Clipboard,
+) -> SearchResponse {
     ui.horizontal(|ui| {
         // Container for search input and icon
         let search_container = egui::Frame {
@@ -165,13 +274,13 @@ fn search_box(query: &mut SearchQueryState, ui: &mut egui::Ui, clipboard: &mut C
                     // Magnifying glass icon
                     ui.add(search_icon(16.0, search_height));
 
-                    let before_len = query.string.len();
+                    let before_len = input.len();
 
                     // Search input field
                     //let font_size = notedeck::fonts::get_font_size(ui.ctx(), &NotedeckTextStyle::Body);
                     let response = ui.add_sized(
                         [ui.available_width(), search_height],
-                        TextEdit::singleline(&mut query.string)
+                        TextEdit::singleline(input)
                             .hint_text(RichText::new("Search notes...").weak())
                             //.desired_width(available_width - 32.0)
                             //.font(egui::FontId::new(font_size, egui::FontFamily::Proportional))
@@ -182,37 +291,32 @@ fn search_box(query: &mut SearchQueryState, ui: &mut egui::Ui, clipboard: &mut C
                     response.context_menu(|ui| {
                         if ui.button("paste").clicked() {
                             if let Some(text) = clipboard.get() {
-                                query.string.clear();
-                                query.string.push_str(&text);
+                                input.clear();
+                                input.push_str(&text);
                             }
                         }
                     });
 
                     if response.middle_clicked() {
                         if let Some(text) = clipboard.get() {
-                            query.string.clear();
-                            query.string.push_str(&text);
+                            input.clear();
+                            input.push_str(&text);
                         }
                     }
 
-                    if query.focus_state == FocusState::ShouldRequestFocus {
+                    let mut requested_focus = false;
+                    if focus_state == FocusState::ShouldRequestFocus {
                         response.request_focus();
-                        query.focus_state = FocusState::RequestedFocus;
+                        requested_focus = true;
                     }
 
-                    let after_len = query.string.len();
+                    let after_len = input.len();
 
-                    let changed = before_len != after_len;
-                    if changed {
-                        query.mark_updated();
-                    }
+                    let input_changed = before_len != after_len;
 
-                    // Execute search after debouncing
-                    if query.should_search() {
-                        query.mark_searched(SearchState::Searched);
-                        true
-                    } else {
-                        false
+                    SearchResponse {
+                        requested_focus,
+                        input_changed,
                     }
                 })
                 .inner
