@@ -194,6 +194,7 @@ impl<'a> NavTitle<'a> {
             }
             confirm_pressed
         } else {
+            delete_button_resp.on_hover_text("Delete this column");
             false
         }
     }
