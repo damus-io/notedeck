@@ -65,67 +65,75 @@ impl<'a, 'd> ProfileView<'a, 'd> {
 
     pub fn ui(&mut self, ui: &mut egui::Ui) -> Option<ProfileViewAction> {
         let scroll_id = egui::Id::new(("profile_scroll", self.col_id, self.pubkey));
+        let offset_id = scroll_id.with("scroll_offset");
 
-        ScrollArea::vertical()
-            .id_salt(scroll_id)
-            .show(ui, |ui| {
-                let mut action = None;
-                let txn = Transaction::new(self.note_context.ndb).expect("txn");
-                if let Ok(profile) = self
-                    .note_context
-                    .ndb
-                    .get_profile_by_pubkey(&txn, self.pubkey.bytes())
-                {
-                    if self.profile_body(ui, profile) {
-                        action = Some(ProfileViewAction::EditProfile);
-                    }
+        let mut scroll_area = ScrollArea::vertical().id_salt(scroll_id);
+
+        if let Some(offset) = ui.data(|i| i.get_temp::<f32>(offset_id)) {
+            scroll_area = scroll_area.vertical_scroll_offset(offset);
+        }
+
+        let output = scroll_area.show(ui, |ui| {
+            let mut action = None;
+            let txn = Transaction::new(self.note_context.ndb).expect("txn");
+            if let Ok(profile) = self
+                .note_context
+                .ndb
+                .get_profile_by_pubkey(&txn, self.pubkey.bytes())
+            {
+                if self.profile_body(ui, profile) {
+                    action = Some(ProfileViewAction::EditProfile);
                 }
-                let profile_timeline = self
-                    .timeline_cache
-                    .notes(
-                        self.note_context.ndb,
-                        self.note_context.note_cache,
-                        &txn,
-                        &TimelineKind::Profile(*self.pubkey),
-                    )
-                    .get_ptr();
-
-                profile_timeline.selected_view =
-                    tabs_ui(ui, profile_timeline.selected_view, &profile_timeline.views);
-
-                let reversed = false;
-                // poll for new notes and insert them into our existing notes
-                if let Err(e) = profile_timeline.poll_notes_into_view(
+            }
+            let profile_timeline = self
+                .timeline_cache
+                .notes(
                     self.note_context.ndb,
-                    &txn,
-                    self.unknown_ids,
                     self.note_context.note_cache,
-                    reversed,
-                ) {
-                    error!("Profile::poll_notes_into_view: {e}");
-                }
-
-                if let Some(note_action) = TimelineTabView::new(
-                    profile_timeline.current_view(),
-                    reversed,
-                    self.note_options,
                     &txn,
-                    self.is_muted,
-                    self.note_context,
-                    &self
-                        .accounts
-                        .get_selected_account()
-                        .map(|a| (&a.key).into()),
-                    self.jobs,
+                    &TimelineKind::Profile(*self.pubkey),
                 )
-                .show(ui)
-                {
-                    action = Some(ProfileViewAction::Note(note_action));
-                }
+                .get_ptr();
 
-                action
-            })
-            .inner
+            profile_timeline.selected_view =
+                tabs_ui(ui, profile_timeline.selected_view, &profile_timeline.views);
+
+            let reversed = false;
+            // poll for new notes and insert them into our existing notes
+            if let Err(e) = profile_timeline.poll_notes_into_view(
+                self.note_context.ndb,
+                &txn,
+                self.unknown_ids,
+                self.note_context.note_cache,
+                reversed,
+            ) {
+                error!("Profile::poll_notes_into_view: {e}");
+            }
+
+            if let Some(note_action) = TimelineTabView::new(
+                profile_timeline.current_view(),
+                reversed,
+                self.note_options,
+                &txn,
+                self.is_muted,
+                self.note_context,
+                &self
+                    .accounts
+                    .get_selected_account()
+                    .map(|a| (&a.key).into()),
+                self.jobs,
+            )
+            .show(ui)
+            {
+                action = Some(ProfileViewAction::Note(note_action));
+            }
+
+            action
+        });
+
+        ui.data_mut(|d| d.insert_temp(offset_id, output.state.offset.y));
+
+        output.inner
     }
 
     fn profile_body(&mut self, ui: &mut egui::Ui, profile: ProfileRecord<'_>) -> bool {
