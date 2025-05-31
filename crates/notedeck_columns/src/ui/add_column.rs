@@ -763,10 +763,17 @@ pub fn hashtag_ui(
         ui.add(text_edit);
 
         ui.add_space(8.0);
-        if ui
-            .add_sized(egui::vec2(50.0, 40.0), add_column_button())
-            .clicked()
+
+        let mut handle_user_input = false;
+        if ui.input(|i| i.key_released(egui::Key::Enter))
+            || ui
+                .add_sized(egui::vec2(50.0, 40.0), add_column_button())
+                .clicked()
         {
+            handle_user_input = true;
+        }
+
+        if handle_user_input && !text_buffer.is_empty() {
             let resp =
                 AddColumnResponse::Timeline(TimelineKind::Hashtag(sanitize_hashtag(text_buffer)));
             id_string_map.remove(&id);
