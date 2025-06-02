@@ -410,7 +410,8 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
                     let zapping_acc = self
                         .cur_acc
                         .as_ref()
-                        .filter(|_| self.note_context.current_account_has_wallet);
+                        .filter(|_| self.note_context.current_account_has_wallet)
+                        .or(self.cur_acc.as_ref());
 
                     notedeck_ui::padding(8.0, ui, |ui| {
                         let resp = NoteView::new(

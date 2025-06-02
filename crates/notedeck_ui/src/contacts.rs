@@ -17,7 +17,7 @@ pub fn trust_media_from_pk2(
     pk1: Option<&[u8; 32]>,
     pk2: &[u8; 32],
 ) -> bool {
-    pk1.map(|pk| pk1_is_following_pk2(ndb, txn, pk, pk2).unwrap_or(false))
+    pk1.map(|pk| pk == pk2 || pk1_is_following_pk2(ndb, txn, pk, pk2).unwrap_or(false))
         .unwrap_or(false)
 }
 
