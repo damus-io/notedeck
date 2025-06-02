@@ -637,6 +637,7 @@ pub fn render_add_column_routes(
                 crate::timeline::setup_new_timeline(
                     &mut timeline,
                     ctx.ndb,
+                    &txn,
                     &mut app.subscriptions,
                     ctx.pool,
                     ctx.note_cache,
@@ -669,15 +670,15 @@ pub fn render_add_column_routes(
                 // source to be, so let;s create a timeline from that and
                 // add it to our list of timelines
                 AlgoOption::LastPerPubkey(Decision::Decided(list_kind)) => {
-                    let maybe_timeline = {
-                        let txn = Transaction::new(ctx.ndb).unwrap();
-                        TimelineKind::last_per_pubkey(list_kind).into_timeline(&txn, ctx.ndb)
-                    };
+                    let txn = Transaction::new(ctx.ndb).unwrap();
+                    let maybe_timeline =
+                        TimelineKind::last_per_pubkey(list_kind).into_timeline(&txn, ctx.ndb);
 
                     if let Some(mut timeline) = maybe_timeline {
                         crate::timeline::setup_new_timeline(
                             &mut timeline,
                             ctx.ndb,
+                            &txn,
                             &mut app.subscriptions,
                             ctx.pool,
                             ctx.note_cache,

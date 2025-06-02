@@ -123,8 +123,8 @@ impl From<NoteAction> for RenderNavAction {
 }
 
 enum NotedeckNavResponse {
-    Popup(PopupResponse<Option<RenderNavAction>>),
-    Nav(NavResponse<Option<RenderNavAction>>),
+    Popup(Box<PopupResponse<Option<RenderNavAction>>>),
+    Nav(Box<NavResponse<Option<RenderNavAction>>>),
 }
 
 pub struct RenderNavResponse {
@@ -147,11 +147,11 @@ impl RenderNavResponse {
     ) -> bool {
         match self.response {
             NotedeckNavResponse::Popup(nav_action) => {
-                process_popup_resp(nav_action, app, ctx, ui, self.column);
+                process_popup_resp(*nav_action, app, ctx, ui, self.column);
                 false
             }
             NotedeckNavResponse::Nav(nav_response) => {
-                process_nav_resp(app, ctx, ui, nav_response, self.column)
+                process_nav_resp(app, ctx, ui, *nav_response, self.column)
             }
         }
     }
@@ -748,7 +748,7 @@ pub fn render_nav(
                     NavUiType::Body => render_nav_body(ui, app, ctx, route, 1, col, inner_rect),
                 });
 
-            return RenderNavResponse::new(col, NotedeckNavResponse::Popup(resp));
+            return RenderNavResponse::new(col, NotedeckNavResponse::Popup(Box::new(resp)));
         }
     };
 
@@ -790,5 +790,5 @@ pub fn render_nav(
         }
     });
 
-    RenderNavResponse::new(col, NotedeckNavResponse::Nav(nav_response))
+    RenderNavResponse::new(col, NotedeckNavResponse::Nav(Box::new(nav_response)))
 }

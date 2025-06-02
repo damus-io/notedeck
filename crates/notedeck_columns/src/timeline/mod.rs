@@ -482,6 +482,7 @@ pub fn merge_sorted_vecs<T: Ord + Copy>(vec1: &[T], vec2: &[T]) -> (Vec<T>, Merg
 pub fn setup_new_timeline(
     timeline: &mut Timeline,
     ndb: &Ndb,
+    txn: &Transaction,
     subs: &mut Subscriptions,
     pool: &mut RelayPool,
     note_cache: &mut NoteCache,
@@ -489,7 +490,7 @@ pub fn setup_new_timeline(
 ) {
     // if we're ready, setup local subs
     if is_timeline_ready(ndb, pool, note_cache, timeline) {
-        if let Err(err) = setup_timeline_nostrdb_sub(ndb, note_cache, timeline) {
+        if let Err(err) = setup_timeline_nostrdb_sub(ndb, txn, note_cache, timeline) {
             error!("setup_new_timeline: {err}");
         }
     }
@@ -616,6 +617,7 @@ fn fetch_contact_list(
 
 fn setup_initial_timeline(
     ndb: &Ndb,
+    txn: &Transaction,
     timeline: &mut Timeline,
     note_cache: &mut NoteCache,
     filters: &[Filter],
@@ -647,14 +649,13 @@ fn setup_initial_timeline(
         lim += filter.limit().unwrap_or(1) as i32;
     }
 
-    let txn = Transaction::new(ndb)?;
     let notes: Vec<NoteRef> = ndb
-        .query(&txn, filters, lim)?
+        .query(txn, filters, lim)?
         .into_iter()
         .map(NoteRef::from_query_result)
         .collect();
 
-    timeline.insert_new(&txn, ndb, note_cache, &notes);
+    timeline.insert_new(txn, ndb, note_cache, &notes);
 
     Ok(())
 }
@@ -665,7 +666,8 @@ pub fn setup_initial_nostrdb_subs(
     timeline_cache: &mut TimelineCache,
 ) -> Result<()> {
     for (_kind, timeline) in timeline_cache.timelines.iter_mut() {
-        if let Err(err) = setup_timeline_nostrdb_sub(ndb, note_cache, timeline) {
+        let txn = Transaction::new(ndb).expect("txn");
+        if let Err(err) = setup_timeline_nostrdb_sub(ndb, &txn, note_cache, timeline) {
             error!("setup_initial_nostrdb_subs: {err}");
         }
     }
@@ -675,6 +677,7 @@ pub fn setup_initial_nostrdb_subs(
 
 fn setup_timeline_nostrdb_sub(
     ndb: &Ndb,
+    txn: &Transaction,
     note_cache: &mut NoteCache,
     timeline: &mut Timeline,
 ) -> Result<()> {
@@ -684,7 +687,7 @@ fn setup_timeline_nostrdb_sub(
         .ok_or(Error::App(notedeck::Error::empty_contact_list()))?
         .to_owned();
 
-    setup_initial_timeline(ndb, timeline, note_cache, &filter_state)?;
+    setup_initial_timeline(ndb, txn, timeline, note_cache, &filter_state)?;
 
     Ok(())
 }
@@ -754,7 +757,8 @@ pub fn is_timeline_ready(
             // we just switched to the ready state, we should send initial
             // queries and setup the local subscription
             info!("Found contact list! Setting up local and remote contact list query");
-            setup_initial_timeline(ndb, timeline, note_cache, &filter).expect("setup init");
+            let txn = Transaction::new(ndb).expect("txn");
+            setup_initial_timeline(ndb, &txn, timeline, note_cache, &filter).expect("setup init");
             timeline
                 .filter
                 .set_relay_state(relay_id, FilterState::ready(filter.clone()));
