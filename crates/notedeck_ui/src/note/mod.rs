@@ -20,7 +20,7 @@ pub use reply_description::reply_desc;
 use egui::emath::{pos2, Vec2};
 use egui::{Id, Label, Pos2, Rect, Response, RichText, Sense};
 use enostr::{KeypairUnowned, NoteId, Pubkey};
-use nostrdb::{Ndb, Note, NoteKey, Transaction};
+use nostrdb::{Ndb, Note, NoteKey, ProfileRecord, Transaction};
 use notedeck::{
     name::get_display_name,
     note::{NoteAction, NoteContext, ZapAction},
@@ -387,75 +387,148 @@ impl<'a, 'd> NoteView<'a, 'd> {
         });
     }
 
-    #[profiling::function]
-    fn show_standard(&mut self, ui: &mut egui::Ui) -> NoteResponse {
-        let note_key = self.note.key().expect("todo: support non-db notes");
-        let txn = self.note.txn().expect("todo: support non-db notes");
+    fn wide_ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        txn: &Transaction,
+        note_key: NoteKey,
+        profile: &Result<ProfileRecord, nostrdb::Error>,
+        note_action: &mut Option<NoteAction>,
+    ) -> Response {
+        ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+            ui.horizontal(|ui| {
+                let (pfp_resp, action) = self.pfp(note_key, profile, ui);
+                if pfp_resp.clicked() {
+                    *note_action = Some(NoteAction::Profile(Pubkey::new(*self.note.pubkey())));
+                } else if let Some(action) = action {
+                    *note_action = Some(NoteAction::Media(action));
+                };
 
-        let mut note_action: Option<NoteAction> = None;
+                let size = ui.available_size();
+                ui.vertical(|ui| {
+                    ui.add_sized(
+                        [size.x, self.options().pfp_size() as f32],
+                        |ui: &mut egui::Ui| {
+                            ui.horizontal_centered(|ui| {
+                                NoteView::note_header(
+                                    ui,
+                                    self.note_context.note_cache,
+                                    self.note,
+                                    profile,
+                                );
+                            })
+                            .response
+                        },
+                    );
 
-        let hitbox_id = note_hitbox_id(note_key, self.options(), self.parent);
-        let profile = self
-            .note_context
-            .ndb
-            .get_profile_by_pubkey(txn, self.note.pubkey());
-        let maybe_hitbox = maybe_note_hitbox(ui, hitbox_id);
+                    let note_reply = self
+                        .note_context
+                        .note_cache
+                        .cached_note_or_insert_mut(note_key, self.note)
+                        .reply
+                        .borrow(self.note.tags());
 
-        // wide design
-        let response = if self.options().has_wide() {
-            ui.vertical(|ui| {
+                    if note_reply.reply().is_some() {
+                        let action = ui
+                            .horizontal(|ui| {
+                                reply_desc(
+                                    ui,
+                                    self.zapping_acc,
+                                    txn,
+                                    &note_reply,
+                                    self.note_context,
+                                    self.flags,
+                                    self.jobs,
+                                )
+                            })
+                            .inner;
+
+                        if action.is_some() {
+                            *note_action = action;
+                        }
+                    }
+                });
+            });
+
+            let mut contents = NoteContents::new(
+                self.note_context,
+                self.zapping_acc,
+                txn,
+                self.note,
+                self.flags,
+                self.jobs,
+            );
+
+            ui.add(&mut contents);
+
+            if let Some(action) = contents.action {
+                *note_action = Some(action);
+            }
+
+            if self.options().has_actionbar() {
+                if let Some(action) = render_note_actionbar(
+                    ui,
+                    self.zapping_acc.as_ref().map(|c| Zapper {
+                        zaps: self.note_context.zaps,
+                        cur_acc: c,
+                    }),
+                    self.note.id(),
+                    self.note.pubkey(),
+                    note_key,
+                )
+                .inner
+                {
+                    *note_action = Some(action);
+                }
+            }
+        })
+        .response
+    }
+
+    fn standard_ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        txn: &Transaction,
+        note_key: NoteKey,
+        profile: &Result<ProfileRecord, nostrdb::Error>,
+        note_action: &mut Option<NoteAction>,
+    ) -> Response {
+        // main design
+        ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
+            let (pfp_resp, action) = self.pfp(note_key, profile, ui);
+            if pfp_resp.clicked() {
+                *note_action = Some(NoteAction::Profile(Pubkey::new(*self.note.pubkey())));
+            } else if let Some(action) = action {
+                *note_action = Some(NoteAction::Media(action));
+            };
+
+            ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                NoteView::note_header(ui, self.note_context.note_cache, self.note, profile);
                 ui.horizontal(|ui| {
-                    let (pfp_resp, action) = self.pfp(note_key, &profile, ui);
-                    if pfp_resp.clicked() {
-                        note_action = Some(NoteAction::Profile(Pubkey::new(*self.note.pubkey())));
-                    } else if let Some(action) = action {
-                        note_action = Some(NoteAction::Media(action));
-                    };
+                    ui.spacing_mut().item_spacing.x = 2.0;
 
-                    let size = ui.available_size();
-                    ui.vertical(|ui| {
-                        ui.add_sized(
-                            [size.x, self.options().pfp_size() as f32],
-                            |ui: &mut egui::Ui| {
-                                ui.horizontal_centered(|ui| {
-                                    NoteView::note_header(
-                                        ui,
-                                        self.note_context.note_cache,
-                                        self.note,
-                                        &profile,
-                                    );
-                                })
-                                .response
-                            },
+                    let note_reply = self
+                        .note_context
+                        .note_cache
+                        .cached_note_or_insert_mut(note_key, self.note)
+                        .reply
+                        .borrow(self.note.tags());
+
+                    if note_reply.reply().is_some() {
+                        let action = reply_desc(
+                            ui,
+                            self.zapping_acc,
+                            txn,
+                            &note_reply,
+                            self.note_context,
+                            self.flags,
+                            self.jobs,
                         );
 
-                        let note_reply = self
-                            .note_context
-                            .note_cache
-                            .cached_note_or_insert_mut(note_key, self.note)
-                            .reply
-                            .borrow(self.note.tags());
-
-                        if note_reply.reply().is_some() {
-                            let action = ui
-                                .horizontal(|ui| {
-                                    reply_desc(
-                                        ui,
-                                        self.zapping_acc,
-                                        txn,
-                                        &note_reply,
-                                        self.note_context,
-                                        self.flags,
-                                        self.jobs,
-                                    )
-                                })
-                                .inner;
-
-                            if action.is_some() {
-                                note_action = action;
-                            }
+                        if action.is_some() {
+                            *note_action = action;
                         }
-                    });
+                    }
                 });
 
                 let mut contents = NoteContents::new(
@@ -466,11 +539,10 @@ impl<'a, 'd> NoteView<'a, 'd> {
                     self.flags,
                     self.jobs,
                 );
-
                 ui.add(&mut contents);
 
                 if let Some(action) = contents.action {
-                    note_action = Some(action);
+                    *note_action = Some(action);
                 }
 
                 if self.options().has_actionbar() {
@@ -486,83 +558,31 @@ impl<'a, 'd> NoteView<'a, 'd> {
                     )
                     .inner
                     {
-                        note_action = Some(action);
+                        *note_action = Some(action);
                     }
                 }
-            })
-            .response
+            });
+        })
+        .response
+    }
+
+    #[profiling::function]
+    fn show_standard(&mut self, ui: &mut egui::Ui) -> NoteResponse {
+        let note_key = self.note.key().expect("todo: support non-db notes");
+        let txn = self.note.txn().expect("todo: support non-db notes");
+
+        let mut note_action: Option<NoteAction> = None;
+
+        let profile = self
+            .note_context
+            .ndb
+            .get_profile_by_pubkey(txn, self.note.pubkey());
+
+        // wide design
+        let response = if self.options().has_wide() {
+            self.wide_ui(ui, txn, note_key, &profile, &mut note_action)
         } else {
-            // main design
-            ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
-                let (pfp_resp, action) = self.pfp(note_key, &profile, ui);
-                if pfp_resp.clicked() {
-                    note_action = Some(NoteAction::Profile(Pubkey::new(*self.note.pubkey())));
-                } else if let Some(action) = action {
-                    note_action = Some(NoteAction::Media(action));
-                };
-
-                ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
-                    NoteView::note_header(ui, self.note_context.note_cache, self.note, &profile);
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 2.0;
-
-                        let note_reply = self
-                            .note_context
-                            .note_cache
-                            .cached_note_or_insert_mut(note_key, self.note)
-                            .reply
-                            .borrow(self.note.tags());
-
-                        if note_reply.reply().is_some() {
-                            let action = reply_desc(
-                                ui,
-                                self.zapping_acc,
-                                txn,
-                                &note_reply,
-                                self.note_context,
-                                self.flags,
-                                self.jobs,
-                            );
-
-                            if action.is_some() {
-                                note_action = action;
-                            }
-                        }
-                    });
-
-                    let mut contents = NoteContents::new(
-                        self.note_context,
-                        self.zapping_acc,
-                        txn,
-                        self.note,
-                        self.flags,
-                        self.jobs,
-                    );
-                    ui.add(&mut contents);
-
-                    if let Some(action) = contents.action {
-                        note_action = Some(action);
-                    }
-
-                    if self.options().has_actionbar() {
-                        if let Some(action) = render_note_actionbar(
-                            ui,
-                            self.zapping_acc.as_ref().map(|c| Zapper {
-                                zaps: self.note_context.zaps,
-                                cur_acc: c,
-                            }),
-                            self.note.id(),
-                            self.note.pubkey(),
-                            note_key,
-                        )
-                        .inner
-                        {
-                            note_action = Some(action);
-                        }
-                    }
-                });
-            })
-            .response
+            self.standard_ui(ui, txn, note_key, &profile, &mut note_action)
         };
 
         if self.options().has_options_button() {
@@ -579,6 +599,8 @@ impl<'a, 'd> NoteView<'a, 'd> {
             }
         }
 
+        let hitbox_id = note_hitbox_id(note_key, self.options(), self.parent);
+        let maybe_hitbox = maybe_note_hitbox(ui, hitbox_id);
         let note_action = if note_hitbox_clicked(ui, hitbox_id, &response.rect, maybe_hitbox) {
             Some(NoteAction::Note(NoteId::new(*self.note.id())))
         } else {
