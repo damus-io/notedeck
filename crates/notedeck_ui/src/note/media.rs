@@ -54,8 +54,11 @@ pub(crate) fn image_carousel(
     };
     let mut action = None;
 
+    //let has_touch_screen = ui.ctx().input(|i| i.has_touch_screen());
+
     ui.add_sized([width, height], |ui: &mut egui::Ui| {
         egui::ScrollArea::horizontal()
+            .drag_to_scroll(false)
             .id_salt(carousel_id)
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
