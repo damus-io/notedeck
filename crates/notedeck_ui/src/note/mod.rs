@@ -393,15 +393,16 @@ impl<'a, 'd> NoteView<'a, 'd> {
         txn: &Transaction,
         note_key: NoteKey,
         profile: &Result<ProfileRecord, nostrdb::Error>,
-        note_action: &mut Option<NoteAction>,
-    ) -> Response {
+    ) -> egui::InnerResponse<Option<NoteAction>> {
+        let mut note_action: Option<NoteAction> = None;
+
         ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
             ui.horizontal(|ui| {
                 let (pfp_resp, action) = self.pfp(note_key, profile, ui);
                 if pfp_resp.clicked() {
-                    *note_action = Some(NoteAction::Profile(Pubkey::new(*self.note.pubkey())));
+                    note_action = Some(NoteAction::Profile(Pubkey::new(*self.note.pubkey())));
                 } else if let Some(action) = action {
-                    *note_action = Some(NoteAction::Media(action));
+                    note_action = Some(NoteAction::Media(action));
                 };
 
                 let size = ui.available_size();
@@ -444,7 +445,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
                             .inner;
 
                         if action.is_some() {
-                            *note_action = action;
+                            note_action = action;
                         }
                     }
                 });
@@ -462,7 +463,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
             ui.add(&mut contents);
 
             if let Some(action) = contents.action {
-                *note_action = Some(action);
+                note_action = Some(action);
             }
 
             if self.options().has_actionbar() {
@@ -478,11 +479,12 @@ impl<'a, 'd> NoteView<'a, 'd> {
                 )
                 .inner
                 {
-                    *note_action = Some(action);
+                    note_action = Some(action);
                 }
             }
+
+            note_action
         })
-        .response
     }
 
     fn standard_ui(
@@ -491,15 +493,15 @@ impl<'a, 'd> NoteView<'a, 'd> {
         txn: &Transaction,
         note_key: NoteKey,
         profile: &Result<ProfileRecord, nostrdb::Error>,
-        note_action: &mut Option<NoteAction>,
-    ) -> Response {
+    ) -> egui::InnerResponse<Option<NoteAction>> {
+        let mut note_action: Option<NoteAction> = None;
         // main design
         ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
             let (pfp_resp, action) = self.pfp(note_key, profile, ui);
             if pfp_resp.clicked() {
-                *note_action = Some(NoteAction::Profile(Pubkey::new(*self.note.pubkey())));
+                note_action = Some(NoteAction::Profile(Pubkey::new(*self.note.pubkey())));
             } else if let Some(action) = action {
-                *note_action = Some(NoteAction::Media(action));
+                note_action = Some(NoteAction::Media(action));
             };
 
             ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
@@ -526,7 +528,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
                         );
 
                         if action.is_some() {
-                            *note_action = action;
+                            note_action = action;
                         }
                     }
                 });
@@ -542,7 +544,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
                 ui.add(&mut contents);
 
                 if let Some(action) = contents.action {
-                    *note_action = Some(action);
+                    note_action = Some(action);
                 }
 
                 if self.options().has_actionbar() {
@@ -558,12 +560,14 @@ impl<'a, 'd> NoteView<'a, 'd> {
                     )
                     .inner
                     {
-                        *note_action = Some(action);
+                        note_action = Some(action);
                     }
                 }
-            });
+
+                note_action
+            })
+            .inner
         })
-        .response
     }
 
     #[profiling::function]
@@ -571,24 +575,27 @@ impl<'a, 'd> NoteView<'a, 'd> {
         let note_key = self.note.key().expect("todo: support non-db notes");
         let txn = self.note.txn().expect("todo: support non-db notes");
 
-        let mut note_action: Option<NoteAction> = None;
-
         let profile = self
             .note_context
             .ndb
             .get_profile_by_pubkey(txn, self.note.pubkey());
 
+        let hitbox_id = note_hitbox_id(note_key, self.options(), self.parent);
+        let maybe_hitbox = maybe_note_hitbox(ui, hitbox_id);
+
         // wide design
         let response = if self.options().has_wide() {
-            self.wide_ui(ui, txn, note_key, &profile, &mut note_action)
+            self.wide_ui(ui, txn, note_key, &profile)
         } else {
-            self.standard_ui(ui, txn, note_key, &profile, &mut note_action)
+            self.standard_ui(ui, txn, note_key, &profile)
         };
+
+        let mut note_action = response.inner;
 
         if self.options().has_options_button() {
             let context_pos = {
                 let size = NoteContextButton::max_width();
-                let top_right = response.rect.right_top();
+                let top_right = response.response.rect.right_top();
                 let min = Pos2::new(top_right.x - size, top_right.y);
                 Rect::from_min_size(min, egui::vec2(size, size))
             };
@@ -599,15 +606,14 @@ impl<'a, 'd> NoteView<'a, 'd> {
             }
         }
 
-        let hitbox_id = note_hitbox_id(note_key, self.options(), self.parent);
-        let maybe_hitbox = maybe_note_hitbox(ui, hitbox_id);
-        let note_action = if note_hitbox_clicked(ui, hitbox_id, &response.rect, maybe_hitbox) {
-            Some(NoteAction::Note(NoteId::new(*self.note.id())))
-        } else {
-            note_action
-        };
+        let note_action =
+            if note_hitbox_clicked(ui, hitbox_id, &response.response.rect, maybe_hitbox) {
+                Some(NoteAction::Note(NoteId::new(*self.note.id())))
+            } else {
+                note_action
+            };
 
-        NoteResponse::new(response).with_action(note_action)
+        NoteResponse::new(response.response).with_action(note_action)
     }
 }
 
