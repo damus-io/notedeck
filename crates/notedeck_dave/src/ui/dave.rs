@@ -305,6 +305,11 @@ impl<'a> DaveUi<'a> {
         //ui.add_space(Self::chat_margin(ui.ctx()) as f32);
         ui.horizontal(|ui| {
             ui.with_layout(Layout::right_to_left(Align::Max), |ui| {
+                let mut dave_response = DaveResponse::none();
+                if ui.add(egui::Button::new("Ask")).clicked() {
+                    dave_response = DaveResponse::send();
+                }
+
                 let r = ui.add(
                     egui::TextEdit::multiline(self.input)
                         .desired_width(f32::INFINITY)
@@ -322,7 +327,7 @@ impl<'a> DaveUi<'a> {
                 if r.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                     DaveResponse::send()
                 } else {
-                    DaveResponse::none()
+                    dave_response
                 }
             })
             .inner
