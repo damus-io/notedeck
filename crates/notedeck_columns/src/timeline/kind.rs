@@ -265,7 +265,7 @@ impl Display for TimelineKind {
             TimelineKind::Notifications(_) => f.write_str("Notifications"),
             TimelineKind::Profile(_) => f.write_str("Profile"),
             TimelineKind::Universe => f.write_str("Universe"),
-            TimelineKind::Hashtag(_) => f.write_str("Hashtag"),
+            TimelineKind::Hashtag(_) => f.write_str("Hashtags"),
             TimelineKind::Thread(_) => f.write_str("Thread"),
             TimelineKind::Search(_) => f.write_str("Search"),
         }
@@ -397,7 +397,8 @@ impl TimelineKind {
                     Ok(TimelineKind::Hashtag(
                         p.pull_token()?
                             .split_whitespace()
-                            .map(|s| s.to_string())
+                            .filter(|s| !s.is_empty())
+                            .map(|s| s.to_lowercase().to_string())
                             .collect(),
                     ))
                 },

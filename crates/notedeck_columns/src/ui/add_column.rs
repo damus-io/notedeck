@@ -474,7 +474,7 @@ impl<'a> AddColumnView<'a> {
             option: AddColumnOption::UndecidedNotification,
         });
         vec.push(ColumnOptionData {
-            title: "Hashtag",
+            title: "Hashtags",
             description: "Stay up to date with a certain hashtag",
             icon: egui::include_image!("../../../../assets/icons/hashtag_icon_4x.png"),
             option: AddColumnOption::UndecidedHashtag,
@@ -779,7 +779,7 @@ pub fn hashtag_ui(
                 sanitize_hashtag(text_buffer)
                     .split_whitespace()
                     .filter(|s| !s.is_empty())
-                    .map(|s| s.to_string())
+                    .map(|s| s.to_lowercase().to_string())
                     .collect::<Vec<_>>(),
             ));
             id_string_map.remove(&id);

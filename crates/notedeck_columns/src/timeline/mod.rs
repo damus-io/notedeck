@@ -246,6 +246,7 @@ impl Timeline {
     pub fn hashtag(hashtag: Vec<String>) -> Self {
         let filters = hashtag
             .iter()
+            .filter(|tag| !tag.is_empty())
             .map(|tag| {
                 Filter::new()
                     .kinds([1])
