@@ -12,7 +12,7 @@ use notedeck::{
 use notedeck_columns::{timeline::kind::ListKind, timeline::TimelineKind, Damus};
 
 use notedeck_dave::{Dave, DaveAvatar};
-use notedeck_ui::{AnimationHelper, ProfilePic};
+use notedeck_ui::{app_images, AnimationHelper, ProfilePic};
 
 static ICON_WIDTH: f32 = 40.0;
 pub static ICON_EXPANSION_MULTIPLE: f32 = 1.2;
@@ -438,8 +438,7 @@ fn milestone_name() -> impl Widget {
 fn expand_side_panel_button() -> impl Widget {
     |ui: &mut egui::Ui| -> egui::Response {
         let img_size = 40.0;
-        let img_data = egui::include_image!("../../../assets/damus_rounded_80.png");
-        let img = egui::Image::new(img_data)
+        let img = app_images::damus_image()
             .max_width(img_size)
             .sense(egui::Sense::click());
 
@@ -450,17 +449,16 @@ fn expand_side_panel_button() -> impl Widget {
 fn expanding_button(
     name: &'static str,
     img_size: f32,
-    light_img: &egui::ImageSource,
-    dark_img: &egui::ImageSource,
+    light_img: egui::Image,
+    dark_img: egui::Image,
     ui: &mut egui::Ui,
 ) -> egui::Response {
     let max_size = ICON_WIDTH * ICON_EXPANSION_MULTIPLE; // max size of the widget
-    let img_data = if ui.visuals().dark_mode {
+    let img = if ui.visuals().dark_mode {
         dark_img
     } else {
         light_img
     };
-    let img = egui::Image::new(img_data.clone()).max_width(img_size);
 
     let helper = AnimationHelper::new(ui, name, egui::vec2(max_size, max_size));
 
@@ -479,8 +477,8 @@ fn support_button(ui: &mut egui::Ui) -> egui::Response {
     expanding_button(
         "help-button",
         16.0,
-        &egui::include_image!("../../../assets/icons/help_icon_inverted_4x.png"),
-        &egui::include_image!("../../../assets/icons/help_icon_dark_4x.png"),
+        app_images::help_light_image(),
+        app_images::help_dark_image(),
         ui,
     )
 }
@@ -489,8 +487,8 @@ fn settings_button(ui: &mut egui::Ui) -> egui::Response {
     expanding_button(
         "settings-button",
         32.0,
-        &egui::include_image!("../../../assets/icons/settings_light_4x.png"),
-        &egui::include_image!("../../../assets/icons/settings_dark_4x.png"),
+        app_images::settings_light_image(),
+        app_images::settings_dark_image(),
         ui,
     )
 }
@@ -499,8 +497,8 @@ fn notifications_button(ui: &mut egui::Ui) -> egui::Response {
     expanding_button(
         "notifications-button",
         24.0,
-        &egui::include_image!("../../../assets/icons/notifications_dark_4x.png"),
-        &egui::include_image!("../../../assets/icons/notifications_dark_4x.png"),
+        app_images::notifications_button_image(),
+        app_images::notifications_button_image(),
         ui,
     )
 }
@@ -509,15 +507,20 @@ fn home_button(ui: &mut egui::Ui) -> egui::Response {
     expanding_button(
         "home-button",
         24.0,
-        &egui::include_image!("../../../assets/icons/home-toolbar.png"),
-        &egui::include_image!("../../../assets/icons/home-toolbar.png"),
+        app_images::home_button_image(),
+        app_images::home_button_image(),
         ui,
     )
 }
 
 fn columns_button(ui: &mut egui::Ui) -> egui::Response {
-    let btn = egui::include_image!("../../../assets/icons/columns_80.png");
-    expanding_button("columns-button", 40.0, &btn, &btn, ui)
+    expanding_button(
+        "columns-button",
+        40.0,
+        app_images::columns_image(),
+        app_images::columns_image(),
+        ui,
+    )
 }
 
 fn dave_sidebar_rect(ui: &mut egui::Ui) -> Rect {
@@ -574,9 +577,8 @@ fn wallet_button() -> impl Widget {
         let img_size = 24.0;
 
         let max_size = img_size * ICON_EXPANSION_MULTIPLE;
-        let img_data = egui::include_image!("../../../assets/icons/wallet-icon.svg");
 
-        let mut img = egui::Image::new(img_data).max_width(img_size);
+        let mut img = app_images::wallet_image().max_width(img_size);
 
         if !ui.visuals().dark_mode {
             img = img.tint(egui::Color32::BLACK);

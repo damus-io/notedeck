@@ -4,6 +4,7 @@ pub mod media;
 pub mod options;
 pub mod reply_description;
 
+use crate::app_images;
 use crate::jobs::JobsCache;
 use crate::{
     profile::name::one_line_display_name_widget, widgets::x_button, ProfilePic, ProfilePreview,
@@ -877,10 +878,10 @@ fn render_reltime(
 }
 
 fn reply_button(ui: &mut egui::Ui, note_key: NoteKey) -> egui::Response {
-    let img_data = if ui.style().visuals.dark_mode {
-        egui::include_image!("../../../../assets/icons/reply.png")
+    let img = if ui.style().visuals.dark_mode {
+        app_images::reply_dark_image()
     } else {
-        egui::include_image!("../../../../assets/icons/reply-dark.png")
+        app_images::reply_light_image()
     };
 
     let (rect, size, resp) =
@@ -890,18 +891,19 @@ fn reply_button(ui: &mut egui::Ui, note_key: NoteKey) -> egui::Response {
     let expand_size = 5.0; // from hover_expand_small
     let rect = rect.translate(egui::vec2(-(expand_size / 2.0), 0.0));
 
-    let put_resp = ui.put(rect, egui::Image::new(img_data).max_width(size));
+    let put_resp = ui
+        .put(rect, img.max_width(size))
+        .on_hover_text("Reply to this note");
 
     resp.union(put_resp)
 }
 
 fn repost_icon(dark_mode: bool) -> egui::Image<'static> {
-    let img_data = if dark_mode {
-        egui::include_image!("../../../../assets/icons/repost_icon_4x.png")
+    if dark_mode {
+        app_images::repost_dark_image()
     } else {
-        egui::include_image!("../../../../assets/icons/repost_light_4x.png")
-    };
-    egui::Image::new(img_data)
+        app_images::repost_light_image()
+    }
 }
 
 fn quote_repost_button(ui: &mut egui::Ui, note_key: NoteKey) -> egui::Response {
@@ -914,18 +916,18 @@ fn quote_repost_button(ui: &mut egui::Ui, note_key: NoteKey) -> egui::Response {
 
     let rect = rect.translate(egui::vec2(-(expand_size / 2.0), -1.0));
 
-    let put_resp = ui.put(rect, repost_icon(ui.visuals().dark_mode).max_width(size));
+    let put_resp = ui
+        .put(rect, repost_icon(ui.visuals().dark_mode).max_width(size))
+        .on_hover_text("Repost this note");
 
     resp.union(put_resp)
 }
 
 fn zap_button(state: AnyZapState, noteid: &[u8; 32]) -> impl egui::Widget + use<'_> {
     move |ui: &mut egui::Ui| -> egui::Response {
-        let img_data = egui::include_image!("../../../../assets/icons/zap_4x.png");
-
         let (rect, size, resp) = crate::anim::hover_expand_small(ui, ui.id().with("zap"));
 
-        let mut img = egui::Image::new(img_data).max_width(size);
+        let mut img = app_images::zap_image().max_width(size);
         let id = ui.id().with(("pulse", noteid));
         let ctx = ui.ctx().clone();
 
@@ -954,7 +956,7 @@ fn zap_button(state: AnyZapState, noteid: &[u8; 32]) -> impl egui::Widget + use<
         let expand_size = 5.0; // from hover_expand_small
         let rect = rect.translate(egui::vec2(-(expand_size / 2.0), 0.0));
 
-        let put_resp = ui.put(rect, img);
+        let put_resp = ui.put(rect, img).on_hover_text("Zap this note");
 
         resp.union(put_resp)
     }

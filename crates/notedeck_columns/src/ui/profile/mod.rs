@@ -15,6 +15,7 @@ use notedeck::{
     NotedeckTextStyle, UnknownIds,
 };
 use notedeck_ui::{
+    app_images,
     jobs::JobsCache,
     profile::{about_section_widget, banner, display_name_widget},
     NoteOptions, ProfilePic,
@@ -221,9 +222,13 @@ impl<'a, 'd> ProfileView<'a, 'd> {
 }
 
 fn handle_link(ui: &mut egui::Ui, website_url: &str) {
-    ui.image(egui::include_image!(
-        "../../../../../assets/icons/links_4x.png"
-    ));
+    let img = if ui.visuals().dark_mode {
+        app_images::link_image()
+    } else {
+        app_images::link_image().tint(egui::Color32::BLACK)
+    };
+
+    ui.add(img);
     if ui
         .label(RichText::new(website_url).color(notedeck_ui::colors::PINK))
         .on_hover_cursor(egui::CursorIcon::PointingHand)
@@ -237,9 +242,12 @@ fn handle_link(ui: &mut egui::Ui, website_url: &str) {
 }
 
 fn handle_lud16(ui: &mut egui::Ui, lud16: &str) {
-    ui.image(egui::include_image!(
-        "../../../../../assets/icons/zap_4x.png"
-    ));
+    let img = if ui.visuals().dark_mode {
+        app_images::zap_image()
+    } else {
+        app_images::zap_image().tint(egui::Color32::BLACK)
+    };
+    ui.add(img);
 
     let _ = ui.label(RichText::new(lud16).color(notedeck_ui::colors::PINK));
 }
@@ -273,10 +281,8 @@ fn copy_key_widget(pfp_rect: &egui::Rect) -> impl egui::Widget + '_ {
             Stroke::new(1.0, stroke_color),
             egui::StrokeKind::Outside,
         );
-        egui::Image::new(egui::include_image!(
-            "../../../../../assets/icons/key_4x.png"
-        ))
-        .paint_at(
+
+        app_images::key_image().paint_at(
             ui,
             #[allow(deprecated)]
             painter.round_rect_to_pixels(egui::Rect::from_center_size(
@@ -343,10 +349,9 @@ fn edit_profile_button() -> impl egui::Widget + 'static {
 
         painter.galley(galley_rect.left_top(), galley, Color32::WHITE);
 
-        egui::Image::new(egui::include_image!(
-            "../../../../../assets/icons/edit_icon_4x_dark.png"
-        ))
-        .paint_at(ui, edit_icon_rect);
+        app_images::edit_dark_image()
+            .tint(ui.visuals().text_color())
+            .paint_at(ui, edit_icon_rect);
 
         resp
     }
