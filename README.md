@@ -125,3 +125,6 @@ This project is licensed under the GPL - see license information in individual c
 - William Casarin <jb55@jb55.com>
 - kernelkind <kernelkind@gmail.com>
 - And [contributors](https://github.com/damus-io/notedeck/graphs/contributors)
+
+## Deepwiki
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/damus-io/notedeck)
