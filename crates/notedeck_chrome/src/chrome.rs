@@ -51,10 +51,10 @@ impl ChromePanelAction {
     fn process(&self, ctx: &AppContext, chrome: &mut Chrome, ui: &mut egui::Ui) {
         match self {
             Self::SaveTheme(theme) => {
-                tracing::info!("Switching theme to {:?}", theme);
                 ui.ctx().options_mut(|o| {
                     o.theme_preference = *theme;
                 });
+                ctx.theme.save(*theme);
             }
 
             Self::Support => {
@@ -206,6 +206,9 @@ impl Chrome {
                 let resp = ui
                     .add(Button::new("☀").frame(false))
                     .on_hover_text("Switch to light mode");
+                if resp.hovered() {
+                    notedeck_ui::show_pointer(ui);
+                }
                 if resp.clicked() {
                     Some(ChromePanelAction::SaveTheme(ThemePreference::Light))
                 } else {
@@ -216,6 +219,9 @@ impl Chrome {
                 let resp = ui
                     .add(Button::new("🌙").frame(false))
                     .on_hover_text("Switch to dark mode");
+                if resp.hovered() {
+                    notedeck_ui::show_pointer(ui);
+                }
                 if resp.clicked() {
                     Some(ChromePanelAction::SaveTheme(ThemePreference::Dark))
                 } else {
@@ -234,6 +240,14 @@ impl Chrome {
                 "{:10.1}",
                 ctx.frame_history.mean_frame_time() * 1e3
             ));
+        }
+
+        if pfp_resp.hovered()
+            || settings_resp.hovered()
+            || support_resp.hovered()
+            || wallet_resp.hovered()
+        {
+            notedeck_ui::show_pointer(ui);
         }
 
         if pfp_resp.clicked() {
@@ -261,9 +275,9 @@ impl Chrome {
         let txn = Transaction::new(ctx.ndb).expect("should be able to create txn");
         let profile_url = get_account_url(&txn, ctx.ndb, ctx.accounts.get_selected_account());
 
-        let widget = ProfilePic::new(ctx.img_cache, profile_url).size(cur_pfp_size);
+        let mut widget = ProfilePic::new(ctx.img_cache, profile_url).size(cur_pfp_size);
 
-        ui.put(helper.get_animation_rect(), widget);
+        ui.put(helper.get_animation_rect(), &mut widget);
 
         helper.take_animation_response()
     }
@@ -279,21 +293,30 @@ impl Chrome {
         }
 
         if ui.add(expand_side_panel_button()).clicked() {
-            self.active = (self.active + 1) % (self.apps.len() as i32);
+            //self.active = (self.active + 1) % (self.apps.len() as i32);
+            // TODO: collapse sidebar ?
         }
 
         ui.add_space(4.0);
         ui.add(milestone_name());
         ui.add_space(16.0);
         //let dark_mode = ui.ctx().style().visuals.dark_mode;
-        if columns_button(ui).clicked() {
-            self.active = 0;
+        {
+            let col_resp = columns_button(ui);
+            if col_resp.clicked() {
+                self.active = 0;
+            } else if col_resp.hovered() {
+                notedeck_ui::show_pointer(ui);
+            }
         }
         ui.add_space(32.0);
 
         if let Some(dave) = self.get_dave() {
-            if dave_button(dave.avatar_mut(), ui).clicked() {
+            let dave_resp = dave_button(dave.avatar_mut(), ui);
+            if dave_resp.clicked() {
                 self.active = 1;
+            } else if dave_resp.hovered() {
+                notedeck_ui::show_pointer(ui);
             }
         }
     }
@@ -313,19 +336,23 @@ fn milestone_name() -> impl Widget {
     |ui: &mut egui::Ui| -> egui::Response {
         ui.vertical_centered(|ui| {
             let font = egui::FontId::new(
-                notedeck::fonts::get_font_size(
-                    ui.ctx(),
-                    &NotedeckTextStyle::Tiny,
-                ),
+                notedeck::fonts::get_font_size(ui.ctx(), &NotedeckTextStyle::Tiny),
                 egui::FontFamily::Name(notedeck::fonts::NamedFontFamily::Bold.as_str().into()),
             );
-            ui.add(Label::new(
-                RichText::new("ALPHA")
-                    .color( ui.style().visuals.noninteractive().fg_stroke.color)
-                    .font(font),
-            ).selectable(false)).on_hover_text("Notedeck is an alpha product. Expect bugs and contact us when you run into issues.").on_hover_cursor(egui::CursorIcon::Help)
+            ui.add(
+                Label::new(
+                    RichText::new("BETA")
+                        .color(ui.style().visuals.noninteractive().fg_stroke.color)
+                        .font(font),
+                )
+                .selectable(false),
+            )
+            .on_hover_text(
+                "Notedeck is a beta product. Expect bugs and contact us when you run into issues.",
+            )
+            .on_hover_cursor(egui::CursorIcon::Help)
         })
-            .inner
+        .inner
     }
 }
 
@@ -473,13 +500,14 @@ fn chrome_handle_app_action(
 
             let txn = Transaction::new(ctx.ndb).unwrap();
 
-            notedeck_columns::actionbar::execute_and_process_note_action(
-                &note_action,
+            let cols = columns
+                .decks_cache
+                .active_columns_mut(ctx.accounts)
+                .unwrap();
+            let m_action = notedeck_columns::actionbar::execute_and_process_note_action(
+                note_action,
                 ctx.ndb,
-                columns
-                    .decks_cache
-                    .active_columns_mut(ctx.accounts)
-                    .unwrap(),
+                cols,
                 0,
                 &mut columns.timeline_cache,
                 ctx.note_cache,
@@ -489,8 +517,15 @@ fn chrome_handle_app_action(
                 ctx.accounts,
                 ctx.global_wallet,
                 ctx.zaps,
+                ctx.img_cache,
                 ui,
             );
+
+            if let Some(action) = m_action {
+                let col = cols.column_mut(0);
+
+                action.process(&mut col.router, &mut col.sheet_router);
+            }
         }
     }
 }

@@ -6,6 +6,7 @@ version.workspace = true
 [dependencies]
 async-openai = "0.28.0"
 egui = { workspace = true }
+sha2 = { workspace = true }
 notedeck = { workspace = true }
 notedeck_ui = { workspace = true }
 eframe = { workspace = true }

@@ -7,7 +7,7 @@ use crate::{
 
 use enostr::Pubkey;
 use notedeck::{Accounts, MuteFun, NoteContext, UnknownIds};
-use notedeck_ui::NoteOptions;
+use notedeck_ui::{jobs::JobsCache, NoteOptions};
 
 #[allow(clippy::too_many_arguments)]
 pub fn render_timeline_route(
@@ -20,11 +20,8 @@ pub fn render_timeline_route(
     depth: usize,
     ui: &mut egui::Ui,
     note_context: &mut NoteContext,
+    jobs: &mut JobsCache,
 ) -> Option<RenderNavAction> {
-    if kind == &TimelineKind::Universe {
-        note_options.set_hide_media(true);
-    }
-
     match kind {
         TimelineKind::List(_)
         | TimelineKind::Search(_)
@@ -40,6 +37,7 @@ pub fn render_timeline_route(
                 note_context,
                 note_options,
                 &accounts.get_selected_account().map(|a| (&a.key).into()),
+                jobs,
             )
             .ui(ui);
 
@@ -58,6 +56,7 @@ pub fn render_timeline_route(
                     &accounts.mutefun(),
                     note_options,
                     note_context,
+                    jobs,
                 )
             } else {
                 // we render profiles like timelines if they are at the root
@@ -68,6 +67,7 @@ pub fn render_timeline_route(
                     note_context,
                     note_options,
                     &accounts.get_selected_account().map(|a| (&a.key).into()),
+                    jobs,
                 )
                 .ui(ui);
 
@@ -88,6 +88,7 @@ pub fn render_timeline_route(
                 &accounts.mutefun(),
                 note_context,
                 &accounts.get_selected_account().map(|a| (&a.key).into()),
+                jobs,
             )
             .id_source(egui::Id::new(("threadscroll", col)))
             .ui(ui)
@@ -107,6 +108,7 @@ pub fn render_profile_route(
     is_muted: &MuteFun,
     note_options: NoteOptions,
     note_context: &mut NoteContext,
+    jobs: &mut JobsCache,
 ) -> Option<RenderNavAction> {
     let action = ProfileView::new(
         pubkey,
@@ -117,6 +119,7 @@ pub fn render_profile_route(
         unknown_ids,
         is_muted,
         note_context,
+        jobs,
     )
     .ui(ui);
 

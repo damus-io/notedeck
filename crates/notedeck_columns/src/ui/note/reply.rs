@@ -4,8 +4,9 @@ use crate::ui::{
     note::{PostAction, PostResponse, PostType},
 };
 
-use enostr::{FilledKeypair, NoteId};
+use enostr::{FilledKeypair, KeypairUnowned, NoteId};
 use notedeck::NoteContext;
+use notedeck_ui::jobs::JobsCache;
 use notedeck_ui::{NoteOptions, NoteView, ProfilePic};
 
 pub struct PostReplyView<'a, 'd> {
@@ -16,6 +17,7 @@ pub struct PostReplyView<'a, 'd> {
     id_source: Option<egui::Id>,
     inner_rect: egui::Rect,
     note_options: NoteOptions,
+    jobs: &'a mut JobsCache,
 }
 
 impl<'a, 'd> PostReplyView<'a, 'd> {
@@ -27,6 +29,7 @@ impl<'a, 'd> PostReplyView<'a, 'd> {
         note: &'a nostrdb::Note<'a>,
         inner_rect: egui::Rect,
         note_options: NoteOptions,
+        jobs: &'a mut JobsCache,
     ) -> Self {
         let id_source: Option<egui::Id> = None;
         PostReplyView {
@@ -37,6 +40,7 @@ impl<'a, 'd> PostReplyView<'a, 'd> {
             id_source,
             inner_rect,
             note_options,
+            jobs,
         }
     }
 
@@ -63,15 +67,23 @@ impl<'a, 'd> PostReplyView<'a, 'd> {
             let note_offset: i8 =
                 pfp_offset - ProfilePic::medium_size() / 2 - NoteView::expand_size() / 2;
 
+            let zapping_acc = self
+                .note_context
+                .current_account_has_wallet
+                .then(|| KeypairUnowned::from(&self.poster));
+
             let quoted_note = egui::Frame::NONE
                 .outer_margin(egui::Margin::same(note_offset))
                 .show(ui, |ui| {
                     NoteView::new(
                         self.note_context,
-                        &Some(self.poster.into()),
+                        zapping_acc.as_ref(),
                         self.note,
                         self.note_options,
+                        self.jobs,
                     )
+                    .truncate(false)
+                    .selectable_text(true)
                     .actionbar(false)
                     .medium_pfp(true)
                     .options_button(true)
@@ -91,6 +103,7 @@ impl<'a, 'd> PostReplyView<'a, 'd> {
                     self.poster,
                     self.inner_rect,
                     self.note_options,
+                    self.jobs,
                 )
                 .id_source(id)
                 .ui(self.note.txn().unwrap(), ui)

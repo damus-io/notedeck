@@ -5,6 +5,7 @@ use nostrdb::{Ndb, Transaction};
 #[derive(Debug, Clone)]
 pub enum Message {
     System(String),
+    Error(String),
     User(String),
     Assistant(String),
     ToolCalls(Vec<ToolCall>),
@@ -16,6 +17,7 @@ pub enum Message {
 pub enum DaveApiResponse {
     ToolCalls(Vec<ToolCall>),
     Token(String),
+    Failed(String),
 }
 
 impl Message {
@@ -23,45 +25,49 @@ impl Message {
         Self::ToolResponse(ToolResponse::error(id, msg))
     }
 
-    pub fn to_api_msg(&self, txn: &Transaction, ndb: &Ndb) -> ChatCompletionRequestMessage {
+    pub fn to_api_msg(&self, txn: &Transaction, ndb: &Ndb) -> Option<ChatCompletionRequestMessage> {
         match self {
-            Message::User(msg) => {
-                ChatCompletionRequestMessage::User(ChatCompletionRequestUserMessage {
+            Message::Error(_err) => None,
+
+            Message::User(msg) => Some(ChatCompletionRequestMessage::User(
+                ChatCompletionRequestUserMessage {
                     name: None,
                     content: ChatCompletionRequestUserMessageContent::Text(msg.clone()),
-                })
-            }
+                },
+            )),
 
-            Message::Assistant(msg) => {
-                ChatCompletionRequestMessage::Assistant(ChatCompletionRequestAssistantMessage {
+            Message::Assistant(msg) => Some(ChatCompletionRequestMessage::Assistant(
+                ChatCompletionRequestAssistantMessage {
                     content: Some(ChatCompletionRequestAssistantMessageContent::Text(
                         msg.clone(),
                     )),
                     ..Default::default()
-                })
-            }
+                },
+            )),
 
-            Message::System(msg) => {
-                ChatCompletionRequestMessage::System(ChatCompletionRequestSystemMessage {
+            Message::System(msg) => Some(ChatCompletionRequestMessage::System(
+                ChatCompletionRequestSystemMessage {
                     content: ChatCompletionRequestSystemMessageContent::Text(msg.clone()),
                     ..Default::default()
-                })
-            }
+                },
+            )),
 
-            Message::ToolCalls(calls) => {
-                ChatCompletionRequestMessage::Assistant(ChatCompletionRequestAssistantMessage {
+            Message::ToolCalls(calls) => Some(ChatCompletionRequestMessage::Assistant(
+                ChatCompletionRequestAssistantMessage {
                     tool_calls: Some(calls.iter().map(|c| c.to_api()).collect()),
                     ..Default::default()
-                })
-            }
+                },
+            )),
 
             Message::ToolResponse(resp) => {
                 let tool_response = resp.responses().format_for_dave(txn, ndb);
 
-                ChatCompletionRequestMessage::Tool(ChatCompletionRequestToolMessage {
-                    tool_call_id: resp.id().to_owned(),
-                    content: ChatCompletionRequestToolMessageContent::Text(tool_response),
-                })
+                Some(ChatCompletionRequestMessage::Tool(
+                    ChatCompletionRequestToolMessage {
+                        tool_call_id: resp.id().to_owned(),
+                        content: ChatCompletionRequestToolMessageContent::Text(tool_response),
+                    },
+                ))
             }
         }
     }

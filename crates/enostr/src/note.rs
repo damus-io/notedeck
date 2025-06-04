@@ -36,6 +36,16 @@ impl NoteId {
     pub fn to_bech(&self) -> Option<String> {
         bech32::encode::<bech32::Bech32>(HRP_NOTE, &self.0).ok()
     }
+
+    pub fn from_bech(bech: &str) -> Option<Self> {
+        let (hrp, data) = bech32::decode(bech).ok()?;
+
+        if hrp != HRP_NOTE {
+            return None;
+        }
+
+        Some(NoteId::new(data.try_into().ok()?))
+    }
 }
 
 /// Event is the struct used to represent a Nostr event

@@ -1,14 +1,15 @@
 use crate::{
     column::Columns,
-    route::{Route, Router},
+    nav::{RouterAction, RouterType},
+    route::Route,
     timeline::{ThreadSelection, TimelineCache, TimelineKind},
 };
 
 use enostr::{Pubkey, RelayPool};
 use nostrdb::{Ndb, NoteKey, Transaction};
 use notedeck::{
-    get_wallet_for_mut, note::ZapTargetAmount, Accounts, GlobalWallet, NoteAction, NoteCache,
-    NoteZapTargetOwned, UnknownIds, ZapAction, ZapTarget, ZappingError, Zaps,
+    get_wallet_for_mut, note::ZapTargetAmount, Accounts, GlobalWallet, Images, NoteAction,
+    NoteCache, NoteZapTargetOwned, UnknownIds, ZapAction, ZapTarget, ZappingError, Zaps,
 };
 use tracing::error;
 
@@ -21,12 +22,16 @@ pub enum TimelineOpenResult {
     NewNotes(NewNotes),
 }
 
+struct NoteActionResponse {
+    timeline_res: Option<TimelineOpenResult>,
+    router_action: Option<RouterAction>,
+}
+
 /// The note action executor for notedeck_columns
 #[allow(clippy::too_many_arguments)]
 fn execute_note_action(
-    action: &NoteAction,
+    action: NoteAction,
     ndb: &Ndb,
-    router: &mut Router<Route>,
     timeline_cache: &mut TimelineCache,
     note_cache: &mut NoteCache,
     pool: &mut RelayPool,
@@ -34,54 +39,51 @@ fn execute_note_action(
     accounts: &mut Accounts,
     global_wallet: &mut GlobalWallet,
     zaps: &mut Zaps,
+    images: &mut Images,
+    router_type: RouterType,
     ui: &mut egui::Ui,
-) -> Option<TimelineOpenResult> {
+) -> NoteActionResponse {
+    let mut timeline_res = None;
+    let mut router_action = None;
+
     match action {
         NoteAction::Reply(note_id) => {
-            router.route_to(Route::reply(*note_id));
-            None
+            router_action = Some(RouterAction::route_to(Route::reply(note_id)));
         }
-
         NoteAction::Profile(pubkey) => {
-            let kind = TimelineKind::Profile(*pubkey);
-            router.route_to(Route::Timeline(kind.clone()));
-            timeline_cache.open(ndb, note_cache, txn, pool, &kind)
+            let kind = TimelineKind::Profile(pubkey);
+            router_action = Some(RouterAction::route_to(Route::Timeline(kind.clone())));
+            timeline_res = timeline_cache.open(ndb, note_cache, txn, pool, &kind);
         }
-
         NoteAction::Note(note_id) => 'ex: {
-            let Ok(thread_selection) =
-                ThreadSelection::from_note_id(ndb, note_cache, txn, *note_id)
+            let Ok(thread_selection) = ThreadSelection::from_note_id(ndb, note_cache, txn, note_id)
             else {
                 tracing::error!("No thread selection for {}?", hex::encode(note_id.bytes()));
-                break 'ex None;
+                break 'ex;
             };
 
             let kind = TimelineKind::Thread(thread_selection);
-            router.route_to(Route::Timeline(kind.clone()));
+            router_action = Some(RouterAction::route_to(Route::Timeline(kind.clone())));
             // NOTE!!: you need the note_id to timeline root id thing
 
-            timeline_cache.open(ndb, note_cache, txn, pool, &kind)
+            timeline_res = timeline_cache.open(ndb, note_cache, txn, pool, &kind);
         }
-
         NoteAction::Hashtag(htag) => {
             let kind = TimelineKind::Hashtag(vec![htag.to_string()]);
-            router.route_to(Route::Timeline(kind.clone()));
-            timeline_cache.open(ndb, note_cache, txn, pool, &kind)
+            router_action = Some(RouterAction::route_to(Route::Timeline(kind.clone())));
+            timeline_res = timeline_cache.open(ndb, note_cache, txn, pool, &kind);
         }
-
         NoteAction::Quote(note_id) => {
-            router.route_to(Route::quote(*note_id));
-            None
+            router_action = Some(RouterAction::route_to(Route::quote(note_id)));
         }
-
         NoteAction::Zap(zap_action) => 's: {
             let Some(cur_acc) = accounts.get_selected_account_mut() else {
-                break 's None;
+                break 's;
             };
 
             let sender = cur_acc.key.pubkey;
 
-            match zap_action {
+            match &zap_action {
                 ZapAction::Send(target) => 'a: {
                     let Some(wallet) = get_wallet_for_mut(accounts, global_wallet, sender.bytes())
                     else {
@@ -93,6 +95,10 @@ fn execute_note_action(
                         break 'a;
                     };
 
+                    if let RouterType::Sheet = router_type {
+                        router_action = Some(RouterAction::GoBack);
+                    }
+
                     send_zap(
                         &sender,
                         zaps,
@@ -102,27 +108,33 @@ fn execute_note_action(
                     )
                 }
                 ZapAction::ClearError(target) => clear_zap_error(&sender, zaps, target),
-            }
-
-            None
-        }
-
-        NoteAction::Context(context) => {
-            match ndb.get_note_by_key(txn, context.note_key) {
-                Err(err) => tracing::error!("{err}"),
-                Ok(note) => {
-                    context.action.process(ui, &note, pool);
+                ZapAction::CustomizeAmount(target) => {
+                    let route = Route::CustomizeZapAmount(target.to_owned());
+                    router_action = Some(RouterAction::route_to_sheet(route));
                 }
             }
-            None
         }
+        NoteAction::Context(context) => match ndb.get_note_by_key(txn, context.note_key) {
+            Err(err) => tracing::error!("{err}"),
+            Ok(note) => {
+                context.action.process(ui, &note, pool);
+            }
+        },
+        NoteAction::Media(media_action) => {
+            media_action.process(images);
+        }
+    }
+
+    NoteActionResponse {
+        timeline_res,
+        router_action,
     }
 }
 
 /// Execute a NoteAction and process the result
 #[allow(clippy::too_many_arguments)]
 pub fn execute_and_process_note_action(
-    action: &NoteAction,
+    action: NoteAction,
     ndb: &Ndb,
     columns: &mut Columns,
     col: usize,
@@ -134,13 +146,22 @@ pub fn execute_and_process_note_action(
     accounts: &mut Accounts,
     global_wallet: &mut GlobalWallet,
     zaps: &mut Zaps,
+    images: &mut Images,
     ui: &mut egui::Ui,
-) {
-    let router = columns.column_mut(col).router_mut();
-    if let Some(br) = execute_note_action(
+) -> Option<RouterAction> {
+    let router_type = {
+        let sheet_router = &mut columns.column_mut(col).sheet_router;
+
+        if sheet_router.route().is_some() {
+            RouterType::Sheet
+        } else {
+            RouterType::Stack
+        }
+    };
+
+    let resp = execute_note_action(
         action,
         ndb,
-        router,
         timeline_cache,
         note_cache,
         pool,
@@ -148,10 +169,16 @@ pub fn execute_and_process_note_action(
         accounts,
         global_wallet,
         zaps,
+        images,
+        router_type,
         ui,
-    ) {
+    );
+
+    if let Some(br) = resp.timeline_res {
         br.process(ndb, note_cache, txn, timeline_cache, unknown_ids);
     }
+
+    resp.router_action
 }
 
 fn send_zap(

@@ -1,18 +1,30 @@
-# Unreleased
+# Notedeck Beta - v0.4 - 2025-05-05
 
-## Added
+# Added
 
-- Added the ability to tag users in posts (kernelkind)
-- Added ctrl-enter shortcut to send post (Ethan Tuttle)
+- Dave nostr ai assistant app
+- GIFs!
+- Fulltext note search
+- Add full screen images, add zoom & pan
+- Zaps! NWC/ Wallet ui
+- Introduce last note per pubkey feed (experimental)
+- Allow multiple media uploads per selection
+- Major Android improvements (still wip)
+- Added notedeck app sidebar
+- User Tagging
+- Note truncation
+- Local network note broadcast, broadcast notes to other notedeck notes while you're offline
+- Mute list support (reading)
+- Relay list support 
+- Ctrl-enter to send notes
+- Added relay indexing (relay columns soon)
+- Click hashtags to open hashtag timeline
 
-## Changed
+# Fixed
 
-- Updated NIP-05 verification text to "Nostr address" (Derek Ross)
-
-## Fixed
-
-- Added *experimental* last post per pubkey algo feeds (William Casarin)
-- Fixed stale feeds (William Casarin)
+- Fix timelines sometimes not updating (stale feeds)
+- Fix ui bounciness when loading profile pictures
+- Fix unselectable post replies
 
 # Notedeck Alpha 2 - v0.3 - 2025-01-31
 

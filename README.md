@@ -1,6 +1,7 @@
 # Notedeck
 
-[![CI](https://github.com/damus-io/notedeck/actions/workflows/rust.yml/badge.svg)](https://github.com/damus-io/notedeck/actions/workflows/rust.yml)
+[![CI](https://github.com/damus-io/notedeck/actions/workflows/rust.yml/badge.svg)](https://github.com/damus-io/notedeck/actions/workflows/rust.yml) 
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/damus-io/notedeck)
 
 A modern, multiplatform Nostr client built with Rust. Notedeck provides a feature-rich experience for interacting with the Nostr protocol on both desktop and Android platforms.
 

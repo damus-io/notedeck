@@ -637,6 +637,7 @@ pub fn render_add_column_routes(
                 crate::timeline::setup_new_timeline(
                     &mut timeline,
                     ctx.ndb,
+                    &txn,
                     &mut app.subscriptions,
                     ctx.pool,
                     ctx.note_cache,
@@ -669,15 +670,15 @@ pub fn render_add_column_routes(
                 // source to be, so let;s create a timeline from that and
                 // add it to our list of timelines
                 AlgoOption::LastPerPubkey(Decision::Decided(list_kind)) => {
-                    let maybe_timeline = {
-                        let txn = Transaction::new(ctx.ndb).unwrap();
-                        TimelineKind::last_per_pubkey(list_kind).into_timeline(&txn, ctx.ndb)
-                    };
+                    let txn = Transaction::new(ctx.ndb).unwrap();
+                    let maybe_timeline =
+                        TimelineKind::last_per_pubkey(list_kind).into_timeline(&txn, ctx.ndb);
 
                     if let Some(mut timeline) = maybe_timeline {
                         crate::timeline::setup_new_timeline(
                             &mut timeline,
                             ctx.ndb,
+                            &txn,
                             &mut app.subscriptions,
                             ctx.pool,
                             ctx.note_cache,
@@ -763,10 +764,17 @@ pub fn hashtag_ui(
         ui.add(text_edit);
 
         ui.add_space(8.0);
-        if ui
-            .add_sized(egui::vec2(50.0, 40.0), add_column_button())
-            .clicked()
+
+        let mut handle_user_input = false;
+        if ui.input(|i| i.key_released(egui::Key::Enter))
+            || ui
+                .add_sized(egui::vec2(50.0, 40.0), add_column_button())
+                .clicked()
         {
+            handle_user_input = true;
+        }
+
+        if handle_user_input && !text_buffer.is_empty() {
             let resp = AddColumnResponse::Timeline(TimelineKind::Hashtag(
                 sanitize_hashtag(text_buffer)
                     .split_whitespace()

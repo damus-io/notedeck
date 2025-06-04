@@ -2,6 +2,7 @@ use notedeck::{AppAction, AppContext};
 use notedeck_columns::Damus;
 use notedeck_dave::Dave;
 
+#[allow(clippy::large_enum_variant)]
 pub enum NotedeckApp {
     Dave(Dave),
     Columns(Damus),

@@ -2,15 +2,24 @@ use crate::timeline::TimelineTab;
 use notedeck::debouncer::Debouncer;
 use std::time::Duration;
 
+use super::SearchType;
+
 #[derive(Debug, Eq, PartialEq)]
 pub enum SearchState {
-    Typing,
+    Typing(TypingType),
+    PerformSearch(SearchType),
     Searched,
     Navigating,
     New,
 }
 
 #[derive(Debug, Eq, PartialEq)]
+pub enum TypingType {
+    Mention(String),
+    AutoSearch,
+}
+
+#[derive(Debug, Eq, PartialEq, Clone)]
 pub enum FocusState {
     /// Get ready to focus
     Navigating,
@@ -59,23 +68,5 @@ impl SearchQueryState {
             focus_state: FocusState::Navigating,
             debouncer: Debouncer::new(Duration::from_millis(200)),
         }
-    }
-
-    pub fn should_search(&self) -> bool {
-        self.state == SearchState::Typing && self.debouncer.should_act()
-    }
-
-    /// Mark the search as updated. This will update our debouncer and clear
-    /// the searched flag, enabling us to search again. This should be
-    /// called when the search box changes
-    pub fn mark_updated(&mut self) {
-        self.state = SearchState::Typing;
-        self.debouncer.bounce();
-    }
-
-    /// Call this when you are about to do a search so that we don't try
-    /// to search again next frame
-    pub fn mark_searched(&mut self, state: SearchState) {
-        self.state = state;
     }
 }

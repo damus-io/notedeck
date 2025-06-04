@@ -1,6 +1,7 @@
 use crate::persist::{AppSizeHandler, ZoomHandler};
 use crate::wallet::GlobalWallet;
 use crate::zaps::Zaps;
+use crate::JobPool;
 use crate::{
     frame_history::FrameHistory, AccountStorage, Accounts, AppContext, Args, DataPath,
     DataPathType, Directory, Images, NoteAction, NoteCache, RelayDebugView, ThemeHandler,
@@ -43,6 +44,7 @@ pub struct Notedeck {
     clipboard: Clipboard,
     zaps: Zaps,
     frame_history: FrameHistory,
+    job_pool: JobPool,
 }
 
 /// Our chrome, which is basically nothing
@@ -91,7 +93,8 @@ impl eframe::App for Notedeck {
             .on_new_frame(ctx.input(|i| i.time), frame.info().cpu_usage);
 
         // handle account updates
-        self.accounts.update(&mut self.ndb, &mut self.pool, ctx);
+        self.accounts
+            .update(&mut self.ndb, &mut self.pool, ctx, &mut self.unknown_ids);
 
         self.zaps
             .process(&mut self.accounts, &mut self.global_wallet, &self.ndb);
@@ -219,6 +222,7 @@ impl Notedeck {
 
         let global_wallet = GlobalWallet::new(&path);
         let zaps = Zaps::default();
+        let job_pool = JobPool::default();
 
         Self {
             ndb,
@@ -238,6 +242,7 @@ impl Notedeck {
             frame_history: FrameHistory::default(),
             clipboard: Clipboard::new(None),
             zaps,
+            job_pool,
         }
     }
 
@@ -261,6 +266,7 @@ impl Notedeck {
             clipboard: &mut self.clipboard,
             zaps: &mut self.zaps,
             frame_history: &mut self.frame_history,
+            job_pool: &mut self.job_pool,
         }
     }
 

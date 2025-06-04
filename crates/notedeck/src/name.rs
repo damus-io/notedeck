@@ -19,6 +19,16 @@ impl<'a> NostrName<'a> {
         }
     }
 
+    pub fn username_or_displayname(&self) -> &'a str {
+        if let Some(name) = self.username {
+            name
+        } else if let Some(name) = self.display_name {
+            name
+        } else {
+            self.nip05.unwrap_or("??")
+        }
+    }
+
     pub fn unknown() -> Self {
         Self {
             username: None,

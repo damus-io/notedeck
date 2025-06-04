@@ -7,7 +7,7 @@ use crate::{
     profile::{ProfileAction, SaveProfileChanges},
     profile_state::ProfileState,
     relay_pool_manager::RelayPoolManager,
-    route::Route,
+    route::{Route, Router, SingletonRouter},
     timeline::{route::render_timeline_route, TimelineCache},
     ui::{
         self,
@@ -15,7 +15,7 @@ use crate::{
         column::NavTitle,
         configure_deck::ConfigureDeckView,
         edit_deck::{EditDeckResponse, EditDeckView},
-        note::{NewPostAction, PostAction, PostType},
+        note::{custom_zap::CustomZapView, NewPostAction, PostAction, PostType},
         profile::EditProfileView,
         search::{FocusState, SearchView},
         support::SupportView,
@@ -25,9 +25,12 @@ use crate::{
     Damus,
 };
 
-use egui_nav::{Nav, NavAction, NavResponse, NavUiType};
+use egui_nav::{Nav, NavAction, NavResponse, NavUiType, Percent, PopupResponse, PopupSheet};
 use nostrdb::Transaction;
-use notedeck::{AccountsAction, AppContext, NoteAction, NoteContext};
+use notedeck::{
+    get_current_default_msats, get_current_wallet, AccountsAction, AppContext, NoteAction,
+    NoteContext,
+};
 use notedeck_ui::View;
 use tracing::error;
 
@@ -119,7 +122,10 @@ impl From<NoteAction> for RenderNavAction {
     }
 }
 
-pub type NotedeckNavResponse = NavResponse<Option<RenderNavAction>>;
+enum NotedeckNavResponse {
+    Popup(Box<PopupResponse<Option<RenderNavAction>>>),
+    Nav(Box<NavResponse<Option<RenderNavAction>>>),
+}
 
 pub struct RenderNavResponse {
     column: usize,
@@ -134,135 +140,212 @@ impl RenderNavResponse {
 
     #[must_use = "Make sure to save columns if result is true"]
     pub fn process_render_nav_response(
-        &self,
+        self,
         app: &mut Damus,
         ctx: &mut AppContext<'_>,
         ui: &mut egui::Ui,
     ) -> bool {
-        let mut switching_occured: bool = false;
-        let col = self.column;
-
-        if let Some(action) = self
-            .response
-            .response
-            .as_ref()
-            .or(self.response.title_response.as_ref())
-        {
-            // start returning when we're finished posting
-            match action {
-                RenderNavAction::Back => {
-                    app.columns_mut(ctx.accounts)
-                        .column_mut(col)
-                        .router_mut()
-                        .go_back();
-                }
-
-                RenderNavAction::RemoveColumn => {
-                    let kinds_to_pop = app.columns_mut(ctx.accounts).delete_column(col);
-
-                    for kind in &kinds_to_pop {
-                        if let Err(err) = app.timeline_cache.pop(kind, ctx.ndb, ctx.pool) {
-                            error!("error popping timeline: {err}");
-                        }
-                    }
-
-                    switching_occured = true;
-                }
-
-                RenderNavAction::PostAction(new_post_action) => {
-                    let txn = Transaction::new(ctx.ndb).expect("txn");
-                    match new_post_action.execute(ctx.ndb, &txn, ctx.pool, &mut app.drafts) {
-                        Err(err) => tracing::error!("Error executing post action: {err}"),
-                        Ok(_) => tracing::debug!("Post action executed"),
-                    }
-                    get_active_columns_mut(ctx.accounts, &mut app.decks_cache)
-                        .column_mut(col)
-                        .router_mut()
-                        .go_back();
-                }
-
-                RenderNavAction::NoteAction(note_action) => {
-                    let txn = Transaction::new(ctx.ndb).expect("txn");
-
-                    crate::actionbar::execute_and_process_note_action(
-                        note_action,
-                        ctx.ndb,
-                        get_active_columns_mut(ctx.accounts, &mut app.decks_cache),
-                        col,
-                        &mut app.timeline_cache,
-                        ctx.note_cache,
-                        ctx.pool,
-                        &txn,
-                        ctx.unknown_ids,
-                        ctx.accounts,
-                        ctx.global_wallet,
-                        ctx.zaps,
-                        ui,
-                    );
-                }
-
-                RenderNavAction::SwitchingAction(switching_action) => {
-                    switching_occured = switching_action.process(
-                        &mut app.timeline_cache,
-                        &mut app.decks_cache,
-                        ctx,
-                    );
-                }
-                RenderNavAction::ProfileAction(profile_action) => {
-                    profile_action.process(
-                        &mut app.view_state.pubkey_to_profile_state,
-                        ctx.ndb,
-                        ctx.pool,
-                        get_active_columns_mut(ctx.accounts, &mut app.decks_cache)
-                            .column_mut(col)
-                            .router_mut(),
-                    );
-                }
-                RenderNavAction::WalletAction(wallet_action) => {
-                    let router = get_active_columns_mut(ctx.accounts, &mut app.decks_cache)
-                        .column_mut(col)
-                        .router_mut();
-                    wallet_action.process(ctx.accounts, ctx.global_wallet, router)
-                }
+        match self.response {
+            NotedeckNavResponse::Popup(nav_action) => {
+                process_popup_resp(*nav_action, app, ctx, ui, self.column);
+                false
+            }
+            NotedeckNavResponse::Nav(nav_response) => {
+                process_nav_resp(app, ctx, ui, *nav_response, self.column)
             }
         }
-
-        if let Some(action) = self.response.action {
-            match action {
-                NavAction::Returned => {
-                    let r = app
-                        .columns_mut(ctx.accounts)
-                        .column_mut(col)
-                        .router_mut()
-                        .pop();
-
-                    if let Some(Route::Timeline(kind)) = &r {
-                        if let Err(err) = app.timeline_cache.pop(kind, ctx.ndb, ctx.pool) {
-                            error!("popping timeline had an error: {err} for {:?}", kind);
-                        }
-                    };
-
-                    switching_occured = true;
-                }
-
-                NavAction::Navigated => {
-                    let cur_router = app.columns_mut(ctx.accounts).column_mut(col).router_mut();
-                    cur_router.navigating = false;
-                    if cur_router.is_replacing() {
-                        cur_router.remove_previous_routes();
-                    }
-                    switching_occured = true;
-                }
-
-                NavAction::Dragging => {}
-                NavAction::Returning => {}
-                NavAction::Resetting => {}
-                NavAction::Navigating => {}
-            }
-        }
-
-        switching_occured
     }
+}
+
+fn process_popup_resp(
+    action: PopupResponse<Option<RenderNavAction>>,
+    app: &mut Damus,
+    ctx: &mut AppContext<'_>,
+    ui: &mut egui::Ui,
+    col: usize,
+) -> bool {
+    let mut switching_occured = false;
+    if let Some(nav_action) = action.response {
+        switching_occured = process_render_nav_action(app, ctx, ui, col, nav_action);
+    }
+
+    if let Some(NavAction::Returned) = action.action {
+        let column = app.columns_mut(ctx.accounts).column_mut(col);
+        column.sheet_router.clear();
+    } else if let Some(NavAction::Navigating) = action.action {
+        let column = app.columns_mut(ctx.accounts).column_mut(col);
+        column.sheet_router.navigating = false;
+    }
+
+    switching_occured
+}
+
+fn process_nav_resp(
+    app: &mut Damus,
+    ctx: &mut AppContext<'_>,
+    ui: &mut egui::Ui,
+    response: NavResponse<Option<RenderNavAction>>,
+    col: usize,
+) -> bool {
+    let mut switching_occured: bool = false;
+
+    if let Some(action) = response.response.or(response.title_response) {
+        // start returning when we're finished posting
+
+        switching_occured = process_render_nav_action(app, ctx, ui, col, action);
+    }
+
+    if let Some(action) = response.action {
+        match action {
+            NavAction::Returned => {
+                let r = app
+                    .columns_mut(ctx.accounts)
+                    .column_mut(col)
+                    .router_mut()
+                    .pop();
+
+                if let Some(Route::Timeline(kind)) = &r {
+                    if let Err(err) = app.timeline_cache.pop(kind, ctx.ndb, ctx.pool) {
+                        error!("popping timeline had an error: {err} for {:?}", kind);
+                    }
+                };
+
+                switching_occured = true;
+            }
+
+            NavAction::Navigated => {
+                let cur_router = app.columns_mut(ctx.accounts).column_mut(col).router_mut();
+                cur_router.navigating = false;
+                if cur_router.is_replacing() {
+                    cur_router.remove_previous_routes();
+                }
+                switching_occured = true;
+            }
+
+            NavAction::Dragging => {}
+            NavAction::Returning => {}
+            NavAction::Resetting => {}
+            NavAction::Navigating => {}
+        }
+    }
+
+    switching_occured
+}
+
+pub enum RouterAction {
+    GoBack,
+    RouteTo(Route, RouterType),
+}
+
+pub enum RouterType {
+    Sheet,
+    Stack,
+}
+
+impl RouterAction {
+    pub fn process(
+        self,
+        stack_router: &mut Router<Route>,
+        sheet_router: &mut SingletonRouter<Route>,
+    ) {
+        match self {
+            RouterAction::GoBack => {
+                if sheet_router.route().is_some() {
+                    sheet_router.go_back();
+                } else {
+                    stack_router.go_back();
+                }
+            }
+            RouterAction::RouteTo(route, router_type) => match router_type {
+                RouterType::Sheet => sheet_router.route_to(route),
+                RouterType::Stack => stack_router.route_to(route),
+            },
+        }
+    }
+
+    pub fn route_to(route: Route) -> Self {
+        RouterAction::RouteTo(route, RouterType::Stack)
+    }
+
+    pub fn route_to_sheet(route: Route) -> Self {
+        RouterAction::RouteTo(route, RouterType::Sheet)
+    }
+}
+
+fn process_render_nav_action(
+    app: &mut Damus,
+    ctx: &mut AppContext<'_>,
+    ui: &mut egui::Ui,
+    col: usize,
+    action: RenderNavAction,
+) -> bool {
+    let router_action = match action {
+        RenderNavAction::Back => Some(RouterAction::GoBack),
+
+        RenderNavAction::RemoveColumn => {
+            let kinds_to_pop = app.columns_mut(ctx.accounts).delete_column(col);
+
+            for kind in &kinds_to_pop {
+                if let Err(err) = app.timeline_cache.pop(kind, ctx.ndb, ctx.pool) {
+                    error!("error popping timeline: {err}");
+                }
+            }
+
+            return true;
+        }
+
+        RenderNavAction::PostAction(new_post_action) => {
+            let txn = Transaction::new(ctx.ndb).expect("txn");
+            match new_post_action.execute(ctx.ndb, &txn, ctx.pool, &mut app.drafts) {
+                Err(err) => tracing::error!("Error executing post action: {err}"),
+                Ok(_) => tracing::debug!("Post action executed"),
+            }
+
+            Some(RouterAction::GoBack)
+        }
+
+        RenderNavAction::NoteAction(note_action) => {
+            let txn = Transaction::new(ctx.ndb).expect("txn");
+
+            crate::actionbar::execute_and_process_note_action(
+                note_action,
+                ctx.ndb,
+                get_active_columns_mut(ctx.accounts, &mut app.decks_cache),
+                col,
+                &mut app.timeline_cache,
+                ctx.note_cache,
+                ctx.pool,
+                &txn,
+                ctx.unknown_ids,
+                ctx.accounts,
+                ctx.global_wallet,
+                ctx.zaps,
+                ctx.img_cache,
+                ui,
+            )
+        }
+
+        RenderNavAction::SwitchingAction(switching_action) => {
+            return switching_action.process(&mut app.timeline_cache, &mut app.decks_cache, ctx);
+        }
+        RenderNavAction::ProfileAction(profile_action) => profile_action.process(
+            &mut app.view_state.pubkey_to_profile_state,
+            ctx.ndb,
+            ctx.pool,
+        ),
+        RenderNavAction::WalletAction(wallet_action) => {
+            wallet_action.process(ctx.accounts, ctx.global_wallet)
+        }
+    };
+
+    if let Some(action) = router_action {
+        let cols = get_active_columns_mut(ctx.accounts, &mut app.decks_cache).column_mut(col);
+        let router = &mut cols.router;
+        let sheet_router = &mut cols.sheet_router;
+        action.process(router, sheet_router);
+    }
+
+    false
 }
 
 fn render_nav_body(
@@ -280,6 +363,8 @@ fn render_nav_body(
         note_cache: ctx.note_cache,
         zaps: ctx.zaps,
         pool: ctx.pool,
+        job_pool: ctx.job_pool,
+        current_account_has_wallet: get_current_wallet(ctx.accounts, ctx.global_wallet).is_some(),
     };
     match top {
         Route::Timeline(kind) => render_timeline_route(
@@ -292,8 +377,8 @@ fn render_nav_body(
             depth,
             ui,
             &mut note_context,
+            &mut app.jobs,
         ),
-
         Route::Accounts(amr) => {
             let mut action = render_accounts_route(
                 ui,
@@ -311,13 +396,11 @@ fn render_nav_body(
                 .accounts_action
                 .map(|f| RenderNavAction::SwitchingAction(SwitchingAction::Accounts(f)))
         }
-
         Route::Relays => {
             let manager = RelayPoolManager::new(ctx.pool);
             RelayView::new(ctx.accounts, manager, &mut app.view_state.id_string_map).ui(ui);
             None
         }
-
         Route::Reply(id) => {
             let txn = if let Ok(txn) = Transaction::new(ctx.ndb) {
                 txn
@@ -348,6 +431,7 @@ fn render_nav_body(
                             &note,
                             inner_rect,
                             app.note_options,
+                            &mut app.jobs,
                         )
                         .id_source(id)
                         .show(ui)
@@ -359,7 +443,6 @@ fn render_nav_body(
 
             action.map(Into::into)
         }
-
         Route::Quote(id) => {
             let txn = Transaction::new(ctx.ndb).expect("txn");
 
@@ -384,6 +467,7 @@ fn render_nav_body(
                         &note,
                         inner_rect,
                         app.note_options,
+                        &mut app.jobs,
                     )
                     .id_source(id)
                     .show(ui)
@@ -392,7 +476,6 @@ fn render_nav_body(
 
             response.action.map(Into::into)
         }
-
         Route::ComposeNote => {
             let kp = ctx.accounts.get_selected_account()?.key.to_full()?;
             let draft = app.drafts.compose_mut();
@@ -405,27 +488,24 @@ fn render_nav_body(
                 kp,
                 inner_rect,
                 app.note_options,
+                &mut app.jobs,
             )
             .ui(&txn, ui);
 
             post_response.action.map(Into::into)
         }
-
         Route::AddColumn(route) => {
             render_add_column_routes(ui, app, ctx, col, route);
 
             None
         }
-
         Route::Support => {
             SupportView::new(&mut app.support).show(ui);
             None
         }
-
         Route::Search => {
             let id = ui.id().with(("search", depth, col));
-            let navigating = app
-                .columns_mut(ctx.accounts)
+            let navigating = get_active_columns_mut(ctx.accounts, &mut app.decks_cache)
                 .column(col)
                 .router()
                 .navigating;
@@ -448,11 +528,11 @@ fn render_nav_body(
                 search_buffer,
                 &mut note_context,
                 &ctx.accounts.get_selected_account().map(|a| (&a.key).into()),
+                &mut app.jobs,
             )
             .show(ui, ctx.clipboard)
             .map(RenderNavAction::NoteAction)
         }
-
         Route::NewDeck => {
             let id = ui.id().with("new-deck");
             let new_deck_state = app.view_state.id_to_deck_state.entry(id).or_default();
@@ -595,6 +675,30 @@ fn render_nav_body(
                 .ui(ui)
                 .map(RenderNavAction::WalletAction)
         }
+        Route::CustomizeZapAmount(target) => {
+            let txn = Transaction::new(ctx.ndb).expect("txn");
+            let default_msats = get_current_default_msats(ctx.accounts, ctx.global_wallet);
+            CustomZapView::new(
+                ctx.img_cache,
+                ctx.ndb,
+                &txn,
+                &target.zap_recipient,
+                default_msats,
+            )
+            .ui(ui)
+            .map(|msats| {
+                get_active_columns_mut(ctx.accounts, &mut app.decks_cache)
+                    .column_mut(col)
+                    .router_mut()
+                    .go_back();
+                RenderNavAction::NoteAction(NoteAction::Zap(notedeck::ZapAction::Send(
+                    notedeck::note::ZapTargetAmount {
+                        target: target.clone(),
+                        specified_msats: Some(msats),
+                    },
+                )))
+            })
+        }
     }
 }
 
@@ -606,6 +710,48 @@ pub fn render_nav(
     ctx: &mut AppContext<'_>,
     ui: &mut egui::Ui,
 ) -> RenderNavResponse {
+    if let Some(sheet_route) = app
+        .columns(ctx.accounts)
+        .column(col)
+        .sheet_router
+        .route()
+        .clone()
+    {
+        let navigating = app
+            .columns(ctx.accounts)
+            .column(col)
+            .sheet_router
+            .navigating;
+        let returning = app.columns(ctx.accounts).column(col).sheet_router.returning;
+        let bg_route = app
+            .columns(ctx.accounts)
+            .column(col)
+            .router()
+            .routes()
+            .last()
+            .cloned();
+        if let Some(bg_route) = bg_route {
+            let resp = PopupSheet::new(&bg_route, &sheet_route)
+                .id_source(egui::Id::new(("nav", col)))
+                .navigating(navigating)
+                .returning(returning)
+                .with_split_percent_from_top(Percent::new(35).expect("35 <= 100"))
+                .show_mut(ui, |ui, typ, route| match typ {
+                    NavUiType::Title => NavTitle::new(
+                        ctx.ndb,
+                        ctx.img_cache,
+                        get_active_columns_mut(ctx.accounts, &mut app.decks_cache),
+                        &[route.clone()],
+                        col,
+                    )
+                    .show(ui),
+                    NavUiType::Body => render_nav_body(ui, app, ctx, route, 1, col, inner_rect),
+                });
+
+            return RenderNavResponse::new(col, NotedeckNavResponse::Popup(Box::new(resp)));
+        }
+    };
+
     let nav_response = Nav::new(
         &app.columns(ctx.accounts)
             .column(col)
@@ -644,5 +790,5 @@ pub fn render_nav(
         }
     });
 
-    RenderNavResponse::new(col, nav_response)
+    RenderNavResponse::new(col, NotedeckNavResponse::Nav(Box::new(nav_response)))
 }

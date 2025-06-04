@@ -5,9 +5,11 @@ use async_openai::{
 };
 use chrono::{Duration, Local};
 use egui_wgpu::RenderState;
+use enostr::KeypairUnowned;
 use futures::StreamExt;
 use nostrdb::Transaction;
 use notedeck::{AppAction, AppContext};
+use notedeck_ui::jobs::JobsCache;
 use std::collections::HashMap;
 use std::string::ToString;
 use std::sync::mpsc::{self, Receiver};
@@ -37,11 +39,24 @@ pub struct Dave {
     /// A 3d representation of dave.
     avatar: Option<DaveAvatar>,
     input: String,
-    pubkey: String,
     tools: Arc<HashMap<String, Tool>>,
     client: async_openai::Client<OpenAIConfig>,
     incoming_tokens: Option<Receiver<DaveApiResponse>>,
     model_config: ModelConfig,
+    jobs: JobsCache,
+}
+
+/// Calculate an anonymous user_id from a keypair
+fn calculate_user_id(keypair: KeypairUnowned) -> String {
+    use sha2::{Digest, Sha256};
+    // pubkeys have degraded privacy, don't do that
+    let key_input = keypair
+        .secret_key
+        .map(|sk| sk.as_secret_bytes())
+        .unwrap_or(keypair.pubkey.bytes());
+    let hex_key = hex::encode(key_input);
+    let input = format!("{hex_key}notedeck_dave_user_id");
+    hex::encode(Sha256::digest(input))
 }
 
 impl Dave {
@@ -50,7 +65,6 @@ impl Dave {
     }
 
     fn system_prompt() -> Message {
-        let pubkey = "32e1827635450ebb3c5a7d12c1f8e7b2b514439ac10a67eef3d9fd9c5c68e245".to_string();
         let now = Local::now();
         let yesterday = now - Duration::hours(24);
         let date = now.format("%Y-%m-%d %H:%M:%S");
@@ -64,8 +78,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 - The current date is {date} ({timestamp} unix timestamp if needed for queries).
 
 - Yesterday (-24hrs) was {yesterday_timestamp}. You can use this in combination with `since` queries for pulling notes for summarizing notes the user might have missed while they were away.
-
-- The current users pubkey is {pubkey}
 
 # Response Guidelines
 
@@ -84,19 +96,19 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         let input = "".to_string();
         let avatar = render_state.map(DaveAvatar::new);
         let mut tools: HashMap<String, Tool> = HashMap::new();
-        let pubkey = "32e1827635450ebb3c5a7d12c1f8e7b2b514439ac10a67eef3d9fd9c5c68e245".to_string();
         for tool in tools::dave_tools() {
             tools.insert(tool.name().to_string(), tool);
         }
+
         Dave {
             client,
-            pubkey: pubkey.clone(),
             avatar,
             incoming_tokens: None,
             tools: Arc::new(tools),
             input,
             model_config,
-            chat: vec![Self::system_prompt()],
+            chat: vec![],
+            jobs: JobsCache::default(),
         }
     }
 
@@ -115,6 +127,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 avatar.random_nudge();
             }
             match res {
+                DaveApiResponse::Failed(err) => self.chat.push(Message::Error(err)),
+
                 DaveApiResponse::Token(token) => match self.chat.last_mut() {
                     Some(Message::Assistant(msg)) => *msg = msg.clone() + &token,
                     Some(_) => self.chat.push(Message::Assistant(token)),
@@ -166,11 +180,15 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     }
 
     fn ui(&mut self, app_ctx: &mut AppContext, ui: &mut egui::Ui) -> DaveResponse {
-        DaveUi::new(&self.chat, &mut self.input).ui(app_ctx, ui)
+        DaveUi::new(self.model_config.trial, &self.chat, &mut self.input).ui(
+            app_ctx,
+            &mut self.jobs,
+            ui,
+        )
     }
 
     fn handle_new_chat(&mut self) {
-        self.chat = vec![Self::system_prompt()];
+        self.chat = vec![];
         self.input.clear();
     }
 
@@ -186,11 +204,17 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             let txn = Transaction::new(app_ctx.ndb).expect("txn");
             self.chat
                 .iter()
-                .map(|c| c.to_api_msg(&txn, app_ctx.ndb))
+                .filter_map(|c| c.to_api_msg(&txn, app_ctx.ndb))
                 .collect()
         };
         tracing::debug!("sending messages, latest: {:?}", messages.last().unwrap());
-        let pubkey = self.pubkey.clone();
+
+        let user_id = app_ctx
+            .accounts
+            .get_selected_account()
+            .map(|sa| calculate_user_id(sa.keypair()))
+            .unwrap_or_else(|| "unknown_user".to_string());
+
         let ctx = ctx.clone();
         let client = self.client.clone();
         let tools = self.tools.clone();
@@ -207,7 +231,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     stream: Some(true),
                     messages,
                     tools: Some(tools::dave_tools().iter().map(|t| t.to_api()).collect()),
-                    user: Some(pubkey),
+                    user: Some(user_id),
                     ..Default::default()
                 })
                 .await
@@ -227,6 +251,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     Ok(token) => token,
                     Err(err) => {
                         tracing::error!("failed to get token: {err}");
+                        let _ = tx.send(DaveApiResponse::Failed(err.to_string()));
                         return;
                     }
                 };
@@ -320,6 +345,11 @@ impl notedeck::App for Dave {
             .on_new_frame(ctx.input(|i| i.time), frame.info().cpu_usage);
         */
         let mut app_action: Option<AppAction> = None;
+
+        // always insert system prompt if we have no context
+        if self.chat.is_empty() {
+            self.chat.push(Dave::system_prompt());
+        }
 
         //update_dave(self, ctx, ui.ctx());
         let should_send = self.process_events(ctx);

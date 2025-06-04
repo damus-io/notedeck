@@ -3,6 +3,7 @@ use egui::{vec2, Direction, Layout, Pos2, Stroke};
 use egui_tabs::TabColor;
 use enostr::KeypairUnowned;
 use nostrdb::Transaction;
+use notedeck_ui::jobs::JobsCache;
 use std::f32::consts::PI;
 use tracing::{error, warn};
 
@@ -21,6 +22,7 @@ pub struct TimelineView<'a, 'd> {
     is_muted: &'a MuteFun,
     note_context: &'a mut NoteContext<'d>,
     cur_acc: &'a Option<KeypairUnowned<'a>>,
+    jobs: &'a mut JobsCache,
 }
 
 impl<'a, 'd> TimelineView<'a, 'd> {
@@ -32,6 +34,7 @@ impl<'a, 'd> TimelineView<'a, 'd> {
         note_context: &'a mut NoteContext<'d>,
         note_options: NoteOptions,
         cur_acc: &'a Option<KeypairUnowned<'a>>,
+        jobs: &'a mut JobsCache,
     ) -> Self {
         let reverse = false;
         TimelineView {
@@ -42,6 +45,7 @@ impl<'a, 'd> TimelineView<'a, 'd> {
             is_muted,
             note_context,
             cur_acc,
+            jobs,
         }
     }
 
@@ -55,6 +59,7 @@ impl<'a, 'd> TimelineView<'a, 'd> {
             self.is_muted,
             self.note_context,
             self.cur_acc,
+            self.jobs,
         )
     }
 
@@ -74,6 +79,7 @@ fn timeline_ui(
     is_muted: &MuteFun,
     note_context: &mut NoteContext,
     cur_acc: &Option<KeypairUnowned>,
+    jobs: &mut JobsCache,
 ) -> Option<NoteAction> {
     //padding(4.0, ui, |ui| ui.heading("Notifications"));
     /*
@@ -124,6 +130,12 @@ fn timeline_ui(
         .auto_shrink([false, false])
         .scroll_bar_visibility(ScrollBarVisibility::AlwaysVisible);
 
+    let offset_id = scroll_id.with("timeline_scroll_offset");
+
+    if let Some(offset) = ui.data(|i| i.get_temp::<f32>(offset_id)) {
+        scroll_area = scroll_area.vertical_scroll_offset(offset);
+    }
+
     if let Some(goto_top_resp) = goto_top_resp {
         if goto_top_resp.clicked() {
             scroll_area = scroll_area.vertical_scroll_offset(0.0);
@@ -152,9 +164,12 @@ fn timeline_ui(
             is_muted,
             note_context,
             cur_acc,
+            jobs,
         )
         .show(ui)
     });
+
+    ui.data_mut(|d| d.insert_temp(offset_id, scroll_output.state.offset.y));
 
     let at_top_after_scroll = scroll_output.state.offset.y == 0.0;
     let cur_show_top_button = ui.ctx().data(|d| d.get_temp::<bool>(show_top_button_id));
@@ -323,6 +338,7 @@ pub struct TimelineTabView<'a, 'd> {
     is_muted: &'a MuteFun,
     note_context: &'a mut NoteContext<'d>,
     cur_acc: &'a Option<KeypairUnowned<'a>>,
+    jobs: &'a mut JobsCache,
 }
 
 impl<'a, 'd> TimelineTabView<'a, 'd> {
@@ -335,6 +351,7 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
         is_muted: &'a MuteFun,
         note_context: &'a mut NoteContext<'d>,
         cur_acc: &'a Option<KeypairUnowned<'a>>,
+        jobs: &'a mut JobsCache,
     ) -> Self {
         Self {
             tab,
@@ -344,6 +361,7 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
             is_muted,
             note_context,
             cur_acc,
+            jobs,
         }
     }
 
@@ -352,9 +370,9 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
         let len = self.tab.notes.len();
 
         let is_muted = self.is_muted;
+
         self.tab
             .list
-            .clone()
             .borrow_mut()
             .ui_custom_layout(ui, len, |ui, start_index| {
                 ui.spacing_mut().item_spacing.y = 0.0;
@@ -389,12 +407,19 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
                 };
 
                 if !muted {
+                    let zapping_acc = self
+                        .cur_acc
+                        .as_ref()
+                        .filter(|_| self.note_context.current_account_has_wallet)
+                        .or(self.cur_acc.as_ref());
+
                     notedeck_ui::padding(8.0, ui, |ui| {
                         let resp = NoteView::new(
                             self.note_context,
-                            self.cur_acc,
+                            zapping_acc,
                             &note,
                             self.note_options,
+                            self.jobs,
                         )
                         .show(ui);
 
