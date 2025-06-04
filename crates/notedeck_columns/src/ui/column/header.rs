@@ -13,6 +13,7 @@ use egui::{RichText, Stroke, UiBuilder};
 use enostr::Pubkey;
 use nostrdb::{Ndb, Transaction};
 use notedeck::{Images, NotedeckTextStyle};
+use notedeck_ui::app_images;
 use notedeck_ui::{
     anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},
     ProfilePic,
@@ -149,12 +150,12 @@ impl<'a> NavTitle<'a> {
         let img_size = 16.0;
         let max_size = icon_width * ICON_EXPANSION_MULTIPLE;
 
-        let img_data = if ui.visuals().dark_mode {
-            egui::include_image!("../../../../../assets/icons/column_delete_icon_4x.png")
+        let img = (if ui.visuals().dark_mode {
+            app_images::delete_dark_image()
         } else {
-            egui::include_image!("../../../../../assets/icons/column_delete_icon_light_4x.png")
-        };
-        let img = egui::Image::new(img_data).max_width(img_size);
+            app_images::delete_light_image()
+        })
+        .max_width(img_size);
 
         let helper =
             AnimationHelper::new(ui, "delete-column-button", egui::vec2(max_size, max_size));
@@ -419,10 +420,8 @@ impl<'a> NavTitle<'a> {
             Route::Timeline(kind) => match kind {
                 TimelineKind::Hashtag(_ht) => {
                     ui.add(
-                        egui::Image::new(egui::include_image!(
-                            "../../../../../assets/icons/hashtag_icon_4x.png"
-                        ))
-                        .fit_to_exact_size(egui::vec2(pfp_size, pfp_size)),
+                        app_images::hashtag_image()
+                            .fit_to_exact_size(egui::vec2(pfp_size, pfp_size)),
                     );
                 }
 

@@ -4,6 +4,7 @@ pub mod media;
 pub mod options;
 pub mod reply_description;
 
+use crate::app_images;
 use crate::jobs::JobsCache;
 use crate::{
     profile::name::one_line_display_name_widget, widgets::x_button, ProfilePic, ProfilePreview,
@@ -840,11 +841,9 @@ fn quote_repost_button(ui: &mut egui::Ui, note_key: NoteKey) -> egui::Response {
 
 fn zap_button(state: AnyZapState, noteid: &[u8; 32]) -> impl egui::Widget + use<'_> {
     move |ui: &mut egui::Ui| -> egui::Response {
-        let img_data = egui::include_image!("../../../../assets/icons/zap_4x.png");
-
         let (rect, size, resp) = crate::anim::hover_expand_small(ui, ui.id().with("zap"));
 
-        let mut img = egui::Image::new(img_data).max_width(size);
+        let mut img = app_images::zap_image().max_width(size);
         let id = ui.id().with(("pulse", noteid));
         let ctx = ui.ctx().clone();
 
