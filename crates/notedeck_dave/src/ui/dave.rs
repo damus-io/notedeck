@@ -5,7 +5,7 @@ use crate::{
 use egui::{Align, Key, KeyboardShortcut, Layout, Modifiers};
 use nostrdb::{Ndb, Transaction};
 use notedeck::{AppContext, NoteAction, NoteContext};
-use notedeck_ui::{icons::search_icon, jobs::JobsCache, NoteOptions, ProfilePic};
+use notedeck_ui::{NoteOptions, ProfilePic, icons::search_icon, jobs::JobsCache};
 
 /// DaveUi holds all of the data it needs to render itself
 pub struct DaveUi<'a> {
@@ -89,21 +89,7 @@ impl<'a> DaveUi<'a> {
         jobs: &mut JobsCache,
         ui: &mut egui::Ui,
     ) -> DaveResponse {
-        let mut action: Option<DaveAction> = None;
-        // Scroll area for chat messages
-        let new_resp = {
-            let mut rect = ui.available_rect_before_wrap();
-            rect = rect.translate(egui::vec2(20.0, 20.0));
-            rect.set_width(32.0);
-            rect.set_height(32.0);
-            ui.put(rect, new_chat_button())
-        };
-
-        if new_resp.clicked() {
-            action = Some(DaveAction::NewChat);
-        } else if new_resp.hovered() {
-            notedeck_ui::show_pointer(ui);
-        }
+        let action = new_chat_button_ui(ui);
 
         egui::Frame::NONE
             .show(ui, |ui| {
@@ -464,4 +450,24 @@ fn pill_label_ui(name: &str, mut value: impl FnMut(&mut egui::Ui), ui: &mut egui
 
             value(ui);
         });
+}
+
+fn new_chat_button_ui(ui: &mut egui::Ui) -> Option<DaveAction> {
+    // Scroll area for chat messages
+    let new_resp = {
+        let mut rect = ui.available_rect_before_wrap();
+        rect = rect.translate(egui::vec2(20.0, 20.0));
+        rect.set_width(32.0);
+        rect.set_height(32.0);
+        ui.put(rect, new_chat_button())
+    };
+
+    if new_resp.clicked() {
+        Some(DaveAction::NewChat)
+    } else if new_resp.hovered() {
+        notedeck_ui::show_pointer(ui);
+        None
+    } else {
+        None
+    }
 }
