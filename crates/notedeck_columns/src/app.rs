@@ -165,7 +165,7 @@ fn try_process_event(
 fn unknown_id_send(unknown_ids: &mut UnknownIds, pool: &mut RelayPool) {
     debug!("unknown_id_send called on: {:?}", &unknown_ids);
     let filter = unknown_ids.filter().expect("filter");
-    info!(
+    debug!(
         "Getting {} unknown ids from relays",
         unknown_ids.ids_iter().len()
     );
