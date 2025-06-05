@@ -4,8 +4,8 @@ use crate::{
 };
 use egui::{Align, Key, KeyboardShortcut, Layout, Modifiers};
 use nostrdb::{Ndb, Transaction};
-use notedeck::{AppContext, NoteAction, NoteContext};
-use notedeck_ui::{NoteOptions, ProfilePic, icons::search_icon, jobs::JobsCache};
+use notedeck::{Accounts, AppContext, Images, NoteAction, NoteContext};
+use notedeck_ui::{icons::search_icon, jobs::JobsCache, NoteOptions, ProfilePic};
 
 /// DaveUi holds all of the data it needs to render itself
 pub struct DaveUi<'a> {
@@ -56,6 +56,7 @@ pub enum DaveAction {
     /// The action generated when the user sends a message to dave
     Send,
     NewChat,
+    ToggleChrome,
     Note(NoteAction),
 }
 
@@ -89,7 +90,7 @@ impl<'a> DaveUi<'a> {
         jobs: &mut JobsCache,
         ui: &mut egui::Ui,
     ) -> DaveResponse {
-        let action = new_chat_button_ui(ui);
+        let action = top_buttons_ui(app_ctx, ui);
 
         egui::Frame::NONE
             .show(ui, |ui| {
@@ -452,22 +453,48 @@ fn pill_label_ui(name: &str, mut value: impl FnMut(&mut egui::Ui), ui: &mut egui
         });
 }
 
-fn new_chat_button_ui(ui: &mut egui::Ui) -> Option<DaveAction> {
+fn top_buttons_ui(app_ctx: &mut AppContext, ui: &mut egui::Ui) -> Option<DaveAction> {
     // Scroll area for chat messages
-    let new_resp = {
-        let mut rect = ui.available_rect_before_wrap();
-        rect = rect.translate(egui::vec2(20.0, 20.0));
-        rect.set_width(32.0);
-        rect.set_height(32.0);
-        ui.put(rect, new_chat_button())
-    };
+    let mut action: Option<DaveAction> = None;
+    let mut rect = ui.available_rect_before_wrap();
+    rect = rect.translate(egui::vec2(20.0, 20.0));
+    rect.set_height(32.0);
+    rect.set_width(32.0);
 
-    if new_resp.clicked() {
-        Some(DaveAction::NewChat)
-    } else if new_resp.hovered() {
+    let txn = Transaction::new(app_ctx.ndb).unwrap();
+    let r = ui.put(
+        rect,
+        &mut pfp_button(&txn, app_ctx.accounts, app_ctx.img_cache, app_ctx.ndb),
+    );
+
+    if r.clicked() {
+        action = Some(DaveAction::ToggleChrome);
+    } else if r.hovered() {
         notedeck_ui::show_pointer(ui);
-        None
-    } else {
-        None
     }
+
+    rect = rect.translate(egui::vec2(30.0, 0.0));
+    let r = ui.put(rect, new_chat_button());
+
+    if r.clicked() {
+        action = Some(DaveAction::NewChat);
+    } else if r.hovered() {
+        notedeck_ui::show_pointer(ui);
+    }
+
+    action
+}
+
+fn pfp_button<'me, 'a>(
+    txn: &'a Transaction,
+    accounts: &Accounts,
+    img_cache: &'me mut Images,
+    ndb: &Ndb,
+) -> ProfilePic<'me, 'a> {
+    let account = accounts.get_selected_account();
+    let profile = account.and_then(|a| ndb.get_profile_by_pubkey(txn, a.key.pubkey.bytes()).ok());
+
+    ProfilePic::from_profile_or_default(img_cache, profile.as_ref())
+        .size(24.0)
+        .sense(egui::Sense::click())
 }

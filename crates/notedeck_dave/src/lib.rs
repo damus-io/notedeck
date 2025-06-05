@@ -355,6 +355,9 @@ impl notedeck::App for Dave {
         let should_send = self.process_events(ctx);
         if let Some(action) = self.ui(ctx, ui).action {
             match action {
+                DaveAction::ToggleChrome => {
+                    app_action = Some(AppAction::ToggleChrome);
+                }
                 DaveAction::Note(n) => {
                     app_action = Some(AppAction::Note(n));
                 }
