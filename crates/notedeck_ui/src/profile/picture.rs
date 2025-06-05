@@ -9,13 +9,14 @@ pub struct ProfilePic<'cache, 'url> {
     cache: &'cache mut Images,
     url: &'url str,
     size: f32,
+    sense: Sense,
     border: Option<Stroke>,
     pub action: Option<MediaAction>,
 }
 
 impl egui::Widget for &mut ProfilePic<'_, '_> {
     fn ui(self, ui: &mut egui::Ui) -> egui::Response {
-        let inner = render_pfp(ui, self.cache, self.url, self.size, self.border);
+        let inner = render_pfp(ui, self.cache, self.url, self.size, self.border, self.sense);
 
         self.action = inner.inner;
 
@@ -26,13 +27,21 @@ impl egui::Widget for &mut ProfilePic<'_, '_> {
 impl<'cache, 'url> ProfilePic<'cache, 'url> {
     pub fn new(cache: &'cache mut Images, url: &'url str) -> Self {
         let size = Self::default_size() as f32;
+        let sense = Sense::hover();
+
         ProfilePic {
             cache,
+            sense,
             url,
             size,
             border: None,
             action: None,
         }
+    }
+
+    pub fn sense(mut self, sense: Sense) -> Self {
+        self.sense = sense;
+        self
     }
 
     pub fn border_stroke(ui: &egui::Ui) -> Stroke {
@@ -98,6 +107,7 @@ fn render_pfp(
     url: &str,
     ui_size: f32,
     border: Option<Stroke>,
+    sense: Sense,
 ) -> InnerResponse<Option<MediaAction>> {
     // We will want to downsample these so it's not blurry on hi res displays
     let img_size = 128u32;
@@ -105,39 +115,39 @@ fn render_pfp(
     let cache_type = supported_mime_hosted_at_url(&mut img_cache.urls, url)
         .unwrap_or(notedeck::MediaCacheType::Image);
 
-    egui::Frame::NONE.show(ui, |ui| {
-        let cur_state = get_render_state(
-            ui.ctx(),
-            img_cache,
-            cache_type,
-            url,
-            ImageType::Profile(img_size),
-        );
+    let cur_state = get_render_state(
+        ui.ctx(),
+        img_cache,
+        cache_type,
+        url,
+        ImageType::Profile(img_size),
+    );
 
-        match cur_state.texture_state {
-            notedeck::TextureState::Pending => {
-                paint_circle(ui, ui_size, border);
-                None
-            }
-            notedeck::TextureState::Error(e) => {
-                paint_circle(ui, ui_size, border);
-                show_one_error_message(ui, &format!("Failed to fetch profile at url {url}: {e}"));
+    match cur_state.texture_state {
+        notedeck::TextureState::Pending => {
+            egui::InnerResponse::new(None, paint_circle(ui, ui_size, border, sense))
+        }
+        notedeck::TextureState::Error(e) => {
+            let r = paint_circle(ui, ui_size, border, sense);
+            show_one_error_message(ui, &format!("Failed to fetch profile at url {url}: {e}"));
+            egui::InnerResponse::new(
                 Some(MediaAction::FetchImage {
                     url: url.to_owned(),
                     cache_type,
                     no_pfp_promise: fetch_no_pfp_promise(ui.ctx(), img_cache.get_cache(cache_type)),
-                })
-            }
-            notedeck::TextureState::Loaded(textured_image) => {
-                let texture_handle = handle_repaint(
-                    ui,
-                    retrieve_latest_texture(url, cur_state.gifs, textured_image),
-                );
-                pfp_image(ui, texture_handle, ui_size, border);
-                None
-            }
+                }),
+                r,
+            )
         }
-    })
+        notedeck::TextureState::Loaded(textured_image) => {
+            let texture_handle = handle_repaint(
+                ui,
+                retrieve_latest_texture(url, cur_state.gifs, textured_image),
+            );
+
+            egui::InnerResponse::new(None, pfp_image(ui, texture_handle, ui_size, border, sense))
+        }
+    }
 }
 
 #[profiling::function]
@@ -146,8 +156,9 @@ fn pfp_image(
     img: &TextureHandle,
     size: f32,
     border: Option<Stroke>,
+    sense: Sense,
 ) -> egui::Response {
-    let (rect, response) = ui.allocate_at_least(vec2(size, size), Sense::hover());
+    let (rect, response) = ui.allocate_at_least(vec2(size, size), sense);
     if let Some(stroke) = border {
         draw_bg_border(ui, rect.center(), size, stroke);
     }
@@ -156,8 +167,13 @@ fn pfp_image(
     response
 }
 
-fn paint_circle(ui: &mut egui::Ui, size: f32, border: Option<Stroke>) -> egui::Response {
-    let (rect, response) = ui.allocate_at_least(vec2(size, size), Sense::hover());
+fn paint_circle(
+    ui: &mut egui::Ui,
+    size: f32,
+    border: Option<Stroke>,
+    sense: Sense,
+) -> egui::Response {
+    let (rect, response) = ui.allocate_at_least(vec2(size, size), sense);
 
     if let Some(stroke) = border {
         draw_bg_border(ui, rect.center(), size, stroke);

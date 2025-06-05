@@ -8,8 +8,7 @@ use crate::{
     ui::{self},
 };
 
-use egui::Margin;
-use egui::{RichText, Stroke, UiBuilder};
+use egui::{Margin, Response, RichText, Sense, Stroke, UiBuilder};
 use enostr::Pubkey;
 use nostrdb::{Ndb, Transaction};
 use notedeck::{Images, NotedeckTextStyle};
@@ -84,8 +83,10 @@ impl<'a> NavTitle<'a> {
         let title_resp = self.title(ui, self.routes.last().unwrap(), back_button_resp.is_some());
 
         if let Some(resp) = title_resp {
+            tracing::debug!("got title response {resp:?}");
             match resp {
                 TitleResponse::RemoveColumn => Some(RenderNavAction::RemoveColumn),
+                TitleResponse::PfpClicked => Some(RenderNavAction::PfpClicked),
                 TitleResponse::MoveColumn(to_index) => {
                     let from = self.col_id;
                     Some(RenderNavAction::SwitchingAction(SwitchingAction::Columns(
@@ -94,6 +95,7 @@ impl<'a> NavTitle<'a> {
                 }
             }
         } else if back_button_resp.is_some_and(|r| r.clicked()) {
+            tracing::debug!("render nav action back");
             Some(RenderNavAction::Back)
         } else {
             None
@@ -395,89 +397,95 @@ impl<'a> NavTitle<'a> {
             .get_profile_by_pubkey(txn, pubkey)
             .as_ref()
             .ok()
-            .and_then(move |p| Some(ProfilePic::from_profile(self.img_cache, p)?.size(pfp_size)))
+            .and_then(move |p| {
+                Some(
+                    ProfilePic::from_profile(self.img_cache, p)?
+                        .size(pfp_size)
+                        .sense(Sense::click()),
+                )
+            })
     }
 
-    fn timeline_pfp(&mut self, ui: &mut egui::Ui, id: &TimelineKind, pfp_size: f32) {
+    fn timeline_pfp(&mut self, ui: &mut egui::Ui, id: &TimelineKind, pfp_size: f32) -> Response {
         let txn = Transaction::new(self.ndb).unwrap();
 
         if let Some(mut pfp) = id
             .pubkey()
             .and_then(|pk| self.pubkey_pfp(&txn, pk.bytes(), pfp_size))
         {
-            ui.add(&mut pfp);
+            ui.add(&mut pfp)
         } else {
             ui.add(
                 &mut ProfilePic::new(self.img_cache, notedeck::profile::no_pfp_url())
-                    .size(pfp_size),
-            );
+                    .size(pfp_size)
+                    .sense(Sense::click()),
+            )
         }
     }
 
-    fn title_pfp(&mut self, ui: &mut egui::Ui, top: &Route, pfp_size: f32) {
+    fn title_pfp(&mut self, ui: &mut egui::Ui, top: &Route, pfp_size: f32) -> Option<Response> {
         match top {
             Route::Timeline(kind) => match kind {
-                TimelineKind::Hashtag(_ht) => {
+                TimelineKind::Hashtag(_ht) => Some(
                     ui.add(
                         egui::Image::new(egui::include_image!(
                             "../../../../../assets/icons/hashtag_icon_4x.png"
                         ))
                         .fit_to_exact_size(egui::vec2(pfp_size, pfp_size)),
-                    );
-                }
+                    ),
+                ),
 
-                TimelineKind::Profile(pubkey) => {
-                    self.show_profile(ui, pubkey, pfp_size);
-                }
+                TimelineKind::Profile(pubkey) => Some(self.show_profile(ui, pubkey, pfp_size)),
 
                 TimelineKind::Thread(_) => {
                     // no pfp for threads
+                    None
                 }
 
                 TimelineKind::Search(_sq) => {
                     // TODO: show author pfp if author field set?
 
-                    ui.add(ui::side_panel::search_button());
+                    Some(ui.add(ui::side_panel::search_button()))
                 }
 
                 TimelineKind::Universe
                 | TimelineKind::Algo(_)
                 | TimelineKind::Notifications(_)
                 | TimelineKind::Generic(_)
-                | TimelineKind::List(_) => {
-                    self.timeline_pfp(ui, kind, pfp_size);
-                }
+                | TimelineKind::List(_) => Some(self.timeline_pfp(ui, kind, pfp_size)),
             },
-            Route::Reply(_) => {}
-            Route::Quote(_) => {}
-            Route::Accounts(_as) => {}
-            Route::ComposeNote => {}
-            Route::AddColumn(_add_col_route) => {}
-            Route::Support => {}
-            Route::Relays => {}
-            Route::NewDeck => {}
-            Route::EditDeck(_) => {}
-            Route::EditProfile(pubkey) => {
-                self.show_profile(ui, pubkey, pfp_size);
-            }
-            Route::Search => {
-                ui.add(ui::side_panel::search_button());
-            }
-            Route::Wallet(_) => {}
-            Route::CustomizeZapAmount(_) => {}
+            Route::Reply(_) => None,
+            Route::Quote(_) => None,
+            Route::Accounts(_as) => None,
+            Route::ComposeNote => None,
+            Route::AddColumn(_add_col_route) => None,
+            Route::Support => None,
+            Route::Relays => None,
+            Route::NewDeck => None,
+            Route::EditDeck(_) => None,
+            Route::EditProfile(pubkey) => Some(self.show_profile(ui, pubkey, pfp_size)),
+            Route::Search => Some(ui.add(ui::side_panel::search_button())),
+            Route::Wallet(_) => None,
+            Route::CustomizeZapAmount(_) => None,
         }
     }
 
-    fn show_profile(&mut self, ui: &mut egui::Ui, pubkey: &Pubkey, pfp_size: f32) {
+    fn show_profile(
+        &mut self,
+        ui: &mut egui::Ui,
+        pubkey: &Pubkey,
+        pfp_size: f32,
+    ) -> egui::Response {
         let txn = Transaction::new(self.ndb).unwrap();
         if let Some(mut pfp) = self.pubkey_pfp(&txn, pubkey.bytes(), pfp_size) {
-            ui.add(&mut pfp);
+            ui.add(&mut pfp)
         } else {
             ui.add(
                 &mut ProfilePic::new(self.img_cache, notedeck::profile::no_pfp_url())
-                    .size(pfp_size),
-            );
-        };
+                    .size(pfp_size)
+                    .sense(Sense::click()),
+            )
+        }
     }
 
     fn title_label_value(title: &str) -> egui::Label {
@@ -489,27 +497,26 @@ impl<'a> NavTitle<'a> {
         let column_title = top.title();
 
         match &column_title {
-            ColumnTitle::Simple(title) => {
-                ui.add(Self::title_label_value(title));
-            }
+            ColumnTitle::Simple(title) => ui.add(Self::title_label_value(title)),
 
             ColumnTitle::NeedsDb(need_db) => {
                 let txn = Transaction::new(self.ndb).unwrap();
                 let title = need_db.title(&txn, self.ndb);
-                ui.add(Self::title_label_value(title));
+                ui.add(Self::title_label_value(title))
             }
         };
     }
 
     fn title(&mut self, ui: &mut egui::Ui, top: &Route, navigating: bool) -> Option<TitleResponse> {
-        if !navigating {
-            self.title_presentation(ui, top, 32.0);
-        }
+        let title_r = if !navigating {
+            self.title_presentation(ui, top, 32.0)
+        } else {
+            None
+        };
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if navigating {
-                self.title_presentation(ui, top, 32.0);
-                None
+                self.title_presentation(ui, top, 32.0)
             } else {
                 let move_col = self.move_button_section(ui);
                 let remove_col = self.delete_button_section(ui);
@@ -523,16 +530,37 @@ impl<'a> NavTitle<'a> {
             }
         })
         .inner
+        .or(title_r)
     }
 
-    fn title_presentation(&mut self, ui: &mut egui::Ui, top: &Route, pfp_size: f32) {
-        self.title_pfp(ui, top, pfp_size);
+    fn title_presentation(
+        &mut self,
+        ui: &mut egui::Ui,
+        top: &Route,
+        pfp_size: f32,
+    ) -> Option<TitleResponse> {
+        let pfp_r = self.title_pfp(ui, top, pfp_size);
+
+        if pfp_r.as_ref().is_some_and(|r| r.hovered()) {
+            notedeck_ui::show_pointer(ui);
+        }
+
         self.title_label(ui, top);
+
+        pfp_r.and_then(|r| {
+            if r.clicked() {
+                Some(TitleResponse::PfpClicked)
+            } else {
+                None
+            }
+        })
     }
 }
 
+#[derive(Debug)]
 enum TitleResponse {
     RemoveColumn,
+    PfpClicked,
     MoveColumn(usize),
 }
 

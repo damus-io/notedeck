@@ -16,10 +16,20 @@ use notedeck_ui::{AnimationHelper, ProfilePic};
 static ICON_WIDTH: f32 = 40.0;
 pub static ICON_EXPANSION_MULTIPLE: f32 = 1.2;
 
-#[derive(Default)]
 pub struct Chrome {
     active: i32,
+    open: bool,
     apps: Vec<NotedeckApp>,
+}
+
+impl Default for Chrome {
+    fn default() -> Self {
+        Self {
+            active: 0,
+            open: true,
+            apps: vec![],
+        }
+    }
 }
 
 pub enum ChromePanelAction {
@@ -85,6 +95,10 @@ impl Chrome {
         Chrome::default()
     }
 
+    pub fn toggle(&mut self) {
+        self.open = !self.open;
+    }
+
     pub fn add_app(&mut self, app: NotedeckApp) {
         self.apps.push(app);
     }
@@ -132,8 +146,11 @@ impl Chrome {
         let mut got_action: Option<ChromePanelAction> = None;
         let side_panel_width: f32 = 70.0;
 
+        let open_id = egui::Id::new("chrome_open");
+        let amt_open = ui.ctx().animate_bool(open_id, self.open) * side_panel_width;
+
         StripBuilder::new(ui)
-            .size(Size::exact(side_panel_width)) // collapsible sidebar
+            .size(Size::exact(amt_open)) // collapsible sidebar
             .size(Size::remainder()) // the main app contents
             .clip(true)
             .horizontal(|mut strip| {
@@ -294,7 +311,7 @@ impl Chrome {
 
         if ui.add(expand_side_panel_button()).clicked() {
             //self.active = (self.active + 1) % (self.apps.len() as i32);
-            // TODO: collapse sidebar ?
+            self.open = !self.open;
         }
 
         ui.add_space(4.0);
@@ -492,6 +509,10 @@ fn chrome_handle_app_action(
     ui: &mut egui::Ui,
 ) {
     match action {
+        AppAction::ToggleChrome => {
+            chrome.toggle();
+        }
+
         AppAction::Note(note_action) => {
             chrome.switch_to_columns();
             let Some(columns) = chrome.get_columns() else {

@@ -34,10 +34,24 @@ use notedeck::{
 use notedeck_ui::View;
 use tracing::error;
 
+/// The result of processing a nav response
+pub enum ProcessNavResult {
+    SwitchOccurred,
+    PfpClicked,
+}
+
+impl ProcessNavResult {
+    pub fn switch_occurred(&self) -> bool {
+        matches!(self, Self::SwitchOccurred)
+    }
+}
+
 #[allow(clippy::enum_variant_names)]
 pub enum RenderNavAction {
     Back,
     RemoveColumn,
+    /// The response when the user interacts with a pfp in the nav header
+    PfpClicked,
     PostAction(NewPostAction),
     NoteAction(NoteAction),
     ProfileAction(ProfileAction),
@@ -144,11 +158,10 @@ impl RenderNavResponse {
         app: &mut Damus,
         ctx: &mut AppContext<'_>,
         ui: &mut egui::Ui,
-    ) -> bool {
+    ) -> Option<ProcessNavResult> {
         match self.response {
             NotedeckNavResponse::Popup(nav_action) => {
-                process_popup_resp(*nav_action, app, ctx, ui, self.column);
-                false
+                process_popup_resp(*nav_action, app, ctx, ui, self.column)
             }
             NotedeckNavResponse::Nav(nav_response) => {
                 process_nav_resp(app, ctx, ui, *nav_response, self.column)
@@ -163,10 +176,10 @@ fn process_popup_resp(
     ctx: &mut AppContext<'_>,
     ui: &mut egui::Ui,
     col: usize,
-) -> bool {
-    let mut switching_occured = false;
+) -> Option<ProcessNavResult> {
+    let mut process_result: Option<ProcessNavResult> = None;
     if let Some(nav_action) = action.response {
-        switching_occured = process_render_nav_action(app, ctx, ui, col, nav_action);
+        process_result = process_render_nav_action(app, ctx, ui, col, nav_action);
     }
 
     if let Some(NavAction::Returned) = action.action {
@@ -177,7 +190,7 @@ fn process_popup_resp(
         column.sheet_router.navigating = false;
     }
 
-    switching_occured
+    process_result
 }
 
 fn process_nav_resp(
@@ -186,13 +199,13 @@ fn process_nav_resp(
     ui: &mut egui::Ui,
     response: NavResponse<Option<RenderNavAction>>,
     col: usize,
-) -> bool {
-    let mut switching_occured: bool = false;
+) -> Option<ProcessNavResult> {
+    let mut process_result: Option<ProcessNavResult> = None;
 
     if let Some(action) = response.response.or(response.title_response) {
         // start returning when we're finished posting
 
-        switching_occured = process_render_nav_action(app, ctx, ui, col, action);
+        process_result = process_render_nav_action(app, ctx, ui, col, action);
     }
 
     if let Some(action) = response.action {
@@ -210,7 +223,7 @@ fn process_nav_resp(
                     }
                 };
 
-                switching_occured = true;
+                process_result = Some(ProcessNavResult::SwitchOccurred);
             }
 
             NavAction::Navigated => {
@@ -219,7 +232,8 @@ fn process_nav_resp(
                 if cur_router.is_replacing() {
                     cur_router.remove_previous_routes();
                 }
-                switching_occured = true;
+
+                process_result = Some(ProcessNavResult::SwitchOccurred);
             }
 
             NavAction::Dragging => {}
@@ -229,11 +243,15 @@ fn process_nav_resp(
         }
     }
 
-    switching_occured
+    process_result
 }
 
 pub enum RouterAction {
     GoBack,
+    /// We clicked on a pfp in a route. We currently don't carry any
+    /// information about the pfp since we only use it for toggling the
+    /// chrome atm
+    PfpClicked,
     RouteTo(Route, RouterType),
 }
 
@@ -247,7 +265,7 @@ impl RouterAction {
         self,
         stack_router: &mut Router<Route>,
         sheet_router: &mut SingletonRouter<Route>,
-    ) {
+    ) -> Option<ProcessNavResult> {
         match self {
             RouterAction::GoBack => {
                 if sheet_router.route().is_some() {
@@ -255,10 +273,21 @@ impl RouterAction {
                 } else {
                     stack_router.go_back();
                 }
+
+                None
             }
+
+            RouterAction::PfpClicked => Some(ProcessNavResult::PfpClicked),
+
             RouterAction::RouteTo(route, router_type) => match router_type {
-                RouterType::Sheet => sheet_router.route_to(route),
-                RouterType::Stack => stack_router.route_to(route),
+                RouterType::Sheet => {
+                    sheet_router.route_to(route);
+                    None
+                }
+                RouterType::Stack => {
+                    stack_router.route_to(route);
+                    None
+                }
             },
         }
     }
@@ -278,9 +307,10 @@ fn process_render_nav_action(
     ui: &mut egui::Ui,
     col: usize,
     action: RenderNavAction,
-) -> bool {
+) -> Option<ProcessNavResult> {
     let router_action = match action {
         RenderNavAction::Back => Some(RouterAction::GoBack),
+        RenderNavAction::PfpClicked => Some(RouterAction::PfpClicked),
 
         RenderNavAction::RemoveColumn => {
             let kinds_to_pop = app.columns_mut(ctx.accounts).delete_column(col);
@@ -291,7 +321,7 @@ fn process_render_nav_action(
                 }
             }
 
-            return true;
+            return Some(ProcessNavResult::SwitchOccurred);
         }
 
         RenderNavAction::PostAction(new_post_action) => {
@@ -326,7 +356,11 @@ fn process_render_nav_action(
         }
 
         RenderNavAction::SwitchingAction(switching_action) => {
-            return switching_action.process(&mut app.timeline_cache, &mut app.decks_cache, ctx);
+            if switching_action.process(&mut app.timeline_cache, &mut app.decks_cache, ctx) {
+                return Some(ProcessNavResult::SwitchOccurred);
+            } else {
+                return None;
+            }
         }
         RenderNavAction::ProfileAction(profile_action) => profile_action.process(
             &mut app.view_state.pubkey_to_profile_state,
@@ -342,10 +376,11 @@ fn process_render_nav_action(
         let cols = get_active_columns_mut(ctx.accounts, &mut app.decks_cache).column_mut(col);
         let router = &mut cols.router;
         let sheet_router = &mut cols.sheet_router;
-        action.process(router, sheet_router);
-    }
 
-    false
+        action.process(router, sheet_router)
+    } else {
+        None
+    }
 }
 
 fn render_nav_body(

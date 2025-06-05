@@ -269,6 +269,11 @@ impl<'a, 'd> NoteView<'a, 'd> {
                 let pfp_resp = ui.put(rect, &mut pfp);
 
                 action = action.or(pfp.action);
+
+                if resp.hovered() || resp.clicked() {
+                    crate::show_pointer(ui);
+                }
+
                 pfp_resp.on_hover_ui_at_pointer(|ui| {
                     ui.set_max_width(300.0);
                     ui.add(ProfilePreview::new(
@@ -276,10 +281,6 @@ impl<'a, 'd> NoteView<'a, 'd> {
                         self.note_context.img_cache,
                     ));
                 });
-
-                if resp.hovered() || resp.clicked() {
-                    crate::show_pointer(ui);
-                }
 
                 resp
             }

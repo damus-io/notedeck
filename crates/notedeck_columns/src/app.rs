@@ -3,7 +3,7 @@ use crate::{
     column::Columns,
     decks::{Decks, DecksCache, FALLBACK_PUBKEY},
     draft::Drafts,
-    nav,
+    nav::{self, ProcessNavResult},
     route::Route,
     storage,
     subscriptions::{SubKind, Subscriptions},
@@ -340,15 +340,21 @@ fn process_message(damus: &mut Damus, ctx: &mut AppContext<'_>, relay: &str, msg
     }
 }
 
-fn render_damus(damus: &mut Damus, app_ctx: &mut AppContext<'_>, ui: &mut egui::Ui) {
-    if notedeck::ui::is_narrow(ui.ctx()) {
-        render_damus_mobile(damus, app_ctx, ui);
+fn render_damus(
+    damus: &mut Damus,
+    app_ctx: &mut AppContext<'_>,
+    ui: &mut egui::Ui,
+) -> Option<AppAction> {
+    let app_action = if notedeck::ui::is_narrow(ui.ctx()) {
+        render_damus_mobile(damus, app_ctx, ui)
     } else {
-        render_damus_desktop(damus, app_ctx, ui);
-    }
+        render_damus_desktop(damus, app_ctx, ui)
+    };
 
     // We use this for keeping timestamps and things up to date
     ui.ctx().request_repaint_after(Duration::from_secs(1));
+
+    app_action
 }
 
 /*
@@ -518,17 +524,32 @@ fn circle_icon(ui: &mut egui::Ui, openness: f32, response: &egui::Response) {
 */
 
 #[profiling::function]
-fn render_damus_mobile(app: &mut Damus, app_ctx: &mut AppContext<'_>, ui: &mut egui::Ui) {
+fn render_damus_mobile(
+    app: &mut Damus,
+    app_ctx: &mut AppContext<'_>,
+    ui: &mut egui::Ui,
+) -> Option<AppAction> {
     //let routes = app.timelines[0].routes.clone();
 
     let mut rect = ui.available_rect_before_wrap();
+    let mut app_action: Option<AppAction> = None;
 
-    if !app.columns(app_ctx.accounts).columns().is_empty()
-        && nav::render_nav(0, ui.available_rect_before_wrap(), app, app_ctx, ui)
-            .process_render_nav_response(app, app_ctx, ui)
-        && !app.tmp_columns
-    {
-        storage::save_decks_cache(app_ctx.path, &app.decks_cache);
+    if !app.columns(app_ctx.accounts).columns().is_empty() {
+        let r = nav::render_nav(0, ui.available_rect_before_wrap(), app, app_ctx, ui)
+            .process_render_nav_response(app, app_ctx, ui);
+        if let Some(r) = &r {
+            match r {
+                ProcessNavResult::SwitchOccurred => {
+                    if !app.tmp_columns {
+                        storage::save_decks_cache(app_ctx.path, &app.decks_cache);
+                    }
+                }
+
+                ProcessNavResult::PfpClicked => {
+                    app_action = Some(AppAction::ToggleChrome);
+                }
+            }
+        }
     }
 
     rect.min.x = rect.max.x - 100.0;
@@ -549,10 +570,16 @@ fn render_damus_mobile(app: &mut Damus, app_ctx: &mut AppContext<'_>, ui: &mut e
             router.route_to(Route::ComposeNote);
         }
     }
+
+    app_action
 }
 
 #[profiling::function]
-fn render_damus_desktop(app: &mut Damus, app_ctx: &mut AppContext<'_>, ui: &mut egui::Ui) {
+fn render_damus_desktop(
+    app: &mut Damus,
+    app_ctx: &mut AppContext<'_>,
+    ui: &mut egui::Ui,
+) -> Option<AppAction> {
     let screen_size = ui.ctx().screen_rect().width();
     let calc_panel_width = (screen_size
         / get_active_columns(app_ctx.accounts, &app.decks_cache).num_columns() as f32)
@@ -566,16 +593,22 @@ fn render_damus_desktop(app: &mut Damus, app_ctx: &mut AppContext<'_>, ui: &mut 
     };
 
     ui.spacing_mut().item_spacing.x = 0.0;
+
     if need_scroll {
-        egui::ScrollArea::horizontal().show(ui, |ui| {
-            timelines_view(ui, panel_sizes, app, app_ctx);
-        });
+        egui::ScrollArea::horizontal()
+            .show(ui, |ui| timelines_view(ui, panel_sizes, app, app_ctx))
+            .inner
     } else {
-        timelines_view(ui, panel_sizes, app, app_ctx);
+        timelines_view(ui, panel_sizes, app, app_ctx)
     }
 }
 
-fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus, ctx: &mut AppContext<'_>) {
+fn timelines_view(
+    ui: &mut egui::Ui,
+    sizes: Size,
+    app: &mut Damus,
+    ctx: &mut AppContext<'_>,
+) -> Option<AppAction> {
     let num_cols = get_active_columns(ctx.accounts, &app.decks_cache).num_columns();
     let mut side_panel_action: Option<nav::SwitchingAction> = None;
     let mut responses = Vec::with_capacity(num_cols);
@@ -654,9 +687,20 @@ fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus, ctx: &mut App
         save_cols = save_cols || action.process(&mut app.timeline_cache, &mut app.decks_cache, ctx);
     }
 
+    let mut app_action: Option<AppAction> = None;
+
     for response in responses {
-        let save = response.process_render_nav_response(app, ctx, ui);
-        save_cols = save_cols || save;
+        let nav_result = response.process_render_nav_response(app, ctx, ui);
+
+        if let Some(nr) = &nav_result {
+            match nr {
+                ProcessNavResult::SwitchOccurred => save_cols = true,
+
+                ProcessNavResult::PfpClicked => {
+                    app_action = Some(AppAction::ToggleChrome);
+                }
+            }
+        }
     }
 
     if app.tmp_columns {
@@ -666,6 +710,8 @@ fn timelines_view(ui: &mut egui::Ui, sizes: Size, app: &mut Damus, ctx: &mut App
     if save_cols {
         storage::save_decks_cache(ctx.path, &app.decks_cache);
     }
+
+    app_action
 }
 
 impl notedeck::App for Damus {
@@ -677,9 +723,7 @@ impl notedeck::App for Damus {
         */
 
         update_damus(self, ctx, ui.ctx());
-        render_damus(self, ctx, ui);
-
-        None
+        render_damus(self, ctx, ui)
     }
 }
 
