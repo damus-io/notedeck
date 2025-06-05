@@ -58,7 +58,7 @@ mkShell ({
         platforms-android-31
         ndk-27-2-12479018
         #ndk-24-0-8215888
-      ] ++ lib.optional android_emulator [ emulator ]);
+      ] ++ lib.optional android_emulator emulator);
 
       android-sdk-path = "${android-sdk.out}/share/android-sdk";
       android-ndk-path = "${android-sdk-path}/ndk/${ndk-version}";
