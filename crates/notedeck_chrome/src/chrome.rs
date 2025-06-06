@@ -2,12 +2,12 @@
 //#[cfg(target_arch = "wasm32")]
 //use wasm_bindgen::prelude::*;
 use crate::app::NotedeckApp;
-use egui::{Button, Label, Layout, RichText, ThemePreference, Widget, vec2};
+use egui::{vec2, Button, Label, Layout, Rect, RichText, ThemePreference, Widget};
 use egui_extras::{Size, StripBuilder};
 use nostrdb::{ProfileRecord, Transaction};
 use notedeck::{
-    App, AppAction, AppContext, NotedeckTextStyle, UserAccount, WalletType,
-    profile::get_profile_url,
+    profile::get_profile_url, App, AppAction, AppContext, NotedeckTextStyle, UserAccount,
+    WalletType,
 };
 use notedeck_columns::Damus;
 use notedeck_dave::{Dave, DaveAvatar};
@@ -19,6 +19,7 @@ pub static ICON_EXPANSION_MULTIPLE: f32 = 1.2;
 pub struct Chrome {
     active: i32,
     open: bool,
+    tab_selected: i32,
     apps: Vec<NotedeckApp>,
 }
 
@@ -26,10 +27,17 @@ impl Default for Chrome {
     fn default() -> Self {
         Self {
             active: 0,
+            tab_selected: 0,
             open: true,
             apps: vec![],
         }
     }
+}
+
+pub enum ToolbarAction {
+    Notifications,
+    Dave,
+    Home,
 }
 
 pub enum ChromePanelAction {
@@ -37,6 +45,7 @@ pub enum ChromePanelAction {
     Settings,
     Account,
     Wallet,
+    Toolbar(ToolbarAction),
     SaveTheme(ThemePreference),
 }
 
@@ -65,6 +74,10 @@ impl ChromePanelAction {
                     o.theme_preference = *theme;
                 });
                 ctx.theme.save(*theme);
+            }
+
+            Self::Toolbar(_toolbar_action) => {
+                tracing::info!("toolbar action");
             }
 
             Self::Support => {
@@ -135,21 +148,16 @@ impl Chrome {
         self.active = app;
     }
 
-    /// Show the side menu or bar, depending on if we're on a narrow
-    /// or wide screen.
-    ///
-    /// The side menu should hover over the screen, while the side bar
-    /// is collapsible but persistent on the screen.
-    fn show(&mut self, ctx: &mut AppContext, ui: &mut egui::Ui) -> Option<ChromePanelAction> {
-        ui.spacing_mut().item_spacing.x = 0.0;
-
+    /// The chrome side panel
+    fn panel(
+        &mut self,
+        app_ctx: &mut AppContext,
+        builder: StripBuilder,
+        amt_open: f32,
+    ) -> Option<ChromePanelAction> {
         let mut got_action: Option<ChromePanelAction> = None;
-        let side_panel_width: f32 = 70.0;
 
-        let open_id = egui::Id::new("chrome_open");
-        let amt_open = ui.ctx().animate_bool(open_id, self.open) * side_panel_width;
-
-        StripBuilder::new(ui)
+        builder
             .size(Size::exact(amt_open)) // collapsible sidebar
             .size(Size::remainder()) // the main app contents
             .clip(true)
@@ -172,7 +180,7 @@ impl Chrome {
                     });
 
                     ui.with_layout(Layout::bottom_up(egui::Align::Center), |ui| {
-                        if let Some(action) = bottomup_sidebar(ctx, ui) {
+                        if let Some(action) = bottomup_sidebar(app_ctx, ui) {
                             got_action = Some(action);
                         }
                     });
@@ -197,13 +205,97 @@ impl Chrome {
                     );
                     */
 
-                    if let Some(action) = self.apps[self.active as usize].update(ctx, ui) {
-                        chrome_handle_app_action(self, ctx, action, ui);
+                    if let Some(action) = self.apps[self.active as usize].update(app_ctx, ui) {
+                        chrome_handle_app_action(self, app_ctx, action, ui);
                     }
                 });
             });
 
         got_action
+    }
+
+    /// How far is the chrome panel expanded?
+    fn amount_open(&self, ui: &mut egui::Ui) -> f32 {
+        let open_id = egui::Id::new("chrome_open");
+        let side_panel_width: f32 = 70.0;
+        ui.ctx().animate_bool(open_id, self.open) * side_panel_width
+    }
+
+    fn toolbar_height() -> f32 {
+        60.0
+    }
+
+    /// On narrow layouts, we have a toolbar
+    fn toolbar_chrome(
+        &mut self,
+        ctx: &mut AppContext,
+        ui: &mut egui::Ui,
+    ) -> Option<ChromePanelAction> {
+        let mut got_action: Option<ChromePanelAction> = None;
+        let amt_open = self.amount_open(ui);
+
+        StripBuilder::new(ui)
+            .size(Size::remainder()) // top cell
+            .size(Size::exact(Self::toolbar_height())) // bottom cell
+            .vertical(|mut strip| {
+                strip.strip(|builder| {
+                    // the chrome panel is nested above the toolbar
+
+                    got_action = self.panel(ctx, builder, amt_open);
+                });
+
+                strip.cell(|ui| {
+                    if let Some(action) = self.toolbar(ui) {
+                        got_action = Some(ChromePanelAction::Toolbar(action))
+                    }
+                });
+            });
+
+        got_action
+    }
+
+    fn toolbar(&mut self, ui: &mut egui::Ui) -> Option<ToolbarAction> {
+        let _tab_res = egui_tabs::Tabs::new(3)
+            .selected(self.tab_selected)
+            //.hover_bg(TabColor::none())
+            //.selected_fg(TabColor::none())
+            //.selected_bg(TabColor::none())
+            //.hover_bg(TabColor::none())
+            //.hover_bg(TabColor::custom(egui::Color32::RED))
+            .height(Self::toolbar_height())
+            .layout(Layout::centered_and_justified(egui::Direction::TopDown))
+            .show(ui, |ui, state| {
+                let index = state.index();
+
+                if index == 0 {
+                    home_button(ui);
+                } else if index == 1 {
+                    if let Some(dave) = self.get_dave() {
+                        let rect = dave_toolbar_rect(ui);
+                        let _dave_resp = dave_button(dave.avatar_mut(), ui, rect);
+                    }
+                } else if index == 2 {
+                    notifications_button(ui);
+                }
+            });
+
+        None
+    }
+
+    /// Show the side menu or bar, depending on if we're on a narrow
+    /// or wide screen.
+    ///
+    /// The side menu should hover over the screen, while the side bar
+    /// is collapsible but persistent on the screen.
+    fn show(&mut self, ctx: &mut AppContext, ui: &mut egui::Ui) -> Option<ChromePanelAction> {
+        ui.spacing_mut().item_spacing.x = 0.0;
+
+        if notedeck::ui::is_narrow(ui.ctx()) {
+            self.toolbar_chrome(ctx, ui)
+        } else {
+            let amt_open = self.amount_open(ui);
+            self.panel(ctx, StripBuilder::new(ui), amt_open)
+        }
     }
 
     fn topdown_sidebar(&mut self, ui: &mut egui::Ui) {
@@ -236,7 +328,8 @@ impl Chrome {
         ui.add_space(32.0);
 
         if let Some(dave) = self.get_dave() {
-            let dave_resp = dave_button(dave.avatar_mut(), ui);
+            let rect = dave_sidebar_rect(ui);
+            let dave_resp = dave_button(dave.avatar_mut(), ui, rect);
             if dave_resp.clicked() {
                 self.active = 1;
             } else if dave_resp.hovered() {
@@ -340,17 +433,49 @@ fn settings_button(ui: &mut egui::Ui) -> egui::Response {
     )
 }
 
+fn notifications_button(ui: &mut egui::Ui) -> egui::Response {
+    expanding_button(
+        "notifications-button",
+        24.0,
+        &egui::include_image!("../../../assets/icons/notifications_dark_4x.png"),
+        &egui::include_image!("../../../assets/icons/notifications_dark_4x.png"),
+        ui,
+    )
+}
+
+fn home_button(ui: &mut egui::Ui) -> egui::Response {
+    expanding_button(
+        "home-button",
+        24.0,
+        &egui::include_image!("../../../assets/icons/home-toolbar.png"),
+        &egui::include_image!("../../../assets/icons/home-toolbar.png"),
+        ui,
+    )
+}
+
 fn columns_button(ui: &mut egui::Ui) -> egui::Response {
     let btn = egui::include_image!("../../../assets/icons/columns_80.png");
     expanding_button("columns-button", 40.0, &btn, &btn, ui)
 }
 
-fn dave_button(avatar: Option<&mut DaveAvatar>, ui: &mut egui::Ui) -> egui::Response {
+fn dave_sidebar_rect(ui: &mut egui::Ui) -> Rect {
+    let size = vec2(60.0, 60.0);
+    let available = ui.available_rect_before_wrap();
+    let center_x = available.center().x;
+    let center_y = available.top();
+    egui::Rect::from_center_size(egui::pos2(center_x, center_y), size)
+}
+
+fn dave_toolbar_rect(ui: &mut egui::Ui) -> Rect {
+    let size = vec2(60.0, 60.0);
+    let available = ui.available_rect_before_wrap();
+    let center_x = available.center().x;
+    let center_y = available.center().y;
+    egui::Rect::from_center_size(egui::pos2(center_x, center_y), size)
+}
+
+fn dave_button(avatar: Option<&mut DaveAvatar>, ui: &mut egui::Ui, rect: Rect) -> egui::Response {
     if let Some(avatar) = avatar {
-        let size = vec2(60.0, 60.0);
-        let available = ui.available_rect_before_wrap();
-        let center_x = available.center().x;
-        let rect = egui::Rect::from_center_size(egui::pos2(center_x, available.top()), size);
         avatar.render(rect, ui)
     } else {
         // plain icon if wgpu device not available??
