@@ -9,7 +9,8 @@ use notedeck::{
     profile::get_profile_url, App, AppAction, AppContext, NotedeckTextStyle, UserAccount,
     WalletType,
 };
-use notedeck_columns::Damus;
+use notedeck_columns::{timeline::kind::ListKind, timeline::TimelineKind, Damus};
+
 use notedeck_dave::{Dave, DaveAvatar};
 use notedeck_ui::{AnimationHelper, ProfilePic};
 
@@ -36,6 +37,7 @@ impl Default for Chrome {
 
 /// When you click the toolbar button, these actions
 /// are returned
+#[derive(Debug, Eq, PartialEq)]
 pub enum ToolbarAction {
     Notifications,
     Dave,
@@ -52,12 +54,23 @@ pub enum ChromePanelAction {
 }
 
 impl ChromePanelAction {
+    fn columns_switch(ctx: &AppContext, chrome: &mut Chrome, kind: &TimelineKind) {
+        chrome.switch_to_columns();
+
+        if let Some(active_columns) = chrome
+            .get_columns()
+            .and_then(|cols| cols.decks_cache.active_columns_mut(ctx.accounts))
+        {
+            active_columns.select_by_kind(kind)
+        }
+    }
+
     fn columns_navigate(ctx: &AppContext, chrome: &mut Chrome, route: notedeck_columns::Route) {
         chrome.switch_to_columns();
 
         if let Some(c) = chrome
             .get_columns()
-            .and_then(|columns| columns.decks_cache.first_column_mut(ctx.accounts))
+            .and_then(|columns| columns.decks_cache.selected_column_mut(ctx.accounts))
         {
             if c.router().routes().iter().any(|r| r == &route) {
                 // return if we are already routing to accounts
@@ -78,9 +91,33 @@ impl ChromePanelAction {
                 ctx.theme.save(*theme);
             }
 
-            Self::Toolbar(_toolbar_action) => {
-                tracing::info!("toolbar action");
-            }
+            Self::Toolbar(toolbar_action) => match toolbar_action {
+                ToolbarAction::Dave => chrome.switch_to_dave(),
+
+                ToolbarAction::Home => {
+                    if let Some(pubkey) = ctx
+                        .accounts
+                        .get_selected_account()
+                        .map(|acc| acc.key.pubkey)
+                    {
+                        Self::columns_switch(
+                            ctx,
+                            chrome,
+                            &TimelineKind::List(ListKind::Contact(pubkey)),
+                        );
+                    }
+                }
+
+                ToolbarAction::Notifications => {
+                    if let Some(pubkey) = ctx
+                        .accounts
+                        .get_selected_account()
+                        .map(|acc| acc.key.pubkey)
+                    {
+                        Self::columns_switch(ctx, chrome, &TimelineKind::Notifications(pubkey));
+                    }
+                }
+            },
 
             Self::Support => {
                 Self::columns_navigate(ctx, chrome, notedeck_columns::Route::Support);
@@ -136,6 +173,14 @@ impl Chrome {
         }
 
         None
+    }
+
+    fn switch_to_dave(&mut self) {
+        for (i, app) in self.apps.iter().enumerate() {
+            if let NotedeckApp::Dave(_) = app {
+                self.active = i as i32;
+            }
+        }
     }
 
     fn switch_to_columns(&mut self) {
@@ -282,10 +327,8 @@ impl Chrome {
                             action = Some(ToolbarAction::Dave);
                         }
                     }
-                } else if index == 2 {
-                    if notifications_button(ui).clicked() {
-                        action = Some(ToolbarAction::Notifications);
-                    }
+                } else if index == 2 && notifications_button(ui).clicked() {
+                    action = Some(ToolbarAction::Notifications);
                 }
 
                 action
@@ -350,7 +393,7 @@ impl Chrome {
             let rect = dave_sidebar_rect(ui);
             let dave_resp = dave_button(dave.avatar_mut(), ui, rect);
             if dave_resp.clicked() {
-                self.active = 1;
+                self.switch_to_dave();
             } else if dave_resp.hovered() {
                 notedeck_ui::show_pointer(ui);
             }
