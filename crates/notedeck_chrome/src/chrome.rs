@@ -34,6 +34,8 @@ impl Default for Chrome {
     }
 }
 
+/// When you click the toolbar button, these actions
+/// are returned
 pub enum ToolbarAction {
     Notifications,
     Dave,
@@ -255,29 +257,46 @@ impl Chrome {
     }
 
     fn toolbar(&mut self, ui: &mut egui::Ui) -> Option<ToolbarAction> {
-        let _tab_res = egui_tabs::Tabs::new(3)
+        use egui_tabs::{TabColor, Tabs};
+
+        let rs = Tabs::new(3)
             .selected(self.tab_selected)
-            //.hover_bg(TabColor::none())
-            //.selected_fg(TabColor::none())
-            //.selected_bg(TabColor::none())
-            //.hover_bg(TabColor::none())
-            //.hover_bg(TabColor::custom(egui::Color32::RED))
+            .hover_bg(TabColor::none())
+            .selected_fg(TabColor::none())
+            .selected_bg(TabColor::none())
             .height(Self::toolbar_height())
             .layout(Layout::centered_and_justified(egui::Direction::TopDown))
             .show(ui, |ui, state| {
                 let index = state.index();
 
+                let mut action: Option<ToolbarAction> = None;
+
                 if index == 0 {
-                    home_button(ui);
+                    if home_button(ui).clicked() {
+                        action = Some(ToolbarAction::Home);
+                    }
                 } else if index == 1 {
                     if let Some(dave) = self.get_dave() {
                         let rect = dave_toolbar_rect(ui);
-                        let _dave_resp = dave_button(dave.avatar_mut(), ui, rect);
+                        if dave_button(dave.avatar_mut(), ui, rect).clicked() {
+                            action = Some(ToolbarAction::Dave);
+                        }
                     }
                 } else if index == 2 {
-                    notifications_button(ui);
+                    if notifications_button(ui).clicked() {
+                        action = Some(ToolbarAction::Notifications);
+                    }
                 }
-            });
+
+                action
+            })
+            .inner();
+
+        for maybe_r in rs {
+            if maybe_r.inner.is_some() {
+                return maybe_r.inner;
+            }
+        }
 
         None
     }
