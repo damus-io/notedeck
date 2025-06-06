@@ -39,12 +39,41 @@ pub struct Columns {
     columns: Vec<Column>,
 
     /// The selected column for key navigation
-    selected: i32,
+    pub selected: i32,
 }
 
 impl Columns {
     pub fn new() -> Self {
         Columns::default()
+    }
+
+    /// Choose which column is selected. If in narrow mode, this
+    /// decides which column to render in the main view
+    pub fn select_column(&mut self, index: i32) {
+        let len = self.columns.len();
+
+        if index < (len as i32) {
+            self.selected = index;
+        }
+    }
+
+    /// Select the column based on the timeline kind.
+    ///
+    /// TODO: add timeline if missing?
+    pub fn select_by_kind(&mut self, kind: &TimelineKind) {
+        for (i, col) in self.columns.iter().enumerate() {
+            for route in col.router().routes() {
+                if let Some(timeline) = route.timeline_id() {
+                    if timeline == kind {
+                        tracing::info!("selecting {kind:?} column");
+                        self.select_column(i as i32);
+                        return;
+                    }
+                }
+            }
+        }
+
+        tracing::error!("failed to select {kind:?} column");
     }
 
     pub fn add_new_timeline_column(
