@@ -215,7 +215,7 @@ pub enum TimelineKind {
     /// Generic filter, references a hash of a filter
     Generic(u64),
 
-    Hashtag(String),
+    Hashtag(Vec<String>),
 }
 
 const NOTIFS_TOKEN_DEPRECATED: &str = "notifs";
@@ -265,7 +265,7 @@ impl Display for TimelineKind {
             TimelineKind::Notifications(_) => f.write_str("Notifications"),
             TimelineKind::Profile(_) => f.write_str("Profile"),
             TimelineKind::Universe => f.write_str("Universe"),
-            TimelineKind::Hashtag(_) => f.write_str("Hashtag"),
+            TimelineKind::Hashtag(_) => f.write_str("Hashtags"),
             TimelineKind::Thread(_) => f.write_str("Thread"),
             TimelineKind::Search(_) => f.write_str("Search"),
         }
@@ -334,7 +334,7 @@ impl TimelineKind {
             }
             TimelineKind::Hashtag(ht) => {
                 writer.write_token("hashtag");
-                writer.write_token(ht);
+                writer.write_token(&ht.join(" "));
             }
         }
     }
@@ -394,7 +394,13 @@ impl TimelineKind {
                 },
                 |p| {
                     p.parse_token("hashtag")?;
-                    Ok(TimelineKind::Hashtag(p.pull_token()?.to_string()))
+                    Ok(TimelineKind::Hashtag(
+                        p.pull_token()?
+                            .split_whitespace()
+                            .filter(|s| !s.is_empty())
+                            .map(|s| s.to_lowercase().to_string())
+                            .collect(),
+                    ))
                 },
                 |p| {
                     p.parse_token("search")?;
@@ -456,12 +462,19 @@ impl TimelineKind {
                 .build()]),
 
             TimelineKind::Hashtag(hashtag) => {
-                let url: &str = &hashtag.to_lowercase();
-                FilterState::ready(vec![Filter::new()
-                    .kinds([1])
-                    .limit(filter::default_limit())
-                    .tags([url], 't')
-                    .build()])
+                let filters = hashtag
+                    .iter()
+                    .filter(|tag| !tag.is_empty())
+                    .map(|tag| {
+                        Filter::new()
+                            .kinds([1])
+                            .limit(filter::default_limit())
+                            .tags([tag.to_lowercase().as_str()], 't')
+                            .build()
+                    })
+                    .collect::<Vec<_>>();
+
+                FilterState::ready(filters)
             }
 
             TimelineKind::Algo(algo_timeline) => match algo_timeline {
@@ -612,7 +625,7 @@ impl TimelineKind {
             TimelineKind::Thread(_root_id) => ColumnTitle::simple("Thread"),
             TimelineKind::Universe => ColumnTitle::simple("Universe"),
             TimelineKind::Generic(_) => ColumnTitle::simple("Custom"),
-            TimelineKind::Hashtag(hashtag) => ColumnTitle::formatted(hashtag.to_string()),
+            TimelineKind::Hashtag(hashtag) => ColumnTitle::formatted(hashtag.join(" ").to_string()),
         }
     }
 }
