@@ -2,12 +2,12 @@
 //#[cfg(target_arch = "wasm32")]
 //use wasm_bindgen::prelude::*;
 use crate::app::NotedeckApp;
-use egui::{vec2, Button, Label, Layout, RichText, ThemePreference, Widget};
+use egui::{Button, Label, Layout, RichText, ThemePreference, Widget, vec2};
 use egui_extras::{Size, StripBuilder};
 use nostrdb::{ProfileRecord, Transaction};
 use notedeck::{
-    profile::get_profile_url, App, AppAction, AppContext, NotedeckTextStyle, UserAccount,
-    WalletType,
+    App, AppAction, AppContext, NotedeckTextStyle, UserAccount, WalletType,
+    profile::get_profile_url,
 };
 use notedeck_columns::Damus;
 use notedeck_dave::{Dave, DaveAvatar};
@@ -215,7 +215,7 @@ impl Chrome {
     ) -> Option<ChromePanelAction> {
         ui.add_space(8.0);
 
-        let pfp_resp = self.pfp_button(ctx, ui);
+        let pfp_resp = pfp_button(ctx, ui);
         let settings_resp = settings_button(ui);
 
         let theme_action = match ui.ctx().theme() {
@@ -280,23 +280,6 @@ impl Chrome {
         } else {
             None
         }
-    }
-
-    fn pfp_button(&mut self, ctx: &mut AppContext, ui: &mut egui::Ui) -> egui::Response {
-        let max_size = ICON_WIDTH * ICON_EXPANSION_MULTIPLE; // max size of the widget
-        let helper = AnimationHelper::new(ui, "pfp-button", egui::vec2(max_size, max_size));
-
-        let min_pfp_size = ICON_WIDTH;
-        let cur_pfp_size = helper.scale_1d_pos(min_pfp_size);
-
-        let txn = Transaction::new(ctx.ndb).expect("should be able to create txn");
-        let profile_url = get_account_url(&txn, ctx.ndb, ctx.accounts.get_selected_account());
-
-        let mut widget = ProfilePic::new(ctx.img_cache, profile_url).size(cur_pfp_size);
-
-        ui.put(helper.get_animation_rect(), &mut widget);
-
-        helper.take_animation_response()
     }
 
     fn topdown_sidebar(&mut self, ui: &mut egui::Ui) {
@@ -549,4 +532,21 @@ fn chrome_handle_app_action(
             }
         }
     }
+}
+
+fn pfp_button(ctx: &mut AppContext, ui: &mut egui::Ui) -> egui::Response {
+    let max_size = ICON_WIDTH * ICON_EXPANSION_MULTIPLE; // max size of the widget
+    let helper = AnimationHelper::new(ui, "pfp-button", egui::vec2(max_size, max_size));
+
+    let min_pfp_size = ICON_WIDTH;
+    let cur_pfp_size = helper.scale_1d_pos(min_pfp_size);
+
+    let txn = Transaction::new(ctx.ndb).expect("should be able to create txn");
+    let profile_url = get_account_url(&txn, ctx.ndb, ctx.accounts.get_selected_account());
+
+    let mut widget = ProfilePic::new(ctx.img_cache, profile_url).size(cur_pfp_size);
+
+    ui.put(helper.get_animation_rect(), &mut widget);
+
+    helper.take_animation_response()
 }
