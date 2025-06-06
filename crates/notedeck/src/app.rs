@@ -12,7 +12,7 @@ use egui_winit::clipboard::Clipboard;
 use enostr::RelayPool;
 use nostrdb::{Config, Ndb, Transaction};
 use std::cell::RefCell;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::path::Path;
 use std::rc::Rc;
 use tracing::{error, info};
@@ -46,6 +46,7 @@ pub struct Notedeck {
     zaps: Zaps,
     frame_history: FrameHistory,
     job_pool: JobPool,
+    missing_events_ids: HashSet<[u8; 32]>,
 }
 
 /// Our chrome, which is basically nothing
@@ -143,6 +144,7 @@ impl Notedeck {
             .datapath
             .clone()
             .unwrap_or(data_path.as_ref().to_str().expect("db path ok").to_string());
+
         let path = DataPath::new(&data_path);
         let dbpath_str = parsed_args
             .dbpath
@@ -244,6 +246,7 @@ impl Notedeck {
             clipboard: Clipboard::new(None),
             zaps,
             job_pool,
+            missing_events_ids: HashSet::new(),
         }
     }
 
@@ -268,6 +271,7 @@ impl Notedeck {
             zaps: &mut self.zaps,
             frame_history: &mut self.frame_history,
             job_pool: &mut self.job_pool,
+            missing_events_ids: &mut self.missing_events_ids,
         }
     }
 

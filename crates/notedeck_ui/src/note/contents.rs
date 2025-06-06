@@ -9,7 +9,7 @@ use crate::{
 
 use egui::{Color32, Hyperlink, RichText};
 use enostr::KeypairUnowned;
-use nostrdb::{BlockType, Mention, Note, NoteKey, Transaction};
+use nostrdb::{BlockType, Filter, Mention, Note, NoteKey, Transaction};
 use tracing::warn;
 
 use notedeck::NoteContext;
@@ -64,6 +64,35 @@ impl egui::Widget for &mut NoteContents<'_, '_> {
     }
 }
 
+fn from_ndb_or_fetch<'a>(
+    note_context: &mut NoteContext,
+    txn: &'a Transaction,
+    id: &[u8; 32],
+) -> Result<Note<'a>, nostrdb::Error> {
+    let ndb_note = note_context.ndb.get_note_by_id(txn, id);
+    let sub_id = format!("note_{}", hex::encode(id));
+    let missing_events_ids = &mut *note_context.missing_events_ids;
+
+    if let Ok(note) = ndb_note {
+        if missing_events_ids.contains(id) {
+            note_context.pool.unsubscribe(sub_id);
+            missing_events_ids.remove(id);
+        }
+        return Ok(note);
+    }
+
+    if !missing_events_ids.contains(id) {
+        missing_events_ids.insert(*id);
+
+        note_context.pool.subscribe(
+            sub_id.clone(),
+            vec![Filter::new().ids([id]).limit(1).build()],
+        );
+    }
+
+    Err(nostrdb::Error::NotFound)
+}
+
 /// Render an inline note preview with a border. These are used when
 /// notes are references within a note
 #[allow(clippy::too_many_arguments)]
@@ -78,7 +107,7 @@ pub fn render_note_preview(
     note_options: NoteOptions,
     jobs: &mut JobsCache,
 ) -> NoteResponse {
-    let note = if let Ok(note) = note_context.ndb.get_note_by_id(txn, id) {
+    let note = if let Ok(note) = from_ndb_or_fetch(note_context, txn, id) {
         // TODO: support other preview kinds
         if note.kind() == 1 {
             note

@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use crate::{
     frame_history::FrameHistory, wallet::GlobalWallet, zaps::Zaps, Accounts, Args, DataPath,
     Images, JobPool, NoteCache, ThemeHandler, UnknownIds,
@@ -24,4 +26,5 @@ pub struct AppContext<'a> {
     pub zaps: &'a mut Zaps,
     pub frame_history: &'a mut FrameHistory,
     pub job_pool: &'a mut JobPool,
+    pub missing_events_ids: &'a mut HashSet<[u8; 32]>,
 }

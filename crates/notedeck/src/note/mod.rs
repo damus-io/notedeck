@@ -10,6 +10,7 @@ use enostr::{NoteId, RelayPool};
 use nostrdb::{Ndb, Note, NoteKey, QueryResult, Transaction};
 use std::borrow::Borrow;
 use std::cmp::Ordering;
+use std::collections::HashSet;
 use std::fmt;
 
 /// Aggregates dependencies to reduce the number of parameters
@@ -21,6 +22,7 @@ pub struct NoteContext<'d> {
     pub zaps: &'d mut Zaps,
     pub pool: &'d mut RelayPool,
     pub job_pool: &'d mut JobPool,
+    pub missing_events_ids: &'d mut HashSet<[u8; 32]>,
     pub current_account_has_wallet: bool,
 }
 
