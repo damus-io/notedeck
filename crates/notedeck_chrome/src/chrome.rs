@@ -172,7 +172,7 @@ impl Chrome {
                     });
 
                     ui.with_layout(Layout::bottom_up(egui::Align::Center), |ui| {
-                        if let Some(action) = self.bottomup_sidebar(ctx, ui) {
+                        if let Some(action) = bottomup_sidebar(ctx, ui) {
                             got_action = Some(action);
                         }
                     });
@@ -204,82 +204,6 @@ impl Chrome {
             });
 
         got_action
-    }
-
-    /// The section of the chrome sidebar that starts at the
-    /// bottom and goes up
-    fn bottomup_sidebar(
-        &mut self,
-        ctx: &mut AppContext,
-        ui: &mut egui::Ui,
-    ) -> Option<ChromePanelAction> {
-        ui.add_space(8.0);
-
-        let pfp_resp = pfp_button(ctx, ui);
-        let settings_resp = settings_button(ui);
-
-        let theme_action = match ui.ctx().theme() {
-            egui::Theme::Dark => {
-                let resp = ui
-                    .add(Button::new("☀").frame(false))
-                    .on_hover_text("Switch to light mode");
-                if resp.hovered() {
-                    notedeck_ui::show_pointer(ui);
-                }
-                if resp.clicked() {
-                    Some(ChromePanelAction::SaveTheme(ThemePreference::Light))
-                } else {
-                    None
-                }
-            }
-            egui::Theme::Light => {
-                let resp = ui
-                    .add(Button::new("🌙").frame(false))
-                    .on_hover_text("Switch to dark mode");
-                if resp.hovered() {
-                    notedeck_ui::show_pointer(ui);
-                }
-                if resp.clicked() {
-                    Some(ChromePanelAction::SaveTheme(ThemePreference::Dark))
-                } else {
-                    None
-                }
-            }
-        };
-
-        let support_resp = support_button(ui);
-
-        let wallet_resp = ui.add(wallet_button());
-
-        if ctx.args.debug {
-            ui.weak(format!("{}", ctx.frame_history.fps() as i32));
-            ui.weak(format!(
-                "{:10.1}",
-                ctx.frame_history.mean_frame_time() * 1e3
-            ));
-        }
-
-        if pfp_resp.hovered()
-            || settings_resp.hovered()
-            || support_resp.hovered()
-            || wallet_resp.hovered()
-        {
-            notedeck_ui::show_pointer(ui);
-        }
-
-        if pfp_resp.clicked() {
-            Some(ChromePanelAction::Account)
-        } else if settings_resp.clicked() {
-            Some(ChromePanelAction::Settings)
-        } else if theme_action.is_some() {
-            theme_action
-        } else if support_resp.clicked() {
-            Some(ChromePanelAction::Support)
-        } else if wallet_resp.clicked() {
-            Some(ChromePanelAction::Wallet)
-        } else {
-            None
-        }
     }
 
     fn topdown_sidebar(&mut self, ui: &mut egui::Ui) {
@@ -549,4 +473,76 @@ fn pfp_button(ctx: &mut AppContext, ui: &mut egui::Ui) -> egui::Response {
     ui.put(helper.get_animation_rect(), &mut widget);
 
     helper.take_animation_response()
+}
+
+/// The section of the chrome sidebar that starts at the
+/// bottom and goes up
+fn bottomup_sidebar(ctx: &mut AppContext, ui: &mut egui::Ui) -> Option<ChromePanelAction> {
+    ui.add_space(8.0);
+
+    let pfp_resp = pfp_button(ctx, ui);
+    let settings_resp = settings_button(ui);
+
+    let theme_action = match ui.ctx().theme() {
+        egui::Theme::Dark => {
+            let resp = ui
+                .add(Button::new("☀").frame(false))
+                .on_hover_text("Switch to light mode");
+            if resp.hovered() {
+                notedeck_ui::show_pointer(ui);
+            }
+            if resp.clicked() {
+                Some(ChromePanelAction::SaveTheme(ThemePreference::Light))
+            } else {
+                None
+            }
+        }
+        egui::Theme::Light => {
+            let resp = ui
+                .add(Button::new("🌙").frame(false))
+                .on_hover_text("Switch to dark mode");
+            if resp.hovered() {
+                notedeck_ui::show_pointer(ui);
+            }
+            if resp.clicked() {
+                Some(ChromePanelAction::SaveTheme(ThemePreference::Dark))
+            } else {
+                None
+            }
+        }
+    };
+
+    let support_resp = support_button(ui);
+
+    let wallet_resp = ui.add(wallet_button());
+
+    if ctx.args.debug {
+        ui.weak(format!("{}", ctx.frame_history.fps() as i32));
+        ui.weak(format!(
+            "{:10.1}",
+            ctx.frame_history.mean_frame_time() * 1e3
+        ));
+    }
+
+    if pfp_resp.hovered()
+        || settings_resp.hovered()
+        || support_resp.hovered()
+        || wallet_resp.hovered()
+    {
+        notedeck_ui::show_pointer(ui);
+    }
+
+    if pfp_resp.clicked() {
+        Some(ChromePanelAction::Account)
+    } else if settings_resp.clicked() {
+        Some(ChromePanelAction::Settings)
+    } else if theme_action.is_some() {
+        theme_action
+    } else if support_resp.clicked() {
+        Some(ChromePanelAction::Support)
+    } else if wallet_resp.clicked() {
+        Some(ChromePanelAction::Wallet)
+    } else {
+        None
+    }
 }
