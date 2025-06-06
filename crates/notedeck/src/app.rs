@@ -19,6 +19,7 @@ use tracing::{error, info};
 
 pub enum AppAction {
     Note(NoteAction),
+    ToggleChrome,
 }
 
 pub trait App {
