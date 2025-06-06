@@ -260,8 +260,16 @@ fn search_box(
             outer_margin: egui::Margin::ZERO,
             corner_radius: CornerRadius::same(18), // More rounded corners
             shadow: Default::default(),
-            fill: Color32::from_rgb(30, 30, 30), // Darker background to match screenshot
-            stroke: Stroke::new(1.0, Color32::from_rgb(60, 60, 60)),
+            fill: if ui.visuals().dark_mode {
+                Color32::from_rgb(30, 30, 30)
+            } else {
+                Color32::from_rgb(240, 240, 240)
+            },
+            stroke: if ui.visuals().dark_mode {
+                Stroke::new(1.0, Color32::from_rgb(60, 60, 60))
+            } else {
+                Stroke::new(1.0, Color32::from_rgb(200, 200, 200))
+            },
         };
 
         search_container
