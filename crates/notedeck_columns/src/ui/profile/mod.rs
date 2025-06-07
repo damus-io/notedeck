@@ -15,6 +15,7 @@ use notedeck::{
     NotedeckTextStyle, UnknownIds,
 };
 use notedeck_ui::{
+    app_images,
     jobs::JobsCache,
     profile::{about_section_widget, banner, display_name_widget},
     NoteOptions, ProfilePic,
@@ -237,9 +238,7 @@ fn handle_link(ui: &mut egui::Ui, website_url: &str) {
 }
 
 fn handle_lud16(ui: &mut egui::Ui, lud16: &str) {
-    ui.image(egui::include_image!(
-        "../../../../../assets/icons/zap_4x.png"
-    ));
+    ui.add(app_images::zap_image());
 
     let _ = ui.label(RichText::new(lud16).color(notedeck_ui::colors::PINK));
 }
