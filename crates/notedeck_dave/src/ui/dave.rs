@@ -216,6 +216,7 @@ impl<'a> DaveUi<'a> {
             zaps: ctx.zaps,
             pool: ctx.pool,
             job_pool: ctx.job_pool,
+            missing_events_ids: &mut ctx.missing_events_ids,
             current_account_has_wallet: false,
         };
 

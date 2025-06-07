@@ -399,6 +399,7 @@ fn render_nav_body(
         zaps: ctx.zaps,
         pool: ctx.pool,
         job_pool: ctx.job_pool,
+        missing_events_ids: &mut ctx.missing_events_ids,
         current_account_has_wallet: get_current_wallet(ctx.accounts, ctx.global_wallet).is_some(),
     };
     match top {

@@ -3304,6 +3304,7 @@ dependencies = [
  "ehttp",
  "enostr",
  "hashbrown",
+ "hex",
  "image",
  "nostrdb",
  "notedeck",
