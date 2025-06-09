@@ -497,8 +497,8 @@ fn notifications_button(ui: &mut egui::Ui) -> egui::Response {
     expanding_button(
         "notifications-button",
         24.0,
-        &egui::include_image!("../../../assets/icons/notifications_dark_4x.png"),
-        &egui::include_image!("../../../assets/icons/notifications_dark_4x.png"),
+        app_images::notifications_button_image(),
+        app_images::notifications_button_image(),
         ui,
     )
 }
@@ -507,8 +507,8 @@ fn home_button(ui: &mut egui::Ui) -> egui::Response {
     expanding_button(
         "home-button",
         24.0,
-        &egui::include_image!("../../../assets/icons/home-toolbar.png"),
-        &egui::include_image!("../../../assets/icons/home-toolbar.png"),
+        app_images::home_button_image(),
+        app_images::home_button_image(),
         ui,
     )
 }

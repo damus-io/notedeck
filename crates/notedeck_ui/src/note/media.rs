@@ -10,6 +10,7 @@ use notedeck::{
 };
 
 use crate::{
+    app_images,
     blur::{compute_blurhash, Blur, ObfuscationType, PointDimensions},
     gif::{handle_repaint, retrieve_latest_texture},
     images::{fetch_no_pfp_promise, get_render_state, ImageType},
@@ -537,8 +538,6 @@ fn render_blur_text(ui: &mut egui::Ui, url: &str, render_rect: egui::Rect) -> eg
 
     let text_style = NotedeckTextStyle::Button;
 
-    let icon_data = egui::include_image!("../../../../assets/icons/eye-slash-dark.png");
-
     let icon_size = helper.scale_1d_pos(30.0);
     let animation_fontid = FontId::new(
         helper.scale_1d_pos(get_font_size(ui.ctx(), &text_style)),
@@ -568,9 +567,13 @@ fn render_blur_text(ui: &mut egui::Ui, url: &str, render_rect: egui::Rect) -> eg
         egui::Rect::from_center_size(center, egui::vec2(icon_size, icon_size))
     };
 
-    egui::Image::new(icon_data)
-        .max_width(icon_size)
-        .paint_at(ui, icon_rect);
+    (if ui.visuals().dark_mode {
+        app_images::eye_slash_dark_image()
+    } else {
+        app_images::eye_slash_light_image()
+    })
+    .max_width(icon_size)
+    .paint_at(ui, icon_rect);
 
     let info_galley_pos = {
         let mut pos = icon_rect.center();

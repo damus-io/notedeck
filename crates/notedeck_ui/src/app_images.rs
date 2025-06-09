@@ -1,4 +1,9 @@
-use egui::{include_image, Image};
+use eframe::icon_data::from_png_bytes;
+use egui::{include_image, IconData, Image};
+
+pub fn app_icon() -> IconData {
+    from_png_bytes(include_bytes!("../../../assets/damus-app-icon.png")).expect("icon")
+}
 
 pub fn add_account_image() -> Image<'static> {
     Image::new(include_image!(
@@ -66,6 +71,12 @@ pub fn disconnected_image() -> Image<'static> {
     ))
 }
 
+pub fn edit_dark_image() -> Image<'static> {
+    Image::new(include_image!(
+        "../../../assets/icons/edit_icon_4x_dark.png"
+    ))
+}
+
 pub fn eye_dark_image() -> Image<'static> {
     Image::new(include_image!("../../../assets/icons/eye-dark.png"))
 }
@@ -102,10 +113,26 @@ pub fn help_light_image() -> Image<'static> {
     ))
 }
 
+pub fn home_button_image() -> Image<'static> {
+    Image::new(include_image!("../../../assets/icons/home-toolbar.png"))
+}
+
 pub fn home_image() -> Image<'static> {
     Image::new(include_image!(
         "../../../assets/icons/home_icon_dark_4x.png"
     ))
+}
+
+pub fn key_image() -> Image<'static> {
+    Image::new(include_image!("../../../assets/icons/key_4x.png"))
+}
+
+pub fn link_image() -> Image<'static> {
+    Image::new(include_image!("../../../assets/icons/links_4x.png"))
+}
+
+pub fn new_message_image() -> Image<'static> {
+    Image::new(include_image!("../../../assets/icons/newmessage_64.png"))
 }
 
 pub fn new_deck_image() -> Image<'static> {
@@ -114,10 +141,31 @@ pub fn new_deck_image() -> Image<'static> {
     ))
 }
 
+pub fn notifications_button_image() -> Image<'static> {
+    Image::new(include_image!(
+        "../../../assets/icons/notifications_dark_4x.png"
+    ))
+}
+
 pub fn notifications_image() -> Image<'static> {
     Image::new(include_image!(
         "../../../assets/icons/notifications_icon_dark_4x.png"
     ))
+}
+pub fn repost_dark_image() -> Image<'static> {
+    Image::new(include_image!("../../../assets/icons/repost_icon_4x.png"))
+}
+
+pub fn repost_light_image() -> Image<'static> {
+    Image::new(include_image!("../../../assets/icons/repost_light_4x.png"))
+}
+
+pub fn reply_dark_image() -> Image<'static> {
+    Image::new(include_image!("../../../assets/icons/reply.png"))
+}
+
+pub fn reply_light_image() -> Image<'static> {
+    Image::new(include_image!("../../../assets/icons/reply-dark.png"))
 }
 
 pub fn profile_image() -> Image<'static> {
@@ -138,6 +186,10 @@ pub fn universe_image() -> Image<'static> {
     Image::new(include_image!(
         "../../../assets/icons/universe_icon_dark_4x.png"
     ))
+}
+
+pub fn verified_image() -> Image<'static> {
+    Image::new(include_image!("../../../assets/icons/verified_4x.png"))
 }
 
 pub fn media_upload_dark_image() -> Image<'static> {
