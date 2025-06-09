@@ -784,6 +784,7 @@ mod preview {
                 zaps: app.zaps,
                 pool: app.pool,
                 job_pool: app.job_pool,
+                unknown_ids: app.unknown_ids,
                 current_account_has_wallet: false,
             };
 
