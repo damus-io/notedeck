@@ -534,9 +534,16 @@ fn render_damus_mobile(
     let mut rect = ui.available_rect_before_wrap();
     let mut app_action: Option<AppAction> = None;
 
+    let active_col = app.columns_mut(app_ctx.accounts).selected as usize;
     if !app.columns(app_ctx.accounts).columns().is_empty() {
-        let r = nav::render_nav(0, ui.available_rect_before_wrap(), app, app_ctx, ui)
-            .process_render_nav_response(app, app_ctx, ui);
+        let r = nav::render_nav(
+            active_col,
+            ui.available_rect_before_wrap(),
+            app,
+            app_ctx,
+            ui,
+        )
+        .process_render_nav_response(app, app_ctx, ui);
         if let Some(r) = &r {
             match r {
                 ProcessNavResult::SwitchOccurred => {
@@ -563,7 +570,7 @@ fn render_damus_mobile(
         .clicked()
         && !app.columns(app_ctx.accounts).columns().is_empty()
     {
-        let router = app.columns_mut(app_ctx.accounts).columns_mut()[0].router_mut();
+        let router = app.columns_mut(app_ctx.accounts).selected().router_mut();
         if router.top() == &Route::ComposeNote {
             router.go_back();
         } else {

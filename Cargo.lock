@@ -1477,7 +1477,7 @@ dependencies = [
 [[package]]
 name = "egui_tabs"
 version = "0.2.1"
-source = "git+https://github.com/damus-io/egui-tabs?rev=881d86bdf8b424563bf0869eaab5ab9a69e012a4#881d86bdf8b424563bf0869eaab5ab9a69e012a4"
+source = "git+https://github.com/damus-io/egui-tabs?rev=6eb91740577b374a8a6658c09c9a4181299734d0#6eb91740577b374a8a6658c09c9a4181299734d0"
 dependencies = [
  "egui",
  "egui_extras",
@@ -3198,6 +3198,7 @@ dependencies = [
  "egui",
  "egui-winit",
  "egui_extras",
+ "egui_tabs",
  "nostrdb",
  "notedeck",
  "notedeck_columns",

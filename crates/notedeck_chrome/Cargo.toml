@@ -10,6 +10,7 @@ description = "The nostr browser"
 
 [dependencies]
 eframe = { workspace = true }
+egui_tabs = { workspace = true }
 egui_extras = { workspace = true }
 egui = { workspace = true }
 notedeck_columns = { workspace = true }
