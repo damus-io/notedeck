@@ -6,12 +6,11 @@ use crate::{
 };
 
 use enostr::Pubkey;
-use notedeck::{Accounts, MuteFun, NoteContext, UnknownIds};
+use notedeck::{Accounts, MuteFun, NoteContext};
 use notedeck_ui::{jobs::JobsCache, NoteOptions};
 
 #[allow(clippy::too_many_arguments)]
 pub fn render_timeline_route(
-    unknown_ids: &mut UnknownIds,
     timeline_cache: &mut TimelineCache,
     accounts: &mut Accounts,
     kind: &TimelineKind,
@@ -50,7 +49,6 @@ pub fn render_timeline_route(
                     pubkey,
                     accounts,
                     timeline_cache,
-                    unknown_ids,
                     col,
                     ui,
                     &accounts.mutefun(),
@@ -79,7 +77,6 @@ pub fn render_timeline_route(
 
 #[allow(clippy::too_many_arguments)]
 pub fn render_thread_route(
-    unknown_ids: &mut UnknownIds,
     threads: &mut Threads,
     accounts: &mut Accounts,
     selection: &ThreadSelection,
@@ -95,7 +92,6 @@ pub fn render_thread_route(
 
     ui::ThreadView::new(
         threads,
-        unknown_ids,
         selection.selected_or_root(),
         note_options,
         &accounts.mutefun(),
@@ -113,7 +109,6 @@ pub fn render_profile_route(
     pubkey: &Pubkey,
     accounts: &Accounts,
     timeline_cache: &mut TimelineCache,
-    unknown_ids: &mut UnknownIds,
     col: usize,
     ui: &mut egui::Ui,
     is_muted: &MuteFun,
@@ -127,7 +122,6 @@ pub fn render_profile_route(
         col,
         timeline_cache,
         note_options,
-        unknown_ids,
         is_muted,
         note_context,
         jobs,

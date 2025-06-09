@@ -3,7 +3,7 @@ use egui_virtual_list::VirtualList;
 use enostr::KeypairUnowned;
 use nostrdb::{Note, Transaction};
 use notedeck::note::root_note_id_from_selected_id;
-use notedeck::{MuteFun, NoteAction, NoteContext, UnknownIds};
+use notedeck::{MuteFun, NoteAction, NoteContext};
 use notedeck_ui::jobs::JobsCache;
 use notedeck_ui::note::NoteResponse;
 use notedeck_ui::{NoteOptions, NoteView};
@@ -12,7 +12,6 @@ use crate::timeline::thread::{NoteSeenFlags, ParentState, Threads};
 
 pub struct ThreadView<'a, 'd> {
     threads: &'a mut Threads,
-    unknown_ids: &'a mut UnknownIds,
     selected_note_id: &'a [u8; 32],
     note_options: NoteOptions,
     col: usize,
@@ -27,7 +26,6 @@ impl<'a, 'd> ThreadView<'a, 'd> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         threads: &'a mut Threads,
-        unknown_ids: &'a mut UnknownIds,
         selected_note_id: &'a [u8; 32],
         note_options: NoteOptions,
         is_muted: &'a MuteFun,
@@ -38,7 +36,6 @@ impl<'a, 'd> ThreadView<'a, 'd> {
         let id_source = egui::Id::new("threadscroll_threadview");
         ThreadView {
             threads,
-            unknown_ids,
             selected_note_id,
             note_options,
             id_source,
@@ -96,7 +93,7 @@ impl<'a, 'd> ThreadView<'a, 'd> {
             self.note_context.note_cache,
             self.note_context.ndb,
             txn,
-            self.unknown_ids,
+            self.note_context.unknown_ids,
             self.col,
         );
 

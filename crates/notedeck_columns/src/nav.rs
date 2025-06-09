@@ -420,11 +420,11 @@ fn render_nav_body(
         zaps: ctx.zaps,
         pool: ctx.pool,
         job_pool: ctx.job_pool,
+        unknown_ids: ctx.unknown_ids,
         current_account_has_wallet: get_current_wallet(ctx.accounts, ctx.global_wallet).is_some(),
     };
     match top {
         Route::Timeline(kind) => render_timeline_route(
-            ctx.unknown_ids,
             &mut app.timeline_cache,
             ctx.accounts,
             kind,
@@ -436,7 +436,6 @@ fn render_nav_body(
             &mut app.jobs,
         ),
         Route::Thread(selection) => render_thread_route(
-            ctx.unknown_ids,
             &mut app.threads,
             ctx.accounts,
             selection,
