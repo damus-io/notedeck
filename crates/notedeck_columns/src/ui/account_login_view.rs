@@ -1,11 +1,10 @@
 use crate::login_manager::AcquireKeyState;
 use crate::ui::{Preview, PreviewConfig};
-use egui::{
-    Align, Button, Color32, Frame, Image, InnerResponse, Margin, RichText, TextBuffer, Vec2,
-};
+use egui::{Align, Button, Color32, Frame, InnerResponse, Margin, RichText, TextBuffer, Vec2};
 use egui::{Layout, TextEdit};
 use enostr::Keypair;
 use notedeck::{fonts::get_font_size, AppAction, NotedeckTextStyle};
+use notedeck_ui::app_images;
 
 pub struct AccountLoginView<'a> {
     manager: &'a mut AcquireKeyState,
@@ -133,15 +132,15 @@ fn login_textedit(manager: &mut AcquireKeyState) -> TextEdit {
 
 fn eye_button(ui: &mut egui::Ui, is_visible: bool) -> egui::Response {
     let is_dark_mode = ui.visuals().dark_mode;
-    let icon = Image::new(if is_visible && is_dark_mode {
-        egui::include_image!("../../../../assets/icons/eye-dark.png")
+    let icon = if is_visible && is_dark_mode {
+        app_images::eye_dark_image()
     } else if is_visible {
-        egui::include_image!("../../../../assets/icons/eye-light.png")
+        app_images::eye_light_image()
     } else if is_dark_mode {
-        egui::include_image!("../../../../assets/icons/eye-slash-dark.png")
+        app_images::eye_slash_dark_image()
     } else {
-        egui::include_image!("../../../../assets/icons/eye-slash-light.png")
-    });
+        app_images::eye_slash_light_image()
+    };
     ui.add(Button::image(icon).frame(false))
 }
 

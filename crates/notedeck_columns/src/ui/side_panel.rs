@@ -12,7 +12,7 @@ use crate::{
 use notedeck::{Accounts, UserAccount};
 use notedeck_ui::{
     anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},
-    colors, View,
+    app_images, colors, View,
 };
 
 use super::configure_deck::deck_icon;
@@ -105,7 +105,7 @@ impl<'a> DesktopSidePanel<'a> {
                         compose_resp.on_hover_cursor(egui::CursorIcon::NotAllowed)
                     };
                     let search_resp = ui.add(search_button());
-                    let column_resp = ui.add(add_column_button(dark_mode));
+                    let column_resp = ui.add(add_column_button());
 
                     ui.add(Separator::default().horizontal().spacing(8.0).shrink(4.0));
 
@@ -295,18 +295,16 @@ impl<'a> DesktopSidePanel<'a> {
     }
 }
 
-fn add_column_button(dark_mode: bool) -> impl Widget {
+fn add_column_button() -> impl Widget {
     move |ui: &mut egui::Ui| {
         let img_size = 24.0;
         let max_size = ICON_WIDTH * ICON_EXPANSION_MULTIPLE; // max size of the widget
 
-        let img_data = if dark_mode {
-            egui::include_image!("../../../../assets/icons/add_column_dark_4x.png")
+        let img = if ui.visuals().dark_mode {
+            app_images::add_column_dark_image()
         } else {
-            egui::include_image!("../../../../assets/icons/add_column_light_4x.png")
+            app_images::add_column_light_image()
         };
-
-        let img = egui::Image::new(img_data).max_width(img_size);
 
         let helper = AnimationHelper::new(ui, "add-column-button", vec2(max_size, max_size));
 
@@ -371,8 +369,7 @@ fn add_deck_button() -> impl Widget {
         let img_size = 40.0;
 
         let max_size = ICON_WIDTH * ICON_EXPANSION_MULTIPLE; // max size of the widget
-        let img_data = egui::include_image!("../../../../assets/icons/new_deck_icon_4x_dark.png");
-        let img = egui::Image::new(img_data).max_width(img_size);
+        let img = app_images::new_deck_image().max_width(img_size);
 
         let helper = AnimationHelper::new(ui, "new-deck-icon", vec2(max_size, max_size));
 

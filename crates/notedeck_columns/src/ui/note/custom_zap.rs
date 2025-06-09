@@ -9,7 +9,7 @@ use nostrdb::{Ndb, ProfileRecord, Transaction};
 use notedeck::{
     fonts::get_font_size, get_profile_url, name::get_display_name, Images, NotedeckTextStyle,
 };
-use notedeck_ui::{colors, profile::display_name_widget, AnimationHelper, ProfilePic};
+use notedeck_ui::{app_images, colors, profile::display_name_widget, AnimationHelper, ProfilePic};
 
 use crate::ui::widgets::styled_button_toggleable;
 
@@ -143,10 +143,9 @@ fn show_title(ui: &mut egui::Ui) {
             );
             painter.circle_filled(rect.center(), max_size / 2.0, circle_color);
 
-            let img_data = egui::include_image!("../../../../../assets/icons/filled_zap_icon.svg");
             let zap_max_width = 25.16;
             let zap_max_height = 29.34;
-            let img = egui::Image::new(img_data)
+            let img = app_images::filled_zap_image()
                 .max_width(zap_max_width)
                 .max_height(zap_max_height);
 
