@@ -12,7 +12,7 @@ use crate::{
 };
 use notedeck::{
     name::get_display_name, profile::get_profile_url, Accounts, MuteFun, NoteAction, NoteContext,
-    NotedeckTextStyle, UnknownIds,
+    NotedeckTextStyle,
 };
 use notedeck_ui::{
     jobs::JobsCache,
@@ -26,7 +26,6 @@ pub struct ProfileView<'a, 'd> {
     col_id: usize,
     timeline_cache: &'a mut TimelineCache,
     note_options: NoteOptions,
-    unknown_ids: &'a mut UnknownIds,
     is_muted: &'a MuteFun,
     note_context: &'a mut NoteContext<'d>,
     jobs: &'a mut JobsCache,
@@ -45,7 +44,6 @@ impl<'a, 'd> ProfileView<'a, 'd> {
         col_id: usize,
         timeline_cache: &'a mut TimelineCache,
         note_options: NoteOptions,
-        unknown_ids: &'a mut UnknownIds,
         is_muted: &'a MuteFun,
         note_context: &'a mut NoteContext<'d>,
         jobs: &'a mut JobsCache,
@@ -56,7 +54,6 @@ impl<'a, 'd> ProfileView<'a, 'd> {
             col_id,
             timeline_cache,
             note_options,
-            unknown_ids,
             is_muted,
             note_context,
             jobs,
@@ -103,7 +100,7 @@ impl<'a, 'd> ProfileView<'a, 'd> {
             if let Err(e) = profile_timeline.poll_notes_into_view(
                 self.note_context.ndb,
                 &txn,
-                self.unknown_ids,
+                self.note_context.unknown_ids,
                 self.note_context.note_cache,
                 reversed,
             ) {

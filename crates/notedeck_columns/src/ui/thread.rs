@@ -1,6 +1,6 @@
 use enostr::KeypairUnowned;
 use nostrdb::Transaction;
-use notedeck::{MuteFun, NoteAction, NoteContext, RootNoteId, UnknownIds};
+use notedeck::{MuteFun, NoteAction, NoteContext, RootNoteId};
 use notedeck_ui::jobs::JobsCache;
 use notedeck_ui::NoteOptions;
 use tracing::error;
@@ -10,7 +10,6 @@ use crate::ui::timeline::TimelineTabView;
 
 pub struct ThreadView<'a, 'd> {
     timeline_cache: &'a mut TimelineCache,
-    unknown_ids: &'a mut UnknownIds,
     selected_note_id: &'a [u8; 32],
     note_options: NoteOptions,
     id_source: egui::Id,
@@ -24,7 +23,6 @@ impl<'a, 'd> ThreadView<'a, 'd> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         timeline_cache: &'a mut TimelineCache,
-        unknown_ids: &'a mut UnknownIds,
         selected_note_id: &'a [u8; 32],
         note_options: NoteOptions,
         is_muted: &'a MuteFun,
@@ -35,7 +33,6 @@ impl<'a, 'd> ThreadView<'a, 'd> {
         let id_source = egui::Id::new("threadscroll_threadview");
         ThreadView {
             timeline_cache,
-            unknown_ids,
             selected_note_id,
             note_options,
             id_source,
@@ -98,7 +95,7 @@ impl<'a, 'd> ThreadView<'a, 'd> {
             if let Err(err) = thread_timeline.poll_notes_into_view(
                 self.note_context.ndb,
                 &txn,
-                self.unknown_ids,
+                self.note_context.unknown_ids,
                 self.note_context.note_cache,
                 reversed,
             ) {

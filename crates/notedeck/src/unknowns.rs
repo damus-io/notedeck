@@ -201,7 +201,11 @@ impl UnknownIds {
             return;
         }
 
-        self.ids.entry(UnknownId::Pubkey(*pubkey)).or_default();
+        let unknown_id = UnknownId::Pubkey(*pubkey);
+        if self.ids.contains_key(&unknown_id) {
+            return;
+        }
+        self.ids.entry(unknown_id).or_default();
         self.mark_updated();
     }
 
@@ -211,7 +215,11 @@ impl UnknownIds {
             return;
         }
 
-        self.ids.entry(UnknownId::Id(*note_id)).or_default();
+        let unknown_id = UnknownId::Id(*note_id);
+        if self.ids.contains_key(&unknown_id) {
+            return;
+        }
+        self.ids.entry(unknown_id).or_default();
         self.mark_updated();
     }
 }

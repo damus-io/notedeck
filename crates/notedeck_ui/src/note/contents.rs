@@ -8,7 +8,7 @@ use crate::{
 };
 
 use egui::{Color32, Hyperlink, RichText};
-use enostr::KeypairUnowned;
+use enostr::{KeypairUnowned, NoteId};
 use nostrdb::{BlockType, Mention, Note, NoteKey, Transaction};
 use tracing::warn;
 
@@ -89,6 +89,10 @@ pub fn render_note_preview(
             ));
         }
     } else {
+        note_context
+            .unknown_ids
+            .add_note_id_if_missing(note_context.ndb, txn, &NoteId::new(*id));
+
         return NoteResponse::new(ui.colored_label(Color32::RED, "TODO: COULD NOT LOAD"));
         /*
         return ui
