@@ -3,6 +3,7 @@ pub mod blur;
 pub mod colors;
 pub mod constants;
 pub mod contacts;
+pub mod context_menu;
 pub mod gif;
 pub mod icons;
 pub mod images;
