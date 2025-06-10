@@ -4,11 +4,14 @@ use egui::{
     Align, Button, Color32, Frame, Image, InnerResponse, Margin, RichText, TextBuffer, Vec2,
 };
 use egui::{Layout, TextEdit};
+use egui_winit::clipboard::Clipboard;
 use enostr::Keypair;
 use notedeck::{fonts::get_font_size, AppAction, NotedeckTextStyle};
+use notedeck_ui::context_menu::{input_context, PasteBehavior};
 
 pub struct AccountLoginView<'a> {
     manager: &'a mut AcquireKeyState,
+    clipboard: &'a mut Clipboard,
 }
 
 pub enum AccountLoginResponse {
@@ -17,8 +20,8 @@ pub enum AccountLoginResponse {
 }
 
 impl<'a> AccountLoginView<'a> {
-    pub fn new(state: &'a mut AcquireKeyState) -> Self {
-        AccountLoginView { manager: state }
+    pub fn new(manager: &'a mut AcquireKeyState, clipboard: &'a mut Clipboard) -> Self {
+        AccountLoginView { manager, clipboard }
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui) -> InnerResponse<Option<AccountLoginResponse>> {
@@ -42,7 +45,9 @@ impl<'a> AccountLoginView<'a> {
                     let button_width = 32.0;
                     let text_edit_width = available_width - button_width;
 
-                    ui.add_sized([text_edit_width, 40.0], login_textedit(self.manager));
+                    let textedit_resp = ui.add_sized([text_edit_width, 40.0], login_textedit(self.manager));
+                    input_context(&textedit_resp, self.clipboard, self.manager.input_buffer(), PasteBehavior::Clear);
+
                     if eye_button(ui, self.manager.password_visible()).clicked() {
                         self.manager.toggle_password_visibility();
                     }
@@ -154,12 +159,8 @@ mod preview {
     }
 
     impl App for AccountLoginPreview {
-        fn update(
-            &mut self,
-            _app_ctx: &mut AppContext<'_>,
-            ui: &mut egui::Ui,
-        ) -> Option<AppAction> {
-            AccountLoginView::new(&mut self.manager).ui(ui);
+        fn update(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> Option<AppAction> {
+            AccountLoginView::new(&mut self.manager, ctx.clipboard).ui(ui);
 
             None
         }

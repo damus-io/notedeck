@@ -15,6 +15,7 @@ use crate::{
         accounts::{AccountsView, AccountsViewResponse},
     },
 };
+use egui_winit::clipboard::Clipboard;
 use tracing::info;
 
 mod route;
@@ -31,6 +32,7 @@ pub fn render_accounts_route(
     accounts: &mut Accounts,
     decks: &mut DecksCache,
     login_state: &mut AcquireKeyState,
+    clipboard: &mut Clipboard,
     route: AccountsRoute,
 ) -> AddAccountAction {
     let resp = match route {
@@ -39,7 +41,7 @@ pub fn render_accounts_route(
             .inner
             .map(AccountsRouteResponse::Accounts),
 
-        AccountsRoute::AddAccount => AccountLoginView::new(login_state)
+        AccountsRoute::AddAccount => AccountLoginView::new(login_state, clipboard)
             .ui(ui)
             .inner
             .map(AccountsRouteResponse::AddAccount),

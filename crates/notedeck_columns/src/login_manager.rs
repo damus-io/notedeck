@@ -28,6 +28,10 @@ impl<'a> AcquireKeyState {
         textedit_closure(&mut self.desired_key)
     }
 
+    pub fn input_buffer(&mut self) -> &mut String {
+        &mut self.desired_key
+    }
+
     /// User pressed the 'acquire' button
     pub fn apply_acquire(&'a mut self) {
         let new_promise = match &self.promise_query {

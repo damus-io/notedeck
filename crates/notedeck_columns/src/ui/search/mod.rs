@@ -6,7 +6,12 @@ use crate::{timeline::TimelineTab, ui::timeline::TimelineTabView};
 use egui_winit::clipboard::Clipboard;
 use nostrdb::{Filter, Ndb, Transaction};
 use notedeck::{MuteFun, NoteAction, NoteContext, NoteRef};
-use notedeck_ui::{icons::search_icon, jobs::JobsCache, padding, NoteOptions};
+use notedeck_ui::{
+    context_menu::{input_context, PasteBehavior},
+    icons::search_icon,
+    jobs::JobsCache,
+    padding, NoteOptions,
+};
 use std::time::{Duration, Instant};
 use tracing::{error, info, warn};
 
@@ -296,7 +301,7 @@ fn search_box(
                             .frame(false),
                     );
 
-                    notedeck_ui::context_menu::input_context(&response, clipboard, input);
+                    input_context(&response, clipboard, input, PasteBehavior::Append);
 
                     let mut requested_focus = false;
                     if focus_state == FocusState::ShouldRequestFocus {

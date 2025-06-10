@@ -423,6 +423,7 @@ fn render_nav_body(
                 ctx.accounts,
                 &mut app.decks_cache,
                 &mut app.view_state.login,
+                ctx.clipboard,
                 *amr,
             );
             let txn = Transaction::new(ctx.ndb).expect("txn");
