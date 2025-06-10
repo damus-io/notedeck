@@ -80,6 +80,9 @@ pub fn render_timeline_route(
             // default truncated everywher eelse
             note_options.set_truncate(false);
 
+            // text is selectable in threads
+            note_options.set_selectable_text(true);
+
             ui::ThreadView::new(
                 timeline_cache,
                 unknown_ids,
