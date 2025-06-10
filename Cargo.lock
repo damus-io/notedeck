@@ -3300,6 +3300,7 @@ dependencies = [
  "bitflags 2.9.0",
  "blurhash",
  "egui",
+ "egui-winit",
  "egui_extras",
  "ehttp",
  "enostr",
@@ -3309,6 +3310,8 @@ dependencies = [
  "notedeck",
  "poll-promise",
  "profiling",
+ "strum",
+ "strum_macros",
  "tokio",
  "tracing",
 ]

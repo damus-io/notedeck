@@ -6,6 +6,9 @@ version.workspace = true
 [dependencies]
 egui = { workspace = true }
 egui_extras = { workspace = true }
+egui-winit = { workspace = true }
+strum_macros = { workspace = true }
+strum = { workspace = true }
 ehttp = { workspace = true }
 nostrdb = { workspace = true }
 tracing = { workspace = true }
