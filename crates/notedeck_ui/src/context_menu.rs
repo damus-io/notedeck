@@ -3,7 +3,8 @@ use egui_winit::clipboard::Clipboard;
 
 fn handle_paste(clipboard: &mut Clipboard, input: &mut String) {
     if let Some(text) = clipboard.get() {
-        input.clear();
+        // clear should be a separate action imo
+        //input.clear();
         input.push_str(&text);
     }
 }
