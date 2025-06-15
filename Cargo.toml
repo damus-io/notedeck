@@ -90,12 +90,12 @@ strip = true        # Strip symbols from binary*
 #egui_extras = { path = "/home/jb55/dev/github/emilk/egui/crates/egui_extras" }
 #epaint = { path = "/home/jb55/dev/github/emilk/egui/crates/epaint" }
 
-egui = { git = "https://github.com/damus-io/egui", rev = "05beb0354c293a0e6cf4fac414b6c3b5f59adf51" }
-eframe = { git = "https://github.com/damus-io/egui", rev = "05beb0354c293a0e6cf4fac414b6c3b5f59adf51" }
-egui-winit = { git = "https://github.com/damus-io/egui", rev = "05beb0354c293a0e6cf4fac414b6c3b5f59adf51" }
-egui-wgpu = { git = "https://github.com/damus-io/egui", rev = "05beb0354c293a0e6cf4fac414b6c3b5f59adf51" }
-egui_extras = { git = "https://github.com/damus-io/egui", rev = "05beb0354c293a0e6cf4fac414b6c3b5f59adf51" }
-epaint = { git = "https://github.com/damus-io/egui", rev = "05beb0354c293a0e6cf4fac414b6c3b5f59adf51" }
+egui = { git = "https://github.com/damus-io/egui", rev = "73a831ed43d3a8592611e2948b505add88d8aba2" }
+eframe = { git = "https://github.com/damus-io/egui", rev = "73a831ed43d3a8592611e2948b505add88d8aba2" }
+egui-winit = { git = "https://github.com/damus-io/egui", rev = "73a831ed43d3a8592611e2948b505add88d8aba2" }
+egui-wgpu = { git = "https://github.com/damus-io/egui", rev = "73a831ed43d3a8592611e2948b505add88d8aba2" }
+egui_extras = { git = "https://github.com/damus-io/egui", rev = "73a831ed43d3a8592611e2948b505add88d8aba2" }
+epaint = { git = "https://github.com/damus-io/egui", rev = "73a831ed43d3a8592611e2948b505add88d8aba2" }
 puffin = { git = "https://github.com/jb55/puffin", package = "puffin", rev = "c6a6242adaf90b6292c0f462d2acd34d96d224d2" }
 puffin_egui = { git = "https://github.com/jb55/puffin", package = "puffin_egui", rev = "c6a6242adaf90b6292c0f462d2acd34d96d224d2" }
 #winit = { git = "https://github.com/damus-io/winit", rev = "14d61a74bee0c9863abe7ef28efae2c4d8bd3743" }
