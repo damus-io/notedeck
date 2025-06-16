@@ -50,6 +50,7 @@ mkShell ({
       android-nixpkgs = callPackage (fetchTarball android) { };
       #ndk-version = "24.0.8215888";
       ndk-version = "27.2.12479018";
+      android-version = "31";
 
       android-sdk = android-nixpkgs.sdk (sdkPkgs: with sdkPkgs; [
         cmdline-tools-latest
@@ -67,6 +68,7 @@ mkShell ({
     {
       buildInputs = [ android-sdk ];
       ANDROID_NDK_ROOT = android-ndk-path;
+      ANDROID_JAR = "${android-sdk-path}/platforms/android-${android-version}/android.jar";
       GRADLE_OPTS = "-Dorg.gradle.project.android.aapt2FromMavenOverride=${aapt}/bin/aapt2";
     }
   )
