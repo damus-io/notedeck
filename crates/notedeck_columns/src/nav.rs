@@ -253,6 +253,10 @@ pub enum RouterAction {
     /// chrome atm
     PfpClicked,
     RouteTo(Route, RouterType),
+    Overlay {
+        route: Route,
+        make_new: bool,
+    },
 }
 
 pub enum RouterType {
@@ -289,6 +293,14 @@ impl RouterAction {
                     None
                 }
             },
+            RouterAction::Overlay { route, make_new } => {
+                if make_new {
+                    stack_router.route_to_overlaid_new(route);
+                } else {
+                    stack_router.route_to_overlaid(route);
+                }
+                None
+            }
         }
     }
 
