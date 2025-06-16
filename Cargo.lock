@@ -3303,6 +3303,7 @@ dependencies = [
  "egui_virtual_list",
  "ehttp",
  "enostr",
+ "hashbrown",
  "hex",
  "human_format",
  "image",
