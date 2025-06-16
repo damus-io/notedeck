@@ -1554,6 +1554,7 @@ version = "0.3.0"
 dependencies = [
  "bech32",
  "ewebsock",
+ "hashbrown",
  "hex",
  "mio",
  "nostr 0.37.0",
