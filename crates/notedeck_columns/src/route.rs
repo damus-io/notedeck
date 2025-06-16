@@ -1,6 +1,9 @@
 use enostr::{NoteId, Pubkey};
 use notedeck::{NoteZapTargetOwned, WalletType};
-use std::fmt::{self};
+use std::{
+    fmt::{self},
+    ops::Range,
+};
 
 use crate::{
     accounts::AccountsRoute,
@@ -250,6 +253,9 @@ pub struct Router<R: Clone> {
     pub returning: bool,
     pub navigating: bool,
     replacing: bool,
+
+    // An overlay captures a range of routes where only one will persist when going back, the most recent added
+    overlay_ranges: Vec<Range<usize>>,
 }
 
 impl<R: Clone> Router<R> {
@@ -265,12 +271,23 @@ impl<R: Clone> Router<R> {
             returning,
             navigating,
             replacing,
+            overlay_ranges: Vec::new(),
         }
     }
 
     pub fn route_to(&mut self, route: R) {
         self.navigating = true;
         self.routes.push(route);
+    }
+
+    pub fn route_to_overlaid(&mut self, route: R) {
+        self.route_to(route);
+        self.set_overlaying();
+    }
+
+    pub fn route_to_overlaid_new(&mut self, route: R) {
+        self.route_to(route);
+        self.new_overlay();
     }
 
     // Route to R. Then when it is successfully placed, should call `remove_previous_routes` to remove all previous routes
@@ -286,6 +303,18 @@ impl<R: Clone> Router<R> {
             return None;
         }
         self.returning = true;
+
+        if let Some(range) = self.overlay_ranges.pop() {
+            tracing::info!("Going back, found overlay: {:?}", range);
+            self.remove_overlay(range);
+        } else {
+            tracing::info!("Going back, no overlay");
+        }
+
+        if self.routes.len() == 1 {
+            return None;
+        }
+
         self.prev().cloned()
     }
 
@@ -294,6 +323,24 @@ impl<R: Clone> Router<R> {
         if self.routes.len() == 1 {
             return None;
         }
+
+        's: {
+            let Some(last_range) = self.overlay_ranges.last_mut() else {
+                break 's;
+            };
+
+            if last_range.end != self.routes.len() {
+                break 's;
+            }
+
+            if last_range.end - 1 <= last_range.start {
+                self.overlay_ranges.pop();
+                break 's;
+            }
+
+            last_range.end -= 1;
+        }
+
         self.returning = false;
         self.routes.pop()
     }
@@ -309,8 +356,45 @@ impl<R: Clone> Router<R> {
         self.routes.drain(..num_routes - 1);
     }
 
+    /// Removes all routes in the overlay besides the last
+    fn remove_overlay(&mut self, overlay_range: Range<usize>) {
+        let num_routes = self.routes.len();
+        if num_routes <= 1 {
+            return;
+        }
+
+        if overlay_range.len() <= 1 {
+            return;
+        }
+
+        self.routes
+            .drain(overlay_range.start..overlay_range.end - 1);
+    }
+
     pub fn is_replacing(&self) -> bool {
         self.replacing
+    }
+
+    fn set_overlaying(&mut self) {
+        let mut overlaying_active = None;
+        let mut binding = self.overlay_ranges.last_mut();
+        if let Some(range) = &mut binding {
+            if range.end == self.routes.len() - 1 {
+                overlaying_active = Some(range);
+            }
+        };
+
+        if let Some(range) = overlaying_active {
+            range.end = self.routes.len();
+        } else {
+            let new_range = self.routes.len() - 1..self.routes.len();
+            self.overlay_ranges.push(new_range);
+        }
+    }
+
+    fn new_overlay(&mut self) {
+        let new_range = self.routes.len() - 1..self.routes.len();
+        self.overlay_ranges.push(new_range);
     }
 
     pub fn top(&self) -> &R {
