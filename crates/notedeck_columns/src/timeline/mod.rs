@@ -21,6 +21,7 @@ use tracing::{debug, error, info, warn};
 pub mod cache;
 pub mod kind;
 pub mod route;
+pub mod thread;
 
 pub use cache::TimelineCache;
 pub use kind::{ColumnTitle, PubkeySource, ThreadSelection, TimelineKind};
