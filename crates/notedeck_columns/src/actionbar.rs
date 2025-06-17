@@ -41,8 +41,9 @@ struct NoteActionResponse {
 #[allow(clippy::too_many_arguments)]
 fn execute_note_action(
     action: NoteAction,
-    ndb: &Ndb,
+    ndb: &mut Ndb,
     timeline_cache: &mut TimelineCache,
+    threads: &mut Threads,
     note_cache: &mut NoteCache,
     pool: &mut RelayPool,
     txn: &Transaction,
@@ -52,6 +53,7 @@ fn execute_note_action(
     images: &mut Images,
     router_type: RouterType,
     ui: &mut egui::Ui,
+    col: usize,
 ) -> NoteActionResponse {
     let mut timeline_res = None;
     let mut router_action = None;
@@ -74,13 +76,16 @@ fn execute_note_action(
                 break 'ex;
             };
 
-            let kind = TimelineKind::Thread(thread_selection);
-            router_action = Some(RouterAction::route_to(Route::Timeline(kind.clone())));
-            // NOTE!!: you need the note_id to timeline root id thing
+            timeline_res = threads
+                .open(ndb, txn, pool, &thread_selection, preview, col)
+                .map(NotesOpenResult::Thread);
 
-            timeline_res = timeline_cache
-                .open(ndb, note_cache, txn, pool, &kind)
-                .map(NotesOpenResult::Timeline);
+            let route = Route::Thread(thread_selection);
+
+            router_action = Some(RouterAction::Overlay {
+                route,
+                make_new: preview,
+            });
         }
         NoteAction::Hashtag(htag) => {
             let kind = TimelineKind::Hashtag(htag.clone());
@@ -151,10 +156,11 @@ fn execute_note_action(
 #[allow(clippy::too_many_arguments)]
 pub fn execute_and_process_note_action(
     action: NoteAction,
-    ndb: &Ndb,
+    ndb: &mut Ndb,
     columns: &mut Columns,
     col: usize,
     timeline_cache: &mut TimelineCache,
+    threads: &mut Threads,
     note_cache: &mut NoteCache,
     pool: &mut RelayPool,
     txn: &Transaction,
@@ -179,6 +185,7 @@ pub fn execute_and_process_note_action(
         action,
         ndb,
         timeline_cache,
+        threads,
         note_cache,
         pool,
         txn,
@@ -188,6 +195,7 @@ pub fn execute_and_process_note_action(
         images,
         router_type,
         ui,
+        col,
     );
 
     if let Some(br) = resp.timeline_res {
@@ -195,7 +203,9 @@ pub fn execute_and_process_note_action(
             NotesOpenResult::Timeline(timeline_open_result) => {
                 timeline_open_result.process(ndb, note_cache, txn, timeline_cache, unknown_ids);
             }
-            NotesOpenResult::Thread(new_thread_notes) => todo!(),
+            NotesOpenResult::Thread(thread_open_result) => {
+                thread_open_result.process(threads, ndb, txn, unknown_ids, note_cache);
+            }
         }
     }
 
@@ -258,7 +268,7 @@ impl NewNotes {
         unknown_ids: &mut UnknownIds,
         note_cache: &mut NoteCache,
     ) {
-        let reversed = matches!(&self.id, TimelineKind::Thread(_));
+        let reversed = false;
 
         let timeline = if let Some(profile) = timeline_cache.timelines.get_mut(&self.id) {
             profile

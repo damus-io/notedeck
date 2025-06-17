@@ -625,6 +625,7 @@ fn chrome_handle_app_action(
                 cols,
                 0,
                 &mut columns.timeline_cache,
+                &mut columns.threads,
                 ctx.note_cache,
                 ctx.pool,
                 &txn,

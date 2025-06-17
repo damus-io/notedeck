@@ -1,6 +1,7 @@
 use crate::column::ColumnsAction;
 use crate::nav::RenderNavAction;
 use crate::nav::SwitchingAction;
+use crate::timeline::ThreadSelection;
 use crate::{
     column::Columns,
     route::Route,
@@ -437,11 +438,6 @@ impl<'a> NavTitle<'a> {
 
                 TimelineKind::Profile(pubkey) => Some(self.show_profile(ui, pubkey, pfp_size)),
 
-                TimelineKind::Thread(_) => {
-                    // no pfp for threads
-                    None
-                }
-
                 TimelineKind::Search(_sq) => {
                     // TODO: show author pfp if author field set?
 
@@ -467,6 +463,9 @@ impl<'a> NavTitle<'a> {
             Route::Search => Some(ui.add(ui::side_panel::search_button())),
             Route::Wallet(_) => None,
             Route::CustomizeZapAmount(_) => None,
+            Route::Thread(thread_selection) => {
+                Some(self.thread_pfp(ui, thread_selection, pfp_size))
+            }
         }
     }
 
@@ -486,6 +485,23 @@ impl<'a> NavTitle<'a> {
                     .sense(Sense::click()),
             )
         }
+    }
+
+    fn thread_pfp(
+        &mut self,
+        ui: &mut egui::Ui,
+        selection: &ThreadSelection,
+        pfp_size: f32,
+    ) -> egui::Response {
+        let txn = Transaction::new(self.ndb).unwrap();
+
+        if let Ok(note) = self.ndb.get_note_by_id(&txn, selection.selected_or_root()) {
+            if let Some(mut pfp) = self.pubkey_pfp(&txn, note.pubkey(), pfp_size) {
+                return ui.add(&mut pfp);
+            }
+        }
+
+        ui.add(&mut ProfilePic::new(self.img_cache, notedeck::profile::no_pfp_url()).size(pfp_size))
     }
 
     fn title_label_value(title: &str) -> egui::Label {
