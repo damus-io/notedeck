@@ -34,7 +34,9 @@ pub fn setup_chrome(ctx: &egui::Context, args: &notedeck::Args, theme: ThemePref
 pub fn setup_cc(ctx: &egui::Context, is_mobile: bool) {
     fonts::setup_fonts(ctx);
 
-    //ctx.set_pixels_per_point(ctx.pixels_per_point() + UI_SCALE_FACTOR);
+    if notedeck::ui::is_compiled_as_mobile() {
+        ctx.set_pixels_per_point(ctx.pixels_per_point() + 0.2);
+    }
     //ctx.set_pixels_per_point(1.0);
     //
     //
@@ -44,8 +46,6 @@ pub fn setup_cc(ctx: &egui::Context, is_mobile: bool) {
 
     ctx.all_styles_mut(|style| theme::add_custom_style(is_mobile, style));
 }
-
-//pub const UI_SCALE_FACTOR: f32 = 0.2;
 
 pub fn generate_native_options(paths: DataPath) -> NativeOptions {
     let window_builder = Box::new(move |builder: egui::ViewportBuilder| {
