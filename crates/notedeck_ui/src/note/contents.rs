@@ -270,11 +270,17 @@ pub fn render_note_contents(
         }
     });
 
-    let preview_note_action = if let Some((id, _block_str)) = inline_note {
-        render_note_preview(ui, note_context, cur_acc, txn, id, note_key, options, jobs).action
-    } else {
-        None
-    };
+    let preview_note_action = inline_note.and_then(|(id, _)| {
+        render_note_preview(ui, note_context, cur_acc, txn, id, note_key, options, jobs)
+            .action
+            .map(|a| match a {
+                NoteAction::Note { note_id, .. } => NoteAction::Note {
+                    note_id,
+                    preview: true,
+                },
+                other => other,
+            })
+    });
 
     let mut media_action = None;
     if !supported_medias.is_empty() && !options.has_textmode() {

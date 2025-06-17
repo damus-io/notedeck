@@ -609,7 +609,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
         }
 
         note_action = note_hitbox_clicked(ui, hitbox_id, &response.response.rect, maybe_hitbox)
-            .then_some(NoteAction::Note(NoteId::new(*self.note.id())))
+            .then_some(NoteAction::note(NoteId::new(*self.note.id())))
             .or(note_action);
 
         NoteResponse::new(response.response)

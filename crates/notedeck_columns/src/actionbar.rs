@@ -60,7 +60,7 @@ fn execute_note_action(
             router_action = Some(RouterAction::route_to(Route::Timeline(kind.clone())));
             timeline_res = timeline_cache.open(ndb, note_cache, txn, pool, &kind);
         }
-        NoteAction::Note(note_id) => 'ex: {
+        NoteAction::Note { note_id, preview } => 'ex: {
             let Ok(thread_selection) = ThreadSelection::from_note_id(ndb, note_cache, txn, note_id)
             else {
                 tracing::error!("No thread selection for {}?", hex::encode(note_id.bytes()));

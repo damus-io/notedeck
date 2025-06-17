@@ -184,7 +184,13 @@ fn show_notes(
 }
 
 fn strip_note_action(action: NoteAction) -> Option<NoteAction> {
-    if matches!(action, NoteAction::Note(_)) {
+    if matches!(
+        action,
+        NoteAction::Note {
+            note_id: _,
+            preview: false,
+        }
+    ) {
         return None;
     }
 
