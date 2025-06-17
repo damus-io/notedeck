@@ -23,12 +23,17 @@ pub struct NewNotes {
     pub notes: Vec<NoteKey>,
 }
 
+pub enum NotesOpenResult {
+    Timeline(TimelineOpenResult),
+    Thread(NewThreadNotes),
+}
+
 pub enum TimelineOpenResult {
     NewNotes(NewNotes),
 }
 
 struct NoteActionResponse {
-    timeline_res: Option<TimelineOpenResult>,
+    timeline_res: Option<NotesOpenResult>,
     router_action: Option<RouterAction>,
 }
 
@@ -58,7 +63,9 @@ fn execute_note_action(
         NoteAction::Profile(pubkey) => {
             let kind = TimelineKind::Profile(pubkey);
             router_action = Some(RouterAction::route_to(Route::Timeline(kind.clone())));
-            timeline_res = timeline_cache.open(ndb, note_cache, txn, pool, &kind);
+            timeline_res = timeline_cache
+                .open(ndb, note_cache, txn, pool, &kind)
+                .map(NotesOpenResult::Timeline);
         }
         NoteAction::Note { note_id, preview } => 'ex: {
             let Ok(thread_selection) = ThreadSelection::from_note_id(ndb, note_cache, txn, note_id)
@@ -71,12 +78,16 @@ fn execute_note_action(
             router_action = Some(RouterAction::route_to(Route::Timeline(kind.clone())));
             // NOTE!!: you need the note_id to timeline root id thing
 
-            timeline_res = timeline_cache.open(ndb, note_cache, txn, pool, &kind);
+            timeline_res = timeline_cache
+                .open(ndb, note_cache, txn, pool, &kind)
+                .map(NotesOpenResult::Timeline);
         }
         NoteAction::Hashtag(htag) => {
             let kind = TimelineKind::Hashtag(htag.clone());
             router_action = Some(RouterAction::route_to(Route::Timeline(kind.clone())));
-            timeline_res = timeline_cache.open(ndb, note_cache, txn, pool, &kind);
+            timeline_res = timeline_cache
+                .open(ndb, note_cache, txn, pool, &kind)
+                .map(NotesOpenResult::Timeline);
         }
         NoteAction::Quote(note_id) => {
             router_action = Some(RouterAction::route_to(Route::quote(note_id)));
@@ -180,7 +191,12 @@ pub fn execute_and_process_note_action(
     );
 
     if let Some(br) = resp.timeline_res {
-        br.process(ndb, note_cache, txn, timeline_cache, unknown_ids);
+        match br {
+            NotesOpenResult::Timeline(timeline_open_result) => {
+                timeline_open_result.process(ndb, note_cache, txn, timeline_cache, unknown_ids);
+            }
+            NotesOpenResult::Thread(new_thread_notes) => todo!(),
+        }
     }
 
     resp.router_action
