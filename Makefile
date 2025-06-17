@@ -13,7 +13,7 @@ jni: fake
 	cargo ndk --target arm64-v8a -o $(ANDROID_DIR)/app/src/main/jniLibs/ build --profile release
 
 jni-check: fake
-	cargo ndk --target arm64-v8a -o $(ANDROID_DIR)/app/src/main/jniLibs/ check
+	cargo ndk --target arm64-v8a check
 
 apk: jni
 	cd $(ANDROID_DIR) && ./gradlew build
