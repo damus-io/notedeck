@@ -271,7 +271,22 @@ pub fn render_note_contents(
     });
 
     let preview_note_action = if let Some((id, _block_str)) = inline_note {
-        render_note_preview(ui, note_context, cur_acc, txn, id, note_key, options, jobs).action
+        render_note_preview(ui, note_context, cur_acc, txn, id, note_key, options, jobs)
+            .action
+            .and_then(|a| {
+                if let NoteAction::Note {
+                    note_id,
+                    preview: _,
+                } = a
+                {
+                    Some(NoteAction::Note {
+                        note_id,
+                        preview: true,
+                    })
+                } else {
+                    None
+                }
+            })
     } else {
         None
     };

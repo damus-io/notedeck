@@ -18,7 +18,7 @@ pub enum NoteAction {
     Profile(Pubkey),
 
     /// User has clicked a note link
-    Note(NoteId),
+    Note { note_id: NoteId, preview: bool },
 
     /// User has selected some context option
     Context(ContextSelection),
@@ -28,6 +28,15 @@ pub enum NoteAction {
 
     /// User clicked on media
     Media(MediaAction),
+}
+
+impl NoteAction {
+    pub fn note(id: NoteId) -> NoteAction {
+        NoteAction::Note {
+            note_id: id,
+            preview: false,
+        }
+    }
 }
 
 #[derive(Debug, Eq, PartialEq, Clone)]

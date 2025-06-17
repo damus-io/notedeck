@@ -663,7 +663,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
 
         let note_action =
             if note_hitbox_clicked(ui, hitbox_id, &response.response.rect, maybe_hitbox) {
-                Some(NoteAction::Note(NoteId::new(*self.note.id())))
+                Some(NoteAction::note(NoteId::new(*self.note.id())))
             } else {
                 note_action
             };
