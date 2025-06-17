@@ -214,24 +214,6 @@ impl Timeline {
         ))
     }
 
-    pub fn thread(selection: ThreadSelection) -> Self {
-        let filter = vec![
-            nostrdb::Filter::new()
-                .kinds([1])
-                .event(selection.root_id.bytes())
-                .build(),
-            nostrdb::Filter::new()
-                .ids([selection.root_id.bytes()])
-                .limit(1)
-                .build(),
-        ];
-        Timeline::new(
-            TimelineKind::Thread(selection),
-            FilterState::ready(filter),
-            TimelineTab::only_notes_and_replies(),
-        )
-    }
-
     pub fn last_per_pubkey(list: &Note, list_kind: &ListKind) -> Result<Self> {
         let kind = 1;
         let notes_per_pk = 1;

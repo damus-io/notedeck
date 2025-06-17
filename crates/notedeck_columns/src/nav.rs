@@ -8,7 +8,10 @@ use crate::{
     profile_state::ProfileState,
     relay_pool_manager::RelayPoolManager,
     route::{Route, Router, SingletonRouter},
-    timeline::{route::render_timeline_route, TimelineCache},
+    timeline::{
+        route::{render_thread_route, render_timeline_route},
+        TimelineCache,
+    },
     ui::{
         self,
         add_column::render_add_column_routes,
@@ -210,7 +213,7 @@ fn process_nav_resp(
 
     if let Some(action) = response.action {
         match action {
-            NavAction::Returned(_) => {
+            NavAction::Returned(return_type) => {
                 let r = app
                     .columns_mut(ctx.accounts)
                     .column_mut(col)
@@ -222,6 +225,12 @@ fn process_nav_resp(
                         error!("popping timeline had an error: {err} for {:?}", kind);
                     }
                 };
+
+                if let Some(Route::Thread(selection)) = &r {
+                    tracing::info!("Return type: {:?}", return_type);
+                    app.threads
+                        .close(ctx.ndb, ctx.pool, selection, return_type, col);
+                }
 
                 process_result = Some(ProcessNavResult::SwitchOccurred);
             }
@@ -355,6 +364,7 @@ fn process_render_nav_action(
                 get_active_columns_mut(ctx.accounts, &mut app.decks_cache),
                 col,
                 &mut app.timeline_cache,
+                &mut app.threads,
                 ctx.note_cache,
                 ctx.pool,
                 &txn,
@@ -422,6 +432,17 @@ fn render_nav_body(
             col,
             app.note_options,
             depth,
+            ui,
+            &mut note_context,
+            &mut app.jobs,
+        ),
+        Route::Thread(selection) => render_thread_route(
+            ctx.unknown_ids,
+            &mut app.threads,
+            ctx.accounts,
+            selection,
+            col,
+            app.note_options,
             ui,
             &mut note_context,
             &mut app.jobs,
