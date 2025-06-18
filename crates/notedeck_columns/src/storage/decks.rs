@@ -319,26 +319,22 @@ fn deserialize_columns(
 ) -> Columns {
     let mut cols = Columns::new();
     for column in columns {
-        let mut cur_routes = Vec::new();
+        let Some(route) = column.first() else {
+            continue;
+        };
 
-        for route in column {
-            let tokens: Vec<&str> = route.split(":").collect();
-            let mut parser = TokenParser::new(&tokens);
+        let tokens: Vec<&str> = route.split(":").collect();
+        let mut parser = TokenParser::new(&tokens);
 
-            match CleanIntermediaryRoute::parse(&mut parser, deck_user) {
-                Ok(route_intermediary) => {
-                    if let Some(ir) = route_intermediary.into_intermediary_route(ndb) {
-                        cur_routes.push(ir);
-                    }
-                }
-                Err(err) => {
-                    error!("could not turn tokens to RouteIntermediary: {:?}", err);
+        match CleanIntermediaryRoute::parse(&mut parser, deck_user) {
+            Ok(route_intermediary) => {
+                if let Some(ir) = route_intermediary.into_intermediary_route(ndb) {
+                    cols.insert_intermediary_routes(timeline_cache, vec![ir]);
                 }
             }
-        }
-
-        if !cur_routes.is_empty() {
-            cols.insert_intermediary_routes(timeline_cache, cur_routes);
+            Err(err) => {
+                error!("could not turn tokens to RouteIntermediary: {:?}", err);
+            }
         }
     }
 
