@@ -191,7 +191,7 @@ impl UnknownIds {
     pub fn add_unknown_id_if_missing(&mut self, ndb: &Ndb, txn: &Transaction, unk_id: &UnknownId) {
         match unk_id {
             UnknownId::Pubkey(pk) => self.add_pubkey_if_missing(ndb, txn, pk),
-            UnknownId::Id(note_id) => self.add_note_id_if_missing(ndb, txn, note_id),
+            UnknownId::Id(note_id) => self.add_note_id_if_missing(ndb, txn, note_id.bytes()),
         }
     }
 
@@ -205,13 +205,15 @@ impl UnknownIds {
         self.mark_updated();
     }
 
-    pub fn add_note_id_if_missing(&mut self, ndb: &Ndb, txn: &Transaction, note_id: &NoteId) {
+    pub fn add_note_id_if_missing(&mut self, ndb: &Ndb, txn: &Transaction, note_id: &[u8; 32]) {
         // we already have this note, skip
-        if ndb.get_note_by_id(txn, note_id.bytes()).is_ok() {
+        if ndb.get_note_by_id(txn, note_id).is_ok() {
             return;
         }
 
-        self.ids.entry(UnknownId::Id(*note_id)).or_default();
+        self.ids
+            .entry(UnknownId::Id(NoteId::new(*note_id)))
+            .or_default();
         self.mark_updated();
     }
 }

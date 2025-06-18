@@ -20,3 +20,4 @@ url = { workspace = true }
 mio = { workspace = true }
 tokio = { workspace = true }
 tokenator = { workspace = true }
+hashbrown = { workspace = true }

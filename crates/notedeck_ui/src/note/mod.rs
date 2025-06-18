@@ -4,6 +4,7 @@ pub mod media;
 pub mod options;
 pub mod reply_description;
 
+use crate::colors::PINK;
 use crate::jobs::JobsCache;
 use crate::{
     profile::name::one_line_display_name_widget, widgets::x_button, ProfilePic, ProfilePreview,
@@ -36,11 +37,13 @@ pub struct NoteView<'a, 'd> {
     framed: bool,
     flags: NoteOptions,
     jobs: &'a mut JobsCache,
+    show_unread_indicator: bool,
 }
 
 pub struct NoteResponse {
     pub response: egui::Response,
     pub action: Option<NoteAction>,
+    pub pfp_rect: Option<egui::Rect>,
 }
 
 impl NoteResponse {
@@ -48,11 +51,17 @@ impl NoteResponse {
         Self {
             response,
             action: None,
+            pfp_rect: None,
         }
     }
 
     pub fn with_action(mut self, action: Option<NoteAction>) -> Self {
         self.action = action;
+        self
+    }
+
+    pub fn with_pfp(mut self, pfp_rect: egui::Rect) -> Self {
+        self.pfp_rect = Some(pfp_rect);
         self
     }
 }
@@ -93,6 +102,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
             flags,
             framed,
             jobs,
+            show_unread_indicator: false,
         }
     }
 
@@ -179,6 +189,11 @@ impl<'a, 'd> NoteView<'a, 'd> {
         self
     }
 
+    pub fn unread_indicator(mut self, show_unread_indicator: bool) -> Self {
+        self.show_unread_indicator = show_unread_indicator;
+        self
+    }
+
     fn textmode_ui(&mut self, ui: &mut egui::Ui) -> egui::Response {
         let note_key = self.note.key().expect("todo: implement non-db notes");
         let txn = self.note.txn().expect("todo: implement non-db notes");
@@ -234,7 +249,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
         note_key: NoteKey,
         profile: &Result<nostrdb::ProfileRecord<'_>, nostrdb::Error>,
         ui: &mut egui::Ui,
-    ) -> (egui::Response, Option<MediaAction>) {
+    ) -> (PfpResponse, Option<MediaAction>) {
         let mut action = None;
         if !self.options().has_wide() {
             ui.spacing_mut().item_spacing.x = 16.0;
@@ -282,7 +297,10 @@ impl<'a, 'd> NoteView<'a, 'd> {
                     ));
                 });
 
-                resp
+                PfpResponse {
+                    response: resp,
+                    rect: rect.shrink((rect.width() - size) / 2.0),
+                }
             }
 
             None => {
@@ -297,7 +315,10 @@ impl<'a, 'd> NoteView<'a, 'd> {
                 let resp = ui.put(rect, &mut pfp).interact(sense);
                 action = action.or(pfp.action);
 
-                resp
+                PfpResponse {
+                    response: resp,
+                    rect: rect.shrink((rect.width() - size) / 2.0),
+                }
             }
         };
         (resp, action)
@@ -376,16 +397,34 @@ impl<'a, 'd> NoteView<'a, 'd> {
         note_cache: &mut NoteCache,
         note: &Note,
         profile: &Result<nostrdb::ProfileRecord<'_>, nostrdb::Error>,
+        show_unread_indicator: bool,
     ) {
         let note_key = note.key().unwrap();
 
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 2.0;
-            ui.add(Username::new(profile.as_ref().ok(), note.pubkey()).abbreviated(20));
+        let horiz_resp = ui
+            .horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
+                ui.add(Username::new(profile.as_ref().ok(), note.pubkey()).abbreviated(20));
 
-            let cached_note = note_cache.cached_note_or_insert_mut(note_key, note);
-            render_reltime(ui, cached_note, true);
-        });
+                let cached_note = note_cache.cached_note_or_insert_mut(note_key, note);
+                render_reltime(ui, cached_note, true);
+            })
+            .response;
+
+        let avail_rect = ui.available_rect_before_wrap();
+
+        if !show_unread_indicator {
+            return;
+        }
+
+        let radius = 4.0;
+        let circle_center = {
+            let mut center = horiz_resp.rect.right_center();
+            center.x += radius + 4.0;
+            center
+        };
+
+        ui.painter().circle_filled(circle_center, radius, PINK);
     }
 
     fn wide_ui(
@@ -394,63 +433,66 @@ impl<'a, 'd> NoteView<'a, 'd> {
         txn: &Transaction,
         note_key: NoteKey,
         profile: &Result<ProfileRecord, nostrdb::Error>,
-    ) -> egui::InnerResponse<Option<NoteAction>> {
-        let mut note_action: Option<NoteAction> = None;
-
+    ) -> egui::InnerResponse<NoteUIResponse> {
         ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
-            ui.horizontal(|ui| {
-                let (pfp_resp, action) = self.pfp(note_key, profile, ui);
-                if pfp_resp.clicked() {
-                    note_action = Some(NoteAction::Profile(Pubkey::new(*self.note.pubkey())));
-                } else if let Some(action) = action {
-                    note_action = Some(NoteAction::Media(action));
-                };
+            let mut note_action: Option<NoteAction> = None;
+            let pfp_rect = ui
+                .horizontal(|ui| {
+                    let (pfp_resp, action) = self.pfp(note_key, profile, ui);
+                    if pfp_resp.response.clicked() {
+                        note_action = Some(NoteAction::Profile(Pubkey::new(*self.note.pubkey())));
+                    } else if let Some(action) = action {
+                        note_action = Some(NoteAction::Media(action));
+                    };
 
-                let size = ui.available_size();
-                ui.vertical(|ui| {
-                    ui.add_sized(
-                        [size.x, self.options().pfp_size() as f32],
-                        |ui: &mut egui::Ui| {
-                            ui.horizontal_centered(|ui| {
-                                NoteView::note_header(
-                                    ui,
-                                    self.note_context.note_cache,
-                                    self.note,
-                                    profile,
-                                );
-                            })
-                            .response
-                        },
-                    );
+                    let size = ui.available_size();
+                    ui.vertical(|ui| {
+                        ui.add_sized(
+                            [size.x, self.options().pfp_size() as f32],
+                            |ui: &mut egui::Ui| {
+                                ui.horizontal_centered(|ui| {
+                                    NoteView::note_header(
+                                        ui,
+                                        self.note_context.note_cache,
+                                        self.note,
+                                        profile,
+                                        self.show_unread_indicator,
+                                    );
+                                })
+                                .response
+                            },
+                        );
 
-                    let note_reply = self
-                        .note_context
-                        .note_cache
-                        .cached_note_or_insert_mut(note_key, self.note)
-                        .reply
-                        .borrow(self.note.tags());
+                        let note_reply = self
+                            .note_context
+                            .note_cache
+                            .cached_note_or_insert_mut(note_key, self.note)
+                            .reply
+                            .borrow(self.note.tags());
 
-                    if note_reply.reply().is_some() {
-                        let action = ui
-                            .horizontal(|ui| {
-                                reply_desc(
-                                    ui,
-                                    self.zapping_acc,
-                                    txn,
-                                    &note_reply,
-                                    self.note_context,
-                                    self.flags,
-                                    self.jobs,
-                                )
-                            })
-                            .inner;
+                        if note_reply.reply().is_some() {
+                            let action = ui
+                                .horizontal(|ui| {
+                                    reply_desc(
+                                        ui,
+                                        self.zapping_acc,
+                                        txn,
+                                        &note_reply,
+                                        self.note_context,
+                                        self.flags,
+                                        self.jobs,
+                                    )
+                                })
+                                .inner;
 
-                        if action.is_some() {
-                            note_action = action;
+                            if action.is_some() {
+                                note_action = action;
+                            }
                         }
-                    }
-                });
-            });
+                    });
+                    pfp_resp.rect
+                })
+                .inner;
 
             let mut contents = NoteContents::new(
                 self.note_context,
@@ -484,7 +526,10 @@ impl<'a, 'd> NoteView<'a, 'd> {
                 }
             }
 
-            note_action
+            NoteUIResponse {
+                action: note_action,
+                pfp_rect,
+            }
         })
     }
 
@@ -494,19 +539,25 @@ impl<'a, 'd> NoteView<'a, 'd> {
         txn: &Transaction,
         note_key: NoteKey,
         profile: &Result<ProfileRecord, nostrdb::Error>,
-    ) -> egui::InnerResponse<Option<NoteAction>> {
+    ) -> egui::InnerResponse<NoteUIResponse> {
         let mut note_action: Option<NoteAction> = None;
         // main design
         ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
             let (pfp_resp, action) = self.pfp(note_key, profile, ui);
-            if pfp_resp.clicked() {
+            if pfp_resp.response.clicked() {
                 note_action = Some(NoteAction::Profile(Pubkey::new(*self.note.pubkey())));
             } else if let Some(action) = action {
                 note_action = Some(NoteAction::Media(action));
             };
 
             ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
-                NoteView::note_header(ui, self.note_context.note_cache, self.note, profile);
+                NoteView::note_header(
+                    ui,
+                    self.note_context.note_cache,
+                    self.note,
+                    profile,
+                    self.show_unread_indicator,
+                );
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 2.0;
 
@@ -565,7 +616,10 @@ impl<'a, 'd> NoteView<'a, 'd> {
                     }
                 }
 
-                note_action
+                NoteUIResponse {
+                    action: note_action,
+                    pfp_rect: pfp_resp.rect,
+                }
             })
             .inner
         })
@@ -591,7 +645,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
             self.standard_ui(ui, txn, note_key, &profile)
         };
 
-        let mut note_action = response.inner;
+        let mut note_action = response.inner.action;
 
         if self.options().has_options_button() {
             let context_pos = {
@@ -609,13 +663,20 @@ impl<'a, 'd> NoteView<'a, 'd> {
 
         let note_action =
             if note_hitbox_clicked(ui, hitbox_id, &response.response.rect, maybe_hitbox) {
-                Some(NoteAction::Note(NoteId::new(*self.note.id())))
+                Some(NoteAction::note(NoteId::new(*self.note.id())))
             } else {
                 note_action
             };
 
-        NoteResponse::new(response.response).with_action(note_action)
+        NoteResponse::new(response.response)
+            .with_action(note_action)
+            .with_pfp(response.inner.pfp_rect)
     }
+}
+
+struct NoteUIResponse {
+    action: Option<NoteAction>,
+    pfp_rect: egui::Rect,
 }
 
 fn get_reposted_note<'a>(ndb: &Ndb, txn: &'a Transaction, note: &Note) -> Option<Note<'a>> {
@@ -640,6 +701,11 @@ fn get_reposted_note<'a>(ndb: &Ndb, txn: &'a Transaction, note: &Note) -> Option
 
     let note = ndb.get_note_by_id(txn, new_note_id).ok();
     note.filter(|note| note.kind() == 1)
+}
+
+struct PfpResponse {
+    response: egui::Response,
+    rect: egui::Rect, // the current bounding box around the pfp
 }
 
 fn note_hitbox_id(

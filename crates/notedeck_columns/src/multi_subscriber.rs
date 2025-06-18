@@ -1,7 +1,10 @@
-use enostr::{Filter, RelayPool};
+use enostr::{Filter, NoteId, RelayPool};
+use hashbrown::HashMap;
 use nostrdb::{Ndb, Subscription};
 use tracing::{error, info};
 use uuid::Uuid;
+
+use crate::timeline::ThreadSelection;
 
 #[derive(Debug)]
 pub struct MultiSubscriber {
@@ -142,4 +145,219 @@ impl MultiSubscriber {
             }
         }
     }
+}
+
+type RootNoteId = NoteId;
+
+#[derive(Default)]
+pub struct ThreadSubs {
+    pub remotes: HashMap<RootNoteId, Remote>,
+
+    // each 'scope' represents a thread with the same root id. Navigating to a different root id means we need
+    // a new scope so we can retain the old subscription. Navigating to a note within the same root id replaces the
+    // local subscription in that scope
+    scopes: HashMap<MetaId, Vec<ScopedSub>>,
+}
+
+// column id
+type MetaId = usize;
+
+pub struct Remote {
+    pub filter: Vec<Filter>,
+    subid: String,
+    dependers: usize,
+}
+
+impl std::fmt::Debug for Remote {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Remote")
+            .field("subid", &self.subid)
+            .field("dependers", &self.dependers)
+            .finish()
+    }
+}
+
+pub struct ScopedSub {
+    pub selection: ThreadSelection,
+    pub sub: Subscription,
+    pub filter: Vec<Filter>,
+}
+
+impl ThreadSubs {
+    #[allow(clippy::too_many_arguments)]
+    pub fn subscribe(
+        &mut self,
+        ndb: &mut Ndb,
+        pool: &mut RelayPool,
+        meta_id: usize,
+        id: &ThreadSelection,
+        local_sub_filter: Vec<Filter>,
+        new_scope: bool,
+        remote_sub_filter: impl FnOnce() -> Vec<Filter>,
+    ) {
+        let cur_scopes = self.scopes.entry(meta_id).or_default();
+
+        let new_subs = if new_scope || cur_scopes.is_empty() {
+            local_sub_new_scope(ndb, id, local_sub_filter, cur_scopes)
+        } else {
+            let cur_scope = cur_scopes.last_mut().expect("can't be empty");
+            replace_local_sub(ndb, id, local_sub_filter, cur_scope)
+        };
+
+        let remote = match self.remotes.raw_entry_mut().from_key(&id.root_id.bytes()) {
+            hashbrown::hash_map::RawEntryMut::Occupied(entry) => entry.into_mut(),
+            hashbrown::hash_map::RawEntryMut::Vacant(entry) => {
+                let (_, res) = entry.insert(
+                    NoteId::new(*id.root_id.bytes()),
+                    sub_remote(pool, remote_sub_filter, id),
+                );
+
+                res
+            }
+        };
+
+        remote.dependers = remote.dependers.saturating_add_signed(new_subs);
+        tracing::info!(
+            "Sub stats: num remotes: {}, num locals: {}",
+            self.remotes.len(),
+            self.scopes.len()
+        );
+    }
+
+    pub fn unsubscribe(
+        &mut self,
+        ndb: &mut Ndb,
+        pool: &mut RelayPool,
+        meta_id: usize,
+        id: &ThreadSelection,
+    ) {
+        let Some(scopes) = self.scopes.get_mut(&meta_id) else {
+            return;
+        };
+
+        let Some(scope) = scopes.pop() else {
+            tracing::error!("called unsubscribe but there aren't any scopes left");
+            return;
+        };
+        ndb_unsub(ndb, scope.sub, id);
+
+        if scopes.is_empty() {
+            self.scopes.remove(&meta_id);
+        }
+
+        let Some(remote) = self.remotes.get_mut(&id.root_id.bytes()) else {
+            tracing::error!("somehow we're unsubscribing but we don't have a remote");
+            return;
+        };
+
+        remote.dependers = remote.dependers.saturating_sub(1);
+
+        if remote.dependers == 0 {
+            let remote = self
+                .remotes
+                .remove(&id.root_id.bytes())
+                .expect("code above should guarentee existence");
+            tracing::info!("Remotely unsubscribed: {}", remote.subid);
+            pool.unsubscribe(remote.subid);
+        }
+
+        tracing::info!(
+            "Unsub status num remotes: {}, num locals: {}",
+            self.remotes.len(),
+            self.scopes.len()
+        );
+    }
+
+    pub fn get_local(&self, meta_id: usize) -> Option<&ScopedSub> {
+        self.scopes.get(&meta_id).as_ref().and_then(|s| s.last())
+    }
+}
+
+fn replace_local_sub(
+    ndb: &mut Ndb,
+    selection: &ThreadSelection,
+    local_sub_filter: Vec<Filter>,
+    old_sub: &mut ScopedSub,
+) -> isize {
+    if old_sub.selection == *selection {
+        return 0;
+    }
+
+    let mut new_subs = 0;
+
+    if ndb_unsub(ndb, old_sub.sub, selection) {
+        new_subs -= 1;
+    }
+
+    if let Some(sub) = ndb_sub(ndb, &local_sub_filter, selection) {
+        *old_sub = ScopedSub {
+            selection: selection.clone(),
+            sub,
+            filter: local_sub_filter,
+        };
+        new_subs += 1;
+    }
+
+    new_subs
+}
+
+fn ndb_sub(ndb: &Ndb, filter: &[Filter], id: impl std::fmt::Debug) -> Option<Subscription> {
+    match ndb.subscribe(filter) {
+        Ok(s) => Some(s),
+        Err(e) => {
+            tracing::info!("Failed to get subscription for {:?}: {e}", id);
+            None
+        }
+    }
+}
+
+fn ndb_unsub(ndb: &mut Ndb, sub: Subscription, id: impl std::fmt::Debug) -> bool {
+    match ndb.unsubscribe(sub) {
+        Ok(_) => true,
+        Err(e) => {
+            tracing::info!("Failed to unsub {:?}: {e}", id);
+            false
+        }
+    }
+}
+
+fn sub_remote(
+    pool: &mut RelayPool,
+    remote_sub_filter: impl FnOnce() -> Vec<Filter>,
+    id: impl std::fmt::Debug,
+) -> Remote {
+    let subid = Uuid::new_v4().to_string();
+
+    let filter = remote_sub_filter();
+
+    let remote = Remote {
+        filter: filter.clone(),
+        subid: subid.clone(),
+        dependers: 0,
+    };
+
+    tracing::info!("Remote subscribe for {:?}", id);
+
+    pool.subscribe(subid, filter);
+
+    remote
+}
+
+fn local_sub_new_scope(
+    ndb: &mut Ndb,
+    id: &ThreadSelection,
+    local_sub_filter: Vec<Filter>,
+    scopes: &mut Vec<ScopedSub>,
+) -> isize {
+    let Some(sub) = ndb_sub(ndb, &local_sub_filter, id) else {
+        return 0;
+    };
+
+    scopes.push(ScopedSub {
+        selection: id.clone(),
+        sub,
+        filter: local_sub_filter,
+    });
+
+    1
 }
