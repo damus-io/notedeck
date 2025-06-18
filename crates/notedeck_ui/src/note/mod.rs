@@ -680,7 +680,7 @@ fn note_hitbox_clicked(
     // Stash the dimensions of the note content so we can render the
     // hitbox in the next frame
     ui.ctx().data_mut(|d| {
-        d.insert_persisted(hitbox_id, note_rect.size());
+        d.insert_temp(hitbox_id, note_rect.size());
     });
 
     // If there was an hitbox and it was clicked open the thread
