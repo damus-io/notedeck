@@ -1,4 +1,5 @@
 use crate::draft::{Draft, Drafts, MentionHint};
+#[cfg(not(target_os = "android"))]
 use crate::media_upload::{nostrbuild_nip96_upload, MediaPath};
 use crate::post::{downcast_post_buffer, MentionType, NewPost};
 use crate::ui::search_results::SearchResultsView;

@@ -507,7 +507,7 @@ impl TimelineKind {
             TimelineKind::Universe => Some(Timeline::new(
                 TimelineKind::Universe,
                 FilterState::ready(universe_filter()),
-                TimelineTab::no_replies(),
+                TimelineTab::full_tabs(),
             )),
 
             TimelineKind::Thread(root_id) => Some(Timeline::thread(root_id)),

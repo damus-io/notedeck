@@ -22,6 +22,28 @@ jobs:
           cargo fmt --all -- --check
           cargo clippy
 
+  android:
+    name: Check (android)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt,clippy
+      - name: Setup Java JDK
+        uses: actions/setup-java@v4.5.0
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+      - name: Add android rust target
+        run: rustup target add aarch64-linux-android
+      - name: Install Cargo NDK
+        run: cargo install cargo-ndk
+      - name: Run tests
+        run: make jni-check
+
   linux-test:
     name: Test (Linux)
     uses: ./.github/workflows/build-and-test.yml
