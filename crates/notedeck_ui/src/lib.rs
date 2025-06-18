@@ -1,4 +1,5 @@
 pub mod anim;
+pub mod app_images;
 pub mod blur;
 pub mod colors;
 pub mod constants;

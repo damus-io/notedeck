@@ -4,6 +4,7 @@ edition = "2021"
 version.workspace = true
 
 [dependencies]
+eframe = { workspace = true }
 egui = { workspace = true }
 egui_extras = { workspace = true }
 egui-winit = { workspace = true }

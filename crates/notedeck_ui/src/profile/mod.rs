@@ -10,6 +10,8 @@ pub use preview::ProfilePreview;
 use egui::{load::TexturePoll, Label, RichText};
 use notedeck::{NostrName, NotedeckTextStyle};
 
+use crate::app_images;
+
 pub fn display_name_widget<'a>(
     name: &'a NostrName<'a>,
     add_placeholder_space: bool,
@@ -38,9 +40,8 @@ pub fn display_name_widget<'a>(
                 });
 
                 let nip05_resp = name.nip05.map(|nip05| {
-                    ui.image(egui::include_image!(
-                        "../../../../assets/icons/verified_4x.png"
-                    ));
+                    ui.add(app_images::verified_image());
+
                     ui.add(Label::new(
                         RichText::new(nip05).size(16.0).color(crate::colors::TEAL),
                     ))

@@ -5,7 +5,7 @@ use crate::{
 use egui::{Align, Key, KeyboardShortcut, Layout, Modifiers};
 use nostrdb::{Ndb, Transaction};
 use notedeck::{Accounts, AppContext, Images, NoteAction, NoteContext};
-use notedeck_ui::{icons::search_icon, jobs::JobsCache, NoteOptions, ProfilePic};
+use notedeck_ui::{app_images, icons::search_icon, jobs::JobsCache, NoteOptions, ProfilePic};
 
 /// DaveUi holds all of the data it needs to render itself
 pub struct DaveUi<'a> {
@@ -359,8 +359,7 @@ fn new_chat_button() -> impl egui::Widget {
         let img_size = 24.0;
         let max_size = 32.0;
 
-        let img_data = egui::include_image!("../../../../assets/icons/newmessage_64.png");
-        let img = egui::Image::new(img_data).max_width(img_size);
+        let img = app_images::new_message_image().max_width(img_size);
 
         let helper = notedeck_ui::anim::AnimationHelper::new(
             ui,
