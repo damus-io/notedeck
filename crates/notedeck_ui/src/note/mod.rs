@@ -42,6 +42,7 @@ pub struct NoteView<'a, 'd> {
 pub struct NoteResponse {
     pub response: egui::Response,
     pub action: Option<NoteAction>,
+    pub pfp_rect: Option<egui::Rect>,
 }
 
 impl NoteResponse {
@@ -49,11 +50,17 @@ impl NoteResponse {
         Self {
             response,
             action: None,
+            pfp_rect: None,
         }
     }
 
     pub fn with_action(mut self, action: Option<NoteAction>) -> Self {
         self.action = action;
+        self
+    }
+
+    pub fn with_pfp(mut self, pfp_rect: egui::Rect) -> Self {
+        self.pfp_rect = Some(pfp_rect);
         self
     }
 }
@@ -364,57 +371,62 @@ impl<'a, 'd> NoteView<'a, 'd> {
         txn: &Transaction,
         note_key: NoteKey,
         profile: &Result<ProfileRecord, nostrdb::Error>,
-    ) -> egui::InnerResponse<Option<NoteAction>> {
+    ) -> egui::InnerResponse<NoteUiResponse> {
         ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
             let mut note_action: Option<NoteAction> = None;
-            ui.horizontal(|ui| {
-                note_action = self
-                    .pfp(note_key, profile, ui)
-                    .into_action(self.note.pubkey())
-                    .or(note_action.take());
-
-                let size = ui.available_size();
-                ui.vertical(|ui| 's: {
-                    ui.add_sized(
-                        [size.x, self.options().pfp_size() as f32],
-                        |ui: &mut egui::Ui| {
-                            ui.horizontal_centered(|ui| {
-                                NoteView::note_header(
-                                    ui,
-                                    self.note_context.note_cache,
-                                    self.note,
-                                    profile,
-                                );
-                            })
-                            .response
-                        },
-                    );
-
-                    let note_reply = self
-                        .note_context
-                        .note_cache
-                        .cached_note_or_insert_mut(note_key, self.note)
-                        .reply
-                        .borrow(self.note.tags());
-
-                    if note_reply.reply().is_none() {
-                        break 's;
-                    }
-
-                    ui.horizontal(|ui| {
-                        note_action = reply_desc(
-                            ui,
-                            self.zapping_acc,
-                            txn,
-                            &note_reply,
-                            self.note_context,
-                            self.flags,
-                            self.jobs,
-                        )
+            let pfp_rect = ui
+                .horizontal(|ui| {
+                    let pfp_resp = self.pfp(note_key, profile, ui);
+                    let pfp_rect = pfp_resp.bounding_rect;
+                    note_action = pfp_resp
+                        .into_action(self.note.pubkey())
                         .or(note_action.take());
+
+                    let size = ui.available_size();
+                    ui.vertical(|ui| 's: {
+                        ui.add_sized(
+                            [size.x, self.options().pfp_size() as f32],
+                            |ui: &mut egui::Ui| {
+                                ui.horizontal_centered(|ui| {
+                                    NoteView::note_header(
+                                        ui,
+                                        self.note_context.note_cache,
+                                        self.note,
+                                        profile,
+                                    );
+                                })
+                                .response
+                            },
+                        );
+
+                        let note_reply = self
+                            .note_context
+                            .note_cache
+                            .cached_note_or_insert_mut(note_key, self.note)
+                            .reply
+                            .borrow(self.note.tags());
+
+                        if note_reply.reply().is_none() {
+                            break 's;
+                        }
+
+                        ui.horizontal(|ui| {
+                            note_action = reply_desc(
+                                ui,
+                                self.zapping_acc,
+                                txn,
+                                &note_reply,
+                                self.note_context,
+                                self.flags,
+                                self.jobs,
+                            )
+                            .or(note_action.take());
+                        });
                     });
-                });
-            });
+
+                    pfp_rect
+                })
+                .inner;
 
             let mut contents = NoteContents::new(
                 self.note_context,
@@ -441,10 +453,13 @@ impl<'a, 'd> NoteView<'a, 'd> {
                     note_key,
                 )
                 .inner
-                .or(note_action)
+                .or(note_action);
             }
 
-            note_action
+            NoteUiResponse {
+                action: note_action,
+                pfp_rect,
+            }
         })
     }
 
@@ -454,12 +469,12 @@ impl<'a, 'd> NoteView<'a, 'd> {
         txn: &Transaction,
         note_key: NoteKey,
         profile: &Result<ProfileRecord, nostrdb::Error>,
-    ) -> egui::InnerResponse<Option<NoteAction>> {
+    ) -> egui::InnerResponse<NoteUiResponse> {
         // main design
         ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
-            let mut note_action: Option<NoteAction> = self
-                .pfp(note_key, profile, ui)
-                .into_action(self.note.pubkey());
+            let pfp_resp = self.pfp(note_key, profile, ui);
+            let pfp_rect = pfp_resp.bounding_rect;
+            let mut note_action: Option<NoteAction> = pfp_resp.into_action(self.note.pubkey());
 
             ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
                 NoteView::note_header(ui, self.note_context.note_cache, self.note, profile);
@@ -513,9 +528,13 @@ impl<'a, 'd> NoteView<'a, 'd> {
                         note_key,
                     )
                     .inner
-                    .or(note_action)
+                    .or(note_action);
                 }
-                note_action
+
+                NoteUiResponse {
+                    action: note_action,
+                    pfp_rect,
+                }
             })
             .inner
         })
@@ -541,7 +560,8 @@ impl<'a, 'd> NoteView<'a, 'd> {
             self.standard_ui(ui, txn, note_key, &profile)
         };
 
-        let mut note_action = response.inner;
+        let note_ui_resp = response.inner;
+        let mut note_action = note_ui_resp.action;
 
         if self.options().has_options_button() {
             let context_pos = {
@@ -561,7 +581,9 @@ impl<'a, 'd> NoteView<'a, 'd> {
             .then_some(NoteAction::Note(NoteId::new(*self.note.id())))
             .or(note_action);
 
-        NoteResponse::new(response.response).with_action(note_action)
+        NoteResponse::new(response.response)
+            .with_action(note_action)
+            .with_pfp(note_ui_resp.pfp_rect)
     }
 }
 
@@ -591,9 +613,15 @@ fn get_reposted_note<'a>(ndb: &Ndb, txn: &'a Transaction, note: &Note) -> Option
     note.filter(|note| note.kind() == 1)
 }
 
+struct NoteUiResponse {
+    action: Option<NoteAction>,
+    pfp_rect: egui::Rect,
+}
+
 struct PfpResponse {
     action: Option<MediaAction>,
     response: egui::Response,
+    bounding_rect: egui::Rect,
 }
 
 impl PfpResponse {
@@ -642,6 +670,7 @@ fn show_actual_pfp(
     PfpResponse {
         response: resp,
         action,
+        bounding_rect: rect.shrink((rect.width() - size) / 2.0),
     }
 }
 
@@ -658,6 +687,7 @@ fn show_fallback_pfp(ui: &mut egui::Ui, images: &mut Images, pfp_size: i8) -> Pf
     PfpResponse {
         action: pfp.action,
         response,
+        bounding_rect: rect.shrink((rect.width() - size) / 2.0),
     }
 }
 
