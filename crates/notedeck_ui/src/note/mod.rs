@@ -14,6 +14,7 @@ pub use contents::{render_note_contents, render_note_preview, NoteContents};
 pub use context::NoteContextButton;
 use notedeck::note::MediaAction;
 use notedeck::note::ZapTargetAmount;
+use notedeck::Images;
 pub use options::NoteOptions;
 pub use reply_description::reply_desc;
 
@@ -234,8 +235,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
         note_key: NoteKey,
         profile: &Result<nostrdb::ProfileRecord<'_>, nostrdb::Error>,
         ui: &mut egui::Ui,
-    ) -> (egui::Response, Option<MediaAction>) {
-        let mut action = None;
+    ) -> PfpResponse {
         if !self.options().has_wide() {
             ui.spacing_mut().item_spacing.x = 16.0;
         } else {
@@ -244,107 +244,77 @@ impl<'a, 'd> NoteView<'a, 'd> {
 
         let pfp_size = self.options().pfp_size();
 
-        let sense = Sense::click();
-        let resp = match profile
+        match profile
             .as_ref()
             .ok()
             .and_then(|p| p.record().profile()?.picture())
         {
             // these have different lifetimes and types,
             // so the calls must be separate
-            Some(pic) => {
-                let anim_speed = 0.05;
-                let profile_key = profile.as_ref().unwrap().record().note_key();
-                let note_key = note_key.as_u64();
+            Some(pic) => show_actual_pfp(
+                ui,
+                self.note_context.img_cache,
+                pic,
+                pfp_size,
+                note_key,
+                profile,
+            ),
 
-                let (rect, size, resp) = crate::anim::hover_expand(
-                    ui,
-                    egui::Id::new((profile_key, note_key)),
-                    pfp_size as f32,
-                    NoteView::expand_size() as f32,
-                    anim_speed,
-                );
+            None => show_fallback_pfp(ui, self.note_context.img_cache, pfp_size),
+        }
+    }
 
-                let mut pfp = ProfilePic::new(self.note_context.img_cache, pic).size(size);
-                let pfp_resp = ui.put(rect, &mut pfp);
+    fn show_repost(
+        &mut self,
+        ui: &mut egui::Ui,
+        txn: &Transaction,
+        note_to_repost: Note<'_>,
+    ) -> NoteResponse {
+        let profile = self
+            .note_context
+            .ndb
+            .get_profile_by_pubkey(txn, self.note.pubkey());
 
-                action = action.or(pfp.action);
-
-                if resp.hovered() || resp.clicked() {
-                    crate::show_pointer(ui);
-                }
-
-                pfp_resp.on_hover_ui_at_pointer(|ui| {
+        let style = NotedeckTextStyle::Small;
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                ui.add_space(2.0);
+                ui.add_sized([20.0, 20.0], repost_icon(ui.visuals().dark_mode));
+            });
+            ui.add_space(6.0);
+            let resp = ui.add(one_line_display_name_widget(
+                ui.visuals(),
+                get_display_name(profile.as_ref().ok()),
+                style,
+            ));
+            if let Ok(rec) = &profile {
+                resp.on_hover_ui_at_pointer(|ui| {
                     ui.set_max_width(300.0);
-                    ui.add(ProfilePreview::new(
-                        profile.as_ref().unwrap(),
-                        self.note_context.img_cache,
-                    ));
+                    ui.add(ProfilePreview::new(rec, self.note_context.img_cache));
                 });
-
-                resp
             }
-
-            None => {
-                // This has to match the expand size from the above case to
-                // prevent bounciness
-                let size = (pfp_size + NoteView::expand_size()) as f32;
-                let (rect, _response) = ui.allocate_exact_size(egui::vec2(size, size), sense);
-
-                let mut pfp =
-                    ProfilePic::new(self.note_context.img_cache, notedeck::profile::no_pfp_url())
-                        .size(pfp_size as f32);
-                let resp = ui.put(rect, &mut pfp).interact(sense);
-                action = action.or(pfp.action);
-
-                resp
-            }
-        };
-        (resp, action)
+            let color = ui.style().visuals.noninteractive().fg_stroke.color;
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new("Reposted")
+                    .color(color)
+                    .text_style(style.text_style()),
+            );
+        });
+        NoteView::new(
+            self.note_context,
+            self.zapping_acc,
+            &note_to_repost,
+            self.flags,
+            self.jobs,
+        )
+        .show(ui)
     }
 
     pub fn show_impl(&mut self, ui: &mut egui::Ui) -> NoteResponse {
         let txn = self.note.txn().expect("txn");
         if let Some(note_to_repost) = get_reposted_note(self.note_context.ndb, txn, self.note) {
-            let profile = self
-                .note_context
-                .ndb
-                .get_profile_by_pubkey(txn, self.note.pubkey());
-
-            let style = NotedeckTextStyle::Small;
-            ui.horizontal(|ui| {
-                ui.vertical(|ui| {
-                    ui.add_space(2.0);
-                    ui.add_sized([20.0, 20.0], repost_icon(ui.visuals().dark_mode));
-                });
-                ui.add_space(6.0);
-                let resp = ui.add(one_line_display_name_widget(
-                    ui.visuals(),
-                    get_display_name(profile.as_ref().ok()),
-                    style,
-                ));
-                if let Ok(rec) = &profile {
-                    resp.on_hover_ui_at_pointer(|ui| {
-                        ui.set_max_width(300.0);
-                        ui.add(ProfilePreview::new(rec, self.note_context.img_cache));
-                    });
-                }
-                let color = ui.style().visuals.noninteractive().fg_stroke.color;
-                ui.add_space(4.0);
-                ui.label(
-                    RichText::new("Reposted")
-                        .color(color)
-                        .text_style(style.text_style()),
-                );
-            });
-            NoteView::new(
-                self.note_context,
-                self.zapping_acc,
-                &note_to_repost,
-                self.flags,
-                self.jobs,
-            )
-            .show(ui)
+            self.show_repost(ui, txn, note_to_repost)
         } else {
             self.show_standard(ui)
         }
@@ -395,19 +365,16 @@ impl<'a, 'd> NoteView<'a, 'd> {
         note_key: NoteKey,
         profile: &Result<ProfileRecord, nostrdb::Error>,
     ) -> egui::InnerResponse<Option<NoteAction>> {
-        let mut note_action: Option<NoteAction> = None;
-
         ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+            let mut note_action: Option<NoteAction> = None;
             ui.horizontal(|ui| {
-                let (pfp_resp, action) = self.pfp(note_key, profile, ui);
-                if pfp_resp.clicked() {
-                    note_action = Some(NoteAction::Profile(Pubkey::new(*self.note.pubkey())));
-                } else if let Some(action) = action {
-                    note_action = Some(NoteAction::Media(action));
-                };
+                note_action = self
+                    .pfp(note_key, profile, ui)
+                    .into_action(self.note.pubkey())
+                    .or(note_action.take());
 
                 let size = ui.available_size();
-                ui.vertical(|ui| {
+                ui.vertical(|ui| 's: {
                     ui.add_sized(
                         [size.x, self.options().pfp_size() as f32],
                         |ui: &mut egui::Ui| {
@@ -430,25 +397,22 @@ impl<'a, 'd> NoteView<'a, 'd> {
                         .reply
                         .borrow(self.note.tags());
 
-                    if note_reply.reply().is_some() {
-                        let action = ui
-                            .horizontal(|ui| {
-                                reply_desc(
-                                    ui,
-                                    self.zapping_acc,
-                                    txn,
-                                    &note_reply,
-                                    self.note_context,
-                                    self.flags,
-                                    self.jobs,
-                                )
-                            })
-                            .inner;
-
-                        if action.is_some() {
-                            note_action = action;
-                        }
+                    if note_reply.reply().is_none() {
+                        break 's;
                     }
+
+                    ui.horizontal(|ui| {
+                        note_action = reply_desc(
+                            ui,
+                            self.zapping_acc,
+                            txn,
+                            &note_reply,
+                            self.note_context,
+                            self.flags,
+                            self.jobs,
+                        )
+                        .or(note_action.take());
+                    });
                 });
             });
 
@@ -463,12 +427,10 @@ impl<'a, 'd> NoteView<'a, 'd> {
 
             ui.add(&mut contents);
 
-            if let Some(action) = contents.action {
-                note_action = Some(action);
-            }
+            note_action = contents.action.or(note_action);
 
             if self.options().has_actionbar() {
-                if let Some(action) = render_note_actionbar(
+                note_action = render_note_actionbar(
                     ui,
                     self.zapping_acc.as_ref().map(|c| Zapper {
                         zaps: self.note_context.zaps,
@@ -479,9 +441,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
                     note_key,
                 )
                 .inner
-                {
-                    note_action = Some(action);
-                }
+                .or(note_action)
             }
 
             note_action
@@ -495,19 +455,15 @@ impl<'a, 'd> NoteView<'a, 'd> {
         note_key: NoteKey,
         profile: &Result<ProfileRecord, nostrdb::Error>,
     ) -> egui::InnerResponse<Option<NoteAction>> {
-        let mut note_action: Option<NoteAction> = None;
         // main design
         ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
-            let (pfp_resp, action) = self.pfp(note_key, profile, ui);
-            if pfp_resp.clicked() {
-                note_action = Some(NoteAction::Profile(Pubkey::new(*self.note.pubkey())));
-            } else if let Some(action) = action {
-                note_action = Some(NoteAction::Media(action));
-            };
+            let mut note_action: Option<NoteAction> = self
+                .pfp(note_key, profile, ui)
+                .into_action(self.note.pubkey());
 
             ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
                 NoteView::note_header(ui, self.note_context.note_cache, self.note, profile);
-                ui.horizontal(|ui| {
+                ui.horizontal(|ui| 's: {
                     ui.spacing_mut().item_spacing.x = 2.0;
 
                     let note_reply = self
@@ -517,21 +473,20 @@ impl<'a, 'd> NoteView<'a, 'd> {
                         .reply
                         .borrow(self.note.tags());
 
-                    if note_reply.reply().is_some() {
-                        let action = reply_desc(
-                            ui,
-                            self.zapping_acc,
-                            txn,
-                            &note_reply,
-                            self.note_context,
-                            self.flags,
-                            self.jobs,
-                        );
-
-                        if action.is_some() {
-                            note_action = action;
-                        }
+                    if note_reply.reply().is_none() {
+                        break 's;
                     }
+
+                    note_action = reply_desc(
+                        ui,
+                        self.zapping_acc,
+                        txn,
+                        &note_reply,
+                        self.note_context,
+                        self.flags,
+                        self.jobs,
+                    )
+                    .or(note_action.take());
                 });
 
                 let mut contents = NoteContents::new(
@@ -544,12 +499,10 @@ impl<'a, 'd> NoteView<'a, 'd> {
                 );
                 ui.add(&mut contents);
 
-                if let Some(action) = contents.action {
-                    note_action = Some(action);
-                }
+                note_action = contents.action.or(note_action);
 
                 if self.options().has_actionbar() {
-                    if let Some(action) = render_note_actionbar(
+                    note_action = render_note_actionbar(
                         ui,
                         self.zapping_acc.as_ref().map(|c| Zapper {
                             zaps: self.note_context.zaps,
@@ -560,11 +513,8 @@ impl<'a, 'd> NoteView<'a, 'd> {
                         note_key,
                     )
                     .inner
-                    {
-                        note_action = Some(action);
-                    }
+                    .or(note_action)
                 }
-
                 note_action
             })
             .inner
@@ -607,19 +557,20 @@ impl<'a, 'd> NoteView<'a, 'd> {
             }
         }
 
-        let note_action =
-            if note_hitbox_clicked(ui, hitbox_id, &response.response.rect, maybe_hitbox) {
-                Some(NoteAction::Note(NoteId::new(*self.note.id())))
-            } else {
-                note_action
-            };
+        note_action = note_hitbox_clicked(ui, hitbox_id, &response.response.rect, maybe_hitbox)
+            .then_some(NoteAction::Note(NoteId::new(*self.note.id())))
+            .or(note_action);
 
         NoteResponse::new(response.response).with_action(note_action)
     }
 }
 
 fn get_reposted_note<'a>(ndb: &Ndb, txn: &'a Transaction, note: &Note) -> Option<Note<'a>> {
-    let new_note_id: &[u8; 32] = if note.kind() == 6 {
+    if note.kind() != 6 {
+        return None;
+    }
+
+    let new_note_id: &[u8; 32] = {
         let mut res = None;
         for tag in note.tags().iter() {
             if tag.count() == 0 {
@@ -634,12 +585,80 @@ fn get_reposted_note<'a>(ndb: &Ndb, txn: &'a Transaction, note: &Note) -> Option
             }
         }
         res?
-    } else {
-        return None;
     };
 
     let note = ndb.get_note_by_id(txn, new_note_id).ok();
     note.filter(|note| note.kind() == 1)
+}
+
+struct PfpResponse {
+    action: Option<MediaAction>,
+    response: egui::Response,
+}
+
+impl PfpResponse {
+    fn into_action(self, note_pk: &[u8; 32]) -> Option<NoteAction> {
+        if self.response.clicked() {
+            return Some(NoteAction::Profile(Pubkey::new(*note_pk)));
+        }
+
+        self.action.map(NoteAction::Media)
+    }
+}
+
+fn show_actual_pfp(
+    ui: &mut egui::Ui,
+    images: &mut Images,
+    pic: &str,
+    pfp_size: i8,
+    note_key: NoteKey,
+    profile: &Result<nostrdb::ProfileRecord<'_>, nostrdb::Error>,
+) -> PfpResponse {
+    let anim_speed = 0.05;
+    let profile_key = profile.as_ref().unwrap().record().note_key();
+    let note_key = note_key.as_u64();
+
+    let (rect, size, resp) = crate::anim::hover_expand(
+        ui,
+        egui::Id::new((profile_key, note_key)),
+        pfp_size as f32,
+        NoteView::expand_size() as f32,
+        anim_speed,
+    );
+
+    let mut pfp = ProfilePic::new(images, pic).size(size);
+    let pfp_resp = ui.put(rect, &mut pfp);
+    let action = pfp.action;
+
+    if resp.hovered() || resp.clicked() {
+        crate::show_pointer(ui);
+    }
+
+    pfp_resp.on_hover_ui_at_pointer(|ui| {
+        ui.set_max_width(300.0);
+        ui.add(ProfilePreview::new(profile.as_ref().unwrap(), images));
+    });
+
+    PfpResponse {
+        response: resp,
+        action,
+    }
+}
+
+fn show_fallback_pfp(ui: &mut egui::Ui, images: &mut Images, pfp_size: i8) -> PfpResponse {
+    let sense = Sense::click();
+    // This has to match the expand size from the above case to
+    // prevent bounciness
+    let size = (pfp_size + NoteView::expand_size()) as f32;
+    let (rect, _response) = ui.allocate_exact_size(egui::vec2(size, size), sense);
+
+    let mut pfp = ProfilePic::new(images, notedeck::profile::no_pfp_url()).size(pfp_size as f32);
+    let response = ui.put(rect, &mut pfp).interact(sense);
+
+    PfpResponse {
+        action: pfp.action,
+        response,
+    }
 }
 
 fn note_hitbox_id(
