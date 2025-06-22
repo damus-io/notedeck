@@ -182,7 +182,7 @@ fn process_popup_resp(
         process_result = process_render_nav_action(app, ctx, ui, col, nav_action);
     }
 
-    if let Some(NavAction::Returned) = action.action {
+    if let Some(NavAction::Returned(_)) = action.action {
         let column = app.columns_mut(ctx.accounts).column_mut(col);
         column.sheet_router.clear();
     } else if let Some(NavAction::Navigating) = action.action {
@@ -210,7 +210,7 @@ fn process_nav_resp(
 
     if let Some(action) = response.action {
         match action {
-            NavAction::Returned => {
+            NavAction::Returned(_) => {
                 let r = app
                     .columns_mut(ctx.accounts)
                     .column_mut(col)
@@ -237,7 +237,7 @@ fn process_nav_resp(
             }
 
             NavAction::Dragging => {}
-            NavAction::Returning => {}
+            NavAction::Returning(_) => {}
             NavAction::Resetting => {}
             NavAction::Navigating => {}
         }
