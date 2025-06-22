@@ -37,6 +37,7 @@ pub struct NoteView<'a, 'd> {
     framed: bool,
     flags: NoteOptions,
     jobs: &'a mut JobsCache,
+    show_unread_indicator: bool,
 }
 
 pub struct NoteResponse {
@@ -101,6 +102,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
             flags,
             framed,
             jobs,
+            show_unread_indicator: false,
         }
     }
 
@@ -184,6 +186,11 @@ impl<'a, 'd> NoteView<'a, 'd> {
 
     pub fn is_preview(mut self, is_preview: bool) -> Self {
         self.options_mut().set_is_preview(is_preview);
+        self
+    }
+
+    pub fn unread_indicator(mut self, show_unread_indicator: bool) -> Self {
+        self.show_unread_indicator = show_unread_indicator;
         self
     }
 
@@ -353,16 +360,33 @@ impl<'a, 'd> NoteView<'a, 'd> {
         note_cache: &mut NoteCache,
         note: &Note,
         profile: &Result<nostrdb::ProfileRecord<'_>, nostrdb::Error>,
+        show_unread_indicator: bool,
     ) {
         let note_key = note.key().unwrap();
 
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 2.0;
-            ui.add(Username::new(profile.as_ref().ok(), note.pubkey()).abbreviated(20));
+        let horiz_resp = ui
+            .horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
+                ui.add(Username::new(profile.as_ref().ok(), note.pubkey()).abbreviated(20));
 
-            let cached_note = note_cache.cached_note_or_insert_mut(note_key, note);
-            render_reltime(ui, cached_note, true);
-        });
+                let cached_note = note_cache.cached_note_or_insert_mut(note_key, note);
+                render_reltime(ui, cached_note, true);
+            })
+            .response;
+
+        if !show_unread_indicator {
+            return;
+        }
+
+        let radius = 4.0;
+        let circle_center = {
+            let mut center = horiz_resp.rect.right_center();
+            center.x += radius + 4.0;
+            center
+        };
+
+        ui.painter()
+            .circle_filled(circle_center, radius, crate::colors::PINK);
     }
 
     fn wide_ui(
@@ -393,6 +417,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
                                         self.note_context.note_cache,
                                         self.note,
                                         profile,
+                                        self.show_unread_indicator,
                                     );
                                 })
                                 .response
@@ -477,7 +502,13 @@ impl<'a, 'd> NoteView<'a, 'd> {
             let mut note_action: Option<NoteAction> = pfp_resp.into_action(self.note.pubkey());
 
             ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
-                NoteView::note_header(ui, self.note_context.note_cache, self.note, profile);
+                NoteView::note_header(
+                    ui,
+                    self.note_context.note_cache,
+                    self.note,
+                    profile,
+                    self.show_unread_indicator,
+                );
                 ui.horizontal(|ui| 's: {
                     ui.spacing_mut().item_spacing.x = 2.0;
 
