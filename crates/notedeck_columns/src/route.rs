@@ -1,6 +1,9 @@
 use enostr::{NoteId, Pubkey};
-use notedeck::{NoteZapTargetOwned, WalletType};
-use std::fmt::{self};
+use notedeck::{NoteZapTargetOwned, RootNoteIdBuf, WalletType};
+use std::{
+    fmt::{self},
+    ops::Range,
+};
 
 use crate::{
     accounts::AccountsRoute,
@@ -17,6 +20,7 @@ use tokenator::{ParseError, TokenParser, TokenSerializable, TokenWriter};
 #[derive(Clone, Eq, PartialEq, Debug)]
 pub enum Route {
     Timeline(TimelineKind),
+    Thread(ThreadSelection),
     Accounts(AccountsRoute),
     Reply(NoteId),
     Quote(NoteId),
@@ -50,7 +54,7 @@ impl Route {
     }
 
     pub fn thread(thread_selection: ThreadSelection) -> Self {
-        Route::Timeline(TimelineKind::Thread(thread_selection))
+        Route::Thread(thread_selection)
     }
 
     pub fn profile(pubkey: Pubkey) -> Self {
@@ -76,6 +80,18 @@ impl Route {
     pub fn serialize_tokens(&self, writer: &mut TokenWriter) {
         match self {
             Route::Timeline(timeline_kind) => timeline_kind.serialize_tokens(writer),
+            Route::Thread(selection) => {
+                writer.write_token("thread");
+
+                if let Some(reply) = selection.selected_note {
+                    writer.write_token("root");
+                    writer.write_token(&NoteId::new(*selection.root_id.bytes()).hex());
+                    writer.write_token("reply");
+                    writer.write_token(&reply.hex());
+                } else {
+                    writer.write_token(&NoteId::new(*selection.root_id.bytes()).hex());
+                }
+            }
             Route::Accounts(routes) => routes.serialize_tokens(writer),
             Route::AddColumn(routes) => routes.serialize_tokens(writer),
             Route::Search => writer.write_token("search"),
@@ -196,6 +212,31 @@ impl Route {
                         Ok(Route::Search)
                     })
                 },
+                |p| {
+                    p.parse_all(|p| {
+                        p.parse_token("thread")?;
+                        p.parse_token("root")?;
+
+                        let root = tokenator::parse_hex_id(p)?;
+
+                        p.parse_token("reply")?;
+
+                        let selected = tokenator::parse_hex_id(p)?;
+
+                        Ok(Route::Thread(ThreadSelection {
+                            root_id: RootNoteIdBuf::new_unsafe(root),
+                            selected_note: Some(NoteId::new(selected)),
+                        }))
+                    })
+                },
+                |p| {
+                    p.parse_all(|p| {
+                        p.parse_token("thread")?;
+                        Ok(Route::Thread(ThreadSelection::from_root_id(
+                            RootNoteIdBuf::new_unsafe(tokenator::parse_hex_id(p)?),
+                        )))
+                    })
+                },
             ],
         )
     }
@@ -203,6 +244,7 @@ impl Route {
     pub fn title(&self) -> ColumnTitle<'_> {
         match self {
             Route::Timeline(kind) => kind.to_title(),
+            Route::Thread(_) => ColumnTitle::simple("Thread"),
             Route::Reply(_id) => ColumnTitle::simple("Reply"),
             Route::Quote(_id) => ColumnTitle::simple("Quote"),
             Route::Relays => ColumnTitle::simple("Relays"),
@@ -250,6 +292,9 @@ pub struct Router<R: Clone> {
     pub returning: bool,
     pub navigating: bool,
     replacing: bool,
+
+    // An overlay captures a range of routes where only one will persist when going back, the most recent added
+    overlay_ranges: Vec<Range<usize>>,
 }
 
 impl<R: Clone> Router<R> {
@@ -265,12 +310,23 @@ impl<R: Clone> Router<R> {
             returning,
             navigating,
             replacing,
+            overlay_ranges: Vec::new(),
         }
     }
 
     pub fn route_to(&mut self, route: R) {
         self.navigating = true;
         self.routes.push(route);
+    }
+
+    pub fn route_to_overlaid(&mut self, route: R) {
+        self.route_to(route);
+        self.set_overlaying();
+    }
+
+    pub fn route_to_overlaid_new(&mut self, route: R) {
+        self.route_to(route);
+        self.new_overlay();
     }
 
     // Route to R. Then when it is successfully placed, should call `remove_previous_routes` to remove all previous routes
@@ -286,6 +342,18 @@ impl<R: Clone> Router<R> {
             return None;
         }
         self.returning = true;
+
+        if let Some(range) = self.overlay_ranges.pop() {
+            tracing::info!("Going back, found overlay: {:?}", range);
+            self.remove_overlay(range);
+        } else {
+            tracing::info!("Going back, no overlay");
+        }
+
+        if self.routes.len() == 1 {
+            return None;
+        }
+
         self.prev().cloned()
     }
 
@@ -294,6 +362,24 @@ impl<R: Clone> Router<R> {
         if self.routes.len() == 1 {
             return None;
         }
+
+        's: {
+            let Some(last_range) = self.overlay_ranges.last_mut() else {
+                break 's;
+            };
+
+            if last_range.end != self.routes.len() {
+                break 's;
+            }
+
+            if last_range.end - 1 <= last_range.start {
+                self.overlay_ranges.pop();
+                break 's;
+            }
+
+            last_range.end -= 1;
+        }
+
         self.returning = false;
         self.routes.pop()
     }
@@ -309,8 +395,45 @@ impl<R: Clone> Router<R> {
         self.routes.drain(..num_routes - 1);
     }
 
+    /// Removes all routes in the overlay besides the last
+    fn remove_overlay(&mut self, overlay_range: Range<usize>) {
+        let num_routes = self.routes.len();
+        if num_routes <= 1 {
+            return;
+        }
+
+        if overlay_range.len() <= 1 {
+            return;
+        }
+
+        self.routes
+            .drain(overlay_range.start..overlay_range.end - 1);
+    }
+
     pub fn is_replacing(&self) -> bool {
         self.replacing
+    }
+
+    fn set_overlaying(&mut self) {
+        let mut overlaying_active = None;
+        let mut binding = self.overlay_ranges.last_mut();
+        if let Some(range) = &mut binding {
+            if range.end == self.routes.len() - 1 {
+                overlaying_active = Some(range);
+            }
+        };
+
+        if let Some(range) = overlaying_active {
+            range.end = self.routes.len();
+        } else {
+            let new_range = self.routes.len() - 1..self.routes.len();
+            self.overlay_ranges.push(new_range);
+        }
+    }
+
+    fn new_overlay(&mut self) {
+        let new_range = self.routes.len() - 1..self.routes.len();
+        self.overlay_ranges.push(new_range);
     }
 
     pub fn top(&self) -> &R {
@@ -339,9 +462,9 @@ impl fmt::Display for Route {
                 TimelineKind::Generic(_) => write!(f, "Custom"),
                 TimelineKind::Search(_) => write!(f, "Search"),
                 TimelineKind::Hashtag(ht) => write!(f, "Hashtag ({})", ht),
-                TimelineKind::Thread(_id) => write!(f, "Thread"),
                 TimelineKind::Profile(_id) => write!(f, "Profile"),
             },
+            Route::Thread(_) => write!(f, "Thread"),
             Route::Reply(_id) => write!(f, "Reply"),
             Route::Quote(_id) => write!(f, "Quote"),
             Route::Relays => write!(f, "Relays"),
@@ -396,5 +519,32 @@ impl<R: Clone> Default for SingletonRouter<R> {
             returning: false,
             navigating: false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use enostr::NoteId;
+    use tokenator::{TokenParser, TokenWriter};
+
+    use crate::{timeline::ThreadSelection, Route};
+    use enostr::Pubkey;
+    use notedeck::RootNoteIdBuf;
+
+    #[test]
+    fn test_thread_route_serialize() {
+        let note_id_hex = "1c54e5b0c386425f7e017d9e068ddef8962eb2ce1bb08ed27e24b93411c12e60";
+        let note_id = NoteId::from_hex(note_id_hex).unwrap();
+        let data_str = format!("thread:{}", note_id_hex);
+        let data = &data_str.split(":").collect::<Vec<&str>>();
+        let mut token_writer = TokenWriter::default();
+        let mut parser = TokenParser::new(&data);
+        let parsed = Route::parse(&mut parser, &Pubkey::new(*note_id.bytes())).unwrap();
+        let expected = Route::Thread(ThreadSelection::from_root_id(RootNoteIdBuf::new_unsafe(
+            *note_id.bytes(),
+        )));
+        parsed.serialize_tokens(&mut token_writer);
+        assert_eq!(expected, parsed);
+        assert_eq!(token_writer.str(), data_str);
     }
 }

@@ -208,8 +208,6 @@ pub enum TimelineKind {
 
     Profile(Pubkey),
 
-    Thread(ThreadSelection),
-
     Universe,
 
     /// Generic filter, references a hash of a filter
@@ -266,7 +264,6 @@ impl Display for TimelineKind {
             TimelineKind::Profile(_) => f.write_str("Profile"),
             TimelineKind::Universe => f.write_str("Universe"),
             TimelineKind::Hashtag(_) => f.write_str("Hashtag"),
-            TimelineKind::Thread(_) => f.write_str("Thread"),
             TimelineKind::Search(_) => f.write_str("Search"),
         }
     }
@@ -282,7 +279,6 @@ impl TimelineKind {
             TimelineKind::Universe => None,
             TimelineKind::Generic(_) => None,
             TimelineKind::Hashtag(_ht) => None,
-            TimelineKind::Thread(_ht) => None,
             TimelineKind::Search(query) => query.author(),
         }
     }
@@ -298,7 +294,6 @@ impl TimelineKind {
             TimelineKind::Universe => true,
             TimelineKind::Generic(_) => true,
             TimelineKind::Hashtag(_ht) => true,
-            TimelineKind::Thread(_ht) => true,
             TimelineKind::Search(_q) => true,
         }
     }
@@ -320,10 +315,6 @@ impl TimelineKind {
             TimelineKind::Profile(pk) => {
                 writer.write_token("profile");
                 PubkeySource::pubkey(*pk).serialize_tokens(writer);
-            }
-            TimelineKind::Thread(root_note_id) => {
-                writer.write_token("thread");
-                writer.write_token(&root_note_id.root_id.hex());
             }
             TimelineKind::Universe => {
                 writer.write_token("universe");
@@ -378,12 +369,6 @@ impl TimelineKind {
             parser,
             &[
                 |p| {
-                    p.parse_token("thread")?;
-                    Ok(TimelineKind::Thread(ThreadSelection::from_root_id(
-                        RootNoteIdBuf::new_unsafe(tokenator::parse_hex_id(p)?),
-                    )))
-                },
-                |p| {
                     p.parse_token("universe")?;
                     Ok(TimelineKind::Universe)
                 },
@@ -423,10 +408,6 @@ impl TimelineKind {
 
     pub fn profile(pk: Pubkey) -> Self {
         TimelineKind::Profile(pk)
-    }
-
-    pub fn thread(selected_note: ThreadSelection) -> Self {
-        TimelineKind::Thread(selected_note)
     }
 
     pub fn is_notifications(&self) -> bool {
@@ -474,17 +455,6 @@ impl TimelineKind {
                 todo!("implement generic filter lookups")
             }
 
-            TimelineKind::Thread(selection) => FilterState::ready(vec![
-                nostrdb::Filter::new()
-                    .kinds([1])
-                    .event(selection.root_id.bytes())
-                    .build(),
-                nostrdb::Filter::new()
-                    .ids([selection.root_id.bytes()])
-                    .limit(1)
-                    .build(),
-            ]),
-
             TimelineKind::Profile(pk) => FilterState::ready(vec![Filter::new()
                 .authors([pk.bytes()])
                 .kinds([1])
@@ -509,8 +479,6 @@ impl TimelineKind {
                 FilterState::ready(universe_filter()),
                 TimelineTab::full_tabs(),
             )),
-
-            TimelineKind::Thread(root_id) => Some(Timeline::thread(root_id)),
 
             TimelineKind::Generic(_filter_id) => {
                 warn!("you can't convert a TimelineKind::Generic to a Timeline");
@@ -609,7 +577,6 @@ impl TimelineKind {
             },
             TimelineKind::Notifications(_pubkey_source) => ColumnTitle::simple("Notifications"),
             TimelineKind::Profile(_pubkey_source) => ColumnTitle::needs_db(self),
-            TimelineKind::Thread(_root_id) => ColumnTitle::simple("Thread"),
             TimelineKind::Universe => ColumnTitle::simple("Universe"),
             TimelineKind::Generic(_) => ColumnTitle::simple("Custom"),
             TimelineKind::Hashtag(hashtag) => ColumnTitle::formatted(hashtag.to_string()),

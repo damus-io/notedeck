@@ -1489,7 +1489,7 @@ dependencies = [
 [[package]]
 name = "egui_nav"
 version = "0.2.0"
-source = "git+https://github.com/damus-io/egui-nav?rev=0f0cbdd3184f3ff5fdf69ada08416ffc58a70d7a#0f0cbdd3184f3ff5fdf69ada08416ffc58a70d7a"
+source = "git+https://github.com/kernelkind/egui-nav?rev=111de8ac40b5d18df53e9691eb18a50d49cb31d8#111de8ac40b5d18df53e9691eb18a50d49cb31d8"
 dependencies = [
  "egui",
  "egui_extras",
@@ -1554,6 +1554,7 @@ version = "0.3.0"
 dependencies = [
  "bech32",
  "ewebsock",
+ "hashbrown",
  "hex",
  "mio",
  "nostr 0.37.0",
@@ -3302,6 +3303,7 @@ dependencies = [
  "egui_virtual_list",
  "ehttp",
  "enostr",
+ "hashbrown",
  "hex",
  "human_format",
  "image",
