@@ -253,8 +253,8 @@ impl ThreadSubs {
                         return;
                     };
 
-                    if cur_sub.selected_id.bytes() != id.selected_or_root() {
-                        tracing::error!("Somehow the current scope's root is not equal to the selected note's root");
+                    if scope.root_id.bytes() != id.root_id.bytes() {
+                        tracing::error!("Somehow the current scope's root is not equal to the selected note's root. scope's root: {:?}, thread's root: {:?}", scope.root_id.hex(), id.root_id.bytes());
                     }
 
                     if ndb_unsub(ndb, cur_sub.sub, id) {
@@ -272,11 +272,10 @@ impl ThreadSubs {
                     return;
                 };
 
+                if scope.root_id.bytes() != id.root_id.bytes() {
+                    tracing::error!("Somehow the current scope's root is not equal to the selected note's root. scope's root: {:?}, thread's root: {:?}", scope.root_id.hex(), id.root_id.bytes());
+                }
                 for sub in scope.stack {
-                    if sub.selected_id.bytes() != id.selected_or_root() {
-                        tracing::error!("Somehow the current scope's root is not equal to the selected note's root");
-                    }
-
                     if ndb_unsub(ndb, sub.sub, id) {
                         remote.dependers = remote.dependers.saturating_sub(1);
                     }

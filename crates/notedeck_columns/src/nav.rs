@@ -227,7 +227,6 @@ fn process_nav_resp(
                 };
 
                 if let Some(Route::Thread(selection)) = &r {
-                    tracing::info!("Return type: {:?}", return_type);
                     app.threads
                         .close(ctx.ndb, ctx.pool, selection, return_type, col);
                 }
