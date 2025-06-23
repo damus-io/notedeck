@@ -177,7 +177,7 @@ fn show_notes(
     let selected_note_index = thread_notes.selected_index;
     let notes = &thread_notes.notes;
 
-    list.ui_custom_layout(ui, notes.len(), |ui, cur_index| 's: {
+    list.ui_custom_layout(ui, notes.len(), |ui, cur_index| {
         let note = &notes[cur_index];
 
         // should we mute the thread? we might not have it!
@@ -191,7 +191,7 @@ fn show_notes(
         .is_some_and(|root_id| is_muted(&note.note, root_id.bytes()));
 
         if muted {
-            break 's 0;
+            return 1;
         }
 
         let resp = note.show(note_context, zapping_acc, flags, jobs, ui);
