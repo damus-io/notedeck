@@ -307,6 +307,7 @@ impl<'a> ThreadNote<'a> {
             ThreadNoteType::Chain { root: _ } => cur_options,
             ThreadNoteType::Selected { root: _ } => {
                 cur_options.set_wide(true);
+                cur_options.set_selectable_text(true);
                 cur_options
             }
             ThreadNoteType::Reply => cur_options,
