@@ -124,11 +124,6 @@ impl ListKind {
     }
 }
 
-/// Thread selection hashing is done in a specific way. For TimelineCache
-/// lookups, we want to only let the root_id influence thread selection.
-/// This way Thread TimelineKinds always map to the same cached timeline
-/// for now (we will likely have to rework this since threads aren't
-/// *really* timelines)
 #[derive(Debug, Clone)]
 pub struct ThreadSelection {
     pub root_id: RootNoteIdBuf,
@@ -171,6 +166,11 @@ impl ThreadSelection {
     }
 }
 
+/// Thread selection hashing is done in a specific way. For TimelineCache
+/// lookups, we want to only let the root_id influence thread selection.
+/// This way Thread TimelineKinds always map to the same cached timeline
+/// for now (we will likely have to rework this since threads aren't
+/// *really* timelines)
 impl Hash for ThreadSelection {
     fn hash<H: Hasher>(&self, state: &mut H) {
         // only hash the root id for thread selection
