@@ -344,10 +344,10 @@ impl<R: Clone> Router<R> {
         self.returning = true;
 
         if let Some(range) = self.overlay_ranges.pop() {
-            tracing::info!("Going back, found overlay: {:?}", range);
+            tracing::debug!("Going back, found overlay: {:?}", range);
             self.remove_overlay(range);
         } else {
-            tracing::info!("Going back, no overlay");
+            tracing::debug!("Going back, no overlay");
         }
 
         if self.routes.len() == 1 {
