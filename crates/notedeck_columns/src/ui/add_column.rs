@@ -776,10 +776,10 @@ pub fn hashtag_ui(
 
         if handle_user_input && !text_buffer.is_empty() {
             let resp = AddColumnResponse::Timeline(TimelineKind::Hashtag(
-                sanitize_hashtag(text_buffer)
+                text_buffer
                     .split_whitespace()
                     .filter(|s| !s.is_empty())
-                    .map(|s| s.to_lowercase().to_string())
+                    .map(|s| sanitize_hashtag(s).to_lowercase().to_string())
                     .collect::<Vec<_>>(),
             ));
             id_string_map.remove(&id);
@@ -792,7 +792,10 @@ pub fn hashtag_ui(
 }
 
 fn sanitize_hashtag(raw_hashtag: &str) -> String {
-    raw_hashtag.replace("#", "")
+    raw_hashtag
+        .chars()
+        .filter(|c| c.is_alphanumeric()) // keep letters and numbers only
+        .collect()
 }
 
 #[cfg(test)]
