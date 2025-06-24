@@ -226,18 +226,22 @@ impl Timeline {
         ))
     }
 
-    pub fn hashtag(hashtag: String) -> Self {
-        let hashtag = hashtag.to_lowercase();
-        let htag: &str = &hashtag;
-        let filter = Filter::new()
-            .kinds([1])
-            .limit(filter::default_limit())
-            .tags([htag], 't')
-            .build();
+    pub fn hashtag(hashtag: Vec<String>) -> Self {
+        let filters = hashtag
+            .iter()
+            .filter(|tag| !tag.is_empty())
+            .map(|tag| {
+                Filter::new()
+                    .kinds([1])
+                    .limit(filter::default_limit())
+                    .tags([tag.as_str()], 't')
+                    .build()
+            })
+            .collect::<Vec<_>>();
 
         Timeline::new(
             TimelineKind::Hashtag(hashtag),
-            FilterState::ready(vec![filter]),
+            FilterState::ready(filters),
             TimelineTab::only_notes_and_replies(),
         )
     }
