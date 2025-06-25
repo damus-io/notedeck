@@ -1,5 +1,5 @@
 pub mod abbrev;
-mod accounts;
+mod account;
 mod app;
 mod args;
 mod context;
@@ -33,7 +33,9 @@ mod user_account;
 mod wallet;
 mod zaps;
 
-pub use accounts::{AccountData, Accounts, AccountsAction, AddAccountAction, SwitchAccountAction};
+pub use account::accounts::{
+    AccountData, Accounts, AccountsAction, AddAccountAction, SwitchAccountAction,
+};
 pub use app::{App, AppAction, Notedeck};
 pub use args::Args;
 pub use context::AppContext;
