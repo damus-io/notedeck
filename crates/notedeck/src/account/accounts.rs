@@ -1,7 +1,7 @@
 use tracing::{debug, error, info};
 
 use crate::account::mute::AccountMutedData;
-use crate::account::relay::AccountRelayData;
+use crate::account::relay::{AccountRelayData, RelayDefaults};
 use crate::{AccountStorage, MuteFun, RelaySpec, SingleUnkIdAction, UnknownIds, UserAccount};
 use enostr::{ClientMessage, FilledKeypair, Keypair, Pubkey, RelayPool};
 use nostrdb::{Ndb, Note, Transaction};
@@ -18,8 +18,7 @@ pub struct Accounts {
     accounts: Vec<UserAccount>,
     key_store: Option<AccountStorage>,
     account_data: BTreeMap<[u8; 32], AccountData>,
-    forced_relays: BTreeSet<RelaySpec>,
-    bootstrap_relays: BTreeSet<RelaySpec>,
+    relay_defaults: RelayDefaults,
     needs_relay_config: bool,
     fallback: Option<Pubkey>,
 }
@@ -44,29 +43,15 @@ impl Accounts {
         };
 
         let account_data = BTreeMap::new();
-        let forced_relays: BTreeSet<RelaySpec> = forced_relays
-            .into_iter()
-            .map(|u| RelaySpec::new(AccountRelayData::canonicalize_url(&u), false, false))
-            .collect();
-        let bootstrap_relays = [
-            "wss://relay.damus.io",
-            // "wss://pyramid.fiatjaf.com",  // Uncomment if needed
-            "wss://nos.lol",
-            "wss://nostr.wine",
-            "wss://purplepag.es",
-        ]
-        .iter()
-        .map(|&url| url.to_string())
-        .map(|u| RelaySpec::new(AccountRelayData::canonicalize_url(&u), false, false))
-        .collect();
+
+        let relay_defaults = RelayDefaults::new(forced_relays);
 
         Accounts {
             currently_selected_account,
             accounts,
             key_store,
             account_data,
-            forced_relays,
-            bootstrap_relays,
+            relay_defaults,
             needs_relay_config: true,
             fallback: None,
         }
@@ -424,7 +409,7 @@ impl Accounts {
         );
 
         // If forced relays are set use them only
-        let mut desired_relays = self.forced_relays.clone();
+        let mut desired_relays = self.relay_defaults.forced_relays.clone();
 
         // Compose the desired relay lists from the selected account
         if desired_relays.is_empty() {
@@ -436,7 +421,7 @@ impl Accounts {
 
         // If no relays are specified at this point use the bootstrap list
         if desired_relays.is_empty() {
-            desired_relays = self.bootstrap_relays.clone();
+            desired_relays = self.relay_defaults.bootstrap_relays.clone();
         }
 
         debug!("current relays: {:?}", pool.urls());
@@ -575,7 +560,8 @@ impl Accounts {
                             if advertised.is_empty() {
                                 // If the selected account has no advertised relays,
                                 // initialize with the bootstrapping set.
-                                advertised.extend(self.bootstrap_relays.iter().cloned());
+                                advertised
+                                    .extend(self.relay_defaults.bootstrap_relays.iter().cloned());
                             }
                             match action {
                                 RelayAction::Add => {

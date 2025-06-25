@@ -149,3 +149,33 @@ impl AccountRelayData {
         pool.send(&enostr::ClientMessage::event(&note).expect("note client message"));
     }
 }
+
+pub(crate) struct RelayDefaults {
+    pub forced_relays: BTreeSet<RelaySpec>,
+    pub bootstrap_relays: BTreeSet<RelaySpec>,
+}
+
+impl RelayDefaults {
+    pub(crate) fn new(forced_relays: Vec<String>) -> Self {
+        let forced_relays: BTreeSet<RelaySpec> = forced_relays
+            .into_iter()
+            .map(|u| RelaySpec::new(AccountRelayData::canonicalize_url(&u), false, false))
+            .collect();
+        let bootstrap_relays = [
+            "wss://relay.damus.io",
+            // "wss://pyramid.fiatjaf.com",  // Uncomment if needed
+            "wss://nos.lol",
+            "wss://nostr.wine",
+            "wss://purplepag.es",
+        ]
+        .iter()
+        .map(|&url| url.to_string())
+        .map(|u| RelaySpec::new(AccountRelayData::canonicalize_url(&u), false, false))
+        .collect();
+
+        Self {
+            forced_relays,
+            bootstrap_relays,
+        }
+    }
+}
