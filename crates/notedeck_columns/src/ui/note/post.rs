@@ -14,6 +14,7 @@ use egui::{
 };
 use enostr::{FilledKeypair, FullKeypair, KeypairUnowned, NoteId, Pubkey, RelayPool};
 use nostrdb::{Ndb, Transaction};
+use notedeck_ui::app_images;
 use notedeck_ui::blur::PixelDimensions;
 use notedeck_ui::images::{get_render_state, RenderState};
 use notedeck_ui::jobs::JobsCache;
@@ -640,11 +641,15 @@ fn media_upload_button() -> impl egui::Widget {
 
         painter.rect_filled(resp.rect, 8.0, fill_color);
         painter.rect_stroke(resp.rect, 8.0, stroke, egui::StrokeKind::Middle);
-        egui::Image::new(egui::include_image!(
-            "../../../../../assets/icons/media_upload_dark_4x.png"
-        ))
-        .max_size(egui::vec2(16.0, 16.0))
-        .paint_at(ui, resp.rect.shrink(8.0));
+        let mut upload_img = app_images::media_upload_dark_image();
+
+        if !ui.visuals().dark_mode {
+            upload_img = upload_img.tint(egui::Color32::BLACK);
+        };
+
+        upload_img
+            .max_size(egui::vec2(16.0, 16.0))
+            .paint_at(ui, resp.rect.shrink(8.0));
         resp
     }
 }
@@ -785,6 +790,7 @@ mod preview {
                 zaps: app.zaps,
                 pool: app.pool,
                 job_pool: app.job_pool,
+                unknown_ids: app.unknown_ids,
                 current_account_has_wallet: false,
             };
 

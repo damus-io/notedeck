@@ -2,8 +2,8 @@ use core::f32;
 use std::collections::HashMap;
 
 use egui::{
-    pos2, vec2, Align, Color32, FontId, Id, ImageSource, Margin, Pos2, Rect, RichText, Separator,
-    Ui, Vec2, Widget,
+    pos2, vec2, Align, Color32, FontId, Id, Image, Margin, Pos2, Rect, RichText, Separator, Ui,
+    Vec2, Widget,
 };
 use enostr::Pubkey;
 use nostrdb::{Ndb, Transaction};
@@ -17,7 +17,7 @@ use crate::{
 };
 
 use notedeck::{AppContext, Images, NotedeckTextStyle, UserAccount};
-use notedeck_ui::anim::ICON_EXPANSION_MULTIPLE;
+use notedeck_ui::{anim::ICON_EXPANSION_MULTIPLE, app_images};
 use tokenator::{ParseError, TokenParser, TokenSerializable, TokenWriter};
 
 use crate::ui::widgets::styled_button;
@@ -226,7 +226,7 @@ impl<'a> AddColumnView<'a> {
         let algo_option = ColumnOptionData {
             title: "Contact List",
             description: "Source the last note for each user in your contact list",
-            icon: egui::include_image!("../../../../assets/icons/home_icon_dark_4x.png"),
+            icon: app_images::home_image(),
             option: AddColumnOption::Algo(AlgoOption::LastPerPubkey(Decision::Decided(
                 ListKind::contact_list(deck_author),
             ))),
@@ -244,7 +244,7 @@ impl<'a> AddColumnView<'a> {
         let algo_option = ColumnOptionData {
             title: "Last Note per User",
             description: "Show the last note for each user from a list",
-            icon: egui::include_image!("../../../../assets/icons/algo.png"),
+            icon: app_images::algo_image(),
             option: AddColumnOption::Algo(AlgoOption::LastPerPubkey(Decision::Undecided)),
         };
 
@@ -434,7 +434,7 @@ impl<'a> AddColumnView<'a> {
         );
 
         let icon_cur_y = animation_rect.top() + cur_height_padding + (total_content_height / 2.0);
-        let icon_img = egui::Image::new(data.icon).fit_to_exact_size(cur_icon_size);
+        let icon_img = data.icon.fit_to_exact_size(cur_icon_size);
         let icon_rect = Rect::from_center_size(pos2(cur_icon_x_pos, icon_cur_y), cur_icon_size);
 
         icon_img.paint_at(ui, icon_rect);
@@ -449,7 +449,7 @@ impl<'a> AddColumnView<'a> {
         vec.push(ColumnOptionData {
             title: "Universe",
             description: "See the whole nostr universe",
-            icon: egui::include_image!("../../../../assets/icons/universe_icon_dark_4x.png"),
+            icon: app_images::universe_image(),
             option: AddColumnOption::Universe,
         });
 
@@ -463,32 +463,32 @@ impl<'a> AddColumnView<'a> {
             vec.push(ColumnOptionData {
                 title: "Contacts",
                 description: "See notes from your contacts",
-                icon: egui::include_image!("../../../../assets/icons/home_icon_dark_4x.png"),
+                icon: app_images::home_image(),
                 option: AddColumnOption::Contacts(source),
             });
         }
         vec.push(ColumnOptionData {
             title: "Notifications",
             description: "Stay up to date with notifications and mentions",
-            icon: egui::include_image!("../../../../assets/icons/notifications_icon_dark_4x.png"),
+            icon: app_images::notifications_image(),
             option: AddColumnOption::UndecidedNotification,
         });
         vec.push(ColumnOptionData {
             title: "Hashtags",
             description: "Stay up to date with a certain hashtag",
-            icon: egui::include_image!("../../../../assets/icons/hashtag_icon_4x.png"),
+            icon: app_images::hashtag_image(),
             option: AddColumnOption::UndecidedHashtag,
         });
         vec.push(ColumnOptionData {
             title: "Individual",
             description: "Stay up to date with someone's notes & replies",
-            icon: egui::include_image!("../../../../assets/icons/profile_icon_4x.png"),
+            icon: app_images::profile_image(),
             option: AddColumnOption::UndecidedIndividual,
         });
         vec.push(ColumnOptionData {
             title: "Algo",
             description: "Algorithmic feeds to aid in note discovery",
-            icon: egui::include_image!("../../../../assets/icons/algo.png"),
+            icon: app_images::algo_image(),
             option: AddColumnOption::Algo(AlgoOption::LastPerPubkey(Decision::Undecided)),
         });
 
@@ -508,9 +508,7 @@ impl<'a> AddColumnView<'a> {
             vec.push(ColumnOptionData {
                 title: "Your Notifications",
                 description: "Stay up to date with your notifications and mentions",
-                icon: egui::include_image!(
-                    "../../../../assets/icons/notifications_icon_dark_4x.png"
-                ),
+                icon: app_images::notifications_image(),
                 option: AddColumnOption::Notification(source),
             });
         }
@@ -518,7 +516,7 @@ impl<'a> AddColumnView<'a> {
         vec.push(ColumnOptionData {
             title: "Someone else's Notifications",
             description: "Stay up to date with someone else's notifications and mentions",
-            icon: egui::include_image!("../../../../assets/icons/notifications_icon_dark_4x.png"),
+            icon: app_images::notifications_image(),
             option: AddColumnOption::ExternalNotification,
         });
 
@@ -538,7 +536,7 @@ impl<'a> AddColumnView<'a> {
             vec.push(ColumnOptionData {
                 title: "Your Notes",
                 description: "Keep track of your notes & replies",
-                icon: egui::include_image!("../../../../assets/icons/profile_icon_4x.png"),
+                icon: app_images::profile_image(),
                 option: AddColumnOption::Individual(source),
             });
         }
@@ -546,7 +544,7 @@ impl<'a> AddColumnView<'a> {
         vec.push(ColumnOptionData {
             title: "Someone else's Notes",
             description: "Stay up to date with someone else's notes & replies",
-            icon: egui::include_image!("../../../../assets/icons/profile_icon_4x.png"),
+            icon: app_images::profile_image(),
             option: AddColumnOption::ExternalIndividual,
         });
 
@@ -586,7 +584,7 @@ pub(crate) fn sized_button(text: &str) -> impl Widget + '_ {
 struct ColumnOptionData {
     title: &'static str,
     description: &'static str,
-    icon: ImageSource<'static>,
+    icon: Image<'static>,
     option: AddColumnOption,
 }
 

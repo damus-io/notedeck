@@ -5,6 +5,7 @@ pub use action::{MediaAction, NoteAction, ZapAction, ZapTargetAmount};
 pub use context::{BroadcastContext, ContextSelection, NoteContextSelection};
 
 use crate::JobPool;
+use crate::UnknownIds;
 use crate::{notecache::NoteCache, zaps::Zaps, Images};
 use enostr::{NoteId, RelayPool};
 use nostrdb::{Ndb, Note, NoteKey, QueryResult, Transaction};
@@ -21,6 +22,7 @@ pub struct NoteContext<'d> {
     pub zaps: &'d mut Zaps,
     pub pool: &'d mut RelayPool,
     pub job_pool: &'d mut JobPool,
+    pub unknown_ids: &'d mut UnknownIds,
     pub current_account_has_wallet: bool,
 }
 

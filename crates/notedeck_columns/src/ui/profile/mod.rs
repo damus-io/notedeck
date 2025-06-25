@@ -12,9 +12,10 @@ use crate::{
 };
 use notedeck::{
     name::get_display_name, profile::get_profile_url, Accounts, MuteFun, NoteAction, NoteContext,
-    NotedeckTextStyle, UnknownIds,
+    NotedeckTextStyle,
 };
 use notedeck_ui::{
+    app_images,
     jobs::JobsCache,
     profile::{about_section_widget, banner, display_name_widget},
     NoteOptions, ProfilePic,
@@ -26,7 +27,6 @@ pub struct ProfileView<'a, 'd> {
     col_id: usize,
     timeline_cache: &'a mut TimelineCache,
     note_options: NoteOptions,
-    unknown_ids: &'a mut UnknownIds,
     is_muted: &'a MuteFun,
     note_context: &'a mut NoteContext<'d>,
     jobs: &'a mut JobsCache,
@@ -45,7 +45,6 @@ impl<'a, 'd> ProfileView<'a, 'd> {
         col_id: usize,
         timeline_cache: &'a mut TimelineCache,
         note_options: NoteOptions,
-        unknown_ids: &'a mut UnknownIds,
         is_muted: &'a MuteFun,
         note_context: &'a mut NoteContext<'d>,
         jobs: &'a mut JobsCache,
@@ -56,7 +55,6 @@ impl<'a, 'd> ProfileView<'a, 'd> {
             col_id,
             timeline_cache,
             note_options,
-            unknown_ids,
             is_muted,
             note_context,
             jobs,
@@ -103,7 +101,7 @@ impl<'a, 'd> ProfileView<'a, 'd> {
             if let Err(e) = profile_timeline.poll_notes_into_view(
                 self.note_context.ndb,
                 &txn,
-                self.unknown_ids,
+                self.note_context.unknown_ids,
                 self.note_context.note_cache,
                 reversed,
             ) {
@@ -221,9 +219,13 @@ impl<'a, 'd> ProfileView<'a, 'd> {
 }
 
 fn handle_link(ui: &mut egui::Ui, website_url: &str) {
-    ui.image(egui::include_image!(
-        "../../../../../assets/icons/links_4x.png"
-    ));
+    let img = if ui.visuals().dark_mode {
+        app_images::link_image()
+    } else {
+        app_images::link_image().tint(egui::Color32::BLACK)
+    };
+
+    ui.add(img);
     if ui
         .label(RichText::new(website_url).color(notedeck_ui::colors::PINK))
         .on_hover_cursor(egui::CursorIcon::PointingHand)
@@ -237,9 +239,12 @@ fn handle_link(ui: &mut egui::Ui, website_url: &str) {
 }
 
 fn handle_lud16(ui: &mut egui::Ui, lud16: &str) {
-    ui.image(egui::include_image!(
-        "../../../../../assets/icons/zap_4x.png"
-    ));
+    let img = if ui.visuals().dark_mode {
+        app_images::zap_image()
+    } else {
+        app_images::zap_image().tint(egui::Color32::BLACK)
+    };
+    ui.add(img);
 
     let _ = ui.label(RichText::new(lud16).color(notedeck_ui::colors::PINK));
 }
@@ -273,10 +278,8 @@ fn copy_key_widget(pfp_rect: &egui::Rect) -> impl egui::Widget + '_ {
             Stroke::new(1.0, stroke_color),
             egui::StrokeKind::Outside,
         );
-        egui::Image::new(egui::include_image!(
-            "../../../../../assets/icons/key_4x.png"
-        ))
-        .paint_at(
+
+        app_images::key_image().paint_at(
             ui,
             #[allow(deprecated)]
             painter.round_rect_to_pixels(egui::Rect::from_center_size(
@@ -343,10 +346,9 @@ fn edit_profile_button() -> impl egui::Widget + 'static {
 
         painter.galley(galley_rect.left_top(), galley, Color32::WHITE);
 
-        egui::Image::new(egui::include_image!(
-            "../../../../../assets/icons/edit_icon_4x_dark.png"
-        ))
-        .paint_at(ui, edit_icon_rect);
+        app_images::edit_dark_image()
+            .tint(ui.visuals().text_color())
+            .paint_at(ui, edit_icon_rect);
 
         resp
     }

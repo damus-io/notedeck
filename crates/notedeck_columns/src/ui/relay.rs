@@ -2,11 +2,10 @@ use std::collections::HashMap;
 
 use crate::relay_pool_manager::{RelayPoolManager, RelayStatus};
 use crate::ui::{Preview, PreviewConfig};
-use egui::{
-    Align, Button, CornerRadius, Frame, Id, Image, Layout, Margin, Rgba, RichText, Ui, Vec2,
-};
+use egui::{Align, Button, CornerRadius, Frame, Id, Layout, Margin, Rgba, RichText, Ui, Vec2};
 use enostr::RelayPool;
 use notedeck::{Accounts, NotedeckTextStyle};
+use notedeck_ui::app_images;
 use notedeck_ui::{colors::PINK, padding, View};
 use tracing::debug;
 
@@ -180,10 +179,8 @@ impl<'a> RelayView<'a> {
 }
 
 fn add_relay_button() -> Button<'static> {
-    let img_data = egui::include_image!("../../../../assets/icons/add_relay_icon_4x.png");
-    let img = Image::new(img_data).fit_to_exact_size(Vec2::new(48.0, 48.0));
     Button::image_and_text(
-        img,
+        app_images::add_relay_image().fit_to_exact_size(Vec2::new(48.0, 48.0)),
         RichText::new(" Add relay")
             .size(16.0)
             // TODO: this color should not be hard coded. Find some way to add it to the visuals
@@ -207,18 +204,14 @@ fn get_right_side_width(status: RelayStatus) -> f32 {
     }
 }
 
-fn delete_button(_dark_mode: bool) -> egui::Button<'static> {
-    /*
-    let img_data = if dark_mode {
-        egui::include_image!("../../assets/icons/delete_icon_4x.png")
+fn delete_button(dark_mode: bool) -> egui::Button<'static> {
+    let img = if dark_mode {
+        app_images::delete_dark_image()
     } else {
-        // TODO: use light delete icon
-        egui::include_image!("../../assets/icons/delete_icon_4x.png")
+        app_images::delete_light_image()
     };
-    */
-    let img_data = egui::include_image!("../../../../assets/icons/delete_icon_4x.png");
 
-    egui::Button::image(egui::Image::new(img_data).max_width(10.0)).frame(false)
+    egui::Button::image(img.max_width(10.0)).frame(false)
 }
 
 fn relay_frame(ui: &mut Ui) -> Frame {
@@ -254,19 +247,11 @@ fn show_connection_status(ui: &mut Ui, status: RelayStatus) {
 }
 
 fn get_connection_icon(status: RelayStatus) -> egui::Image<'static> {
-    let img_data = match status {
-        RelayStatus::Connected => {
-            egui::include_image!("../../../../assets/icons/connected_icon_4x.png")
-        }
-        RelayStatus::Connecting => {
-            egui::include_image!("../../../../assets/icons/connecting_icon_4x.png")
-        }
-        RelayStatus::Disconnected => {
-            egui::include_image!("../../../../assets/icons/disconnected_icon_4x.png")
-        }
-    };
-
-    egui::Image::new(img_data)
+    match status {
+        RelayStatus::Connected => app_images::connected_image(),
+        RelayStatus::Connecting => app_images::connecting_image(),
+        RelayStatus::Disconnected => app_images::disconnected_image(),
+    }
 }
 
 // PREVIEWS

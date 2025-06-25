@@ -89,6 +89,10 @@ pub fn render_note_preview(
             ));
         }
     } else {
+        note_context
+            .unknown_ids
+            .add_note_id_if_missing(note_context.ndb, txn, id);
+
         return NoteResponse::new(ui.colored_label(Color32::RED, "TODO: COULD NOT LOAD"));
         /*
         return ui
