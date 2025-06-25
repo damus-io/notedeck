@@ -11,44 +11,6 @@ use std::collections::{BTreeMap, BTreeSet};
 // TODO: remove this
 use std::sync::Arc;
 
-#[derive(Debug, Clone)]
-pub struct SwitchAccountAction {
-    /// Some index representing the source of the action
-    pub source: Option<usize>,
-
-    /// The account index to switch to
-    pub switch_to: usize,
-}
-
-impl SwitchAccountAction {
-    pub fn new(source: Option<usize>, switch_to: usize) -> Self {
-        SwitchAccountAction { source, switch_to }
-    }
-}
-
-#[derive(Debug)]
-pub enum AccountsAction {
-    Switch(SwitchAccountAction),
-    Remove(usize),
-}
-
-#[derive(Default)]
-pub struct ContainsAccount {
-    pub has_nsec: bool,
-    pub index: usize,
-}
-
-#[must_use = "You must call process_login_action on this to handle unknown ids"]
-pub struct AddAccountAction {
-    pub accounts_action: Option<AccountsAction>,
-    pub unk_id_action: SingleUnkIdAction,
-}
-
-pub struct AccountData {
-    pub(crate) relay: AccountRelayData,
-    pub(crate) muted: AccountMutedData,
-}
-
 /// The interface for managing the user's accounts.
 /// Represents all user-facing operations related to account management.
 pub struct Accounts {
@@ -674,4 +636,42 @@ impl AddAccountAction {
     pub fn process_action(&mut self, ids: &mut UnknownIds, ndb: &Ndb, txn: &Transaction) {
         self.unk_id_action.process_action(ids, ndb, txn);
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct SwitchAccountAction {
+    /// Some index representing the source of the action
+    pub source: Option<usize>,
+
+    /// The account index to switch to
+    pub switch_to: usize,
+}
+
+impl SwitchAccountAction {
+    pub fn new(source: Option<usize>, switch_to: usize) -> Self {
+        SwitchAccountAction { source, switch_to }
+    }
+}
+
+#[derive(Debug)]
+pub enum AccountsAction {
+    Switch(SwitchAccountAction),
+    Remove(usize),
+}
+
+#[derive(Default)]
+pub struct ContainsAccount {
+    pub has_nsec: bool,
+    pub index: usize,
+}
+
+#[must_use = "You must call process_login_action on this to handle unknown ids"]
+pub struct AddAccountAction {
+    pub accounts_action: Option<AccountsAction>,
+    pub unk_id_action: SingleUnkIdAction,
+}
+
+pub struct AccountData {
+    pub(crate) relay: AccountRelayData,
+    pub(crate) muted: AccountMutedData,
 }
