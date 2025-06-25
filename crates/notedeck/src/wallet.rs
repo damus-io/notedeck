@@ -62,6 +62,21 @@ pub struct Wallet {
     balance: Option<Promise<Result<u64, nwc::Error>>>,
 }
 
+#[derive(Clone)]
+pub struct WalletSerializable {
+    pub uri: String,
+    pub default_mzap: Option<UserZapMsats>,
+}
+
+impl WalletSerializable {
+    pub fn new(uri: String) -> Self {
+        Self {
+            uri,
+            default_mzap: None,
+        }
+    }
+}
+
 impl std::fmt::Debug for Wallet {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "Wallet({})", self.uri)
@@ -127,26 +142,6 @@ fn pay_invoice(
     promise
 }
 
-impl TokenSerializable for Wallet {
-    fn parse_from_tokens<'a>(
-        parser: &mut tokenator::TokenParser<'a>,
-    ) -> Result<Self, tokenator::ParseError<'a>> {
-        parser.parse_token("nwc_uri")?;
-
-        let raw_uri = parser.pull_token()?;
-
-        let wallet =
-            Wallet::new(raw_uri.to_owned()).map_err(|_| tokenator::ParseError::DecodeFailed)?;
-
-        Ok(wallet)
-    }
-
-    fn serialize_tokens(&self, writer: &mut tokenator::TokenWriter) {
-        writer.write_token("nwc_uri");
-        writer.write_token(&self.uri);
-    }
-}
-
 pub struct GlobalWallet {
     pub wallet: Option<ZapWallet>,
     pub ui_state: WalletUIState,
@@ -176,7 +171,8 @@ impl GlobalWallet {
             return;
         };
 
-        match self.wallet_handler.save(wallet, "\t") {
+        let serializable: WalletSerializable = wallet.into();
+        match self.wallet_handler.save(&serializable, "\t") {
             Ok(_) => {}
             Err(e) => tracing::error!("Could not save global wallet: {e}"),
         }
@@ -184,12 +180,15 @@ impl GlobalWallet {
 }
 
 fn construct_global_wallet(wallet_handler: &TokenHandler) -> Option<ZapWallet> {
-    let Ok(res) = wallet_handler.load::<ZapWallet>("\t") else {
+    let Ok(res) = wallet_handler.load::<WalletSerializable>("\t") else {
         return None;
     };
 
     let wallet = match res {
-        Ok(wallet) => wallet,
+        Ok(wallet) => {
+            let m_zap_wallet: Result<ZapWallet, crate::Error> = wallet.into();
+            m_zap_wallet.ok()?
+        }
         Err(e) => {
             tracing::error!("Error parsing wallet: {:?}", e);
             return None;
@@ -206,11 +205,49 @@ pub struct ZapWallet {
 }
 
 enum ZapWalletRoute {
-    Wallet(Wallet),
+    Wallet(String),
     DefaultZapMsats(UserZapMsats),
 }
 
-impl TokenSerializable for ZapWallet {
+impl ZapWallet {
+    pub fn new(wallet: Wallet) -> Self {
+        Self {
+            wallet,
+            default_zap: DefaultZapMsats::default(),
+        }
+    }
+
+    pub fn with_default_zap_msats(mut self, msats: u64) -> Self {
+        self.default_zap.set_user_selection(msats);
+        self
+    }
+}
+
+impl From<Wallet> for ZapWallet {
+    fn from(value: Wallet) -> Self {
+        ZapWallet::new(value)
+    }
+}
+
+impl From<&ZapWallet> for WalletSerializable {
+    fn from(value: &ZapWallet) -> Self {
+        Self {
+            uri: value.wallet.uri.to_string(),
+            default_mzap: value.default_zap.try_into_user(),
+        }
+    }
+}
+
+impl From<WalletSerializable> for Result<ZapWallet, crate::Error> {
+    fn from(value: WalletSerializable) -> Result<ZapWallet, crate::Error> {
+        Ok(ZapWallet {
+            wallet: Wallet::new(value.uri)?,
+            default_zap: DefaultZapMsats::from_user(value.default_mzap),
+        })
+    }
+}
+
+impl TokenSerializable for WalletSerializable {
     fn parse_from_tokens<'a>(
         parser: &mut tokenator::TokenParser<'a>,
     ) -> Result<Self, tokenator::ParseError<'a>> {
@@ -220,7 +257,12 @@ impl TokenSerializable for ZapWallet {
             let res = TokenParser::alt(
                 parser,
                 &[
-                    |p| Ok(ZapWalletRoute::Wallet(Wallet::parse_from_tokens(p)?)),
+                    |p| {
+                        p.parse_token("nwc_uri")?;
+                        let raw_uri = p.pull_token()?;
+
+                        Ok(ZapWalletRoute::Wallet(raw_uri.to_string()))
+                    },
                     |p| {
                         Ok(ZapWalletRoute::DefaultZapMsats(
                             UserZapMsats::parse_from_tokens(p)?,
@@ -245,41 +287,19 @@ impl TokenSerializable for ZapWallet {
             return Err(ParseError::DecodeFailed);
         };
 
-        let mut zap_wallet = ZapWallet::new(wallet);
-
-        let default_zap = DefaultZapMsats::from_user(m_default_zap);
-
-        zap_wallet.default_zap = default_zap;
-
-        Ok(zap_wallet)
+        Ok(WalletSerializable {
+            uri: wallet,
+            default_mzap: m_default_zap,
+        })
     }
 
     fn serialize_tokens(&self, writer: &mut tokenator::TokenWriter) {
-        self.wallet.serialize_tokens(writer);
+        writer.write_token("nwc_uri");
+        writer.write_token(&self.uri);
 
-        if let Some(user_zap_msats) = self.default_zap.try_into_user() {
-            user_zap_msats.serialize_tokens(writer);
+        if let Some(msats) = &self.default_mzap {
+            msats.serialize_tokens(writer);
         }
-    }
-}
-
-impl ZapWallet {
-    pub fn new(wallet: Wallet) -> Self {
-        Self {
-            wallet,
-            default_zap: DefaultZapMsats::default(),
-        }
-    }
-
-    pub fn with_default_zap_msats(mut self, msats: u64) -> Self {
-        self.default_zap.set_user_selection(msats);
-        self
-    }
-}
-
-impl From<Wallet> for ZapWallet {
-    fn from(value: Wallet) -> Self {
-        ZapWallet::new(value)
     }
 }
 
@@ -287,7 +307,7 @@ impl From<Wallet> for ZapWallet {
 mod tests {
     use tokenator::{TokenParser, TokenSerializable, TokenWriter};
 
-    use crate::Wallet;
+    use crate::{wallet::WalletSerializable, Wallet};
 
     use super::ZapWallet;
 
@@ -301,7 +321,7 @@ mod tests {
 
     #[test]
     fn test_wallet_serialize_deserialize() {
-        let wallet = Wallet::new(URI.to_owned()).unwrap();
+        let wallet = WalletSerializable::new(URI.to_owned());
 
         let mut writer = TokenWriter::new("\t");
         wallet.serialize_tokens(&mut writer);
@@ -309,7 +329,7 @@ mod tests {
 
         let data = &serialized.split("\t").collect::<Vec<&str>>();
         let mut parser = TokenParser::new(data);
-        let m_new_wallet = Wallet::parse_from_tokens(&mut parser);
+        let m_new_wallet = WalletSerializable::parse_from_tokens(&mut parser);
 
         assert!(m_new_wallet.is_ok());
 
@@ -325,13 +345,20 @@ mod tests {
             ZapWallet::new(Wallet::new(URI.to_owned()).unwrap()).with_default_zap_msats(MSATS);
 
         let mut writer = TokenWriter::new("\t");
-        zap_wallet.serialize_tokens(&mut writer);
+
+        let serializable: WalletSerializable = (&zap_wallet).into();
+        serializable.serialize_tokens(&mut writer);
         let serialized = writer.str();
 
         let data = &serialized.split("\t").collect::<Vec<&str>>();
         let mut parser = TokenParser::new(data);
 
-        let m_new_zap_wallet = ZapWallet::parse_from_tokens(&mut parser);
+        let m_deserialized = WalletSerializable::parse_from_tokens(&mut parser);
+        assert!(m_deserialized.is_ok());
+
+        let deserialized = m_deserialized.unwrap();
+
+        let m_new_zap_wallet: Result<ZapWallet, crate::Error> = deserialized.into();
 
         assert!(m_new_zap_wallet.is_ok());
 

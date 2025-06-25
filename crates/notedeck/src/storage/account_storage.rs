@@ -1,4 +1,4 @@
-use crate::{Result, UserAccount};
+use crate::{user_account::UserAccountSerializable, Result};
 use enostr::{Keypair, Pubkey, SerializableKeypair};
 use tokenator::{TokenParser, TokenSerializable, TokenWriter};
 
@@ -21,7 +21,7 @@ impl AccountStorage {
         }
     }
 
-    pub fn write_account(&self, account: &UserAccount) -> Result<()> {
+    pub fn write_account(&self, account: &UserAccountSerializable) -> Result<()> {
         let mut writer = TokenWriter::new("\t");
         account.serialize_tokens(&mut writer);
         write_file(
@@ -31,7 +31,7 @@ impl AccountStorage {
         )
     }
 
-    pub fn get_accounts(&self) -> Result<Vec<UserAccount>> {
+    pub fn get_accounts(&self) -> Result<Vec<UserAccountSerializable>> {
         let keys = self
             .accounts_directory
             .get_files()?
@@ -79,16 +79,18 @@ impl AccountStorage {
     }
 }
 
-fn deserialize_storage(serialized: &str) -> Result<UserAccount> {
+fn deserialize_storage(serialized: &str) -> Result<UserAccountSerializable> {
     let data = serialized.split("\t").collect::<Vec<&str>>();
     let mut parser = TokenParser::new(&data);
 
-    if let Ok(acc) = UserAccount::parse_from_tokens(&mut parser) {
+    if let Ok(acc) = UserAccountSerializable::parse_from_tokens(&mut parser) {
         return Ok(acc);
     }
 
     // try old deserialization way
-    Ok(UserAccount::new(old_deserialization(serialized)?))
+    Ok(UserAccountSerializable::new(old_deserialization(
+        serialized,
+    )?))
 }
 
 fn old_deserialization(serialized: &str) -> Result<Keypair> {
@@ -118,7 +120,7 @@ mod tests {
     fn test_basic() {
         let kp = enostr::FullKeypair::generate().to_keypair();
         let storage = AccountStorage::mock().unwrap();
-        let resp = storage.write_account(&UserAccount::new(kp.clone()));
+        let resp = storage.write_account(&UserAccountSerializable::new(kp.clone()));
 
         assert!(resp.is_ok());
         assert_num_storage(&storage.get_accounts(), 1);
@@ -127,7 +129,7 @@ mod tests {
         assert_num_storage(&storage.get_accounts(), 0);
     }
 
-    fn assert_num_storage(keys_response: &Result<Vec<UserAccount>>, n: usize) {
+    fn assert_num_storage(keys_response: &Result<Vec<UserAccountSerializable>>, n: usize) {
         match keys_response {
             Ok(keys) => {
                 assert_eq!(keys.len(), n);
@@ -143,7 +145,7 @@ mod tests {
         let kp = enostr::FullKeypair::generate().to_keypair();
 
         let storage = AccountStorage::mock().unwrap();
-        let _ = storage.write_account(&UserAccount::new(kp.clone()));
+        let _ = storage.write_account(&UserAccountSerializable::new(kp.clone()));
         assert_num_storage(&storage.get_accounts(), 1);
 
         let resp = storage.select_key(Some(kp.pubkey));

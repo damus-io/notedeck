@@ -3,6 +3,7 @@ use tracing::{debug, error, info};
 use crate::account::cache::AccountCache;
 use crate::account::mute::AccountMutedData;
 use crate::account::relay::{AccountRelayData, RelayDefaults};
+use crate::user_account::UserAccountSerializable;
 use crate::{AccountStorage, MuteFun, RelaySpec, SingleUnkIdAction, UserAccount};
 use enostr::{ClientMessage, FilledKeypair, Keypair, Pubkey, RelayPool};
 use nostrdb::{Ndb, Note, Transaction};
@@ -32,7 +33,8 @@ impl Accounts {
             match keystore.get_accounts() {
                 Ok(accounts) => {
                     for account in accounts {
-                        cache.add(account);
+                        // TODO(kernelkind): this will get processed in a later commit
+                        let _ = add_account_from_storage(&mut cache, account);
                     }
                 }
                 Err(e) => {
@@ -94,7 +96,7 @@ impl Accounts {
         };
 
         if let Some(key_store) = &self.key_store {
-            if let Err(e) = key_store.write_account(acc.get_acc()) {
+            if let Err(e) = key_store.write_account(&acc.get_acc().into()) {
                 tracing::error!("Could not add key for {:?}: {e}", kp.pubkey);
             }
         }
@@ -118,7 +120,7 @@ impl Accounts {
             return false;
         };
 
-        if let Err(err) = key_store.write_account(cur_acc) {
+        if let Err(err) = key_store.write_account(&cur_acc.into()) {
             tracing::error!("Could not add account {:?} to storage: {err}", cur_acc.key);
             return false;
         }
@@ -448,6 +450,40 @@ impl<'a> AccType<'a> {
             AccType::Acc(user_account) => user_account,
         }
     }
+}
+
+fn add_account_from_storage(
+    cache: &mut AccountCache,
+    user_account_serializable: UserAccountSerializable,
+) -> SingleUnkIdAction {
+    let Some(acc) = get_acc_from_storage(user_account_serializable) else {
+        return SingleUnkIdAction::NoAction;
+    };
+
+    let pk = acc.key.pubkey;
+    cache.add(acc);
+
+    SingleUnkIdAction::pubkey(pk)
+}
+
+fn get_acc_from_storage(user_account_serializable: UserAccountSerializable) -> Option<UserAccount> {
+    let keypair = user_account_serializable.key;
+
+    let mut wallet = None;
+    if let Some(wallet_s) = user_account_serializable.wallet {
+        let m_wallet: Result<crate::ZapWallet, crate::Error> = wallet_s.into();
+        match m_wallet {
+            Ok(w) => wallet = Some(w),
+            Err(e) => {
+                tracing::error!("Problem creating wallet from disk: {e}");
+            }
+        };
+    }
+
+    Some(UserAccount {
+        key: keypair,
+        wallet,
+    })
 }
 
 enum RelayAction {

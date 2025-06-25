@@ -11,6 +11,16 @@ pub struct DefaultZapMsats {
 }
 
 impl DefaultZapMsats {
+    pub fn from_msats(msats: Option<u64>) -> Self {
+        let mut default = DefaultZapMsats::default();
+
+        if let Some(msats) = msats {
+            default.set_user_selection(msats);
+            default.pending.write_msats(msats);
+        }
+
+        default
+    }
     pub fn from_user(value: Option<UserZapMsats>) -> Self {
         let mut obj = match value {
             Some(user_msats) => {
@@ -50,7 +60,7 @@ impl DefaultZapMsats {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct UserZapMsats {
     pub msats: u64,
 }
