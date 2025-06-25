@@ -282,6 +282,37 @@ impl Route {
             Route::CustomizeZapAmount(_) => ColumnTitle::simple("Customize Zap Amount"),
         }
     }
+
+    pub fn exportable_to_note(&self) -> bool {
+        match &self {
+            Route::Timeline(timeline_kind) => match timeline_kind {
+                TimelineKind::List(list_kind) => match list_kind {
+                    ListKind::Contact(_) => true,
+                },
+                TimelineKind::Algo(algo) => match algo {
+                    AlgoTimeline::LastPerPubkey(list_kind) => match list_kind {
+                        ListKind::Contact(_) => true,
+                    },
+                },
+                TimelineKind::Notifications(_) => true,
+                TimelineKind::Profile(_) => true,
+                TimelineKind::Thread(_) => false,
+                TimelineKind::Universe => true,
+                TimelineKind::Generic(_) => false,
+                TimelineKind::Hashtag(_) => true,
+            },
+            Route::Accounts(_) => false,
+            Route::Reply(_) => false,
+            Route::Quote(_) => false,
+            Route::Relays => false,
+            Route::ComposeNote => false,
+            Route::AddColumn(_) => false,
+            Route::EditProfile(_) => false,
+            Route::Support => false,
+            Route::NewDeck => false,
+            Route::EditDeck(_) => false,
+        }
+    }
 }
 
 // TODO: add this to egui-nav so we don't have to deal with returning
@@ -446,6 +477,10 @@ impl<R: Clone> Router<R> {
 
     pub fn routes(&self) -> &Vec<R> {
         &self.routes
+    }
+
+    pub fn first(&self) -> Option<&R> {
+        self.routes.first()
     }
 }
 
