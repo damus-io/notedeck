@@ -1,13 +1,13 @@
 use tracing::{debug, error, info};
 
+use crate::account::relay::AccountRelayData;
 use crate::{
     AccountStorage, MuteFun, Muted, RelaySpec, SingleUnkIdAction, UnknownIds, UserAccount,
 };
 use enostr::{ClientMessage, FilledKeypair, Keypair, Pubkey, RelayPool};
-use nostrdb::{Filter, Ndb, Note, NoteBuilder, NoteKey, Subscription, Transaction};
+use nostrdb::{Filter, Ndb, Note, NoteKey, Subscription, Transaction};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
-use url::Url;
 use uuid::Uuid;
 
 // TODO: remove this
@@ -34,14 +34,6 @@ pub enum AccountsAction {
     Remove(usize),
 }
 
-pub struct AccountRelayData {
-    filter: Filter,
-    subid: Option<String>,
-    sub: Option<Subscription>,
-    local: BTreeSet<RelaySpec>,      // used locally but not advertised
-    advertised: BTreeSet<RelaySpec>, // advertised via NIP-65
-}
-
 #[derive(Default)]
 pub struct ContainsAccount {
     pub has_nsec: bool,
@@ -52,136 +44,6 @@ pub struct ContainsAccount {
 pub struct AddAccountAction {
     pub accounts_action: Option<AccountsAction>,
     pub unk_id_action: SingleUnkIdAction,
-}
-
-impl AccountRelayData {
-    pub fn new(ndb: &Ndb, pubkey: &[u8; 32]) -> Self {
-        // Construct a filter for the user's NIP-65 relay list
-        let filter = Filter::new()
-            .authors([pubkey])
-            .kinds([10002])
-            .limit(1)
-            .build();
-
-        // Query the ndb immediately to see if the user list is already there
-        let txn = Transaction::new(ndb).expect("transaction");
-        let lim = filter.limit().unwrap_or(crate::filter::default_limit()) as i32;
-        let nks = ndb
-            .query(&txn, &[filter.clone()], lim)
-            .expect("query user relays results")
-            .iter()
-            .map(|qr| qr.note_key)
-            .collect::<Vec<NoteKey>>();
-        let relays = Self::harvest_nip65_relays(ndb, &txn, &nks);
-        debug!(
-            "pubkey {}: initial relays {:?}",
-            hex::encode(pubkey),
-            relays
-        );
-
-        AccountRelayData {
-            filter,
-            subid: None,
-            sub: None,
-            local: BTreeSet::new(),
-            advertised: relays.into_iter().collect(),
-        }
-    }
-
-    // make this account the current selected account
-    pub fn activate(&mut self, ndb: &Ndb, pool: &mut RelayPool) {
-        debug!("activating relay sub {}", self.filter.json().unwrap());
-        assert_eq!(self.subid, None, "subid already exists");
-        assert_eq!(self.sub, None, "sub already exists");
-
-        // local subscription
-        let sub = ndb
-            .subscribe(&[self.filter.clone()])
-            .expect("ndb relay list subscription");
-
-        // remote subscription
-        let subid = Uuid::new_v4().to_string();
-        pool.subscribe(subid.clone(), vec![self.filter.clone()]);
-
-        self.sub = Some(sub);
-        self.subid = Some(subid);
-    }
-
-    // this account is no longer the selected account
-    pub fn deactivate(&mut self, ndb: &mut Ndb, pool: &mut RelayPool) {
-        debug!("deactivating relay sub {}", self.filter.json().unwrap());
-        assert_ne!(self.subid, None, "subid doesn't exist");
-        assert_ne!(self.sub, None, "sub doesn't exist");
-
-        // remote subscription
-        pool.unsubscribe(self.subid.as_ref().unwrap().clone());
-
-        // local subscription
-        ndb.unsubscribe(self.sub.unwrap())
-            .expect("ndb relay list unsubscribe");
-
-        self.sub = None;
-        self.subid = None;
-    }
-
-    // standardize the format (ie, trailing slashes) to avoid dups
-    pub fn canonicalize_url(url: &str) -> String {
-        match Url::parse(url) {
-            Ok(parsed_url) => parsed_url.to_string(),
-            Err(_) => url.to_owned(), // If parsing fails, return the original URL.
-        }
-    }
-
-    fn harvest_nip65_relays(ndb: &Ndb, txn: &Transaction, nks: &[NoteKey]) -> Vec<RelaySpec> {
-        let mut relays = Vec::new();
-        for nk in nks.iter() {
-            if let Ok(note) = ndb.get_note_by_key(txn, *nk) {
-                for tag in note.tags() {
-                    match tag.get(0).and_then(|t| t.variant().str()) {
-                        Some("r") => {
-                            if let Some(url) = tag.get(1).and_then(|f| f.variant().str()) {
-                                let has_read_marker = tag
-                                    .get(2)
-                                    .is_some_and(|m| m.variant().str() == Some("read"));
-                                let has_write_marker = tag
-                                    .get(2)
-                                    .is_some_and(|m| m.variant().str() == Some("write"));
-                                relays.push(RelaySpec::new(
-                                    Self::canonicalize_url(url),
-                                    has_read_marker,
-                                    has_write_marker,
-                                ));
-                            }
-                        }
-                        Some("alt") => {
-                            // ignore for now
-                        }
-                        Some(x) => {
-                            error!("harvest_nip65_relays: unexpected tag type: {}", x);
-                        }
-                        None => {
-                            error!("harvest_nip65_relays: invalid tag");
-                        }
-                    }
-                }
-            }
-        }
-        relays
-    }
-
-    pub fn publish_nip65_relays(&self, seckey: &[u8; 32], pool: &mut RelayPool) {
-        let mut builder = NoteBuilder::new().kind(10002).content("");
-        for rs in &self.advertised {
-            builder = builder.start_tag().tag_str("r").tag_str(&rs.url);
-            if rs.has_read_marker {
-                builder = builder.tag_str("read");
-            } else if rs.has_write_marker {
-                builder = builder.tag_str("write");
-            }
-        }
-        let note = builder.sign(seckey).build().expect("note build");
-        pool.send(&enostr::ClientMessage::event(&note).expect("note client message"));
-    }
 }
 
 pub struct AccountMutedData {
@@ -299,8 +161,8 @@ impl AccountMutedData {
 }
 
 pub struct AccountData {
-    relay: AccountRelayData,
-    muted: AccountMutedData,
+    pub(crate) relay: AccountRelayData,
+    pub(crate) muted: AccountMutedData,
 }
 
 /// The interface for managing the user's accounts.
