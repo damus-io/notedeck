@@ -69,10 +69,6 @@ impl Accounts {
         self.accounts.get(ind)
     }
 
-    pub fn get_account_mut(&mut self, ind: usize) -> Option<&mut UserAccount> {
-        self.accounts.get_mut(ind)
-    }
-
     pub fn find_account(&self, pk: &[u8; 32]) -> Option<&UserAccount> {
         self.accounts
             .iter()
@@ -254,7 +250,7 @@ impl Accounts {
 
     pub fn get_selected_account_mut(&mut self) -> Option<&mut UserAccount> {
         self.currently_selected_account
-            .map(|i| self.get_account_mut(i))?
+            .map(|i| self.accounts.get_mut(i))?
     }
 
     pub fn get_account_mut_optimized(&mut self, pk: &[u8; 32]) -> Option<&mut UserAccount> {
