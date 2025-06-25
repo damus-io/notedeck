@@ -20,11 +20,15 @@ pub struct Accounts {
     account_data: BTreeMap<[u8; 32], AccountData>,
     relay_defaults: RelayDefaults,
     needs_relay_config: bool,
-    fallback: Option<Pubkey>,
+    fallback: Pubkey,
 }
 
 impl Accounts {
-    pub fn new(key_store: Option<AccountStorage>, forced_relays: Vec<String>) -> Self {
+    pub fn new(
+        key_store: Option<AccountStorage>,
+        forced_relays: Vec<String>,
+        fallback: Pubkey,
+    ) -> Self {
         let accounts = match &key_store {
             Some(keystore) => match keystore.get_accounts() {
                 Ok(k) => k,
@@ -53,7 +57,7 @@ impl Accounts {
             account_data,
             relay_defaults,
             needs_relay_config: true,
-            fallback: None,
+            fallback,
         }
     }
 
@@ -82,7 +86,7 @@ impl Accounts {
     }
 
     pub fn with_fallback(&mut self, fallback: Pubkey) {
-        self.fallback = Some(fallback);
+        self.fallback = fallback;
     }
 
     pub fn remove_account(&mut self, index: usize) {
@@ -359,11 +363,9 @@ impl Accounts {
     }
 
     fn handle_no_accounts(&mut self, unknown_ids: &mut UnknownIds, ndb: &Ndb, txn: &Transaction) {
-        if let Some(fallback) = self.fallback {
-            self.add_account(Keypair::new(fallback, None))
-                .process_action(unknown_ids, ndb, txn);
-            self.select_account(self.num_accounts() - 1);
-        }
+        self.add_account(Keypair::new(self.fallback, None))
+            .process_action(unknown_ids, ndb, txn);
+        self.select_account(self.num_accounts() - 1);
     }
 
     fn poll_for_updates(&mut self, ndb: &Ndb) -> bool {

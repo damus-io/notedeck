@@ -1,3 +1,4 @@
+use crate::account::FALLBACK_PUBKEY;
 use crate::persist::{AppSizeHandler, ZoomHandler};
 use crate::wallet::GlobalWallet;
 use crate::zaps::Zaps;
@@ -176,7 +177,7 @@ impl Notedeck {
             None
         };
 
-        let mut accounts = Accounts::new(keystore, parsed_args.relays.clone());
+        let mut accounts = Accounts::new(keystore, parsed_args.relays.clone(), FALLBACK_PUBKEY());
 
         let num_keys = parsed_args.keys.len();
 
