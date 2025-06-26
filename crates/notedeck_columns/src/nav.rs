@@ -544,7 +544,7 @@ fn render_nav_body(
             response.action.map(Into::into)
         }
         Route::ComposeNote => {
-            let kp = ctx.accounts.get_selected_account()?.key.to_full()?;
+            let kp = ctx.accounts.get_selected_account().key.to_full()?;
             let draft = app.drafts.compose_mut();
 
             let txn = Transaction::new(ctx.ndb).expect("txn");
@@ -594,7 +594,7 @@ fn render_nav_body(
                 app.note_options,
                 search_buffer,
                 &mut note_context,
-                &ctx.accounts.get_selected_account().map(|a| (&a.key).into()),
+                &(&ctx.accounts.get_selected_account().key).into(),
                 &mut app.jobs,
             )
             .show(ui, ctx.clipboard)
@@ -605,19 +605,18 @@ fn render_nav_body(
             let new_deck_state = app.view_state.id_to_deck_state.entry(id).or_default();
             let mut resp = None;
             if let Some(config_resp) = ConfigureDeckView::new(new_deck_state).ui(ui) {
-                if let Some(cur_acc) = ctx.accounts.selected_account_pubkey() {
-                    app.decks_cache
-                        .add_deck(*cur_acc, Deck::new(config_resp.icon, config_resp.name));
+                let cur_acc = ctx.accounts.selected_account_pubkey();
+                app.decks_cache
+                    .add_deck(*cur_acc, Deck::new(config_resp.icon, config_resp.name));
 
-                    // set new deck as active
-                    let cur_index = get_decks_mut(ctx.accounts, &mut app.decks_cache)
-                        .decks()
-                        .len()
-                        - 1;
-                    resp = Some(RenderNavAction::SwitchingAction(SwitchingAction::Decks(
-                        DecksAction::Switch(cur_index),
-                    )));
-                }
+                // set new deck as active
+                let cur_index = get_decks_mut(ctx.accounts, &mut app.decks_cache)
+                    .decks()
+                    .len()
+                    - 1;
+                resp = Some(RenderNavAction::SwitchingAction(SwitchingAction::Decks(
+                    DecksAction::Switch(cur_index),
+                )));
 
                 new_deck_state.clear();
                 get_active_columns_mut(ctx.accounts, &mut app.decks_cache)

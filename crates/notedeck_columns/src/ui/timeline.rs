@@ -21,7 +21,7 @@ pub struct TimelineView<'a, 'd> {
     reverse: bool,
     is_muted: &'a MuteFun,
     note_context: &'a mut NoteContext<'d>,
-    cur_acc: &'a Option<KeypairUnowned<'a>>,
+    cur_acc: &'a KeypairUnowned<'a>,
     jobs: &'a mut JobsCache,
 }
 
@@ -33,7 +33,7 @@ impl<'a, 'd> TimelineView<'a, 'd> {
         is_muted: &'a MuteFun,
         note_context: &'a mut NoteContext<'d>,
         note_options: NoteOptions,
-        cur_acc: &'a Option<KeypairUnowned<'a>>,
+        cur_acc: &'a KeypairUnowned<'a>,
         jobs: &'a mut JobsCache,
     ) -> Self {
         let reverse = false;
@@ -78,7 +78,7 @@ fn timeline_ui(
     note_options: NoteOptions,
     is_muted: &MuteFun,
     note_context: &mut NoteContext,
-    cur_acc: &Option<KeypairUnowned>,
+    cur_acc: &KeypairUnowned,
     jobs: &mut JobsCache,
 ) -> Option<NoteAction> {
     //padding(4.0, ui, |ui| ui.heading("Notifications"));
@@ -337,7 +337,7 @@ pub struct TimelineTabView<'a, 'd> {
     txn: &'a Transaction,
     is_muted: &'a MuteFun,
     note_context: &'a mut NoteContext<'d>,
-    cur_acc: &'a Option<KeypairUnowned<'a>>,
+    cur_acc: &'a KeypairUnowned<'a>,
     jobs: &'a mut JobsCache,
 }
 
@@ -350,7 +350,7 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
         txn: &'a Transaction,
         is_muted: &'a MuteFun,
         note_context: &'a mut NoteContext<'d>,
-        cur_acc: &'a Option<KeypairUnowned<'a>>,
+        cur_acc: &'a KeypairUnowned<'a>,
         jobs: &'a mut JobsCache,
     ) -> Self {
         Self {
@@ -407,11 +407,11 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
                 };
 
                 if !muted {
-                    let zapping_acc = self
-                        .cur_acc
-                        .as_ref()
-                        .filter(|_| self.note_context.current_account_has_wallet)
-                        .or(self.cur_acc.as_ref());
+                    let zapping_acc = if self.note_context.current_account_has_wallet {
+                        Some(self.cur_acc)
+                    } else {
+                        None
+                    };
 
                     notedeck_ui::padding(8.0, ui, |ui| {
                         let resp = NoteView::new(

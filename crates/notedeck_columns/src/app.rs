@@ -386,7 +386,7 @@ impl Damus {
         // arg parsing
 
         let (parsed_args, unrecognized_args) =
-            ColumnsArgs::parse(args, ctx.accounts.selected_account_pubkey());
+            ColumnsArgs::parse(args, Some(ctx.accounts.selected_account_pubkey()));
 
         let account = ctx.accounts.selected_account_pubkey_bytes();
 
@@ -747,9 +747,7 @@ pub fn get_active_columns<'a>(accounts: &Accounts, decks_cache: &'a DecksCache) 
 }
 
 pub fn get_decks<'a>(accounts: &Accounts, decks_cache: &'a DecksCache) -> &'a Decks {
-    let key = accounts
-        .selected_account_pubkey()
-        .unwrap_or_else(|| decks_cache.get_fallback_pubkey());
+    let key = accounts.selected_account_pubkey();
     decks_cache.decks(key)
 }
 
@@ -763,10 +761,7 @@ pub fn get_active_columns_mut<'a>(
 }
 
 pub fn get_decks_mut<'a>(accounts: &Accounts, decks_cache: &'a mut DecksCache) -> &'a mut Decks {
-    match accounts.selected_account_pubkey() {
-        Some(acc) => decks_cache.decks_mut(acc),
-        None => decks_cache.fallback_mut(),
-    }
+    decks_cache.decks_mut(accounts.selected_account_pubkey())
 }
 
 pub fn set_demo(
@@ -782,7 +777,7 @@ pub fn set_demo(
     accounts.select_account(accounts.num_accounts() - 1);
 }
 
-fn columns_to_decks_cache(cols: Columns, key: Option<&[u8; 32]>) -> DecksCache {
+fn columns_to_decks_cache(cols: Columns, key: &[u8; 32]) -> DecksCache {
     let mut account_to_decks: HashMap<Pubkey, Decks> = Default::default();
     let decks = Decks::new(crate::decks::Deck::new_with_columns(
         crate::decks::Deck::default().icon,
@@ -790,11 +785,7 @@ fn columns_to_decks_cache(cols: Columns, key: Option<&[u8; 32]>) -> DecksCache {
         cols,
     ));
 
-    let account = if let Some(key) = key {
-        Pubkey::new(*key)
-    } else {
-        FALLBACK_PUBKEY()
-    };
+    let account = Pubkey::new(*key);
     account_to_decks.insert(account, decks);
     DecksCache::new(account_to_decks)
 }

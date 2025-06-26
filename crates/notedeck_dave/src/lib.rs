@@ -209,11 +209,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         };
         tracing::debug!("sending messages, latest: {:?}", messages.last().unwrap());
 
-        let user_id = app_ctx
-            .accounts
-            .get_selected_account()
-            .map(|sa| calculate_user_id(sa.keypair()))
-            .unwrap_or_else(|| "unknown_user".to_string());
+        let user_id = calculate_user_id(app_ctx.accounts.get_selected_account().keypair());
 
         let ctx = ctx.clone();
         let client = self.client.clone();

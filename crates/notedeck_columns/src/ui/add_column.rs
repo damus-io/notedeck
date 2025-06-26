@@ -165,7 +165,7 @@ pub struct AddColumnView<'a> {
     key_state_map: &'a mut HashMap<Id, AcquireKeyState>,
     ndb: &'a Ndb,
     img_cache: &'a mut Images,
-    cur_account: Option<&'a UserAccount>,
+    cur_account: &'a UserAccount,
 }
 
 impl<'a> AddColumnView<'a> {
@@ -173,7 +173,7 @@ impl<'a> AddColumnView<'a> {
         key_state_map: &'a mut HashMap<Id, AcquireKeyState>,
         ndb: &'a Ndb,
         img_cache: &'a mut Images,
-        cur_account: Option<&'a UserAccount>,
+        cur_account: &'a UserAccount,
     ) -> Self {
         Self {
             key_state_map,
@@ -188,7 +188,7 @@ impl<'a> AddColumnView<'a> {
         for column_option_data in self.get_base_options() {
             let option = column_option_data.option.clone();
             if self.column_option_ui(ui, column_option_data).clicked() {
-                selected_option = self.cur_account.map(|acct| option.take_as_response(acct))
+                selected_option = Some(option.take_as_response(self.cur_account));
             }
 
             ui.add(Separator::default().spacing(0.0));
@@ -202,7 +202,7 @@ impl<'a> AddColumnView<'a> {
         for column_option_data in self.get_notifications_options() {
             let option = column_option_data.option.clone();
             if self.column_option_ui(ui, column_option_data).clicked() {
-                selected_option = self.cur_account.map(|acct| option.take_as_response(acct));
+                selected_option = Some(option.take_as_response(self.cur_account));
             }
 
             ui.add(Separator::default().spacing(0.0));
@@ -233,11 +233,9 @@ impl<'a> AddColumnView<'a> {
         };
 
         let option = algo_option.option.clone();
-        if self.column_option_ui(ui, algo_option).clicked() {
-            self.cur_account.map(|acct| option.take_as_response(acct))
-        } else {
-            None
-        }
+        self.column_option_ui(ui, algo_option)
+            .clicked()
+            .then(|| option.take_as_response(self.cur_account))
     }
 
     fn algo_ui(&mut self, ui: &mut Ui) -> Option<AddColumnResponse> {
@@ -249,11 +247,9 @@ impl<'a> AddColumnView<'a> {
         };
 
         let option = algo_option.option.clone();
-        if self.column_option_ui(ui, algo_option).clicked() {
-            self.cur_account.map(|acct| option.take_as_response(acct))
-        } else {
-            None
-        }
+        self.column_option_ui(ui, algo_option)
+            .clicked()
+            .then(|| option.take_as_response(self.cur_account))
     }
 
     fn individual_ui(&mut self, ui: &mut Ui) -> Option<AddColumnResponse> {
@@ -261,7 +257,7 @@ impl<'a> AddColumnView<'a> {
         for column_option_data in self.get_individual_options() {
             let option = column_option_data.option.clone();
             if self.column_option_ui(ui, column_option_data).clicked() {
-                selected_option = self.cur_account.map(|acct| option.take_as_response(acct));
+                selected_option = Some(option.take_as_response(self.cur_account));
             }
 
             ui.add(Separator::default().spacing(0.0));
@@ -327,12 +323,9 @@ impl<'a> AddColumnView<'a> {
                     }
                 }
 
-                if ui.add(add_column_button()).clicked() {
-                    self.cur_account
-                        .map(|acc| to_option(keypair.pubkey).take_as_response(acc))
-                } else {
-                    None
-                }
+                ui.add(add_column_button())
+                    .clicked()
+                    .then(|| to_option(keypair.pubkey).take_as_response(self.cur_account))
             } else {
                 None
             };
@@ -453,20 +446,18 @@ impl<'a> AddColumnView<'a> {
             option: AddColumnOption::Universe,
         });
 
-        if let Some(acc) = self.cur_account {
-            let source = if acc.key.secret_key.is_some() {
-                PubkeySource::DeckAuthor
-            } else {
-                PubkeySource::Explicit(acc.key.pubkey)
-            };
+        let source = if self.cur_account.key.secret_key.is_some() {
+            PubkeySource::DeckAuthor
+        } else {
+            PubkeySource::Explicit(self.cur_account.key.pubkey)
+        };
 
-            vec.push(ColumnOptionData {
-                title: "Contacts",
-                description: "See notes from your contacts",
-                icon: app_images::home_image(),
-                option: AddColumnOption::Contacts(source),
-            });
-        }
+        vec.push(ColumnOptionData {
+            title: "Contacts",
+            description: "See notes from your contacts",
+            icon: app_images::home_image(),
+            option: AddColumnOption::Contacts(source),
+        });
         vec.push(ColumnOptionData {
             title: "Notifications",
             description: "Stay up to date with notifications and mentions",
@@ -498,20 +489,18 @@ impl<'a> AddColumnView<'a> {
     fn get_notifications_options(&self) -> Vec<ColumnOptionData> {
         let mut vec = Vec::new();
 
-        if let Some(acc) = self.cur_account {
-            let source = if acc.key.secret_key.is_some() {
-                PubkeySource::DeckAuthor
-            } else {
-                PubkeySource::Explicit(acc.key.pubkey)
-            };
+        let source = if self.cur_account.key.secret_key.is_some() {
+            PubkeySource::DeckAuthor
+        } else {
+            PubkeySource::Explicit(self.cur_account.key.pubkey)
+        };
 
-            vec.push(ColumnOptionData {
-                title: "Your Notifications",
-                description: "Stay up to date with your notifications and mentions",
-                icon: app_images::notifications_image(),
-                option: AddColumnOption::Notification(source),
-            });
-        }
+        vec.push(ColumnOptionData {
+            title: "Your Notifications",
+            description: "Stay up to date with your notifications and mentions",
+            icon: app_images::notifications_image(),
+            option: AddColumnOption::Notification(source),
+        });
 
         vec.push(ColumnOptionData {
             title: "Someone else's Notifications",
@@ -526,20 +515,18 @@ impl<'a> AddColumnView<'a> {
     fn get_individual_options(&self) -> Vec<ColumnOptionData> {
         let mut vec = Vec::new();
 
-        if let Some(acc) = self.cur_account {
-            let source = if acc.key.secret_key.is_some() {
-                PubkeySource::DeckAuthor
-            } else {
-                PubkeySource::Explicit(acc.key.pubkey)
-            };
+        let source = if self.cur_account.key.secret_key.is_some() {
+            PubkeySource::DeckAuthor
+        } else {
+            PubkeySource::Explicit(self.cur_account.key.pubkey)
+        };
 
-            vec.push(ColumnOptionData {
-                title: "Your Notes",
-                description: "Keep track of your notes & replies",
-                icon: app_images::profile_image(),
-                option: AddColumnOption::Individual(source),
-            });
-        }
+        vec.push(ColumnOptionData {
+            title: "Your Notes",
+            description: "Keep track of your notes & replies",
+            icon: app_images::profile_image(),
+            option: AddColumnOption::Individual(source),
+        });
 
         vec.push(ColumnOptionData {
             title: "Someone else's Notes",
@@ -605,13 +592,8 @@ pub fn render_add_column_routes(
         AddColumnRoute::Base => add_column_view.ui(ui),
         AddColumnRoute::Algo(r) => match r {
             AddAlgoRoute::Base => add_column_view.algo_ui(ui),
-            AddAlgoRoute::LastPerPubkey => {
-                if let Some(deck_author) = ctx.accounts.get_selected_account() {
-                    add_column_view.algo_last_per_pk_ui(ui, deck_author.key.pubkey)
-                } else {
-                    None
-                }
-            }
+            AddAlgoRoute::LastPerPubkey => add_column_view
+                .algo_last_per_pk_ui(ui, ctx.accounts.get_selected_account().key.pubkey),
         },
         AddColumnRoute::UndecidedNotification => add_column_view.notifications_ui(ui),
         AddColumnRoute::ExternalNotification => add_column_view.external_notification_ui(ui),

@@ -195,9 +195,7 @@ impl Accounts {
             update(cur_account);
         }
 
-        let Some(cur_acc) = self.get_selected_account() else {
-            return false;
-        };
+        let cur_acc = self.get_selected_account();
 
         let Some(key_store) = &self.key_store else {
             return false;
@@ -221,31 +219,30 @@ impl Accounts {
 
     pub fn selected_or_first_nsec(&self) -> Option<FilledKeypair<'_>> {
         self.get_selected_account()
-            .and_then(|kp| kp.key.to_full())
+            .key
+            .to_full()
             .or_else(|| self.accounts.iter().find_map(|a| a.key.to_full()))
     }
 
     /// Get the selected account's pubkey as bytes. Common operation so
     /// we make it a helper here.
-    pub fn selected_account_pubkey_bytes(&self) -> Option<&[u8; 32]> {
-        self.get_selected_account().map(|kp| kp.key.pubkey.bytes())
+    pub fn selected_account_pubkey_bytes(&self) -> &[u8; 32] {
+        self.get_selected_account().key.pubkey.bytes()
     }
 
-    pub fn selected_account_pubkey(&self) -> Option<&Pubkey> {
-        self.get_selected_account().map(|acc| &acc.key.pubkey)
+    pub fn selected_account_pubkey(&self) -> &Pubkey {
+        &self.get_selected_account().key.pubkey
     }
 
-    pub fn get_selected_account(&self) -> Option<&UserAccount> {
+    pub fn get_selected_account(&self) -> &UserAccount {
         self.currently_selected_account
-            .map(|i| self.get_account(i))?
+            .and_then(|i| self.get_account(i))
+            // NOTE: yeah, this is incorrect but we just need to seperate out the changes in smaller commits
+            .unwrap()
     }
 
     pub fn selected_account_has_wallet(&self) -> bool {
-        if let Some(acc) = self.get_selected_account() {
-            return acc.wallet.is_some();
-        }
-
-        false
+        self.get_selected_account().wallet.is_some()
     }
 
     pub fn get_selected_account_mut(&mut self) -> Option<&mut UserAccount> {
@@ -265,7 +262,7 @@ impl Accounts {
     }
 
     pub fn get_selected_account_data(&mut self) -> Option<&mut AccountData> {
-        let account_pubkey = *self.selected_account_pubkey_bytes()?;
+        let account_pubkey = *self.selected_account_pubkey_bytes();
         self.account_data.get_mut(&account_pubkey)
     }
 

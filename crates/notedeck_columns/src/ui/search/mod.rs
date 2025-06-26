@@ -27,7 +27,7 @@ pub struct SearchView<'a, 'd> {
     txn: &'a Transaction,
     is_muted: &'a MuteFun,
     note_context: &'a mut NoteContext<'d>,
-    cur_acc: &'a Option<KeypairUnowned<'a>>,
+    cur_acc: &'a KeypairUnowned<'a>,
     jobs: &'a mut JobsCache,
 }
 
@@ -38,7 +38,7 @@ impl<'a, 'd> SearchView<'a, 'd> {
         note_options: NoteOptions,
         query: &'a mut SearchQueryState,
         note_context: &'a mut NoteContext<'d>,
-        cur_acc: &'a Option<KeypairUnowned<'a>>,
+        cur_acc: &'a KeypairUnowned<'a>,
         jobs: &'a mut JobsCache,
     ) -> Self {
         Self {

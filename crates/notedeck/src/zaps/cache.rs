@@ -81,11 +81,7 @@ fn process_new_zap_event(
     txn: &Transaction,
     sender_relays: Vec<String>,
 ) -> NextState {
-    let Some(full_kp) = accounts
-        .get_selected_account()
-        .or_else(|| accounts.find_account(zap_ctx.key.sender.bytes()))
-        .and_then(|u| u.key.to_full())
-    else {
+    let Some(full_kp) = accounts.get_selected_account().key.to_full() else {
         return NextState::Event(EventResponse {
             id: zap_ctx.id,
             event: Err(ZappingError::InvalidAccount),

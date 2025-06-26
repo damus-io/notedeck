@@ -115,10 +115,7 @@ impl<'a, 'd> ProfileView<'a, 'd> {
                 &txn,
                 self.is_muted,
                 self.note_context,
-                &self
-                    .accounts
-                    .get_selected_account()
-                    .map(|a| (&a.key).into()),
+                &(&self.accounts.get_selected_account().key).into(),
                 self.jobs,
             )
             .show(ui)

@@ -5,10 +5,7 @@ use crate::app::NotedeckApp;
 use egui::{vec2, Button, Label, Layout, Rect, RichText, ThemePreference, Widget};
 use egui_extras::{Size, StripBuilder};
 use nostrdb::{ProfileRecord, Transaction};
-use notedeck::{
-    profile::get_profile_url, App, AppAction, AppContext, NotedeckTextStyle, UserAccount,
-    WalletType,
-};
+use notedeck::{App, AppAction, AppContext, NotedeckTextStyle, UserAccount, WalletType};
 use notedeck_columns::{timeline::kind::ListKind, timeline::TimelineKind, Damus};
 
 use notedeck_dave::{Dave, DaveAvatar};
@@ -95,27 +92,23 @@ impl ChromePanelAction {
                 ToolbarAction::Dave => chrome.switch_to_dave(),
 
                 ToolbarAction::Home => {
-                    if let Some(pubkey) = ctx
-                        .accounts
-                        .get_selected_account()
-                        .map(|acc| acc.key.pubkey)
-                    {
-                        Self::columns_switch(
-                            ctx,
-                            chrome,
-                            &TimelineKind::List(ListKind::Contact(pubkey)),
-                        );
-                    }
+                    Self::columns_switch(
+                        ctx,
+                        chrome,
+                        &TimelineKind::List(ListKind::Contact(
+                            ctx.accounts.get_selected_account().key.pubkey,
+                        )),
+                    );
                 }
 
                 ToolbarAction::Notifications => {
-                    if let Some(pubkey) = ctx
-                        .accounts
-                        .get_selected_account()
-                        .map(|acc| acc.key.pubkey)
-                    {
-                        Self::columns_switch(ctx, chrome, &TimelineKind::Notifications(pubkey));
-                    }
+                    Self::columns_switch(
+                        ctx,
+                        chrome,
+                        &TimelineKind::Notifications(
+                            ctx.accounts.get_selected_account().key.pubkey,
+                        ),
+                    );
                 }
             },
 
@@ -559,16 +552,12 @@ pub fn get_profile_url_owned(profile: Option<ProfileRecord<'_>>) -> &str {
 pub fn get_account_url<'a>(
     txn: &'a nostrdb::Transaction,
     ndb: &nostrdb::Ndb,
-    account: Option<&UserAccount>,
+    account: &UserAccount,
 ) -> &'a str {
-    if let Some(selected_account) = account {
-        if let Ok(profile) = ndb.get_profile_by_pubkey(txn, selected_account.key.pubkey.bytes()) {
-            get_profile_url_owned(Some(profile))
-        } else {
-            get_profile_url_owned(None)
-        }
+    if let Ok(profile) = ndb.get_profile_by_pubkey(txn, account.key.pubkey.bytes()) {
+        get_profile_url_owned(Some(profile))
     } else {
-        get_profile_url(None)
+        get_profile_url_owned(None)
     }
 }
 

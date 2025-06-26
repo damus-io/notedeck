@@ -39,7 +39,7 @@ impl DecksCache {
 
     /// Gets the active columns
     pub fn active_columns_mut(&mut self, accounts: &notedeck::Accounts) -> Option<&mut Columns> {
-        let account = accounts.get_selected_account()?;
+        let account = accounts.get_selected_account();
 
         self.decks_mut(&account.key.pubkey)
             .active_deck_mut()

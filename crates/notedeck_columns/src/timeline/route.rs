@@ -35,7 +35,7 @@ pub fn render_timeline_route(
                 &accounts.mutefun(),
                 note_context,
                 note_options,
-                &accounts.get_selected_account().map(|a| (&a.key).into()),
+                &(&accounts.get_selected_account().key).into(),
                 jobs,
             )
             .ui(ui);
@@ -64,7 +64,7 @@ pub fn render_timeline_route(
                     &accounts.mutefun(),
                     note_context,
                     note_options,
-                    &accounts.get_selected_account().map(|a| (&a.key).into()),
+                    &(&accounts.get_selected_account().key).into(),
                     jobs,
                 )
                 .ui(ui);
@@ -96,7 +96,7 @@ pub fn render_thread_route(
         note_options,
         &accounts.mutefun(),
         note_context,
-        &accounts.get_selected_account().map(|a| (&a.key).into()),
+        &(&accounts.get_selected_account().key).into(),
         jobs,
     )
     .id_source(col)
