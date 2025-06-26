@@ -1,4 +1,4 @@
-use enostr::FullKeypair;
+use enostr::{FullKeypair, Pubkey};
 use nostrdb::{Ndb, Transaction};
 
 use notedeck::{Accounts, Images, SingleUnkIdAction, UnknownIds};
@@ -35,11 +35,11 @@ pub struct SwitchAccountAction {
     pub source_column: usize,
 
     /// The account to switch to
-    pub switch_to: usize,
+    pub switch_to: Pubkey,
 }
 
 impl SwitchAccountAction {
-    pub fn new(source_column: usize, switch_to: usize) -> Self {
+    pub fn new(source_column: usize, switch_to: Pubkey) -> Self {
         SwitchAccountAction {
             source_column,
             switch_to,
@@ -50,7 +50,7 @@ impl SwitchAccountAction {
 #[derive(Debug)]
 pub enum AccountsAction {
     Switch(SwitchAccountAction),
-    Remove(usize),
+    Remove(Pubkey),
 }
 
 #[must_use = "You must call process_login_action on this to handle unknown ids"]
@@ -120,24 +120,24 @@ pub fn process_accounts_view_response(
     let router = get_active_columns_mut(accounts, decks)
         .column_mut(col)
         .router_mut();
-    let mut selection = None;
+    let mut action = None;
     match response {
-        AccountsViewResponse::RemoveAccount(index) => {
-            let acc_sel = AccountsAction::Remove(index);
-            info!("account selection: {:?}", acc_sel);
-            selection = Some(acc_sel);
+        AccountsViewResponse::RemoveAccount(pk_to_remove) => {
+            let cur_action = AccountsAction::Remove(pk_to_remove);
+            info!("account selection: {:?}", action);
+            action = Some(cur_action);
         }
-        AccountsViewResponse::SelectAccount(index) => {
-            let acc_sel = AccountsAction::Switch(SwitchAccountAction::new(col, index));
+        AccountsViewResponse::SelectAccount(new_pk) => {
+            let acc_sel = AccountsAction::Switch(SwitchAccountAction::new(col, new_pk));
             info!("account selection: {:?}", acc_sel);
-            selection = Some(acc_sel);
+            action = Some(acc_sel);
         }
         AccountsViewResponse::RouteToLogin => {
             router.route_to(Route::add_account());
         }
     }
     accounts.needs_relay_config();
-    selection
+    action
 }
 
 pub fn process_login_view_response(
@@ -160,13 +160,13 @@ pub fn process_login_view_response(
 
     decks.add_deck_default(pubkey);
 
-    if let Some(resp) = r {
+    if let Some(action) = r {
         AddAccountAction {
             accounts_action: Some(AccountsAction::Switch(SwitchAccountAction {
                 source_column: col,
-                switch_to: resp.switch_to,
+                switch_to: action.switch_to,
             })),
-            unk_id_action: resp.unk_id_action,
+            unk_id_action: action.unk_id_action,
         }
     } else {
         AddAccountAction {

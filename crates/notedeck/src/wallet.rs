@@ -11,13 +11,13 @@ use tokio::sync::RwLock;
 use crate::{zaps::UserZapMsats, Accounts, DataPath, DefaultZapMsats, TokenHandler};
 
 pub fn get_wallet_for<'a>(
-    accounts: &'a mut Accounts,
+    accounts: &'a Accounts,
     global_wallet: &'a mut GlobalWallet,
     account_pk: &'a [u8; 32],
 ) -> Option<&'a ZapWallet> {
-    let cur_acc = accounts.get_account_mut_optimized(account_pk)?;
+    let cur_acc = accounts.cache.get_bytes(account_pk)?;
 
-    if let Some(wallet) = &mut cur_acc.wallet {
+    if let Some(wallet) = &cur_acc.wallet {
         return Some(wallet);
     }
 
@@ -28,9 +28,7 @@ pub fn get_current_wallet<'a>(
     accounts: &'a mut Accounts,
     global_wallet: &'a mut GlobalWallet,
 ) -> Option<&'a mut ZapWallet> {
-    let Some(acc) = accounts.get_selected_account_mut() else {
-        return global_wallet.wallet.as_mut();
-    };
+    let acc = accounts.get_selected_account_mut();
 
     let Some(wallet) = &mut acc.wallet else {
         return global_wallet.wallet.as_mut();

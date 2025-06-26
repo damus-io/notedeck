@@ -78,14 +78,14 @@ impl SwitchingAction {
         match &self {
             SwitchingAction::Accounts(account_action) => match account_action {
                 AccountsAction::Switch(switch_action) => {
-                    ctx.accounts.select_account(switch_action.switch_to);
+                    ctx.accounts.select_account(&switch_action.switch_to);
                     // pop nav after switch
                     get_active_columns_mut(ctx.accounts, decks_cache)
                         .column_mut(switch_action.source_column)
                         .router_mut()
                         .go_back();
                 }
-                AccountsAction::Remove(index) => ctx.accounts.remove_account(*index),
+                AccountsAction::Remove(to_remove) => ctx.accounts.remove_account(to_remove),
             },
             SwitchingAction::Columns(columns_action) => match *columns_action {
                 ColumnsAction::Remove(index) => {
@@ -481,7 +481,7 @@ fn render_nav_body(
             };
 
             let id = egui::Id::new(("post", col, note.key().unwrap()));
-            let poster = ctx.accounts.selected_or_first_nsec()?;
+            let poster = ctx.accounts.selected_filled()?;
 
             let action = {
                 let draft = app.drafts.reply_mut(note.id());
@@ -519,7 +519,7 @@ fn render_nav_body(
 
             let id = egui::Id::new(("post", col, note.key().unwrap()));
 
-            let poster = ctx.accounts.selected_or_first_nsec()?;
+            let poster = ctx.accounts.selected_filled()?;
             let draft = app.drafts.quote_mut(note.id());
 
             let response = egui::ScrollArea::vertical()
@@ -656,7 +656,7 @@ fn render_nav_body(
         }
         Route::EditProfile(pubkey) => {
             let mut action = None;
-            if let Some(kp) = ctx.accounts.get_full(pubkey.bytes()) {
+            if let Some(kp) = ctx.accounts.get_full(pubkey) {
                 let state = app
                     .view_state
                     .pubkey_to_profile_state
@@ -686,15 +686,16 @@ fn render_nav_body(
         Route::Wallet(wallet_type) => {
             let state = match wallet_type {
                 notedeck::WalletType::Auto => 's: {
-                    if let Some(cur_acc) = ctx.accounts.get_selected_account_mut() {
-                        if let Some(wallet) = &mut cur_acc.wallet {
-                            let default_zap_state = get_default_zap_state(&mut wallet.default_zap);
-                            break 's WalletState::Wallet {
-                                wallet: &mut wallet.wallet,
-                                default_zap_state,
-                                can_create_local_wallet: false,
-                            };
-                        }
+                    if let Some(cur_acc_wallet) =
+                        &mut ctx.accounts.get_selected_account_mut().wallet
+                    {
+                        let default_zap_state =
+                            get_default_zap_state(&mut cur_acc_wallet.default_zap);
+                        break 's WalletState::Wallet {
+                            wallet: &mut cur_acc_wallet.wallet,
+                            default_zap_state,
+                            can_create_local_wallet: false,
+                        };
                     }
 
                     let Some(wallet) = &mut ctx.global_wallet.wallet else {
@@ -712,12 +713,7 @@ fn render_nav_body(
                     }
                 }
                 notedeck::WalletType::Local => 's: {
-                    let Some(cur_acc) = ctx.accounts.get_selected_account_mut() else {
-                        break 's WalletState::NoWallet {
-                            state: &mut ctx.global_wallet.ui_state,
-                            show_local_only: false,
-                        };
-                    };
+                    let cur_acc = ctx.accounts.get_selected_account_mut();
                     let Some(wallet) = &mut cur_acc.wallet else {
                         break 's WalletState::NoWallet {
                             state: &mut ctx.global_wallet.ui_state,

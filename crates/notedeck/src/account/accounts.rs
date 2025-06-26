@@ -1,11 +1,11 @@
 use tracing::{debug, error, info};
 
+use crate::account::cache::AccountCache;
 use crate::account::mute::AccountMutedData;
 use crate::account::relay::{AccountRelayData, RelayDefaults};
-use crate::{AccountStorage, MuteFun, RelaySpec, SingleUnkIdAction, UnknownIds, UserAccount};
+use crate::{AccountStorage, MuteFun, RelaySpec, SingleUnkIdAction, UserAccount};
 use enostr::{ClientMessage, FilledKeypair, Keypair, Pubkey, RelayPool};
 use nostrdb::{Ndb, Note, Transaction};
-use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
 // TODO: remove this
@@ -14,13 +14,11 @@ use std::sync::Arc;
 /// The interface for managing the user's accounts.
 /// Represents all user-facing operations related to account management.
 pub struct Accounts {
-    currently_selected_account: Option<usize>,
-    accounts: Vec<UserAccount>,
+    pub cache: AccountCache,
     key_store: Option<AccountStorage>,
     account_data: BTreeMap<[u8; 32], AccountData>,
     relay_defaults: RelayDefaults,
     needs_relay_config: bool,
-    fallback: Pubkey,
 }
 
 impl Accounts {
@@ -29,21 +27,21 @@ impl Accounts {
         forced_relays: Vec<String>,
         fallback: Pubkey,
     ) -> Self {
-        let accounts = match &key_store {
-            Some(keystore) => match keystore.get_accounts() {
-                Ok(k) => k,
+        let (mut cache, _) = AccountCache::new(UserAccount::new(Keypair::only_pubkey(fallback)));
+        if let Some(keystore) = &key_store {
+            match keystore.get_accounts() {
+                Ok(accounts) => {
+                    for account in accounts {
+                        cache.add(account);
+                    }
+                }
                 Err(e) => {
                     tracing::error!("could not get keys: {e}");
-                    Vec::new()
                 }
-            },
-            None => Vec::new(),
-        };
-
-        let currently_selected_account = if let Some(key_store) = &key_store {
-            get_selected_index(&accounts, key_store)
-        } else {
-            None
+            }
+            if let Some(selected) = keystore.get_selected_key().ok().flatten() {
+                cache.select(selected);
+            }
         };
 
         let account_data = BTreeMap::new();
@@ -51,69 +49,22 @@ impl Accounts {
         let relay_defaults = RelayDefaults::new(forced_relays);
 
         Accounts {
-            currently_selected_account,
-            accounts,
+            cache,
             key_store,
             account_data,
             relay_defaults,
             needs_relay_config: true,
-            fallback,
         }
     }
 
-    pub fn get_accounts(&self) -> &Vec<UserAccount> {
-        &self.accounts
-    }
+    pub fn remove_account(&mut self, pk: &Pubkey) {
+        let Some(removed) = self.cache.remove(pk) else {
+            return;
+        };
 
-    pub fn get_account(&self, ind: usize) -> Option<&UserAccount> {
-        self.accounts.get(ind)
-    }
-
-    pub fn find_account(&self, pk: &[u8; 32]) -> Option<&UserAccount> {
-        self.accounts
-            .iter()
-            .find(|acc| acc.key.pubkey.bytes() == pk)
-    }
-
-    pub fn find_account_mut(&mut self, pk: &[u8; 32]) -> Option<&mut UserAccount> {
-        self.accounts
-            .iter_mut()
-            .find(|acc| acc.key.pubkey.bytes() == pk)
-    }
-
-    pub fn with_fallback(&mut self, fallback: Pubkey) {
-        self.fallback = fallback;
-    }
-
-    pub fn remove_account(&mut self, index: usize) {
-        if let Some(account) = self.accounts.get(index) {
-            if let Some(key_store) = &self.key_store {
-                if let Err(e) = key_store.remove_key(&account.key) {
-                    tracing::error!("Could not remove account at index {index}: {e}");
-                }
-            }
-
-            self.accounts.remove(index);
-
-            if let Some(selected_index) = self.currently_selected_account {
-                match selected_index.cmp(&index) {
-                    Ordering::Greater => {
-                        self.select_account(selected_index - 1);
-                    }
-                    Ordering::Equal => {
-                        if self.accounts.is_empty() {
-                            // If no accounts remain, clear the selection
-                            self.clear_selected_account();
-                        } else if index >= self.accounts.len() {
-                            // If the removed account was the last one, select the new last account
-                            self.select_account(self.accounts.len() - 1);
-                        } else {
-                            // Otherwise, select the account at the same position
-                            self.select_account(index);
-                        }
-                    }
-                    Ordering::Less => {}
-                }
+        if let Some(key_store) = &self.key_store {
+            if let Err(e) = key_store.remove_key(&removed.key) {
+                tracing::error!("Could not remove account {pk}: {e}");
             }
         }
     }
@@ -122,74 +73,44 @@ impl Accounts {
         self.needs_relay_config = true;
     }
 
-    fn contains_account(&self, pubkey: &[u8; 32]) -> Option<ContainsAccount> {
-        for (index, account) in self.accounts.iter().enumerate() {
-            let has_pubkey = account.key.pubkey.bytes() == pubkey;
-            let has_nsec = account.key.secret_key.is_some();
-            if has_pubkey {
-                return Some(ContainsAccount { has_nsec, index });
-            }
-        }
-
-        None
-    }
-
     pub fn contains_full_kp(&self, pubkey: &enostr::Pubkey) -> bool {
-        if let Some(contains) = self.contains_account(pubkey.bytes()) {
-            contains.has_nsec
-        } else {
-            false
-        }
+        self.cache
+            .get(pubkey)
+            .is_some_and(|u| u.key.secret_key.is_some())
     }
 
     #[must_use = "UnknownIdAction's must be handled. Use .process_unknown_id_action()"]
-    pub fn add_account(&mut self, key: Keypair) -> Option<AddAccountResponse> {
-        let pubkey = key.pubkey;
-        let switch_to_index = if let Some(contains_acc) = self.contains_account(pubkey.bytes()) {
-            if key.secret_key.is_some() && !contains_acc.has_nsec {
-                info!(
-                    "user provided nsec, but we already have npub {}. Upgrading to nsec",
-                    pubkey
-                );
-
-                if let Some(key_store) = &self.key_store {
-                    if let Err(e) = key_store.write_account(&UserAccount::new(key.clone())) {
-                        tracing::error!("Could not add key for {:?}: {e}", key.pubkey);
-                    }
-                }
-
-                self.accounts[contains_acc.index].key = key;
-            } else {
-                info!("already have account, not adding {}", pubkey);
+    pub fn add_account(&mut self, kp: Keypair) -> Option<AddAccountResponse> {
+        let acc = if let Some(acc) = self.cache.get_mut(&kp.pubkey) {
+            if kp.secret_key.is_none() || acc.key.secret_key.is_some() {
+                tracing::info!("Already have account, not adding");
+                return None;
             }
-            contains_acc.index
+
+            acc.key = kp.clone();
+            AccType::Acc(&*acc)
         } else {
-            info!("adding new account {}", pubkey);
-            if let Some(key_store) = &self.key_store {
-                if let Err(e) = key_store.write_account(&UserAccount::new(key.clone())) {
-                    tracing::error!("Could not add key for {:?}: {e}", key.pubkey);
-                }
-            }
-            self.accounts.push(UserAccount::new(key));
-            self.accounts.len() - 1
+            AccType::Entry(self.cache.add(UserAccount::new(kp.clone())))
         };
 
+        if let Some(key_store) = &self.key_store {
+            if let Err(e) = key_store.write_account(acc.get_acc()) {
+                tracing::error!("Could not add key for {:?}: {e}", kp.pubkey);
+            }
+        }
+
         Some(AddAccountResponse {
-            switch_to: switch_to_index,
-            unk_id_action: SingleUnkIdAction::pubkey(pubkey),
+            switch_to: kp.pubkey,
+            unk_id_action: SingleUnkIdAction::pubkey(kp.pubkey),
         })
     }
 
     /// Update the `UserAccount` via callback and save the result to disk.
     /// return true if the update was successful
     pub fn update_current_account(&mut self, update: impl FnOnce(&mut UserAccount)) -> bool {
-        {
-            let Some(cur_account) = self.get_selected_account_mut() else {
-                return false;
-            };
+        let cur_account = self.get_selected_account_mut();
 
-            update(cur_account);
-        }
+        update(cur_account);
 
         let cur_acc = self.get_selected_account();
 
@@ -205,19 +126,8 @@ impl Accounts {
         true
     }
 
-    pub fn num_accounts(&self) -> usize {
-        self.accounts.len()
-    }
-
-    pub fn get_selected_account_index(&self) -> Option<usize> {
-        self.currently_selected_account
-    }
-
-    pub fn selected_or_first_nsec(&self) -> Option<FilledKeypair<'_>> {
-        self.get_selected_account()
-            .key
-            .to_full()
-            .or_else(|| self.accounts.iter().find_map(|a| a.key.to_full()))
+    pub fn selected_filled(&self) -> Option<FilledKeypair<'_>> {
+        self.get_selected_account().key.to_full()
     }
 
     /// Get the selected account's pubkey as bytes. Common operation so
@@ -231,30 +141,15 @@ impl Accounts {
     }
 
     pub fn get_selected_account(&self) -> &UserAccount {
-        self.currently_selected_account
-            .and_then(|i| self.get_account(i))
-            // NOTE: yeah, this is incorrect but we just need to seperate out the changes in smaller commits
-            .unwrap()
+        self.cache.selected()
     }
 
     pub fn selected_account_has_wallet(&self) -> bool {
         self.get_selected_account().wallet.is_some()
     }
 
-    pub fn get_selected_account_mut(&mut self) -> Option<&mut UserAccount> {
-        self.currently_selected_account
-            .map(|i| self.accounts.get_mut(i))?
-    }
-
-    pub fn get_account_mut_optimized(&mut self, pk: &[u8; 32]) -> Option<&mut UserAccount> {
-        if let Some(ind) = self.currently_selected_account {
-            if ind < self.accounts.len() {
-                return Some(&mut self.accounts[ind]);
-            }
-        }
-        self.accounts
-            .iter_mut()
-            .find(|acc| acc.key.pubkey.bytes() == pk)
+    pub fn get_selected_account_mut(&mut self) -> &mut UserAccount {
+        self.cache.selected_mut()
     }
 
     pub fn get_selected_account_data(&mut self) -> Option<&mut AccountData> {
@@ -262,37 +157,21 @@ impl Accounts {
         self.account_data.get_mut(&account_pubkey)
     }
 
-    pub fn select_account(&mut self, index: usize) {
-        if let Some(account) = self.accounts.get(index) {
-            self.currently_selected_account = Some(index);
+    pub fn select_account(&mut self, pk: &Pubkey) {
+        if self.cache.select(*pk) {
             if let Some(key_store) = &self.key_store {
-                if let Err(e) = key_store.select_key(Some(account.key.pubkey)) {
-                    tracing::error!("Could not select key {:?}: {e}", account.key.pubkey);
+                if let Err(e) = key_store.select_key(Some(*pk)) {
+                    tracing::error!("Could not select key {:?}: {e}", pk);
                 }
-            }
-        }
-    }
-
-    pub fn clear_selected_account(&mut self) {
-        self.currently_selected_account = None;
-        if let Some(key_store) = &self.key_store {
-            if let Err(e) = key_store.select_key(None) {
-                tracing::error!("Could not select None key: {e}");
             }
         }
     }
 
     pub fn mutefun(&self) -> Box<MuteFun> {
-        if let Some(index) = self.currently_selected_account {
-            if let Some(account) = self.accounts.get(index) {
-                let pubkey = account.key.pubkey.bytes();
-                if let Some(account_data) = self.account_data.get(pubkey) {
-                    let muted = Arc::clone(&account_data.muted.muted);
-                    return Box::new(move |note: &Note, thread: &[u8; 32]| {
-                        muted.is_muted(note, thread)
-                    });
-                }
-            }
+        let pubkey = self.cache.selected().key.pubkey.bytes();
+        if let Some(account_data) = self.account_data.get(pubkey) {
+            let muted = Arc::clone(&account_data.muted.muted);
+            return Box::new(move |note: &Note, thread: &[u8; 32]| muted.is_muted(note, thread));
         }
         Box::new(|_: &Note, _: &[u8; 32]| false)
     }
@@ -320,14 +199,14 @@ impl Accounts {
     // which have still data but are no longer in our account list (removed).
     fn delta_accounts(&self) -> (Vec<[u8; 32]>, Vec<[u8; 32]>) {
         let mut added = Vec::new();
-        for pubkey in self.accounts.iter().map(|a| a.key.pubkey.bytes()) {
+        for pubkey in (&self.cache).into_iter().map(|(pk, _)| pk.bytes()) {
             if !self.account_data.contains_key(pubkey) {
                 added.push(*pubkey);
             }
         }
         let mut removed = Vec::new();
         for pubkey in self.account_data.keys() {
-            if self.contains_account(pubkey).is_none() {
+            if self.cache.get_bytes(pubkey).is_none() {
                 removed.push(*pubkey);
             }
         }
@@ -349,13 +228,6 @@ impl Accounts {
         debug!("handle_removed_account {}", hex::encode(pubkey));
         // FIXME - we need to unsubscribe here
         self.account_data.remove(pubkey);
-    }
-
-    fn handle_no_accounts(&mut self, unknown_ids: &mut UnknownIds, ndb: &Ndb, txn: &Transaction) {
-        if let Some(resp) = self.add_account(Keypair::new(self.fallback, None)) {
-            resp.unk_id_action.process_action(unknown_ids, ndb, txn);
-        }
-        self.select_account(self.num_accounts() - 1);
     }
 
     fn poll_for_updates(&mut self, ndb: &Ndb) -> bool {
@@ -396,8 +268,7 @@ impl Accounts {
     ) {
         debug!(
             "updating relay configuration for currently selected {:?}",
-            self.currently_selected_account
-                .map(|i| hex::encode(self.accounts.get(i).unwrap().key.pubkey.bytes()))
+            self.cache.selected().key.pubkey.hex()
         );
 
         // If forced relays are set use them only
@@ -444,13 +315,7 @@ impl Accounts {
         debug!("current relays: {:?}", pool.urls());
     }
 
-    pub fn update(
-        &mut self,
-        ndb: &mut Ndb,
-        pool: &mut RelayPool,
-        ctx: &egui::Context,
-        unknown_ids: &mut UnknownIds,
-    ) {
+    pub fn update(&mut self, ndb: &mut Ndb, pool: &mut RelayPool, ctx: &egui::Context) {
         // IMPORTANT - This function is called in the UI update loop,
         // make sure it is fast when idle
 
@@ -463,8 +328,11 @@ impl Accounts {
         };
 
         // Do we need to deactivate any existing account subs?
-        for (ndx, account) in self.accounts.iter().enumerate() {
-            if Some(ndx) != self.currently_selected_account {
+
+        let selected = self.cache.selected();
+
+        for (pk, account) in &self.cache {
+            if *pk != selected.key.pubkey {
                 // this account is not currently selected
                 if let Some(data) = self.account_data.get_mut(account.key.pubkey.bytes()) {
                     if data.relay.sub.is_some() {
@@ -490,10 +358,6 @@ impl Accounts {
             need_reconfig = true;
         }
 
-        if self.accounts.is_empty() {
-            let txn = Transaction::new(ndb).unwrap();
-            self.handle_no_accounts(unknown_ids, ndb, &txn);
-        }
         // Did any accounts receive updates (ie NIP-65 relay lists)
         need_reconfig = self.poll_for_updates(ndb) || need_reconfig;
 
@@ -516,16 +380,8 @@ impl Accounts {
         }
     }
 
-    pub fn get_full<'a>(&'a self, pubkey: &[u8; 32]) -> Option<FilledKeypair<'a>> {
-        if let Some(contains) = self.contains_account(pubkey) {
-            if contains.has_nsec {
-                if let Some(kp) = self.get_account(contains.index) {
-                    return kp.key.to_full();
-                }
-            }
-        }
-
-        None
+    pub fn get_full<'a>(&'a self, pubkey: &Pubkey) -> Option<FilledKeypair<'a>> {
+        self.cache.get(pubkey).and_then(|r| r.key.to_full())
     }
 
     fn modify_advertised_relays(
@@ -539,42 +395,35 @@ impl Accounts {
             RelayAction::Add => info!("add advertised relay \"{}\"", relay_url),
             RelayAction::Remove => info!("remove advertised relay \"{}\"", relay_url),
         }
-        match self.currently_selected_account {
-            None => error!("no account is currently selected."),
-            Some(index) => match self.accounts.get(index) {
-                None => error!("selected account index {} is out of range.", index),
-                Some(keypair) => {
-                    let key_bytes: [u8; 32] = *keypair.key.pubkey.bytes();
-                    match self.account_data.get_mut(&key_bytes) {
-                        None => error!("no account data found for the provided key."),
-                        Some(account_data) => {
-                            let advertised = &mut account_data.relay.advertised;
-                            if advertised.is_empty() {
-                                // If the selected account has no advertised relays,
-                                // initialize with the bootstrapping set.
-                                advertised
-                                    .extend(self.relay_defaults.bootstrap_relays.iter().cloned());
-                            }
-                            match action {
-                                RelayAction::Add => {
-                                    advertised.insert(RelaySpec::new(relay_url, false, false));
-                                }
-                                RelayAction::Remove => {
-                                    advertised.remove(&RelaySpec::new(relay_url, false, false));
-                                }
-                            }
-                            self.needs_relay_config = true;
 
-                            // If we have the secret key publish the NIP-65 relay list
-                            if let Some(secretkey) = &keypair.key.secret_key {
-                                account_data
-                                    .relay
-                                    .publish_nip65_relays(&secretkey.to_secret_bytes(), pool);
-                            }
-                        }
+        let selected = self.cache.selected();
+        let key_bytes: [u8; 32] = *self.cache.selected().key.pubkey.bytes();
+        match self.account_data.get_mut(&key_bytes) {
+            None => error!("no account data found for the provided key."),
+            Some(account_data) => {
+                let advertised = &mut account_data.relay.advertised;
+                if advertised.is_empty() {
+                    // If the selected account has no advertised relays,
+                    // initialize with the bootstrapping set.
+                    advertised.extend(self.relay_defaults.bootstrap_relays.iter().cloned());
+                }
+                match action {
+                    RelayAction::Add => {
+                        advertised.insert(RelaySpec::new(relay_url, false, false));
+                    }
+                    RelayAction::Remove => {
+                        advertised.remove(&RelaySpec::new(relay_url, false, false));
                     }
                 }
-            },
+                self.needs_relay_config = true;
+
+                // If we have the secret key publish the NIP-65 relay list
+                if let Some(secretkey) = &selected.key.secret_key {
+                    account_data
+                        .relay
+                        .publish_nip65_relays(&secretkey.to_secret_bytes(), pool);
+                }
+            }
         }
     }
 
@@ -587,29 +436,23 @@ impl Accounts {
     }
 }
 
+enum AccType<'a> {
+    Entry(hashbrown::hash_map::OccupiedEntry<'a, Pubkey, UserAccount>),
+    Acc(&'a UserAccount),
+}
+
+impl<'a> AccType<'a> {
+    fn get_acc(&'a self) -> &'a UserAccount {
+        match self {
+            AccType::Entry(occupied_entry) => occupied_entry.get(),
+            AccType::Acc(user_account) => user_account,
+        }
+    }
+}
+
 enum RelayAction {
     Add,
     Remove,
-}
-
-fn get_selected_index(accounts: &[UserAccount], keystore: &AccountStorage) -> Option<usize> {
-    match keystore.get_selected_key() {
-        Ok(Some(pubkey)) => {
-            return accounts
-                .iter()
-                .position(|account| account.key.pubkey == pubkey);
-        }
-        Ok(None) => {}
-        Err(e) => error!("Error getting selected key: {}", e),
-    };
-
-    None
-}
-
-#[derive(Default)]
-pub struct ContainsAccount {
-    pub has_nsec: bool,
-    pub index: usize,
 }
 
 pub struct AccountData {
@@ -618,6 +461,6 @@ pub struct AccountData {
 }
 
 pub struct AddAccountResponse {
-    pub switch_to: usize,
+    pub switch_to: Pubkey,
     pub unk_id_action: SingleUnkIdAction,
 }

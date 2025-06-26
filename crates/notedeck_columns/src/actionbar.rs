@@ -97,10 +97,8 @@ fn execute_note_action(
         NoteAction::Quote(note_id) => {
             router_action = Some(RouterAction::route_to(Route::quote(note_id)));
         }
-        NoteAction::Zap(zap_action) => 's: {
-            let Some(cur_acc) = accounts.get_selected_account_mut() else {
-                break 's;
-            };
+        NoteAction::Zap(zap_action) => {
+            let cur_acc = accounts.get_selected_account_mut();
 
             let sender = cur_acc.key.pubkey;
 

@@ -428,8 +428,8 @@ impl Damus {
         } else {
             info!("DecksCache: creating new with demo configuration");
             let mut cache = DecksCache::new_with_demo_config(&mut timeline_cache, ctx);
-            for account in ctx.accounts.get_accounts() {
-                cache.add_deck_default(account.key.pubkey);
+            for (pk, _) in &ctx.accounts.cache {
+                cache.add_deck_default(*pk);
             }
             set_demo(&mut cache, ctx.ndb, ctx.accounts, ctx.unknown_ids);
 
@@ -444,8 +444,6 @@ impl Damus {
         note_options.set_hide_media(parsed_args.no_media);
 
         let jobs = JobsCache::default();
-
-        ctx.accounts.with_fallback(FALLBACK_PUBKEY());
 
         let threads = Threads::default();
 
@@ -770,13 +768,14 @@ pub fn set_demo(
     accounts: &mut Accounts,
     unk_ids: &mut UnknownIds,
 ) {
+    let fallback = decks_cache.get_fallback_pubkey();
     let txn = Transaction::new(ndb).expect("txn");
     if let Some(resp) =
         accounts.add_account(Keypair::only_pubkey(*decks_cache.get_fallback_pubkey()))
     {
         resp.unk_id_action.process_action(unk_ids, ndb, &txn);
     }
-    accounts.select_account(accounts.num_accounts() - 1);
+    accounts.select_account(fallback);
 }
 
 fn columns_to_decks_cache(cols: Columns, key: &[u8; 32]) -> DecksCache {

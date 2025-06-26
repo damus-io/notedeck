@@ -131,7 +131,7 @@ pub fn render_profile_route(
     if let Some(action) = action {
         match action {
             ui::profile::ProfileViewAction::EditProfile => accounts
-                .get_full(pubkey.bytes())
+                .get_full(pubkey)
                 .map(|kp| RenderNavAction::ProfileAction(ProfileAction::Edit(kp.to_full()))),
             ui::profile::ProfileViewAction::Note(note_action) => {
                 Some(RenderNavAction::NoteAction(note_action))

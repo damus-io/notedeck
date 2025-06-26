@@ -95,8 +95,7 @@ impl eframe::App for Notedeck {
             .on_new_frame(ctx.input(|i| i.time), frame.info().cpu_usage);
 
         // handle account updates
-        self.accounts
-            .update(&mut self.ndb, &mut self.pool, ctx, &mut self.unknown_ids);
+        self.accounts.update(&mut self.ndb, &mut self.pool, ctx);
 
         self.zaps
             .process(&mut self.accounts, &mut self.global_wallet, &self.ndb);
@@ -179,8 +178,6 @@ impl Notedeck {
 
         let mut accounts = Accounts::new(keystore, parsed_args.relays.clone(), FALLBACK_PUBKEY());
 
-        let num_keys = parsed_args.keys.len();
-
         let mut unknown_ids = UnknownIds::default();
         let ndb = Ndb::new(&dbpath_str, &config).expect("ndb");
 
@@ -195,8 +192,8 @@ impl Notedeck {
             }
         }
 
-        if num_keys != 0 {
-            accounts.select_account(0);
+        if let Some(first) = parsed_args.keys.first() {
+            accounts.select_account(&first.pubkey);
         }
 
         // AccountManager will setup the pool on first update

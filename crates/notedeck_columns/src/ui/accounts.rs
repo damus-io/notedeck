@@ -1,6 +1,7 @@
 use egui::{
     Align, Button, Frame, InnerResponse, Layout, RichText, ScrollArea, Ui, UiBuilder, Vec2,
 };
+use enostr::Pubkey;
 use nostrdb::{Ndb, Transaction};
 use notedeck::{Accounts, Images};
 use notedeck_ui::colors::PINK;
@@ -16,8 +17,8 @@ pub struct AccountsView<'a> {
 
 #[derive(Clone, Debug)]
 pub enum AccountsViewResponse {
-    SelectAccount(usize),
-    RemoveAccount(usize),
+    SelectAccount(Pubkey),
+    RemoveAccount(Pubkey),
     RouteToLogin,
 }
 
@@ -68,19 +69,11 @@ impl<'a> AccountsView<'a> {
                     return;
                 };
 
-                for i in 0..accounts.num_accounts() {
-                    let (account_pubkey, has_nsec) = match accounts.get_account(i) {
-                        Some(acc) => (acc.key.pubkey.bytes(), acc.key.secret_key.is_some()),
-                        None => continue,
-                    };
-
-                    let profile = ndb.get_profile_by_pubkey(&txn, account_pubkey).ok();
-                    let is_selected = if let Some(selected) = accounts.get_selected_account_index()
-                    {
-                        i == selected
-                    } else {
-                        false
-                    };
+                let selected = accounts.cache.selected();
+                for (pk, account) in &accounts.cache {
+                    let profile = ndb.get_profile_by_pubkey(&txn, pk).ok();
+                    let is_selected = *pk == selected.key.pubkey;
+                    let has_nsec = account.key.secret_key.is_some();
 
                     let profile_peview_view = {
                         let max_size = egui::vec2(ui.available_width(), 77.0);
@@ -96,10 +89,10 @@ impl<'a> AccountsView<'a> {
                     if let Some(op) = profile_peview_view {
                         return_op = Some(match op {
                             ProfilePreviewAction::SwitchTo => {
-                                AccountsViewResponse::SelectAccount(i)
+                                AccountsViewResponse::SelectAccount(*pk)
                             }
                             ProfilePreviewAction::RemoveAccount => {
-                                AccountsViewResponse::RemoveAccount(i)
+                                AccountsViewResponse::RemoveAccount(*pk)
                             }
                         });
                     }
