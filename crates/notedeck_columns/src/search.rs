@@ -3,7 +3,7 @@ use nostrdb::{Filter, FilterBuilder};
 use rmpv::Value;
 use tokenator::{ParseError, TokenParser, TokenSerializable, TokenWriter};
 
-#[derive(Debug, Eq, PartialEq, Clone, Hash)]
+#[derive(Debug, Eq, PartialEq, Clone, Hash, PartialOrd, Ord)]
 pub struct SearchQuery {
     author: Option<Pubkey>,
     pub search: String,

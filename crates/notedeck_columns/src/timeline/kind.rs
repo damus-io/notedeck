@@ -14,14 +14,14 @@ use std::{borrow::Cow, fmt::Display};
 use tokenator::{ParseError, TokenParser, TokenSerializable, TokenWriter};
 use tracing::{error, warn};
 
-#[derive(Clone, Hash, Copy, Default, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq, Serialize, Deserialize, PartialOrd, Ord)]
 pub enum PubkeySource {
     Explicit(Pubkey),
     #[default]
     DeckAuthor,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Hash, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Hash, Eq, PartialOrd, Ord)]
 pub enum ListKind {
     Contact(Pubkey),
 }
@@ -195,7 +195,7 @@ impl Eq for ThreadSelection {}
 ///   - filter
 ///   - ... etc
 ///
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum TimelineKind {
     List(ListKind),
 
@@ -220,7 +220,7 @@ const NOTIFS_TOKEN_DEPRECATED: &str = "notifs";
 const NOTIFS_TOKEN: &str = "notifications";
 
 /// Hardcoded algo timelines
-#[derive(Debug, Hash, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Hash, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum AlgoTimeline {
     /// LastPerPubkey: a special nostr query that fetches the last N
     /// notes for each pubkey on the list
