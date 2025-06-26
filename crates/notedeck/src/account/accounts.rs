@@ -143,7 +143,7 @@ impl Accounts {
     }
 
     #[must_use = "UnknownIdAction's must be handled. Use .process_unknown_id_action()"]
-    pub fn add_account(&mut self, key: Keypair) -> AddAccountAction {
+    pub fn add_account(&mut self, key: Keypair) -> Option<AddAccountResponse> {
         let pubkey = key.pubkey;
         let switch_to_index = if let Some(contains_acc) = self.contains_account(pubkey.bytes()) {
             if key.secret_key.is_some() && !contains_acc.has_nsec {
@@ -174,14 +174,10 @@ impl Accounts {
             self.accounts.len() - 1
         };
 
-        let source: Option<usize> = None;
-        AddAccountAction {
-            accounts_action: Some(AccountsAction::Switch(SwitchAccountAction::new(
-                source,
-                switch_to_index,
-            ))),
+        Some(AddAccountResponse {
+            switch_to: switch_to_index,
             unk_id_action: SingleUnkIdAction::pubkey(pubkey),
-        }
+        })
     }
 
     /// Update the `UserAccount` via callback and save the result to disk.
@@ -356,8 +352,9 @@ impl Accounts {
     }
 
     fn handle_no_accounts(&mut self, unknown_ids: &mut UnknownIds, ndb: &Ndb, txn: &Transaction) {
-        self.add_account(Keypair::new(self.fallback, None))
-            .process_action(unknown_ids, ndb, txn);
+        if let Some(resp) = self.add_account(Keypair::new(self.fallback, None)) {
+            resp.unk_id_action.process_action(unknown_ids, ndb, txn);
+        }
         self.select_account(self.num_accounts() - 1);
     }
 
@@ -609,50 +606,18 @@ fn get_selected_index(accounts: &[UserAccount], keystore: &AccountStorage) -> Op
     None
 }
 
-impl AddAccountAction {
-    // Simple wrapper around processing the unknown action to expose too
-    // much internal logic. This allows us to have a must_use on our
-    // LoginAction type, otherwise the SingleUnkIdAction's must_use will
-    // be lost when returned in the login action
-    pub fn process_action(&mut self, ids: &mut UnknownIds, ndb: &Ndb, txn: &Transaction) {
-        self.unk_id_action.process_action(ids, ndb, txn);
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct SwitchAccountAction {
-    /// Some index representing the source of the action
-    pub source: Option<usize>,
-
-    /// The account index to switch to
-    pub switch_to: usize,
-}
-
-impl SwitchAccountAction {
-    pub fn new(source: Option<usize>, switch_to: usize) -> Self {
-        SwitchAccountAction { source, switch_to }
-    }
-}
-
-#[derive(Debug)]
-pub enum AccountsAction {
-    Switch(SwitchAccountAction),
-    Remove(usize),
-}
-
 #[derive(Default)]
 pub struct ContainsAccount {
     pub has_nsec: bool,
     pub index: usize,
 }
 
-#[must_use = "You must call process_login_action on this to handle unknown ids"]
-pub struct AddAccountAction {
-    pub accounts_action: Option<AccountsAction>,
-    pub unk_id_action: SingleUnkIdAction,
-}
-
 pub struct AccountData {
     pub(crate) relay: AccountRelayData,
     pub(crate) muted: AccountMutedData,
+}
+
+pub struct AddAccountResponse {
+    pub switch_to: usize,
+    pub unk_id_action: SingleUnkIdAction,
 }

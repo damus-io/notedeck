@@ -1,9 +1,7 @@
 use enostr::FullKeypair;
-use nostrdb::Ndb;
+use nostrdb::{Ndb, Transaction};
 
-use notedeck::{
-    Accounts, AccountsAction, AddAccountAction, Images, SingleUnkIdAction, SwitchAccountAction,
-};
+use notedeck::{Accounts, Images, SingleUnkIdAction, UnknownIds};
 
 use crate::app::get_active_columns_mut;
 use crate::decks::DecksCache;
@@ -21,6 +19,45 @@ use tracing::info;
 mod route;
 
 pub use route::{AccountsRoute, AccountsRouteResponse};
+
+impl AddAccountAction {
+    // Simple wrapper around processing the unknown action to expose too
+    // much internal logic. This allows us to have a must_use on our
+    // LoginAction type, otherwise the SingleUnkIdAction's must_use will
+    // be lost when returned in the login action
+    pub fn process_action(&mut self, ids: &mut UnknownIds, ndb: &Ndb, txn: &Transaction) {
+        self.unk_id_action.process_action(ids, ndb, txn);
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SwitchAccountAction {
+    pub source_column: usize,
+
+    /// The account to switch to
+    pub switch_to: usize,
+}
+
+impl SwitchAccountAction {
+    pub fn new(source_column: usize, switch_to: usize) -> Self {
+        SwitchAccountAction {
+            source_column,
+            switch_to,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum AccountsAction {
+    Switch(SwitchAccountAction),
+    Remove(usize),
+}
+
+#[must_use = "You must call process_login_action on this to handle unknown ids"]
+pub struct AddAccountAction {
+    pub accounts_action: Option<AccountsAction>,
+    pub unk_id_action: SingleUnkIdAction,
+}
 
 /// Render account management views from a route
 #[allow(clippy::too_many_arguments)]
@@ -57,7 +94,7 @@ pub fn render_accounts_route(
                 }
             }
             AccountsRouteResponse::AddAccount(response) => {
-                let action = process_login_view_response(accounts, decks, response);
+                let action = process_login_view_response(accounts, decks, col, response);
                 *login_state = Default::default();
                 let router = get_active_columns_mut(accounts, decks)
                     .column_mut(col)
@@ -91,7 +128,7 @@ pub fn process_accounts_view_response(
             selection = Some(acc_sel);
         }
         AccountsViewResponse::SelectAccount(index) => {
-            let acc_sel = AccountsAction::Switch(SwitchAccountAction::new(Some(col), index));
+            let acc_sel = AccountsAction::Switch(SwitchAccountAction::new(col, index));
             info!("account selection: {:?}", acc_sel);
             selection = Some(acc_sel);
         }
@@ -106,6 +143,7 @@ pub fn process_accounts_view_response(
 pub fn process_login_view_response(
     manager: &mut Accounts,
     decks: &mut DecksCache,
+    col: usize,
     response: AccountLoginResponse,
 ) -> AddAccountAction {
     let (r, pubkey) = match response {
@@ -122,5 +160,18 @@ pub fn process_login_view_response(
 
     decks.add_deck_default(pubkey);
 
-    r
+    if let Some(resp) = r {
+        AddAccountAction {
+            accounts_action: Some(AccountsAction::Switch(SwitchAccountAction {
+                source_column: col,
+                switch_to: resp.switch_to,
+            })),
+            unk_id_action: resp.unk_id_action,
+        }
+    } else {
+        AddAccountAction {
+            accounts_action: None,
+            unk_id_action: SingleUnkIdAction::NoAction,
+        }
+    }
 }

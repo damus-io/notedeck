@@ -33,9 +33,7 @@ mod user_account;
 mod wallet;
 mod zaps;
 
-pub use account::accounts::{
-    AccountData, Accounts, AccountsAction, AddAccountAction, SwitchAccountAction,
-};
+pub use account::accounts::{AccountData, Accounts};
 pub use account::FALLBACK_PUBKEY;
 pub use app::{App, AppAction, Notedeck};
 pub use args::Args;

@@ -1,5 +1,5 @@
 use crate::{
-    accounts::render_accounts_route,
+    accounts::{render_accounts_route, AccountsAction},
     app::{get_active_columns_mut, get_decks_mut},
     column::ColumnsAction,
     deck_state::DeckState,
@@ -31,8 +31,7 @@ use crate::{
 use egui_nav::{Nav, NavAction, NavResponse, NavUiType, Percent, PopupResponse, PopupSheet};
 use nostrdb::Transaction;
 use notedeck::{
-    get_current_default_msats, get_current_wallet, AccountsAction, AppContext, NoteAction,
-    NoteContext,
+    get_current_default_msats, get_current_wallet, AppContext, NoteAction, NoteContext,
 };
 use notedeck_ui::View;
 use tracing::error;
@@ -81,12 +80,10 @@ impl SwitchingAction {
                 AccountsAction::Switch(switch_action) => {
                     ctx.accounts.select_account(switch_action.switch_to);
                     // pop nav after switch
-                    if let Some(src) = switch_action.source {
-                        get_active_columns_mut(ctx.accounts, decks_cache)
-                            .column_mut(src)
-                            .router_mut()
-                            .go_back();
-                    }
+                    get_active_columns_mut(ctx.accounts, decks_cache)
+                        .column_mut(switch_action.source_column)
+                        .router_mut()
+                        .go_back();
                 }
                 AccountsAction::Remove(index) => ctx.accounts.remove_account(*index),
             },

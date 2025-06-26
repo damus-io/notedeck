@@ -188,9 +188,10 @@ impl Notedeck {
             let txn = Transaction::new(&ndb).expect("txn");
             for key in &parsed_args.keys {
                 info!("adding account: {}", &key.pubkey);
-                accounts
-                    .add_account(key.clone())
-                    .process_action(&mut unknown_ids, &ndb, &txn);
+                if let Some(resp) = accounts.add_account(key.clone()) {
+                    resp.unk_id_action
+                        .process_action(&mut unknown_ids, &ndb, &txn);
+                }
             }
         }
 
