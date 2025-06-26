@@ -166,3 +166,9 @@ impl<'de> Deserialize<'de> for Pubkey {
         Pubkey::from_hex(&s).map_err(serde::de::Error::custom)
     }
 }
+
+impl hashbrown::Equivalent<Pubkey> for &[u8; 32] {
+    fn equivalent(&self, key: &Pubkey) -> bool {
+        self.as_slice() == key.bytes()
+    }
+}
