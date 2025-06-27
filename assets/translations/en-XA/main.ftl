@@ -145,6 +145,27 @@ Copy_Pubkey_9cc4 = {"["}Çópy Púbkéy{"]"}
 # Copy the text content of the note to clipboard
 Copy_Text_f81c = {"["}Çópy Téxt{"]"}
 
+# Relative time in days
+count_d_b9be = {"["}{$count}d{"]"}
+
+# Relative time in hours
+count_h_3ecb = {"["}{$count}h{"]"}
+
+# Relative time in minutes
+count_m_b41e = {"["}{$count}m{"]"}
+
+# Relative time in months
+count_mo_7aba = {"["}{$count}mó{"]"}
+
+# Relative time in seconds
+count_s_aa26 = {"["}{$count}s{"]"}
+
+# Relative time in weeks
+count_w_7468 = {"["}{$count}w{"]"}
+
+# Relative time in years
+count_y_9408 = {"["}{$count}y{"]"}
+
 # Button to create a new account
 Create_Account_6994 = {"["}Çréàté Àççóúñt{"]"}
 
@@ -345,6 +366,9 @@ Notifications_d673 = {"["}Ñótífíçàtíóñs{"]"}
 
 # Title for notifications column
 Notifications_ef56 = {"["}Ñótífíçàtíóñs{"]"}
+
+# Relative time for very recent events (less than 3 seconds)
+now_2181 = {"["}ñów{"]"}
 
 # Button label to open email client
 Open_Email_25e9 = {"["}Ópéñ Émàíl{"]"}
