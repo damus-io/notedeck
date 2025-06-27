@@ -7,7 +7,7 @@ use egui::{
 use enostr::Pubkey;
 use nostrdb::{Ndb, ProfileRecord, Transaction};
 use notedeck::{
-    fonts::get_font_size, get_profile_url, name::get_display_name, Images, NotedeckTextStyle,
+    fonts::get_font_size, get_profile_url, name::get_display_name, tr, Images, NotedeckTextStyle,
 };
 use notedeck_ui::{
     app_images, colors, profile::display_name_widget, widgets::styled_button_toggleable,
@@ -110,7 +110,7 @@ impl<'a> CustomZapView<'a> {
             ui.data_mut(|d| d.insert_temp(id, cur_amount));
 
             let resp = ui.add(styled_button_toggleable(
-                "Send",
+                &tr!("Send", "Button label to send a zap"),
                 colors::PINK,
                 is_valid_zap(maybe_sats),
             ));
@@ -158,7 +158,8 @@ fn show_title(ui: &mut egui::Ui) {
             ui.add_space(8.0);
 
             ui.add(egui::Label::new(
-                egui::RichText::new("Zap").text_style(NotedeckTextStyle::Heading2.text_style()),
+                egui::RichText::new(tr!("Zap", "Heading for zap (tip) action"))
+                    .text_style(NotedeckTextStyle::Heading2.text_style()),
             ));
         },
     );
@@ -190,7 +191,10 @@ fn show_amount(ui: &mut egui::Ui, id: egui::Id, user_input: &mut String, width: 
     let painter = ui.painter();
 
     let sats_galley = painter.layout_no_wrap(
-        "SATS".to_owned(),
+        tr!(
+            "SATS",
+            "Label for satoshis (Bitcoin unit) for custom zap amount input field"
+        ),
         NotedeckTextStyle::Heading4.get_font_id(ui.ctx()),
         ui.visuals().noninteractive().text_color(),
     );
@@ -215,7 +219,7 @@ fn show_amount(ui: &mut egui::Ui, id: egui::Id, user_input: &mut String, width: 
                     .font(user_input_font);
 
                 let amount_resp = ui.add(Label::new(
-                    egui::RichText::new("Amount")
+                    egui::RichText::new(tr!("Amount", "Label for zap amount input field"))
                         .text_style(NotedeckTextStyle::Heading3.text_style())
                         .color(ui.visuals().noninteractive().text_color()),
                 ));
@@ -398,11 +402,11 @@ impl Display for ZapSelectionButton {
             ZapSelectionButton::First => write!(f, "69"),
             ZapSelectionButton::Second => write!(f, "100"),
             ZapSelectionButton::Third => write!(f, "420"),
-            ZapSelectionButton::Fourth => write!(f, "5K"),
-            ZapSelectionButton::Fifth => write!(f, "10K"),
-            ZapSelectionButton::Sixth => write!(f, "20K"),
-            ZapSelectionButton::Seventh => write!(f, "50K"),
-            ZapSelectionButton::Eighth => write!(f, "100K"),
+            ZapSelectionButton::Fourth => write!(f, "{}", tr!("5K", "Zap amount button for 5000 sats. Abbreviated because the button is too small to display the full amount.")),
+            ZapSelectionButton::Fifth => write!(f, "{}", tr!("10K", "Zap amount button for 10000 sats. Abbreviated because the button is too small to display the full amount.")),
+            ZapSelectionButton::Sixth => write!(f, "{}", tr!("20K", "Zap amount button for 20000 sats. Abbreviated because the button is too small to display the full amount.")),
+            ZapSelectionButton::Seventh => write!(f, "{}", tr!("50K", "Zap amount button for 50000 sats. Abbreviated because the button is too small to display the full amount.")),
+            ZapSelectionButton::Eighth => write!(f, "{}", tr!("100K", "Zap amount button for 100000 sats. Abbreviated because the button is too small to display the full amount.")),
         }
     }
 }
