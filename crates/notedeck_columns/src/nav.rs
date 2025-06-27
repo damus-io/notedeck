@@ -31,8 +31,8 @@ use egui_nav::{Nav, NavAction, NavResponse, NavUiType, Percent, PopupResponse, P
 use enostr::ProfileState;
 use nostrdb::{Filter, Ndb, Transaction};
 use notedeck::{
-    get_current_default_msats, get_current_wallet, ui::is_narrow, Accounts, AppContext, NoteAction,
-    NoteContext, RelayAction,
+    get_current_default_msats, get_current_wallet, tr, ui::is_narrow, Accounts, AppContext,
+    NoteAction, NoteContext, RelayAction,
 };
 use tracing::error;
 
@@ -572,14 +572,20 @@ fn render_nav_body(
             let txn = if let Ok(txn) = Transaction::new(ctx.ndb) {
                 txn
             } else {
-                ui.label("Reply to unknown note");
+                ui.label(tr!(
+                    "Reply to unknown note",
+                    "Error message when reply note cannot be found"
+                ));
                 return None;
             };
 
             let note = if let Ok(note) = ctx.ndb.get_note_by_id(&txn, id.bytes()) {
                 note
             } else {
-                ui.label("Reply to unknown note");
+                ui.label(tr!(
+                    "Reply to unknown note",
+                    "Error message when reply note cannot be found"
+                ));
                 return None;
             };
 
@@ -616,7 +622,10 @@ fn render_nav_body(
             let note = if let Ok(note) = ctx.ndb.get_note_by_id(&txn, id.bytes()) {
                 note
             } else {
-                ui.label("Quote of unknown note");
+                ui.label(tr!(
+                    "Quote of unknown note",
+                    "Error message when quote note cannot be found"
+                ));
                 return None;
             };
 

@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use crate::ui::{Preview, PreviewConfig};
 use egui::{Align, Button, CornerRadius, Frame, Id, Layout, Margin, Rgba, RichText, Ui, Vec2};
 use enostr::{RelayPool, RelayStatus};
-use notedeck::{NotedeckTextStyle, RelayAction};
+use notedeck::{tr, NotedeckTextStyle, RelayAction};
 use notedeck_ui::app_images;
 use notedeck_ui::{colors::PINK, padding};
 use tracing::debug;
@@ -26,7 +26,7 @@ impl RelayView<'_> {
                 ui.horizontal(|ui| {
                     ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                         ui.label(
-                            RichText::new("Relays")
+                            RichText::new(tr!("Relays", "Label for relay list section"))
                                 .text_style(NotedeckTextStyle::Heading2.text_style()),
                         );
                     });
@@ -150,8 +150,11 @@ impl<'a> RelayView<'a> {
             let is_enabled = self.pool.is_valid_url(text_buffer);
             let text_edit = egui::TextEdit::singleline(text_buffer)
                 .hint_text(
-                    RichText::new("Enter the relay here")
-                        .text_style(NotedeckTextStyle::Body.text_style()),
+                    RichText::new(tr!(
+                        "Enter the relay here",
+                        "Placeholder for relay input field"
+                    ))
+                    .text_style(NotedeckTextStyle::Body.text_style()),
                 )
                 .vertical_align(Align::Center)
                 .desired_width(f32::INFINITY)
@@ -175,7 +178,7 @@ impl<'a> RelayView<'a> {
 fn add_relay_button() -> Button<'static> {
     Button::image_and_text(
         app_images::add_relay_image().fit_to_exact_size(Vec2::new(48.0, 48.0)),
-        RichText::new(" Add relay")
+        RichText::new(tr!("Add relay", "Button label to add a relay"))
             .size(16.0)
             // TODO: this color should not be hard coded. Find some way to add it to the visuals
             .color(PINK),
@@ -185,7 +188,8 @@ fn add_relay_button() -> Button<'static> {
 
 fn add_relay_button2(is_enabled: bool) -> impl egui::Widget + 'static {
     move |ui: &mut egui::Ui| -> egui::Response {
-        let button_widget = styled_button("Add", notedeck_ui::colors::PINK);
+        let add_text = tr!("Add", "Button label to add a relay");
+        let button_widget = styled_button(add_text.as_str(), notedeck_ui::colors::PINK);
         ui.add_enabled(is_enabled, button_widget)
     }
 }
@@ -224,9 +228,9 @@ fn show_connection_status(ui: &mut Ui, status: RelayStatus) {
     let bg_color = egui::lerp(Rgba::from(fg_color)..=Rgba::BLACK, 0.8).into();
 
     let label_text = match status {
-        RelayStatus::Connected => "Connected",
-        RelayStatus::Connecting => "Connecting...",
-        RelayStatus::Disconnected => "Not Connected",
+        RelayStatus::Connected => tr!("Connected", "Status label for connected relay"),
+        RelayStatus::Connecting => tr!("Connecting...", "Status label for connecting relay"),
+        RelayStatus::Disconnected => tr!("Not Connected", "Status label for disconnected relay"),
     };
 
     let frame = Frame::new()

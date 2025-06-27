@@ -3,13 +3,12 @@ use egui::Widget;
 use crate::deck_state::DeckState;
 
 use super::configure_deck::{ConfigureDeckResponse, ConfigureDeckView};
+use notedeck::tr;
 use notedeck_ui::padding;
 
 pub struct EditDeckView<'a> {
     config_view: ConfigureDeckView<'a>,
 }
-
-static EDIT_TEXT: &str = "Edit Deck";
 
 pub enum EditDeckResponse {
     Edit(ConfigureDeckResponse),
@@ -18,7 +17,8 @@ pub enum EditDeckResponse {
 
 impl<'a> EditDeckView<'a> {
     pub fn new(state: &'a mut DeckState) -> Self {
-        let config_view = ConfigureDeckView::new(state).with_create_text(EDIT_TEXT);
+        let config_view = ConfigureDeckView::new(state)
+            .with_create_text(tr!("Edit Deck", "Button label to edit a deck"));
         Self { config_view }
     }
 
@@ -44,7 +44,7 @@ fn delete_button() -> impl Widget {
         let size = egui::vec2(108.0, 40.0);
         ui.allocate_ui_with_layout(size, egui::Layout::top_down(egui::Align::Center), |ui| {
             ui.add(
-                egui::Button::new("Delete Deck")
+                egui::Button::new(tr!("Delete Deck", "Button label to delete a deck"))
                     .fill(ui.visuals().error_fg_color)
                     .min_size(size),
             )

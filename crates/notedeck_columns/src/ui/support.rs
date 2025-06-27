@@ -1,5 +1,5 @@
 use egui::{vec2, Button, Label, Layout, RichText};
-use notedeck::{NamedFontFamily, NotedeckTextStyle};
+use notedeck::{tr, NamedFontFamily, NotedeckTextStyle};
 use notedeck_ui::{colors::PINK, padding};
 use tracing::error;
 
@@ -21,10 +21,18 @@ impl<'a> SupportView<'a> {
                 notedeck::fonts::get_font_size(ui.ctx(), &NotedeckTextStyle::Body),
                 egui::FontFamily::Name(NamedFontFamily::Bold.as_str().into()),
             );
-            ui.add(Label::new(RichText::new("Running into a bug?").font(font)));
-            ui.label(RichText::new("Step 1").text_style(NotedeckTextStyle::Heading3.text_style()));
+            ui.add(Label::new(
+                RichText::new(tr!("Running into a bug?", "Heading for support section")).font(font),
+            ));
+            ui.label(
+                RichText::new(tr!("Step 1", "Step 1 label in support instructions"))
+                    .text_style(NotedeckTextStyle::Heading3.text_style()),
+            );
             padding(8.0, ui, |ui| {
-                ui.label("Open your default email client to get help from the Damus team");
+                ui.label(tr!(
+                    "Open your default email client to get help from the Damus team",
+                    "Instruction to open email client"
+                ));
                 let size = vec2(120.0, 40.0);
                 ui.allocate_ui_with_layout(size, Layout::top_down(egui::Align::Center), |ui| {
                     let font_size =
@@ -47,16 +55,19 @@ impl<'a> SupportView<'a> {
 
             if let Some(logs) = self.support.get_most_recent_log() {
                 ui.label(
-                    RichText::new("Step 2").text_style(NotedeckTextStyle::Heading3.text_style()),
+                    RichText::new(tr!("Step 2", "Step 2 label in support instructions"))
+                        .text_style(NotedeckTextStyle::Heading3.text_style()),
                 );
                 let size = vec2(80.0, 40.0);
-                let copy_button = Button::new(RichText::new("Copy").size(
-                    notedeck::fonts::get_font_size(ui.ctx(), &NotedeckTextStyle::Body),
-                ))
+                let copy_button = Button::new(
+                    RichText::new(tr!("Copy", "Button label to copy logs")).size(
+                        notedeck::fonts::get_font_size(ui.ctx(), &NotedeckTextStyle::Body),
+                    ),
+                )
                 .fill(PINK)
                 .min_size(size);
                 padding(8.0, ui, |ui| {
-                    ui.add(Label::new("Press the button below to copy your most recent logs to your system's clipboard. Then paste it into your email.").wrap());
+                    ui.add(Label::new(RichText::new(tr!("Press the button below to copy your most recent logs to your system's clipboard. Then paste it into your email.", "Instruction for copying logs"))).wrap());
                     ui.allocate_ui_with_layout(size, Layout::top_down(egui::Align::Center), |ui| {
                         if ui.add(copy_button).clicked() {
                             ui.ctx().copy_text(logs.to_string());
@@ -76,7 +87,9 @@ impl<'a> SupportView<'a> {
 }
 
 fn open_email_button(font_size: f32, size: egui::Vec2) -> impl egui::Widget {
-    Button::new(RichText::new("Open Email").size(font_size))
-        .fill(PINK)
-        .min_size(size)
+    Button::new(
+        RichText::new(tr!("Open Email", "Button label to open email client")).size(font_size),
+    )
+    .fill(PINK)
+    .min_size(size)
 }

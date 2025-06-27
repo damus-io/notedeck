@@ -12,7 +12,7 @@ use crate::{
     route::Route,
 };
 
-use notedeck::{Accounts, UserAccount};
+use notedeck::{tr, Accounts, UserAccount};
 use notedeck_ui::{
     anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},
     app_images, colors, View,
@@ -105,7 +105,7 @@ impl<'a> DesktopSidePanel<'a> {
 
                     ui.add_space(8.0);
                     ui.add(egui::Label::new(
-                        RichText::new("DECKS")
+                        RichText::new(tr!("DECKS", "Label for decks section in side panel"))
                             .size(11.0)
                             .color(ui.visuals().noninteractive().fg_stroke.color),
                     ));

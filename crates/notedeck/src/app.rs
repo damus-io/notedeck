@@ -233,7 +233,7 @@ impl Notedeck {
         // Initialize localization
         let i18n_resource_dir = Path::new("assets/translations");
         let localization_manager = Arc::new(
-            LocalizationManager::new(&i18n_resource_dir).unwrap_or_else(|e| {
+            LocalizationManager::new(i18n_resource_dir).unwrap_or_else(|e| {
                 error!("Failed to initialize localization manager: {}", e);
                 // Create a fallback manager with a temporary directory
                 LocalizationManager::new(&std::env::temp_dir().join("notedeck_i18n_fallback"))

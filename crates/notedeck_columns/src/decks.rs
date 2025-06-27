@@ -2,7 +2,7 @@ use std::collections::{hash_map::ValuesMut, HashMap};
 
 use enostr::{Pubkey, RelayPool};
 use nostrdb::Transaction;
-use notedeck::{AppContext, FALLBACK_PUBKEY};
+use notedeck::{tr, AppContext, FALLBACK_PUBKEY};
 use tracing::{error, info};
 
 use crate::{
@@ -397,8 +397,8 @@ impl Deck {
         '🇩'
     }
 
-    pub fn default_name() -> &'static str {
-        "Default Deck"
+    pub fn default_name() -> String {
+        tr!("Default Deck", "Name of the default deck feed")
     }
 
     pub fn new(icon: char, name: String) -> Self {

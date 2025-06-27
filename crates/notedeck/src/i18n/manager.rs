@@ -78,7 +78,7 @@ impl LocalizationManager {
         locale: &LanguageIdentifier,
     ) -> Result<Arc<FluentResource>, Box<dyn std::error::Error + Send + Sync>> {
         // Construct the path using the stored resource directory
-        let expected_path = self.resource_dir.join(format!("{}/main.ftl", locale));
+        let expected_path = self.resource_dir.join(format!("{locale}/main.ftl"));
 
         // Try to open the file directly
         if let Err(e) = std::fs::File::open(&expected_path) {
@@ -87,16 +87,16 @@ impl LocalizationManager {
                 expected_path.display(),
                 e
             );
-            return Err(format!("Failed to open FTL file: {}", e).into());
+            return Err(format!("Failed to open FTL file: {e}").into());
         }
 
         // Load the FTL file directly instead of using ResourceManager
         let ftl_string = std::fs::read_to_string(&expected_path)
-            .map_err(|e| format!("Failed to read FTL file: {}", e))?;
+            .map_err(|e| format!("Failed to read FTL file: {e}"))?;
 
         // Parse the FTL content
         let resource = FluentResource::try_new(ftl_string)
-            .map_err(|e| format!("Failed to parse FTL content: {:?}", e))?;
+            .map_err(|e| format!("Failed to parse FTL content: {e:?}"))?;
 
         tracing::debug!(
             "Loaded and cached parsed FluentResource for locale: {}",
@@ -182,15 +182,15 @@ impl LocalizationManager {
         let mut bundle = FluentBundle::new(vec![locale.clone()]);
         bundle
             .add_resource(resource.as_ref())
-            .map_err(|e| format!("Failed to add resource to bundle: {:?}", e))?;
+            .map_err(|e| format!("Failed to add resource to bundle: {e:?}"))?;
 
         let message = bundle
             .get_message(id)
-            .ok_or_else(|| format!("Message not found: {}", id))?;
+            .ok_or_else(|| format!("Message not found: {id}"))?;
 
         let pattern = message
             .value()
-            .ok_or_else(|| format!("Message has no value: {}", id))?;
+            .ok_or_else(|| format!("Message has no value: {id}"))?;
 
         // Format the message
         let mut errors = Vec::new();
@@ -243,16 +243,16 @@ impl LocalizationManager {
                 locale,
                 self.available_locales
             );
-            return Err(format!("Locale {} is not available", locale).into());
+            return Err(format!("Locale {locale} is not available").into());
         }
 
         let mut current = self
             .current_locale
             .write()
             .map_err(|e| format!("Lock error: {e}"))?;
-        tracing::info!("Switching locale from {} to {}", *current, locale);
+        tracing::info!("Switching locale from {} to {locale}", *current);
         *current = locale.clone();
-        tracing::info!("Successfully set locale to: {}", locale);
+        tracing::info!("Successfully set locale to: {locale}");
 
         // Clear caches when locale changes since they are locale-specific
         let mut string_cache = self
@@ -406,7 +406,7 @@ impl LocalizationContext {
     pub fn get_string_with_args(&self, id: &str, args: Option<&FluentArgs>) -> String {
         self.manager
             .get_string_with_args(id, args)
-            .unwrap_or_else(|_| format!("[MISSING: {}]", id))
+            .unwrap_or_else(|_| format!("[MISSING: {id}]"))
     }
 
     /// Sets the current locale
@@ -447,7 +447,7 @@ pub trait Localizable {
 impl Localizable for LocalizationContext {
     fn get_localized_string(&self, id: &str) -> String {
         self.get_string(id)
-            .unwrap_or_else(|| format!("[MISSING: {}]", id))
+            .unwrap_or_else(|| format!("[MISSING: {id}]"))
     }
 
     fn get_localized_string_with_args(&self, id: &str, args: Option<&FluentArgs>) -> String {

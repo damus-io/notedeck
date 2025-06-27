@@ -3,7 +3,7 @@ use egui::{Frame, Label, RichText};
 use egui_extras::Size;
 use nostrdb::ProfileRecord;
 
-use notedeck::{name::get_display_name, profile::get_profile_url, Images, NotedeckTextStyle};
+use notedeck::{name::get_display_name, profile::get_profile_url, tr, Images, NotedeckTextStyle};
 
 use super::{about_section_widget, banner, display_name_widget};
 
@@ -96,7 +96,7 @@ impl egui::Widget for SimpleProfilePreview<'_, '_> {
                     if !self.is_nsec {
                         ui.add(
                             Label::new(
-                                RichText::new("Read only")
+                                RichText::new(tr!("Read only", "Label for read-only profile mode"))
                                     .size(notedeck::fonts::get_font_size(
                                         ui.ctx(),
                                         &NotedeckTextStyle::Tiny,

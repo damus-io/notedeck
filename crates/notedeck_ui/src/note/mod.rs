@@ -27,7 +27,7 @@ use nostrdb::{Ndb, Note, NoteKey, ProfileRecord, Transaction};
 use notedeck::{
     name::get_display_name,
     note::{NoteAction, NoteContext, ZapAction},
-    AnyZapState, CachedNote, ContextSelection, NoteCache, NoteZapTarget, NoteZapTargetOwned,
+    tr, AnyZapState, CachedNote, ContextSelection, NoteCache, NoteZapTarget, NoteZapTargetOwned,
     NotedeckTextStyle, ZapTarget, Zaps,
 };
 
@@ -308,7 +308,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
             let color = ui.style().visuals.noninteractive().fg_stroke.color;
             ui.add_space(4.0);
             ui.label(
-                RichText::new("Reposted")
+                RichText::new(tr!("Reposted", "Label for reposted notes"))
                     .color(color)
                     .text_style(style.text_style()),
             );
@@ -864,7 +864,7 @@ fn reply_button(ui: &mut egui::Ui, note_key: NoteKey) -> egui::Response {
 
     let put_resp = ui
         .put(rect, img.max_width(size))
-        .on_hover_text("Reply to this note");
+        .on_hover_text(tr!("Reply to this note", "Hover text for reply button"));
 
     resp.union(put_resp)
 }
@@ -889,7 +889,7 @@ fn quote_repost_button(ui: &mut egui::Ui, note_key: NoteKey) -> egui::Response {
 
     let put_resp = ui
         .put(rect, repost_icon(ui.visuals().dark_mode).max_width(size))
-        .on_hover_text("Repost this note");
+        .on_hover_text(tr!("Repost this note", "Hover text for repost button"));
 
     resp.union(put_resp)
 }
@@ -927,7 +927,9 @@ fn zap_button(state: AnyZapState, noteid: &[u8; 32]) -> impl egui::Widget + use<
         let expand_size = 5.0; // from hover_expand_small
         let rect = rect.translate(egui::vec2(-(expand_size / 2.0), 0.0));
 
-        let put_resp = ui.put(rect, img).on_hover_text("Zap this note");
+        let put_resp = ui
+            .put(rect, img)
+            .on_hover_text(tr!("Zap this note", "Hover text for zap button"));
 
         resp.union(put_resp)
     }

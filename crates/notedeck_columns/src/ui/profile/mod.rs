@@ -4,6 +4,7 @@ pub use edit::EditProfileView;
 use egui::{vec2, Color32, CornerRadius, Layout, Rect, RichText, ScrollArea, Sense, Stroke};
 use enostr::Pubkey;
 use nostrdb::{ProfileRecord, Transaction};
+use notedeck::tr;
 use notedeck_ui::profile::follow_button;
 use tracing::error;
 
@@ -362,7 +363,7 @@ fn edit_profile_button() -> impl egui::Widget + 'static {
 
         let edit_icon_size = vec2(16.0, 16.0);
         let galley = painter.layout(
-            "Edit Profile".to_owned(),
+            tr!("Edit Profile", "Button label to edit user profile"),
             NotedeckTextStyle::Button.get_font_id(ui.ctx()),
             ui.visuals().text_color(),
             rect.width(),

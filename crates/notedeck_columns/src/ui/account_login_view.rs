@@ -6,7 +6,7 @@ use egui::{
 };
 use egui_winit::clipboard::Clipboard;
 use enostr::Keypair;
-use notedeck::{fonts::get_font_size, AppAction, NotedeckTextStyle};
+use notedeck::{fonts::get_font_size, tr, AppAction, NotedeckTextStyle};
 use notedeck_ui::{
     app_images,
     context_menu::{input_context, PasteBehavior},
@@ -58,7 +58,7 @@ impl<'a> AccountLoginView<'a> {
                 ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
                 let help_text_style = NotedeckTextStyle::Small;
                 ui.add(egui::Label::new(
-                    RichText::new("Enter your public key (npub), nostr address (e.g. vrod@damus.io), or private key (nsec). You must enter your private key to be able to post, reply, etc.")
+                    RichText::new(tr!("Enter your public key (npub), nostr address (e.g. {address}), or private key (nsec). You must enter your private key to be able to post, reply, etc.", "Instructions for entering Nostr credentials", address="vrod@damus.io"))
                         .text_style(help_text_style.text_style())
                         .size(get_font_size(ui.ctx(), &help_text_style)).color(ui.visuals().weak_text_color()),
                     ).wrap())
@@ -73,13 +73,13 @@ impl<'a> AccountLoginView<'a> {
 
             ui.horizontal(|ui| {
                 ui.label(
-                    RichText::new("New to Nostr?")
+                    RichText::new(tr!("New to Nostr?", "Label asking if the user is new to Nostr. Underneath this label is a button to create an account."))
                         .color(ui.style().visuals.noninteractive().fg_stroke.color)
                         .text_style(NotedeckTextStyle::Body.text_style()),
                 );
 
                 if ui
-                    .add(Button::new(RichText::new("Create Account")).frame(false))
+                    .add(Button::new(RichText::new(tr!("Create Account", "Button to create a new account"))).frame(false))
                     .clicked()
                 {
                     self.manager.should_create_new();
@@ -99,20 +99,20 @@ impl<'a> AccountLoginView<'a> {
 }
 
 fn login_title_text() -> RichText {
-    RichText::new("Login")
+    RichText::new(tr!("Login", "Login page title"))
         .text_style(NotedeckTextStyle::Heading2.text_style())
         .strong()
 }
 
 fn login_textedit_info_text() -> RichText {
-    RichText::new("Enter your key")
+    RichText::new(tr!("Enter your key", "Label for key input field. Key can be public key (npub), private key (nsec), or Nostr address (NIP-05)."))
         .strong()
         .text_style(NotedeckTextStyle::Body.text_style())
 }
 
 fn login_button() -> Button<'static> {
     Button::new(
-        RichText::new("Login now — let's do this!")
+        RichText::new(tr!("Login now — let's do this!", "Login button text"))
             .text_style(NotedeckTextStyle::Body.text_style())
             .strong(),
     )
@@ -124,7 +124,11 @@ fn login_textedit(manager: &mut AcquireKeyState) -> TextEdit {
     let create_textedit: fn(&mut dyn TextBuffer) -> TextEdit = |text| {
         egui::TextEdit::singleline(text)
             .hint_text(
-                RichText::new("Your key here...").text_style(NotedeckTextStyle::Body.text_style()),
+                RichText::new(tr!(
+                    "Your key here...",
+                    "Placeholder text for key input field"
+                ))
+                .text_style(NotedeckTextStyle::Body.text_style()),
             )
             .vertical_align(Align::Center)
             .min_size(Vec2::new(0.0, 40.0))

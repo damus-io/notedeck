@@ -54,7 +54,7 @@ fn simple_hash(s: &str) -> String {
 pub fn normalize_ftl_key(key: &str, comment: Option<&str>) -> String {
     // Try to get from cache first
     let cache_key = if let Some(comment) = comment {
-        format!("{}:{}", key, comment)
+        format!("{key}:{comment}")
     } else {
         key.to_string()
     };
@@ -76,8 +76,8 @@ pub fn normalize_ftl_key(key: &str, comment: Option<&str>) -> String {
     result = result.trim_matches('_').to_string();
 
     // Ensure the key starts with a letter (Fluent requirement)
-    if !(result.len() > 0 && result.chars().next().unwrap().is_ascii_alphabetic()) {
-        result = format!("k_{}", result);
+    if result.is_empty() || !result.chars().next().unwrap().is_ascii_alphabetic() {
+        result = format!("k_{result}");
     }
 
     // If we have a comment, append a hash of it to reduce collisions

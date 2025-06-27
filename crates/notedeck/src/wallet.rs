@@ -153,8 +153,8 @@ impl From<nwc::Error> for NwcError {
 impl Display for NwcError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            NwcError::NIP47(err) => write!(f, "NIP47 error: {}", err),
-            NwcError::Relay(err) => write!(f, "Relay error: {}", err),
+            NwcError::NIP47(err) => write!(f, "NIP47 error: {err}"),
+            NwcError::Relay(err) => write!(f, "Relay error: {err}"),
             NwcError::PrematureExit => write!(f, "Premature exit"),
             NwcError::Timeout => write!(f, "Request timed out"),
         }

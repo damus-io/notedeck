@@ -4,7 +4,7 @@ use crate::{
 };
 use egui::{Align, Key, KeyboardShortcut, Layout, Modifiers};
 use nostrdb::{Ndb, Transaction};
-use notedeck::{Accounts, AppContext, Images, NoteAction, NoteContext};
+use notedeck::{tr, Accounts, AppContext, Images, NoteAction, NoteContext};
 use notedeck_ui::{app_images, icons::search_icon, jobs::JobsCache, NoteOptions, ProfilePic};
 
 /// DaveUi holds all of the data it needs to render itself
@@ -138,7 +138,7 @@ impl<'a> DaveUi<'a> {
         if self.trial {
             ui.add(egui::Label::new(
                 egui::RichText::new(
-                    "The Dave Nostr AI assistant trial has ended :(. Thanks for testing! Zap-enabled Dave coming soon!",
+                    tr!("The Dave Nostr AI assistant trial has ended :(. Thanks for testing! Zap-enabled Dave coming soon!", "Message shown when Dave trial period has ended"),
                 )
                 .weak(),
             ));
@@ -308,7 +308,13 @@ impl<'a> DaveUi<'a> {
         ui.horizontal(|ui| {
             ui.with_layout(Layout::right_to_left(Align::Max), |ui| {
                 let mut dave_response = DaveResponse::none();
-                if ui.add(egui::Button::new("Ask")).clicked() {
+                if ui
+                    .add(egui::Button::new(tr!(
+                        "Ask",
+                        "Button to send message to Dave AI assistant"
+                    )))
+                    .clicked()
+                {
                     dave_response = DaveResponse::send();
                 }
 
@@ -322,7 +328,13 @@ impl<'a> DaveUi<'a> {
                             },
                             Key::Enter,
                         ))
-                        .hint_text(egui::RichText::new("Ask dave anything...").weak())
+                        .hint_text(
+                            egui::RichText::new(tr!(
+                                "Ask dave anything...",
+                                "Placeholder text for Dave AI input field"
+                            ))
+                            .weak(),
+                        )
                         .frame(false),
                 );
 

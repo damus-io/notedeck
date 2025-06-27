@@ -17,7 +17,7 @@ use crate::{
     Damus,
 };
 
-use notedeck::{AppContext, Images, NotedeckTextStyle, UserAccount};
+use notedeck::{tr, AppContext, Images, NotedeckTextStyle, UserAccount};
 use notedeck_ui::{anim::ICON_EXPANSION_MULTIPLE, app_images};
 use tokenator::{ParseError, TokenParser, TokenSerializable, TokenWriter};
 
@@ -229,8 +229,11 @@ impl<'a> AddColumnView<'a> {
         deck_author: Pubkey,
     ) -> Option<AddColumnResponse> {
         let algo_option = ColumnOptionData {
-            title: "Contact List",
-            description: "Source the last note for each user in your contact list",
+            title: tr!("Contact List", "Title for contact list column"),
+            description: tr!(
+                "Source the last note for each user in your contact list",
+                "Description for contact list column"
+            ),
             icon: app_images::home_image(),
             option: AddColumnOption::Algo(AlgoOption::LastPerPubkey(Decision::Decided(
                 ListKind::contact_list(deck_author),
@@ -245,8 +248,11 @@ impl<'a> AddColumnView<'a> {
 
     fn algo_ui(&mut self, ui: &mut Ui) -> Option<AddColumnResponse> {
         let algo_option = ColumnOptionData {
-            title: "Last Note per User",
-            description: "Show the last note for each user from a list",
+            title: tr!("Last Note per User", "Title for last note per user column"),
+            description: tr!(
+                "Show the last note for each user from a list",
+                "Description for last note per user column"
+            ),
             icon: app_images::algo_image(),
             option: AddColumnOption::Algo(AlgoOption::LastPerPubkey(Decision::Undecided)),
         };
@@ -291,8 +297,11 @@ impl<'a> AddColumnView<'a> {
             let text_edit = key_state.get_acquire_textedit(|text| {
                 egui::TextEdit::singleline(text)
                     .hint_text(
-                        RichText::new("Enter the user's key (npub, hex, nip05) here...")
-                            .text_style(NotedeckTextStyle::Body.text_style()),
+                        RichText::new(tr!(
+                            "Enter the user's key (npub, hex, nip05) here...",
+                            "Hint text to prompt entering the user's public key."
+                        ))
+                        .text_style(NotedeckTextStyle::Body.text_style()),
                     )
                     .vertical_align(Align::Center)
                     .desired_width(f32::INFINITY)
@@ -386,7 +395,8 @@ impl<'a> AddColumnView<'a> {
             title_font_max_size + inter_text_padding + desc_font_max_size + (2.0 * height_padding)
         };
 
-        let helper = AnimationHelper::new(ui, data.title, vec2(max_width, max_height));
+        let title = data.title.clone();
+        let helper = AnimationHelper::new(ui, title.clone(), vec2(max_width, max_height));
         let animation_rect = helper.get_animation_rect();
 
         let cur_icon_width = helper.scale_1d_pos(min_icon_width);
@@ -445,8 +455,11 @@ impl<'a> AddColumnView<'a> {
     fn get_base_options(&self, ui: &mut Ui) -> Vec<ColumnOptionData> {
         let mut vec = Vec::new();
         vec.push(ColumnOptionData {
-            title: "Home",
-            description: "See notes from your contacts",
+            title: tr!("Home", "Title for Home column"),
+            description: tr!(
+                "See notes from your contacts",
+                "Description for Home column"
+            ),
             icon: app_images::home_image(),
             option: AddColumnOption::Contacts(if self.cur_account.key.secret_key.is_some() {
                 PubkeySource::DeckAuthor
@@ -455,32 +468,47 @@ impl<'a> AddColumnView<'a> {
             }),
         });
         vec.push(ColumnOptionData {
-            title: "Notifications",
-            description: "Stay up to date with notifications and mentions",
+            title: tr!("Notifications", "Title for notifications column"),
+            description: tr!(
+                "Stay up to date with notifications and mentions",
+                "Description for notifications column"
+            ),
             icon: app_images::notifications_image(ui.visuals().dark_mode),
             option: AddColumnOption::UndecidedNotification,
         });
         vec.push(ColumnOptionData {
-            title: "Universe",
-            description: "See the whole nostr universe",
+            title: tr!("Universe", "Title for universe column"),
+            description: tr!(
+                "See the whole nostr universe",
+                "Description for universe column"
+            ),
             icon: app_images::universe_image(),
             option: AddColumnOption::Universe,
         });
         vec.push(ColumnOptionData {
-            title: "Hashtags",
-            description: "Stay up to date with a certain hashtag",
+            title: tr!("Hashtags", "Title for hashtags column"),
+            description: tr!(
+                "Stay up to date with a certain hashtag",
+                "Description for hashtags column"
+            ),
             icon: app_images::hashtag_image(),
             option: AddColumnOption::UndecidedHashtag,
         });
         vec.push(ColumnOptionData {
-            title: "Individual",
-            description: "Stay up to date with someone's notes & replies",
+            title: tr!("Individual", "Title for individual user column"),
+            description: tr!(
+                "Stay up to date with someone's notes & replies",
+                "Description for individual user column"
+            ),
             icon: app_images::profile_image(),
             option: AddColumnOption::UndecidedIndividual,
         });
         vec.push(ColumnOptionData {
-            title: "Algo",
-            description: "Algorithmic feeds to aid in note discovery",
+            title: tr!("Algo", "Title for algorithmic feeds column"),
+            description: tr!(
+                "Algorithmic feeds to aid in note discovery",
+                "Description for algorithmic feeds column"
+            ),
             icon: app_images::algo_image(),
             option: AddColumnOption::Algo(AlgoOption::LastPerPubkey(Decision::Undecided)),
         });
@@ -498,15 +526,24 @@ impl<'a> AddColumnView<'a> {
         };
 
         vec.push(ColumnOptionData {
-            title: "Your Notifications",
-            description: "Stay up to date with your notifications and mentions",
+            title: tr!("Your Notifications", "Title for your notifications column"),
+            description: tr!(
+                "Stay up to date with your notifications and mentions",
+                "Description for your notifications column"
+            ),
             icon: app_images::notifications_image(ui.visuals().dark_mode),
             option: AddColumnOption::Notification(source),
         });
 
         vec.push(ColumnOptionData {
-            title: "Someone else's Notifications",
-            description: "Stay up to date with someone else's notifications and mentions",
+            title: tr!(
+                "Someone else's Notifications",
+                "Title for someone else's notifications column"
+            ),
+            description: tr!(
+                "Stay up to date with someone else's notifications and mentions",
+                "Description for someone else's notifications column"
+            ),
             icon: app_images::notifications_image(ui.visuals().dark_mode),
             option: AddColumnOption::ExternalNotification,
         });
@@ -524,15 +561,24 @@ impl<'a> AddColumnView<'a> {
         };
 
         vec.push(ColumnOptionData {
-            title: "Your Notes",
-            description: "Keep track of your notes & replies",
+            title: tr!("Your Notes", "Title for your notes column"),
+            description: tr!(
+                "Keep track of your notes & replies",
+                "Description for your notes column"
+            ),
             icon: app_images::profile_image(),
             option: AddColumnOption::Individual(source),
         });
 
         vec.push(ColumnOptionData {
-            title: "Someone else's Notes",
-            description: "Stay up to date with someone else's notes & replies",
+            title: tr!(
+                "Someone else's Notes",
+                "Title for someone else's notes column"
+            ),
+            description: tr!(
+                "Stay up to date with someone else's notes & replies",
+                "Description for someone else's notes column"
+            ),
             icon: app_images::profile_image(),
             option: AddColumnOption::ExternalIndividual,
         });
@@ -542,11 +588,15 @@ impl<'a> AddColumnView<'a> {
 }
 
 fn find_user_button() -> impl Widget {
-    styled_button("Find User", notedeck_ui::colors::PINK)
+    let label = tr!("Find User", "Label for find user button");
+    let color = notedeck_ui::colors::PINK;
+    move |ui: &mut egui::Ui| styled_button(label.as_str(), color).ui(ui)
 }
 
 fn add_column_button() -> impl Widget {
-    styled_button("Add", notedeck_ui::colors::PINK)
+    let label = tr!("Add", "Label for add column button");
+    let color = notedeck_ui::colors::PINK;
+    move |ui: &mut egui::Ui| styled_button(label.as_str(), color).ui(ui)
 }
 
 /*
@@ -571,8 +621,8 @@ pub(crate) fn sized_button(text: &str) -> impl Widget + '_ {
 */
 
 struct ColumnOptionData {
-    title: &'static str,
-    description: &'static str,
+    title: String,
+    description: String,
     icon: Image<'static>,
     option: AddColumnOption,
 }
@@ -648,7 +698,7 @@ pub fn render_add_column_routes(
                 }
 
                 // We have a decision on where we want the last per pubkey
-                // source to be, so let;s create a timeline from that and
+                // source to be, so let's create a timeline from that and
                 // add it to our list of timelines
                 AlgoOption::LastPerPubkey(Decision::Decided(list_kind)) => {
                     let txn = Transaction::new(ctx.ndb).unwrap();
@@ -734,8 +784,11 @@ pub fn hashtag_ui(
 
         let text_edit = egui::TextEdit::singleline(text_buffer)
             .hint_text(
-                RichText::new("Enter the desired hashtags here (for multiple space-separated)")
-                    .text_style(NotedeckTextStyle::Body.text_style()),
+                RichText::new(tr!(
+                    "Enter the desired hashtags here (for multiple space-separated)",
+                    "Placeholder for hashtag input field"
+                ))
+                .text_style(NotedeckTextStyle::Body.text_style()),
             )
             .vertical_align(Align::Center)
             .desired_width(f32::INFINITY)
@@ -790,7 +843,7 @@ mod tests {
             let data_str = "column:algo_selection:last_per_pubkey";
             let data = &data_str.split(":").collect::<Vec<&str>>();
             let mut token_writer = TokenWriter::default();
-            let mut parser = TokenParser::new(&data);
+            let mut parser = TokenParser::new(data);
             let parsed = AddColumnRoute::parse_from_tokens(&mut parser).unwrap();
             let expected = AddColumnRoute::Algo(AddAlgoRoute::LastPerPubkey);
             parsed.serialize_tokens(&mut token_writer);
