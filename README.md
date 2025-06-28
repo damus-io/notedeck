@@ -111,6 +111,8 @@ Building on notedeck dev documentation is also on the roadmap.
 
 ## 🤝 Contributing
 
+### Developers
+
 Contributions are welcome! Please check the developer documentation and follow these guidelines:
 
 1. Fork the repository
@@ -118,6 +120,15 @@ Contributions are welcome! Please check the developer documentation and follow t
 3. Commit your changes (`git commit -m 'Add amazing feature'`)
 4. Push to the branch (`git push origin feature/amazing-feature`)
 5. Open a Pull Request
+
+### Translators
+
+Help us bring Notedeck to non-English speakers!
+
+Request to join the Notedeck translations team through [Crowdin](https://crowdin.com/project/notedeck).
+
+If you do not have a Crowdin account, sign up for one.
+If you do not see your language, please request it in Crowdin.
 
 ## 🔒 Security
 
