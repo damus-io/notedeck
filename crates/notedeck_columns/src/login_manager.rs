@@ -2,6 +2,7 @@ use crate::key_parsing::perform_key_retrieval;
 use crate::key_parsing::AcquireKeyError;
 use egui::{TextBuffer, TextEdit};
 use enostr::Keypair;
+use notedeck::tr;
 use poll_promise::Promise;
 
 /// The state data for acquiring a nostr key
@@ -134,7 +135,8 @@ fn show_error(ui: &mut egui::Ui, err: &AcquireKeyError) {
     ui.horizontal(|ui| {
         let error_label = match err {
             AcquireKeyError::InvalidKey => egui::Label::new(
-                egui::RichText::new("Invalid key.").color(ui.visuals().error_fg_color),
+                egui::RichText::new(tr!("Invalid key.", "Error message for invalid key input"))
+                    .color(ui.visuals().error_fg_color),
             ),
             AcquireKeyError::Nip05Failed(e) => {
                 egui::Label::new(egui::RichText::new(e).color(ui.visuals().error_fg_color))

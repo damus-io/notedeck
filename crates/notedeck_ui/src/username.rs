@@ -1,6 +1,6 @@
 use egui::{Color32, RichText, Widget};
 use nostrdb::ProfileRecord;
-use notedeck::fonts::NamedFontFamily;
+use notedeck::{fonts::NamedFontFamily, tr};
 
 pub struct Username<'a> {
     profile: Option<&'a ProfileRecord<'a>>,
@@ -52,7 +52,11 @@ impl Widget for Username<'_> {
                     }
                 }
             } else {
-                let mut txt = RichText::new("nostrich").family(NamedFontFamily::Medium.as_family());
+                let mut txt = RichText::new(tr!(
+                    "nostrich",
+                    "Default username when profile is not available"
+                ))
+                .family(NamedFontFamily::Medium.as_family());
                 if let Some(col) = color {
                     txt = txt.color(col)
                 }

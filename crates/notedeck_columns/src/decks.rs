@@ -2,7 +2,7 @@ use std::collections::{hash_map::ValuesMut, HashMap};
 
 use enostr::Pubkey;
 use nostrdb::Transaction;
-use notedeck::AppContext;
+use notedeck::{tr, AppContext};
 use tracing::{error, info};
 
 use crate::{
@@ -291,7 +291,7 @@ impl Default for Deck {
         columns.new_column_picker();
         Self {
             icon: '🇩',
-            name: String::from("Default Deck"),
+            name: tr!("Default Deck", "Name of the default deck feed"),
             columns,
         }
     }
@@ -366,7 +366,7 @@ pub fn demo_decks(
 
         Deck {
             icon: '🇩',
-            name: String::from("Demo Deck"),
+            name: tr!("Demo Deck", "Name of the demo deck feed"),
             columns,
         }
     };
