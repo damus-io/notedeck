@@ -3,13 +3,13 @@ use fluent::{FluentBundle, FluentResource};
 use fluent_langneg::negotiate_languages;
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use unic_langid::LanguageIdentifier;
 
 /// Manages localization resources and provides localized strings
 pub struct LocalizationManager {
     /// Current locale
-    current_locale: RwLock<LanguageIdentifier>,
+    current_locale: LanguageIdentifier,
     /// Available locales
     available_locales: Vec<LanguageIdentifier>,
     /// Fallback locale
@@ -17,9 +17,9 @@ pub struct LocalizationManager {
     /// Resource directory path
     resource_dir: std::path::PathBuf,
     /// Cached parsed FluentResource per locale
-    resource_cache: RwLock<HashMap<LanguageIdentifier, Arc<FluentResource>>>,
+    resource_cache: HashMap<LanguageIdentifier, Arc<FluentResource>>,
     /// Cached string results per locale (only for strings without arguments)
-    string_cache: RwLock<HashMap<LanguageIdentifier, HashMap<String, String>>>,
+    string_cache: HashMap<LanguageIdentifier, HashMap<String, String>>,
 }
 
 impl LocalizationManager {
@@ -49,21 +49,21 @@ impl LocalizationManager {
         }
 
         Ok(Self {
-            current_locale: RwLock::new(default_locale),
+            current_locale: default_locale,
             available_locales,
             fallback_locale,
             resource_dir: resource_dir.to_path_buf(),
-            resource_cache: RwLock::new(HashMap::new()),
-            string_cache: RwLock::new(HashMap::new()),
+            resource_cache: HashMap::new(),
+            string_cache: HashMap::new(),
         })
     }
 
     /// Gets a localized string by its ID
-    pub fn get_string(&self, id: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    pub fn get_string(&self, id: &str) -> String {
         tracing::debug!(
             "Getting string '{}' for locale '{}'",
             id,
-            self.get_current_locale()?
+            self.get_current_locale()
         );
         let result = self.get_string_with_args(id, None);
         if let Err(ref e) = result {
@@ -107,70 +107,51 @@ impl LocalizationManager {
 
     /// Gets cached parsed FluentResource for the current locale, loading it if necessary
     fn get_cached_resource(
-        &self,
+        &mut self,
     ) -> Result<Arc<FluentResource>, Box<dyn std::error::Error + Send + Sync>> {
-        let locale = self
-            .current_locale
-            .read()
-            .map_err(|e| format!("Lock error: {e}"))?;
-
         // Try to get from cache first
         {
-            let cache = self
-                .resource_cache
-                .read()
-                .map_err(|e| format!("Cache lock error: {e}"))?;
-            if let Some(resource) = cache.get(&locale) {
-                tracing::debug!("Using cached parsed FluentResource for locale: {}", locale);
+            if let Some(resource) = self.resource_cache.get(&self.current_locale) {
+                tracing::debug!(
+                    "Using cached parsed FluentResource for locale: {}",
+                    self.current_locale
+                );
                 return Ok(resource.clone());
             }
         }
 
         // Not in cache, load and cache it
-        let resource = self.load_resource_for_locale(&locale)?;
+        let resource = self.load_resource_for_locale(&self.current_locale)?;
 
         // Store in cache
-        {
-            let mut cache = self
-                .resource_cache
-                .write()
-                .map_err(|e| format!("Cache lock error: {e}"))?;
-            cache.insert(locale.clone(), resource.clone());
-            tracing::debug!("Cached parsed FluentResource for locale: {}", locale);
-        }
+        self.resource_cache
+            .insert(self.current_locale.clone(), resource.clone());
+        tracing::debug!(
+            "Cached parsed FluentResource for locale: {}",
+            self.current_locale
+        );
 
         Ok(resource)
     }
 
     /// Gets cached string result, or formats it and caches the result
     fn get_cached_string(
-        &self,
+        &mut self,
         id: &str,
         args: Option<&FluentArgs>,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-        let locale = self
-            .current_locale
-            .read()
-            .map_err(|e| format!("Lock error: {e}"))?;
-
         // Only cache simple strings without arguments
         // For strings with arguments, we can't cache the final result since args may vary
         if args.is_none() {
             // Try to get from string cache first
-            {
-                let cache = self
-                    .string_cache
-                    .read()
-                    .map_err(|e| format!("String cache lock error: {e}"))?;
-                if let Some(locale_cache) = cache.get(&locale) {
-                    if let Some(cached_string) = locale_cache.get(id) {
-                        tracing::debug!(
-                            "Using cached string result for '{}' in locale: {}",
-                            id,
-                            locale
-                        );
-                        return Ok(cached_string.clone());
-                    }
+            if let Some(locale_cache) = self.string_cache.get(&self.current_locale) {
+                if let Some(cached_string) = locale_cache.get(id) {
+                    tracing::debug!(
+                        "Using cached string result for '{}' in locale: {}",
+                        id,
+                        &self.current_locale
+                    );
+                    return Ok(cached_string.clone());
                 }
             }
         }
@@ -179,7 +160,7 @@ impl LocalizationManager {
         let resource = self.get_cached_resource()?;
 
         // Create a bundle for this request (not cached due to thread-safety issues)
-        let mut bundle = FluentBundle::new(vec![locale.clone()]);
+        let mut bundle = FluentBundle::new(vec![self.current_locale.clone()]);
         bundle
             .add_resource(resource.as_ref())
             .map_err(|e| format!("Failed to add resource to bundle: {:?}", e))?;
@@ -205,13 +186,16 @@ impl LocalizationManager {
         // Only cache simple strings without arguments
         // This prevents caching issues when the same message ID is used with different arguments
         if args.is_none() {
-            let mut cache = self
+            let locale_cache = self
                 .string_cache
-                .write()
-                .map_err(|e| format!("String cache lock error: {e}"))?;
-            let locale_cache = cache.entry(locale.clone()).or_insert_with(HashMap::new);
+                .entry(self.current_locale.clone())
+                .or_insert_with(HashMap::new);
             locale_cache.insert(id.to_string(), result_string.clone());
-            tracing::debug!("Cached string result for '{}' in locale: {}", id, locale);
+            tracing::debug!(
+                "Cached string result for '{}' in locale: {}",
+                id,
+                &self.current_locale
+            );
         } else {
             tracing::debug!("Not caching string '{}' due to arguments", id);
         }
@@ -224,13 +208,13 @@ impl LocalizationManager {
         &self,
         id: &str,
         args: Option<&FluentArgs>,
-    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<&str, Box<dyn std::error::Error + Send + Sync>> {
         self.get_cached_string(id, args)
     }
 
     /// Sets the current locale
     pub fn set_locale(
-        &self,
+        &mut self,
         locale: LanguageIdentifier,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         tracing::info!("Attempting to set locale to: {}", locale);
@@ -246,53 +230,35 @@ impl LocalizationManager {
             return Err(format!("Locale {} is not available", locale).into());
         }
 
-        let mut current = self
-            .current_locale
-            .write()
-            .map_err(|e| format!("Lock error: {e}"))?;
-        tracing::info!("Switching locale from {} to {}", *current, locale);
-        *current = locale.clone();
+        tracing::info!(
+            "Switching locale from {} to {}",
+            &self.current_locale,
+            locale
+        );
+        self.current_locale = locale;
         tracing::info!("Successfully set locale to: {}", locale);
 
         // Clear caches when locale changes since they are locale-specific
-        let mut string_cache = self
-            .string_cache
-            .write()
-            .map_err(|e| format!("String cache lock error: {e}"))?;
-        string_cache.clear();
+        self.string_cache.clear();
         tracing::debug!("String cache cleared due to locale change");
 
         Ok(())
     }
 
     /// Clears the parsed FluentResource cache (useful for development when FTL files change)
-    pub fn clear_cache(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let mut cache = self
-            .resource_cache
-            .write()
-            .map_err(|e| format!("Cache lock error: {e}"))?;
-        cache.clear();
-        tracing::info!("Parsed FluentResource cache cleared");
+    pub fn clear_cache(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.resource_cache.clear();
+        tracing::debug!("Parsed FluentResource cache cleared");
 
-        let mut string_cache = self
-            .string_cache
-            .write()
-            .map_err(|e| format!("String cache lock error: {e}"))?;
-        string_cache.clear();
-        tracing::info!("String result cache cleared");
+        self.string_cache.clear();
+        tracing::debug!("String result cache cleared");
 
         Ok(())
     }
 
     /// Gets the current locale
-    pub fn get_current_locale(
-        &self,
-    ) -> Result<LanguageIdentifier, Box<dyn std::error::Error + Send + Sync>> {
-        let current = self
-            .current_locale
-            .read()
-            .map_err(|e| format!("Lock error: {e}"))?;
-        Ok(current.clone())
+    pub fn get_current_locale(&self) -> &LanguageIdentifier {
+        &self.current_locale
     }
 
     /// Gets all available locales
@@ -307,24 +273,15 @@ impl LocalizationManager {
 
     /// Gets cache statistics for monitoring performance
     pub fn get_cache_stats(&self) -> Result<CacheStats, Box<dyn std::error::Error + Send + Sync>> {
-        let resource_cache = self
-            .resource_cache
-            .read()
-            .map_err(|e| format!("Cache lock error: {e}"))?;
-        let string_cache = self
-            .string_cache
-            .read()
-            .map_err(|e| format!("String cache lock error: {e}"))?;
-
         let mut total_strings = 0;
-        for locale_cache in string_cache.values() {
+        for locale_cache in self.string_cache.values() {
             total_strings += locale_cache.len();
         }
 
         Ok(CacheStats {
-            resource_cache_size: resource_cache.len(),
+            resource_cache_size: self.resource_cache.len(),
             string_cache_size: total_strings,
-            cached_locales: resource_cache.keys().cloned().collect(),
+            cached_locales: self.resource_cache.keys().cloned().collect(),
         })
     }
 
@@ -333,12 +290,7 @@ impl LocalizationManager {
         &self,
         max_strings_per_locale: usize,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let mut string_cache = self
-            .string_cache
-            .write()
-            .map_err(|e| format!("String cache lock error: {e}"))?;
-
-        for locale_cache in string_cache.values_mut() {
+        for locale_cache in self.string_cache.values_mut() {
             if locale_cache.len() > max_strings_per_locale {
                 // Remove oldest entries (simple approach: just clear and let it rebuild)
                 // In a more sophisticated implementation, you might use an LRU cache
@@ -418,9 +370,7 @@ impl LocalizationContext {
     }
 
     /// Gets the current locale
-    pub fn get_current_locale(
-        &self,
-    ) -> Result<LanguageIdentifier, Box<dyn std::error::Error + Send + Sync>> {
+    pub fn get_current_locale(&self) -> &LanguageIdentifier {
         self.manager.get_current_locale()
     }
 
@@ -685,10 +635,6 @@ mod tests {
 
         let manager = LocalizationManager::new(&temp_dir).unwrap();
 
-        // Load some strings in en-US
-        let result1 = manager.get_string("test_key");
-        assert!(result1.is_ok());
-
         // Check that caches are populated
         let stats1 = manager.get_cache_stats().unwrap();
         assert!(stats1.resource_cache_size > 0);
@@ -724,10 +670,7 @@ mod tests {
         let mut args = fluent::FluentArgs::new();
         args.set("name", "Alice");
         let result1 = manager.get_string_with_args("welcome_message", Some(&args));
-        assert!(result1.is_ok());
-        // Note: Fluent may add bidirectional text control characters, so we check contains
-        let result1_str = result1.unwrap();
-        assert!(result1_str.contains("Alice"));
+        assert!(result1.contains("Alice"));
 
         // Check that it's not in the string cache
         let stats1 = manager.get_cache_stats().unwrap();

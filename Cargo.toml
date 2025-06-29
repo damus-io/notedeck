@@ -8,7 +8,7 @@ members = [
     "crates/notedeck_dave",
     "crates/notedeck_ui",
 
-    "crates/enostr", "crates/tokenator", "crates/notedeck_dave", "crates/notedeck_ui",
+    "crates/enostr", "crates/tokenator", "crates/notedeck_dave", "crates/notedeck_ui", "crates/notedeck_notebook",
 ]
 
 [workspace.dependencies]
