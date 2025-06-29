@@ -3,6 +3,7 @@ use tracing::{debug, info};
 use crate::account::cache::AccountCache;
 use crate::account::mute::AccountMutedData;
 use crate::account::relay::{AccountRelayData, RelayDefaults};
+use crate::storage::AccountStorageWriter;
 use crate::user_account::UserAccountSerializable;
 use crate::{AccountStorage, MuteFun, RelaySpec, SingleUnkIdAction, UnknownIds, UserAccount};
 use enostr::{ClientMessage, FilledKeypair, Keypair, Pubkey, RelayPool};
@@ -16,7 +17,7 @@ use std::sync::Arc;
 /// Represents all user-facing operations related to account management.
 pub struct Accounts {
     pub cache: AccountCache,
-    key_store: Option<AccountStorage>,
+    storage_writer: Option<AccountStorageWriter>,
     relay_defaults: RelayDefaults,
     needs_relay_config: bool,
 }
@@ -40,8 +41,10 @@ impl Accounts {
 
         unknown_id.process_action(unknown_ids, ndb, txn);
 
-        if let Some(keystore) = &key_store {
-            match keystore.get_accounts() {
+        let mut storage_writer = None;
+        if let Some(keystore) = key_store {
+            let (reader, writer) = keystore.rw();
+            match reader.get_accounts() {
                 Ok(accounts) => {
                     for account in accounts {
                         add_account_from_storage(&mut cache, ndb, txn, account).process_action(
@@ -55,16 +58,18 @@ impl Accounts {
                     tracing::error!("could not get keys: {e}");
                 }
             }
-            if let Some(selected) = keystore.get_selected_key().ok().flatten() {
+            if let Some(selected) = reader.get_selected_key().ok().flatten() {
                 cache.select(selected);
             }
+
+            storage_writer = Some(writer);
         };
 
         let relay_defaults = RelayDefaults::new(forced_relays);
 
         Accounts {
             cache,
-            key_store,
+            storage_writer,
             relay_defaults,
             needs_relay_config: true,
         }
@@ -75,7 +80,7 @@ impl Accounts {
             return;
         };
 
-        if let Some(key_store) = &self.key_store {
+        if let Some(key_store) = &self.storage_writer {
             if let Err(e) = key_store.remove_key(&removed.key) {
                 tracing::error!("Could not remove account {pk}: {e}");
             }
@@ -118,7 +123,7 @@ impl Accounts {
             )
         };
 
-        if let Some(key_store) = &self.key_store {
+        if let Some(key_store) = &self.storage_writer {
             if let Err(e) = key_store.write_account(&acc.get_acc().into()) {
                 tracing::error!("Could not add key for {:?}: {e}", kp.pubkey);
             }
@@ -139,7 +144,7 @@ impl Accounts {
 
         let cur_acc = self.get_selected_account();
 
-        let Some(key_store) = &self.key_store else {
+        let Some(key_store) = &self.storage_writer else {
             return false;
         };
 
@@ -190,7 +195,7 @@ impl Accounts {
             return;
         }
 
-        if let Some(key_store) = &self.key_store {
+        if let Some(key_store) = &self.storage_writer {
             if let Err(e) = key_store.select_key(Some(*pk)) {
                 tracing::error!("Could not select key {:?}: {e}", pk);
             }

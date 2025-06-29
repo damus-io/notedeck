@@ -7,7 +7,7 @@ use super::file_storage::{delete_file, write_file, Directory};
 static SELECTED_PUBKEY_FILE_NAME: &str = "selected_pubkey";
 
 /// An OS agnostic file key storage implementation
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct AccountStorage {
     accounts_directory: Directory,
     selected_key_directory: Directory,
@@ -21,18 +21,73 @@ impl AccountStorage {
         }
     }
 
+    pub fn rw(self) -> (AccountStorageReader, AccountStorageWriter) {
+        (
+            AccountStorageReader::new(self.clone()),
+            AccountStorageWriter::new(self),
+        )
+    }
+}
+
+pub struct AccountStorageWriter {
+    storage: AccountStorage,
+}
+
+impl AccountStorageWriter {
+    pub fn new(storage: AccountStorage) -> Self {
+        Self { storage }
+    }
+
     pub fn write_account(&self, account: &UserAccountSerializable) -> Result<()> {
         let mut writer = TokenWriter::new("\t");
         account.serialize_tokens(&mut writer);
         write_file(
-            &self.accounts_directory.file_path,
+            &self.storage.accounts_directory.file_path,
             account.key.pubkey.hex(),
             writer.str(),
         )
     }
 
+    pub fn remove_key(&self, key: &Keypair) -> Result<()> {
+        delete_file(&self.storage.accounts_directory.file_path, key.pubkey.hex())
+    }
+
+    pub fn select_key(&self, pubkey: Option<Pubkey>) -> Result<()> {
+        if let Some(pubkey) = pubkey {
+            write_file(
+                &self.storage.selected_key_directory.file_path,
+                SELECTED_PUBKEY_FILE_NAME.to_owned(),
+                &serde_json::to_string(&pubkey.hex())?,
+            )
+        } else if self
+            .storage
+            .selected_key_directory
+            .get_file(SELECTED_PUBKEY_FILE_NAME.to_owned())
+            .is_ok()
+        {
+            // Case where user chose to have no selected pubkey, but one already exists
+            Ok(delete_file(
+                &self.storage.selected_key_directory.file_path,
+                SELECTED_PUBKEY_FILE_NAME.to_owned(),
+            )?)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+pub struct AccountStorageReader {
+    storage: AccountStorage,
+}
+
+impl AccountStorageReader {
+    pub fn new(storage: AccountStorage) -> Self {
+        Self { storage }
+    }
+
     pub fn get_accounts(&self) -> Result<Vec<UserAccountSerializable>> {
         let keys = self
+            .storage
             .accounts_directory
             .get_files()?
             .values()
@@ -41,40 +96,15 @@ impl AccountStorage {
         Ok(keys)
     }
 
-    pub fn remove_key(&self, key: &Keypair) -> Result<()> {
-        delete_file(&self.accounts_directory.file_path, key.pubkey.hex())
-    }
-
     pub fn get_selected_key(&self) -> Result<Option<Pubkey>> {
         match self
+            .storage
             .selected_key_directory
             .get_file(SELECTED_PUBKEY_FILE_NAME.to_owned())
         {
             Ok(pubkey_str) => Ok(Some(serde_json::from_str(&pubkey_str)?)),
             Err(crate::Error::Io(_)) => Ok(None),
             Err(e) => Err(e),
-        }
-    }
-
-    pub fn select_key(&self, pubkey: Option<Pubkey>) -> Result<()> {
-        if let Some(pubkey) = pubkey {
-            write_file(
-                &self.selected_key_directory.file_path,
-                SELECTED_PUBKEY_FILE_NAME.to_owned(),
-                &serde_json::to_string(&pubkey.hex())?,
-            )
-        } else if self
-            .selected_key_directory
-            .get_file(SELECTED_PUBKEY_FILE_NAME.to_owned())
-            .is_ok()
-        {
-            // Case where user chose to have no selected pubkey, but one already exists
-            Ok(delete_file(
-                &self.selected_key_directory.file_path,
-                SELECTED_PUBKEY_FILE_NAME.to_owned(),
-            )?)
-        } else {
-            Ok(())
         }
     }
 }
@@ -119,14 +149,14 @@ mod tests {
     #[test]
     fn test_basic() {
         let kp = enostr::FullKeypair::generate().to_keypair();
-        let storage = AccountStorage::mock().unwrap();
-        let resp = storage.write_account(&UserAccountSerializable::new(kp.clone()));
+        let (reader, writer) = AccountStorage::mock().unwrap().rw();
+        let resp = writer.write_account(&UserAccountSerializable::new(kp.clone()));
 
         assert!(resp.is_ok());
-        assert_num_storage(&storage.get_accounts(), 1);
+        assert_num_storage(&reader.get_accounts(), 1);
 
-        assert!(storage.remove_key(&kp).is_ok());
-        assert_num_storage(&storage.get_accounts(), 0);
+        assert!(writer.remove_key(&kp).is_ok());
+        assert_num_storage(&reader.get_accounts(), 0);
     }
 
     fn assert_num_storage(keys_response: &Result<Vec<UserAccountSerializable>>, n: usize) {
@@ -144,21 +174,21 @@ mod tests {
     fn test_select_key() {
         let kp = enostr::FullKeypair::generate().to_keypair();
 
-        let storage = AccountStorage::mock().unwrap();
-        let _ = storage.write_account(&UserAccountSerializable::new(kp.clone()));
-        assert_num_storage(&storage.get_accounts(), 1);
+        let (reader, writer) = AccountStorage::mock().unwrap().rw();
+        let _ = writer.write_account(&UserAccountSerializable::new(kp.clone()));
+        assert_num_storage(&reader.get_accounts(), 1);
 
-        let resp = storage.select_key(Some(kp.pubkey));
+        let resp = writer.select_key(Some(kp.pubkey));
         assert!(resp.is_ok());
 
-        let resp = storage.get_selected_key();
+        let resp = reader.get_selected_key();
 
         assert!(resp.is_ok());
     }
 
     #[test]
     fn test_get_selected_key_when_no_file() {
-        let storage = AccountStorage::mock().unwrap();
+        let storage = AccountStorage::mock().unwrap().rw().0;
 
         // Should return Ok(None) when no key has been selected
         match storage.get_selected_key() {
