@@ -3,7 +3,9 @@ use egui::{Frame, Label, RichText};
 use egui_extras::Size;
 use nostrdb::ProfileRecord;
 
-use notedeck::{name::get_display_name, profile::get_profile_url, tr, Images, NotedeckTextStyle};
+use notedeck::{
+    name::get_display_name, profile::get_profile_url, tr, Images, Localization, NotedeckTextStyle,
+};
 
 use super::{about_section_widget, banner, display_name_widget};
 
@@ -68,6 +70,7 @@ impl egui::Widget for ProfilePreview<'_, '_> {
 
 pub struct SimpleProfilePreview<'a, 'cache> {
     profile: Option<&'a ProfileRecord<'a>>,
+    pub i18n: &'cache mut Localization,
     cache: &'cache mut Images,
     is_nsec: bool,
 }
@@ -76,12 +79,14 @@ impl<'a, 'cache> SimpleProfilePreview<'a, 'cache> {
     pub fn new(
         profile: Option<&'a ProfileRecord<'a>>,
         cache: &'cache mut Images,
+        i18n: &'cache mut Localization,
         is_nsec: bool,
     ) -> Self {
         SimpleProfilePreview {
             profile,
             cache,
             is_nsec,
+            i18n,
         }
     }
 }
@@ -96,12 +101,16 @@ impl egui::Widget for SimpleProfilePreview<'_, '_> {
                     if !self.is_nsec {
                         ui.add(
                             Label::new(
-                                RichText::new(tr!("Read only", "Label for read-only profile mode"))
-                                    .size(notedeck::fonts::get_font_size(
-                                        ui.ctx(),
-                                        &NotedeckTextStyle::Tiny,
-                                    ))
-                                    .color(ui.visuals().warn_fg_color),
+                                RichText::new(tr!(
+                                    self.i18n,
+                                    "Read only",
+                                    "Label for read-only profile mode"
+                                ))
+                                .size(notedeck::fonts::get_font_size(
+                                    ui.ctx(),
+                                    &NotedeckTextStyle::Tiny,
+                                ))
+                                .color(ui.visuals().warn_fg_color),
                             )
                             .selectable(false),
                         );

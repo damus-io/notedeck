@@ -1,35 +1,55 @@
-use fluent::FluentArgs;
-use fluent::{FluentBundle, FluentResource};
+use super::{IntlError, IntlKey, IntlKeyBuf};
+use fluent::{FluentArgs, FluentBundle, FluentResource};
 use fluent_langneg::negotiate_languages;
+use std::borrow::Cow;
 use std::collections::HashMap;
-use std::path::Path;
-use std::sync::{Arc, RwLock};
-use unic_langid::LanguageIdentifier;
+use unic_langid::{langid, LanguageIdentifier};
+
+const EN_XA: LanguageIdentifier = langid!("en-XA");
+const EN_US: LanguageIdentifier = langid!("en-US");
+const NUM_FTLS: usize = 2;
+
+struct StaticBundle {
+    identifier: LanguageIdentifier,
+    ftl: &'static str,
+}
+
+const FTLS: [StaticBundle; NUM_FTLS] = [
+    StaticBundle {
+        identifier: EN_XA,
+        ftl: include_str!("../../../../assets/translations/en-XA/main.ftl"),
+    },
+    StaticBundle {
+        identifier: EN_US,
+        ftl: include_str!("../../../../assets/translations/en-US/main.ftl"),
+    },
+];
+
+type Bundle = FluentBundle<FluentResource>;
 
 /// Manages localization resources and provides localized strings
-pub struct LocalizationManager {
+pub struct Localization {
     /// Current locale
-    current_locale: RwLock<LanguageIdentifier>,
+    current_locale: LanguageIdentifier,
     /// Available locales
     available_locales: Vec<LanguageIdentifier>,
     /// Fallback locale
     fallback_locale: LanguageIdentifier,
-    /// Resource directory path
-    resource_dir: std::path::PathBuf,
-    /// Cached parsed FluentResource per locale
-    resource_cache: RwLock<HashMap<LanguageIdentifier, Arc<FluentResource>>>,
+
     /// Cached string results per locale (only for strings without arguments)
-    string_cache: RwLock<HashMap<LanguageIdentifier, HashMap<String, String>>>,
+    string_cache: HashMap<LanguageIdentifier, HashMap<String, String>>,
+    /// Cached normalized keys
+    normalized_key_cache: HashMap<String, IntlKeyBuf>,
+    /// Bundles
+    bundles: HashMap<LanguageIdentifier, Bundle>,
 }
 
-impl LocalizationManager {
-    /// Creates a new LocalizationManager with the specified resource directory
-    pub fn new(resource_dir: &Path) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+impl Default for Localization {
+    fn default() -> Self {
         // Default to English (US)
-        let default_locale: LanguageIdentifier = "en-US"
-            .parse()
-            .map_err(|e| format!("Locale parse error: {e:?}"))?;
+        let default_locale = EN_US;
         let fallback_locale = default_locale.clone();
+        let mut current_locale = default_locale.clone();
 
         // Check if pseudolocale is enabled via environment variable
         let enable_pseudolocale = std::env::var("NOTEDECK_PSEUDOLOCALE").is_ok();
@@ -39,200 +59,243 @@ impl LocalizationManager {
 
         // Add en-XA if pseudolocale is enabled
         if enable_pseudolocale {
-            let pseudolocale: LanguageIdentifier = "en-XA"
-                .parse()
-                .map_err(|e| format!("Pseudolocale parse error: {e:?}"))?;
-            available_locales.push(pseudolocale);
+            available_locales.push(EN_XA.clone());
+            current_locale = EN_XA.clone();
             tracing::info!(
                 "Pseudolocale (en-XA) enabled via NOTEDECK_PSEUDOLOCALE environment variable"
             );
         }
 
-        Ok(Self {
-            current_locale: RwLock::new(default_locale),
+        Self {
+            current_locale,
             available_locales,
             fallback_locale,
-            resource_dir: resource_dir.to_path_buf(),
-            resource_cache: RwLock::new(HashMap::new()),
-            string_cache: RwLock::new(HashMap::new()),
-        })
+            normalized_key_cache: HashMap::new(),
+            string_cache: HashMap::new(),
+            bundles: HashMap::new(),
+        }
+    }
+}
+
+pub enum StringCacheResult<'a> {
+    Hit(Cow<'a, str>),
+    NeedsInsert(IntlKeyBuf, String),
+}
+
+impl Localization {
+    /// Creates a new Localization with the specified resource directory
+    pub fn new() -> Self {
+        Localization::default()
     }
 
     /// Gets a localized string by its ID
-    pub fn get_string(&self, id: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-        tracing::debug!(
-            "Getting string '{}' for locale '{}'",
-            id,
-            self.get_current_locale()?
-        );
-        let result = self.get_string_with_args(id, None);
-        if let Err(ref e) = result {
-            tracing::error!("Failed to get string '{}': {}", id, e);
-        }
-        result
+    pub fn get_string(&mut self, id: IntlKey<'_>) -> Result<String, IntlError> {
+        self.get_cached_string(id, None)
     }
 
-    /// Loads and caches a parsed FluentResource for the given locale
-    fn load_resource_for_locale(
-        &self,
-        locale: &LanguageIdentifier,
-    ) -> Result<Arc<FluentResource>, Box<dyn std::error::Error + Send + Sync>> {
-        // Construct the path using the stored resource directory
-        let expected_path = self.resource_dir.join(format!("{locale}/main.ftl"));
+    /// Load a fluent bundle given a language identifier. Only looks in the static
+    /// ftl files baked into the binary
+    fn load_bundle(lang: &LanguageIdentifier) -> Result<Bundle, IntlError> {
+        for ftl in &FTLS {
+            if &ftl.identifier == lang {
+                let mut bundle = FluentBundle::new(vec![lang.to_owned()]);
+                let resource = FluentResource::try_new(ftl.ftl.to_string());
+                match resource {
+                    Err((resource, errors)) => {
+                        for error in errors {
+                            tracing::error!("load_bundle ({lang}): {error}");
+                        }
 
-        // Try to open the file directly
-        if let Err(e) = std::fs::File::open(&expected_path) {
-            tracing::error!(
-                "Direct file open failed: {} ({})",
-                expected_path.display(),
-                e
-            );
-            return Err(format!("Failed to open FTL file: {e}").into());
-        }
+                        tracing::warn!("load_bundle ({}: loading bundle with errors", lang);
+                        if let Err(errs) = bundle.add_resource(resource) {
+                            for err in errs {
+                                tracing::error!("adding resource: {err}");
+                            }
+                        }
+                    }
 
-        // Load the FTL file directly instead of using ResourceManager
-        let ftl_string = std::fs::read_to_string(&expected_path)
-            .map_err(|e| format!("Failed to read FTL file: {e}"))?;
+                    Ok(resource) => {
+                        tracing::info!("loaded {} bundle OK!", lang);
+                        if let Err(errs) = bundle.add_resource(resource) {
+                            for err in errs {
+                                tracing::error!("adding resource 2: {err}");
+                            }
+                        }
+                    }
+                }
 
-        // Parse the FTL content
-        let resource = FluentResource::try_new(ftl_string)
-            .map_err(|e| format!("Failed to parse FTL content: {e:?}"))?;
-
-        tracing::debug!(
-            "Loaded and cached parsed FluentResource for locale: {}",
-            locale
-        );
-        Ok(Arc::new(resource))
-    }
-
-    /// Gets cached parsed FluentResource for the current locale, loading it if necessary
-    fn get_cached_resource(
-        &self,
-    ) -> Result<Arc<FluentResource>, Box<dyn std::error::Error + Send + Sync>> {
-        let locale = self
-            .current_locale
-            .read()
-            .map_err(|e| format!("Lock error: {e}"))?;
-
-        // Try to get from cache first
-        {
-            let cache = self
-                .resource_cache
-                .read()
-                .map_err(|e| format!("Cache lock error: {e}"))?;
-            if let Some(resource) = cache.get(&locale) {
-                tracing::debug!("Using cached parsed FluentResource for locale: {}", locale);
-                return Ok(resource.clone());
+                return Ok(bundle);
             }
         }
 
-        // Not in cache, load and cache it
-        let resource = self.load_resource_for_locale(&locale)?;
+        // no static ftl for this LanguageIdentifier
+        Err(IntlError::NoFtl(lang.to_owned()))
+    }
 
-        // Store in cache
-        {
-            let mut cache = self
-                .resource_cache
-                .write()
-                .map_err(|e| format!("Cache lock error: {e}"))?;
-            cache.insert(locale.clone(), resource.clone());
-            tracing::debug!("Cached parsed FluentResource for locale: {}", locale);
+    fn get_bundle<'a>(&'a self, lang: &LanguageIdentifier) -> &'a Bundle {
+        self.bundles
+            .get(lang)
+            .expect("make sure to call ensure_bundle!")
+    }
+
+    fn has_bundle(&self, lang: &LanguageIdentifier) -> bool {
+        self.bundles.contains_key(lang)
+    }
+
+    fn try_load_bundle(&mut self, lang: &LanguageIdentifier) -> Result<(), IntlError> {
+        self.bundles
+            .insert(lang.to_owned(), Self::load_bundle(lang)?);
+        Ok(())
+    }
+
+    pub fn normalized_ftl_key(&mut self, key: &str, comment: &str) -> IntlKeyBuf {
+        match self.get_ftl_key(key) {
+            Some(intl_key) => intl_key,
+            None => {
+                self.insert_ftl_key(key, comment);
+                self.get_ftl_key(key).unwrap()
+            }
+        }
+    }
+
+    fn get_ftl_key(&self, cache_key: &str) -> Option<IntlKeyBuf> {
+        self.normalized_key_cache.get(cache_key).cloned()
+    }
+
+    fn insert_ftl_key(&mut self, cache_key: &str, comment: &str) {
+        let mut result = fixup_key(cache_key);
+
+        // Ensure the key starts with a letter (Fluent requirement)
+        if result.is_empty() || !result.chars().next().unwrap().is_ascii_alphabetic() {
+            result = format!("k_{result}");
         }
 
-        Ok(resource)
+        // If we have a comment, append a hash of it to reduce collisions
+        let hash_str = format!("_{}", simple_hash(comment));
+        result.push_str(&hash_str);
+
+        tracing::debug!(
+            "normalize_ftl_key: original='{}', final='{}'",
+            cache_key,
+            result
+        );
+
+        self.normalized_key_cache
+            .insert(cache_key.to_owned(), IntlKeyBuf::new(result));
+    }
+
+    fn get_cached_string_no_args<'key>(
+        &'key self,
+        lang: &LanguageIdentifier,
+        id: IntlKey<'key>,
+    ) -> Result<Cow<'key, str>, IntlError> {
+        // Try to get from string cache first
+        if let Some(locale_cache) = self.string_cache.get(lang) {
+            if let Some(cached_string) = locale_cache.get(id.as_str()) {
+                /*
+                tracing::trace!(
+                    "Using cached string result for '{}' in locale: {}",
+                    id,
+                    &lang
+                );
+                */
+
+                return Ok(Cow::Borrowed(cached_string));
+            }
+        }
+
+        Err(IntlError::NotFound(id.to_owned()))
+    }
+
+    fn ensure_bundle(&mut self) -> Result<(), IntlError> {
+        let locale = self.current_locale.clone();
+        if !self.has_bundle(&locale) {
+            match self.try_load_bundle(&locale) {
+                Err(err) => {
+                    tracing::warn!(
+                        "tried to load bundle {} but failed with '{err}'. using fallback {}",
+                        &locale,
+                        &self.fallback_locale
+                    );
+                    self.try_load_bundle(&locale)
+                        .expect("failed to load fallback bundle!?");
+                    Ok(())
+                }
+
+                Ok(()) => Ok(()),
+            }
+        } else {
+            Ok(())
+        }
+    }
+
+    fn get_current_bundle(&self) -> &Bundle {
+        if self.has_bundle(&self.current_locale) {
+            return self.get_bundle(&self.current_locale);
+        }
+
+        self.get_bundle(&self.fallback_locale)
     }
 
     /// Gets cached string result, or formats it and caches the result
-    fn get_cached_string(
-        &self,
-        id: &str,
+    pub fn get_cached_string(
+        &mut self,
+        id: IntlKey<'_>,
         args: Option<&FluentArgs>,
-    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-        let locale = self
-            .current_locale
-            .read()
-            .map_err(|e| format!("Lock error: {e}"))?;
+    ) -> Result<String, IntlError> {
+        self.ensure_bundle()?;
 
-        // Only cache simple strings without arguments
-        // For strings with arguments, we can't cache the final result since args may vary
         if args.is_none() {
-            // Try to get from string cache first
-            {
-                let cache = self
-                    .string_cache
-                    .read()
-                    .map_err(|e| format!("String cache lock error: {e}"))?;
-                if let Some(locale_cache) = cache.get(&locale) {
-                    if let Some(cached_string) = locale_cache.get(id) {
-                        tracing::debug!(
-                            "Using cached string result for '{}' in locale: {}",
-                            id,
-                            locale
-                        );
-                        return Ok(cached_string.clone());
-                    }
-                }
+            if let Ok(result) = self.get_cached_string_no_args(&self.current_locale, id) {
+                return Ok(result.to_string());
             }
         }
 
-        // Not in cache or has arguments, format it using cached resource
-        let resource = self.get_cached_resource()?;
+        let result = {
+            let bundle = self.get_current_bundle();
 
-        // Create a bundle for this request (not cached due to thread-safety issues)
-        let mut bundle = FluentBundle::new(vec![locale.clone()]);
-        bundle
-            .add_resource(resource.as_ref())
-            .map_err(|e| format!("Failed to add resource to bundle: {e:?}"))?;
+            let message = bundle
+                .get_message(id.as_str())
+                .ok_or_else(|| IntlError::NotFound(id.to_owned()))?;
 
-        let message = bundle
-            .get_message(id)
-            .ok_or_else(|| format!("Message not found: {id}"))?;
+            let pattern = message
+                .value()
+                .ok_or_else(|| IntlError::NoValue(id.to_owned()))?;
 
-        let pattern = message
-            .value()
-            .ok_or_else(|| format!("Message has no value: {id}"))?;
+            let mut errors = Vec::with_capacity(0);
+            let result = bundle.format_pattern(pattern, args, &mut errors);
 
-        // Format the message
-        let mut errors = Vec::new();
-        let result = bundle.format_pattern(pattern, args, &mut errors);
+            if !errors.is_empty() {
+                tracing::warn!("Localization errors for {}: {:?}", id, &errors);
+            }
 
-        if !errors.is_empty() {
-            tracing::warn!("Localization errors for {}: {:?}", id, errors);
-        }
-
-        let result_string = result.into_owned();
+            result.to_string()
+        };
 
         // Only cache simple strings without arguments
         // This prevents caching issues when the same message ID is used with different arguments
         if args.is_none() {
-            let mut cache = self
-                .string_cache
-                .write()
-                .map_err(|e| format!("String cache lock error: {e}"))?;
-            let locale_cache = cache.entry(locale.clone()).or_insert_with(HashMap::new);
-            locale_cache.insert(id.to_string(), result_string.clone());
-            tracing::debug!("Cached string result for '{}' in locale: {}", id, locale);
+            self.cache_string(self.current_locale.clone(), id, result.as_str());
+            tracing::debug!(
+                "Cached string result for '{}' in locale: {}",
+                id,
+                &self.current_locale
+            );
         } else {
-            tracing::debug!("Not caching string '{}' due to arguments", id);
+            tracing::trace!("Not caching string '{}' due to arguments", id);
         }
 
-        Ok(result_string)
+        Ok(result)
     }
 
-    /// Gets a localized string by its ID with optional arguments
-    pub fn get_string_with_args(
-        &self,
-        id: &str,
-        args: Option<&FluentArgs>,
-    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-        self.get_cached_string(id, args)
+    pub fn cache_string<'a>(&mut self, locale: LanguageIdentifier, id: IntlKey<'a>, result: &str) {
+        tracing::debug!("Cached string result for '{}' in locale: {}", id, &locale);
+        let locale_cache = self.string_cache.entry(locale).or_default();
+        locale_cache.insert(id.to_owned().to_string(), result.to_owned());
     }
 
     /// Sets the current locale
-    pub fn set_locale(
-        &self,
-        locale: LanguageIdentifier,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    pub fn set_locale(&mut self, locale: LanguageIdentifier) -> Result<(), IntlError> {
         tracing::info!("Attempting to set locale to: {}", locale);
         tracing::info!("Available locales: {:?}", self.available_locales);
 
@@ -243,56 +306,37 @@ impl LocalizationManager {
                 locale,
                 self.available_locales
             );
-            return Err(format!("Locale {locale} is not available").into());
+            return Err(IntlError::LocaleNotAvailable(locale));
         }
 
-        let mut current = self
-            .current_locale
-            .write()
-            .map_err(|e| format!("Lock error: {e}"))?;
-        tracing::info!("Switching locale from {} to {locale}", *current);
-        *current = locale.clone();
-        tracing::info!("Successfully set locale to: {locale}");
+        tracing::info!(
+            "Switching locale from {} to {}",
+            &self.current_locale,
+            &locale
+        );
+        self.current_locale = locale;
 
         // Clear caches when locale changes since they are locale-specific
-        let mut string_cache = self
-            .string_cache
-            .write()
-            .map_err(|e| format!("String cache lock error: {e}"))?;
-        string_cache.clear();
+        self.string_cache.clear();
         tracing::debug!("String cache cleared due to locale change");
 
         Ok(())
     }
 
     /// Clears the parsed FluentResource cache (useful for development when FTL files change)
-    pub fn clear_cache(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let mut cache = self
-            .resource_cache
-            .write()
-            .map_err(|e| format!("Cache lock error: {e}"))?;
-        cache.clear();
-        tracing::info!("Parsed FluentResource cache cleared");
+    pub fn clear_cache(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.bundles.clear();
+        tracing::debug!("Parsed FluentResource cache cleared");
 
-        let mut string_cache = self
-            .string_cache
-            .write()
-            .map_err(|e| format!("String cache lock error: {e}"))?;
-        string_cache.clear();
-        tracing::info!("String result cache cleared");
+        self.string_cache.clear();
+        tracing::debug!("String result cache cleared");
 
         Ok(())
     }
 
     /// Gets the current locale
-    pub fn get_current_locale(
-        &self,
-    ) -> Result<LanguageIdentifier, Box<dyn std::error::Error + Send + Sync>> {
-        let current = self
-            .current_locale
-            .read()
-            .map_err(|e| format!("Lock error: {e}"))?;
-        Ok(current.clone())
+    pub fn get_current_locale(&self) -> &LanguageIdentifier {
+        &self.current_locale
     }
 
     /// Gets all available locales
@@ -307,38 +351,24 @@ impl LocalizationManager {
 
     /// Gets cache statistics for monitoring performance
     pub fn get_cache_stats(&self) -> Result<CacheStats, Box<dyn std::error::Error + Send + Sync>> {
-        let resource_cache = self
-            .resource_cache
-            .read()
-            .map_err(|e| format!("Cache lock error: {e}"))?;
-        let string_cache = self
-            .string_cache
-            .read()
-            .map_err(|e| format!("String cache lock error: {e}"))?;
-
         let mut total_strings = 0;
-        for locale_cache in string_cache.values() {
+        for locale_cache in self.string_cache.values() {
             total_strings += locale_cache.len();
         }
 
         Ok(CacheStats {
-            resource_cache_size: resource_cache.len(),
+            resource_cache_size: self.bundles.len(),
             string_cache_size: total_strings,
-            cached_locales: resource_cache.keys().cloned().collect(),
+            cached_locales: self.bundles.keys().cloned().collect(),
         })
     }
 
     /// Limits the string cache size to prevent memory growth
     pub fn limit_string_cache_size(
-        &self,
+        &mut self,
         max_strings_per_locale: usize,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let mut string_cache = self
-            .string_cache
-            .write()
-            .map_err(|e| format!("String cache lock error: {e}"))?;
-
-        for locale_cache in string_cache.values_mut() {
+        for locale_cache in self.string_cache.values_mut() {
             if locale_cache.len() > max_strings_per_locale {
                 // Remove oldest entries (simple approach: just clear and let it rebuild)
                 // In a more sophisticated implementation, you might use an LRU cache
@@ -365,96 +395,6 @@ impl LocalizationManager {
     }
 }
 
-/// Context for sharing localization across the application
-#[derive(Clone)]
-pub struct LocalizationContext {
-    /// The localization manager
-    manager: Arc<LocalizationManager>,
-}
-
-impl LocalizationContext {
-    /// Creates a new LocalizationContext
-    pub fn new(manager: Arc<LocalizationManager>) -> Self {
-        let context = Self { manager };
-
-        // Auto-switch to pseudolocale if environment variable is set
-        if std::env::var("NOTEDECK_PSEUDOLOCALE").is_ok() {
-            tracing::info!("NOTEDECK_PSEUDOLOCALE environment variable detected");
-            if let Ok(pseudolocale) = "en-XA".parse::<LanguageIdentifier>() {
-                tracing::info!("Attempting to switch to pseudolocale: {}", pseudolocale);
-                if let Err(e) = context.set_locale(pseudolocale) {
-                    tracing::warn!("Failed to switch to pseudolocale: {}", e);
-                } else {
-                    tracing::info!("Automatically switched to pseudolocale (en-XA)");
-                }
-            } else {
-                tracing::error!("Failed to parse en-XA as LanguageIdentifier");
-            }
-        } else {
-            tracing::info!("NOTEDECK_PSEUDOLOCALE environment variable not set");
-        }
-
-        context
-    }
-
-    /// Gets a localized string by its ID
-    pub fn get_string(&self, id: &str) -> Option<String> {
-        self.manager.get_string(id).ok()
-    }
-
-    /// Gets a localized string by its ID with optional arguments
-    pub fn get_string_with_args(&self, id: &str, args: Option<&FluentArgs>) -> String {
-        self.manager
-            .get_string_with_args(id, args)
-            .unwrap_or_else(|_| format!("[MISSING: {id}]"))
-    }
-
-    /// Sets the current locale
-    pub fn set_locale(
-        &self,
-        locale: LanguageIdentifier,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        self.manager.set_locale(locale)
-    }
-
-    /// Gets the current locale
-    pub fn get_current_locale(
-        &self,
-    ) -> Result<LanguageIdentifier, Box<dyn std::error::Error + Send + Sync>> {
-        self.manager.get_current_locale()
-    }
-
-    /// Clears the resource cache (useful for development when FTL files change)
-    pub fn clear_cache(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        self.manager.clear_cache()
-    }
-
-    /// Gets the underlying manager
-    pub fn manager(&self) -> &Arc<LocalizationManager> {
-        &self.manager
-    }
-}
-
-/// Trait for objects that can be localized
-pub trait Localizable {
-    /// Gets a localized string by its ID
-    fn get_localized_string(&self, id: &str) -> String;
-
-    /// Gets a localized string by its ID with optional arguments
-    fn get_localized_string_with_args(&self, id: &str, args: Option<&FluentArgs>) -> String;
-}
-
-impl Localizable for LocalizationContext {
-    fn get_localized_string(&self, id: &str) -> String {
-        self.get_string(id)
-            .unwrap_or_else(|| format!("[MISSING: {id}]"))
-    }
-
-    fn get_localized_string_with_args(&self, id: &str, args: Option<&FluentArgs>) -> String {
-        self.get_string_with_args(id, args)
-    }
-}
-
 /// Statistics about cache usage
 #[derive(Debug, Clone)]
 pub struct CacheStats {
@@ -468,266 +408,162 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_localization_manager_creation() {
-        let temp_dir = std::env::temp_dir().join("notedeck_i18n_test");
-        std::fs::create_dir_all(&temp_dir).unwrap();
-
-        let manager = LocalizationManager::new(&temp_dir);
-        assert!(manager.is_ok());
-
-        // Cleanup
-        std::fs::remove_dir_all(&temp_dir).unwrap();
-    }
-
-    #[test]
     fn test_locale_management() {
-        let temp_dir = std::env::temp_dir().join("notedeck_i18n_test2");
-        std::fs::create_dir_all(&temp_dir).unwrap();
-
-        let manager = LocalizationManager::new(&temp_dir).unwrap();
+        let i18n = Localization::default();
 
         // Test default locale
-        let current = manager.get_current_locale().unwrap();
+        let current = i18n.get_current_locale();
         assert_eq!(current.to_string(), "en-US");
 
         // Test available locales
-        let available = manager.get_available_locales();
+        let available = i18n.get_available_locales();
         assert_eq!(available.len(), 1);
         assert_eq!(available[0].to_string(), "en-US");
-
-        // Cleanup
-        std::fs::remove_dir_all(&temp_dir).unwrap();
     }
 
     #[test]
     fn test_ftl_caching() {
-        let temp_dir = std::env::temp_dir().join("notedeck_i18n_test3");
-        std::fs::create_dir_all(&temp_dir).unwrap();
-
-        // Create a test FTL file
-        let en_us_dir = temp_dir.join("en-US");
-        std::fs::create_dir_all(&en_us_dir).unwrap();
-        let ftl_content = "test_key = Test Value\nanother_key = Another Value";
-        std::fs::write(en_us_dir.join("main.ftl"), ftl_content).unwrap();
-
-        let manager = LocalizationManager::new(&temp_dir).unwrap();
+        let mut i18n = Localization::default();
 
         // First call should load and cache the FTL content
-        let result1 = manager.get_string("test_key");
+        let result1 = i18n.get_string(IntlKeyBuf::new("test_key").borrow());
         assert!(result1.is_ok());
         assert_eq!(result1.as_ref().unwrap(), "Test Value");
 
         // Second call should use cached FTL content
-        let result2 = manager.get_string("test_key");
+        let result2 = i18n.get_string(IntlKeyBuf::new("test_key").borrow());
         assert!(result2.is_ok());
         assert_eq!(result2.unwrap(), "Test Value");
 
         // Test another key from the same FTL content
-        let result3 = manager.get_string("another_key");
+        let result3 = i18n.get_string(IntlKeyBuf::new("another_key").borrow());
         assert!(result3.is_ok());
         assert_eq!(result3.unwrap(), "Another Value");
-
-        // Cleanup
-        std::fs::remove_dir_all(&temp_dir).unwrap();
     }
 
     #[test]
     fn test_cache_clearing() {
-        let temp_dir = std::env::temp_dir().join("notedeck_i18n_test4");
-        std::fs::create_dir_all(&temp_dir).unwrap();
-
-        // Create a test FTL file
-        let en_us_dir = temp_dir.join("en-US");
-        std::fs::create_dir_all(&en_us_dir).unwrap();
-        let ftl_content = "test_key = Test Value";
-        std::fs::write(en_us_dir.join("main.ftl"), ftl_content).unwrap();
-
-        let manager = LocalizationManager::new(&temp_dir).unwrap();
+        let mut i18n = Localization::default();
 
         // Load and cache the FTL content
-        let result1 = manager.get_string("test_key");
+        let result1 = i18n.get_string(IntlKeyBuf::new("test_key").borrow());
         assert!(result1.is_ok());
 
         // Clear the cache
-        let clear_result = manager.clear_cache();
+        let clear_result = i18n.clear_cache();
         assert!(clear_result.is_ok());
 
         // Should still work after clearing cache (will reload)
-        let result2 = manager.get_string("test_key");
+        let result2 = i18n.get_string(IntlKeyBuf::new("test_key").borrow());
         assert!(result2.is_ok());
         assert_eq!(result2.unwrap(), "Test Value");
-
-        // Cleanup
-        std::fs::remove_dir_all(&temp_dir).unwrap();
     }
 
     #[test]
     fn test_context_caching() {
-        let temp_dir = std::env::temp_dir().join("notedeck_i18n_test5");
-        std::fs::create_dir_all(&temp_dir).unwrap();
-
-        // Create a test FTL file
-        let en_us_dir = temp_dir.join("en-US");
-        std::fs::create_dir_all(&en_us_dir).unwrap();
-        let ftl_content = "test_key = Test Value";
-        std::fs::write(en_us_dir.join("main.ftl"), ftl_content).unwrap();
-
-        let manager = Arc::new(LocalizationManager::new(&temp_dir).unwrap());
-        let context = LocalizationContext::new(manager);
+        let mut i18n = Localization::default();
 
         // Debug: check what the normalized key should be
-        let normalized_key = crate::i18n::normalize_ftl_key("test_key", None);
+        let normalized_key = i18n.normalized_ftl_key("test_key", "comment");
         println!("Normalized key: '{}'", normalized_key);
 
         // First call should load and cache the FTL content
-        let result1 = context.get_string("test_key");
+        let result1 = i18n.get_string(normalized_key.borrow());
         println!("First result: {:?}", result1);
-        assert!(result1.is_some());
+        assert!(result1.is_ok());
         assert_eq!(result1.unwrap(), "Test Value");
 
         // Second call should use cached FTL content
-        let result2 = context.get_string("test_key");
-        assert!(result2.is_some());
+        let result2 = i18n.get_string(normalized_key.borrow());
+        assert!(result2.is_ok());
         assert_eq!(result2.unwrap(), "Test Value");
 
         // Test cache clearing through context
-        let clear_result = context.clear_cache();
+        let clear_result = i18n.clear_cache();
         assert!(clear_result.is_ok());
 
         // Should still work after clearing cache
-        let result3 = context.get_string("test_key");
-        assert!(result3.is_some());
+        let result3 = i18n.get_string(normalized_key.borrow());
+        assert!(result3.is_ok());
         assert_eq!(result3.unwrap(), "Test Value");
-
-        // Cleanup
-        std::fs::remove_dir_all(&temp_dir).unwrap();
     }
 
     #[test]
     fn test_bundle_caching() {
-        let temp_dir = std::env::temp_dir().join("notedeck_i18n_test6");
-        std::fs::create_dir_all(&temp_dir).unwrap();
-
-        // Create a test FTL file
-        let en_us_dir = temp_dir.join("en-US");
-        std::fs::create_dir_all(&en_us_dir).unwrap();
-        let ftl_content = "test_key = Test Value\nanother_key = Another Value";
-        std::fs::write(en_us_dir.join("main.ftl"), ftl_content).unwrap();
-
-        let manager = LocalizationManager::new(&temp_dir).unwrap();
+        let mut i18n = Localization::default();
 
         // First call should create bundle and cache the resource
-        let result1 = manager.get_string("test_key");
+        let result1 = i18n.get_string(IntlKeyBuf::new("test_key").borrow());
         assert!(result1.is_ok());
         assert_eq!(result1.unwrap(), "Test Value");
 
         // Second call should use cached resource but create new bundle
-        let result2 = manager.get_string("another_key");
+        let result2 = i18n.get_string(IntlKeyBuf::new("another_key").borrow());
         assert!(result2.is_ok());
         assert_eq!(result2.unwrap(), "Another Value");
 
         // Check cache stats
-        let stats = manager.get_cache_stats().unwrap();
+        let stats = i18n.get_cache_stats().unwrap();
         assert_eq!(stats.resource_cache_size, 1);
         assert_eq!(stats.string_cache_size, 2); // Both strings should be cached
-
-        // Cleanup
-        std::fs::remove_dir_all(&temp_dir).unwrap();
     }
 
     #[test]
     fn test_string_caching() {
-        let temp_dir = std::env::temp_dir().join("notedeck_i18n_test7");
-        std::fs::create_dir_all(&temp_dir).unwrap();
-
-        // Create a test FTL file
-        let en_us_dir = temp_dir.join("en-US");
-        std::fs::create_dir_all(&en_us_dir).unwrap();
-        let ftl_content = "test_key = Test Value";
-        std::fs::write(en_us_dir.join("main.ftl"), ftl_content).unwrap();
-
-        let manager = LocalizationManager::new(&temp_dir).unwrap();
+        let mut i18n = Localization::default();
+        let key = i18n.normalized_ftl_key("test_key", "comment");
 
         // First call should format and cache the string
-        let result1 = manager.get_string("test_key");
+        let result1 = i18n.get_string(key.borrow());
         assert!(result1.is_ok());
         assert_eq!(result1.unwrap(), "Test Value");
 
         // Second call should use cached string
-        let result2 = manager.get_string("test_key");
+        let result2 = i18n.get_string(key.borrow());
         assert!(result2.is_ok());
         assert_eq!(result2.unwrap(), "Test Value");
 
         // Check cache stats
-        let stats = manager.get_cache_stats().unwrap();
+        let stats = i18n.get_cache_stats().unwrap();
         assert_eq!(stats.string_cache_size, 1);
-
-        // Cleanup
-        std::fs::remove_dir_all(&temp_dir).unwrap();
     }
 
     #[test]
     fn test_cache_clearing_on_locale_change() {
-        let temp_dir = std::env::temp_dir().join("notedeck_i18n_test8");
-        std::fs::create_dir_all(&temp_dir).unwrap();
-
-        // Create test FTL files for two locales
-        let en_us_dir = temp_dir.join("en-US");
-        std::fs::create_dir_all(&en_us_dir).unwrap();
-        std::fs::write(en_us_dir.join("main.ftl"), "test_key = Test Value").unwrap();
-
-        let en_xa_dir = temp_dir.join("en-XA");
-        std::fs::create_dir_all(&en_xa_dir).unwrap();
-        std::fs::write(en_xa_dir.join("main.ftl"), "test_key = Test Value XA").unwrap();
-
         // Enable pseudolocale for this test
         std::env::set_var("NOTEDECK_PSEUDOLOCALE", "1");
 
-        let manager = LocalizationManager::new(&temp_dir).unwrap();
-
-        // Load some strings in en-US
-        let result1 = manager.get_string("test_key");
-        assert!(result1.is_ok());
+        let mut i18n = Localization::default();
 
         // Check that caches are populated
-        let stats1 = manager.get_cache_stats().unwrap();
+        let stats1 = i18n.get_cache_stats().unwrap();
         assert!(stats1.resource_cache_size > 0);
         assert!(stats1.string_cache_size > 0);
 
         // Switch to en-XA
-        let en_xa: LanguageIdentifier = "en-XA".parse().unwrap();
-        manager.set_locale(en_xa).unwrap();
+        let en_xa: LanguageIdentifier = langid!("en-XA");
+        i18n.set_locale(en_xa).unwrap();
 
         // Check that string cache is cleared (resource cache remains for both locales)
-        let stats2 = manager.get_cache_stats().unwrap();
+        let stats2 = i18n.get_cache_stats().unwrap();
         assert_eq!(stats2.string_cache_size, 0);
 
         // Cleanup
         std::env::remove_var("NOTEDECK_PSEUDOLOCALE");
-        std::fs::remove_dir_all(&temp_dir).unwrap();
     }
 
     #[test]
     fn test_string_caching_with_arguments() {
-        let temp_dir = std::env::temp_dir().join("notedeck_i18n_test9");
-        std::fs::create_dir_all(&temp_dir).unwrap();
-
-        // Create a test FTL file with a message that takes arguments
-        let en_us_dir = temp_dir.join("en-US");
-        std::fs::create_dir_all(&en_us_dir).unwrap();
-        let ftl_content = "welcome_message = Welcome {$name}!";
-        std::fs::write(en_us_dir.join("main.ftl"), ftl_content).unwrap();
-
-        let manager = LocalizationManager::new(&temp_dir).unwrap();
+        let mut manager = Localization::default();
 
         // First call with arguments should not be cached
         let mut args = fluent::FluentArgs::new();
         args.set("name", "Alice");
-        let result1 = manager.get_string_with_args("welcome_message", Some(&args));
-        assert!(result1.is_ok());
-        // Note: Fluent may add bidirectional text control characters, so we check contains
-        let result1_str = result1.unwrap();
-        assert!(result1_str.contains("Alice"));
+        let key = IntlKeyBuf::new("welcome_message");
+        let result1 = manager
+            .get_cached_string(key.borrow(), Some(&args))
+            .unwrap();
+        assert!(result1.contains("Alice"));
 
         // Check that it's not in the string cache
         let stats1 = manager.get_cache_stats().unwrap();
@@ -736,7 +572,7 @@ mod tests {
         // Second call with different arguments should work correctly
         let mut args2 = fluent::FluentArgs::new();
         args2.set("name", "Bob");
-        let result2 = manager.get_string_with_args("welcome_message", Some(&args2));
+        let result2 = manager.get_cached_string(key.borrow(), Some(&args2));
         assert!(result2.is_ok());
         let result2_str = result2.unwrap();
         assert!(result2_str.contains("Bob"));
@@ -745,22 +581,35 @@ mod tests {
         let stats2 = manager.get_cache_stats().unwrap();
         assert_eq!(stats2.string_cache_size, 0);
 
-        // Test a simple string without arguments - should be cached
-        let ftl_content_simple = "simple_message = Hello World";
-        std::fs::write(en_us_dir.join("main.ftl"), ftl_content_simple).unwrap();
-
         // Clear cache to start fresh
         manager.clear_cache().unwrap();
 
-        let result3 = manager.get_string("simple_message");
+        let result3 = manager.get_string(key.borrow());
         assert!(result3.is_ok());
         assert_eq!(result3.unwrap(), "Hello World");
 
         // Check that simple string is cached
         let stats3 = manager.get_cache_stats().unwrap();
         assert_eq!(stats3.string_cache_size, 1);
-
-        // Cleanup
-        std::fs::remove_dir_all(&temp_dir).unwrap();
     }
+}
+
+/// Replace each invalid character with exactly one underscore
+/// This matches the behavior of the Python extraction script
+pub fn fixup_key(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' => out.push(ch),
+            _ => out.push('_'), // always push
+        }
+    }
+    let trimmed = out.trim_matches('_');
+    trimmed.to_owned()
+}
+
+fn simple_hash(s: &str) -> String {
+    let digest = md5::compute(s.as_bytes());
+    // Take the first 2 bytes and convert to 4 hex characters
+    format!("{:02x}{:02x}", digest[0], digest[1])
 }

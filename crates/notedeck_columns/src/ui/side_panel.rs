@@ -12,7 +12,7 @@ use crate::{
     route::Route,
 };
 
-use notedeck::{tr, Accounts, UserAccount};
+use notedeck::{tr, Accounts, Localization, UserAccount};
 use notedeck_ui::{
     anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},
     app_images, colors, View,
@@ -26,6 +26,7 @@ static ICON_WIDTH: f32 = 40.0;
 pub struct DesktopSidePanel<'a> {
     selected_account: &'a UserAccount,
     decks_cache: &'a DecksCache,
+    i18n: &'a mut Localization,
 }
 
 impl View for DesktopSidePanel<'_> {
@@ -58,10 +59,15 @@ impl SidePanelResponse {
 }
 
 impl<'a> DesktopSidePanel<'a> {
-    pub fn new(selected_account: &'a UserAccount, decks_cache: &'a DecksCache) -> Self {
+    pub fn new(
+        selected_account: &'a UserAccount,
+        decks_cache: &'a DecksCache,
+        i18n: &'a mut Localization,
+    ) -> Self {
         Self {
             selected_account,
             decks_cache,
+            i18n,
         }
     }
 
@@ -105,9 +111,13 @@ impl<'a> DesktopSidePanel<'a> {
 
                     ui.add_space(8.0);
                     ui.add(egui::Label::new(
-                        RichText::new(tr!("DECKS", "Label for decks section in side panel"))
-                            .size(11.0)
-                            .color(ui.visuals().noninteractive().fg_stroke.color),
+                        RichText::new(tr!(
+                            self.i18n,
+                            "DECKS",
+                            "Label for decks section in side panel"
+                        ))
+                        .size(11.0)
+                        .color(ui.visuals().noninteractive().fg_stroke.color),
                     ));
                     ui.add_space(8.0);
                     let add_deck_resp = ui.add(add_deck_button());
@@ -175,8 +185,9 @@ impl<'a> DesktopSidePanel<'a> {
         decks_cache: &mut DecksCache,
         accounts: &Accounts,
         action: SidePanelAction,
+        i18n: &mut Localization,
     ) -> Option<SwitchingAction> {
-        let router = get_active_columns_mut(accounts, decks_cache).get_first_router();
+        let router = get_active_columns_mut(i18n, accounts, decks_cache).get_first_router();
         let mut switching_response = None;
         match action {
             /*
@@ -218,7 +229,7 @@ impl<'a> DesktopSidePanel<'a> {
                 {
                     router.go_back();
                 } else {
-                    get_active_columns_mut(accounts, decks_cache).new_column_picker();
+                    get_active_columns_mut(i18n, accounts, decks_cache).new_column_picker();
                 }
             }
             SidePanelAction::ComposeNote => {
@@ -263,7 +274,7 @@ impl<'a> DesktopSidePanel<'a> {
                     switching_response = Some(crate::nav::SwitchingAction::Decks(
                         DecksAction::Switch(index),
                     ));
-                    if let Some(edit_deck) = get_decks_mut(accounts, decks_cache)
+                    if let Some(edit_deck) = get_decks_mut(i18n, accounts, decks_cache)
                         .decks_mut()
                         .get_mut(index)
                     {

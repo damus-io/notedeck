@@ -2,7 +2,7 @@ use std::collections::{hash_map::ValuesMut, HashMap};
 
 use enostr::{Pubkey, RelayPool};
 use nostrdb::Transaction;
-use notedeck::{tr, AppContext, FALLBACK_PUBKEY};
+use notedeck::{tr, AppContext, Localization, FALLBACK_PUBKEY};
 use tracing::{error, info};
 
 use crate::{
@@ -21,18 +21,20 @@ pub struct DecksCache {
     fallback_pubkey: Pubkey,
 }
 
-impl Default for DecksCache {
-    fn default() -> Self {
-        let mut account_to_decks: HashMap<Pubkey, Decks> = Default::default();
-        account_to_decks.insert(FALLBACK_PUBKEY(), Decks::default());
-        DecksCache::new(account_to_decks)
-    }
-}
-
 impl DecksCache {
+    pub fn default_decks_cache(i18n: &mut Localization) -> Self {
+        let mut account_to_decks: HashMap<Pubkey, Decks> = Default::default();
+        account_to_decks.insert(FALLBACK_PUBKEY(), Decks::default_decks(i18n));
+        DecksCache::new(account_to_decks, i18n)
+    }
+
     /// Gets the first column in the currently active user's active deck
-    pub fn selected_column_mut(&mut self, accounts: &notedeck::Accounts) -> Option<&mut Column> {
-        self.active_columns_mut(accounts)
+    pub fn selected_column_mut(
+        &mut self,
+        i18n: &mut Localization,
+        accounts: &notedeck::Accounts,
+    ) -> Option<&mut Column> {
+        self.active_columns_mut(i18n, accounts)
             .and_then(|ad| ad.selected_mut())
     }
 
@@ -45,10 +47,14 @@ impl DecksCache {
     }
 
     /// Gets a mutable reference to the active columns
-    pub fn active_columns_mut(&mut self, accounts: &notedeck::Accounts) -> Option<&mut Columns> {
+    pub fn active_columns_mut(
+        &mut self,
+        i18n: &mut Localization,
+        accounts: &notedeck::Accounts,
+    ) -> Option<&mut Columns> {
         let account = accounts.get_selected_account();
 
-        self.decks_mut(&account.key.pubkey)
+        self.decks_mut(i18n, &account.key.pubkey)
             .active_deck_mut()
             .map(|ad| ad.columns_mut())
     }
@@ -62,9 +68,11 @@ impl DecksCache {
             .map(|ad| ad.columns())
     }
 
-    pub fn new(mut account_to_decks: HashMap<Pubkey, Decks>) -> Self {
+    pub fn new(mut account_to_decks: HashMap<Pubkey, Decks>, i18n: &mut Localization) -> Self {
         let fallback_pubkey = FALLBACK_PUBKEY();
-        account_to_decks.entry(fallback_pubkey).or_default();
+        account_to_decks
+            .entry(fallback_pubkey)
+            .or_insert_with(|| Decks::default_decks(i18n));
 
         Self {
             account_to_decks,
@@ -79,7 +87,7 @@ impl DecksCache {
             fallback_pubkey,
             demo_decks(fallback_pubkey, timeline_cache, ctx),
         );
-        DecksCache::new(account_to_decks)
+        DecksCache::new(account_to_decks, ctx.i18n)
     }
 
     pub fn decks(&self, key: &Pubkey) -> &Decks {
@@ -88,8 +96,10 @@ impl DecksCache {
             .unwrap_or_else(|| self.fallback())
     }
 
-    pub fn decks_mut(&mut self, key: &Pubkey) -> &mut Decks {
-        self.account_to_decks.entry(*key).or_default()
+    pub fn decks_mut(&mut self, i18n: &mut Localization, key: &Pubkey) -> &mut Decks {
+        self.account_to_decks
+            .entry(*key)
+            .or_insert_with(|| Decks::default_decks(i18n))
     }
 
     pub fn fallback(&self) -> &Decks {
@@ -110,7 +120,7 @@ impl DecksCache {
         timeline_cache: &mut TimelineCache,
         pubkey: Pubkey,
     ) {
-        let mut decks = Decks::default();
+        let mut decks = Decks::default_decks(ctx.i18n);
 
         // add home and notifications for new accounts
         add_demo_columns(
@@ -157,6 +167,7 @@ impl DecksCache {
 
     pub fn remove(
         &mut self,
+        i18n: &mut Localization,
         key: &Pubkey,
         timeline_cache: &mut TimelineCache,
         ndb: &mut nostrdb::Ndb,
@@ -171,7 +182,7 @@ impl DecksCache {
 
         if !self.account_to_decks.contains_key(&self.fallback_pubkey) {
             self.account_to_decks
-                .insert(self.fallback_pubkey, Decks::default());
+                .insert(self.fallback_pubkey, Decks::default_decks(i18n));
         }
     }
 
@@ -194,13 +205,11 @@ pub struct Decks {
     decks: Vec<Deck>,
 }
 
-impl Default for Decks {
-    fn default() -> Self {
-        Decks::new(Deck::default())
-    }
-}
-
 impl Decks {
+    pub fn default_decks(i18n: &mut Localization) -> Self {
+        Decks::new(Deck::default_deck(i18n))
+    }
+
     pub fn new(deck: Deck) -> Self {
         let decks = vec![deck];
 
@@ -381,24 +390,22 @@ pub struct Deck {
     columns: Columns,
 }
 
-impl Default for Deck {
-    fn default() -> Self {
-        let columns = Columns::default();
-        Self {
-            columns,
-            icon: Deck::default_icon(),
-            name: Deck::default_name().to_string(),
-        }
-    }
-}
-
 impl Deck {
     pub fn default_icon() -> char {
         '🇩'
     }
 
-    pub fn default_name() -> String {
-        tr!("Default Deck", "Name of the default deck feed")
+    fn default_deck(i18n: &mut Localization) -> Self {
+        let columns = Columns::default();
+        Self {
+            columns,
+            icon: Deck::default_icon(),
+            name: Deck::default_name(i18n).to_string(),
+        }
+    }
+
+    pub fn default_name(i18n: &mut Localization) -> String {
+        tr!(i18n, "Default Deck", "Name of the default deck feed")
     }
 
     pub fn new(icon: char, name: String) -> Self {
@@ -482,7 +489,7 @@ pub fn demo_decks(
 
         Deck {
             icon: Deck::default_icon(),
-            name: Deck::default_name().to_string(),
+            name: Deck::default_name(ctx.i18n).to_string(),
             columns,
         }
     };

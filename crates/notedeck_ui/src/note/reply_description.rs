@@ -130,9 +130,13 @@ fn render_text_segments(
                 if let Ok(note) = note_context.ndb.get_note_by_id(txn, note_id) {
                     let r = ui.add(
                         Label::new(
-                            RichText::new(tr!("note", "Link text for note references"))
-                                .size(size)
-                                .color(link_color),
+                            RichText::new(tr!(
+                                note_context.i18n,
+                                "note",
+                                "Link text for note references"
+                            ))
+                            .size(size)
+                            .color(link_color),
                         )
                         .sense(Sense::click())
                         .selectable(selectable),
@@ -157,9 +161,13 @@ fn render_text_segments(
                 if let Ok(note) = note_context.ndb.get_note_by_id(txn, note_id) {
                     let r = ui.add(
                         Label::new(
-                            RichText::new(tr!("thread", "Link text for thread references"))
-                                .size(size)
-                                .color(link_color),
+                            RichText::new(tr!(
+                                note_context.i18n,
+                                "thread",
+                                "Link text for thread references"
+                            ))
+                            .size(size)
+                            .color(link_color),
                         )
                         .sense(Sense::click())
                         .selectable(selectable),
@@ -206,6 +214,7 @@ pub fn reply_desc(
     } else {
         // Handle case where reply note is not found
         let template = tr!(
+            note_context.i18n,
             "replying to a note",
             "Fallback text when reply note is not found"
         );
@@ -225,6 +234,7 @@ pub fn reply_desc(
     let segments = if note_reply.is_reply_to_root() {
         // Template: "replying to {user}'s {thread}"
         let template = tr!(
+            note_context.i18n,
             "replying to {user}'s {thread}",
             "Template for replying to root thread",
             user = "{user}",
@@ -243,6 +253,7 @@ pub fn reply_desc(
             if root_note.pubkey() == reply_note.pubkey() {
                 // Template: "replying to {user}'s {note}"
                 let template = tr!(
+                    note_context.i18n,
                     "replying to {user}'s {note}",
                     "Template for replying to user's note",
                     user = "{user}",
@@ -254,6 +265,7 @@ pub fn reply_desc(
                 // Template: "replying to {reply_user}'s {note} in {thread_user}'s {thread}"
                 // This would need more sophisticated placeholder handling
                 let template = tr!(
+                    note_context.i18n,
                     "replying to {user}'s {note} in {thread_user}'s {thread}",
                     "Template for replying to note in different user's thread",
                     user = "{user}",
@@ -273,6 +285,7 @@ pub fn reply_desc(
         } else {
             // Template: "replying to {user} in someone's thread"
             let template = tr!(
+                note_context.i18n,
                 "replying to {user} in someone's thread",
                 "Template for replying to user in unknown thread",
                 user = "{user}"
@@ -283,6 +296,7 @@ pub fn reply_desc(
     } else {
         // Fallback
         let template = tr!(
+            note_context.i18n,
             "replying to {user}",
             "Fallback template for replying to user",
             user = "{user}"

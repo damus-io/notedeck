@@ -89,7 +89,7 @@ impl SwitchingAction {
                         ui_ctx,
                     );
                     // pop nav after switch
-                    get_active_columns_mut(ctx.accounts, decks_cache)
+                    get_active_columns_mut(ctx.i18n, ctx.accounts, decks_cache)
                         .column_mut(switch_action.source_column)
                         .router_mut()
                         .go_back();
@@ -102,13 +102,13 @@ impl SwitchingAction {
                         break 's;
                     }
 
-                    decks_cache.remove(to_remove, timeline_cache, ctx.ndb, ctx.pool);
+                    decks_cache.remove(ctx.i18n, to_remove, timeline_cache, ctx.ndb, ctx.pool);
                 }
             },
             SwitchingAction::Columns(columns_action) => match *columns_action {
                 ColumnsAction::Remove(index) => {
-                    let kinds_to_pop =
-                        get_active_columns_mut(ctx.accounts, decks_cache).delete_column(index);
+                    let kinds_to_pop = get_active_columns_mut(ctx.i18n, ctx.accounts, decks_cache)
+                        .delete_column(index);
                     for kind in &kinds_to_pop {
                         if let Err(err) = timeline_cache.pop(kind, ctx.ndb, ctx.pool) {
                             error!("error popping timeline: {err}");
@@ -117,15 +117,15 @@ impl SwitchingAction {
                 }
 
                 ColumnsAction::Switch(from, to) => {
-                    get_active_columns_mut(ctx.accounts, decks_cache).move_col(from, to);
+                    get_active_columns_mut(ctx.i18n, ctx.accounts, decks_cache).move_col(from, to);
                 }
             },
             SwitchingAction::Decks(decks_action) => match *decks_action {
                 DecksAction::Switch(index) => {
-                    get_decks_mut(ctx.accounts, decks_cache).set_active(index)
+                    get_decks_mut(ctx.i18n, ctx.accounts, decks_cache).set_active(index)
                 }
                 DecksAction::Removing(index) => {
-                    get_decks_mut(ctx.accounts, decks_cache).remove_deck(
+                    get_decks_mut(ctx.i18n, ctx.accounts, decks_cache).remove_deck(
                         index,
                         timeline_cache,
                         ctx.ndb,
@@ -206,10 +206,10 @@ fn process_popup_resp(
     }
 
     if let Some(NavAction::Returned(_)) = action.action {
-        let column = app.columns_mut(ctx.accounts).column_mut(col);
+        let column = app.columns_mut(ctx.i18n, ctx.accounts).column_mut(col);
         column.sheet_router.clear();
     } else if let Some(NavAction::Navigating) = action.action {
-        let column = app.columns_mut(ctx.accounts).column_mut(col);
+        let column = app.columns_mut(ctx.i18n, ctx.accounts).column_mut(col);
         column.sheet_router.navigating = false;
     }
 
@@ -235,7 +235,7 @@ fn process_nav_resp(
         match action {
             NavAction::Returned(return_type) => {
                 let r = app
-                    .columns_mut(ctx.accounts)
+                    .columns_mut(ctx.i18n, ctx.accounts)
                     .column_mut(col)
                     .router_mut()
                     .pop();
@@ -260,7 +260,10 @@ fn process_nav_resp(
             }
 
             NavAction::Navigated => {
-                let cur_router = app.columns_mut(ctx.accounts).column_mut(col).router_mut();
+                let cur_router = app
+                    .columns_mut(ctx.i18n, ctx.accounts)
+                    .column_mut(col)
+                    .router_mut();
                 cur_router.navigating = false;
                 if cur_router.is_replacing() {
                     cur_router.remove_previous_routes();
@@ -414,7 +417,7 @@ fn process_render_nav_action(
         RenderNavAction::Back => Some(RouterAction::GoBack),
         RenderNavAction::PfpClicked => Some(RouterAction::PfpClicked),
         RenderNavAction::RemoveColumn => {
-            let kinds_to_pop = app.columns_mut(ctx.accounts).delete_column(col);
+            let kinds_to_pop = app.columns_mut(ctx.i18n, ctx.accounts).delete_column(col);
 
             for kind in &kinds_to_pop {
                 if let Err(err) = app.timeline_cache.pop(kind, ctx.ndb, ctx.pool) {
@@ -439,7 +442,7 @@ fn process_render_nav_action(
             crate::actionbar::execute_and_process_note_action(
                 note_action,
                 ctx.ndb,
-                get_active_columns_mut(ctx.accounts, &mut app.decks_cache),
+                get_active_columns_mut(ctx.i18n, ctx.accounts, &mut app.decks_cache),
                 col,
                 &mut app.timeline_cache,
                 &mut app.threads,
@@ -480,7 +483,8 @@ fn process_render_nav_action(
     };
 
     if let Some(action) = router_action {
-        let cols = get_active_columns_mut(ctx.accounts, &mut app.decks_cache).column_mut(col);
+        let cols =
+            get_active_columns_mut(ctx.i18n, ctx.accounts, &mut app.decks_cache).column_mut(col);
         let router = &mut cols.router;
         let sheet_router = &mut cols.sheet_router;
 
@@ -511,6 +515,7 @@ fn render_nav_body(
         unknown_ids: ctx.unknown_ids,
         clipboard: ctx.clipboard,
         current_account_has_wallet,
+        i18n: ctx.i18n,
     };
     match top {
         Route::Timeline(kind) => {
@@ -565,7 +570,7 @@ fn render_nav_body(
                 .accounts_action
                 .map(|f| RenderNavAction::SwitchingAction(SwitchingAction::Accounts(f)))
         }
-        Route::Relays => RelayView::new(ctx.pool, &mut app.view_state.id_string_map)
+        Route::Relays => RelayView::new(ctx.pool, &mut app.view_state.id_string_map, ctx.i18n)
             .ui(ui)
             .map(RenderNavAction::RelayAction),
         Route::Reply(id) => {
@@ -573,6 +578,7 @@ fn render_nav_body(
                 txn
             } else {
                 ui.label(tr!(
+                    note_context.i18n,
                     "Reply to unknown note",
                     "Error message when reply note cannot be found"
                 ));
@@ -583,6 +589,7 @@ fn render_nav_body(
                 note
             } else {
                 ui.label(tr!(
+                    note_context.i18n,
                     "Reply to unknown note",
                     "Error message when reply note cannot be found"
                 ));
@@ -623,6 +630,7 @@ fn render_nav_body(
                 note
             } else {
                 ui.label(tr!(
+                    note_context.i18n,
                     "Quote of unknown note",
                     "Error message when quote note cannot be found"
                 ));
@@ -676,15 +684,16 @@ fn render_nav_body(
             None
         }
         Route::Support => {
-            SupportView::new(&mut app.support).show(ui);
+            SupportView::new(&mut app.support, ctx.i18n).show(ui);
             None
         }
         Route::Search => {
             let id = ui.id().with(("search", depth, col));
-            let navigating = get_active_columns_mut(ctx.accounts, &mut app.decks_cache)
-                .column(col)
-                .router()
-                .navigating;
+            let navigating =
+                get_active_columns_mut(note_context.i18n, ctx.accounts, &mut app.decks_cache)
+                    .column(col)
+                    .router()
+                    .navigating;
             let search_buffer = app.view_state.searches.entry(id).or_default();
             let txn = Transaction::new(ctx.ndb).expect("txn");
 
@@ -711,13 +720,13 @@ fn render_nav_body(
             let id = ui.id().with("new-deck");
             let new_deck_state = app.view_state.id_to_deck_state.entry(id).or_default();
             let mut resp = None;
-            if let Some(config_resp) = ConfigureDeckView::new(new_deck_state).ui(ui) {
+            if let Some(config_resp) = ConfigureDeckView::new(new_deck_state, ctx.i18n).ui(ui) {
                 let cur_acc = ctx.accounts.selected_account_pubkey();
                 app.decks_cache
                     .add_deck(*cur_acc, Deck::new(config_resp.icon, config_resp.name));
 
                 // set new deck as active
-                let cur_index = get_decks_mut(ctx.accounts, &mut app.decks_cache)
+                let cur_index = get_decks_mut(ctx.i18n, ctx.accounts, &mut app.decks_cache)
                     .decks()
                     .len()
                     - 1;
@@ -726,7 +735,7 @@ fn render_nav_body(
                 )));
 
                 new_deck_state.clear();
-                get_active_columns_mut(ctx.accounts, &mut app.decks_cache)
+                get_active_columns_mut(ctx.i18n, ctx.accounts, &mut app.decks_cache)
                     .get_first_router()
                     .go_back();
             }
@@ -734,7 +743,7 @@ fn render_nav_body(
         }
         Route::EditDeck(index) => {
             let mut action = None;
-            let cur_deck = get_decks_mut(ctx.accounts, &mut app.decks_cache)
+            let cur_deck = get_decks_mut(ctx.i18n, ctx.accounts, &mut app.decks_cache)
                 .decks_mut()
                 .get_mut(*index)
                 .expect("index wasn't valid");
@@ -746,7 +755,7 @@ fn render_nav_body(
                 .id_to_deck_state
                 .entry(id)
                 .or_insert_with(|| DeckState::from_deck(cur_deck));
-            if let Some(resp) = EditDeckView::new(deck_state).ui(ui) {
+            if let Some(resp) = EditDeckView::new(deck_state, ctx.i18n).ui(ui) {
                 match resp {
                     EditDeckResponse::Edit(configure_deck_response) => {
                         cur_deck.edit(configure_deck_response);
@@ -757,7 +766,7 @@ fn render_nav_body(
                         )));
                     }
                 }
-                get_active_columns_mut(ctx.accounts, &mut app.decks_cache)
+                get_active_columns_mut(ctx.i18n, ctx.accounts, &mut app.decks_cache)
                     .get_first_router()
                     .go_back();
             }
@@ -778,7 +787,7 @@ fn render_nav_body(
                 return action;
             };
 
-            if EditProfileView::new(state, ctx.img_cache).ui(ui) {
+            if EditProfileView::new(ctx.i18n, state, ctx.img_cache).ui(ui) {
                 if let Some(state) = app.view_state.pubkey_to_profile_state.get(kp.pubkey) {
                     action = Some(RenderNavAction::ProfileAction(ProfileAction::SaveChanges(
                         SaveProfileChanges::new(kp.to_full(), state.clone()),
@@ -833,7 +842,7 @@ fn render_nav_body(
                 }
             };
 
-            WalletView::new(state)
+            WalletView::new(state, ctx.i18n)
                 .ui(ui)
                 .map(RenderNavAction::WalletAction)
         }
@@ -841,6 +850,7 @@ fn render_nav_body(
             let txn = Transaction::new(ctx.ndb).expect("txn");
             let default_msats = get_current_default_msats(ctx.accounts, ctx.global_wallet);
             CustomZapView::new(
+                ctx.i18n,
                 ctx.img_cache,
                 ctx.ndb,
                 &txn,
@@ -849,7 +859,7 @@ fn render_nav_body(
             )
             .ui(ui)
             .map(|msats| {
-                get_active_columns_mut(ctx.accounts, &mut app.decks_cache)
+                get_active_columns_mut(ctx.i18n, ctx.accounts, &mut app.decks_cache)
                     .column_mut(col)
                     .router_mut()
                     .go_back();
@@ -904,9 +914,10 @@ pub fn render_nav(
                     NavUiType::Title => NavTitle::new(
                         ctx.ndb,
                         ctx.img_cache,
-                        get_active_columns_mut(ctx.accounts, &mut app.decks_cache),
+                        get_active_columns_mut(ctx.i18n, ctx.accounts, &mut app.decks_cache),
                         &[route.clone()],
                         col,
+                        ctx.i18n,
                     )
                     .show_move_button(!narrow)
                     .show_delete_button(!narrow)
@@ -926,13 +937,13 @@ pub fn render_nav(
             .clone(),
     )
     .navigating(
-        app.columns_mut(ctx.accounts)
+        app.columns_mut(ctx.i18n, ctx.accounts)
             .column_mut(col)
             .router_mut()
             .navigating,
     )
     .returning(
-        app.columns_mut(ctx.accounts)
+        app.columns_mut(ctx.i18n, ctx.accounts)
             .column_mut(col)
             .router_mut()
             .returning,
@@ -942,9 +953,10 @@ pub fn render_nav(
         NavUiType::Title => NavTitle::new(
             ctx.ndb,
             ctx.img_cache,
-            get_active_columns_mut(ctx.accounts, &mut app.decks_cache),
+            get_active_columns_mut(ctx.i18n, ctx.accounts, &mut app.decks_cache),
             nav.routes(),
             col,
+            ctx.i18n,
         )
         .show_move_button(!narrow)
         .show_delete_button(!narrow)

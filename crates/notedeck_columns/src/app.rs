@@ -20,7 +20,7 @@ use enostr::{ClientMessage, PoolRelay, Pubkey, RelayEvent, RelayMessage, RelayPo
 use nostrdb::Transaction;
 use notedeck::{
     tr, ui::is_narrow, Accounts, AppAction, AppContext, DataPath, DataPathType, FilterState,
-    UnknownIds,
+    Localization, UnknownIds,
 };
 use notedeck_ui::{jobs::JobsCache, NoteOptions};
 use std::collections::{BTreeSet, HashMap};
@@ -92,7 +92,8 @@ fn try_process_event(
     app_ctx: &mut AppContext<'_>,
     ctx: &egui::Context,
 ) -> Result<()> {
-    let current_columns = get_active_columns_mut(app_ctx.accounts, &mut damus.decks_cache);
+    let current_columns =
+        get_active_columns_mut(app_ctx.i18n, app_ctx.accounts, &mut damus.decks_cache);
     ctx.input(|i| handle_key_events(i, current_columns));
 
     let ctx2 = ctx.clone();
@@ -187,7 +188,9 @@ fn update_damus(damus: &mut Damus, app_ctx: &mut AppContext<'_>, ctx: &egui::Con
     app_ctx.img_cache.urls.cache.handle_io();
 
     if damus.columns(app_ctx.accounts).columns().is_empty() {
-        damus.columns_mut(app_ctx.accounts).new_column_picker();
+        damus
+            .columns_mut(app_ctx.i18n, app_ctx.accounts)
+            .new_column_picker();
     }
 
     match damus.state {
@@ -262,7 +265,7 @@ fn handle_eose(
                 tl
             } else {
                 error!(
-                    "timeline uid:{} not found for FetchingContactList",
+                    "timeline uid:{:?} not found for FetchingContactList",
                     timeline_uid
                 );
                 return Ok(());
@@ -427,9 +430,9 @@ impl Damus {
                 }
             }
 
-            columns_to_decks_cache(columns, account)
+            columns_to_decks_cache(ctx.i18n, columns, account)
         } else if let Some(decks_cache) =
-            crate::storage::load_decks_cache(ctx.path, ctx.ndb, &mut timeline_cache)
+            crate::storage::load_decks_cache(ctx.path, ctx.ndb, &mut timeline_cache, ctx.i18n)
         {
             info!(
                 "DecksCache: loading from disk {}",
@@ -495,8 +498,8 @@ impl Damus {
         self.options.insert(AppOptions::ScrollToTop)
     }
 
-    pub fn columns_mut(&mut self, accounts: &Accounts) -> &mut Columns {
-        get_active_columns_mut(accounts, &mut self.decks_cache)
+    pub fn columns_mut(&mut self, i18n: &mut Localization, accounts: &Accounts) -> &mut Columns {
+        get_active_columns_mut(i18n, accounts, &mut self.decks_cache)
     }
 
     pub fn columns(&self, accounts: &Accounts) -> &Columns {
@@ -512,7 +515,8 @@ impl Damus {
     }
 
     pub fn mock<P: AsRef<Path>>(data_path: P) -> Self {
-        let decks_cache = DecksCache::default();
+        let mut i18n = Localization::default();
+        let decks_cache = DecksCache::default_decks_cache(&mut i18n);
 
         let path = DataPath::new(&data_path);
         let imgcache_dir = path.path(DataPathType::Cache);
@@ -567,7 +571,7 @@ fn render_damus_mobile(
     let rect = ui.available_rect_before_wrap();
     let mut app_action: Option<AppAction> = None;
 
-    let active_col = app.columns_mut(app_ctx.accounts).selected as usize;
+    let active_col = app.columns_mut(app_ctx.i18n, app_ctx.accounts).selected as usize;
     if !app.columns(app_ctx.accounts).columns().is_empty() {
         let r = nav::render_nav(
             active_col,
@@ -623,6 +627,7 @@ fn hovering_post_button(
             &mut app.decks_cache,
             app_ctx.accounts,
             SidePanelAction::ComposeNote,
+            app_ctx.i18n,
         );
     }
 }
@@ -715,9 +720,12 @@ fn timelines_view(
         .horizontal(|mut strip| {
             strip.cell(|ui| {
                 let rect = ui.available_rect_before_wrap();
-                let side_panel =
-                    DesktopSidePanel::new(ctx.accounts.get_selected_account(), &app.decks_cache)
-                        .show(ui);
+                let side_panel = DesktopSidePanel::new(
+                    ctx.accounts.get_selected_account(),
+                    &app.decks_cache,
+                    ctx.i18n,
+                )
+                .show(ui);
 
                 if let Some(side_panel) = side_panel {
                     if side_panel.response.clicked() || side_panel.response.secondary_clicked() {
@@ -725,6 +733,7 @@ fn timelines_view(
                             &mut app.decks_cache,
                             ctx.accounts,
                             side_panel.action,
+                            ctx.i18n,
                         ) {
                             side_panel_action = Some(action);
                         }
@@ -833,27 +842,32 @@ pub fn get_decks<'a>(accounts: &Accounts, decks_cache: &'a DecksCache) -> &'a De
 }
 
 pub fn get_active_columns_mut<'a>(
+    i18n: &mut Localization,
     accounts: &Accounts,
     decks_cache: &'a mut DecksCache,
 ) -> &'a mut Columns {
-    get_decks_mut(accounts, decks_cache)
+    get_decks_mut(i18n, accounts, decks_cache)
         .active_mut()
         .columns_mut()
 }
 
-pub fn get_decks_mut<'a>(accounts: &Accounts, decks_cache: &'a mut DecksCache) -> &'a mut Decks {
-    decks_cache.decks_mut(accounts.selected_account_pubkey())
+pub fn get_decks_mut<'a>(
+    i18n: &mut Localization,
+    accounts: &Accounts,
+    decks_cache: &'a mut DecksCache,
+) -> &'a mut Decks {
+    decks_cache.decks_mut(i18n, accounts.selected_account_pubkey())
 }
 
-fn columns_to_decks_cache(cols: Columns, key: &[u8; 32]) -> DecksCache {
+fn columns_to_decks_cache(i18n: &mut Localization, cols: Columns, key: &[u8; 32]) -> DecksCache {
     let mut account_to_decks: HashMap<Pubkey, Decks> = Default::default();
     let decks = Decks::new(crate::decks::Deck::new_with_columns(
-        crate::decks::Deck::default().icon,
-        tr!("My Deck", "Title for the user's deck"),
+        crate::decks::Deck::default_icon(),
+        tr!(i18n, "My Deck", "Title for the user's deck"),
         cols,
     ));
 
     let account = Pubkey::new(*key);
     account_to_decks.insert(account, decks);
-    DecksCache::new(account_to_decks)
+    DecksCache::new(account_to_decks, i18n)
 }

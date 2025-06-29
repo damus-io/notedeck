@@ -17,6 +17,7 @@ use notedeck::note::MediaAction;
 use notedeck::note::ZapTargetAmount;
 use notedeck::ui::is_narrow;
 use notedeck::Images;
+use notedeck::Localization;
 pub use options::NoteOptions;
 pub use reply_description::reply_desc;
 
@@ -27,8 +28,8 @@ use nostrdb::{Ndb, Note, NoteKey, ProfileRecord, Transaction};
 use notedeck::{
     name::get_display_name,
     note::{NoteAction, NoteContext, ZapAction},
-    tr, AnyZapState, CachedNote, ContextSelection, NoteCache, NoteZapTarget, NoteZapTargetOwned,
-    NotedeckTextStyle, ZapTarget, Zaps,
+    tr, AnyZapState, ContextSelection, NoteZapTarget, NoteZapTargetOwned, NotedeckTextStyle,
+    ZapTarget, Zaps,
 };
 
 pub struct NoteView<'a, 'd> {
@@ -194,7 +195,6 @@ impl<'a, 'd> NoteView<'a, 'd> {
     }
 
     fn textmode_ui(&mut self, ui: &mut egui::Ui) -> egui::Response {
-        let note_key = self.note.key().expect("todo: implement non-db notes");
         let txn = self.note.txn().expect("todo: implement non-db notes");
 
         ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
@@ -206,23 +206,22 @@ impl<'a, 'd> NoteView<'a, 'd> {
             //ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
 
-            let cached_note = self
-                .note_context
-                .note_cache
-                .cached_note_or_insert_mut(note_key, self.note);
-
             let (_id, rect) = ui.allocate_space(egui::vec2(50.0, 20.0));
             ui.allocate_rect(rect, Sense::hover());
             ui.put(rect, |ui: &mut egui::Ui| {
-                render_reltime(ui, cached_note, false).response
+                render_reltime(ui, self.note_context.i18n, self.note.created_at(), false).response
             });
             let (_id, rect) = ui.allocate_space(egui::vec2(150.0, 20.0));
             ui.allocate_rect(rect, Sense::hover());
             ui.put(rect, |ui: &mut egui::Ui| {
                 ui.add(
-                    Username::new(profile.as_ref().ok(), self.note.pubkey())
-                        .abbreviated(6)
-                        .pk_colored(true),
+                    Username::new(
+                        self.note_context.i18n,
+                        profile.as_ref().ok(),
+                        self.note.pubkey(),
+                    )
+                    .abbreviated(6)
+                    .pk_colored(true),
                 )
             });
 
@@ -308,9 +307,13 @@ impl<'a, 'd> NoteView<'a, 'd> {
             let color = ui.style().visuals.noninteractive().fg_stroke.color;
             ui.add_space(4.0);
             ui.label(
-                RichText::new(tr!("Reposted", "Label for reposted notes"))
-                    .color(color)
-                    .text_style(style.text_style()),
+                RichText::new(tr!(
+                    self.note_context.i18n,
+                    "Reposted",
+                    "Label for reposted notes"
+                ))
+                .color(color)
+                .text_style(style.text_style()),
             );
         });
         NoteView::new(self.note_context, &note_to_repost, self.flags, self.jobs).show(ui)
@@ -348,20 +351,17 @@ impl<'a, 'd> NoteView<'a, 'd> {
     #[profiling::function]
     fn note_header(
         ui: &mut egui::Ui,
-        note_cache: &mut NoteCache,
+        i18n: &mut Localization,
         note: &Note,
         profile: &Result<nostrdb::ProfileRecord<'_>, nostrdb::Error>,
         show_unread_indicator: bool,
     ) {
-        let note_key = note.key().unwrap();
-
         let horiz_resp = ui
             .horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = if is_narrow(ui.ctx()) { 1.0 } else { 2.0 };
-                ui.add(Username::new(profile.as_ref().ok(), note.pubkey()).abbreviated(20));
+                ui.add(Username::new(i18n, profile.as_ref().ok(), note.pubkey()).abbreviated(20));
 
-                let cached_note = note_cache.cached_note_or_insert_mut(note_key, note);
-                render_reltime(ui, cached_note, true);
+                render_reltime(ui, i18n, note.created_at(), true);
             })
             .response;
 
@@ -405,7 +405,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
                                 ui.horizontal_centered(|ui| {
                                     NoteView::note_header(
                                         ui,
-                                        self.note_context.note_cache,
+                                        self.note_context.i18n,
                                         self.note,
                                         profile,
                                         self.show_unread_indicator,
@@ -460,10 +460,16 @@ impl<'a, 'd> NoteView<'a, 'd> {
                         cur_acc: cur_acc.keypair(),
                     })
                 };
-                note_action =
-                    render_note_actionbar(ui, zapper, self.note.id(), self.note.pubkey(), note_key)
-                        .inner
-                        .or(note_action);
+                note_action = render_note_actionbar(
+                    ui,
+                    zapper,
+                    self.note.id(),
+                    self.note.pubkey(),
+                    note_key,
+                    self.note_context.i18n,
+                )
+                .inner
+                .or(note_action);
             }
 
             NoteUiResponse {
@@ -489,7 +495,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
             ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
                 NoteView::note_header(
                     ui,
-                    self.note_context.note_cache,
+                    self.note_context.i18n,
                     self.note,
                     profile,
                     self.show_unread_indicator,
@@ -542,6 +548,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
                         self.note.id(),
                         self.note.pubkey(),
                         note_key,
+                        self.note_context.i18n,
                     )
                     .inner
                     .or(note_action);
@@ -588,7 +595,8 @@ impl<'a, 'd> NoteView<'a, 'd> {
             };
 
             let resp = ui.add(NoteContextButton::new(note_key).place_at(context_pos));
-            if let Some(action) = NoteContextButton::menu(ui, resp.clone()) {
+            if let Some(action) = NoteContextButton::menu(ui, self.note_context.i18n, resp.clone())
+            {
                 note_action = Some(NoteAction::Context(ContextSelection { note_key, action }));
             }
         }
@@ -765,11 +773,13 @@ fn render_note_actionbar(
     note_id: &[u8; 32],
     note_pubkey: &[u8; 32],
     note_key: NoteKey,
+    i18n: &mut Localization,
 ) -> egui::InnerResponse<Option<NoteAction>> {
     ui.horizontal(|ui| 's: {
-        let reply_resp = reply_button(ui, note_key).on_hover_cursor(egui::CursorIcon::PointingHand);
+        let reply_resp =
+            reply_button(ui, i18n, note_key).on_hover_cursor(egui::CursorIcon::PointingHand);
         let quote_resp =
-            quote_repost_button(ui, note_key).on_hover_cursor(egui::CursorIcon::PointingHand);
+            quote_repost_button(ui, i18n, note_key).on_hover_cursor(egui::CursorIcon::PointingHand);
 
         let to_noteid = |id: &[u8; 32]| NoteId::new(*id);
         if reply_resp.clicked() {
@@ -804,7 +814,7 @@ fn render_note_actionbar(
             cur_acc.secret_key.as_ref()?;
 
             match zap_state {
-                Ok(any_zap_state) => ui.add(zap_button(any_zap_state, note_id)),
+                Ok(any_zap_state) => ui.add(zap_button(i18n, any_zap_state, note_id)),
                 Err(err) => {
                     let (rect, _) =
                         ui.allocate_at_least(egui::vec2(10.0, 10.0), egui::Sense::click());
@@ -832,7 +842,8 @@ fn render_note_actionbar(
 #[profiling::function]
 fn render_reltime(
     ui: &mut egui::Ui,
-    note_cache: &mut CachedNote,
+    i18n: &mut Localization,
+    created_at: u64,
     before: bool,
 ) -> egui::InnerResponse<()> {
     ui.horizontal(|ui| {
@@ -840,7 +851,7 @@ fn render_reltime(
             secondary_label(ui, "⋅");
         }
 
-        secondary_label(ui, note_cache.reltime_str_mut());
+        secondary_label(ui, notedeck::time_ago_since(i18n, created_at));
 
         if !before {
             secondary_label(ui, "⋅");
@@ -848,7 +859,7 @@ fn render_reltime(
     })
 }
 
-fn reply_button(ui: &mut egui::Ui, note_key: NoteKey) -> egui::Response {
+fn reply_button(ui: &mut egui::Ui, i18n: &mut Localization, note_key: NoteKey) -> egui::Response {
     let img = if ui.style().visuals.dark_mode {
         app_images::reply_dark_image()
     } else {
@@ -862,9 +873,11 @@ fn reply_button(ui: &mut egui::Ui, note_key: NoteKey) -> egui::Response {
     let expand_size = 5.0; // from hover_expand_small
     let rect = rect.translate(egui::vec2(-(expand_size / 2.0), 0.0));
 
-    let put_resp = ui
-        .put(rect, img.max_width(size))
-        .on_hover_text(tr!("Reply to this note", "Hover text for reply button"));
+    let put_resp = ui.put(rect, img.max_width(size)).on_hover_text(tr!(
+        i18n,
+        "Reply to this note",
+        "Hover text for reply button"
+    ));
 
     resp.union(put_resp)
 }
@@ -877,7 +890,11 @@ fn repost_icon(dark_mode: bool) -> egui::Image<'static> {
     }
 }
 
-fn quote_repost_button(ui: &mut egui::Ui, note_key: NoteKey) -> egui::Response {
+fn quote_repost_button(
+    ui: &mut egui::Ui,
+    i18n: &mut Localization,
+    note_key: NoteKey,
+) -> egui::Response {
     let size = 14.0;
     let expand_size = 5.0;
     let anim_speed = 0.05;
@@ -889,12 +906,20 @@ fn quote_repost_button(ui: &mut egui::Ui, note_key: NoteKey) -> egui::Response {
 
     let put_resp = ui
         .put(rect, repost_icon(ui.visuals().dark_mode).max_width(size))
-        .on_hover_text(tr!("Repost this note", "Hover text for repost button"));
+        .on_hover_text(tr!(
+            i18n,
+            "Repost this note",
+            "Hover text for repost button"
+        ));
 
     resp.union(put_resp)
 }
 
-fn zap_button(state: AnyZapState, noteid: &[u8; 32]) -> impl egui::Widget + use<'_> {
+fn zap_button<'a>(
+    i18n: &'a mut Localization,
+    state: AnyZapState,
+    noteid: &'a [u8; 32],
+) -> impl egui::Widget + use<'a> {
     move |ui: &mut egui::Ui| -> egui::Response {
         let (rect, size, resp) = crate::anim::hover_expand_small(ui, ui.id().with("zap"));
 
@@ -927,9 +952,11 @@ fn zap_button(state: AnyZapState, noteid: &[u8; 32]) -> impl egui::Widget + use<
         let expand_size = 5.0; // from hover_expand_small
         let rect = rect.translate(egui::vec2(-(expand_size / 2.0), 0.0));
 
-        let put_resp = ui
-            .put(rect, img)
-            .on_hover_text(tr!("Zap this note", "Hover text for zap button"));
+        let put_resp = ui.put(rect, img).on_hover_text(tr!(
+            i18n,
+            "Zap this note",
+            "Hover text for zap button"
+        ));
 
         resp.union(put_resp)
     }

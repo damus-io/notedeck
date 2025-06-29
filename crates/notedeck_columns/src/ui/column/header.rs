@@ -13,7 +13,7 @@ use egui::{Margin, Response, RichText, Sense, Stroke, UiBuilder};
 use enostr::Pubkey;
 use nostrdb::{Ndb, Transaction};
 use notedeck::tr;
-use notedeck::{Images, NotedeckTextStyle};
+use notedeck::{Images, Localization, NotedeckTextStyle};
 use notedeck_ui::app_images;
 use notedeck_ui::{
     anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},
@@ -27,6 +27,7 @@ pub struct NavTitle<'a> {
     routes: &'a [Route],
     col_id: usize,
     options: u32,
+    i18n: &'a mut Localization,
 }
 
 impl<'a> NavTitle<'a> {
@@ -40,6 +41,7 @@ impl<'a> NavTitle<'a> {
         columns: &'a Columns,
         routes: &'a [Route],
         col_id: usize,
+        i18n: &'a mut Localization,
     ) -> Self {
         let options = Self::SHOW_MOVE | Self::SHOW_DELETE;
         NavTitle {
@@ -49,6 +51,7 @@ impl<'a> NavTitle<'a> {
             routes,
             col_id,
             options,
+            i18n,
         }
     }
 
@@ -129,7 +132,7 @@ impl<'a> NavTitle<'a> {
         // NOTE(jb55): include graphic in back label as well because why
         // not it looks cool
         let pfp_resp = self.title_pfp(ui, prev, 32.0);
-        let column_title = prev.title();
+        let column_title = prev.title(self.i18n);
 
         let back_resp = match &column_title {
             ColumnTitle::Simple(title) => ui.add(Self::back_label(title, color)),
@@ -182,7 +185,7 @@ impl<'a> NavTitle<'a> {
         animation_resp
     }
 
-    fn delete_button_section(&self, ui: &mut egui::Ui) -> bool {
+    fn delete_button_section(&mut self, ui: &mut egui::Ui) -> bool {
         let id = ui.id().with("title");
 
         let delete_button_resp = self.delete_column_button(ui, 32.0);
@@ -193,14 +196,18 @@ impl<'a> NavTitle<'a> {
         if ui.data_mut(|d| *d.get_temp_mut_or_default(id)) {
             let mut confirm_pressed = false;
             delete_button_resp.show_tooltip_ui(|ui| {
-                let confirm_resp = ui.button(tr!("Confirm", "Button label to confirm an action"));
+                let confirm_resp = ui.button(tr!(
+                    self.i18n,
+                    "Confirm",
+                    "Button label to confirm an action"
+                ));
                 if confirm_resp.clicked() {
                     confirm_pressed = true;
                 }
 
                 if confirm_resp.clicked()
                     || ui
-                        .button(tr!("Cancel", "Button label to cancel an action"))
+                        .button(tr!(self.i18n, "Cancel", "Button label to cancel an action"))
                         .clicked()
                 {
                     ui.data_mut(|d| d.insert_temp(id, false));
@@ -211,8 +218,11 @@ impl<'a> NavTitle<'a> {
             }
             confirm_pressed
         } else {
-            delete_button_resp
-                .on_hover_text(tr!("Delete this column", "Tooltip for deleting a column"));
+            delete_button_resp.on_hover_text(tr!(
+                self.i18n,
+                "Delete this column",
+                "Tooltip for deleting a column"
+            ));
             false
         }
     }
@@ -227,6 +237,7 @@ impl<'a> NavTitle<'a> {
         // showing the hover text while showing the move tooltip causes some weird visuals
         if ui.data(|d| d.get_temp::<bool>(cur_id).is_none()) {
             move_resp = move_resp.on_hover_text(tr!(
+                self.i18n,
                 "Moves this column to another position",
                 "Tooltip for moving a column"
             ));
@@ -522,8 +533,8 @@ impl<'a> NavTitle<'a> {
             .selectable(false)
     }
 
-    fn title_label(&self, ui: &mut egui::Ui, top: &Route) {
-        let column_title = top.title();
+    fn title_label(&mut self, ui: &mut egui::Ui, top: &Route) {
+        let column_title = top.title(self.i18n);
 
         match &column_title {
             ColumnTitle::Simple(title) => ui.add(Self::title_label_value(title)),

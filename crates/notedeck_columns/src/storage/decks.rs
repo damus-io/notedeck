@@ -13,7 +13,7 @@ use crate::{
     Error,
 };
 
-use notedeck::{storage, DataPath, DataPathType, Directory};
+use notedeck::{storage, DataPath, DataPathType, Directory, Localization};
 use tokenator::{ParseError, TokenParser, TokenWriter};
 
 pub static DECKS_CACHE_FILE: &str = "decks_cache.json";
@@ -22,6 +22,7 @@ pub fn load_decks_cache(
     path: &DataPath,
     ndb: &Ndb,
     timeline_cache: &mut TimelineCache,
+    i18n: &mut Localization,
 ) -> Option<DecksCache> {
     let data_path = path.path(DataPathType::Setting);
 
@@ -40,7 +41,7 @@ pub fn load_decks_cache(
         serde_json::from_str::<SerializableDecksCache>(&decks_cache_str).ok()?;
 
     serializable_decks_cache
-        .decks_cache(ndb, timeline_cache)
+        .decks_cache(ndb, timeline_cache, i18n)
         .ok()
 }
 
@@ -91,6 +92,7 @@ impl SerializableDecksCache {
         self,
         ndb: &Ndb,
         timeline_cache: &mut TimelineCache,
+        i18n: &mut Localization,
     ) -> Result<DecksCache, Error> {
         let account_to_decks = self
             .decks_cache
@@ -102,7 +104,7 @@ impl SerializableDecksCache {
             })
             .collect::<Result<HashMap<Pubkey, Decks>, Error>>()?;
 
-        Ok(DecksCache::new(account_to_decks))
+        Ok(DecksCache::new(account_to_decks, i18n))
     }
 }
 

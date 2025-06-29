@@ -5,7 +5,7 @@ use state::TypingType;
 use crate::{timeline::TimelineTab, ui::timeline::TimelineTabView};
 use egui_winit::clipboard::Clipboard;
 use nostrdb::{Filter, Ndb, Transaction};
-use notedeck::{tr, tr_plural, NoteAction, NoteContext, NoteRef};
+use notedeck::{tr, tr_plural, Localization, NoteAction, NoteContext, NoteRef};
 use notedeck_ui::{
     context_menu::{input_context, PasteBehavior},
     icons::search_icon,
@@ -54,6 +54,7 @@ impl<'a, 'd> SearchView<'a, 'd> {
         ui.spacing_mut().item_spacing = egui::vec2(0.0, 12.0);
 
         let search_resp = search_box(
+            self.note_context.i18n,
             &mut self.query.string,
             self.query.focus_state.clone(),
             ui,
@@ -120,6 +121,7 @@ impl<'a, 'd> SearchView<'a, 'd> {
             }
             SearchState::Searched => {
                 ui.label(tr_plural!(
+                    self.note_context.i18n,
                     "Got {count} result for '{query}'",  // one
                     "Got {count} results for '{query}'", // other
                     "Search results count",              // comment
@@ -130,6 +132,7 @@ impl<'a, 'd> SearchView<'a, 'd> {
             }
             SearchState::Typing(TypingType::AutoSearch) => {
                 ui.label(tr!(
+                    self.note_context.i18n,
                     "Searching for '{query}'",
                     "Search in progress message",
                     query = &self.query.string
@@ -247,6 +250,7 @@ impl SearchResponse {
 }
 
 fn search_box(
+    i18n: &mut Localization,
     input: &mut String,
     focus_state: FocusState,
     ui: &mut egui::Ui,
@@ -290,6 +294,7 @@ fn search_box(
                         TextEdit::singleline(input)
                             .hint_text(
                                 RichText::new(tr!(
+                                    i18n,
                                     "Search notes...",
                                     "Placeholder for search notes input field"
                                 ))

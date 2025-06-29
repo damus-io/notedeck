@@ -6,11 +6,11 @@ use nostrdb::{Ndb, Transaction};
 use notedeck::{
     contacts::{contacts_filter, hybrid_contacts_filter},
     filter::{self, default_limit, default_remote_limit, HybridFilter},
-    tr, FilterError, FilterState, NoteCache, RootIdError, RootNoteIdBuf,
+    tr, FilterError, FilterState, Localization, NoteCache, RootIdError, RootNoteIdBuf,
 };
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::hash::{Hash, Hasher};
-use std::{borrow::Cow, fmt::Display};
 use tokenator::{ParseError, TokenParser, TokenSerializable, TokenWriter};
 use tracing::{error, warn};
 
@@ -254,6 +254,7 @@ impl AlgoTimeline {
     }
 }
 
+/*
 impl Display for TimelineKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -301,6 +302,7 @@ impl Display for TimelineKind {
         }
     }
 }
+*/
 
 impl TimelineKind {
     pub fn pubkey(&self) -> Option<&Pubkey> {
@@ -594,31 +596,32 @@ impl TimelineKind {
         }
     }
 
-    pub fn to_title(&self) -> ColumnTitle<'_> {
+    pub fn to_title(&self, i18n: &mut Localization) -> ColumnTitle<'_> {
         match self {
             TimelineKind::Search(query) => {
                 ColumnTitle::formatted(format!("Search \"{}\"", query.search))
             }
             TimelineKind::List(list_kind) => match list_kind {
                 ListKind::Contact(_pubkey_source) => {
-                    ColumnTitle::formatted(tr!("Contacts", "Column title for contact lists"))
+                    ColumnTitle::formatted(tr!(i18n, "Contacts", "Column title for contact lists"))
                 }
             },
             TimelineKind::Algo(AlgoTimeline::LastPerPubkey(list_kind)) => match list_kind {
                 ListKind::Contact(_pubkey_source) => ColumnTitle::formatted(tr!(
+                    i18n,
                     "Contacts (last notes)",
                     "Column title for last notes per contact"
                 )),
             },
             TimelineKind::Notifications(_pubkey_source) => {
-                ColumnTitle::formatted(tr!("Notifications", "Column title for notifications"))
+                ColumnTitle::formatted(tr!(i18n, "Notifications", "Column title for notifications"))
             }
             TimelineKind::Profile(_pubkey_source) => ColumnTitle::needs_db(self),
             TimelineKind::Universe => {
-                ColumnTitle::formatted(tr!("Universe", "Column title for universe feed"))
+                ColumnTitle::formatted(tr!(i18n, "Universe", "Column title for universe feed"))
             }
             TimelineKind::Generic(_) => {
-                ColumnTitle::formatted(tr!("Custom", "Column title for custom timelines"))
+                ColumnTitle::formatted(tr!(i18n, "Custom", "Column title for custom timelines"))
             }
             TimelineKind::Hashtag(hashtag) => ColumnTitle::formatted(hashtag.join(" ").to_string()),
         }

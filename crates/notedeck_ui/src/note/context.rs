@@ -1,6 +1,6 @@
 use egui::{Rect, Vec2};
 use nostrdb::NoteKey;
-use notedeck::{tr, BroadcastContext, NoteContextSelection};
+use notedeck::{tr, BroadcastContext, Localization, NoteContextSelection};
 
 pub struct NoteContextButton {
     put_at: Option<Rect>,
@@ -105,24 +105,17 @@ impl NoteContextButton {
     #[profiling::function]
     pub fn menu(
         ui: &mut egui::Ui,
+        i18n: &mut Localization,
         button_response: egui::Response,
     ) -> Option<NoteContextSelection> {
         let mut context_selection: Option<NoteContextSelection> = None;
-
-        // Debug: Check if global i18n is available
-        if let Some(i18n) = notedeck::i18n::get_global_i18n() {
-            if let Ok(locale) = i18n.get_current_locale() {
-                tracing::debug!("Current locale in context menu: {}", locale);
-            }
-        } else {
-            tracing::warn!("Global i18n context not available in context menu");
-        }
 
         stationary_arbitrary_menu_button(ui, button_response, |ui| {
             ui.set_max_width(200.0);
 
             // Debug: Check what the tr! macro returns
             let copy_text = tr!(
+                i18n,
                 "Copy Text",
                 "Copy the text content of the note to clipboard"
             );
@@ -134,6 +127,7 @@ impl NoteContextButton {
             }
             if ui
                 .button(tr!(
+                    i18n,
                     "Copy Pubkey",
                     "Copy the author's public key to clipboard"
                 ))
@@ -144,6 +138,7 @@ impl NoteContextButton {
             }
             if ui
                 .button(tr!(
+                    i18n,
                     "Copy Note ID",
                     "Copy the unique note identifier to clipboard"
                 ))
@@ -154,6 +149,7 @@ impl NoteContextButton {
             }
             if ui
                 .button(tr!(
+                    i18n,
                     "Copy Note JSON",
                     "Copy the raw note data in JSON format to clipboard"
                 ))
@@ -164,6 +160,7 @@ impl NoteContextButton {
             }
             if ui
                 .button(tr!(
+                    i18n,
                     "Broadcast",
                     "Broadcast the note to all connected relays"
                 ))
@@ -176,6 +173,7 @@ impl NoteContextButton {
             }
             if ui
                 .button(tr!(
+                    i18n,
                     "Broadcast Local",
                     "Broadcast the note only to local network relays"
                 ))

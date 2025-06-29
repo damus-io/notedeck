@@ -2,17 +2,26 @@ use core::f32;
 
 use egui::{vec2, Button, CornerRadius, Layout, Margin, RichText, ScrollArea, TextEdit};
 use enostr::ProfileState;
-use notedeck::{profile::unwrap_profile_url, tr, Images, NotedeckTextStyle};
+use notedeck::{profile::unwrap_profile_url, tr, Images, Localization, NotedeckTextStyle};
 use notedeck_ui::{profile::banner, ProfilePic};
 
 pub struct EditProfileView<'a> {
     state: &'a mut ProfileState,
     img_cache: &'a mut Images,
+    i18n: &'a mut Localization,
 }
 
 impl<'a> EditProfileView<'a> {
-    pub fn new(state: &'a mut ProfileState, img_cache: &'a mut Images) -> Self {
-        Self { state, img_cache }
+    pub fn new(
+        i18n: &'a mut Localization,
+        state: &'a mut ProfileState,
+        img_cache: &'a mut Images,
+    ) -> Self {
+        Self {
+            i18n,
+            state,
+            img_cache,
+        }
     }
 
     // return true to save
@@ -34,8 +43,12 @@ impl<'a> EditProfileView<'a> {
                         if ui
                             .add(
                                 button(
-                                    tr!("Save changes", "Button label to save profile changes")
-                                        .as_str(),
+                                    tr!(
+                                        self.i18n,
+                                        "Save changes",
+                                        "Button label to save profile changes"
+                                    )
+                                    .as_str(),
                                     119.0,
                                 )
                                 .fill(notedeck_ui::colors::PINK),
@@ -70,42 +83,52 @@ impl<'a> EditProfileView<'a> {
 
         in_frame(ui, |ui| {
             ui.add(label(
-                tr!("Display name", "Profile display name field label").as_str(),
+                tr!(
+                    self.i18n,
+                    "Display name",
+                    "Profile display name field label"
+                )
+                .as_str(),
             ));
             ui.add(singleline_textedit(self.state.str_mut("display_name")));
         });
 
         in_frame(ui, |ui| {
             ui.add(label(
-                tr!("Username", "Profile username field label").as_str(),
+                tr!(self.i18n, "Username", "Profile username field label").as_str(),
             ));
             ui.add(singleline_textedit(self.state.str_mut("name")));
         });
 
         in_frame(ui, |ui| {
             ui.add(label(
-                tr!("Profile picture", "Profile picture URL field label").as_str(),
+                tr!(
+                    self.i18n,
+                    "Profile picture",
+                    "Profile picture URL field label"
+                )
+                .as_str(),
             ));
             ui.add(multiline_textedit(self.state.str_mut("picture")));
         });
 
         in_frame(ui, |ui| {
             ui.add(label(
-                tr!("Banner", "Profile banner URL field label").as_str(),
+                tr!(self.i18n, "Banner", "Profile banner URL field label").as_str(),
             ));
             ui.add(multiline_textedit(self.state.str_mut("banner")));
         });
 
         in_frame(ui, |ui| {
             ui.add(label(
-                tr!("About", "Profile about/bio field label").as_str(),
+                tr!(self.i18n, "About", "Profile about/bio field label").as_str(),
             ));
             ui.add(multiline_textedit(self.state.str_mut("about")));
         });
 
         in_frame(ui, |ui| {
             ui.add(label(
-                tr!("Website", "Profile website field label").as_str(),
+                tr!(self.i18n, "Website", "Profile website field label").as_str(),
             ));
             ui.add(singleline_textedit(self.state.str_mut("website")));
         });
@@ -113,6 +136,7 @@ impl<'a> EditProfileView<'a> {
         in_frame(ui, |ui| {
             ui.add(label(
                 tr!(
+                    self.i18n,
                     "Lightning network address (lud16)",
                     "Bitcoin Lightning network address field label"
                 )
@@ -124,6 +148,7 @@ impl<'a> EditProfileView<'a> {
         in_frame(ui, |ui| {
             ui.add(label(
                 tr!(
+                    self.i18n,
                     "Nostr address (NIP-05 identity)",
                     "NIP-05 identity field label"
                 )
@@ -153,12 +178,14 @@ impl<'a> EditProfileView<'a> {
                 ui.visuals().noninteractive().fg_stroke.color,
                 RichText::new(if use_domain {
                     tr!(
+                        self.i18n,
                         "\"{domain}\" will be used for identification",
                         "Domain identification message",
                         domain = suffix
                     )
                 } else {
                     tr!(
+                        self.i18n,
                         "\"{username}\" at \"{domain}\" will be used for identification",
                         "Username and domain identification message",
                         username = prefix,

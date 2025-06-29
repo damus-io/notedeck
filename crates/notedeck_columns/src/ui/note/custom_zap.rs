@@ -1,5 +1,3 @@
-use std::fmt::Display;
-
 use egui::{
     emath::GuiRounding, pos2, vec2, Color32, CornerRadius, FontId, Frame, Label, Layout, Slider,
     Stroke,
@@ -7,7 +5,8 @@ use egui::{
 use enostr::Pubkey;
 use nostrdb::{Ndb, ProfileRecord, Transaction};
 use notedeck::{
-    fonts::get_font_size, get_profile_url, name::get_display_name, tr, Images, NotedeckTextStyle,
+    fonts::get_font_size, get_profile_url, name::get_display_name, tr, Images, Localization,
+    NotedeckTextStyle,
 };
 use notedeck_ui::{
     app_images, colors, profile::display_name_widget, widgets::styled_button_toggleable,
@@ -20,11 +19,13 @@ pub struct CustomZapView<'a> {
     txn: &'a Transaction,
     target_pubkey: &'a Pubkey,
     default_msats: u64,
+    i18n: &'a mut Localization,
 }
 
 #[allow(clippy::new_without_default)]
 impl<'a> CustomZapView<'a> {
     pub fn new(
+        i18n: &'a mut Localization,
         images: &'a mut Images,
         ndb: &'a Ndb,
         txn: &'a Transaction,
@@ -37,6 +38,7 @@ impl<'a> CustomZapView<'a> {
             ndb,
             txn,
             default_msats,
+            i18n,
         }
     }
 
@@ -48,7 +50,7 @@ impl<'a> CustomZapView<'a> {
     }
 
     fn ui_internal(&mut self, ui: &mut egui::Ui) -> Option<u64> {
-        show_title(ui);
+        show_title(ui, self.i18n);
 
         ui.add_space(16.0);
 
@@ -82,7 +84,7 @@ impl<'a> CustomZapView<'a> {
             } else {
                 (self.default_msats / 1000).to_string()
             };
-            show_amount(ui, id, &mut cur_amount, slider_width);
+            show_amount(ui, self.i18n, id, &mut cur_amount, slider_width);
             let mut maybe_sats = cur_amount.parse::<u64>().ok();
 
             let prev_slider_sats = maybe_sats.unwrap_or(default_sats).clamp(1, 100000);
@@ -102,7 +104,7 @@ impl<'a> CustomZapView<'a> {
                 maybe_sats = Some(slider_sats);
             }
 
-            if let Some(selection) = show_selection_buttons(ui, maybe_sats) {
+            if let Some(selection) = show_selection_buttons(ui, maybe_sats, self.i18n) {
                 cur_amount = selection.to_string();
                 maybe_sats = Some(selection);
             }
@@ -110,7 +112,7 @@ impl<'a> CustomZapView<'a> {
             ui.data_mut(|d| d.insert_temp(id, cur_amount));
 
             let resp = ui.add(styled_button_toggleable(
-                &tr!("Send", "Button label to send a zap"),
+                &tr!(self.i18n, "Send", "Button label to send a zap"),
                 colors::PINK,
                 is_valid_zap(maybe_sats),
             ));
@@ -129,7 +131,7 @@ fn is_valid_zap(amount: Option<u64>) -> bool {
     amount.is_some_and(|sats| sats > 0)
 }
 
-fn show_title(ui: &mut egui::Ui) {
+fn show_title(ui: &mut egui::Ui, i18n: &mut Localization) {
     let max_size = 32.0;
     ui.allocate_ui_with_layout(
         vec2(ui.available_width(), max_size),
@@ -158,7 +160,7 @@ fn show_title(ui: &mut egui::Ui) {
             ui.add_space(8.0);
 
             ui.add(egui::Label::new(
-                egui::RichText::new(tr!("Zap", "Heading for zap (tip) action"))
+                egui::RichText::new(tr!(i18n, "Zap", "Heading for zap (tip) action"))
                     .text_style(NotedeckTextStyle::Heading2.text_style()),
             ));
         },
@@ -177,7 +179,13 @@ fn show_profile(ui: &mut egui::Ui, images: &mut Images, profile: Option<&Profile
     );
 }
 
-fn show_amount(ui: &mut egui::Ui, id: egui::Id, user_input: &mut String, width: f32) {
+fn show_amount(
+    ui: &mut egui::Ui,
+    i18n: &mut Localization,
+    id: egui::Id,
+    user_input: &mut String,
+    width: f32,
+) {
     let user_input_font = NotedeckTextStyle::Heading.get_bolded_font(ui.ctx());
 
     let user_input_id = id.with("sats_amount");
@@ -192,6 +200,7 @@ fn show_amount(ui: &mut egui::Ui, id: egui::Id, user_input: &mut String, width: 
 
     let sats_galley = painter.layout_no_wrap(
         tr!(
+            i18n,
             "SATS",
             "Label for satoshis (Bitcoin unit) for custom zap amount input field"
         ),
@@ -219,7 +228,7 @@ fn show_amount(ui: &mut egui::Ui, id: egui::Id, user_input: &mut String, width: 
                     .font(user_input_font);
 
                 let amount_resp = ui.add(Label::new(
-                    egui::RichText::new(tr!("Amount", "Label for zap amount input field"))
+                    egui::RichText::new(tr!(i18n, "Amount", "Label for zap amount input field"))
                         .text_style(NotedeckTextStyle::Heading3.text_style())
                         .color(ui.visuals().noninteractive().text_color()),
                 ));
@@ -300,7 +309,11 @@ const SELECTION_BUTTONS: [ZapSelectionButton; 8] = [
     ZapSelectionButton::Eighth,
 ];
 
-fn show_selection_buttons(ui: &mut egui::Ui, sats_selection: Option<u64>) -> Option<u64> {
+fn show_selection_buttons(
+    ui: &mut egui::Ui,
+    sats_selection: Option<u64>,
+    i18n: &mut Localization,
+) -> Option<u64> {
     let mut our_selection = None;
     ui.allocate_ui_with_layout(
         vec2(224.0, 116.0),
@@ -309,7 +322,8 @@ fn show_selection_buttons(ui: &mut egui::Ui, sats_selection: Option<u64>) -> Opt
             ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
 
             for button in SELECTION_BUTTONS {
-                our_selection = our_selection.or(show_selection_button(ui, sats_selection, button));
+                our_selection =
+                    our_selection.or(show_selection_button(ui, sats_selection, button, i18n));
             }
         },
     );
@@ -321,6 +335,7 @@ fn show_selection_button(
     ui: &mut egui::Ui,
     sats_selection: Option<u64>,
     button: ZapSelectionButton,
+    i18n: &mut Localization,
 ) -> Option<u64> {
     let (rect, _) = ui.allocate_exact_size(vec2(50.0, 50.0), egui::Sense::click());
     let helper = AnimationHelper::new_from_rect(ui, ("zap_selection_button", &button), rect);
@@ -353,7 +368,11 @@ fn show_selection_button(
         NotedeckTextStyle::Body.font_family(),
     );
 
-    let galley = painter.layout_no_wrap(button.to_string(), fontid, ui.visuals().text_color());
+    let galley = painter.layout_no_wrap(
+        button.to_desc_string(i18n),
+        fontid,
+        ui.visuals().text_color(),
+    );
     let text_rect = {
         let mut galley_rect = galley.rect;
         galley_rect.set_center(rect.center());
@@ -394,19 +413,17 @@ impl ZapSelectionButton {
             ZapSelectionButton::Eighth => 100_000,
         }
     }
-}
 
-impl Display for ZapSelectionButton {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    pub fn to_desc_string(&self, i18n: &mut Localization) -> String {
         match self {
-            ZapSelectionButton::First => write!(f, "69"),
-            ZapSelectionButton::Second => write!(f, "100"),
-            ZapSelectionButton::Third => write!(f, "420"),
-            ZapSelectionButton::Fourth => write!(f, "{}", tr!("5K", "Zap amount button for 5000 sats. Abbreviated because the button is too small to display the full amount.")),
-            ZapSelectionButton::Fifth => write!(f, "{}", tr!("10K", "Zap amount button for 10000 sats. Abbreviated because the button is too small to display the full amount.")),
-            ZapSelectionButton::Sixth => write!(f, "{}", tr!("20K", "Zap amount button for 20000 sats. Abbreviated because the button is too small to display the full amount.")),
-            ZapSelectionButton::Seventh => write!(f, "{}", tr!("50K", "Zap amount button for 50000 sats. Abbreviated because the button is too small to display the full amount.")),
-            ZapSelectionButton::Eighth => write!(f, "{}", tr!("100K", "Zap amount button for 100000 sats. Abbreviated because the button is too small to display the full amount.")),
+            ZapSelectionButton::First => "69".to_string(),
+            ZapSelectionButton::Second => "100".to_string(),
+            ZapSelectionButton::Third => "420".to_string(),
+            ZapSelectionButton::Fourth => tr!(i18n, "5K", "Zap amount button for 5000 sats. Abbreviated because the button is too small to display the full amount."),
+            ZapSelectionButton::Fifth => tr!(i18n, "10K", "Zap amount button for 10000 sats. Abbreviated because the button is too small to display the full amount."),
+            ZapSelectionButton::Sixth => tr!(i18n, "20K", "Zap amount button for 20000 sats. Abbreviated because the button is too small to display the full amount."),
+            ZapSelectionButton::Seventh => tr!(i18n, "50K", "Zap amount button for 50000 sats. Abbreviated because the button is too small to display the full amount."),
+            ZapSelectionButton::Eighth => tr!(i18n, "100K", "Zap amount button for 100000 sats. Abbreviated because the button is too small to display the full amount."),
         }
     }
 }

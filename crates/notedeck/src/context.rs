@@ -1,5 +1,5 @@
 use crate::{
-    account::accounts::Accounts, frame_history::FrameHistory, i18n::LocalizationContext,
+    account::accounts::Accounts, frame_history::FrameHistory, i18n::Localization,
     wallet::GlobalWallet, zaps::Zaps, Args, DataPath, Images, JobPool, NoteCache, ThemeHandler,
     UnknownIds,
 };
@@ -25,5 +25,5 @@ pub struct AppContext<'a> {
     pub zaps: &'a mut Zaps,
     pub frame_history: &'a mut FrameHistory,
     pub job_pool: &'a mut JobPool,
-    pub i18n: &'a LocalizationContext,
+    pub i18n: &'a mut Localization,
 }

@@ -9,8 +9,8 @@ use crate::{
 use notedeck::{
     contacts::hybrid_contacts_filter,
     filter::{self, HybridFilter},
-    tr, Accounts, CachedNote, ContactState, FilterError, FilterState, FilterStates, NoteCache,
-    NoteRef, UnknownIds,
+    tr, Accounts, CachedNote, ContactState, FilterError, FilterState, FilterStates, Localization,
+    NoteCache, NoteRef, UnknownIds,
 };
 
 use egui_virtual_list::VirtualList;
@@ -64,11 +64,15 @@ pub enum ViewFilter {
 }
 
 impl ViewFilter {
-    pub fn name(&self) -> String {
+    pub fn name(&self, i18n: &mut Localization) -> String {
         match self {
-            ViewFilter::Notes => tr!("Notes", "Filter label for notes only view"),
+            ViewFilter::Notes => tr!(i18n, "Notes", "Filter label for notes only view"),
             ViewFilter::NotesAndReplies => {
-                tr!("Notes & Replies", "Filter label for notes and replies view")
+                tr!(
+                    i18n,
+                    "Notes & Replies",
+                    "Filter label for notes and replies view"
+                )
             }
         }
     }

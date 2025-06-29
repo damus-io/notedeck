@@ -1,7 +1,7 @@
 use enostr::{FullKeypair, Pubkey};
 use nostrdb::{Ndb, Transaction};
 
-use notedeck::{Accounts, AppContext, SingleUnkIdAction, UnknownIds};
+use notedeck::{Accounts, AppContext, Localization, SingleUnkIdAction, UnknownIds};
 
 use crate::app::get_active_columns_mut;
 use crate::decks::DecksCache;
@@ -72,23 +72,34 @@ pub fn render_accounts_route(
     route: AccountsRoute,
 ) -> AddAccountAction {
     let resp = match route {
-        AccountsRoute::Accounts => {
-            AccountsView::new(app_ctx.ndb, app_ctx.accounts, app_ctx.img_cache)
+        AccountsRoute::Accounts => AccountsView::new(
+            app_ctx.ndb,
+            app_ctx.accounts,
+            app_ctx.img_cache,
+            app_ctx.i18n,
+        )
+        .ui(ui)
+        .inner
+        .map(AccountsRouteResponse::Accounts),
+
+        AccountsRoute::AddAccount => {
+            AccountLoginView::new(login_state, app_ctx.clipboard, app_ctx.i18n)
                 .ui(ui)
                 .inner
-                .map(AccountsRouteResponse::Accounts)
+                .map(AccountsRouteResponse::AddAccount)
         }
-
-        AccountsRoute::AddAccount => AccountLoginView::new(login_state, app_ctx.clipboard)
-            .ui(ui)
-            .inner
-            .map(AccountsRouteResponse::AddAccount),
     };
 
     if let Some(resp) = resp {
         match resp {
             AccountsRouteResponse::Accounts(response) => {
-                let action = process_accounts_view_response(app_ctx.accounts, decks, col, response);
+                let action = process_accounts_view_response(
+                    app_ctx.i18n,
+                    app_ctx.accounts,
+                    decks,
+                    col,
+                    response,
+                );
                 AddAccountAction {
                     accounts_action: action,
                     unk_id_action: SingleUnkIdAction::no_action(),
@@ -98,7 +109,7 @@ pub fn render_accounts_route(
                 let action =
                     process_login_view_response(app_ctx, timeline_cache, decks, col, response);
                 *login_state = Default::default();
-                let router = get_active_columns_mut(app_ctx.accounts, decks)
+                let router = get_active_columns_mut(app_ctx.i18n, app_ctx.accounts, decks)
                     .column_mut(col)
                     .router_mut();
                 router.go_back();
@@ -114,12 +125,13 @@ pub fn render_accounts_route(
 }
 
 pub fn process_accounts_view_response(
+    i18n: &mut Localization,
     accounts: &mut Accounts,
     decks: &mut DecksCache,
     col: usize,
     response: AccountsViewResponse,
 ) -> Option<AccountsAction> {
-    let router = get_active_columns_mut(accounts, decks)
+    let router = get_active_columns_mut(i18n, accounts, decks)
         .column_mut(col)
         .router_mut();
     let mut action = None;

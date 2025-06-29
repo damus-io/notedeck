@@ -1,7 +1,7 @@
 use egui::{vec2, CornerRadius, Layout};
 use notedeck::{
-    get_current_wallet, tr, Accounts, DefaultZapMsats, GlobalWallet, NotedeckTextStyle,
-    PendingDefaultZapState, Wallet, WalletError, WalletUIState, ZapWallet,
+    get_current_wallet, tr, Accounts, DefaultZapMsats, GlobalWallet, Localization,
+    NotedeckTextStyle, PendingDefaultZapState, Wallet, WalletError, WalletUIState, ZapWallet,
 };
 
 use crate::{nav::RouterAction, route::Route};
@@ -153,11 +153,12 @@ impl WalletAction {
 
 pub struct WalletView<'a> {
     state: WalletState<'a>,
+    i18n: &'a mut Localization,
 }
 
 impl<'a> WalletView<'a> {
-    pub fn new(state: WalletState<'a>) -> Self {
-        Self { state }
+    pub fn new(state: WalletState<'a>, i18n: &'a mut Localization) -> Self {
+        Self { state, i18n }
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui) -> Option<WalletAction> {
@@ -173,11 +174,17 @@ impl<'a> WalletView<'a> {
                 wallet,
                 default_zap_state,
                 can_create_local_wallet,
-            } => show_with_wallet(ui, wallet, default_zap_state, *can_create_local_wallet),
+            } => show_with_wallet(
+                ui,
+                self.i18n,
+                wallet,
+                default_zap_state,
+                *can_create_local_wallet,
+            ),
             WalletState::NoWallet {
                 state,
                 show_local_only,
-            } => show_no_wallet(ui, state, *show_local_only),
+            } => show_no_wallet(ui, self.i18n, state, *show_local_only),
         }
     }
 }
@@ -196,6 +203,7 @@ fn try_create_wallet(state: &mut WalletUIState) -> Option<Wallet> {
 
 fn show_no_wallet(
     ui: &mut egui::Ui,
+    i18n: &mut Localization,
     state: &mut WalletUIState,
     show_local_only: bool,
 ) -> Option<WalletAction> {
@@ -203,6 +211,7 @@ fn show_no_wallet(
         let text_edit = egui::TextEdit::singleline(&mut state.buf)
             .hint_text(
                 egui::RichText::new(tr!(
+                    i18n,
                     "Paste your NWC URI here...",
                     "Placeholder text for NWC URI input"
                 ))
@@ -222,10 +231,12 @@ fn show_no_wallet(
 
         let error_str = match error_msg {
             WalletError::InvalidURI => tr!(
+                i18n,
                 "Invalid NWC URI",
                 "Error message for invalid Nostr Wallet Connect URI"
             ),
             WalletError::NoWallet => tr!(
+                i18n,
                 "Add a wallet to continue",
                 "Error message for missing wallet"
             ),
@@ -239,6 +250,7 @@ fn show_no_wallet(
         ui.checkbox(
             &mut state.for_local_only,
             tr!(
+                i18n,
                 "Use this wallet for the current account only",
                 "Checkbox label for using wallet only for current account"
             ),
@@ -248,7 +260,7 @@ fn show_no_wallet(
 
     ui.with_layout(Layout::top_down(egui::Align::Center), |ui| {
         ui.add(styled_button(
-            tr!("Add Wallet", "Button label to add a wallet").as_str(),
+            tr!(i18n, "Add Wallet", "Button label to add a wallet").as_str(),
             notedeck_ui::colors::PINK,
         ))
         .clicked()
@@ -259,6 +271,7 @@ fn show_no_wallet(
 
 fn show_with_wallet(
     ui: &mut egui::Ui,
+    i18n: &mut Localization,
     wallet: &mut Wallet,
     default_zap_state: &mut DefaultZapState,
     can_create_local_wallet: bool,
@@ -279,12 +292,12 @@ fn show_with_wallet(
         }
     });
 
-    let mut action = show_default_zap(ui, default_zap_state);
+    let mut action = show_default_zap(ui, i18n, default_zap_state);
 
     ui.with_layout(Layout::bottom_up(egui::Align::Min), |ui| 's: {
         if ui
             .add(styled_button(
-                tr!("Delete Wallet", "Button label to delete a wallet").as_str(),
+                tr!(i18n, "Delete Wallet", "Button label to delete a wallet").as_str(),
                 ui.visuals().window_fill,
             ))
             .clicked()
@@ -299,6 +312,7 @@ fn show_with_wallet(
                 .checkbox(
                     &mut false,
                     tr!(
+                        i18n,
                         "Add a different wallet that will only be used for this account",
                         "Button label to add a different wallet"
                     ),
@@ -323,13 +337,17 @@ fn show_balance(ui: &mut egui::Ui, msats: u64) -> egui::Response {
     .inner
 }
 
-fn show_default_zap(ui: &mut egui::Ui, state: &mut DefaultZapState) -> Option<WalletAction> {
+fn show_default_zap(
+    ui: &mut egui::Ui,
+    i18n: &mut Localization,
+    state: &mut DefaultZapState,
+) -> Option<WalletAction> {
     let mut action = None;
     ui.allocate_ui_with_layout(
         vec2(ui.available_width(), 50.0),
         egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true),
         |ui| {
-            ui.label(tr!("Default amount per zap: ", "Label for default zap amount input"));
+            ui.label(tr!(i18n, "Default amount per zap: ", "Label for default zap amount input"));
             match state {
                 DefaultZapState::Pending(pending_default_zap_state) => {
                     let text = &mut pending_default_zap_state.amount_sats;
@@ -361,27 +379,27 @@ fn show_default_zap(ui: &mut egui::Ui, state: &mut DefaultZapState) -> Option<Wa
 
                     ui.memory_mut(|m| m.request_focus(id));
 
-                    ui.label(tr!("sats", "Unit label for satoshis (Bitcoin unit) for configuring default zap amount in wallet settings."));
+                    ui.label(tr!(i18n, "sats", "Unit label for satoshis (Bitcoin unit) for configuring default zap amount in wallet settings."));
 
                     if ui
-                        .add(styled_button(tr!("Save", "Button to save default zap amount").as_str(), ui.visuals().widgets.active.bg_fill))
+                        .add(styled_button(tr!(i18n, "Save", "Button to save default zap amount").as_str(), ui.visuals().widgets.active.bg_fill))
                         .clicked()
                     {
                         action = Some(WalletAction::SetDefaultZapSats(text.to_string()));
                     }
                 }
                 DefaultZapState::Valid(msats) => {
-                    if let Some(wallet_action) = show_valid_msats(ui, **msats) {
+                    if let Some(wallet_action) = show_valid_msats(ui, i18n, **msats) {
                         action = Some(wallet_action);
                     }
-                    ui.label(tr!("sats", "Unit label for satoshis (Bitcoin unit) for configuring default zap amount in wallet settings."));
+                    ui.label(tr!(i18n, "sats", "Unit label for satoshis (Bitcoin unit) for configuring default zap amount in wallet settings."));
                 }
             }
 
             if let DefaultZapState::Pending(pending) = state {
                 if let Some(error_message) = &pending.error_message {
                     let msg_str = match error_message {
-                        notedeck::DefaultZapError::InvalidUserInput => tr!("Invalid amount", "Error message for invalid zap amount"),
+                        notedeck::DefaultZapError::InvalidUserInput => tr!(i18n, "Invalid amount", "Error message for invalid zap amount"),
                     };
 
                     ui.colored_label(ui.visuals().warn_fg_color, msg_str);
@@ -393,7 +411,11 @@ fn show_default_zap(ui: &mut egui::Ui, state: &mut DefaultZapState) -> Option<Wa
     action
 }
 
-fn show_valid_msats(ui: &mut egui::Ui, msats: u64) -> Option<WalletAction> {
+fn show_valid_msats(
+    ui: &mut egui::Ui,
+    i18n: &mut Localization,
+    msats: u64,
+) -> Option<WalletAction> {
     let galley = {
         let painter = ui.painter();
 
@@ -409,7 +431,11 @@ fn show_valid_msats(ui: &mut egui::Ui, msats: u64) -> Option<WalletAction> {
 
     let resp = resp
         .on_hover_cursor(egui::CursorIcon::PointingHand)
-        .on_hover_text_at_pointer(tr!("Click to edit", "Hover text for editable zap amount"));
+        .on_hover_text_at_pointer(tr!(
+            i18n,
+            "Click to edit",
+            "Hover text for editable zap amount"
+        ));
 
     let painter = ui.painter_at(resp.rect);
 

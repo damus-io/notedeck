@@ -1,5 +1,5 @@
 use egui::{vec2, Button, Label, Layout, RichText};
-use notedeck::{tr, NamedFontFamily, NotedeckTextStyle};
+use notedeck::{tr, Localization, NamedFontFamily, NotedeckTextStyle};
 use notedeck_ui::{colors::PINK, padding};
 use tracing::error;
 
@@ -7,11 +7,12 @@ use crate::support::Support;
 
 pub struct SupportView<'a> {
     support: &'a mut Support,
+    i18n: &'a mut Localization,
 }
 
 impl<'a> SupportView<'a> {
-    pub fn new(support: &'a mut Support) -> Self {
-        Self { support }
+    pub fn new(support: &'a mut Support, i18n: &'a mut Localization) -> Self {
+        Self { support, i18n }
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui) {
@@ -22,14 +23,24 @@ impl<'a> SupportView<'a> {
                 egui::FontFamily::Name(NamedFontFamily::Bold.as_str().into()),
             );
             ui.add(Label::new(
-                RichText::new(tr!("Running into a bug?", "Heading for support section")).font(font),
+                RichText::new(tr!(
+                    self.i18n,
+                    "Running into a bug?",
+                    "Heading for support section"
+                ))
+                .font(font),
             ));
             ui.label(
-                RichText::new(tr!("Step 1", "Step 1 label in support instructions"))
-                    .text_style(NotedeckTextStyle::Heading3.text_style()),
+                RichText::new(tr!(
+                    self.i18n,
+                    "Step 1",
+                    "Step 1 label in support instructions"
+                ))
+                .text_style(NotedeckTextStyle::Heading3.text_style()),
             );
             padding(8.0, ui, |ui| {
                 ui.label(tr!(
+                    self.i18n,
                     "Open your default email client to get help from the Damus team",
                     "Instruction to open email client"
                 ));
@@ -37,7 +48,7 @@ impl<'a> SupportView<'a> {
                 ui.allocate_ui_with_layout(size, Layout::top_down(egui::Align::Center), |ui| {
                     let font_size =
                         notedeck::fonts::get_font_size(ui.ctx(), &NotedeckTextStyle::Body);
-                    let button_resp = ui.add(open_email_button(font_size, size));
+                    let button_resp = ui.add(open_email_button(self.i18n, font_size, size));
                     if button_resp.clicked() {
                         if let Err(e) = open::that(self.support.get_mailto_url()) {
                             error!(
@@ -55,19 +66,23 @@ impl<'a> SupportView<'a> {
 
             if let Some(logs) = self.support.get_most_recent_log() {
                 ui.label(
-                    RichText::new(tr!("Step 2", "Step 2 label in support instructions"))
-                        .text_style(NotedeckTextStyle::Heading3.text_style()),
+                    RichText::new(tr!(
+                        self.i18n,
+                        "Step 2",
+                        "Step 2 label in support instructions"
+                    ))
+                    .text_style(NotedeckTextStyle::Heading3.text_style()),
                 );
                 let size = vec2(80.0, 40.0);
                 let copy_button = Button::new(
-                    RichText::new(tr!("Copy", "Button label to copy logs")).size(
+                    RichText::new(tr!(self.i18n, "Copy", "Button label to copy logs")).size(
                         notedeck::fonts::get_font_size(ui.ctx(), &NotedeckTextStyle::Body),
                     ),
                 )
                 .fill(PINK)
                 .min_size(size);
                 padding(8.0, ui, |ui| {
-                    ui.add(Label::new(RichText::new(tr!("Press the button below to copy your most recent logs to your system's clipboard. Then paste it into your email.", "Instruction for copying logs"))).wrap());
+                    ui.add(Label::new(RichText::new(tr!(self.i18n,"Press the button below to copy your most recent logs to your system's clipboard. Then paste it into your email.", "Instruction for copying logs"))).wrap());
                     ui.allocate_ui_with_layout(size, Layout::top_down(egui::Align::Center), |ui| {
                         if ui.add(copy_button).clicked() {
                             ui.ctx().copy_text(logs.to_string());
@@ -86,9 +101,13 @@ impl<'a> SupportView<'a> {
     }
 }
 
-fn open_email_button(font_size: f32, size: egui::Vec2) -> impl egui::Widget {
+fn open_email_button(
+    i18n: &mut Localization,
+    font_size: f32,
+    size: egui::Vec2,
+) -> impl egui::Widget {
     Button::new(
-        RichText::new(tr!("Open Email", "Button label to open email client")).size(font_size),
+        RichText::new(tr!(i18n, "Open Email", "Button label to open email client")).size(font_size),
     )
     .fill(PINK)
     .min_size(size)

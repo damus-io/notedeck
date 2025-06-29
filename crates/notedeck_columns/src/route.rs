@@ -1,16 +1,10 @@
 use enostr::{NoteId, Pubkey};
-use notedeck::{tr, NoteZapTargetOwned, RootNoteIdBuf, WalletType};
-use std::{
-    fmt::{self},
-    ops::Range,
-};
+use notedeck::{tr, Localization, NoteZapTargetOwned, RootNoteIdBuf, WalletType};
+use std::ops::Range;
 
 use crate::{
     accounts::AccountsRoute,
-    timeline::{
-        kind::{AlgoTimeline, ColumnTitle, ListKind},
-        ThreadSelection, TimelineKind,
-    },
+    timeline::{kind::ColumnTitle, ThreadSelection, TimelineKind},
     ui::add_column::{AddAlgoRoute, AddColumnRoute},
 };
 
@@ -241,85 +235,104 @@ impl Route {
         )
     }
 
-    pub fn title(&self) -> ColumnTitle<'_> {
+    pub fn title(&self, i18n: &mut Localization) -> ColumnTitle<'_> {
         match self {
-            Route::Timeline(kind) => kind.to_title(),
+            Route::Timeline(kind) => kind.to_title(i18n),
             Route::Thread(_) => {
-                ColumnTitle::formatted(tr!("Thread", "Column title for note thread view"))
+                ColumnTitle::formatted(tr!(i18n, "Thread", "Column title for note thread view"))
             }
             Route::Reply(_id) => {
-                ColumnTitle::formatted(tr!("Reply", "Column title for reply composition"))
+                ColumnTitle::formatted(tr!(i18n, "Reply", "Column title for reply composition"))
             }
             Route::Quote(_id) => {
-                ColumnTitle::formatted(tr!("Quote", "Column title for quote composition"))
+                ColumnTitle::formatted(tr!(i18n, "Quote", "Column title for quote composition"))
             }
             Route::Relays => {
-                ColumnTitle::formatted(tr!("Relays", "Column title for relay management"))
+                ColumnTitle::formatted(tr!(i18n, "Relays", "Column title for relay management"))
             }
             Route::Accounts(amr) => match amr {
-                AccountsRoute::Accounts => {
-                    ColumnTitle::formatted(tr!("Accounts", "Column title for account management"))
-                }
+                AccountsRoute::Accounts => ColumnTitle::formatted(tr!(
+                    i18n,
+                    "Accounts",
+                    "Column title for account management"
+                )),
                 AccountsRoute::AddAccount => ColumnTitle::formatted(tr!(
+                    i18n,
                     "Add Account",
                     "Column title for adding new account"
                 )),
             },
-            Route::ComposeNote => {
-                ColumnTitle::formatted(tr!("Compose Note", "Column title for note composition"))
-            }
+            Route::ComposeNote => ColumnTitle::formatted(tr!(
+                i18n,
+                "Compose Note",
+                "Column title for note composition"
+            )),
             Route::AddColumn(c) => match c {
-                AddColumnRoute::Base => {
-                    ColumnTitle::formatted(tr!("Add Column", "Column title for adding new column"))
-                }
+                AddColumnRoute::Base => ColumnTitle::formatted(tr!(
+                    i18n,
+                    "Add Column",
+                    "Column title for adding new column"
+                )),
                 AddColumnRoute::Algo(r) => match r {
                     AddAlgoRoute::Base => ColumnTitle::formatted(tr!(
+                        i18n,
                         "Add Algo Column",
                         "Column title for adding algorithm column"
                     )),
                     AddAlgoRoute::LastPerPubkey => ColumnTitle::formatted(tr!(
+                        i18n,
                         "Add Last Notes Column",
                         "Column title for adding last notes column"
                     )),
                 },
                 AddColumnRoute::UndecidedNotification => ColumnTitle::formatted(tr!(
+                    i18n,
                     "Add Notifications Column",
                     "Column title for adding notifications column"
                 )),
                 AddColumnRoute::ExternalNotification => ColumnTitle::formatted(tr!(
+                    i18n,
                     "Add External Notifications Column",
                     "Column title for adding external notifications column"
                 )),
                 AddColumnRoute::Hashtag => ColumnTitle::formatted(tr!(
+                    i18n,
                     "Add Hashtag Column",
                     "Column title for adding hashtag column"
                 )),
                 AddColumnRoute::UndecidedIndividual => ColumnTitle::formatted(tr!(
+                    i18n,
                     "Subscribe to someone's notes",
                     "Column title for subscribing to individual user"
                 )),
                 AddColumnRoute::ExternalIndividual => ColumnTitle::formatted(tr!(
+                    i18n,
                     "Subscribe to someone else's notes",
                     "Column title for subscribing to external user"
                 )),
             },
             Route::Support => {
-                ColumnTitle::formatted(tr!("Damus Support", "Column title for support page"))
+                ColumnTitle::formatted(tr!(i18n, "Damus Support", "Column title for support page"))
             }
             Route::NewDeck => {
-                ColumnTitle::formatted(tr!("Add Deck", "Column title for adding new deck"))
+                ColumnTitle::formatted(tr!(i18n, "Add Deck", "Column title for adding new deck"))
             }
             Route::EditDeck(_) => {
-                ColumnTitle::formatted(tr!("Edit Deck", "Column title for editing deck"))
+                ColumnTitle::formatted(tr!(i18n, "Edit Deck", "Column title for editing deck"))
             }
-            Route::EditProfile(_) => {
-                ColumnTitle::formatted(tr!("Edit Profile", "Column title for profile editing"))
+            Route::EditProfile(_) => ColumnTitle::formatted(tr!(
+                i18n,
+                "Edit Profile",
+                "Column title for profile editing"
+            )),
+            Route::Search => {
+                ColumnTitle::formatted(tr!(i18n, "Search", "Column title for search page"))
             }
-            Route::Search => ColumnTitle::formatted(tr!("Search", "Column title for search page")),
             Route::Wallet(_) => {
-                ColumnTitle::formatted(tr!("Wallet", "Column title for wallet management"))
+                ColumnTitle::formatted(tr!(i18n, "Wallet", "Column title for wallet management"))
             }
             Route::CustomizeZapAmount(_) => ColumnTitle::formatted(tr!(
+                i18n,
                 "Customize Zap Amount",
                 "Column title for zap amount customization"
             )),
@@ -492,12 +505,13 @@ impl<R: Clone> Router<R> {
     }
 }
 
+/*
 impl fmt::Display for Route {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Route::Timeline(kind) => match kind {
                 TimelineKind::List(ListKind::Contact(_pk)) => {
-                    write!(f, "{}", tr!("Home", "Display name for home feed"))
+                    write!(f, "{}", i18n, "Home", "Display name for home feed"))
                 }
                 TimelineKind::Algo(AlgoTimeline::LastPerPubkey(ListKind::Contact(_))) => {
                     write!(
@@ -583,6 +597,7 @@ impl fmt::Display for Route {
         }
     }
 }
+*/
 
 #[derive(Clone, Debug)]
 pub struct SingletonRouter<R: Clone> {

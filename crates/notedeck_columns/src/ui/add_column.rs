@@ -17,7 +17,7 @@ use crate::{
     Damus,
 };
 
-use notedeck::{tr, AppContext, Images, NotedeckTextStyle, UserAccount};
+use notedeck::{tr, AppContext, Images, Localization, NotedeckTextStyle, UserAccount};
 use notedeck_ui::{anim::ICON_EXPANSION_MULTIPLE, app_images};
 use tokenator::{ParseError, TokenParser, TokenSerializable, TokenWriter};
 
@@ -167,6 +167,7 @@ pub struct AddColumnView<'a> {
     ndb: &'a Ndb,
     img_cache: &'a mut Images,
     cur_account: &'a UserAccount,
+    i18n: &'a mut Localization,
 }
 
 impl<'a> AddColumnView<'a> {
@@ -175,12 +176,14 @@ impl<'a> AddColumnView<'a> {
         ndb: &'a Ndb,
         img_cache: &'a mut Images,
         cur_account: &'a UserAccount,
+        i18n: &'a mut Localization,
     ) -> Self {
         Self {
             key_state_map,
             ndb,
             img_cache,
             cur_account,
+            i18n,
         }
     }
 
@@ -229,8 +232,9 @@ impl<'a> AddColumnView<'a> {
         deck_author: Pubkey,
     ) -> Option<AddColumnResponse> {
         let algo_option = ColumnOptionData {
-            title: tr!("Contact List", "Title for contact list column"),
+            title: tr!(self.i18n, "Contact List", "Title for contact list column"),
             description: tr!(
+                self.i18n,
                 "Source the last note for each user in your contact list",
                 "Description for contact list column"
             ),
@@ -248,8 +252,13 @@ impl<'a> AddColumnView<'a> {
 
     fn algo_ui(&mut self, ui: &mut Ui) -> Option<AddColumnResponse> {
         let algo_option = ColumnOptionData {
-            title: tr!("Last Note per User", "Title for last note per user column"),
+            title: tr!(
+                self.i18n,
+                "Last Note per User",
+                "Title for last note per user column"
+            ),
             description: tr!(
+                self.i18n,
                 "Show the last note for each user from a list",
                 "Description for last note per user column"
             ),
@@ -298,6 +307,7 @@ impl<'a> AddColumnView<'a> {
                 egui::TextEdit::singleline(text)
                     .hint_text(
                         RichText::new(tr!(
+                            self.i18n,
                             "Enter the user's key (npub, hex, nip05) here...",
                             "Hint text to prompt entering the user's public key."
                         ))
@@ -312,9 +322,11 @@ impl<'a> AddColumnView<'a> {
             ui.add(text_edit);
 
             key_state.handle_input_change_after_acquire();
-            key_state.loading_and_error_ui(ui);
+            key_state.loading_and_error_ui(ui, self.i18n);
 
-            if key_state.get_login_keypair().is_none() && ui.add(find_user_button()).clicked() {
+            if key_state.get_login_keypair().is_none()
+                && ui.add(find_user_button(self.i18n)).clicked()
+            {
                 key_state.apply_acquire();
             }
 
@@ -337,7 +349,7 @@ impl<'a> AddColumnView<'a> {
                     }
                 }
 
-                ui.add(add_column_button())
+                ui.add(add_column_button(self.i18n))
                     .clicked()
                     .then(|| to_option(keypair.pubkey).take_as_response(self.cur_account))
             } else {
@@ -452,11 +464,12 @@ impl<'a> AddColumnView<'a> {
         helper.take_animation_response()
     }
 
-    fn get_base_options(&self, ui: &mut Ui) -> Vec<ColumnOptionData> {
+    fn get_base_options(&mut self, ui: &mut Ui) -> Vec<ColumnOptionData> {
         let mut vec = Vec::new();
         vec.push(ColumnOptionData {
-            title: tr!("Home", "Title for Home column"),
+            title: tr!(self.i18n, "Home", "Title for Home column"),
             description: tr!(
+                self.i18n,
                 "See notes from your contacts",
                 "Description for Home column"
             ),
@@ -468,8 +481,9 @@ impl<'a> AddColumnView<'a> {
             }),
         });
         vec.push(ColumnOptionData {
-            title: tr!("Notifications", "Title for notifications column"),
+            title: tr!(self.i18n, "Notifications", "Title for notifications column"),
             description: tr!(
+                self.i18n,
                 "Stay up to date with notifications and mentions",
                 "Description for notifications column"
             ),
@@ -477,8 +491,9 @@ impl<'a> AddColumnView<'a> {
             option: AddColumnOption::UndecidedNotification,
         });
         vec.push(ColumnOptionData {
-            title: tr!("Universe", "Title for universe column"),
+            title: tr!(self.i18n, "Universe", "Title for universe column"),
             description: tr!(
+                self.i18n,
                 "See the whole nostr universe",
                 "Description for universe column"
             ),
@@ -486,8 +501,9 @@ impl<'a> AddColumnView<'a> {
             option: AddColumnOption::Universe,
         });
         vec.push(ColumnOptionData {
-            title: tr!("Hashtags", "Title for hashtags column"),
+            title: tr!(self.i18n, "Hashtags", "Title for hashtags column"),
             description: tr!(
+                self.i18n,
                 "Stay up to date with a certain hashtag",
                 "Description for hashtags column"
             ),
@@ -495,8 +511,9 @@ impl<'a> AddColumnView<'a> {
             option: AddColumnOption::UndecidedHashtag,
         });
         vec.push(ColumnOptionData {
-            title: tr!("Individual", "Title for individual user column"),
+            title: tr!(self.i18n, "Individual", "Title for individual user column"),
             description: tr!(
+                self.i18n,
                 "Stay up to date with someone's notes & replies",
                 "Description for individual user column"
             ),
@@ -504,8 +521,9 @@ impl<'a> AddColumnView<'a> {
             option: AddColumnOption::UndecidedIndividual,
         });
         vec.push(ColumnOptionData {
-            title: tr!("Algo", "Title for algorithmic feeds column"),
+            title: tr!(self.i18n, "Algo", "Title for algorithmic feeds column"),
             description: tr!(
+                self.i18n,
                 "Algorithmic feeds to aid in note discovery",
                 "Description for algorithmic feeds column"
             ),
@@ -516,7 +534,7 @@ impl<'a> AddColumnView<'a> {
         vec
     }
 
-    fn get_notifications_options(&self, ui: &mut Ui) -> Vec<ColumnOptionData> {
+    fn get_notifications_options(&mut self, ui: &mut Ui) -> Vec<ColumnOptionData> {
         let mut vec = Vec::new();
 
         let source = if self.cur_account.key.secret_key.is_some() {
@@ -526,8 +544,13 @@ impl<'a> AddColumnView<'a> {
         };
 
         vec.push(ColumnOptionData {
-            title: tr!("Your Notifications", "Title for your notifications column"),
+            title: tr!(
+                self.i18n,
+                "Your Notifications",
+                "Title for your notifications column"
+            ),
             description: tr!(
+                self.i18n,
                 "Stay up to date with your notifications and mentions",
                 "Description for your notifications column"
             ),
@@ -537,10 +560,12 @@ impl<'a> AddColumnView<'a> {
 
         vec.push(ColumnOptionData {
             title: tr!(
+                self.i18n,
                 "Someone else's Notifications",
                 "Title for someone else's notifications column"
             ),
             description: tr!(
+                self.i18n,
                 "Stay up to date with someone else's notifications and mentions",
                 "Description for someone else's notifications column"
             ),
@@ -551,7 +576,7 @@ impl<'a> AddColumnView<'a> {
         vec
     }
 
-    fn get_individual_options(&self) -> Vec<ColumnOptionData> {
+    fn get_individual_options(&mut self) -> Vec<ColumnOptionData> {
         let mut vec = Vec::new();
 
         let source = if self.cur_account.key.secret_key.is_some() {
@@ -561,8 +586,9 @@ impl<'a> AddColumnView<'a> {
         };
 
         vec.push(ColumnOptionData {
-            title: tr!("Your Notes", "Title for your notes column"),
+            title: tr!(self.i18n, "Your Notes", "Title for your notes column"),
             description: tr!(
+                self.i18n,
                 "Keep track of your notes & replies",
                 "Description for your notes column"
             ),
@@ -572,10 +598,12 @@ impl<'a> AddColumnView<'a> {
 
         vec.push(ColumnOptionData {
             title: tr!(
+                self.i18n,
                 "Someone else's Notes",
                 "Title for someone else's notes column"
             ),
             description: tr!(
+                self.i18n,
                 "Stay up to date with someone else's notes & replies",
                 "Description for someone else's notes column"
             ),
@@ -587,14 +615,14 @@ impl<'a> AddColumnView<'a> {
     }
 }
 
-fn find_user_button() -> impl Widget {
-    let label = tr!("Find User", "Label for find user button");
+fn find_user_button(i18n: &mut Localization) -> impl Widget {
+    let label = tr!(i18n, "Find User", "Label for find user button");
     let color = notedeck_ui::colors::PINK;
     move |ui: &mut egui::Ui| styled_button(label.as_str(), color).ui(ui)
 }
 
-fn add_column_button() -> impl Widget {
-    let label = tr!("Add", "Label for add column button");
+fn add_column_button(i18n: &mut Localization) -> impl Widget {
+    let label = tr!(i18n, "Add", "Label for add column button");
     let color = notedeck_ui::colors::PINK;
     move |ui: &mut egui::Ui| styled_button(label.as_str(), color).ui(ui)
 }
@@ -639,6 +667,7 @@ pub fn render_add_column_routes(
         ctx.ndb,
         ctx.img_cache,
         ctx.accounts.get_selected_account(),
+        ctx.i18n,
     );
     let resp = match route {
         AddColumnRoute::Base => add_column_view.ui(ui),
@@ -649,7 +678,7 @@ pub fn render_add_column_routes(
         },
         AddColumnRoute::UndecidedNotification => add_column_view.notifications_ui(ui),
         AddColumnRoute::ExternalNotification => add_column_view.external_notification_ui(ui),
-        AddColumnRoute::Hashtag => hashtag_ui(ui, &mut app.view_state.id_string_map),
+        AddColumnRoute::Hashtag => hashtag_ui(ui, ctx.i18n, &mut app.view_state.id_string_map),
         AddColumnRoute::UndecidedIndividual => add_column_view.individual_ui(ui),
         AddColumnRoute::ExternalIndividual => add_column_view.external_individual_ui(ui),
     };
@@ -677,7 +706,7 @@ pub fn render_add_column_routes(
                     ctx.accounts,
                 );
 
-                app.columns_mut(ctx.accounts)
+                app.columns_mut(ctx.i18n, ctx.accounts)
                     .column_mut(col)
                     .router_mut()
                     .route_to_replaced(Route::timeline(timeline.kind.clone()));
@@ -689,7 +718,7 @@ pub fn render_add_column_routes(
                 // If we are undecided, we simply route to the LastPerPubkey
                 // algo route selection
                 AlgoOption::LastPerPubkey(Decision::Undecided) => {
-                    app.columns_mut(ctx.accounts)
+                    app.columns_mut(ctx.i18n, ctx.accounts)
                         .column_mut(col)
                         .router_mut()
                         .route_to(Route::AddColumn(AddColumnRoute::Algo(
@@ -717,7 +746,7 @@ pub fn render_add_column_routes(
                             ctx.accounts,
                         );
 
-                        app.columns_mut(ctx.accounts)
+                        app.columns_mut(ctx.i18n, ctx.accounts)
                             .column_mut(col)
                             .router_mut()
                             .route_to_replaced(Route::timeline(timeline.kind.clone()));
@@ -735,13 +764,13 @@ pub fn render_add_column_routes(
             },
 
             AddColumnResponse::UndecidedNotification => {
-                app.columns_mut(ctx.accounts)
+                app.columns_mut(ctx.i18n, ctx.accounts)
                     .column_mut(col)
                     .router_mut()
                     .route_to(Route::AddColumn(AddColumnRoute::UndecidedNotification));
             }
             AddColumnResponse::ExternalNotification => {
-                app.columns_mut(ctx.accounts)
+                app.columns_mut(ctx.i18n, ctx.accounts)
                     .column_mut(col)
                     .router_mut()
                     .route_to(crate::route::Route::AddColumn(
@@ -749,13 +778,13 @@ pub fn render_add_column_routes(
                     ));
             }
             AddColumnResponse::Hashtag => {
-                app.columns_mut(ctx.accounts)
+                app.columns_mut(ctx.i18n, ctx.accounts)
                     .column_mut(col)
                     .router_mut()
                     .route_to(crate::route::Route::AddColumn(AddColumnRoute::Hashtag));
             }
             AddColumnResponse::UndecidedIndividual => {
-                app.columns_mut(ctx.accounts)
+                app.columns_mut(ctx.i18n, ctx.accounts)
                     .column_mut(col)
                     .router_mut()
                     .route_to(crate::route::Route::AddColumn(
@@ -763,7 +792,7 @@ pub fn render_add_column_routes(
                     ));
             }
             AddColumnResponse::ExternalIndividual => {
-                app.columns_mut(ctx.accounts)
+                app.columns_mut(ctx.i18n, ctx.accounts)
                     .column_mut(col)
                     .router_mut()
                     .route_to(crate::route::Route::AddColumn(
@@ -776,6 +805,7 @@ pub fn render_add_column_routes(
 
 pub fn hashtag_ui(
     ui: &mut Ui,
+    i18n: &mut Localization,
     id_string_map: &mut HashMap<Id, String>,
 ) -> Option<AddColumnResponse> {
     padding(16.0, ui, |ui| {
@@ -785,6 +815,7 @@ pub fn hashtag_ui(
         let text_edit = egui::TextEdit::singleline(text_buffer)
             .hint_text(
                 RichText::new(tr!(
+                    i18n,
                     "Enter the desired hashtags here (for multiple space-separated)",
                     "Placeholder for hashtag input field"
                 ))
@@ -801,7 +832,7 @@ pub fn hashtag_ui(
         let mut handle_user_input = false;
         if ui.input(|i| i.key_released(egui::Key::Enter))
             || ui
-                .add_sized(egui::vec2(50.0, 40.0), add_column_button())
+                .add_sized(egui::vec2(50.0, 40.0), add_column_button(i18n))
                 .clicked()
         {
             handle_user_input = true;
