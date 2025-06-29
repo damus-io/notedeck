@@ -176,16 +176,23 @@ impl Notedeck {
             None
         };
 
-        let mut accounts = Accounts::new(keystore, parsed_args.relays.clone(), FALLBACK_PUBKEY());
-
         let mut unknown_ids = UnknownIds::default();
         let ndb = Ndb::new(&dbpath_str, &config).expect("ndb");
+        let txn = Transaction::new(&ndb).expect("txn");
+
+        let mut accounts = Accounts::new(
+            keystore,
+            parsed_args.relays.clone(),
+            FALLBACK_PUBKEY(),
+            &ndb,
+            &txn,
+            &mut unknown_ids,
+        );
 
         {
-            let txn = Transaction::new(&ndb).expect("txn");
             for key in &parsed_args.keys {
                 info!("adding account: {}", &key.pubkey);
-                if let Some(resp) = accounts.add_account(key.clone()) {
+                if let Some(resp) = accounts.add_account(&ndb, &txn, key.clone()) {
                     resp.unk_id_action
                         .process_action(&mut unknown_ids, &ndb, &txn);
                 }

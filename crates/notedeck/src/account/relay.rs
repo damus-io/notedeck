@@ -17,7 +17,7 @@ pub(crate) struct AccountRelayData {
 }
 
 impl AccountRelayData {
-    pub fn new(ndb: &Ndb, pubkey: &[u8; 32]) -> Self {
+    pub fn new(ndb: &Ndb, txn: &Transaction, pubkey: &[u8; 32]) -> Self {
         // Construct a filter for the user's NIP-65 relay list
         let filter = Filter::new()
             .authors([pubkey])
@@ -26,15 +26,14 @@ impl AccountRelayData {
             .build();
 
         // Query the ndb immediately to see if the user list is already there
-        let txn = Transaction::new(ndb).expect("transaction");
         let lim = filter.limit().unwrap_or(crate::filter::default_limit()) as i32;
         let nks = ndb
-            .query(&txn, &[filter.clone()], lim)
+            .query(txn, &[filter.clone()], lim)
             .expect("query user relays results")
             .iter()
             .map(|qr| qr.note_key)
             .collect::<Vec<NoteKey>>();
-        let relays = Self::harvest_nip65_relays(ndb, &txn, &nks);
+        let relays = Self::harvest_nip65_relays(ndb, txn, &nks);
         debug!(
             "pubkey {}: initial relays {:?}",
             hex::encode(pubkey),

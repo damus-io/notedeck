@@ -1,16 +1,24 @@
 use enostr::{Keypair, KeypairUnowned};
 use tokenator::{ParseError, TokenParser, TokenSerializable};
 
-use crate::wallet::{WalletSerializable, ZapWallet};
+use crate::{
+    wallet::{WalletSerializable, ZapWallet},
+    AccountData,
+};
 
 pub struct UserAccount {
     pub key: Keypair,
     pub wallet: Option<ZapWallet>,
+    pub data: AccountData,
 }
 
 impl UserAccount {
-    pub fn new(key: Keypair) -> Self {
-        Self { key, wallet: None }
+    pub fn new(key: Keypair, data: AccountData) -> Self {
+        Self {
+            key,
+            wallet: None,
+            data,
+        }
     }
 
     pub fn keypair(&self) -> KeypairUnowned {

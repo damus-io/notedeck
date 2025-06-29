@@ -15,7 +15,7 @@ pub(crate) struct AccountMutedData {
 }
 
 impl AccountMutedData {
-    pub fn new(ndb: &Ndb, pubkey: &[u8; 32]) -> Self {
+    pub fn new(ndb: &Ndb, txn: &Transaction, pubkey: &[u8; 32]) -> Self {
         // Construct a filter for the user's NIP-51 muted list
         let filter = Filter::new()
             .authors([pubkey])
@@ -24,15 +24,14 @@ impl AccountMutedData {
             .build();
 
         // Query the ndb immediately to see if the user's muted list is already there
-        let txn = Transaction::new(ndb).expect("transaction");
         let lim = filter.limit().unwrap_or(crate::filter::default_limit()) as i32;
         let nks = ndb
-            .query(&txn, &[filter.clone()], lim)
+            .query(txn, &[filter.clone()], lim)
             .expect("query user muted results")
             .iter()
             .map(|qr| qr.note_key)
             .collect::<Vec<NoteKey>>();
-        let muted = Self::harvest_nip51_muted(ndb, &txn, &nks);
+        let muted = Self::harvest_nip51_muted(ndb, txn, &nks);
         debug!("pubkey {}: initial muted {:?}", hex::encode(pubkey), muted);
 
         AccountMutedData {

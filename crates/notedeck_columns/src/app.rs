@@ -770,9 +770,12 @@ pub fn set_demo(
 ) {
     let fallback = decks_cache.get_fallback_pubkey();
     let txn = Transaction::new(ndb).expect("txn");
-    if let Some(resp) =
-        accounts.add_account(Keypair::only_pubkey(*decks_cache.get_fallback_pubkey()))
-    {
+    if let Some(resp) = accounts.add_account(
+        ndb,
+        &txn,
+        Keypair::only_pubkey(*decks_cache.get_fallback_pubkey()),
+    ) {
+        let txn = Transaction::new(ndb).expect("txn");
         resp.unk_id_action.process_action(unk_ids, ndb, &txn);
     }
     accounts.select_account(fallback);
