@@ -93,7 +93,8 @@ impl DecksCache {
     }
 
     pub fn add_deck_default(&mut self, key: Pubkey) {
-        self.account_to_decks.insert(key, Decks::default());
+        let default_deck = Deck::new_with_notifications('🇩', String::from("Default Deck"), key);
+        self.account_to_decks.insert(key, Decks::new(default_deck));
         info!(
             "Adding new default deck for {:?}. New decks size is {}",
             key,
@@ -301,6 +302,19 @@ impl Deck {
     pub fn new(icon: char, name: String) -> Self {
         let mut columns = Columns::default();
         columns.new_column_picker();
+        Self {
+            icon,
+            name,
+            columns,
+        }
+    }
+
+    pub fn new_with_notifications(icon: char, name: String, pubkey: Pubkey) -> Self {
+        let mut columns = Columns::default();
+        columns.new_column_picker();
+        columns.add_column(Column::new(vec![Route::Timeline(
+            TimelineKind::Notifications(pubkey),
+        )]));
         Self {
             icon,
             name,
