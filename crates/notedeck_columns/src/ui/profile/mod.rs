@@ -1,7 +1,7 @@
 pub mod edit;
 
 pub use edit::EditProfileView;
-use egui::{vec2, Color32, CornerRadius, Layout, Rect, RichText, ScrollArea, Sense, Stroke};
+use egui::{vec2, Layout, RichText, ScrollArea, Sense};
 use enostr::Pubkey;
 use nostrdb::{ProfileRecord, Transaction};
 use tracing::error;
@@ -12,7 +12,6 @@ use crate::{
 };
 use notedeck::{
     name::get_display_name, profile::get_profile_url, Accounts, MuteFun, NoteAction, NoteContext,
-    NotedeckTextStyle,
 };
 use notedeck_ui::{
     app_images,
@@ -82,50 +81,47 @@ impl<'a, 'd> ProfileView<'a, 'd> {
                 if self.profile_body(ui, profile) {
                     action = Some(ProfileViewAction::EditProfile);
                 }
+
+                let kind = TimelineKind::Profile(*self.pubkey);
+                let profile_timeline_opt = self.timeline_cache.timelines.get_mut(&kind);
+
+                if let Some(profile_timeline) = profile_timeline_opt {
+                    // poll timeline to add notes *before* getting the immutable reference for the view
+                    if let Err(e) = profile_timeline.poll_notes_into_pending(
+                        self.note_context.ndb,
+                        &txn,
+                        self.note_context.unknown_ids,
+                        self.note_context.note_cache,
+                    ) {
+                        error!("Profile::poll_notes_into_pending: {e}");
+                    }
+
+                    // Now we can use the (implicitly reborrowed) timeline for the view
+                    profile_timeline.selected_view =
+                        tabs_ui(ui, profile_timeline.selected_view, &profile_timeline.views);
+
+                    if let Some(note_action) = TimelineTabView::new(
+                        profile_timeline.current_view(),
+                        false, // reversed
+                        self.note_options,
+                        &txn,
+                        self.is_muted,
+                        self.note_context,
+                        &self
+                            .accounts
+                            .get_selected_account()
+                            .map(|a| (&a.key).into()),
+                        self.jobs,
+                    )
+                    .show(ui)
+                    {
+                        action = Some(ProfileViewAction::Note(note_action));
+                    }
+                } else {
+                    // Handle case where timeline doesn't exist yet (maybe show loading?)
+                    ui.label("Loading profile timeline...");
+                }
             }
-            let profile_timeline = self
-                .timeline_cache
-                .notes(
-                    self.note_context.ndb,
-                    self.note_context.note_cache,
-                    &txn,
-                    &TimelineKind::Profile(*self.pubkey),
-                )
-                .get_ptr();
-
-            profile_timeline.selected_view =
-                tabs_ui(ui, profile_timeline.selected_view, &profile_timeline.views);
-
-            let reversed = false;
-            // poll for new notes and insert them into our existing notes
-            if let Err(e) = profile_timeline.poll_notes_into_view(
-                self.note_context.ndb,
-                &txn,
-                self.note_context.unknown_ids,
-                self.note_context.note_cache,
-                reversed,
-            ) {
-                error!("Profile::poll_notes_into_view: {e}");
-            }
-
-            if let Some(note_action) = TimelineTabView::new(
-                profile_timeline.current_view(),
-                reversed,
-                self.note_options,
-                &txn,
-                self.is_muted,
-                self.note_context,
-                &self
-                    .accounts
-                    .get_selected_account()
-                    .map(|a| (&a.key).into()),
-                self.jobs,
-            )
-            .show(ui)
-            {
-                action = Some(ProfileViewAction::Note(note_action));
-            }
-
             action
         });
 
@@ -211,145 +207,63 @@ impl<'a, 'd> ProfileView<'a, 'd> {
                         handle_lud16(ui, lud16);
                     }
                 });
+
+                ui.add_space(padding);
             });
         });
-
         action
     }
 }
 
 fn handle_link(ui: &mut egui::Ui, website_url: &str) {
-    let img = if ui.visuals().dark_mode {
-        app_images::link_image()
-    } else {
-        app_images::link_image().tint(egui::Color32::BLACK)
-    };
+    let icon_size = 18.0;
 
-    ui.add(img);
-    if ui
-        .label(RichText::new(website_url).color(notedeck_ui::colors::PINK))
-        .on_hover_cursor(egui::CursorIcon::PointingHand)
-        .interact(Sense::click())
-        .clicked()
-    {
-        if let Err(e) = open::that(website_url) {
-            error!("Failed to open URL {} because: {}", website_url, e);
-        };
-    }
+    ui.horizontal(|ui| {
+        ui.add(app_images::link_image().fit_to_exact_size(vec2(icon_size, icon_size)));
+        ui.add_space(4.0);
+        ui.hyperlink(website_url);
+    });
 }
 
 fn handle_lud16(ui: &mut egui::Ui, lud16: &str) {
-    let img = if ui.visuals().dark_mode {
-        app_images::zap_image()
-    } else {
-        app_images::zap_image().tint(egui::Color32::BLACK)
-    };
-    ui.add(img);
-
-    let _ = ui.label(RichText::new(lud16).color(notedeck_ui::colors::PINK));
+    let icon_size = 18.0;
+    ui.horizontal(|ui| {
+        ui.add(app_images::zap_image().fit_to_exact_size(vec2(icon_size, icon_size)));
+        ui.add_space(4.0);
+        ui.label(lud16);
+    });
 }
 
-fn copy_key_widget(pfp_rect: &egui::Rect) -> impl egui::Widget + '_ {
-    |ui: &mut egui::Ui| -> egui::Response {
-        let painter = ui.painter();
-        #[allow(deprecated)]
-        let copy_key_rect = painter.round_rect_to_pixels(egui::Rect::from_center_size(
-            pfp_rect.center_bottom(),
-            egui::vec2(48.0, 28.0),
-        ));
-        let resp = ui.interact(
-            copy_key_rect,
-            ui.id().with("custom_painter"),
-            Sense::click(),
-        );
+fn copy_key_widget(_pfp_rect: &egui::Rect) -> impl egui::Widget + '_ {
+    move |ui: &mut egui::Ui| {
+        let icon_size = 18.0;
+        let padding = 8.0;
+        let circle_size = icon_size + 2.0 * padding;
+        let desired_size = egui::vec2(circle_size, circle_size);
+        let (rect, response) = ui.allocate_exact_size(desired_size, Sense::click());
 
-        let copy_key_rounding = CornerRadius::same(100);
-        let fill_color = if resp.hovered() {
-            ui.visuals().widgets.inactive.weak_bg_fill
-        } else {
-            ui.visuals().noninteractive().bg_stroke.color
-        };
-        painter.rect_filled(copy_key_rect, copy_key_rounding, fill_color);
-
-        let stroke_color = ui.visuals().widgets.inactive.weak_bg_fill;
-        painter.rect_stroke(
-            copy_key_rect.shrink(1.0),
-            copy_key_rounding,
-            Stroke::new(1.0, stroke_color),
-            egui::StrokeKind::Outside,
-        );
-
-        app_images::key_image().paint_at(
-            ui,
-            #[allow(deprecated)]
-            painter.round_rect_to_pixels(egui::Rect::from_center_size(
-                copy_key_rect.center(),
-                egui::vec2(16.0, 16.0),
-            )),
-        );
-
-        resp
+        if ui.is_rect_visible(rect) {
+            let _visuals = ui.style().interact_selectable(&response, false);
+            let local_response = ui.add(
+                app_images::key_image()
+                    .max_size(vec2(icon_size, icon_size))
+                    .sense(Sense::click()),
+            );
+            if local_response.clicked() {
+                // handle click
+            }
+        }
+        response
     }
 }
 
 fn edit_profile_button() -> impl egui::Widget + 'static {
-    |ui: &mut egui::Ui| -> egui::Response {
-        let (rect, resp) = ui.allocate_exact_size(vec2(124.0, 32.0), Sense::click());
-        let painter = ui.painter_at(rect);
-        #[allow(deprecated)]
-        let rect = painter.round_rect_to_pixels(rect);
-
-        painter.rect_filled(
-            rect,
-            CornerRadius::same(8),
-            if resp.hovered() {
-                ui.visuals().widgets.active.bg_fill
-            } else {
-                ui.visuals().widgets.inactive.bg_fill
-            },
-        );
-        painter.rect_stroke(
-            rect.shrink(1.0),
-            CornerRadius::same(8),
-            if resp.hovered() {
-                ui.visuals().widgets.active.bg_stroke
-            } else {
-                ui.visuals().widgets.inactive.bg_stroke
-            },
-            egui::StrokeKind::Outside,
-        );
-
-        let edit_icon_size = vec2(16.0, 16.0);
-        let galley = painter.layout(
-            "Edit Profile".to_owned(),
-            NotedeckTextStyle::Button.get_font_id(ui.ctx()),
-            ui.visuals().text_color(),
-            rect.width(),
-        );
-
-        let space_between_icon_galley = 8.0;
-        let half_icon_size = edit_icon_size.x / 2.0;
-        let galley_rect = {
-            let galley_rect = Rect::from_center_size(rect.center(), galley.rect.size());
-            galley_rect.translate(vec2(half_icon_size + space_between_icon_galley / 2.0, 0.0))
-        };
-
-        let edit_icon_rect = {
-            let mut center = galley_rect.left_center();
-            center.x -= half_icon_size + space_between_icon_galley;
-            #[allow(deprecated)]
-            painter.round_rect_to_pixels(Rect::from_center_size(
-                painter.round_pos_to_pixel_center(center),
-                edit_icon_size,
-            ))
-        };
-
-        painter.galley(galley_rect.left_top(), galley, Color32::WHITE);
-
-        app_images::edit_dark_image()
-            .tint(ui.visuals().text_color())
-            .paint_at(ui, edit_icon_rect);
-
-        resp
+    move |ui: &mut egui::Ui| {
+        let text = RichText::new("Edit Profile")
+            .text_style(notedeck::NotedeckTextStyle::Button.text_style());
+        let button = egui::Button::new(text)
+            .min_size(egui::vec2(120.0, 32.0))
+            .corner_radius(12.0);
+        ui.add(button)
     }
 }
