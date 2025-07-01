@@ -2,13 +2,12 @@ use tracing::{debug, info};
 
 use crate::account::cache::AccountCache;
 use crate::account::mute::AccountMutedData;
-use crate::account::relay::{AccountRelayData, RelayDefaults};
+use crate::account::relay::{update_relay_configuration, AccountRelayData, RelayDefaults};
 use crate::storage::AccountStorageWriter;
 use crate::user_account::UserAccountSerializable;
 use crate::{AccountStorage, MuteFun, RelaySpec, SingleUnkIdAction, UnknownIds, UserAccount};
 use enostr::{ClientMessage, FilledKeypair, Keypair, Pubkey, RelayPool};
 use nostrdb::{Ndb, Note, Transaction};
-use std::collections::BTreeSet;
 
 // TODO: remove this
 use std::sync::Arc;
@@ -273,70 +272,12 @@ impl Accounts {
         changed
     }
 
-    fn update_relay_configuration(
-        &mut self,
-        pool: &mut RelayPool,
-        wakeup: impl Fn() + Send + Sync + Clone + 'static,
-    ) {
-        debug!(
-            "updating relay configuration for currently selected {:?}",
-            self.cache.selected().key.pubkey.hex()
-        );
-
-        // If forced relays are set use them only
-        let mut desired_relays = self.relay_defaults.forced_relays.clone();
-
-        // Compose the desired relay lists from the selected account
-        if desired_relays.is_empty() {
-            let data = self.get_selected_account_data_mut();
-            desired_relays.extend(data.relay.local.iter().cloned());
-            desired_relays.extend(data.relay.advertised.iter().cloned());
-        }
-
-        // If no relays are specified at this point use the bootstrap list
-        if desired_relays.is_empty() {
-            desired_relays = self.relay_defaults.bootstrap_relays.clone();
-        }
-
-        debug!("current relays: {:?}", pool.urls());
-        debug!("desired relays: {:?}", desired_relays);
-
-        let pool_specs = pool
-            .urls()
-            .iter()
-            .map(|url| RelaySpec::new(url.clone(), false, false))
-            .collect();
-        let add: BTreeSet<RelaySpec> = desired_relays.difference(&pool_specs).cloned().collect();
-        let mut sub: BTreeSet<RelaySpec> =
-            pool_specs.difference(&desired_relays).cloned().collect();
-        if !add.is_empty() {
-            debug!("configuring added relays: {:?}", add);
-            let _ = pool.add_urls(add.iter().map(|r| r.url.clone()).collect(), wakeup);
-        }
-        if !sub.is_empty() {
-            // certain relays are persistent like the multicast relay,
-            // although we should probably have a way to explicitly
-            // disable it
-            sub.remove(&RelaySpec::new("multicast", false, false));
-
-            debug!("removing unwanted relays: {:?}", sub);
-            pool.remove_urls(&sub.iter().map(|r| r.url.clone()).collect());
-        }
-
-        debug!("current relays: {:?}", pool.urls());
-    }
-
     pub fn update(&mut self, ndb: &mut Ndb, pool: &mut RelayPool, ctx: &egui::Context) {
         // IMPORTANT - This function is called in the UI update loop,
         // make sure it is fast when idle
 
         // On the initial update the relays need config even if nothing changes below
         let mut need_reconfig = self.needs_relay_config;
-
-        let ctx2 = ctx.clone();
-        let wakeup = move || {
-            ctx2.request_repaint();
-        };
 
         // Do we need to deactivate any existing account subs?
 
@@ -370,7 +311,14 @@ impl Accounts {
 
         // If needed, update the relay configuration
         if need_reconfig {
-            self.update_relay_configuration(pool, wakeup);
+            let acc = self.cache.selected();
+            update_relay_configuration(
+                pool,
+                &self.relay_defaults,
+                &acc.key.pubkey,
+                &acc.data,
+                create_wakeup(ctx),
+            );
             self.needs_relay_config = false;
         }
 
@@ -449,6 +397,13 @@ impl<'a> AccType<'a> {
             AccType::Entry(occupied_entry) => occupied_entry.get(),
             AccType::Acc(user_account) => user_account,
         }
+    }
+}
+
+fn create_wakeup(ctx: &egui::Context) -> impl Fn() + Send + Sync + Clone + 'static {
+    let ctx = ctx.clone();
+    move || {
+        ctx.request_repaint();
     }
 }
 

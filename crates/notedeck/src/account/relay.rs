@@ -1,12 +1,12 @@
 use std::collections::BTreeSet;
 
-use enostr::RelayPool;
+use enostr::{Pubkey, RelayPool};
 use nostrdb::{Filter, Ndb, NoteBuilder, NoteKey, Subscription, Transaction};
 use tracing::{debug, error};
 use url::Url;
 use uuid::Uuid;
 
-use crate::RelaySpec;
+use crate::{AccountData, RelaySpec};
 
 pub(crate) struct AccountRelayData {
     pub filter: Filter,
@@ -177,4 +177,57 @@ impl RelayDefaults {
             bootstrap_relays,
         }
     }
+}
+
+pub(super) fn update_relay_configuration(
+    pool: &mut RelayPool,
+    relay_defaults: &RelayDefaults,
+    pk: &Pubkey,
+    data: &AccountData,
+    wakeup: impl Fn() + Send + Sync + Clone + 'static,
+) {
+    debug!(
+        "updating relay configuration for currently selected {:?}",
+        pk.hex()
+    );
+
+    // If forced relays are set use them only
+    let mut desired_relays = relay_defaults.forced_relays.clone();
+
+    // Compose the desired relay lists from the selected account
+    if desired_relays.is_empty() {
+        desired_relays.extend(data.relay.local.iter().cloned());
+        desired_relays.extend(data.relay.advertised.iter().cloned());
+    }
+
+    // If no relays are specified at this point use the bootstrap list
+    if desired_relays.is_empty() {
+        desired_relays = relay_defaults.bootstrap_relays.clone();
+    }
+
+    debug!("current relays: {:?}", pool.urls());
+    debug!("desired relays: {:?}", desired_relays);
+
+    let pool_specs = pool
+        .urls()
+        .iter()
+        .map(|url| RelaySpec::new(url.clone(), false, false))
+        .collect();
+    let add: BTreeSet<RelaySpec> = desired_relays.difference(&pool_specs).cloned().collect();
+    let mut sub: BTreeSet<RelaySpec> = pool_specs.difference(&desired_relays).cloned().collect();
+    if !add.is_empty() {
+        debug!("configuring added relays: {:?}", add);
+        let _ = pool.add_urls(add.iter().map(|r| r.url.clone()).collect(), wakeup);
+    }
+    if !sub.is_empty() {
+        // certain relays are persistent like the multicast relay,
+        // although we should probably have a way to explicitly
+        // disable it
+        sub.remove(&RelaySpec::new("multicast", false, false));
+
+        debug!("removing unwanted relays: {:?}", sub);
+        pool.remove_urls(&sub.iter().map(|r| r.url.clone()).collect());
+    }
+
+    debug!("current relays: {:?}", pool.urls());
 }
