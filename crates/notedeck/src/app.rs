@@ -8,6 +8,7 @@ use crate::{
     DataPathType, Directory, Images, NoteAction, NoteCache, RelayDebugView, ThemeHandler,
     UnknownIds,
 };
+use egui::Margin;
 use egui::ThemePreference;
 use egui_winit::clipboard::Clipboard;
 use enostr::RelayPool;
@@ -51,14 +52,8 @@ pub struct Notedeck {
 
 /// Our chrome, which is basically nothing
 fn main_panel(style: &egui::Style) -> egui::CentralPanel {
-    let inner_margin = egui::Margin {
-        top: 0,
-        left: 0,
-        right: 0,
-        bottom: 0,
-    };
     egui::CentralPanel::default().frame(egui::Frame {
-        inner_margin,
+        inner_margin: Margin::ZERO,
         fill: style.visuals.panel_fill,
         ..Default::default()
     })
