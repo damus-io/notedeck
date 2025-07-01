@@ -6,7 +6,6 @@ use crate::{
     decks::{Deck, DecksAction, DecksCache},
     profile::{ProfileAction, SaveProfileChanges},
     profile_state::ProfileState,
-    relay_pool_manager::RelayPoolManager,
     route::{Route, Router, SingletonRouter},
     timeline::{
         route::{render_thread_route, render_timeline_route},
@@ -31,9 +30,8 @@ use crate::{
 use egui_nav::{Nav, NavAction, NavResponse, NavUiType, Percent, PopupResponse, PopupSheet};
 use nostrdb::Transaction;
 use notedeck::{
-    get_current_default_msats, get_current_wallet, AppContext, NoteAction, NoteContext,
+    get_current_default_msats, get_current_wallet, AppContext, NoteAction, NoteContext, RelayAction,
 };
-use notedeck_ui::View;
 use tracing::error;
 
 /// The result of processing a nav response
@@ -59,6 +57,7 @@ pub enum RenderNavAction {
     ProfileAction(ProfileAction),
     SwitchingAction(SwitchingAction),
     WalletAction(WalletAction),
+    RelayAction(RelayAction),
 }
 
 pub enum SwitchingAction {
@@ -334,7 +333,6 @@ fn process_render_nav_action(
     let router_action = match action {
         RenderNavAction::Back => Some(RouterAction::GoBack),
         RenderNavAction::PfpClicked => Some(RouterAction::PfpClicked),
-
         RenderNavAction::RemoveColumn => {
             let kinds_to_pop = app.columns_mut(ctx.accounts).delete_column(col);
 
@@ -346,7 +344,6 @@ fn process_render_nav_action(
 
             return Some(ProcessNavResult::SwitchOccurred);
         }
-
         RenderNavAction::PostAction(new_post_action) => {
             let txn = Transaction::new(ctx.ndb).expect("txn");
             match new_post_action.execute(ctx.ndb, &txn, ctx.pool, &mut app.drafts) {
@@ -356,7 +353,6 @@ fn process_render_nav_action(
 
             Some(RouterAction::GoBack)
         }
-
         RenderNavAction::NoteAction(note_action) => {
             let txn = Transaction::new(ctx.ndb).expect("txn");
 
@@ -378,7 +374,6 @@ fn process_render_nav_action(
                 ui,
             )
         }
-
         RenderNavAction::SwitchingAction(switching_action) => {
             if switching_action.process(
                 &mut app.timeline_cache,
@@ -398,6 +393,11 @@ fn process_render_nav_action(
         ),
         RenderNavAction::WalletAction(wallet_action) => {
             wallet_action.process(ctx.accounts, ctx.global_wallet)
+        }
+        RenderNavAction::RelayAction(action) => {
+            ctx.accounts
+                .process_relay_action(ui.ctx(), ctx.pool, action);
+            None
         }
     };
 
@@ -471,11 +471,9 @@ fn render_nav_body(
                 .accounts_action
                 .map(|f| RenderNavAction::SwitchingAction(SwitchingAction::Accounts(f)))
         }
-        Route::Relays => {
-            let manager = RelayPoolManager::new(ctx.pool);
-            RelayView::new(ctx.accounts, manager, &mut app.view_state.id_string_map).ui(ui);
-            None
-        }
+        Route::Relays => RelayView::new(ctx.pool, &mut app.view_state.id_string_map)
+            .ui(ui)
+            .map(RenderNavAction::RelayAction),
         Route::Reply(id) => {
             let txn = if let Ok(txn) = Transaction::new(ctx.ndb) {
                 txn

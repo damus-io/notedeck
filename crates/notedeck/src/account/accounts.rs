@@ -315,25 +315,21 @@ impl Accounts {
         self.cache.get(pubkey).and_then(|r| r.key.to_full())
     }
 
-    pub fn add_advertised_relay(&mut self, relay_to_add: &str, pool: &mut RelayPool) {
+    pub fn process_relay_action(
+        &mut self,
+        ctx: &egui::Context,
+        pool: &mut RelayPool,
+        action: RelayAction,
+    ) {
         let acc = self.cache.selected_mut();
-        modify_advertised_relays(
-            &acc.key,
-            RelayAction::Add(relay_to_add.to_owned()),
-            pool,
-            &self.relay_defaults,
-            &mut acc.data,
-        );
-    }
+        modify_advertised_relays(&acc.key, action, pool, &self.relay_defaults, &mut acc.data);
 
-    pub fn remove_advertised_relay(&mut self, relay_to_remove: &str, pool: &mut RelayPool) {
-        let acc = self.cache.selected_mut();
-        modify_advertised_relays(
-            &acc.key,
-            RelayAction::Remove(relay_to_remove.to_owned()),
+        update_relay_configuration(
             pool,
             &self.relay_defaults,
-            &mut acc.data,
+            &acc.key.pubkey,
+            &acc.data,
+            create_wakeup(ctx),
         );
     }
 }

@@ -1,24 +1,23 @@
 use std::collections::HashMap;
 
-use crate::relay_pool_manager::{RelayPoolManager, RelayStatus};
 use crate::ui::{Preview, PreviewConfig};
 use egui::{Align, Button, CornerRadius, Frame, Id, Layout, Margin, Rgba, RichText, Ui, Vec2};
-use enostr::RelayPool;
-use notedeck::{Accounts, NotedeckTextStyle};
+use enostr::{RelayPool, RelayStatus};
+use notedeck::{NotedeckTextStyle, RelayAction};
 use notedeck_ui::app_images;
-use notedeck_ui::{colors::PINK, padding, View};
+use notedeck_ui::{colors::PINK, padding};
 use tracing::debug;
 
 use super::widgets::styled_button;
 
 pub struct RelayView<'a> {
-    accounts: &'a mut Accounts,
-    manager: RelayPoolManager<'a>,
+    pool: &'a RelayPool,
     id_string_map: &'a mut HashMap<Id, String>,
 }
 
-impl View for RelayView<'_> {
-    fn ui(&mut self, ui: &mut egui::Ui) {
+impl RelayView<'_> {
+    pub fn ui(&mut self, ui: &mut egui::Ui) -> Option<RelayAction> {
+        let mut action = None;
         Frame::new()
             .inner_margin(Margin::symmetric(10, 0))
             .show(ui, |ui| {
@@ -40,28 +39,23 @@ impl View for RelayView<'_> {
                     .auto_shrink([false; 2])
                     .show(ui, |ui| {
                         if let Some(relay_to_remove) = self.show_relays(ui) {
-                            self.accounts
-                                .remove_advertised_relay(&relay_to_remove, self.manager.pool);
+                            action = Some(RelayAction::Remove(relay_to_remove));
                         }
                         ui.add_space(8.0);
                         if let Some(relay_to_add) = self.show_add_relay_ui(ui) {
-                            self.accounts
-                                .add_advertised_relay(&relay_to_add, self.manager.pool);
+                            action = Some(RelayAction::Add(relay_to_add));
                         }
                     });
             });
+
+        action
     }
 }
 
 impl<'a> RelayView<'a> {
-    pub fn new(
-        accounts: &'a mut Accounts,
-        manager: RelayPoolManager<'a>,
-        id_string_map: &'a mut HashMap<Id, String>,
-    ) -> Self {
+    pub fn new(pool: &'a RelayPool, id_string_map: &'a mut HashMap<Id, String>) -> Self {
         RelayView {
-            accounts,
-            manager,
+            pool,
             id_string_map,
         }
     }
@@ -73,7 +67,7 @@ impl<'a> RelayView<'a> {
     /// Show the current relays and return a relay the user selected to delete
     fn show_relays(&'a self, ui: &mut Ui) -> Option<String> {
         let mut relay_to_remove = None;
-        for (index, relay_info) in self.manager.get_relay_infos().iter().enumerate() {
+        for (index, relay_info) in get_relay_infos(self.pool).iter().enumerate() {
             ui.add_space(8.0);
             ui.vertical_centered_justified(|ui| {
                 relay_frame(ui).show(ui, |ui| {
@@ -153,7 +147,7 @@ impl<'a> RelayView<'a> {
                 .id_string_map
                 .entry(id)
                 .or_insert_with(|| Self::RELAY_PREFILL.to_string());
-            let is_enabled = self.manager.is_valid_relay(text_buffer);
+            let is_enabled = self.pool.is_valid_url(text_buffer);
             let text_edit = egui::TextEdit::singleline(text_buffer)
                 .hint_text(
                     RichText::new("Enter the relay here")
@@ -254,6 +248,21 @@ fn get_connection_icon(status: RelayStatus) -> egui::Image<'static> {
     }
 }
 
+struct RelayInfo<'a> {
+    pub relay_url: &'a str,
+    pub status: RelayStatus,
+}
+
+fn get_relay_infos(pool: &RelayPool) -> Vec<RelayInfo> {
+    pool.relays
+        .iter()
+        .map(|relay| RelayInfo {
+            relay_url: relay.url(),
+            status: relay.status(),
+        })
+        .collect()
+}
+
 // PREVIEWS
 
 mod preview {
@@ -277,12 +286,7 @@ mod preview {
         fn update(&mut self, app: &mut AppContext<'_>, ui: &mut egui::Ui) -> Option<AppAction> {
             self.pool.try_recv();
             let mut id_string_map = HashMap::new();
-            RelayView::new(
-                app.accounts,
-                RelayPoolManager::new(&mut self.pool),
-                &mut id_string_map,
-            )
-            .ui(ui);
+            RelayView::new(app.pool, &mut id_string_map).ui(ui);
             None
         }
     }
