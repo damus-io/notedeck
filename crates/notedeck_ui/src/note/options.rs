@@ -22,6 +22,8 @@ bitflags! {
         /// Is the content truncated? If the length is over a certain size it
         /// will end with a ... and a "Show more" button.
         const Truncate        = 1 << 11;
+        /// Show note's client in the note header
+        const ShowNoteClient  = 1 << 12;
     }
 }
 

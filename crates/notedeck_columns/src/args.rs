@@ -11,6 +11,7 @@ pub enum ColumnsFlag {
     Textmode,
     Scramble,
     NoMedia,
+    ShowNoteClient,
 }
 
 pub struct ColumnsArgs {
@@ -52,6 +53,8 @@ impl ColumnsArgs {
                 res.clear_flag(ColumnsFlag::SinceOptimize);
             } else if arg == "--scramble" {
                 res.set_flag(ColumnsFlag::Scramble);
+            } else if arg == "--show-note-client" {
+                res.set_flag(ColumnsFlag::ShowNoteClient);
             } else if arg == "--no-media" {
                 res.set_flag(ColumnsFlag::NoMedia);
             } else if arg == "--filter" {

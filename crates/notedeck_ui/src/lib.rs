@@ -21,7 +21,7 @@ pub use note::{NoteContents, NoteOptions, NoteView};
 pub use profile::{ProfilePic, ProfilePreview};
 pub use username::Username;
 
-use egui::Margin;
+use egui::{Label, Margin, RichText};
 
 /// This is kind of like the Widget trait but is meant for larger top-level
 /// views that are typically stateful.
@@ -57,4 +57,9 @@ pub fn hline_with_width(ui: &egui::Ui, range: egui::Rangef) {
     let resize_y = ui.painter().round_to_pixel(rect.top()) - 0.5;
     let stroke = ui.style().visuals.widgets.noninteractive.bg_stroke;
     ui.painter().hline(range, resize_y, stroke);
+}
+
+pub fn secondary_label(ui: &mut egui::Ui, s: impl Into<String>) {
+    let color = ui.style().visuals.noninteractive().fg_stroke.color;
+    ui.add(Label::new(RichText::new(s).size(10.0).color(color)).selectable(false));
 }

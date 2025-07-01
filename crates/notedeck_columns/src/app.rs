@@ -452,6 +452,10 @@ impl Damus {
             NoteOptions::HideMedia,
             parsed_args.is_flag_set(ColumnsFlag::NoMedia),
         );
+        note_options.set(
+            NoteOptions::ShowNoteClient,
+            parsed_args.is_flag_set(ColumnsFlag::ShowNoteClient),
+        );
         options.set(AppOptions::Debug, ctx.args.debug);
         options.set(
             AppOptions::SinceOptimize,

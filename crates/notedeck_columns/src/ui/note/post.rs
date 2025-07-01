@@ -643,15 +643,17 @@ fn media_upload_button() -> impl egui::Widget {
 
         painter.rect_filled(resp.rect, 8.0, fill_color);
         painter.rect_stroke(resp.rect, 8.0, stroke, egui::StrokeKind::Middle);
-        let mut upload_img = app_images::media_upload_dark_image();
 
-        if !ui.visuals().dark_mode {
-            upload_img = upload_img.tint(egui::Color32::BLACK);
+        let upload_img = if ui.visuals().dark_mode {
+            app_images::media_upload_dark_image()
+        } else {
+            app_images::media_upload_light_image()
         };
 
         upload_img
             .max_size(egui::vec2(16.0, 16.0))
             .paint_at(ui, resp.rect.shrink(8.0));
+
         resp
     }
 }

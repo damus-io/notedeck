@@ -4,8 +4,8 @@ pub mod media;
 pub mod options;
 pub mod reply_description;
 
-use crate::app_images;
 use crate::jobs::JobsCache;
+use crate::{app_images, secondary_label};
 use crate::{
     profile::name::one_line_display_name_widget, widgets::x_button, ProfilePic, ProfilePreview,
     PulseAlpha, Username,
@@ -21,7 +21,7 @@ pub use options::NoteOptions;
 pub use reply_description::reply_desc;
 
 use egui::emath::{pos2, Vec2};
-use egui::{Id, Label, Pos2, Rect, Response, RichText, Sense};
+use egui::{Id, Pos2, Rect, Response, RichText, Sense};
 use enostr::{KeypairUnowned, NoteId, Pubkey};
 use nostrdb::{Ndb, Note, NoteKey, ProfileRecord, Transaction};
 use notedeck::{
@@ -534,6 +534,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
                         cur_acc: cur_acc.keypair(),
                     })
                 };
+
                 if self.options().contains(NoteOptions::ActionBar) {
                     note_action = render_note_actionbar(
                         ui,
@@ -828,11 +829,6 @@ fn render_note_actionbar(
     })
 }
 
-fn secondary_label(ui: &mut egui::Ui, s: impl Into<String>) {
-    let color = ui.style().visuals.noninteractive().fg_stroke.color;
-    ui.add(Label::new(RichText::new(s).size(10.0).color(color)));
-}
-
 #[profiling::function]
 fn render_reltime(
     ui: &mut egui::Ui,
@@ -902,14 +898,14 @@ fn zap_button(state: AnyZapState, noteid: &[u8; 32]) -> impl egui::Widget + use<
     move |ui: &mut egui::Ui| -> egui::Response {
         let (rect, size, resp) = crate::anim::hover_expand_small(ui, ui.id().with("zap"));
 
-        let mut img = app_images::zap_image().max_width(size);
+        let mut img = app_images::zap_dark_image().max_width(size);
         let id = ui.id().with(("pulse", noteid));
         let ctx = ui.ctx().clone();
 
         match state {
             AnyZapState::None => {
                 if !ui.visuals().dark_mode {
-                    img = img.tint(egui::Color32::BLACK);
+                    img = app_images::zap_light_image();
                 }
             }
             AnyZapState::Pending => {

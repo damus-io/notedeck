@@ -193,3 +193,19 @@ where
             |rnid| Ok(RootNoteId::new_unsafe(rnid.id)),
         )
 }
+
+pub fn event_tag<'a>(ev: &nostrdb::Note<'a>, name: &str) -> Option<&'a str> {
+    ev.tags().iter().find_map(|tag| {
+        if tag.count() < 2 {
+            return None;
+        }
+
+        let cur_name = tag.get_str(0)?;
+
+        if cur_name != name {
+            return None;
+        }
+
+        tag.get_str(1)
+    })
+}

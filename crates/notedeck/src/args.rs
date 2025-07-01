@@ -6,6 +6,7 @@ use tracing::error;
 pub struct Args {
     pub relays: Vec<String>,
     pub is_mobile: Option<bool>,
+    pub show_note_client: bool,
     pub keys: Vec<Keypair>,
     pub light: bool,
     pub debug: bool,
@@ -28,6 +29,7 @@ impl Args {
             is_mobile: None,
             keys: vec![],
             light: false,
+            show_note_client: false,
             debug: false,
             relay_debug: false,
             tests: false,
@@ -116,6 +118,8 @@ impl Args {
                 res.use_keystore = false;
             } else if arg == "--relay-debug" {
                 res.relay_debug = true;
+            } else if arg == "--show-note-client" {
+                res.show_note_client = true;
             } else {
                 unrecognized_args.insert(arg.clone());
             }

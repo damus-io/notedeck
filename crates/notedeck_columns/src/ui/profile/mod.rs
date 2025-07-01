@@ -261,9 +261,9 @@ enum ProfileType {
 
 fn handle_link(ui: &mut egui::Ui, website_url: &str) {
     let img = if ui.visuals().dark_mode {
-        app_images::link_image()
+        app_images::link_dark_image()
     } else {
-        app_images::link_image().tint(egui::Color32::BLACK)
+        app_images::link_light_image()
     };
 
     ui.add(img);
