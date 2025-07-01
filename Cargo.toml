@@ -90,15 +90,15 @@ strip = true        # Strip symbols from binary*
 #egui_extras = { path = "/home/jb55/dev/github/emilk/egui/crates/egui_extras" }
 #epaint = { path = "/home/jb55/dev/github/emilk/egui/crates/epaint" }
 
-egui = { git = "https://github.com/damus-io/egui", rev = "bcc9074805b53cc935ab8e853929c914ca170b69" }
-eframe = { git = "https://github.com/damus-io/egui", rev = "bcc9074805b53cc935ab8e853929c914ca170b69" }
-egui-winit = { git = "https://github.com/damus-io/egui", rev = "bcc9074805b53cc935ab8e853929c914ca170b69" }
-egui-wgpu = { git = "https://github.com/damus-io/egui", rev = "bcc9074805b53cc935ab8e853929c914ca170b69" }
-egui_extras = { git = "https://github.com/damus-io/egui", rev = "bcc9074805b53cc935ab8e853929c914ca170b69" }
-epaint = { git = "https://github.com/damus-io/egui", rev = "bcc9074805b53cc935ab8e853929c914ca170b69" }
+egui = { git = "https://github.com/damus-io/egui", rev = "73a831ed43d3a8592611e2948b505add88d8aba2" }
+eframe = { git = "https://github.com/damus-io/egui", rev = "73a831ed43d3a8592611e2948b505add88d8aba2" }
+egui-winit = { git = "https://github.com/damus-io/egui", rev = "73a831ed43d3a8592611e2948b505add88d8aba2" }
+egui-wgpu = { git = "https://github.com/damus-io/egui", rev = "73a831ed43d3a8592611e2948b505add88d8aba2" }
+egui_extras = { git = "https://github.com/damus-io/egui", rev = "73a831ed43d3a8592611e2948b505add88d8aba2" }
+epaint = { git = "https://github.com/damus-io/egui", rev = "73a831ed43d3a8592611e2948b505add88d8aba2" }
 puffin = { git = "https://github.com/jb55/puffin", package = "puffin", rev = "c6a6242adaf90b6292c0f462d2acd34d96d224d2" }
 puffin_egui = { git = "https://github.com/jb55/puffin", package = "puffin_egui", rev = "c6a6242adaf90b6292c0f462d2acd34d96d224d2" }
 #winit = { git = "https://github.com/damus-io/winit", rev = "14d61a74bee0c9863abe7ef28efae2c4d8bd3743" }
 #winit = { path = "/home/jb55/dev/github/rust-windowing/winit" }
-#android-activity = { git = "https://github.com/damus-io/android-activity", rev = "7c8d44c1265c5cb5f0f15137c2e060991671def8" }
+android-activity = { git = "https://github.com/damus-io/android-activity", rev = "a8948332c7c551303d32eb26a59d0abd676e47a5" }
 #android-activity = { path = "/home/jb55/dev/github/rust-mobile/android-activity/android-activity" }

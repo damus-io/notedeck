@@ -105,28 +105,7 @@ checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 [[package]]
 name = "android-activity"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ef6978589202a00cd7e118380c448a08b6ed394c3a8df3a430d0898e3a42d046"
-dependencies = [
- "android-properties",
- "bitflags 2.9.1",
- "cc",
- "cesu8",
- "jni 0.21.1 (registry+https://github.com/rust-lang/crates.io-index)",
- "jni-sys 0.3.0",
- "libc",
- "log",
- "ndk",
- "ndk-context",
- "ndk-sys 0.6.0+11769913",
- "num_enum",
- "thiserror 1.0.69",
-]
-
-[[package]]
-name = "android-activity"
-version = "0.6.0"
-source = "git+https://github.com/damus-io/android-activity?rev=c3c0decc83c4d6c94d2c448391fc8dd51b13f3d9#c3c0decc83c4d6c94d2c448391fc8dd51b13f3d9"
+source = "git+https://github.com/damus-io/android-activity?rev=a8948332c7c551303d32eb26a59d0abd676e47a5#a8948332c7c551303d32eb26a59d0abd676e47a5"
 dependencies = [
  "android-properties",
  "bitflags 2.9.1",
@@ -1365,7 +1344,7 @@ checksum = "75b325c5dbd37f80359721ad39aca5a29fb04c89279657cffdda8736d0c0b9d2"
 [[package]]
 name = "dpi"
 version = "0.1.1"
-source = "git+https://github.com/damus-io/winit?rev=eaff639ab0a14fccf595241f687be883154b267c#eaff639ab0a14fccf595241f687be883154b267c"
+source = "git+https://github.com/damus-io/winit?rev=14d61a74bee0c9863abe7ef28efae2c4d8bd3743#14d61a74bee0c9863abe7ef28efae2c4d8bd3743"
 
 [[package]]
 name = "dpi"
@@ -1376,7 +1355,7 @@ checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
 [[package]]
 name = "ecolor"
 version = "0.31.1"
-source = "git+https://github.com/damus-io/egui?rev=bcc9074805b53cc935ab8e853929c914ca170b69#bcc9074805b53cc935ab8e853929c914ca170b69"
+source = "git+https://github.com/damus-io/egui?rev=73a831ed43d3a8592611e2948b505add88d8aba2#73a831ed43d3a8592611e2948b505add88d8aba2"
 dependencies = [
  "bytemuck",
  "emath",
@@ -1386,7 +1365,7 @@ dependencies = [
 [[package]]
 name = "eframe"
 version = "0.31.1"
-source = "git+https://github.com/damus-io/egui?rev=bcc9074805b53cc935ab8e853929c914ca170b69#bcc9074805b53cc935ab8e853929c914ca170b69"
+source = "git+https://github.com/damus-io/egui?rev=73a831ed43d3a8592611e2948b505add88d8aba2#73a831ed43d3a8592611e2948b505add88d8aba2"
 dependencies = [
  "ahash",
  "bytemuck",
@@ -1422,7 +1401,7 @@ dependencies = [
 [[package]]
 name = "egui"
 version = "0.31.1"
-source = "git+https://github.com/damus-io/egui?rev=bcc9074805b53cc935ab8e853929c914ca170b69#bcc9074805b53cc935ab8e853929c914ca170b69"
+source = "git+https://github.com/damus-io/egui?rev=73a831ed43d3a8592611e2948b505add88d8aba2#73a831ed43d3a8592611e2948b505add88d8aba2"
 dependencies = [
  "accesskit",
  "ahash",
@@ -1439,7 +1418,7 @@ dependencies = [
 [[package]]
 name = "egui-wgpu"
 version = "0.31.1"
-source = "git+https://github.com/damus-io/egui?rev=bcc9074805b53cc935ab8e853929c914ca170b69#bcc9074805b53cc935ab8e853929c914ca170b69"
+source = "git+https://github.com/damus-io/egui?rev=73a831ed43d3a8592611e2948b505add88d8aba2#73a831ed43d3a8592611e2948b505add88d8aba2"
 dependencies = [
  "ahash",
  "bytemuck",
@@ -1458,7 +1437,7 @@ dependencies = [
 [[package]]
 name = "egui-winit"
 version = "0.31.1"
-source = "git+https://github.com/damus-io/egui?rev=bcc9074805b53cc935ab8e853929c914ca170b69#bcc9074805b53cc935ab8e853929c914ca170b69"
+source = "git+https://github.com/damus-io/egui?rev=73a831ed43d3a8592611e2948b505add88d8aba2#73a831ed43d3a8592611e2948b505add88d8aba2"
 dependencies = [
  "ahash",
  "arboard",
@@ -1476,7 +1455,7 @@ dependencies = [
 [[package]]
 name = "egui_extras"
 version = "0.31.1"
-source = "git+https://github.com/damus-io/egui?rev=bcc9074805b53cc935ab8e853929c914ca170b69#bcc9074805b53cc935ab8e853929c914ca170b69"
+source = "git+https://github.com/damus-io/egui?rev=73a831ed43d3a8592611e2948b505add88d8aba2#73a831ed43d3a8592611e2948b505add88d8aba2"
 dependencies = [
  "ahash",
  "egui",
@@ -1493,7 +1472,7 @@ dependencies = [
 [[package]]
 name = "egui_glow"
 version = "0.31.1"
-source = "git+https://github.com/damus-io/egui?rev=bcc9074805b53cc935ab8e853929c914ca170b69#bcc9074805b53cc935ab8e853929c914ca170b69"
+source = "git+https://github.com/damus-io/egui?rev=73a831ed43d3a8592611e2948b505add88d8aba2#73a831ed43d3a8592611e2948b505add88d8aba2"
 dependencies = [
  "ahash",
  "bytemuck",
@@ -1557,7 +1536,7 @@ checksum = "48c757948c5ede0e46177b7add2e67155f70e33c07fea8284df6576da70b3719"
 [[package]]
 name = "emath"
 version = "0.31.1"
-source = "git+https://github.com/damus-io/egui?rev=bcc9074805b53cc935ab8e853929c914ca170b69#bcc9074805b53cc935ab8e853929c914ca170b69"
+source = "git+https://github.com/damus-io/egui?rev=73a831ed43d3a8592611e2948b505add88d8aba2#73a831ed43d3a8592611e2948b505add88d8aba2"
 dependencies = [
  "bytemuck",
  "serde",
@@ -1646,7 +1625,7 @@ dependencies = [
 [[package]]
 name = "epaint"
 version = "0.31.1"
-source = "git+https://github.com/damus-io/egui?rev=bcc9074805b53cc935ab8e853929c914ca170b69#bcc9074805b53cc935ab8e853929c914ca170b69"
+source = "git+https://github.com/damus-io/egui?rev=73a831ed43d3a8592611e2948b505add88d8aba2#73a831ed43d3a8592611e2948b505add88d8aba2"
 dependencies = [
  "ab_glyph",
  "ahash",
@@ -1664,7 +1643,7 @@ dependencies = [
 [[package]]
 name = "epaint_default_fonts"
 version = "0.31.1"
-source = "git+https://github.com/damus-io/egui?rev=bcc9074805b53cc935ab8e853929c914ca170b69#bcc9074805b53cc935ab8e853929c914ca170b69"
+source = "git+https://github.com/damus-io/egui?rev=73a831ed43d3a8592611e2948b505add88d8aba2#73a831ed43d3a8592611e2948b505add88d8aba2"
 
 [[package]]
 name = "equator"
@@ -6834,10 +6813,10 @@ checksum = "271414315aff87387382ec3d271b52d7ae78726f5d44ac98b4f4030c91880486"
 [[package]]
 name = "winit"
 version = "0.30.8"
-source = "git+https://github.com/damus-io/winit?rev=eaff639ab0a14fccf595241f687be883154b267c#eaff639ab0a14fccf595241f687be883154b267c"
+source = "git+https://github.com/damus-io/winit?rev=14d61a74bee0c9863abe7ef28efae2c4d8bd3743#14d61a74bee0c9863abe7ef28efae2c4d8bd3743"
 dependencies = [
  "ahash",
- "android-activity 0.6.0 (git+https://github.com/damus-io/android-activity?rev=c3c0decc83c4d6c94d2c448391fc8dd51b13f3d9)",
+ "android-activity",
  "atomic-waker",
  "bitflags 2.9.1",
  "block2 0.5.1",
@@ -6889,7 +6868,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a4409c10174df8779dc29a4788cac85ed84024ccbc1743b776b21a520ee1aaf4"
 dependencies = [
  "ahash",
- "android-activity 0.6.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "android-activity",
  "atomic-waker",
  "bitflags 2.9.1",
  "block2 0.5.1",
