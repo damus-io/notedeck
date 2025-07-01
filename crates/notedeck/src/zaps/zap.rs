@@ -64,23 +64,6 @@ impl Zap {
     }
 }
 
-#[allow(dead_code)]
-pub fn event_tag<'a>(ev: nostrdb::Note<'a>, name: &str) -> Option<&'a str> {
-    ev.tags().iter().find_map(|tag| {
-        if tag.count() < 2 {
-            return None;
-        }
-
-        let cur_name = tag.get_str(0)?;
-
-        if cur_name != name {
-            return None;
-        }
-
-        tag.get_str(1)
-    })
-}
-
 fn determine_zap_target(tags: &ZapTags) -> Option<ZapTarget> {
     if let Some(note_zapped) = tags.note_zapped {
         Some(ZapTarget::Note(NoteZapTarget {

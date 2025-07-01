@@ -57,6 +57,8 @@ pub fn compose_note_button(interactive: bool, dark_mode: bool) -> impl Widget {
         painter.circle_filled(west_edge, use_edge_circle_radius, Color32::WHITE);
         painter.circle_filled(east_edge, use_edge_circle_radius, Color32::WHITE);
 
-        helper.take_animation_response()
+        helper
+            .take_animation_response()
+            .on_hover_text("Compose new note")
     }
 }

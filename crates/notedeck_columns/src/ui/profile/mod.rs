@@ -220,9 +220,9 @@ impl<'a, 'd> ProfileView<'a, 'd> {
 
 fn handle_link(ui: &mut egui::Ui, website_url: &str) {
     let img = if ui.visuals().dark_mode {
-        app_images::link_image()
+        app_images::link_dark_image()
     } else {
-        app_images::link_image().tint(egui::Color32::BLACK)
+        app_images::link_light_image()
     };
 
     ui.add(img);
@@ -240,10 +240,11 @@ fn handle_link(ui: &mut egui::Ui, website_url: &str) {
 
 fn handle_lud16(ui: &mut egui::Ui, lud16: &str) {
     let img = if ui.visuals().dark_mode {
-        app_images::zap_image()
+        app_images::zap_dark_image()
     } else {
-        app_images::zap_image().tint(egui::Color32::BLACK)
+        app_images::zap_light_image()
     };
+
     ui.add(img);
 
     let _ = ui.label(RichText::new(lud16).color(notedeck_ui::colors::PINK));
