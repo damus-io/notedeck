@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, error};
 
 use crate::{
-    column::{Columns, IntermediaryRoute},
+    column::{ColSize, Column, Columns, IntermediaryRoute},
     decks::{Deck, Decks, DecksCache},
     route::Route,
     timeline::{TimelineCache, TimelineKind},
@@ -302,6 +302,8 @@ fn serialize_columns(columns: &Columns) -> Vec<Vec<String>> {
         let mut column_routes = Vec::new();
         for route in column.router().routes() {
             let mut writer = TokenWriter::default();
+            writer.write_token("size");
+            writer.write_token(format!("{:?}", column.col_size).as_str());
             route.serialize_tokens(&mut writer);
             column_routes.push(writer.str().to_string());
         }
@@ -323,18 +325,34 @@ fn deserialize_columns(
             continue;
         };
 
-        let tokens: Vec<&str> = route.split(":").collect();
+        let mut tokens: Vec<&str> = route.split(":").collect();
+
+        let mut col_size = ColSize::S;
+        if Some(&"size") == tokens.first() {
+            if let Some(size_str) = tokens.get(1) {
+                if let Ok(size) = size_str.parse::<crate::column::ColSize>() {
+                    col_size = size;
+                }
+            }
+            tokens = tokens.into_iter().skip(2).collect();
+        }
+
         let mut parser = TokenParser::new(&tokens);
 
+        let mut col: Option<&mut Column> = None;
         match CleanIntermediaryRoute::parse(&mut parser, deck_user) {
             Ok(route_intermediary) => {
                 if let Some(ir) = route_intermediary.into_intermediary_route(ndb) {
-                    cols.insert_intermediary_routes(timeline_cache, vec![ir]);
+                    col = Some(cols.insert_intermediary_routes(timeline_cache, vec![ir]));
                 }
             }
             Err(err) => {
                 error!("could not turn tokens to RouteIntermediary: {:?}", err);
             }
+        }
+
+        if let Some(col) = col {
+            col.col_size = col_size;
         }
     }
 

@@ -6,11 +6,54 @@ use crate::{
 use enostr::RelayPool;
 use nostrdb::{Ndb, Transaction};
 use notedeck::NoteCache;
-use std::iter::Iterator;
+use std::{iter::Iterator, str::FromStr};
 use tracing::warn;
 
 #[derive(Clone, Debug)]
+pub enum ColSize {
+    S,
+    M,
+    L,
+    XL,
+}
+
+impl FromStr for ColSize {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "S" => Ok(ColSize::S),
+            "M" => Ok(ColSize::M),
+            "L" => Ok(ColSize::L),
+            "XL" => Ok(ColSize::XL),
+            _ => Err(()),
+        }
+    }
+}
+
+impl ColSize {
+    pub fn width(&self) -> f32 {
+        match self {
+            ColSize::S => 320.0,
+            ColSize::M => 420.0,
+            ColSize::L => 520.0,
+            ColSize::XL => 620.0,
+        }
+    }
+
+    pub fn next(&self) -> Self {
+        match self {
+            ColSize::S => ColSize::M,
+            ColSize::M => ColSize::L,
+            ColSize::L => ColSize::XL,
+            ColSize::XL => ColSize::S,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct Column {
+    pub col_size: ColSize,
     pub router: Router<Route>,
     pub sheet_router: SingletonRouter<Route>,
 }
@@ -19,6 +62,7 @@ impl Column {
     pub fn new(routes: Vec<Route>) -> Self {
         let router = Router::new(routes);
         Column {
+            col_size: ColSize::M,
             router,
             sheet_router: SingletonRouter::default(),
         }
@@ -100,7 +144,7 @@ impl Columns {
         &mut self,
         timeline_cache: &mut TimelineCache,
         intermediary_routes: Vec<IntermediaryRoute>,
-    ) {
+    ) -> &mut Column {
         let routes = intermediary_routes
             .into_iter()
             .map(|r| match r {
@@ -115,7 +159,9 @@ impl Columns {
             })
             .collect();
 
-        self.columns.push(Column::new(routes));
+        let column = Column::new(routes);
+        self.columns.push(column);
+        self.columns.last_mut().unwrap()
     }
 
     #[inline]
@@ -136,6 +182,11 @@ impl Columns {
     #[inline]
     pub fn num_columns(&self) -> usize {
         self.columns.len()
+    }
+
+    #[inline]
+    pub fn columns_width(&self) -> f32 {
+        self.columns.iter().map(|col| col.col_size.width()).sum()
     }
 
     // Get the first router in the columns if there are columns present.
@@ -205,6 +256,10 @@ impl Columns {
         }
 
         kinds_to_pop
+    }
+
+    pub fn change_column_size(&mut self, index: usize, new_size: ColSize) {
+        self.columns[index].col_size = new_size;
     }
 
     pub fn move_col(&mut self, from_index: usize, to_index: usize) {

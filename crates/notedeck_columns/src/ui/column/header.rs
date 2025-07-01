@@ -1,3 +1,4 @@
+use crate::column::ColSize;
 use crate::column::ColumnsAction;
 use crate::nav::RenderNavAction;
 use crate::nav::SwitchingAction;
@@ -95,6 +96,9 @@ impl<'a> NavTitle<'a> {
                         ColumnsAction::Switch(from, to_index),
                     )))
                 }
+                TitleResponse::ChangeColumnSize(col_size) => {
+                    Some(RenderNavAction::ChangeColumnSize(col_size))
+                }
             }
         } else if back_button_resp.is_some_and(|r| r.clicked()) {
             tracing::debug!("render nav action back");
@@ -171,6 +175,27 @@ impl<'a> NavTitle<'a> {
         img.paint_at(ui, animation_rect.shrink((max_size - cur_img_size) / 2.0));
 
         animation_resp
+    }
+
+    fn column(&self) -> &crate::column::Column {
+        self.columns.column(self.col_id)
+    }
+
+    fn column_size_button_section(&self, ui: &mut egui::Ui) -> Option<ColSize> {
+        let col_size = &self.column().col_size;
+
+        let label = RichText::new(format!("{:?}", col_size))
+            .size(10.0)
+            .color(ui.style().visuals.noninteractive().fg_stroke.color);
+
+        let col_size_button_resp = ui.button(label);
+
+        if col_size_button_resp.clicked() {
+            return Some(col_size.next());
+        }
+
+        col_size_button_resp.on_hover_text("Change column size");
+        None
     }
 
     fn delete_button_section(&self, ui: &mut egui::Ui) -> bool {
@@ -531,9 +556,13 @@ impl<'a> NavTitle<'a> {
                 self.title_presentation(ui, top, 32.0)
             } else {
                 let move_col = self.move_button_section(ui);
+                let next_col_size = self.column_size_button_section(ui);
                 let remove_col = self.delete_button_section(ui);
+
                 if let Some(col) = move_col {
                     Some(TitleResponse::MoveColumn(col))
+                } else if let Some(next_col_size) = next_col_size {
+                    Some(TitleResponse::ChangeColumnSize(next_col_size))
                 } else if remove_col {
                     Some(TitleResponse::RemoveColumn)
                 } else {
@@ -574,6 +603,7 @@ enum TitleResponse {
     RemoveColumn,
     PfpClicked,
     MoveColumn(usize),
+    ChangeColumnSize(ColSize),
 }
 
 fn prev<R>(xs: &[R]) -> Option<&R> {
