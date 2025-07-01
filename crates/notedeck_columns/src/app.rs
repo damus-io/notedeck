@@ -14,18 +14,15 @@ use crate::{
     Result,
 };
 
-use notedeck::{
-    Accounts, AppAction, AppContext, DataPath, DataPathType, FilterState, UnknownIds,
-    FALLBACK_PUBKEY,
-};
+use notedeck::{Accounts, AppAction, AppContext, DataPath, DataPathType, FilterState, UnknownIds};
 use notedeck_ui::{jobs::JobsCache, NoteOptions};
 
-use enostr::{ClientMessage, Keypair, PoolRelay, Pubkey, RelayEvent, RelayMessage, RelayPool};
+use enostr::{ClientMessage, PoolRelay, Pubkey, RelayEvent, RelayMessage, RelayPool};
 use uuid::Uuid;
 
 use egui_extras::{Size, StripBuilder};
 
-use nostrdb::{Ndb, Transaction};
+use nostrdb::Transaction;
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
@@ -431,7 +428,6 @@ impl Damus {
             for (pk, _) in &ctx.accounts.cache {
                 cache.add_deck_default(*pk);
             }
-            set_demo(&mut cache, ctx.ndb, ctx.accounts, ctx.unknown_ids);
 
             cache
         };
@@ -697,7 +693,8 @@ fn timelines_view(
     // StripBuilder rendering
     let mut save_cols = false;
     if let Some(action) = side_panel_action {
-        save_cols = save_cols || action.process(&mut app.timeline_cache, &mut app.decks_cache, ctx);
+        save_cols = save_cols
+            || action.process(&mut app.timeline_cache, &mut app.decks_cache, ctx, ui.ctx());
     }
 
     let mut app_action: Option<AppAction> = None;
@@ -760,25 +757,6 @@ pub fn get_active_columns_mut<'a>(
 
 pub fn get_decks_mut<'a>(accounts: &Accounts, decks_cache: &'a mut DecksCache) -> &'a mut Decks {
     decks_cache.decks_mut(accounts.selected_account_pubkey())
-}
-
-pub fn set_demo(
-    decks_cache: &mut DecksCache,
-    ndb: &Ndb,
-    accounts: &mut Accounts,
-    unk_ids: &mut UnknownIds,
-) {
-    let fallback = decks_cache.get_fallback_pubkey();
-    let txn = Transaction::new(ndb).expect("txn");
-    if let Some(resp) = accounts.add_account(
-        ndb,
-        &txn,
-        Keypair::only_pubkey(*decks_cache.get_fallback_pubkey()),
-    ) {
-        let txn = Transaction::new(ndb).expect("txn");
-        resp.unk_id_action.process_action(unk_ids, ndb, &txn);
-    }
-    accounts.select_account(fallback);
 }
 
 fn columns_to_decks_cache(cols: Columns, key: &[u8; 32]) -> DecksCache {

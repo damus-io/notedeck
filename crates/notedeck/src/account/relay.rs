@@ -1,17 +1,14 @@
 use std::collections::BTreeSet;
 
 use enostr::{Keypair, Pubkey, RelayPool};
-use nostrdb::{Filter, Ndb, NoteBuilder, NoteKey, Subscription, Transaction};
+use nostrdb::{Filter, Ndb, NoteBuilder, NoteKey, Transaction};
 use tracing::{debug, error, info};
 use url::Url;
-use uuid::Uuid;
 
 use crate::{AccountData, RelaySpec};
 
 pub(crate) struct AccountRelayData {
     pub filter: Filter,
-    pub subid: Option<String>,
-    pub sub: Option<Subscription>,
     pub local: BTreeSet<RelaySpec>, // used locally but not advertised
     pub advertised: BTreeSet<RelaySpec>, // advertised via NIP-65
 }
@@ -42,47 +39,9 @@ impl AccountRelayData {
 
         AccountRelayData {
             filter,
-            subid: None,
-            sub: None,
             local: BTreeSet::new(),
             advertised: relays.into_iter().collect(),
         }
-    }
-
-    // make this account the current selected account
-    pub fn activate(&mut self, ndb: &Ndb, pool: &mut RelayPool) {
-        debug!("activating relay sub {}", self.filter.json().unwrap());
-        assert_eq!(self.subid, None, "subid already exists");
-        assert_eq!(self.sub, None, "sub already exists");
-
-        // local subscription
-        let sub = ndb
-            .subscribe(&[self.filter.clone()])
-            .expect("ndb relay list subscription");
-
-        // remote subscription
-        let subid = Uuid::new_v4().to_string();
-        pool.subscribe(subid.clone(), vec![self.filter.clone()]);
-
-        self.sub = Some(sub);
-        self.subid = Some(subid);
-    }
-
-    // this account is no longer the selected account
-    pub fn deactivate(&mut self, ndb: &mut Ndb, pool: &mut RelayPool) {
-        debug!("deactivating relay sub {}", self.filter.json().unwrap());
-        assert_ne!(self.subid, None, "subid doesn't exist");
-        assert_ne!(self.sub, None, "sub doesn't exist");
-
-        // remote subscription
-        pool.unsubscribe(self.subid.as_ref().unwrap().clone());
-
-        // local subscription
-        ndb.unsubscribe(self.sub.unwrap())
-            .expect("ndb relay list unsubscribe");
-
-        self.sub = None;
-        self.subid = None;
     }
 
     // standardize the format (ie, trailing slashes) to avoid dups

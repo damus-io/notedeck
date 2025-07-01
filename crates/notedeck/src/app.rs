@@ -176,16 +176,27 @@ impl Notedeck {
             None
         };
 
+        // AccountManager will setup the pool on first update
+        let mut pool = RelayPool::new();
+        {
+            let ctx = ctx.clone();
+            if let Err(err) = pool.add_multicast_relay(move || ctx.request_repaint()) {
+                error!("error setting up multicast relay: {err}");
+            }
+        }
+
         let mut unknown_ids = UnknownIds::default();
-        let ndb = Ndb::new(&dbpath_str, &config).expect("ndb");
+        let mut ndb = Ndb::new(&dbpath_str, &config).expect("ndb");
         let txn = Transaction::new(&ndb).expect("txn");
 
         let mut accounts = Accounts::new(
             keystore,
             parsed_args.relays.clone(),
             FALLBACK_PUBKEY(),
-            &ndb,
+            &mut ndb,
             &txn,
+            &mut pool,
+            ctx,
             &mut unknown_ids,
         );
 
@@ -200,16 +211,7 @@ impl Notedeck {
         }
 
         if let Some(first) = parsed_args.keys.first() {
-            accounts.select_account(&first.pubkey);
-        }
-
-        // AccountManager will setup the pool on first update
-        let mut pool = RelayPool::new();
-        {
-            let ctx = ctx.clone();
-            if let Err(err) = pool.add_multicast_relay(move || ctx.request_repaint()) {
-                error!("error setting up multicast relay: {err}");
-            }
+            accounts.select_account(&first.pubkey, &mut ndb, &mut pool, ctx);
         }
 
         let img_cache = Images::new(img_cache_dir);

@@ -74,11 +74,17 @@ impl SwitchingAction {
         timeline_cache: &mut TimelineCache,
         decks_cache: &mut DecksCache,
         ctx: &mut AppContext<'_>,
+        ui_ctx: &egui::Context,
     ) -> bool {
         match &self {
             SwitchingAction::Accounts(account_action) => match account_action {
                 AccountsAction::Switch(switch_action) => {
-                    ctx.accounts.select_account(&switch_action.switch_to);
+                    ctx.accounts.select_account(
+                        &switch_action.switch_to,
+                        ctx.ndb,
+                        ctx.pool,
+                        ui_ctx,
+                    );
                     // pop nav after switch
                     get_active_columns_mut(ctx.accounts, decks_cache)
                         .column_mut(switch_action.source_column)
@@ -374,7 +380,12 @@ fn process_render_nav_action(
         }
 
         RenderNavAction::SwitchingAction(switching_action) => {
-            if switching_action.process(&mut app.timeline_cache, &mut app.decks_cache, ctx) {
+            if switching_action.process(
+                &mut app.timeline_cache,
+                &mut app.decks_cache,
+                ctx,
+                ui.ctx(),
+            ) {
                 return Some(ProcessNavResult::SwitchOccurred);
             } else {
                 return None;

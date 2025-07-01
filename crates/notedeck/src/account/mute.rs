@@ -1,16 +1,12 @@
 use std::sync::Arc;
 
-use enostr::RelayPool;
-use nostrdb::{Filter, Ndb, NoteKey, Subscription, Transaction};
+use nostrdb::{Filter, Ndb, NoteKey, Transaction};
 use tracing::{debug, error};
-use uuid::Uuid;
 
 use crate::Muted;
 
 pub(crate) struct AccountMutedData {
     pub filter: Filter,
-    pub subid: Option<String>,
-    pub sub: Option<Subscription>,
     pub muted: Arc<Muted>,
 }
 
@@ -36,46 +32,8 @@ impl AccountMutedData {
 
         AccountMutedData {
             filter,
-            subid: None,
-            sub: None,
             muted: Arc::new(muted),
         }
-    }
-
-    // make this account the current selected account
-    pub fn activate(&mut self, ndb: &Ndb, pool: &mut RelayPool) {
-        debug!("activating muted sub {}", self.filter.json().unwrap());
-        assert_eq!(self.subid, None, "subid already exists");
-        assert_eq!(self.sub, None, "sub already exists");
-
-        // local subscription
-        let sub = ndb
-            .subscribe(&[self.filter.clone()])
-            .expect("ndb muted subscription");
-
-        // remote subscription
-        let subid = Uuid::new_v4().to_string();
-        pool.subscribe(subid.clone(), vec![self.filter.clone()]);
-
-        self.sub = Some(sub);
-        self.subid = Some(subid);
-    }
-
-    // this account is no longer the selected account
-    pub fn deactivate(&mut self, ndb: &mut Ndb, pool: &mut RelayPool) {
-        debug!("deactivating muted sub {}", self.filter.json().unwrap());
-        assert_ne!(self.subid, None, "subid doesn't exist");
-        assert_ne!(self.sub, None, "sub doesn't exist");
-
-        // remote subscription
-        pool.unsubscribe(self.subid.as_ref().unwrap().clone());
-
-        // local subscription
-        ndb.unsubscribe(self.sub.unwrap())
-            .expect("ndb muted unsubscribe");
-
-        self.sub = None;
-        self.subid = None;
     }
 
     pub(crate) fn harvest_nip51_muted(ndb: &Ndb, txn: &Transaction, nks: &[NoteKey]) -> Muted {
