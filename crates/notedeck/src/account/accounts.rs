@@ -8,7 +8,7 @@ use crate::account::relay::{
 };
 use crate::storage::AccountStorageWriter;
 use crate::user_account::UserAccountSerializable;
-use crate::{AccountStorage, MuteFun, SingleUnkIdAction, UnknownIds, UserAccount};
+use crate::{AccountStorage, MuteFun, SingleUnkIdAction, UnknownIds, UserAccount, ZapWallet};
 use enostr::{ClientMessage, FilledKeypair, Keypair, Pubkey, RelayPool};
 use nostrdb::{Ndb, Note, Transaction};
 
@@ -180,8 +180,12 @@ impl Accounts {
         self.get_selected_account().wallet.is_some()
     }
 
-    pub fn get_selected_account_mut(&mut self) -> &mut UserAccount {
+    fn get_selected_account_mut(&mut self) -> &mut UserAccount {
         self.cache.selected_mut()
+    }
+
+    pub fn get_selected_wallet_mut(&mut self) -> Option<&mut ZapWallet> {
+        self.cache.selected_mut().wallet.as_mut()
     }
 
     fn get_selected_account_data(&self) -> &AccountData {

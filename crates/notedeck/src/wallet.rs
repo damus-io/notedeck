@@ -28,9 +28,7 @@ pub fn get_current_wallet<'a>(
     accounts: &'a mut Accounts,
     global_wallet: &'a mut GlobalWallet,
 ) -> Option<&'a mut ZapWallet> {
-    let acc = accounts.get_selected_account_mut();
-
-    let Some(wallet) = &mut acc.wallet else {
+    let Some(wallet) = accounts.get_selected_wallet_mut() else {
         return global_wallet.wallet.as_mut();
     };
 

@@ -686,9 +686,7 @@ fn render_nav_body(
         Route::Wallet(wallet_type) => {
             let state = match wallet_type {
                 notedeck::WalletType::Auto => 's: {
-                    if let Some(cur_acc_wallet) =
-                        &mut ctx.accounts.get_selected_account_mut().wallet
-                    {
+                    if let Some(cur_acc_wallet) = ctx.accounts.get_selected_wallet_mut() {
                         let default_zap_state =
                             get_default_zap_state(&mut cur_acc_wallet.default_zap);
                         break 's WalletState::Wallet {
@@ -713,8 +711,8 @@ fn render_nav_body(
                     }
                 }
                 notedeck::WalletType::Local => 's: {
-                    let cur_acc = ctx.accounts.get_selected_account_mut();
-                    let Some(wallet) = &mut cur_acc.wallet else {
+                    let cur_acc = ctx.accounts.get_selected_wallet_mut();
+                    let Some(wallet) = cur_acc else {
                         break 's WalletState::NoWallet {
                             state: &mut ctx.global_wallet.ui_state,
                             show_local_only: false,

@@ -63,9 +63,8 @@ impl WalletAction {
                 let ui_state = &mut global_wallet.ui_state;
                 if ui_state.for_local_only {
                     ui_state.for_local_only = false;
-                    let cur_acc = accounts.get_selected_account_mut();
 
-                    if cur_acc.wallet.is_some() {
+                    if accounts.get_selected_wallet_mut().is_some() {
                         return None;
                     }
 

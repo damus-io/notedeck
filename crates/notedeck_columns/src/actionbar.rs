@@ -98,7 +98,7 @@ fn execute_note_action(
             router_action = Some(RouterAction::route_to(Route::quote(note_id)));
         }
         NoteAction::Zap(zap_action) => {
-            let cur_acc = accounts.get_selected_account_mut();
+            let cur_acc = accounts.get_selected_account();
 
             let sender = cur_acc.key.pubkey;
 
