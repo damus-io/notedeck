@@ -362,6 +362,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
         note: &Note,
         profile: &Result<nostrdb::ProfileRecord<'_>, nostrdb::Error>,
         show_unread_indicator: bool,
+        show_note_client: bool,
     ) {
         let note_key = note.key().unwrap();
 
@@ -371,7 +372,13 @@ impl<'a, 'd> NoteView<'a, 'd> {
                 ui.add(Username::new(profile.as_ref().ok(), note.pubkey()).abbreviated(20));
 
                 let cached_note = note_cache.cached_note_or_insert_mut(note_key, note);
-                render_reltime(ui, cached_note, true);
+                let resp = render_reltime(ui, cached_note, true);
+
+                if show_note_client {
+                    render_client(ui, cached_note, true);
+                }
+
+                resp
             })
             .response;
 
@@ -419,6 +426,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
                                         self.note,
                                         profile,
                                         self.show_unread_indicator,
+                                        self.options().has_show_note_client(),
                                     );
                                 })
                                 .response
@@ -509,6 +517,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
                     self.note,
                     profile,
                     self.show_unread_indicator,
+                    self.options().has_show_note_client(),
                 );
                 ui.horizontal(|ui| 's: {
                     ui.spacing_mut().item_spacing.x = 2.0;
@@ -877,6 +886,26 @@ fn render_reltime(
     })
 }
 
+#[profiling::function]
+fn render_client(ui: &mut egui::Ui, note: &mut CachedNote, before: bool) {
+    match note.client.as_deref() {
+        Some(client) if !client.is_empty() => {
+            ui.horizontal(|ui| {
+                if before {
+                    secondary_label(ui, "⋅");
+                }
+
+                secondary_label(ui, format!("via {}", client));
+
+                if !before {
+                    secondary_label(ui, "⋅");
+                }
+            });
+        }
+        _ => return,
+    }
+}
+
 fn reply_button(ui: &mut egui::Ui, note_key: NoteKey) -> egui::Response {
     let img = if ui.style().visuals.dark_mode {
         app_images::reply_dark_image()
@@ -927,14 +956,14 @@ fn zap_button(state: AnyZapState, noteid: &[u8; 32]) -> impl egui::Widget + use<
     move |ui: &mut egui::Ui| -> egui::Response {
         let (rect, size, resp) = crate::anim::hover_expand_small(ui, ui.id().with("zap"));
 
-        let mut img = app_images::zap_image().max_width(size);
+        let mut img = app_images::zap_dark_image().max_width(size);
         let id = ui.id().with(("pulse", noteid));
         let ctx = ui.ctx().clone();
 
         match state {
             AnyZapState::None => {
                 if !ui.visuals().dark_mode {
-                    img = img.tint(egui::Color32::BLACK);
+                    img = app_images::zap_light_image();
                 }
             }
             AnyZapState::Pending => {

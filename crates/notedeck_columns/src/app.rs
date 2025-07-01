@@ -439,6 +439,7 @@ impl Damus {
         note_options.set_textmode(parsed_args.textmode);
         note_options.set_scramble_text(parsed_args.scramble);
         note_options.set_hide_media(parsed_args.no_media);
+        note_options.set_show_note_client(ctx.args.show_note_client);
 
         let jobs = JobsCache::default();
 

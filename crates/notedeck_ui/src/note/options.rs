@@ -25,6 +25,9 @@ bitflags! {
         /// Is the content truncated? If the length is over a certain size it
         /// will end with a ... and a "Show more" button.
         const truncate        = 0b0000100000000000;
+
+        /// Show note's client in the note header
+        const show_note_client = 0b0001000000000000;
     }
 }
 
@@ -68,6 +71,7 @@ impl NoteOptions {
     create_bit_methods!(set_scramble_text, has_scramble_text, scramble_text);
     create_bit_methods!(set_is_preview, has_is_preview, is_preview);
     create_bit_methods!(set_truncate, has_truncate, truncate);
+    create_bit_methods!(set_show_note_client, has_show_note_client, show_note_client);
 
     pub fn new(is_universe_timeline: bool) -> Self {
         let mut options = NoteOptions::default();
