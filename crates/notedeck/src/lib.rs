@@ -36,6 +36,7 @@ mod zaps;
 pub use account::accounts::{
     AccountData, Accounts, AccountsAction, AddAccountAction, SwitchAccountAction,
 };
+pub use account::FALLBACK_PUBKEY;
 pub use app::{App, AppAction, Notedeck};
 pub use args::Args;
 pub use context::AppContext;

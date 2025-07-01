@@ -1,7 +1,7 @@
 use crate::{
     args::ColumnsArgs,
     column::Columns,
-    decks::{Decks, DecksCache, FALLBACK_PUBKEY},
+    decks::{Decks, DecksCache},
     draft::Drafts,
     nav::{self, ProcessNavResult},
     route::Route,
@@ -14,7 +14,10 @@ use crate::{
     Result,
 };
 
-use notedeck::{Accounts, AppAction, AppContext, DataPath, DataPathType, FilterState, UnknownIds};
+use notedeck::{
+    Accounts, AppAction, AppContext, DataPath, DataPathType, FilterState, UnknownIds,
+    FALLBACK_PUBKEY,
+};
 use notedeck_ui::{jobs::JobsCache, NoteOptions};
 
 use enostr::{ClientMessage, Keypair, PoolRelay, Pubkey, RelayEvent, RelayMessage, RelayPool};
