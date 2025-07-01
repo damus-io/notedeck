@@ -208,7 +208,6 @@ impl Notedeck {
 
         let img_cache = Images::new(img_cache_dir);
         let note_cache = NoteCache::default();
-        let unknown_ids = UnknownIds::default();
         let zoom = ZoomHandler::new(&path);
         let app_size = AppSizeHandler::new(&path);
 
