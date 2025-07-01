@@ -316,7 +316,9 @@ fn add_column_button() -> impl Widget {
                 .shrink((max_size - cur_img_size) / 2.0),
         );
 
-        helper.take_animation_response()
+        helper
+            .take_animation_response()
+            .on_hover_text("Add new column")
     }
 }
 
@@ -358,7 +360,9 @@ pub fn search_button() -> impl Widget {
             circle_stroke,
         );
 
-        helper.take_animation_response()
+        helper
+            .take_animation_response()
+            .on_hover_text("Open search")
     }
 }
 
@@ -381,7 +385,9 @@ fn add_deck_button() -> impl Widget {
                 .shrink((max_size - cur_img_size) / 2.0),
         );
 
-        helper.take_animation_response()
+        helper
+            .take_animation_response()
+            .on_hover_text("Add new deck")
     }
 }
 
