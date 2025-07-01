@@ -1,8 +1,8 @@
 use std::collections::BTreeSet;
 
-use enostr::{Pubkey, RelayPool};
+use enostr::{Keypair, Pubkey, RelayPool};
 use nostrdb::{Filter, Ndb, NoteBuilder, NoteKey, Subscription, Transaction};
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 use url::Url;
 use uuid::Uuid;
 
@@ -230,4 +230,56 @@ pub(super) fn update_relay_configuration(
     }
 
     debug!("current relays: {:?}", pool.urls());
+}
+
+pub enum RelayAction {
+    Add(String),
+    Remove(String),
+}
+
+impl RelayAction {
+    pub(super) fn get_url(&self) -> &str {
+        match self {
+            RelayAction::Add(url) => url,
+            RelayAction::Remove(url) => url,
+        }
+    }
+}
+
+pub(super) fn modify_advertised_relays(
+    kp: &Keypair,
+    action: RelayAction,
+    pool: &mut RelayPool,
+    relay_defaults: &RelayDefaults,
+    account_data: &mut AccountData,
+) {
+    let relay_url = AccountRelayData::canonicalize_url(action.get_url());
+    match action {
+        RelayAction::Add(_) => info!("add advertised relay \"{}\"", relay_url),
+        RelayAction::Remove(_) => info!("remove advertised relay \"{}\"", relay_url),
+    }
+
+    // let selected = self.cache.selected_mut();
+
+    let advertised = &mut account_data.relay.advertised;
+    if advertised.is_empty() {
+        // If the selected account has no advertised relays,
+        // initialize with the bootstrapping set.
+        advertised.extend(relay_defaults.bootstrap_relays.iter().cloned());
+    }
+    match action {
+        RelayAction::Add(_) => {
+            advertised.insert(RelaySpec::new(relay_url, false, false));
+        }
+        RelayAction::Remove(_) => {
+            advertised.remove(&RelaySpec::new(relay_url, false, false));
+        }
+    }
+
+    // If we have the secret key publish the NIP-65 relay list
+    if let Some(secretkey) = &kp.secret_key {
+        account_data
+            .relay
+            .publish_nip65_relays(&secretkey.to_secret_bytes(), pool);
+    }
 }

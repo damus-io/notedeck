@@ -1,11 +1,14 @@
-use tracing::{debug, info};
+use tracing::debug;
 
 use crate::account::cache::AccountCache;
 use crate::account::mute::AccountMutedData;
-use crate::account::relay::{update_relay_configuration, AccountRelayData, RelayDefaults};
+use crate::account::relay::{
+    modify_advertised_relays, update_relay_configuration, AccountRelayData, RelayAction,
+    RelayDefaults,
+};
 use crate::storage::AccountStorageWriter;
 use crate::user_account::UserAccountSerializable;
-use crate::{AccountStorage, MuteFun, RelaySpec, SingleUnkIdAction, UnknownIds, UserAccount};
+use crate::{AccountStorage, MuteFun, SingleUnkIdAction, UnknownIds, UserAccount};
 use enostr::{ClientMessage, FilledKeypair, Keypair, Pubkey, RelayPool};
 use nostrdb::{Ndb, Note, Transaction};
 
@@ -338,51 +341,26 @@ impl Accounts {
         self.cache.get(pubkey).and_then(|r| r.key.to_full())
     }
 
-    fn modify_advertised_relays(
-        &mut self,
-        relay_url: &str,
-        pool: &mut RelayPool,
-        action: RelayAction,
-    ) {
-        let relay_url = AccountRelayData::canonicalize_url(relay_url);
-        match action {
-            RelayAction::Add => info!("add advertised relay \"{}\"", relay_url),
-            RelayAction::Remove => info!("remove advertised relay \"{}\"", relay_url),
-        }
-
-        let selected = self.cache.selected_mut();
-        let account_data = &mut selected.data;
-
-        let advertised = &mut account_data.relay.advertised;
-        if advertised.is_empty() {
-            // If the selected account has no advertised relays,
-            // initialize with the bootstrapping set.
-            advertised.extend(self.relay_defaults.bootstrap_relays.iter().cloned());
-        }
-        match action {
-            RelayAction::Add => {
-                advertised.insert(RelaySpec::new(relay_url, false, false));
-            }
-            RelayAction::Remove => {
-                advertised.remove(&RelaySpec::new(relay_url, false, false));
-            }
-        }
-        self.needs_relay_config = true;
-
-        // If we have the secret key publish the NIP-65 relay list
-        if let Some(secretkey) = &selected.key.secret_key {
-            account_data
-                .relay
-                .publish_nip65_relays(&secretkey.to_secret_bytes(), pool);
-        }
-    }
-
     pub fn add_advertised_relay(&mut self, relay_to_add: &str, pool: &mut RelayPool) {
-        self.modify_advertised_relays(relay_to_add, pool, RelayAction::Add);
+        let acc = self.cache.selected_mut();
+        modify_advertised_relays(
+            &acc.key,
+            RelayAction::Add(relay_to_add.to_owned()),
+            pool,
+            &self.relay_defaults,
+            &mut acc.data,
+        );
     }
 
     pub fn remove_advertised_relay(&mut self, relay_to_remove: &str, pool: &mut RelayPool) {
-        self.modify_advertised_relays(relay_to_remove, pool, RelayAction::Remove);
+        let acc = self.cache.selected_mut();
+        modify_advertised_relays(
+            &acc.key,
+            RelayAction::Remove(relay_to_remove.to_owned()),
+            pool,
+            &self.relay_defaults,
+            &mut acc.data,
+        );
     }
 }
 
@@ -450,11 +428,6 @@ fn get_acc_from_storage(
         wallet,
         data: new_account_data,
     })
-}
-
-enum RelayAction {
-    Add,
-    Remove,
 }
 
 pub struct AccountData {
