@@ -1,12 +1,13 @@
 use std::{collections::HashMap, path::Path};
 
 use egui::{
-    Button, Color32, Context, CornerRadius, FontId, Image, Response, Sense, TextureHandle, Window,
+    Button, Color32, Context, CornerRadius, FontId, Image, Response, RichText, Sense,
+    TextureHandle, Window,
 };
 use notedeck::{
     fonts::get_font_size, note::MediaAction, show_one_error_message, supported_mime_hosted_at_url,
-    GifState, GifStateMap, Images, JobPool, MediaCache, MediaCacheType, NotedeckTextStyle,
-    TexturedImage, TexturesCache, UrlMimes,
+    ui::is_narrow, GifState, GifStateMap, Images, JobPool, MediaCache, MediaCacheType,
+    NotedeckTextStyle, TexturedImage, TexturesCache, UrlMimes,
 };
 
 use crate::{
@@ -29,7 +30,8 @@ pub(crate) fn image_carousel(
 ) -> Option<MediaAction> {
     // let's make sure everything is within our area
 
-    let height = 360.0;
+    let height = if is_narrow(ui.ctx()) { 90.0 } else { 360.0 };
+
     let width = ui.available_width();
 
     let show_popup = ui.ctx().memory(|mem| {
@@ -55,8 +57,9 @@ pub(crate) fn image_carousel(
     };
     let mut action = None;
 
-    //let has_touch_screen = ui.ctx().input(|i| i.has_touch_screen());
+    let media_urls = &medias.iter().map(|m| m.url.to_string()).collect::<Vec<_>>();
 
+    //let has_touch_screen = ui.ctx().input(|i| i.has_touch_screen());
     ui.add_sized([width, height], |ui: &mut egui::Ui| {
         egui::ScrollArea::horizontal()
             .drag_to_scroll(false)
@@ -96,16 +99,13 @@ pub(crate) fn image_carousel(
                             height,
                             carousel_id,
                         ) {
-                            let cur_action = cur_action.to_media_action(
+                            action = cur_action.to_media_action(
                                 ui.ctx(),
                                 url,
                                 media_type,
                                 cache,
                                 ImageType::Content,
                             );
-                            if let Some(cur_action) = cur_action {
-                                action = Some(cur_action);
-                            }
                         }
                     }
                 })
@@ -116,7 +116,14 @@ pub(crate) fn image_carousel(
 
     if show_popup {
         if let Some((image_url, cache_type)) = current_image {
-            show_full_screen_media(ui, &image_url, cache_type, img_cache, carousel_id);
+            show_full_screen_media(
+                ui,
+                &media_urls,
+                &image_url,
+                cache_type,
+                img_cache,
+                carousel_id,
+            );
         }
     }
     action
@@ -170,6 +177,7 @@ impl MediaUIAction {
 
 fn show_full_screen_media(
     ui: &mut egui::Ui,
+    media_urls: &[String],
     image_url: &str,
     cache_type: MediaCacheType,
     img_cache: &mut Images,
@@ -196,6 +204,7 @@ fn show_full_screen_media(
 
                 render_full_screen_media(
                     ui,
+                    &media_urls,
                     textured_image,
                     cur_state.gifs,
                     image_url,
@@ -310,6 +319,7 @@ fn get_obfuscated<'a>(
 
 fn render_full_screen_media(
     ui: &mut egui::Ui,
+    media_urls: &[String],
     renderable_media: &mut TexturedImage,
     gifs: &mut HashMap<String, GifState>,
     image_url: &str,
@@ -322,6 +332,51 @@ fn render_full_screen_media(
         ui.ctx().memory_mut(|mem| {
             mem.data.insert_temp(carousel_id.with("show_popup"), false);
         });
+    }
+
+    if media_urls.len() > 1 {
+        if ui.input(|i| i.key_pressed(egui::Key::ArrowRight)) {
+            ui.ctx().memory_mut(|mem| {
+                let curr = media_urls.iter().position(|m| m == image_url).unwrap_or(0) as i32;
+
+                let next: i32 = if curr + 1 >= media_urls.len() as i32 {
+                    0
+                } else {
+                    curr + 1
+                };
+                let next_url = media_urls.get(next as usize).cloned();
+
+                mem.data.insert_temp(
+                    carousel_id.with("current_image"),
+                    (
+                        next_url.unwrap_or_else(|| image_url.to_owned()),
+                        MediaCacheType::Image,
+                    ),
+                );
+            });
+        }
+
+        if ui.input(|i| i.key_pressed(egui::Key::ArrowLeft)) {
+            ui.ctx().memory_mut(|mem| {
+                let curr = media_urls.iter().position(|m| m == image_url).unwrap_or(0) as i32;
+
+                let next: i32 = if curr - 1 < 0 {
+                    media_urls.len() as i32 - 1
+                } else {
+                    curr - 1
+                };
+
+                let next_url = media_urls.get(next as usize).cloned();
+
+                mem.data.insert_temp(
+                    carousel_id.with("current_image"),
+                    (
+                        next_url.unwrap_or_else(|| image_url.to_owned()),
+                        MediaCacheType::Image,
+                    ),
+                );
+            });
+        }
     }
 
     // background
@@ -452,6 +507,18 @@ fn render_full_screen_media(
             mem.data.insert_temp(pan_id, pan_offset);
             mem.data.insert_temp(zoom_id, zoom);
         });
+    }
+
+    if media_urls.len() > 1 {
+        let color = ui.style().visuals.noninteractive().fg_stroke.color;
+
+        let curr = media_urls.iter().position(|m| m == image_url).unwrap_or(0) + 1;
+
+        let text = format!("{}/{}", curr, media_urls.len());
+
+        println!("Rendering media: {text}");
+
+        ui.label(RichText::new(text).size(10.0).color(color));
     }
 
     copy_link(image_url, response);
