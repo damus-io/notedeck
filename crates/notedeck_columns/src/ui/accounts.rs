@@ -2,7 +2,7 @@ use egui::{
     Align, Button, Frame, InnerResponse, Layout, RichText, ScrollArea, Ui, UiBuilder, Vec2,
 };
 use nostrdb::{Ndb, Transaction};
-use notedeck::{Accounts, Images};
+use notedeck::{tr, Accounts, Images};
 use notedeck_ui::colors::PINK;
 
 use notedeck_ui::app_images;
@@ -178,7 +178,7 @@ fn scroll_area() -> ScrollArea {
 fn add_account_button() -> Button<'static> {
     Button::image_and_text(
         app_images::add_account_image().fit_to_exact_size(Vec2::new(48.0, 48.0)),
-        RichText::new(" Add account")
+        RichText::new(tr!("Add account", "Button label to add a new account"))
             .size(16.0)
             // TODO: this color should not be hard coded. Find some way to add it to the visuals
             .color(PINK),
@@ -187,5 +187,8 @@ fn add_account_button() -> Button<'static> {
 }
 
 fn sign_out_button() -> egui::Button<'static> {
-    egui::Button::new(RichText::new("Sign out"))
+    egui::Button::new(RichText::new(tr!(
+        "Sign out",
+        "Button label to sign out of account"
+    )))
 }

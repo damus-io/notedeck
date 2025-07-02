@@ -24,7 +24,7 @@ use notedeck_ui::{
     NoteOptions, ProfilePic,
 };
 
-use notedeck::{name::get_display_name, supported_mime_hosted_at_url, NoteAction, NoteContext};
+use notedeck::{name::get_display_name, supported_mime_hosted_at_url, tr, NoteAction, NoteContext};
 use tracing::error;
 
 pub struct PostView<'a, 'd> {
@@ -179,7 +179,13 @@ impl<'a, 'd> PostView<'a, 'd> {
         };
 
         let textedit = TextEdit::multiline(&mut self.draft.buffer)
-            .hint_text(egui::RichText::new("Write a banger note here...").weak())
+            .hint_text(
+                egui::RichText::new(tr!(
+                    "Write a banger note here...",
+                    "Placeholder for note input field"
+                ))
+                .weak(),
+            )
             .frame(false)
             .desired_width(ui.available_width())
             .layouter(&mut layouter);
@@ -603,7 +609,7 @@ fn render_post_view_media(
 
 fn post_button(interactive: bool) -> impl egui::Widget {
     move |ui: &mut egui::Ui| {
-        let button = egui::Button::new("Post now");
+        let button = egui::Button::new(tr!("Post now", "Button label to post a note"));
         if interactive {
             ui.add(button)
         } else {

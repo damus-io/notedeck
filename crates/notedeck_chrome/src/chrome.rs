@@ -6,7 +6,7 @@ use egui::{vec2, Button, Label, Layout, Rect, RichText, ThemePreference, Widget}
 use egui_extras::{Size, StripBuilder};
 use nostrdb::{ProfileRecord, Transaction};
 use notedeck::{
-    profile::get_profile_url, App, AppAction, AppContext, NotedeckTextStyle, UserAccount,
+    profile::get_profile_url, tr, App, AppAction, AppContext, NotedeckTextStyle, UserAccount,
     WalletType,
 };
 use notedeck_columns::{timeline::kind::ListKind, timeline::TimelineKind, Damus};
@@ -420,15 +420,16 @@ fn milestone_name() -> impl Widget {
             );
             ui.add(
                 Label::new(
-                    RichText::new("BETA")
+                    RichText::new(tr!("BETA", "Beta version label"))
                         .color(ui.style().visuals.noninteractive().fg_stroke.color)
                         .font(font),
                 )
                 .selectable(false),
             )
-            .on_hover_text(
+            .on_hover_text(tr!(
                 "Notedeck is a beta product. Expect bugs and contact us when you run into issues.",
-            )
+                "Beta product warning message"
+            ))
             .on_hover_cursor(egui::CursorIcon::Help)
         })
         .inner
@@ -675,9 +676,10 @@ fn bottomup_sidebar(ctx: &mut AppContext, ui: &mut egui::Ui) -> Option<ChromePan
 
     let theme_action = match ui.ctx().theme() {
         egui::Theme::Dark => {
-            let resp = ui
-                .add(Button::new("☀").frame(false))
-                .on_hover_text("Switch to light mode");
+            let resp = ui.add(Button::new("☀").frame(false)).on_hover_text(tr!(
+                "Switch to light mode",
+                "Hover text for light mode toggle button"
+            ));
             if resp.hovered() {
                 notedeck_ui::show_pointer(ui);
             }
@@ -688,9 +690,10 @@ fn bottomup_sidebar(ctx: &mut AppContext, ui: &mut egui::Ui) -> Option<ChromePan
             }
         }
         egui::Theme::Light => {
-            let resp = ui
-                .add(Button::new("🌙").frame(false))
-                .on_hover_text("Switch to dark mode");
+            let resp = ui.add(Button::new("🌙").frame(false)).on_hover_text(tr!(
+                "Switch to dark mode",
+                "Hover text for dark mode toggle button"
+            ));
             if resp.hovered() {
                 notedeck_ui::show_pointer(ui);
             }

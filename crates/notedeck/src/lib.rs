@@ -8,6 +8,7 @@ mod error;
 pub mod filter;
 pub mod fonts;
 mod frame_history;
+pub mod i18n;
 mod imgcache;
 mod job_pool;
 mod muted;
@@ -40,6 +41,11 @@ pub use context::AppContext;
 pub use error::{show_one_error_message, Error, FilterError, ZapError};
 pub use filter::{FilterState, FilterStates, UnifiedSubscription};
 pub use fonts::NamedFontFamily;
+pub use i18n::manager::Localizable;
+pub use i18n::{
+    CacheStats, FluentArgs, FluentValue, LanguageIdentifier, LocalizationContext,
+    LocalizationManager,
+};
 pub use imgcache::{
     Animation, GifState, GifStateMap, ImageFrame, Images, LoadableTextureState, MediaCache,
     MediaCacheType, TextureFrame, TextureState, TexturedImage, TexturesCache,
@@ -79,3 +85,5 @@ pub use enostr;
 pub use nostrdb;
 
 pub use zaps::Zaps;
+
+pub use crate::i18n::{get_global_i18n, init_global_i18n};

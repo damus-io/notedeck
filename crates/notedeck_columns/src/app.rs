@@ -14,7 +14,9 @@ use crate::{
     Result,
 };
 
-use notedeck::{Accounts, AppAction, AppContext, DataPath, DataPathType, FilterState, UnknownIds};
+use notedeck::{
+    tr, Accounts, AppAction, AppContext, DataPath, DataPathType, FilterState, UnknownIds,
+};
 use notedeck_ui::{jobs::JobsCache, NoteOptions};
 
 use enostr::{ClientMessage, Keypair, PoolRelay, Pubkey, RelayEvent, RelayMessage, RelayPool};
@@ -783,7 +785,7 @@ fn columns_to_decks_cache(cols: Columns, key: Option<&[u8; 32]>) -> DecksCache {
     let mut account_to_decks: HashMap<Pubkey, Decks> = Default::default();
     let decks = Decks::new(crate::decks::Deck::new_with_columns(
         crate::decks::Deck::default().icon,
-        "My Deck".to_owned(),
+        tr!("My Deck", "Title for the user's deck"),
         cols,
     ));
 
