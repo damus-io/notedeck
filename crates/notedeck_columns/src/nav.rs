@@ -1,7 +1,7 @@
 use crate::{
     accounts::render_accounts_route,
     app::{get_active_columns_mut, get_decks_mut},
-    column::ColumnsAction,
+    column::{ColSize, ColumnsAction},
     deck_state::DeckState,
     decks::{Deck, DecksAction, DecksCache},
     profile::{ProfileAction, SaveProfileChanges},
@@ -53,6 +53,7 @@ impl ProcessNavResult {
 pub enum RenderNavAction {
     Back,
     RemoveColumn,
+    ChangeColumnSize(ColSize),
     /// The response when the user interacts with a pfp in the nav header
     PfpClicked,
     PostAction(NewPostAction),
@@ -331,7 +332,12 @@ fn process_render_nav_action(
     let router_action = match action {
         RenderNavAction::Back => Some(RouterAction::GoBack),
         RenderNavAction::PfpClicked => Some(RouterAction::PfpClicked),
+        RenderNavAction::ChangeColumnSize(col_size) => {
+            app.columns_mut(ctx.accounts)
+                .change_column_size(col, col_size);
 
+            return Some(ProcessNavResult::SwitchOccurred);
+        }
         RenderNavAction::RemoveColumn => {
             let kinds_to_pop = app.columns_mut(ctx.accounts).delete_column(col);
 

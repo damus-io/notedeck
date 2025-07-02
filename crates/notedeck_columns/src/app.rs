@@ -593,31 +593,23 @@ fn render_damus_desktop(
     ui: &mut egui::Ui,
 ) -> Option<AppAction> {
     let screen_size = ui.ctx().screen_rect().width();
-    let calc_panel_width = (screen_size
-        / get_active_columns(app_ctx.accounts, &app.decks_cache).num_columns() as f32)
-        - 30.0;
-    let min_width = 320.0;
-    let need_scroll = calc_panel_width < min_width;
-    let panel_sizes = if need_scroll {
-        Size::exact(min_width)
-    } else {
-        Size::remainder()
-    };
+
+    let need_scroll =
+        get_active_columns(app_ctx.accounts, &app.decks_cache).columns_width() > screen_size;
 
     ui.spacing_mut().item_spacing.x = 0.0;
 
     if need_scroll {
         egui::ScrollArea::horizontal()
-            .show(ui, |ui| timelines_view(ui, panel_sizes, app, app_ctx))
+            .show(ui, |ui| timelines_view(ui, app, app_ctx))
             .inner
     } else {
-        timelines_view(ui, panel_sizes, app, app_ctx)
+        timelines_view(ui, app, app_ctx)
     }
 }
 
 fn timelines_view(
     ui: &mut egui::Ui,
-    sizes: Size,
     app: &mut Damus,
     ctx: &mut AppContext<'_>,
 ) -> Option<AppAction> {
@@ -625,72 +617,79 @@ fn timelines_view(
     let mut side_panel_action: Option<nav::SwitchingAction> = None;
     let mut responses = Vec::with_capacity(num_cols);
 
-    StripBuilder::new(ui)
-        .size(Size::exact(ui::side_panel::SIDE_PANEL_WIDTH))
-        .sizes(sizes, num_cols)
-        .clip(true)
-        .horizontal(|mut strip| {
-            strip.cell(|ui| {
-                let rect = ui.available_rect_before_wrap();
-                let side_panel =
-                    DesktopSidePanel::new(ctx.accounts.get_selected_account(), &app.decks_cache)
-                        .show(ui);
+    let builder = get_active_columns(ctx.accounts, &app.decks_cache)
+        .columns()
+        .iter()
+        .fold(
+            StripBuilder::new(ui).size(Size::exact(ui::side_panel::SIDE_PANEL_WIDTH)),
+            |mut builder, col| {
+                builder = builder.size(Size::exact(col.col_size.width()));
+                builder
+            },
+        );
 
-                if let Some(side_panel) = side_panel {
-                    if side_panel.response.clicked() || side_panel.response.secondary_clicked() {
-                        if let Some(action) = DesktopSidePanel::perform_action(
-                            &mut app.decks_cache,
-                            ctx.accounts,
-                            side_panel.action,
-                        ) {
-                            side_panel_action = Some(action);
-                        }
+    builder.clip(true).horizontal(|mut strip| {
+        strip.cell(|ui| {
+            let rect = ui.available_rect_before_wrap();
+            let side_panel =
+                DesktopSidePanel::new(ctx.accounts.get_selected_account(), &app.decks_cache)
+                    .show(ui);
+
+            if let Some(side_panel) = side_panel {
+                if side_panel.response.clicked() || side_panel.response.secondary_clicked() {
+                    if let Some(action) = DesktopSidePanel::perform_action(
+                        &mut app.decks_cache,
+                        ctx.accounts,
+                        side_panel.action,
+                    ) {
+                        side_panel_action = Some(action);
                     }
                 }
+            }
 
-                // debug
-                /*
-                ui.painter().rect(
-                    rect,
-                    0,
-                    egui::Color32::RED,
-                    egui::Stroke::new(1.0, egui::Color32::BLUE),
-                    egui::StrokeKind::Inside,
-                );
-                */
+            // debug
+            /*
+            ui.painter().rect(
+                rect,
+                0,
+                egui::Color32::RED,
+                egui::Stroke::new(1.0, egui::Color32::BLUE),
+                egui::StrokeKind::Inside,
+            );
+            */
 
-                // vertical sidebar line
-                ui.painter().vline(
-                    rect.right(),
-                    rect.y_range(),
-                    ui.visuals().widgets.noninteractive.bg_stroke,
-                );
+            // vertical sidebar line
+            ui.painter().vline(
+                rect.right(),
+                rect.y_range(),
+                ui.visuals().widgets.noninteractive.bg_stroke,
+            );
+        });
+
+        for col_index in 0..num_cols {
+            strip.cell(|ui| {
+                let rect = ui.available_rect_before_wrap();
+                let v_line_stroke = ui.visuals().widgets.noninteractive.bg_stroke;
+                let inner_rect = {
+                    let mut inner = rect;
+                    inner.set_right(rect.right() - v_line_stroke.width);
+                    inner
+                };
+                responses.push(nav::render_nav(col_index, inner_rect, app, ctx, ui));
+
+                // vertical line
+                ui.painter()
+                    .vline(rect.right(), rect.y_range(), v_line_stroke);
+
+                // we need borrow ui context for processing, so proces
+                // responses in the last cell
+
+                if col_index == num_cols - 1 {}
             });
 
-            for col_index in 0..num_cols {
-                strip.cell(|ui| {
-                    let rect = ui.available_rect_before_wrap();
-                    let v_line_stroke = ui.visuals().widgets.noninteractive.bg_stroke;
-                    let inner_rect = {
-                        let mut inner = rect;
-                        inner.set_right(rect.right() - v_line_stroke.width);
-                        inner
-                    };
-                    responses.push(nav::render_nav(col_index, inner_rect, app, ctx, ui));
-
-                    // vertical line
-                    ui.painter()
-                        .vline(rect.right(), rect.y_range(), v_line_stroke);
-
-                    // we need borrow ui context for processing, so proces
-                    // responses in the last cell
-
-                    if col_index == num_cols - 1 {}
-                });
-
-                //strip.cell(|ui| timeline::timeline_view(ui, app, timeline_ind));
-            }
-        });
+            //strip.cell(|ui| timeline::timeline_view(ui, app, timeline_ind));
+        }
+    });
 
     // process the side panel action after so we don't change the number of columns during
     // StripBuilder rendering
