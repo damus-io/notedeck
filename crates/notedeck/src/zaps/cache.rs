@@ -4,7 +4,7 @@ use nwc::nostr::nips::nip47::PayInvoiceResponse;
 use poll_promise::Promise;
 use tokio::task::JoinError;
 
-use crate::{get_wallet_for_mut, Accounts, GlobalWallet, ZapError};
+use crate::{get_wallet_for, Accounts, GlobalWallet, ZapError};
 
 use super::{
     networking::{fetch_invoice_lnurl, fetch_invoice_lud16, FetchedInvoice, FetchingInvoice},
@@ -43,8 +43,7 @@ fn process_event(
             req_noteid,
             invoice,
         } => {
-            let Some(wallet) = get_wallet_for_mut(accounts, global_wallet, &zap_ctx.key.sender)
-            else {
+            let Some(wallet) = get_wallet_for(accounts, global_wallet, &zap_ctx.key.sender) else {
                 return NextState::Event(EventResponse {
                     id,
                     event: Err(ZappingError::SenderNoWallet),
@@ -81,11 +80,7 @@ fn process_new_zap_event(
     txn: &Transaction,
     sender_relays: Vec<String>,
 ) -> NextState {
-    let Some(full_kp) = accounts
-        .get_selected_account()
-        .or_else(|| accounts.find_account(zap_ctx.key.sender.bytes()))
-        .and_then(|u| u.key.to_full())
-    else {
+    let Some(full_kp) = accounts.get_selected_account().key.to_full() else {
         return NextState::Event(EventResponse {
             id: zap_ctx.id,
             event: Err(ZappingError::InvalidAccount),

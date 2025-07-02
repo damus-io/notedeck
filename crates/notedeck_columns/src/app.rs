@@ -1,7 +1,7 @@
 use crate::{
     args::ColumnsArgs,
     column::Columns,
-    decks::{Decks, DecksCache, FALLBACK_PUBKEY},
+    decks::{Decks, DecksCache},
     draft::Drafts,
     nav::{self, ProcessNavResult},
     route::Route,
@@ -17,12 +17,12 @@ use crate::{
 use notedeck::{Accounts, AppAction, AppContext, DataPath, DataPathType, FilterState, UnknownIds};
 use notedeck_ui::{jobs::JobsCache, NoteOptions};
 
-use enostr::{ClientMessage, Keypair, PoolRelay, Pubkey, RelayEvent, RelayMessage, RelayPool};
+use enostr::{ClientMessage, PoolRelay, Pubkey, RelayEvent, RelayMessage, RelayPool};
 use uuid::Uuid;
 
 use egui_extras::{Size, StripBuilder};
 
-use nostrdb::{Ndb, Transaction};
+use nostrdb::Transaction;
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
@@ -383,7 +383,7 @@ impl Damus {
         // arg parsing
 
         let (parsed_args, unrecognized_args) =
-            ColumnsArgs::parse(args, ctx.accounts.selected_account_pubkey());
+            ColumnsArgs::parse(args, Some(ctx.accounts.selected_account_pubkey()));
 
         let account = ctx.accounts.selected_account_pubkey_bytes();
 
@@ -425,10 +425,9 @@ impl Damus {
         } else {
             info!("DecksCache: creating new with demo configuration");
             let mut cache = DecksCache::new_with_demo_config(&mut timeline_cache, ctx);
-            for account in ctx.accounts.get_accounts() {
-                cache.add_deck_default(account.key.pubkey);
+            for (pk, _) in &ctx.accounts.cache {
+                cache.add_deck_default(*pk);
             }
-            set_demo(&mut cache, ctx.ndb, ctx.accounts, ctx.unknown_ids);
 
             cache
         };
@@ -441,8 +440,6 @@ impl Damus {
         note_options.set_hide_media(parsed_args.no_media);
 
         let jobs = JobsCache::default();
-
-        ctx.accounts.with_fallback(FALLBACK_PUBKEY());
 
         let threads = Threads::default();
 
@@ -696,7 +693,8 @@ fn timelines_view(
     // StripBuilder rendering
     let mut save_cols = false;
     if let Some(action) = side_panel_action {
-        save_cols = save_cols || action.process(&mut app.timeline_cache, &mut app.decks_cache, ctx);
+        save_cols = save_cols
+            || action.process(&mut app.timeline_cache, &mut app.decks_cache, ctx, ui.ctx());
     }
 
     let mut app_action: Option<AppAction> = None;
@@ -744,9 +742,7 @@ pub fn get_active_columns<'a>(accounts: &Accounts, decks_cache: &'a DecksCache) 
 }
 
 pub fn get_decks<'a>(accounts: &Accounts, decks_cache: &'a DecksCache) -> &'a Decks {
-    let key = accounts
-        .selected_account_pubkey()
-        .unwrap_or_else(|| decks_cache.get_fallback_pubkey());
+    let key = accounts.selected_account_pubkey();
     decks_cache.decks(key)
 }
 
@@ -760,26 +756,10 @@ pub fn get_active_columns_mut<'a>(
 }
 
 pub fn get_decks_mut<'a>(accounts: &Accounts, decks_cache: &'a mut DecksCache) -> &'a mut Decks {
-    match accounts.selected_account_pubkey() {
-        Some(acc) => decks_cache.decks_mut(acc),
-        None => decks_cache.fallback_mut(),
-    }
+    decks_cache.decks_mut(accounts.selected_account_pubkey())
 }
 
-pub fn set_demo(
-    decks_cache: &mut DecksCache,
-    ndb: &Ndb,
-    accounts: &mut Accounts,
-    unk_ids: &mut UnknownIds,
-) {
-    let txn = Transaction::new(ndb).expect("txn");
-    accounts
-        .add_account(Keypair::only_pubkey(*decks_cache.get_fallback_pubkey()))
-        .process_action(unk_ids, ndb, &txn);
-    accounts.select_account(accounts.num_accounts() - 1);
-}
-
-fn columns_to_decks_cache(cols: Columns, key: Option<&[u8; 32]>) -> DecksCache {
+fn columns_to_decks_cache(cols: Columns, key: &[u8; 32]) -> DecksCache {
     let mut account_to_decks: HashMap<Pubkey, Decks> = Default::default();
     let decks = Decks::new(crate::decks::Deck::new_with_columns(
         crate::decks::Deck::default().icon,
@@ -787,11 +767,7 @@ fn columns_to_decks_cache(cols: Columns, key: Option<&[u8; 32]>) -> DecksCache {
         cols,
     ));
 
-    let account = if let Some(key) = key {
-        Pubkey::new(*key)
-    } else {
-        FALLBACK_PUBKEY()
-    };
+    let account = Pubkey::new(*key);
     account_to_decks.insert(account, decks);
     DecksCache::new(account_to_decks)
 }

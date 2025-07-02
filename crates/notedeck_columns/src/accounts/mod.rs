@@ -1,9 +1,7 @@
-use enostr::FullKeypair;
-use nostrdb::Ndb;
+use enostr::{FullKeypair, Pubkey};
+use nostrdb::{Ndb, Transaction};
 
-use notedeck::{
-    Accounts, AccountsAction, AddAccountAction, Images, SingleUnkIdAction, SwitchAccountAction,
-};
+use notedeck::{Accounts, Images, SingleUnkIdAction, UnknownIds};
 
 use crate::app::get_active_columns_mut;
 use crate::decks::DecksCache;
@@ -21,6 +19,45 @@ use tracing::info;
 mod route;
 
 pub use route::{AccountsRoute, AccountsRouteResponse};
+
+impl AddAccountAction {
+    // Simple wrapper around processing the unknown action to expose too
+    // much internal logic. This allows us to have a must_use on our
+    // LoginAction type, otherwise the SingleUnkIdAction's must_use will
+    // be lost when returned in the login action
+    pub fn process_action(&mut self, ids: &mut UnknownIds, ndb: &Ndb, txn: &Transaction) {
+        self.unk_id_action.process_action(ids, ndb, txn);
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SwitchAccountAction {
+    pub source_column: usize,
+
+    /// The account to switch to
+    pub switch_to: Pubkey,
+}
+
+impl SwitchAccountAction {
+    pub fn new(source_column: usize, switch_to: Pubkey) -> Self {
+        SwitchAccountAction {
+            source_column,
+            switch_to,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum AccountsAction {
+    Switch(SwitchAccountAction),
+    Remove(Pubkey),
+}
+
+#[must_use = "You must call process_login_action on this to handle unknown ids"]
+pub struct AddAccountAction {
+    pub accounts_action: Option<AccountsAction>,
+    pub unk_id_action: SingleUnkIdAction,
+}
 
 /// Render account management views from a route
 #[allow(clippy::too_many_arguments)]
@@ -57,7 +94,7 @@ pub fn render_accounts_route(
                 }
             }
             AccountsRouteResponse::AddAccount(response) => {
-                let action = process_login_view_response(accounts, decks, response);
+                let action = process_login_view_response(accounts, decks, col, ndb, response);
                 *login_state = Default::default();
                 let router = get_active_columns_mut(accounts, decks)
                     .column_mut(col)
@@ -83,44 +120,60 @@ pub fn process_accounts_view_response(
     let router = get_active_columns_mut(accounts, decks)
         .column_mut(col)
         .router_mut();
-    let mut selection = None;
+    let mut action = None;
     match response {
-        AccountsViewResponse::RemoveAccount(index) => {
-            let acc_sel = AccountsAction::Remove(index);
-            info!("account selection: {:?}", acc_sel);
-            selection = Some(acc_sel);
+        AccountsViewResponse::RemoveAccount(pk_to_remove) => {
+            let cur_action = AccountsAction::Remove(pk_to_remove);
+            info!("account selection: {:?}", action);
+            action = Some(cur_action);
         }
-        AccountsViewResponse::SelectAccount(index) => {
-            let acc_sel = AccountsAction::Switch(SwitchAccountAction::new(Some(col), index));
+        AccountsViewResponse::SelectAccount(new_pk) => {
+            let acc_sel = AccountsAction::Switch(SwitchAccountAction::new(col, new_pk));
             info!("account selection: {:?}", acc_sel);
-            selection = Some(acc_sel);
+            action = Some(acc_sel);
         }
         AccountsViewResponse::RouteToLogin => {
             router.route_to(Route::add_account());
         }
     }
-    accounts.needs_relay_config();
-    selection
+    action
 }
 
 pub fn process_login_view_response(
     manager: &mut Accounts,
     decks: &mut DecksCache,
+    col: usize,
+    ndb: &Ndb,
     response: AccountLoginResponse,
 ) -> AddAccountAction {
     let (r, pubkey) = match response {
         AccountLoginResponse::CreateNew => {
             let kp = FullKeypair::generate().to_keypair();
             let pubkey = kp.pubkey;
-            (manager.add_account(kp), pubkey)
+            let txn = Transaction::new(ndb).expect("txn");
+            (manager.add_account(ndb, &txn, kp), pubkey)
         }
         AccountLoginResponse::LoginWith(keypair) => {
             let pubkey = keypair.pubkey;
-            (manager.add_account(keypair), pubkey)
+            let txn = Transaction::new(ndb).expect("txn");
+            (manager.add_account(ndb, &txn, keypair), pubkey)
         }
     };
 
     decks.add_deck_default(pubkey);
 
-    r
+    if let Some(action) = r {
+        AddAccountAction {
+            accounts_action: Some(AccountsAction::Switch(SwitchAccountAction {
+                source_column: col,
+                switch_to: action.switch_to,
+            })),
+            unk_id_action: action.unk_id_action,
+        }
+    } else {
+        AddAccountAction {
+            accounts_action: None,
+            unk_id_action: SingleUnkIdAction::NoAction,
+        }
+    }
 }

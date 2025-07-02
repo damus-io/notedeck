@@ -18,7 +18,7 @@ pub struct ThreadView<'a, 'd> {
     id_source: egui::Id,
     is_muted: &'a MuteFun,
     note_context: &'a mut NoteContext<'d>,
-    cur_acc: &'a Option<KeypairUnowned<'a>>,
+    cur_acc: &'a KeypairUnowned<'a>,
     jobs: &'a mut JobsCache,
 }
 
@@ -30,7 +30,7 @@ impl<'a, 'd> ThreadView<'a, 'd> {
         note_options: NoteOptions,
         is_muted: &'a MuteFun,
         note_context: &'a mut NoteContext<'d>,
-        cur_acc: &'a Option<KeypairUnowned<'a>>,
+        cur_acc: &'a KeypairUnowned<'a>,
         jobs: &'a mut JobsCache,
     ) -> Self {
         let id_source = egui::Id::new("threadscroll_threadview");
@@ -135,10 +135,9 @@ impl<'a, 'd> ThreadView<'a, 'd> {
         }
 
         let zapping_acc = self
-            .cur_acc
-            .as_ref()
-            .filter(|_| self.note_context.current_account_has_wallet)
-            .or(self.cur_acc.as_ref());
+            .note_context
+            .current_account_has_wallet
+            .then_some(self.cur_acc);
 
         show_notes(
             ui,

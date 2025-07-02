@@ -1,3 +1,4 @@
+use crate::account::FALLBACK_PUBKEY;
 use crate::persist::{AppSizeHandler, ZoomHandler};
 use crate::wallet::GlobalWallet;
 use crate::zaps::Zaps;
@@ -94,8 +95,7 @@ impl eframe::App for Notedeck {
             .on_new_frame(ctx.input(|i| i.time), frame.info().cpu_usage);
 
         // handle account updates
-        self.accounts
-            .update(&mut self.ndb, &mut self.pool, ctx, &mut self.unknown_ids);
+        self.accounts.update(&mut self.ndb, &mut self.pool, ctx);
 
         self.zaps
             .process(&mut self.accounts, &mut self.global_wallet, &self.ndb);
@@ -176,27 +176,6 @@ impl Notedeck {
             None
         };
 
-        let mut accounts = Accounts::new(keystore, parsed_args.relays.clone());
-
-        let num_keys = parsed_args.keys.len();
-
-        let mut unknown_ids = UnknownIds::default();
-        let ndb = Ndb::new(&dbpath_str, &config).expect("ndb");
-
-        {
-            let txn = Transaction::new(&ndb).expect("txn");
-            for key in &parsed_args.keys {
-                info!("adding account: {}", &key.pubkey);
-                accounts
-                    .add_account(key.clone())
-                    .process_action(&mut unknown_ids, &ndb, &txn);
-            }
-        }
-
-        if num_keys != 0 {
-            accounts.select_account(0);
-        }
-
         // AccountManager will setup the pool on first update
         let mut pool = RelayPool::new();
         {
@@ -206,9 +185,37 @@ impl Notedeck {
             }
         }
 
+        let mut unknown_ids = UnknownIds::default();
+        let mut ndb = Ndb::new(&dbpath_str, &config).expect("ndb");
+        let txn = Transaction::new(&ndb).expect("txn");
+
+        let mut accounts = Accounts::new(
+            keystore,
+            parsed_args.relays.clone(),
+            FALLBACK_PUBKEY(),
+            &mut ndb,
+            &txn,
+            &mut pool,
+            ctx,
+            &mut unknown_ids,
+        );
+
+        {
+            for key in &parsed_args.keys {
+                info!("adding account: {}", &key.pubkey);
+                if let Some(resp) = accounts.add_account(&ndb, &txn, key.clone()) {
+                    resp.unk_id_action
+                        .process_action(&mut unknown_ids, &ndb, &txn);
+                }
+            }
+        }
+
+        if let Some(first) = parsed_args.keys.first() {
+            accounts.select_account(&first.pubkey, &mut ndb, &mut pool, ctx);
+        }
+
         let img_cache = Images::new(img_cache_dir);
         let note_cache = NoteCache::default();
-        let unknown_ids = UnknownIds::default();
         let zoom = ZoomHandler::new(&path);
         let app_size = AppSizeHandler::new(&path);
 

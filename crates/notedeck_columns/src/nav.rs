@@ -1,12 +1,11 @@
 use crate::{
-    accounts::render_accounts_route,
+    accounts::{render_accounts_route, AccountsAction},
     app::{get_active_columns_mut, get_decks_mut},
     column::ColumnsAction,
     deck_state::DeckState,
     decks::{Deck, DecksAction, DecksCache},
     profile::{ProfileAction, SaveProfileChanges},
     profile_state::ProfileState,
-    relay_pool_manager::RelayPoolManager,
     route::{Route, Router, SingletonRouter},
     timeline::{
         route::{render_thread_route, render_timeline_route},
@@ -31,10 +30,8 @@ use crate::{
 use egui_nav::{Nav, NavAction, NavResponse, NavUiType, Percent, PopupResponse, PopupSheet};
 use nostrdb::Transaction;
 use notedeck::{
-    get_current_default_msats, get_current_wallet, AccountsAction, AppContext, NoteAction,
-    NoteContext,
+    get_current_default_msats, get_current_wallet, AppContext, NoteAction, NoteContext, RelayAction,
 };
-use notedeck_ui::View;
 use tracing::error;
 
 /// The result of processing a nav response
@@ -60,6 +57,7 @@ pub enum RenderNavAction {
     ProfileAction(ProfileAction),
     SwitchingAction(SwitchingAction),
     WalletAction(WalletAction),
+    RelayAction(RelayAction),
 }
 
 pub enum SwitchingAction {
@@ -75,20 +73,24 @@ impl SwitchingAction {
         timeline_cache: &mut TimelineCache,
         decks_cache: &mut DecksCache,
         ctx: &mut AppContext<'_>,
+        ui_ctx: &egui::Context,
     ) -> bool {
         match &self {
             SwitchingAction::Accounts(account_action) => match account_action {
                 AccountsAction::Switch(switch_action) => {
-                    ctx.accounts.select_account(switch_action.switch_to);
+                    ctx.accounts.select_account(
+                        &switch_action.switch_to,
+                        ctx.ndb,
+                        ctx.pool,
+                        ui_ctx,
+                    );
                     // pop nav after switch
-                    if let Some(src) = switch_action.source {
-                        get_active_columns_mut(ctx.accounts, decks_cache)
-                            .column_mut(src)
-                            .router_mut()
-                            .go_back();
-                    }
+                    get_active_columns_mut(ctx.accounts, decks_cache)
+                        .column_mut(switch_action.source_column)
+                        .router_mut()
+                        .go_back();
                 }
-                AccountsAction::Remove(index) => ctx.accounts.remove_account(*index),
+                AccountsAction::Remove(to_remove) => ctx.accounts.remove_account(to_remove),
             },
             SwitchingAction::Columns(columns_action) => match *columns_action {
                 ColumnsAction::Remove(index) => {
@@ -331,7 +333,6 @@ fn process_render_nav_action(
     let router_action = match action {
         RenderNavAction::Back => Some(RouterAction::GoBack),
         RenderNavAction::PfpClicked => Some(RouterAction::PfpClicked),
-
         RenderNavAction::RemoveColumn => {
             let kinds_to_pop = app.columns_mut(ctx.accounts).delete_column(col);
 
@@ -343,7 +344,6 @@ fn process_render_nav_action(
 
             return Some(ProcessNavResult::SwitchOccurred);
         }
-
         RenderNavAction::PostAction(new_post_action) => {
             let txn = Transaction::new(ctx.ndb).expect("txn");
             match new_post_action.execute(ctx.ndb, &txn, ctx.pool, &mut app.drafts) {
@@ -353,7 +353,6 @@ fn process_render_nav_action(
 
             Some(RouterAction::GoBack)
         }
-
         RenderNavAction::NoteAction(note_action) => {
             let txn = Transaction::new(ctx.ndb).expect("txn");
 
@@ -375,9 +374,13 @@ fn process_render_nav_action(
                 ui,
             )
         }
-
         RenderNavAction::SwitchingAction(switching_action) => {
-            if switching_action.process(&mut app.timeline_cache, &mut app.decks_cache, ctx) {
+            if switching_action.process(
+                &mut app.timeline_cache,
+                &mut app.decks_cache,
+                ctx,
+                ui.ctx(),
+            ) {
                 return Some(ProcessNavResult::SwitchOccurred);
             } else {
                 return None;
@@ -390,6 +393,11 @@ fn process_render_nav_action(
         ),
         RenderNavAction::WalletAction(wallet_action) => {
             wallet_action.process(ctx.accounts, ctx.global_wallet)
+        }
+        RenderNavAction::RelayAction(action) => {
+            ctx.accounts
+                .process_relay_action(ui.ctx(), ctx.pool, action);
+            None
         }
     };
 
@@ -463,11 +471,9 @@ fn render_nav_body(
                 .accounts_action
                 .map(|f| RenderNavAction::SwitchingAction(SwitchingAction::Accounts(f)))
         }
-        Route::Relays => {
-            let manager = RelayPoolManager::new(ctx.pool);
-            RelayView::new(ctx.accounts, manager, &mut app.view_state.id_string_map).ui(ui);
-            None
-        }
+        Route::Relays => RelayView::new(ctx.pool, &mut app.view_state.id_string_map)
+            .ui(ui)
+            .map(RenderNavAction::RelayAction),
         Route::Reply(id) => {
             let txn = if let Ok(txn) = Transaction::new(ctx.ndb) {
                 txn
@@ -484,7 +490,7 @@ fn render_nav_body(
             };
 
             let id = egui::Id::new(("post", col, note.key().unwrap()));
-            let poster = ctx.accounts.selected_or_first_nsec()?;
+            let poster = ctx.accounts.selected_filled()?;
 
             let action = {
                 let draft = app.drafts.reply_mut(note.id());
@@ -522,7 +528,7 @@ fn render_nav_body(
 
             let id = egui::Id::new(("post", col, note.key().unwrap()));
 
-            let poster = ctx.accounts.selected_or_first_nsec()?;
+            let poster = ctx.accounts.selected_filled()?;
             let draft = app.drafts.quote_mut(note.id());
 
             let response = egui::ScrollArea::vertical()
@@ -544,7 +550,7 @@ fn render_nav_body(
             response.action.map(Into::into)
         }
         Route::ComposeNote => {
-            let kp = ctx.accounts.get_selected_account()?.key.to_full()?;
+            let kp = ctx.accounts.get_selected_account().key.to_full()?;
             let draft = app.drafts.compose_mut();
 
             let txn = Transaction::new(ctx.ndb).expect("txn");
@@ -594,7 +600,7 @@ fn render_nav_body(
                 app.note_options,
                 search_buffer,
                 &mut note_context,
-                &ctx.accounts.get_selected_account().map(|a| (&a.key).into()),
+                &(&ctx.accounts.get_selected_account().key).into(),
                 &mut app.jobs,
             )
             .show(ui, ctx.clipboard)
@@ -605,19 +611,18 @@ fn render_nav_body(
             let new_deck_state = app.view_state.id_to_deck_state.entry(id).or_default();
             let mut resp = None;
             if let Some(config_resp) = ConfigureDeckView::new(new_deck_state).ui(ui) {
-                if let Some(cur_acc) = ctx.accounts.selected_account_pubkey() {
-                    app.decks_cache
-                        .add_deck(*cur_acc, Deck::new(config_resp.icon, config_resp.name));
+                let cur_acc = ctx.accounts.selected_account_pubkey();
+                app.decks_cache
+                    .add_deck(*cur_acc, Deck::new(config_resp.icon, config_resp.name));
 
-                    // set new deck as active
-                    let cur_index = get_decks_mut(ctx.accounts, &mut app.decks_cache)
-                        .decks()
-                        .len()
-                        - 1;
-                    resp = Some(RenderNavAction::SwitchingAction(SwitchingAction::Decks(
-                        DecksAction::Switch(cur_index),
-                    )));
-                }
+                // set new deck as active
+                let cur_index = get_decks_mut(ctx.accounts, &mut app.decks_cache)
+                    .decks()
+                    .len()
+                    - 1;
+                resp = Some(RenderNavAction::SwitchingAction(SwitchingAction::Decks(
+                    DecksAction::Switch(cur_index),
+                )));
 
                 new_deck_state.clear();
                 get_active_columns_mut(ctx.accounts, &mut app.decks_cache)
@@ -660,7 +665,7 @@ fn render_nav_body(
         }
         Route::EditProfile(pubkey) => {
             let mut action = None;
-            if let Some(kp) = ctx.accounts.get_full(pubkey.bytes()) {
+            if let Some(kp) = ctx.accounts.get_full(pubkey) {
                 let state = app
                     .view_state
                     .pubkey_to_profile_state
@@ -690,15 +695,14 @@ fn render_nav_body(
         Route::Wallet(wallet_type) => {
             let state = match wallet_type {
                 notedeck::WalletType::Auto => 's: {
-                    if let Some(cur_acc) = ctx.accounts.get_selected_account_mut() {
-                        if let Some(wallet) = &mut cur_acc.wallet {
-                            let default_zap_state = get_default_zap_state(&mut wallet.default_zap);
-                            break 's WalletState::Wallet {
-                                wallet: &mut wallet.wallet,
-                                default_zap_state,
-                                can_create_local_wallet: false,
-                            };
-                        }
+                    if let Some(cur_acc_wallet) = ctx.accounts.get_selected_wallet_mut() {
+                        let default_zap_state =
+                            get_default_zap_state(&mut cur_acc_wallet.default_zap);
+                        break 's WalletState::Wallet {
+                            wallet: &mut cur_acc_wallet.wallet,
+                            default_zap_state,
+                            can_create_local_wallet: false,
+                        };
                     }
 
                     let Some(wallet) = &mut ctx.global_wallet.wallet else {
@@ -716,13 +720,8 @@ fn render_nav_body(
                     }
                 }
                 notedeck::WalletType::Local => 's: {
-                    let Some(cur_acc) = ctx.accounts.get_selected_account_mut() else {
-                        break 's WalletState::NoWallet {
-                            state: &mut ctx.global_wallet.ui_state,
-                            show_local_only: false,
-                        };
-                    };
-                    let Some(wallet) = &mut cur_acc.wallet else {
+                    let cur_acc = ctx.accounts.get_selected_wallet_mut();
+                    let Some(wallet) = cur_acc else {
                         break 's WalletState::NoWallet {
                             state: &mut ctx.global_wallet.ui_state,
                             show_local_only: false,

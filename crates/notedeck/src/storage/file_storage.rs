@@ -59,7 +59,7 @@ pub enum DataPathType {
     Cache,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct Directory {
     pub file_path: PathBuf,
 }

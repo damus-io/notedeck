@@ -2,7 +2,7 @@ use std::collections::{hash_map::ValuesMut, HashMap};
 
 use enostr::Pubkey;
 use nostrdb::Transaction;
-use notedeck::AppContext;
+use notedeck::{AppContext, FALLBACK_PUBKEY};
 use tracing::{error, info};
 
 use crate::{
@@ -11,10 +11,6 @@ use crate::{
     route::Route,
     timeline::{TimelineCache, TimelineKind},
     ui::{add_column::AddColumnRoute, configure_deck::ConfigureDeckResponse},
-};
-
-pub static FALLBACK_PUBKEY: fn() -> Pubkey = || {
-    Pubkey::from_hex("aa733081e4f0f79dd43023d8983265593f2b41a988671cfcef3f489b91ad93fe").unwrap()
 };
 
 pub enum DecksAction {
@@ -43,7 +39,7 @@ impl DecksCache {
 
     /// Gets the active columns
     pub fn active_columns_mut(&mut self, accounts: &notedeck::Accounts) -> Option<&mut Columns> {
-        let account = accounts.get_selected_account()?;
+        let account = accounts.get_selected_account();
 
         self.decks_mut(&account.key.pubkey)
             .active_deck_mut()

@@ -13,8 +13,8 @@ use crate::{
 use enostr::{NoteId, Pubkey, RelayPool};
 use nostrdb::{Ndb, NoteKey, Transaction};
 use notedeck::{
-    get_wallet_for_mut, note::ZapTargetAmount, Accounts, GlobalWallet, Images, NoteAction,
-    NoteCache, NoteZapTargetOwned, UnknownIds, ZapAction, ZapTarget, ZappingError, Zaps,
+    get_wallet_for, note::ZapTargetAmount, Accounts, GlobalWallet, Images, NoteAction, NoteCache,
+    NoteZapTargetOwned, UnknownIds, ZapAction, ZapTarget, ZappingError, Zaps,
 };
 use tracing::error;
 
@@ -97,16 +97,14 @@ fn execute_note_action(
         NoteAction::Quote(note_id) => {
             router_action = Some(RouterAction::route_to(Route::quote(note_id)));
         }
-        NoteAction::Zap(zap_action) => 's: {
-            let Some(cur_acc) = accounts.get_selected_account_mut() else {
-                break 's;
-            };
+        NoteAction::Zap(zap_action) => {
+            let cur_acc = accounts.get_selected_account();
 
             let sender = cur_acc.key.pubkey;
 
             match &zap_action {
                 ZapAction::Send(target) => 'a: {
-                    let Some(wallet) = get_wallet_for_mut(accounts, global_wallet, sender.bytes())
+                    let Some(wallet) = get_wallet_for(accounts, global_wallet, sender.bytes())
                     else {
                         zaps.send_error(
                             sender.bytes(),

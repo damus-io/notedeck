@@ -21,7 +21,7 @@ pub static SIDE_PANEL_WIDTH: f32 = 68.0;
 static ICON_WIDTH: f32 = 40.0;
 
 pub struct DesktopSidePanel<'a> {
-    selected_account: Option<&'a UserAccount>,
+    selected_account: &'a UserAccount,
     decks_cache: &'a DecksCache,
 }
 
@@ -55,7 +55,7 @@ impl SidePanelResponse {
 }
 
 impl<'a> DesktopSidePanel<'a> {
-    pub fn new(selected_account: Option<&'a UserAccount>, decks_cache: &'a DecksCache) -> Self {
+    pub fn new(selected_account: &'a UserAccount, decks_cache: &'a DecksCache) -> Self {
         Self {
             selected_account,
             decks_cache,
@@ -92,9 +92,7 @@ impl<'a> DesktopSidePanel<'a> {
                     //    ui.add_space(24.0);
                     //}
 
-                    let is_interactive = self
-                        .selected_account
-                        .is_some_and(|s| s.key.secret_key.is_some());
+                    let is_interactive = self.selected_account.key.secret_key.is_some();
                     let compose_resp = ui.add(crate::ui::post::compose_note_button(
                         is_interactive,
                         dark_mode,
@@ -388,14 +386,10 @@ fn add_deck_button() -> impl Widget {
 fn show_decks<'a>(
     ui: &mut egui::Ui,
     decks_cache: &'a DecksCache,
-    selected_account: Option<&'a UserAccount>,
+    selected_account: &'a UserAccount,
 ) -> InnerResponse<Option<usize>> {
     let show_decks_id = ui.id().with("show-decks");
-    let account_id = if let Some(acc) = selected_account {
-        acc.key.pubkey
-    } else {
-        *decks_cache.get_fallback_pubkey()
-    };
+    let account_id = selected_account.key.pubkey;
     let (cur_decks, account_id) = (
         decks_cache.decks(&account_id),
         show_decks_id.with(account_id),

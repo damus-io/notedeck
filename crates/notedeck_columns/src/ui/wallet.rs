@@ -63,9 +63,8 @@ impl WalletAction {
                 let ui_state = &mut global_wallet.ui_state;
                 if ui_state.for_local_only {
                     ui_state.for_local_only = false;
-                    let cur_acc = accounts.get_selected_account_mut()?;
 
-                    if cur_acc.wallet.is_some() {
+                    if accounts.get_selected_wallet_mut().is_some() {
                         return None;
                     }
 
@@ -92,13 +91,11 @@ impl WalletAction {
                 global_wallet.ui_state.for_local_only = true;
             }
             WalletAction::Delete => {
-                if let Some(acc) = accounts.get_selected_account() {
-                    if acc.wallet.is_some() {
-                        accounts.update_current_account(|acc| {
-                            acc.wallet = None;
-                        });
-                        return None;
-                    }
+                if accounts.get_selected_account().wallet.is_some() {
+                    accounts.update_current_account(|acc| {
+                        acc.wallet = None;
+                    });
+                    return None;
                 }
 
                 global_wallet.wallet = None;

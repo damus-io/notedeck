@@ -1,5 +1,5 @@
 pub mod abbrev;
-mod accounts;
+mod account;
 mod app;
 mod args;
 mod context;
@@ -33,7 +33,9 @@ mod user_account;
 mod wallet;
 mod zaps;
 
-pub use accounts::{AccountData, Accounts, AccountsAction, AddAccountAction, SwitchAccountAction};
+pub use account::accounts::{AccountData, Accounts};
+pub use account::relay::RelayAction;
+pub use account::FALLBACK_PUBKEY;
 pub use app::{App, AppAction, Notedeck};
 pub use args::Args;
 pub use context::AppContext;
@@ -66,7 +68,7 @@ pub use unknowns::{get_unknown_note_ids, NoteRefsUnkIdAction, SingleUnkIdAction,
 pub use urls::{supported_mime_hosted_at_url, SupportedMimeType, UrlMimes};
 pub use user_account::UserAccount;
 pub use wallet::{
-    get_current_wallet, get_wallet_for_mut, GlobalWallet, Wallet, WalletError, WalletType,
+    get_current_wallet, get_wallet_for, GlobalWallet, Wallet, WalletError, WalletType,
     WalletUIState, ZapWallet,
 };
 pub use zaps::{

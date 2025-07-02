@@ -35,7 +35,7 @@ pub fn render_timeline_route(
                 &accounts.mutefun(),
                 note_context,
                 note_options,
-                &accounts.get_selected_account().map(|a| (&a.key).into()),
+                &(&accounts.get_selected_account().key).into(),
                 jobs,
             )
             .ui(ui);
@@ -64,7 +64,7 @@ pub fn render_timeline_route(
                     &accounts.mutefun(),
                     note_context,
                     note_options,
-                    &accounts.get_selected_account().map(|a| (&a.key).into()),
+                    &(&accounts.get_selected_account().key).into(),
                     jobs,
                 )
                 .ui(ui);
@@ -96,7 +96,7 @@ pub fn render_thread_route(
         note_options,
         &accounts.mutefun(),
         note_context,
-        &accounts.get_selected_account().map(|a| (&a.key).into()),
+        &(&accounts.get_selected_account().key).into(),
         jobs,
     )
     .id_source(col)
@@ -131,7 +131,7 @@ pub fn render_profile_route(
     if let Some(action) = action {
         match action {
             ui::profile::ProfileViewAction::EditProfile => accounts
-                .get_full(pubkey.bytes())
+                .get_full(pubkey)
                 .map(|kp| RenderNavAction::ProfileAction(ProfileAction::Edit(kp.to_full()))),
             ui::profile::ProfileViewAction::Note(note_action) => {
                 Some(RenderNavAction::NoteAction(note_action))
