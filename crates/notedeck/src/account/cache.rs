@@ -90,14 +90,6 @@ impl AccountCache {
             .get_mut(&self.selected)
             .expect("guarenteed that selected exists in accounts")
     }
-
-    pub fn contains(&self, pk: &[u8; 32]) -> bool {
-        self.accounts.contains_key(pk)
-    }
-
-    pub(super) fn iter_mut(&mut self) -> AccountCacheIterMut<'_> {
-        AccountCacheIterMut(self.accounts.iter_mut())
-    }
 }
 
 impl<'a> IntoIterator for &'a AccountCache {
@@ -106,15 +98,5 @@ impl<'a> IntoIterator for &'a AccountCache {
 
     fn into_iter(self) -> Self::IntoIter {
         self.accounts.iter()
-    }
-}
-
-pub(super) struct AccountCacheIterMut<'a>(hashbrown::hash_map::IterMut<'a, Pubkey, UserAccount>);
-
-impl<'a> Iterator for AccountCacheIterMut<'a> {
-    type Item = (&'a Pubkey, &'a mut UserAccount);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.0.next()
     }
 }
