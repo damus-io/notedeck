@@ -1,4 +1,3 @@
-use tracing::debug;
 use uuid::Uuid;
 
 use crate::account::cache::AccountCache;
@@ -263,51 +262,31 @@ impl Accounts {
         );
     }
 
-    fn poll_for_updates(&mut self, ndb: &Ndb) -> bool {
-        let mut changed = false;
-        let relay_sub = self.subs.relay.local;
-        let mute_sub = self.subs.mute.local;
-        let acc = self.get_selected_account_mut();
-
-        let nks = ndb.poll_for_notes(relay_sub, 1);
-        if !nks.is_empty() {
-            let txn = Transaction::new(ndb).expect("txn");
-            let relays = AccountRelayData::harvest_nip65_relays(ndb, &txn, &nks);
-            debug!(
-                "pubkey {}: updated relays {:?}",
-                acc.key.pubkey.hex(),
-                relays
-            );
-            acc.data.relay.advertised = relays.into_iter().collect();
-            changed = true;
-        }
-
-        let nks = ndb.poll_for_notes(mute_sub, 1);
-        if !nks.is_empty() {
-            let txn = Transaction::new(ndb).expect("txn");
-            let muted = AccountMutedData::harvest_nip51_muted(ndb, &txn, &nks);
-            debug!("pubkey {}: updated muted {:?}", acc.key.pubkey.hex(), muted);
-            acc.data.muted.muted = Arc::new(muted);
-            changed = true;
-        }
-
-        changed
-    }
-
     pub fn update(&mut self, ndb: &mut Ndb, pool: &mut RelayPool, ctx: &egui::Context) {
         // IMPORTANT - This function is called in the UI update loop,
         // make sure it is fast when idle
 
-        // If needed, update the relay configuration
-        if self.poll_for_updates(ndb) {
-            let acc = self.cache.selected();
-            update_relay_configuration(
-                pool,
-                &self.relay_defaults,
-                &acc.key.pubkey,
-                &acc.data,
-                create_wakeup(ctx),
-            );
+        let Some(update) = self
+            .cache
+            .selected_mut()
+            .data
+            .poll_for_updates(ndb, &self.subs)
+        else {
+            return;
+        };
+
+        match update {
+            // If needed, update the relay configuration
+            AccountDataUpdate::Relay => {
+                let acc = self.cache.selected();
+                update_relay_configuration(
+                    pool,
+                    &self.relay_defaults,
+                    &acc.key.pubkey,
+                    &acc.data.relay,
+                    create_wakeup(ctx),
+                );
+            }
         }
     }
 
@@ -328,7 +307,7 @@ impl Accounts {
             pool,
             &self.relay_defaults,
             &acc.key.pubkey,
-            &acc.data,
+            &acc.data.relay,
             create_wakeup(ctx),
         );
     }
@@ -405,12 +384,34 @@ pub struct AccountData {
     pub(crate) muted: AccountMutedData,
 }
 
+impl AccountData {
+    pub(super) fn poll_for_updates(
+        &mut self,
+        ndb: &Ndb,
+        subs: &AccountSubs,
+    ) -> Option<AccountDataUpdate> {
+        let txn = Transaction::new(ndb).expect("txn");
+        let mut resp = None;
+        if self.relay.poll_for_updates(ndb, &txn, subs.relay.local) {
+            resp = Some(AccountDataUpdate::Relay);
+        }
+
+        self.muted.poll_for_updates(ndb, &txn, subs.mute.local);
+
+        resp
+    }
+}
+
+pub(super) enum AccountDataUpdate {
+    Relay,
+}
+
 pub struct AddAccountResponse {
     pub switch_to: Pubkey,
     pub unk_id_action: SingleUnkIdAction,
 }
 
-struct AccountSubs {
+pub(super) struct AccountSubs {
     relay: UnifiedSubscription,
     mute: UnifiedSubscription,
 }
@@ -426,7 +427,7 @@ impl AccountSubs {
     ) -> Self {
         let relay = subscribe(ndb, pool, &data.relay.filter);
         let mute = subscribe(ndb, pool, &data.muted.filter);
-        update_relay_configuration(pool, relay_defaults, pk, data, wakeup);
+        update_relay_configuration(pool, relay_defaults, pk, &data.relay, wakeup);
 
         Self { relay, mute }
     }

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use nostrdb::{Filter, Ndb, NoteKey, Transaction};
+use nostrdb::{Filter, Ndb, NoteKey, Subscription, Transaction};
 use tracing::{debug, error};
 
 use crate::Muted;
@@ -75,5 +75,17 @@ impl AccountMutedData {
             }
         }
         muted
+    }
+
+    pub(super) fn poll_for_updates(&mut self, ndb: &Ndb, txn: &Transaction, sub: Subscription) {
+        let nks = ndb.poll_for_notes(sub, 1);
+
+        if nks.is_empty() {
+            return;
+        }
+
+        let muted = AccountMutedData::harvest_nip51_muted(ndb, txn, &nks);
+        debug!("updated muted {:?}", muted);
+        self.muted = Arc::new(muted);
     }
 }
