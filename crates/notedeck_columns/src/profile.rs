@@ -65,3 +65,33 @@ impl ProfileAction {
         }
     }
 }
+
+pub fn builder_from_note<F>(note: Note<'_>, skip_tag: Option<F>) -> NoteBuilder<'_>
+where
+    F: Fn(&nostrdb::Tag<'_>) -> bool,
+{
+    let mut builder = NoteBuilder::new();
+
+    builder = builder.content(note.content());
+    builder = builder.options(NoteBuildOptions::default());
+    builder = builder.kind(note.kind());
+    builder = builder.pubkey(note.pubkey());
+
+    for tag in note.tags() {
+        if let Some(skip) = &skip_tag {
+            if skip(&tag) {
+                continue;
+            }
+        }
+
+        builder = builder.start_tag();
+        for tag_item in tag {
+            builder = match tag_item.variant() {
+                nostrdb::NdbStrVariant::Id(i) => builder.tag_id(i),
+                nostrdb::NdbStrVariant::Str(s) => builder.tag_str(s),
+            };
+        }
+    }
+
+    builder
+}
