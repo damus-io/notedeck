@@ -406,6 +406,7 @@ fn process_render_nav_action(
             &mut app.view_state.pubkey_to_profile_state,
             ctx.ndb,
             ctx.pool,
+            ctx.accounts,
         ),
         RenderNavAction::WalletAction(wallet_action) => {
             wallet_action.process(ctx.accounts, ctx.global_wallet)

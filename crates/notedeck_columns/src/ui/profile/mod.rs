@@ -35,6 +35,8 @@ pub struct ProfileView<'a, 'd> {
 pub enum ProfileViewAction {
     EditProfile,
     Note(NoteAction),
+    Unfollow(Pubkey),
+    Follow(Pubkey),
 }
 
 impl<'a, 'd> ProfileView<'a, 'd> {

@@ -38,6 +38,8 @@ fn add_client_tag(builder: NoteBuilder<'_>) -> NoteBuilder<'_> {
 pub enum ProfileAction {
     Edit(FullKeypair),
     SaveChanges(SaveProfileChanges),
+    Follow(Pubkey),
+    Unfollow(Pubkey),
 }
 
 impl ProfileAction {
@@ -46,6 +48,7 @@ impl ProfileAction {
         state_map: &mut HashMap<Pubkey, ProfileState>,
         ndb: &Ndb,
         pool: &mut RelayPool,
+        accounts: &Accounts,
     ) -> Option<RouterAction> {
         match self {
             ProfileAction::Edit(kp) => Some(RouterAction::route_to(Route::EditProfile(kp.pubkey))),
@@ -62,6 +65,14 @@ impl ProfileAction {
                 pool.send(&enostr::ClientMessage::raw(raw_msg));
 
                 Some(RouterAction::GoBack)
+            }
+            ProfileAction::Follow(target_key) => {
+                Self::send_follow_user_event(ndb, pool, accounts, target_key);
+                None
+            }
+            ProfileAction::Unfollow(target_key) => {
+                Self::send_unfollow_user_event(ndb, pool, accounts, target_key);
+                None
             }
         }
     }
