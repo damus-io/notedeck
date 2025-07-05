@@ -1,9 +1,9 @@
-use enostr::{Keypair, KeypairUnowned};
+use enostr::{Keypair, KeypairUnowned, Pubkey};
 use tokenator::{ParseError, TokenParser, TokenSerializable};
 
 use crate::{
     wallet::{WalletSerializable, ZapWallet},
-    AccountData,
+    AccountData, IsFollowing,
 };
 
 pub struct UserAccount {
@@ -31,6 +31,10 @@ impl UserAccount {
     pub fn with_wallet(mut self, wallet: ZapWallet) -> Self {
         self.wallet = Some(wallet);
         self
+    }
+
+    pub fn is_following(&self, pk: &Pubkey) -> IsFollowing {
+        self.data.contacts.is_following(pk)
     }
 }
 

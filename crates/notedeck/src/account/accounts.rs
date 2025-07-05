@@ -1,6 +1,7 @@
 use uuid::Uuid;
 
 use crate::account::cache::AccountCache;
+use crate::account::contacts::Contacts;
 use crate::account::mute::AccountMutedData;
 use crate::account::relay::{
     modify_advertised_relays, update_relay_configuration, AccountRelayData, RelayAction,
@@ -253,6 +254,13 @@ impl Accounts {
             ),
             relay_url,
         );
+        pool.send_to(
+            &ClientMessage::req(
+                self.subs.contacts.remote.clone(),
+                vec![data.contacts.filter.clone()],
+            ),
+            relay_url,
+        );
     }
 
     pub fn update(&mut self, ndb: &mut Ndb, pool: &mut RelayPool, ctx: &egui::Context) {
@@ -366,6 +374,7 @@ fn get_acc_from_storage(user_account_serializable: UserAccountSerializable) -> O
 pub struct AccountData {
     pub(crate) relay: AccountRelayData,
     pub(crate) muted: AccountMutedData,
+    pub contacts: Contacts,
 }
 
 impl AccountData {
@@ -373,6 +382,7 @@ impl AccountData {
         Self {
             relay: AccountRelayData::new(pubkey),
             muted: AccountMutedData::new(pubkey),
+            contacts: Contacts::new(pubkey),
         }
     }
 
@@ -388,6 +398,8 @@ impl AccountData {
         }
 
         self.muted.poll_for_updates(ndb, &txn, subs.mute.local);
+        self.contacts
+            .poll_for_updates(ndb, &txn, subs.contacts.local);
 
         resp
     }
@@ -396,6 +408,7 @@ impl AccountData {
     pub(super) fn query(&mut self, ndb: &Ndb, txn: &Transaction) {
         self.relay.query(ndb, txn);
         self.muted.query(ndb, txn);
+        self.contacts.query(ndb, txn);
     }
 }
 
@@ -411,6 +424,7 @@ pub struct AddAccountResponse {
 pub(super) struct AccountSubs {
     relay: UnifiedSubscription,
     mute: UnifiedSubscription,
+    contacts: UnifiedSubscription,
 }
 
 impl AccountSubs {
@@ -424,9 +438,14 @@ impl AccountSubs {
     ) -> Self {
         let relay = subscribe(ndb, pool, &data.relay.filter);
         let mute = subscribe(ndb, pool, &data.muted.filter);
+        let contacts = subscribe(ndb, pool, &data.contacts.filter);
         update_relay_configuration(pool, relay_defaults, pk, &data.relay, wakeup);
 
-        Self { relay, mute }
+        Self {
+            relay,
+            mute,
+            contacts,
+        }
     }
 
     pub fn swap_to(
@@ -440,6 +459,7 @@ impl AccountSubs {
     ) {
         unsubscribe(ndb, pool, &self.relay);
         unsubscribe(ndb, pool, &self.mute);
+        unsubscribe(ndb, pool, &self.contacts);
 
         *self = AccountSubs::new(ndb, pool, relay_defaults, pk, new_selection_data, wakeup);
     }
