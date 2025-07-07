@@ -312,6 +312,10 @@ impl Accounts {
             create_wakeup(ctx),
         );
     }
+
+    pub fn get_subs(&self) -> &AccountSubs {
+        &self.subs
+    }
 }
 
 enum AccType<'a> {
@@ -421,14 +425,14 @@ pub struct AddAccountResponse {
     pub unk_id_action: SingleUnkIdAction,
 }
 
-pub(super) struct AccountSubs {
+pub struct AccountSubs {
     relay: UnifiedSubscription,
     mute: UnifiedSubscription,
-    contacts: UnifiedSubscription,
+    pub contacts: UnifiedSubscription,
 }
 
 impl AccountSubs {
-    pub fn new(
+    pub(super) fn new(
         ndb: &mut Ndb,
         pool: &mut RelayPool,
         relay_defaults: &RelayDefaults,
@@ -448,7 +452,7 @@ impl AccountSubs {
         }
     }
 
-    pub fn swap_to(
+    pub(super) fn swap_to(
         &mut self,
         ndb: &mut Ndb,
         pool: &mut RelayPool,
