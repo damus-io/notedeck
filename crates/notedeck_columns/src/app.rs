@@ -8,14 +8,16 @@ use crate::{
     storage,
     subscriptions::{SubKind, Subscriptions},
     support::Support,
-    timeline::{self, thread::Threads, TimelineCache},
+    timeline::{
+        self, fetch_contact_list, kind::ListKind, thread::Threads, TimelineCache, TimelineKind,
+    },
     ui::{self, DesktopSidePanel},
     view_state::ViewState,
     Result,
 };
 
 use notedeck::{
-    ui::is_narrow, Accounts, AppAction, AppContext, DataPath, DataPathType, FilterState, UnknownIds,
+    ui::is_narrow, Accounts, AppAction, AppContext, DataPath, DataPathType, UnknownIds,
 };
 use notedeck_ui::{jobs::JobsCache, NoteOptions};
 
@@ -116,13 +118,21 @@ fn try_process_event(
                     .accounts
                     .send_initial_filters(app_ctx.pool, &ev.relay);
 
+                let data = app_ctx.accounts.get_subs();
+                damus.subscriptions.subs.insert(
+                    data.contacts.remote.clone(),
+                    SubKind::FetchingContactList(TimelineKind::List(ListKind::Contact(
+                        *app_ctx.accounts.selected_account_pubkey(),
+                    ))),
+                );
+
                 timeline::send_initial_timeline_filters(
-                    app_ctx.ndb,
                     damus.since_optimize,
                     &mut damus.timeline_cache,
                     &mut damus.subscriptions,
                     app_ctx.pool,
                     &ev.relay,
+                    app_ctx.accounts,
                 );
             }
             // TODO: handle reconnects
@@ -248,44 +258,11 @@ fn handle_eose(
         }
 
         SubKind::FetchingContactList(timeline_uid) => {
-            let timeline = if let Some(tl) = timeline_cache.timelines.get_mut(timeline_uid) {
-                tl
-            } else {
-                error!(
-                    "timeline uid:{} not found for FetchingContactList",
-                    timeline_uid
-                );
+            let Some(timeline) = timeline_cache.timelines.get_mut(timeline_uid) else {
                 return Ok(());
             };
 
-            let filter_state = timeline.filter.get_mut(relay_url);
-
-            // If this request was fetching a contact list, our filter
-            // state should be "FetchingRemote". We look at the local
-            // subscription for that filter state and get the subscription id
-            let local_sub = if let FilterState::FetchingRemote(unisub) = filter_state {
-                unisub.local
-            } else {
-                // TODO: we could have multiple contact list results, we need
-                // to check to see if this one is newer and use that instead
-                warn!(
-                    "Expected timeline to have FetchingRemote state but was {:?}",
-                    timeline.filter
-                );
-                return Ok(());
-            };
-
-            info!(
-                "got contact list from {}, updating filter_state to got_remote",
-                relay_url
-            );
-
-            // We take the subscription id and pass it to the new state of
-            // "GotRemote". This will let future frames know that it can try
-            // to look for the contact list in nostrdb.
-            timeline
-                .filter
-                .set_relay_state(relay_url.to_string(), FilterState::got_remote(local_sub));
+            fetch_contact_list(relay_url, timeline, ctx.accounts);
         }
     }
 
@@ -704,7 +681,13 @@ fn timelines_view(
     let mut save_cols = false;
     if let Some(action) = side_panel_action {
         save_cols = save_cols
-            || action.process(&mut app.timeline_cache, &mut app.decks_cache, ctx, ui.ctx());
+            || action.process(
+                &mut app.timeline_cache,
+                &mut app.decks_cache,
+                &mut app.subscriptions,
+                ctx,
+                ui.ctx(),
+            );
     }
 
     let mut app_action: Option<AppAction> = None;
