@@ -42,8 +42,8 @@ impl Accounts {
         let (mut cache, unknown_id) = AccountCache::new(UserAccount::new(
             Keypair::only_pubkey(fallback),
             AccountData {
-                relay: AccountRelayData::new(ndb, txn, fallback.bytes()),
-                muted: AccountMutedData::new(ndb, txn, fallback.bytes()),
+                relay: AccountRelayData::new(fallback.bytes()),
+                muted: AccountMutedData::new(fallback.bytes()),
             },
         ));
 
@@ -55,7 +55,7 @@ impl Accounts {
             match reader.get_accounts() {
                 Ok(accounts) => {
                     for account in accounts {
-                        add_account_from_storage(&mut cache, ndb, txn, account).process_action(
+                        add_account_from_storage(&mut cache, account).process_action(
                             unknown_ids,
                             ndb,
                             txn,
@@ -75,8 +75,10 @@ impl Accounts {
 
         let relay_defaults = RelayDefaults::new(forced_relays);
 
-        let selected = cache.selected();
-        let selected_data = &selected.data;
+        let selected = cache.selected_mut();
+        let selected_data = &mut selected.data;
+
+        selected_data.query(ndb, txn);
 
         let subs = {
             AccountSubs::new(
@@ -116,12 +118,7 @@ impl Accounts {
     }
 
     #[must_use = "UnknownIdAction's must be handled. Use .process_unknown_id_action()"]
-    pub fn add_account(
-        &mut self,
-        ndb: &Ndb,
-        txn: &Transaction,
-        kp: Keypair,
-    ) -> Option<AddAccountResponse> {
+    pub fn add_account(&mut self, kp: Keypair) -> Option<AddAccountResponse> {
         let acc = if let Some(acc) = self.cache.get_mut(&kp.pubkey) {
             if kp.secret_key.is_none() || acc.key.secret_key.is_some() {
                 tracing::info!("Already have account, not adding");
@@ -132,8 +129,8 @@ impl Accounts {
             AccType::Acc(&*acc)
         } else {
             let new_account_data = AccountData {
-                relay: AccountRelayData::new(ndb, txn, kp.pubkey.bytes()),
-                muted: AccountMutedData::new(ndb, txn, kp.pubkey.bytes()),
+                relay: AccountRelayData::new(kp.pubkey.bytes()),
+                muted: AccountMutedData::new(kp.pubkey.bytes()),
             };
             AccType::Entry(
                 self.cache
@@ -212,6 +209,7 @@ impl Accounts {
         &mut self,
         pk_to_select: &Pubkey,
         ndb: &mut Ndb,
+        txn: &Transaction,
         pool: &mut RelayPool,
         ctx: &egui::Context,
     ) {
@@ -225,6 +223,7 @@ impl Accounts {
             }
         }
 
+        self.get_selected_account_mut().data.query(ndb, txn);
         self.subs.swap_to(
             ndb,
             pool,
@@ -336,11 +335,9 @@ fn create_wakeup(ctx: &egui::Context) -> impl Fn() + Send + Sync + Clone + 'stat
 
 fn add_account_from_storage(
     cache: &mut AccountCache,
-    ndb: &Ndb,
-    txn: &Transaction,
     user_account_serializable: UserAccountSerializable,
 ) -> SingleUnkIdAction {
-    let Some(acc) = get_acc_from_storage(ndb, txn, user_account_serializable) else {
+    let Some(acc) = get_acc_from_storage(user_account_serializable) else {
         return SingleUnkIdAction::NoAction;
     };
 
@@ -350,15 +347,11 @@ fn add_account_from_storage(
     SingleUnkIdAction::pubkey(pk)
 }
 
-fn get_acc_from_storage(
-    ndb: &Ndb,
-    txn: &Transaction,
-    user_account_serializable: UserAccountSerializable,
-) -> Option<UserAccount> {
+fn get_acc_from_storage(user_account_serializable: UserAccountSerializable) -> Option<UserAccount> {
     let keypair = user_account_serializable.key;
     let new_account_data = AccountData {
-        relay: AccountRelayData::new(ndb, txn, keypair.pubkey.bytes()),
-        muted: AccountMutedData::new(ndb, txn, keypair.pubkey.bytes()),
+        relay: AccountRelayData::new(keypair.pubkey.bytes()),
+        muted: AccountMutedData::new(keypair.pubkey.bytes()),
     };
 
     let mut wallet = None;
@@ -399,6 +392,12 @@ impl AccountData {
         self.muted.poll_for_updates(ndb, &txn, subs.mute.local);
 
         resp
+    }
+
+    /// Note: query should be called as close to the subscription as possible
+    pub(super) fn query(&mut self, ndb: &Ndb, txn: &Transaction) {
+        self.relay.query(ndb, txn);
+        self.muted.query(ndb, txn);
     }
 }
 

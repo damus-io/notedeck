@@ -203,7 +203,7 @@ impl Notedeck {
         {
             for key in &parsed_args.keys {
                 info!("adding account: {}", &key.pubkey);
-                if let Some(resp) = accounts.add_account(&ndb, &txn, key.clone()) {
+                if let Some(resp) = accounts.add_account(key.clone()) {
                     resp.unk_id_action
                         .process_action(&mut unknown_ids, &ndb, &txn);
                 }
@@ -211,7 +211,7 @@ impl Notedeck {
         }
 
         if let Some(first) = parsed_args.keys.first() {
-            accounts.select_account(&first.pubkey, &mut ndb, &mut pool, ctx);
+            accounts.select_account(&first.pubkey, &mut ndb, &txn, &mut pool, ctx);
         }
 
         let img_cache = Images::new(img_cache_dir);

@@ -94,7 +94,7 @@ pub fn render_accounts_route(
                 }
             }
             AccountsRouteResponse::AddAccount(response) => {
-                let action = process_login_view_response(accounts, decks, col, ndb, response);
+                let action = process_login_view_response(accounts, decks, col, response);
                 *login_state = Default::default();
                 let router = get_active_columns_mut(accounts, decks)
                     .column_mut(col)
@@ -143,20 +143,17 @@ pub fn process_login_view_response(
     manager: &mut Accounts,
     decks: &mut DecksCache,
     col: usize,
-    ndb: &Ndb,
     response: AccountLoginResponse,
 ) -> AddAccountAction {
     let (r, pubkey) = match response {
         AccountLoginResponse::CreateNew => {
             let kp = FullKeypair::generate().to_keypair();
             let pubkey = kp.pubkey;
-            let txn = Transaction::new(ndb).expect("txn");
-            (manager.add_account(ndb, &txn, kp), pubkey)
+            (manager.add_account(kp), pubkey)
         }
         AccountLoginResponse::LoginWith(keypair) => {
             let pubkey = keypair.pubkey;
-            let txn = Transaction::new(ndb).expect("txn");
-            (manager.add_account(ndb, &txn, keypair), pubkey)
+            (manager.add_account(keypair), pubkey)
         }
     };
 

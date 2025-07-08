@@ -14,7 +14,7 @@ pub(crate) struct AccountRelayData {
 }
 
 impl AccountRelayData {
-    pub fn new(ndb: &Ndb, txn: &Transaction, pubkey: &[u8; 32]) -> Self {
+    pub fn new(pubkey: &[u8; 32]) -> Self {
         // Construct a filter for the user's NIP-65 relay list
         let filter = Filter::new()
             .authors([pubkey])
@@ -22,26 +22,29 @@ impl AccountRelayData {
             .limit(1)
             .build();
 
+        AccountRelayData {
+            filter,
+            local: BTreeSet::new(),
+            advertised: BTreeSet::new(),
+        }
+    }
+
+    pub fn query(&mut self, ndb: &Ndb, txn: &Transaction) {
         // Query the ndb immediately to see if the user list is already there
-        let lim = filter.limit().unwrap_or(crate::filter::default_limit()) as i32;
+        let lim = self
+            .filter
+            .limit()
+            .unwrap_or(crate::filter::default_limit()) as i32;
         let nks = ndb
-            .query(txn, &[filter.clone()], lim)
+            .query(txn, &[self.filter.clone()], lim)
             .expect("query user relays results")
             .iter()
             .map(|qr| qr.note_key)
             .collect::<Vec<NoteKey>>();
         let relays = Self::harvest_nip65_relays(ndb, txn, &nks);
-        debug!(
-            "pubkey {}: initial relays {:?}",
-            hex::encode(pubkey),
-            relays
-        );
+        debug!("initial relays {:?}", relays);
 
-        AccountRelayData {
-            filter,
-            local: BTreeSet::new(),
-            advertised: relays.into_iter().collect(),
-        }
+        self.advertised = relays.into_iter().collect()
     }
 
     // standardize the format (ie, trailing slashes) to avoid dups

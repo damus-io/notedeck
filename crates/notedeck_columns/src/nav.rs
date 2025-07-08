@@ -78,9 +78,11 @@ impl SwitchingAction {
         match &self {
             SwitchingAction::Accounts(account_action) => match account_action {
                 AccountsAction::Switch(switch_action) => {
+                    let txn = Transaction::new(ctx.ndb).expect("txn");
                     ctx.accounts.select_account(
                         &switch_action.switch_to,
                         ctx.ndb,
+                        &txn,
                         ctx.pool,
                         ui_ctx,
                     );
