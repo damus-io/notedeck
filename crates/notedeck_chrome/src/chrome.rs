@@ -19,6 +19,9 @@ pub struct Chrome {
     open: bool,
     tab_selected: i32,
     apps: Vec<NotedeckApp>,
+
+    #[cfg(feature = "memory")]
+    show_memory_debug: bool,
 }
 
 impl Default for Chrome {
@@ -28,6 +31,9 @@ impl Default for Chrome {
             tab_selected: 0,
             open: true,
             apps: vec![],
+
+            #[cfg(feature = "memory")]
+            show_memory_debug: false,
         }
     }
 }
@@ -220,7 +226,7 @@ impl Chrome {
                     });
 
                     ui.with_layout(Layout::bottom_up(egui::Align::Center), |ui| {
-                        if let Some(action) = bottomup_sidebar(app_ctx, ui) {
+                        if let Some(action) = bottomup_sidebar(self, app_ctx, ui) {
                             got_action = Some(action);
                         }
                     });
@@ -656,7 +662,11 @@ fn pfp_button(ctx: &mut AppContext, ui: &mut egui::Ui) -> egui::Response {
 
 /// The section of the chrome sidebar that starts at the
 /// bottom and goes up
-fn bottomup_sidebar(ctx: &mut AppContext, ui: &mut egui::Ui) -> Option<ChromePanelAction> {
+fn bottomup_sidebar(
+    _chrome: &mut Chrome,
+    ctx: &mut AppContext,
+    ui: &mut egui::Ui,
+) -> Option<ChromePanelAction> {
     ui.add_space(8.0);
 
     let pfp_resp = pfp_button(ctx, ui);
@@ -701,6 +711,26 @@ fn bottomup_sidebar(ctx: &mut AppContext, ui: &mut egui::Ui) -> Option<ChromePan
             "{:10.1}",
             ctx.frame_history.mean_frame_time() * 1e3
         ));
+
+        #[cfg(feature = "memory")]
+        {
+            let mem_use = re_memory::MemoryUse::capture();
+            if let Some(counted) = mem_use.counted {
+                let memory_resp = ui.label(format!("{}", format_bytes(counted as f64)));
+                if memory_resp.clicked() {
+                    _chrome.show_memory_debug = !_chrome.show_memory_debug;
+                } else if memory_resp.hovered() {
+                    notedeck_ui::show_pointer(ui);
+                }
+            }
+            if let Some(resident) = mem_use.resident {
+                ui.weak(format!("{}", format_bytes(resident as f64)));
+            }
+
+            if _chrome.show_memory_debug {
+                egui::Window::new("Memory Debug").show(ui.ctx(), memory_debug_ui);
+            }
+        }
     }
 
     if pfp_resp.hovered()
@@ -723,5 +753,102 @@ fn bottomup_sidebar(ctx: &mut AppContext, ui: &mut egui::Ui) -> Option<ChromePan
         Some(ChromePanelAction::Wallet)
     } else {
         None
+    }
+}
+
+#[cfg(feature = "memory")]
+fn memory_debug_ui(ui: &mut egui::Ui) {
+    let Some(stats) = &re_memory::accounting_allocator::tracking_stats() else {
+        ui.label("re_memory::accounting_allocator::set_tracking_callstacks(true); not set!!");
+        return;
+    };
+
+    egui::ScrollArea::vertical().show(ui, |ui| {
+        ui.label(format!(
+            "track_size_threshold {}",
+            stats.track_size_threshold
+        ));
+        ui.label(format!(
+            "untracked {} {}",
+            stats.untracked.count,
+            format_bytes(stats.untracked.size as f64)
+        ));
+        ui.label(format!(
+            "stochastically_tracked {} {}",
+            stats.stochastically_tracked.count,
+            format_bytes(stats.stochastically_tracked.size as f64),
+        ));
+        ui.label(format!(
+            "fully_tracked {} {}",
+            stats.fully_tracked.count,
+            format_bytes(stats.fully_tracked.size as f64)
+        ));
+        ui.label(format!(
+            "overhead {} {}",
+            stats.overhead.count,
+            format_bytes(stats.overhead.size as f64)
+        ));
+
+        ui.separator();
+
+        for (i, callstack) in stats.top_callstacks.iter().enumerate() {
+            let full_bt = format!("{}", callstack.readable_backtrace);
+            let mut lines = full_bt.lines().skip(5);
+            let bt_header = lines.nth(0).map_or("??", |v| v);
+            let header = format!(
+                "#{} {bt_header} {}x {}",
+                i + 1,
+                callstack.extant.count,
+                format_bytes(callstack.extant.size as f64)
+            );
+
+            egui::CollapsingHeader::new(header)
+                .id_salt(("mem_cs", i))
+                .show(ui, |ui| {
+                    ui.label(lines.collect::<Vec<_>>().join("\n"));
+                });
+        }
+    });
+}
+
+/// Pretty format a number of bytes by using SI notation (base2), e.g.
+///
+/// ```
+/// # use re_format::format_bytes;
+/// assert_eq!(format_bytes(123.0), "123 B");
+/// assert_eq!(format_bytes(12_345.0), "12.1 KiB");
+/// assert_eq!(format_bytes(1_234_567.0), "1.2 MiB");
+/// assert_eq!(format_bytes(123_456_789.0), "118 MiB");
+/// ```
+#[cfg(feature = "memory")]
+pub fn format_bytes(number_of_bytes: f64) -> String {
+    /// The minus character: <https://www.compart.com/en/unicode/U+2212>
+    /// Looks slightly different from the normal hyphen `-`.
+    const MINUS: char = '−';
+
+    if number_of_bytes < 0.0 {
+        format!("{MINUS}{}", format_bytes(-number_of_bytes))
+    } else if number_of_bytes == 0.0 {
+        "0 B".to_owned()
+    } else if number_of_bytes < 1.0 {
+        format!("{number_of_bytes} B")
+    } else if number_of_bytes < 20.0 {
+        let is_integer = number_of_bytes.round() == number_of_bytes;
+        if is_integer {
+            format!("{number_of_bytes:.0} B")
+        } else {
+            format!("{number_of_bytes:.1} B")
+        }
+    } else if number_of_bytes < 10.0_f64.exp2() {
+        format!("{number_of_bytes:.0} B")
+    } else if number_of_bytes < 20.0_f64.exp2() {
+        let decimals = (10.0 * number_of_bytes < 20.0_f64.exp2()) as usize;
+        format!("{:.*} KiB", decimals, number_of_bytes / 10.0_f64.exp2())
+    } else if number_of_bytes < 30.0_f64.exp2() {
+        let decimals = (10.0 * number_of_bytes < 30.0_f64.exp2()) as usize;
+        format!("{:.*} MiB", decimals, number_of_bytes / 20.0_f64.exp2())
+    } else {
+        let decimals = (10.0 * number_of_bytes < 40.0_f64.exp2()) as usize;
+        format!("{:.*} GiB", decimals, number_of_bytes / 30.0_f64.exp2())
     }
 }

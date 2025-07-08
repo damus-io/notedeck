@@ -28,6 +28,7 @@ tracing-appender = { workspace = true }
 tracing-subscriber = { workspace = true }
 tracing = { workspace = true }
 profiling = { workspace = true }
+re_memory = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
@@ -45,6 +46,7 @@ path = "src/notedeck.rs"
 
 [features]
 default = []
+memory = ["re_memory"]
 puffin = ["profiling/profile-with-puffin", "dep:puffin"]
 debug-widget-callstack = ["egui/callstack"]
 debug-interactive-widgets = []

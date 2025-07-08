@@ -1,6 +1,14 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 // hide console window on Windows in release
 
+#[cfg(feature = "memory")]
+use re_memory::AccountingAllocator;
+
+#[cfg(feature = "memory")]
+#[global_allocator]
+static GLOBAL: AccountingAllocator<std::alloc::System> =
+    AccountingAllocator::new(std::alloc::System);
+
 use notedeck::{DataPath, DataPathType, Notedeck};
 use notedeck_chrome::{
     setup::{generate_native_options, setup_chrome},
@@ -66,6 +74,9 @@ fn setup_logging(path: &DataPath) -> Option<WorkerGuard> {
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::main]
 async fn main() {
+    #[cfg(feature = "memory")]
+    re_memory::accounting_allocator::set_tracking_callstacks(true);
+
     let base_path = DataPath::default_base_or_cwd();
     let path = DataPath::new(base_path.clone());
 
