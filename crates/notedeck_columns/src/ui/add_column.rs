@@ -2,8 +2,8 @@ use core::f32;
 use std::collections::HashMap;
 
 use egui::{
-    pos2, vec2, Align, Color32, FontId, Id, Image, Margin, Pos2, Rect, RichText, Separator, Ui,
-    Vec2, Widget,
+    pos2, vec2, Align, Color32, FontId, Id, Image, Margin, Pos2, Rect, RichText, ScrollArea,
+    Separator, Ui, Vec2, Widget,
 };
 use enostr::Pubkey;
 use nostrdb::{Ndb, Transaction};
@@ -184,17 +184,21 @@ impl<'a> AddColumnView<'a> {
     }
 
     pub fn ui(&mut self, ui: &mut Ui) -> Option<AddColumnResponse> {
-        let mut selected_option: Option<AddColumnResponse> = None;
-        for column_option_data in self.get_base_options() {
-            let option = column_option_data.option.clone();
-            if self.column_option_ui(ui, column_option_data).clicked() {
-                selected_option = Some(option.take_as_response(self.cur_account));
-            }
+        ScrollArea::vertical()
+            .show(ui, |ui| {
+                let mut selected_option: Option<AddColumnResponse> = None;
+                for column_option_data in self.get_base_options() {
+                    let option = column_option_data.option.clone();
+                    if self.column_option_ui(ui, column_option_data).clicked() {
+                        selected_option = Some(option.take_as_response(self.cur_account));
+                    }
 
-            ui.add(Separator::default().spacing(0.0));
-        }
+                    ui.add(Separator::default().spacing(0.0));
+                }
 
-        selected_option
+                selected_option
+            })
+            .inner
     }
 
     fn notifications_ui(&mut self, ui: &mut Ui) -> Option<AddColumnResponse> {
