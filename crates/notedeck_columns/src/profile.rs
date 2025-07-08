@@ -205,6 +205,12 @@ fn send_note_builder(builder: NoteBuilder, ndb: &Ndb, pool: &mut RelayPool, kp: 
     pool.send(&enostr::ClientMessage::raw(raw_msg));
 }
 
+pub fn send_new_contact_list(kp: FilledKeypair, ndb: &Ndb, pool: &mut RelayPool) {
+    let builder = construct_new_contact_list(kp.pubkey);
+
+    send_note_builder(builder, ndb, pool, kp);
+}
+
 fn construct_new_contact_list<'a>(pk: &'a Pubkey) -> NoteBuilder<'a> {
     NoteBuilder::new()
         .content("")

@@ -1,10 +1,11 @@
-use enostr::{FullKeypair, Pubkey};
+use enostr::{FullKeypair, Pubkey, RelayPool};
 use nostrdb::{Ndb, Transaction};
 
 use notedeck::{Accounts, Images, SingleUnkIdAction, UnknownIds};
 
 use crate::app::get_active_columns_mut;
 use crate::decks::DecksCache;
+use crate::profile::send_new_contact_list;
 use crate::{
     login_manager::AcquireKeyState,
     route::Route,
@@ -70,6 +71,7 @@ pub fn render_accounts_route(
     decks: &mut DecksCache,
     login_state: &mut AcquireKeyState,
     clipboard: &mut Clipboard,
+    pool: &mut RelayPool,
     route: AccountsRoute,
 ) -> AddAccountAction {
     let resp = match route {
@@ -94,7 +96,7 @@ pub fn render_accounts_route(
                 }
             }
             AccountsRouteResponse::AddAccount(response) => {
-                let action = process_login_view_response(accounts, decks, col, response);
+                let action = process_login_view_response(accounts, decks, col, ndb, pool, response);
                 *login_state = Default::default();
                 let router = get_active_columns_mut(accounts, decks)
                     .column_mut(col)
@@ -143,13 +145,16 @@ pub fn process_login_view_response(
     manager: &mut Accounts,
     decks: &mut DecksCache,
     col: usize,
+    ndb: &Ndb,
+    pool: &mut RelayPool,
     response: AccountLoginResponse,
 ) -> AddAccountAction {
     let (r, pubkey) = match response {
         AccountLoginResponse::CreateNew => {
-            let kp = FullKeypair::generate().to_keypair();
+            let kp = FullKeypair::generate();
             let pubkey = kp.pubkey;
-            (manager.add_account(kp), pubkey)
+            send_new_contact_list(kp.to_filled(), ndb, pool);
+            (manager.add_account(kp.to_keypair()), pubkey)
         }
         AccountLoginResponse::LoginWith(keypair) => {
             let pubkey = keypair.pubkey;
