@@ -14,7 +14,9 @@ use crate::{
     Result,
 };
 
-use notedeck::{Accounts, AppAction, AppContext, DataPath, DataPathType, FilterState, UnknownIds};
+use notedeck::{
+    ui::is_narrow, Accounts, AppAction, AppContext, DataPath, DataPathType, FilterState, UnknownIds,
+};
 use notedeck_ui::{jobs::JobsCache, NoteOptions};
 
 use enostr::{ClientMessage, PoolRelay, Pubkey, RelayEvent, RelayMessage, RelayPool};
@@ -561,14 +563,22 @@ fn render_damus_mobile(
         }
     }
 
-    rect.min.x = rect.max.x - 100.0;
+    rect.min.x = rect.max.x - if is_narrow(ui.ctx()) { 60.0 } else { 100.0 };
     rect.min.y = rect.max.y - 100.0;
 
-    let interactive = true;
+    let is_interactive = app_ctx
+        .accounts
+        .get_selected_account()
+        .key
+        .secret_key
+        .is_some();
     let darkmode = ui.ctx().style().visuals.dark_mode;
 
     if ui
-        .put(rect, ui::post::compose_note_button(interactive, darkmode))
+        .put(
+            rect,
+            ui::post::compose_note_button(is_interactive, darkmode),
+        )
         .clicked()
         && !app.columns(app_ctx.accounts).columns().is_empty()
     {

@@ -15,6 +15,7 @@ pub use contents::{render_note_contents, render_note_preview, NoteContents};
 pub use context::NoteContextButton;
 use notedeck::note::MediaAction;
 use notedeck::note::ZapTargetAmount;
+use notedeck::ui::is_narrow;
 use notedeck::Images;
 pub use options::NoteOptions;
 pub use reply_description::reply_desc;
@@ -253,6 +254,10 @@ impl<'a, 'd> NoteView<'a, 'd> {
             ui.spacing_mut().item_spacing.x = 4.0;
         }
 
+        if is_narrow(ui.ctx()) {
+            ui.spacing_mut().item_spacing.x = 1.0
+        }
+
         let pfp_size = self.options().pfp_size();
 
         match profile
@@ -363,7 +368,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
 
         let horiz_resp = ui
             .horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 2.0;
+                ui.spacing_mut().item_spacing.x = if is_narrow(ui.ctx()) { 1.0 } else { 2.0 };
                 ui.add(Username::new(profile.as_ref().ok(), note.pubkey()).abbreviated(20));
 
                 let cached_note = note_cache.cached_note_or_insert_mut(note_key, note);
@@ -507,7 +512,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
                     self.show_unread_indicator,
                 );
                 ui.horizontal(|ui| 's: {
-                    ui.spacing_mut().item_spacing.x = 2.0;
+                    ui.spacing_mut().item_spacing.x = if is_narrow(ui.ctx()) { 1.0 } else { 2.0 };
 
                     let note_reply = self
                         .note_context

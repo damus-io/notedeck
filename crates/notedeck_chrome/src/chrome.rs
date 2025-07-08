@@ -2,7 +2,7 @@
 //#[cfg(target_arch = "wasm32")]
 //use wasm_bindgen::prelude::*;
 use crate::app::NotedeckApp;
-use egui::{vec2, Button, Label, Layout, Rect, RichText, ThemePreference, Widget};
+use egui::{vec2, Button, Color32, Label, Layout, Rect, RichText, ThemePreference, Widget};
 use egui_extras::{Size, StripBuilder};
 use nostrdb::{ProfileRecord, Transaction};
 use notedeck::{App, AppAction, AppContext, NotedeckTextStyle, UserAccount, WalletType};
@@ -207,8 +207,8 @@ impl Chrome {
             .size(Size::exact(amt_open)) // collapsible sidebar
             .size(Size::remainder()) // the main app contents
             .clip(true)
-            .horizontal(|mut strip| {
-                strip.cell(|ui| {
+            .horizontal(|mut hstrip| {
+                hstrip.cell(|ui| {
                     let rect = ui.available_rect_before_wrap();
                     if !ui.visuals().dark_mode {
                         let rect = ui.available_rect_before_wrap();
@@ -216,20 +216,28 @@ impl Chrome {
                             rect,
                             0,
                             notedeck_ui::colors::ALMOST_WHITE,
-                            egui::Stroke::new(0.0, egui::Color32::TRANSPARENT),
+                            egui::Stroke::new(0.0, Color32::TRANSPARENT),
                             egui::StrokeKind::Inside,
                         );
                     }
 
-                    ui.with_layout(Layout::top_down(egui::Align::Center), |ui| {
-                        self.topdown_sidebar(ui);
-                    });
-
-                    ui.with_layout(Layout::bottom_up(egui::Align::Center), |ui| {
-                        if let Some(action) = bottomup_sidebar(self, app_ctx, ui) {
-                            got_action = Some(action);
-                        }
-                    });
+                    StripBuilder::new(ui)
+                        .size(Size::remainder())
+                        .size(Size::remainder())
+                        .vertical(|mut vstrip| {
+                            vstrip.cell(|ui| {
+                                _ = ui.vertical_centered(|ui| {
+                                    self.topdown_sidebar(ui);
+                                })
+                            });
+                            vstrip.cell(|ui| {
+                                ui.with_layout(Layout::bottom_up(egui::Align::Center), |ui| {
+                                    if let Some(action) = bottomup_sidebar(self, app_ctx, ui) {
+                                        got_action = Some(action);
+                                    }
+                                });
+                            });
+                        });
 
                     // vertical sidebar line
                     ui.painter().vline(
@@ -239,7 +247,7 @@ impl Chrome {
                     );
                 });
 
-                strip.cell(|ui| {
+                hstrip.cell(|ui| {
                     /*
                     let rect = ui.available_rect_before_wrap();
                     ui.painter().rect(
@@ -286,7 +294,6 @@ impl Chrome {
             .vertical(|mut strip| {
                 strip.strip(|builder| {
                     // the chrome panel is nested above the toolbar
-
                     got_action = self.panel(ctx, builder, amt_open);
                 });
 
@@ -302,6 +309,23 @@ impl Chrome {
 
     fn toolbar(&mut self, ui: &mut egui::Ui) -> Option<ToolbarAction> {
         use egui_tabs::{TabColor, Tabs};
+
+        let rect = ui.available_rect_before_wrap();
+        ui.painter().hline(
+            rect.x_range(),
+            rect.top(),
+            ui.visuals().widgets.noninteractive.bg_stroke,
+        );
+
+        if !ui.visuals().dark_mode {
+            ui.painter().rect(
+                rect,
+                0,
+                notedeck_ui::colors::ALMOST_WHITE,
+                egui::Stroke::new(0.0, Color32::TRANSPARENT),
+                egui::StrokeKind::Inside,
+            );
+        }
 
         let rs = Tabs::new(3)
             .selected(self.tab_selected)
@@ -496,8 +520,8 @@ fn notifications_button(ui: &mut egui::Ui) -> egui::Response {
     expanding_button(
         "notifications-button",
         24.0,
-        app_images::notifications_button_image(),
-        app_images::notifications_button_image(),
+        app_images::notifications_light_image(),
+        app_images::notifications_dark_image(),
         ui,
     )
 }
@@ -506,8 +530,8 @@ fn home_button(ui: &mut egui::Ui) -> egui::Response {
     expanding_button(
         "home-button",
         24.0,
-        app_images::home_button_image(),
-        app_images::home_button_image(),
+        app_images::home_light_image(),
+        app_images::home_dark_image(),
         ui,
     )
 }

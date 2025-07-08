@@ -187,7 +187,7 @@ impl<'a> AddColumnView<'a> {
         ScrollArea::vertical()
             .show(ui, |ui| {
                 let mut selected_option: Option<AddColumnResponse> = None;
-                for column_option_data in self.get_base_options() {
+                for column_option_data in self.get_base_options(ui) {
                     let option = column_option_data.option.clone();
                     if self.column_option_ui(ui, column_option_data).clicked() {
                         selected_option = Some(option.take_as_response(self.cur_account));
@@ -203,7 +203,7 @@ impl<'a> AddColumnView<'a> {
 
     fn notifications_ui(&mut self, ui: &mut Ui) -> Option<AddColumnResponse> {
         let mut selected_option: Option<AddColumnResponse> = None;
-        for column_option_data in self.get_notifications_options() {
+        for column_option_data in self.get_notifications_options(ui) {
             let option = column_option_data.option.clone();
             if self.column_option_ui(ui, column_option_data).clicked() {
                 selected_option = Some(option.take_as_response(self.cur_account));
@@ -441,7 +441,7 @@ impl<'a> AddColumnView<'a> {
         helper.take_animation_response()
     }
 
-    fn get_base_options(&self) -> Vec<ColumnOptionData> {
+    fn get_base_options(&self, ui: &mut Ui) -> Vec<ColumnOptionData> {
         let mut vec = Vec::new();
         vec.push(ColumnOptionData {
             title: "Universe",
@@ -465,7 +465,7 @@ impl<'a> AddColumnView<'a> {
         vec.push(ColumnOptionData {
             title: "Notifications",
             description: "Stay up to date with notifications and mentions",
-            icon: app_images::notifications_image(),
+            icon: app_images::notifications_image(ui.visuals().dark_mode),
             option: AddColumnOption::UndecidedNotification,
         });
         vec.push(ColumnOptionData {
@@ -490,7 +490,7 @@ impl<'a> AddColumnView<'a> {
         vec
     }
 
-    fn get_notifications_options(&self) -> Vec<ColumnOptionData> {
+    fn get_notifications_options(&self, ui: &mut Ui) -> Vec<ColumnOptionData> {
         let mut vec = Vec::new();
 
         let source = if self.cur_account.key.secret_key.is_some() {
@@ -502,14 +502,14 @@ impl<'a> AddColumnView<'a> {
         vec.push(ColumnOptionData {
             title: "Your Notifications",
             description: "Stay up to date with your notifications and mentions",
-            icon: app_images::notifications_image(),
+            icon: app_images::notifications_image(ui.visuals().dark_mode),
             option: AddColumnOption::Notification(source),
         });
 
         vec.push(ColumnOptionData {
             title: "Someone else's Notifications",
             description: "Stay up to date with someone else's notifications and mentions",
-            icon: app_images::notifications_image(),
+            icon: app_images::notifications_image(ui.visuals().dark_mode),
             option: AddColumnOption::ExternalNotification,
         });
 
