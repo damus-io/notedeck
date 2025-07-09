@@ -30,10 +30,6 @@ use notedeck::{
     NotedeckTextStyle, ZapTarget, Zaps,
 };
 
-const ACTION_BAR_ICON_SIZE: f32 = 14.0;
-const ACTION_BAR_EXPAND_SIZE: f32 = 5.0;
-const ACTION_BAR_ANIM_SPEED: f32 = 0.05;
-
 pub struct NoteView<'a, 'd> {
     note_context: &'a mut NoteContext<'d>,
     zapping_acc: Option<&'a KeypairUnowned<'a>>,
@@ -70,6 +66,14 @@ impl NoteResponse {
         self
     }
 }
+
+/*
+impl View for NoteView<'_, '_> {
+    fn ui(&mut self, ui: &mut egui::Ui) {
+        self.show(ui);
+    }
+}
+*/
 
 impl egui::Widget for &mut NoteView<'_, '_> {
     fn ui(self, ui: &mut egui::Ui) -> egui::Response {
@@ -780,91 +784,73 @@ fn render_note_actionbar(
     note_pubkey: &[u8; 32],
     note_key: NoteKey,
 ) -> egui::InnerResponse<Option<NoteAction>> {
-    ui.add_space(10.0);
+    ui.horizontal(|ui| 's: {
+        let reply_resp = reply_button(ui, note_key);
+        let quote_resp = quote_repost_button(ui, note_key);
 
-    let icon_space = ACTION_BAR_ICON_SIZE * 2.0;
-    let width = ui.available_width();
-    let height = 22.0;
+        let to_noteid = |id: &[u8; 32]| NoteId::new(*id);
+        if reply_resp.clicked() {
+            break 's Some(NoteAction::Reply(to_noteid(note_id)));
+        } else if reply_resp.hovered() {
+            crate::show_pointer(ui);
+        }
 
-    let (rect, _response) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::click());
+        if quote_resp.clicked() {
+            break 's Some(NoteAction::Quote(to_noteid(note_id)));
+        } else if quote_resp.hovered() {
+            crate::show_pointer(ui);
+        }
 
-    #[allow(deprecated)]
-    ui.allocate_ui_at_rect(rect, |ui| {
-        ui.horizontal(|ui| 's: {
-            let reply_resp = reply_button(ui, note_key);
+        let Some(Zapper { zaps, cur_acc }) = zapper else {
+            break 's None;
+        };
 
-            ui.add_space(icon_space);
+        let zap_target = ZapTarget::Note(NoteZapTarget {
+            note_id,
+            zap_recipient: note_pubkey,
+        });
 
-            let quote_resp = quote_repost_button(ui, note_key);
+        let zap_state = zaps.any_zap_state_for(cur_acc.pubkey.bytes(), zap_target);
 
-            let to_noteid = |id: &[u8; 32]| NoteId::new(*id);
-            if reply_resp.clicked() {
-                break 's Some(NoteAction::Reply(to_noteid(note_id)));
-            } else if reply_resp.hovered() {
-                crate::show_pointer(ui);
-            }
+        let target = NoteZapTargetOwned {
+            note_id: to_noteid(note_id),
+            zap_recipient: Pubkey::new(*note_pubkey),
+        };
 
-            if quote_resp.clicked() {
-                break 's Some(NoteAction::Quote(to_noteid(note_id)));
-            } else if quote_resp.hovered() {
-                crate::show_pointer(ui);
-            }
+        if zap_state.is_err() {
+            break 's Some(NoteAction::Zap(ZapAction::ClearError(target)));
+        }
 
-            let Some(Zapper { zaps, cur_acc }) = zapper else {
-                break 's None;
-            };
+        let zap_resp = {
+            cur_acc.secret_key.as_ref()?;
 
-            let zap_target = ZapTarget::Note(NoteZapTarget {
-                note_id,
-                zap_recipient: note_pubkey,
-            });
-
-            let zap_state = zaps.any_zap_state_for(cur_acc.pubkey.bytes(), zap_target);
-
-            let target = NoteZapTargetOwned {
-                note_id: to_noteid(note_id),
-                zap_recipient: Pubkey::new(*note_pubkey),
-            };
-
-            if zap_state.is_err() {
-                break 's Some(NoteAction::Zap(ZapAction::ClearError(target)));
-            }
-
-            let zap_resp = {
-                cur_acc.secret_key.as_ref()?;
-
-                match zap_state {
-                    Ok(any_zap_state) => {
-                        ui.add_space(icon_space);
-                        ui.add(zap_button(any_zap_state, note_id))
-                    }
-                    Err(err) => {
-                        let (rect, _) =
-                            ui.allocate_at_least(egui::vec2(10.0, 10.0), egui::Sense::click());
-                        ui.add(x_button(rect)).on_hover_text(err.to_string())
-                    }
+            match zap_state {
+                Ok(any_zap_state) => ui.add(zap_button(any_zap_state, note_id)),
+                Err(err) => {
+                    let (rect, _) =
+                        ui.allocate_at_least(egui::vec2(10.0, 10.0), egui::Sense::click());
+                    ui.add(x_button(rect)).on_hover_text(err.to_string())
                 }
-            };
-
-            if zap_resp.hovered() {
-                crate::show_pointer(ui);
             }
+        };
 
-            if zap_resp.secondary_clicked() {
-                break 's Some(NoteAction::Zap(ZapAction::CustomizeAmount(target)));
-            }
+        if zap_resp.hovered() {
+            crate::show_pointer(ui);
+        }
 
-            if !zap_resp.clicked() {
-                break 's None;
-            }
+        if zap_resp.secondary_clicked() {
+            break 's Some(NoteAction::Zap(ZapAction::CustomizeAmount(target)));
+        }
 
-            Some(NoteAction::Zap(ZapAction::Send(ZapTargetAmount {
-                target,
-                specified_msats: None,
-            })))
-        })
+        if !zap_resp.clicked() {
+            break 's None;
+        }
+
+        Some(NoteAction::Zap(ZapAction::Send(ZapTargetAmount {
+            target,
+            specified_msats: None,
+        })))
     })
-    .inner
 }
 
 fn secondary_label(ui: &mut egui::Ui, s: impl Into<String>) {
@@ -892,23 +878,18 @@ fn render_reltime(
 }
 
 fn reply_button(ui: &mut egui::Ui, note_key: NoteKey) -> egui::Response {
-    let id = ui.id().with(("reply_anim", note_key));
-
-    let (rect, size, resp) = crate::anim::hover_expand(
-        ui,
-        id,
-        ACTION_BAR_ICON_SIZE,
-        ACTION_BAR_EXPAND_SIZE,
-        ACTION_BAR_ANIM_SPEED,
-    );
-
-    let rect = rect.translate(egui::vec2(-(ACTION_BAR_EXPAND_SIZE / 2.0), -1.0));
-
     let img = if ui.style().visuals.dark_mode {
         app_images::reply_dark_image()
     } else {
         app_images::reply_light_image()
     };
+
+    let (rect, size, resp) =
+        crate::anim::hover_expand_small(ui, ui.id().with(("reply_anim", note_key)));
+
+    // align rect to note contents
+    let expand_size = 5.0; // from hover_expand_small
+    let rect = rect.translate(egui::vec2(-(expand_size / 2.0), 0.0));
 
     let put_resp = ui
         .put(rect, img.max_width(size))
@@ -926,17 +907,14 @@ fn repost_icon(dark_mode: bool) -> egui::Image<'static> {
 }
 
 fn quote_repost_button(ui: &mut egui::Ui, note_key: NoteKey) -> egui::Response {
+    let size = 14.0;
+    let expand_size = 5.0;
+    let anim_speed = 0.05;
     let id = ui.id().with(("repost_anim", note_key));
 
-    let (rect, size, resp) = crate::anim::hover_expand(
-        ui,
-        id,
-        ACTION_BAR_ICON_SIZE,
-        ACTION_BAR_EXPAND_SIZE,
-        ACTION_BAR_ANIM_SPEED,
-    );
+    let (rect, size, resp) = crate::anim::hover_expand(ui, id, size, expand_size, anim_speed);
 
-    let rect = rect.translate(egui::vec2(-(ACTION_BAR_EXPAND_SIZE / 2.0), -1.0));
+    let rect = rect.translate(egui::vec2(-(expand_size / 2.0), -1.0));
 
     let put_resp = ui
         .put(rect, repost_icon(ui.visuals().dark_mode).max_width(size))
@@ -947,19 +925,9 @@ fn quote_repost_button(ui: &mut egui::Ui, note_key: NoteKey) -> egui::Response {
 
 fn zap_button(state: AnyZapState, noteid: &[u8; 32]) -> impl egui::Widget + use<'_> {
     move |ui: &mut egui::Ui| -> egui::Response {
-        let id = ui.id().with(("zap", noteid));
+        let (rect, size, resp) = crate::anim::hover_expand_small(ui, ui.id().with("zap"));
 
-        let (rect, size, resp) = crate::anim::hover_expand(
-            ui,
-            id,
-            ACTION_BAR_ICON_SIZE,
-            ACTION_BAR_EXPAND_SIZE,
-            ACTION_BAR_ANIM_SPEED,
-        );
-
-        let mut img = app_images::zap_image()
-            .max_width(size)
-            .tint(egui::Color32::WHITE);
+        let mut img = app_images::zap_image().max_width(size);
         let id = ui.id().with(("pulse", noteid));
         let ctx = ui.ctx().clone();
 

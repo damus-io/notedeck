@@ -1,5 +1,5 @@
 use eframe::icon_data::from_png_bytes;
-use egui::{include_image, Color32, IconData, Image};
+use egui::{include_image, IconData, Image};
 
 pub fn app_icon() -> IconData {
     from_png_bytes(include_bytes!("../../../assets/damus-app-icon.png")).expect("icon")
@@ -153,19 +153,19 @@ pub fn notifications_image() -> Image<'static> {
     ))
 }
 pub fn repost_dark_image() -> Image<'static> {
-    Image::new(include_image!("../../../assets/icons/repost.svg"))
+    Image::new(include_image!("../../../assets/icons/repost_icon_4x.png"))
 }
 
 pub fn repost_light_image() -> Image<'static> {
-    Image::new(include_image!("../../../assets/icons/repost_light.png"))
+    Image::new(include_image!("../../../assets/icons/repost_light_4x.png"))
 }
 
 pub fn reply_dark_image() -> Image<'static> {
-    Image::new(include_image!("../../../assets/icons/reply.svg"))
+    Image::new(include_image!("../../../assets/icons/reply.png"))
 }
 
 pub fn reply_light_image() -> Image<'static> {
-    Image::new(include_image!("../../../assets/icons/reply.svg")).tint(Color32::BLACK)
+    Image::new(include_image!("../../../assets/icons/reply-dark.png"))
 }
 
 pub fn profile_image() -> Image<'static> {
@@ -203,5 +203,5 @@ pub fn wallet_image() -> Image<'static> {
 }
 
 pub fn zap_image() -> Image<'static> {
-    Image::new(include_image!("../../../assets/icons/zap.svg"))
+    Image::new(include_image!("../../../assets/icons/zap_4x.png"))
 }
