@@ -46,7 +46,7 @@ impl<'a, 'cache> ProfilePreview<'a, 'cache> {
                 &get_display_name(Some(self.profile)),
                 false,
             ));
-            ui.add(about_section_widget(self.profile));
+            ui.add(about_section_widget(Some(self.profile)));
         });
     }
 }

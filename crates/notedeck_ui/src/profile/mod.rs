@@ -68,12 +68,17 @@ pub fn display_name_widget<'a>(
     }
 }
 
-pub fn about_section_widget<'a, 'b>(profile: &'b ProfileRecord<'a>) -> impl egui::Widget + 'b
+pub fn about_section_widget<'a, 'b>(
+    profile: Option<&'b ProfileRecord<'a>>,
+) -> impl egui::Widget + 'b
 where
     'b: 'a,
 {
     move |ui: &mut egui::Ui| {
-        if let Some(about) = profile.record().profile().and_then(|p| p.about()) {
+        if let Some(about) = profile
+            .map(|p| p.record().profile())
+            .and_then(|p| p.and_then(|p| p.about()))
+        {
             let resp = ui.label(about);
             ui.add_space(8.0);
             resp
