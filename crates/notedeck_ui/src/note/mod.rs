@@ -258,10 +258,6 @@ impl<'a, 'd> NoteView<'a, 'd> {
             ui.spacing_mut().item_spacing.x = 4.0;
         }
 
-        if is_narrow(ui.ctx()) {
-            ui.spacing_mut().item_spacing.x = 1.0
-        }
-
         let pfp_size = self.options().pfp_size();
 
         match profile
