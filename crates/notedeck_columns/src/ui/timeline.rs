@@ -8,7 +8,7 @@ use std::f32::consts::PI;
 use tracing::{error, warn};
 
 use crate::timeline::{TimelineCache, TimelineKind, TimelineTab, ViewFilter};
-use notedeck::{note::root_note_id_from_selected_id, MuteFun, NoteAction, NoteContext};
+use notedeck::{note::root_note_id_from_selected_id, MuteFun, NoteAction, NoteContext, ScrollInfo};
 use notedeck_ui::{
     anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},
     show_pointer, NoteOptions, NoteView,
@@ -184,7 +184,18 @@ fn timeline_ui(
             .data_mut(|d| d.insert_temp(show_top_button_id, true));
     }
 
-    scroll_output.inner
+    scroll_output.inner.or_else(|| {
+        // if we're scrolling, return that as a response. We need this
+        // for auto-closing the side menu
+
+        let velocity = scroll_output.state.velocity();
+        let offset = scroll_output.state.offset;
+        if velocity.length_sq() > 0.0 {
+            Some(NoteAction::Scroll(ScrollInfo { velocity, offset }))
+        } else {
+            None
+        }
+    })
 }
 
 fn goto_top_button(center: Pos2) -> impl egui::Widget {

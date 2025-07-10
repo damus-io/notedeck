@@ -1,7 +1,14 @@
 use super::context::ContextSelection;
 use crate::{zaps::NoteZapTargetOwned, Images, MediaCacheType, TexturedImage};
+use egui::Vec2;
 use enostr::{NoteId, Pubkey};
 use poll_promise::Promise;
+
+#[derive(Debug)]
+pub struct ScrollInfo {
+    pub velocity: Vec2,
+    pub offset: Vec2,
+}
 
 #[derive(Debug)]
 pub enum NoteAction {
@@ -28,6 +35,9 @@ pub enum NoteAction {
 
     /// User clicked on media
     Media(MediaAction),
+
+    /// User scrolled the timeline
+    Scroll(ScrollInfo),
 }
 
 impl NoteAction {

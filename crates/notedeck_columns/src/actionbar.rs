@@ -59,6 +59,10 @@ fn execute_note_action(
     let mut router_action = None;
 
     match action {
+        NoteAction::Scroll(ref scroll_info) => {
+            tracing::trace!("timeline scroll {scroll_info:?}")
+        }
+
         NoteAction::Reply(note_id) => {
             router_action = Some(RouterAction::route_to(Route::reply(note_id)));
         }
