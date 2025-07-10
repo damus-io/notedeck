@@ -457,7 +457,7 @@ impl<'a> AddColumnView<'a> {
         };
 
         vec.push(ColumnOptionData {
-            title: "Contacts",
+            title: "Home",
             description: "See notes from your contacts",
             icon: app_images::home_image(),
             option: AddColumnOption::Contacts(source),

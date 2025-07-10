@@ -453,7 +453,7 @@ impl fmt::Display for Route {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Route::Timeline(kind) => match kind {
-                TimelineKind::List(ListKind::Contact(_pk)) => write!(f, "Contacts"),
+                TimelineKind::List(ListKind::Contact(_pk)) => write!(f, "Home"),
                 TimelineKind::Algo(AlgoTimeline::LastPerPubkey(ListKind::Contact(_))) => {
                     write!(f, "Last Per Pubkey (Contact)")
                 }
