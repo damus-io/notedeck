@@ -2,26 +2,44 @@ use std::collections::BTreeSet;
 
 use crate::timeline::TimelineKind;
 use enostr::{Filter, Pubkey};
+use oot_bitset::{bitset_clear, bitset_get, bitset_set};
 use tracing::{debug, error, info};
+
+#[repr(u16)]
+pub enum ColumnsFlag {
+    SinceOptimize,
+    Textmode,
+    Scramble,
+    NoMedia,
+}
 
 pub struct ColumnsArgs {
     pub columns: Vec<ArgColumn>,
-    pub since_optimize: bool,
-    pub textmode: bool,
-    pub scramble: bool,
-    pub no_media: bool,
+    flags: [u16; 2],
 }
 
 impl ColumnsArgs {
+    pub fn is_flag_set(&self, flag: ColumnsFlag) -> bool {
+        bitset_get(&self.flags, flag as u16)
+    }
+
+    pub fn set_flag(&mut self, flag: ColumnsFlag) {
+        bitset_set(&mut self.flags, flag as u16)
+    }
+
+    pub fn clear_flag(&mut self, flag: ColumnsFlag) {
+        bitset_clear(&mut self.flags, flag as u16)
+    }
+
     pub fn parse(args: &[String], deck_author: Option<&Pubkey>) -> (Self, BTreeSet<String>) {
         let mut unrecognized_args = BTreeSet::new();
         let mut res = Self {
             columns: vec![],
-            since_optimize: true,
-            textmode: false,
-            scramble: false,
-            no_media: false,
+            flags: [0; 2],
         };
+
+        // flag defaults
+        res.set_flag(ColumnsFlag::SinceOptimize);
 
         let mut i = 0;
         let len = args.len();
@@ -29,13 +47,13 @@ impl ColumnsArgs {
             let arg = &args[i];
 
             if arg == "--textmode" {
-                res.textmode = true;
+                res.set_flag(ColumnsFlag::Textmode);
             } else if arg == "--no-since-optimize" {
-                res.since_optimize = false;
+                res.clear_flag(ColumnsFlag::SinceOptimize);
             } else if arg == "--scramble" {
-                res.scramble = true;
+                res.set_flag(ColumnsFlag::Scramble);
             } else if arg == "--no-media" {
-                res.no_media = true;
+                res.set_flag(ColumnsFlag::NoMedia);
             } else if arg == "--filter" {
                 i += 1;
                 let filter = if let Some(next_arg) = args.get(i) {
@@ -75,7 +93,9 @@ impl ColumnsArgs {
                                 deck_author.to_owned(),
                             )));
                     } else {
-                        panic!("No accounts available, could not handle implicit pubkey contacts column");
+                        panic!(
+                            "No accounts available, could not handle implicit pubkey contacts column"
+                        );
                     }
                 } else if column_name == "search" {
                     i += 1;
@@ -168,7 +188,7 @@ impl ColumnsArgs {
 
 /// A way to define columns from the commandline. Can be column kinds or
 /// generic queries
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ArgColumn {
     Timeline(TimelineKind),
     Generic(Vec<Filter>),

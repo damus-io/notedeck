@@ -3375,6 +3375,7 @@ dependencies = [
  "nostrdb",
  "notedeck",
  "notedeck_ui",
+ "oot_bitset",
  "open",
  "poll-promise",
  "pretty_assertions",
@@ -3853,6 +3854,12 @@ name = "once_cell"
 version = "1.21.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "42f5e15c9953c5e4ccceeb2e7382a716482c34515315f7b03532b8b4e8393d2d"
+
+[[package]]
+name = "oot_bitset"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "52ee4aa71e631bae52c51e653fcc29361459759f2c54753dc3968bbc1e9183a3"
 
 [[package]]
 name = "opaque-debug"

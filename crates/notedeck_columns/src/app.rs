@@ -1,5 +1,5 @@
 use crate::{
-    args::ColumnsArgs,
+    args::{ColumnsArgs, ColumnsFlag},
     column::Columns,
     decks::{Decks, DecksCache},
     draft::Drafts,
@@ -395,8 +395,8 @@ impl Damus {
             info!("DecksCache: loading from command line arguments");
             let mut columns: Columns = Columns::new();
             let txn = Transaction::new(ctx.ndb).unwrap();
-            for col in parsed_args.columns {
-                let timeline_kind = col.into_timeline_kind();
+            for col in &parsed_args.columns {
+                let timeline_kind = col.clone().into_timeline_kind();
                 if let Some(add_result) = columns.add_new_timeline_column(
                     &mut timeline_cache,
                     &txn,
@@ -437,9 +437,9 @@ impl Damus {
         let debug = ctx.args.debug;
         let support = Support::new(ctx.path);
         let mut note_options = NoteOptions::default();
-        note_options.set_textmode(parsed_args.textmode);
-        note_options.set_scramble_text(parsed_args.scramble);
-        note_options.set_hide_media(parsed_args.no_media);
+        note_options.set_textmode(parsed_args.is_flag_set(ColumnsFlag::Textmode));
+        note_options.set_scramble_text(parsed_args.is_flag_set(ColumnsFlag::Scramble));
+        note_options.set_hide_media(parsed_args.is_flag_set(ColumnsFlag::NoMedia));
 
         let jobs = JobsCache::default();
 
@@ -447,7 +447,7 @@ impl Damus {
 
         Self {
             subscriptions: Subscriptions::default(),
-            since_optimize: parsed_args.since_optimize,
+            since_optimize: parsed_args.is_flag_set(ColumnsFlag::SinceOptimize),
             timeline_cache,
             drafts: Drafts::default(),
             state: DamusState::Initializing,

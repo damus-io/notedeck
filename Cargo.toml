@@ -74,6 +74,7 @@ secp256k1 = "0.30.0"
 hashbrown = "0.15.2"
 openai-api-rs = "6.0.3"
 re_memory = "0.23.4"
+oot_bitset = "0.1.1"
 
 [profile.small]
 inherits = 'release'

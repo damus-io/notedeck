@@ -52,6 +52,7 @@ base64 = { workspace = true }
 egui-winit = { workspace = true }
 profiling = { workspace = true }
 hashbrown = { workspace = true }
+oot_bitset = { workspace = true }
 human_format = "1.1.0"
 
 [target.'cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))'.dependencies]
