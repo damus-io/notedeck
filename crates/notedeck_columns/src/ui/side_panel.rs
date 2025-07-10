@@ -92,16 +92,7 @@ impl<'a> DesktopSidePanel<'a> {
                     //    ui.add_space(24.0);
                     //}
 
-                    let is_interactive = self.selected_account.key.secret_key.is_some();
-                    let compose_resp = ui.add(crate::ui::post::compose_note_button(
-                        is_interactive,
-                        dark_mode,
-                    ));
-                    let compose_resp = if is_interactive {
-                        compose_resp
-                    } else {
-                        compose_resp.on_hover_cursor(egui::CursorIcon::NotAllowed)
-                    };
+                    let compose_resp = ui.add(crate::ui::post::compose_note_button(dark_mode));
                     let search_resp = ui.add(search_button());
                     let column_resp = ui.add(add_column_button());
 
@@ -135,6 +126,9 @@ impl<'a> DesktopSidePanel<'a> {
                             SidePanelAction::ComposeNote,
                             compose_resp,
                         ))
+                    } else if compose_resp.hovered() {
+                        notedeck_ui::show_pointer(ui);
+                        None
                     } else if search_resp.clicked() {
                         Some(InnerResponse::new(SidePanelAction::Search, search_resp))
                     } else if column_resp.clicked() {
@@ -226,7 +220,11 @@ impl<'a> DesktopSidePanel<'a> {
                 }
             }
             SidePanelAction::ComposeNote => {
-                if router.routes().iter().any(|r| r == &Route::ComposeNote) {
+                let can_post = accounts.get_selected_account().key.secret_key.is_some();
+
+                if !can_post {
+                    router.route_to(Route::accounts());
+                } else if router.routes().iter().any(|r| r == &Route::ComposeNote) {
                     router.go_back();
                 } else {
                     router.route_to(Route::ComposeNote);

@@ -9,7 +9,7 @@ use crate::{
     subscriptions::{SubKind, Subscriptions},
     support::Support,
     timeline::{self, kind::ListKind, thread::Threads, TimelineCache, TimelineKind},
-    ui::{self, DesktopSidePanel},
+    ui::{self, DesktopSidePanel, SidePanelAction},
     view_state::ViewState,
     Result,
 };
@@ -573,30 +573,21 @@ fn render_damus_mobile(
     rect.min.x = rect.max.x - if is_narrow(ui.ctx()) { 60.0 } else { 100.0 };
     rect.min.y = rect.max.y - 100.0;
 
-    let is_interactive = app_ctx
-        .accounts
-        .get_selected_account()
-        .key
-        .secret_key
-        .is_some();
     let darkmode = ui.ctx().style().visuals.dark_mode;
 
     // only show the compose button on profile pages and on home
     if should_show_compose_button(&app.decks_cache, app_ctx.accounts) {
-        let compose_resp = ui.put(
-            rect,
-            ui::post::compose_note_button(is_interactive, darkmode),
-        );
+        let compose_resp = ui.put(rect, ui::post::compose_note_button(darkmode));
+        if compose_resp.hovered() {
+            notedeck_ui::show_pointer(ui);
+        }
         if compose_resp.clicked() && !app.columns(app_ctx.accounts).columns().is_empty() {
-            let router = app
-                .columns_mut(app_ctx.accounts)
-                .selected_mut()
-                .router_mut();
-            if router.top() == &Route::ComposeNote {
-                router.go_back();
-            } else {
-                router.route_to(Route::ComposeNote);
-            }
+            // just use the some side panel logic as the desktop
+            DesktopSidePanel::perform_action(
+                &mut app.decks_cache,
+                app_ctx.accounts,
+                SidePanelAction::ComposeNote,
+            );
         }
     }
 

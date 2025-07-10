@@ -57,6 +57,7 @@ fn execute_note_action(
 ) -> NoteActionResponse {
     let mut timeline_res = None;
     let mut router_action = None;
+    let can_post = accounts.get_selected_account().key.secret_key.is_some();
 
     match action {
         NoteAction::Scroll(ref scroll_info) => {
@@ -64,7 +65,11 @@ fn execute_note_action(
         }
 
         NoteAction::Reply(note_id) => {
-            router_action = Some(RouterAction::route_to(Route::reply(note_id)));
+            if can_post {
+                router_action = Some(RouterAction::route_to(Route::reply(note_id)));
+            } else {
+                router_action = Some(RouterAction::route_to(Route::accounts()));
+            }
         }
         NoteAction::Profile(pubkey) => {
             let kind = TimelineKind::Profile(pubkey);
@@ -99,7 +104,11 @@ fn execute_note_action(
                 .map(NotesOpenResult::Timeline);
         }
         NoteAction::Quote(note_id) => {
-            router_action = Some(RouterAction::route_to(Route::quote(note_id)));
+            if can_post {
+                router_action = Some(RouterAction::route_to(Route::quote(note_id)));
+            } else {
+                router_action = Some(RouterAction::route_to(Route::accounts()));
+            }
         }
         NoteAction::Zap(zap_action) => {
             let cur_acc = accounts.get_selected_account();
@@ -336,7 +345,10 @@ pub fn process_thread_notes(
         let note = if let Ok(note) = ndb.get_note_by_key(txn, *key) {
             note
         } else {
-            tracing::error!("hit race condition in poll_notes_into_view: https://github.com/damus-io/nostrdb/issues/35 note {:?} was not added to timeline", key);
+            tracing::error!(
+                "hit race condition in poll_notes_into_view: https://github.com/damus-io/nostrdb/issues/35 note {:?} was not added to timeline",
+                key
+            );
             continue;
         };
 

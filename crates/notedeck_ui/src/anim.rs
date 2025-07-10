@@ -60,8 +60,8 @@ impl AnimationHelper {
         }
     }
 
-    pub fn no_animation(ui: &mut egui::Ui, size: egui::Vec2) -> Self {
-        let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
+    pub fn no_animation(ui: &mut egui::Ui, size: egui::Vec2, sense: Sense) -> Self {
+        let (rect, response) = ui.allocate_exact_size(size, sense);
 
         Self {
             rect,

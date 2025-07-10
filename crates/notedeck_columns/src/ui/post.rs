@@ -4,7 +4,7 @@ use notedeck_ui::anim::AnimationHelper;
 static ICON_WIDTH: f32 = 40.0;
 static ICON_EXPANSION_MULTIPLE: f32 = 1.2;
 
-pub fn compose_note_button(interactive: bool, dark_mode: bool) -> impl Widget {
+pub fn compose_note_button(dark_mode: bool) -> impl Widget {
     move |ui: &mut egui::Ui| -> egui::Response {
         let max_size = ICON_WIDTH * ICON_EXPANSION_MULTIPLE; // max size of the widget
 
@@ -12,11 +12,7 @@ pub fn compose_note_button(interactive: bool, dark_mode: bool) -> impl Widget {
         let min_plus_sign_size = 14.0; // length of the plus sign
         let min_line_width = 2.25; // width of the plus sign
 
-        let helper = if interactive {
-            AnimationHelper::new(ui, "note-compose-button", vec2(max_size, max_size))
-        } else {
-            AnimationHelper::no_animation(ui, vec2(max_size, max_size))
-        };
+        let helper = AnimationHelper::new(ui, "note-compose-button", vec2(max_size, max_size));
 
         let painter = ui.painter_at(helper.get_animation_rect());
 
@@ -24,11 +20,8 @@ pub fn compose_note_button(interactive: bool, dark_mode: bool) -> impl Widget {
         let use_line_width = helper.scale_1d_pos(min_line_width);
         let use_edge_circle_radius = helper.scale_radius(min_line_width);
 
-        let fill_color = if interactive {
-            notedeck_ui::colors::PINK
-        } else {
-            ui.visuals().noninteractive().bg_fill
-        };
+        // TODO: theme!?
+        let fill_color = notedeck_ui::colors::PINK;
 
         painter.circle_filled(helper.center(), use_background_radius, fill_color);
 
@@ -38,7 +31,7 @@ pub fn compose_note_button(interactive: bool, dark_mode: bool) -> impl Widget {
         let west_edge = helper.scale_from_center(-min_half_plus_sign_size, 0.0);
         let east_edge = helper.scale_from_center(min_half_plus_sign_size, 0.0);
 
-        let icon_color = if !dark_mode && !interactive {
+        let icon_color = if !dark_mode {
             Color32::BLACK
         } else {
             Color32::WHITE
