@@ -90,8 +90,8 @@ impl<'a, 'd> NoteView<'a, 'd> {
         mut flags: NoteOptions,
         jobs: &'a mut JobsCache,
     ) -> Self {
-        flags.set_actionbar(true);
-        flags.set_note_previews(true);
+        flags.set(NoteOptions::ActionBar, true);
+        flags.set(NoteOptions::NotePreviews, true);
 
         let framed = false;
         let parent: Option<NoteKey> = None;
@@ -119,17 +119,17 @@ impl<'a, 'd> NoteView<'a, 'd> {
     }
 
     pub fn textmode(mut self, enable: bool) -> Self {
-        self.options_mut().set_textmode(enable);
+        self.options_mut().set(NoteOptions::Textmode, enable);
         self
     }
 
     pub fn actionbar(mut self, enable: bool) -> Self {
-        self.options_mut().set_actionbar(enable);
+        self.options_mut().set(NoteOptions::ActionBar, enable);
         self
     }
 
     pub fn hide_media(mut self, enable: bool) -> Self {
-        self.options_mut().set_hide_media(enable);
+        self.options_mut().set(NoteOptions::HideMedia, enable);
         self
     }
 
@@ -139,37 +139,37 @@ impl<'a, 'd> NoteView<'a, 'd> {
     }
 
     pub fn truncate(mut self, enable: bool) -> Self {
-        self.options_mut().set_truncate(enable);
+        self.options_mut().set(NoteOptions::Truncate, enable);
         self
     }
 
     pub fn small_pfp(mut self, enable: bool) -> Self {
-        self.options_mut().set_small_pfp(enable);
+        self.options_mut().set(NoteOptions::SmallPfp, enable);
         self
     }
 
     pub fn medium_pfp(mut self, enable: bool) -> Self {
-        self.options_mut().set_medium_pfp(enable);
+        self.options_mut().set(NoteOptions::MediumPfp, enable);
         self
     }
 
     pub fn note_previews(mut self, enable: bool) -> Self {
-        self.options_mut().set_note_previews(enable);
+        self.options_mut().set(NoteOptions::NotePreviews, enable);
         self
     }
 
     pub fn selectable_text(mut self, enable: bool) -> Self {
-        self.options_mut().set_selectable_text(enable);
+        self.options_mut().set(NoteOptions::SelectableText, enable);
         self
     }
 
     pub fn wide(mut self, enable: bool) -> Self {
-        self.options_mut().set_wide(enable);
+        self.options_mut().set(NoteOptions::Wide, enable);
         self
     }
 
     pub fn options_button(mut self, enable: bool) -> Self {
-        self.options_mut().set_options_button(enable);
+        self.options_mut().set(NoteOptions::OptionsButton, enable);
         self
     }
 
@@ -187,7 +187,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
     }
 
     pub fn is_preview(mut self, is_preview: bool) -> Self {
-        self.options_mut().set_is_preview(is_preview);
+        self.options_mut().set(NoteOptions::Preview, is_preview);
         self
     }
 
@@ -252,7 +252,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
         profile: &Result<nostrdb::ProfileRecord<'_>, nostrdb::Error>,
         ui: &mut egui::Ui,
     ) -> PfpResponse {
-        if !self.options().has_wide() {
+        if !self.options().has(NoteOptions::Wide) {
             ui.spacing_mut().item_spacing.x = 16.0;
         } else {
             ui.spacing_mut().item_spacing.x = 4.0;
@@ -337,7 +337,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui) -> NoteResponse {
-        if self.options().has_textmode() {
+        if self.options().has(NoteOptions::Textmode) {
             NoteResponse::new(self.textmode_ui(ui))
         } else if self.framed {
             egui::Frame::new()
@@ -468,7 +468,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
 
             note_action = contents.action.or(note_action);
 
-            if self.options().has_actionbar() {
+            if self.options().has(NoteOptions::ActionBar) {
                 note_action = render_note_actionbar(
                     ui,
                     self.zapping_acc.as_ref().map(|c| Zapper {
@@ -549,7 +549,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
 
                 note_action = contents.action.or(note_action);
 
-                if self.options().has_actionbar() {
+                if self.options().has(NoteOptions::ActionBar) {
                     note_action = render_note_actionbar(
                         ui,
                         self.zapping_acc.as_ref().map(|c| Zapper {
@@ -587,7 +587,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
         let maybe_hitbox = maybe_note_hitbox(ui, hitbox_id);
 
         // wide design
-        let response = if self.options().has_wide() {
+        let response = if self.options().has(NoteOptions::Wide) {
             self.wide_ui(ui, txn, note_key, &profile)
         } else {
             self.standard_ui(ui, txn, note_key, &profile)
@@ -596,7 +596,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
         let note_ui_resp = response.inner;
         let mut note_action = note_ui_resp.action;
 
-        if self.options().has_options_button() {
+        if self.options().has(NoteOptions::OptionsButton) {
             let context_pos = {
                 let size = NoteContextButton::max_width();
                 let top_right = response.response.rect.right_top();

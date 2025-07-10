@@ -88,7 +88,7 @@ pub fn render_thread_route(
 ) -> Option<RenderNavAction> {
     // don't truncate thread notes for now, since they are
     // default truncated everywher eelse
-    note_options.set_truncate(false);
+    note_options.set(NoteOptions::Truncate, false);
 
     ui::ThreadView::new(
         threads,

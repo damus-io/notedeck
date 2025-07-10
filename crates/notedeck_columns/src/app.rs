@@ -437,9 +437,18 @@ impl Damus {
         let debug = ctx.args.debug;
         let support = Support::new(ctx.path);
         let mut note_options = NoteOptions::default();
-        note_options.set_textmode(parsed_args.is_flag_set(ColumnsFlag::Textmode));
-        note_options.set_scramble_text(parsed_args.is_flag_set(ColumnsFlag::Scramble));
-        note_options.set_hide_media(parsed_args.is_flag_set(ColumnsFlag::NoMedia));
+        note_options.set(
+            NoteOptions::Textmode,
+            parsed_args.is_flag_set(ColumnsFlag::Textmode),
+        );
+        note_options.set(
+            NoteOptions::ScrambleText,
+            parsed_args.is_flag_set(ColumnsFlag::Scramble),
+        );
+        note_options.set(
+            NoteOptions::HideMedia,
+            parsed_args.is_flag_set(ColumnsFlag::NoMedia),
+        );
 
         let jobs = JobsCache::default();
 
