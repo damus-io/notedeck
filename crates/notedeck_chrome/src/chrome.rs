@@ -56,6 +56,7 @@ pub enum ChromePanelAction {
     Wallet,
     Toolbar(ToolbarAction),
     SaveTheme(ThemePreference),
+    Profile(notedeck::enostr::Pubkey),
 }
 
 impl ChromePanelAction {
@@ -102,7 +103,7 @@ impl ChromePanelAction {
         };
     }
 
-    fn process(&self, ctx: &AppContext, chrome: &mut Chrome, ui: &mut egui::Ui) {
+    fn process(&self, ctx: &mut AppContext, chrome: &mut Chrome, ui: &mut egui::Ui) {
         match self {
             Self::SaveTheme(theme) => {
                 ui.ctx().options_mut(|o| {
@@ -153,6 +154,9 @@ impl ChromePanelAction {
                     chrome,
                     notedeck_columns::Route::Wallet(WalletType::Auto),
                 );
+            }
+            Self::Profile(pk) => {
+                columns_route_to_profile(pk, chrome, ctx, ui);
             }
         }
     }
@@ -695,6 +699,59 @@ fn chrome_handle_app_action(
     }
 }
 
+fn columns_route_to_profile(
+    pk: &notedeck::enostr::Pubkey,
+    chrome: &mut Chrome,
+    ctx: &mut AppContext,
+    ui: &mut egui::Ui,
+) {
+    chrome.switch_to_columns();
+    let Some(columns) = chrome.get_columns_app() else {
+        return;
+    };
+
+    let cols = columns
+        .decks_cache
+        .active_columns_mut(ctx.accounts)
+        .unwrap();
+
+    let router = cols.get_first_router();
+    if router.routes().iter().any(|r| {
+        matches!(
+            r,
+            notedeck_columns::Route::Timeline(TimelineKind::Profile(_))
+        )
+    }) {
+        router.go_back();
+        return;
+    }
+
+    let txn = Transaction::new(ctx.ndb).unwrap();
+    let m_action = notedeck_columns::actionbar::execute_and_process_note_action(
+        notedeck::NoteAction::Profile(*pk),
+        ctx.ndb,
+        cols,
+        0,
+        &mut columns.timeline_cache,
+        &mut columns.threads,
+        ctx.note_cache,
+        ctx.pool,
+        &txn,
+        ctx.unknown_ids,
+        ctx.accounts,
+        ctx.global_wallet,
+        ctx.zaps,
+        ctx.img_cache,
+        ui,
+    );
+
+    if let Some(action) = m_action {
+        let col = cols.column_mut(0);
+
+        action.process(&mut col.router, &mut col.sheet_router);
+    }
+}
+
 fn pfp_button(ctx: &mut AppContext, ui: &mut egui::Ui) -> egui::Response {
     let max_size = ICON_WIDTH * ICON_EXPANSION_MULTIPLE; // max size of the widget
     let helper = AnimationHelper::new(ui, "pfp-button", egui::vec2(max_size, max_size));
@@ -785,9 +842,9 @@ fn bottomup_sidebar(
         }
     }
 
-    #[allow(clippy::if_same_then_else)]
     if pfp_resp.clicked() {
-        Some(ChromePanelAction::Account)
+        let pk = ctx.accounts.get_selected_account().key.pubkey;
+        Some(ChromePanelAction::Profile(pk))
     } else if accounts_resp.clicked() {
         Some(ChromePanelAction::Account)
     } else if settings_resp.clicked() {
