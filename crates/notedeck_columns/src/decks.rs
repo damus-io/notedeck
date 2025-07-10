@@ -6,11 +6,9 @@ use notedeck::{AppContext, FALLBACK_PUBKEY};
 use tracing::{error, info};
 
 use crate::{
-    accounts::AccountsRoute,
     column::{Column, Columns},
-    route::Route,
     timeline::{TimelineCache, TimelineKind},
-    ui::{add_column::AddColumnRoute, configure_deck::ConfigureDeckResponse},
+    ui::configure_deck::ConfigureDeckResponse,
 };
 
 pub enum DecksAction {
@@ -333,29 +331,31 @@ pub fn demo_decks(
 ) -> Decks {
     let deck = {
         let mut columns = Columns::default();
-        columns.add_column(Column::new(vec![
-            Route::AddColumn(AddColumnRoute::Base),
-            Route::Accounts(AccountsRoute::Accounts),
-        ]));
 
-        let kind = TimelineKind::contact_list(demo_pubkey);
+        let timeline_kinds = [
+            TimelineKind::contact_list(demo_pubkey),
+            TimelineKind::notifications(demo_pubkey),
+        ];
+
         let txn = Transaction::new(ctx.ndb).unwrap();
 
-        if let Some(results) = columns.add_new_timeline_column(
-            timeline_cache,
-            &txn,
-            ctx.ndb,
-            ctx.note_cache,
-            ctx.pool,
-            &kind,
-        ) {
-            results.process(
+        for kind in &timeline_kinds {
+            if let Some(results) = columns.add_new_timeline_column(
+                timeline_cache,
+                &txn,
                 ctx.ndb,
                 ctx.note_cache,
-                &txn,
-                timeline_cache,
-                ctx.unknown_ids,
-            );
+                ctx.pool,
+                kind,
+            ) {
+                results.process(
+                    ctx.ndb,
+                    ctx.note_cache,
+                    &txn,
+                    timeline_cache,
+                    ctx.unknown_ids,
+                );
+            }
         }
 
         //columns.add_new_timeline_column(Timeline::hashtag("introductions".to_string()));

@@ -426,12 +426,10 @@ impl Damus {
             decks_cache
         } else {
             info!("DecksCache: creating new with demo configuration");
-            let mut cache = DecksCache::new_with_demo_config(&mut timeline_cache, ctx);
-            for (pk, _) in &ctx.accounts.cache {
-                cache.add_deck_default(*pk);
-            }
-
-            cache
+            DecksCache::new_with_demo_config(&mut timeline_cache, ctx)
+            //for (pk, _) in &ctx.accounts.cache {
+            //    cache.add_deck_default(*pk);
+            //}
         };
 
         let debug = ctx.args.debug;
