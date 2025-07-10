@@ -563,6 +563,16 @@ fn columns_button(ui: &mut egui::Ui) -> egui::Response {
     )
 }
 
+fn accounts_button(ui: &mut egui::Ui) -> egui::Response {
+    expanding_button(
+        "accounts-button",
+        24.0,
+        app_images::accounts_image().tint(ui.visuals().text_color()),
+        app_images::accounts_image(),
+        ui,
+    )
+}
+
 fn dave_sidebar_rect(ui: &mut egui::Ui) -> Rect {
     let size = vec2(60.0, 60.0);
     let available = ui.available_rect_before_wrap();
@@ -712,6 +722,7 @@ fn bottomup_sidebar(
     ui.add_space(8.0);
 
     let pfp_resp = pfp_button(ctx, ui).on_hover_cursor(egui::CursorIcon::PointingHand);
+    let accounts_resp = accounts_button(ui).on_hover_cursor(egui::CursorIcon::PointingHand);
     let settings_resp = settings_button(ui).on_hover_cursor(egui::CursorIcon::PointingHand);
 
     let theme_action = match ui.ctx().theme() {
@@ -774,7 +785,10 @@ fn bottomup_sidebar(
         }
     }
 
+    #[allow(clippy::if_same_then_else)]
     if pfp_resp.clicked() {
+        Some(ChromePanelAction::Account)
+    } else if accounts_resp.clicked() {
         Some(ChromePanelAction::Account)
     } else if settings_resp.clicked() {
         Some(ChromePanelAction::Settings)
