@@ -29,7 +29,8 @@ impl Default for Chrome {
         Self {
             active: 0,
             tab_selected: 0,
-            open: true,
+            // sidemenu is not open by default on mobile/narrow uis
+            open: !notedeck::ui::is_compiled_as_mobile(),
             apps: vec![],
 
             #[cfg(feature = "memory")]
