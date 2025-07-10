@@ -41,13 +41,9 @@ fn note_follows(contacts_note: Note<'_>, pk: &[u8; 32]) -> bool {
             continue;
         }
 
-        let Some(t) = tag.get_str(0) else {
+        let Some("p") = tag.get_str(0) else {
             continue;
         };
-
-        if t != "p" {
-            continue;
-        }
 
         let Some(author) = tag.get_id(1) else {
             continue;

@@ -6,8 +6,8 @@ use egui::{
 };
 use notedeck::{
     fonts::get_font_size, note::MediaAction, show_one_error_message, supported_mime_hosted_at_url,
-    ui::is_narrow, GifState, GifStateMap, Images, JobPool, MediaCache, MediaCacheType,
-    NotedeckTextStyle, TexturedImage, TexturesCache, UrlMimes,
+    GifState, GifStateMap, Images, JobPool, MediaCache, MediaCacheType, NotedeckTextStyle,
+    TexturedImage, TexturesCache, UrlMimes,
 };
 
 use crate::{
@@ -30,8 +30,8 @@ pub(crate) fn image_carousel(
 ) -> Option<MediaAction> {
     // let's make sure everything is within our area
 
-    let height = if is_narrow(ui.ctx()) { 90.0 } else { 360.0 };
-
+    //let height = if is_narrow(ui.ctx()) { 90.0 } else { 360.0 };
+    let height = 360.0;
     let width = ui.available_width();
 
     let show_popup = get_show_popup(ui, popup_id(carousel_id));

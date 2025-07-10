@@ -32,16 +32,30 @@ impl Default for DecksCache {
 impl DecksCache {
     /// Gets the first column in the currently active user's active deck
     pub fn selected_column_mut(&mut self, accounts: &notedeck::Accounts) -> Option<&mut Column> {
-        self.active_columns_mut(accounts).map(|ad| ad.selected())
+        self.active_columns_mut(accounts)
+            .map(|ad| ad.selected_mut())
     }
 
-    /// Gets the active columns
+    pub fn selected_column(&self, accounts: &notedeck::Accounts) -> Option<&Column> {
+        self.active_columns(accounts).map(|ad| ad.selected())
+    }
+
+    /// Gets a mutable reference to the active columns
     pub fn active_columns_mut(&mut self, accounts: &notedeck::Accounts) -> Option<&mut Columns> {
         let account = accounts.get_selected_account();
 
         self.decks_mut(&account.key.pubkey)
             .active_deck_mut()
             .map(|ad| ad.columns_mut())
+    }
+
+    /// Gets an immutable reference to the active columns
+    pub fn active_columns(&self, accounts: &notedeck::Accounts) -> Option<&Columns> {
+        let account = accounts.get_selected_account();
+
+        self.decks(&account.key.pubkey)
+            .active_deck()
+            .map(|ad| ad.columns())
     }
 
     pub fn new(mut account_to_decks: HashMap<Pubkey, Decks>) -> Self {
@@ -187,7 +201,7 @@ impl Decks {
         &self.decks
     }
 
-    pub fn active_deck_mut(&mut self) -> Option<&mut Deck> {
+    fn active_deck_index(&self) -> Option<usize> {
         if self.decks.is_empty() {
             return None;
         }
@@ -197,7 +211,15 @@ impl Decks {
             return None;
         }
 
-        Some(&mut self.decks[active])
+        Some(active)
+    }
+
+    pub fn active_deck(&self) -> Option<&Deck> {
+        self.active_deck_index().map(|ind| &self.decks[ind])
+    }
+
+    pub fn active_deck_mut(&mut self) -> Option<&mut Deck> {
+        self.active_deck_index().map(|ind| &mut self.decks[ind])
     }
 
     pub fn decks_mut(&mut self) -> &mut Vec<Deck> {

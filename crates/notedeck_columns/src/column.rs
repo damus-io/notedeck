@@ -158,7 +158,12 @@ impl Columns {
     }
 
     #[inline]
-    pub fn selected(&mut self) -> &mut Column {
+    pub fn selected(&self) -> &Column {
+        &self.columns[self.selected as usize]
+    }
+
+    #[inline]
+    pub fn selected_mut(&mut self) -> &mut Column {
         &mut self.columns[self.selected as usize]
     }
 

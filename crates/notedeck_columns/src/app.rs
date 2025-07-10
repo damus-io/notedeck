@@ -8,7 +8,7 @@ use crate::{
     storage,
     subscriptions::{SubKind, Subscriptions},
     support::Support,
-    timeline::{self, thread::Threads, TimelineCache},
+    timeline::{self, kind::ListKind, thread::Threads, TimelineCache, TimelineKind},
     ui::{self, DesktopSidePanel},
     view_state::ViewState,
     Result,
@@ -581,23 +581,68 @@ fn render_damus_mobile(
         .is_some();
     let darkmode = ui.ctx().style().visuals.dark_mode;
 
-    if ui
-        .put(
+    // only show the compose button on profile pages and on home
+    if should_show_compose_button(&app.decks_cache, app_ctx.accounts) {
+        let compose_resp = ui.put(
             rect,
             ui::post::compose_note_button(is_interactive, darkmode),
-        )
-        .clicked()
-        && !app.columns(app_ctx.accounts).columns().is_empty()
-    {
-        let router = app.columns_mut(app_ctx.accounts).selected().router_mut();
-        if router.top() == &Route::ComposeNote {
-            router.go_back();
-        } else {
-            router.route_to(Route::ComposeNote);
+        );
+        if compose_resp.clicked() && !app.columns(app_ctx.accounts).columns().is_empty() {
+            let router = app
+                .columns_mut(app_ctx.accounts)
+                .selected_mut()
+                .router_mut();
+            if router.top() == &Route::ComposeNote {
+                router.go_back();
+            } else {
+                router.route_to(Route::ComposeNote);
+            }
         }
     }
 
     app_action
+}
+
+/// Should we show the compose button? When in threads we should hide it, etc
+fn should_show_compose_button(decks: &DecksCache, accounts: &Accounts) -> bool {
+    let Some(col) = decks.selected_column(accounts) else {
+        return false;
+    };
+
+    match col.router().top() {
+        Route::Timeline(timeline_kind) => {
+            match timeline_kind {
+                TimelineKind::List(list_kind) => match list_kind {
+                    ListKind::Contact(_pk) => true,
+                },
+
+                TimelineKind::Algo(_pk) => true,
+                TimelineKind::Profile(_pk) => true,
+                TimelineKind::Universe => true,
+                TimelineKind::Generic(_) => true,
+                TimelineKind::Hashtag(_) => true,
+
+                // no!
+                TimelineKind::Search(_) => false,
+                TimelineKind::Notifications(_) => false,
+            }
+        }
+
+        Route::Thread(_) => false,
+        Route::Accounts(_) => false,
+        Route::Reply(_) => false,
+        Route::Quote(_) => false,
+        Route::Relays => false,
+        Route::ComposeNote => false,
+        Route::AddColumn(_) => false,
+        Route::EditProfile(_) => false,
+        Route::Support => false,
+        Route::NewDeck => false,
+        Route::Search => false,
+        Route::EditDeck(_) => false,
+        Route::Wallet(_) => false,
+        Route::CustomizeZapAmount(_) => false,
+    }
 }
 
 #[profiling::function]
