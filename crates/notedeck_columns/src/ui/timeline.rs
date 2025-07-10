@@ -3,6 +3,7 @@ use egui::{vec2, Direction, Layout, Pos2, Stroke};
 use egui_tabs::TabColor;
 use enostr::KeypairUnowned;
 use nostrdb::Transaction;
+use notedeck::ui::is_narrow;
 use notedeck_ui::jobs::JobsCache;
 use std::f32::consts::PI;
 use tracing::{error, warn};
@@ -114,7 +115,9 @@ fn timeline_ui(
         .unwrap_or(false);
 
     let goto_top_resp = if show_top_button {
-        let top_button_pos = ui.available_rect_before_wrap().right_top() - vec2(48.0, -24.0);
+        let top_button_pos_x = if is_narrow(ui.ctx()) { 28.0 } else { 48.0 };
+        let top_button_pos =
+            ui.available_rect_before_wrap().right_top() - vec2(top_button_pos_x, -24.0);
         egui::Area::new(ui.id().with("foreground_area"))
             .order(egui::Order::Middle)
             .fixed_pos(top_button_pos)

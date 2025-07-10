@@ -113,8 +113,12 @@ pub fn help_light_image() -> Image<'static> {
     ))
 }
 
-pub fn home_button_image() -> Image<'static> {
+pub fn home_dark_image() -> Image<'static> {
     Image::new(include_image!("../../../assets/icons/home-toolbar.png"))
+}
+
+pub fn home_light_image() -> Image<'static> {
+    home_dark_image().tint(egui::Color32::BLACK)
 }
 
 pub fn home_image() -> Image<'static> {
@@ -141,16 +145,22 @@ pub fn new_deck_image() -> Image<'static> {
     ))
 }
 
-pub fn notifications_button_image() -> Image<'static> {
+pub fn notifications_image(dark_mode: bool) -> Image<'static> {
+    if dark_mode {
+        crate::app_images::notifications_dark_image()
+    } else {
+        crate::app_images::notifications_light_image()
+    }
+}
+
+pub fn notifications_dark_image() -> Image<'static> {
     Image::new(include_image!(
         "../../../assets/icons/notifications_dark_4x.png"
     ))
 }
 
-pub fn notifications_image() -> Image<'static> {
-    Image::new(include_image!(
-        "../../../assets/icons/notifications_icon_dark_4x.png"
-    ))
+pub fn notifications_light_image() -> Image<'static> {
+    notifications_dark_image().tint(egui::Color32::BLACK)
 }
 pub fn repost_dark_image() -> Image<'static> {
     Image::new(include_image!("../../../assets/icons/repost_icon_4x.png"))
