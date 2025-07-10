@@ -7,9 +7,6 @@ use notedeck_dave::Dave;
 
 use crate::{app::NotedeckApp, chrome::Chrome, setup::setup_chrome};
 use notedeck::Notedeck;
-use serde_json::Value;
-use std::fs;
-use std::path::PathBuf;
 
 #[no_mangle]
 #[tokio::main]
@@ -131,23 +128,29 @@ Using internal storage would be better but it seems hard to get the config file 
 the device ...
 */
 
-fn get_app_args(app: AndroidApp) -> Vec<String> {
-    let external_data_path: PathBuf = app
+fn get_app_args(_app: AndroidApp) -> Vec<String> {
+    vec!["argv0-placeholder".to_string()]
+    /*
+    use serde_json::value;
+    use std::fs;
+    use std::path::PathBuf;
+
+    let external_data_path: pathbuf = app
         .external_data_path()
         .expect("external data path")
         .to_path_buf();
     let config_file = external_data_path.join("android-config.json");
 
+    let initial_user = hex::encode(notedeck::FALLBACK_PUBKEY().bytes());
     let default_args = vec![
         "argv0-placeholder",
+        "--no-tmp-columns",
         "--pub",
-        "32e1827635450ebb3c5a7d12c1f8e7b2b514439ac10a67eef3d9fd9c5c68e245",
+        &initial_user,
         "-c",
         "contacts",
         "-c",
         "notifications",
-        "-c",
-        "notifications:3efdaebb1d8923ebd99c9e7ace3b4194ab45512e2be79c1b7d68d9243e0d2681",
     ]
     .into_iter()
     .map(|s| s.to_string())
@@ -169,4 +172,5 @@ fn get_app_args(app: AndroidApp) -> Vec<String> {
     }
 
     default_args // Return the default args if config is missing or invalid
+    */
 }
