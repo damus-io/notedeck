@@ -444,29 +444,26 @@ impl<'a> AddColumnView<'a> {
     fn get_base_options(&self, ui: &mut Ui) -> Vec<ColumnOptionData> {
         let mut vec = Vec::new();
         vec.push(ColumnOptionData {
-            title: "Universe",
-            description: "See the whole nostr universe",
-            icon: app_images::universe_image(),
-            option: AddColumnOption::Universe,
-        });
-
-        let source = if self.cur_account.key.secret_key.is_some() {
-            PubkeySource::DeckAuthor
-        } else {
-            PubkeySource::Explicit(self.cur_account.key.pubkey)
-        };
-
-        vec.push(ColumnOptionData {
             title: "Home",
             description: "See notes from your contacts",
             icon: app_images::home_image(),
-            option: AddColumnOption::Contacts(source),
+            option: AddColumnOption::Contacts(if self.cur_account.key.secret_key.is_some() {
+                PubkeySource::DeckAuthor
+            } else {
+                PubkeySource::Explicit(self.cur_account.key.pubkey)
+            }),
         });
         vec.push(ColumnOptionData {
             title: "Notifications",
             description: "Stay up to date with notifications and mentions",
             icon: app_images::notifications_image(ui.visuals().dark_mode),
             option: AddColumnOption::UndecidedNotification,
+        });
+        vec.push(ColumnOptionData {
+            title: "Universe",
+            description: "See the whole nostr universe",
+            icon: app_images::universe_image(),
+            option: AddColumnOption::Universe,
         });
         vec.push(ColumnOptionData {
             title: "Hashtags",
