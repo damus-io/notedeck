@@ -24,7 +24,7 @@ pub(crate) fn image_carousel(
     img_cache: &mut Images,
     job_pool: &mut JobPool,
     jobs: &mut JobsCache,
-    medias: Vec<RenderableMedia>,
+    medias: &[RenderableMedia],
     carousel_id: egui::Id,
     trusted_media: bool,
 ) -> Option<MediaAction> {
@@ -34,30 +34,8 @@ pub(crate) fn image_carousel(
 
     let width = ui.available_width();
 
-    let show_popup = ui.ctx().memory(|mem| {
-        mem.data
-            .get_temp(carousel_id.with("show_popup"))
-            .unwrap_or(false)
-    });
-
-    let current_image = 'scope: {
-        if !show_popup {
-            break 'scope None;
-        }
-
-        let Some(media) = medias.first() else {
-            break 'scope None;
-        };
-
-        Some(ui.ctx().memory(|mem| {
-            mem.data
-                .get_temp::<(String, MediaCacheType)>(carousel_id.with("current_image"))
-                .unwrap_or_else(|| (media.url.to_owned(), media.media_type))
-        }))
-    };
+    let show_popup = get_show_popup(ui, popup_id(carousel_id));
     let mut action = None;
-
-    let media_urls = &medias.iter().map(|m| m.url.to_string()).collect::<Vec<_>>();
 
     //let has_touch_screen = ui.ctx().input(|i| i.has_touch_screen());
     ui.add_sized([width, height], |ui: &mut egui::Ui| {
@@ -66,7 +44,7 @@ pub(crate) fn image_carousel(
             .id_salt(carousel_id)
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    for media in medias {
+                    for (i, media) in medias.iter().enumerate() {
                         let RenderableMedia {
                             url,
                             media_type,
@@ -86,23 +64,23 @@ pub(crate) fn image_carousel(
                             height,
                             &mut cache.textures_cache,
                             url,
-                            media_type,
+                            *media_type,
                             &cache.cache_dir,
-                            blur_type,
+                            blur_type.clone(),
                         );
-                        if let Some(cur_action) = render_media(
-                            ui,
-                            &mut img_cache.gif_states,
-                            media_state,
-                            url,
-                            media_type,
-                            height,
-                            carousel_id,
-                        ) {
+                        if let Some(cur_action) =
+                            render_media(ui, &mut img_cache.gif_states, media_state, url, height)
+                        {
+                            // clicked the media, lets set the active index
+                            if let MediaUIAction::Clicked = cur_action {
+                                set_show_popup(ui, popup_id(carousel_id), true);
+                                set_selected_index(ui, selection_id(carousel_id), i);
+                            }
+
                             action = cur_action.to_media_action(
                                 ui.ctx(),
                                 url,
-                                media_type,
+                                *media_type,
                                 cache,
                                 ImageType::Content,
                             );
@@ -115,16 +93,13 @@ pub(crate) fn image_carousel(
     });
 
     if show_popup {
-        if let Some((image_url, cache_type)) = current_image {
-            show_full_screen_media(
-                ui,
-                &media_urls,
-                &image_url,
-                cache_type,
-                img_cache,
-                carousel_id,
-            );
-        }
+        if medias.is_empty() {
+            return None;
+        };
+
+        let current_image_index = update_selected_image_index(ui, carousel_id, medias.len() as i32);
+
+        show_full_screen_media(ui, medias, current_image_index, img_cache, carousel_id);
     }
     action
 }
@@ -133,6 +108,7 @@ enum MediaUIAction {
     Unblur,
     Error,
     DoneLoading,
+    Clicked,
 }
 
 impl MediaUIAction {
@@ -145,6 +121,11 @@ impl MediaUIAction {
         img_type: ImageType,
     ) -> Option<MediaAction> {
         match self {
+            MediaUIAction::Clicked => {
+                tracing::debug!("{} clicked", url);
+                None
+            }
+
             MediaUIAction::Unblur => Some(MediaAction::FetchImage {
                 url: url.to_owned(),
                 cache_type,
@@ -177,9 +158,8 @@ impl MediaUIAction {
 
 fn show_full_screen_media(
     ui: &mut egui::Ui,
-    media_urls: &[String],
-    image_url: &str,
-    cache_type: MediaCacheType,
+    medias: &[RenderableMedia],
+    index: usize,
     img_cache: &mut Images,
     carousel_id: egui::Id,
 ) {
@@ -190,10 +170,19 @@ fn show_full_screen_media(
         .frame(egui::Frame::NONE)
         .show(ui.ctx(), |ui| {
             ui.centered_and_justified(|ui| 's: {
+                let image_url = medias[index].url;
+                let media_type = medias[index].media_type;
+                tracing::trace!(
+                    "show_full_screen_media using img {} @ {} for carousel_id {:?}",
+                    image_url,
+                    index,
+                    carousel_id
+                );
+
                 let cur_state = get_render_state(
                     ui.ctx(),
                     img_cache,
-                    cache_type,
+                    media_type,
                     image_url,
                     ImageType::Content,
                 );
@@ -204,7 +193,8 @@ fn show_full_screen_media(
 
                 render_full_screen_media(
                     ui,
-                    &media_urls,
+                    medias.len(),
+                    index,
                     textured_image,
                     cur_state.gifs,
                     image_url,
@@ -212,6 +202,35 @@ fn show_full_screen_media(
                 );
             })
         });
+}
+
+fn set_selected_index(ui: &mut egui::Ui, sel_id: egui::Id, index: usize) {
+    ui.data_mut(|d| {
+        d.insert_temp(sel_id, index);
+    });
+}
+
+fn get_selected_index(ui: &egui::Ui, selection_id: egui::Id) -> usize {
+    ui.data(|d| d.get_temp(selection_id).unwrap_or(0))
+}
+
+/// Checks to see if we have any left/right key presses and updates the carousel index
+fn update_selected_image_index(ui: &mut egui::Ui, carousel_id: egui::Id, num_urls: i32) -> usize {
+    if num_urls > 1 {
+        if ui.input(|i| i.key_pressed(egui::Key::ArrowRight) || i.key_pressed(egui::Key::L)) {
+            let ind = select_next_media(ui, carousel_id, num_urls, 1);
+            tracing::debug!("carousel selecting right {}/{}", ind + 1, num_urls);
+            ind
+        } else if ui.input(|i| i.key_pressed(egui::Key::ArrowLeft) || i.key_pressed(egui::Key::H)) {
+            let ind = select_next_media(ui, carousel_id, num_urls, -1);
+            tracing::debug!("carousel selecting left {}/{}", ind + 1, num_urls);
+            ind
+        } else {
+            get_selected_index(ui, selection_id(carousel_id))
+        }
+    } else {
+        0
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -317,9 +336,35 @@ fn get_obfuscated<'a>(
     ObfuscatedTexture::Blur(texture_handle)
 }
 
+// simple selector memory
+fn select_next_media(
+    ui: &mut egui::Ui,
+    carousel_id: egui::Id,
+    num_urls: i32,
+    direction: i32,
+) -> usize {
+    let sel_id = selection_id(carousel_id);
+    let current = get_selected_index(ui, sel_id) as i32;
+    let next = current + direction;
+    let next = if next >= num_urls {
+        0
+    } else if next < 0 {
+        num_urls - 1
+    } else {
+        next
+    };
+
+    if next != current {
+        set_selected_index(ui, sel_id, next as usize);
+    }
+
+    next as usize
+}
+
 fn render_full_screen_media(
     ui: &mut egui::Ui,
-    media_urls: &[String],
+    num_urls: usize,
+    index: usize,
     renderable_media: &mut TexturedImage,
     gifs: &mut HashMap<String, GifState>,
     image_url: &str,
@@ -332,51 +377,6 @@ fn render_full_screen_media(
         ui.ctx().memory_mut(|mem| {
             mem.data.insert_temp(carousel_id.with("show_popup"), false);
         });
-    }
-
-    if media_urls.len() > 1 {
-        if ui.input(|i| i.key_pressed(egui::Key::ArrowRight)) {
-            ui.ctx().memory_mut(|mem| {
-                let curr = media_urls.iter().position(|m| m == image_url).unwrap_or(0) as i32;
-
-                let next: i32 = if curr + 1 >= media_urls.len() as i32 {
-                    0
-                } else {
-                    curr + 1
-                };
-                let next_url = media_urls.get(next as usize).cloned();
-
-                mem.data.insert_temp(
-                    carousel_id.with("current_image"),
-                    (
-                        next_url.unwrap_or_else(|| image_url.to_owned()),
-                        MediaCacheType::Image,
-                    ),
-                );
-            });
-        }
-
-        if ui.input(|i| i.key_pressed(egui::Key::ArrowLeft)) {
-            ui.ctx().memory_mut(|mem| {
-                let curr = media_urls.iter().position(|m| m == image_url).unwrap_or(0) as i32;
-
-                let next: i32 = if curr - 1 < 0 {
-                    media_urls.len() as i32 - 1
-                } else {
-                    curr - 1
-                };
-
-                let next_url = media_urls.get(next as usize).cloned();
-
-                mem.data.insert_temp(
-                    carousel_id.with("current_image"),
-                    (
-                        next_url.unwrap_or_else(|| image_url.to_owned()),
-                        MediaCacheType::Image,
-                    ),
-                );
-            });
-        }
     }
 
     // background
@@ -466,12 +466,12 @@ fn render_full_screen_media(
     let img_rect = ui.allocate_rect(rect, Sense::click());
 
     if img_rect.clicked() {
-        ui.ctx().memory_mut(|mem| {
-            mem.data.insert_temp(carousel_id.with("show_popup"), true);
+        ui.data_mut(|data| {
+            data.insert_temp(carousel_id.with("show_popup"), true);
         });
     } else if img_rect.clicked_elsewhere() {
-        ui.ctx().memory_mut(|mem| {
-            mem.data.insert_temp(carousel_id.with("show_popup"), false);
+        ui.data_mut(|data| {
+            data.insert_temp(carousel_id.with("show_popup"), false);
         });
     }
 
@@ -494,8 +494,8 @@ fn render_full_screen_media(
             pan_offset.y = 0.0;
         }
 
-        ui.ctx().memory_mut(|mem| {
-            mem.data.insert_temp(pan_id, pan_offset);
+        ui.data_mut(|data| {
+            data.insert_temp(pan_id, pan_offset);
         });
     }
 
@@ -509,22 +509,17 @@ fn render_full_screen_media(
         });
     }
 
-    if media_urls.len() > 1 {
+    if num_urls > 1 {
         let color = ui.style().visuals.noninteractive().fg_stroke.color;
 
-        let curr = media_urls.iter().position(|m| m == image_url).unwrap_or(0) + 1;
-
-        let text = format!("{}/{}", curr, media_urls.len());
-
-        println!("Rendering media: {text}");
-
+        let text = format!("{}/{}", index + 1, num_urls);
         ui.label(RichText::new(text).size(10.0).color(color));
     }
 
-    copy_link(image_url, response);
+    copy_link(image_url, &response);
 }
 
-fn copy_link(url: &str, img_resp: Response) {
+fn copy_link(url: &str, img_resp: &Response) {
     img_resp.context_menu(|ui| {
         if ui.button("Copy Link").clicked() {
             ui.ctx().copy_text(url.to_owned());
@@ -539,14 +534,15 @@ fn render_media(
     gifs: &mut GifStateMap,
     render_state: MediaRenderState,
     url: &str,
-    cache_type: MediaCacheType,
     height: f32,
-    carousel_id: egui::Id,
 ) -> Option<MediaUIAction> {
     match render_state {
         MediaRenderState::ActualImage(image) => {
-            render_success_media(ui, url, image, gifs, cache_type, height, carousel_id);
-            None
+            if render_success_media(ui, url, image, gifs, height).clicked() {
+                Some(MediaUIAction::Clicked)
+            } else {
+                None
+            }
         }
         MediaRenderState::Transitioning { image, obfuscation } => match obfuscation {
             ObfuscatedTexture::Blur(texture) => {
@@ -726,7 +722,7 @@ pub(crate) fn find_renderable_media<'a>(
     let media_type = supported_mime_hosted_at_url(urls, url)?;
 
     let obfuscation_type = match blurhashes.get(url) {
-        Some(blur) => ObfuscationType::Blurhash(blur),
+        Some(blur) => ObfuscationType::Blurhash(blur.clone()),
         None => ObfuscationType::Default,
     };
 
@@ -737,30 +733,42 @@ pub(crate) fn find_renderable_media<'a>(
     })
 }
 
+#[inline]
+fn selection_id(carousel_id: egui::Id) -> egui::Id {
+    carousel_id.with("sel")
+}
+
+/// get the popup carousel window state
+#[inline]
+fn get_show_popup(ui: &egui::Ui, popup_id: egui::Id) -> bool {
+    ui.data(|data| data.get_temp(popup_id).unwrap_or(false))
+}
+
+/// set the popup carousel window state
+#[inline]
+fn set_show_popup(ui: &mut egui::Ui, popup_id: egui::Id, show_popup: bool) {
+    ui.data_mut(|data| data.insert_temp(popup_id, show_popup));
+}
+
+#[inline]
+fn popup_id(carousel_id: egui::Id) -> egui::Id {
+    carousel_id.with("show_popup")
+}
+
 fn render_success_media(
     ui: &mut egui::Ui,
     url: &str,
     tex: &mut TexturedImage,
     gifs: &mut GifStateMap,
-    cache_type: MediaCacheType,
     height: f32,
-    carousel_id: egui::Id,
-) {
+) -> Response {
     let texture = handle_repaint(ui, retrieve_latest_texture(url, gifs, tex));
     let img = texture_to_image(texture, height);
     let img_resp = ui.add(Button::image(img).frame(false));
 
-    if img_resp.clicked() {
-        ui.ctx().memory_mut(|mem| {
-            mem.data.insert_temp(carousel_id.with("show_popup"), true);
-            mem.data.insert_temp(
-                carousel_id.with("current_image"),
-                (url.to_owned(), cache_type),
-            );
-        });
-    }
+    copy_link(url, &img_resp);
 
-    copy_link(url, img_resp);
+    img_resp
 }
 
 fn texture_to_image(tex: &TextureHandle, max_height: f32) -> egui::Image {

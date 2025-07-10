@@ -113,6 +113,10 @@ pub fn retrieve_latest_texture<'a>(
                 gifs.insert(url.to_owned(), new_state);
             }
 
+            if let Some(req) = request_next_repaint {
+                tracing::trace!("requesting repaint for {url} after {req:?}");
+            }
+
             LatextTexture {
                 texture,
                 request_next_repaint,

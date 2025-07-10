@@ -303,7 +303,7 @@ pub fn render_note_contents(
             note_context.img_cache,
             note_context.job_pool,
             jobs,
-            supported_medias,
+            &supported_medias,
             carousel_id,
             trusted_media,
         );

@@ -4,6 +4,7 @@ use nostrdb::Note;
 
 use crate::jobs::{Job, JobError, JobParamsOwned};
 
+#[derive(Clone)]
 pub struct Blur<'a> {
     pub blurhash: &'a str,
     pub dimensions: Option<PixelDimensions>, // width and height in pixels
@@ -145,8 +146,9 @@ fn find_blur(tag_iter: nostrdb::TagIter) -> Option<(&str, Blur)> {
     ))
 }
 
+#[derive(Clone)]
 pub enum ObfuscationType<'a> {
-    Blurhash(&'a Blur<'a>),
+    Blurhash(Blur<'a>),
     Default,
 }
 
