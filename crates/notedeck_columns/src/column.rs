@@ -158,13 +158,19 @@ impl Columns {
     }
 
     #[inline]
-    pub fn selected(&self) -> &Column {
-        &self.columns[self.selected as usize]
+    pub fn selected(&self) -> Option<&Column> {
+        if self.columns.is_empty() {
+            return None;
+        }
+        Some(&self.columns[self.selected as usize])
     }
 
     #[inline]
-    pub fn selected_mut(&mut self) -> &mut Column {
-        &mut self.columns[self.selected as usize]
+    pub fn selected_mut(&mut self) -> Option<&mut Column> {
+        if self.columns.is_empty() {
+            return None;
+        }
+        Some(&mut self.columns[self.selected as usize])
     }
 
     #[inline]

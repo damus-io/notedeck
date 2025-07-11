@@ -33,11 +33,11 @@ impl DecksCache {
     /// Gets the first column in the currently active user's active deck
     pub fn selected_column_mut(&mut self, accounts: &notedeck::Accounts) -> Option<&mut Column> {
         self.active_columns_mut(accounts)
-            .map(|ad| ad.selected_mut())
+            .and_then(|ad| ad.selected_mut())
     }
 
     pub fn selected_column(&self, accounts: &notedeck::Accounts) -> Option<&Column> {
-        self.active_columns(accounts).map(|ad| ad.selected())
+        self.active_columns(accounts).and_then(|ad| ad.selected())
     }
 
     /// Gets a mutable reference to the active columns
