@@ -4,6 +4,7 @@ pub use edit::EditProfileView;
 use egui::{vec2, Color32, CornerRadius, Layout, Rect, RichText, ScrollArea, Sense, Stroke};
 use enostr::Pubkey;
 use nostrdb::{ProfileRecord, Transaction};
+use notedeck_ui::profile::follow_button;
 use tracing::error;
 
 use crate::{
@@ -11,8 +12,8 @@ use crate::{
     ui::timeline::{tabs_ui, TimelineTabView},
 };
 use notedeck::{
-    name::get_display_name, profile::get_profile_url, Accounts, MuteFun, NoteAction, NoteContext,
-    NotedeckTextStyle,
+    name::get_display_name, profile::get_profile_url, Accounts, IsFollowing, MuteFun, NoteAction,
+    NoteContext, NotedeckTextStyle,
 };
 use notedeck_ui::{
     app_images,
@@ -35,6 +36,8 @@ pub struct ProfileView<'a, 'd> {
 pub enum ProfileViewAction {
     EditProfile,
     Note(NoteAction),
+    Unfollow(Pubkey),
+    Follow(Pubkey),
 }
 
 impl<'a, 'd> ProfileView<'a, 'd> {
@@ -79,8 +82,8 @@ impl<'a, 'd> ProfileView<'a, 'd> {
                 .ndb
                 .get_profile_by_pubkey(&txn, self.pubkey.bytes())
             {
-                if self.profile_body(ui, profile) {
-                    action = Some(ProfileViewAction::EditProfile);
+                if let Some(profile_view_action) = self.profile_body(ui, profile) {
+                    action = Some(profile_view_action);
                 }
             }
             let profile_timeline = self
@@ -131,8 +134,12 @@ impl<'a, 'd> ProfileView<'a, 'd> {
         output.inner
     }
 
-    fn profile_body(&mut self, ui: &mut egui::Ui, profile: ProfileRecord<'_>) -> bool {
-        let mut action = false;
+    fn profile_body(
+        &mut self,
+        ui: &mut egui::Ui,
+        profile: ProfileRecord<'_>,
+    ) -> Option<ProfileViewAction> {
+        let mut action = None;
         ui.vertical(|ui| {
             banner(
                 ui,
@@ -169,13 +176,49 @@ impl<'a, 'd> ProfileView<'a, 'd> {
                         ui.ctx().copy_text(to_copy)
                     }
 
-                    if self.accounts.contains_full_kp(self.pubkey) {
-                        ui.with_layout(Layout::right_to_left(egui::Align::Max), |ui| {
-                            if ui.add(edit_profile_button()).clicked() {
-                                action = true;
+                    ui.with_layout(Layout::right_to_left(egui::Align::RIGHT), |ui| {
+                        ui.add_space(24.0);
+
+                        let target_key = self.pubkey;
+                        let selected = self.accounts.get_selected_account();
+
+                        let profile_type = if selected.key.secret_key.is_none() {
+                            ProfileType::ReadOnly
+                        } else if &selected.key.pubkey == self.pubkey {
+                            ProfileType::MyProfile
+                        } else {
+                            ProfileType::Followable(selected.is_following(target_key))
+                        };
+
+                        match profile_type {
+                            ProfileType::MyProfile => {
+                                if ui.add(edit_profile_button()).clicked() {
+                                    action = Some(ProfileViewAction::EditProfile);
+                                }
                             }
-                        });
-                    }
+                            ProfileType::Followable(is_following) => {
+                                let follow_button = ui.add(follow_button(is_following));
+
+                                if follow_button.clicked() {
+                                    action = match is_following {
+                                        IsFollowing::Unknown => {
+                                            // don't do anything, we don't have contact list
+                                            None
+                                        }
+
+                                        IsFollowing::Yes => {
+                                            Some(ProfileViewAction::Unfollow(target_key.to_owned()))
+                                        }
+
+                                        IsFollowing::No => {
+                                            Some(ProfileViewAction::Follow(target_key.to_owned()))
+                                        }
+                                    };
+                                }
+                            }
+                            ProfileType::ReadOnly => {}
+                        }
+                    });
                 });
 
                 ui.add_space(18.0);
@@ -213,6 +256,12 @@ impl<'a, 'd> ProfileView<'a, 'd> {
 
         action
     }
+}
+
+enum ProfileType {
+    MyProfile,
+    ReadOnly,
+    Followable(IsFollowing),
 }
 
 fn handle_link(ui: &mut egui::Ui, website_url: &str) {

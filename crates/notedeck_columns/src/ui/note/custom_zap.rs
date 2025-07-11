@@ -9,9 +9,10 @@ use nostrdb::{Ndb, ProfileRecord, Transaction};
 use notedeck::{
     fonts::get_font_size, get_profile_url, name::get_display_name, Images, NotedeckTextStyle,
 };
-use notedeck_ui::{app_images, colors, profile::display_name_widget, AnimationHelper, ProfilePic};
-
-use crate::ui::widgets::styled_button_toggleable;
+use notedeck_ui::{
+    app_images, colors, profile::display_name_widget, widgets::styled_button_toggleable,
+    AnimationHelper, ProfilePic,
+};
 
 pub struct CustomZapView<'a> {
     images: &'a mut Images,

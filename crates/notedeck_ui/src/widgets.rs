@@ -1,5 +1,6 @@
 use crate::anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE};
 use egui::{emath::GuiRounding, Pos2, Stroke};
+use notedeck::NotedeckTextStyle;
 
 pub fn x_button(rect: egui::Rect) -> impl egui::Widget {
     move |ui: &mut egui::Ui| -> egui::Response {
@@ -31,5 +32,48 @@ pub fn x_button(rect: egui::Rect) -> impl egui::Widget {
         painter.line_segment([ne_edge, sw_edge], Stroke::new(line_width, fill_color));
 
         helper.take_animation_response()
+    }
+}
+
+/// Button styled in the Notedeck theme
+pub fn styled_button_toggleable(
+    text: &str,
+    fill_color: egui::Color32,
+    enabled: bool,
+) -> impl egui::Widget + '_ {
+    move |ui: &mut egui::Ui| -> egui::Response {
+        let painter = ui.painter();
+        let text_color = if ui.visuals().dark_mode {
+            egui::Color32::WHITE
+        } else {
+            egui::Color32::BLACK
+        };
+
+        let galley = painter.layout(
+            text.to_owned(),
+            NotedeckTextStyle::Button.get_font_id(ui.ctx()),
+            text_color,
+            ui.available_width(),
+        );
+
+        let size = galley.rect.expand2(egui::vec2(16.0, 8.0)).size();
+        let mut button = egui::Button::new(galley).corner_radius(8.0);
+
+        if !enabled {
+            button = button
+                .sense(egui::Sense::focusable_noninteractive())
+                .fill(ui.visuals().noninteractive().bg_fill)
+                .stroke(ui.visuals().noninteractive().bg_stroke);
+        } else {
+            button = button.fill(fill_color);
+        }
+
+        let mut resp = ui.add_sized(size, button);
+
+        if !enabled {
+            resp = resp.on_hover_cursor(egui::CursorIcon::NotAllowed);
+        }
+
+        resp
     }
 }

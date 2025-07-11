@@ -116,7 +116,7 @@ pub fn render_profile_route(
     note_context: &mut NoteContext,
     jobs: &mut JobsCache,
 ) -> Option<RenderNavAction> {
-    let action = ProfileView::new(
+    let profile_view = ProfileView::new(
         pubkey,
         accounts,
         col,
@@ -128,7 +128,7 @@ pub fn render_profile_route(
     )
     .ui(ui);
 
-    if let Some(action) = action {
+    if let Some(action) = profile_view {
         match action {
             ui::profile::ProfileViewAction::EditProfile => accounts
                 .get_full(pubkey)
@@ -136,6 +136,12 @@ pub fn render_profile_route(
             ui::profile::ProfileViewAction::Note(note_action) => {
                 Some(RenderNavAction::NoteAction(note_action))
             }
+            ui::profile::ProfileViewAction::Follow(target_key) => Some(
+                RenderNavAction::ProfileAction(ProfileAction::Follow(target_key)),
+            ),
+            ui::profile::ProfileViewAction::Unfollow(target_key) => Some(
+                RenderNavAction::ProfileAction(ProfileAction::Unfollow(target_key)),
+            ),
         }
     } else {
         None

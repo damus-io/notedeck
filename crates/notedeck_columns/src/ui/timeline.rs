@@ -154,6 +154,9 @@ fn timeline_ui(
             error!("tried to render timeline in column, but timeline was missing");
             // TODO (jb55): render error when timeline is missing?
             // this shouldn't happen...
+            //
+            // NOTE (jb55): it can easily happen if you add a timeline column without calling
+            // add_new_timeline_column, since that sets up the initial subs, etc
             return None;
         };
 

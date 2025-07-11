@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 
 use enostr::{Keypair, Pubkey, RelayPool};
-use nostrdb::{Filter, Ndb, NoteBuilder, NoteKey, Transaction};
+use nostrdb::{Filter, Ndb, NoteBuilder, NoteKey, Subscription, Transaction};
 use tracing::{debug, error, info};
 use url::Url;
 
@@ -14,7 +14,7 @@ pub(crate) struct AccountRelayData {
 }
 
 impl AccountRelayData {
-    pub fn new(ndb: &Ndb, txn: &Transaction, pubkey: &[u8; 32]) -> Self {
+    pub fn new(pubkey: &[u8; 32]) -> Self {
         // Construct a filter for the user's NIP-65 relay list
         let filter = Filter::new()
             .authors([pubkey])
@@ -22,26 +22,29 @@ impl AccountRelayData {
             .limit(1)
             .build();
 
+        AccountRelayData {
+            filter,
+            local: BTreeSet::new(),
+            advertised: BTreeSet::new(),
+        }
+    }
+
+    pub fn query(&mut self, ndb: &Ndb, txn: &Transaction) {
         // Query the ndb immediately to see if the user list is already there
-        let lim = filter.limit().unwrap_or(crate::filter::default_limit()) as i32;
+        let lim = self
+            .filter
+            .limit()
+            .unwrap_or(crate::filter::default_limit()) as i32;
         let nks = ndb
-            .query(txn, &[filter.clone()], lim)
+            .query(txn, &[self.filter.clone()], lim)
             .expect("query user relays results")
             .iter()
             .map(|qr| qr.note_key)
             .collect::<Vec<NoteKey>>();
         let relays = Self::harvest_nip65_relays(ndb, txn, &nks);
-        debug!(
-            "pubkey {}: initial relays {:?}",
-            hex::encode(pubkey),
-            relays
-        );
+        debug!("initial relays {:?}", relays);
 
-        AccountRelayData {
-            filter,
-            local: BTreeSet::new(),
-            advertised: relays.into_iter().collect(),
-        }
+        self.advertised = relays.into_iter().collect()
     }
 
     // standardize the format (ie, trailing slashes) to avoid dups
@@ -106,6 +109,20 @@ impl AccountRelayData {
         let note = builder.sign(seckey).build().expect("note build");
         pool.send(&enostr::ClientMessage::event(&note).expect("note client message"));
     }
+
+    pub fn poll_for_updates(&mut self, ndb: &Ndb, txn: &Transaction, sub: Subscription) -> bool {
+        let nks = ndb.poll_for_notes(sub, 1);
+
+        if nks.is_empty() {
+            return false;
+        }
+
+        let relays = AccountRelayData::harvest_nip65_relays(ndb, txn, &nks);
+        debug!("updated relays {:?}", relays);
+        self.advertised = relays.into_iter().collect();
+
+        true
+    }
 }
 
 pub(crate) struct RelayDefaults {
@@ -142,7 +159,7 @@ pub(super) fn update_relay_configuration(
     pool: &mut RelayPool,
     relay_defaults: &RelayDefaults,
     pk: &Pubkey,
-    data: &AccountData,
+    data: &AccountRelayData,
     wakeup: impl Fn() + Send + Sync + Clone + 'static,
 ) {
     debug!(
@@ -155,8 +172,8 @@ pub(super) fn update_relay_configuration(
 
     // Compose the desired relay lists from the selected account
     if desired_relays.is_empty() {
-        desired_relays.extend(data.relay.local.iter().cloned());
-        desired_relays.extend(data.relay.advertised.iter().cloned());
+        desired_relays.extend(data.local.iter().cloned());
+        desired_relays.extend(data.advertised.iter().cloned());
     }
 
     // If no relays are specified at this point use the bootstrap list

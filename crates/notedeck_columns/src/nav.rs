@@ -7,9 +7,11 @@ use crate::{
     profile::{ProfileAction, SaveProfileChanges},
     profile_state::ProfileState,
     route::{Route, Router, SingletonRouter},
+    subscriptions::{SubKind, Subscriptions},
     timeline::{
+        kind::ListKind,
         route::{render_thread_route, render_timeline_route},
-        TimelineCache,
+        TimelineCache, TimelineKind,
     },
     ui::{
         self,
@@ -72,18 +74,31 @@ impl SwitchingAction {
         &self,
         timeline_cache: &mut TimelineCache,
         decks_cache: &mut DecksCache,
+        subs: &mut Subscriptions,
         ctx: &mut AppContext<'_>,
         ui_ctx: &egui::Context,
     ) -> bool {
         match &self {
             SwitchingAction::Accounts(account_action) => match account_action {
                 AccountsAction::Switch(switch_action) => {
+                    let txn = Transaction::new(ctx.ndb).expect("txn");
                     ctx.accounts.select_account(
                         &switch_action.switch_to,
                         ctx.ndb,
+                        &txn,
                         ctx.pool,
                         ui_ctx,
                     );
+
+                    let new_subs = ctx.accounts.get_subs();
+
+                    subs.subs.insert(
+                        new_subs.contacts.remote.clone(),
+                        SubKind::FetchingContactList(TimelineKind::List(ListKind::Contact(
+                            *ctx.accounts.selected_account_pubkey(),
+                        ))),
+                    );
+
                     // pop nav after switch
                     get_active_columns_mut(ctx.accounts, decks_cache)
                         .column_mut(switch_action.source_column)
@@ -378,6 +393,7 @@ fn process_render_nav_action(
             if switching_action.process(
                 &mut app.timeline_cache,
                 &mut app.decks_cache,
+                &mut app.subscriptions,
                 ctx,
                 ui.ctx(),
             ) {
@@ -390,6 +406,7 @@ fn process_render_nav_action(
             &mut app.view_state.pubkey_to_profile_state,
             ctx.ndb,
             ctx.pool,
+            ctx.accounts,
         ),
         RenderNavAction::WalletAction(wallet_action) => {
             wallet_action.process(ctx.accounts, ctx.global_wallet)

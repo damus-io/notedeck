@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use nostrdb::{Filter, Ndb, NoteKey, Transaction};
+use nostrdb::{Filter, Ndb, NoteKey, Subscription, Transaction};
 use tracing::{debug, error};
 
 use crate::Muted;
@@ -11,7 +11,7 @@ pub(crate) struct AccountMutedData {
 }
 
 impl AccountMutedData {
-    pub fn new(ndb: &Ndb, txn: &Transaction, pubkey: &[u8; 32]) -> Self {
+    pub fn new(pubkey: &[u8; 32]) -> Self {
         // Construct a filter for the user's NIP-51 muted list
         let filter = Filter::new()
             .authors([pubkey])
@@ -19,21 +19,28 @@ impl AccountMutedData {
             .limit(1)
             .build();
 
+        AccountMutedData {
+            filter,
+            muted: Arc::new(Muted::default()),
+        }
+    }
+
+    pub(super) fn query(&mut self, ndb: &Ndb, txn: &Transaction) {
         // Query the ndb immediately to see if the user's muted list is already there
-        let lim = filter.limit().unwrap_or(crate::filter::default_limit()) as i32;
+        let lim = self
+            .filter
+            .limit()
+            .unwrap_or(crate::filter::default_limit()) as i32;
         let nks = ndb
-            .query(txn, &[filter.clone()], lim)
+            .query(txn, &[self.filter.clone()], lim)
             .expect("query user muted results")
             .iter()
             .map(|qr| qr.note_key)
             .collect::<Vec<NoteKey>>();
         let muted = Self::harvest_nip51_muted(ndb, txn, &nks);
-        debug!("pubkey {}: initial muted {:?}", hex::encode(pubkey), muted);
+        debug!("initial muted {:?}", muted);
 
-        AccountMutedData {
-            filter,
-            muted: Arc::new(muted),
-        }
+        self.muted = Arc::new(muted);
     }
 
     pub(crate) fn harvest_nip51_muted(ndb: &Ndb, txn: &Transaction, nks: &[NoteKey]) -> Muted {
@@ -75,5 +82,17 @@ impl AccountMutedData {
             }
         }
         muted
+    }
+
+    pub(super) fn poll_for_updates(&mut self, ndb: &Ndb, txn: &Transaction, sub: Subscription) {
+        let nks = ndb.poll_for_notes(sub, 1);
+
+        if nks.is_empty() {
+            return;
+        }
+
+        let muted = AccountMutedData::harvest_nip51_muted(ndb, txn, &nks);
+        debug!("updated muted {:?}", muted);
+        self.muted = Arc::new(muted);
     }
 }

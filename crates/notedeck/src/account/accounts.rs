@@ -1,7 +1,7 @@
-use tracing::debug;
 use uuid::Uuid;
 
 use crate::account::cache::AccountCache;
+use crate::account::contacts::Contacts;
 use crate::account::mute::AccountMutedData;
 use crate::account::relay::{
     modify_advertised_relays, update_relay_configuration, AccountRelayData, RelayAction,
@@ -42,10 +42,7 @@ impl Accounts {
     ) -> Self {
         let (mut cache, unknown_id) = AccountCache::new(UserAccount::new(
             Keypair::only_pubkey(fallback),
-            AccountData {
-                relay: AccountRelayData::new(ndb, txn, fallback.bytes()),
-                muted: AccountMutedData::new(ndb, txn, fallback.bytes()),
-            },
+            AccountData::new(fallback.bytes()),
         ));
 
         unknown_id.process_action(unknown_ids, ndb, txn);
@@ -56,7 +53,7 @@ impl Accounts {
             match reader.get_accounts() {
                 Ok(accounts) => {
                     for account in accounts {
-                        add_account_from_storage(&mut cache, ndb, txn, account).process_action(
+                        add_account_from_storage(&mut cache, account).process_action(
                             unknown_ids,
                             ndb,
                             txn,
@@ -76,8 +73,10 @@ impl Accounts {
 
         let relay_defaults = RelayDefaults::new(forced_relays);
 
-        let selected = cache.selected();
-        let selected_data = &selected.data;
+        let selected = cache.selected_mut();
+        let selected_data = &mut selected.data;
+
+        selected_data.query(ndb, txn);
 
         let subs = {
             AccountSubs::new(
@@ -117,12 +116,7 @@ impl Accounts {
     }
 
     #[must_use = "UnknownIdAction's must be handled. Use .process_unknown_id_action()"]
-    pub fn add_account(
-        &mut self,
-        ndb: &Ndb,
-        txn: &Transaction,
-        kp: Keypair,
-    ) -> Option<AddAccountResponse> {
+    pub fn add_account(&mut self, kp: Keypair) -> Option<AddAccountResponse> {
         let acc = if let Some(acc) = self.cache.get_mut(&kp.pubkey) {
             if kp.secret_key.is_none() || acc.key.secret_key.is_some() {
                 tracing::info!("Already have account, not adding");
@@ -132,10 +126,7 @@ impl Accounts {
             acc.key = kp.clone();
             AccType::Acc(&*acc)
         } else {
-            let new_account_data = AccountData {
-                relay: AccountRelayData::new(ndb, txn, kp.pubkey.bytes()),
-                muted: AccountMutedData::new(ndb, txn, kp.pubkey.bytes()),
-            };
+            let new_account_data = AccountData::new(kp.pubkey.bytes());
             AccType::Entry(
                 self.cache
                     .add(UserAccount::new(kp.clone(), new_account_data)),
@@ -213,6 +204,7 @@ impl Accounts {
         &mut self,
         pk_to_select: &Pubkey,
         ndb: &mut Ndb,
+        txn: &Transaction,
         pool: &mut RelayPool,
         ctx: &egui::Context,
     ) {
@@ -226,6 +218,7 @@ impl Accounts {
             }
         }
 
+        self.get_selected_account_mut().data.query(ndb, txn);
         self.subs.swap_to(
             ndb,
             pool,
@@ -261,53 +254,40 @@ impl Accounts {
             ),
             relay_url,
         );
-    }
-
-    fn poll_for_updates(&mut self, ndb: &Ndb) -> bool {
-        let mut changed = false;
-        let relay_sub = self.subs.relay.local;
-        let mute_sub = self.subs.mute.local;
-        let acc = self.get_selected_account_mut();
-
-        let nks = ndb.poll_for_notes(relay_sub, 1);
-        if !nks.is_empty() {
-            let txn = Transaction::new(ndb).expect("txn");
-            let relays = AccountRelayData::harvest_nip65_relays(ndb, &txn, &nks);
-            debug!(
-                "pubkey {}: updated relays {:?}",
-                acc.key.pubkey.hex(),
-                relays
-            );
-            acc.data.relay.advertised = relays.into_iter().collect();
-            changed = true;
-        }
-
-        let nks = ndb.poll_for_notes(mute_sub, 1);
-        if !nks.is_empty() {
-            let txn = Transaction::new(ndb).expect("txn");
-            let muted = AccountMutedData::harvest_nip51_muted(ndb, &txn, &nks);
-            debug!("pubkey {}: updated muted {:?}", acc.key.pubkey.hex(), muted);
-            acc.data.muted.muted = Arc::new(muted);
-            changed = true;
-        }
-
-        changed
+        pool.send_to(
+            &ClientMessage::req(
+                self.subs.contacts.remote.clone(),
+                vec![data.contacts.filter.clone()],
+            ),
+            relay_url,
+        );
     }
 
     pub fn update(&mut self, ndb: &mut Ndb, pool: &mut RelayPool, ctx: &egui::Context) {
         // IMPORTANT - This function is called in the UI update loop,
         // make sure it is fast when idle
 
-        // If needed, update the relay configuration
-        if self.poll_for_updates(ndb) {
-            let acc = self.cache.selected();
-            update_relay_configuration(
-                pool,
-                &self.relay_defaults,
-                &acc.key.pubkey,
-                &acc.data,
-                create_wakeup(ctx),
-            );
+        let Some(update) = self
+            .cache
+            .selected_mut()
+            .data
+            .poll_for_updates(ndb, &self.subs)
+        else {
+            return;
+        };
+
+        match update {
+            // If needed, update the relay configuration
+            AccountDataUpdate::Relay => {
+                let acc = self.cache.selected();
+                update_relay_configuration(
+                    pool,
+                    &self.relay_defaults,
+                    &acc.key.pubkey,
+                    &acc.data.relay,
+                    create_wakeup(ctx),
+                );
+            }
         }
     }
 
@@ -328,9 +308,13 @@ impl Accounts {
             pool,
             &self.relay_defaults,
             &acc.key.pubkey,
-            &acc.data,
+            &acc.data.relay,
             create_wakeup(ctx),
         );
+    }
+
+    pub fn get_subs(&self) -> &AccountSubs {
+        &self.subs
     }
 }
 
@@ -357,11 +341,9 @@ fn create_wakeup(ctx: &egui::Context) -> impl Fn() + Send + Sync + Clone + 'stat
 
 fn add_account_from_storage(
     cache: &mut AccountCache,
-    ndb: &Ndb,
-    txn: &Transaction,
     user_account_serializable: UserAccountSerializable,
 ) -> SingleUnkIdAction {
-    let Some(acc) = get_acc_from_storage(ndb, txn, user_account_serializable) else {
+    let Some(acc) = get_acc_from_storage(user_account_serializable) else {
         return SingleUnkIdAction::NoAction;
     };
 
@@ -371,16 +353,9 @@ fn add_account_from_storage(
     SingleUnkIdAction::pubkey(pk)
 }
 
-fn get_acc_from_storage(
-    ndb: &Ndb,
-    txn: &Transaction,
-    user_account_serializable: UserAccountSerializable,
-) -> Option<UserAccount> {
+fn get_acc_from_storage(user_account_serializable: UserAccountSerializable) -> Option<UserAccount> {
     let keypair = user_account_serializable.key;
-    let new_account_data = AccountData {
-        relay: AccountRelayData::new(ndb, txn, keypair.pubkey.bytes()),
-        muted: AccountMutedData::new(ndb, txn, keypair.pubkey.bytes()),
-    };
+    let new_account_data = AccountData::new(keypair.pubkey.bytes());
 
     let mut wallet = None;
     if let Some(wallet_s) = user_account_serializable.wallet {
@@ -403,6 +378,46 @@ fn get_acc_from_storage(
 pub struct AccountData {
     pub(crate) relay: AccountRelayData,
     pub(crate) muted: AccountMutedData,
+    pub contacts: Contacts,
+}
+
+impl AccountData {
+    pub fn new(pubkey: &[u8; 32]) -> Self {
+        Self {
+            relay: AccountRelayData::new(pubkey),
+            muted: AccountMutedData::new(pubkey),
+            contacts: Contacts::new(pubkey),
+        }
+    }
+
+    pub(super) fn poll_for_updates(
+        &mut self,
+        ndb: &Ndb,
+        subs: &AccountSubs,
+    ) -> Option<AccountDataUpdate> {
+        let txn = Transaction::new(ndb).expect("txn");
+        let mut resp = None;
+        if self.relay.poll_for_updates(ndb, &txn, subs.relay.local) {
+            resp = Some(AccountDataUpdate::Relay);
+        }
+
+        self.muted.poll_for_updates(ndb, &txn, subs.mute.local);
+        self.contacts
+            .poll_for_updates(ndb, &txn, subs.contacts.local);
+
+        resp
+    }
+
+    /// Note: query should be called as close to the subscription as possible
+    pub(super) fn query(&mut self, ndb: &Ndb, txn: &Transaction) {
+        self.relay.query(ndb, txn);
+        self.muted.query(ndb, txn);
+        self.contacts.query(ndb, txn);
+    }
+}
+
+pub(super) enum AccountDataUpdate {
+    Relay,
 }
 
 pub struct AddAccountResponse {
@@ -410,13 +425,14 @@ pub struct AddAccountResponse {
     pub unk_id_action: SingleUnkIdAction,
 }
 
-struct AccountSubs {
+pub struct AccountSubs {
     relay: UnifiedSubscription,
     mute: UnifiedSubscription,
+    pub contacts: UnifiedSubscription,
 }
 
 impl AccountSubs {
-    pub fn new(
+    pub(super) fn new(
         ndb: &mut Ndb,
         pool: &mut RelayPool,
         relay_defaults: &RelayDefaults,
@@ -426,12 +442,17 @@ impl AccountSubs {
     ) -> Self {
         let relay = subscribe(ndb, pool, &data.relay.filter);
         let mute = subscribe(ndb, pool, &data.muted.filter);
-        update_relay_configuration(pool, relay_defaults, pk, data, wakeup);
+        let contacts = subscribe(ndb, pool, &data.contacts.filter);
+        update_relay_configuration(pool, relay_defaults, pk, &data.relay, wakeup);
 
-        Self { relay, mute }
+        Self {
+            relay,
+            mute,
+            contacts,
+        }
     }
 
-    pub fn swap_to(
+    pub(super) fn swap_to(
         &mut self,
         ndb: &mut Ndb,
         pool: &mut RelayPool,
@@ -442,6 +463,7 @@ impl AccountSubs {
     ) {
         unsubscribe(ndb, pool, &self.relay);
         unsubscribe(ndb, pool, &self.mute);
+        unsubscribe(ndb, pool, &self.contacts);
 
         *self = AccountSubs::new(ndb, pool, relay_defaults, pk, new_selection_data, wakeup);
     }

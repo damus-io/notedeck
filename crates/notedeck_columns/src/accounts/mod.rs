@@ -5,6 +5,7 @@ use notedeck::{Accounts, AppContext, SingleUnkIdAction, UnknownIds};
 
 use crate::app::get_active_columns_mut;
 use crate::decks::DecksCache;
+use crate::profile::send_new_contact_list;
 use crate::{
     login_manager::AcquireKeyState,
     route::Route,
@@ -149,18 +150,14 @@ pub fn process_login_view_response(
 ) -> AddAccountAction {
     let (r, pubkey) = match response {
         AccountLoginResponse::CreateNew => {
-            let kp = FullKeypair::generate().to_keypair();
+            let kp = FullKeypair::generate();
             let pubkey = kp.pubkey;
-            let txn = Transaction::new(app_ctx.ndb).expect("txn");
-            (app_ctx.accounts.add_account(app_ctx.ndb, &txn, kp), pubkey)
+            send_new_contact_list(kp.to_filled(), app_ctx.ndb, app_ctx.pool);
+            (app_ctx.accounts.add_account(kp.to_keypair()), pubkey)
         }
         AccountLoginResponse::LoginWith(keypair) => {
             let pubkey = keypair.pubkey;
-            let txn = Transaction::new(app_ctx.ndb).expect("txn");
-            (
-                app_ctx.accounts.add_account(app_ctx.ndb, &txn, keypair),
-                pubkey,
-            )
+            (app_ctx.accounts.add_account(keypair), pubkey)
         }
     };
 
