@@ -7,11 +7,9 @@ use crate::{
     profile::{ProfileAction, SaveProfileChanges},
     profile_state::ProfileState,
     route::{Route, Router, SingletonRouter},
-    subscriptions::{SubKind, Subscriptions},
     timeline::{
-        kind::ListKind,
         route::{render_thread_route, render_timeline_route},
-        TimelineCache, TimelineKind,
+        TimelineCache,
     },
     ui::{
         self,
@@ -74,7 +72,6 @@ impl SwitchingAction {
         &self,
         timeline_cache: &mut TimelineCache,
         decks_cache: &mut DecksCache,
-        subs: &mut Subscriptions,
         ctx: &mut AppContext<'_>,
         ui_ctx: &egui::Context,
     ) -> bool {
@@ -89,16 +86,6 @@ impl SwitchingAction {
                         ctx.pool,
                         ui_ctx,
                     );
-
-                    let new_subs = ctx.accounts.get_subs();
-
-                    subs.subs.insert(
-                        new_subs.contacts.remote.clone(),
-                        SubKind::FetchingContactList(TimelineKind::List(ListKind::Contact(
-                            *ctx.accounts.selected_account_pubkey(),
-                        ))),
-                    );
-
                     // pop nav after switch
                     get_active_columns_mut(ctx.accounts, decks_cache)
                         .column_mut(switch_action.source_column)
@@ -393,7 +380,6 @@ fn process_render_nav_action(
             if switching_action.process(
                 &mut app.timeline_cache,
                 &mut app.decks_cache,
-                &mut app.subscriptions,
                 ctx,
                 ui.ctx(),
             ) {

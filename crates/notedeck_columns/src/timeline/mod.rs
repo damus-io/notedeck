@@ -7,8 +7,7 @@ use crate::{
 };
 
 use notedeck::{
-    filter, Accounts, CachedNote, FilterError, FilterState, FilterStates, NoteCache, NoteRef,
-    UnknownIds,
+    filter, CachedNote, FilterError, FilterState, FilterStates, NoteCache, NoteRef, UnknownIds,
 };
 
 use egui_virtual_list::VirtualList;
@@ -475,7 +474,6 @@ pub fn setup_new_timeline(
     pool: &mut RelayPool,
     note_cache: &mut NoteCache,
     since_optimize: bool,
-    accounts: &Accounts,
 ) {
     // if we're ready, setup local subs
     if is_timeline_ready(ndb, pool, note_cache, timeline) {
@@ -485,7 +483,7 @@ pub fn setup_new_timeline(
     }
 
     for relay in &mut pool.relays {
-        send_initial_timeline_filter(since_optimize, subs, relay, timeline, accounts);
+        send_initial_timeline_filter(ndb, since_optimize, subs, relay, timeline);
     }
 }
 
@@ -494,29 +492,29 @@ pub fn setup_new_timeline(
 /// situations where you are adding a new timeline, use
 /// setup_new_timeline.
 pub fn send_initial_timeline_filters(
+    ndb: &Ndb,
     since_optimize: bool,
     timeline_cache: &mut TimelineCache,
     subs: &mut Subscriptions,
     pool: &mut RelayPool,
     relay_id: &str,
-    accounts: &Accounts,
 ) -> Option<()> {
     info!("Sending initial filters to {}", relay_id);
     let relay = &mut pool.relays.iter_mut().find(|r| r.url() == relay_id)?;
 
     for (_kind, timeline) in timeline_cache.timelines.iter_mut() {
-        send_initial_timeline_filter(since_optimize, subs, relay, timeline, accounts);
+        send_initial_timeline_filter(ndb, since_optimize, subs, relay, timeline);
     }
 
     Some(())
 }
 
 pub fn send_initial_timeline_filter(
+    ndb: &Ndb,
     can_since_optimize: bool,
     subs: &mut Subscriptions,
     relay: &mut PoolRelay,
     timeline: &mut Timeline,
-    accounts: &Accounts,
 ) {
     let filter_state = timeline.filter.get_mut(relay.url());
 
@@ -574,27 +572,34 @@ pub fn send_initial_timeline_filter(
         }
 
         // we need some data first
-        FilterState::NeedsRemote(_filter) => fetch_contact_list(relay.url(), timeline, accounts),
+        FilterState::NeedsRemote(filter) => {
+            fetch_contact_list(filter.to_owned(), ndb, subs, relay, timeline)
+        }
     }
 }
 
-pub fn fetch_contact_list(relay_url: &str, timeline: &mut Timeline, accounts: &Accounts) {
-    let account_subs = accounts.get_subs();
-    let local = account_subs.contacts.local;
+pub fn fetch_contact_list(
+    filter: Vec<Filter>,
+    ndb: &Ndb,
+    subs: &mut Subscriptions,
+    relay: &mut PoolRelay,
+    timeline: &mut Timeline,
+) {
+    let sub_kind = SubKind::FetchingContactList(timeline.kind.clone());
+    let sub_id = subscriptions::new_sub_id();
+    let local_sub = ndb.subscribe(&filter).expect("sub");
 
-    let filter_state = match accounts.get_selected_account().data.contacts.get_state() {
-        notedeck::ContactState::Unreceived => {
-            FilterState::fetching_remote(account_subs.contacts.remote.clone(), local)
-        }
-        notedeck::ContactState::Received {
-            contacts: _,
-            note_key: _,
-        } => FilterState::GotRemote(local),
-    };
+    timeline.filter.set_relay_state(
+        relay.url().to_string(),
+        FilterState::fetching_remote(sub_id.clone(), local_sub),
+    );
 
-    timeline
-        .filter
-        .set_relay_state(relay_url.to_owned(), filter_state);
+    subs.subs.insert(sub_id.clone(), sub_kind);
+
+    info!("fetching contact list from {}", relay.url());
+    if let Err(err) = relay.subscribe(sub_id, filter) {
+        error!("error subscribing: {err}");
+    }
 }
 
 fn setup_initial_timeline(

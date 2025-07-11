@@ -623,7 +623,6 @@ pub fn render_add_column_routes(
                     ctx.pool,
                     ctx.note_cache,
                     app.since_optimize,
-                    ctx.accounts,
                 );
 
                 app.columns_mut(ctx.accounts)
@@ -665,7 +664,6 @@ pub fn render_add_column_routes(
                             ctx.pool,
                             ctx.note_cache,
                             app.since_optimize,
-                            ctx.accounts,
                         );
 
                         app.columns_mut(ctx.accounts)
