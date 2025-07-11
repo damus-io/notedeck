@@ -1,19 +1,19 @@
 use enostr::{FullKeypair, Pubkey};
 use nostrdb::{Ndb, Transaction};
 
-use notedeck::{Accounts, Images, SingleUnkIdAction, UnknownIds};
+use notedeck::{Accounts, AppContext, SingleUnkIdAction, UnknownIds};
 
 use crate::app::get_active_columns_mut;
 use crate::decks::DecksCache;
 use crate::{
     login_manager::AcquireKeyState,
     route::Route,
+    timeline::TimelineCache,
     ui::{
         account_login_view::{AccountLoginResponse, AccountLoginView},
         accounts::{AccountsView, AccountsViewResponse},
     },
 };
-use egui_winit::clipboard::Clipboard;
 use tracing::info;
 
 mod route;
@@ -63,22 +63,22 @@ pub struct AddAccountAction {
 #[allow(clippy::too_many_arguments)]
 pub fn render_accounts_route(
     ui: &mut egui::Ui,
-    ndb: &Ndb,
+    app_ctx: &mut AppContext,
     col: usize,
-    img_cache: &mut Images,
-    accounts: &mut Accounts,
     decks: &mut DecksCache,
+    timeline_cache: &mut TimelineCache,
     login_state: &mut AcquireKeyState,
-    clipboard: &mut Clipboard,
     route: AccountsRoute,
 ) -> AddAccountAction {
     let resp = match route {
-        AccountsRoute::Accounts => AccountsView::new(ndb, accounts, img_cache)
-            .ui(ui)
-            .inner
-            .map(AccountsRouteResponse::Accounts),
+        AccountsRoute::Accounts => {
+            AccountsView::new(app_ctx.ndb, app_ctx.accounts, app_ctx.img_cache)
+                .ui(ui)
+                .inner
+                .map(AccountsRouteResponse::Accounts)
+        }
 
-        AccountsRoute::AddAccount => AccountLoginView::new(login_state, clipboard)
+        AccountsRoute::AddAccount => AccountLoginView::new(login_state, app_ctx.clipboard)
             .ui(ui)
             .inner
             .map(AccountsRouteResponse::AddAccount),
@@ -87,16 +87,17 @@ pub fn render_accounts_route(
     if let Some(resp) = resp {
         match resp {
             AccountsRouteResponse::Accounts(response) => {
-                let action = process_accounts_view_response(accounts, decks, col, response);
+                let action = process_accounts_view_response(app_ctx.accounts, decks, col, response);
                 AddAccountAction {
                     accounts_action: action,
                     unk_id_action: SingleUnkIdAction::no_action(),
                 }
             }
             AccountsRouteResponse::AddAccount(response) => {
-                let action = process_login_view_response(accounts, decks, col, ndb, response);
+                let action =
+                    process_login_view_response(app_ctx, timeline_cache, decks, col, response);
                 *login_state = Default::default();
-                let router = get_active_columns_mut(accounts, decks)
+                let router = get_active_columns_mut(app_ctx.accounts, decks)
                     .column_mut(col)
                     .router_mut();
                 router.go_back();
@@ -140,27 +141,30 @@ pub fn process_accounts_view_response(
 }
 
 pub fn process_login_view_response(
-    manager: &mut Accounts,
+    app_ctx: &mut AppContext,
+    timeline_cache: &mut TimelineCache,
     decks: &mut DecksCache,
     col: usize,
-    ndb: &Ndb,
     response: AccountLoginResponse,
 ) -> AddAccountAction {
     let (r, pubkey) = match response {
         AccountLoginResponse::CreateNew => {
             let kp = FullKeypair::generate().to_keypair();
             let pubkey = kp.pubkey;
-            let txn = Transaction::new(ndb).expect("txn");
-            (manager.add_account(ndb, &txn, kp), pubkey)
+            let txn = Transaction::new(app_ctx.ndb).expect("txn");
+            (app_ctx.accounts.add_account(app_ctx.ndb, &txn, kp), pubkey)
         }
         AccountLoginResponse::LoginWith(keypair) => {
             let pubkey = keypair.pubkey;
-            let txn = Transaction::new(ndb).expect("txn");
-            (manager.add_account(ndb, &txn, keypair), pubkey)
+            let txn = Transaction::new(app_ctx.ndb).expect("txn");
+            (
+                app_ctx.accounts.add_account(app_ctx.ndb, &txn, keypair),
+                pubkey,
+            )
         }
     };
 
-    decks.add_deck_default(pubkey);
+    decks.add_deck_default(app_ctx, timeline_cache, pubkey);
 
     if let Some(action) = r {
         AddAccountAction {

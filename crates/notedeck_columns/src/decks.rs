@@ -100,12 +100,27 @@ impl DecksCache {
             .unwrap_or_else(|| panic!("fallback deck not found"))
     }
 
-    pub fn add_deck_default(&mut self, key: Pubkey) {
-        self.account_to_decks.insert(key, Decks::default());
+    pub fn add_deck_default(
+        &mut self,
+        ctx: &mut AppContext,
+        timeline_cache: &mut TimelineCache,
+        pubkey: Pubkey,
+    ) {
+        let mut decks = Decks::default();
+
+        // add home and notifications for new accounts
+        add_demo_columns(
+            ctx,
+            timeline_cache,
+            pubkey,
+            &mut decks.decks_mut()[0].columns,
+        );
+
+        self.account_to_decks.insert(pubkey, decks);
         info!(
             "Adding new default deck for {:?}. New decks size is {}",
-            key,
-            self.account_to_decks.get(&key).unwrap().decks.len()
+            pubkey,
+            self.account_to_decks.get(&pubkey).unwrap().decks.len()
         );
     }
 
@@ -303,20 +318,29 @@ pub struct Deck {
 
 impl Default for Deck {
     fn default() -> Self {
-        let mut columns = Columns::default();
-        columns.new_column_picker();
+        let columns = Columns::default();
         Self {
-            icon: '🇩',
-            name: String::from("Default Deck"),
             columns,
+            icon: Deck::default_icon(),
+            name: Deck::default_name().to_string(),
         }
     }
 }
 
 impl Deck {
+    pub fn default_icon() -> char {
+        '🇩'
+    }
+
+    pub fn default_name() -> &'static str {
+        "Default Deck"
+    }
+
     pub fn new(icon: char, name: String) -> Self {
         let mut columns = Columns::default();
+
         columns.new_column_picker();
+
         Self {
             icon,
             name,
@@ -346,6 +370,39 @@ impl Deck {
     }
 }
 
+pub fn add_demo_columns(
+    ctx: &mut AppContext,
+    timeline_cache: &mut TimelineCache,
+    pubkey: Pubkey,
+    columns: &mut Columns,
+) {
+    let timeline_kinds = [
+        TimelineKind::contact_list(pubkey),
+        TimelineKind::notifications(pubkey),
+    ];
+
+    let txn = Transaction::new(ctx.ndb).unwrap();
+
+    for kind in &timeline_kinds {
+        if let Some(results) = columns.add_new_timeline_column(
+            timeline_cache,
+            &txn,
+            ctx.ndb,
+            ctx.note_cache,
+            ctx.pool,
+            kind,
+        ) {
+            results.process(
+                ctx.ndb,
+                ctx.note_cache,
+                &txn,
+                timeline_cache,
+                ctx.unknown_ids,
+            );
+        }
+    }
+}
+
 pub fn demo_decks(
     demo_pubkey: Pubkey,
     timeline_cache: &mut TimelineCache,
@@ -354,37 +411,13 @@ pub fn demo_decks(
     let deck = {
         let mut columns = Columns::default();
 
-        let timeline_kinds = [
-            TimelineKind::contact_list(demo_pubkey),
-            TimelineKind::notifications(demo_pubkey),
-        ];
-
-        let txn = Transaction::new(ctx.ndb).unwrap();
-
-        for kind in &timeline_kinds {
-            if let Some(results) = columns.add_new_timeline_column(
-                timeline_cache,
-                &txn,
-                ctx.ndb,
-                ctx.note_cache,
-                ctx.pool,
-                kind,
-            ) {
-                results.process(
-                    ctx.ndb,
-                    ctx.note_cache,
-                    &txn,
-                    timeline_cache,
-                    ctx.unknown_ids,
-                );
-            }
-        }
+        add_demo_columns(ctx, timeline_cache, demo_pubkey, &mut columns);
 
         //columns.add_new_timeline_column(Timeline::hashtag("introductions".to_string()));
 
         Deck {
-            icon: '🇩',
-            name: String::from("Demo Deck"),
+            icon: Deck::default_icon(),
+            name: Deck::default_name().to_string(),
             columns,
         }
     };

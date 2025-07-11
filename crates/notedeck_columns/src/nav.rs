@@ -456,13 +456,11 @@ fn render_nav_body(
         Route::Accounts(amr) => {
             let mut action = render_accounts_route(
                 ui,
-                ctx.ndb,
+                ctx,
                 col,
-                ctx.img_cache,
-                ctx.accounts,
                 &mut app.decks_cache,
+                &mut app.timeline_cache,
                 &mut app.view_state.login,
-                ctx.clipboard,
                 *amr,
             );
             let txn = Transaction::new(ctx.ndb).expect("txn");
