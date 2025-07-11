@@ -542,7 +542,7 @@ fn render_damus_mobile(
 ) -> Option<AppAction> {
     //let routes = app.timelines[0].routes.clone();
 
-    let mut rect = ui.available_rect_before_wrap();
+    let rect = ui.available_rect_before_wrap();
     let mut app_action: Option<AppAction> = None;
 
     let active_col = app.columns_mut(app_ctx.accounts).selected as usize;
@@ -570,13 +570,29 @@ fn render_damus_mobile(
         }
     }
 
+    hovering_post_button(ui, app, app_ctx, rect);
+
+    app_action
+}
+
+fn hovering_post_button(
+    ui: &mut egui::Ui,
+    app: &mut Damus,
+    app_ctx: &mut AppContext,
+    mut rect: egui::Rect,
+) {
+    let should_show_compose = should_show_compose_button(&app.decks_cache, app_ctx.accounts);
+    let btn_id = ui.id().with("hover_post_btn");
+    let button_y = ui
+        .ctx()
+        .animate_bool_responsive(btn_id, should_show_compose);
     rect.min.x = rect.max.x - if is_narrow(ui.ctx()) { 60.0 } else { 100.0 };
-    rect.min.y = rect.max.y - 100.0;
+    rect.min.y = rect.max.y - 100.0 * button_y;
 
     let darkmode = ui.ctx().style().visuals.dark_mode;
 
     // only show the compose button on profile pages and on home
-    if should_show_compose_button(&app.decks_cache, app_ctx.accounts) {
+    if should_show_compose {
         let compose_resp = ui.put(rect, ui::post::compose_note_button(darkmode));
         if compose_resp.hovered() {
             notedeck_ui::show_pointer(ui);
@@ -590,8 +606,6 @@ fn render_damus_mobile(
             );
         }
     }
-
-    app_action
 }
 
 /// Should we show the compose button? When in threads we should hide it, etc
