@@ -23,6 +23,7 @@ pub struct NoteContext<'d> {
     pub pool: &'d mut RelayPool,
     pub job_pool: &'d mut JobPool,
     pub unknown_ids: &'d mut UnknownIds,
+    pub clipboard: &'d mut egui_winit::clipboard::Clipboard,
     pub current_account_has_wallet: bool,
 }
 

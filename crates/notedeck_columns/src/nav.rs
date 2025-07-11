@@ -432,6 +432,7 @@ fn render_nav_body(
         pool: ctx.pool,
         job_pool: ctx.job_pool,
         unknown_ids: ctx.unknown_ids,
+        clipboard: ctx.clipboard,
         current_account_has_wallet: get_current_wallet(ctx.accounts, ctx.global_wallet).is_some(),
     };
     match top {
@@ -604,7 +605,7 @@ fn render_nav_body(
                 &(&ctx.accounts.get_selected_account().key).into(),
                 &mut app.jobs,
             )
-            .show(ui, ctx.clipboard)
+            .show(ui)
             .map(RenderNavAction::NoteAction)
         }
         Route::NewDeck => {

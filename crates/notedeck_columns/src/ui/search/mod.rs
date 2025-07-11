@@ -52,22 +52,18 @@ impl<'a, 'd> SearchView<'a, 'd> {
         }
     }
 
-    pub fn show(&mut self, ui: &mut egui::Ui, clipboard: &mut Clipboard) -> Option<NoteAction> {
-        padding(8.0, ui, |ui| self.show_impl(ui, clipboard)).inner
+    pub fn show(&mut self, ui: &mut egui::Ui) -> Option<NoteAction> {
+        padding(8.0, ui, |ui| self.show_impl(ui)).inner
     }
 
-    pub fn show_impl(
-        &mut self,
-        ui: &mut egui::Ui,
-        clipboard: &mut Clipboard,
-    ) -> Option<NoteAction> {
+    pub fn show_impl(&mut self, ui: &mut egui::Ui) -> Option<NoteAction> {
         ui.spacing_mut().item_spacing = egui::vec2(0.0, 12.0);
 
         let search_resp = search_box(
             &mut self.query.string,
             self.query.focus_state.clone(),
             ui,
-            clipboard,
+            self.note_context.clipboard,
         );
 
         search_resp.process(self.query);

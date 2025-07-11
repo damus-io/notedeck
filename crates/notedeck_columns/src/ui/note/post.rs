@@ -14,12 +14,13 @@ use egui::{
 };
 use enostr::{FilledKeypair, FullKeypair, KeypairUnowned, NoteId, Pubkey, RelayPool};
 use nostrdb::{Ndb, Transaction};
-use notedeck_ui::app_images;
-use notedeck_ui::blur::PixelDimensions;
-use notedeck_ui::images::{get_render_state, RenderState};
-use notedeck_ui::jobs::JobsCache;
 use notedeck_ui::{
+    app_images,
+    blur::PixelDimensions,
+    context_menu::{input_context, PasteBehavior},
     gif::{handle_repaint, retrieve_latest_texture},
+    images::{get_render_state, RenderState},
+    jobs::JobsCache,
     note::render_note_preview,
     NoteOptions, ProfilePic,
 };
@@ -185,6 +186,13 @@ impl<'a, 'd> PostView<'a, 'd> {
             .layouter(&mut layouter);
 
         let out = textedit.show(ui);
+
+        input_context(
+            &out.response,
+            self.note_context.clipboard,
+            &mut self.draft.buffer.text_buffer,
+            PasteBehavior::Append,
+        );
 
         if updated_layout {
             self.draft.buffer.selected_mention = false;
@@ -792,6 +800,7 @@ mod preview {
                 job_pool: app.job_pool,
                 unknown_ids: app.unknown_ids,
                 current_account_has_wallet: false,
+                clipboard: app.clipboard,
             };
 
             PostView::new(

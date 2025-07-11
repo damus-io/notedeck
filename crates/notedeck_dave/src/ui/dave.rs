@@ -217,6 +217,7 @@ impl<'a> DaveUi<'a> {
             pool: ctx.pool,
             job_pool: ctx.job_pool,
             unknown_ids: ctx.unknown_ids,
+            clipboard: ctx.clipboard,
             current_account_has_wallet: false,
         };
 
