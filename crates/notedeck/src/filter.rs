@@ -92,7 +92,7 @@ impl FilterStates {
 /// [`FilterState`] tracks this.
 #[derive(Debug, Clone)]
 pub enum FilterState {
-    NeedsRemote(Vec<Filter>),
+    NeedsRemote,
     FetchingRemote(FetchingRemoteType),
     GotRemote(GotRemoteType),
     Ready(Vec<Filter>),
@@ -139,8 +139,8 @@ impl FilterState {
     /// for home timelines where we don't have a contact list yet. We
     /// need to fetch the contact list before we have the right timeline
     /// filter.
-    pub fn needs_remote(filter: Vec<Filter>) -> Self {
-        Self::NeedsRemote(filter)
+    pub fn needs_remote() -> Self {
+        Self::NeedsRemote
     }
 
     /// We got the remote data. Local data should be available to build

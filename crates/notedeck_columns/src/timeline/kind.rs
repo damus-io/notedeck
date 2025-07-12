@@ -500,11 +500,7 @@ impl TimelineKind {
             }
 
             TimelineKind::Algo(AlgoTimeline::LastPerPubkey(ListKind::Contact(pk))) => {
-                let contact_filter = Filter::new()
-                    .authors([pk.bytes()])
-                    .kinds([3])
-                    .limit(1)
-                    .build();
+                let contact_filter = contacts_filter(pk.bytes());
 
                 let results = ndb
                     .query(txn, &[contact_filter.clone()], 1)
@@ -516,7 +512,7 @@ impl TimelineKind {
                 if results.is_empty() {
                     return Some(Timeline::new(
                         kind_fn(ListKind::contact_list(pk)),
-                        FilterState::needs_remote(vec![contact_filter.clone()]),
+                        FilterState::needs_remote(),
                         tabs,
                     ));
                 }
@@ -527,7 +523,7 @@ impl TimelineKind {
                     Err(Error::App(notedeck::Error::Filter(FilterError::EmptyContactList))) => {
                         Some(Timeline::new(
                             kind_fn(list_kind),
-                            FilterState::needs_remote(vec![contact_filter]),
+                            FilterState::needs_remote(),
                             tabs,
                         ))
                     }
@@ -652,12 +648,12 @@ fn contact_filter_state(txn: &Transaction, ndb: &Ndb, pk: &Pubkey) -> FilterStat
         .expect("contact query failed?");
 
     if results.is_empty() {
-        FilterState::needs_remote(vec![contact_filter.clone()])
+        FilterState::needs_remote()
     } else {
         let with_hashtags = false;
         match filter::filter_from_tags(&results[0].note, Some(pk.bytes()), with_hashtags) {
             Err(notedeck::Error::Filter(FilterError::EmptyContactList)) => {
-                FilterState::needs_remote(vec![contact_filter])
+                FilterState::needs_remote()
             }
             Err(err) => {
                 error!("Error getting contact filter state: {err}");
@@ -669,11 +665,7 @@ fn contact_filter_state(txn: &Transaction, ndb: &Ndb, pk: &Pubkey) -> FilterStat
 }
 
 fn last_per_pubkey_filter_state(ndb: &Ndb, pk: &Pubkey) -> FilterState {
-    let contact_filter = Filter::new()
-        .authors([pk.bytes()])
-        .kinds([3])
-        .limit(1)
-        .build();
+    let contact_filter = contacts_filter(pk.bytes());
 
     let txn = Transaction::new(ndb).expect("txn");
     let results = ndb
@@ -681,13 +673,13 @@ fn last_per_pubkey_filter_state(ndb: &Ndb, pk: &Pubkey) -> FilterState {
         .expect("contact query failed?");
 
     if results.is_empty() {
-        FilterState::needs_remote(vec![contact_filter])
+        FilterState::needs_remote()
     } else {
         let kind = 1;
         let notes_per_pk = 1;
         match filter::last_n_per_pubkey_from_tags(&results[0].note, kind, notes_per_pk) {
             Err(notedeck::Error::Filter(FilterError::EmptyContactList)) => {
-                FilterState::needs_remote(vec![contact_filter])
+                FilterState::needs_remote()
             }
             Err(err) => {
                 error!("Error getting contact filter state: {err}");

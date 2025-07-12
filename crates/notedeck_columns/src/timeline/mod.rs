@@ -574,7 +574,7 @@ pub fn send_initial_timeline_filter(
         }
 
         // we need some data first
-        FilterState::NeedsRemote(_) => fetch_contact_list(subs, relay, timeline, accounts),
+        FilterState::NeedsRemote => fetch_contact_list(subs, relay, timeline, accounts),
     }
 }
 
