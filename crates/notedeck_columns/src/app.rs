@@ -117,12 +117,12 @@ fn try_process_event(
                     .send_initial_filters(app_ctx.pool, &ev.relay);
 
                 timeline::send_initial_timeline_filters(
-                    app_ctx.ndb,
                     damus.since_optimize,
                     &mut damus.timeline_cache,
                     &mut damus.subscriptions,
                     app_ctx.pool,
                     &ev.relay,
+                    app_ctx.accounts,
                 );
             }
             // TODO: handle reconnects
@@ -136,8 +136,13 @@ fn try_process_event(
     }
 
     for (_kind, timeline) in damus.timeline_cache.timelines.iter_mut() {
-        let is_ready =
-            timeline::is_timeline_ready(app_ctx.ndb, app_ctx.pool, app_ctx.note_cache, timeline);
+        let is_ready = timeline::is_timeline_ready(
+            app_ctx.ndb,
+            app_ctx.pool,
+            app_ctx.note_cache,
+            timeline,
+            app_ctx.accounts,
+        );
 
         if is_ready {
             let txn = Transaction::new(app_ctx.ndb).expect("txn");
@@ -260,12 +265,7 @@ fn handle_eose(
 
             let filter_state = timeline.filter.get_mut(relay_url);
 
-            // If this request was fetching a contact list, our filter
-            // state should be "FetchingRemote". We look at the local
-            // subscription for that filter state and get the subscription id
-            let local_sub = if let FilterState::FetchingRemote(unisub) = filter_state {
-                unisub.local
-            } else {
+            let FilterState::FetchingRemote(fetching_remote_type) = filter_state else {
                 // TODO: we could have multiple contact list results, we need
                 // to check to see if this one is newer and use that instead
                 warn!(
@@ -275,17 +275,21 @@ fn handle_eose(
                 return Ok(());
             };
 
-            info!(
-                "got contact list from {}, updating filter_state to got_remote",
-                relay_url
-            );
+            let new_filter_state = match fetching_remote_type {
+                notedeck::filter::FetchingRemoteType::Normal(unified_subscription) => {
+                    FilterState::got_remote(unified_subscription.local)
+                }
+                notedeck::filter::FetchingRemoteType::Contact => {
+                    FilterState::GotRemote(notedeck::filter::GotRemoteType::Contact)
+                }
+            };
 
             // We take the subscription id and pass it to the new state of
             // "GotRemote". This will let future frames know that it can try
             // to look for the contact list in nostrdb.
             timeline
                 .filter
-                .set_relay_state(relay_url.to_string(), FilterState::got_remote(local_sub));
+                .set_relay_state(relay_url.to_string(), new_filter_state);
         }
     }
 

@@ -37,10 +37,18 @@ impl FilterStates {
         }
     }
 
-    pub fn get_any_gotremote(&self) -> Option<(&str, Subscription)> {
+    pub fn get_any_gotremote(&self) -> Option<GotRemoteResult> {
         for (k, v) in self.states.iter() {
-            if let FilterState::GotRemote(sub) = v {
-                return Some((k, *sub));
+            if let FilterState::GotRemote(item_type) = v {
+                return match item_type {
+                    GotRemoteType::Normal(subscription) => Some(GotRemoteResult::Normal {
+                        relay_id: k.to_owned(),
+                        sub_id: *subscription,
+                    }),
+                    GotRemoteType::Contact => Some(GotRemoteResult::Contact {
+                        relay_id: k.to_owned(),
+                    }),
+                };
             }
         }
 
@@ -84,11 +92,33 @@ impl FilterStates {
 /// [`FilterState`] tracks this.
 #[derive(Debug, Clone)]
 pub enum FilterState {
-    NeedsRemote(Vec<Filter>),
-    FetchingRemote(UnifiedSubscription),
-    GotRemote(Subscription),
+    NeedsRemote,
+    FetchingRemote(FetchingRemoteType),
+    GotRemote(GotRemoteType),
     Ready(Vec<Filter>),
     Broken(FilterError),
+}
+
+pub enum GotRemoteResult {
+    Normal {
+        relay_id: String,
+        sub_id: Subscription,
+    },
+    Contact {
+        relay_id: String,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub enum FetchingRemoteType {
+    Normal(UnifiedSubscription),
+    Contact,
+}
+
+#[derive(Debug, Clone)]
+pub enum GotRemoteType {
+    Normal(Subscription),
+    Contact,
 }
 
 impl FilterState {
@@ -109,14 +139,14 @@ impl FilterState {
     /// for home timelines where we don't have a contact list yet. We
     /// need to fetch the contact list before we have the right timeline
     /// filter.
-    pub fn needs_remote(filter: Vec<Filter>) -> Self {
-        Self::NeedsRemote(filter)
+    pub fn needs_remote() -> Self {
+        Self::NeedsRemote
     }
 
     /// We got the remote data. Local data should be available to build
     /// the filter for the [`FilterState::Ready`] state
     pub fn got_remote(local_sub: Subscription) -> Self {
-        Self::GotRemote(local_sub)
+        Self::GotRemote(GotRemoteType::Normal(local_sub))
     }
 
     /// We have sent off a remote subscription to get data needed for the
@@ -126,7 +156,7 @@ impl FilterState {
             local: local_sub,
             remote: sub_id,
         };
-        Self::FetchingRemote(unified_sub)
+        Self::FetchingRemote(FetchingRemoteType::Normal(unified_sub))
     }
 }
 
