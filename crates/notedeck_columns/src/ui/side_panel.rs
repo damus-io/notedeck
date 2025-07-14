@@ -1,4 +1,7 @@
-use egui::{vec2, InnerResponse, Layout, Margin, RichText, ScrollArea, Separator, Stroke, Widget};
+use egui::{
+    vec2, CursorIcon, InnerResponse, Layout, Margin, RichText, ScrollArea, Separator, Stroke,
+    Widget,
+};
 use tracing::{error, info};
 
 use crate::{
@@ -312,7 +315,10 @@ fn add_column_button() -> impl Widget {
                 .shrink((max_size - cur_img_size) / 2.0),
         );
 
-        helper.take_animation_response()
+        helper
+            .take_animation_response()
+            .on_hover_cursor(CursorIcon::PointingHand)
+            .on_hover_text("Add new column")
     }
 }
 
@@ -354,7 +360,10 @@ pub fn search_button() -> impl Widget {
             circle_stroke,
         );
 
-        helper.take_animation_response()
+        helper
+            .take_animation_response()
+            .on_hover_cursor(CursorIcon::PointingHand)
+            .on_hover_text("Open search")
     }
 }
 
@@ -377,7 +386,10 @@ fn add_deck_button() -> impl Widget {
                 .shrink((max_size - cur_img_size) / 2.0),
         );
 
-        helper.take_animation_response()
+        helper
+            .take_animation_response()
+            .on_hover_cursor(CursorIcon::PointingHand)
+            .on_hover_text("Add new deck")
     }
 }
 
@@ -406,7 +418,8 @@ fn show_decks<'a>(
                 40.0,
                 highlight,
             ))
-            .on_hover_text_at_pointer(&deck.name);
+            .on_hover_text_at_pointer(&deck.name)
+            .on_hover_cursor(CursorIcon::PointingHand);
         if deck_icon_resp.clicked() || deck_icon_resp.secondary_clicked() {
             clicked_index = Some(index);
         }
