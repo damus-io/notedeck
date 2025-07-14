@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+
+MIPMAP="../crates/notedeck_chrome/android/app/src/main/res/mipmap-"
+
+function mkicon() {
+	local name="$1"
+	echo "making icon $name"
+	mkdir -p "${MIPMAP}/{l,m,h,xh,xxh,xxxh}dpi"
+	inkscape "$name".svg -w 36  -h 36 -o  ${MIPMAP}ldpi/"$name".png &
+	inkscape "$name".svg -w 48  -h 48 -o  ${MIPMAP}mdpi/"$name".png &
+	inkscape "$name".svg -w 72  -h 72 -o  ${MIPMAP}hdpi/"$name".png &
+	inkscape "$name".svg -w 96  -h 96 -o  ${MIPMAP}xhdpi/"$name".png &
+	inkscape "$name".svg -w 144 -h 144 -o ${MIPMAP}xxhdpi/"$name".png &
+	inkscape "$name".svg -w 192 -h 192 -o ${MIPMAP}xxxhdpi/"$name".png &
+	wait
+}
+
+mkicon "damusfg"
+mkicon "damusbg"
