@@ -7,7 +7,7 @@ bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub struct NoteOptions: u64 {
         const ActionBar       = 1 << 0;
-        const NotePreviews    = 1 << 1;
+        const HasNotePreviews = 1 << 1;
         const SmallPfp        = 1 << 2;
         const MediumPfp       = 1 << 3;
         const Wide            = 1 << 4;
@@ -18,7 +18,7 @@ bitflags! {
         /// Scramble text so that its not distracting during development
         const ScrambleText    = 1 << 9;
         /// Is this a note preview?
-        const Preview         = 1 << 10;
+        const IsPreview       = 1 << 10;
         /// Is the content truncated? If the length is over a certain size it
         /// will end with a ... and a "Show more" button.
         const Truncate        = 1 << 11;
@@ -28,7 +28,7 @@ bitflags! {
 impl Default for NoteOptions {
     fn default() -> NoteOptions {
         NoteOptions::OptionsButton
-            | NoteOptions::NotePreviews
+            | NoteOptions::HasNotePreviews
             | NoteOptions::ActionBar
             | NoteOptions::Truncate
     }

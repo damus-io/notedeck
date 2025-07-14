@@ -91,7 +91,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
         jobs: &'a mut JobsCache,
     ) -> Self {
         flags.set(NoteOptions::ActionBar, true);
-        flags.set(NoteOptions::NotePreviews, true);
+        flags.set(NoteOptions::HasNotePreviews, true);
 
         let framed = false;
         let parent: Option<NoteKey> = None;
@@ -154,7 +154,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
     }
 
     pub fn note_previews(mut self, enable: bool) -> Self {
-        self.options_mut().set(NoteOptions::NotePreviews, enable);
+        self.options_mut().set(NoteOptions::HasNotePreviews, enable);
         self
     }
 
@@ -187,7 +187,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
     }
 
     pub fn is_preview(mut self, is_preview: bool) -> Self {
-        self.options_mut().set(NoteOptions::Preview, is_preview);
+        self.options_mut().set(NoteOptions::IsPreview, is_preview);
         self
     }
 
