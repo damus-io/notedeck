@@ -45,11 +45,13 @@ pub fn compose_note_button(dark_mode: bool) -> impl Widget {
             [west_edge, east_edge],
             Stroke::new(use_line_width, icon_color),
         );
-        painter.circle_filled(north_edge, use_edge_circle_radius, Color32::WHITE);
-        painter.circle_filled(south_edge, use_edge_circle_radius, Color32::WHITE);
-        painter.circle_filled(west_edge, use_edge_circle_radius, Color32::WHITE);
-        painter.circle_filled(east_edge, use_edge_circle_radius, Color32::WHITE);
+        painter.circle_filled(north_edge, use_edge_circle_radius, icon_color);
+        painter.circle_filled(south_edge, use_edge_circle_radius, icon_color);
+        painter.circle_filled(west_edge, use_edge_circle_radius, icon_color);
+        painter.circle_filled(east_edge, use_edge_circle_radius, icon_color);
 
-        helper.take_animation_response()
+        helper
+            .take_animation_response()
+            .on_hover_text("Compose new note")
     }
 }
