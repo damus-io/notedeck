@@ -12,8 +12,8 @@ use crate::{
     ui::timeline::{tabs_ui, TimelineTabView},
 };
 use notedeck::{
-    name::get_display_name, profile::get_profile_url, Accounts, IsFollowing, MuteFun, NoteAction,
-    NoteContext, NotedeckTextStyle,
+    name::get_display_name, profile::get_profile_url, ui::is_narrow, Accounts, IsFollowing,
+    MuteFun, NoteAction, NoteContext, NotedeckTextStyle,
 };
 use notedeck_ui::{
     app_images,
@@ -229,20 +229,29 @@ impl<'a, 'd> ProfileView<'a, 'd> {
                 ui.add(about_section_widget(profile));
 
                 ui.horizontal_wrapped(|ui| {
-                    if let Some(website_url) = profile
+                    let website_url = profile
                         .as_ref()
                         .map(|p| p.record().profile())
-                        .and_then(|p| p.and_then(|p| p.website()).filter(|s| !s.is_empty()))
-                    {
-                        handle_link(ui, website_url);
+                        .and_then(|p| p.and_then(|p| p.website()).filter(|s| !s.is_empty()));
+
+                    let lud16 = profile
+                        .as_ref()
+                        .map(|p| p.record().profile())
+                        .and_then(|p| p.and_then(|p| p.lud16()).filter(|s| !s.is_empty()));
+
+                    if let Some(website_url) = website_url {
+                        ui.horizontal(|ui| {
+                            handle_link(ui, website_url);
+                        });
                     }
 
-                    if let Some(lud16) = profile
-                        .as_ref()
-                        .map(|p| p.record().profile())
-                        .and_then(|p| p.and_then(|p| p.lud16()).filter(|s| !s.is_empty()))
-                    {
-                        handle_lud16(ui, lud16);
+                    if let Some(lud16) = lud16 {
+                        if is_narrow(ui.ctx()) && website_url.is_some() {
+                            ui.end_row();
+                        }
+                        ui.horizontal(|ui| {
+                            handle_lud16(ui, lud16);
+                        });
                     }
                 });
             });
@@ -269,6 +278,7 @@ fn handle_link(ui: &mut egui::Ui, website_url: &str) {
     if ui
         .label(RichText::new(website_url).color(notedeck_ui::colors::PINK))
         .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text(website_url)
         .interact(Sense::click())
         .clicked()
     {
@@ -279,14 +289,11 @@ fn handle_link(ui: &mut egui::Ui, website_url: &str) {
 }
 
 fn handle_lud16(ui: &mut egui::Ui, lud16: &str) {
-    let img = if ui.visuals().dark_mode {
-        app_images::zap_image()
-    } else {
-        app_images::zap_image().tint(egui::Color32::BLACK)
-    };
-    ui.add(img);
+    ui.add(app_images::filled_zap_image());
 
-    let _ = ui.label(RichText::new(lud16).color(notedeck_ui::colors::PINK));
+    let _ = ui
+        .label(RichText::new(lud16).color(notedeck_ui::colors::PINK))
+        .on_hover_text(lud16);
 }
 
 fn copy_key_widget(pfp_rect: &egui::Rect) -> impl egui::Widget + '_ {
