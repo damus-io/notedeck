@@ -180,6 +180,10 @@ fn unknown_id_send(unknown_ids: &mut UnknownIds, pool: &mut RelayPool) {
 fn update_damus(damus: &mut Damus, app_ctx: &mut AppContext<'_>, ctx: &egui::Context) {
     app_ctx.img_cache.urls.cache.handle_io();
 
+    if damus.columns(app_ctx.accounts).columns().is_empty() {
+        damus.columns_mut(app_ctx.accounts).new_column_picker();
+    }
+
     match damus.state {
         DamusState::Initializing => {
             damus.state = DamusState::Initialized;
