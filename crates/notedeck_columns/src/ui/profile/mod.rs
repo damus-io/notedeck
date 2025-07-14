@@ -77,14 +77,14 @@ impl<'a, 'd> ProfileView<'a, 'd> {
         let output = scroll_area.show(ui, |ui| {
             let mut action = None;
             let txn = Transaction::new(self.note_context.ndb).expect("txn");
-            if let Ok(profile) = self
+            let profile = self
                 .note_context
                 .ndb
                 .get_profile_by_pubkey(&txn, self.pubkey.bytes())
-            {
-                if let Some(profile_view_action) = self.profile_body(ui, profile) {
-                    action = Some(profile_view_action);
-                }
+                .ok();
+
+            if let Some(profile_view_action) = self.profile_body(ui, profile.as_ref()) {
+                action = Some(profile_view_action);
             }
             let profile_timeline = self
                 .timeline_cache
@@ -137,13 +137,15 @@ impl<'a, 'd> ProfileView<'a, 'd> {
     fn profile_body(
         &mut self,
         ui: &mut egui::Ui,
-        profile: ProfileRecord<'_>,
+        profile: Option<&ProfileRecord<'_>>,
     ) -> Option<ProfileViewAction> {
         let mut action = None;
         ui.vertical(|ui| {
             banner(
                 ui,
-                profile.record().profile().and_then(|p| p.banner()),
+                profile
+                    .map(|p| p.record().profile())
+                    .and_then(|p| p.and_then(|p| p.banner())),
                 120.0,
             );
 
@@ -158,12 +160,9 @@ impl<'a, 'd> ProfileView<'a, 'd> {
                 ui.horizontal(|ui| {
                     ui.put(
                         pfp_rect,
-                        &mut ProfilePic::new(
-                            self.note_context.img_cache,
-                            get_profile_url(Some(&profile)),
-                        )
-                        .size(size)
-                        .border(ProfilePic::border_stroke(ui)),
+                        &mut ProfilePic::new(self.note_context.img_cache, get_profile_url(profile))
+                            .size(size)
+                            .border(ProfilePic::border_stroke(ui)),
                     );
 
                     if ui.add(copy_key_widget(&pfp_rect)).clicked() {
@@ -223,30 +222,25 @@ impl<'a, 'd> ProfileView<'a, 'd> {
 
                 ui.add_space(18.0);
 
-                ui.add(display_name_widget(
-                    &get_display_name(Some(&profile)),
-                    false,
-                ));
+                ui.add(display_name_widget(&get_display_name(profile), false));
 
                 ui.add_space(8.0);
 
-                ui.add(about_section_widget(&profile));
+                ui.add(about_section_widget(profile));
 
                 ui.horizontal_wrapped(|ui| {
                     if let Some(website_url) = profile
-                        .record()
-                        .profile()
-                        .and_then(|p| p.website())
-                        .filter(|s| !s.is_empty())
+                        .as_ref()
+                        .map(|p| p.record().profile())
+                        .and_then(|p| p.and_then(|p| p.website()).filter(|s| !s.is_empty()))
                     {
                         handle_link(ui, website_url);
                     }
 
                     if let Some(lud16) = profile
-                        .record()
-                        .profile()
-                        .and_then(|p| p.lud16())
-                        .filter(|s| !s.is_empty())
+                        .as_ref()
+                        .map(|p| p.record().profile())
+                        .and_then(|p| p.and_then(|p| p.lud16()).filter(|s| !s.is_empty()))
                     {
                         handle_lud16(ui, lud16);
                     }
