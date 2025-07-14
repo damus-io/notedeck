@@ -192,7 +192,7 @@ pub fn render_note_contents(
                     }
 
                     _ => {
-                        ui.colored_label(link_color, format!("@{}", &block.as_str()[4..16]));
+                        ui.colored_label(link_color, format!("@{}", &block.as_str()[..16]));
                     }
                 },
 
