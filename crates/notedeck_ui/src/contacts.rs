@@ -49,7 +49,7 @@ fn note_follows(contacts_note: Note<'_>, pk: &[u8; 32]) -> bool {
             continue;
         };
 
-        if *pk == *author {
+        if pk == author {
             return true;
         }
     }
