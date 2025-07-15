@@ -40,6 +40,10 @@ impl DecksCache {
         self.active_columns(accounts).and_then(|ad| ad.selected())
     }
 
+    pub fn selected_column_index(&self, accounts: &notedeck::Accounts) -> Option<usize> {
+        self.active_columns(accounts).map(|ad| ad.selected as usize)
+    }
+
     /// Gets a mutable reference to the active columns
     pub fn active_columns_mut(&mut self, accounts: &notedeck::Accounts) -> Option<&mut Columns> {
         let account = accounts.get_selected_account();

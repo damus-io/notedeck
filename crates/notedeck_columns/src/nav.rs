@@ -4,6 +4,7 @@ use crate::{
     column::ColumnsAction,
     deck_state::DeckState,
     decks::{Deck, DecksAction, DecksCache},
+    options::AppOptions,
     profile::{ProfileAction, SaveProfileChanges},
     route::{Route, Router, SingletonRouter},
     timeline::{
@@ -496,17 +497,34 @@ fn render_nav_body(
         current_account_has_wallet: get_current_wallet(ctx.accounts, ctx.global_wallet).is_some(),
     };
     match top {
-        Route::Timeline(kind) => render_timeline_route(
-            &mut app.timeline_cache,
-            ctx.accounts,
-            kind,
-            col,
-            app.note_options,
-            depth,
-            ui,
-            &mut note_context,
-            &mut app.jobs,
-        ),
+        Route::Timeline(kind) => {
+            // did something request scroll to top for the selection column?
+            let scroll_to_top = app
+                .decks_cache
+                .selected_column_index(ctx.accounts)
+                .is_some_and(|ind| ind == col)
+                && app.options.contains(AppOptions::ScrollToTop);
+
+            let nav_action = render_timeline_route(
+                &mut app.timeline_cache,
+                ctx.accounts,
+                kind,
+                col,
+                app.note_options,
+                depth,
+                ui,
+                &mut note_context,
+                &mut app.jobs,
+                scroll_to_top,
+            );
+
+            // always clear the scroll_to_top request
+            if scroll_to_top {
+                app.options.remove(AppOptions::ScrollToTop);
+            }
+
+            nav_action
+        }
         Route::Thread(selection) => render_thread_route(
             &mut app.threads,
             ctx.accounts,

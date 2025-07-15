@@ -25,6 +25,7 @@ pub struct TimelineView<'a, 'd> {
     cur_acc: &'a KeypairUnowned<'a>,
     jobs: &'a mut JobsCache,
     col: usize,
+    scroll_to_top: bool,
 }
 
 impl<'a, 'd> TimelineView<'a, 'd> {
@@ -40,6 +41,7 @@ impl<'a, 'd> TimelineView<'a, 'd> {
         col: usize,
     ) -> Self {
         let reverse = false;
+        let scroll_to_top = false;
         TimelineView {
             timeline_id,
             timeline_cache,
@@ -50,6 +52,7 @@ impl<'a, 'd> TimelineView<'a, 'd> {
             cur_acc,
             jobs,
             col,
+            scroll_to_top,
         }
     }
 
@@ -65,7 +68,13 @@ impl<'a, 'd> TimelineView<'a, 'd> {
             self.cur_acc,
             self.jobs,
             self.col,
+            self.scroll_to_top,
         )
+    }
+
+    pub fn scroll_to_top(mut self, enable: bool) -> Self {
+        self.scroll_to_top = enable;
+        self
     }
 
     pub fn reversed(mut self) -> Self {
@@ -86,6 +95,7 @@ fn timeline_ui(
     cur_acc: &KeypairUnowned,
     jobs: &mut JobsCache,
     col: usize,
+    scroll_to_top: bool,
 ) -> Option<NoteAction> {
     //padding(4.0, ui, |ui| ui.heading("Notifications"));
     /*
@@ -150,6 +160,11 @@ fn timeline_ui(
         } else if goto_top_resp.hovered() {
             show_pointer(ui);
         }
+    }
+
+    // chrome can ask to scroll to top as well via an app option
+    if scroll_to_top {
+        scroll_area = scroll_area.vertical_scroll_offset(0.0);
     }
 
     let scroll_output = scroll_area.show(ui, |ui| {

@@ -8,7 +8,7 @@ pub mod actionbar;
 pub mod app_creation;
 mod app_style;
 mod args;
-mod column;
+pub mod column;
 mod deck_state;
 mod decks;
 mod draft;

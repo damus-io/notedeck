@@ -6,7 +6,9 @@ use egui::{vec2, Button, Color32, Label, Layout, Rect, RichText, ThemePreference
 use egui_extras::{Size, StripBuilder};
 use nostrdb::{ProfileRecord, Transaction};
 use notedeck::{App, AppAction, AppContext, NotedeckTextStyle, UserAccount, WalletType};
-use notedeck_columns::{timeline::kind::ListKind, timeline::TimelineKind, Damus};
+use notedeck_columns::{
+    column::SelectionResult, timeline::kind::ListKind, timeline::TimelineKind, Damus,
+};
 
 use notedeck_dave::{Dave, DaveAvatar};
 use notedeck_ui::{app_images, AnimationHelper, ProfilePic};
@@ -61,11 +63,26 @@ impl ChromePanelAction {
     fn columns_switch(ctx: &AppContext, chrome: &mut Chrome, kind: &TimelineKind) {
         chrome.switch_to_columns();
 
-        if let Some(active_columns) = chrome
-            .get_columns()
-            .and_then(|cols| cols.decks_cache.active_columns_mut(ctx.accounts))
-        {
-            active_columns.select_by_kind(kind)
+        let Some(columns_app) = chrome.get_columns_app() else {
+            return;
+        };
+
+        if let Some(active_columns) = columns_app.decks_cache.active_columns_mut(ctx.accounts) {
+            match active_columns.select_by_kind(kind) {
+                SelectionResult::NewSelection(_index) => {
+                    // great! no need to go to top yet
+                }
+
+                SelectionResult::AlreadySelected(_n) => {
+                    // we already selected this, so scroll to top
+                    columns_app.scroll_to_top();
+                }
+
+                SelectionResult::Failed => {
+                    // oh no, something went wrong
+                    // TODO(jb55): handle tab selection failure
+                }
+            }
         }
     }
 
@@ -73,7 +90,7 @@ impl ChromePanelAction {
         chrome.switch_to_columns();
 
         if let Some(c) = chrome
-            .get_columns()
+            .get_columns_app()
             .and_then(|columns| columns.decks_cache.selected_column_mut(ctx.accounts))
         {
             if c.router().routes().iter().any(|r| r == &route) {
@@ -155,7 +172,7 @@ impl Chrome {
         self.apps.push(app);
     }
 
-    fn get_columns(&mut self) -> Option<&mut Damus> {
+    fn get_columns_app(&mut self) -> Option<&mut Damus> {
         for app in &mut self.apps {
             if let NotedeckApp::Columns(cols) = app {
                 return Some(cols);
@@ -632,7 +649,7 @@ fn chrome_handle_app_action(
 
         AppAction::Note(note_action) => {
             chrome.switch_to_columns();
-            let Some(columns) = chrome.get_columns() else {
+            let Some(columns) = chrome.get_columns_app() else {
                 return;
             };
 

@@ -20,6 +20,7 @@ pub fn render_timeline_route(
     ui: &mut egui::Ui,
     note_context: &mut NoteContext,
     jobs: &mut JobsCache,
+    scroll_to_top: bool,
 ) -> Option<RenderNavAction> {
     match kind {
         TimelineKind::List(_)
@@ -39,6 +40,7 @@ pub fn render_timeline_route(
                 jobs,
                 col,
             )
+            .scroll_to_top(scroll_to_top)
             .ui(ui);
 
             note_action.map(RenderNavAction::NoteAction)
@@ -69,6 +71,7 @@ pub fn render_timeline_route(
                     jobs,
                     col,
                 )
+                .scroll_to_top(scroll_to_top)
                 .ui(ui);
 
                 note_action.map(RenderNavAction::NoteAction)
