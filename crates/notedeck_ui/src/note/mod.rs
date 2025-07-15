@@ -33,7 +33,6 @@ use notedeck::{
 
 pub struct NoteView<'a, 'd> {
     note_context: &'a mut NoteContext<'d>,
-    zapping_acc: Option<&'a KeypairUnowned<'a>>,
     parent: Option<NoteKey>,
     note: &'a nostrdb::Note<'a>,
     framed: bool,
@@ -85,7 +84,6 @@ impl egui::Widget for &mut NoteView<'_, '_> {
 impl<'a, 'd> NoteView<'a, 'd> {
     pub fn new(
         note_context: &'a mut NoteContext<'d>,
-        zapping_acc: Option<&'a KeypairUnowned<'a>>,
         note: &'a nostrdb::Note<'a>,
         mut flags: NoteOptions,
         jobs: &'a mut JobsCache,
@@ -98,7 +96,6 @@ impl<'a, 'd> NoteView<'a, 'd> {
 
         Self {
             note_context,
-            zapping_acc,
             parent,
             note,
             flags,
@@ -231,7 +228,6 @@ impl<'a, 'd> NoteView<'a, 'd> {
 
             ui.add(&mut NoteContents::new(
                 self.note_context,
-                self.zapping_acc,
                 txn,
                 self.note,
                 self.flags,
@@ -317,14 +313,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
                     .text_style(style.text_style()),
             );
         });
-        NoteView::new(
-            self.note_context,
-            self.zapping_acc,
-            &note_to_repost,
-            self.flags,
-            self.jobs,
-        )
-        .show(ui)
+        NoteView::new(self.note_context, &note_to_repost, self.flags, self.jobs).show(ui)
     }
 
     pub fn show_impl(&mut self, ui: &mut egui::Ui) -> NoteResponse {
@@ -440,7 +429,6 @@ impl<'a, 'd> NoteView<'a, 'd> {
                         ui.horizontal(|ui| {
                             note_action = reply_desc(
                                 ui,
-                                self.zapping_acc,
                                 txn,
                                 &note_reply,
                                 self.note_context,
@@ -455,32 +443,27 @@ impl<'a, 'd> NoteView<'a, 'd> {
                 })
                 .inner;
 
-            let mut contents = NoteContents::new(
-                self.note_context,
-                self.zapping_acc,
-                txn,
-                self.note,
-                self.flags,
-                self.jobs,
-            );
+            let mut contents =
+                NoteContents::new(self.note_context, txn, self.note, self.flags, self.jobs);
 
             ui.add(&mut contents);
 
             note_action = contents.action.or(note_action);
 
             if self.options().has(NoteOptions::ActionBar) {
-                note_action = render_note_actionbar(
-                    ui,
-                    self.zapping_acc.as_ref().map(|c| Zapper {
+                let zapper = {
+                    let cur_acc = self.note_context.accounts.get_selected_account();
+                    let has_wallet = cur_acc.wallet.is_some();
+
+                    has_wallet.then_some(Zapper {
                         zaps: self.note_context.zaps,
-                        cur_acc: c,
-                    }),
-                    self.note.id(),
-                    self.note.pubkey(),
-                    note_key,
-                )
-                .inner
-                .or(note_action);
+                        cur_acc: cur_acc.keypair(),
+                    })
+                };
+                note_action =
+                    render_note_actionbar(ui, zapper, self.note.id(), self.note.pubkey(), note_key)
+                        .inner
+                        .or(note_action);
             }
 
             NoteUiResponse {
@@ -527,7 +510,6 @@ impl<'a, 'd> NoteView<'a, 'd> {
 
                     note_action = reply_desc(
                         ui,
-                        self.zapping_acc,
                         txn,
                         &note_reply,
                         self.note_context,
@@ -537,25 +519,25 @@ impl<'a, 'd> NoteView<'a, 'd> {
                     .or(note_action.take());
                 });
 
-                let mut contents = NoteContents::new(
-                    self.note_context,
-                    self.zapping_acc,
-                    txn,
-                    self.note,
-                    self.flags,
-                    self.jobs,
-                );
+                let mut contents =
+                    NoteContents::new(self.note_context, txn, self.note, self.flags, self.jobs);
                 ui.add(&mut contents);
 
                 note_action = contents.action.or(note_action);
 
+                let zapper = {
+                    let cur_acc = self.note_context.accounts.get_selected_account();
+                    let has_wallet = cur_acc.wallet.is_some();
+
+                    has_wallet.then_some(Zapper {
+                        zaps: self.note_context.zaps,
+                        cur_acc: cur_acc.keypair(),
+                    })
+                };
                 if self.options().has(NoteOptions::ActionBar) {
                     note_action = render_note_actionbar(
                         ui,
-                        self.zapping_acc.as_ref().map(|c| Zapper {
-                            zaps: self.note_context.zaps,
-                            cur_acc: c,
-                        }),
+                        zapper,
                         self.note.id(),
                         self.note.pubkey(),
                         note_key,
@@ -774,7 +756,7 @@ fn note_hitbox_clicked(
 
 struct Zapper<'a> {
     zaps: &'a Zaps,
-    cur_acc: &'a KeypairUnowned<'a>,
+    cur_acc: KeypairUnowned<'a>,
 }
 
 #[profiling::function]

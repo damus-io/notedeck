@@ -1,6 +1,5 @@
 use egui::InnerResponse;
 use egui_virtual_list::VirtualList;
-use enostr::KeypairUnowned;
 use nostrdb::{Note, Transaction};
 use notedeck::note::root_note_id_from_selected_id;
 use notedeck::{MuteFun, NoteAction, NoteContext};
@@ -18,7 +17,6 @@ pub struct ThreadView<'a, 'd> {
     id_source: egui::Id,
     is_muted: &'a MuteFun,
     note_context: &'a mut NoteContext<'d>,
-    cur_acc: &'a KeypairUnowned<'a>,
     jobs: &'a mut JobsCache,
 }
 
@@ -30,7 +28,6 @@ impl<'a, 'd> ThreadView<'a, 'd> {
         note_options: NoteOptions,
         is_muted: &'a MuteFun,
         note_context: &'a mut NoteContext<'d>,
-        cur_acc: &'a KeypairUnowned<'a>,
         jobs: &'a mut JobsCache,
     ) -> Self {
         let id_source = egui::Id::new("threadscroll_threadview");
@@ -41,7 +38,6 @@ impl<'a, 'd> ThreadView<'a, 'd> {
             id_source,
             is_muted,
             note_context,
-            cur_acc,
             jobs,
             col: 0,
         }
@@ -134,17 +130,11 @@ impl<'a, 'd> ThreadView<'a, 'd> {
             ui.colored_label(ui.visuals().error_fg_color, "LOADING NOTES");
         }
 
-        let zapping_acc = self
-            .note_context
-            .current_account_has_wallet
-            .then_some(self.cur_acc);
-
         show_notes(
             ui,
             list,
             &notes,
             self.note_context,
-            zapping_acc,
             self.note_options,
             self.jobs,
             txn,
@@ -159,7 +149,6 @@ fn show_notes(
     list: &mut VirtualList,
     thread_notes: &ThreadNotes,
     note_context: &mut NoteContext<'_>,
-    zapping_acc: Option<&KeypairUnowned<'_>>,
     flags: NoteOptions,
     jobs: &mut JobsCache,
     txn: &Transaction,
@@ -190,7 +179,7 @@ fn show_notes(
             return 1;
         }
 
-        let resp = note.show(note_context, zapping_acc, flags, jobs, ui);
+        let resp = note.show(note_context, flags, jobs, ui);
 
         action = if cur_index == selected_note_index {
             resp.action.and_then(strip_note_action)
@@ -313,21 +302,14 @@ impl<'a> ThreadNote<'a> {
     fn show(
         &self,
         note_context: &'a mut NoteContext<'_>,
-        zapping_acc: Option<&'a KeypairUnowned<'a>>,
         flags: NoteOptions,
         jobs: &'a mut JobsCache,
         ui: &mut egui::Ui,
     ) -> NoteResponse {
         let inner = notedeck_ui::padding(8.0, ui, |ui| {
-            NoteView::new(
-                note_context,
-                zapping_acc,
-                &self.note,
-                self.options(flags),
-                jobs,
-            )
-            .unread_indicator(self.unread_and_have_replies)
-            .show(ui)
+            NoteView::new(note_context, &self.note, self.options(flags), jobs)
+                .unread_indicator(self.unread_and_have_replies)
+                .show(ui)
         });
 
         match self.note_type {

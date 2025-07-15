@@ -211,6 +211,7 @@ impl<'a> DaveUi<'a> {
     ) -> Option<NoteAction> {
         let mut note_context = NoteContext {
             ndb: ctx.ndb,
+            accounts: ctx.accounts,
             img_cache: ctx.img_cache,
             note_cache: ctx.note_cache,
             zaps: ctx.zaps,
@@ -243,7 +244,6 @@ impl<'a> DaveUi<'a> {
                                 |ui| {
                                     notedeck_ui::NoteView::new(
                                         &mut note_context,
-                                        None,
                                         &note,
                                         NoteOptions::default(),
                                         jobs,

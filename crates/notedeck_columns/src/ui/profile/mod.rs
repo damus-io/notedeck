@@ -12,7 +12,7 @@ use crate::{
     ui::timeline::{tabs_ui, TimelineTabView},
 };
 use notedeck::{
-    name::get_display_name, profile::get_profile_url, Accounts, IsFollowing, MuteFun, NoteAction,
+    name::get_display_name, profile::get_profile_url, IsFollowing, MuteFun, NoteAction,
     NoteContext, NotedeckTextStyle,
 };
 use notedeck_ui::{
@@ -24,7 +24,6 @@ use notedeck_ui::{
 
 pub struct ProfileView<'a, 'd> {
     pubkey: &'a Pubkey,
-    accounts: &'a Accounts,
     col_id: usize,
     timeline_cache: &'a mut TimelineCache,
     note_options: NoteOptions,
@@ -44,7 +43,6 @@ impl<'a, 'd> ProfileView<'a, 'd> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         pubkey: &'a Pubkey,
-        accounts: &'a Accounts,
         col_id: usize,
         timeline_cache: &'a mut TimelineCache,
         note_options: NoteOptions,
@@ -54,7 +52,6 @@ impl<'a, 'd> ProfileView<'a, 'd> {
     ) -> Self {
         ProfileView {
             pubkey,
-            accounts,
             col_id,
             timeline_cache,
             note_options,
@@ -118,7 +115,6 @@ impl<'a, 'd> ProfileView<'a, 'd> {
                 &txn,
                 self.is_muted,
                 self.note_context,
-                &(&self.accounts.get_selected_account().key).into(),
                 self.jobs,
             )
             .show(ui)
@@ -179,7 +175,7 @@ impl<'a, 'd> ProfileView<'a, 'd> {
                         ui.add_space(24.0);
 
                         let target_key = self.pubkey;
-                        let selected = self.accounts.get_selected_account();
+                        let selected = self.note_context.accounts.get_selected_account();
 
                         let profile_type = if selected.key.secret_key.is_none() {
                             ProfileType::ReadOnly

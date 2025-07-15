@@ -12,7 +12,7 @@ use egui::{
     widgets::text_edit::TextEdit,
     Frame, Layout, Margin, Pos2, ScrollArea, Sense, TextBuffer,
 };
-use enostr::{FilledKeypair, FullKeypair, KeypairUnowned, NoteId, Pubkey, RelayPool};
+use enostr::{FilledKeypair, FullKeypair, NoteId, Pubkey, RelayPool};
 use nostrdb::{Ndb, Transaction};
 use notedeck_ui::{
     app_images,
@@ -352,15 +352,9 @@ impl<'a, 'd> PostView<'a, 'd> {
                             ui.vertical(|ui| {
                                 ui.set_max_width(avail_size.x * 0.8);
 
-                                let zapping_acc = self
-                                    .note_context
-                                    .current_account_has_wallet
-                                    .then(|| KeypairUnowned::from(&self.poster));
-
                                 render_note_preview(
                                     ui,
                                     self.note_context,
-                                    zapping_acc.as_ref(),
                                     txn,
                                     id.bytes(),
                                     nostrdb::NoteKey::new(0),
@@ -793,6 +787,7 @@ mod preview {
             let txn = Transaction::new(app.ndb).expect("txn");
             let mut note_context = NoteContext {
                 ndb: app.ndb,
+                accounts: app.accounts,
                 img_cache: app.img_cache,
                 note_cache: app.note_cache,
                 zaps: app.zaps,

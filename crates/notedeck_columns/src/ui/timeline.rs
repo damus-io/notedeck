@@ -1,7 +1,6 @@
 use egui::containers::scroll_area::ScrollBarVisibility;
 use egui::{vec2, Direction, Layout, Pos2, Stroke};
 use egui_tabs::TabColor;
-use enostr::KeypairUnowned;
 use nostrdb::Transaction;
 use notedeck::ui::is_narrow;
 use notedeck_ui::jobs::JobsCache;
@@ -22,7 +21,6 @@ pub struct TimelineView<'a, 'd> {
     reverse: bool,
     is_muted: &'a MuteFun,
     note_context: &'a mut NoteContext<'d>,
-    cur_acc: &'a KeypairUnowned<'a>,
     jobs: &'a mut JobsCache,
 }
 
@@ -34,7 +32,6 @@ impl<'a, 'd> TimelineView<'a, 'd> {
         is_muted: &'a MuteFun,
         note_context: &'a mut NoteContext<'d>,
         note_options: NoteOptions,
-        cur_acc: &'a KeypairUnowned<'a>,
         jobs: &'a mut JobsCache,
     ) -> Self {
         let reverse = false;
@@ -45,7 +42,6 @@ impl<'a, 'd> TimelineView<'a, 'd> {
             reverse,
             is_muted,
             note_context,
-            cur_acc,
             jobs,
         }
     }
@@ -59,7 +55,6 @@ impl<'a, 'd> TimelineView<'a, 'd> {
             self.note_options,
             self.is_muted,
             self.note_context,
-            self.cur_acc,
             self.jobs,
         )
     }
@@ -79,7 +74,6 @@ fn timeline_ui(
     note_options: NoteOptions,
     is_muted: &MuteFun,
     note_context: &mut NoteContext,
-    cur_acc: &KeypairUnowned,
     jobs: &mut JobsCache,
 ) -> Option<NoteAction> {
     //padding(4.0, ui, |ui| ui.heading("Notifications"));
@@ -169,7 +163,6 @@ fn timeline_ui(
             &txn,
             is_muted,
             note_context,
-            cur_acc,
             jobs,
         )
         .show(ui)
@@ -354,7 +347,6 @@ pub struct TimelineTabView<'a, 'd> {
     txn: &'a Transaction,
     is_muted: &'a MuteFun,
     note_context: &'a mut NoteContext<'d>,
-    cur_acc: &'a KeypairUnowned<'a>,
     jobs: &'a mut JobsCache,
 }
 
@@ -367,7 +359,6 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
         txn: &'a Transaction,
         is_muted: &'a MuteFun,
         note_context: &'a mut NoteContext<'d>,
-        cur_acc: &'a KeypairUnowned<'a>,
         jobs: &'a mut JobsCache,
     ) -> Self {
         Self {
@@ -377,7 +368,6 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
             txn,
             is_muted,
             note_context,
-            cur_acc,
             jobs,
         }
     }
@@ -424,21 +414,10 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
                 };
 
                 if !muted {
-                    let zapping_acc = if self.note_context.current_account_has_wallet {
-                        Some(self.cur_acc)
-                    } else {
-                        None
-                    };
-
                     notedeck_ui::padding(8.0, ui, |ui| {
-                        let resp = NoteView::new(
-                            self.note_context,
-                            zapping_acc,
-                            &note,
-                            self.note_options,
-                            self.jobs,
-                        )
-                        .show(ui);
+                        let resp =
+                            NoteView::new(self.note_context, &note, self.note_options, self.jobs)
+                                .show(ui);
 
                         if let Some(note_action) = resp.action {
                             action = Some(note_action)

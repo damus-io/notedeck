@@ -1,5 +1,5 @@
 use egui::{vec2, Align, Color32, CornerRadius, RichText, Stroke, TextEdit};
-use enostr::{KeypairUnowned, NoteId, Pubkey};
+use enostr::{NoteId, Pubkey};
 use state::TypingType;
 
 use crate::{timeline::TimelineTab, ui::timeline::TimelineTabView};
@@ -27,7 +27,6 @@ pub struct SearchView<'a, 'd> {
     txn: &'a Transaction,
     is_muted: &'a MuteFun,
     note_context: &'a mut NoteContext<'d>,
-    cur_acc: &'a KeypairUnowned<'a>,
     jobs: &'a mut JobsCache,
 }
 
@@ -38,7 +37,6 @@ impl<'a, 'd> SearchView<'a, 'd> {
         note_options: NoteOptions,
         query: &'a mut SearchQueryState,
         note_context: &'a mut NoteContext<'d>,
-        cur_acc: &'a KeypairUnowned<'a>,
         jobs: &'a mut JobsCache,
     ) -> Self {
         Self {
@@ -47,7 +45,6 @@ impl<'a, 'd> SearchView<'a, 'd> {
             query,
             note_options,
             note_context,
-            cur_acc,
             jobs,
         }
     }
@@ -157,7 +154,6 @@ impl<'a, 'd> SearchView<'a, 'd> {
                     self.txn,
                     self.is_muted,
                     self.note_context,
-                    self.cur_acc,
                     self.jobs,
                 )
                 .show(ui)
