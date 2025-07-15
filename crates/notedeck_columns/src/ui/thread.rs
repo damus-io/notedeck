@@ -2,7 +2,7 @@ use egui::InnerResponse;
 use egui_virtual_list::VirtualList;
 use nostrdb::{Note, Transaction};
 use notedeck::note::root_note_id_from_selected_id;
-use notedeck::{MuteFun, NoteAction, NoteContext};
+use notedeck::{NoteAction, NoteContext};
 use notedeck_ui::jobs::JobsCache;
 use notedeck_ui::note::NoteResponse;
 use notedeck_ui::{NoteOptions, NoteView};
@@ -15,7 +15,6 @@ pub struct ThreadView<'a, 'd> {
     note_options: NoteOptions,
     col: usize,
     id_source: egui::Id,
-    is_muted: &'a MuteFun,
     note_context: &'a mut NoteContext<'d>,
     jobs: &'a mut JobsCache,
 }
@@ -26,7 +25,6 @@ impl<'a, 'd> ThreadView<'a, 'd> {
         threads: &'a mut Threads,
         selected_note_id: &'a [u8; 32],
         note_options: NoteOptions,
-        is_muted: &'a MuteFun,
         note_context: &'a mut NoteContext<'d>,
         jobs: &'a mut JobsCache,
     ) -> Self {
@@ -36,7 +34,6 @@ impl<'a, 'd> ThreadView<'a, 'd> {
             selected_note_id,
             note_options,
             id_source,
-            is_muted,
             note_context,
             jobs,
             col: 0,
@@ -138,7 +135,6 @@ impl<'a, 'd> ThreadView<'a, 'd> {
             self.note_options,
             self.jobs,
             txn,
-            self.is_muted,
         )
     }
 }
@@ -152,7 +148,6 @@ fn show_notes(
     flags: NoteOptions,
     jobs: &mut JobsCache,
     txn: &Transaction,
-    is_muted: &MuteFun,
 ) -> Option<NoteAction> {
     let mut action = None;
 
@@ -161,6 +156,8 @@ fn show_notes(
 
     let selected_note_index = thread_notes.selected_index;
     let notes = &thread_notes.notes;
+
+    let is_muted = note_context.accounts.mutefun();
 
     list.ui_custom_layout(ui, notes.len(), |ui, cur_index| {
         let note = &notes[cur_index];

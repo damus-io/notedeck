@@ -598,7 +598,6 @@ fn render_nav_body(
 
             SearchView::new(
                 &txn,
-                &ctx.accounts.mutefun(),
                 app.note_options,
                 search_buffer,
                 &mut note_context,

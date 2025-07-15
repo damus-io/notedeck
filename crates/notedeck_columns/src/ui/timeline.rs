@@ -8,7 +8,7 @@ use std::f32::consts::PI;
 use tracing::{error, warn};
 
 use crate::timeline::{TimelineCache, TimelineKind, TimelineTab, ViewFilter};
-use notedeck::{note::root_note_id_from_selected_id, MuteFun, NoteAction, NoteContext, ScrollInfo};
+use notedeck::{note::root_note_id_from_selected_id, NoteAction, NoteContext, ScrollInfo};
 use notedeck_ui::{
     anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},
     show_pointer, NoteOptions, NoteView,
@@ -19,7 +19,6 @@ pub struct TimelineView<'a, 'd> {
     timeline_cache: &'a mut TimelineCache,
     note_options: NoteOptions,
     reverse: bool,
-    is_muted: &'a MuteFun,
     note_context: &'a mut NoteContext<'d>,
     jobs: &'a mut JobsCache,
 }
@@ -29,7 +28,6 @@ impl<'a, 'd> TimelineView<'a, 'd> {
     pub fn new(
         timeline_id: &'a TimelineKind,
         timeline_cache: &'a mut TimelineCache,
-        is_muted: &'a MuteFun,
         note_context: &'a mut NoteContext<'d>,
         note_options: NoteOptions,
         jobs: &'a mut JobsCache,
@@ -40,7 +38,6 @@ impl<'a, 'd> TimelineView<'a, 'd> {
             timeline_cache,
             note_options,
             reverse,
-            is_muted,
             note_context,
             jobs,
         }
@@ -53,7 +50,6 @@ impl<'a, 'd> TimelineView<'a, 'd> {
             self.timeline_cache,
             self.reverse,
             self.note_options,
-            self.is_muted,
             self.note_context,
             self.jobs,
         )
@@ -72,7 +68,6 @@ fn timeline_ui(
     timeline_cache: &mut TimelineCache,
     reversed: bool,
     note_options: NoteOptions,
-    is_muted: &MuteFun,
     note_context: &mut NoteContext,
     jobs: &mut JobsCache,
 ) -> Option<NoteAction> {
@@ -161,7 +156,6 @@ fn timeline_ui(
             reversed,
             note_options,
             &txn,
-            is_muted,
             note_context,
             jobs,
         )
@@ -345,7 +339,6 @@ pub struct TimelineTabView<'a, 'd> {
     reversed: bool,
     note_options: NoteOptions,
     txn: &'a Transaction,
-    is_muted: &'a MuteFun,
     note_context: &'a mut NoteContext<'d>,
     jobs: &'a mut JobsCache,
 }
@@ -357,7 +350,6 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
         reversed: bool,
         note_options: NoteOptions,
         txn: &'a Transaction,
-        is_muted: &'a MuteFun,
         note_context: &'a mut NoteContext<'d>,
         jobs: &'a mut JobsCache,
     ) -> Self {
@@ -366,7 +358,6 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
             reversed,
             note_options,
             txn,
-            is_muted,
             note_context,
             jobs,
         }
@@ -376,7 +367,7 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
         let mut action: Option<NoteAction> = None;
         let len = self.tab.notes.len();
 
-        let is_muted = self.is_muted;
+        let is_muted = self.note_context.accounts.mutefun();
 
         self.tab
             .list

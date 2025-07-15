@@ -12,8 +12,8 @@ use crate::{
     ui::timeline::{tabs_ui, TimelineTabView},
 };
 use notedeck::{
-    name::get_display_name, profile::get_profile_url, IsFollowing, MuteFun, NoteAction,
-    NoteContext, NotedeckTextStyle,
+    name::get_display_name, profile::get_profile_url, IsFollowing, NoteAction, NoteContext,
+    NotedeckTextStyle,
 };
 use notedeck_ui::{
     app_images,
@@ -27,7 +27,6 @@ pub struct ProfileView<'a, 'd> {
     col_id: usize,
     timeline_cache: &'a mut TimelineCache,
     note_options: NoteOptions,
-    is_muted: &'a MuteFun,
     note_context: &'a mut NoteContext<'d>,
     jobs: &'a mut JobsCache,
 }
@@ -46,7 +45,6 @@ impl<'a, 'd> ProfileView<'a, 'd> {
         col_id: usize,
         timeline_cache: &'a mut TimelineCache,
         note_options: NoteOptions,
-        is_muted: &'a MuteFun,
         note_context: &'a mut NoteContext<'d>,
         jobs: &'a mut JobsCache,
     ) -> Self {
@@ -55,7 +53,6 @@ impl<'a, 'd> ProfileView<'a, 'd> {
             col_id,
             timeline_cache,
             note_options,
-            is_muted,
             note_context,
             jobs,
         }
@@ -113,7 +110,6 @@ impl<'a, 'd> ProfileView<'a, 'd> {
                 reversed,
                 self.note_options,
                 &txn,
-                self.is_muted,
                 self.note_context,
                 self.jobs,
             )

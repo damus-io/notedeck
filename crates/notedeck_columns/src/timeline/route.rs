@@ -6,7 +6,7 @@ use crate::{
 };
 
 use enostr::Pubkey;
-use notedeck::{MuteFun, NoteContext};
+use notedeck::NoteContext;
 use notedeck_ui::{jobs::JobsCache, NoteOptions};
 
 #[allow(clippy::too_many_arguments)]
@@ -28,15 +28,9 @@ pub fn render_timeline_route(
         | TimelineKind::Universe
         | TimelineKind::Hashtag(_)
         | TimelineKind::Generic(_) => {
-            let note_action = ui::TimelineView::new(
-                kind,
-                timeline_cache,
-                &note_context.accounts.mutefun(),
-                note_context,
-                note_options,
-                jobs,
-            )
-            .ui(ui);
+            let note_action =
+                ui::TimelineView::new(kind, timeline_cache, note_context, note_options, jobs)
+                    .ui(ui);
 
             note_action.map(RenderNavAction::NoteAction)
         }
@@ -48,22 +42,15 @@ pub fn render_timeline_route(
                     timeline_cache,
                     col,
                     ui,
-                    &note_context.accounts.mutefun(),
                     note_options,
                     note_context,
                     jobs,
                 )
             } else {
                 // we render profiles like timelines if they are at the root
-                let note_action = ui::TimelineView::new(
-                    kind,
-                    timeline_cache,
-                    &note_context.accounts.mutefun(),
-                    note_context,
-                    note_options,
-                    jobs,
-                )
-                .ui(ui);
+                let note_action =
+                    ui::TimelineView::new(kind, timeline_cache, note_context, note_options, jobs)
+                        .ui(ui);
 
                 note_action.map(RenderNavAction::NoteAction)
             }
@@ -89,7 +76,6 @@ pub fn render_thread_route(
         threads,
         selection.selected_or_root(),
         note_options,
-        &note_context.accounts.mutefun(),
         note_context,
         jobs,
     )
@@ -104,7 +90,6 @@ pub fn render_profile_route(
     timeline_cache: &mut TimelineCache,
     col: usize,
     ui: &mut egui::Ui,
-    is_muted: &MuteFun,
     note_options: NoteOptions,
     note_context: &mut NoteContext,
     jobs: &mut JobsCache,
@@ -114,7 +99,6 @@ pub fn render_profile_route(
         col,
         timeline_cache,
         note_options,
-        is_muted,
         note_context,
         jobs,
     )

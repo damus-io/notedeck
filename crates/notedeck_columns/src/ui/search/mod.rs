@@ -5,7 +5,7 @@ use state::TypingType;
 use crate::{timeline::TimelineTab, ui::timeline::TimelineTabView};
 use egui_winit::clipboard::Clipboard;
 use nostrdb::{Filter, Ndb, Transaction};
-use notedeck::{MuteFun, NoteAction, NoteContext, NoteRef};
+use notedeck::{NoteAction, NoteContext, NoteRef};
 use notedeck_ui::{
     context_menu::{input_context, PasteBehavior},
     icons::search_icon,
@@ -25,7 +25,6 @@ pub struct SearchView<'a, 'd> {
     query: &'a mut SearchQueryState,
     note_options: NoteOptions,
     txn: &'a Transaction,
-    is_muted: &'a MuteFun,
     note_context: &'a mut NoteContext<'d>,
     jobs: &'a mut JobsCache,
 }
@@ -33,7 +32,6 @@ pub struct SearchView<'a, 'd> {
 impl<'a, 'd> SearchView<'a, 'd> {
     pub fn new(
         txn: &'a Transaction,
-        is_muted: &'a MuteFun,
         note_options: NoteOptions,
         query: &'a mut SearchQueryState,
         note_context: &'a mut NoteContext<'d>,
@@ -41,7 +39,6 @@ impl<'a, 'd> SearchView<'a, 'd> {
     ) -> Self {
         Self {
             txn,
-            is_muted,
             query,
             note_options,
             note_context,
@@ -152,7 +149,6 @@ impl<'a, 'd> SearchView<'a, 'd> {
                     reversed,
                     self.note_options,
                     self.txn,
-                    self.is_muted,
                     self.note_context,
                     self.jobs,
                 )
