@@ -11,6 +11,7 @@ use tracing::error;
 
 use crate::{
     login_manager::AcquireKeyState,
+    options::AppOptions,
     route::Route,
     timeline::{kind::ListKind, PubkeySource, TimelineKind},
     Damus,
@@ -622,7 +623,7 @@ pub fn render_add_column_routes(
                     &mut app.subscriptions,
                     ctx.pool,
                     ctx.note_cache,
-                    app.since_optimize,
+                    app.options.contains(AppOptions::SinceOptimize),
                     ctx.accounts,
                 );
 
@@ -664,7 +665,7 @@ pub fn render_add_column_routes(
                             &mut app.subscriptions,
                             ctx.pool,
                             ctx.note_cache,
-                            app.since_optimize,
+                            app.options.contains(AppOptions::SinceOptimize),
                             ctx.accounts,
                         );
 

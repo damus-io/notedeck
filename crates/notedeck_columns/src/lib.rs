@@ -17,6 +17,7 @@ pub mod login_manager;
 mod media_upload;
 mod multi_subscriber;
 mod nav;
+pub mod options;
 mod post;
 mod profile;
 mod route;

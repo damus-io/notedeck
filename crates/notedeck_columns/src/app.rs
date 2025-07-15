@@ -4,6 +4,7 @@ use crate::{
     decks::{Decks, DecksCache},
     draft::Drafts,
     nav::{self, ProcessNavResult},
+    options::AppOptions,
     route::Route,
     storage,
     subscriptions::{SubKind, Subscriptions},
@@ -14,22 +15,18 @@ use crate::{
     Result,
 };
 
+use egui_extras::{Size, StripBuilder};
+use enostr::{ClientMessage, PoolRelay, Pubkey, RelayEvent, RelayMessage, RelayPool};
+use nostrdb::Transaction;
 use notedeck::{
     ui::is_narrow, Accounts, AppAction, AppContext, DataPath, DataPathType, FilterState, UnknownIds,
 };
 use notedeck_ui::{jobs::JobsCache, NoteOptions};
-
-use enostr::{ClientMessage, PoolRelay, Pubkey, RelayEvent, RelayMessage, RelayPool};
-use uuid::Uuid;
-
-use egui_extras::{Size, StripBuilder};
-
-use nostrdb::Transaction;
-
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 use std::time::Duration;
 use tracing::{debug, error, info, trace, warn};
+use uuid::Uuid;
 
 #[derive(Debug, Eq, PartialEq, Clone)]
 pub enum DamusState {
@@ -53,9 +50,7 @@ pub struct Damus {
 
     // TODO: make these bitflags
     /// Were columns loaded from the commandline? If so disable persistence.
-    pub tmp_columns: bool,
-    pub debug: bool,
-    pub since_optimize: bool,
+    pub options: AppOptions,
     pub note_options: NoteOptions,
 
     pub unrecognized_args: BTreeSet<String>,
@@ -117,7 +112,7 @@ fn try_process_event(
                     .send_initial_filters(app_ctx.pool, &ev.relay);
 
                 timeline::send_initial_timeline_filters(
-                    damus.since_optimize,
+                    damus.options.contains(AppOptions::SinceOptimize),
                     &mut damus.timeline_cache,
                     &mut damus.subscriptions,
                     app_ctx.pool,
@@ -394,7 +389,10 @@ impl Damus {
         let account = ctx.accounts.selected_account_pubkey_bytes();
 
         let mut timeline_cache = TimelineCache::default();
+        let mut options = AppOptions::default();
         let tmp_columns = !parsed_args.columns.is_empty();
+        options.set(AppOptions::TmpColumns, tmp_columns);
+
         let decks_cache = if tmp_columns {
             info!("DecksCache: loading from command line arguments");
             let mut columns: Columns = Columns::new();
@@ -436,7 +434,6 @@ impl Damus {
             //}
         };
 
-        let debug = ctx.args.debug;
         let support = Support::new(ctx.path);
         let mut note_options = NoteOptions::default();
         note_options.set(
@@ -451,6 +448,11 @@ impl Damus {
             NoteOptions::HideMedia,
             parsed_args.is_flag_set(ColumnsFlag::NoMedia),
         );
+        options.set(AppOptions::Debug, ctx.args.debug);
+        options.set(
+            AppOptions::SinceOptimize,
+            parsed_args.is_flag_set(ColumnsFlag::SinceOptimize),
+        );
 
         let jobs = JobsCache::default();
 
@@ -458,21 +460,25 @@ impl Damus {
 
         Self {
             subscriptions: Subscriptions::default(),
-            since_optimize: parsed_args.is_flag_set(ColumnsFlag::SinceOptimize),
             timeline_cache,
             drafts: Drafts::default(),
             state: DamusState::Initializing,
             note_options,
+            options,
             //frame_history: FrameHistory::default(),
             view_state: ViewState::default(),
-            tmp_columns,
             support,
             decks_cache,
-            debug,
             unrecognized_args,
             jobs,
             threads,
         }
+    }
+
+    /// Scroll to the top of the currently selected column. This is called
+    /// by the chrome when you click the toolbar
+    pub fn scroll_to_top(&mut self) {
+        self.options.insert(AppOptions::ScrollToTop)
     }
 
     pub fn columns_mut(&mut self, accounts: &Accounts) -> &mut Columns {
@@ -484,7 +490,7 @@ impl Damus {
     }
 
     pub fn gen_subid(&self, kind: &SubKind) -> String {
-        if self.debug {
+        if self.options.contains(AppOptions::Debug) {
             format!("{:?}", kind)
         } else {
             Uuid::new_v4().to_string()
@@ -497,22 +503,20 @@ impl Damus {
         let path = DataPath::new(&data_path);
         let imgcache_dir = path.path(DataPathType::Cache);
         let _ = std::fs::create_dir_all(imgcache_dir.clone());
-        let debug = true;
+        let options = AppOptions::default() | AppOptions::Debug | AppOptions::TmpColumns;
 
         let support = Support::new(&path);
 
         Self {
-            debug,
             subscriptions: Subscriptions::default(),
-            since_optimize: true,
             timeline_cache: TimelineCache::default(),
             drafts: Drafts::default(),
             state: DamusState::Initializing,
             note_options: NoteOptions::default(),
-            tmp_columns: true,
             //frame_history: FrameHistory::default(),
             view_state: ViewState::default(),
             support,
+            options,
             decks_cache,
             unrecognized_args: BTreeSet::default(),
             jobs: JobsCache::default(),
@@ -562,7 +566,7 @@ fn render_damus_mobile(
         if let Some(r) = &r {
             match r {
                 ProcessNavResult::SwitchOccurred => {
-                    if !app.tmp_columns {
+                    if !app.options.contains(AppOptions::TmpColumns) {
                         storage::save_decks_cache(app_ctx.path, &app.decks_cache);
                     }
                 }
@@ -782,7 +786,7 @@ fn timelines_view(
         }
     }
 
-    if app.tmp_columns {
+    if app.options.contains(AppOptions::TmpColumns) {
         save_cols = false;
     }
 
