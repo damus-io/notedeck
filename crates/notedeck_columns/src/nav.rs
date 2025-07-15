@@ -788,6 +788,8 @@ pub fn render_nav(
     ctx: &mut AppContext<'_>,
     ui: &mut egui::Ui,
 ) -> RenderNavResponse {
+    let narrow = is_narrow(ui.ctx());
+
     if let Some(sheet_route) = app
         .columns(ctx.accounts)
         .column(col)
@@ -822,6 +824,8 @@ pub fn render_nav(
                         &[route.clone()],
                         col,
                     )
+                    .show_move_button(!narrow)
+                    .show_delete_button(!narrow)
                     .show(ui),
                     NavUiType::Body => render_nav_body(ui, app, ctx, route, 1, col, inner_rect),
                 });
@@ -858,7 +862,10 @@ pub fn render_nav(
             nav.routes(),
             col,
         )
+        .show_move_button(!narrow)
+        .show_delete_button(!narrow)
         .show(ui),
+
         NavUiType::Body => {
             if let Some(top) = nav.routes().last() {
                 render_nav_body(ui, app, ctx, top, nav.routes().len(), col, inner_rect)

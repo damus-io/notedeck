@@ -25,9 +25,14 @@ pub struct NavTitle<'a> {
     columns: &'a Columns,
     routes: &'a [Route],
     col_id: usize,
+    options: u32,
 }
 
 impl<'a> NavTitle<'a> {
+    // options
+    const SHOW_MOVE: u32 = 1 << 0;
+    const SHOW_DELETE: u32 = 1 << 1;
+
     pub fn new(
         ndb: &'a Ndb,
         img_cache: &'a mut Images,
@@ -35,12 +40,14 @@ impl<'a> NavTitle<'a> {
         routes: &'a [Route],
         col_id: usize,
     ) -> Self {
+        let options = Self::SHOW_MOVE | Self::SHOW_DELETE;
         NavTitle {
             ndb,
             img_cache,
             columns,
             routes,
             col_id,
+            options,
         }
     }
 
@@ -519,6 +526,34 @@ impl<'a> NavTitle<'a> {
         };
     }
 
+    pub fn show_move_button(&mut self, enable: bool) -> &mut Self {
+        if enable {
+            self.options |= Self::SHOW_MOVE;
+        } else {
+            self.options &= !Self::SHOW_MOVE;
+        }
+
+        self
+    }
+
+    pub fn show_delete_button(&mut self, enable: bool) -> &mut Self {
+        if enable {
+            self.options |= Self::SHOW_DELETE;
+        } else {
+            self.options &= !Self::SHOW_DELETE;
+        }
+
+        self
+    }
+
+    fn should_show_move_button(&self) -> bool {
+        (self.options & Self::SHOW_MOVE) == Self::SHOW_MOVE
+    }
+
+    fn should_show_delete_button(&self) -> bool {
+        (self.options & Self::SHOW_DELETE) == Self::SHOW_DELETE
+    }
+
     fn title(&mut self, ui: &mut egui::Ui, top: &Route, navigating: bool) -> Option<TitleResponse> {
         let title_r = if !navigating {
             self.title_presentation(ui, top, 32.0)
@@ -530,8 +565,16 @@ impl<'a> NavTitle<'a> {
             if navigating {
                 self.title_presentation(ui, top, 32.0)
             } else {
-                let move_col = self.move_button_section(ui);
-                let remove_col = self.delete_button_section(ui);
+                let mut move_col: Option<usize> = None;
+                let mut remove_col = false;
+
+                if self.should_show_move_button() {
+                    move_col = self.move_button_section(ui);
+                }
+                if self.should_show_delete_button() {
+                    remove_col = self.delete_button_section(ui);
+                }
+
                 if let Some(col) = move_col {
                     Some(TitleResponse::MoveColumn(col))
                 } else if remove_col {
