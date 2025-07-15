@@ -304,11 +304,13 @@ fn copy_key_widget(pfp_rect: &egui::Rect) -> impl egui::Widget + '_ {
             pfp_rect.center_bottom(),
             egui::vec2(48.0, 28.0),
         ));
-        let resp = ui.interact(
-            copy_key_rect,
-            ui.id().with("custom_painter"),
-            Sense::click(),
-        );
+        let resp = ui
+            .interact(
+                copy_key_rect,
+                ui.id().with("custom_painter"),
+                Sense::click(),
+            )
+            .on_hover_text("Copy npub to clipboard");
 
         let copy_key_rounding = CornerRadius::same(100);
         let fill_color = if resp.hovered() {
