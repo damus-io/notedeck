@@ -1,4 +1,4 @@
-use enostr::{Keypair, KeypairUnowned, Pubkey};
+use enostr::{Keypair, KeypairUnowned};
 use tokenator::{ParseError, TokenParser, TokenSerializable};
 
 use crate::{
@@ -33,8 +33,8 @@ impl UserAccount {
         self
     }
 
-    pub fn is_following(&self, pk: &Pubkey) -> IsFollowing {
-        self.data.contacts.is_following(pk)
+    pub fn is_following(&self, other_pubkey: &[u8; 32]) -> IsFollowing {
+        self.data.contacts.is_following(other_pubkey)
     }
 }
 

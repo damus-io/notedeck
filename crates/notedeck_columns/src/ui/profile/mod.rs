@@ -178,7 +178,7 @@ impl<'a, 'd> ProfileView<'a, 'd> {
                         } else if &selected.key.pubkey == self.pubkey {
                             ProfileType::MyProfile
                         } else {
-                            ProfileType::Followable(selected.is_following(target_key))
+                            ProfileType::Followable(selected.is_following(target_key.bytes()))
                         };
 
                         match profile_type {
