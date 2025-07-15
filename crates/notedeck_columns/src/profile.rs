@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use enostr::{FilledKeypair, FullKeypair, ProfileState, Pubkey, RelayPool};
 use nostrdb::{Ndb, Note, NoteBuildOptions, NoteBuilder, Transaction};
 
@@ -45,7 +43,6 @@ pub enum ProfileAction {
 impl ProfileAction {
     pub fn process_profile_action(
         &self,
-        state_map: &mut HashMap<Pubkey, ProfileState>,
         ndb: &Ndb,
         pool: &mut RelayPool,
         accounts: &Accounts,
@@ -59,7 +56,6 @@ impl ProfileAction {
                     raw_msg.as_str(),
                     nostrdb::IngestMetadata::new().client(true),
                 );
-                let _ = state_map.remove_entry(&changes.kp.pubkey);
 
                 info!("sending {}", raw_msg);
                 pool.send(&enostr::ClientMessage::raw(raw_msg));

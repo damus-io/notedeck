@@ -28,9 +28,9 @@ use crate::{
 
 use egui_nav::{Nav, NavAction, NavResponse, NavUiType, Percent, PopupResponse, PopupSheet};
 use enostr::ProfileState;
-use nostrdb::{Filter, Transaction};
+use nostrdb::{Filter, Ndb, Transaction};
 use notedeck::{
-    get_current_default_msats, get_current_wallet, ui::is_narrow, AppContext, NoteAction,
+    get_current_default_msats, get_current_wallet, ui::is_narrow, Accounts, AppContext, NoteAction,
     NoteContext, RelayAction,
 };
 use tracing::error;
@@ -236,6 +236,11 @@ fn process_nav_resp(
                         .close(ctx.ndb, ctx.pool, selection, return_type, col);
                 }
 
+                // we should remove profile state once we've returned
+                if let Some(Route::EditProfile(pk)) = &r {
+                    app.view_state.pubkey_to_profile_state.remove(pk);
+                }
+
                 process_result = Some(ProcessNavResult::SwitchOccurred);
             }
 
@@ -252,11 +257,52 @@ fn process_nav_resp(
             NavAction::Dragging => {}
             NavAction::Returning(_) => {}
             NavAction::Resetting => {}
-            NavAction::Navigating => {}
+            NavAction::Navigating => {
+                // explicitly update the edit profile state when navigating
+                handle_navigating_edit_profile(ctx.ndb, ctx.accounts, app, col);
+            }
         }
     }
 
     process_result
+}
+
+/// We are navigating to edit profile, prepare the profile state
+/// if we don't have it
+fn handle_navigating_edit_profile(ndb: &Ndb, accounts: &Accounts, app: &mut Damus, col: usize) {
+    let pk = {
+        let Route::EditProfile(pk) = app.columns(accounts).column(col).router().top() else {
+            return;
+        };
+
+        if app.view_state.pubkey_to_profile_state.contains_key(pk) {
+            return;
+        }
+
+        pk.to_owned()
+    };
+
+    let txn = Transaction::new(ndb).expect("txn");
+    app.view_state.pubkey_to_profile_state.insert(pk, {
+        let filter = Filter::new_with_capacity(1)
+            .kinds([0])
+            .authors([pk.bytes()])
+            .build();
+
+        if let Ok(results) = ndb.query(&txn, &[filter], 1) {
+            if let Some(result) = results.first() {
+                tracing::debug!(
+                    "refreshing profile state for edit view: {}",
+                    result.note.content()
+                );
+                ProfileState::from_note_contents(result.note.content())
+            } else {
+                ProfileState::default()
+            }
+        } else {
+            ProfileState::default()
+        }
+    });
 }
 
 pub enum RouterAction {
@@ -389,12 +435,9 @@ fn process_render_nav_action(
                 return None;
             }
         }
-        RenderNavAction::ProfileAction(profile_action) => profile_action.process_profile_action(
-            &mut app.view_state.pubkey_to_profile_state,
-            ctx.ndb,
-            ctx.pool,
-            ctx.accounts,
-        ),
+        RenderNavAction::ProfileAction(profile_action) => {
+            profile_action.process_profile_action(ctx.ndb, ctx.pool, ctx.accounts)
+        }
         RenderNavAction::WalletAction(wallet_action) => {
             wallet_action.process(ctx.accounts, ctx.global_wallet)
         }
@@ -673,33 +716,17 @@ fn render_nav_body(
                 return None;
             };
 
-            let state = app
-                .view_state
-                .pubkey_to_profile_state
-                .entry(*kp.pubkey)
-                .or_insert_with(|| {
-                    let txn = Transaction::new(ctx.ndb).expect("txn");
-                    let filter = Filter::new_with_capacity(1)
-                        .kinds([0])
-                        .authors([kp.pubkey.bytes()])
-                        .build();
-
-                    let Ok(results) = ctx.ndb.query(&txn, &[filter], 1) else {
-                        return ProfileState::default();
-                    };
-
-                    if let Some(result) = results.first() {
-                        ProfileState::from_note_contents(result.note.content())
-                    } else {
-                        ProfileState::default()
-                    }
-                });
+            let Some(state) = app.view_state.pubkey_to_profile_state.get_mut(kp.pubkey) else {
+                tracing::error!(
+                    "No profile state when navigating to EditProfile... was handle_navigating_edit_profile not called?"
+                );
+                return action;
+            };
 
             if EditProfileView::new(state, ctx.img_cache).ui(ui) {
-                if let Some(taken_state) = app.view_state.pubkey_to_profile_state.remove(kp.pubkey)
-                {
+                if let Some(state) = app.view_state.pubkey_to_profile_state.get(kp.pubkey) {
                     action = Some(RenderNavAction::ProfileAction(ProfileAction::SaveChanges(
-                        SaveProfileChanges::new(kp.to_full(), taken_state),
+                        SaveProfileChanges::new(kp.to_full(), state.clone()),
                     )))
                 }
             }
