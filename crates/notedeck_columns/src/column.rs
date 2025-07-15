@@ -123,11 +123,8 @@ impl Columns {
             .map(|r| match r {
                 IntermediaryRoute::Timeline(mut timeline) => {
                     let route = Route::timeline(timeline.kind.clone());
-
                     timeline.subscription.increment();
-                    timeline_cache
-                        .timelines
-                        .insert(timeline.kind.clone(), timeline);
+                    timeline_cache.insert(timeline.kind.clone(), timeline);
                     route
                 }
                 IntermediaryRoute::Route(route) => route,

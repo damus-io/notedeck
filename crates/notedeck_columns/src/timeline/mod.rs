@@ -504,7 +504,7 @@ pub fn send_initial_timeline_filters(
     info!("Sending initial filters to {}", relay_id);
     let relay = &mut pool.relays.iter_mut().find(|r| r.url() == relay_id)?;
 
-    for (_kind, timeline) in timeline_cache.timelines.iter_mut() {
+    for (_kind, timeline) in timeline_cache {
         send_initial_timeline_filter(since_optimize, subs, relay, timeline, accounts);
     }
 
@@ -644,7 +644,7 @@ pub fn setup_initial_nostrdb_subs(
     note_cache: &mut NoteCache,
     timeline_cache: &mut TimelineCache,
 ) -> Result<()> {
-    for (_kind, timeline) in timeline_cache.timelines.iter_mut() {
+    for (_kind, timeline) in timeline_cache {
         let txn = Transaction::new(ndb).expect("txn");
         if let Err(err) = setup_timeline_nostrdb_sub(ndb, &txn, note_cache, timeline) {
             error!("setup_initial_nostrdb_subs: {err}");

@@ -94,7 +94,7 @@ fn timeline_ui(
     */
 
     let scroll_id = {
-        let timeline = if let Some(timeline) = timeline_cache.timelines.get_mut(timeline_id) {
+        let timeline = if let Some(timeline) = timeline_cache.get_mut(timeline_id) {
             timeline
         } else {
             error!("tried to render timeline in column, but timeline was missing");
@@ -154,7 +154,7 @@ fn timeline_ui(
     }
 
     let scroll_output = scroll_area.show(ui, |ui| {
-        let timeline = if let Some(timeline) = timeline_cache.timelines.get(timeline_id) {
+        let timeline = if let Some(timeline) = timeline_cache.get(timeline_id) {
             timeline
         } else {
             error!("tried to render timeline in column, but timeline was missing");

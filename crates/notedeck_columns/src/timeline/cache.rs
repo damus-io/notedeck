@@ -13,7 +13,7 @@ use tracing::{debug, error, info, warn};
 
 #[derive(Default)]
 pub struct TimelineCache {
-    pub timelines: HashMap<TimelineKind, Timeline>,
+    timelines: HashMap<TimelineKind, Timeline>,
 }
 
 pub enum Vitality<'a, M> {

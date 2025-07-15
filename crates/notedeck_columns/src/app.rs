@@ -130,7 +130,7 @@ fn try_process_event(
         }
     }
 
-    for (_kind, timeline) in damus.timeline_cache.timelines.iter_mut() {
+    for (_kind, timeline) in &mut damus.timeline_cache {
         let is_ready = timeline::is_timeline_ready(
             app_ctx.ndb,
             app_ctx.pool,
@@ -252,7 +252,7 @@ fn handle_eose(
         }
 
         SubKind::FetchingContactList(timeline_uid) => {
-            let timeline = if let Some(tl) = timeline_cache.timelines.get_mut(timeline_uid) {
+            let timeline = if let Some(tl) = timeline_cache.get_mut(timeline_uid) {
                 tl
             } else {
                 error!(

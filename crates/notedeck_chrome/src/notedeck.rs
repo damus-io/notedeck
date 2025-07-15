@@ -242,9 +242,9 @@ mod tests {
             .timeline_id()
             .unwrap();
 
-        assert_eq!(app.timeline_cache.timelines.len(), 2);
-        assert!(app.timeline_cache.timelines.get(&tl1).is_some());
-        assert!(app.timeline_cache.timelines.get(&tl2).is_some());
+        assert_eq!(app.timeline_cache.num_timelines(), 2);
+        assert!(app.timeline_cache.get(&tl1).is_some());
+        assert!(app.timeline_cache.get(&tl2).is_some());
 
         rmrf(tmpdir);
     }
