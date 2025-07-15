@@ -323,6 +323,14 @@ pub enum RouterType {
     Stack,
 }
 
+fn go_back(stack: &mut Router<Route>, sheet: &mut SingletonRouter<Route>) {
+    if sheet.route().is_some() {
+        sheet.go_back();
+    } else {
+        stack.go_back();
+    }
+}
+
 impl RouterAction {
     pub fn process(
         self,
@@ -331,16 +339,24 @@ impl RouterAction {
     ) -> Option<ProcessNavResult> {
         match self {
             RouterAction::GoBack => {
-                if sheet_router.route().is_some() {
-                    sheet_router.go_back();
-                } else {
-                    stack_router.go_back();
-                }
+                go_back(stack_router, sheet_router);
 
                 None
             }
 
-            RouterAction::PfpClicked => Some(ProcessNavResult::PfpClicked),
+            RouterAction::PfpClicked => {
+                if stack_router.routes().len() == 1 {
+                    // if we're at the top level and we click a profile pic,
+                    // bubble it up so that it can be handled by the chrome
+                    // to open the sidebar
+                    Some(ProcessNavResult::PfpClicked)
+                } else {
+                    // Otherwise just execute a back action
+                    go_back(stack_router, sheet_router);
+
+                    None
+                }
+            }
 
             RouterAction::RouteTo(route, router_type) => match router_type {
                 RouterType::Sheet => {

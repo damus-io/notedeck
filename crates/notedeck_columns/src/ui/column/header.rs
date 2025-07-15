@@ -129,8 +129,7 @@ impl<'a> NavTitle<'a> {
 
         // NOTE(jb55): include graphic in back label as well because why
         // not it looks cool
-        self.title_pfp(ui, prev, 32.0);
-
+        let pfp_resp = self.title_pfp(ui, prev, 32.0);
         let column_title = prev.title();
 
         let back_resp = match &column_title {
@@ -143,7 +142,11 @@ impl<'a> NavTitle<'a> {
             }
         };
 
-        back_resp.union(chev_resp)
+        if let Some(pfp_resp) = pfp_resp {
+            back_resp.union(chev_resp).union(pfp_resp)
+        } else {
+            back_resp.union(chev_resp)
+        }
     }
 
     fn back_label(title: &str, color: egui::Color32) -> egui::Label {
