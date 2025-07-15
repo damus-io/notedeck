@@ -4,8 +4,8 @@ use enostr::Pubkey;
 
 use crate::deck_state::DeckState;
 use crate::login_manager::AcquireKeyState;
-use crate::profile_state::ProfileState;
 use crate::ui::search::SearchQueryState;
+use enostr::ProfileState;
 
 /// Various state for views
 #[derive(Default)]

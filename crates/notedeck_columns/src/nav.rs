@@ -5,7 +5,6 @@ use crate::{
     deck_state::DeckState,
     decks::{Deck, DecksAction, DecksCache},
     profile::{ProfileAction, SaveProfileChanges},
-    profile_state::ProfileState,
     route::{Route, Router, SingletonRouter},
     timeline::{
         route::{render_thread_route, render_timeline_route},
@@ -28,9 +27,11 @@ use crate::{
 };
 
 use egui_nav::{Nav, NavAction, NavResponse, NavUiType, Percent, PopupResponse, PopupSheet};
-use nostrdb::Transaction;
+use enostr::ProfileState;
+use nostrdb::{Filter, Transaction};
 use notedeck::{
-    get_current_default_msats, get_current_wallet, AppContext, NoteAction, NoteContext, RelayAction,
+    get_current_default_msats, get_current_wallet, ui::is_narrow, AppContext, NoteAction,
+    NoteContext, RelayAction,
 };
 use tracing::error;
 
@@ -674,8 +675,17 @@ fn render_nav_body(
                     .entry(*kp.pubkey)
                     .or_insert_with(|| {
                         let txn = Transaction::new(ctx.ndb).expect("txn");
-                        if let Ok(record) = ctx.ndb.get_profile_by_pubkey(&txn, kp.pubkey.bytes()) {
-                            ProfileState::from_profile(&record)
+                        let filter = Filter::new_with_capacity(1)
+                            .kinds([0])
+                            .authors([kp.pubkey.bytes()])
+                            .build();
+
+                        let Ok(results) = ctx.ndb.query(&txn, &[filter], 1) else {
+                            return ProfileState::default();
+                        };
+
+                        if let Some(result) = results.first() {
+                            ProfileState::from_note_contents(result.note.content())
                         } else {
                             ProfileState::default()
                         }

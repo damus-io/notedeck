@@ -1,7 +1,7 @@
 use core::f32;
 
-use crate::profile_state::ProfileState;
 use egui::{vec2, Button, CornerRadius, Layout, Margin, RichText, ScrollArea, TextEdit};
+use enostr::ProfileState;
 use notedeck::{profile::unwrap_profile_url, Images, NotedeckTextStyle};
 use notedeck_ui::{profile::banner, ProfilePic};
 
@@ -19,7 +19,7 @@ impl<'a> EditProfileView<'a> {
     pub fn ui(&mut self, ui: &mut egui::Ui) -> bool {
         ScrollArea::vertical()
             .show(ui, |ui| {
-                banner(ui, Some(&self.state.banner), 188.0);
+                banner(ui, self.state.banner(), 188.0);
 
                 let padding = 24.0;
                 notedeck_ui::padding(padding, ui, |ui| {
@@ -53,11 +53,7 @@ impl<'a> EditProfileView<'a> {
         pfp_rect.set_height(size);
         let pfp_rect = pfp_rect.translate(egui::vec2(0.0, -(padding + 2.0 + (size / 2.0))));
 
-        let pfp_url = unwrap_profile_url(if self.state.picture.is_empty() {
-            None
-        } else {
-            Some(&self.state.picture)
-        });
+        let pfp_url = unwrap_profile_url(self.state.picture());
         ui.put(
             pfp_rect,
             &mut ProfilePic::new(self.img_cache, pfp_url)
@@ -67,65 +63,72 @@ impl<'a> EditProfileView<'a> {
 
         in_frame(ui, |ui| {
             ui.add(label("Display name"));
-            ui.add(singleline_textedit(&mut self.state.display_name));
+            ui.add(singleline_textedit(self.state.str_mut("display_name")));
         });
 
         in_frame(ui, |ui| {
             ui.add(label("Username"));
-            ui.add(singleline_textedit(&mut self.state.name));
+            ui.add(singleline_textedit(self.state.str_mut("name")));
         });
 
         in_frame(ui, |ui| {
             ui.add(label("Profile picture"));
-            ui.add(multiline_textedit(&mut self.state.picture));
+            ui.add(multiline_textedit(self.state.str_mut("picture")));
         });
 
         in_frame(ui, |ui| {
             ui.add(label("Banner"));
-            ui.add(multiline_textedit(&mut self.state.banner));
+            ui.add(multiline_textedit(self.state.str_mut("banner")));
         });
 
         in_frame(ui, |ui| {
             ui.add(label("About"));
-            ui.add(multiline_textedit(&mut self.state.about));
+            ui.add(multiline_textedit(self.state.str_mut("about")));
         });
 
         in_frame(ui, |ui| {
             ui.add(label("Website"));
-            ui.add(singleline_textedit(&mut self.state.website));
+            ui.add(singleline_textedit(self.state.str_mut("website")));
         });
 
         in_frame(ui, |ui| {
             ui.add(label("Lightning network address (lud16)"));
-            ui.add(multiline_textedit(&mut self.state.lud16));
+            ui.add(multiline_textedit(self.state.str_mut("lud16")));
         });
 
         in_frame(ui, |ui| {
             ui.add(label("Nostr address (NIP-05 identity)"));
-            ui.add(singleline_textedit(&mut self.state.nip05));
-            let split = &mut self.state.nip05.split('@');
-            let prefix = split.next();
-            let suffix = split.next();
-            if let Some(prefix) = prefix {
-                if let Some(suffix) = suffix {
-                    let use_domain = if let Some(f) = prefix.chars().next() {
-                        f == '_'
-                    } else {
-                        false
-                    };
-                    ui.colored_label(
-                        ui.visuals().noninteractive().fg_stroke.color,
-                        RichText::new(if use_domain {
-                            format!("\"{}\" will be used for identification", suffix)
-                        } else {
-                            format!(
-                                "\"{}\" at \"{}\" will be used for identification",
-                                prefix, suffix
-                            )
-                        }),
-                    );
-                }
-            }
+            ui.add(singleline_textedit(self.state.str_mut("nip05")));
+
+            let Some(nip05) = self.state.nip05() else {
+                return;
+            };
+
+            let mut split = nip05.split('@');
+
+            let Some(prefix) = split.next() else {
+                return;
+            };
+            let Some(suffix) = split.next() else {
+                return;
+            };
+
+            let use_domain = if let Some(f) = prefix.chars().next() {
+                f == '_'
+            } else {
+                false
+            };
+            ui.colored_label(
+                ui.visuals().noninteractive().fg_stroke.color,
+                RichText::new(if use_domain {
+                    format!("\"{}\" will be used for identification", suffix)
+                } else {
+                    format!(
+                        "\"{}\" at \"{}\" will be used for identification",
+                        prefix, suffix
+                    )
+                }),
+            );
         });
     }
 }
@@ -164,47 +167,4 @@ fn button(text: &str, width: f32) -> egui::Button<'static> {
     Button::new(text)
         .corner_radius(CornerRadius::same(8))
         .min_size(vec2(width, 40.0))
-}
-
-mod preview {
-    use notedeck::{App, AppAction};
-
-    use crate::{
-        profile_state::ProfileState,
-        test_data,
-        ui::{Preview, PreviewConfig},
-    };
-
-    use super::EditProfileView;
-
-    pub struct EditProfilePreivew {
-        state: ProfileState,
-    }
-
-    impl Default for EditProfilePreivew {
-        fn default() -> Self {
-            Self {
-                state: ProfileState::from_profile(&test_data::test_profile_record()),
-            }
-        }
-    }
-
-    impl App for EditProfilePreivew {
-        fn update(
-            &mut self,
-            ctx: &mut notedeck::AppContext<'_>,
-            ui: &mut egui::Ui,
-        ) -> Option<AppAction> {
-            EditProfileView::new(&mut self.state, ctx.img_cache).ui(ui);
-            None
-        }
-    }
-
-    impl Preview for EditProfileView<'_> {
-        type Prev = EditProfilePreivew;
-
-        fn preview(_cfg: PreviewConfig) -> Self::Prev {
-            EditProfilePreivew::default()
-        }
-    }
 }

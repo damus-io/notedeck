@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 
-use enostr::{FilledKeypair, FullKeypair, Pubkey, RelayPool};
+use enostr::{FilledKeypair, FullKeypair, ProfileState, Pubkey, RelayPool};
 use nostrdb::{Ndb, Note, NoteBuildOptions, NoteBuilder, Transaction};
 
 use notedeck::{Accounts, ContactState};
 use tracing::info;
 
-use crate::{nav::RouterAction, profile_state::ProfileState, route::Route};
+use crate::{nav::RouterAction, route::Route};
 
 pub struct SaveProfileChanges {
     pub kp: FullKeypair,
@@ -149,13 +149,17 @@ fn send_kind_3_event(ndb: &Ndb, pool: &mut RelayPool, accounts: &Accounts, actio
     let contact_note = match ndb.get_note_by_key(&txn, *note_key).ok() {
         Some(n) => n,
         None => {
-            tracing::error!("Somehow we are in state ContactState::Received but the contact note key doesn't exist");
+            tracing::error!(
+                "Somehow we are in state ContactState::Received but the contact note key doesn't exist"
+            );
             return;
         }
     };
 
     if contact_note.kind() != 3 {
-        tracing::error!("Something very wrong just occured. The key for the supposed contact note yielded a note which was not a contact...");
+        tracing::error!(
+            "Something very wrong just occured. The key for the supposed contact note yielded a note which was not a contact..."
+        );
         return;
     }
 

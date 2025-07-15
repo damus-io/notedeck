@@ -19,7 +19,6 @@ mod multi_subscriber;
 mod nav;
 mod post;
 mod profile;
-mod profile_state;
 mod route;
 mod search;
 mod subscriptions;
