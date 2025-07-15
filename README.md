@@ -103,6 +103,12 @@ Detailed developer documentation is available in each crate:
 
 Notedeck is currently in **ALPHA** status. For the latest changes, see the [CHANGELOG](./CHANGELOG.md).
 
+## Future
+
+Notedeck allows for app development built on top of the performant, built specifically for nostr database nostrDB. An example app written on notedeck is Dave: https://github.com/damus-io/notedeck/tree/master/crates/notedeck_dave. 
+
+Building on notedeck dev documentation is also on the roadmap.
+
 ## 🤝 Contributing
 
 Contributions are welcome! Please check the developer documentation and follow these guidelines:
