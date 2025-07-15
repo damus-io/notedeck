@@ -359,7 +359,7 @@ fn render_damus(
     };
 
     // We use this for keeping timestamps and things up to date
-    ui.ctx().request_repaint_after(Duration::from_secs(1));
+    ui.ctx().request_repaint_after(Duration::from_secs(5));
 
     app_action
 }
