@@ -8,7 +8,7 @@ pub use picture::ProfilePic;
 pub use preview::ProfilePreview;
 
 use egui::{load::TexturePoll, Label, RichText};
-use notedeck::{IsFollowing, NostrName, NotedeckTextStyle};
+use notedeck::{ui::is_narrow, IsFollowing, NostrName, NotedeckTextStyle};
 
 use crate::{app_images, colors, widgets::styled_button_toggleable};
 
@@ -39,12 +39,18 @@ pub fn display_name_widget<'a>(
                     )
                 });
 
-                let nip05_resp = name.nip05.map(|nip05| {
-                    ui.add(app_images::verified_image());
+                if is_narrow(ui.ctx()) {
+                    ui.end_row();
+                }
 
-                    ui.add(Label::new(
-                        RichText::new(nip05).size(16.0).color(crate::colors::TEAL),
-                    ))
+                let nip05_resp = name.nip05.map(|nip05| {
+                    ui.horizontal(|ui| {
+                        ui.add(app_images::verified_image());
+
+                        ui.label(RichText::new(nip05).size(16.0).color(crate::colors::TEAL))
+                            .on_hover_text(nip05)
+                    })
+                    .inner
                 });
 
                 (username_resp, nip05_resp)
