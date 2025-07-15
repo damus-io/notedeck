@@ -43,7 +43,7 @@ pub enum ProfileAction {
 }
 
 impl ProfileAction {
-    pub fn process(
+    pub fn process_profile_action(
         &self,
         state_map: &mut HashMap<Pubkey, ProfileState>,
         ndb: &Ndb,

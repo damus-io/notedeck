@@ -389,7 +389,7 @@ fn process_render_nav_action(
                 return None;
             }
         }
-        RenderNavAction::ProfileAction(profile_action) => profile_action.process(
+        RenderNavAction::ProfileAction(profile_action) => profile_action.process_profile_action(
             &mut app.view_state.pubkey_to_profile_state,
             ctx.ndb,
             ctx.pool,
