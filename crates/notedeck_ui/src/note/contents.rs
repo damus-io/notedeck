@@ -301,11 +301,19 @@ pub fn render_note_contents(
         ui.add_space(2.0);
         let carousel_id = egui::Id::new(("carousel", note.key().expect("expected tx note")));
 
-        let trusted_media = note_context
-            .accounts
-            .get_selected_account()
-            .is_following(note.pubkey())
-            == IsFollowing::Yes;
+        let is_self = note.pubkey()
+            == note_context
+                .accounts
+                .get_selected_account()
+                .key
+                .pubkey
+                .bytes();
+        let trusted_media = is_self
+            || note_context
+                .accounts
+                .get_selected_account()
+                .is_following(note.pubkey())
+                == IsFollowing::Yes;
 
         media_action = image_carousel(
             ui,
