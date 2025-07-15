@@ -668,40 +668,42 @@ fn render_nav_body(
         }
         Route::EditProfile(pubkey) => {
             let mut action = None;
-            if let Some(kp) = ctx.accounts.get_full(pubkey) {
-                let state = app
-                    .view_state
-                    .pubkey_to_profile_state
-                    .entry(*kp.pubkey)
-                    .or_insert_with(|| {
-                        let txn = Transaction::new(ctx.ndb).expect("txn");
-                        let filter = Filter::new_with_capacity(1)
-                            .kinds([0])
-                            .authors([kp.pubkey.bytes()])
-                            .build();
-
-                        let Ok(results) = ctx.ndb.query(&txn, &[filter], 1) else {
-                            return ProfileState::default();
-                        };
-
-                        if let Some(result) = results.first() {
-                            ProfileState::from_note_contents(result.note.content())
-                        } else {
-                            ProfileState::default()
-                        }
-                    });
-                if EditProfileView::new(state, ctx.img_cache).ui(ui) {
-                    if let Some(taken_state) =
-                        app.view_state.pubkey_to_profile_state.remove(kp.pubkey)
-                    {
-                        action = Some(RenderNavAction::ProfileAction(ProfileAction::SaveChanges(
-                            SaveProfileChanges::new(kp.to_full(), taken_state),
-                        )))
-                    }
-                }
-            } else {
+            let Some(kp) = ctx.accounts.get_full(pubkey) else {
                 error!("Pubkey in EditProfile route did not have an nsec attached in Accounts");
+                return None;
+            };
+
+            let state = app
+                .view_state
+                .pubkey_to_profile_state
+                .entry(*kp.pubkey)
+                .or_insert_with(|| {
+                    let txn = Transaction::new(ctx.ndb).expect("txn");
+                    let filter = Filter::new_with_capacity(1)
+                        .kinds([0])
+                        .authors([kp.pubkey.bytes()])
+                        .build();
+
+                    let Ok(results) = ctx.ndb.query(&txn, &[filter], 1) else {
+                        return ProfileState::default();
+                    };
+
+                    if let Some(result) = results.first() {
+                        ProfileState::from_note_contents(result.note.content())
+                    } else {
+                        ProfileState::default()
+                    }
+                });
+
+            if EditProfileView::new(state, ctx.img_cache).ui(ui) {
+                if let Some(taken_state) = app.view_state.pubkey_to_profile_state.remove(kp.pubkey)
+                {
+                    action = Some(RenderNavAction::ProfileAction(ProfileAction::SaveChanges(
+                        SaveProfileChanges::new(kp.to_full(), taken_state),
+                    )))
+                }
             }
+
             action
         }
         Route::Wallet(wallet_type) => {
