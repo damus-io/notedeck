@@ -133,7 +133,7 @@ pub fn render_note_contents(
     let mut current_len: usize = 0;
     let truncate_len = 280;
 
-    if !options.has(NoteOptions::HasNotePreviews) {
+    if !options.has(NoteOptions::IsPreview) {
         // need this for the rect to take the full width of the column
         let _ = ui.allocate_at_least(egui::vec2(ui.available_width(), 0.0), egui::Sense::click());
     }
