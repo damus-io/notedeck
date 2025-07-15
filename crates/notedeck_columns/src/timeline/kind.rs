@@ -257,7 +257,7 @@ impl AlgoTimeline {
 impl Display for TimelineKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            TimelineKind::List(ListKind::Contact(_src)) => f.write_str("Contacts"),
+            TimelineKind::List(ListKind::Contact(_src)) => f.write_str("Home"),
             TimelineKind::Algo(AlgoTimeline::LastPerPubkey(_lk)) => f.write_str("Last Notes"),
             TimelineKind::Generic(_) => f.write_str("Timeline"),
             TimelineKind::Notifications(_) => f.write_str("Notifications"),
