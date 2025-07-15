@@ -35,10 +35,6 @@ impl Default for NoteOptions {
 }
 
 impl NoteOptions {
-    pub fn has(self, flag: NoteOptions) -> bool {
-        (self & flag) == flag
-    }
-
     pub fn new(is_universe_timeline: bool) -> Self {
         let mut options = NoteOptions::default();
         options.set(NoteOptions::HideMedia, is_universe_timeline);
@@ -46,9 +42,9 @@ impl NoteOptions {
     }
 
     pub fn pfp_size(&self) -> i8 {
-        if self.has(NoteOptions::SmallPfp) {
+        if self.contains(NoteOptions::SmallPfp) {
             ProfilePic::small_size()
-        } else if self.has(NoteOptions::MediumPfp) {
+        } else if self.contains(NoteOptions::MediumPfp) {
             ProfilePic::medium_size()
         } else {
             ProfilePic::default_size()

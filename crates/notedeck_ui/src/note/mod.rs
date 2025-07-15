@@ -252,7 +252,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
         profile: &Result<nostrdb::ProfileRecord<'_>, nostrdb::Error>,
         ui: &mut egui::Ui,
     ) -> PfpResponse {
-        if !self.options().has(NoteOptions::Wide) {
+        if !self.options().contains(NoteOptions::Wide) {
             ui.spacing_mut().item_spacing.x = 16.0;
         } else {
             ui.spacing_mut().item_spacing.x = 4.0;
@@ -337,7 +337,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui) -> NoteResponse {
-        if self.options().has(NoteOptions::Textmode) {
+        if self.options().contains(NoteOptions::Textmode) {
             NoteResponse::new(self.textmode_ui(ui))
         } else if self.framed {
             egui::Frame::new()
@@ -468,7 +468,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
 
             note_action = contents.action.or(note_action);
 
-            if self.options().has(NoteOptions::ActionBar) {
+            if self.options().contains(NoteOptions::ActionBar) {
                 note_action = render_note_actionbar(
                     ui,
                     self.zapping_acc.as_ref().map(|c| Zapper {
@@ -549,7 +549,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
 
                 note_action = contents.action.or(note_action);
 
-                if self.options().has(NoteOptions::ActionBar) {
+                if self.options().contains(NoteOptions::ActionBar) {
                     note_action = render_note_actionbar(
                         ui,
                         self.zapping_acc.as_ref().map(|c| Zapper {
@@ -587,7 +587,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
         let maybe_hitbox = maybe_note_hitbox(ui, hitbox_id);
 
         // wide design
-        let response = if self.options().has(NoteOptions::Wide) {
+        let response = if self.options().contains(NoteOptions::Wide) {
             self.wide_ui(ui, txn, note_key, &profile)
         } else {
             self.standard_ui(ui, txn, note_key, &profile)
@@ -596,7 +596,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
         let note_ui_resp = response.inner;
         let mut note_action = note_ui_resp.action;
 
-        if self.options().has(NoteOptions::OptionsButton) {
+        if self.options().contains(NoteOptions::OptionsButton) {
             let context_pos = {
                 let size = NoteContextButton::max_width();
                 let top_right = response.response.rect.right_top();

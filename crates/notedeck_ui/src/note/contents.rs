@@ -123,17 +123,17 @@ pub fn render_note_contents(
     jobs: &mut JobsCache,
 ) -> NoteResponse {
     let note_key = note.key().expect("todo: implement non-db notes");
-    let selectable = options.has(NoteOptions::SelectableText);
+    let selectable = options.contains(NoteOptions::SelectableText);
     let mut note_action: Option<NoteAction> = None;
     let mut inline_note: Option<(&[u8; 32], &str)> = None;
-    let hide_media = options.has(NoteOptions::HideMedia);
+    let hide_media = options.contains(NoteOptions::HideMedia);
     let link_color = ui.visuals().hyperlink_color;
 
     // The current length of the rendered blocks. Used in trucation logic
     let mut current_len: usize = 0;
     let truncate_len = 280;
 
-    if !options.has(NoteOptions::IsPreview) {
+    if !options.contains(NoteOptions::IsPreview) {
         // need this for the rect to take the full width of the column
         let _ = ui.allocate_at_least(egui::vec2(ui.available_width(), 0.0), egui::Sense::click());
     }
@@ -183,11 +183,11 @@ pub fn render_note_contents(
                         }
                     }
 
-                    Mention::Note(note) if options.has(NoteOptions::HasNotePreviews) => {
+                    Mention::Note(note) if options.contains(NoteOptions::HasNotePreviews) => {
                         inline_note = Some((note.id(), block.as_str()));
                     }
 
-                    Mention::Event(note) if options.has(NoteOptions::HasNotePreviews) => {
+                    Mention::Event(note) if options.contains(NoteOptions::HasNotePreviews) => {
                         inline_note = Some((note.id(), block.as_str()));
                     }
 
@@ -233,7 +233,7 @@ pub fn render_note_contents(
                 BlockType::Text => {
                     // truncate logic
                     let mut truncate = false;
-                    let block_str = if options.has(NoteOptions::Truncate)
+                    let block_str = if options.contains(NoteOptions::Truncate)
                         && (current_len + block.as_str().len() > truncate_len)
                     {
                         truncate = true;
@@ -251,7 +251,7 @@ pub fn render_note_contents(
                         block_str
                     };
 
-                    if options.has(NoteOptions::ScrambleText) {
+                    if options.contains(NoteOptions::ScrambleText) {
                         ui.add(
                             egui::Label::new(rot13(block_str))
                                 .wrap()
@@ -287,7 +287,7 @@ pub fn render_note_contents(
     });
 
     let mut media_action = None;
-    if !supported_medias.is_empty() && !options.has(NoteOptions::Textmode) {
+    if !supported_medias.is_empty() && !options.contains(NoteOptions::Textmode) {
         ui.add_space(2.0);
         let carousel_id = egui::Id::new(("carousel", note.key().expect("expected tx note")));
 
