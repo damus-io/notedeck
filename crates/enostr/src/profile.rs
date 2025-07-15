@@ -1,7 +1,13 @@
 use serde_json::{Map, Value};
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ProfileState(Value);
+
+impl Default for ProfileState {
+    fn default() -> Self {
+        ProfileState::new(Map::default())
+    }
+}
 
 impl ProfileState {
     pub fn new(value: Map<String, Value>) -> Self {
