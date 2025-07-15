@@ -2,7 +2,6 @@ use std::cell::OnceCell;
 
 use crate::{
     blur::imeta_blurhashes,
-    contacts::trust_media_from_pk2,
     jobs::JobsCache,
     note::{NoteAction, NoteOptions, NoteResponse, NoteView},
 };
@@ -11,7 +10,7 @@ use egui::{Color32, Hyperlink, RichText};
 use nostrdb::{BlockType, Mention, Note, NoteKey, Transaction};
 use tracing::warn;
 
-use notedeck::NoteContext;
+use notedeck::{IsFollowing, NoteContext};
 
 use super::media::{find_renderable_media, image_carousel, RenderableMedia};
 
@@ -284,11 +283,11 @@ pub fn render_note_contents(
         ui.add_space(2.0);
         let carousel_id = egui::Id::new(("carousel", note.key().expect("expected tx note")));
 
-        let zapping_acc = {
-            let cur_acc = note_context.accounts.get_selected_account();
-            cur_acc.wallet.as_ref().map(|_| cur_acc.key.pubkey.bytes())
-        };
-        let trusted_media = trust_media_from_pk2(note_context.ndb, txn, zapping_acc, note.pubkey());
+        let trusted_media = note_context
+            .accounts
+            .get_selected_account()
+            .is_following(note.pubkey())
+            == IsFollowing::Yes;
 
         media_action = image_carousel(
             ui,
