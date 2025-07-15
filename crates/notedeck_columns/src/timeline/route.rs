@@ -37,6 +37,7 @@ pub fn render_timeline_route(
                 note_options,
                 &(&accounts.get_selected_account().key).into(),
                 jobs,
+                col,
             )
             .ui(ui);
 
@@ -66,6 +67,7 @@ pub fn render_timeline_route(
                     note_options,
                     &(&accounts.get_selected_account().key).into(),
                     jobs,
+                    col,
                 )
                 .ui(ui);
 

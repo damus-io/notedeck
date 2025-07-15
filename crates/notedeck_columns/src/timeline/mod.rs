@@ -247,12 +247,12 @@ impl Timeline {
         )
     }
 
-    pub fn make_view_id(id: &TimelineKind, selected_view: usize) -> egui::Id {
-        egui::Id::new((id, selected_view))
+    pub fn make_view_id(id: &TimelineKind, col: usize, selected_view: usize) -> egui::Id {
+        egui::Id::new((id, selected_view, col))
     }
 
-    pub fn view_id(&self) -> egui::Id {
-        Timeline::make_view_id(&self.kind, self.selected_view)
+    pub fn view_id(&self, col: usize) -> egui::Id {
+        Timeline::make_view_id(&self.kind, col, self.selected_view)
     }
 
     pub fn new(kind: TimelineKind, filter_state: FilterState, views: Vec<TimelineTab>) -> Self {

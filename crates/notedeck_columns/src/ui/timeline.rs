@@ -24,6 +24,7 @@ pub struct TimelineView<'a, 'd> {
     note_context: &'a mut NoteContext<'d>,
     cur_acc: &'a KeypairUnowned<'a>,
     jobs: &'a mut JobsCache,
+    col: usize,
 }
 
 impl<'a, 'd> TimelineView<'a, 'd> {
@@ -36,6 +37,7 @@ impl<'a, 'd> TimelineView<'a, 'd> {
         note_options: NoteOptions,
         cur_acc: &'a KeypairUnowned<'a>,
         jobs: &'a mut JobsCache,
+        col: usize,
     ) -> Self {
         let reverse = false;
         TimelineView {
@@ -47,6 +49,7 @@ impl<'a, 'd> TimelineView<'a, 'd> {
             note_context,
             cur_acc,
             jobs,
+            col,
         }
     }
 
@@ -61,6 +64,7 @@ impl<'a, 'd> TimelineView<'a, 'd> {
             self.note_context,
             self.cur_acc,
             self.jobs,
+            self.col,
         )
     }
 
@@ -81,6 +85,7 @@ fn timeline_ui(
     note_context: &mut NoteContext,
     cur_acc: &KeypairUnowned,
     jobs: &mut JobsCache,
+    col: usize,
 ) -> Option<NoteAction> {
     //padding(4.0, ui, |ui| ui.heading("Notifications"));
     /*
@@ -104,7 +109,7 @@ fn timeline_ui(
         // need this for some reason??
         ui.add_space(3.0);
 
-        egui::Id::new(("tlscroll", timeline.view_id()))
+        egui::Id::new(("tlscroll", timeline.view_id(col)))
     };
 
     let show_top_button_id = ui.id().with((scroll_id, "at_top"));
