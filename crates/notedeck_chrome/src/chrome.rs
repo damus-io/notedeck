@@ -277,7 +277,7 @@ impl Chrome {
     }
 
     fn toolbar_height() -> f32 {
-        60.0
+        48.0
     }
 
     /// On narrow layouts, we have a toolbar
@@ -340,18 +340,19 @@ impl Chrome {
 
                 let mut action: Option<ToolbarAction> = None;
 
+                let btn_size: f32 = 20.0;
                 if index == 0 {
-                    if home_button(ui).clicked() {
+                    if home_button(ui, btn_size).clicked() {
                         action = Some(ToolbarAction::Home);
                     }
                 } else if index == 1 {
                     if let Some(dave) = self.get_dave() {
-                        let rect = dave_toolbar_rect(ui);
+                        let rect = dave_toolbar_rect(ui, btn_size * 2.0);
                         if dave_button(dave.avatar_mut(), ui, rect).clicked() {
                             action = Some(ToolbarAction::Dave);
                         }
                     }
-                } else if index == 2 && notifications_button(ui).clicked() {
+                } else if index == 2 && notifications_button(ui, btn_size).clicked() {
                     action = Some(ToolbarAction::Notifications);
                 }
 
@@ -517,20 +518,20 @@ fn settings_button(ui: &mut egui::Ui) -> egui::Response {
     )
 }
 
-fn notifications_button(ui: &mut egui::Ui) -> egui::Response {
+fn notifications_button(ui: &mut egui::Ui, size: f32) -> egui::Response {
     expanding_button(
         "notifications-button",
-        24.0,
+        size,
         app_images::notifications_light_image(),
         app_images::notifications_dark_image(),
         ui,
     )
 }
 
-fn home_button(ui: &mut egui::Ui) -> egui::Response {
+fn home_button(ui: &mut egui::Ui, size: f32) -> egui::Response {
     expanding_button(
         "home-button",
-        24.0,
+        size,
         app_images::home_light_image(),
         app_images::home_dark_image(),
         ui,
@@ -555,8 +556,8 @@ fn dave_sidebar_rect(ui: &mut egui::Ui) -> Rect {
     egui::Rect::from_center_size(egui::pos2(center_x, center_y), size)
 }
 
-fn dave_toolbar_rect(ui: &mut egui::Ui) -> Rect {
-    let size = vec2(60.0, 60.0);
+fn dave_toolbar_rect(ui: &mut egui::Ui, size: f32) -> Rect {
+    let size = vec2(size, size);
     let available = ui.available_rect_before_wrap();
     let center_x = available.center().x;
     let center_y = available.center().y;
