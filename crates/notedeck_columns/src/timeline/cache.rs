@@ -38,6 +38,15 @@ impl<'a, M> Vitality<'a, M> {
     }
 }
 
+impl<'a> IntoIterator for &'a mut TimelineCache {
+    type Item = (&'a TimelineKind, &'a mut Timeline);
+    type IntoIter = std::collections::hash_map::IterMut<'a, TimelineKind, Timeline>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.timelines.iter_mut()
+    }
+}
+
 impl TimelineCache {
     /// Pop a timeline from the timeline cache. This only removes the timeline
     /// if it has reached 0 subscribers, meaning it was the last one to be
@@ -92,6 +101,14 @@ impl TimelineCache {
 
         // insert initial notes into timeline
         timeline.insert_new(txn, ndb, note_cache, notes);
+        self.timelines.insert(id, timeline);
+    }
+
+    pub fn insert(&mut self, id: TimelineKind, timeline: Timeline) {
+        if let Some(_cur_timeline) = self.timelines.get_mut(&id) {
+            return;
+        };
+
         self.timelines.insert(id, timeline);
     }
 
@@ -189,6 +206,18 @@ impl TimelineCache {
         };
 
         open_result
+    }
+
+    pub fn get(&self, id: &TimelineKind) -> Option<&Timeline> {
+        self.timelines.get(id)
+    }
+
+    pub fn get_mut(&mut self, id: &TimelineKind) -> Option<&mut Timeline> {
+        self.timelines.get_mut(id)
+    }
+
+    pub fn num_timelines(&self) -> usize {
+        self.timelines.len()
     }
 }
 
