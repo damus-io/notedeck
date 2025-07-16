@@ -536,7 +536,7 @@ pub fn send_initial_timeline_filter(
 
         FilterState::Ready(filter) => {
             let filter = filter.to_owned();
-            let new_filters = filter.into_iter().map(|f| {
+            let new_filters: Vec<Filter> = filter.into_iter().map(|f| {
                 // limit the size of remote filters
                 let default_limit = filter::default_remote_limit();
                 let mut lim = f.limit().unwrap_or(default_limit);
@@ -567,8 +567,10 @@ pub fn send_initial_timeline_filter(
             let sub_id = subscriptions::new_sub_id();
             subs.subs.insert(sub_id.clone(), SubKind::Initial);
 
-            if let Err(err) = relay.subscribe(sub_id, new_filters) {
+            if let Err(err) = relay.subscribe(sub_id.clone(), new_filters.clone()) {
                 error!("error subscribing: {err}");
+            } else {
+                timeline.subscription.force_add_remote(sub_id);
             }
         }
 
@@ -756,8 +758,7 @@ pub fn is_timeline_ready(
 
             //let ck = &timeline.kind;
             //let subid = damus.gen_subid(&SubKind::Column(ck.clone()));
-            let subid = subscriptions::new_sub_id();
-            pool.subscribe(subid, filter);
+            timeline.subscription.try_add_remote(pool, &filter);
             true
         }
     }
