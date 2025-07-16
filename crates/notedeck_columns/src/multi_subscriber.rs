@@ -2,151 +2,10 @@ use egui_nav::ReturnType;
 use enostr::{Filter, NoteId, RelayPool};
 use hashbrown::HashMap;
 use nostrdb::{Ndb, Subscription};
-use tracing::{error, info};
+use notedeck::UnifiedSubscription;
 use uuid::Uuid;
 
-use crate::timeline::ThreadSelection;
-
-#[derive(Debug)]
-pub struct MultiSubscriber {
-    pub filters: Vec<Filter>,
-    pub local_subid: Option<Subscription>,
-    pub remote_subid: Option<String>,
-    local_subscribers: u32,
-    remote_subscribers: u32,
-}
-
-impl MultiSubscriber {
-    /// Create a MultiSubscriber with an initial local subscription.
-    pub fn with_initial_local_sub(sub: Subscription, filters: Vec<Filter>) -> Self {
-        let mut msub = MultiSubscriber::new(filters);
-        msub.local_subid = Some(sub);
-        msub.local_subscribers = 1;
-        msub
-    }
-
-    pub fn new(filters: Vec<Filter>) -> Self {
-        Self {
-            filters,
-            local_subid: None,
-            remote_subid: None,
-            local_subscribers: 0,
-            remote_subscribers: 0,
-        }
-    }
-
-    fn unsubscribe_remote(&mut self, ndb: &Ndb, pool: &mut RelayPool) {
-        let remote_subid = if let Some(remote_subid) = &self.remote_subid {
-            remote_subid
-        } else {
-            self.err_log(ndb, "unsubscribe_remote: nothing to unsubscribe from?");
-            return;
-        };
-
-        pool.unsubscribe(remote_subid.clone());
-
-        self.remote_subid = None;
-    }
-
-    /// Locally unsubscribe if we have one
-    fn unsubscribe_local(&mut self, ndb: &mut Ndb) {
-        let local_sub = if let Some(local_sub) = self.local_subid {
-            local_sub
-        } else {
-            self.err_log(ndb, "unsubscribe_local: nothing to unsubscribe from?");
-            return;
-        };
-
-        match ndb.unsubscribe(local_sub) {
-            Err(e) => {
-                self.err_log(ndb, &format!("Failed to unsubscribe: {e}"));
-            }
-            Ok(_) => {
-                self.local_subid = None;
-            }
-        }
-    }
-
-    pub fn unsubscribe(&mut self, ndb: &mut Ndb, pool: &mut RelayPool) -> bool {
-        if self.local_subscribers == 0 && self.remote_subscribers == 0 {
-            self.err_log(
-                ndb,
-                "Called multi_subscriber unsubscribe when both sub counts are 0",
-            );
-            return false;
-        }
-
-        self.local_subscribers = self.local_subscribers.saturating_sub(1);
-        self.remote_subscribers = self.remote_subscribers.saturating_sub(1);
-
-        if self.local_subscribers == 0 && self.remote_subscribers == 0 {
-            self.info_log(ndb, "Locally unsubscribing");
-            self.unsubscribe_local(ndb);
-            self.unsubscribe_remote(ndb, pool);
-            self.local_subscribers = 0;
-            self.remote_subscribers = 0;
-            true
-        } else {
-            false
-        }
-    }
-
-    fn info_log(&self, ndb: &Ndb, msg: &str) {
-        info!(
-            "{msg}. {}/{}/{} active ndb/local/remote subscriptions.",
-            ndb.subscription_count(),
-            self.local_subscribers,
-            self.remote_subscribers,
-        );
-    }
-
-    fn err_log(&self, ndb: &Ndb, msg: &str) {
-        error!(
-            "{msg}. {}/{}/{} active ndb/local/remote subscriptions.",
-            ndb.subscription_count(),
-            self.local_subscribers,
-            self.remote_subscribers,
-        );
-    }
-
-    pub fn subscribe(&mut self, ndb: &Ndb, pool: &mut RelayPool) {
-        self.local_subscribers += 1;
-        self.remote_subscribers += 1;
-
-        if self.remote_subscribers == 1 {
-            if self.remote_subid.is_some() {
-                self.err_log(
-                    ndb,
-                    "Object is first subscriber, but it already had a subscription",
-                );
-                return;
-            } else {
-                let subid = Uuid::new_v4().to_string();
-                pool.subscribe(subid.clone(), self.filters.clone());
-                self.info_log(ndb, "First remote subscription");
-                self.remote_subid = Some(subid);
-            }
-        }
-
-        if self.local_subscribers == 1 {
-            if self.local_subid.is_some() {
-                self.err_log(ndb, "Should not have a local subscription already");
-                return;
-            }
-
-            match ndb.subscribe(&self.filters) {
-                Ok(sub) => {
-                    self.info_log(ndb, "First local subscription");
-                    self.local_subid = Some(sub);
-                }
-
-                Err(err) => {
-                    error!("multi_subscriber: error subscribing locally: '{err}'")
-                }
-            }
-        }
-    }
-}
+use crate::{subscriptions, timeline::ThreadSelection};
 
 type RootNoteId = NoteId;
 
@@ -403,4 +262,241 @@ fn local_sub_new_scope(
     });
 
     1
+}
+
+#[derive(Debug)]
+pub struct TimelineSub {
+    filter: Option<Vec<Filter>>,
+    state: SubState,
+}
+
+#[derive(Debug)]
+enum SubState {
+    NoSub {
+        dependers: usize,
+    },
+    LocalOnly {
+        local: Subscription,
+        dependers: usize,
+    },
+    RemoteOnly {
+        remote: String,
+        dependers: usize,
+    },
+    Unified {
+        unified: UnifiedSubscription,
+        dependers: usize,
+    },
+}
+
+impl Default for TimelineSub {
+    fn default() -> Self {
+        Self {
+            state: SubState::NoSub { dependers: 0 },
+            filter: None,
+        }
+    }
+}
+
+impl TimelineSub {
+    pub fn try_add_local(&mut self, ndb: &Ndb, filter: &[Filter]) {
+        match &mut self.state {
+            SubState::NoSub { dependers } => {
+                let Some(sub) = ndb_sub(ndb, filter, "") else {
+                    return;
+                };
+
+                self.filter = Some(filter.to_owned());
+                self.state = SubState::LocalOnly {
+                    local: sub,
+                    dependers: *dependers,
+                }
+            }
+            SubState::LocalOnly {
+                local: _,
+                dependers: _,
+            } => {}
+            SubState::RemoteOnly { remote, dependers } => {
+                let Some(local) = ndb_sub(ndb, filter, "") else {
+                    return;
+                };
+                self.state = SubState::Unified {
+                    unified: UnifiedSubscription {
+                        local,
+                        remote: remote.to_owned(),
+                    },
+                    dependers: *dependers,
+                };
+            }
+            SubState::Unified {
+                unified: _,
+                dependers: _,
+            } => {}
+        }
+    }
+
+    pub fn force_add_remote(&mut self, subid: String) {
+        match &mut self.state {
+            SubState::NoSub { dependers } => {
+                self.state = SubState::RemoteOnly {
+                    remote: subid,
+                    dependers: *dependers,
+                }
+            }
+            SubState::LocalOnly { local, dependers } => {
+                self.state = SubState::Unified {
+                    unified: UnifiedSubscription {
+                        local: *local,
+                        remote: subid,
+                    },
+                    dependers: *dependers,
+                }
+            }
+            SubState::RemoteOnly {
+                remote: _,
+                dependers: _,
+            } => {}
+            SubState::Unified {
+                unified: _,
+                dependers: _,
+            } => {}
+        }
+    }
+
+    pub fn try_add_remote(&mut self, pool: &mut RelayPool, filter: &Vec<Filter>) {
+        match &mut self.state {
+            SubState::NoSub { dependers } => {
+                let subid = subscriptions::new_sub_id();
+                pool.subscribe(subid.clone(), filter.clone());
+                self.filter = Some(filter.to_owned());
+                self.state = SubState::RemoteOnly {
+                    remote: subid,
+                    dependers: *dependers,
+                };
+            }
+            SubState::LocalOnly { local, dependers } => {
+                let subid = subscriptions::new_sub_id();
+                pool.subscribe(subid.clone(), filter.clone());
+                self.filter = Some(filter.to_owned());
+                self.state = SubState::Unified {
+                    unified: UnifiedSubscription {
+                        local: *local,
+                        remote: subid,
+                    },
+                    dependers: *dependers,
+                }
+            }
+            SubState::RemoteOnly {
+                remote: _,
+                dependers: _,
+            } => {}
+            SubState::Unified {
+                unified: _,
+                dependers: _,
+            } => {}
+        }
+    }
+
+    pub fn increment(&mut self) {
+        match &mut self.state {
+            SubState::NoSub { dependers } => {
+                *dependers += 1;
+            }
+            SubState::LocalOnly {
+                local: _,
+                dependers,
+            } => {
+                *dependers += 1;
+            }
+            SubState::RemoteOnly {
+                remote: _,
+                dependers,
+            } => {
+                *dependers += 1;
+            }
+            SubState::Unified {
+                unified: _,
+                dependers,
+            } => {
+                *dependers += 1;
+            }
+        }
+    }
+
+    pub fn get_local(&self) -> Option<Subscription> {
+        match &self.state {
+            SubState::NoSub { dependers: _ } => None,
+            SubState::LocalOnly {
+                local,
+                dependers: _,
+            } => Some(*local),
+            SubState::RemoteOnly {
+                remote: _,
+                dependers: _,
+            } => None,
+            SubState::Unified {
+                unified,
+                dependers: _,
+            } => Some(unified.local),
+        }
+    }
+
+    pub fn unsubscribe_or_decrement(&mut self, ndb: &mut Ndb, pool: &mut RelayPool) {
+        match &mut self.state {
+            SubState::NoSub { dependers } => {
+                *dependers -= 1;
+            }
+            SubState::LocalOnly { local, dependers } => {
+                if *dependers > 1 {
+                    *dependers -= 1;
+                    return;
+                }
+
+                if let Err(e) = ndb.unsubscribe(*local) {
+                    tracing::error!("Could not unsub ndb: {e}");
+                    return;
+                }
+
+                self.state = SubState::NoSub { dependers: 0 };
+            }
+            SubState::RemoteOnly { remote, dependers } => {
+                if *dependers > 1 {
+                    *dependers -= 1;
+                    return;
+                }
+
+                pool.unsubscribe(remote.to_owned());
+
+                self.state = SubState::NoSub { dependers: 0 };
+            }
+            SubState::Unified { unified, dependers } => {
+                if *dependers > 1 {
+                    *dependers -= 1;
+                    return;
+                }
+
+                pool.unsubscribe(unified.remote.to_owned());
+
+                if let Err(e) = ndb.unsubscribe(unified.local) {
+                    tracing::error!("could not unsub ndb: {e}");
+                    self.state = SubState::LocalOnly {
+                        local: unified.local,
+                        dependers: *dependers,
+                    }
+                } else {
+                    self.state = SubState::NoSub {
+                        dependers: *dependers,
+                    };
+                }
+            }
+        }
+    }
+
+    pub fn get_filter(&self) -> Option<&Vec<Filter>> {
+        self.filter.as_ref()
+    }
+
+    pub fn no_sub(&self) -> bool {
+        matches!(self.state, SubState::NoSub { dependers: _ })
+    }
 }

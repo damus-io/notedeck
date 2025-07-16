@@ -1,7 +1,6 @@
 use crate::{
     actionbar::TimelineOpenResult,
     error::Error,
-    multi_subscriber::MultiSubscriber,
     //subscriptions::SubRefs,
     timeline::{Timeline, TimelineKind},
 };
@@ -55,20 +54,17 @@ impl TimelineCache {
             return Err(Error::TimelineNotFound);
         };
 
-        if let Some(sub) = &mut timeline.subscription {
-            // if this is the last subscriber, remove the timeline from cache
-            if sub.unsubscribe(ndb, pool) {
-                debug!(
-                    "popped last timeline {:?}, removing from timeline cache",
-                    id
-                );
-                self.timelines.remove(id);
-            }
+        timeline.subscription.unsubscribe_or_decrement(ndb, pool);
 
-            Ok(())
-        } else {
-            Err(Error::MissingSubscription)
+        if timeline.subscription.no_sub() {
+            debug!(
+                "popped last timeline {:?}, removing from timeline cache",
+                id
+            );
+            self.timelines.remove(id);
         }
+
+        Ok(())
     }
 
     fn get_expected_mut(&mut self, key: &TimelineKind) -> &mut Timeline {
@@ -158,7 +154,7 @@ impl TimelineCache {
                 // The timeline cache is stale, let's update it
                 let notes = find_new_notes(
                     timeline.all_or_any_notes(),
-                    timeline.subscription.as_ref().map(|s| &s.filters)?,
+                    timeline.subscription.get_filter()?,
                     txn,
                     ndb,
                 );
@@ -180,14 +176,10 @@ impl TimelineCache {
             Vitality::Fresh(timeline) => (None, timeline),
         };
 
-        if let Some(multi_sub) = &mut timeline.subscription {
-            debug!("got open with *old* subscription for {:?}", &timeline.kind);
-            multi_sub.subscribe(ndb, pool);
-        } else if let Some(filter) = timeline.filter.get_any_ready() {
+        if let Some(filter) = timeline.filter.get_any_ready() {
             debug!("got open with *new* subscription for {:?}", &timeline.kind);
-            let mut multi_sub = MultiSubscriber::new(filter.clone());
-            multi_sub.subscribe(ndb, pool);
-            timeline.subscription = Some(multi_sub);
+            timeline.subscription.try_add_local(ndb, filter);
+            timeline.subscription.try_add_remote(pool, filter);
         } else {
             // This should never happen reasoning, self.notes would have
             // failed above if the filter wasn't ready

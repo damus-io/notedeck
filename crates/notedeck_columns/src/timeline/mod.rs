@@ -1,6 +1,6 @@
 use crate::{
     error::Error,
-    multi_subscriber::MultiSubscriber,
+    multi_subscriber::TimelineSub,
     subscriptions::{self, SubKind, Subscriptions},
     timeline::kind::ListKind,
     Result,
@@ -198,7 +198,7 @@ pub struct Timeline {
     pub views: Vec<TimelineTab>,
     pub selected_view: usize,
 
-    pub subscription: Option<MultiSubscriber>,
+    pub subscription: TimelineSub,
 }
 
 impl Timeline {
@@ -257,7 +257,7 @@ impl Timeline {
 
     pub fn new(kind: TimelineKind, filter_state: FilterState, views: Vec<TimelineTab>) -> Self {
         let filter = FilterStates::new(filter_state);
-        let subscription: Option<MultiSubscriber> = None;
+        let subscription = TimelineSub::default();
         let selected_view = 0;
 
         Timeline {
@@ -405,8 +405,7 @@ impl Timeline {
 
         let sub = self
             .subscription
-            .as_ref()
-            .and_then(|s| s.local_subid)
+            .get_local()
             .ok_or(Error::App(notedeck::Error::no_active_sub()))?;
 
         let new_note_ids = ndb.poll_for_notes(sub, 500);
@@ -613,19 +612,7 @@ fn setup_initial_timeline(
 ) -> Result<()> {
     // some timelines are one-shot and a refreshed, like last_per_pubkey algo feed
     if timeline.kind.should_subscribe_locally() {
-        let local_sub = ndb.subscribe(filters)?;
-        match &mut timeline.subscription {
-            None => {
-                timeline.subscription = Some(MultiSubscriber::with_initial_local_sub(
-                    local_sub,
-                    filters.to_vec(),
-                ));
-            }
-
-            Some(msub) => {
-                msub.local_subid = Some(local_sub);
-            }
-        };
+        timeline.subscription.try_add_local(ndb, filters);
     }
 
     debug!(
