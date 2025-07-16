@@ -1,6 +1,6 @@
 [package]
 name = "notedeck_dave"
-edition = "2021"
+edition.workspace = true
 version.workspace = true
 
 [dependencies]

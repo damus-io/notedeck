@@ -34,14 +34,14 @@ mod user_account;
 mod wallet;
 mod zaps;
 
+pub use account::FALLBACK_PUBKEY;
 pub use account::accounts::{AccountData, AccountSubs, Accounts};
 pub use account::contacts::{ContactState, IsFollowing};
 pub use account::relay::RelayAction;
-pub use account::FALLBACK_PUBKEY;
 pub use app::{App, AppAction, Notedeck};
 pub use args::Args;
 pub use context::AppContext;
-pub use error::{show_one_error_message, Error, FilterError, ZapError};
+pub use error::{Error, FilterError, ZapError, show_one_error_message};
 pub use filter::{FilterState, FilterStates, UnifiedSubscription};
 pub use fonts::NamedFontFamily;
 pub use imgcache::{
@@ -66,16 +66,16 @@ pub use style::NotedeckTextStyle;
 pub use theme::ColorTheme;
 pub use time::time_ago_since;
 pub use timecache::TimeCached;
-pub use unknowns::{get_unknown_note_ids, NoteRefsUnkIdAction, SingleUnkIdAction, UnknownIds};
-pub use urls::{supported_mime_hosted_at_url, SupportedMimeType, UrlMimes};
+pub use unknowns::{NoteRefsUnkIdAction, SingleUnkIdAction, UnknownIds, get_unknown_note_ids};
+pub use urls::{SupportedMimeType, UrlMimes, supported_mime_hosted_at_url};
 pub use user_account::UserAccount;
 pub use wallet::{
-    get_current_wallet, get_wallet_for, GlobalWallet, Wallet, WalletError, WalletType,
-    WalletUIState, ZapWallet,
+    GlobalWallet, Wallet, WalletError, WalletType, WalletUIState, ZapWallet, get_current_wallet,
+    get_wallet_for,
 };
 pub use zaps::{
-    get_current_default_msats, AnyZapState, DefaultZapError, DefaultZapMsats, NoteZapTarget,
-    NoteZapTargetOwned, PendingDefaultZapState, ZapTarget, ZapTargetOwned, ZappingError,
+    AnyZapState, DefaultZapError, DefaultZapMsats, NoteZapTarget, NoteZapTargetOwned,
+    PendingDefaultZapState, ZapTarget, ZapTargetOwned, ZappingError, get_current_default_msats,
 };
 
 // export libs

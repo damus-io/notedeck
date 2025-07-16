@@ -1,6 +1,6 @@
 use egui::{
-    style::{Selection, WidgetVisuals, Widgets},
     Color32, CornerRadius, Stroke, Visuals,
+    style::{Selection, WidgetVisuals, Widgets},
 };
 
 pub struct ColorTheme {

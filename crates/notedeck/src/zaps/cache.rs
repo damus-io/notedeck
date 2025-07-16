@@ -4,10 +4,10 @@ use nwc::nostr::nips::nip47::PayInvoiceResponse;
 use poll_promise::Promise;
 use tokio::task::JoinError;
 
-use crate::{get_wallet_for, Accounts, GlobalWallet, ZapError};
+use crate::{Accounts, GlobalWallet, ZapError, get_wallet_for};
 
 use super::{
-    networking::{fetch_invoice_lnurl, fetch_invoice_lud16, FetchedInvoice, FetchingInvoice},
+    networking::{FetchedInvoice, FetchingInvoice, fetch_invoice_lnurl, fetch_invoice_lud16},
     zap::Zap,
 };
 

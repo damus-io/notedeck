@@ -12,7 +12,7 @@ use notedeck::Notedeck;
 #[tokio::main]
 pub async fn android_main(app: AndroidApp) {
     //use tracing_logcat::{LogcatMakeWriter, LogcatTag};
-    use tracing_subscriber::{prelude::*, EnvFilter};
+    use tracing_subscriber::{EnvFilter, prelude::*};
 
     std::env::set_var("RUST_BACKTRACE", "full");
     //std::env::set_var("DAVE_ENDPOINT", "http://ollama.jb55.com/v1");

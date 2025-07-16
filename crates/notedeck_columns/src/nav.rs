@@ -1,5 +1,6 @@
 use crate::{
-    accounts::{render_accounts_route, AccountsAction},
+    Damus,
+    accounts::{AccountsAction, render_accounts_route},
     app::{get_active_columns_mut, get_decks_mut},
     column::ColumnsAction,
     deck_state::DeckState,
@@ -8,31 +9,29 @@ use crate::{
     profile::{ProfileAction, SaveProfileChanges},
     route::{Route, Router, SingletonRouter},
     timeline::{
-        route::{render_thread_route, render_timeline_route},
         TimelineCache,
+        route::{render_thread_route, render_timeline_route},
     },
     ui::{
-        self,
+        self, RelayView,
         add_column::render_add_column_routes,
         column::NavTitle,
         configure_deck::ConfigureDeckView,
         edit_deck::{EditDeckResponse, EditDeckView},
-        note::{custom_zap::CustomZapView, NewPostAction, PostAction, PostType},
+        note::{NewPostAction, PostAction, PostType, custom_zap::CustomZapView},
         profile::EditProfileView,
         search::{FocusState, SearchView},
         support::SupportView,
-        wallet::{get_default_zap_state, WalletAction, WalletState, WalletView},
-        RelayView,
+        wallet::{WalletAction, WalletState, WalletView, get_default_zap_state},
     },
-    Damus,
 };
 
 use egui_nav::{Nav, NavAction, NavResponse, NavUiType, Percent, PopupResponse, PopupSheet};
 use enostr::ProfileState;
 use nostrdb::{Filter, Ndb, Transaction};
 use notedeck::{
-    get_current_default_msats, get_current_wallet, ui::is_narrow, Accounts, AppContext, NoteAction,
-    NoteContext, RelayAction,
+    Accounts, AppContext, NoteAction, NoteContext, RelayAction, get_current_default_msats,
+    get_current_wallet, ui::is_narrow,
 };
 use tracing::error;
 

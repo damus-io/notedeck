@@ -1,7 +1,7 @@
 pub mod edit;
 
 pub use edit::EditProfileView;
-use egui::{vec2, Color32, CornerRadius, Layout, Rect, RichText, ScrollArea, Sense, Stroke};
+use egui::{Color32, CornerRadius, Layout, Rect, RichText, ScrollArea, Sense, Stroke, vec2};
 use enostr::Pubkey;
 use nostrdb::{ProfileRecord, Transaction};
 use notedeck_ui::profile::follow_button;
@@ -9,17 +9,16 @@ use tracing::error;
 
 use crate::{
     timeline::{TimelineCache, TimelineKind},
-    ui::timeline::{tabs_ui, TimelineTabView},
+    ui::timeline::{TimelineTabView, tabs_ui},
 };
 use notedeck::{
-    name::get_display_name, profile::get_profile_url, IsFollowing, NoteAction, NoteContext,
-    NotedeckTextStyle,
+    IsFollowing, NoteAction, NoteContext, NotedeckTextStyle, name::get_display_name,
+    profile::get_profile_url,
 };
 use notedeck_ui::{
-    app_images,
+    NoteOptions, ProfilePic, app_images,
     jobs::JobsCache,
     profile::{about_section_widget, banner, display_name_widget},
-    NoteOptions, ProfilePic,
 };
 
 pub struct ProfileView<'a, 'd> {

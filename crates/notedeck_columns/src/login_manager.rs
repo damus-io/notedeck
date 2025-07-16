@@ -1,5 +1,5 @@
-use crate::key_parsing::perform_key_retrieval;
 use crate::key_parsing::AcquireKeyError;
+use crate::key_parsing::perform_key_retrieval;
 use egui::{TextBuffer, TextEdit};
 use enostr::Keypair;
 use poll_promise::Promise;

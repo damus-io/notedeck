@@ -1,9 +1,9 @@
 use core::f32;
 
-use egui::{vec2, Button, CornerRadius, Layout, Margin, RichText, ScrollArea, TextEdit};
+use egui::{Button, CornerRadius, Layout, Margin, RichText, ScrollArea, TextEdit, vec2};
 use enostr::ProfileState;
-use notedeck::{profile::unwrap_profile_url, Images, NotedeckTextStyle};
-use notedeck_ui::{profile::banner, ProfilePic};
+use notedeck::{Images, NotedeckTextStyle, profile::unwrap_profile_url};
+use notedeck_ui::{ProfilePic, profile::banner};
 
 pub struct EditProfileView<'a> {
     state: &'a mut ProfileState,

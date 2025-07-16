@@ -1,8 +1,8 @@
 use std::{
     future::Future,
     sync::{
-        mpsc::{self, Sender},
         Arc, Mutex,
+        mpsc::{self, Sender},
     },
 };
 use tokio::sync::oneshot;
@@ -26,19 +26,21 @@ impl JobPool {
         let arc_rx = Arc::new(Mutex::new(rx));
         for _ in 0..num_threads {
             let arc_rx_clone = arc_rx.clone();
-            std::thread::spawn(move || loop {
-                let job = {
-                    let Ok(unlocked) = arc_rx_clone.lock() else {
-                        continue;
-                    };
-                    let Ok(job) = unlocked.recv() else {
-                        continue;
+            std::thread::spawn(move || {
+                loop {
+                    let job = {
+                        let Ok(unlocked) = arc_rx_clone.lock() else {
+                            continue;
+                        };
+                        let Ok(job) = unlocked.recv() else {
+                            continue;
+                        };
+
+                        job
                     };
 
-                    job
-                };
-
-                job();
+                    job();
+                }
             });
         }
 

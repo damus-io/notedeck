@@ -2,7 +2,7 @@ use egui_nav::ReturnType;
 use enostr::{Filter, NoteId, RelayPool};
 use hashbrown::HashMap;
 use nostrdb::{Ndb, Subscription};
-use notedeck::{filter::HybridFilter, UnifiedSubscription};
+use notedeck::{UnifiedSubscription, filter::HybridFilter};
 use uuid::Uuid;
 
 use crate::{subscriptions, timeline::ThreadSelection};

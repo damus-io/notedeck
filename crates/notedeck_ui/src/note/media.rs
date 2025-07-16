@@ -5,19 +5,18 @@ use egui::{
     TextureHandle, UiBuilder, Window,
 };
 use notedeck::{
-    fonts::get_font_size, note::MediaAction, show_one_error_message, supported_mime_hosted_at_url,
     GifState, GifStateMap, Images, JobPool, MediaCache, MediaCacheType, NotedeckTextStyle,
-    TexturedImage, TexturesCache, UrlMimes,
+    TexturedImage, TexturesCache, UrlMimes, fonts::get_font_size, note::MediaAction,
+    show_one_error_message, supported_mime_hosted_at_url,
 };
 
 use crate::{
-    app_images,
-    blur::{compute_blurhash, Blur, ObfuscationType, PointDimensions},
+    AnimationHelper, PulseAlpha, app_images,
+    blur::{Blur, ObfuscationType, PointDimensions, compute_blurhash},
     colors::PINK,
     gif::{handle_repaint, retrieve_latest_texture},
-    images::{fetch_no_pfp_promise, get_render_state, ImageType},
+    images::{ImageType, fetch_no_pfp_promise, get_render_state},
     jobs::{BlurhashParams, Job, JobId, JobParams, JobState, JobsCache},
-    AnimationHelper, PulseAlpha,
 };
 
 pub(crate) fn image_carousel(
@@ -288,18 +287,20 @@ pub fn get_content_media_render_state<'a>(
     }
 }
 
-fn get_obfuscated<'a>(
+fn get_obfuscated(
     ui: &mut egui::Ui,
     url: &str,
-    obfuscation_type: ObfuscationType<'a>,
-    job_pool: &'a mut JobPool,
-    jobs: &'a mut JobsCache,
+    obfuscation_type: ObfuscationType<'_>,
+    job_pool: &mut JobPool,
+    jobs: &mut JobsCache,
     height: f32,
-) -> ObfuscatedTexture<'a> {
+) -> ObfuscatedTexture {
     let ObfuscationType::Blurhash(renderable_blur) = obfuscation_type else {
         return ObfuscatedTexture::Default;
     };
 
+    return ObfuscatedTexture::Default;
+    /*
     let params = BlurhashParams {
         blurhash: renderable_blur.blurhash,
         url,
@@ -312,7 +313,6 @@ fn get_obfuscated<'a>(
     };
 
     let pixel_sizes = renderable_blur.scaled_pixel_dimensions(ui, available_points);
-
     let job_state = jobs.get_or_insert_with(
         job_pool,
         &JobId::Blurhash(url),
@@ -325,8 +325,7 @@ fn get_obfuscated<'a>(
     };
 
     #[allow(irrefutable_let_patterns)]
-    let Job::Blurhash(m_texture_handle) = m_blur_job
-    else {
+    let Job::Blurhash(m_texture_handle) = m_blur_job else {
         tracing::error!("Did not get the correct job type: {:?}", m_blur_job);
         return ObfuscatedTexture::Default;
     };
@@ -335,7 +334,8 @@ fn get_obfuscated<'a>(
         return ObfuscatedTexture::Default;
     };
 
-    ObfuscatedTexture::Blur(texture_handle)
+    ObfuscatedTexture::Blur(texture_handle.clone())
+    */
 }
 
 // simple selector memory
@@ -638,7 +638,7 @@ fn copy_link(url: &str, img_resp: &Response) {
     img_resp.context_menu(|ui| {
         if ui.button("Copy Link").clicked() {
             ui.ctx().copy_text(url.to_owned());
-            ui.close_menu();
+            ui.close();
         }
     });
 }
@@ -661,7 +661,7 @@ fn render_media(
         }
         MediaRenderState::Transitioning { image, obfuscation } => match obfuscation {
             ObfuscatedTexture::Blur(texture) => {
-                if render_blur_transition(ui, url, height, texture, image.get_first_texture()) {
+                if render_blur_transition(ui, url, height, &texture, image.get_first_texture()) {
                     Some(MediaUIAction::DoneLoading)
                 } else {
                     None
@@ -678,7 +678,7 @@ fn render_media(
             Some(MediaUIAction::Error)
         }
         MediaRenderState::Shimmering(obfuscated_texture) => {
-            match obfuscated_texture {
+            match &obfuscated_texture {
                 ObfuscatedTexture::Blur(texture_handle) => {
                     shimmer_blurhash(texture_handle, ui, url, height);
                 }
@@ -689,7 +689,7 @@ fn render_media(
             None
         }
         MediaRenderState::Obfuscated(obfuscated_texture) => {
-            let resp = match obfuscated_texture {
+            let resp = match &obfuscated_texture {
                 ObfuscatedTexture::Blur(texture_handle) => {
                     let resp = ui.add(texture_to_image(texture_handle, height));
                     render_blur_text(ui, url, resp.rect)
@@ -817,15 +817,15 @@ pub enum MediaRenderState<'a> {
     ActualImage(&'a mut TexturedImage),
     Transitioning {
         image: &'a mut TexturedImage,
-        obfuscation: ObfuscatedTexture<'a>,
+        obfuscation: ObfuscatedTexture,
     },
     Error(&'a notedeck::Error),
-    Shimmering(ObfuscatedTexture<'a>),
-    Obfuscated(ObfuscatedTexture<'a>),
+    Shimmering(ObfuscatedTexture),
+    Obfuscated(ObfuscatedTexture),
 }
 
-pub enum ObfuscatedTexture<'a> {
-    Blur(&'a TextureHandle),
+pub enum ObfuscatedTexture {
+    Blur(TextureHandle),
     Default,
 }
 

@@ -1,6 +1,6 @@
 use egui::{
-    vec2, CursorIcon, InnerResponse, Layout, Margin, RichText, ScrollArea, Separator, Stroke,
-    Widget,
+    CursorIcon, InnerResponse, Layout, Margin, RichText, ScrollArea, Separator, Stroke, Widget,
+    vec2,
 };
 use tracing::{error, info};
 
@@ -14,8 +14,9 @@ use crate::{
 
 use notedeck::{Accounts, UserAccount};
 use notedeck_ui::{
+    View,
     anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},
-    app_images, colors, View,
+    app_images, colors,
 };
 
 use super::configure_deck::deck_icon;

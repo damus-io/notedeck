@@ -1,14 +1,14 @@
 use std::sync::Arc;
 
 use nwc::{
-    nostr::nips::nip47::{NostrWalletConnectURI, PayInvoiceRequest, PayInvoiceResponse},
     NWC,
+    nostr::nips::nip47::{NostrWalletConnectURI, PayInvoiceRequest, PayInvoiceResponse},
 };
 use poll_promise::Promise;
 use tokenator::{ParseError, TokenParser, TokenSerializable};
 use tokio::sync::RwLock;
 
-use crate::{zaps::UserZapMsats, Accounts, DataPath, DefaultZapMsats, TokenHandler};
+use crate::{Accounts, DataPath, DefaultZapMsats, TokenHandler, zaps::UserZapMsats};
 
 pub fn get_wallet_for<'a>(
     accounts: &'a Accounts,
@@ -305,7 +305,7 @@ impl TokenSerializable for WalletSerializable {
 mod tests {
     use tokenator::{TokenParser, TokenSerializable, TokenWriter};
 
-    use crate::{wallet::WalletSerializable, Wallet};
+    use crate::{Wallet, wallet::WalletSerializable};
 
     use super::ZapWallet;
 

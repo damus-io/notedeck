@@ -1,5 +1,5 @@
 use super::context::ContextSelection;
-use crate::{zaps::NoteZapTargetOwned, Images, MediaCacheType, TexturedImage};
+use crate::{Images, MediaCacheType, TexturedImage, zaps::NoteZapTargetOwned};
 use egui::Vec2;
 use enostr::{NoteId, Pubkey};
 use poll_promise::Promise;

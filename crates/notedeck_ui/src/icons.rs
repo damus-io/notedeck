@@ -1,4 +1,4 @@
-use egui::{vec2, Color32, Stroke};
+use egui::{Color32, Stroke, vec2};
 
 /// Creates a magnifying glass icon widget
 pub fn search_icon(size: f32, height: f32) -> impl egui::Widget {

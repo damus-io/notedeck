@@ -1,5 +1,5 @@
 use crate::anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE};
-use egui::{emath::GuiRounding, Pos2, Stroke};
+use egui::{Pos2, Stroke, emath::GuiRounding};
 use notedeck::NotedeckTextStyle;
 
 pub fn x_button(rect: egui::Rect) -> impl egui::Widget {

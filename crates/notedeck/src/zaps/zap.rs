@@ -1,7 +1,7 @@
 use enostr::{NoteId, Pubkey};
 use image::EncodableLayout;
 use lightning_invoice::Bolt11Invoice;
-use secp256k1::{schnorr::Signature, Message, Secp256k1, XOnlyPublicKey};
+use secp256k1::{Message, Secp256k1, XOnlyPublicKey, schnorr::Signature};
 use sha2::Digest;
 
 #[allow(dead_code)]
@@ -230,7 +230,7 @@ mod tests {
     use nostrdb::{Config, Filter, IngestMetadata, Ndb, Transaction};
     use tempfile::TempDir;
 
-    use crate::zaps::zap::{valid_zap_request, Zap};
+    use crate::zaps::zap::{Zap, valid_zap_request};
 
     // a random zap receipt
     const ZAP_RECEIPT: &str = r#"{"kind":9735,"id":"c8a5767f33cd73716cf670c9615a73ec50cb91c373100f6c0d5cc160237b58dc","pubkey":"be1d89794bf92de5dd64c1e60f6a2c70c140abac9932418fee30c5c637fe9479","created_at":1743191143,"tags":[["p","1af54955936be804f95010647ea5ada5c7627eddf0734a7f813bba0e31eed960"],["e","ec998b249a8c366358c264f0932a9b433ac60b1c2f630cb24a604560873f7030"],["bolt11","lnbc330n1pn7dlrrpp566sfk69zda849huwjw6wepw3uzxxp4mp9np54qx49ruw8cuv86ushp52te27l4jadsz0u76jvgsk5uekl04tujpjkt9cc7duu0jfzp9zdtscqzzsxqyz5vqsp5m3tzc7ryp5f9fv90v27uyrrd4qfmj5lrwv9rvmvum3v50kdph23s9qxpqysgqut2ssf0m7nmtd73cwqk7qfw4sw6zlj598sjdxmdsepmvn0ptamnhf45c425h26juzcfupegltefwsf8qav2ldell7v9fpc0y23nl0kgqtf432g"],["description","{\"id\":\"73d05cfe976bb56b139b6cd04286a801b20cc0b01070886d6e3176ff2e107833\",\"pubkey\":\"d4338b7c3306491cfdf54914d1a52b80a965685f7361311eae5f3eaff1d23a5b\",\"created_at\":1743191138,\"kind\":9734,\"tags\":[[\"e\",\"ec998b249a8c366358c264f0932a9b433ac60b1c2f630cb24a604560873f7030\"],[\"p\",\"1af54955936be804f95010647ea5ada5c7627eddf0734a7f813bba0e31eed960\"],[\"relays\",\"wss://nosdrive.app/relay\"],[\"alt\",\"Zap request\"]],\"content\":\"\",\"sig\":\"2091b7f720586d7420ea7a90406ea856378339c8b0b3f3e695ccbfebaa8c4ea20a3cb850ff18cae957aa2e0ecb06c386d0bd27aa7a13bf7a8f7425a4c2a57903\"}"],["preimage","13821fcf87afa4c3bb753d62949481969e6af8fca9867d753e3503bd45e2814e"]],"content":"","sig":"d15aecbd1d0d289f99ffbf4d0b7c77c24875ed38fed13deee4e2e1254bcd05bda8dca3bb2858b5c3167749b4afa732f4670b9df54904786614252b4ed7916e5f"}"#;

@@ -1,6 +1,6 @@
 use crate::{
-    account::accounts::Accounts, frame_history::FrameHistory, wallet::GlobalWallet, zaps::Zaps,
     Args, DataPath, Images, JobPool, NoteCache, ThemeHandler, UnknownIds,
+    account::accounts::Accounts, frame_history::FrameHistory, wallet::GlobalWallet, zaps::Zaps,
 };
 use egui_winit::clipboard::Clipboard;
 

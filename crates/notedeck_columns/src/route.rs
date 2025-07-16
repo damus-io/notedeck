@@ -8,8 +8,8 @@ use std::{
 use crate::{
     accounts::AccountsRoute,
     timeline::{
-        kind::{AlgoTimeline, ColumnTitle, ListKind},
         ThreadSelection, TimelineKind,
+        kind::{AlgoTimeline, ColumnTitle, ListKind},
     },
     ui::add_column::{AddAlgoRoute, AddColumnRoute},
 };
@@ -527,7 +527,7 @@ mod tests {
     use enostr::NoteId;
     use tokenator::{TokenParser, TokenWriter};
 
-    use crate::{timeline::ThreadSelection, Route};
+    use crate::{Route, timeline::ThreadSelection};
     use enostr::Pubkey;
     use notedeck::RootNoteIdBuf;
 

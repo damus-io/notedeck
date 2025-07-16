@@ -1,13 +1,13 @@
 use crate::{
     nav::RenderNavAction,
     profile::ProfileAction,
-    timeline::{thread::Threads, ThreadSelection, TimelineCache, TimelineKind},
+    timeline::{ThreadSelection, TimelineCache, TimelineKind, thread::Threads},
     ui::{self, ProfileView},
 };
 
 use enostr::Pubkey;
 use notedeck::NoteContext;
-use notedeck_ui::{jobs::JobsCache, NoteOptions};
+use notedeck_ui::{NoteOptions, jobs::JobsCache};
 
 #[allow(clippy::too_many_arguments)]
 pub fn render_timeline_route(

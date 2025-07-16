@@ -1,4 +1,4 @@
-use egui::{text::LayoutJob, TextBuffer, TextFormat};
+use egui::{TextBuffer, TextFormat, text::LayoutJob};
 use enostr::{FullKeypair, Pubkey};
 use nostrdb::{Note, NoteBuilder, NoteReply};
 use std::{
@@ -310,7 +310,10 @@ impl PostBuffer {
             info.mention_type = MentionType::Finalized(pk);
             self.selected_mention = true;
         } else {
-            error!("Error selecting mention for index: {mention_key}. Have the following mentions: {:?}", self.mentions);
+            error!(
+                "Error selecting mention for index: {mention_key}. Have the following mentions: {:?}",
+                self.mentions
+            );
         }
     }
 
@@ -326,7 +329,10 @@ impl PostBuffer {
             self.insert_text(full_name, text_start_index);
             self.select_full_mention(mention_key, pk);
         } else {
-            error!("Error selecting mention for index: {mention_key}. Have the following mentions: {:?}", self.mentions);
+            error!(
+                "Error selecting mention for index: {mention_key}. Have the following mentions: {:?}",
+                self.mentions
+            );
         }
     }
 
@@ -445,11 +451,7 @@ fn char_indices_to_byte(text: &str, char_range: Range<usize>) -> Option<Range<us
 }
 
 pub fn downcast_post_buffer(buffer: &dyn TextBuffer) -> Option<&PostBuffer> {
-    let mut hasher = DefaultHasher::new();
-    TypeId::of::<PostBuffer>().hash(&mut hasher);
-    let post_id = hasher.finish() as usize;
-
-    if buffer.type_id() == post_id {
+    if buffer.type_id() == TypeId::of::<PostBuffer>() {
         unsafe { Some(&*(buffer as *const dyn TextBuffer as *const PostBuffer)) }
     } else {
         None
@@ -686,10 +688,8 @@ impl TextBuffer for PostBuffer {
         }
     }
 
-    fn type_id(&self) -> usize {
-        let mut hasher = DefaultHasher::new();
-        TypeId::of::<PostBuffer>().hash(&mut hasher);
-        hasher.finish() as usize
+    fn type_id(&self) -> std::any::TypeId {
+        TypeId::of::<PostBuffer>()
     }
 }
 
@@ -1282,7 +1282,10 @@ mod tests {
 
         assert!(tags_iter.next().is_none());
 
-        assert_eq!(note.content(), "nostr:npub1xtscya34g58tk0z605fvr788k263gsu6cy9x0mhnm87echrgufzsevkk5s test nostr:npub1fgz3pungsr2quse0fpjuk4c5m8fuyqx2d6a3ddqc4ek92h6hf9ns0mjeck test");
+        assert_eq!(
+            note.content(),
+            "nostr:npub1xtscya34g58tk0z605fvr788k263gsu6cy9x0mhnm87echrgufzsevkk5s test nostr:npub1fgz3pungsr2quse0fpjuk4c5m8fuyqx2d6a3ddqc4ek92h6hf9ns0mjeck test"
+        );
     }
 
     #[test]

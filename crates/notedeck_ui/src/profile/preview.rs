@@ -3,7 +3,7 @@ use egui::{Frame, Label, RichText};
 use egui_extras::Size;
 use nostrdb::ProfileRecord;
 
-use notedeck::{name::get_display_name, profile::get_profile_url, Images, NotedeckTextStyle};
+use notedeck::{Images, NotedeckTextStyle, name::get_display_name, profile::get_profile_url};
 
 use super::{about_section_widget, banner, display_name_widget};
 

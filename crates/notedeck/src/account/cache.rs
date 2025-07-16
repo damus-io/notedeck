@@ -1,5 +1,5 @@
 use enostr::Pubkey;
-use hashbrown::{hash_map::OccupiedEntry, HashMap};
+use hashbrown::{HashMap, hash_map::OccupiedEntry};
 
 use crate::{SingleUnkIdAction, UserAccount};
 

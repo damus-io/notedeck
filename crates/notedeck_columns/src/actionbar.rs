@@ -3,18 +3,18 @@ use crate::{
     nav::{RouterAction, RouterType},
     route::Route,
     timeline::{
-        thread::{
-            selected_has_at_least_n_replies, InsertionResponse, NoteSeenFlags, ThreadNode, Threads,
-        },
         ThreadSelection, TimelineCache, TimelineKind,
+        thread::{
+            InsertionResponse, NoteSeenFlags, ThreadNode, Threads, selected_has_at_least_n_replies,
+        },
     },
 };
 
 use enostr::{NoteId, Pubkey, RelayPool};
 use nostrdb::{Ndb, NoteKey, Transaction};
 use notedeck::{
-    get_wallet_for, note::ZapTargetAmount, Accounts, GlobalWallet, Images, NoteAction, NoteCache,
-    NoteZapTargetOwned, UnknownIds, ZapAction, ZapTarget, ZappingError, Zaps,
+    Accounts, GlobalWallet, Images, NoteAction, NoteCache, NoteZapTargetOwned, UnknownIds,
+    ZapAction, ZapTarget, ZappingError, Zaps, get_wallet_for, note::ZapTargetAmount,
 };
 use tracing::error;
 

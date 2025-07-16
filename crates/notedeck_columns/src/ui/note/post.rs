@@ -1,31 +1,30 @@
+use crate::Result;
 use crate::draft::{Draft, Drafts, MentionHint};
 #[cfg(not(target_os = "android"))]
-use crate::media_upload::{nostrbuild_nip96_upload, MediaPath};
-use crate::post::{downcast_post_buffer, MentionType, NewPost};
+use crate::media_upload::{MediaPath, nostrbuild_nip96_upload};
+use crate::post::{MentionType, NewPost, downcast_post_buffer};
 use crate::ui::search_results::SearchResultsView;
 use crate::ui::{self, Preview, PreviewConfig};
-use crate::Result;
 
 use egui::{
+    Frame, Layout, Margin, Pos2, ScrollArea, Sense, TextBuffer,
     text::{CCursorRange, LayoutJob},
     text_edit::TextEditOutput,
     widgets::text_edit::TextEdit,
-    Frame, Layout, Margin, Pos2, ScrollArea, Sense, TextBuffer,
 };
 use enostr::{FilledKeypair, FullKeypair, NoteId, Pubkey, RelayPool};
 use nostrdb::{Ndb, Transaction};
 use notedeck_ui::{
-    app_images,
+    NoteOptions, ProfilePic, app_images,
     blur::PixelDimensions,
-    context_menu::{input_context, PasteBehavior},
+    context_menu::{PasteBehavior, input_context},
     gif::{handle_repaint, retrieve_latest_texture},
-    images::{get_render_state, RenderState},
+    images::{RenderState, get_render_state},
     jobs::JobsCache,
     note::render_note_preview,
-    NoteOptions, ProfilePic,
 };
 
-use notedeck::{name::get_display_name, supported_mime_hosted_at_url, NoteAction, NoteContext};
+use notedeck::{NoteAction, NoteContext, name::get_display_name, supported_mime_hosted_at_url};
 use tracing::error;
 
 pub struct PostView<'a, 'd> {
@@ -720,7 +719,7 @@ fn calculate_mention_hints_pos(out: &TextEditOutput, char_pos: usize) -> egui::P
             cur_pos += row.glyphs.len();
         } else if let Some(glyph) = row.glyphs.get(char_pos - cur_pos) {
             let mut pos = glyph.pos + out.galley_pos.to_vec2();
-            pos.y += row.rect.height();
+            pos.y += row.rect().height();
             return pos;
         }
     }

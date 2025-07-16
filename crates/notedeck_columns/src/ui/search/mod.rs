@@ -1,4 +1,4 @@
-use egui::{vec2, Align, Color32, CornerRadius, RichText, Stroke, TextEdit};
+use egui::{Align, Color32, CornerRadius, RichText, Stroke, TextEdit, vec2};
 use enostr::{NoteId, Pubkey};
 use state::TypingType;
 
@@ -7,10 +7,11 @@ use egui_winit::clipboard::Clipboard;
 use nostrdb::{Filter, Ndb, Transaction};
 use notedeck::{NoteAction, NoteContext, NoteRef};
 use notedeck_ui::{
-    context_menu::{input_context, PasteBehavior},
+    NoteOptions,
+    context_menu::{PasteBehavior, input_context},
     icons::search_icon,
     jobs::JobsCache,
-    padding, NoteOptions,
+    padding,
 };
 use std::time::{Duration, Instant};
 use tracing::{error, info, warn};

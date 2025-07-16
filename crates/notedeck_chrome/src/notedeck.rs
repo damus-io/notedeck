@@ -11,8 +11,8 @@ static GLOBAL: AccountingAllocator<std::alloc::System> =
 
 use notedeck::{DataPath, DataPathType, Notedeck};
 use notedeck_chrome::{
-    setup::{generate_native_options, setup_chrome},
     Chrome, NotedeckApp,
+    setup::{generate_native_options, setup_chrome},
 };
 use notedeck_columns::Damus;
 use notedeck_dave::Dave;

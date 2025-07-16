@@ -16,7 +16,9 @@ pub fn setup_chrome(ctx: &egui::Context, args: &notedeck::Args, theme: ThemePref
     // Some people have been running notedeck in debug, let's catch that!
     if !args.tests && cfg!(debug_assertions) && !args.debug {
         println!("--- WELCOME TO DAMUS NOTEDECK! ---");
-        println!("It looks like are running notedeck in debug mode, unless you are a developer, this is not likely what you want.");
+        println!(
+            "It looks like are running notedeck in debug mode, unless you are a developer, this is not likely what you want."
+        );
         println!("If you are a developer, run `cargo run -- --debug` to skip this message.");
         println!("For everyone else, try again with `cargo run --release`. Enjoy!");
         println!("---------------------------------");

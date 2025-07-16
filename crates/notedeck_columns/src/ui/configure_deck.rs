@@ -1,5 +1,5 @@
 use crate::{app_style::deck_icon_font_sized, deck_state::DeckState};
-use egui::{vec2, Button, Color32, Label, RichText, Stroke, Ui, Widget};
+use egui::{Button, Color32, Label, RichText, Stroke, Ui, Widget, vec2};
 use notedeck::{NamedFontFamily, NotedeckTextStyle};
 use notedeck_ui::{
     anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},

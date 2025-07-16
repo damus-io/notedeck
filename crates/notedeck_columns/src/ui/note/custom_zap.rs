@@ -1,17 +1,17 @@
 use std::fmt::Display;
 
 use egui::{
-    emath::GuiRounding, pos2, vec2, Color32, CornerRadius, FontId, Frame, Label, Layout, Slider,
-    Stroke,
+    Color32, CornerRadius, FontId, Frame, Label, Layout, Slider, Stroke, emath::GuiRounding, pos2,
+    vec2,
 };
 use enostr::Pubkey;
 use nostrdb::{Ndb, ProfileRecord, Transaction};
 use notedeck::{
-    fonts::get_font_size, get_profile_url, name::get_display_name, Images, NotedeckTextStyle,
+    Images, NotedeckTextStyle, fonts::get_font_size, get_profile_url, name::get_display_name,
 };
 use notedeck_ui::{
-    app_images, colors, profile::display_name_widget, widgets::styled_button_toggleable,
-    AnimationHelper, ProfilePic,
+    AnimationHelper, ProfilePic, app_images, colors, profile::display_name_widget,
+    widgets::styled_button_toggleable,
 };
 
 pub struct CustomZapView<'a> {

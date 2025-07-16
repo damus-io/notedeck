@@ -1,4 +1,4 @@
-use crate::{ui, NotedeckTextStyle};
+use crate::{NotedeckTextStyle, ui};
 
 pub enum NamedFontFamily {
     Medium,

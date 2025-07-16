@@ -2,7 +2,7 @@ use egui::{Label, RichText, Sense};
 use nostrdb::{Note, NoteReply, Transaction};
 
 use super::NoteOptions;
-use crate::{jobs::JobsCache, note::NoteView, Mention};
+use crate::{Mention, jobs::JobsCache, note::NoteView};
 use notedeck::{NoteAction, NoteContext};
 
 #[must_use = "Please handle the resulting note action"]

@@ -206,8 +206,8 @@ mod tests {
     use std::path::PathBuf;
 
     use crate::{
-        storage::file_storage::{delete_file, write_file},
         Result,
+        storage::file_storage::{delete_file, write_file},
     };
 
     use super::Directory;

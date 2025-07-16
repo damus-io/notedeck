@@ -1,9 +1,9 @@
 use crate::gif::{handle_repaint, retrieve_latest_texture};
-use crate::images::{fetch_no_pfp_promise, get_render_state, ImageType};
-use egui::{vec2, InnerResponse, Sense, Stroke, TextureHandle};
+use crate::images::{ImageType, fetch_no_pfp_promise, get_render_state};
+use egui::{InnerResponse, Sense, Stroke, TextureHandle, vec2};
 
 use notedeck::note::MediaAction;
-use notedeck::{show_one_error_message, supported_mime_hosted_at_url, Images};
+use notedeck::{Images, show_one_error_message, supported_mime_hosted_at_url};
 
 pub struct ProfilePic<'cache, 'url> {
     cache: &'cache mut Images,

@@ -113,31 +113,31 @@ impl NoteContextButton {
             ui.set_max_width(200.0);
             if ui.button("Copy text").clicked() {
                 context_selection = Some(NoteContextSelection::CopyText);
-                ui.close_menu();
+                ui.close();
             }
             if ui.button("Copy user public key").clicked() {
                 context_selection = Some(NoteContextSelection::CopyPubkey);
-                ui.close_menu();
+                ui.close();
             }
             if ui.button("Copy note id").clicked() {
                 context_selection = Some(NoteContextSelection::CopyNoteId);
-                ui.close_menu();
+                ui.close();
             }
             if ui.button("Copy note json").clicked() {
                 context_selection = Some(NoteContextSelection::CopyNoteJSON);
-                ui.close_menu();
+                ui.close();
             }
             if ui.button("Broadcast").clicked() {
                 context_selection = Some(NoteContextSelection::Broadcast(
                     BroadcastContext::Everywhere,
                 ));
-                ui.close_menu();
+                ui.close();
             }
             if ui.button("Broadcast to local network").clicked() {
                 context_selection = Some(NoteContextSelection::Broadcast(
                     BroadcastContext::LocalNetwork,
                 ));
-                ui.close_menu();
+                ui.close();
             }
         });
 

@@ -1,4 +1,4 @@
-use egui::{style::Interaction, Color32, FontId, Style, Visuals};
+use egui::{Color32, FontId, Style, Visuals, style::Interaction};
 use notedeck::{ColorTheme, NotedeckTextStyle};
 use strum::IntoEnumIterator;
 

@@ -5,30 +5,30 @@ pub mod options;
 pub mod reply_description;
 
 use crate::jobs::JobsCache;
-use crate::{app_images, secondary_label};
 use crate::{
-    profile::name::one_line_display_name_widget, widgets::x_button, ProfilePic, ProfilePreview,
-    PulseAlpha, Username,
+    ProfilePic, ProfilePreview, PulseAlpha, Username, profile::name::one_line_display_name_widget,
+    widgets::x_button,
 };
+use crate::{app_images, secondary_label};
 
-pub use contents::{render_note_contents, render_note_preview, NoteContents};
+pub use contents::{NoteContents, render_note_contents, render_note_preview};
 pub use context::NoteContextButton;
+use notedeck::Images;
 use notedeck::note::MediaAction;
 use notedeck::note::ZapTargetAmount;
 use notedeck::ui::is_narrow;
-use notedeck::Images;
 pub use options::NoteOptions;
 pub use reply_description::reply_desc;
 
-use egui::emath::{pos2, Vec2};
+use egui::emath::{Vec2, pos2};
 use egui::{Id, Pos2, Rect, Response, RichText, Sense};
 use enostr::{KeypairUnowned, NoteId, Pubkey};
 use nostrdb::{Ndb, Note, NoteKey, ProfileRecord, Transaction};
 use notedeck::{
-    name::get_display_name,
-    note::{NoteAction, NoteContext, ZapAction},
     AnyZapState, CachedNote, ContextSelection, NoteCache, NoteZapTarget, NoteZapTargetOwned,
     NotedeckTextStyle, ZapTarget, Zaps,
+    name::get_display_name,
+    note::{NoteAction, NoteContext, ZapAction},
 };
 
 pub struct NoteView<'a, 'd> {

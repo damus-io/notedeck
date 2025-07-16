@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 package.version = "0.5.4"
+package.edition = "2024"
 members = [
     "crates/notedeck",
     "crates/notedeck_chrome",
@@ -18,15 +19,15 @@ rmpv = "1.3.0"
 bech32 = { version = "0.11", default-features = false }
 bitflags = "2.5.0"
 dirs = "5.0.1"
-eframe = { version = "0.31.1", default-features = false, features = [ "wgpu", "wayland", "x11", "android-game-activity" ] }
-egui = { version = "0.31.1", features = ["serde"] }
-egui-wgpu = "0.31.1"
-egui_extras = { version = "0.31.1", features = ["all_loaders"] }
-egui-winit = { version = "0.31.1", features = ["android-game-activity", "clipboard"] }
-egui_nav = { git = "https://github.com/damus-io/egui-nav", rev = "111de8ac40b5d18df53e9691eb18a50d49cb31d8" }
-egui_tabs = { git = "https://github.com/damus-io/egui-tabs", rev = "6eb91740577b374a8a6658c09c9a4181299734d0" }
+eframe = { version = "0.32.0", default-features = false, features = [ "wgpu", "wayland", "x11", "android-game-activity" ] }
+egui = { version = "0.32.0", features = ["serde"] }
+egui-wgpu = "0.32.0"
+egui_extras = { version = "0.32.0", features = ["all_loaders"] }
+egui-winit = { version = "0.32.0", features = ["android-game-activity", "clipboard"] }
+egui_nav = { git = "https://github.com/damus-io/egui-nav", branch = "egui-0.32" }
+egui_tabs = { git = "https://github.com/damus-io/egui-tabs", branch = "egui-0.32" }
 #egui_virtual_list = "0.6.0"
-egui_virtual_list = { git = "https://github.com/jb55/hello_egui", rev = "a66b6794f5e707a2f4109633770e02b02fb722e1" }
+egui_virtual_list = "0.8.0"
 ehttp = "0.5.0"
 enostr = { path = "crates/enostr" } 
 ewebsock = { version = "0.2.0", features = ["tls"] }
@@ -92,12 +93,12 @@ strip = true        # Strip symbols from binary*
 #egui_extras = { path = "/home/jb55/dev/github/emilk/egui/crates/egui_extras" }
 #epaint = { path = "/home/jb55/dev/github/emilk/egui/crates/epaint" }
 
-egui = { git = "https://github.com/damus-io/egui", rev = "041d4d18b16cf8be97e0d7ef5892c87436352dfc" }
-eframe = { git = "https://github.com/damus-io/egui", rev = "041d4d18b16cf8be97e0d7ef5892c87436352dfc" }
-egui-winit = { git = "https://github.com/damus-io/egui", rev = "041d4d18b16cf8be97e0d7ef5892c87436352dfc" }
-egui-wgpu = { git = "https://github.com/damus-io/egui", rev = "041d4d18b16cf8be97e0d7ef5892c87436352dfc" }
-egui_extras = { git = "https://github.com/damus-io/egui", rev = "041d4d18b16cf8be97e0d7ef5892c87436352dfc" }
-epaint = { git = "https://github.com/damus-io/egui", rev = "041d4d18b16cf8be97e0d7ef5892c87436352dfc" }
+egui = { git = "https://github.com/damus-io/egui", rev = "4af4ab39471d518a6e5c213f8d9fba9bec50bd64" }
+eframe = { git = "https://github.com/damus-io/egui", rev = "4af4ab39471d518a6e5c213f8d9fba9bec50bd64" }
+egui-winit = { git = "https://github.com/damus-io/egui", rev = "4af4ab39471d518a6e5c213f8d9fba9bec50bd64" }
+egui-wgpu = { git = "https://github.com/damus-io/egui", rev = "4af4ab39471d518a6e5c213f8d9fba9bec50bd64" }
+egui_extras = { git = "https://github.com/damus-io/egui", rev = "4af4ab39471d518a6e5c213f8d9fba9bec50bd64" }
+epaint = { git = "https://github.com/damus-io/egui", rev = "4af4ab39471d518a6e5c213f8d9fba9bec50bd64" }
 puffin = { git = "https://github.com/jb55/puffin", package = "puffin", rev = "c6a6242adaf90b6292c0f462d2acd34d96d224d2" }
 puffin_egui = { git = "https://github.com/jb55/puffin", package = "puffin_egui", rev = "c6a6242adaf90b6292c0f462d2acd34d96d224d2" }
 #winit = { git = "https://github.com/damus-io/winit", rev = "14d61a74bee0c9863abe7ef28efae2c4d8bd3743" }

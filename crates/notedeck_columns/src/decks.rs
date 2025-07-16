@@ -1,4 +1,4 @@
-use std::collections::{hash_map::ValuesMut, HashMap};
+use std::collections::{HashMap, hash_map::ValuesMut};
 
 use enostr::Pubkey;
 use nostrdb::Transaction;

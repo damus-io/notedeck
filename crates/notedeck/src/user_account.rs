@@ -2,8 +2,8 @@ use enostr::{Keypair, KeypairUnowned};
 use tokenator::{ParseError, TokenParser, TokenSerializable};
 
 use crate::{
-    wallet::{WalletSerializable, ZapWallet},
     AccountData, IsFollowing,
+    wallet::{WalletSerializable, ZapWallet},
 };
 
 pub struct UserAccount {
@@ -21,7 +21,7 @@ impl UserAccount {
         }
     }
 
-    pub fn keypair(&self) -> KeypairUnowned {
+    pub fn keypair(&self) -> KeypairUnowned<'_> {
         KeypairUnowned {
             pubkey: &self.key.pubkey,
             secret_key: self.key.secret_key.as_ref(),

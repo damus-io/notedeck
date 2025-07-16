@@ -1,16 +1,16 @@
 use crate::{
+    Result,
     error::Error,
     multi_subscriber::TimelineSub,
     subscriptions::{self, SubKind, Subscriptions},
     timeline::kind::ListKind,
-    Result,
 };
 
 use notedeck::{
-    contacts::hybrid_contacts_filter,
-    filter::{self, HybridFilter},
     Accounts, CachedNote, ContactState, FilterError, FilterState, FilterStates, NoteCache, NoteRef,
     UnknownIds,
+    contacts::hybrid_contacts_filter,
+    filter::{self, HybridFilter},
 };
 
 use egui_virtual_list::VirtualList;

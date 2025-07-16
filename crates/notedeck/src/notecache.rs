@@ -1,4 +1,4 @@
-use crate::{time_ago_since, TimeCached};
+use crate::{TimeCached, time_ago_since};
 use nostrdb::{Note, NoteKey, NoteReply, NoteReplyBuf};
 use std::collections::HashMap;
 use std::time::Duration;

@@ -15,8 +15,8 @@ use nostrdb::{Ndb, Transaction};
 use notedeck::{Images, NotedeckTextStyle};
 use notedeck_ui::app_images;
 use notedeck_ui::{
-    anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},
     ProfilePic,
+    anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},
 };
 
 pub struct NavTitle<'a> {

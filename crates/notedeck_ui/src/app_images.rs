@@ -1,5 +1,5 @@
 use eframe::icon_data::from_png_bytes;
-use egui::{include_image, Color32, IconData, Image};
+use egui::{Color32, IconData, Image, include_image};
 
 pub fn app_icon() -> IconData {
     from_png_bytes(include_bytes!("../../../assets/damus-app-icon.png")).expect("icon")

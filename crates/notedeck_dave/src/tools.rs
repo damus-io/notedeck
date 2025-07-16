@@ -3,7 +3,7 @@ use chrono::DateTime;
 use enostr::{NoteId, Pubkey};
 use nostrdb::{Ndb, Note, NoteKey, Transaction};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{collections::HashMap, fmt};
 
 /// A tool
@@ -145,11 +145,6 @@ pub enum ToolCalls {
     Invalid(InvalidToolCall),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct ErrorCall {
-    error: String,
-}
-
 impl ToolCalls {
     pub fn to_api(&self) -> FunctionCall {
         FunctionCall {
@@ -188,8 +183,8 @@ impl fmt::Display for ToolCallError {
         match self {
             ToolCallError::EmptyName => write!(f, "the tool name was empty"),
             ToolCallError::EmptyArgs => write!(f, "no arguments were provided"),
-            ToolCallError::NotFound(ref name) => write!(f, "tool '{name}' not found"),
-            ToolCallError::ArgParseFailure(ref msg) => {
+            ToolCallError::NotFound(name) => write!(f, "tool '{name}' not found"),
+            ToolCallError::ArgParseFailure(msg) => {
                 write!(f, "failed to parse arguments: {msg}")
             }
         }
@@ -557,15 +552,13 @@ fn present_tool() -> Tool {
         name: "present_notes",
         parse_call: PresentNotesCall::parse,
         description: "A tool for presenting notes to the user for display. Should be called at the end of a response so that the UI can present the notes referred to in the previous message.",
-        arguments: vec![
-            ToolArg {
-                name: "note_ids",
-                description: "A comma-separated list of hex note ids",
-                typ: ArgType::String,
-                required: true,
-                default: None
-            }
-        ]
+        arguments: vec![ToolArg {
+            name: "note_ids",
+            description: "A comma-separated list of hex note ids",
+            typ: ArgType::String,
+            required: true,
+            default: None,
+        }],
     }
 }
 

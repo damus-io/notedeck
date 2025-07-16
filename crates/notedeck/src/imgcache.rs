@@ -1,5 +1,5 @@
-use crate::urls::{UrlCache, UrlMimes};
 use crate::Result;
+use crate::urls::{UrlCache, UrlMimes};
 use egui::TextureHandle;
 use image::{Delay, Frame};
 use poll_promise::Promise;
@@ -7,7 +7,7 @@ use poll_promise::Promise;
 use egui::ColorImage;
 
 use std::collections::HashMap;
-use std::fs::{create_dir_all, File};
+use std::fs::{File, create_dir_all};
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -27,7 +27,7 @@ impl TexturesCache {
         &mut self,
         url: &str,
         closure: impl FnOnce() -> Promise<Option<Result<TexturedImage>>>,
-    ) -> LoadableTextureState {
+    ) -> LoadableTextureState<'_> {
         let internal = self.handle_and_get_state_internal(url, true, closure);
 
         internal.into()
@@ -37,7 +37,7 @@ impl TexturesCache {
         &mut self,
         url: &str,
         closure: impl FnOnce() -> Promise<Option<Result<TexturedImage>>>,
-    ) -> TextureState {
+    ) -> TextureState<'_> {
         let internal = self.handle_and_get_state_internal(url, false, closure);
 
         internal.into()
@@ -49,7 +49,7 @@ impl TexturesCache {
         use_loading: bool,
         closure: impl FnOnce() -> Promise<Option<Result<TexturedImage>>>,
     ) -> &mut TextureStateInternal {
-        let state = match self.cache.raw_entry_mut().from_key(url) {
+        match self.cache.raw_entry_mut().from_key(url) {
             hashbrown::hash_map::RawEntryMut::Occupied(entry) => {
                 let state = entry.into_mut();
                 handle_occupied(state, use_loading);
@@ -62,9 +62,7 @@ impl TexturesCache {
 
                 state
             }
-        };
-
-        state
+        }
     }
 
     pub fn insert_pending(&mut self, url: &str, promise: Promise<Option<Result<TexturedImage>>>) {
@@ -88,7 +86,7 @@ impl TexturesCache {
         });
     }
 
-    pub fn get_and_handle(&mut self, url: &str) -> Option<LoadableTextureState> {
+    pub fn get_and_handle(&mut self, url: &str) -> Option<LoadableTextureState<'_>> {
         self.cache.get_mut(url).map(|state| {
             handle_occupied(state, true);
             state.into()

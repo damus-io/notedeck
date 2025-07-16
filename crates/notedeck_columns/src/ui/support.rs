@@ -1,4 +1,4 @@
-use egui::{vec2, Button, Label, Layout, RichText};
+use egui::{Button, Label, Layout, RichText, vec2};
 use notedeck::{NamedFontFamily, NotedeckTextStyle};
 use notedeck_ui::{colors::PINK, padding};
 use tracing::error;

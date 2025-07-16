@@ -2,19 +2,19 @@ use core::f32;
 use std::collections::HashMap;
 
 use egui::{
-    pos2, vec2, Align, Color32, FontId, Id, Image, Margin, Pos2, Rect, RichText, ScrollArea,
-    Separator, Ui, Vec2, Widget,
+    Align, Color32, FontId, Id, Image, Margin, Pos2, Rect, RichText, ScrollArea, Separator, Ui,
+    Vec2, Widget, pos2, vec2,
 };
 use enostr::Pubkey;
 use nostrdb::{Ndb, Transaction};
 use tracing::error;
 
 use crate::{
+    Damus,
     login_manager::AcquireKeyState,
     options::AppOptions,
     route::Route,
-    timeline::{kind::ListKind, PubkeySource, TimelineKind},
-    Damus,
+    timeline::{PubkeySource, TimelineKind, kind::ListKind},
 };
 
 use notedeck::{AppContext, Images, NotedeckTextStyle, UserAccount};
@@ -22,7 +22,7 @@ use notedeck_ui::{anim::ICON_EXPANSION_MULTIPLE, app_images};
 use tokenator::{ParseError, TokenParser, TokenSerializable, TokenWriter};
 
 use crate::ui::widgets::styled_button;
-use notedeck_ui::{anim::AnimationHelper, padding, ProfilePreview};
+use notedeck_ui::{ProfilePreview, anim::AnimationHelper, padding};
 
 pub enum AddColumnResponse {
     Timeline(TimelineKind),
