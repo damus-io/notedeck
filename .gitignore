@@ -3,10 +3,7 @@
 TODO.bak
 android-config.json
 build.log
-perf.data
 rusty-tags.vi
-notedeck-settings
-perf.data.old
 crates/notedeck_chrome/android/app/build
 .privenv
 *.so
@@ -20,10 +17,5 @@ cache
 /dist
 /packages
 .direnv/
-src/camera.rs
 scripts/macos_build_secrets.sh
-*.patch
-*.txt
 /tags
-*.mdb
-.idea/
