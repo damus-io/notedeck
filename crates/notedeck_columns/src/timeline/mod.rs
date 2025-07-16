@@ -486,6 +486,7 @@ pub fn setup_new_timeline(
     for relay in &mut pool.relays {
         send_initial_timeline_filter(since_optimize, subs, relay, timeline, accounts);
     }
+    timeline.subscription.increment();
 }
 
 /// Send initial filters for a specific relay. This typically gets called

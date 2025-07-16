@@ -1,7 +1,6 @@
 use crate::{
     actionbar::TimelineOpenResult,
     error::Error,
-    //subscriptions::SubRefs,
     timeline::{Timeline, TimelineKind},
 };
 
@@ -105,7 +104,8 @@ impl TimelineCache {
     }
 
     pub fn insert(&mut self, id: TimelineKind, timeline: Timeline) {
-        if let Some(_cur_timeline) = self.timelines.get_mut(&id) {
+        if let Some(cur_timeline) = self.timelines.get_mut(&id) {
+            cur_timeline.subscription.increment();
             return;
         };
 
@@ -204,6 +204,8 @@ impl TimelineCache {
                 "open: filter not ready, so could not setup subscription. this should never happen"
             );
         };
+
+        timeline.subscription.increment();
 
         open_result
     }
