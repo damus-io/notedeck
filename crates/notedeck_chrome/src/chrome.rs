@@ -756,11 +756,12 @@ fn bottomup_sidebar(
         {
             let mem_use = re_memory::MemoryUse::capture();
             if let Some(counted) = mem_use.counted {
-                let memory_resp = ui.label(format!("{}", format_bytes(counted as f64)));
-                if memory_resp.clicked() {
+                if ui
+                    .label(format!("{}", format_bytes(counted as f64)))
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .clicked()
+                {
                     _chrome.show_memory_debug = !_chrome.show_memory_debug;
-                } else if memory_resp.hovered() {
-                    notedeck_ui::show_pointer(ui);
                 }
             }
             if let Some(resident) = mem_use.resident {

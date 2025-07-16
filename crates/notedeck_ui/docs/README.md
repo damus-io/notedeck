@@ -169,19 +169,6 @@ if ui.visuals().dark_mode {
 
 ## Common Patterns
 
-### Handling User Interactions
-
-```rust
-// For clickable elements
-let response = ui.add(/* widget */);
-if response.clicked() {
-    // Handle click
-} else if response.hovered() {
-    // Show hover effect (often using show_pointer())
-    crate::show_pointer(ui);
-}
-```
-
 ### Hover Previews
 
 ```rust
