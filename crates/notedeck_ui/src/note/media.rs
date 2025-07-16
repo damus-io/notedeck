@@ -2,7 +2,7 @@ use std::{collections::HashMap, path::Path};
 
 use egui::{
     Button, Color32, Context, CornerRadius, FontId, Image, Response, RichText, Sense,
-    TextureHandle, Window,
+    TextureHandle, UiBuilder, Window,
 };
 use notedeck::{
     fonts::get_font_size, note::MediaAction, show_one_error_message, supported_mime_hosted_at_url,
@@ -13,6 +13,7 @@ use notedeck::{
 use crate::{
     app_images,
     blur::{compute_blurhash, Blur, ObfuscationType, PointDimensions},
+    colors::PINK,
     gif::{handle_repaint, retrieve_latest_texture},
     images::{fetch_no_pfp_promise, get_render_state, ImageType},
     jobs::{BlurhashParams, Job, JobId, JobParams, JobState, JobsCache},
@@ -30,7 +31,6 @@ pub(crate) fn image_carousel(
 ) -> Option<MediaAction> {
     // let's make sure everything is within our area
 
-    //let height = if is_narrow(ui.ctx()) { 90.0 } else { 360.0 };
     let height = 360.0;
     let width = ui.available_width();
 
@@ -68,6 +68,7 @@ pub(crate) fn image_carousel(
                             &cache.cache_dir,
                             blur_type.clone(),
                         );
+
                         if let Some(cur_action) =
                             render_media(ui, &mut img_cache.gif_states, media_state, url, height)
                         {
@@ -171,6 +172,7 @@ fn show_full_screen_media(
         .show(ui.ctx(), |ui| {
             ui.centered_and_justified(|ui| 's: {
                 let image_url = medias[index].url;
+
                 let media_type = medias[index].media_type;
                 tracing::trace!(
                     "show_full_screen_media using img {} @ {} for carousel_id {:?}",
@@ -370,43 +372,49 @@ fn render_full_screen_media(
     image_url: &str,
     carousel_id: egui::Id,
 ) {
-    let screen_rect = ui.ctx().screen_rect();
+    const TOP_BAR_HEIGHT: f32 = 30.0;
+    const BOTTOM_BAR_HEIGHT: f32 = 60.0;
 
-    // escape
+    let screen_rect = ui.ctx().screen_rect();
+    let screen_size = screen_rect.size();
+
+    // Escape key closes popup
     if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
         ui.ctx().memory_mut(|mem| {
             mem.data.insert_temp(carousel_id.with("show_popup"), false);
         });
     }
 
-    // background
+    // Draw background
     ui.painter()
         .rect_filled(screen_rect, 0.0, Color32::from_black_alpha(230));
 
-    // zoom init
-    let zoom_id = carousel_id.with("zoom_level");
-    let mut zoom = ui
-        .ctx()
-        .memory(|mem| mem.data.get_temp(zoom_id).unwrap_or(1.0_f32));
+    let background_response = ui.interact(
+        screen_rect,
+        carousel_id.with("background"),
+        egui::Sense::click(),
+    );
 
-    // pan init
+    // Zoom & pan state
+    let zoom_id = carousel_id.with("zoom_level");
     let pan_id = carousel_id.with("pan_offset");
+
+    let mut zoom: f32 = ui
+        .ctx()
+        .memory(|mem| mem.data.get_temp(zoom_id).unwrap_or(1.0));
     let mut pan_offset = ui
         .ctx()
         .memory(|mem| mem.data.get_temp(pan_id).unwrap_or(egui::Vec2::ZERO));
 
-    // zoom & scroll
+    // Handle scroll to zoom
     if ui.input(|i| i.pointer.hover_pos()).is_some() {
         let scroll_delta = ui.input(|i| i.smooth_scroll_delta);
         if scroll_delta.y != 0.0 {
             let zoom_factor = if scroll_delta.y > 0.0 { 1.05 } else { 0.95 };
-            zoom *= zoom_factor;
-            zoom = zoom.clamp(0.1, 5.0);
-
+            zoom = (zoom * zoom_factor).clamp(0.1, 5.0);
             if zoom <= 1.0 {
                 pan_offset = egui::Vec2::ZERO;
             }
-
             ui.ctx().memory_mut(|mem| {
                 mem.data.insert_temp(zoom_id, zoom);
                 mem.data.insert_temp(pan_id, pan_offset);
@@ -414,106 +422,213 @@ fn render_full_screen_media(
         }
     }
 
+    // Fetch image
     let texture = handle_repaint(
         ui,
         retrieve_latest_texture(image_url, gifs, renderable_media),
     );
 
     let texture_size = texture.size_vec2();
-    let screen_size = ui.ctx().screen_rect().size();
-    let scale = (screen_size.x / texture_size.x)
-        .min(screen_size.y / texture_size.y)
+
+    let topbar_rect = egui::Rect::from_min_max(
+        screen_rect.min + egui::vec2(0.0, 0.0),
+        screen_rect.min + egui::vec2(screen_size.x, TOP_BAR_HEIGHT),
+    );
+
+    let topbar_response = ui.interact(
+        topbar_rect,
+        carousel_id.with("topbar"),
+        egui::Sense::click(),
+    );
+
+    let mut keep_popup_open = false;
+    if topbar_response.clicked() {
+        keep_popup_open = true;
+    }
+
+    ui.allocate_new_ui(
+        UiBuilder::new()
+            .max_rect(topbar_rect)
+            .layout(egui::Layout::top_down(egui::Align::RIGHT)),
+        |ui| {
+            let color = ui.style().visuals.noninteractive().fg_stroke.color;
+
+            ui.add_space(10.0);
+
+            ui.horizontal(|ui| {
+                let label_reponse = ui
+                    .label(RichText::new(image_url).color(color).small())
+                    .on_hover_text(image_url);
+                if label_reponse.double_clicked()
+                    || label_reponse.clicked()
+                    || label_reponse.hovered()
+                {
+                    keep_popup_open = true;
+
+                    ui.ctx().copy_text(image_url.to_owned());
+                }
+            });
+        },
+    );
+
+    // Calculate available rect for image
+    let image_rect = egui::Rect::from_min_max(
+        screen_rect.min + egui::vec2(0.0, TOP_BAR_HEIGHT),
+        screen_rect.max - egui::vec2(0.0, BOTTOM_BAR_HEIGHT),
+    );
+
+    let image_area_size = image_rect.size();
+    let scale = (image_area_size.x / texture_size.x)
+        .min(image_area_size.y / texture_size.y)
         .min(1.0);
     let scaled_size = texture_size * scale * zoom;
 
-    let visible_width = scaled_size.x.min(screen_size.x);
-    let visible_height = scaled_size.y.min(screen_size.y);
+    let visible_width = scaled_size.x.min(image_area_size.x);
+    let visible_height = scaled_size.y.min(image_area_size.y);
 
     let max_pan_x = ((scaled_size.x - visible_width) / 2.0).max(0.0);
     let max_pan_y = ((scaled_size.y - visible_height) / 2.0).max(0.0);
 
-    if max_pan_x > 0.0 {
-        pan_offset.x = pan_offset.x.clamp(-max_pan_x, max_pan_x);
+    pan_offset.x = if max_pan_x > 0.0 {
+        pan_offset.x.clamp(-max_pan_x, max_pan_x)
     } else {
-        pan_offset.x = 0.0;
-    }
-
-    if max_pan_y > 0.0 {
-        pan_offset.y = pan_offset.y.clamp(-max_pan_y, max_pan_y);
+        0.0
+    };
+    pan_offset.y = if max_pan_y > 0.0 {
+        pan_offset.y.clamp(-max_pan_y, max_pan_y)
     } else {
-        pan_offset.y = 0.0;
-    }
+        0.0
+    };
 
-    let (rect, response) = ui.allocate_exact_size(
+    let render_rect = egui::Rect::from_center_size(
+        image_rect.center(),
         egui::vec2(visible_width, visible_height),
-        egui::Sense::click_and_drag(),
     );
 
+    // Compute UVs for zoom & pan
     let uv_min = egui::pos2(
         0.5 - (visible_width / scaled_size.x) / 2.0 + pan_offset.x / scaled_size.x,
         0.5 - (visible_height / scaled_size.y) / 2.0 + pan_offset.y / scaled_size.y,
     );
-
     let uv_max = egui::pos2(
         uv_min.x + visible_width / scaled_size.x,
         uv_min.y + visible_height / scaled_size.y,
     );
 
-    let uv = egui::Rect::from_min_max(uv_min, uv_max);
+    // Paint image
+    ui.painter().image(
+        texture.id(),
+        render_rect,
+        egui::Rect::from_min_max(uv_min, uv_max),
+        Color32::WHITE,
+    );
 
-    ui.painter()
-        .image(texture.id(), rect, uv, egui::Color32::WHITE);
-    let img_rect = ui.allocate_rect(rect, Sense::click());
+    // image actions
+    let response = ui.interact(
+        render_rect,
+        carousel_id.with("img"),
+        Sense::click_and_drag(),
+    );
 
-    if img_rect.clicked() {
-        ui.data_mut(|data| {
-            data.insert_temp(carousel_id.with("show_popup"), true);
-        });
-    } else if img_rect.clicked_elsewhere() {
-        ui.data_mut(|data| {
-            data.insert_temp(carousel_id.with("show_popup"), false);
-        });
-    }
-
-    // Handle dragging for pan
+    // Handle pan via drag
     if response.dragged() {
         let delta = response.drag_delta();
-
-        pan_offset.x -= delta.x;
-        pan_offset.y -= delta.y;
-
-        if max_pan_x > 0.0 {
-            pan_offset.x = pan_offset.x.clamp(-max_pan_x, max_pan_x);
-        } else {
-            pan_offset.x = 0.0;
-        }
-
-        if max_pan_y > 0.0 {
-            pan_offset.y = pan_offset.y.clamp(-max_pan_y, max_pan_y);
-        } else {
-            pan_offset.y = 0.0;
-        }
-
-        ui.data_mut(|data| {
-            data.insert_temp(pan_id, pan_offset);
-        });
+        pan_offset -= delta;
+        pan_offset.x = pan_offset.x.clamp(-max_pan_x, max_pan_x);
+        pan_offset.y = pan_offset.y.clamp(-max_pan_y, max_pan_y);
+        ui.ctx()
+            .memory_mut(|mem| mem.data.insert_temp(pan_id, pan_offset));
     }
 
-    // reset zoom on double-click
+    // Double click to reset
     if response.double_clicked() {
-        pan_offset = egui::Vec2::ZERO;
         zoom = 1.0;
+        pan_offset = egui::Vec2::ZERO;
         ui.ctx().memory_mut(|mem| {
             mem.data.insert_temp(pan_id, pan_offset);
             mem.data.insert_temp(zoom_id, zoom);
         });
     }
 
+    // bottom bar
     if num_urls > 1 {
-        let color = ui.style().visuals.noninteractive().fg_stroke.color;
+        let bottom_rect = egui::Rect::from_min_max(
+            screen_rect.max - egui::vec2(screen_size.x, BOTTOM_BAR_HEIGHT),
+            screen_rect.max,
+        );
 
-        let text = format!("{}/{}", index + 1, num_urls);
-        ui.label(RichText::new(text).size(10.0).color(color));
+        let full_response = ui.interact(
+            bottom_rect,
+            carousel_id.with("bottom_bar"),
+            egui::Sense::click(),
+        );
+
+        if full_response.clicked() {
+            keep_popup_open = true;
+        }
+
+        let mut clicked_index: Option<usize> = None;
+
+        #[allow(deprecated)]
+        ui.allocate_ui_at_rect(bottom_rect, |ui| {
+            let dot_radius = 7.0;
+            let dot_spacing = 20.0;
+            let color_active = PINK;
+            let color_inactive: Color32 = ui.style().visuals.widgets.inactive.bg_fill;
+
+            let center = bottom_rect.center();
+
+            for i in 0..num_urls {
+                let distance = egui::vec2(
+                    (i as f32 - (num_urls as f32 - 1.0) / 2.0) * dot_spacing,
+                    0.0,
+                );
+                let pos = center + distance;
+
+                let circle_color = if i == index {
+                    color_active
+                } else {
+                    color_inactive
+                };
+
+                let circle_rect = egui::Rect::from_center_size(
+                    pos,
+                    egui::vec2(dot_radius * 2.0, dot_radius * 2.0),
+                );
+
+                let resp = ui.interact(circle_rect, carousel_id.with(i), egui::Sense::click());
+
+                ui.painter().circle_filled(pos, dot_radius, circle_color);
+
+                if i != index && resp.hovered() {
+                    ui.painter()
+                        .circle_stroke(pos, dot_radius + 2.0, (1.0, PINK));
+                }
+
+                if resp.clicked() {
+                    keep_popup_open = true;
+                    if i != index {
+                        clicked_index = Some(i);
+                    }
+                }
+            }
+        });
+
+        if let Some(new_index) = clicked_index {
+            ui.ctx().data_mut(|data| {
+                data.insert_temp(selection_id(carousel_id), new_index);
+            });
+        }
+    }
+
+    if keep_popup_open || response.clicked() {
+        ui.data_mut(|data| {
+            data.insert_temp(carousel_id.with("show_popup"), true);
+        });
+    } else if background_response.clicked() || response.clicked_elsewhere() {
+        ui.data_mut(|data| {
+            data.insert_temp(carousel_id.with("show_popup"), false);
+        });
     }
 
     copy_link(image_url, &response);
