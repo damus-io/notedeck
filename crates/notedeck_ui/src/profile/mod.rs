@@ -8,7 +8,7 @@ pub use picture::ProfilePic;
 pub use preview::ProfilePreview;
 
 use egui::{load::TexturePoll, Label, RichText};
-use notedeck::{ui::is_narrow, IsFollowing, NostrName, NotedeckTextStyle};
+use notedeck::{IsFollowing, NostrName, NotedeckTextStyle};
 
 use crate::{app_images, colors, widgets::styled_button_toggleable};
 
@@ -39,7 +39,7 @@ pub fn display_name_widget<'a>(
                     )
                 });
 
-                if is_narrow(ui.ctx()) {
+                if name.username.is_some() && name.nip05.is_some() {
                     ui.end_row();
                 }
 
@@ -74,12 +74,7 @@ pub fn display_name_widget<'a>(
     }
 }
 
-pub fn about_section_widget<'a, 'b>(
-    profile: Option<&'b ProfileRecord<'a>>,
-) -> impl egui::Widget + 'b
-where
-    'b: 'a,
-{
+pub fn about_section_widget<'a>(profile: Option<&'a ProfileRecord<'a>>) -> impl egui::Widget + 'a {
     move |ui: &mut egui::Ui| {
         if let Some(about) = profile
             .map(|p| p.record().profile())

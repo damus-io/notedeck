@@ -12,8 +12,8 @@ use crate::{
     ui::timeline::{tabs_ui, TimelineTabView},
 };
 use notedeck::{
-    name::get_display_name, profile::get_profile_url, ui::is_narrow, Accounts, IsFollowing,
-    MuteFun, NoteAction, NoteContext, NotedeckTextStyle,
+    name::get_display_name, profile::get_profile_url, Accounts, IsFollowing, MuteFun, NoteAction,
+    NoteContext, NotedeckTextStyle,
 };
 use notedeck_ui::{
     app_images,
@@ -246,7 +246,7 @@ impl<'a, 'd> ProfileView<'a, 'd> {
                     }
 
                     if let Some(lud16) = lud16 {
-                        if is_narrow(ui.ctx()) && website_url.is_some() {
+                        if website_url.is_some() {
                             ui.end_row();
                         }
                         ui.horizontal(|ui| {
