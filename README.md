@@ -105,7 +105,7 @@ Notedeck is currently in **ALPHA** status. For the latest changes, see the [CHAN
 
 ## Future
 
-Notedeck allows for app development built on top of the performant, built specifically for nostr database nostrDB. An example app written on notedeck is Dave: https://github.com/damus-io/notedeck/tree/master/crates/notedeck_dave. 
+Notedeck allows for app development built on top of the performant, built specifically for nostr database [nostrdb][nostrdb]. An example app written on notedeck is [Dave][./crates/notedeck_dave]
 
 Building on notedeck dev documentation is also on the roadmap.
 
@@ -132,3 +132,6 @@ This project is licensed under the GPL - see license information in individual c
 - William Casarin <jb55@jb55.com>
 - kernelkind <kernelkind@gmail.com>
 - And [contributors](https://github.com/damus-io/notedeck/graphs/contributors)
+
+
+[nostrdb]: https://github.com/damus-io/nostrdb
