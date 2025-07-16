@@ -105,7 +105,7 @@ Notedeck is currently in **ALPHA** status. For the latest changes, see the [CHAN
 
 ## Future
 
-Notedeck allows for app development built on top of the performant, built specifically for nostr database [nostrdb][nostrdb]. An example app written on notedeck is [Dave][./crates/notedeck_dave]
+Notedeck allows for app development built on top of the performant, built specifically for nostr database [nostrdb][nostrdb]. An example app written on notedeck is [Dave](./crates/notedeck_dave)
 
 Building on notedeck dev documentation is also on the roadmap.
 
