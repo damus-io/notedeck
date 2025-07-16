@@ -4,13 +4,14 @@ use crate::{
     blur::imeta_blurhashes,
     jobs::JobsCache,
     note::{NoteAction, NoteOptions, NoteResponse, NoteView},
+    secondary_label,
 };
 
 use egui::{Color32, Hyperlink, RichText};
 use nostrdb::{BlockType, Mention, Note, NoteKey, Transaction};
 use tracing::warn;
 
-use notedeck::{IsFollowing, NoteContext};
+use notedeck::{IsFollowing, NoteCache, NoteContext};
 
 use super::media::{find_renderable_media, image_carousel, RenderableMedia};
 
@@ -53,8 +54,25 @@ impl egui::Widget for &mut NoteContents<'_, '_> {
             self.options,
             self.jobs,
         );
+        if self.options.contains(NoteOptions::ShowNoteClient) {
+            render_client(ui, self.note_context.note_cache, self.note);
+        }
         self.action = result.action;
         result.response
+    }
+}
+
+#[profiling::function]
+fn render_client(ui: &mut egui::Ui, note_cache: &mut NoteCache, note: &Note) {
+    let cached_note = note_cache.cached_note_or_insert_mut(note.key().unwrap(), note);
+
+    match cached_note.client.as_deref() {
+        Some(client) if !client.is_empty() => {
+            ui.horizontal(|ui| {
+                secondary_label(ui, format!("via {}", client));
+            });
+        }
+        _ => return,
     }
 }
 

@@ -9,7 +9,6 @@ use notedeck::{App, AppAction, AppContext, NotedeckTextStyle, UserAccount, Walle
 use notedeck_columns::{
     column::SelectionResult, timeline::kind::ListKind, timeline::TimelineKind, Damus,
 };
-
 use notedeck_dave::{Dave, DaveAvatar};
 use notedeck_ui::{app_images, AnimationHelper, ProfilePic};
 
@@ -289,7 +288,7 @@ impl Chrome {
     /// How far is the chrome panel expanded?
     fn amount_open(&self, ui: &mut egui::Ui) -> f32 {
         let open_id = egui::Id::new("chrome_open");
-        let side_panel_width: f32 = 70.0;
+        let side_panel_width: f32 = 74.0;
         ui.ctx().animate_bool(open_id, self.open) * side_panel_width
     }
 
@@ -406,7 +405,7 @@ impl Chrome {
         // macos needs a bit of space to make room for window
         // minimize/close buttons
         if cfg!(target_os = "macos") {
-            ui.add_space(28.0);
+            ui.add_space(30.0);
         } else {
             // we still want *some* padding so that it aligns with the + button regardless
             ui.add_space(notedeck_ui::constants::FRAME_MARGIN.into());
@@ -615,11 +614,12 @@ fn wallet_button() -> impl Widget {
 
         let max_size = img_size * ICON_EXPANSION_MULTIPLE;
 
-        let mut img = app_images::wallet_image().max_width(img_size);
-
-        if !ui.visuals().dark_mode {
-            img = img.tint(egui::Color32::BLACK);
+        let img = if !ui.visuals().dark_mode {
+            app_images::wallet_light_image()
+        } else {
+            app_images::wallet_dark_image()
         }
+        .max_width(img_size);
 
         let helper = AnimationHelper::new(ui, "wallet-icon", vec2(max_size, max_size));
 

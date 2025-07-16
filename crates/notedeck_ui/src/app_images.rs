@@ -1,5 +1,5 @@
 use eframe::icon_data::from_png_bytes;
-use egui::{include_image, IconData, Image};
+use egui::{include_image, Color32, IconData, Image};
 
 pub fn app_icon() -> IconData {
     from_png_bytes(include_bytes!("../../../assets/damus-app-icon.png")).expect("icon")
@@ -113,12 +113,12 @@ pub fn help_light_image() -> Image<'static> {
     ))
 }
 
-pub fn home_dark_image() -> Image<'static> {
-    Image::new(include_image!("../../../assets/icons/home-toolbar.png"))
+pub fn home_light_image() -> Image<'static> {
+    home_dark_image().tint(Color32::BLACK)
 }
 
-pub fn home_light_image() -> Image<'static> {
-    home_dark_image().tint(egui::Color32::BLACK)
+pub fn home_dark_image() -> Image<'static> {
+    Image::new(include_image!("../../../assets/icons/home-toolbar.png"))
 }
 
 pub fn home_image() -> Image<'static> {
@@ -131,8 +131,12 @@ pub fn key_image() -> Image<'static> {
     Image::new(include_image!("../../../assets/icons/key_4x.png"))
 }
 
-pub fn link_image() -> Image<'static> {
+pub fn link_dark_image() -> Image<'static> {
     Image::new(include_image!("../../../assets/icons/links_4x.png"))
+}
+
+pub fn link_light_image() -> Image<'static> {
+    link_dark_image().tint(Color32::BLACK)
 }
 
 pub fn new_message_image() -> Image<'static> {
@@ -153,15 +157,16 @@ pub fn notifications_image(dark_mode: bool) -> Image<'static> {
     }
 }
 
+pub fn notifications_light_image() -> Image<'static> {
+    notifications_dark_image().tint(Color32::BLACK)
+}
+
 pub fn notifications_dark_image() -> Image<'static> {
     Image::new(include_image!(
         "../../../assets/icons/notifications_dark_4x.png"
     ))
 }
 
-pub fn notifications_light_image() -> Image<'static> {
-    notifications_dark_image().tint(egui::Color32::BLACK)
-}
 pub fn repost_dark_image() -> Image<'static> {
     Image::new(include_image!("../../../assets/icons/repost_icon_4x.png"))
 }
@@ -208,10 +213,22 @@ pub fn media_upload_dark_image() -> Image<'static> {
     ))
 }
 
-pub fn wallet_image() -> Image<'static> {
+pub fn media_upload_light_image() -> Image<'static> {
+    media_upload_dark_image().tint(Color32::BLACK)
+}
+
+pub fn wallet_dark_image() -> Image<'static> {
     Image::new(include_image!("../../../assets/icons/wallet-icon.svg"))
 }
 
-pub fn zap_image() -> Image<'static> {
+pub fn wallet_light_image() -> Image<'static> {
+    wallet_dark_image().tint(Color32::BLACK)
+}
+
+pub fn zap_dark_image() -> Image<'static> {
     Image::new(include_image!("../../../assets/icons/zap_4x.png"))
+}
+
+pub fn zap_light_image() -> Image<'static> {
+    zap_dark_image().tint(Color32::BLACK)
 }
