@@ -49,14 +49,14 @@ impl Contacts {
         update_state(&mut self.state, &res.note, res.note_key);
     }
 
-    pub fn is_following(&self, other: &Pubkey) -> IsFollowing {
+    pub fn is_following(&self, other_pubkey: &[u8; 32]) -> IsFollowing {
         match &self.state {
             ContactState::Unreceived => IsFollowing::Unknown,
             ContactState::Received {
                 contacts,
                 note_key: _,
             } => {
-                if contacts.contains(other) {
+                if contacts.contains(other_pubkey) {
                     IsFollowing::Yes
                 } else {
                     IsFollowing::No

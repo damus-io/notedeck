@@ -4,6 +4,7 @@ mod context;
 pub use action::{MediaAction, NoteAction, ScrollInfo, ZapAction, ZapTargetAmount};
 pub use context::{BroadcastContext, ContextSelection, NoteContextSelection};
 
+use crate::Accounts;
 use crate::JobPool;
 use crate::UnknownIds;
 use crate::{notecache::NoteCache, zaps::Zaps, Images};
@@ -17,6 +18,7 @@ use std::fmt;
 /// passed to inner UI elements, minimizing prop drilling.
 pub struct NoteContext<'d> {
     pub ndb: &'d Ndb,
+    pub accounts: &'d Accounts,
     pub img_cache: &'d mut Images,
     pub note_cache: &'d mut NoteCache,
     pub zaps: &'d mut Zaps,

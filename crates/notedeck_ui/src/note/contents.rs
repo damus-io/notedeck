@@ -2,23 +2,20 @@ use std::cell::OnceCell;
 
 use crate::{
     blur::imeta_blurhashes,
-    contacts::trust_media_from_pk2,
     jobs::JobsCache,
     note::{NoteAction, NoteOptions, NoteResponse, NoteView},
 };
 
 use egui::{Color32, Hyperlink, RichText};
-use enostr::KeypairUnowned;
 use nostrdb::{BlockType, Mention, Note, NoteKey, Transaction};
 use tracing::warn;
 
-use notedeck::NoteContext;
+use notedeck::{IsFollowing, NoteContext};
 
 use super::media::{find_renderable_media, image_carousel, RenderableMedia};
 
 pub struct NoteContents<'a, 'd> {
     note_context: &'a mut NoteContext<'d>,
-    cur_acc: Option<&'a KeypairUnowned<'a>>,
     txn: &'a Transaction,
     note: &'a Note<'a>,
     options: NoteOptions,
@@ -30,7 +27,6 @@ impl<'a, 'd> NoteContents<'a, 'd> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         note_context: &'a mut NoteContext<'d>,
-        cur_acc: Option<&'a KeypairUnowned<'a>>,
         txn: &'a Transaction,
         note: &'a Note,
         options: NoteOptions,
@@ -38,7 +34,6 @@ impl<'a, 'd> NoteContents<'a, 'd> {
     ) -> Self {
         NoteContents {
             note_context,
-            cur_acc,
             txn,
             note,
             options,
@@ -53,7 +48,6 @@ impl egui::Widget for &mut NoteContents<'_, '_> {
         let result = render_note_contents(
             ui,
             self.note_context,
-            self.cur_acc,
             self.txn,
             self.note,
             self.options,
@@ -71,7 +65,6 @@ impl egui::Widget for &mut NoteContents<'_, '_> {
 pub fn render_note_preview(
     ui: &mut egui::Ui,
     note_context: &mut NoteContext,
-    cur_acc: Option<&KeypairUnowned>,
     txn: &Transaction,
     id: &[u8; 32],
     parent: NoteKey,
@@ -105,7 +98,7 @@ pub fn render_note_preview(
             */
     };
 
-    NoteView::new(note_context, cur_acc, &note, note_options, jobs)
+    NoteView::new(note_context, &note, note_options, jobs)
         .preview_style()
         .parent(parent)
         .show(ui)
@@ -116,7 +109,6 @@ pub fn render_note_preview(
 pub fn render_note_contents(
     ui: &mut egui::Ui,
     note_context: &mut NoteContext,
-    cur_acc: Option<&KeypairUnowned>,
     txn: &Transaction,
     note: &Note,
     options: NoteOptions,
@@ -275,7 +267,7 @@ pub fn render_note_contents(
     });
 
     let preview_note_action = inline_note.and_then(|(id, _)| {
-        render_note_preview(ui, note_context, cur_acc, txn, id, note_key, options, jobs)
+        render_note_preview(ui, note_context, txn, id, note_key, options, jobs)
             .action
             .map(|a| match a {
                 NoteAction::Note { note_id, .. } => NoteAction::Note {
@@ -291,12 +283,11 @@ pub fn render_note_contents(
         ui.add_space(2.0);
         let carousel_id = egui::Id::new(("carousel", note.key().expect("expected tx note")));
 
-        let trusted_media = trust_media_from_pk2(
-            note_context.ndb,
-            txn,
-            cur_acc.as_ref().map(|k| k.pubkey.bytes()),
-            note.pubkey(),
-        );
+        let trusted_media = note_context
+            .accounts
+            .get_selected_account()
+            .is_following(note.pubkey())
+            == IsFollowing::Yes;
 
         media_action = image_carousel(
             ui,

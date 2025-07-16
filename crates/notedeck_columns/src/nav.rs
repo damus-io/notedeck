@@ -485,8 +485,10 @@ fn render_nav_body(
     col: usize,
     inner_rect: egui::Rect,
 ) -> Option<RenderNavAction> {
+    let current_account_has_wallet = get_current_wallet(ctx.accounts, ctx.global_wallet).is_some();
     let mut note_context = NoteContext {
         ndb: ctx.ndb,
+        accounts: ctx.accounts,
         img_cache: ctx.img_cache,
         note_cache: ctx.note_cache,
         zaps: ctx.zaps,
@@ -494,7 +496,7 @@ fn render_nav_body(
         job_pool: ctx.job_pool,
         unknown_ids: ctx.unknown_ids,
         clipboard: ctx.clipboard,
-        current_account_has_wallet: get_current_wallet(ctx.accounts, ctx.global_wallet).is_some(),
+        current_account_has_wallet,
     };
     match top {
         Route::Timeline(kind) => {
@@ -507,7 +509,6 @@ fn render_nav_body(
 
             let nav_action = render_timeline_route(
                 &mut app.timeline_cache,
-                ctx.accounts,
                 kind,
                 col,
                 app.note_options,
@@ -527,7 +528,6 @@ fn render_nav_body(
         }
         Route::Thread(selection) => render_thread_route(
             &mut app.threads,
-            ctx.accounts,
             selection,
             col,
             app.note_options,
@@ -676,11 +676,9 @@ fn render_nav_body(
 
             SearchView::new(
                 &txn,
-                &ctx.accounts.mutefun(),
                 app.note_options,
                 search_buffer,
                 &mut note_context,
-                &(&ctx.accounts.get_selected_account().key).into(),
                 &mut app.jobs,
             )
             .show(ui)
