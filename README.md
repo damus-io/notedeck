@@ -101,7 +101,7 @@ Detailed developer documentation is available in each crate:
 
 ## 🔄 Release Status
 
-Notedeck is currently in **ALPHA** status. For the latest changes, see the [CHANGELOG](./CHANGELOG.md).
+Notedeck is currently in **BETA** status. For the latest changes, see the [CHANGELOG](./CHANGELOG.md).
 
 ## Future
 
