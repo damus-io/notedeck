@@ -189,12 +189,12 @@ pub fn render_note_contents(
                 },
 
                 BlockType::Hashtag => {
-                    let resp = ui.colored_label(link_color, format!("#{}", block.as_str()));
+                    let resp = ui
+                        .colored_label(link_color, format!("#{}", block.as_str()))
+                        .on_hover_cursor(egui::CursorIcon::PointingHand);
 
                     if resp.clicked() {
                         note_action = Some(NoteAction::Hashtag(block.as_str().to_string()));
-                    } else if resp.hovered() {
-                        crate::show_pointer(ui);
                     }
                 }
 

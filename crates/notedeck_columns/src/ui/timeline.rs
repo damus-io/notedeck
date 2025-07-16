@@ -11,7 +11,7 @@ use crate::timeline::{TimelineCache, TimelineKind, TimelineTab, ViewFilter};
 use notedeck::{note::root_note_id_from_selected_id, NoteAction, NoteContext, ScrollInfo};
 use notedeck_ui::{
     anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},
-    show_pointer, NoteOptions, NoteView,
+    NoteOptions, NoteView,
 };
 
 pub struct TimelineView<'a, 'd> {
@@ -127,6 +127,7 @@ fn timeline_ui(
             .fixed_pos(top_button_pos)
             .show(ui.ctx(), |ui| Some(ui.add(goto_top_button(top_button_pos))))
             .inner
+            .map(|r| r.on_hover_cursor(egui::CursorIcon::PointingHand))
     } else {
         None
     };
@@ -143,12 +144,8 @@ fn timeline_ui(
         scroll_area = scroll_area.vertical_scroll_offset(offset);
     }
 
-    if let Some(goto_top_resp) = goto_top_resp {
-        if goto_top_resp.clicked() {
-            scroll_area = scroll_area.vertical_scroll_offset(0.0);
-        } else if goto_top_resp.hovered() {
-            show_pointer(ui);
-        }
+    if goto_top_resp.is_some_and(|r| r.clicked()) {
+        scroll_area = scroll_area.vertical_scroll_offset(0.0);
     }
 
     // chrome can ask to scroll to top as well via an app option

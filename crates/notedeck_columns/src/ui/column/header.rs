@@ -76,14 +76,12 @@ impl<'a> NavTitle<'a> {
         ui.spacing_mut().item_spacing.x = item_spacing;
 
         let chev_x = 8.0;
-        let back_button_resp =
-            prev(self.routes).map(|r| self.back_button(ui, r, egui::Vec2::new(chev_x, 15.0)));
+        let back_button_resp = prev(self.routes).map(|r| {
+            self.back_button(ui, r, egui::Vec2::new(chev_x, 15.0))
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+        });
 
-        if let Some(back_resp) = &back_button_resp {
-            if back_resp.hovered() || back_resp.clicked() {
-                notedeck_ui::show_pointer(ui);
-            }
-        } else {
+        if back_button_resp.is_none() {
             // add some space where chevron would have been. this makes the ui
             // less bumpy when navigating
             ui.add_space(chev_x + item_spacing);
@@ -216,7 +214,9 @@ impl<'a> NavTitle<'a> {
     // returns the column index to switch to, if any
     fn move_button_section(&mut self, ui: &mut egui::Ui) -> Option<usize> {
         let cur_id = ui.id().with("move");
-        let mut move_resp = ui.add(grab_button());
+        let mut move_resp = ui
+            .add(grab_button())
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
 
         // showing the hover text while showing the move tooltip causes some weird visuals
         if ui.data(|d| d.get_temp::<bool>(cur_id).is_none()) {
@@ -235,8 +235,6 @@ impl<'a> NavTitle<'a> {
                     d.insert_temp(cur_id, true);
                 }
             });
-        } else if move_resp.hovered() {
-            notedeck_ui::show_pointer(ui);
         }
 
         ui.data(|d| d.get_temp(cur_id)).and_then(|val| {
@@ -597,11 +595,9 @@ impl<'a> NavTitle<'a> {
         top: &Route,
         pfp_size: f32,
     ) -> Option<TitleResponse> {
-        let pfp_r = self.title_pfp(ui, top, pfp_size);
-
-        if pfp_r.as_ref().is_some_and(|r| r.hovered()) {
-            notedeck_ui::show_pointer(ui);
-        }
+        let pfp_r = self
+            .title_pfp(ui, top, pfp_size)
+            .map(|r| r.on_hover_cursor(egui::CursorIcon::PointingHand));
 
         self.title_label(ui, top);
 

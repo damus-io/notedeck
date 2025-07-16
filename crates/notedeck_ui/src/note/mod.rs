@@ -669,13 +669,11 @@ fn show_actual_pfp(
         anim_speed,
     );
 
+    let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+
     let mut pfp = ProfilePic::new(images, pic).size(size);
     let pfp_resp = ui.put(rect, &mut pfp);
     let action = pfp.action;
-
-    if resp.hovered() || resp.clicked() {
-        crate::show_pointer(ui);
-    }
 
     pfp_resp.on_hover_ui_at_pointer(|ui| {
         ui.set_max_width(300.0);
@@ -768,20 +766,17 @@ fn render_note_actionbar(
     note_key: NoteKey,
 ) -> egui::InnerResponse<Option<NoteAction>> {
     ui.horizontal(|ui| 's: {
-        let reply_resp = reply_button(ui, note_key);
-        let quote_resp = quote_repost_button(ui, note_key);
+        let reply_resp = reply_button(ui, note_key).on_hover_cursor(egui::CursorIcon::PointingHand);
+        let quote_resp =
+            quote_repost_button(ui, note_key).on_hover_cursor(egui::CursorIcon::PointingHand);
 
         let to_noteid = |id: &[u8; 32]| NoteId::new(*id);
         if reply_resp.clicked() {
             break 's Some(NoteAction::Reply(to_noteid(note_id)));
-        } else if reply_resp.hovered() {
-            crate::show_pointer(ui);
         }
 
         if quote_resp.clicked() {
             break 's Some(NoteAction::Quote(to_noteid(note_id)));
-        } else if quote_resp.hovered() {
-            crate::show_pointer(ui);
         }
 
         let Some(Zapper { zaps, cur_acc }) = zapper else {
@@ -815,11 +810,8 @@ fn render_note_actionbar(
                     ui.add(x_button(rect)).on_hover_text(err.to_string())
                 }
             }
-        };
-
-        if zap_resp.hovered() {
-            crate::show_pointer(ui);
         }
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
 
         if zap_resp.secondary_clicked() {
             break 's Some(NoteAction::Zap(ZapAction::CustomizeAmount(target)));

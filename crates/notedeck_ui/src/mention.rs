@@ -1,4 +1,4 @@
-use crate::{show_pointer, ProfilePreview};
+use crate::ProfilePreview;
 use egui::Sense;
 use enostr::Pubkey;
 use nostrdb::{Ndb, Transaction};
@@ -75,18 +75,16 @@ fn mention_ui(
         get_display_name(profile.as_ref()).username_or_displayname()
     );
 
-    let resp = ui.add(
-        egui::Label::new(egui::RichText::new(name).color(link_color).size(size))
-            .sense(Sense::click())
-            .selectable(selectable),
-    );
+    let resp = ui
+        .add(
+            egui::Label::new(egui::RichText::new(name).color(link_color).size(size))
+                .sense(Sense::click())
+                .selectable(selectable),
+        )
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
 
     let note_action = if resp.clicked() {
-        show_pointer(ui);
         Some(NoteAction::Profile(Pubkey::new(*pk)))
-    } else if resp.hovered() {
-        show_pointer(ui);
-        None
     } else {
         None
     };

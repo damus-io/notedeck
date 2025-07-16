@@ -422,22 +422,21 @@ impl Chrome {
         ui.add_space(16.0);
         //let dark_mode = ui.ctx().style().visuals.dark_mode;
         {
-            let col_resp = columns_button(ui);
-            if col_resp.clicked() {
+            if columns_button(ui)
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .clicked()
+            {
                 self.active = 0;
-            } else if col_resp.hovered() {
-                notedeck_ui::show_pointer(ui);
             }
         }
         ui.add_space(32.0);
 
         if let Some(dave) = self.get_dave() {
             let rect = dave_sidebar_rect(ui);
-            let dave_resp = dave_button(dave.avatar_mut(), ui, rect);
+            let dave_resp = dave_button(dave.avatar_mut(), ui, rect)
+                .on_hover_cursor(egui::CursorIcon::PointingHand);
             if dave_resp.clicked() {
                 self.switch_to_dave();
-            } else if dave_resp.hovered() {
-                notedeck_ui::show_pointer(ui);
             }
         }
     }
@@ -712,17 +711,15 @@ fn bottomup_sidebar(
 ) -> Option<ChromePanelAction> {
     ui.add_space(8.0);
 
-    let pfp_resp = pfp_button(ctx, ui);
-    let settings_resp = settings_button(ui);
+    let pfp_resp = pfp_button(ctx, ui).on_hover_cursor(egui::CursorIcon::PointingHand);
+    let settings_resp = settings_button(ui).on_hover_cursor(egui::CursorIcon::PointingHand);
 
     let theme_action = match ui.ctx().theme() {
         egui::Theme::Dark => {
             let resp = ui
                 .add(Button::new("☀").frame(false))
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
                 .on_hover_text("Switch to light mode");
-            if resp.hovered() {
-                notedeck_ui::show_pointer(ui);
-            }
             if resp.clicked() {
                 Some(ChromePanelAction::SaveTheme(ThemePreference::Light))
             } else {
@@ -732,10 +729,8 @@ fn bottomup_sidebar(
         egui::Theme::Light => {
             let resp = ui
                 .add(Button::new("🌙").frame(false))
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
                 .on_hover_text("Switch to dark mode");
-            if resp.hovered() {
-                notedeck_ui::show_pointer(ui);
-            }
             if resp.clicked() {
                 Some(ChromePanelAction::SaveTheme(ThemePreference::Dark))
             } else {
@@ -744,9 +739,11 @@ fn bottomup_sidebar(
         }
     };
 
-    let support_resp = support_button(ui);
+    let support_resp = support_button(ui).on_hover_cursor(egui::CursorIcon::PointingHand);
 
-    let wallet_resp = ui.add(wallet_button());
+    let wallet_resp = ui
+        .add(wallet_button())
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
 
     if ctx.args.debug {
         ui.weak(format!("{}", ctx.frame_history.fps() as i32));
@@ -774,14 +771,6 @@ fn bottomup_sidebar(
                 egui::Window::new("Memory Debug").show(ui.ctx(), memory_debug_ui);
             }
         }
-    }
-
-    if pfp_resp.hovered()
-        || settings_resp.hovered()
-        || support_resp.hovered()
-        || wallet_resp.hovered()
-    {
-        notedeck_ui::show_pointer(ui);
     }
 
     if pfp_resp.clicked() {

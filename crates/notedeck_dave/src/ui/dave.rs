@@ -468,15 +468,15 @@ fn top_buttons_ui(app_ctx: &mut AppContext, ui: &mut egui::Ui) -> Option<DaveAct
     rect.set_width(32.0);
 
     let txn = Transaction::new(app_ctx.ndb).unwrap();
-    let r = ui.put(
-        rect,
-        &mut pfp_button(&txn, app_ctx.accounts, app_ctx.img_cache, app_ctx.ndb),
-    );
+    let r = ui
+        .put(
+            rect,
+            &mut pfp_button(&txn, app_ctx.accounts, app_ctx.img_cache, app_ctx.ndb),
+        )
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
 
     if r.clicked() {
         action = Some(DaveAction::ToggleChrome);
-    } else if r.hovered() {
-        notedeck_ui::show_pointer(ui);
     }
 
     rect = rect.translate(egui::vec2(30.0, 0.0));
@@ -484,8 +484,6 @@ fn top_buttons_ui(app_ctx: &mut AppContext, ui: &mut egui::Ui) -> Option<DaveAct
 
     if r.clicked() {
         action = Some(DaveAction::NewChat);
-    } else if r.hovered() {
-        notedeck_ui::show_pointer(ui);
     }
 
     action
