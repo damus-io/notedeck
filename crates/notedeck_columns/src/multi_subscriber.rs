@@ -79,7 +79,7 @@ impl ThreadSubs {
 
         remote.dependers = remote.dependers.saturating_add_signed(new_subs);
         let num_dependers = remote.dependers;
-        tracing::info!(
+        tracing::debug!(
             "Sub stats: num remotes: {}, num locals: {}, num remote dependers: {:?}",
             self.remotes.len(),
             self.scopes.len(),
@@ -153,11 +153,11 @@ impl ThreadSubs {
                 .remotes
                 .remove(&id.root_id.bytes())
                 .expect("code above should guarentee existence");
-            tracing::info!("Remotely unsubscribed: {}", remote.subid);
+            tracing::debug!("Remotely unsubscribed: {}", remote.subid);
             pool.unsubscribe(remote.subid);
         }
 
-        tracing::info!(
+        tracing::debug!(
             "unsub stats: num remotes: {}, num locals: {}, num remote dependers: {:?}",
             self.remotes.len(),
             self.scopes.len(),
@@ -204,7 +204,7 @@ fn ndb_sub(ndb: &Ndb, filter: &[Filter], id: impl std::fmt::Debug) -> Option<Sub
     match ndb.subscribe(filter) {
         Ok(s) => Some(s),
         Err(e) => {
-            tracing::info!("Failed to get subscription for {:?}: {e}", id);
+            tracing::error!("Failed to get subscription for {:?}: {e}", id);
             None
         }
     }
@@ -214,7 +214,7 @@ fn ndb_unsub(ndb: &mut Ndb, sub: Subscription, id: impl std::fmt::Debug) -> bool
     match ndb.unsubscribe(sub) {
         Ok(_) => true,
         Err(e) => {
-            tracing::info!("Failed to unsub {:?}: {e}", id);
+            tracing::error!("Failed to unsub {:?}: {e}", id);
             false
         }
     }
@@ -235,7 +235,7 @@ fn sub_remote(
         dependers: 0,
     };
 
-    tracing::info!("Remote subscribe for {:?}", id);
+    tracing::debug!("Remote subscribe for {:?}", id);
 
     pool.subscribe(subid, filter);
 
@@ -334,7 +334,7 @@ impl TimelineSub {
                 dependers: _,
             } => {}
         }
-        tracing::info!(
+        tracing::debug!(
             "TimelineSub::try_add_local: {:?} => {:?}",
             before,
             self.state
@@ -368,7 +368,7 @@ impl TimelineSub {
                 dependers: _,
             } => {}
         }
-        tracing::info!(
+        tracing::debug!(
             "TimelineSub::force_add_remote: {:?} => {:?}",
             before,
             self.state
@@ -408,7 +408,7 @@ impl TimelineSub {
                 dependers: _,
             } => {}
         }
-        tracing::info!(
+        tracing::debug!(
             "TimelineSub::try_add_remote: {:?} => {:?}",
             before,
             self.state
@@ -441,7 +441,7 @@ impl TimelineSub {
             }
         }
 
-        tracing::info!("TimelineSub::increment: {:?} => {:?}", before, self.state);
+        tracing::debug!("TimelineSub::increment: {:?} => {:?}", before, self.state);
     }
 
     pub fn get_local(&self) -> Option<Subscription> {
@@ -512,7 +512,7 @@ impl TimelineSub {
                 }
             }
         }
-        tracing::info!(
+        tracing::debug!(
             "TimelineSub::unsubscribe_or_decrement: {:?} => {:?}",
             before,
             self.state
