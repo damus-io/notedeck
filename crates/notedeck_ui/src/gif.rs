@@ -15,10 +15,10 @@ pub struct LatextTexture<'a> {
 /// So we must keep on requesting to repaint at our desired time to ensure our repaint goes through.
 /// See [`egui::Context::request_repaint_after`]
 pub fn handle_repaint<'a>(ui: &egui::Ui, latest: LatextTexture<'a>) -> &'a TextureHandle {
-    if let Some(repaint) = latest.request_next_repaint {
-        if let Ok(dur) = repaint.duration_since(SystemTime::now()) {
-            ui.ctx().request_repaint_after(dur);
-        }
+    if let Some(_repaint) = latest.request_next_repaint {
+        // 24fps for gif is fine
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(41));
     }
     latest.texture
 }
