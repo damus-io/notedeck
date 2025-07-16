@@ -8,6 +8,6 @@ pub use cache::{
 };
 
 pub use default_zap::{
-    get_current_default_msats, DefaultZapError, DefaultZapMsats, PendingDefaultZapState,
-    UserZapMsats,
+    DefaultZapError, DefaultZapMsats, PendingDefaultZapState, UserZapMsats,
+    get_current_default_msats,
 };

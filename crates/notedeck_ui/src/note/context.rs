@@ -1,6 +1,6 @@
 use egui::{Rect, Vec2};
 use nostrdb::NoteKey;
-use notedeck::{tr, BroadcastContext, Localization, NoteContextSelection};
+use notedeck::{BroadcastContext, Localization, NoteContextSelection, tr};
 
 pub struct NoteContextButton {
     put_at: Option<Rect>,
@@ -123,7 +123,7 @@ impl NoteContextButton {
 
             if ui.button(copy_text).clicked() {
                 context_selection = Some(NoteContextSelection::CopyText);
-                ui.close_menu();
+                ui.close();
             }
             if ui
                 .button(tr!(
@@ -134,7 +134,7 @@ impl NoteContextButton {
                 .clicked()
             {
                 context_selection = Some(NoteContextSelection::CopyPubkey);
-                ui.close_menu();
+                ui.close();
             }
             if ui
                 .button(tr!(
@@ -145,7 +145,7 @@ impl NoteContextButton {
                 .clicked()
             {
                 context_selection = Some(NoteContextSelection::CopyNoteId);
-                ui.close_menu();
+                ui.close();
             }
             if ui
                 .button(tr!(
@@ -156,7 +156,7 @@ impl NoteContextButton {
                 .clicked()
             {
                 context_selection = Some(NoteContextSelection::CopyNoteJSON);
-                ui.close_menu();
+                ui.close();
             }
             if ui
                 .button(tr!(
@@ -169,7 +169,7 @@ impl NoteContextButton {
                 context_selection = Some(NoteContextSelection::Broadcast(
                     BroadcastContext::Everywhere,
                 ));
-                ui.close_menu();
+                ui.close();
             }
             if ui
                 .button(tr!(
@@ -182,7 +182,7 @@ impl NoteContextButton {
                 context_selection = Some(NoteContextSelection::Broadcast(
                     BroadcastContext::LocalNetwork,
                 ));
-                ui.close_menu();
+                ui.close();
             }
         });
 

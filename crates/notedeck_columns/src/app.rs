@@ -1,4 +1,5 @@
 use crate::{
+    Result,
     args::{ColumnsArgs, ColumnsFlag},
     column::Columns,
     decks::{Decks, DecksCache},
@@ -9,20 +10,19 @@ use crate::{
     storage,
     subscriptions::{SubKind, Subscriptions},
     support::Support,
-    timeline::{self, kind::ListKind, thread::Threads, TimelineCache, TimelineKind},
+    timeline::{self, TimelineCache, TimelineKind, kind::ListKind, thread::Threads},
     ui::{self, DesktopSidePanel, SidePanelAction},
     view_state::ViewState,
-    Result,
 };
 
 use egui_extras::{Size, StripBuilder};
 use enostr::{ClientMessage, PoolRelay, Pubkey, RelayEvent, RelayMessage, RelayPool};
 use nostrdb::Transaction;
 use notedeck::{
-    tr, ui::is_narrow, Accounts, AppAction, AppContext, DataPath, DataPathType, FilterState,
-    Localization, UnknownIds,
+    Accounts, AppAction, AppContext, DataPath, DataPathType, FilterState, Localization, UnknownIds,
+    tr, ui::is_narrow,
 };
-use notedeck_ui::{jobs::JobsCache, NoteOptions};
+use notedeck_ui::{NoteOptions, jobs::JobsCache};
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 use std::time::Duration;

@@ -6,14 +6,14 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, error};
 
 use crate::{
+    Error,
     column::{Columns, IntermediaryRoute},
     decks::{Deck, Decks, DecksCache},
     route::Route,
     timeline::{TimelineCache, TimelineKind},
-    Error,
 };
 
-use notedeck::{storage, DataPath, DataPathType, Directory, Localization};
+use notedeck::{DataPath, DataPathType, Directory, Localization, storage};
 use tokenator::{ParseError, TokenParser, TokenWriter};
 
 pub static DECKS_CACHE_FILE: &str = "decks_cache.json";

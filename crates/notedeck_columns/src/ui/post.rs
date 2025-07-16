@@ -1,4 +1,4 @@
-use egui::{vec2, Color32, Stroke, Widget};
+use egui::{Color32, Stroke, Widget, vec2};
 use notedeck_ui::anim::AnimationHelper;
 
 static ICON_WIDTH: f32 = 40.0;

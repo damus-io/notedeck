@@ -1,6 +1,6 @@
 use tokenator::{ParseError, ParseErrorOwned, TokenParser, TokenSerializable, TokenWriter};
 
-use crate::{storage, DataPath, DataPathType, Directory};
+use crate::{DataPath, DataPathType, Directory, storage};
 
 pub struct TokenHandler {
     directory: Directory,

@@ -1,6 +1,6 @@
 use egui::{Color32, RichText, Widget};
 use nostrdb::ProfileRecord;
-use notedeck::{fonts::NamedFontFamily, tr, Localization};
+use notedeck::{Localization, fonts::NamedFontFamily, tr};
 
 pub struct Username<'a> {
     i18n: &'a mut Localization,

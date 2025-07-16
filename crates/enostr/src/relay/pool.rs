@@ -1,4 +1,4 @@
-use crate::relay::{setup_multicast_relay, MulticastRelay, Relay, RelayStatus};
+use crate::relay::{MulticastRelay, Relay, RelayStatus, setup_multicast_relay};
 use crate::{ClientMessage, Error, Result};
 use nostrdb::Filter;
 
@@ -381,7 +381,7 @@ impl RelayPool {
                         // let's just handle pongs here.
                         // We only need to do this natively.
                         #[cfg(not(target_arch = "wasm32"))]
-                        if let WsMessage::Ping(ref bs) = ev {
+                        if let WsMessage::Ping(bs) = ev {
                             debug!("pong {}", relay.url());
                             match relay {
                                 PoolRelay::Websocket(wsr) => {

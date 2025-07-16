@@ -25,6 +25,8 @@ mkShell ({
     #wabt
     #gdb
     #heaptrack
+    #inkscape
+    gitFull
   ] ++ lib.optionals (!stdenv.isDarwin) [
     zenity
   ] ++ lib.optionals use_android [

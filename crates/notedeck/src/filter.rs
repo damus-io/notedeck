@@ -60,7 +60,7 @@ impl FilterStates {
             Some(fs)
         } else {
             for (_k, v) in self.states.iter() {
-                if let FilterState::Ready(ref fs) = v {
+                if let FilterState::Ready(fs) = v {
                     return Some(fs);
                 }
             }

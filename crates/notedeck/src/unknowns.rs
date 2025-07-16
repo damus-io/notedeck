@@ -1,7 +1,7 @@
 use crate::{
+    Result,
     note::NoteRef,
     notecache::{CachedNote, NoteCache},
-    Result,
 };
 
 use enostr::{Filter, NoteId, Pubkey};

@@ -1,8 +1,8 @@
-use std::collections::{hash_map::ValuesMut, HashMap};
+use std::collections::{HashMap, hash_map::ValuesMut};
 
 use enostr::{Pubkey, RelayPool};
 use nostrdb::Transaction;
-use notedeck::{tr, AppContext, Localization, FALLBACK_PUBKEY};
+use notedeck::{AppContext, FALLBACK_PUBKEY, Localization, tr};
 use tracing::{error, info};
 
 use crate::{

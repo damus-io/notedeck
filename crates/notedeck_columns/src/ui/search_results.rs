@@ -1,13 +1,13 @@
-use egui::{vec2, FontId, Layout, Pos2, Rect, ScrollArea, UiBuilder, Vec2b};
+use egui::{FontId, Layout, Pos2, Rect, ScrollArea, UiBuilder, Vec2b, vec2};
 use nostrdb::{Ndb, ProfileRecord, Transaction};
 use notedeck::{
-    fonts::get_font_size, name::get_display_name, profile::get_profile_url, Images,
-    NotedeckTextStyle,
+    Images, NotedeckTextStyle, fonts::get_font_size, name::get_display_name,
+    profile::get_profile_url,
 };
 use notedeck_ui::{
+    ProfilePic,
     anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},
     widgets::x_button,
-    ProfilePic,
 };
 use tracing::error;
 

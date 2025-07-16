@@ -157,8 +157,7 @@ pub(crate) fn compute_blurhash(
     dims: PixelDimensions,
 ) -> Result<Job, JobError> {
     #[allow(irrefutable_let_patterns)]
-    let Some(JobParamsOwned::Blurhash(params)) = params
-    else {
+    let Some(JobParamsOwned::Blurhash(params)) = params else {
         return Err(JobError::InvalidParameters);
     };
 

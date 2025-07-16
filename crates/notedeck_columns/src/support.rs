@@ -29,7 +29,13 @@ impl Support {
 
 static MAX_LOG_LINES: usize = 500;
 static SUPPORT_EMAIL: &str = "support@damus.io";
-static EMAIL_TEMPLATE: &str = concat!("version ", env!("CARGO_PKG_VERSION"), "\nCommit hash: ", env!("GIT_COMMIT_HASH"), "\n\nDescribe the bug you have encountered:\n<-- your statement here -->\n\n===== Paste your log below =====\n\n");
+static EMAIL_TEMPLATE: &str = concat!(
+    "version ",
+    env!("CARGO_PKG_VERSION"),
+    "\nCommit hash: ",
+    env!("GIT_COMMIT_HASH"),
+    "\n\nDescribe the bug you have encountered:\n<-- your statement here -->\n\n===== Paste your log below =====\n\n"
+);
 
 impl Support {
     pub fn refresh(&mut self) {
@@ -60,7 +66,7 @@ fn get_log_str(interactor: &Directory) -> Option<String> {
                             file_output.output_num_lines,
                             file_output.total_lines_in_file,
                         ) + &file_output.output,
-                    )
+                    );
                 }
                 Err(e) => {
                     error!(

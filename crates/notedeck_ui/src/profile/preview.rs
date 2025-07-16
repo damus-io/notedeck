@@ -4,7 +4,7 @@ use egui_extras::Size;
 use nostrdb::ProfileRecord;
 
 use notedeck::{
-    name::get_display_name, profile::get_profile_url, tr, Images, Localization, NotedeckTextStyle,
+    Images, Localization, NotedeckTextStyle, name::get_display_name, profile::get_profile_url, tr,
 };
 
 use super::{about_section_widget, banner, display_name_widget};

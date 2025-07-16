@@ -4,7 +4,7 @@ use crate::{
     timeline::{Timeline, TimelineKind},
 };
 
-use notedeck::{filter, FilterState, NoteCache, NoteRef};
+use notedeck::{FilterState, NoteCache, NoteRef, filter};
 
 use enostr::RelayPool;
 use nostrdb::{Filter, Ndb, Transaction};

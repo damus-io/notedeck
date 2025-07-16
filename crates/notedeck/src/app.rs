@@ -1,13 +1,12 @@
+use crate::JobPool;
 use crate::account::FALLBACK_PUBKEY;
 use crate::i18n::Localization;
 use crate::persist::{AppSizeHandler, ZoomHandler};
 use crate::wallet::GlobalWallet;
 use crate::zaps::Zaps;
-use crate::JobPool;
 use crate::{
-    frame_history::FrameHistory, AccountStorage, Accounts, AppContext, Args, DataPath,
-    DataPathType, Directory, Images, NoteAction, NoteCache, RelayDebugView, ThemeHandler,
-    UnknownIds,
+    AccountStorage, Accounts, AppContext, Args, DataPath, DataPathType, Directory, Images,
+    NoteAction, NoteCache, RelayDebugView, ThemeHandler, UnknownIds, frame_history::FrameHistory,
 };
 use egui::Margin;
 use egui::ThemePreference;

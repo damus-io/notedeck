@@ -1,10 +1,10 @@
 use enostr::{NoteId, Pubkey};
-use notedeck::{tr, Localization, NoteZapTargetOwned, RootNoteIdBuf, WalletType};
+use notedeck::{Localization, NoteZapTargetOwned, RootNoteIdBuf, WalletType, tr};
 use std::ops::Range;
 
 use crate::{
     accounts::AccountsRoute,
-    timeline::{kind::ColumnTitle, ThreadSelection, TimelineKind},
+    timeline::{ThreadSelection, TimelineKind, kind::ColumnTitle},
     ui::add_column::{AddAlgoRoute, AddColumnRoute},
 };
 
@@ -659,7 +659,7 @@ mod tests {
     use enostr::NoteId;
     use tokenator::{TokenParser, TokenWriter};
 
-    use crate::{timeline::ThreadSelection, Route};
+    use crate::{Route, timeline::ThreadSelection};
     use enostr::Pubkey;
     use notedeck::RootNoteIdBuf;
 

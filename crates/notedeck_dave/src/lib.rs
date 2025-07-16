@@ -1,7 +1,7 @@
 use async_openai::{
+    Client,
     config::OpenAIConfig,
     types::{ChatCompletionRequestMessage, CreateChatCompletionRequest},
-    Client,
 };
 use chrono::{Duration, Local};
 use egui_wgpu::RenderState;
@@ -12,8 +12,8 @@ use notedeck::{AppAction, AppContext};
 use notedeck_ui::jobs::JobsCache;
 use std::collections::HashMap;
 use std::string::ToString;
-use std::sync::mpsc::{self, Receiver};
 use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver};
 
 pub use avatar::DaveAvatar;
 pub use config::ModelConfig;

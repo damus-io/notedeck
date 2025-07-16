@@ -1,8 +1,8 @@
-use crate::key_parsing::perform_key_retrieval;
 use crate::key_parsing::AcquireKeyError;
+use crate::key_parsing::perform_key_retrieval;
 use egui::{TextBuffer, TextEdit};
 use enostr::Keypair;
-use notedeck::{tr, Localization};
+use notedeck::{Localization, tr};
 use poll_promise::Promise;
 
 /// The state data for acquiring a nostr key

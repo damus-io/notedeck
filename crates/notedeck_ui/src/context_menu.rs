@@ -28,18 +28,18 @@ pub fn input_context(
     response.context_menu(|ui| {
         if ui.button("Paste").clicked() {
             handle_paste(clipboard, input, paste_behavior);
-            ui.close_menu();
+            ui.close();
         }
 
         if ui.button("Copy").clicked() {
             clipboard.set_text(input.to_owned());
-            ui.close_menu();
+            ui.close();
         }
 
         if ui.button("Cut").clicked() {
             clipboard.set_text(input.to_owned());
             input.clear();
-            ui.close_menu();
+            ui.close();
         }
     });
 

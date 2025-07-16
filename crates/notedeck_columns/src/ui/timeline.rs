@@ -1,5 +1,5 @@
 use egui::containers::scroll_area::ScrollBarVisibility;
-use egui::{vec2, Direction, Layout, Pos2, Stroke};
+use egui::{Direction, Layout, Pos2, Stroke, vec2};
 use egui_tabs::TabColor;
 use nostrdb::Transaction;
 use notedeck::ui::is_narrow;
@@ -9,11 +9,11 @@ use tracing::{error, warn};
 
 use crate::timeline::{TimelineCache, TimelineKind, TimelineTab, ViewFilter};
 use notedeck::{
-    note::root_note_id_from_selected_id, tr, Localization, NoteAction, NoteContext, ScrollInfo,
+    Localization, NoteAction, NoteContext, ScrollInfo, note::root_note_id_from_selected_id, tr,
 };
 use notedeck_ui::{
-    anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},
     NoteOptions, NoteView,
+    anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},
 };
 
 pub struct TimelineView<'a, 'd> {

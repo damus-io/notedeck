@@ -67,12 +67,6 @@ impl From<RelayEvent<'_>> for OwnedRelayEvent {
     }
 }
 
-#[derive(PartialEq, Eq, Hash, Clone)]
-pub struct RelaySub {
-    pub(crate) subid: String,
-    pub(crate) filter: String,
-}
-
 #[derive(Default)]
 pub struct SubStats {
     pub filter: String,

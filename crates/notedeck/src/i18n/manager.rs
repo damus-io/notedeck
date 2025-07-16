@@ -3,7 +3,7 @@ use fluent::{FluentArgs, FluentBundle, FluentResource};
 use fluent_langneg::negotiate_languages;
 use std::borrow::Cow;
 use std::collections::HashMap;
-use unic_langid::{langid, LanguageIdentifier};
+use unic_langid::{LanguageIdentifier, langid};
 
 const EN_XA: LanguageIdentifier = langid!("en-XA");
 const EN_US: LanguageIdentifier = langid!("en-US");

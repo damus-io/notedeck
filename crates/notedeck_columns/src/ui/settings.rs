@@ -1,9 +1,9 @@
-use egui::{vec2, Button, Color32, ComboBox, Frame, Margin, RichText, ThemePreference};
-use notedeck::{tr, Images, LanguageIdentifier, Localization, NotedeckTextStyle, ThemeHandler};
+use egui::{Button, Color32, ComboBox, Frame, Margin, RichText, ThemePreference, vec2};
+use notedeck::{Images, LanguageIdentifier, Localization, NotedeckTextStyle, ThemeHandler, tr};
 use notedeck_ui::NoteOptions;
 use strum::Display;
 
-use crate::{nav::RouterAction, Damus, Route};
+use crate::{Damus, Route, nav::RouterAction};
 
 #[derive(Clone, Copy, PartialEq, Eq, Display)]
 pub enum ShowNoteClientOptions {

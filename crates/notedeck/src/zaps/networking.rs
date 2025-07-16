@@ -1,4 +1,4 @@
-use crate::{zaps::ZapTargetOwned, ZapError};
+use crate::{ZapError, zaps::ZapTargetOwned};
 use enostr::NoteId;
 use nostrdb::NoteBuilder;
 use poll_promise::Promise;

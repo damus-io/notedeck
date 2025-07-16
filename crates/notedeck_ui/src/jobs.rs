@@ -1,6 +1,5 @@
 use egui::TextureHandle;
-use hashbrown::{hash_map::RawEntryMut, HashMap};
-use notedeck::JobPool;
+use hashbrown::HashMap;
 use poll_promise::Promise;
 
 #[derive(Default)]
@@ -61,12 +60,13 @@ pub struct BlurhashParamsOwned {
 }
 
 impl JobsCache {
+    /*
     pub fn get_or_insert_with<
         'a,
         F: FnOnce(Option<JobParamsOwned>) -> Result<Job, JobError> + Send + 'static,
     >(
         &'a mut self,
-        job_pool: &mut JobPool,
+        job_pool: &'a mut JobPool,
         jobid: &JobId,
         params: Option<JobParams>,
         run_job: F,
@@ -108,6 +108,7 @@ impl JobsCache {
             }
         }
     }
+    */
 
     pub fn get(&self, jobid: &JobId) -> Option<&JobState> {
         self.jobs.get(jobid)

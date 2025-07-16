@@ -1,8 +1,8 @@
 [package]
 name = "notedeck_columns"
-version = { workspace = true }
 authors = ["William Casarin <jb55@jb55.com>"]
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 #rust-version = "1.60"
 license = "GPLv3"
 description = "A tweetdeck-style notedeck app"

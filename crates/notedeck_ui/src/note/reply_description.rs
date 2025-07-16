@@ -2,8 +2,8 @@ use egui::{Label, RichText, Sense};
 use nostrdb::{NoteReply, Transaction};
 
 use super::NoteOptions;
-use crate::{jobs::JobsCache, note::NoteView, Mention};
-use notedeck::{tr, NoteAction, NoteContext};
+use crate::{Mention, jobs::JobsCache, note::NoteView};
+use notedeck::{NoteAction, NoteContext, tr};
 
 // Rich text segment types for internationalized rendering
 #[derive(Debug, Clone)]

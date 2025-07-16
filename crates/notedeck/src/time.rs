@@ -1,4 +1,4 @@
-use crate::{tr, Localization};
+use crate::{Localization, tr};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 // Time duration constants in seconds

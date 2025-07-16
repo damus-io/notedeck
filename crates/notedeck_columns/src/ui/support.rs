@@ -1,5 +1,5 @@
-use egui::{vec2, Button, Label, Layout, RichText};
-use notedeck::{tr, Localization, NamedFontFamily, NotedeckTextStyle};
+use egui::{Button, Label, Layout, RichText, vec2};
+use notedeck::{Localization, NamedFontFamily, NotedeckTextStyle, tr};
 use notedeck_ui::{colors::PINK, padding};
 use tracing::error;
 

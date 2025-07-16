@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use base64::{prelude::BASE64_URL_SAFE, Engine};
+use base64::{Engine, prelude::BASE64_URL_SAFE};
 use ehttp::Request;
 use nostrdb::{Note, NoteBuilder};
 use notedeck::SupportedMimeType;
@@ -143,7 +143,7 @@ pub fn nip96_upload(
         Err(e) => {
             return Promise::from_ready(Err(Error::Generic(format!(
                 "could not read contents of file to upload: {e}"
-            ))))
+            ))));
         }
     };
 
@@ -349,7 +349,7 @@ mod tests {
     use enostr::FullKeypair;
 
     use crate::media_upload::{
-        get_upload_url_from_provider, nostrbuild_nip96_upload, MediaPath, NOSTR_BUILD_URL,
+        MediaPath, NOSTR_BUILD_URL, get_upload_url_from_provider, nostrbuild_nip96_upload,
     };
 
     use super::internal_nip96_upload;

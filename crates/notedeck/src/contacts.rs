@@ -1,6 +1,6 @@
 use crate::{
-    filter::{self, HybridFilter},
     Error,
+    filter::{self, HybridFilter},
 };
 use nostrdb::{Filter, Note};
 

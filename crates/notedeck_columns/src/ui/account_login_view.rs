@@ -5,10 +5,10 @@ use egui::{
 };
 use egui_winit::clipboard::Clipboard;
 use enostr::Keypair;
-use notedeck::{fonts::get_font_size, tr, AppAction, Localization, NotedeckTextStyle};
+use notedeck::{AppAction, Localization, NotedeckTextStyle, fonts::get_font_size, tr};
 use notedeck_ui::{
     app_images,
-    context_menu::{input_context, PasteBehavior},
+    context_menu::{PasteBehavior, input_context},
 };
 
 pub struct AccountLoginView<'a> {

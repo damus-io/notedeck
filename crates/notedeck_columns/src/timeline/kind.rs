@@ -4,9 +4,10 @@ use crate::timeline::{Timeline, TimelineTab};
 use enostr::{Filter, NoteId, Pubkey};
 use nostrdb::{Ndb, Transaction};
 use notedeck::{
+    FilterError, FilterState, Localization, NoteCache, RootIdError, RootNoteIdBuf,
     contacts::{contacts_filter, hybrid_contacts_filter},
-    filter::{self, default_limit, default_remote_limit, HybridFilter},
-    tr, FilterError, FilterState, Localization, NoteCache, RootIdError, RootNoteIdBuf,
+    filter::{self, HybridFilter, default_limit, default_remote_limit},
+    tr,
 };
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -471,11 +472,13 @@ impl TimelineKind {
             },
 
             // TODO: still need to update this to fetch likes, zaps, etc
-            TimelineKind::Notifications(pubkey) => FilterState::ready(vec![Filter::new()
-                .pubkeys([pubkey.bytes()])
-                .kinds([1])
-                .limit(default_limit())
-                .build()]),
+            TimelineKind::Notifications(pubkey) => FilterState::ready(vec![
+                Filter::new()
+                    .pubkeys([pubkey.bytes()])
+                    .kinds([1])
+                    .limit(default_limit())
+                    .build(),
+            ]),
 
             TimelineKind::Hashtag(hashtag) => {
                 let filters = hashtag
@@ -727,16 +730,20 @@ fn last_per_pubkey_filter_state(ndb: &Ndb, pk: &Pubkey) -> FilterState {
 
 fn profile_filter(pk: &[u8; 32]) -> HybridFilter {
     HybridFilter::split(
-        vec![Filter::new()
-            .authors([pk])
-            .kinds([1])
-            .limit(default_limit())
-            .build()],
-        vec![Filter::new()
-            .authors([pk])
-            .kinds([1, 0])
-            .limit(default_remote_limit())
-            .build()],
+        vec![
+            Filter::new()
+                .authors([pk])
+                .kinds([1])
+                .limit(default_limit())
+                .build(),
+        ],
+        vec![
+            Filter::new()
+                .authors([pk])
+                .kinds([1, 0])
+                .limit(default_remote_limit())
+                .build(),
+        ],
     )
 }
 

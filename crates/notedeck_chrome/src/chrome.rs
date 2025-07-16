@@ -2,17 +2,17 @@
 //#[cfg(target_arch = "wasm32")]
 //use wasm_bindgen::prelude::*;
 use crate::app::NotedeckApp;
-use egui::{vec2, Button, Color32, Label, Layout, Rect, RichText, ThemePreference, Widget};
+use egui::{Button, Color32, Label, Layout, Rect, RichText, ThemePreference, Widget, vec2};
 use egui_extras::{Size, StripBuilder};
 use nostrdb::{ProfileRecord, Transaction};
 use notedeck::{
-    tr, App, AppAction, AppContext, Localization, NotedeckTextStyle, UserAccount, WalletType,
+    App, AppAction, AppContext, Localization, NotedeckTextStyle, UserAccount, WalletType, tr,
 };
 use notedeck_columns::{
-    column::SelectionResult, timeline::kind::ListKind, timeline::TimelineKind, Damus,
+    Damus, column::SelectionResult, timeline::TimelineKind, timeline::kind::ListKind,
 };
 use notedeck_dave::{Dave, DaveAvatar};
-use notedeck_ui::{app_images, AnimationHelper, ProfilePic};
+use notedeck_ui::{AnimationHelper, ProfilePic, app_images};
 
 static ICON_WIDTH: f32 = 40.0;
 pub static ICON_EXPANSION_MULTIPLE: f32 = 1.2;

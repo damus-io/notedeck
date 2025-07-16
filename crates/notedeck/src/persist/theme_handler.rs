@@ -1,7 +1,7 @@
 use egui::ThemePreference;
 use tracing::{error, info};
 
-use crate::{storage, DataPath, DataPathType, Directory};
+use crate::{DataPath, DataPathType, Directory, storage};
 
 pub struct ThemeHandler {
     directory: Directory,

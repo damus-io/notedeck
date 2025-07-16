@@ -3,7 +3,7 @@ use egui::Widget;
 use crate::deck_state::DeckState;
 
 use super::configure_deck::{ConfigureDeckResponse, ConfigureDeckView};
-use notedeck::{tr, Localization};
+use notedeck::{Localization, tr};
 use notedeck_ui::padding;
 
 pub struct EditDeckView<'a> {

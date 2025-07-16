@@ -1,8 +1,8 @@
-use crate::{user_account::UserAccountSerializable, Result};
+use crate::{Result, user_account::UserAccountSerializable};
 use enostr::{Keypair, Pubkey, SerializableKeypair};
 use tokenator::{TokenParser, TokenSerializable, TokenWriter};
 
-use super::file_storage::{delete_file, write_file, Directory};
+use super::file_storage::{Directory, delete_file, write_file};
 
 static SELECTED_PUBKEY_FILE_NAME: &str = "selected_pubkey";
 

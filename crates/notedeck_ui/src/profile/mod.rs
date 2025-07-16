@@ -7,7 +7,7 @@ pub mod preview;
 pub use picture::ProfilePic;
 pub use preview::ProfilePreview;
 
-use egui::{load::TexturePoll, Label, RichText};
+use egui::{Label, RichText, load::TexturePoll};
 use notedeck::{IsFollowing, NostrName, NotedeckTextStyle};
 
 use crate::{app_images, colors, widgets::styled_button_toggleable};

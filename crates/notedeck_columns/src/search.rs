@@ -146,13 +146,17 @@ mod tests {
         let msgpack_value = query.to_msgpack_value();
 
         if let Value::Map(values) = msgpack_value {
-            assert!(values
-                .iter()
-                .any(|(k, v)| *k == Value::String("search".into())
-                    && *v == Value::String("nostrdb".into())));
-            assert!(values
-                .iter()
-                .any(|(k, _v)| *k == Value::String("authors".into())));
+            assert!(
+                values
+                    .iter()
+                    .any(|(k, v)| *k == Value::String("search".into())
+                        && *v == Value::String("nostrdb".into()))
+            );
+            assert!(
+                values
+                    .iter()
+                    .any(|(k, _v)| *k == Value::String("authors".into()))
+            );
         } else {
             panic!("Failed to encode SearchQuery to MessagePack");
         }

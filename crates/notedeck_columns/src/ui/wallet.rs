@@ -1,7 +1,8 @@
-use egui::{vec2, CornerRadius, Layout};
+use egui::{CornerRadius, Layout, vec2};
 use notedeck::{
-    get_current_wallet_mut, tr, Accounts, DefaultZapMsats, GlobalWallet, Localization,
-    NotedeckTextStyle, PendingDefaultZapState, Wallet, WalletError, WalletUIState, ZapWallet,
+    Accounts, DefaultZapMsats, GlobalWallet, Localization, NotedeckTextStyle,
+    PendingDefaultZapState, Wallet, WalletError, WalletUIState, ZapWallet, get_current_wallet_mut,
+    tr,
 };
 
 use crate::{nav::RouterAction, route::Route};
@@ -361,11 +362,7 @@ fn show_default_zap(
                             ui.visuals().text_color(),
                         );
                         let rect_width = galley.rect.width();
-                        if rect_width < 5.0 {
-                            10.0
-                        } else {
-                            rect_width
-                        }
+                        if rect_width < 5.0 { 10.0 } else { rect_width }
                     };
 
                     let id = ui.id().with("default_zap_amount");

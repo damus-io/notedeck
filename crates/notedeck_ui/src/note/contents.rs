@@ -13,7 +13,7 @@ use tracing::warn;
 
 use notedeck::{IsFollowing, NoteCache, NoteContext};
 
-use super::media::{find_renderable_media, image_carousel, RenderableMedia};
+use super::media::{RenderableMedia, find_renderable_media, image_carousel};
 
 pub struct NoteContents<'a, 'd> {
     note_context: &'a mut NoteContext<'d>,

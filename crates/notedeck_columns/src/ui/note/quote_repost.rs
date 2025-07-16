@@ -6,7 +6,7 @@ use crate::{
 
 use enostr::{FilledKeypair, NoteId};
 use notedeck::NoteContext;
-use notedeck_ui::{jobs::JobsCache, NoteOptions};
+use notedeck_ui::{NoteOptions, jobs::JobsCache};
 
 pub struct QuoteRepostView<'a, 'd> {
     note_context: &'a mut NoteContext<'d>,

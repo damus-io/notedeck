@@ -34,7 +34,7 @@ impl<'a> From<&'a WsEvent> for RelayEvent<'a> {
         match event {
             WsEvent::Opened => RelayEvent::Opened,
             WsEvent::Closed => RelayEvent::Closed,
-            WsEvent::Message(ref ws_msg) => ws_msg.into(),
+            WsEvent::Message(ws_msg) => ws_msg.into(),
             WsEvent::Error(s) => RelayEvent::Error(Error::Generic(s.to_owned())),
         }
     }

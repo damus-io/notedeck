@@ -4,8 +4,8 @@ use crate::account::cache::AccountCache;
 use crate::account::contacts::Contacts;
 use crate::account::mute::AccountMutedData;
 use crate::account::relay::{
-    modify_advertised_relays, update_relay_configuration, AccountRelayData, RelayAction,
-    RelayDefaults,
+    AccountRelayData, RelayAction, RelayDefaults, modify_advertised_relays,
+    update_relay_configuration,
 };
 use crate::storage::AccountStorageWriter;
 use crate::user_account::UserAccountSerializable;

@@ -6,12 +6,12 @@ use std::{
 use egui_nav::ReturnType;
 use egui_virtual_list::VirtualList;
 use enostr::{NoteId, RelayPool};
-use hashbrown::{hash_map::RawEntryMut, HashMap};
+use hashbrown::{HashMap, hash_map::RawEntryMut};
 use nostrdb::{Filter, Ndb, Note, NoteKey, NoteReplyBuf, Transaction};
 use notedeck::{NoteCache, NoteRef, UnknownIds};
 
 use crate::{
-    actionbar::{process_thread_notes, NewThreadNotes},
+    actionbar::{NewThreadNotes, process_thread_notes},
     multi_subscriber::ThreadSubs,
     timeline::MergeKind,
 };

@@ -2,7 +2,7 @@ use crate::ProfilePreview;
 use egui::Sense;
 use enostr::Pubkey;
 use nostrdb::{Ndb, Transaction};
-use notedeck::{name::get_display_name, Images, NoteAction};
+use notedeck::{Images, NoteAction, name::get_display_name};
 
 pub struct Mention<'a> {
     ndb: &'a Ndb,

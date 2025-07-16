@@ -1,16 +1,16 @@
 use egui::{
-    emath::GuiRounding, pos2, vec2, Color32, CornerRadius, FontId, Frame, Label, Layout, Slider,
-    Stroke,
+    Color32, CornerRadius, FontId, Frame, Label, Layout, Slider, Stroke, emath::GuiRounding, pos2,
+    vec2,
 };
 use enostr::Pubkey;
 use nostrdb::{Ndb, ProfileRecord, Transaction};
 use notedeck::{
-    fonts::get_font_size, get_profile_url, name::get_display_name, tr, Images, Localization,
-    NotedeckTextStyle,
+    Images, Localization, NotedeckTextStyle, fonts::get_font_size, get_profile_url,
+    name::get_display_name, tr,
 };
 use notedeck_ui::{
-    app_images, colors, profile::display_name_widget, widgets::styled_button_toggleable,
-    AnimationHelper, ProfilePic,
+    AnimationHelper, ProfilePic, app_images, colors, profile::display_name_widget,
+    widgets::styled_button_toggleable,
 };
 
 pub struct CustomZapView<'a> {
@@ -419,11 +419,31 @@ impl ZapSelectionButton {
             ZapSelectionButton::First => "69".to_string(),
             ZapSelectionButton::Second => "100".to_string(),
             ZapSelectionButton::Third => "420".to_string(),
-            ZapSelectionButton::Fourth => tr!(i18n, "5K", "Zap amount button for 5000 sats. Abbreviated because the button is too small to display the full amount."),
-            ZapSelectionButton::Fifth => tr!(i18n, "10K", "Zap amount button for 10000 sats. Abbreviated because the button is too small to display the full amount."),
-            ZapSelectionButton::Sixth => tr!(i18n, "20K", "Zap amount button for 20000 sats. Abbreviated because the button is too small to display the full amount."),
-            ZapSelectionButton::Seventh => tr!(i18n, "50K", "Zap amount button for 50000 sats. Abbreviated because the button is too small to display the full amount."),
-            ZapSelectionButton::Eighth => tr!(i18n, "100K", "Zap amount button for 100000 sats. Abbreviated because the button is too small to display the full amount."),
+            ZapSelectionButton::Fourth => tr!(
+                i18n,
+                "5K",
+                "Zap amount button for 5000 sats. Abbreviated because the button is too small to display the full amount."
+            ),
+            ZapSelectionButton::Fifth => tr!(
+                i18n,
+                "10K",
+                "Zap amount button for 10000 sats. Abbreviated because the button is too small to display the full amount."
+            ),
+            ZapSelectionButton::Sixth => tr!(
+                i18n,
+                "20K",
+                "Zap amount button for 20000 sats. Abbreviated because the button is too small to display the full amount."
+            ),
+            ZapSelectionButton::Seventh => tr!(
+                i18n,
+                "50K",
+                "Zap amount button for 50000 sats. Abbreviated because the button is too small to display the full amount."
+            ),
+            ZapSelectionButton::Eighth => tr!(
+                i18n,
+                "100K",
+                "Zap amount button for 100000 sats. Abbreviated because the button is too small to display the full amount."
+            ),
         }
     }
 }
