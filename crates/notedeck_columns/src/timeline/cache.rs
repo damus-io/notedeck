@@ -129,7 +129,7 @@ impl TimelineCache {
         }
 
         let notes = if let FilterState::Ready(filters) = id.filters(txn, ndb) {
-            if let Ok(results) = ndb.query(txn, &filters, 1000) {
+            if let Ok(results) = ndb.query(txn, filters.local(), 1000) {
                 results
                     .into_iter()
                     .map(NoteRef::from_query_result)
@@ -171,7 +171,7 @@ impl TimelineCache {
                 // The timeline cache is stale, let's update it
                 let notes = find_new_notes(
                     timeline.all_or_any_notes(),
-                    timeline.subscription.get_filter()?,
+                    timeline.subscription.get_filter()?.local(),
                     txn,
                     ndb,
                 );

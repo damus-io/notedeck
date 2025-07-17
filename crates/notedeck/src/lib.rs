@@ -2,6 +2,7 @@ pub mod abbrev;
 mod account;
 mod app;
 mod args;
+pub mod contacts;
 mod context;
 pub mod debouncer;
 mod error;

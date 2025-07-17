@@ -55,7 +55,7 @@ impl FilterStates {
         None
     }
 
-    pub fn get_any_ready(&self) -> Option<&Vec<Filter>> {
+    pub fn get_any_ready(&self) -> Option<&HybridFilter> {
         if let FilterState::Ready(fs) = &self.initial_state {
             Some(fs)
         } else {
@@ -95,7 +95,7 @@ pub enum FilterState {
     NeedsRemote,
     FetchingRemote(FetchingRemoteType),
     GotRemote(GotRemoteType),
-    Ready(Vec<Filter>),
+    Ready(HybridFilter),
     Broken(FilterError),
 }
 
@@ -132,6 +132,17 @@ impl FilterState {
 
     /// The filter is ready
     pub fn ready(filter: Vec<Filter>) -> Self {
+        Self::Ready(HybridFilter::unsplit(filter))
+    }
+
+    /// The filter is ready, but we have a different local filter from
+    /// our remote one
+    pub fn ready_split(local: Vec<Filter>, remote: Vec<Filter>) -> Self {
+        Self::Ready(HybridFilter::split(local, remote))
+    }
+
+    /// Our hybrid filter is ready (either split or unsplit)
+    pub fn ready_hybrid(filter: HybridFilter) -> Self {
         Self::Ready(filter)
     }
 
@@ -195,8 +206,55 @@ pub struct FilteredTags {
     pub hashtags: Option<FilterBuilder>,
 }
 
+/// The local and remote filter are related but slightly different
+#[derive(Debug, Clone)]
+pub struct SplitFilter {
+    pub local: Vec<Filter>,
+    pub remote: Vec<Filter>,
+}
+
+/// Either a [`SplitFilter`] or a regular unsplit filter,. Split filters
+/// have different remote and local filters but are tracked together.
+#[derive(Debug, Clone)]
+pub enum HybridFilter {
+    Split(SplitFilter),
+    Unsplit(Vec<Filter>),
+}
+
+impl HybridFilter {
+    pub fn unsplit(filter: Vec<Filter>) -> Self {
+        HybridFilter::Unsplit(filter)
+    }
+
+    pub fn split(local: Vec<Filter>, remote: Vec<Filter>) -> Self {
+        HybridFilter::Split(SplitFilter { local, remote })
+    }
+
+    pub fn local(&self) -> &[Filter] {
+        match self {
+            Self::Split(split) => &split.local,
+
+            // local as the same as remote in unsplit
+            Self::Unsplit(local) => &local,
+        }
+    }
+
+    pub fn remote(&self) -> &[Filter] {
+        match self {
+            Self::Split(split) => &split.remote,
+
+            // local as the same as remote in unsplit
+            Self::Unsplit(remote) => remote,
+        }
+    }
+}
+
 impl FilteredTags {
     pub fn into_follow_filter(self) -> Vec<Filter> {
+        self.into_filter([1], default_limit())
+    }
+
+    pub fn into_follow_filter_with_profiles(self) -> Vec<Filter> {
         self.into_filter([1], default_limit())
     }
 
