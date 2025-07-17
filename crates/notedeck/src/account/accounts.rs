@@ -375,6 +375,7 @@ fn get_acc_from_storage(user_account_serializable: UserAccountSerializable) -> O
     })
 }
 
+#[derive(Clone)]
 pub struct AccountData {
     pub(crate) relay: AccountRelayData,
     pub(crate) muted: AccountMutedData,

@@ -60,6 +60,16 @@ pub struct Wallet {
     balance: Option<Promise<Result<u64, NwcError>>>,
 }
 
+impl Clone for Wallet {
+    fn clone(&self) -> Self {
+        Self {
+            uri: self.uri.clone(),
+            wallet: self.wallet.clone(),
+            balance: None,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct WalletSerializable {
     pub uri: String,
@@ -236,7 +246,7 @@ fn construct_global_wallet(wallet_handler: &TokenHandler) -> Option<ZapWallet> {
     Some(wallet)
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ZapWallet {
     pub wallet: Wallet,
     pub default_zap: DefaultZapMsats,
