@@ -50,15 +50,22 @@ impl ProfileAction {
         match self {
             ProfileAction::Edit(kp) => Some(RouterAction::route_to(Route::EditProfile(kp.pubkey))),
             ProfileAction::SaveChanges(changes) => {
-                let raw_msg = format!("[\"EVENT\",{}]", changes.to_note().json().unwrap());
+                let note = changes.to_note();
+                let Ok(event) = enostr::ClientMessage::event(&note) else {
+                    tracing::error!("could not serialize profile note?");
+                    return None;
+                };
 
-                let _ = ndb.process_event_with(
-                    raw_msg.as_str(),
-                    nostrdb::IngestMetadata::new().client(true),
-                );
+                let Ok(json) = event.to_json() else {
+                    tracing::error!("could not serialize profile note?");
+                    return None;
+                };
 
-                info!("sending {}", raw_msg);
-                pool.send(&enostr::ClientMessage::raw(raw_msg));
+                // TODO(jb55): do this in a more centralized place
+                let _ = ndb.process_event_with(&json, nostrdb::IngestMetadata::new().client(true));
+
+                info!("sending {}", &json);
+                pool.send(&event);
 
                 Some(RouterAction::GoBack)
             }
@@ -195,14 +202,19 @@ fn send_note_builder(builder: NoteBuilder, ndb: &Ndb, pool: &mut RelayPool, kp: 
         .build()
         .expect("build note");
 
-    let raw_msg = format!("[\"EVENT\",{}]", note.json().unwrap());
+    let Ok(event) = &enostr::ClientMessage::event(&note) else {
+        tracing::error!("send_note_builder: failed to build json");
+        return;
+    };
 
-    let _ = ndb.process_event_with(
-        raw_msg.as_str(),
-        nostrdb::IngestMetadata::new().client(true),
-    );
-    info!("sending {}", raw_msg);
-    pool.send(&enostr::ClientMessage::raw(raw_msg));
+    let Ok(json) = event.to_json() else {
+        tracing::error!("send_note_builder: failed to build json");
+        return;
+    };
+
+    let _ = ndb.process_event_with(&json, nostrdb::IngestMetadata::new().client(true));
+    info!("sending {}", &json);
+    pool.send(event);
 }
 
 pub fn send_new_contact_list(kp: FilledKeypair, ndb: &Ndb, pool: &mut RelayPool) {

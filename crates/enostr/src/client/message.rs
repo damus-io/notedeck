@@ -38,10 +38,6 @@ impl ClientMessage {
         Ok(ClientMessage::Event(EventClientMessage { note_json }))
     }
 
-    pub fn raw(raw: String) -> Self {
-        ClientMessage::Raw(raw)
-    }
-
     pub fn req(sub_id: String, filters: Vec<Filter>) -> Self {
         ClientMessage::Req { sub_id, filters }
     }
