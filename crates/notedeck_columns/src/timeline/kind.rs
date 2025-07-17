@@ -5,7 +5,7 @@ use enostr::{Filter, NoteId, Pubkey};
 use nostrdb::{Ndb, Transaction};
 use notedeck::{
     contacts::{contacts_filter, hybrid_contacts_filter},
-    filter::{self, default_limit},
+    filter::{self, default_limit, default_remote_limit, HybridFilter},
     FilterError, FilterState, NoteCache, RootIdError, RootNoteIdBuf,
 };
 use serde::{Deserialize, Serialize};
@@ -468,11 +468,7 @@ impl TimelineKind {
                 todo!("implement generic filter lookups")
             }
 
-            TimelineKind::Profile(pk) => FilterState::ready(vec![Filter::new()
-                .authors([pk.bytes()])
-                .kinds([1])
-                .limit(default_limit())
-                .build()]),
+            TimelineKind::Profile(pk) => FilterState::ready_hybrid(profile_filter(pk.bytes())),
         }
     }
 
@@ -535,19 +531,11 @@ impl TimelineKind {
                 }
             }
 
-            TimelineKind::Profile(pk) => {
-                let filter = Filter::new()
-                    .authors([pk.bytes()])
-                    .kinds([1])
-                    .limit(default_limit())
-                    .build();
-
-                Some(Timeline::new(
-                    TimelineKind::profile(pk),
-                    FilterState::ready(vec![filter]),
-                    TimelineTab::full_tabs(),
-                ))
-            }
+            TimelineKind::Profile(pk) => Some(Timeline::new(
+                TimelineKind::profile(pk),
+                FilterState::ready_hybrid(profile_filter(pk.bytes())),
+                TimelineTab::full_tabs(),
+            )),
 
             TimelineKind::Notifications(pk) => {
                 let notifications_filter = Filter::new()
@@ -688,6 +676,21 @@ fn last_per_pubkey_filter_state(ndb: &Ndb, pk: &Pubkey) -> FilterState {
             Ok(filter) => FilterState::ready(filter),
         }
     }
+}
+
+fn profile_filter(pk: &[u8; 32]) -> HybridFilter {
+    HybridFilter::split(
+        vec![Filter::new()
+            .authors([pk])
+            .kinds([1])
+            .limit(default_limit())
+            .build()],
+        vec![Filter::new()
+            .authors([pk])
+            .kinds([1, 0])
+            .limit(default_remote_limit())
+            .build()],
+    )
 }
 
 fn search_filter(s: &SearchQuery) -> Vec<Filter> {
