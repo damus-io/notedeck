@@ -351,9 +351,9 @@ impl CleanIntermediaryRoute {
         match self {
             CleanIntermediaryRoute::ToTimeline(timeline_kind) => {
                 let txn = Transaction::new(ndb).unwrap();
-                Some(IntermediaryRoute::Timeline(
+                Some(IntermediaryRoute::Timeline(Box::new(
                     timeline_kind.into_timeline(&txn, ndb)?,
-                ))
+                )))
             }
             CleanIntermediaryRoute::ToRoute(route) => Some(IntermediaryRoute::Route(route)),
         }

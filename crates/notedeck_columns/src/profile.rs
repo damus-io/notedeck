@@ -144,6 +144,7 @@ fn send_kind_3_event(ndb: &Ndb, pool: &mut RelayPool, accounts: &Accounts, actio
     let ContactState::Received {
         contacts: _,
         note_key,
+        timestamp: _,
     } = accounts.get_selected_account().data.contacts.get_state()
     else {
         return;
