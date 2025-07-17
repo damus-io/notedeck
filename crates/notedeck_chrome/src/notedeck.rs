@@ -106,8 +106,7 @@ async fn main() {
                 .collect();
             assert!(
                 completely_unrecognized.is_empty(),
-                "unrecognized args: {:?}",
-                completely_unrecognized
+                "unrecognized args: {completely_unrecognized:?}"
             );
 
             chrome.add_app(NotedeckApp::Columns(columns));

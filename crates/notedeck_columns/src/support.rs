@@ -83,8 +83,7 @@ fn get_log_str(interactor: &Directory) -> Option<String> {
 
 fn get_prefix(file_name: &str, lines_displayed: usize, num_total_lines: usize) -> String {
     format!(
-        "===\nDisplaying the last {} of {} lines in file {}\n===\n\n",
-        lines_displayed, num_total_lines, file_name,
+        "===\nDisplaying the last {lines_displayed} of {num_total_lines} lines in file {file_name}\n===\n\n",
     )
 }
 

@@ -285,7 +285,7 @@ impl<'a> DaveUi<'a> {
                         }
                     }
                     ToolCalls::Invalid(err) => {
-                        ui.label(format!("invalid tool call: {:?}", err));
+                        ui.label(format!("invalid tool call: {err:?}"));
                     }
                     ToolCalls::Query(search_call) => {
                         ui.allocate_ui_with_layout(

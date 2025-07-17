@@ -56,10 +56,10 @@ impl ClientMessage {
             Self::Raw(raw) => raw.clone(),
             Self::Req { sub_id, filters } => {
                 if filters.is_empty() {
-                    format!("[\"REQ\",\"{}\",{{ }}]", sub_id)
+                    format!("[\"REQ\",\"{sub_id}\",{{ }}]")
                 } else if filters.len() == 1 {
                     let filters_json_str = filters[0].json()?;
-                    format!("[\"REQ\",\"{}\",{}]", sub_id, filters_json_str)
+                    format!("[\"REQ\",\"{sub_id}\",{filters_json_str}]")
                 } else {
                     let filters_json_str: Result<Vec<String>, Error> = filters
                         .iter()

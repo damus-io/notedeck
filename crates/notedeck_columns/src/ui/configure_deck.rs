@@ -139,7 +139,7 @@ fn show_warnings(ui: &mut Ui, warn_no_icon: bool, warn_no_title: bool) {
 
         ui.add(
             egui::Label::new(
-                RichText::new(format!("Please {}.", message)).color(ui.visuals().error_fg_color),
+                RichText::new(format!("Please {message}.")).color(ui.visuals().error_fg_color),
             )
             .wrap(),
         );

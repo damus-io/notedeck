@@ -270,7 +270,7 @@ impl Decks {
             if self.decks.len() > 1 {
                 self.decks.remove(index);
 
-                let info_prefix = format!("Removed deck at index {}", index);
+                let info_prefix = format!("Removed deck at index {index}");
                 match index.cmp(&self.active_deck) {
                     std::cmp::Ordering::Less => {
                         info!(

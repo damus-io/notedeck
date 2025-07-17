@@ -31,7 +31,7 @@ pub fn display_name_widget<'a>(
                 let username_resp = name.username.map(|username| {
                     ui.add(
                         Label::new(
-                            RichText::new(format!("@{}", username))
+                            RichText::new(format!("@{username}"))
                                 .size(16.0)
                                 .color(crate::colors::MID_GRAY),
                         )

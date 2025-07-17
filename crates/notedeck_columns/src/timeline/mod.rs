@@ -734,7 +734,7 @@ pub fn is_timeline_ready(
         let note = ndb.get_note_by_key(&txn, note_key).expect("note");
         let add_pk = timeline.kind.pubkey().map(|pk| pk.bytes());
 
-        hybrid_contacts_filter(&note, add_pk, with_hashtags).map_err(Into::into)
+        hybrid_contacts_filter(&note, add_pk, with_hashtags)
     };
 
     // TODO: into_follow_filter is hardcoded to contact lists, let's generalize

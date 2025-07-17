@@ -169,7 +169,7 @@ fn parse_img_response(
         let dyn_image = image::load_from_memory(&response.bytes)?;
         Ok(process_pfp_bitmap(imgtyp, dyn_image))
     } else {
-        Err(format!("Expected image, found content-type {:?}", content_type).into())
+        Err(format!("Expected image, found content-type {content_type:?}").into())
     }
 }
 
@@ -328,7 +328,7 @@ fn generate_animation_frame(
 
     TextureFrame {
         delay,
-        texture: ctx.load_texture(format!("{}{}", url, index), color_img, Default::default()),
+        texture: ctx.load_texture(format!("{url}{index}"), color_img, Default::default()),
     }
 }
 

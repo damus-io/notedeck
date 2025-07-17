@@ -107,7 +107,7 @@ impl Directory {
         } else {
             Err(Error::Io(io::Error::new(
                 io::ErrorKind::NotFound,
-                format!("Requested file was not found: {}", file_name),
+                format!("Requested file was not found: {file_name}"),
             )))
         }
     }
@@ -142,8 +142,7 @@ impl Directory {
             })
         } else {
             Err(Error::Generic(format!(
-                "Requested file was not found: {}",
-                file_name
+                "Requested file was not found: {file_name}"
             )))
         }
     }
@@ -197,8 +196,7 @@ pub fn delete_file(directory: &Path, file_name: String) -> Result<()> {
         fs::remove_file(file_to_delete).map_err(Error::Io)
     } else {
         Err(Error::Generic(format!(
-            "Requested file to delete was not found: {}",
-            file_name
+            "Requested file to delete was not found: {file_name}"
         )))
     }
 }

@@ -188,9 +188,9 @@ impl fmt::Display for ToolCallError {
         match self {
             ToolCallError::EmptyName => write!(f, "the tool name was empty"),
             ToolCallError::EmptyArgs => write!(f, "no arguments were provided"),
-            ToolCallError::NotFound(ref name) => write!(f, "tool '{}' not found", name),
+            ToolCallError::NotFound(ref name) => write!(f, "tool '{name}' not found"),
             ToolCallError::ArgParseFailure(ref msg) => {
-                write!(f, "failed to parse arguments: {}", msg)
+                write!(f, "failed to parse arguments: {msg}")
             }
         }
     }
@@ -375,8 +375,7 @@ impl PresentNotesCall {
                 Ok(ToolCalls::PresentNotes(PresentNotesCall { note_ids }))
             }
             Err(e) => Err(ToolCallError::ArgParseFailure(format!(
-                "{}, error: {}",
-                args, e
+                "{args}, error: {e}"
             ))),
         }
     }
@@ -476,8 +475,7 @@ impl QueryCall {
         match serde_json::from_str::<QueryCall>(args) {
             Ok(call) => Ok(ToolCalls::Query(call)),
             Err(e) => Err(ToolCallError::ArgParseFailure(format!(
-                "{}, error: {}",
-                args, e
+                "{args}, error: {e}"
             ))),
         }
     }

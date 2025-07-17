@@ -69,7 +69,7 @@ fn render_client(ui: &mut egui::Ui, note_cache: &mut NoteCache, note: &Note) {
     match cached_note.client.as_deref() {
         Some(client) if !client.is_empty() => {
             ui.horizontal(|ui| {
-                secondary_label(ui, format!("via {}", client));
+                secondary_label(ui, format!("via {client}"));
             });
         }
         _ => return,

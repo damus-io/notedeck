@@ -106,7 +106,7 @@ fn create_nip96_request(
     )
     .into_bytes();
     body.extend(file_contents);
-    body.extend(format!("\r\n--{}--\r\n", boundary).as_bytes());
+    body.extend(format!("\r\n--{boundary}--\r\n").as_bytes());
 
     let headers = ehttp::Headers::new(&[
         (
@@ -246,7 +246,7 @@ impl MediaPath {
             let file_name = path
                 .file_name()
                 .and_then(|name| name.to_str())
-                .unwrap_or(&format!("file.{}", ex))
+                .unwrap_or(&format!("file.{ex}"))
                 .to_owned();
 
             Ok(MediaPath {
@@ -256,8 +256,7 @@ impl MediaPath {
             })
         } else {
             Err(Error::Generic(format!(
-                "{:?} does not have an extension",
-                path
+                "{path:?} does not have an extension"
             )))
         }
     }

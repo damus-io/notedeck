@@ -15,9 +15,9 @@ pub fn hybrid_contacts_filter(
     add_pk: Option<&[u8; 32]>,
     with_hashtags: bool,
 ) -> Result<HybridFilter, Error> {
-    let local = filter::filter_from_tags(&note, add_pk, with_hashtags)?
+    let local = filter::filter_from_tags(note, add_pk, with_hashtags)?
         .into_filter([1], filter::default_limit());
-    let remote = filter::filter_from_tags(&note, add_pk, with_hashtags)?
+    let remote = filter::filter_from_tags(note, add_pk, with_hashtags)?
         .into_filter([1, 0], filter::default_remote_limit());
 
     Ok(HybridFilter::split(local, remote))

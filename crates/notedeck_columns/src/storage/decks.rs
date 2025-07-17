@@ -192,7 +192,7 @@ impl fmt::Display for MetadataKeyword {
             .find(|(_, keyword)| keyword == self)
             .map(|(name, _)| *name)
         {
-            write!(f, "{}", name)
+            write!(f, "{name}")
         } else {
             write!(f, "UnknownMetadataKeyword")
         }

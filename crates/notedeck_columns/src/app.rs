@@ -504,7 +504,7 @@ impl Damus {
 
     pub fn gen_subid(&self, kind: &SubKind) -> String {
         if self.options.contains(AppOptions::Debug) {
-            format!("{:?}", kind)
+            format!("{kind:?}")
         } else {
             Uuid::new_v4().to_string()
         }

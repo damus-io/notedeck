@@ -235,7 +235,7 @@ impl HybridFilter {
             Self::Split(split) => &split.local,
 
             // local as the same as remote in unsplit
-            Self::Unsplit(local) => &local,
+            Self::Unsplit(local) => local,
         }
     }
 

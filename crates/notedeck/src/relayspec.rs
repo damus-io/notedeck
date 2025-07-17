@@ -55,7 +55,7 @@ impl fmt::Display for RelaySpec {
 // add the read and write markers if present
 impl fmt::Debug for RelaySpec {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "\"{}\"", self)?;
+        write!(f, "\"{self}\"")?;
         if self.has_read_marker {
             write!(f, " [r]")?;
         }

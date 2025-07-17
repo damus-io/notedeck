@@ -6,7 +6,7 @@ fn fallback() {
         .ok()
         .and_then(|cwd| cwd.file_name().and_then(|fname| fname.to_str()))
     {
-        println!("cargo:rustc-env=GIT_COMMIT_HASH={}", dirname);
+        println!("cargo:rustc-env=GIT_COMMIT_HASH={dirname}");
     } else {
         println!("cargo:rustc-env=GIT_COMMIT_HASH=unknown");
     }

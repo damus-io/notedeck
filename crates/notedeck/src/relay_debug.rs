@@ -163,11 +163,11 @@ const KB: usize = 1024;
 fn byte_to_string(b: usize) -> String {
     if b >= MB {
         let mbs = b as f32 / MB as f32;
-        format!("{:.2} MB", mbs)
+        format!("{mbs:.2} MB")
     } else if b >= KB {
         let kbs = b as f32 / KB as f32;
-        format!("{:.2} KB", kbs)
+        format!("{kbs:.2} KB")
     } else {
-        format!("{} B", b)
+        format!("{b} B")
     }
 }

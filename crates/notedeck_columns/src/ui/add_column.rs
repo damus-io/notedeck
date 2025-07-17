@@ -679,7 +679,7 @@ pub fn render_add_column_routes(
 
                         // TODO: spin off the list search here instead
 
-                        ui.label(format!("error: could not find {:?}", list_kind));
+                        ui.label(format!("error: could not find {list_kind:?}"));
                     }
                 }
             },

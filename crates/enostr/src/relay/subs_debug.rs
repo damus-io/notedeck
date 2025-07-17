@@ -46,8 +46,8 @@ impl From<RelayEvent<'_>> for OwnedRelayEvent {
             RelayEvent::Other(ws_message) => {
                 let ws_str = match ws_message {
                     WsMessage::Binary(_) => "Binary".to_owned(),
-                    WsMessage::Text(t) => format!("Text:{}", t),
-                    WsMessage::Unknown(u) => format!("Unknown:{}", u),
+                    WsMessage::Text(t) => format!("Text:{t}"),
+                    WsMessage::Unknown(u) => format!("Unknown:{u}"),
                     WsMessage::Ping(_) => "Ping".to_owned(),
                     WsMessage::Pong(_) => "Pong".to_owned(),
                 };
@@ -57,9 +57,9 @@ impl From<RelayEvent<'_>> for OwnedRelayEvent {
             RelayEvent::Message(relay_message) => {
                 let relay_msg = match relay_message {
                     RelayMessage::OK(_) => "OK".to_owned(),
-                    RelayMessage::Eose(s) => format!("EOSE:{}", s),
-                    RelayMessage::Event(_, s) => format!("EVENT:{}", s),
-                    RelayMessage::Notice(s) => format!("NOTICE:{}", s),
+                    RelayMessage::Eose(s) => format!("EOSE:{s}"),
+                    RelayMessage::Event(_, s) => format!("EVENT:{s}"),
+                    RelayMessage::Notice(s) => format!("NOTICE:{s}"),
                 };
                 OwnedRelayEvent::Message(relay_msg)
             }

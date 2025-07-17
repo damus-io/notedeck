@@ -467,15 +467,15 @@ pub enum ZappingError {
 impl std::fmt::Display for ZappingError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ZappingError::InvoiceFetchFailed(err) => write!(f, "Failed to fetch invoice: {}", err),
+            ZappingError::InvoiceFetchFailed(err) => write!(f, "Failed to fetch invoice: {err}"),
             ZappingError::InvalidAccount => write!(f, "Invalid account"),
             ZappingError::UnsupportedOperation => {
                 write!(f, "Unsupported operation (e.g. profile zaps)")
             }
             ZappingError::InvalidZapAddress => write!(f, "Invalid zap address"),
             ZappingError::SenderNoWallet => write!(f, "Sender has no wallet"),
-            ZappingError::InvalidNWCResponse(msg) => write!(f, "Invalid NWC response: {}", msg),
-            ZappingError::FutureError(msg) => write!(f, "Future error: {}", msg),
+            ZappingError::InvalidNWCResponse(msg) => write!(f, "Invalid NWC response: {msg}"),
+            ZappingError::FutureError(msg) => write!(f, "Future error: {msg}"),
         }
     }
 }

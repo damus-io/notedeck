@@ -121,12 +121,9 @@ impl<'a> EditProfileView<'a> {
             ui.colored_label(
                 ui.visuals().noninteractive().fg_stroke.color,
                 RichText::new(if use_domain {
-                    format!("\"{}\" will be used for identification", suffix)
+                    format!("\"{suffix}\" will be used for identification")
                 } else {
-                    format!(
-                        "\"{}\" at \"{}\" will be used for identification",
-                        prefix, suffix
-                    )
+                    format!("\"{prefix}\" at \"{suffix}\" will be used for identification")
                 }),
             );
         });
