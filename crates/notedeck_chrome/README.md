@@ -26,6 +26,10 @@ The Chrome component provides:
 - **Responsive Design**: Compatible with desktop and mobile interfaces
 - **Android Support**: Native support for Android devices
 
+Future:
+
+- **Signer**: Apps will be sandboxed from the users key
+
 ## Development Status
 
 Notedeck is currently in **ALPHA**. Expect bugs and please report any issues you encounter.
