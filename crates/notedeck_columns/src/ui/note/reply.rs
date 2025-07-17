@@ -4,6 +4,7 @@ use crate::ui::{
     note::{PostAction, PostResponse, PostType},
 };
 
+use egui::{Rect, Response, Ui};
 use enostr::{FilledKeypair, NoteId};
 use notedeck::NoteContext;
 use notedeck_ui::jobs::JobsCache;
@@ -102,48 +103,61 @@ impl<'a, 'd> PostReplyView<'a, 'd> {
                 .action
                 .or(quoted_note.action.map(PostAction::QuotedNoteAction));
 
-            //
-            // reply line
-            //
-
-            // Position and draw the reply line
-            let mut rect = ui.min_rect();
-
-            // Position the line right above the poster's profile pic in
-            // the post box. Use the PostView's margin values to
-            // determine this offset.
-            rect.min.x = avail_rect.min.x + pfp_offset as f32;
-
-            // honestly don't know what the fuck I'm doing here. just trying
-            // to get the line under the profile picture
-            rect.min.y = avail_rect.min.y
-                + (ProfilePic::medium_size() as f32 / 2.0
-                    + ProfilePic::medium_size() as f32
-                    + NoteView::expand_size() as f32 * 2.0)
-                + 1.0;
-
-            // For some reason we need to nudge the reply line's height a
-            // few more pixels?
-            let nudge = if post_response.edit_response.has_focus() {
-                // we nudge by one less pixel if focused, otherwise it
-                // overlaps the focused PostView purple border color
-                2.0
-            } else {
-                // we have to nudge by one more pixel when not focused
-                // otherwise it looks like there's a gap(?)
-                3.0
-            };
-
-            rect.max.y = rect_before_post.max.y + ui::PostView::outer_margin() as f32 + nudge;
-
-            ui.painter().vline(
-                rect.left(),
-                rect.y_range(),
-                ui.visuals().widgets.noninteractive.bg_stroke,
+            reply_line_ui(
+                &rect_before_post,
+                &post_response.edit_response,
+                pfp_offset as f32,
+                &avail_rect,
+                ui,
             );
 
             post_response
         })
         .inner
     }
+}
+
+/// The vertical line in the reply view
+fn reply_line_ui(
+    rect_before_post: &Rect,
+    edit_response: &Response,
+    pfp_offset: f32,
+    avail_rect: &Rect,
+    ui: &mut Ui,
+) {
+    // Position and draw the reply line
+    let mut rect = ui.min_rect();
+
+    // Position the line right above the poster's profile pic in
+    // the post box. Use the PostView's margin values to
+    // determine this offset.
+    rect.min.x = avail_rect.min.x + pfp_offset;
+
+    // honestly don't know what the fuck I'm doing here. just trying
+    // to get the line under the profile picture
+    rect.min.y = avail_rect.min.y
+        + (ProfilePic::medium_size() as f32 / 2.0
+            + ProfilePic::medium_size() as f32
+            + NoteView::expand_size() as f32 * 2.0)
+        + 1.0;
+
+    // For some reason we need to nudge the reply line's height a
+    // few more pixels?
+    let nudge = if edit_response.has_focus() {
+        // we nudge by one less pixel if focused, otherwise it
+        // overlaps the focused PostView purple border color
+        2.0
+    } else {
+        // we have to nudge by one more pixel when not focused
+        // otherwise it looks like there's a gap(?)
+        3.0
+    };
+
+    rect.max.y = rect_before_post.max.y + ui::PostView::outer_margin() as f32 + nudge;
+
+    ui.painter().vline(
+        rect.left(),
+        rect.y_range(),
+        ui.visuals().widgets.noninteractive.bg_stroke,
+    );
 }
