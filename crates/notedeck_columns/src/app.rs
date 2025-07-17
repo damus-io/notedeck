@@ -75,6 +75,11 @@ fn handle_key_events(input: &egui::InputState, columns: &mut Columns) {
                 egui::Key::L => {
                     columns.select_left();
                 }
+                egui::Key::BrowserBack | egui::Key::Escape => {
+                    if let Some(column) = columns.selected_mut() {
+                        column.router_mut().go_back();
+                    }
+                }
                 _ => {}
             }
         }
