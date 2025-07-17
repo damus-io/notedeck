@@ -45,6 +45,9 @@ pub fn setup_cc(ctx: &egui::Context, is_mobile: bool) {
 
     egui_extras::install_image_loaders(ctx);
 
+    ctx.options_mut(|o| {
+        o.input_options.max_click_duration = 0.4;
+    });
     ctx.all_styles_mut(|style| theme::add_custom_style(is_mobile, style));
 }
 
