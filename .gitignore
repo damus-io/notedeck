@@ -2,6 +2,7 @@
 .buildcmd
 TODO.bak
 android-config.json
+logcat.txt
 build.log
 rusty-tags.vi
 crates/notedeck_chrome/android/app/build
