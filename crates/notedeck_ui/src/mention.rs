@@ -10,7 +10,7 @@ pub struct Mention<'a> {
     txn: &'a Transaction,
     pk: &'a [u8; 32],
     selectable: bool,
-    size: f32,
+    size: Option<f32>,
 }
 
 impl<'a> Mention<'a> {
@@ -20,7 +20,7 @@ impl<'a> Mention<'a> {
         txn: &'a Transaction,
         pk: &'a [u8; 32],
     ) -> Self {
-        let size = 16.0;
+        let size = None;
         let selectable = true;
         Mention {
             ndb,
@@ -38,7 +38,7 @@ impl<'a> Mention<'a> {
     }
 
     pub fn size(mut self, size: f32) -> Self {
-        self.size = size;
+        self.size = Some(size);
         self
     }
 
@@ -63,7 +63,7 @@ fn mention_ui(
     txn: &Transaction,
     pk: &[u8; 32],
     ui: &mut egui::Ui,
-    size: f32,
+    size: Option<f32>,
     selectable: bool,
 ) -> Option<NoteAction> {
     let link_color = ui.visuals().hyperlink_color;
@@ -75,9 +75,14 @@ fn mention_ui(
         get_display_name(profile.as_ref()).username_or_displayname()
     );
 
+    let mut text = egui::RichText::new(name).color(link_color);
+    if let Some(size) = size {
+        text = text.size(size);
+    }
+
     let resp = ui
         .add(
-            egui::Label::new(egui::RichText::new(name).color(link_color).size(size))
+            egui::Label::new(text)
                 .sense(Sense::click())
                 .selectable(selectable),
         )
