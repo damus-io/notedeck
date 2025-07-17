@@ -111,6 +111,15 @@ impl<'a, 'd> PostReplyView<'a, 'd> {
                 ui,
             );
 
+            //
+            // NOTE(jb55): We add some space so that you can scroll to
+            // put the input box higher.  This can happen in some
+            // situations where the input box gets covered or if its too
+            // large and things start breaking. I think this is an ok
+            // solution but there could be a better one.
+            //
+            ui.add_space(500.0);
+
             post_response
         })
         .inner
