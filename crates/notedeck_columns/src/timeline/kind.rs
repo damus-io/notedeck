@@ -4,10 +4,10 @@ use crate::timeline::{Timeline, TimelineTab};
 use enostr::{Filter, NoteId, Pubkey};
 use nostrdb::{Ndb, Transaction};
 use notedeck::{
+    contacts::{contacts_filter, hybrid_contacts_filter},
     filter::{self, default_limit},
     FilterError, FilterState, NoteCache, RootIdError, RootNoteIdBuf,
 };
-use notedeck_ui::contacts::contacts_filter;
 use serde::{Deserialize, Serialize};
 use std::hash::{Hash, Hasher};
 use std::{borrow::Cow, fmt::Display};
@@ -651,7 +651,7 @@ fn contact_filter_state(txn: &Transaction, ndb: &Ndb, pk: &Pubkey) -> FilterStat
         FilterState::needs_remote()
     } else {
         let with_hashtags = false;
-        match filter::filter_from_tags(&results[0].note, Some(pk.bytes()), with_hashtags) {
+        match hybrid_contacts_filter(&results[0].note, Some(pk.bytes()), with_hashtags) {
             Err(notedeck::Error::Filter(FilterError::EmptyContactList)) => {
                 FilterState::needs_remote()
             }
@@ -659,7 +659,7 @@ fn contact_filter_state(txn: &Transaction, ndb: &Ndb, pk: &Pubkey) -> FilterStat
                 error!("Error getting contact filter state: {err}");
                 FilterState::Broken(FilterError::EmptyContactList)
             }
-            Ok(filter) => FilterState::ready(filter.into_follow_filter()),
+            Ok(filter) => FilterState::ready_hybrid(filter),
         }
     }
 }

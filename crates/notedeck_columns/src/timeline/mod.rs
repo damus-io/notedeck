@@ -7,8 +7,10 @@ use crate::{
 };
 
 use notedeck::{
-    filter, Accounts, CachedNote, ContactState, FilterError, FilterState, FilterStates, NoteCache,
-    NoteRef, UnknownIds,
+    contacts::hybrid_contacts_filter,
+    filter::{self, HybridFilter},
+    Accounts, CachedNote, ContactState, FilterError, FilterState, FilterStates, NoteCache, NoteRef,
+    UnknownIds,
 };
 
 use egui_virtual_list::VirtualList;
@@ -205,12 +207,12 @@ impl Timeline {
     /// Create a timeline from a contact list
     pub fn contact_list(contact_list: &Note, pubkey: &[u8; 32]) -> Result<Self> {
         let with_hashtags = false;
-        let filter = filter::filter_from_tags(contact_list, Some(pubkey), with_hashtags)?
-            .into_follow_filter();
+        let add_pk = Some(pubkey);
+        let filter = hybrid_contacts_filter(contact_list, add_pk, with_hashtags)?;
 
         Ok(Timeline::new(
             TimelineKind::contact_list(Pubkey::new(*pubkey)),
-            FilterState::ready(filter),
+            FilterState::ready_hybrid(filter),
             TimelineTab::full_tabs(),
         ))
     }
@@ -346,7 +348,10 @@ impl Timeline {
             let note = if let Ok(note) = ndb.get_note_by_key(txn, *key) {
                 note
             } else {
-                error!("hit race condition in poll_notes_into_view: https://github.com/damus-io/nostrdb/issues/35 note {:?} was not added to timeline", key);
+                error!(
+                    "hit race condition in poll_notes_into_view: https://github.com/damus-io/nostrdb/issues/35 note {:?} was not added to timeline",
+                    key
+                );
                 continue;
             };
 
@@ -537,7 +542,7 @@ pub fn send_initial_timeline_filter(
 
         FilterState::Ready(filter) => {
             let filter = filter.to_owned();
-            let new_filters: Vec<Filter> = filter.into_iter().map(|f| {
+            let new_filters: Vec<Filter> = filter.remote().to_owned().into_iter().map(|f| {
                 // limit the size of remote filters
                 let default_limit = filter::default_remote_limit();
                 let mut lim = f.limit().unwrap_or(default_limit);
@@ -611,7 +616,7 @@ fn setup_initial_timeline(
     txn: &Transaction,
     timeline: &mut Timeline,
     note_cache: &mut NoteCache,
-    filters: &[Filter],
+    filters: &HybridFilter,
 ) -> Result<()> {
     // some timelines are one-shot and a refreshed, like last_per_pubkey algo feed
     if timeline.kind.should_subscribe_locally() {
@@ -624,12 +629,12 @@ fn setup_initial_timeline(
     );
 
     let mut lim = 0i32;
-    for filter in filters {
+    for filter in filters.local() {
         lim += filter.limit().unwrap_or(1) as i32;
     }
 
     let notes: Vec<NoteRef> = ndb
-        .query(txn, filters, lim)?
+        .query(txn, filters.local(), lim)?
         .into_iter()
         .map(NoteRef::from_query_result)
         .collect();
@@ -728,7 +733,8 @@ pub fn is_timeline_ready(
         let txn = Transaction::new(ndb).expect("txn");
         let note = ndb.get_note_by_key(&txn, note_key).expect("note");
         let add_pk = timeline.kind.pubkey().map(|pk| pk.bytes());
-        filter::filter_from_tags(&note, add_pk, with_hashtags).map(|f| f.into_follow_filter())
+
+        hybrid_contacts_filter(&note, add_pk, with_hashtags).map_err(Into::into)
     };
 
     // TODO: into_follow_filter is hardcoded to contact lists, let's generalize
@@ -755,7 +761,7 @@ pub fn is_timeline_ready(
             setup_initial_timeline(ndb, &txn, timeline, note_cache, &filter).expect("setup init");
             timeline
                 .filter
-                .set_relay_state(relay_id, FilterState::ready(filter.clone()));
+                .set_relay_state(relay_id, FilterState::ready_hybrid(filter.clone()));
 
             //let ck = &timeline.kind;
             //let subid = damus.gen_subid(&SubKind::Column(ck.clone()));

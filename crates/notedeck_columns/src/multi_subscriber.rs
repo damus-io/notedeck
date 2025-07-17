@@ -2,7 +2,7 @@ use egui_nav::ReturnType;
 use enostr::{Filter, NoteId, RelayPool};
 use hashbrown::HashMap;
 use nostrdb::{Ndb, Subscription};
-use notedeck::UnifiedSubscription;
+use notedeck::{filter::HybridFilter, UnifiedSubscription};
 use uuid::Uuid;
 
 use crate::{subscriptions, timeline::ThreadSelection};
@@ -113,7 +113,11 @@ impl ThreadSubs {
                     };
 
                     if scope.root_id.bytes() != id.root_id.bytes() {
-                        tracing::error!("Somehow the current scope's root is not equal to the selected note's root. scope's root: {:?}, thread's root: {:?}", scope.root_id.hex(), id.root_id.bytes());
+                        tracing::error!(
+                            "Somehow the current scope's root is not equal to the selected note's root. scope's root: {:?}, thread's root: {:?}",
+                            scope.root_id.hex(),
+                            id.root_id.bytes()
+                        );
                     }
 
                     if ndb_unsub(ndb, cur_sub.sub, id) {
@@ -132,7 +136,11 @@ impl ThreadSubs {
                 };
 
                 if scope.root_id.bytes() != id.root_id.bytes() {
-                    tracing::error!("Somehow the current scope's root is not equal to the selected note's root. scope's root: {:?}, thread's root: {:?}", scope.root_id.hex(), id.root_id.bytes());
+                    tracing::error!(
+                        "Somehow the current scope's root is not equal to the selected note's root. scope's root: {:?}, thread's root: {:?}",
+                        scope.root_id.hex(),
+                        id.root_id.bytes()
+                    );
                 }
                 for sub in scope.stack {
                     if ndb_unsub(ndb, sub.sub, id) {
@@ -266,7 +274,7 @@ fn local_sub_new_scope(
 
 #[derive(Debug)]
 pub struct TimelineSub {
-    filter: Option<Vec<Filter>>,
+    filter: Option<HybridFilter>,
     state: SubState,
 }
 
@@ -299,11 +307,11 @@ impl Default for TimelineSub {
 }
 
 impl TimelineSub {
-    pub fn try_add_local(&mut self, ndb: &Ndb, filter: &[Filter]) {
+    pub fn try_add_local(&mut self, ndb: &Ndb, filter: &HybridFilter) {
         let before = self.state.clone();
         match &mut self.state {
             SubState::NoSub { dependers } => {
-                let Some(sub) = ndb_sub(ndb, filter, "") else {
+                let Some(sub) = ndb_sub(ndb, filter.local(), "") else {
                     return;
                 };
 
@@ -318,7 +326,7 @@ impl TimelineSub {
                 dependers: _,
             } => {}
             SubState::RemoteOnly { remote, dependers } => {
-                let Some(local) = ndb_sub(ndb, filter, "") else {
+                let Some(local) = ndb_sub(ndb, filter.local(), "") else {
                     return;
                 };
                 self.state = SubState::Unified {
@@ -375,12 +383,12 @@ impl TimelineSub {
         );
     }
 
-    pub fn try_add_remote(&mut self, pool: &mut RelayPool, filter: &Vec<Filter>) {
+    pub fn try_add_remote(&mut self, pool: &mut RelayPool, filter: &HybridFilter) {
         let before = self.state.clone();
         match &mut self.state {
             SubState::NoSub { dependers } => {
                 let subid = subscriptions::new_sub_id();
-                pool.subscribe(subid.clone(), filter.clone());
+                pool.subscribe(subid.clone(), filter.remote().to_vec());
                 self.filter = Some(filter.to_owned());
                 self.state = SubState::RemoteOnly {
                     remote: subid,
@@ -389,7 +397,7 @@ impl TimelineSub {
             }
             SubState::LocalOnly { local, dependers } => {
                 let subid = subscriptions::new_sub_id();
-                pool.subscribe(subid.clone(), filter.clone());
+                pool.subscribe(subid.clone(), filter.remote().to_vec());
                 self.filter = Some(filter.to_owned());
                 self.state = SubState::Unified {
                     unified: UnifiedSubscription {
@@ -519,7 +527,7 @@ impl TimelineSub {
         );
     }
 
-    pub fn get_filter(&self) -> Option<&Vec<Filter>> {
+    pub fn get_filter(&self) -> Option<&HybridFilter> {
         self.filter.as_ref()
     }
 
