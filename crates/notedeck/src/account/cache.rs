@@ -97,6 +97,10 @@ impl AccountCache {
             .get_mut(&self.selected)
             .expect("guarenteed that selected exists in accounts")
     }
+
+    pub fn fallback(&self) -> &Pubkey {
+        &self.fallback
+    }
 }
 
 impl<'a> IntoIterator for &'a AccountCache {
