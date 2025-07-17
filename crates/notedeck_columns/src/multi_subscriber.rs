@@ -466,12 +466,10 @@ impl TimelineSub {
         let before = self.state.clone();
         's: {
             match &mut self.state {
-                SubState::NoSub { dependers } => {
-                    *dependers -= 1;
-                }
+                SubState::NoSub { dependers } => *dependers = dependers.saturating_sub(1),
                 SubState::LocalOnly { local, dependers } => {
                     if *dependers > 1 {
-                        *dependers -= 1;
+                        *dependers = dependers.saturating_sub(1);
                         break 's;
                     }
 
@@ -484,7 +482,7 @@ impl TimelineSub {
                 }
                 SubState::RemoteOnly { remote, dependers } => {
                     if *dependers > 1 {
-                        *dependers -= 1;
+                        *dependers = dependers.saturating_sub(1);
                         break 's;
                     }
 
@@ -494,7 +492,7 @@ impl TimelineSub {
                 }
                 SubState::Unified { unified, dependers } => {
                     if *dependers > 1 {
-                        *dependers -= 1;
+                        *dependers = dependers.saturating_sub(1);
                         break 's;
                     }
 
