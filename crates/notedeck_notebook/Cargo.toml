@@ -1,0 +1,9 @@
+[package]
+name = "notedeck_notebook"
+edition = "2024"
+version.workspace = true
+
+[dependencies]
+jsoncanvas = { git = "https://github.com/jb55/jsoncanvas", rev = "ae60f96e4d022cf037e086b793cacc3225bc14e5" }
+notedeck = { workspace = true }
+egui = { workspace = true }

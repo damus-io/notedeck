@@ -17,6 +17,7 @@ use notedeck_chrome::{
 };
 use notedeck_columns::Damus;
 use notedeck_dave::Dave;
+use notedeck_notebook::Notebook;
 use tracing::error;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::EnvFilter;
@@ -97,6 +98,7 @@ async fn main() {
             let mut chrome = Chrome::new();
             let columns = Damus::new(&mut notedeck.app_context(), &args);
             let dave = Dave::new(cc.wgpu_render_state.as_ref());
+            let notebook = Notebook::default();
 
             setup_chrome(
                 ctx,
@@ -117,8 +119,9 @@ async fn main() {
                 return Err(Error::Empty.into());
             }
 
-            chrome.add_app(NotedeckApp::Columns(columns));
-            chrome.add_app(NotedeckApp::Dave(dave));
+            chrome.add_app(NotedeckApp::Columns(Box::new(columns)));
+            chrome.add_app(NotedeckApp::Dave(Box::new(dave)));
+            chrome.add_app(NotedeckApp::Notebook(Box::new(notebook)));
 
             chrome.set_active(0);
 
