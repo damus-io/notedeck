@@ -12,6 +12,7 @@ use crate::{
 use egui::{Margin, Response, RichText, Sense, Stroke, UiBuilder};
 use enostr::Pubkey;
 use nostrdb::{Ndb, Transaction};
+use notedeck::tr;
 use notedeck::{Images, NotedeckTextStyle};
 use notedeck_ui::app_images;
 use notedeck_ui::{
@@ -192,12 +193,16 @@ impl<'a> NavTitle<'a> {
         if ui.data_mut(|d| *d.get_temp_mut_or_default(id)) {
             let mut confirm_pressed = false;
             delete_button_resp.show_tooltip_ui(|ui| {
-                let confirm_resp = ui.button("Confirm");
+                let confirm_resp = ui.button(tr!("Confirm", "Button label to confirm an action"));
                 if confirm_resp.clicked() {
                     confirm_pressed = true;
                 }
 
-                if confirm_resp.clicked() || ui.button("Cancel").clicked() {
+                if confirm_resp.clicked()
+                    || ui
+                        .button(tr!("Cancel", "Button label to cancel an action"))
+                        .clicked()
+                {
                     ui.data_mut(|d| d.insert_temp(id, false));
                 }
             });
@@ -206,7 +211,8 @@ impl<'a> NavTitle<'a> {
             }
             confirm_pressed
         } else {
-            delete_button_resp.on_hover_text("Delete this column");
+            delete_button_resp
+                .on_hover_text(tr!("Delete this column", "Tooltip for deleting a column"));
             false
         }
     }
@@ -220,7 +226,10 @@ impl<'a> NavTitle<'a> {
 
         // showing the hover text while showing the move tooltip causes some weird visuals
         if ui.data(|d| d.get_temp::<bool>(cur_id).is_none()) {
-            move_resp = move_resp.on_hover_text("Moves this column to another positon");
+            move_resp = move_resp.on_hover_text(tr!(
+                "Moves this column to another position",
+                "Tooltip for moving a column"
+            ));
         }
 
         if move_resp.clicked() {

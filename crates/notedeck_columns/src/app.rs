@@ -19,7 +19,8 @@ use egui_extras::{Size, StripBuilder};
 use enostr::{ClientMessage, PoolRelay, Pubkey, RelayEvent, RelayMessage, RelayPool};
 use nostrdb::Transaction;
 use notedeck::{
-    ui::is_narrow, Accounts, AppAction, AppContext, DataPath, DataPathType, FilterState, UnknownIds,
+    tr, ui::is_narrow, Accounts, AppAction, AppContext, DataPath, DataPathType, FilterState,
+    UnknownIds,
 };
 use notedeck_ui::{jobs::JobsCache, NoteOptions};
 use std::collections::{BTreeSet, HashMap};
@@ -848,7 +849,7 @@ fn columns_to_decks_cache(cols: Columns, key: &[u8; 32]) -> DecksCache {
     let mut account_to_decks: HashMap<Pubkey, Decks> = Default::default();
     let decks = Decks::new(crate::decks::Deck::new_with_columns(
         crate::decks::Deck::default().icon,
-        "My Deck".to_owned(),
+        tr!("My Deck", "Title for the user's deck"),
         cols,
     ));
 

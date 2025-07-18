@@ -1,4 +1,5 @@
 use crate::account::FALLBACK_PUBKEY;
+use crate::i18n::{LocalizationContext, LocalizationManager};
 use crate::persist::{AppSizeHandler, ZoomHandler};
 use crate::wallet::GlobalWallet;
 use crate::zaps::Zaps;
@@ -17,6 +18,7 @@ use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::rc::Rc;
+use std::sync::Arc;
 use tracing::{error, info};
 
 pub enum AppAction {
@@ -48,6 +50,7 @@ pub struct Notedeck {
     zaps: Zaps,
     frame_history: FrameHistory,
     job_pool: JobPool,
+    i18n: LocalizationContext,
 }
 
 /// Our chrome, which is basically nothing
@@ -227,6 +230,21 @@ impl Notedeck {
         let zaps = Zaps::default();
         let job_pool = JobPool::default();
 
+        // Initialize localization
+        let i18n_resource_dir = Path::new("assets/translations");
+        let localization_manager = Arc::new(
+            LocalizationManager::new(&i18n_resource_dir).unwrap_or_else(|e| {
+                error!("Failed to initialize localization manager: {}", e);
+                // Create a fallback manager with a temporary directory
+                LocalizationManager::new(&std::env::temp_dir().join("notedeck_i18n_fallback"))
+                    .expect("Failed to create fallback localization manager")
+            }),
+        );
+        let i18n = LocalizationContext::new(localization_manager);
+
+        // Initialize global i18n context
+        crate::i18n::init_global_i18n(i18n.clone());
+
         Self {
             ndb,
             img_cache,
@@ -246,6 +264,7 @@ impl Notedeck {
             clipboard: Clipboard::new(None),
             zaps,
             job_pool,
+            i18n,
         }
     }
 
@@ -270,6 +289,7 @@ impl Notedeck {
             zaps: &mut self.zaps,
             frame_history: &mut self.frame_history,
             job_pool: &mut self.job_pool,
+            i18n: &self.i18n,
         }
     }
 

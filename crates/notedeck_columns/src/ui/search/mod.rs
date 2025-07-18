@@ -5,7 +5,7 @@ use state::TypingType;
 use crate::{timeline::TimelineTab, ui::timeline::TimelineTabView};
 use egui_winit::clipboard::Clipboard;
 use nostrdb::{Filter, Ndb, Transaction};
-use notedeck::{NoteAction, NoteContext, NoteRef};
+use notedeck::{tr, tr_plural, NoteAction, NoteContext, NoteRef};
 use notedeck_ui::{
     context_menu::{input_context, PasteBehavior},
     icons::search_icon,
@@ -119,15 +119,21 @@ impl<'a, 'd> SearchView<'a, 'd> {
                 note_action = self.show_search_results(ui);
             }
             SearchState::Searched => {
-                ui.label(format!(
-                    "Got {} results for '{}'",
-                    self.query.notes.notes.len(),
-                    &self.query.string
+                ui.label(tr_plural!(
+                    "Got {count} result for '{query}'",  // one
+                    "Got {count} results for '{query}'", // other
+                    "Search results count",              // comment
+                    self.query.notes.notes.len(),        // count
+                    query = &self.query.string
                 ));
                 note_action = self.show_search_results(ui);
             }
             SearchState::Typing(TypingType::AutoSearch) => {
-                ui.label(format!("Searching for '{}'", &self.query.string));
+                ui.label(tr!(
+                    "Searching for '{query}'",
+                    "Search in progress message",
+                    query = &self.query.string
+                ));
 
                 note_action = self.show_search_results(ui);
             }
@@ -282,7 +288,13 @@ fn search_box(
                     let response = ui.add_sized(
                         [ui.available_width(), search_height],
                         TextEdit::singleline(input)
-                            .hint_text(RichText::new("Search notes...").weak())
+                            .hint_text(
+                                RichText::new(tr!(
+                                    "Search notes...",
+                                    "Placeholder for search notes input field"
+                                ))
+                                .weak(),
+                            )
                             //.desired_width(available_width - 32.0)
                             //.font(egui::FontId::new(font_size, egui::FontFamily::Proportional))
                             .margin(vec2(0.0, 8.0))

@@ -6,7 +6,7 @@ use egui::{
 };
 use notedeck::{
     fonts::get_font_size, note::MediaAction, show_one_error_message, supported_mime_hosted_at_url,
-    GifState, GifStateMap, Images, JobPool, MediaCache, MediaCacheType, NotedeckTextStyle,
+    tr, GifState, GifStateMap, Images, JobPool, MediaCache, MediaCacheType, NotedeckTextStyle,
     TexturedImage, TexturesCache, UrlMimes,
 };
 
@@ -636,7 +636,10 @@ fn render_full_screen_media(
 
 fn copy_link(url: &str, img_resp: &Response) {
     img_resp.context_menu(|ui| {
-        if ui.button("Copy Link").clicked() {
+        if ui
+            .button(tr!("Copy Link", "Button to copy media link to clipboard"))
+            .clicked()
+        {
             ui.ctx().copy_text(url.to_owned());
             ui.close_menu();
         }
@@ -722,14 +725,18 @@ fn render_blur_text(ui: &mut egui::Ui, url: &str, render_rect: egui::Rect) -> eg
         text_style.font_family(),
     );
     let info_galley = painter.layout(
-        "Media from someone you don't follow".to_owned(),
+        tr!(
+            "Media from someone you don't follow",
+            "Text shown on blurred media from unfollowed users"
+        )
+        .to_owned(),
         animation_fontid.clone(),
         ui.visuals().text_color(),
         render_rect.width() / 2.0,
     );
 
     let load_galley = painter.layout_no_wrap(
-        "Tap to Load".to_owned(),
+        tr!("Tap to Load", "Button text to load blurred media").to_owned(),
         animation_fontid,
         egui::Color32::BLACK,
         // ui.visuals().widgets.inactive.bg_fill,

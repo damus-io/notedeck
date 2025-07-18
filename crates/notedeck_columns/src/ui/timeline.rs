@@ -8,7 +8,7 @@ use std::f32::consts::PI;
 use tracing::{error, warn};
 
 use crate::timeline::{TimelineCache, TimelineKind, TimelineTab, ViewFilter};
-use notedeck::{note::root_note_id_from_selected_id, NoteAction, NoteContext, ScrollInfo};
+use notedeck::{note::root_note_id_from_selected_id, tr, NoteAction, NoteContext, ScrollInfo};
 use notedeck_ui::{
     anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},
     NoteOptions, NoteView,
@@ -281,17 +281,19 @@ pub fn tabs_ui(ui: &mut egui::Ui, selected: usize, views: &[TimelineTab]) -> usi
             let ind = state.index();
 
             let txt = match views[ind as usize].filter {
-                ViewFilter::Notes => "Notes",
-                ViewFilter::NotesAndReplies => "Notes & Replies",
+                ViewFilter::Notes => tr!("Notes", "Label for notes-only filter"),
+                ViewFilter::NotesAndReplies => {
+                    tr!("Notes & Replies", "Label for notes and replies filter")
+                }
             };
 
-            let res = ui.add(egui::Label::new(txt).selectable(false));
+            let res = ui.add(egui::Label::new(txt.clone()).selectable(false));
 
             // underline
             if state.is_selected() {
                 let rect = res.rect;
                 let underline =
-                    shrink_range_to_width(rect.x_range(), get_label_width(ui, txt) * 1.15);
+                    shrink_range_to_width(rect.x_range(), get_label_width(ui, &txt) * 1.15);
                 #[allow(deprecated)]
                 let underline_y = ui.painter().round_to_pixel(rect.bottom()) - 1.5;
                 return (underline, underline_y);

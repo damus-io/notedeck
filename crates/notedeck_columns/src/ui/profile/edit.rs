@@ -2,7 +2,7 @@ use core::f32;
 
 use egui::{vec2, Button, CornerRadius, Layout, Margin, RichText, ScrollArea, TextEdit};
 use enostr::ProfileState;
-use notedeck::{profile::unwrap_profile_url, Images, NotedeckTextStyle};
+use notedeck::{profile::unwrap_profile_url, tr, Images, NotedeckTextStyle};
 use notedeck_ui::{profile::banner, ProfilePic};
 
 pub struct EditProfileView<'a> {
@@ -32,7 +32,14 @@ impl<'a> EditProfileView<'a> {
                 notedeck_ui::padding(padding, ui, |ui| {
                     ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui
-                            .add(button("Save changes", 119.0).fill(notedeck_ui::colors::PINK))
+                            .add(
+                                button(
+                                    tr!("Save changes", "Button label to save profile changes")
+                                        .as_str(),
+                                    119.0,
+                                )
+                                .fill(notedeck_ui::colors::PINK),
+                            )
                             .clicked()
                         {
                             save = true;
@@ -62,42 +69,66 @@ impl<'a> EditProfileView<'a> {
         );
 
         in_frame(ui, |ui| {
-            ui.add(label("Display name"));
+            ui.add(label(
+                tr!("Display name", "Profile display name field label").as_str(),
+            ));
             ui.add(singleline_textedit(self.state.str_mut("display_name")));
         });
 
         in_frame(ui, |ui| {
-            ui.add(label("Username"));
+            ui.add(label(
+                tr!("Username", "Profile username field label").as_str(),
+            ));
             ui.add(singleline_textedit(self.state.str_mut("name")));
         });
 
         in_frame(ui, |ui| {
-            ui.add(label("Profile picture"));
+            ui.add(label(
+                tr!("Profile picture", "Profile picture URL field label").as_str(),
+            ));
             ui.add(multiline_textedit(self.state.str_mut("picture")));
         });
 
         in_frame(ui, |ui| {
-            ui.add(label("Banner"));
+            ui.add(label(
+                tr!("Banner", "Profile banner URL field label").as_str(),
+            ));
             ui.add(multiline_textedit(self.state.str_mut("banner")));
         });
 
         in_frame(ui, |ui| {
-            ui.add(label("About"));
+            ui.add(label(
+                tr!("About", "Profile about/bio field label").as_str(),
+            ));
             ui.add(multiline_textedit(self.state.str_mut("about")));
         });
 
         in_frame(ui, |ui| {
-            ui.add(label("Website"));
+            ui.add(label(
+                tr!("Website", "Profile website field label").as_str(),
+            ));
             ui.add(singleline_textedit(self.state.str_mut("website")));
         });
 
         in_frame(ui, |ui| {
-            ui.add(label("Lightning network address (lud16)"));
+            ui.add(label(
+                tr!(
+                    "Lightning network address (lud16)",
+                    "Bitcoin Lightning network address field label"
+                )
+                .as_str(),
+            ));
             ui.add(multiline_textedit(self.state.str_mut("lud16")));
         });
 
         in_frame(ui, |ui| {
-            ui.add(label("Nostr address (NIP-05 identity)"));
+            ui.add(label(
+                tr!(
+                    "Nostr address (NIP-05 identity)",
+                    "NIP-05 identity field label"
+                )
+                .as_str(),
+            ));
             ui.add(singleline_textedit(self.state.str_mut("nip05")));
 
             let Some(nip05) = self.state.nip05() else {
@@ -121,9 +152,18 @@ impl<'a> EditProfileView<'a> {
             ui.colored_label(
                 ui.visuals().noninteractive().fg_stroke.color,
                 RichText::new(if use_domain {
-                    format!("\"{suffix}\" will be used for identification")
+                    tr!(
+                        "\"{domain}\" will be used for identification",
+                        "Domain identification message",
+                        domain = suffix
+                    )
                 } else {
-                    format!("\"{prefix}\" at \"{suffix}\" will be used for identification")
+                    tr!(
+                        "\"{username}\" at \"{domain}\" will be used for identification",
+                        "Username and domain identification message",
+                        username = prefix,
+                        domain = suffix
+                    )
                 }),
             );
         });
