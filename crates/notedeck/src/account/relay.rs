@@ -7,6 +7,7 @@ use url::Url;
 
 use crate::{AccountData, RelaySpec};
 
+#[derive(Clone)]
 pub(crate) struct AccountRelayData {
     pub filter: Filter,
     pub local: BTreeSet<RelaySpec>, // used locally but not advertised

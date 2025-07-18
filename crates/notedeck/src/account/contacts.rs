@@ -3,11 +3,13 @@ use std::collections::HashSet;
 use enostr::Pubkey;
 use nostrdb::{Filter, Ndb, Note, NoteKey, Subscription, Transaction};
 
+#[derive(Clone)]
 pub struct Contacts {
     pub filter: Filter,
     pub(super) state: ContactState,
 }
 
+#[derive(Clone)]
 pub enum ContactState {
     Unreceived,
     Received {

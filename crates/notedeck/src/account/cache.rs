@@ -6,6 +6,7 @@ use crate::{SingleUnkIdAction, UserAccount};
 pub struct AccountCache {
     selected: Pubkey,
     fallback: Pubkey,
+    fallback_account: UserAccount,
 
     // never empty at rest
     accounts: HashMap<Pubkey, UserAccount>,
@@ -16,12 +17,13 @@ impl AccountCache {
         let mut accounts = HashMap::with_capacity(1);
 
         let pk = fallback.key.pubkey;
-        accounts.insert(pk, fallback);
+        accounts.insert(pk, fallback.clone());
 
         (
             Self {
                 selected: pk,
                 fallback: pk,
+                fallback_account: fallback,
                 accounts,
             },
             SingleUnkIdAction::pubkey(pk),
@@ -48,15 +50,20 @@ impl AccountCache {
         self.accounts.entry(pk).insert(account)
     }
 
-    pub(super) fn remove(&mut self, pk: &Pubkey) -> Option<UserAccount> {
-        // fallback account should never be removed
-        if *pk == self.fallback {
+    pub(super) fn remove(&mut self, pk: &Pubkey) -> Option<AccountDeletionResponse> {
+        if *pk == self.fallback && self.accounts.len() == 1 {
+            // no point in removing it since it'll just get re-added anyway
             return None;
         }
 
-        let removed = self.accounts.remove(pk);
+        let removed = self.accounts.remove(pk)?;
 
-        if removed.is_some() && self.selected == *pk {
+        if self.accounts.is_empty() {
+            self.accounts
+                .insert(self.fallback, self.fallback_account.clone());
+        }
+
+        if self.selected == *pk {
             // TODO(kernelkind): choose next better
             let (next, _) = self
                 .accounts
@@ -64,9 +71,17 @@ impl AccountCache {
                 .next()
                 .expect("accounts can never be empty");
             self.selected = *next;
+
+            return Some(AccountDeletionResponse {
+                deleted: removed.key,
+                swap_to: Some(*next),
+            });
         }
 
-        removed
+        Some(AccountDeletionResponse {
+            deleted: removed.key,
+            swap_to: None,
+        })
     }
 
     /// guarenteed that all selected exist in accounts
@@ -90,6 +105,10 @@ impl AccountCache {
             .get_mut(&self.selected)
             .expect("guarenteed that selected exists in accounts")
     }
+
+    pub fn fallback(&self) -> &Pubkey {
+        &self.fallback
+    }
 }
 
 impl<'a> IntoIterator for &'a AccountCache {
@@ -99,4 +118,9 @@ impl<'a> IntoIterator for &'a AccountCache {
     fn into_iter(self) -> Self::IntoIter {
         self.accounts.iter()
     }
+}
+
+pub struct AccountDeletionResponse {
+    pub deleted: enostr::Keypair,
+    pub swap_to: Option<Pubkey>,
 }

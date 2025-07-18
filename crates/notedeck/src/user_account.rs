@@ -6,6 +6,7 @@ use crate::{
     AccountData, IsFollowing,
 };
 
+#[derive(Clone)]
 pub struct UserAccount {
     pub key: Keypair,
     pub wallet: Option<ZapWallet>,
