@@ -21,3 +21,4 @@ mio = { workspace = true }
 tokio = { workspace = true }
 tokenator = { workspace = true }
 hashbrown = { workspace = true }
+uuid = { workspace = true }

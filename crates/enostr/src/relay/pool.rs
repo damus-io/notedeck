@@ -1,5 +1,5 @@
 use crate::relay::{setup_multicast_relay, MulticastRelay, Relay, RelayStatus};
-use crate::{ClientMessage, Error, Result};
+use crate::{ClientMessage, Error, Result, SubId};
 use nostrdb::Filter;
 
 use std::collections::BTreeSet;
@@ -41,6 +41,7 @@ pub enum PoolRelay {
 }
 
 pub struct WebsocketRelay {
+    pub subs: HashSet<SubId>,
     pub relay: Relay,
     pub last_ping: Instant,
     pub last_connect_attempt: Instant,
@@ -95,7 +96,7 @@ impl PoolRelay {
         }
     }
 
-    pub fn subscribe(&mut self, subid: String, filter: Vec<Filter>) -> Result<()> {
+    pub fn subscribe(&mut self, subid: SubId, filter: Vec<Filter>) -> Result<()> {
         self.send(&ClientMessage::req(subid, filter))
     }
 
@@ -126,6 +127,7 @@ impl WebsocketRelay {
 pub struct RelayPool {
     pub relays: Vec<PoolRelay>,
     pub ping_rate: Duration,
+    pub debug_subids: bool,
     pub debug: Option<SubsDebug>,
 }
 
@@ -138,8 +140,10 @@ impl Default for RelayPool {
 impl RelayPool {
     // Constructs a new, empty RelayPool.
     pub fn new() -> RelayPool {
+        let debug_subids = false;
         RelayPool {
             relays: vec![],
+            debug_subids,
             ping_rate: Duration::from_secs(45),
             debug: None,
         }
@@ -191,7 +195,7 @@ impl RelayPool {
         }
     }
 
-    pub fn unsubscribe(&mut self, subid: String) {
+    pub fn unsubscribe(&mut self, subid: SubId) {
         for relay in &mut self.relays {
             let cmd = ClientMessage::close(subid.clone());
             if let Some(debug) = &mut self.debug {
@@ -207,7 +211,7 @@ impl RelayPool {
         }
     }
 
-    pub fn subscribe(&mut self, subid: String, filter: Vec<Filter>) {
+    pub fn subscribe(&mut self, subid: SubId, filter: Vec<Filter>) {
         for relay in &mut self.relays {
             if let Some(debug) = &mut self.debug {
                 debug.send_cmd(

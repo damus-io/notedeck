@@ -1,5 +1,3 @@
-use uuid::Uuid;
-
 use crate::account::cache::AccountCache;
 use crate::account::contacts::Contacts;
 use crate::account::mute::AccountMutedData;
@@ -7,16 +5,18 @@ use crate::account::relay::{
     modify_advertised_relays, update_relay_configuration, AccountRelayData, RelayAction,
     RelayDefaults,
 };
+use crate::filter::NamedFilter;
 use crate::storage::AccountStorageWriter;
 use crate::user_account::UserAccountSerializable;
 use crate::{
     AccountStorage, MuteFun, SingleUnkIdAction, UnifiedSubscription, UnknownIds, UserAccount,
     ZapWallet,
 };
-use enostr::{ClientMessage, FilledKeypair, Keypair, Pubkey, RelayPool};
+use enostr::{ClientMessage, FilledKeypair, Keypair, Pubkey, RelayPool, SubId};
 use nostrdb::{Ndb, Note, Transaction};
 
 // TODO: remove this
+use std::collections::HashSet;
 use std::sync::Arc;
 
 /// The interface for managing the user's accounts.
@@ -39,6 +39,7 @@ impl Accounts {
         pool: &mut RelayPool,
         ctx: &egui::Context,
         unknown_ids: &mut UnknownIds,
+        subs: &mut HashSet<SubId>,
     ) -> Self {
         let (mut cache, unknown_id) = AccountCache::new(UserAccount::new(
             Keypair::only_pubkey(fallback),
@@ -82,6 +83,7 @@ impl Accounts {
             AccountSubs::new(
                 ndb,
                 pool,
+                subs,
                 &relay_defaults,
                 &selected.key.pubkey,
                 selected_data,
@@ -206,6 +208,7 @@ impl Accounts {
         ndb: &mut Ndb,
         txn: &Transaction,
         pool: &mut RelayPool,
+        subs: &mut HashSet<SubId>,
         ctx: &egui::Context,
     ) {
         if !self.cache.select(*pk_to_select) {
@@ -222,6 +225,7 @@ impl Accounts {
         self.subs.swap_to(
             ndb,
             pool,
+            subs,
             &self.relay_defaults,
             pk_to_select,
             &self.cache.selected().data,
@@ -242,7 +246,7 @@ impl Accounts {
         pool.send_to(
             &ClientMessage::req(
                 self.subs.relay.remote.clone(),
-                vec![data.relay.filter.clone()],
+                data.relay.filter.filter.clone(),
             ),
             relay_url,
         );
@@ -250,14 +254,14 @@ impl Accounts {
         pool.send_to(
             &ClientMessage::req(
                 self.subs.mute.remote.clone(),
-                vec![data.muted.filter.clone()],
+                data.muted.filter.filter.clone(),
             ),
             relay_url,
         );
         pool.send_to(
             &ClientMessage::req(
                 self.subs.contacts.remote.clone(),
-                vec![data.contacts.filter.clone()],
+                data.contacts.filter.filter.clone(),
             ),
             relay_url,
         );
@@ -465,18 +469,30 @@ impl AccountSubs {
         unsubscribe(ndb, pool, &self.mute);
         unsubscribe(ndb, pool, &self.contacts);
 
-        *self = AccountSubs::new(ndb, pool, relay_defaults, pk, new_selection_data, wakeup);
+        *self = AccountSubs::new(
+            ndb,
+            pool,
+            subs,
+            relay_defaults,
+            pk,
+            new_selection_data,
+            wakeup,
+        );
     }
 }
 
-fn subscribe(ndb: &Ndb, pool: &mut RelayPool, filter: &nostrdb::Filter) -> UnifiedSubscription {
-    let filters = vec![filter.clone()];
+fn subscribe(
+    ndb: &Ndb,
+    subs: &mut HashSet<SubId>,
+    pool: &mut RelayPool,
+    named_filter: &NamedFilter,
+) -> UnifiedSubscription {
     let sub = ndb
-        .subscribe(&filters)
+        .subscribe(&named_filter.filter)
         .expect("ndb relay list subscription");
 
     // remote subscription
-    let subid = Uuid::new_v4().to_string();
+    let subid = SubId::new(format!("account:{}", named_filter.name));
     pool.subscribe(subid.clone(), filters);
 
     UnifiedSubscription {

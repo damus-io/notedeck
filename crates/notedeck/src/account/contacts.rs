@@ -1,10 +1,11 @@
 use std::collections::HashSet;
 
+use crate::filter::NamedFilter;
 use enostr::Pubkey;
 use nostrdb::{Filter, Ndb, Note, NoteKey, Subscription, Transaction};
 
 pub struct Contacts {
-    pub filter: Filter,
+    pub filter: NamedFilter,
     pub(super) state: ContactState,
 }
 
@@ -32,14 +33,14 @@ impl Contacts {
         let filter = Filter::new().authors([pubkey]).kinds([3]).limit(1).build();
 
         Self {
-            filter,
+            filter: NamedFilter::new("user-contact-list", vec![filter]),
             state: ContactState::Unreceived,
         }
     }
 
     pub(super) fn query(&mut self, ndb: &Ndb, txn: &Transaction) {
         let binding = ndb
-            .query(txn, &[self.filter.clone()], 1)
+            .query(txn, &self.filter.filter, 1)
             .expect("query user relays results");
 
         let Some(res) = binding.first() else {

@@ -1,5 +1,6 @@
 use crate::error::{Error, FilterError};
 use crate::note::NoteRef;
+use enostr::SubId;
 use nostrdb::{Filter, FilterBuilder, Note, Subscription};
 use std::collections::HashMap;
 use tracing::{debug, warn};
@@ -9,7 +10,7 @@ use tracing::{debug, warn};
 #[derive(Debug, Clone)]
 pub struct UnifiedSubscription {
     pub local: Subscription,
-    pub remote: String,
+    pub remote: SubId,
 }
 
 /// Each relay can have a different filter state. For example, some
@@ -131,13 +132,18 @@ impl FilterState {
     }
 
     /// The filter is ready
-    pub fn ready(filter: Vec<Filter>) -> Self {
-        Self::Ready(HybridFilter::unsplit(filter))
+    pub fn ready(name: &'static str, filter: Vec<Filter>) -> Self {
+        Self::Ready(HybridFilter::unsplit(NamedFilter::new(name, filter)))
+    }
+
+    /// The filter is ready
+    pub fn ready_named(named_filter: NamedFilter) -> Self {
+        Self::Ready(HybridFilter::unsplit(named_filter))
     }
 
     /// The filter is ready, but we have a different local filter from
     /// our remote one
-    pub fn ready_split(local: Vec<Filter>, remote: Vec<Filter>) -> Self {
+    pub fn ready_split(local: NamedFilter, remote: NamedFilter) -> Self {
         Self::Ready(HybridFilter::split(local, remote))
     }
 
@@ -162,7 +168,7 @@ impl FilterState {
 
     /// We have sent off a remote subscription to get data needed for the
     /// filter. The string is the subscription id
-    pub fn fetching_remote(sub_id: String, local_sub: Subscription) -> Self {
+    pub fn fetching_remote(sub_id: SubId, local_sub: Subscription) -> Self {
         let unified_sub = UnifiedSubscription {
             local: local_sub,
             remote: sub_id,
@@ -209,8 +215,23 @@ pub struct FilteredTags {
 /// The local and remote filter are related but slightly different
 #[derive(Debug, Clone)]
 pub struct SplitFilter {
-    pub local: Vec<Filter>,
-    pub remote: Vec<Filter>,
+    pub local: NamedFilter,
+    pub remote: NamedFilter,
+}
+
+/// Named filter for debugging
+///
+/// names are used as subscription ids when in subid debug mode
+#[derive(Debug, Clone)]
+pub struct NamedFilter {
+    pub name: &'static str,
+    pub filter: Vec<Filter>,
+}
+
+impl NamedFilter {
+    pub fn new(name: &'static str, filter: Vec<Filter>) -> Self {
+        NamedFilter { name, filter }
+    }
 }
 
 /// Either a [`SplitFilter`] or a regular unsplit filter,. Split filters
@@ -218,33 +239,51 @@ pub struct SplitFilter {
 #[derive(Debug, Clone)]
 pub enum HybridFilter {
     Split(SplitFilter),
-    Unsplit(Vec<Filter>),
+    Unsplit(NamedFilter),
 }
 
 impl HybridFilter {
-    pub fn unsplit(filter: Vec<Filter>) -> Self {
+    pub fn unsplit(filter: NamedFilter) -> Self {
         HybridFilter::Unsplit(filter)
     }
 
-    pub fn split(local: Vec<Filter>, remote: Vec<Filter>) -> Self {
+    pub fn split(local: NamedFilter, remote: NamedFilter) -> Self {
         HybridFilter::Split(SplitFilter { local, remote })
+    }
+
+    pub fn local_name(&self) -> &'static str {
+        match self {
+            Self::Split(split) => split.local.name,
+
+            // local as the same as remote in unsplit
+            Self::Unsplit(local) => local.name,
+        }
+    }
+
+    pub fn remote_name(&self) -> &'static str {
+        match self {
+            Self::Split(split) => split.remote.name,
+
+            // local as the same as remote in unsplit
+            Self::Unsplit(local) => local.name,
+        }
     }
 
     pub fn local(&self) -> &[Filter] {
         match self {
-            Self::Split(split) => &split.local,
+            Self::Split(split) => &split.local.filter,
 
             // local as the same as remote in unsplit
-            Self::Unsplit(local) => local,
+            Self::Unsplit(local) => &local.filter,
         }
     }
 
     pub fn remote(&self) -> &[Filter] {
         match self {
-            Self::Split(split) => &split.remote,
+            Self::Split(split) => &split.remote.filter,
 
             // local as the same as remote in unsplit
-            Self::Unsplit(remote) => remote,
+            Self::Unsplit(remote) => &remote.filter,
         }
     }
 }

@@ -1,7 +1,7 @@
 use crate::{
     error::Error,
     multi_subscriber::TimelineSub,
-    subscriptions::{self, SubKind, Subscriptions},
+    subscriptions::{SubKind, Subscriptions},
     timeline::kind::ListKind,
     Result,
 };
@@ -224,7 +224,7 @@ impl Timeline {
 
         Ok(Timeline::new(
             TimelineKind::last_per_pubkey(*list_kind),
-            FilterState::ready(filter),
+            FilterState::ready("last_per_pubkey", filter),
             TimelineTab::only_notes_and_replies(),
         ))
     }
@@ -244,7 +244,7 @@ impl Timeline {
 
         Timeline::new(
             TimelineKind::Hashtag(hashtag),
-            FilterState::ready(filters),
+            FilterState::ready("hashtag", filters),
             TimelineTab::only_notes_and_replies(),
         )
     }
@@ -488,8 +488,9 @@ pub fn setup_new_timeline(
         }
     }
 
-    for relay in &mut pool.relays {
-        send_initial_timeline_filter(since_optimize, subs, relay, timeline, accounts);
+    let len = pool.relays.len();
+    for i in 0..len {
+        send_initial_timeline_filter(since_optimize, subs, pool, i, timeline, accounts);
     }
     timeline.subscription.increment();
 }
@@ -503,14 +504,16 @@ pub fn send_initial_timeline_filters(
     timeline_cache: &mut TimelineCache,
     subs: &mut Subscriptions,
     pool: &mut RelayPool,
-    relay_id: &str,
+    relay_ind: usize,
     accounts: &Accounts,
 ) -> Option<()> {
-    info!("Sending initial filters to {}", relay_id);
-    let relay = &mut pool.relays.iter_mut().find(|r| r.url() == relay_id)?;
+    info!(
+        "Sending initial filters to {}",
+        pool.relays[relay_ind].url()
+    );
 
     for (_kind, timeline) in timeline_cache {
-        send_initial_timeline_filter(since_optimize, subs, relay, timeline, accounts);
+        send_initial_timeline_filter(since_optimize, subs, pool, relay_ind, timeline, accounts);
     }
 
     Some(())
@@ -519,11 +522,15 @@ pub fn send_initial_timeline_filters(
 pub fn send_initial_timeline_filter(
     can_since_optimize: bool,
     subs: &mut Subscriptions,
-    relay: &mut PoolRelay,
+    pool: &mut RelayPool,
+    relay_ind: usize,
     timeline: &mut Timeline,
     accounts: &Accounts,
 ) {
-    let filter_state = timeline.filter.get_mut(relay.url());
+    let filter_state = {
+        let relay = &mut pool.relays[relay_ind];
+        timeline.filter.get_mut(relay.url())
+    };
 
     match filter_state {
         FilterState::Broken(err) => {
@@ -570,10 +577,12 @@ pub fn send_initial_timeline_filter(
             }).collect();
 
             //let sub_id = damus.gen_subid(&SubKind::Initial);
-            let sub_id = subscriptions::new_sub_id();
+            let sub_id = pool
+                .new_sub_id(|| format!("send_initial_timeline_filter,{}", filter.remote_name()));
             subs.subs.insert(sub_id.clone(), SubKind::Initial);
 
-            if let Err(err) = relay.subscribe(sub_id.clone(), new_filters.clone()) {
+            if let Err(err) = pool.relays[relay_ind].subscribe(sub_id.clone(), new_filters.clone())
+            {
                 error!("error subscribing: {err}");
             } else {
                 timeline.subscription.force_add_remote(sub_id);
@@ -581,7 +590,9 @@ pub fn send_initial_timeline_filter(
         }
 
         // we need some data first
-        FilterState::NeedsRemote => fetch_contact_list(subs, relay, timeline, accounts),
+        FilterState::NeedsRemote => {
+            fetch_contact_list(subs, &mut pool.relays[relay_ind], timeline, accounts)
+        }
     }
 }
 

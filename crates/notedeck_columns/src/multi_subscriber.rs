@@ -5,7 +5,7 @@ use nostrdb::{Ndb, Subscription};
 use notedeck::{filter::HybridFilter, UnifiedSubscription};
 use uuid::Uuid;
 
-use crate::{subscriptions, timeline::ThreadSelection};
+use crate::timeline::ThreadSelection;
 
 type RootNoteId = NoteId;
 
@@ -387,7 +387,8 @@ impl TimelineSub {
         let before = self.state.clone();
         match &mut self.state {
             SubState::NoSub { dependers } => {
-                let subid = subscriptions::new_sub_id();
+                let subid =
+                    pool.new_sub_id(|| format!("try_add_remote,NoSub,{}", filter.remote_name()));
                 pool.subscribe(subid.clone(), filter.remote().to_vec());
                 self.filter = Some(filter.to_owned());
                 self.state = SubState::RemoteOnly {
@@ -396,7 +397,8 @@ impl TimelineSub {
                 };
             }
             SubState::LocalOnly { local, dependers } => {
-                let subid = subscriptions::new_sub_id();
+                let subid = pool
+                    .new_sub_id(|| format!("try_add_remote,LocalOnly,{}", filter.remote_name()));
                 pool.subscribe(subid.clone(), filter.remote().to_vec());
                 self.filter = Some(filter.to_owned());
                 self.state = SubState::Unified {

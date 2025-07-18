@@ -8,7 +8,6 @@ use crate::{ClientMessage, Error, RelayEvent, RelayMessage};
 use super::message::calculate_command_result_size;
 
 type RelayId = String;
-type SubId = String;
 
 pub struct SubsDebug {
     data: HashMap<RelayId, RelayStats>,
@@ -20,7 +19,7 @@ pub struct SubsDebug {
 pub struct RelayStats {
     pub count: TransferStats,
     pub events: Vec<RelayLogEvent>,
-    pub sub_data: HashMap<SubId, SubStats>,
+    pub sub_data: HashMap<String, SubStats>,
 }
 
 #[derive(Clone)]
@@ -123,7 +122,7 @@ impl SubsDebug {
             }
 
             ClientMessage::Close { sub_id } => {
-                data.sub_data.remove(sub_id);
+                data.sub_data.remove(sub_id.to_str());
             }
 
             _ => {}
@@ -188,11 +187,11 @@ fn calculate_client_message_size(message: &ClientMessage) -> usize {
         ClientMessage::Req { sub_id, filters } => {
             mem::size_of_val(message)
                 + mem::size_of_val(sub_id)
-                + sub_id.len()
+                + sub_id.to_str().len()
                 + filters.iter().map(mem::size_of_val).sum::<usize>()
         }
         ClientMessage::Close { sub_id } => {
-            mem::size_of_val(message) + mem::size_of_val(sub_id) + sub_id.len()
+            mem::size_of_val(message) + mem::size_of_val(sub_id) + sub_id.to_str().len()
         }
         ClientMessage::Raw(data) => mem::size_of_val(message) + data.len(),
     }

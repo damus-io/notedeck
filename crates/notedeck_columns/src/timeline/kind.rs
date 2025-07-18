@@ -5,7 +5,7 @@ use enostr::{Filter, NoteId, Pubkey};
 use nostrdb::{Ndb, Transaction};
 use notedeck::{
     contacts::{contacts_filter, hybrid_contacts_filter},
-    filter::{self, default_limit, default_remote_limit, HybridFilter},
+    filter::{self, default_limit, default_remote_limit, HybridFilter, NamedFilter},
     FilterError, FilterState, NoteCache, RootIdError, RootNoteIdBuf,
 };
 use serde::{Deserialize, Serialize};
@@ -427,20 +427,23 @@ impl TimelineKind {
     // TODO: probably should set default limit here
     pub fn filters(&self, txn: &Transaction, ndb: &Ndb) -> FilterState {
         match self {
-            TimelineKind::Search(s) => FilterState::ready(search_filter(s)),
+            TimelineKind::Search(s) => FilterState::ready_named(search_filter(s)),
 
-            TimelineKind::Universe => FilterState::ready(universe_filter()),
+            TimelineKind::Universe => FilterState::ready_named(universe_filter()),
 
             TimelineKind::List(list_k) => match list_k {
                 ListKind::Contact(pubkey) => contact_filter_state(txn, ndb, pubkey),
             },
 
             // TODO: still need to update this to fetch likes, zaps, etc
-            TimelineKind::Notifications(pubkey) => FilterState::ready(vec![Filter::new()
-                .pubkeys([pubkey.bytes()])
-                .kinds([1])
-                .limit(default_limit())
-                .build()]),
+            TimelineKind::Notifications(pubkey) => FilterState::ready(
+                "notifications",
+                vec![Filter::new()
+                    .pubkeys([pubkey.bytes()])
+                    .kinds([1])
+                    .limit(default_limit())
+                    .build()],
+            ),
 
             TimelineKind::Hashtag(hashtag) => {
                 let filters = hashtag
@@ -455,7 +458,7 @@ impl TimelineKind {
                     })
                     .collect::<Vec<_>>();
 
-                FilterState::ready(filters)
+                FilterState::ready("hashtag", filters)
             }
 
             TimelineKind::Algo(algo_timeline) => match algo_timeline {
@@ -475,7 +478,7 @@ impl TimelineKind {
     pub fn into_timeline(self, txn: &Transaction, ndb: &Ndb) -> Option<Timeline> {
         match self {
             TimelineKind::Search(s) => {
-                let filter = FilterState::ready(search_filter(&s));
+                let filter = FilterState::ready_named(search_filter(&s));
                 Some(Timeline::new(
                     TimelineKind::Search(s),
                     filter,
@@ -485,7 +488,7 @@ impl TimelineKind {
 
             TimelineKind::Universe => Some(Timeline::new(
                 TimelineKind::Universe,
-                FilterState::ready(universe_filter()),
+                FilterState::ready_named(universe_filter()),
                 TimelineTab::full_tabs(),
             )),
 
@@ -546,7 +549,7 @@ impl TimelineKind {
 
                 Some(Timeline::new(
                     TimelineKind::notifications(pk),
-                    FilterState::ready(vec![notifications_filter]),
+                    FilterState::ready("notifications", vec![notifications_filter]),
                     TimelineTab::only_notes_and_replies(),
                 ))
             }
@@ -673,30 +676,39 @@ fn last_per_pubkey_filter_state(ndb: &Ndb, pk: &Pubkey) -> FilterState {
                 error!("Error getting contact filter state: {err}");
                 FilterState::Broken(FilterError::EmptyContactList)
             }
-            Ok(filter) => FilterState::ready(filter),
+            Ok(filter) => FilterState::ready("last_per_pubkey", filter),
         }
     }
 }
 
 fn profile_filter(pk: &[u8; 32]) -> HybridFilter {
     HybridFilter::split(
-        vec![Filter::new()
-            .authors([pk])
-            .kinds([1])
-            .limit(default_limit())
-            .build()],
-        vec![Filter::new()
-            .authors([pk])
-            .kinds([1, 0])
-            .limit(default_remote_limit())
-            .build()],
+        NamedFilter::new(
+            "profile-local",
+            vec![Filter::new()
+                .authors([pk])
+                .kinds([1])
+                .limit(default_limit())
+                .build()],
+        ),
+        NamedFilter::new(
+            "profile-remote",
+            vec![Filter::new()
+                .authors([pk])
+                .kinds([1, 0])
+                .limit(default_remote_limit())
+                .build()],
+        ),
     )
 }
 
-fn search_filter(s: &SearchQuery) -> Vec<Filter> {
-    vec![s.filter().limit(default_limit()).build()]
+fn search_filter(s: &SearchQuery) -> NamedFilter {
+    NamedFilter::new("search", vec![s.filter().limit(default_limit()).build()])
 }
 
-fn universe_filter() -> Vec<Filter> {
-    vec![Filter::new().kinds([1]).limit(default_limit()).build()]
+fn universe_filter() -> NamedFilter {
+    NamedFilter::new(
+        "universe",
+        vec![Filter::new().kinds([1]).limit(default_limit()).build()],
+    )
 }

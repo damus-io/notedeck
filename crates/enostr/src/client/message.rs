@@ -1,4 +1,4 @@
-use crate::Error;
+use crate::{Error, SubId};
 use nostrdb::{Filter, Note};
 use serde_json::json;
 
@@ -17,13 +17,8 @@ impl EventClientMessage {
 #[derive(Debug, Clone)]
 pub enum ClientMessage {
     Event(EventClientMessage),
-    Req {
-        sub_id: String,
-        filters: Vec<Filter>,
-    },
-    Close {
-        sub_id: String,
-    },
+    Req { sub_id: SubId, filters: Vec<Filter> },
+    Close { sub_id: SubId },
     Raw(String),
 }
 
@@ -38,11 +33,11 @@ impl ClientMessage {
         Ok(ClientMessage::Event(EventClientMessage { note_json }))
     }
 
-    pub fn req(sub_id: String, filters: Vec<Filter>) -> Self {
+    pub fn req(sub_id: SubId, filters: Vec<Filter>) -> Self {
         ClientMessage::Req { sub_id, filters }
     }
 
-    pub fn close(sub_id: String) -> Self {
+    pub fn close(sub_id: SubId) -> Self {
         ClientMessage::Close { sub_id }
     }
 
@@ -64,7 +59,7 @@ impl ClientMessage {
                     format!("[\"REQ\",\"{}\",{}]", sub_id, filters_json_str?.join(","))
                 }
             }
-            Self::Close { sub_id } => json!(["CLOSE", sub_id]).to_string(),
+            Self::Close { sub_id } => json!(["CLOSE", sub_id.to_string()]).to_string(),
         })
     }
 }

@@ -26,7 +26,6 @@ use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 use std::time::Duration;
 use tracing::{debug, error, info, trace, warn};
-use uuid::Uuid;
 
 #[derive(Debug, Eq, PartialEq, Clone)]
 pub enum DamusState {
@@ -116,14 +115,23 @@ fn try_process_event(
                     .accounts
                     .send_initial_filters(app_ctx.pool, &ev.relay);
 
-                timeline::send_initial_timeline_filters(
-                    damus.options.contains(AppOptions::SinceOptimize),
-                    &mut damus.timeline_cache,
-                    &mut damus.subscriptions,
-                    app_ctx.pool,
-                    &ev.relay,
-                    app_ctx.accounts,
-                );
+                if let Some(relay_ind) =
+                    app_ctx.pool.relays.iter().position(|r| r.url() == ev.relay)
+                {
+                    timeline::send_initial_timeline_filters(
+                        damus.options.contains(AppOptions::SinceOptimize),
+                        &mut damus.timeline_cache,
+                        &mut damus.subscriptions,
+                        app_ctx.pool,
+                        relay_ind,
+                        app_ctx.accounts,
+                    );
+                } else {
+                    error!(
+                        "failed to find relay {} to send initial timeline filter",
+                        ev.relay
+                    );
+                }
             }
             // TODO: handle reconnects
             RelayEvent::Closed => warn!("{} connection closed", &ev.relay),
@@ -500,14 +508,6 @@ impl Damus {
 
     pub fn columns(&self, accounts: &Accounts) -> &Columns {
         get_active_columns(accounts, &self.decks_cache)
-    }
-
-    pub fn gen_subid(&self, kind: &SubKind) -> String {
-        if self.options.contains(AppOptions::Debug) {
-            format!("{kind:?}")
-        } else {
-            Uuid::new_v4().to_string()
-        }
     }
 
     pub fn mock<P: AsRef<Path>>(data_path: P) -> Self {

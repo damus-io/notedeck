@@ -3,6 +3,12 @@ use std::collections::HashMap;
 use uuid::Uuid;
 
 #[derive(Debug, Clone)]
+pub enum AccountSubKind {
+    Mutes,
+    Contacts,
+}
+
+#[derive(Debug, Clone)]
 pub enum SubKind {
     /// Initial subscription. This is the first time we do a remote subscription
     /// for a timeline
@@ -11,6 +17,10 @@ pub enum SubKind {
     /// One shot requests, we can just close after we receive EOSE
     OneShot,
 
+    /// Home subs
+    AccountSub(AccountSubKind),
+
+    /// Timeline subs
     Timeline(TimelineKind),
 
     /// We are fetching a contact list so that we can use it for our follows
@@ -25,8 +35,4 @@ pub enum SubKind {
 #[derive(Default)]
 pub struct Subscriptions {
     pub subs: HashMap<String, SubKind>,
-}
-
-pub fn new_sub_id() -> String {
-    Uuid::new_v4().to_string()
 }

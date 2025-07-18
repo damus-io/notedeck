@@ -5,10 +5,10 @@ use nostrdb::{Filter, Ndb, NoteBuilder, NoteKey, Subscription, Transaction};
 use tracing::{debug, error, info};
 use url::Url;
 
-use crate::{AccountData, RelaySpec};
+use crate::{filter::NamedFilter, AccountData, RelaySpec};
 
 pub(crate) struct AccountRelayData {
-    pub filter: Filter,
+    pub filter: NamedFilter,
     pub local: BTreeSet<RelaySpec>, // used locally but not advertised
     pub advertised: BTreeSet<RelaySpec>, // advertised via NIP-65
 }
@@ -23,7 +23,7 @@ impl AccountRelayData {
             .build();
 
         AccountRelayData {
-            filter,
+            filter: NamedFilter::new("user-relay-list", vec![filter]),
             local: BTreeSet::new(),
             advertised: BTreeSet::new(),
         }
@@ -31,12 +31,11 @@ impl AccountRelayData {
 
     pub fn query(&mut self, ndb: &Ndb, txn: &Transaction) {
         // Query the ndb immediately to see if the user list is already there
-        let lim = self
-            .filter
+        let lim = self.filter.filter[0]
             .limit()
             .unwrap_or(crate::filter::default_limit()) as i32;
         let nks = ndb
-            .query(txn, &[self.filter.clone()], lim)
+            .query(txn, &self.filter.filter, lim)
             .expect("query user relays results")
             .iter()
             .map(|qr| qr.note_key)

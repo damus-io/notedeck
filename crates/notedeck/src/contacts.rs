@@ -1,5 +1,5 @@
 use crate::{
-    filter::{self, HybridFilter},
+    filter::{self, HybridFilter, NamedFilter},
     Error,
 };
 use nostrdb::{Filter, Note};
@@ -20,5 +20,8 @@ pub fn hybrid_contacts_filter(
     let remote = filter::filter_from_tags(note, add_pk, with_hashtags)?
         .into_filter([1, 0], filter::default_remote_limit());
 
-    Ok(HybridFilter::split(local, remote))
+    Ok(HybridFilter::split(
+        NamedFilter::new("Contact List (Local)", local),
+        NamedFilter::new("Contact List (Remote)", remote),
+    ))
 }

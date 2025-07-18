@@ -3,10 +3,10 @@ use std::sync::Arc;
 use nostrdb::{Filter, Ndb, NoteKey, Subscription, Transaction};
 use tracing::{debug, error};
 
-use crate::Muted;
+use crate::{filter::NamedFilter, Muted};
 
 pub(crate) struct AccountMutedData {
-    pub filter: Filter,
+    pub filter: NamedFilter,
     pub muted: Arc<Muted>,
 }
 
@@ -20,19 +20,18 @@ impl AccountMutedData {
             .build();
 
         AccountMutedData {
-            filter,
+            filter: NamedFilter::new("account-mutelist", vec![filter]),
             muted: Arc::new(Muted::default()),
         }
     }
 
     pub(super) fn query(&mut self, ndb: &Ndb, txn: &Transaction) {
         // Query the ndb immediately to see if the user's muted list is already there
-        let lim = self
-            .filter
+        let lim = self.filter.filter[0]
             .limit()
             .unwrap_or(crate::filter::default_limit()) as i32;
         let nks = ndb
-            .query(txn, &[self.filter.clone()], lim)
+            .query(txn, &self.filter.filter, lim)
             .expect("query user muted results")
             .iter()
             .map(|qr| qr.note_key)
