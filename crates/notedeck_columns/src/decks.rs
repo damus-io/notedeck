@@ -1,6 +1,6 @@
 use std::collections::{hash_map::ValuesMut, HashMap};
 
-use enostr::Pubkey;
+use enostr::{Pubkey, RelayPool};
 use nostrdb::Transaction;
 use notedeck::{AppContext, FALLBACK_PUBKEY};
 use tracing::{error, info};
@@ -155,9 +155,24 @@ impl DecksCache {
         }
     }
 
-    pub fn remove_for(&mut self, key: &Pubkey) {
+    pub fn remove(
+        &mut self,
+        key: &Pubkey,
+        timeline_cache: &mut TimelineCache,
+        ndb: &mut nostrdb::Ndb,
+        pool: &mut RelayPool,
+    ) {
+        let Some(decks) = self.account_to_decks.remove(key) else {
+            return;
+        };
         info!("Removing decks for {:?}", key);
-        self.account_to_decks.remove(key);
+
+        decks.unsubscribe_all(timeline_cache, ndb, pool);
+
+        if !self.account_to_decks.contains_key(&self.fallback_pubkey) {
+            self.account_to_decks
+                .insert(self.fallback_pubkey, Decks::default());
+        }
     }
 
     pub fn get_fallback_pubkey(&self) -> &Pubkey {
@@ -327,6 +342,17 @@ impl Decks {
             error!("index was out of bounds");
         }
         res
+    }
+
+    pub fn unsubscribe_all(
+        self,
+        timeline_cache: &mut TimelineCache,
+        ndb: &mut nostrdb::Ndb,
+        pool: &mut enostr::RelayPool,
+    ) {
+        for deck in self.decks {
+            delete_deck(deck, timeline_cache, ndb, pool);
+        }
     }
 }
 
