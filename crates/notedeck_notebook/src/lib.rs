@@ -48,8 +48,10 @@ fn node_ui(ui: &mut egui::Ui, node: &Node) -> egui::Response {
 
 fn text_node_ui(ui: &mut egui::Ui, node: &TextNode) -> egui::Response {
     node_box_ui(ui, node.node(), |ui| {
-        ui.with_layout(egui::Layout::left_to_right(Align::Min), |ui| {
-            ui.add(Label::new(node.text()).wrap_mode(TextWrapMode::Wrap))
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            ui.with_layout(egui::Layout::left_to_right(Align::Min), |ui| {
+                ui.add(Label::new(node.text()).wrap_mode(TextWrapMode::Wrap))
+            });
         });
     })
 }
