@@ -50,20 +50,20 @@ impl AccountCache {
         self.accounts.entry(pk).insert(account)
     }
 
-    pub(super) fn remove(&mut self, pk: &Pubkey) -> Option<UserAccount> {
+    pub(super) fn remove(&mut self, pk: &Pubkey) -> Option<AccountDeletionResponse> {
         if *pk == self.fallback && self.accounts.len() == 1 {
             // no point in removing it since it'll just get re-added anyway
             return None;
         }
 
-        let removed = self.accounts.remove(pk);
+        let removed = self.accounts.remove(pk)?;
 
         if self.accounts.is_empty() {
             self.accounts
                 .insert(self.fallback, self.fallback_account.clone());
         }
 
-        if removed.is_some() && self.selected == *pk {
+        if self.selected == *pk {
             // TODO(kernelkind): choose next better
             let (next, _) = self
                 .accounts
@@ -71,9 +71,17 @@ impl AccountCache {
                 .next()
                 .expect("accounts can never be empty");
             self.selected = *next;
+
+            return Some(AccountDeletionResponse {
+                deleted: removed.key,
+                swap_to: Some(*next),
+            });
         }
 
-        removed
+        Some(AccountDeletionResponse {
+            deleted: removed.key,
+            swap_to: None,
+        })
     }
 
     /// guarenteed that all selected exist in accounts
@@ -110,4 +118,9 @@ impl<'a> IntoIterator for &'a AccountCache {
     fn into_iter(self) -> Self::IntoIter {
         self.accounts.iter()
     }
+}
+
+pub struct AccountDeletionResponse {
+    pub deleted: enostr::Keypair,
+    pub swap_to: Option<Pubkey>,
 }

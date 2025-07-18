@@ -97,16 +97,31 @@ impl Accounts {
         }
     }
 
-    pub fn remove_account(&mut self, pk: &Pubkey) {
-        let Some(removed) = self.cache.remove(pk) else {
-            return;
+    pub fn remove_account(
+        &mut self,
+        pk: &Pubkey,
+        ndb: &mut Ndb,
+        pool: &mut RelayPool,
+        ctx: &egui::Context,
+    ) -> bool {
+        let Some(resp) = self.cache.remove(pk) else {
+            return false;
         };
 
-        if let Some(key_store) = &self.storage_writer {
-            if let Err(e) = key_store.remove_key(&removed.key) {
-                tracing::error!("Could not remove account {pk}: {e}");
+        if pk != self.cache.fallback() {
+            if let Some(key_store) = &self.storage_writer {
+                if let Err(e) = key_store.remove_key(&resp.deleted) {
+                    tracing::error!("Could not remove account {pk}: {e}");
+                }
             }
         }
+
+        if let Some(swap_to) = resp.swap_to {
+            let txn = Transaction::new(ndb).expect("txn");
+            self.select_account_internal(&swap_to, ndb, &txn, pool, ctx);
+        }
+
+        true
     }
 
     pub fn contains_full_kp(&self, pubkey: &enostr::Pubkey) -> bool {
