@@ -212,6 +212,18 @@ impl Accounts {
             return;
         }
 
+        self.select_account_internal(pk_to_select, ndb, txn, pool, ctx);
+    }
+
+    /// Have already selected in `AccountCache`, updating other things
+    fn select_account_internal(
+        &mut self,
+        pk_to_select: &Pubkey,
+        ndb: &mut Ndb,
+        txn: &Transaction,
+        pool: &mut RelayPool,
+        ctx: &egui::Context,
+    ) {
         if let Some(key_store) = &self.storage_writer {
             if let Err(e) = key_store.select_key(Some(*pk_to_select)) {
                 tracing::error!("Could not select key {:?}: {e}", pk_to_select);
