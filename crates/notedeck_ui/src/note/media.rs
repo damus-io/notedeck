@@ -219,13 +219,32 @@ fn get_selected_index(ui: &egui::Ui, selection_id: egui::Id) -> usize {
 /// Checks to see if we have any left/right key presses and updates the carousel index
 fn update_selected_image_index(ui: &mut egui::Ui, carousel_id: egui::Id, num_urls: i32) -> usize {
     if num_urls > 1 {
-        if ui.input(|i| i.key_pressed(egui::Key::ArrowRight) || i.key_pressed(egui::Key::L)) {
+        let next_image = ui.data(|data| {
+            data.get_temp(carousel_id.with("next_image"))
+                .unwrap_or(false)
+        });
+        let prev_image = ui.data(|data| {
+            data.get_temp(carousel_id.with("prev_image"))
+                .unwrap_or(false)
+        });
+
+        if next_image
+            || ui.input(|i| i.key_pressed(egui::Key::ArrowRight) || i.key_pressed(egui::Key::L))
+        {
             let ind = select_next_media(ui, carousel_id, num_urls, 1);
             tracing::debug!("carousel selecting right {}/{}", ind + 1, num_urls);
+            if next_image {
+                ui.data_mut(|data| data.remove_temp::<bool>(carousel_id.with("next_image")));
+            }
             ind
-        } else if ui.input(|i| i.key_pressed(egui::Key::ArrowLeft) || i.key_pressed(egui::Key::H)) {
+        } else if prev_image
+            || ui.input(|i| i.key_pressed(egui::Key::ArrowLeft) || i.key_pressed(egui::Key::H))
+        {
             let ind = select_next_media(ui, carousel_id, num_urls, -1);
             tracing::debug!("carousel selecting left {}/{}", ind + 1, num_urls);
+            if prev_image {
+                ui.data_mut(|data| data.remove_temp::<bool>(carousel_id.with("prev_image")));
+            }
             ind
         } else {
             get_selected_index(ui, selection_id(carousel_id))
@@ -530,9 +549,20 @@ fn render_full_screen_media(
         Sense::click_and_drag(),
     );
 
+    let swipe_accum_id = carousel_id.with("swipe_accum");
+    let mut swipe_delta = ui.ctx().memory(|mem| {
+        mem.data
+            .get_temp::<egui::Vec2>(swipe_accum_id)
+            .unwrap_or(egui::Vec2::ZERO)
+    });
+
     // Handle pan via drag
     if response.dragged() {
         let delta = response.drag_delta();
+        swipe_delta += delta;
+        ui.ctx().memory_mut(|mem| {
+            mem.data.insert_temp(swipe_accum_id, swipe_delta);
+        });
         pan_offset -= delta;
         pan_offset.x = pan_offset.x.clamp(-max_pan_x, max_pan_x);
         pan_offset.y = pan_offset.y.clamp(-max_pan_y, max_pan_y);
@@ -547,6 +577,27 @@ fn render_full_screen_media(
         ui.ctx().memory_mut(|mem| {
             mem.data.insert_temp(pan_id, pan_offset);
             mem.data.insert_temp(zoom_id, zoom);
+        });
+    }
+
+    let swipe_threshold = 50.0;
+    if response.drag_stopped() {
+        if swipe_delta.x.abs() > swipe_threshold && swipe_delta.y.abs() < swipe_threshold {
+            if swipe_delta.x < 0.0 {
+                ui.ctx().data_mut(|data| {
+                    keep_popup_open = true;
+                    data.insert_temp(carousel_id.with("next_image"), true);
+                });
+            } else if swipe_delta.x > 0.0 {
+                ui.ctx().data_mut(|data| {
+                    keep_popup_open = true;
+                    data.insert_temp(carousel_id.with("prev_image"), true);
+                });
+            }
+        }
+
+        ui.ctx().memory_mut(|mem| {
+            mem.data.remove::<egui::Vec2>(swipe_accum_id);
         });
     }
 
