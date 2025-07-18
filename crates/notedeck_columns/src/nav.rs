@@ -119,7 +119,12 @@ impl SwitchingAction {
                     get_decks_mut(ctx.accounts, decks_cache).set_active(index)
                 }
                 DecksAction::Removing(index) => {
-                    get_decks_mut(ctx.accounts, decks_cache).remove_deck(index)
+                    get_decks_mut(ctx.accounts, decks_cache).remove_deck(
+                        index,
+                        timeline_cache,
+                        ctx.ndb,
+                        ctx.pool,
+                    );
                 }
             },
         }

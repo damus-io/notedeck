@@ -265,10 +265,25 @@ impl Decks {
         }
     }
 
-    pub fn remove_deck(&mut self, index: usize) {
+    pub fn remove_deck(
+        &mut self,
+        index: usize,
+        timeline_cache: &mut TimelineCache,
+        ndb: &mut nostrdb::Ndb,
+        pool: &mut enostr::RelayPool,
+    ) {
+        let Some(deck) = self.remove_deck_internal(index) else {
+            return;
+        };
+
+        delete_deck(deck, timeline_cache, ndb, pool);
+    }
+
+    fn remove_deck_internal(&mut self, index: usize) -> Option<Deck> {
+        let mut res = None;
         if index < self.decks.len() {
             if self.decks.len() > 1 {
-                self.decks.remove(index);
+                res = Some(self.decks.remove(index));
 
                 let info_prefix = format!("Removed deck at index {index}");
                 match index.cmp(&self.active_deck) {
@@ -310,6 +325,26 @@ impl Decks {
             }
         } else {
             error!("index was out of bounds");
+        }
+        res
+    }
+}
+
+fn delete_deck(
+    mut deck: Deck,
+    timeline_cache: &mut TimelineCache,
+    ndb: &mut nostrdb::Ndb,
+    pool: &mut enostr::RelayPool,
+) {
+    let cols = deck.columns_mut();
+    let num_cols = cols.num_columns();
+    for i in (0..num_cols).rev() {
+        let kinds_to_pop = cols.delete_column(i);
+
+        for kind in &kinds_to_pop {
+            if let Err(err) = timeline_cache.pop(kind, ndb, pool) {
+                error!("error popping timeline: {err}");
+            }
         }
     }
 }
