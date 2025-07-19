@@ -7,3 +7,5 @@ version.workspace = true
 jsoncanvas = { git = "https://github.com/jb55/jsoncanvas", rev = "ae60f96e4d022cf037e086b793cacc3225bc14e5" }
 notedeck = { workspace = true }
 egui = { workspace = true }
+#egui_commonmark = { git = "https://github.com/jb55/egui_commonmark", rev = "a8ebe40bdca4b20c469123e0dba940846866f231" } 
+egui_commonmark = "0.21.1"
