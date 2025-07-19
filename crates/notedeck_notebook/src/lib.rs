@@ -225,7 +225,7 @@ fn node_box_ui(
             .show(ui, |ui| {
                 let rect = ui.available_rect_before_wrap();
                 ui.allocate_at_least(ui.available_size(), egui::Sense::click());
-                ui.put(rect, |ui: &mut egui::Ui| contents(ui));
+                ui.put(rect, contents);
             })
             .response
     })
