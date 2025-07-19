@@ -1,10 +1,9 @@
-use egui::{TextBuffer, TextFormat, text::LayoutJob};
+use egui::{text::LayoutJob, TextBuffer, TextFormat};
 use enostr::{FullKeypair, Pubkey};
 use nostrdb::{Note, NoteBuilder, NoteReply};
 use std::{
     any::TypeId,
     collections::{BTreeMap, HashMap, HashSet},
-    hash::{DefaultHasher, Hash, Hasher},
     ops::Range,
 };
 use tracing::error;

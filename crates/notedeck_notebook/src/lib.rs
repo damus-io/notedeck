@@ -1,12 +1,17 @@
-use crate::ui::{edge_ui, node_ui};
+use crate::{
+    markdown::Markdown,
+    ui::{edge_ui, node_ui},
+};
 use egui::{Pos2, Rect};
 use jsoncanvas::JsonCanvas;
 use notedeck::{AppAction, AppContext};
 
+mod markdown;
 mod ui;
 
 pub struct Notebook {
     canvas: JsonCanvas,
+    markdown: Markdown,
     scene_rect: Rect,
     loaded: bool,
 }
@@ -23,6 +28,7 @@ impl Default for Notebook {
             canvas: demo_canvas(),
             scene_rect: Rect::from_min_max(Pos2::ZERO, Pos2::ZERO),
             loaded: false,
+            markdown: Markdown::default(),
         }
     }
 }
@@ -39,7 +45,7 @@ impl notedeck::App for Notebook {
         egui::Scene::new().show(ui, &mut self.scene_rect, |ui| {
             // render nodes
             for (_node_id, node) in self.canvas.get_nodes().iter() {
-                let _resp = node_ui(ui, node);
+                let _resp = node_ui(ui, &mut self.markdown, node);
             }
 
             // render edges
