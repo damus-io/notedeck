@@ -137,7 +137,6 @@ impl RelayDefaults {
             .map(|u| RelaySpec::new(AccountRelayData::canonicalize_url(&u), false, false))
             .collect();
         let bootstrap_relays = [
-            "multicast",
             "wss://relay.damus.io",
             // "wss://pyramid.fiatjaf.com",  // Uncomment if needed
             "wss://nos.lol",
