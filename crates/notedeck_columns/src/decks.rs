@@ -1,6 +1,6 @@
 use std::collections::{hash_map::ValuesMut, HashMap};
 
-use enostr::Pubkey;
+use enostr::{Pubkey, RelayPool};
 use nostrdb::Transaction;
 use notedeck::{AppContext, FALLBACK_PUBKEY};
 use tracing::{error, info};
@@ -155,9 +155,24 @@ impl DecksCache {
         }
     }
 
-    pub fn remove_for(&mut self, key: &Pubkey) {
+    pub fn remove(
+        &mut self,
+        key: &Pubkey,
+        timeline_cache: &mut TimelineCache,
+        ndb: &mut nostrdb::Ndb,
+        pool: &mut RelayPool,
+    ) {
+        let Some(decks) = self.account_to_decks.remove(key) else {
+            return;
+        };
         info!("Removing decks for {:?}", key);
-        self.account_to_decks.remove(key);
+
+        decks.unsubscribe_all(timeline_cache, ndb, pool);
+
+        if !self.account_to_decks.contains_key(&self.fallback_pubkey) {
+            self.account_to_decks
+                .insert(self.fallback_pubkey, Decks::default());
+        }
     }
 
     pub fn get_fallback_pubkey(&self) -> &Pubkey {
@@ -265,10 +280,25 @@ impl Decks {
         }
     }
 
-    pub fn remove_deck(&mut self, index: usize) {
+    pub fn remove_deck(
+        &mut self,
+        index: usize,
+        timeline_cache: &mut TimelineCache,
+        ndb: &mut nostrdb::Ndb,
+        pool: &mut enostr::RelayPool,
+    ) {
+        let Some(deck) = self.remove_deck_internal(index) else {
+            return;
+        };
+
+        delete_deck(deck, timeline_cache, ndb, pool);
+    }
+
+    fn remove_deck_internal(&mut self, index: usize) -> Option<Deck> {
+        let mut res = None;
         if index < self.decks.len() {
             if self.decks.len() > 1 {
-                self.decks.remove(index);
+                res = Some(self.decks.remove(index));
 
                 let info_prefix = format!("Removed deck at index {index}");
                 match index.cmp(&self.active_deck) {
@@ -310,6 +340,37 @@ impl Decks {
             }
         } else {
             error!("index was out of bounds");
+        }
+        res
+    }
+
+    pub fn unsubscribe_all(
+        self,
+        timeline_cache: &mut TimelineCache,
+        ndb: &mut nostrdb::Ndb,
+        pool: &mut enostr::RelayPool,
+    ) {
+        for deck in self.decks {
+            delete_deck(deck, timeline_cache, ndb, pool);
+        }
+    }
+}
+
+fn delete_deck(
+    mut deck: Deck,
+    timeline_cache: &mut TimelineCache,
+    ndb: &mut nostrdb::Ndb,
+    pool: &mut enostr::RelayPool,
+) {
+    let cols = deck.columns_mut();
+    let num_cols = cols.num_columns();
+    for i in (0..num_cols).rev() {
+        let kinds_to_pop = cols.delete_column(i);
+
+        for kind in &kinds_to_pop {
+            if let Err(err) = timeline_cache.pop(kind, ndb, pool) {
+                error!("error popping timeline: {err}");
+            }
         }
     }
 }

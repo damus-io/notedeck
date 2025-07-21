@@ -4,7 +4,7 @@ use crate::get_current_wallet;
 
 const DEFAULT_ZAP_MSATS: u64 = 10_000;
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct DefaultZapMsats {
     pub msats: Option<u64>,
     pub pending: PendingDefaultZapState,
@@ -83,7 +83,7 @@ impl TokenSerializable for UserZapMsats {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PendingDefaultZapState {
     pub amount_sats: String,
     pub error_message: Option<DefaultZapError>,
@@ -110,7 +110,7 @@ fn msats_to_sats_string(msats: u64) -> String {
     (msats / 1000).to_string()
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum DefaultZapError {
     InvalidUserInput,
 }

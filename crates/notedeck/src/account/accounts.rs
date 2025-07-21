@@ -97,16 +97,31 @@ impl Accounts {
         }
     }
 
-    pub fn remove_account(&mut self, pk: &Pubkey) {
-        let Some(removed) = self.cache.remove(pk) else {
-            return;
+    pub fn remove_account(
+        &mut self,
+        pk: &Pubkey,
+        ndb: &mut Ndb,
+        pool: &mut RelayPool,
+        ctx: &egui::Context,
+    ) -> bool {
+        let Some(resp) = self.cache.remove(pk) else {
+            return false;
         };
 
-        if let Some(key_store) = &self.storage_writer {
-            if let Err(e) = key_store.remove_key(&removed.key) {
-                tracing::error!("Could not remove account {pk}: {e}");
+        if pk != self.cache.fallback() {
+            if let Some(key_store) = &self.storage_writer {
+                if let Err(e) = key_store.remove_key(&resp.deleted) {
+                    tracing::error!("Could not remove account {pk}: {e}");
+                }
             }
         }
+
+        if let Some(swap_to) = resp.swap_to {
+            let txn = Transaction::new(ndb).expect("txn");
+            self.select_account_internal(&swap_to, ndb, &txn, pool, ctx);
+        }
+
+        true
     }
 
     pub fn contains_full_kp(&self, pubkey: &enostr::Pubkey) -> bool {
@@ -212,6 +227,18 @@ impl Accounts {
             return;
         }
 
+        self.select_account_internal(pk_to_select, ndb, txn, pool, ctx);
+    }
+
+    /// Have already selected in `AccountCache`, updating other things
+    fn select_account_internal(
+        &mut self,
+        pk_to_select: &Pubkey,
+        ndb: &mut Ndb,
+        txn: &Transaction,
+        pool: &mut RelayPool,
+        ctx: &egui::Context,
+    ) {
         if let Some(key_store) = &self.storage_writer {
             if let Err(e) = key_store.select_key(Some(*pk_to_select)) {
                 tracing::error!("Could not select key {:?}: {e}", pk_to_select);
@@ -375,6 +402,7 @@ fn get_acc_from_storage(user_account_serializable: UserAccountSerializable) -> O
     })
 }
 
+#[derive(Clone)]
 pub struct AccountData {
     pub(crate) relay: AccountRelayData,
     pub(crate) muted: AccountMutedData,

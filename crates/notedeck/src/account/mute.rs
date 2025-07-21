@@ -5,6 +5,7 @@ use tracing::{debug, error};
 
 use crate::Muted;
 
+#[derive(Clone)]
 pub(crate) struct AccountMutedData {
     pub filter: Filter,
     pub muted: Arc<Muted>,

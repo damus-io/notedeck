@@ -94,7 +94,16 @@ impl SwitchingAction {
                         .router_mut()
                         .go_back();
                 }
-                AccountsAction::Remove(to_remove) => ctx.accounts.remove_account(to_remove),
+                AccountsAction::Remove(to_remove) => 's: {
+                    if !ctx
+                        .accounts
+                        .remove_account(to_remove, ctx.ndb, ctx.pool, ui_ctx)
+                    {
+                        break 's;
+                    }
+
+                    decks_cache.remove(to_remove, timeline_cache, ctx.ndb, ctx.pool);
+                }
             },
             SwitchingAction::Columns(columns_action) => match *columns_action {
                 ColumnsAction::Remove(index) => {
@@ -116,7 +125,12 @@ impl SwitchingAction {
                     get_decks_mut(ctx.accounts, decks_cache).set_active(index)
                 }
                 DecksAction::Removing(index) => {
-                    get_decks_mut(ctx.accounts, decks_cache).remove_deck(index)
+                    get_decks_mut(ctx.accounts, decks_cache).remove_deck(
+                        index,
+                        timeline_cache,
+                        ctx.ndb,
+                        ctx.pool,
+                    );
                 }
             },
         }
