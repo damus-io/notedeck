@@ -3,16 +3,17 @@ use egui::{
 };
 use enostr::Pubkey;
 use nostrdb::{Ndb, Transaction};
-use notedeck::{Accounts, Images};
+use notedeck::{tr, Accounts, Images, Localization};
 use notedeck_ui::colors::PINK;
+use notedeck_ui::profile::preview::SimpleProfilePreview;
 
 use notedeck_ui::app_images;
-use notedeck_ui::profile::preview::SimpleProfilePreview;
 
 pub struct AccountsView<'a> {
     ndb: &'a Ndb,
     accounts: &'a Accounts,
     img_cache: &'a mut Images,
+    i18n: &'a mut Localization,
 }
 
 #[derive(Clone, Debug)]
@@ -29,24 +30,30 @@ enum ProfilePreviewAction {
 }
 
 impl<'a> AccountsView<'a> {
-    pub fn new(ndb: &'a Ndb, accounts: &'a Accounts, img_cache: &'a mut Images) -> Self {
+    pub fn new(
+        ndb: &'a Ndb,
+        accounts: &'a Accounts,
+        img_cache: &'a mut Images,
+        i18n: &'a mut Localization,
+    ) -> Self {
         AccountsView {
             ndb,
             accounts,
             img_cache,
+            i18n,
         }
     }
 
     pub fn ui(&mut self, ui: &mut Ui) -> InnerResponse<Option<AccountsViewResponse>> {
         Frame::new().outer_margin(12.0).show(ui, |ui| {
-            if let Some(resp) = Self::top_section_buttons_widget(ui).inner {
+            if let Some(resp) = Self::top_section_buttons_widget(ui, self.i18n).inner {
                 return Some(resp);
             }
 
             ui.add_space(8.0);
             scroll_area()
                 .show(ui, |ui| {
-                    Self::show_accounts(ui, self.accounts, self.ndb, self.img_cache)
+                    Self::show_accounts(ui, self.accounts, self.ndb, self.img_cache, self.i18n)
                 })
                 .inner
         })
@@ -57,6 +64,7 @@ impl<'a> AccountsView<'a> {
         accounts: &Accounts,
         ndb: &Ndb,
         img_cache: &mut Images,
+        i18n: &mut Localization,
     ) -> Option<AccountsViewResponse> {
         let mut return_op: Option<AccountsViewResponse> = None;
         ui.allocate_ui_with_layout(
@@ -79,8 +87,12 @@ impl<'a> AccountsView<'a> {
                         let max_size = egui::vec2(ui.available_width(), 77.0);
                         let resp = ui.allocate_response(max_size, egui::Sense::click());
                         ui.allocate_new_ui(UiBuilder::new().max_rect(resp.rect), |ui| {
-                            let preview =
-                                SimpleProfilePreview::new(profile.as_ref(), img_cache, has_nsec);
+                            let preview = SimpleProfilePreview::new(
+                                profile.as_ref(),
+                                img_cache,
+                                i18n,
+                                has_nsec,
+                            );
                             show_profile_card(ui, preview, max_size, is_selected, resp)
                         })
                         .inner
@@ -104,12 +116,13 @@ impl<'a> AccountsView<'a> {
 
     fn top_section_buttons_widget(
         ui: &mut egui::Ui,
+        i18n: &mut Localization,
     ) -> InnerResponse<Option<AccountsViewResponse>> {
         ui.allocate_ui_with_layout(
             Vec2::new(ui.available_size_before_wrap().x, 32.0),
             Layout::left_to_right(egui::Align::Center),
             |ui| {
-                if ui.add(add_account_button()).clicked() {
+                if ui.add(add_account_button(i18n)).clicked() {
                     Some(AccountsViewResponse::RouteToLogin)
                 } else {
                     None
@@ -141,16 +154,14 @@ fn show_profile_card(
             .inner_margin(8.0)
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
+                    let btn = sign_out_button(preview.i18n);
                     ui.add(preview);
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if card_resp.clicked() {
                             op = Some(ProfilePreviewAction::SwitchTo);
                         }
-                        if ui
-                            .add_sized(egui::Vec2::new(84.0, 32.0), sign_out_button())
-                            .clicked()
-                        {
+                        if ui.add_sized(egui::Vec2::new(84.0, 32.0), btn).clicked() {
                             op = Some(ProfilePreviewAction::RemoveAccount)
                         }
                     });
@@ -168,17 +179,25 @@ fn scroll_area() -> ScrollArea {
         .auto_shrink([false; 2])
 }
 
-fn add_account_button() -> Button<'static> {
+fn add_account_button(i18n: &mut Localization) -> Button<'static> {
     Button::image_and_text(
         app_images::add_account_image().fit_to_exact_size(Vec2::new(48.0, 48.0)),
-        RichText::new(" Add account")
-            .size(16.0)
-            // TODO: this color should not be hard coded. Find some way to add it to the visuals
-            .color(PINK),
+        RichText::new(tr!(
+            i18n,
+            "Add account",
+            "Button label to add a new account"
+        ))
+        .size(16.0)
+        // TODO: this color should not be hard coded. Find some way to add it to the visuals
+        .color(PINK),
     )
     .frame(false)
 }
 
-fn sign_out_button() -> egui::Button<'static> {
-    egui::Button::new(RichText::new("Sign out"))
+fn sign_out_button(i18n: &mut Localization) -> egui::Button<'static> {
+    egui::Button::new(RichText::new(tr!(
+        i18n,
+        "Sign out",
+        "Button label to sign out of account"
+    )))
 }

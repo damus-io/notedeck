@@ -1,6 +1,6 @@
 use egui::{Rect, Vec2};
 use nostrdb::NoteKey;
-use notedeck::{BroadcastContext, NoteContextSelection};
+use notedeck::{tr, BroadcastContext, Localization, NoteContextSelection};
 
 pub struct NoteContextButton {
     put_at: Option<Rect>,
@@ -105,35 +105,80 @@ impl NoteContextButton {
     #[profiling::function]
     pub fn menu(
         ui: &mut egui::Ui,
+        i18n: &mut Localization,
         button_response: egui::Response,
     ) -> Option<NoteContextSelection> {
         let mut context_selection: Option<NoteContextSelection> = None;
 
         stationary_arbitrary_menu_button(ui, button_response, |ui| {
             ui.set_max_width(200.0);
-            if ui.button("Copy text").clicked() {
+
+            // Debug: Check what the tr! macro returns
+            let copy_text = tr!(
+                i18n,
+                "Copy Text",
+                "Copy the text content of the note to clipboard"
+            );
+            tracing::debug!("Copy Text translation: '{}'", copy_text);
+
+            if ui.button(copy_text).clicked() {
                 context_selection = Some(NoteContextSelection::CopyText);
                 ui.close_menu();
             }
-            if ui.button("Copy user public key").clicked() {
+            if ui
+                .button(tr!(
+                    i18n,
+                    "Copy Pubkey",
+                    "Copy the author's public key to clipboard"
+                ))
+                .clicked()
+            {
                 context_selection = Some(NoteContextSelection::CopyPubkey);
                 ui.close_menu();
             }
-            if ui.button("Copy note id").clicked() {
+            if ui
+                .button(tr!(
+                    i18n,
+                    "Copy Note ID",
+                    "Copy the unique note identifier to clipboard"
+                ))
+                .clicked()
+            {
                 context_selection = Some(NoteContextSelection::CopyNoteId);
                 ui.close_menu();
             }
-            if ui.button("Copy note json").clicked() {
+            if ui
+                .button(tr!(
+                    i18n,
+                    "Copy Note JSON",
+                    "Copy the raw note data in JSON format to clipboard"
+                ))
+                .clicked()
+            {
                 context_selection = Some(NoteContextSelection::CopyNoteJSON);
                 ui.close_menu();
             }
-            if ui.button("Broadcast").clicked() {
+            if ui
+                .button(tr!(
+                    i18n,
+                    "Broadcast",
+                    "Broadcast the note to all connected relays"
+                ))
+                .clicked()
+            {
                 context_selection = Some(NoteContextSelection::Broadcast(
                     BroadcastContext::Everywhere,
                 ));
                 ui.close_menu();
             }
-            if ui.button("Broadcast to local network").clicked() {
+            if ui
+                .button(tr!(
+                    i18n,
+                    "Broadcast Local",
+                    "Broadcast the note only to local network relays"
+                ))
+                .clicked()
+            {
                 context_selection = Some(NoteContextSelection::Broadcast(
                     BroadcastContext::LocalNetwork,
                 ));

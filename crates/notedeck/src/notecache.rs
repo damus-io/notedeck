@@ -1,7 +1,5 @@
-use crate::{time_ago_since, TimeCached};
 use nostrdb::{Note, NoteKey, NoteReply, NoteReplyBuf};
 use std::collections::HashMap;
-use std::time::Duration;
 
 #[derive(Default)]
 pub struct NoteCache {
@@ -32,7 +30,7 @@ impl NoteCache {
 
 #[derive(Clone)]
 pub struct CachedNote {
-    reltime: TimeCached<String>,
+    //reltime: TimeCached<String>,
     pub client: Option<String>,
     pub reply: NoteReplyBuf,
 }
@@ -41,22 +39,25 @@ impl CachedNote {
     pub fn new(note: &Note) -> Self {
         use crate::note::event_tag;
 
+        /*
         let created_at = note.created_at();
         let reltime = TimeCached::new(
             Duration::from_secs(1),
-            Box::new(move || time_ago_since(created_at)),
+            Box::new(move || time_ago_since(i18n, created_at)),
         );
+        */
         let reply = NoteReply::new(note.tags()).to_owned();
 
         let client = event_tag(note, "client");
 
         CachedNote {
             client: client.map(|c| c.to_string()),
-            reltime,
+            //   reltime,
             reply,
         }
     }
 
+    /*
     pub fn reltime_str_mut(&mut self) -> &str {
         self.reltime.get_mut()
     }
@@ -64,4 +65,5 @@ impl CachedNote {
     pub fn reltime_str(&self) -> Option<&str> {
         self.reltime.get().map(|x| x.as_str())
     }
+    */
 }

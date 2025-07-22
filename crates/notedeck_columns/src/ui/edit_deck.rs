@@ -3,13 +3,12 @@ use egui::Widget;
 use crate::deck_state::DeckState;
 
 use super::configure_deck::{ConfigureDeckResponse, ConfigureDeckView};
+use notedeck::{tr, Localization};
 use notedeck_ui::padding;
 
 pub struct EditDeckView<'a> {
     config_view: ConfigureDeckView<'a>,
 }
-
-static EDIT_TEXT: &str = "Edit Deck";
 
 pub enum EditDeckResponse {
     Edit(ConfigureDeckResponse),
@@ -17,8 +16,9 @@ pub enum EditDeckResponse {
 }
 
 impl<'a> EditDeckView<'a> {
-    pub fn new(state: &'a mut DeckState) -> Self {
-        let config_view = ConfigureDeckView::new(state).with_create_text(EDIT_TEXT);
+    pub fn new(state: &'a mut DeckState, i18n: &'a mut Localization) -> Self {
+        let txt = tr!(i18n, "Edit Deck", "Button label to edit a deck");
+        let config_view = ConfigureDeckView::new(state, i18n).with_create_text(txt);
         Self { config_view }
     }
 
@@ -26,7 +26,7 @@ impl<'a> EditDeckView<'a> {
         let mut edit_deck_resp = None;
 
         padding(egui::Margin::symmetric(16, 4), ui, |ui| {
-            if ui.add(delete_button()).clicked() {
+            if ui.add(delete_button(self.config_view.i18n)).clicked() {
                 edit_deck_resp = Some(EditDeckResponse::Delete);
             }
         });
@@ -39,12 +39,12 @@ impl<'a> EditDeckView<'a> {
     }
 }
 
-fn delete_button() -> impl Widget {
+fn delete_button<'a>(i18n: &'a mut Localization) -> impl Widget + 'a {
     |ui: &mut egui::Ui| {
         let size = egui::vec2(108.0, 40.0);
         ui.allocate_ui_with_layout(size, egui::Layout::top_down(egui::Align::Center), |ui| {
             ui.add(
-                egui::Button::new("Delete Deck")
+                egui::Button::new(tr!(i18n, "Delete Deck", "Button label to delete a deck"))
                     .fill(ui.visuals().error_fg_color)
                     .min_size(size),
             )
@@ -75,12 +75,8 @@ mod preview {
     }
 
     impl App for EditDeckPreview {
-        fn update(
-            &mut self,
-            _app_ctx: &mut AppContext<'_>,
-            ui: &mut egui::Ui,
-        ) -> Option<AppAction> {
-            EditDeckView::new(&mut self.state).ui(ui);
+        fn update(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> Option<AppAction> {
+            EditDeckView::new(&mut self.state, ctx.i18n).ui(ui);
             None
         }
     }

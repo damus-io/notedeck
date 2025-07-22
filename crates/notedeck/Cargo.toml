@@ -39,6 +39,13 @@ bech32 = { workspace = true }
 lightning-invoice = { workspace = true }
 secp256k1 = { workspace = true }
 hashbrown = { workspace = true }
+fluent = { workspace = true }
+fluent-resmgr = { workspace = true }
+fluent-langneg = { workspace = true }
+unic-langid = { workspace = true }
+once_cell = { workspace = true }
+md5 = { workspace = true }
+regex = "1"
 
 [dev-dependencies]
 tempfile = { workspace = true }

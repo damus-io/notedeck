@@ -1,5 +1,6 @@
 use crate::{app_style::deck_icon_font_sized, deck_state::DeckState};
 use egui::{vec2, Button, Color32, Label, RichText, Stroke, Ui, Widget};
+use notedeck::{tr, Localization};
 use notedeck::{NamedFontFamily, NotedeckTextStyle};
 use notedeck_ui::{
     anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},
@@ -10,6 +11,7 @@ use notedeck_ui::{
 pub struct ConfigureDeckView<'a> {
     state: &'a mut DeckState,
     create_button_text: String,
+    pub i18n: &'a mut Localization,
 }
 
 pub struct ConfigureDeckResponse {
@@ -17,18 +19,17 @@ pub struct ConfigureDeckResponse {
     pub name: String,
 }
 
-static CREATE_TEXT: &str = "Create Deck";
-
 impl<'a> ConfigureDeckView<'a> {
-    pub fn new(state: &'a mut DeckState) -> Self {
+    pub fn new(state: &'a mut DeckState, i18n: &'a mut Localization) -> Self {
         Self {
             state,
-            create_button_text: CREATE_TEXT.to_owned(),
+            create_button_text: tr!(i18n, "Create Deck", "Button label to create a new deck"),
+            i18n,
         }
     }
 
-    pub fn with_create_text(mut self, text: &str) -> Self {
-        self.create_button_text = text.to_owned();
+    pub fn with_create_text(mut self, text: String) -> Self {
+        self.create_button_text = text;
         self
     }
 
@@ -39,22 +40,34 @@ impl<'a> ConfigureDeckView<'a> {
         );
         padding(16.0, ui, |ui| {
             ui.add(Label::new(
-                RichText::new("Deck name").font(title_font.clone()),
+                RichText::new(tr!(
+                    self.i18n,
+                    "Deck name",
+                    "Label for deck name input field"
+                ))
+                .font(title_font.clone()),
             ));
             ui.add_space(8.0);
             ui.text_edit_singleline(&mut self.state.deck_name);
             ui.add_space(8.0);
             ui.add(Label::new(
-                RichText::new("We recommend short names")
-                    .color(ui.visuals().noninteractive().fg_stroke.color)
-                    .size(notedeck::fonts::get_font_size(
-                        ui.ctx(),
-                        &NotedeckTextStyle::Small,
-                    )),
+                RichText::new(tr!(
+                    self.i18n,
+                    "We recommend short names",
+                    "Hint for deck name input field"
+                ))
+                .color(ui.visuals().noninteractive().fg_stroke.color)
+                .size(notedeck::fonts::get_font_size(
+                    ui.ctx(),
+                    &NotedeckTextStyle::Small,
+                )),
             ));
 
             ui.add_space(32.0);
-            ui.add(Label::new(RichText::new("Icon").font(title_font)));
+            ui.add(Label::new(
+                RichText::new(tr!(self.i18n, "Icon", "Label for deck icon selection"))
+                    .font(title_font),
+            ));
 
             if ui
                 .add(deck_icon(
@@ -92,7 +105,12 @@ impl<'a> ConfigureDeckView<'a> {
                 self.state.warn_no_title = false;
             }
 
-            show_warnings(ui, self.state.warn_no_icon, self.state.warn_no_title);
+            show_warnings(
+                ui,
+                self.i18n,
+                self.state.warn_no_icon,
+                self.state.warn_no_title,
+            );
 
             let mut resp = None;
             if ui
@@ -120,29 +138,31 @@ impl<'a> ConfigureDeckView<'a> {
     }
 }
 
-fn show_warnings(ui: &mut Ui, warn_no_icon: bool, warn_no_title: bool) {
-    if warn_no_icon || warn_no_title {
-        let messages = [
-            if warn_no_title {
-                "create a name for the deck"
-            } else {
-                ""
-            },
-            if warn_no_icon { "select an icon" } else { "" },
-        ];
-        let message = messages
-            .iter()
-            .filter(|&&m| !m.is_empty())
-            .copied()
-            .collect::<Vec<_>>()
-            .join(" and ");
+fn show_warnings(ui: &mut Ui, i18n: &mut Localization, warn_no_icon: bool, warn_no_title: bool) {
+    let warning = if warn_no_title && warn_no_icon {
+        tr!(
+            i18n,
+            "Please create a name for the deck and select an icon.",
+            "Error message for missing deck name and icon"
+        )
+    } else if warn_no_title {
+        tr!(
+            i18n,
+            "Please create a name for the deck.",
+            "Error message for missing deck name"
+        )
+    } else if warn_no_icon {
+        tr!(
+            i18n,
+            "Please select an icon.",
+            "Error message for missing deck icon"
+        )
+    } else {
+        String::new()
+    };
 
-        ui.add(
-            egui::Label::new(
-                RichText::new(format!("Please {message}.")).color(ui.visuals().error_fg_color),
-            )
-            .wrap(),
-        );
+    if !warning.is_empty() {
+        ui.add(egui::Label::new(RichText::new(warning).color(ui.visuals().error_fg_color)).wrap());
     }
 }
 
@@ -316,12 +336,8 @@ mod preview {
     }
 
     impl App for ConfigureDeckPreview {
-        fn update(
-            &mut self,
-            _app_ctx: &mut AppContext<'_>,
-            ui: &mut egui::Ui,
-        ) -> Option<AppAction> {
-            ConfigureDeckView::new(&mut self.state).ui(ui);
+        fn update(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> Option<AppAction> {
+            ConfigureDeckView::new(&mut self.state, ctx.i18n).ui(ui);
 
             None
         }

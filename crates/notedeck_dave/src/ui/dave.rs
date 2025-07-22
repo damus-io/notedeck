@@ -4,7 +4,7 @@ use crate::{
 };
 use egui::{Align, Key, KeyboardShortcut, Layout, Modifiers};
 use nostrdb::{Ndb, Transaction};
-use notedeck::{Accounts, AppContext, Images, NoteAction, NoteContext};
+use notedeck::{tr, Accounts, AppContext, Images, Localization, NoteAction, NoteContext};
 use notedeck_ui::{app_images, icons::search_icon, jobs::JobsCache, NoteOptions, ProfilePic};
 
 /// DaveUi holds all of the data it needs to render itself
@@ -107,7 +107,7 @@ impl<'a> DaveUi<'a> {
                         .inner_margin(egui::Margin::same(8))
                         .fill(ui.visuals().extreme_bg_color)
                         .corner_radius(12.0)
-                        .show(ui, |ui| self.inputbox(ui))
+                        .show(ui, |ui| self.inputbox(app_ctx.i18n, ui))
                         .inner;
 
                     let note_action = egui::ScrollArea::vertical()
@@ -134,11 +134,11 @@ impl<'a> DaveUi<'a> {
             .or(DaveResponse { action })
     }
 
-    fn error_chat(&self, err: &str, ui: &mut egui::Ui) {
+    fn error_chat(&self, i18n: &mut Localization, err: &str, ui: &mut egui::Ui) {
         if self.trial {
             ui.add(egui::Label::new(
                 egui::RichText::new(
-                    "The Dave Nostr AI assistant trial has ended :(. Thanks for testing! Zap-enabled Dave coming soon!",
+                    tr!(i18n, "The Dave Nostr AI assistant trial has ended :(. Thanks for testing! Zap-enabled Dave coming soon!", "Message shown when Dave trial period has ended"),
                 )
                 .weak(),
             ));
@@ -160,7 +160,7 @@ impl<'a> DaveUi<'a> {
         for message in self.chat {
             let r = match message {
                 Message::Error(err) => {
-                    self.error_chat(err, ui);
+                    self.error_chat(ctx.i18n, err, ui);
                     None
                 }
                 Message::User(msg) => {
@@ -220,6 +220,7 @@ impl<'a> DaveUi<'a> {
             unknown_ids: ctx.unknown_ids,
             clipboard: ctx.clipboard,
             current_account_has_wallet: false,
+            i18n: ctx.i18n,
         };
 
         let txn = Transaction::new(note_context.ndb).unwrap();
@@ -303,12 +304,19 @@ impl<'a> DaveUi<'a> {
         note_action
     }
 
-    fn inputbox(&mut self, ui: &mut egui::Ui) -> DaveResponse {
+    fn inputbox(&mut self, i18n: &mut Localization, ui: &mut egui::Ui) -> DaveResponse {
         //ui.add_space(Self::chat_margin(ui.ctx()) as f32);
         ui.horizontal(|ui| {
             ui.with_layout(Layout::right_to_left(Align::Max), |ui| {
                 let mut dave_response = DaveResponse::none();
-                if ui.add(egui::Button::new("Ask")).clicked() {
+                if ui
+                    .add(egui::Button::new(tr!(
+                        i18n,
+                        "Ask",
+                        "Button to send message to Dave AI assistant"
+                    )))
+                    .clicked()
+                {
                     dave_response = DaveResponse::send();
                 }
 
@@ -322,7 +330,14 @@ impl<'a> DaveUi<'a> {
                             },
                             Key::Enter,
                         ))
-                        .hint_text(egui::RichText::new("Ask dave anything...").weak())
+                        .hint_text(
+                            egui::RichText::new(tr!(
+                                i18n,
+                                "Ask dave anything...",
+                                "Placeholder text for Dave AI input field"
+                            ))
+                            .weak(),
+                        )
                         .frame(false),
                 );
 

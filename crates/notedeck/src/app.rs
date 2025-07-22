@@ -1,4 +1,5 @@
 use crate::account::FALLBACK_PUBKEY;
+use crate::i18n::Localization;
 use crate::persist::{AppSizeHandler, ZoomHandler};
 use crate::wallet::GlobalWallet;
 use crate::zaps::Zaps;
@@ -48,6 +49,7 @@ pub struct Notedeck {
     zaps: Zaps,
     frame_history: FrameHistory,
     job_pool: JobPool,
+    i18n: Localization,
 }
 
 /// Our chrome, which is basically nothing
@@ -227,6 +229,17 @@ impl Notedeck {
         let zaps = Zaps::default();
         let job_pool = JobPool::default();
 
+        // Initialize localization
+        let mut i18n = Localization::new();
+        if let Some(locale) = &parsed_args.locale {
+            if let Err(err) = i18n.set_locale(locale.to_owned()) {
+                error!("{err}");
+            }
+        }
+
+        // Initialize global i18n context
+        //crate::i18n::init_global_i18n(i18n.clone());
+
         Self {
             ndb,
             img_cache,
@@ -246,6 +259,7 @@ impl Notedeck {
             clipboard: Clipboard::new(None),
             zaps,
             job_pool,
+            i18n,
         }
     }
 
@@ -270,6 +284,7 @@ impl Notedeck {
             zaps: &mut self.zaps,
             frame_history: &mut self.frame_history,
             job_pool: &mut self.job_pool,
+            i18n: &mut self.i18n,
         }
     }
 

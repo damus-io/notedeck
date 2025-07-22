@@ -25,7 +25,9 @@ use notedeck_ui::{
     NoteOptions, ProfilePic,
 };
 
-use notedeck::{name::get_display_name, supported_mime_hosted_at_url, NoteAction, NoteContext};
+use notedeck::{
+    name::get_display_name, supported_mime_hosted_at_url, tr, Localization, NoteAction, NoteContext,
+};
 use tracing::error;
 
 pub struct PostView<'a, 'd> {
@@ -180,7 +182,14 @@ impl<'a, 'd> PostView<'a, 'd> {
         };
 
         let textedit = TextEdit::multiline(&mut self.draft.buffer)
-            .hint_text(egui::RichText::new("Write a banger note here...").weak())
+            .hint_text(
+                egui::RichText::new(tr!(
+                    self.note_context.i18n,
+                    "Write a banger note here...",
+                    "Placeholder for note input field"
+                ))
+                .weak(),
+            )
             .frame(false)
             .desired_width(ui.available_width())
             .layouter(&mut layouter);
@@ -405,7 +414,10 @@ impl<'a, 'd> PostView<'a, 'd> {
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::BOTTOM), |ui| {
             let post_button_clicked = ui
-                .add_sized([91.0, 32.0], post_button(!self.draft.buffer.is_empty()))
+                .add_sized(
+                    [91.0, 32.0],
+                    post_button(self.note_context.i18n, !self.draft.buffer.is_empty()),
+                )
                 .clicked();
 
             let shortcut_pressed = ui.input(|i| {
@@ -603,9 +615,9 @@ fn render_post_view_media(
     }
 }
 
-fn post_button(interactive: bool) -> impl egui::Widget {
+fn post_button<'a>(i18n: &'a mut Localization, interactive: bool) -> impl egui::Widget + 'a {
     move |ui: &mut egui::Ui| {
-        let button = egui::Button::new("Post now");
+        let button = egui::Button::new(tr!(i18n, "Post now", "Button label to post a note"));
         if interactive {
             ui.add(button)
         } else {
@@ -798,6 +810,7 @@ mod preview {
                 unknown_ids: app.unknown_ids,
                 current_account_has_wallet: false,
                 clipboard: app.clipboard,
+                i18n: app.i18n,
             };
 
             PostView::new(

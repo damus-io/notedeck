@@ -9,8 +9,8 @@ use crate::{
 use notedeck::{
     contacts::hybrid_contacts_filter,
     filter::{self, HybridFilter},
-    Accounts, CachedNote, ContactState, FilterError, FilterState, FilterStates, NoteCache, NoteRef,
-    UnknownIds,
+    tr, Accounts, CachedNote, ContactState, FilterError, FilterState, FilterStates, Localization,
+    NoteCache, NoteRef, UnknownIds,
 };
 
 use egui_virtual_list::VirtualList;
@@ -64,10 +64,16 @@ pub enum ViewFilter {
 }
 
 impl ViewFilter {
-    pub fn name(&self) -> &'static str {
+    pub fn name(&self, i18n: &mut Localization) -> String {
         match self {
-            ViewFilter::Notes => "Notes",
-            ViewFilter::NotesAndReplies => "Notes & Replies",
+            ViewFilter::Notes => tr!(i18n, "Notes", "Filter label for notes only view"),
+            ViewFilter::NotesAndReplies => {
+                tr!(
+                    i18n,
+                    "Notes & Replies",
+                    "Filter label for notes and replies view"
+                )
+            }
         }
     }
 
@@ -632,6 +638,8 @@ fn setup_initial_timeline(
     for filter in filters.local() {
         lim += filter.limit().unwrap_or(1) as i32;
     }
+
+    debug!("setup_initial_timeline: limit for local filter is {}", lim);
 
     let notes: Vec<NoteRef> = ndb
         .query(txn, filters.local(), lim)?

@@ -2,10 +2,12 @@ use std::collections::BTreeSet;
 
 use enostr::{Keypair, Pubkey, SecretKey};
 use tracing::error;
+use unic_langid::{LanguageIdentifier, LanguageIdentifierError};
 
 pub struct Args {
     pub relays: Vec<String>,
     pub is_mobile: Option<bool>,
+    pub locale: Option<LanguageIdentifier>,
     pub show_note_client: bool,
     pub keys: Vec<Keypair>,
     pub light: bool,
@@ -36,6 +38,7 @@ impl Args {
             use_keystore: true,
             dbpath: None,
             datapath: None,
+            locale: None,
         };
 
         let mut i = 0;
@@ -47,6 +50,23 @@ impl Args {
                 res.is_mobile = Some(true);
             } else if arg == "--light" {
                 res.light = true;
+            } else if arg == "--locale" {
+                i += 1;
+                let Some(locale) = args.get(i) else {
+                    panic!("locale argument missing?");
+                };
+                let parsed: Result<LanguageIdentifier, LanguageIdentifierError> = locale.parse();
+                match parsed {
+                    Err(err) => {
+                        panic!("locale failed to parse: {err}");
+                    }
+                    Ok(locale) => {
+                        tracing::info!(
+                            "parsed locale '{locale}' from args, not sure if we have it yet though."
+                        );
+                        res.locale = Some(locale);
+                    }
+                }
             } else if arg == "--dark" {
                 res.light = false;
             } else if arg == "--debug" {

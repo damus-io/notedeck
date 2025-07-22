@@ -2,17 +2,26 @@ use core::f32;
 
 use egui::{vec2, Button, CornerRadius, Layout, Margin, RichText, ScrollArea, TextEdit};
 use enostr::ProfileState;
-use notedeck::{profile::unwrap_profile_url, Images, NotedeckTextStyle};
+use notedeck::{profile::unwrap_profile_url, tr, Images, Localization, NotedeckTextStyle};
 use notedeck_ui::{profile::banner, ProfilePic};
 
 pub struct EditProfileView<'a> {
     state: &'a mut ProfileState,
     img_cache: &'a mut Images,
+    i18n: &'a mut Localization,
 }
 
 impl<'a> EditProfileView<'a> {
-    pub fn new(state: &'a mut ProfileState, img_cache: &'a mut Images) -> Self {
-        Self { state, img_cache }
+    pub fn new(
+        i18n: &'a mut Localization,
+        state: &'a mut ProfileState,
+        img_cache: &'a mut Images,
+    ) -> Self {
+        Self {
+            i18n,
+            state,
+            img_cache,
+        }
     }
 
     // return true to save
@@ -32,7 +41,18 @@ impl<'a> EditProfileView<'a> {
                 notedeck_ui::padding(padding, ui, |ui| {
                     ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui
-                            .add(button("Save changes", 119.0).fill(notedeck_ui::colors::PINK))
+                            .add(
+                                button(
+                                    tr!(
+                                        self.i18n,
+                                        "Save changes",
+                                        "Button label to save profile changes"
+                                    )
+                                    .as_str(),
+                                    119.0,
+                                )
+                                .fill(notedeck_ui::colors::PINK),
+                            )
                             .clicked()
                         {
                             save = true;
@@ -62,42 +82,78 @@ impl<'a> EditProfileView<'a> {
         );
 
         in_frame(ui, |ui| {
-            ui.add(label("Display name"));
+            ui.add(label(
+                tr!(
+                    self.i18n,
+                    "Display name",
+                    "Profile display name field label"
+                )
+                .as_str(),
+            ));
             ui.add(singleline_textedit(self.state.str_mut("display_name")));
         });
 
         in_frame(ui, |ui| {
-            ui.add(label("Username"));
+            ui.add(label(
+                tr!(self.i18n, "Username", "Profile username field label").as_str(),
+            ));
             ui.add(singleline_textedit(self.state.str_mut("name")));
         });
 
         in_frame(ui, |ui| {
-            ui.add(label("Profile picture"));
+            ui.add(label(
+                tr!(
+                    self.i18n,
+                    "Profile picture",
+                    "Profile picture URL field label"
+                )
+                .as_str(),
+            ));
             ui.add(multiline_textedit(self.state.str_mut("picture")));
         });
 
         in_frame(ui, |ui| {
-            ui.add(label("Banner"));
+            ui.add(label(
+                tr!(self.i18n, "Banner", "Profile banner URL field label").as_str(),
+            ));
             ui.add(multiline_textedit(self.state.str_mut("banner")));
         });
 
         in_frame(ui, |ui| {
-            ui.add(label("About"));
+            ui.add(label(
+                tr!(self.i18n, "About", "Profile about/bio field label").as_str(),
+            ));
             ui.add(multiline_textedit(self.state.str_mut("about")));
         });
 
         in_frame(ui, |ui| {
-            ui.add(label("Website"));
+            ui.add(label(
+                tr!(self.i18n, "Website", "Profile website field label").as_str(),
+            ));
             ui.add(singleline_textedit(self.state.str_mut("website")));
         });
 
         in_frame(ui, |ui| {
-            ui.add(label("Lightning network address (lud16)"));
+            ui.add(label(
+                tr!(
+                    self.i18n,
+                    "Lightning network address (lud16)",
+                    "Bitcoin Lightning network address field label"
+                )
+                .as_str(),
+            ));
             ui.add(multiline_textedit(self.state.str_mut("lud16")));
         });
 
         in_frame(ui, |ui| {
-            ui.add(label("Nostr address (NIP-05 identity)"));
+            ui.add(label(
+                tr!(
+                    self.i18n,
+                    "Nostr address (NIP-05 identity)",
+                    "NIP-05 identity field label"
+                )
+                .as_str(),
+            ));
             ui.add(singleline_textedit(self.state.str_mut("nip05")));
 
             let Some(nip05) = self.state.nip05() else {
@@ -121,9 +177,20 @@ impl<'a> EditProfileView<'a> {
             ui.colored_label(
                 ui.visuals().noninteractive().fg_stroke.color,
                 RichText::new(if use_domain {
-                    format!("\"{suffix}\" will be used for identification")
+                    tr!(
+                        self.i18n,
+                        "\"{domain}\" will be used for identification",
+                        "Domain identification message",
+                        domain = suffix
+                    )
                 } else {
-                    format!("\"{prefix}\" at \"{suffix}\" will be used for identification")
+                    tr!(
+                        self.i18n,
+                        "\"{username}\" at \"{domain}\" will be used for identification",
+                        "Username and domain identification message",
+                        username = prefix,
+                        domain = suffix
+                    )
                 }),
             );
         });

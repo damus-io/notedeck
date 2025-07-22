@@ -9,6 +9,7 @@ mod error;
 pub mod filter;
 pub mod fonts;
 mod frame_history;
+pub mod i18n;
 mod imgcache;
 mod job_pool;
 mod muted;
@@ -44,6 +45,7 @@ pub use context::AppContext;
 pub use error::{show_one_error_message, Error, FilterError, ZapError};
 pub use filter::{FilterState, FilterStates, UnifiedSubscription};
 pub use fonts::NamedFontFamily;
+pub use i18n::{CacheStats, FluentArgs, FluentValue, LanguageIdentifier, Localization};
 pub use imgcache::{
     Animation, GifState, GifStateMap, ImageFrame, Images, LoadableTextureState, MediaCache,
     MediaCacheType, TextureFrame, TextureState, TexturedImage, TexturesCache,

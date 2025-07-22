@@ -5,7 +5,7 @@ use state::TypingType;
 use crate::{timeline::TimelineTab, ui::timeline::TimelineTabView};
 use egui_winit::clipboard::Clipboard;
 use nostrdb::{Filter, Ndb, Transaction};
-use notedeck::{NoteAction, NoteContext, NoteRef};
+use notedeck::{tr, tr_plural, Localization, NoteAction, NoteContext, NoteRef};
 use notedeck_ui::{
     context_menu::{input_context, PasteBehavior},
     icons::search_icon,
@@ -54,6 +54,7 @@ impl<'a, 'd> SearchView<'a, 'd> {
         ui.spacing_mut().item_spacing = egui::vec2(0.0, 12.0);
 
         let search_resp = search_box(
+            self.note_context.i18n,
             &mut self.query.string,
             self.query.focus_state.clone(),
             ui,
@@ -119,15 +120,23 @@ impl<'a, 'd> SearchView<'a, 'd> {
                 note_action = self.show_search_results(ui);
             }
             SearchState::Searched => {
-                ui.label(format!(
-                    "Got {} results for '{}'",
-                    self.query.notes.notes.len(),
-                    &self.query.string
+                ui.label(tr_plural!(
+                    self.note_context.i18n,
+                    "Got {count} result for '{query}'",  // one
+                    "Got {count} results for '{query}'", // other
+                    "Search results count",              // comment
+                    self.query.notes.notes.len(),        // count
+                    query = &self.query.string
                 ));
                 note_action = self.show_search_results(ui);
             }
             SearchState::Typing(TypingType::AutoSearch) => {
-                ui.label(format!("Searching for '{}'", &self.query.string));
+                ui.label(tr!(
+                    self.note_context.i18n,
+                    "Searching for '{query}'",
+                    "Search in progress message",
+                    query = &self.query.string
+                ));
 
                 note_action = self.show_search_results(ui);
             }
@@ -241,6 +250,7 @@ impl SearchResponse {
 }
 
 fn search_box(
+    i18n: &mut Localization,
     input: &mut String,
     focus_state: FocusState,
     ui: &mut egui::Ui,
@@ -282,7 +292,14 @@ fn search_box(
                     let response = ui.add_sized(
                         [ui.available_width(), search_height],
                         TextEdit::singleline(input)
-                            .hint_text(RichText::new("Search notes...").weak())
+                            .hint_text(
+                                RichText::new(tr!(
+                                    i18n,
+                                    "Search notes...",
+                                    "Placeholder for search notes input field"
+                                ))
+                                .weak(),
+                            )
                             //.desired_width(available_width - 32.0)
                             //.font(egui::FontId::new(font_size, egui::FontFamily::Proportional))
                             .margin(vec2(0.0, 8.0))

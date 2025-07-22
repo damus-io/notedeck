@@ -284,7 +284,7 @@ impl NewNotes {
         let timeline = if let Some(profile) = timeline_cache.get_mut(&self.id) {
             profile
         } else {
-            error!("NewNotes: could not get timeline for key {}", self.id);
+            error!("NewNotes: could not get timeline for key {:?}", self.id);
             return;
         };
 

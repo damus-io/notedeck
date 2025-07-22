@@ -6,6 +6,7 @@ pub use context::{BroadcastContext, ContextSelection, NoteContextSelection};
 
 use crate::Accounts;
 use crate::JobPool;
+use crate::Localization;
 use crate::UnknownIds;
 use crate::{notecache::NoteCache, zaps::Zaps, Images};
 use enostr::{NoteId, RelayPool};
@@ -19,6 +20,7 @@ use std::fmt;
 pub struct NoteContext<'d> {
     pub ndb: &'d Ndb,
     pub accounts: &'d Accounts,
+    pub i18n: &'d mut Localization,
     pub img_cache: &'d mut Images,
     pub note_cache: &'d mut NoteCache,
     pub zaps: &'d mut Zaps,

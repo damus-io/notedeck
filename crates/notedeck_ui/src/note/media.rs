@@ -6,8 +6,8 @@ use egui::{
 };
 use notedeck::{
     fonts::get_font_size, note::MediaAction, show_one_error_message, supported_mime_hosted_at_url,
-    GifState, GifStateMap, Images, JobPool, MediaCache, MediaCacheType, NotedeckTextStyle,
-    TexturedImage, TexturesCache, UrlMimes,
+    tr, GifState, GifStateMap, Images, JobPool, Localization, MediaCache, MediaCacheType,
+    NotedeckTextStyle, TexturedImage, TexturesCache, UrlMimes,
 };
 
 use crate::{
@@ -20,6 +20,7 @@ use crate::{
     AnimationHelper, PulseAlpha,
 };
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn image_carousel(
     ui: &mut egui::Ui,
     img_cache: &mut Images,
@@ -28,6 +29,7 @@ pub(crate) fn image_carousel(
     medias: &[RenderableMedia],
     carousel_id: egui::Id,
     trusted_media: bool,
+    i18n: &mut Localization,
 ) -> Option<MediaAction> {
     // let's make sure everything is within our area
 
@@ -69,9 +71,14 @@ pub(crate) fn image_carousel(
                             blur_type.clone(),
                         );
 
-                        if let Some(cur_action) =
-                            render_media(ui, &mut img_cache.gif_states, media_state, url, height)
-                        {
+                        if let Some(cur_action) = render_media(
+                            ui,
+                            &mut img_cache.gif_states,
+                            media_state,
+                            url,
+                            height,
+                            i18n,
+                        ) {
                             // clicked the media, lets set the active index
                             if let MediaUIAction::Clicked = cur_action {
                                 set_show_popup(ui, popup_id(carousel_id), true);
@@ -100,7 +107,14 @@ pub(crate) fn image_carousel(
 
         let current_image_index = update_selected_image_index(ui, carousel_id, medias.len() as i32);
 
-        show_full_screen_media(ui, medias, current_image_index, img_cache, carousel_id);
+        show_full_screen_media(
+            ui,
+            medias,
+            current_image_index,
+            img_cache,
+            carousel_id,
+            i18n,
+        );
     }
     action
 }
@@ -163,6 +177,7 @@ fn show_full_screen_media(
     index: usize,
     img_cache: &mut Images,
     carousel_id: egui::Id,
+    i18n: &mut Localization,
 ) {
     Window::new("image_popup")
         .title_bar(false)
@@ -201,6 +216,7 @@ fn show_full_screen_media(
                     cur_state.gifs,
                     image_url,
                     carousel_id,
+                    i18n,
                 );
             })
         });
@@ -363,6 +379,7 @@ fn select_next_media(
     next as usize
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_full_screen_media(
     ui: &mut egui::Ui,
     num_urls: usize,
@@ -371,6 +388,7 @@ fn render_full_screen_media(
     gifs: &mut HashMap<String, GifState>,
     image_url: &str,
     carousel_id: egui::Id,
+    i18n: &mut Localization,
 ) {
     const TOP_BAR_HEIGHT: f32 = 30.0;
     const BOTTOM_BAR_HEIGHT: f32 = 60.0;
@@ -631,12 +649,19 @@ fn render_full_screen_media(
         });
     }
 
-    copy_link(image_url, &response);
+    copy_link(i18n, image_url, &response);
 }
 
-fn copy_link(url: &str, img_resp: &Response) {
+fn copy_link(i18n: &mut Localization, url: &str, img_resp: &Response) {
     img_resp.context_menu(|ui| {
-        if ui.button("Copy Link").clicked() {
+        if ui
+            .button(tr!(
+                i18n,
+                "Copy Link",
+                "Button to copy media link to clipboard"
+            ))
+            .clicked()
+        {
             ui.ctx().copy_text(url.to_owned());
             ui.close_menu();
         }
@@ -650,10 +675,11 @@ fn render_media(
     render_state: MediaRenderState,
     url: &str,
     height: f32,
+    i18n: &mut Localization,
 ) -> Option<MediaUIAction> {
     match render_state {
         MediaRenderState::ActualImage(image) => {
-            if render_success_media(ui, url, image, gifs, height).clicked() {
+            if render_success_media(ui, url, image, gifs, height, i18n).clicked() {
                 Some(MediaUIAction::Clicked)
             } else {
                 None
@@ -692,9 +718,9 @@ fn render_media(
             let resp = match obfuscated_texture {
                 ObfuscatedTexture::Blur(texture_handle) => {
                     let resp = ui.add(texture_to_image(texture_handle, height));
-                    render_blur_text(ui, url, resp.rect)
+                    render_blur_text(ui, i18n, url, resp.rect)
                 }
-                ObfuscatedTexture::Default => render_default_blur(ui, height, url),
+                ObfuscatedTexture::Default => render_default_blur(ui, i18n, height, url),
             };
 
             if resp
@@ -709,7 +735,12 @@ fn render_media(
     }
 }
 
-fn render_blur_text(ui: &mut egui::Ui, url: &str, render_rect: egui::Rect) -> egui::Response {
+fn render_blur_text(
+    ui: &mut egui::Ui,
+    i18n: &mut Localization,
+    url: &str,
+    render_rect: egui::Rect,
+) -> egui::Response {
     let helper = AnimationHelper::new_from_rect(ui, ("show_media", url), render_rect);
 
     let painter = ui.painter_at(helper.get_animation_rect());
@@ -722,14 +753,19 @@ fn render_blur_text(ui: &mut egui::Ui, url: &str, render_rect: egui::Rect) -> eg
         text_style.font_family(),
     );
     let info_galley = painter.layout(
-        "Media from someone you don't follow".to_owned(),
+        tr!(
+            i18n,
+            "Media from someone you don't follow",
+            "Text shown on blurred media from unfollowed users"
+        )
+        .to_owned(),
         animation_fontid.clone(),
         ui.visuals().text_color(),
         render_rect.width() / 2.0,
     );
 
     let load_galley = painter.layout_no_wrap(
-        "Tap to Load".to_owned(),
+        tr!(i18n, "Tap to Load", "Button text to load blurred media"),
         animation_fontid,
         egui::Color32::BLACK,
         // ui.visuals().widgets.inactive.bg_fill,
@@ -785,9 +821,14 @@ fn render_blur_text(ui: &mut egui::Ui, url: &str, render_rect: egui::Rect) -> eg
     helper.take_animation_response()
 }
 
-fn render_default_blur(ui: &mut egui::Ui, height: f32, url: &str) -> egui::Response {
+fn render_default_blur(
+    ui: &mut egui::Ui,
+    i18n: &mut Localization,
+    height: f32,
+    url: &str,
+) -> egui::Response {
     let rect = render_default_blur_bg(ui, height, url, false);
-    render_blur_text(ui, url, rect)
+    render_blur_text(ui, i18n, url, rect)
 }
 
 fn render_default_blur_bg(ui: &mut egui::Ui, height: f32, url: &str, shimmer: bool) -> egui::Rect {
@@ -876,12 +917,13 @@ fn render_success_media(
     tex: &mut TexturedImage,
     gifs: &mut GifStateMap,
     height: f32,
+    i18n: &mut Localization,
 ) -> Response {
     let texture = handle_repaint(ui, retrieve_latest_texture(url, gifs, tex));
     let img = texture_to_image(texture, height);
     let img_resp = ui.add(Button::image(img).frame(false));
 
-    copy_link(url, &img_resp);
+    copy_link(i18n, url, &img_resp);
 
     img_resp
 }

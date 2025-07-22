@@ -5,7 +5,9 @@ use crate::app::NotedeckApp;
 use egui::{vec2, Button, Color32, Label, Layout, Rect, RichText, ThemePreference, Widget};
 use egui_extras::{Size, StripBuilder};
 use nostrdb::{ProfileRecord, Transaction};
-use notedeck::{App, AppAction, AppContext, NotedeckTextStyle, UserAccount, WalletType};
+use notedeck::{
+    tr, App, AppAction, AppContext, Localization, NotedeckTextStyle, UserAccount, WalletType,
+};
 use notedeck_columns::{
     column::SelectionResult, timeline::kind::ListKind, timeline::TimelineKind, Damus,
 };
@@ -59,14 +61,17 @@ pub enum ChromePanelAction {
 }
 
 impl ChromePanelAction {
-    fn columns_switch(ctx: &AppContext, chrome: &mut Chrome, kind: &TimelineKind) {
+    fn columns_switch(ctx: &mut AppContext, chrome: &mut Chrome, kind: &TimelineKind) {
         chrome.switch_to_columns();
 
         let Some(columns_app) = chrome.get_columns_app() else {
             return;
         };
 
-        if let Some(active_columns) = columns_app.decks_cache.active_columns_mut(ctx.accounts) {
+        if let Some(active_columns) = columns_app
+            .decks_cache
+            .active_columns_mut(ctx.i18n, ctx.accounts)
+        {
             match active_columns.select_by_kind(kind) {
                 SelectionResult::NewSelection(_index) => {
                     // great! no need to go to top yet
@@ -85,13 +90,14 @@ impl ChromePanelAction {
         }
     }
 
-    fn columns_navigate(ctx: &AppContext, chrome: &mut Chrome, route: notedeck_columns::Route) {
+    fn columns_navigate(ctx: &mut AppContext, chrome: &mut Chrome, route: notedeck_columns::Route) {
         chrome.switch_to_columns();
 
-        if let Some(c) = chrome
-            .get_columns_app()
-            .and_then(|columns| columns.decks_cache.selected_column_mut(ctx.accounts))
-        {
+        if let Some(c) = chrome.get_columns_app().and_then(|columns| {
+            columns
+                .decks_cache
+                .selected_column_mut(ctx.i18n, ctx.accounts)
+        }) {
             if c.router().routes().iter().any(|r| r == &route) {
                 // return if we are already routing to accounts
                 c.router_mut().go_back();
@@ -102,7 +108,7 @@ impl ChromePanelAction {
         };
     }
 
-    fn process(&self, ctx: &AppContext, chrome: &mut Chrome, ui: &mut egui::Ui) {
+    fn process(&self, ctx: &mut AppContext, chrome: &mut Chrome, ui: &mut egui::Ui) {
         match self {
             Self::SaveTheme(theme) => {
                 ui.ctx().options_mut(|o| {
@@ -244,7 +250,7 @@ impl Chrome {
                         .vertical(|mut vstrip| {
                             vstrip.cell(|ui| {
                                 _ = ui.vertical_centered(|ui| {
-                                    self.topdown_sidebar(ui);
+                                    self.topdown_sidebar(ui, app_ctx.i18n);
                                 })
                             });
                             vstrip.cell(|ui| {
@@ -401,7 +407,7 @@ impl Chrome {
         }
     }
 
-    fn topdown_sidebar(&mut self, ui: &mut egui::Ui) {
+    fn topdown_sidebar(&mut self, ui: &mut egui::Ui, i18n: &mut Localization) {
         // macos needs a bit of space to make room for window
         // minimize/close buttons
         if cfg!(target_os = "macos") {
@@ -417,7 +423,7 @@ impl Chrome {
         }
 
         ui.add_space(4.0);
-        ui.add(milestone_name());
+        ui.add(milestone_name(i18n));
         ui.add_space(16.0);
         //let dark_mode = ui.ctx().style().visuals.dark_mode;
         {
@@ -451,7 +457,7 @@ impl notedeck::App for Chrome {
     }
 }
 
-fn milestone_name() -> impl Widget {
+fn milestone_name<'a>(i18n: &'a mut Localization) -> impl Widget + 'a {
     |ui: &mut egui::Ui| -> egui::Response {
         ui.vertical_centered(|ui| {
             let font = egui::FontId::new(
@@ -460,15 +466,17 @@ fn milestone_name() -> impl Widget {
             );
             ui.add(
                 Label::new(
-                    RichText::new("BETA")
+                    RichText::new(tr!(i18n, "BETA", "Beta version label"))
                         .color(ui.style().visuals.noninteractive().fg_stroke.color)
                         .font(font),
                 )
                 .selectable(false),
             )
-            .on_hover_text(
+            .on_hover_text(tr!(
+                i18n,
                 "Notedeck is a beta product. Expect bugs and contact us when you run into issues.",
-            )
+                "Beta product warning message"
+            ))
             .on_hover_cursor(egui::CursorIcon::Help)
         })
         .inner
@@ -656,7 +664,7 @@ fn chrome_handle_app_action(
 
             let cols = columns
                 .decks_cache
-                .active_columns_mut(ctx.accounts)
+                .active_columns_mut(ctx.i18n, ctx.accounts)
                 .unwrap();
             let m_action = notedeck_columns::actionbar::execute_and_process_note_action(
                 note_action,
@@ -719,7 +727,11 @@ fn bottomup_sidebar(
             let resp = ui
                 .add(Button::new("☀").frame(false))
                 .on_hover_cursor(egui::CursorIcon::PointingHand)
-                .on_hover_text("Switch to light mode");
+                .on_hover_text(tr!(
+                    ctx.i18n,
+                    "Switch to light mode",
+                    "Hover text for light mode toggle button"
+                ));
             if resp.clicked() {
                 Some(ChromePanelAction::SaveTheme(ThemePreference::Light))
             } else {
@@ -730,7 +742,11 @@ fn bottomup_sidebar(
             let resp = ui
                 .add(Button::new("🌙").frame(false))
                 .on_hover_cursor(egui::CursorIcon::PointingHand)
-                .on_hover_text("Switch to dark mode");
+                .on_hover_text(tr!(
+                    ctx.i18n,
+                    "Switch to dark mode",
+                    "Hover text for dark mode toggle button"
+                ));
             if resp.clicked() {
                 Some(ChromePanelAction::SaveTheme(ThemePreference::Dark))
             } else {

@@ -8,7 +8,9 @@ use std::f32::consts::PI;
 use tracing::{error, warn};
 
 use crate::timeline::{TimelineCache, TimelineKind, TimelineTab, ViewFilter};
-use notedeck::{note::root_note_id_from_selected_id, NoteAction, NoteContext, ScrollInfo};
+use notedeck::{
+    note::root_note_id_from_selected_id, tr, Localization, NoteAction, NoteContext, ScrollInfo,
+};
 use notedeck_ui::{
     anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},
     NoteOptions, NoteView,
@@ -103,7 +105,12 @@ fn timeline_ui(
             return None;
         };
 
-        timeline.selected_view = tabs_ui(ui, timeline.selected_view, &timeline.views);
+        timeline.selected_view = tabs_ui(
+            ui,
+            note_context.i18n,
+            timeline.selected_view,
+            &timeline.views,
+        );
 
         // need this for some reason??
         ui.add_space(3.0);
@@ -263,7 +270,12 @@ fn goto_top_button(center: Pos2) -> impl egui::Widget {
     }
 }
 
-pub fn tabs_ui(ui: &mut egui::Ui, selected: usize, views: &[TimelineTab]) -> usize {
+pub fn tabs_ui(
+    ui: &mut egui::Ui,
+    i18n: &mut Localization,
+    selected: usize,
+    views: &[TimelineTab],
+) -> usize {
     ui.spacing_mut().item_spacing.y = 0.0;
 
     let tab_res = egui_tabs::Tabs::new(views.len() as i32)
@@ -281,17 +293,23 @@ pub fn tabs_ui(ui: &mut egui::Ui, selected: usize, views: &[TimelineTab]) -> usi
             let ind = state.index();
 
             let txt = match views[ind as usize].filter {
-                ViewFilter::Notes => "Notes",
-                ViewFilter::NotesAndReplies => "Notes & Replies",
+                ViewFilter::Notes => tr!(i18n, "Notes", "Label for notes-only filter"),
+                ViewFilter::NotesAndReplies => {
+                    tr!(
+                        i18n,
+                        "Notes & Replies",
+                        "Label for notes and replies filter"
+                    )
+                }
             };
 
-            let res = ui.add(egui::Label::new(txt).selectable(false));
+            let res = ui.add(egui::Label::new(txt.clone()).selectable(false));
 
             // underline
             if state.is_selected() {
                 let rect = res.rect;
                 let underline =
-                    shrink_range_to_width(rect.x_range(), get_label_width(ui, txt) * 1.15);
+                    shrink_range_to_width(rect.x_range(), get_label_width(ui, &txt) * 1.15);
                 #[allow(deprecated)]
                 let underline_y = ui.painter().round_to_pixel(rect.bottom()) - 1.5;
                 return (underline, underline_y);

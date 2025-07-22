@@ -2,6 +2,7 @@ use crate::key_parsing::perform_key_retrieval;
 use crate::key_parsing::AcquireKeyError;
 use egui::{TextBuffer, TextEdit};
 use enostr::Keypair;
+use notedeck::{tr, Localization};
 use poll_promise::Promise;
 
 /// The state data for acquiring a nostr key
@@ -23,7 +24,7 @@ impl<'a> AcquireKeyState {
     /// Get the textedit for the UI without exposing the key variable
     pub fn get_acquire_textedit(
         &'a mut self,
-        textedit_closure: fn(&'a mut dyn TextBuffer) -> TextEdit<'a>,
+        textedit_closure: impl FnOnce(&'a mut dyn TextBuffer) -> TextEdit<'a>,
     ) -> TextEdit<'a> {
         textedit_closure(&mut self.desired_key)
     }
@@ -105,7 +106,7 @@ impl<'a> AcquireKeyState {
         self.should_create_new
     }
 
-    pub fn loading_and_error_ui(&mut self, ui: &mut egui::Ui) {
+    pub fn loading_and_error_ui(&mut self, ui: &mut egui::Ui, i18n: &mut Localization) {
         ui.add_space(8.0);
 
         ui.vertical_centered(|ui| {
@@ -115,7 +116,7 @@ impl<'a> AcquireKeyState {
         });
 
         if let Some(err) = self.check_for_error() {
-            show_error(ui, err);
+            show_error(ui, i18n, err);
         }
 
         ui.add_space(8.0);
@@ -130,11 +131,16 @@ impl<'a> AcquireKeyState {
     }
 }
 
-fn show_error(ui: &mut egui::Ui, err: &AcquireKeyError) {
+fn show_error(ui: &mut egui::Ui, i18n: &mut Localization, err: &AcquireKeyError) {
     ui.horizontal(|ui| {
         let error_label = match err {
             AcquireKeyError::InvalidKey => egui::Label::new(
-                egui::RichText::new("Invalid key.").color(ui.visuals().error_fg_color),
+                egui::RichText::new(tr!(
+                    i18n,
+                    "Invalid key.",
+                    "Error message for invalid key input"
+                ))
+                .color(ui.visuals().error_fg_color),
             ),
             AcquireKeyError::Nip05Failed(e) => {
                 egui::Label::new(egui::RichText::new(e).color(ui.visuals().error_fg_color))

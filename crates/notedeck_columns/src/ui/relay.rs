@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use crate::ui::{Preview, PreviewConfig};
 use egui::{Align, Button, CornerRadius, Frame, Id, Layout, Margin, Rgba, RichText, Ui, Vec2};
 use enostr::{RelayPool, RelayStatus};
-use notedeck::{NotedeckTextStyle, RelayAction};
+use notedeck::{tr, Localization, NotedeckTextStyle, RelayAction};
 use notedeck_ui::app_images;
 use notedeck_ui::{colors::PINK, padding};
 use tracing::debug;
@@ -13,6 +13,7 @@ use super::widgets::styled_button;
 pub struct RelayView<'a> {
     pool: &'a RelayPool,
     id_string_map: &'a mut HashMap<Id, String>,
+    i18n: &'a mut Localization,
 }
 
 impl RelayView<'_> {
@@ -26,7 +27,7 @@ impl RelayView<'_> {
                 ui.horizontal(|ui| {
                     ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                         ui.label(
-                            RichText::new("Relays")
+                            RichText::new(tr!(self.i18n, "Relays", "Label for relay list section"))
                                 .text_style(NotedeckTextStyle::Heading2.text_style()),
                         );
                     });
@@ -53,10 +54,15 @@ impl RelayView<'_> {
 }
 
 impl<'a> RelayView<'a> {
-    pub fn new(pool: &'a RelayPool, id_string_map: &'a mut HashMap<Id, String>) -> Self {
+    pub fn new(
+        pool: &'a RelayPool,
+        id_string_map: &'a mut HashMap<Id, String>,
+        i18n: &'a mut Localization,
+    ) -> Self {
         RelayView {
             pool,
             id_string_map,
+            i18n,
         }
     }
 
@@ -65,7 +71,7 @@ impl<'a> RelayView<'a> {
     }
 
     /// Show the current relays and return a relay the user selected to delete
-    fn show_relays(&'a self, ui: &mut Ui) -> Option<String> {
+    fn show_relays(&mut self, ui: &mut Ui) -> Option<String> {
         let mut relay_to_remove = None;
         for (index, relay_info) in get_relay_infos(self.pool).iter().enumerate() {
             ui.add_space(8.0);
@@ -107,7 +113,7 @@ impl<'a> RelayView<'a> {
                                 relay_to_remove = Some(relay_info.relay_url.to_string());
                             };
 
-                            show_connection_status(ui, relay_info.status);
+                            show_connection_status(ui, self.i18n, relay_info.status);
                         });
                     });
                 });
@@ -123,7 +129,7 @@ impl<'a> RelayView<'a> {
         match self.id_string_map.get(&id) {
             None => {
                 ui.with_layout(Layout::top_down(Align::Min), |ui| {
-                    let relay_button = add_relay_button();
+                    let relay_button = add_relay_button(self.i18n);
                     if ui.add(relay_button).clicked() {
                         debug!("add relay clicked");
                         self.id_string_map
@@ -150,8 +156,12 @@ impl<'a> RelayView<'a> {
             let is_enabled = self.pool.is_valid_url(text_buffer);
             let text_edit = egui::TextEdit::singleline(text_buffer)
                 .hint_text(
-                    RichText::new("Enter the relay here")
-                        .text_style(NotedeckTextStyle::Body.text_style()),
+                    RichText::new(tr!(
+                        self.i18n,
+                        "Enter the relay here",
+                        "Placeholder for relay input field"
+                    ))
+                    .text_style(NotedeckTextStyle::Body.text_style()),
                 )
                 .vertical_align(Align::Center)
                 .desired_width(f32::INFINITY)
@@ -160,7 +170,10 @@ impl<'a> RelayView<'a> {
             ui.add(text_edit);
             ui.add_space(8.0);
             if ui
-                .add_sized(egui::vec2(50.0, 40.0), add_relay_button2(is_enabled))
+                .add_sized(
+                    egui::vec2(50.0, 40.0),
+                    add_relay_button2(self.i18n, is_enabled),
+                )
                 .clicked()
             {
                 self.id_string_map.remove(&id) // remove and return the value
@@ -172,10 +185,10 @@ impl<'a> RelayView<'a> {
     }
 }
 
-fn add_relay_button() -> Button<'static> {
+fn add_relay_button(i18n: &mut Localization) -> Button<'static> {
     Button::image_and_text(
         app_images::add_relay_image().fit_to_exact_size(Vec2::new(48.0, 48.0)),
-        RichText::new(" Add relay")
+        RichText::new(tr!(i18n, "Add relay", "Button label to add a relay"))
             .size(16.0)
             // TODO: this color should not be hard coded. Find some way to add it to the visuals
             .color(PINK),
@@ -183,9 +196,10 @@ fn add_relay_button() -> Button<'static> {
     .frame(false)
 }
 
-fn add_relay_button2(is_enabled: bool) -> impl egui::Widget + 'static {
+fn add_relay_button2<'a>(i18n: &'a mut Localization, is_enabled: bool) -> impl egui::Widget + 'a {
     move |ui: &mut egui::Ui| -> egui::Response {
-        let button_widget = styled_button("Add", notedeck_ui::colors::PINK);
+        let add_text = tr!(i18n, "Add", "Button label to add a relay");
+        let button_widget = styled_button(add_text.as_str(), notedeck_ui::colors::PINK);
         ui.add_enabled(is_enabled, button_widget)
     }
 }
@@ -215,7 +229,7 @@ fn relay_frame(ui: &mut Ui) -> Frame {
         .stroke(ui.style().visuals.noninteractive().bg_stroke)
 }
 
-fn show_connection_status(ui: &mut Ui, status: RelayStatus) {
+fn show_connection_status(ui: &mut Ui, i18n: &mut Localization, status: RelayStatus) {
     let fg_color = match status {
         RelayStatus::Connected => ui.visuals().selection.bg_fill,
         RelayStatus::Connecting => ui.visuals().warn_fg_color,
@@ -224,9 +238,11 @@ fn show_connection_status(ui: &mut Ui, status: RelayStatus) {
     let bg_color = egui::lerp(Rgba::from(fg_color)..=Rgba::BLACK, 0.8).into();
 
     let label_text = match status {
-        RelayStatus::Connected => "Connected",
-        RelayStatus::Connecting => "Connecting...",
-        RelayStatus::Disconnected => "Not Connected",
+        RelayStatus::Connected => tr!(i18n, "Connected", "Status label for connected relay"),
+        RelayStatus::Connecting => tr!(i18n, "Connecting...", "Status label for connecting relay"),
+        RelayStatus::Disconnected => {
+            tr!(i18n, "Not Connected", "Status label for disconnected relay")
+        }
     };
 
     let frame = Frame::new()
@@ -286,7 +302,7 @@ mod preview {
         fn update(&mut self, app: &mut AppContext<'_>, ui: &mut egui::Ui) -> Option<AppAction> {
             self.pool.try_recv();
             let mut id_string_map = HashMap::new();
-            RelayView::new(app.pool, &mut id_string_map).ui(ui);
+            RelayView::new(app.pool, &mut id_string_map, app.i18n).ui(ui);
             None
         }
     }

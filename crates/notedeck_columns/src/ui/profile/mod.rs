@@ -4,6 +4,7 @@ pub use edit::EditProfileView;
 use egui::{vec2, Color32, CornerRadius, Layout, Rect, RichText, ScrollArea, Sense, Stroke};
 use enostr::Pubkey;
 use nostrdb::{ProfileRecord, Transaction};
+use notedeck::{tr, Localization};
 use notedeck_ui::profile::follow_button;
 use tracing::error;
 
@@ -90,8 +91,12 @@ impl<'a, 'd> ProfileView<'a, 'd> {
                 )
                 .get_ptr();
 
-            profile_timeline.selected_view =
-                tabs_ui(ui, profile_timeline.selected_view, &profile_timeline.views);
+            profile_timeline.selected_view = tabs_ui(
+                ui,
+                self.note_context.i18n,
+                profile_timeline.selected_view,
+                &profile_timeline.views,
+            );
 
             let reversed = false;
             // poll for new notes and insert them into our existing notes
@@ -183,7 +188,10 @@ impl<'a, 'd> ProfileView<'a, 'd> {
 
                         match profile_type {
                             ProfileType::MyProfile => {
-                                if ui.add(edit_profile_button()).clicked() {
+                                if ui
+                                    .add(edit_profile_button(self.note_context.i18n))
+                                    .clicked()
+                                {
                                     action = Some(ProfileViewAction::EditProfile);
                                 }
                             }
@@ -333,7 +341,7 @@ fn copy_key_widget(pfp_rect: &egui::Rect) -> impl egui::Widget + '_ {
     }
 }
 
-fn edit_profile_button() -> impl egui::Widget + 'static {
+fn edit_profile_button<'a>(i18n: &'a mut Localization) -> impl egui::Widget + 'a {
     |ui: &mut egui::Ui| -> egui::Response {
         let (rect, resp) = ui.allocate_exact_size(vec2(124.0, 32.0), Sense::click());
         let painter = ui.painter_at(rect);
@@ -362,7 +370,7 @@ fn edit_profile_button() -> impl egui::Widget + 'static {
 
         let edit_icon_size = vec2(16.0, 16.0);
         let galley = painter.layout(
-            "Edit Profile".to_owned(),
+            tr!(i18n, "Edit Profile", "Button label to edit user profile"),
             NotedeckTextStyle::Button.get_font_id(ui.ctx()),
             ui.visuals().text_color(),
             rect.width(),
