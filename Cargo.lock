@@ -1526,7 +1526,7 @@ dependencies = [
 [[package]]
 name = "egui_nav"
 version = "0.2.0"
-source = "git+https://github.com/damus-io/egui-nav?rev=111de8ac40b5d18df53e9691eb18a50d49cb31d8#111de8ac40b5d18df53e9691eb18a50d49cb31d8"
+source = "git+https://github.com/kernelkind/egui-nav?rev=3c67eb6298edbff36d46546897cfac33df4f04db#3c67eb6298edbff36d46546897cfac33df4f04db"
 dependencies = [
  "egui",
  "egui_extras",
