@@ -7,9 +7,6 @@
 # Profile about/bio field label
 About_00c0 = About
 
-# Display name for account management
-Accounts_e233 = Accounts
-
 # Column title for account management
 Accounts_f018 = Accounts
 
@@ -31,20 +28,11 @@ Add_account_1cfc = Add account
 # Column title for adding new account
 Add_Account_d06c = Add Account
 
-# Display name for adding account
-Add_Account_d715 = Add Account
-
 # Column title for adding algorithm column
 Add_Algo_Column_0d75 = Add Algo Column
 
-# Display name for adding column
-Add_Column_c6ff = Add Column
-
 # Column title for adding new column
 Add_Column_c764 = Add Column
-
-# Display name for adding deck
-Add_Deck_6e5f = Add Deck
 
 # Column title for adding new deck
 Add_Deck_fabf = Add Deck
@@ -100,9 +88,6 @@ Cancel_ed3b = Cancel
 # Hover text for editable zap amount
 Click_to_edit_0414 = Click to edit
 
-# Display name for note composition
-Compose_Note_ad11 = Compose Note
-
 # Column title for note composition
 Compose_Note_c094 = Compose Note
 
@@ -120,9 +105,6 @@ Contact_List_f85a = Contact List
 
 # Column title for contact lists
 Contacts_7533 = Contacts
-
-# Timeline kind label for contact lists
-Contacts_8b98 = Contacts
 
 # Column title for last notes per contact
 Contacts__last_notes_3f84 = Contacts (last notes)
@@ -175,14 +157,8 @@ Create_Deck_16b7 = Create Deck
 # Column title for custom timelines
 Custom_a69e = Custom
 
-# Display name for custom timelines
-Custom_cb4f = Custom
-
 # Column title for zap amount customization
 Customize_Zap_Amount_cfc4 = Customize Zap Amount
-
-# Display name for zap customization
-Customize_Zap_Amount_ed29 = Customize Zap Amount
 
 # Column title for support page
 Damus_Support_27c0 = Damus Support
@@ -217,17 +193,11 @@ domain___will_be_used_for_identification_b67e = "{$domain}" will be used for ide
 # Column title for editing deck
 Edit_Deck_4018 = Edit Deck
 
-# Display name for editing deck
-Edit_Deck_c9ba = Edit Deck
-
 # Button label to edit a deck
 Edit_Deck_fd93 = Edit Deck
 
 # Button label to edit user profile
 Edit_Profile_49e6 = Edit Profile
-
-# Display name for profile editing
-Edit_Profile_6699 = Edit Profile
 
 # Column title for profile editing
 Edit_Profile_8ad4 = Edit Profile
@@ -250,17 +220,8 @@ Enter_your_public_key__npub___nostr_address__e_g___address____or_private_key__ns
 # Label for find user button
 Find_User_bd12 = Find User
 
-# Timeline kind label for hashtag feeds
-Hashtag_a0ab = Hashtag
-
-# Display name for hashtag feeds
-Hashtags_617e = Hashtags
-
 # Title for hashtags column
 Hashtags_f8e0 = Hashtags
-
-# Display name for home feed
-Home_3efc = Home
 
 # Title for Home column
 Home_8c19 = Home
@@ -300,12 +261,6 @@ Keep_track_of_your_notes___replies_a334 = Keep track of your notes & replies
 
 # Title for last note per user column
 Last_Note_per_User_17ad = Last Note per User
-
-# Timeline kind label for last notes per pubkey
-Last_Notes_aefe = Last Notes
-
-# Display name for last notes per contact
-Last_Per_Pubkey__Contact_33ce = Last Per Pubkey (Contact)
 
 # Bitcoin Lightning network address field label
 Lightning_network_address__lud16_ea51 = Lightning network address (lud16)
@@ -355,12 +310,6 @@ Notes___Replies_1ec2 = Notes & Replies
 # Label for notes and replies filter
 Notes___Replies_6e3b = Notes & Replies
 
-# Timeline kind label for notifications
-Notifications_6228 = Notifications
-
-# Display name for notifications
-Notifications_8029 = Notifications
-
 # Column title for notifications
 Notifications_d673 = Notifications
 
@@ -394,29 +343,17 @@ Post_now_8a49 = Post now
 # Instruction for copying logs
 Press_the_button_below_to_copy_your_most_recent_logs_to_your_system_s_clipboard__Then_paste_it_into_your_email_322e = Press the button below to copy your most recent logs to your system's clipboard. Then paste it into your email.
 
-# Display name for user profiles
-Profile_2478 = Profile
-
-# Timeline kind label for user profiles
-Profile_9027 = Profile
-
 # Profile picture URL field label
 Profile_picture_81ff = Profile picture
 
 # Column title for quote composition
 Quote_475c = Quote
 
-# Display name for quote composition
-Quote_a38e = Quote
-
 # Error message when quote note cannot be found
 Quote_of_unknown_note_e4f0 = Quote of unknown note
 
 # Label for read-only profile mode
 Read_only_82ff = Read only
-
-# Display name for relay management
-Relays_7335 = Relays
 
 # Column title for relay management
 Relays_9d89 = Relays
@@ -426,9 +363,6 @@ Relays_ad5e = Relays
 
 # Column title for reply composition
 Reply_3bf1 = Reply
-
-# Display name for reply composition
-Reply_b40f = Reply
 
 # Hover text for reply button
 Reply_to_this_note_f5de = Reply to this note
@@ -474,15 +408,6 @@ Save_6f7c = Save
 
 # Button label to save profile changes
 Save_changes_00db = Save changes
-
-# Display name for search results
-Search_0aa0 = Search
-
-# Display name for search page
-Search_4503 = Search
-
-# Timeline kind label for search results
-Search_a0b8 = Search
 
 # Column title for search page
 Search_c573 = Search
@@ -547,9 +472,6 @@ Subscribe_to_someone_else_s_notes_d1e9 = Subscribe to someone else's notes
 # Column title for subscribing to individual user
 Subscribe_to_someone_s_notes_b3c8 = Subscribe to someone's notes
 
-# Display name for support page
-Support_a4b4 = Support
-
 # Hover text for dark mode toggle button
 Switch_to_dark_mode_4dec = Switch to dark mode
 
@@ -565,20 +487,8 @@ The_Dave_Nostr_AI_assistant_trial_has_ended_____Thanks_for_testing__Zap-enabled_
 # Column title for note thread view
 Thread_0f20 = Thread
 
-# Display name for thread view
-Thread_9957 = Thread
-
 # Link text for thread references
 thread_ad1f = thread
-
-# Generic timeline kind label
-Timeline_b0fc = Timeline
-
-# Timeline kind label for universe feed
-Universe_0a3e = Universe
-
-# Display name for universe feed
-Universe_d47e = Universe
 
 # Title for universe column
 Universe_e01e = Universe
@@ -597,9 +507,6 @@ Username_daa7 = Username
 
 # Column title for wallet management
 Wallet_5e50 = Wallet
-
-# Display name for wallet management
-Wallet_cdca = Wallet
 
 # Hint for deck name input field
 We_recommend_short_names_083e = We recommend short names

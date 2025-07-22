@@ -50,9 +50,9 @@ def extract_tr_macros_with_lines(content: str, file_path: str) -> dict:
     # Search the entire content for tr! macro calls (multi-line aware)
     for macro_content in extract_macro_calls(content, 'tr!'):
         args = parse_macro_arguments(macro_content)
-        if len(args) >= 2:  # Must have at least message and comment
-            message = args[0].strip()
-            comment = args[1].strip()  # Second argument is always the comment
+        if len(args) >= 3:  # Must have at least message and comment
+            message = args[1].strip()
+            comment = args[2].strip()  # Second argument is always the comment
             # Validate placeholders
             if not validate_placeholders(message, file_path):
                 continue
@@ -74,10 +74,10 @@ def extract_tr_plural_macros_with_lines(content: str, file_path: str) -> dict:
         return matches
     for idx, macro_content in enumerate(extract_macro_calls(content, 'tr_plural!')):
         args = parse_macro_arguments(macro_content)
-        if len(args) >= 4:
-            one = args[0].strip()
-            other = args[1].strip()
-            comment = args[2].strip()
+        if len(args) >= 5:
+            one = args[1].strip()
+            other = args[2].strip()
+            comment = args[3].strip()
             key = other
             if key and not key.startswith('//') and not key.startswith('$'):
                 matches.append((key, comment, idx + 1, file_path))
@@ -213,9 +213,9 @@ def extract_tr_macros(content: str) -> List[Tuple[str, str]]:
     # Process the entire content instead of line by line to handle multi-line macros
     for macro_content in extract_macro_calls(content, 'tr!'):
         args = parse_macro_arguments(macro_content)
-        if len(args) >= 2:  # Must have at least message and comment
-            message = args[0].strip()
-            comment = args[1].strip()  # Second argument is always the comment
+        if len(args) >= 3:  # Must have at least message and comment
+            message = args[1].strip()
+            comment = args[2].strip()  # Second argument is always the comment
             # Debug output for identification strings
             if "identification" in comment.lower():
                 print(f"[DEBUG] Found identification tr! macro: message='{message}', comment='{comment}', args={args}")
@@ -254,10 +254,10 @@ def extract_tr_plural_macros(content: str, file_path: str = "") -> Dict[str, dic
         print(f"[DEBUG] Found tr_plural! macro in {file_path}: {macro_content}")
         args = parse_macro_arguments(macro_content)
         print(f"[DEBUG] Parsed args: {args}")
-        if len(args) >= 4:
-            one = args[0].strip()
-            other = args[1].strip()
-            comment = args[2].strip()
+        if len(args) >= 5:
+            one = args[1].strip()
+            other = args[2].strip()
+            comment = args[3].strip()
             key = other
             if key and not key.startswith('//') and not key.startswith('$'):
                 print(f"[DEBUG] Adding plural key '{key}' from {file_path}")

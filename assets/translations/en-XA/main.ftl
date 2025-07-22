@@ -7,9 +7,6 @@
 # Profile about/bio field label
 About_00c0 = {"["}Àbóút{"]"}
 
-# Display name for account management
-Accounts_e233 = {"["}Àççóúñts{"]"}
-
 # Column title for account management
 Accounts_f018 = {"["}Àççóúñts{"]"}
 
@@ -31,20 +28,11 @@ Add_account_1cfc = {"["}Àdd àççóúñt{"]"}
 # Column title for adding new account
 Add_Account_d06c = {"["}Àdd Àççóúñt{"]"}
 
-# Display name for adding account
-Add_Account_d715 = {"["}Àdd Àççóúñt{"]"}
-
 # Column title for adding algorithm column
 Add_Algo_Column_0d75 = {"["}Àdd Àlgó Çólúmñ{"]"}
 
-# Display name for adding column
-Add_Column_c6ff = {"["}Àdd Çólúmñ{"]"}
-
 # Column title for adding new column
 Add_Column_c764 = {"["}Àdd Çólúmñ{"]"}
-
-# Display name for adding deck
-Add_Deck_6e5f = {"["}Àdd Déçk{"]"}
 
 # Column title for adding new deck
 Add_Deck_fabf = {"["}Àdd Déçk{"]"}
@@ -100,9 +88,6 @@ Cancel_ed3b = {"["}Çàñçél{"]"}
 # Hover text for editable zap amount
 Click_to_edit_0414 = {"["}Çlíçk tó édít{"]"}
 
-# Display name for note composition
-Compose_Note_ad11 = {"["}Çómpósé Ñóté{"]"}
-
 # Column title for note composition
 Compose_Note_c094 = {"["}Çómpósé Ñóté{"]"}
 
@@ -120,9 +105,6 @@ Contact_List_f85a = {"["}Çóñtàçt Líst{"]"}
 
 # Column title for contact lists
 Contacts_7533 = {"["}Çóñtàçts{"]"}
-
-# Timeline kind label for contact lists
-Contacts_8b98 = {"["}Çóñtàçts{"]"}
 
 # Column title for last notes per contact
 Contacts__last_notes_3f84 = {"["}Çóñtàçts (làst ñótés){"]"}
@@ -175,14 +157,8 @@ Create_Deck_16b7 = {"["}Çréàté Déçk{"]"}
 # Column title for custom timelines
 Custom_a69e = {"["}Çústóm{"]"}
 
-# Display name for custom timelines
-Custom_cb4f = {"["}Çústóm{"]"}
-
 # Column title for zap amount customization
 Customize_Zap_Amount_cfc4 = {"["}Çústómízé Zàp Àmóúñt{"]"}
-
-# Display name for zap customization
-Customize_Zap_Amount_ed29 = {"["}Çústómízé Zàp Àmóúñt{"]"}
 
 # Column title for support page
 Damus_Support_27c0 = {"["}Dàmús Súppórt{"]"}
@@ -217,17 +193,11 @@ domain___will_be_used_for_identification_b67e = {"["}"{$domain}" wíll bé úsé
 # Column title for editing deck
 Edit_Deck_4018 = {"["}Édít Déçk{"]"}
 
-# Display name for editing deck
-Edit_Deck_c9ba = {"["}Édít Déçk{"]"}
-
 # Button label to edit a deck
 Edit_Deck_fd93 = {"["}Édít Déçk{"]"}
 
 # Button label to edit user profile
 Edit_Profile_49e6 = {"["}Édít Prófílé{"]"}
-
-# Display name for profile editing
-Edit_Profile_6699 = {"["}Édít Prófílé{"]"}
 
 # Column title for profile editing
 Edit_Profile_8ad4 = {"["}Édít Prófílé{"]"}
@@ -250,17 +220,8 @@ Enter_your_public_key__npub___nostr_address__e_g___address____or_private_key__ns
 # Label for find user button
 Find_User_bd12 = {"["}Fíñd Úsér{"]"}
 
-# Timeline kind label for hashtag feeds
-Hashtag_a0ab = {"["}Hàshtàg{"]"}
-
-# Display name for hashtag feeds
-Hashtags_617e = {"["}Hàshtàgs{"]"}
-
 # Title for hashtags column
 Hashtags_f8e0 = {"["}Hàshtàgs{"]"}
-
-# Display name for home feed
-Home_3efc = {"["}Hómé{"]"}
 
 # Title for Home column
 Home_8c19 = {"["}Hómé{"]"}
@@ -300,12 +261,6 @@ Keep_track_of_your_notes___replies_a334 = {"["}Kéép tràçk óf yóúr ñóté
 
 # Title for last note per user column
 Last_Note_per_User_17ad = {"["}Làst Ñóté pér Úsér{"]"}
-
-# Timeline kind label for last notes per pubkey
-Last_Notes_aefe = {"["}Làst Ñótés{"]"}
-
-# Display name for last notes per contact
-Last_Per_Pubkey__Contact_33ce = {"["}Làst Pér Púbkéy (Çóñtàçt){"]"}
 
 # Bitcoin Lightning network address field label
 Lightning_network_address__lud16_ea51 = {"["}Líghtñíñg ñétwórk àddréss (lúd16){"]"}
@@ -355,12 +310,6 @@ Notes___Replies_1ec2 = {"["}Ñótés & Réplíés{"]"}
 # Label for notes and replies filter
 Notes___Replies_6e3b = {"["}Ñótés & Réplíés{"]"}
 
-# Timeline kind label for notifications
-Notifications_6228 = {"["}Ñótífíçàtíóñs{"]"}
-
-# Display name for notifications
-Notifications_8029 = {"["}Ñótífíçàtíóñs{"]"}
-
 # Column title for notifications
 Notifications_d673 = {"["}Ñótífíçàtíóñs{"]"}
 
@@ -394,29 +343,17 @@ Post_now_8a49 = {"["}Póst ñów{"]"}
 # Instruction for copying logs
 Press_the_button_below_to_copy_your_most_recent_logs_to_your_system_s_clipboard__Then_paste_it_into_your_email_322e = {"["}Préss thé búttóñ bélów tó çópy yóúr móst réçéñt lógs tó yóúr systém's çlípbóàrd. Théñ pàsté ít íñtó yóúr émàíl.{"]"}
 
-# Display name for user profiles
-Profile_2478 = {"["}Prófílé{"]"}
-
-# Timeline kind label for user profiles
-Profile_9027 = {"["}Prófílé{"]"}
-
 # Profile picture URL field label
 Profile_picture_81ff = {"["}Prófílé píçtúré{"]"}
 
 # Column title for quote composition
 Quote_475c = {"["}Qúóté{"]"}
 
-# Display name for quote composition
-Quote_a38e = {"["}Qúóté{"]"}
-
 # Error message when quote note cannot be found
 Quote_of_unknown_note_e4f0 = {"["}Qúóté óf úñkñówñ ñóté{"]"}
 
 # Label for read-only profile mode
 Read_only_82ff = {"["}Réàd óñly{"]"}
-
-# Display name for relay management
-Relays_7335 = {"["}Rélàys{"]"}
 
 # Column title for relay management
 Relays_9d89 = {"["}Rélàys{"]"}
@@ -426,9 +363,6 @@ Relays_ad5e = {"["}Rélàys{"]"}
 
 # Column title for reply composition
 Reply_3bf1 = {"["}Réply{"]"}
-
-# Display name for reply composition
-Reply_b40f = {"["}Réply{"]"}
 
 # Hover text for reply button
 Reply_to_this_note_f5de = {"["}Réply tó thís ñóté{"]"}
@@ -474,15 +408,6 @@ Save_6f7c = {"["}Sàvé{"]"}
 
 # Button label to save profile changes
 Save_changes_00db = {"["}Sàvé çhàñgés{"]"}
-
-# Display name for search results
-Search_0aa0 = {"["}Séàrçh{"]"}
-
-# Display name for search page
-Search_4503 = {"["}Séàrçh{"]"}
-
-# Timeline kind label for search results
-Search_a0b8 = {"["}Séàrçh{"]"}
 
 # Column title for search page
 Search_c573 = {"["}Séàrçh{"]"}
@@ -547,9 +472,6 @@ Subscribe_to_someone_else_s_notes_d1e9 = {"["}Súbsçríbé tó sóméóñé él
 # Column title for subscribing to individual user
 Subscribe_to_someone_s_notes_b3c8 = {"["}Súbsçríbé tó sóméóñé's ñótés{"]"}
 
-# Display name for support page
-Support_a4b4 = {"["}Súppórt{"]"}
-
 # Hover text for dark mode toggle button
 Switch_to_dark_mode_4dec = {"["}Swítçh tó dàrk módé{"]"}
 
@@ -565,20 +487,8 @@ The_Dave_Nostr_AI_assistant_trial_has_ended_____Thanks_for_testing__Zap-enabled_
 # Column title for note thread view
 Thread_0f20 = {"["}Thréàd{"]"}
 
-# Display name for thread view
-Thread_9957 = {"["}Thréàd{"]"}
-
 # Link text for thread references
 thread_ad1f = {"["}thréàd{"]"}
-
-# Generic timeline kind label
-Timeline_b0fc = {"["}Tímélíñé{"]"}
-
-# Timeline kind label for universe feed
-Universe_0a3e = {"["}Úñívérsé{"]"}
-
-# Display name for universe feed
-Universe_d47e = {"["}Úñívérsé{"]"}
 
 # Title for universe column
 Universe_e01e = {"["}Úñívérsé{"]"}
@@ -597,9 +507,6 @@ Username_daa7 = {"["}Úsérñàmé{"]"}
 
 # Column title for wallet management
 Wallet_5e50 = {"["}Wàllét{"]"}
-
-# Display name for wallet management
-Wallet_cdca = {"["}Wàllét{"]"}
 
 # Hint for deck name input field
 We_recommend_short_names_083e = {"["}Wé réçómméñd shórt ñàmés{"]"}
