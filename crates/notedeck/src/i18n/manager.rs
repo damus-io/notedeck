@@ -7,7 +7,11 @@ use unic_langid::{langid, LanguageIdentifier};
 
 const EN_XA: LanguageIdentifier = langid!("en-XA");
 const EN_US: LanguageIdentifier = langid!("en-US");
-const NUM_FTLS: usize = 2;
+const DE: LanguageIdentifier = langid!("de");
+const FR: LanguageIdentifier = langid!("FR");
+const ZH_CN: LanguageIdentifier = langid!("ZH_CN");
+const ZH_TW: LanguageIdentifier = langid!("ZH_TW");
+const NUM_FTLS: usize = 6;
 
 struct StaticBundle {
     identifier: LanguageIdentifier,
@@ -16,12 +20,28 @@ struct StaticBundle {
 
 const FTLS: [StaticBundle; NUM_FTLS] = [
     StaticBundle {
+        identifier: EN_US,
+        ftl: include_str!("../../../../assets/translations/en-US/main.ftl"),
+    },
+    StaticBundle {
         identifier: EN_XA,
         ftl: include_str!("../../../../assets/translations/en-XA/main.ftl"),
     },
     StaticBundle {
-        identifier: EN_US,
-        ftl: include_str!("../../../../assets/translations/en-US/main.ftl"),
+        identifier: DE,
+        ftl: include_str!("../../../../assets/translations/de/main.ftl"),
+    },
+    StaticBundle {
+        identifier: FR,
+        ftl: include_str!("../../../../assets/translations/fr/main.ftl"),
+    },
+    StaticBundle {
+        identifier: ZH_CN,
+        ftl: include_str!("../../../../assets/translations/zh-CN/main.ftl"),
+    },
+    StaticBundle {
+        identifier: ZH_TW,
+        ftl: include_str!("../../../../assets/translations/zh-TW/main.ftl"),
     },
 ];
 
@@ -51,7 +71,14 @@ impl Default for Localization {
         let fallback_locale = default_locale.to_owned();
 
         // Build available locales list
-        let available_locales = vec![EN_US.clone(), EN_XA.clone()];
+        let available_locales = vec![
+            EN_US.clone(),
+            EN_XA.clone(),
+            DE.clone(),
+            FR.clone(),
+            ZH_CN.clone(),
+            ZH_TW.clone(),
+        ];
 
         Self {
             current_locale: default_locale.to_owned(),

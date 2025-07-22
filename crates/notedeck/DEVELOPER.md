@@ -332,7 +332,7 @@ For testing that all user-facing strings are going through the localization syst
 UI layout renders well with different language translations, enable the pseudolocale:
 
 ```bash
-NOTEDECK_PSEUDOLOCALE=1 cargo run -- --debug
+cargo run -- --debug --locale en-XA
 ```
 
 The pseudolocale (`en-XA`) transforms English text in a way that is still readable but makes adjustments obvious enough that they are different from the original text (such as replacing English letters with accented equivalents), helping identify potential UI layout issues once it gets translated
