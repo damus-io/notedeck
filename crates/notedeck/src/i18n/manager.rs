@@ -62,6 +62,8 @@ pub struct Localization {
     normalized_key_cache: HashMap<String, IntlKeyBuf>,
     /// Bundles
     bundles: HashMap<LanguageIdentifier, Bundle>,
+
+    use_isolating: bool,
 }
 
 impl Default for Localization {
@@ -84,6 +86,7 @@ impl Default for Localization {
             current_locale: default_locale.to_owned(),
             available_locales,
             fallback_locale,
+            use_isolating: true,
             normalized_key_cache: HashMap::new(),
             string_cache: HashMap::new(),
             bundles: HashMap::new(),
@@ -95,6 +98,14 @@ impl Localization {
     /// Creates a new Localization with the specified resource directory
     pub fn new() -> Self {
         Localization::default()
+    }
+
+    /// Disable bidirectional isolation markers. mostly useful for tests
+    pub fn no_bidi() -> Self {
+        Localization {
+            use_isolating: false,
+            ..Localization::default()
+        }
     }
 
     /// Gets a localized string by its ID
@@ -152,8 +163,11 @@ impl Localization {
     }
 
     fn try_load_bundle(&mut self, lang: &LanguageIdentifier) -> Result<(), IntlError> {
-        self.bundles
-            .insert(lang.to_owned(), Self::load_bundle(lang)?);
+        let mut bundle = Self::load_bundle(lang)?;
+        if !self.use_isolating {
+            bundle.set_use_isolating(false);
+        }
+        self.bundles.insert(lang.to_owned(), bundle);
         Ok(())
     }
 
@@ -228,6 +242,7 @@ impl Localization {
                     );
                     self.try_load_bundle(&locale)
                         .expect("failed to load fallback bundle!?");
+
                     Ok(())
                 }
 

@@ -107,7 +107,7 @@ mod tests {
     #[test]
     fn test_now_condition() {
         let now = get_current_timestamp();
-        let mut intl = Localization::default();
+        let mut intl = Localization::no_bidi();
 
         // Test 0 seconds ago
         let result = time_ago_between(&mut intl, now, now);
@@ -137,7 +137,7 @@ mod tests {
     #[test]
     fn test_seconds_condition() {
         let now = get_current_timestamp();
-        let mut i18n = Localization::default();
+        let mut i18n = Localization::no_bidi();
 
         // Test 3 seconds ago
         let result = time_ago_between(&mut i18n, now - 3, now);
@@ -163,7 +163,7 @@ mod tests {
     #[test]
     fn test_minutes_condition() {
         let now = get_current_timestamp();
-        let mut i18n = Localization::default();
+        let mut i18n = Localization::no_bidi();
 
         // Test 1 minute ago
         let result = time_ago_between(&mut i18n, now - ONE_MINUTE_IN_SECONDS, now);
@@ -189,7 +189,7 @@ mod tests {
     #[test]
     fn test_hours_condition() {
         let now = get_current_timestamp();
-        let mut i18n = Localization::default();
+        let mut i18n = Localization::no_bidi();
 
         // Test 1 hour ago
         let result = time_ago_between(&mut i18n, now - ONE_HOUR_IN_SECONDS, now);
@@ -215,7 +215,7 @@ mod tests {
     #[test]
     fn test_days_condition() {
         let now = get_current_timestamp();
-        let mut i18n = Localization::default();
+        let mut i18n = Localization::no_bidi();
 
         // Test 1 day ago
         let result = time_ago_between(&mut i18n, now - ONE_DAY_IN_SECONDS, now);
@@ -233,7 +233,7 @@ mod tests {
     #[test]
     fn test_weeks_condition() {
         let now = get_current_timestamp();
-        let mut i18n = Localization::default();
+        let mut i18n = Localization::no_bidi();
 
         // Test 1 week ago
         let result = time_ago_between(&mut i18n, now - ONE_WEEK_IN_SECONDS, now);
@@ -247,7 +247,7 @@ mod tests {
     #[test]
     fn test_months_condition() {
         let now = get_current_timestamp();
-        let mut i18n = Localization::default();
+        let mut i18n = Localization::no_bidi();
 
         // Test 1 month ago
         let result = time_ago_between(&mut i18n, now - ONE_MONTH_IN_SECONDS, now);
@@ -265,7 +265,7 @@ mod tests {
     #[test]
     fn test_years_condition() {
         let now = get_current_timestamp();
-        let mut i18n = Localization::default();
+        let mut i18n = Localization::no_bidi();
 
         // Test 1 year ago
         let result = time_ago_between(&mut i18n, now - ONE_YEAR_IN_SECONDS, now);
@@ -287,7 +287,7 @@ mod tests {
     #[test]
     fn test_future_timestamps() {
         let now = get_current_timestamp();
-        let mut i18n = Localization::default();
+        let mut i18n = Localization::no_bidi();
 
         // Test 1 minute in the future
         let result = time_ago_between(&mut i18n, now + ONE_MINUTE_IN_SECONDS, now);
@@ -317,7 +317,7 @@ mod tests {
     #[test]
     fn test_boundary_conditions() {
         let now = get_current_timestamp();
-        let mut i18n = Localization::default();
+        let mut i18n = Localization::no_bidi();
 
         // Test boundary between seconds and minutes
         let result = time_ago_between(&mut i18n, now - 60, now);
