@@ -230,7 +230,12 @@ impl Notedeck {
         let job_pool = JobPool::default();
 
         // Initialize localization
-        let i18n = Localization::new();
+        let mut i18n = Localization::new();
+        if let Some(locale) = &parsed_args.locale {
+            if let Err(err) = i18n.set_locale(locale.to_owned()) {
+                error!("{err}");
+            }
+        }
 
         // Initialize global i18n context
         //crate::i18n::init_global_i18n(i18n.clone());
