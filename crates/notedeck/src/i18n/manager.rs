@@ -47,27 +47,14 @@ pub struct Localization {
 impl Default for Localization {
     fn default() -> Self {
         // Default to English (US)
-        let default_locale = EN_US;
-        let fallback_locale = default_locale.clone();
-        let mut current_locale = default_locale.clone();
-
-        // Check if pseudolocale is enabled via environment variable
-        let enable_pseudolocale = std::env::var("NOTEDECK_PSEUDOLOCALE").is_ok();
+        let default_locale = &EN_US;
+        let fallback_locale = default_locale.to_owned();
 
         // Build available locales list
-        let mut available_locales = vec![default_locale.clone()];
-
-        // Add en-XA if pseudolocale is enabled
-        if enable_pseudolocale {
-            available_locales.push(EN_XA.clone());
-            current_locale = EN_XA.clone();
-            tracing::info!(
-                "Pseudolocale (en-XA) enabled via NOTEDECK_PSEUDOLOCALE environment variable"
-            );
-        }
+        let available_locales = vec![EN_US.clone(), EN_XA.clone()];
 
         Self {
-            current_locale,
+            current_locale: default_locale.to_owned(),
             available_locales,
             fallback_locale,
             normalized_key_cache: HashMap::new(),
@@ -75,11 +62,6 @@ impl Default for Localization {
             bundles: HashMap::new(),
         }
     }
-}
-
-pub enum StringCacheResult<'a> {
-    Hit(Cow<'a, str>),
-    NeedsInsert(IntlKeyBuf, String),
 }
 
 impl Localization {
@@ -417,8 +399,9 @@ mod tests {
 
         // Test available locales
         let available = i18n.get_available_locales();
-        assert_eq!(available.len(), 1);
+        assert_eq!(available.len(), 2);
         assert_eq!(available[0].to_string(), "en-US");
+        assert_eq!(available[1].to_string(), "en-XA");
     }
 
     #[test]

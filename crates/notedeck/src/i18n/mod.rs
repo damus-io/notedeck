@@ -13,7 +13,6 @@ pub use key::{IntlKey, IntlKeyBuf};
 
 pub use manager::CacheStats;
 pub use manager::Localization;
-pub use manager::StringCacheResult;
 
 /// Re-export commonly used types for convenience
 pub use fluent::FluentArgs;
