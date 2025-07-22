@@ -639,6 +639,8 @@ fn setup_initial_timeline(
         lim += filter.limit().unwrap_or(1) as i32;
     }
 
+    debug!("setup_initial_timeline: limit for local filter is {}", lim);
+
     let notes: Vec<NoteRef> = ndb
         .query(txn, filters.local(), lim)?
         .into_iter()
