@@ -11,9 +11,10 @@ const DE: LanguageIdentifier = langid!("de");
 const ES_419: LanguageIdentifier = langid!("es-419");
 const ES_ES: LanguageIdentifier = langid!("es-ES");
 const FR: LanguageIdentifier = langid!("FR");
+const TH: LanguageIdentifier = langid!("TH");
 const ZH_CN: LanguageIdentifier = langid!("ZH_CN");
 const ZH_TW: LanguageIdentifier = langid!("ZH_TW");
-const NUM_FTLS: usize = 8;
+const NUM_FTLS: usize = 9;
 
 struct StaticBundle {
     identifier: LanguageIdentifier,
@@ -44,6 +45,10 @@ const FTLS: [StaticBundle; NUM_FTLS] = [
     StaticBundle {
         identifier: FR,
         ftl: include_str!("../../../../assets/translations/fr/main.ftl"),
+    },
+    StaticBundle {
+        identifier: TH,
+        ftl: include_str!("../../../../assets/translations/th/main.ftl"),
     },
     StaticBundle {
         identifier: ZH_CN,
@@ -90,6 +95,7 @@ impl Default for Localization {
             ES_419.clone(),
             ES_ES.clone(),
             FR.clone(),
+            TH.clone(),
             ZH_CN.clone(),
             ZH_TW.clone(),
         ];
