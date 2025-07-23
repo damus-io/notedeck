@@ -151,7 +151,7 @@ impl ChromePanelAction {
             }
 
             Self::Settings => {
-                Self::columns_navigate(ctx, chrome, notedeck_columns::Route::Relays);
+                Self::columns_navigate(ctx, chrome, notedeck_columns::Route::Settings);
             }
 
             Self::Wallet => {
@@ -774,7 +774,9 @@ fn pfp_button(ctx: &mut AppContext, ui: &mut egui::Ui) -> egui::Response {
 
     ui.put(helper.get_animation_rect(), &mut widget);
 
-    helper.take_animation_response()
+    let pfp_resp = helper.take_animation_response();
+
+    pfp_resp
 }
 
 /// The section of the chrome sidebar that starts at the

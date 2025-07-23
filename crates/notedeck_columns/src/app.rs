@@ -38,6 +38,7 @@ pub enum DamusState {
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
 pub struct Damus {
     state: DamusState,
+
     pub decks_cache: DecksCache,
     pub view_state: ViewState,
     pub drafts: Drafts,
@@ -393,13 +394,13 @@ fn determine_key_storage_type() -> KeyStorageType {
 
 impl Damus {
     /// Called once before the first frame.
-    pub fn new(ctx: &mut AppContext<'_>, args: &[String]) -> Self {
+    pub fn new(app_context: &mut AppContext<'_>, args: &[String]) -> Self {
         // arg parsing
 
         let (parsed_args, unrecognized_args) =
-            ColumnsArgs::parse(args, Some(ctx.accounts.selected_account_pubkey()));
+            ColumnsArgs::parse(args, Some(app_context.accounts.selected_account_pubkey()));
 
-        let account = ctx.accounts.selected_account_pubkey_bytes();
+        let account = app_context.accounts.selected_account_pubkey_bytes();
 
         let mut timeline_cache = TimelineCache::default();
         let mut options = AppOptions::default();
@@ -409,31 +410,34 @@ impl Damus {
         let decks_cache = if tmp_columns {
             info!("DecksCache: loading from command line arguments");
             let mut columns: Columns = Columns::new();
-            let txn = Transaction::new(ctx.ndb).unwrap();
+            let txn = Transaction::new(app_context.ndb).unwrap();
             for col in &parsed_args.columns {
                 let timeline_kind = col.clone().into_timeline_kind();
                 if let Some(add_result) = columns.add_new_timeline_column(
                     &mut timeline_cache,
                     &txn,
-                    ctx.ndb,
-                    ctx.note_cache,
-                    ctx.pool,
+                    app_context.ndb,
+                    app_context.note_cache,
+                    app_context.pool,
                     &timeline_kind,
                 ) {
                     add_result.process(
-                        ctx.ndb,
-                        ctx.note_cache,
+                        app_context.ndb,
+                        app_context.note_cache,
                         &txn,
                         &mut timeline_cache,
-                        ctx.unknown_ids,
+                        app_context.unknown_ids,
                     );
                 }
             }
 
-            columns_to_decks_cache(ctx.i18n, columns, account)
-        } else if let Some(decks_cache) =
-            crate::storage::load_decks_cache(ctx.path, ctx.ndb, &mut timeline_cache, ctx.i18n)
-        {
+            columns_to_decks_cache(app_context.i18n, columns, account)
+        } else if let Some(decks_cache) = crate::storage::load_decks_cache(
+            app_context.path,
+            app_context.ndb,
+            &mut timeline_cache,
+            app_context.i18n,
+        ) {
             info!(
                 "DecksCache: loading from disk {}",
                 crate::storage::DECKS_CACHE_FILE
@@ -441,13 +445,13 @@ impl Damus {
             decks_cache
         } else {
             info!("DecksCache: creating new with demo configuration");
-            DecksCache::new_with_demo_config(&mut timeline_cache, ctx)
-            //for (pk, _) in &ctx.accounts.cache {
+            DecksCache::new_with_demo_config(&mut timeline_cache, app_context)
+            //for (pk, _) in &app_context.accounts.cache {
             //    cache.add_deck_default(*pk);
             //}
         };
 
-        let support = Support::new(ctx.path);
+        let support = Support::new(app_context.path);
         let mut note_options = NoteOptions::default();
         note_options.set(
             NoteOptions::Textmode,
@@ -462,10 +466,14 @@ impl Damus {
             parsed_args.is_flag_set(ColumnsFlag::NoMedia),
         );
         note_options.set(
-            NoteOptions::ShowNoteClient,
-            parsed_args.is_flag_set(ColumnsFlag::ShowNoteClient),
+            NoteOptions::ShowNoteClientTop,
+            parsed_args.is_flag_set(ColumnsFlag::ShowNoteClientTop),
         );
-        options.set(AppOptions::Debug, ctx.args.debug);
+        note_options.set(
+            NoteOptions::ShowNoteClientBottom,
+            parsed_args.is_flag_set(ColumnsFlag::ShowNoteClientBottom),
+        );
+        options.set(AppOptions::Debug, app_context.args.debug);
         options.set(
             AppOptions::SinceOptimize,
             parsed_args.is_flag_set(ColumnsFlag::SinceOptimize),
@@ -662,6 +670,7 @@ fn should_show_compose_button(decks: &DecksCache, accounts: &Accounts) -> bool {
         Route::Reply(_) => false,
         Route::Quote(_) => false,
         Route::Relays => false,
+        Route::Settings => false,
         Route::ComposeNote => false,
         Route::AddColumn(_) => false,
         Route::EditProfile(_) => false,

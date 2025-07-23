@@ -23,7 +23,8 @@ bitflags! {
         /// will end with a ... and a "Show more" button.
         const Truncate        = 1 << 11;
         /// Show note's client in the note header
-        const ShowNoteClient  = 1 << 12;
+        const ShowNoteClientTop  = 1 << 12;
+        const ShowNoteClientBottom  = 1 << 13;
     }
 }
 

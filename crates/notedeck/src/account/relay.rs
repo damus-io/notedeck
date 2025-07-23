@@ -1,11 +1,10 @@
 use std::collections::BTreeSet;
 
+use crate::{AccountData, RelaySpec};
 use enostr::{Keypair, Pubkey, RelayPool};
 use nostrdb::{Filter, Ndb, NoteBuilder, NoteKey, Subscription, Transaction};
 use tracing::{debug, error, info};
 use url::Url;
-
-use crate::{AccountData, RelaySpec};
 
 #[derive(Clone)]
 pub(crate) struct AccountRelayData {

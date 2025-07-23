@@ -19,6 +19,7 @@ pub enum Route {
     Reply(NoteId),
     Quote(NoteId),
     Relays,
+    Settings,
     ComposeNote,
     AddColumn(AddColumnRoute),
     EditProfile(Pubkey),
@@ -45,6 +46,10 @@ impl Route {
 
     pub fn relays() -> Self {
         Route::Relays
+    }
+
+    pub fn settings() -> Self {
+        Route::Settings
     }
 
     pub fn thread(thread_selection: ThreadSelection) -> Self {
@@ -110,6 +115,9 @@ impl Route {
             Route::Relays => {
                 writer.write_token("relay");
             }
+            Route::Settings => {
+                writer.write_token("settings");
+            }
             Route::ComposeNote => {
                 writer.write_token("compose");
             }
@@ -167,6 +175,12 @@ impl Route {
                     p.parse_all(|p| {
                         p.parse_token("relay")?;
                         Ok(Route::Relays)
+                    })
+                },
+                |p| {
+                    p.parse_all(|p| {
+                        p.parse_token("settings")?;
+                        Ok(Route::Settings)
                     })
                 },
                 |p| {
@@ -249,6 +263,9 @@ impl Route {
             }
             Route::Relays => {
                 ColumnTitle::formatted(tr!(i18n, "Relays", "Column title for relay management"))
+            }
+            Route::Settings => {
+                ColumnTitle::formatted(tr!(i18n, "Settings", "Column title for app settings"))
             }
             Route::Accounts(amr) => match amr {
                 AccountsRoute::Accounts => ColumnTitle::formatted(tr!(
@@ -555,6 +572,7 @@ impl fmt::Display for Route {
                 write!(f, "{}", tr!("Quote", "Display name for quote composition"))
             }
             Route::Relays => write!(f, "{}", tr!("Relays", "Display name for relay management")),
+            Route::Settings => write!(f, "{}", tr!("Settings", "Display name for settings management")),
             Route::Accounts(amr) => match amr {
                 AccountsRoute::Accounts => write!(
                     f,

@@ -235,13 +235,13 @@ fn get_selected_index(ui: &egui::Ui, selection_id: egui::Id) -> usize {
 /// Checks to see if we have any left/right key presses and updates the carousel index
 fn update_selected_image_index(ui: &mut egui::Ui, carousel_id: egui::Id, num_urls: i32) -> usize {
     if num_urls > 1 {
-        let next_image = ui.data(|data| {
-            data.get_temp(carousel_id.with("next_image"))
-                .unwrap_or(false)
-        });
-        let prev_image = ui.data(|data| {
-            data.get_temp(carousel_id.with("prev_image"))
-                .unwrap_or(false)
+        let (next_image, prev_image) = ui.data(|data| {
+            (
+                data.get_temp(carousel_id.with("next_image"))
+                    .unwrap_or_default(),
+                data.get_temp(carousel_id.with("prev_image"))
+                    .unwrap_or_default(),
+            )
         });
 
         if next_image

@@ -19,3 +19,5 @@ queries/damus-notifs.json
 .direnv/
 scripts/macos_build_secrets.sh
 /tags
+.zed
+.lsp
