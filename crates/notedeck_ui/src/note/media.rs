@@ -235,11 +235,24 @@ fn get_selected_index(ui: &egui::Ui, selection_id: egui::Id) -> usize {
 /// Checks to see if we have any left/right key presses and updates the carousel index
 fn update_selected_image_index(ui: &mut egui::Ui, carousel_id: egui::Id, num_urls: i32) -> usize {
     if num_urls > 1 {
-        if ui.input(|i| i.key_pressed(egui::Key::ArrowRight) || i.key_pressed(egui::Key::L)) {
+        let (next_image, prev_image) = ui.data(|data| {
+            (
+                data.get_temp(carousel_id.with("next_image"))
+                    .unwrap_or_default(),
+                data.get_temp(carousel_id.with("prev_image"))
+                    .unwrap_or_default(),
+            )
+        });
+
+        if next_image
+            || ui.input(|i| i.key_pressed(egui::Key::ArrowRight) || i.key_pressed(egui::Key::L))
+        {
             let ind = select_next_media(ui, carousel_id, num_urls, 1);
             tracing::debug!("carousel selecting right {}/{}", ind + 1, num_urls);
             ind
-        } else if ui.input(|i| i.key_pressed(egui::Key::ArrowLeft) || i.key_pressed(egui::Key::H)) {
+        } else if prev_image
+            || ui.input(|i| i.key_pressed(egui::Key::ArrowLeft) || i.key_pressed(egui::Key::H))
+        {
             let ind = select_next_media(ui, carousel_id, num_urls, -1);
             tracing::debug!("carousel selecting left {}/{}", ind + 1, num_urls);
             ind

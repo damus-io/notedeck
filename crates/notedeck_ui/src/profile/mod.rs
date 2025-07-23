@@ -45,6 +45,8 @@ pub fn display_name_widget<'a>(
 
                 let nip05_resp = name.nip05.map(|nip05| {
                     ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 2.0;
+
                         ui.add(app_images::verified_image());
 
                         ui.label(RichText::new(nip05).size(16.0).color(crate::colors::TEAL))

@@ -29,6 +29,7 @@ pub fn setup_chrome(ctx: &egui::Context, args: &notedeck::Args, theme: ThemePref
     });
     ctx.set_visuals_of(egui::Theme::Dark, theme::dark_mode(is_oled));
     ctx.set_visuals_of(egui::Theme::Light, theme::light_mode());
+
     setup_cc(ctx, is_mobile);
 }
 
@@ -38,6 +39,7 @@ pub fn setup_cc(ctx: &egui::Context, is_mobile: bool) {
     if notedeck::ui::is_compiled_as_mobile() {
         ctx.set_pixels_per_point(ctx.pixels_per_point() + 0.2);
     }
+
     //ctx.set_pixels_per_point(1.0);
     //
     //
