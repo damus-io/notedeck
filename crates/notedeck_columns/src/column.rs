@@ -191,6 +191,9 @@ impl Columns {
 
     #[inline]
     pub fn column_mut(&mut self, ind: usize) -> &mut Column {
+        if self.columns.is_empty() {
+            self.new_column_picker();
+        }
         &mut self.columns[ind]
     }
 
