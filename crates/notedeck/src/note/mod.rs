@@ -28,7 +28,6 @@ pub struct NoteContext<'d> {
     pub job_pool: &'d mut JobPool,
     pub unknown_ids: &'d mut UnknownIds,
     pub clipboard: &'d mut egui_winit::clipboard::Clipboard,
-    pub current_account_has_wallet: bool,
 }
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone, Hash)]

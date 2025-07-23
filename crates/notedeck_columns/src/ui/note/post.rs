@@ -808,7 +808,6 @@ mod preview {
                 pool: app.pool,
                 job_pool: app.job_pool,
                 unknown_ids: app.unknown_ids,
-                current_account_has_wallet: false,
                 clipboard: app.clipboard,
                 i18n: app.i18n,
             };

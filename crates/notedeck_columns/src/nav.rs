@@ -31,8 +31,8 @@ use egui_nav::{Nav, NavAction, NavResponse, NavUiType, Percent, PopupResponse, P
 use enostr::ProfileState;
 use nostrdb::{Filter, Ndb, Transaction};
 use notedeck::{
-    get_current_default_msats, get_current_wallet, tr, ui::is_narrow, Accounts, AppContext,
-    NoteAction, NoteContext, RelayAction,
+    get_current_default_msats, tr, ui::is_narrow, Accounts, AppContext, NoteAction, NoteContext,
+    RelayAction,
 };
 use tracing::error;
 
@@ -503,7 +503,6 @@ fn render_nav_body(
     col: usize,
     inner_rect: egui::Rect,
 ) -> Option<RenderNavAction> {
-    let current_account_has_wallet = get_current_wallet(ctx.accounts, ctx.global_wallet).is_some();
     let mut note_context = NoteContext {
         ndb: ctx.ndb,
         accounts: ctx.accounts,
@@ -514,7 +513,6 @@ fn render_nav_body(
         job_pool: ctx.job_pool,
         unknown_ids: ctx.unknown_ids,
         clipboard: ctx.clipboard,
-        current_account_has_wallet,
         i18n: ctx.i18n,
     };
     match top {
