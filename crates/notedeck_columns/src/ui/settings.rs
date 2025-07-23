@@ -23,7 +23,7 @@ pub enum SettingsAction {
 }
 
 impl SettingsAction {
-    pub fn process<'a>(
+    pub fn process_settings_action<'a>(
         self,
         app: &mut Damus,
         theme_handler: &'a mut ThemeHandler,
@@ -35,7 +35,7 @@ impl SettingsAction {
 
         match self {
             SettingsAction::OpenRelays => {
-                route_action = Some(RouterAction::route_to(Route::Relays))
+                route_action = Some(RouterAction::route_to(Route::Relays));
             }
             SettingsAction::SetZoom(zoom_level) => {
                 ctx.set_zoom_factor(zoom_level);

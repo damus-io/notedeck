@@ -484,8 +484,7 @@ fn process_render_nav_action(
             None
         }
         RenderNavAction::SettingsAction(action) => {
-            action.process(app, ctx.theme, ctx.i18n, ctx.img_cache, ui.ctx());
-            None
+            action.process_settings_action(app, ctx.theme, ctx.i18n, ctx.img_cache, ui.ctx())
         }
     };
 
