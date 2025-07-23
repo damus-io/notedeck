@@ -8,10 +8,12 @@ use unic_langid::{langid, LanguageIdentifier};
 const EN_XA: LanguageIdentifier = langid!("en-XA");
 const EN_US: LanguageIdentifier = langid!("en-US");
 const DE: LanguageIdentifier = langid!("de");
+const ES_419: LanguageIdentifier = langid!("es-419");
+const ES_ES: LanguageIdentifier = langid!("es-ES");
 const FR: LanguageIdentifier = langid!("FR");
 const ZH_CN: LanguageIdentifier = langid!("ZH_CN");
 const ZH_TW: LanguageIdentifier = langid!("ZH_TW");
-const NUM_FTLS: usize = 6;
+const NUM_FTLS: usize = 8;
 
 struct StaticBundle {
     identifier: LanguageIdentifier,
@@ -30,6 +32,14 @@ const FTLS: [StaticBundle; NUM_FTLS] = [
     StaticBundle {
         identifier: DE,
         ftl: include_str!("../../../../assets/translations/de/main.ftl"),
+    },
+    StaticBundle {
+        identifier: ES_419,
+        ftl: include_str!("../../../../assets/translations/es-419/main.ftl"),
+    },
+    StaticBundle {
+        identifier: ES_ES,
+        ftl: include_str!("../../../../assets/translations/es-ES/main.ftl"),
     },
     StaticBundle {
         identifier: FR,
@@ -77,6 +87,8 @@ impl Default for Localization {
             EN_US.clone(),
             EN_XA.clone(),
             DE.clone(),
+            ES_419.clone(),
+            ES_ES.clone(),
             FR.clone(),
             ZH_CN.clone(),
             ZH_TW.clone(),
