@@ -80,11 +80,7 @@ pub async fn android_main(app: AndroidApp) {
                 .intersection(columns.unrecognized_args())
                 .cloned()
                 .collect();
-            assert!(
-                completely_unrecognized.is_empty(),
-                "unrecognized args: {:?}",
-                completely_unrecognized
-            );
+            info!("ignoring unrecognized args: {:?}", _completely_unrecognized);
 
             chrome.add_app(NotedeckApp::Columns(columns));
             chrome.add_app(NotedeckApp::Dave(dave));

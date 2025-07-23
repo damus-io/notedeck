@@ -16,6 +16,7 @@ use notedeck_chrome::{
 };
 use notedeck_columns::Damus;
 use notedeck_dave::Dave;
+use tracing::info;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::EnvFilter;
 
@@ -98,16 +99,13 @@ async fn main() {
 
             setup_chrome(ctx, notedeck.args(), notedeck.theme());
 
-            // ensure we recognized all the arguments
-            let completely_unrecognized: Vec<String> = notedeck
+            // ignore recognized all the arguments for now
+            let _completely_unrecognized: Vec<String> = notedeck
                 .unrecognized_args()
                 .intersection(columns.unrecognized_args())
                 .cloned()
                 .collect();
-            assert!(
-                completely_unrecognized.is_empty(),
-                "unrecognized args: {completely_unrecognized:?}"
-            );
+            info!("ignoring unrecognized args: {:?}", _completely_unrecognized);
 
             chrome.add_app(NotedeckApp::Columns(columns));
             chrome.add_app(NotedeckApp::Dave(dave));
