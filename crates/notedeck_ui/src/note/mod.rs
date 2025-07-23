@@ -782,8 +782,12 @@ fn render_note_actionbar(
     i18n: &mut Localization,
 ) -> egui::InnerResponse<Option<NoteAction>> {
     ui.horizontal(|ui| {
+        ui.set_min_height(26.0);
+        ui.spacing_mut().item_spacing.x = 24.0;
+
         let reply_resp =
             reply_button(ui, i18n, note_key).on_hover_cursor(egui::CursorIcon::PointingHand);
+
         let quote_resp =
             quote_repost_button(ui, i18n, note_key).on_hover_cursor(egui::CursorIcon::PointingHand);
 
@@ -899,7 +903,7 @@ fn quote_repost_button(
     i18n: &mut Localization,
     note_key: NoteKey,
 ) -> egui::Response {
-    let size = 14.0;
+    let size = crate::anim::hover_small_size() + 4.0;
     let expand_size = 5.0;
     let anim_speed = 0.05;
     let id = ui.id().with(("repost_anim", note_key));
