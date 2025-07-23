@@ -212,7 +212,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
             let (_id, rect) = ui.allocate_space(egui::vec2(50.0, 20.0));
             ui.allocate_rect(rect, Sense::hover());
             ui.put(rect, |ui: &mut egui::Ui| {
-                render_reltime(ui, self.note_context.i18n, self.note.created_at(), false).response
+                render_notetime(ui, self.note_context.i18n, self.note.created_at(), false).response
             });
             let (_id, rect) = ui.allocate_space(egui::vec2(150.0, 20.0));
             ui.allocate_rect(rect, Sense::hover());
@@ -369,7 +369,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
                 ui.spacing_mut().item_spacing.x = if is_narrow(ui.ctx()) { 1.0 } else { 2.0 };
                 ui.add(Username::new(i18n, profile.as_ref().ok(), note.pubkey()).abbreviated(20));
 
-                render_reltime(ui, i18n, note.created_at(), true);
+                render_notetime(ui, i18n, note.created_at(), true)
             })
             .response;
 
@@ -862,7 +862,7 @@ fn render_note_actionbar(
 }
 
 #[profiling::function]
-fn render_reltime(
+fn render_notetime(
     ui: &mut egui::Ui,
     i18n: &mut Localization,
     created_at: u64,
