@@ -7,8 +7,6 @@
 
 # Profile about/bio field label
 About_00c0 = Über
-# Display name for account management
-Accounts_e233 = Konten
 # Column title for account management
 Accounts_f018 = Konten
 # Button label to add a relay
@@ -23,16 +21,10 @@ Add_a_wallet_to_continue_d170 = Wallet hinzufügen um fortzufahren
 Add_account_1cfc = Konto hinzufügen
 # Column title for adding new account
 Add_Account_d06c = Konto hinzufügen
-# Display name for adding account
-Add_Account_d715 = Konto hinzufügen
 # Column title for adding algorithm column
 Add_Algo_Column_0d75 = Algorithmus-Spalte hinzufügen
-# Display name for adding column
-Add_Column_c6ff = Spalte hinzufügen
 # Column title for adding new column
 Add_Column_c764 = Spalte hinzufügen
-# Display name for adding deck
-Add_Deck_6e5f = Deck hinzufügen
 # Column title for adding new deck
 Add_Deck_fabf = Deck hinzufügen
 # Column title for adding external notifications column
@@ -69,8 +61,6 @@ Broadcast_Local_7e50 = Lokal senden
 Cancel_ed3b = Abbrechen
 # Hover text for editable zap amount
 Click_to_edit_0414 = Zum Bearbeiten anklicken
-# Display name for note composition
-Compose_Note_ad11 = Notiz erstellen
 # Column title for note composition
 Compose_Note_c094 = Notiz erstellen
 # Button label to confirm an action
@@ -83,8 +73,6 @@ Connecting_6b7e = Verbinde...
 Contact_List_f85a = Kontaktliste
 # Column title for contact lists
 Contacts_7533 = Kontakte
-# Timeline kind label for contact lists
-Contacts_8b98 = Kontakte
 # Column title for last notes per contact
 Contacts__last_notes_3f84 = Kontakte (letzte Notizen)
 # Button label to copy logs
@@ -119,12 +107,8 @@ Create_Account_6994 = Konto erstellen
 Create_Deck_16b7 = Deck erstellen
 # Column title for custom timelines
 Custom_a69e = Benutzerdefiniert
-# Display name for custom timelines
-Custom_cb4f = Benutzerdefiniert
 # Column title for zap amount customization
 Customize_Zap_Amount_cfc4 = Zap-Betrag anpassen
-# Display name for zap customization
-Customize_Zap_Amount_ed29 = Zap-Betrag anpassen
 # Column title for support page
 Damus_Support_27c0 = Damus Support
 # Label for deck name input field
@@ -147,14 +131,10 @@ Display_name_f9d9 = Anzeigename
 domain___will_be_used_for_identification_b67e = "{ $domain }" wird zur Identifikation verwendet
 # Column title for editing deck
 Edit_Deck_4018 = Deck bearbeiten
-# Display name for editing deck
-Edit_Deck_c9ba = Deck bearbeiten
 # Button label to edit a deck
 Edit_Deck_fd93 = Deck bearbeiten
 # Button label to edit user profile
 Edit_Profile_49e6 = Profil bearbeiten
-# Display name for profile editing
-Edit_Profile_6699 = Profil bearbeiten
 # Column title for profile editing
 Edit_Profile_8ad4 = Profil bearbeiten
 # Placeholder for hashtag input field
@@ -171,14 +151,8 @@ Enter_your_public_key__npub___nostr_address__e_g___address____or_private_key__ns
     Für das Veröffentlichen von Beiträgen und andere Aktionen ist dein privater Schlüssel erforderlich.
 # Label for find user button
 Find_User_bd12 = Profil finden
-# Timeline kind label for hashtag feeds
-Hashtag_a0ab = Hashtag
-# Display name for hashtag feeds
-Hashtags_617e = Hashtags
 # Title for hashtags column
 Hashtags_f8e0 = Hashtags
-# Display name for home feed
-Home_3efc = Startseite
 # Title for Home column
 Home_8c19 = Startseite
 # Label for deck icon selection
@@ -205,10 +179,6 @@ k_5K_f7e6 = 5K
 Keep_track_of_your_notes___replies_a334 = Behalte den Überblick über deine Notizen & Antworten
 # Title for last note per user column
 Last_Note_per_User_17ad = Letzte Notiz pro Profil
-# Timeline kind label for last notes per pubkey
-Last_Notes_aefe = Letzte Notizen
-# Display name for last notes per contact
-Last_Per_Pubkey__Contact_33ce = Zuletzt pro Pubkey (Kontakt)
 # Bitcoin Lightning network address field label
 Lightning_network_address__lud16_ea51 = Lightning-Netzwerkadresse (lud16)
 # Login page title
@@ -241,10 +211,6 @@ Notes_60d2 = Notizen
 Notes___Replies_1ec2 = Notizen & Antworten
 # Label for notes and replies filter
 Notes___Replies_6e3b = Notizen & Antworten
-# Timeline kind label for notifications
-Notifications_6228 = Benachrichtigungen
-# Display name for notifications
-Notifications_8029 = Benachrichtigungen
 # Column title for notifications
 Notifications_d673 = Benachrichtigungen
 # Title for notifications column
@@ -267,30 +233,20 @@ Please_select_an_icon_655b = Bitte wählen ein Symbol aus.
 Post_now_8a49 = Jetzt veröffentlichen
 # Instruction for copying logs
 Press_the_button_below_to_copy_your_most_recent_logs_to_your_system_s_clipboard__Then_paste_it_into_your_email_322e = Drücke die Schaltfläche unten, um deine neuesten Protokolle in die Zwischenablage deines Systems zu kopieren. Dann füge sie in deine E-Mail ein.
-# Display name for user profiles
-Profile_2478 = Profil
-# Timeline kind label for user profiles
-Profile_9027 = Profil
 # Profile picture URL field label
 Profile_picture_81ff = Profilbild
 # Column title for quote composition
 Quote_475c = Zitat
-# Display name for quote composition
-Quote_a38e = Zitat
 # Error message when quote note cannot be found
 Quote_of_unknown_note_e4f0 = Zitat von unbekannter Notiz
 # Label for read-only profile mode
 Read_only_82ff = Nur Lesezugriff
-# Display name for relay management
-Relays_7335 = Relays
 # Column title for relay management
 Relays_9d89 = Relays
 # Label for relay list section
 Relays_ad5e = Relays
 # Column title for reply composition
 Reply_3bf1 = Antwort
-# Display name for reply composition
-Reply_b40f = Antworten
 # Hover text for reply button
 Reply_to_this_note_f5de = Auf diese Notiz antworten
 # Error message when reply note cannot be found
@@ -321,12 +277,6 @@ sats_e5ec = Sats
 Save_6f7c = Speichern
 # Button label to save profile changes
 Save_changes_00db = Änderungen speichern
-# Display name for search results
-Search_0aa0 = Suche
-# Display name for search page
-Search_4503 = Suche
-# Timeline kind label for search results
-Search_a0b8 = Suche
 # Column title for search page
 Search_c573 = Suche
 # Placeholder for search notes input field
@@ -369,8 +319,6 @@ Step_2_d08d = Schritt 2
 Subscribe_to_someone_else_s_notes_d1e9 = Abonniere die Notizen eines anderen
 # Column title for subscribing to individual user
 Subscribe_to_someone_s_notes_b3c8 = Abonniere die Notizen von jemandem
-# Display name for support page
-Support_a4b4 = Support
 # Hover text for dark mode toggle button
 Switch_to_dark_mode_4dec = Zum Dunkelmodus wechseln
 # Hover text for light mode toggle button
@@ -381,16 +329,8 @@ Tap_to_Load_4b05 = Zum Laden antippen
 The_Dave_Nostr_AI_assistant_trial_has_ended_____Thanks_for_testing__Zap-enabled_Dave_coming_soon_c6c7 = Die Testphase des Dave Nostr KI-Assistenten ist beendet :(. Vielen Dank fürs Ausprobieren! Zap-fähiger Dave kommt bald!
 # Column title for note thread view
 Thread_0f20 = Unterhaltungen
-# Display name for thread view
-Thread_9957 = Unterhaltungen
 # Link text for thread references
-thread_ad1f = Unterhaltungen
-# Generic timeline kind label
-Timeline_b0fc = Timeline
-# Timeline kind label for universe feed
-Universe_0a3e = Weltraum
-# Display name for universe feed
-Universe_d47e = Weltraum
+thread_ad1f = Unterhaltung
 # Title for universe column
 Universe_e01e = Weltraum
 # Column title for universe feed
@@ -403,8 +343,6 @@ username___at___domain___will_be_used_for_identification_a4fd = "{ $username }" 
 Username_daa7 = Benutzername
 # Column title for wallet management
 Wallet_5e50 = Wallet
-# Display name for wallet management
-Wallet_cdca = Wallet
 # Hint for deck name input field
 We_recommend_short_names_083e = Wir empfehlen kurze Namen
 # Profile website field label

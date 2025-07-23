@@ -7,8 +7,6 @@
 
 # Profile about/bio field label
 About_00c0 = 关于
-# Display name for account management
-Accounts_e233 = 帐户
 # Column title for account management
 Accounts_f018 = 帐户
 # Button label to add a relay
@@ -23,16 +21,10 @@ Add_a_wallet_to_continue_d170 = 添加钱包以继续
 Add_account_1cfc = 添加帐户
 # Column title for adding new account
 Add_Account_d06c = 添加帐户
-# Display name for adding account
-Add_Account_d715 = 添加帐户
 # Column title for adding algorithm column
 Add_Algo_Column_0d75 = 添加算法列
-# Display name for adding column
-Add_Column_c6ff = 添加列
 # Column title for adding new column
 Add_Column_c764 = 添加列
-# Display name for adding deck
-Add_Deck_6e5f = 添加仪表板
 # Column title for adding new deck
 Add_Deck_fabf = 添加仪表板
 # Column title for adding external notifications column
@@ -69,8 +61,6 @@ Broadcast_Local_7e50 = 仅广播至本地中继
 Cancel_ed3b = 取消
 # Hover text for editable zap amount
 Click_to_edit_0414 = 点击以编辑
-# Display name for note composition
-Compose_Note_ad11 = 撰写笔记
 # Column title for note composition
 Compose_Note_c094 = 撰写笔记
 # Button label to confirm an action
@@ -83,8 +73,6 @@ Connecting_6b7e = 正在连接...
 Contact_List_f85a = 联系人列表
 # Column title for contact lists
 Contacts_7533 = 联系人
-# Timeline kind label for contact lists
-Contacts_8b98 = 联系人
 # Column title for last notes per contact
 Contacts__last_notes_3f84 = 联系人（最新笔记）
 # Button label to copy logs
@@ -119,12 +107,8 @@ Create_Account_6994 = 创建帐户
 Create_Deck_16b7 = 创建仪表板
 # Column title for custom timelines
 Custom_a69e = 自定义
-# Display name for custom timelines
-Custom_cb4f = 自定义
 # Column title for zap amount customization
 Customize_Zap_Amount_cfc4 = 自定义打闪金额
-# Display name for zap customization
-Customize_Zap_Amount_ed29 = 自定义打闪金额
 # Column title for support page
 Damus_Support_27c0 = 达摩支持
 # Label for deck name input field
@@ -147,14 +131,10 @@ Display_name_f9d9 = 显示名称
 domain___will_be_used_for_identification_b67e = "{ $domain }" 将用于身份识别
 # Column title for editing deck
 Edit_Deck_4018 = 编辑仪表板
-# Display name for editing deck
-Edit_Deck_c9ba = 编辑仪表板
 # Button label to edit a deck
 Edit_Deck_fd93 = 编辑仪表板
 # Button label to edit user profile
 Edit_Profile_49e6 = 编辑个人档案
-# Display name for profile editing
-Edit_Profile_6699 = 编辑个人档案
 # Column title for profile editing
 Edit_Profile_8ad4 = 编辑个人档案
 # Placeholder for hashtag input field
@@ -169,14 +149,8 @@ Enter_your_key_0fca = 请输入你的密钥
 Enter_your_public_key__npub___nostr_address__e_g___address____or_private_key__nsec___You_must_enter_your_private_key_to_be_able_to_post__reply__etc_48e9 = 请输入你的公钥（npub）、nostr 地址（如 { $address }）、或私钥(nsec)。 你必须输入你的私钥才能发帖、回复等等。
 # Label for find user button
 Find_User_bd12 = 查找用户
-# Timeline kind label for hashtag feeds
-Hashtag_a0ab = 标签
-# Display name for hashtag feeds
-Hashtags_617e = 标签
 # Title for hashtags column
 Hashtags_f8e0 = 标签
-# Display name for home feed
-Home_3efc = 主页
 # Title for Home column
 Home_8c19 = 主页
 # Label for deck icon selection
@@ -203,10 +177,6 @@ k_5K_f7e6 = 5千
 Keep_track_of_your_notes___replies_a334 = 随时查看你的笔记和回复
 # Title for last note per user column
 Last_Note_per_User_17ad = 每个用户的最新笔记
-# Timeline kind label for last notes per pubkey
-Last_Notes_aefe = 最新笔记
-# Display name for last notes per contact
-Last_Per_Pubkey__Contact_33ce = 每个公钥（联系人）的最新笔记
 # Bitcoin Lightning network address field label
 Lightning_network_address__lud16_ea51 = 闪电网络地址（lud16）
 # Login page title
@@ -239,10 +209,6 @@ Notes_60d2 = 笔记
 Notes___Replies_1ec2 = 笔记和回复
 # Label for notes and replies filter
 Notes___Replies_6e3b = 笔记和回复
-# Timeline kind label for notifications
-Notifications_6228 = 通知
-# Display name for notifications
-Notifications_8029 = 通知
 # Column title for notifications
 Notifications_d673 = 通知
 # Title for notifications column
@@ -265,30 +231,20 @@ Please_select_an_icon_655b = 请选择一个图标。
 Post_now_8a49 = 立即发布
 # Instruction for copying logs
 Press_the_button_below_to_copy_your_most_recent_logs_to_your_system_s_clipboard__Then_paste_it_into_your_email_322e = 请按下面的按钮将你最近的日志复制到系统剪贴板，然后将其粘贴到你的电子邮件。
-# Display name for user profiles
-Profile_2478 = 个人资料
-# Timeline kind label for user profiles
-Profile_9027 = 个人资料
 # Profile picture URL field label
 Profile_picture_81ff = 头像图片
 # Column title for quote composition
 Quote_475c = 引用
-# Display name for quote composition
-Quote_a38e = 引用
 # Error message when quote note cannot be found
 Quote_of_unknown_note_e4f0 = 引用未知笔记
 # Label for read-only profile mode
 Read_only_82ff = 只读
-# Display name for relay management
-Relays_7335 = 中继器
 # Column title for relay management
 Relays_9d89 = 中继器
 # Label for relay list section
 Relays_ad5e = 中继器
 # Column title for reply composition
 Reply_3bf1 = 回复
-# Display name for reply composition
-Reply_b40f = 回复
 # Hover text for reply button
 Reply_to_this_note_f5de = 回复此笔记
 # Error message when reply note cannot be found
@@ -319,12 +275,6 @@ sats_e5ec = 聪
 Save_6f7c = 保存
 # Button label to save profile changes
 Save_changes_00db = 保存变更
-# Display name for search results
-Search_0aa0 = 搜索
-# Display name for search page
-Search_4503 = 搜索
-# Timeline kind label for search results
-Search_a0b8 = 搜索
 # Column title for search page
 Search_c573 = 搜索
 # Placeholder for search notes input field
@@ -367,8 +317,6 @@ Step_2_d08d = 第二步
 Subscribe_to_someone_else_s_notes_d1e9 = 订阅他人的笔记
 # Column title for subscribing to individual user
 Subscribe_to_someone_s_notes_b3c8 = 订阅某人的笔记
-# Display name for support page
-Support_a4b4 = 获取帮助
 # Hover text for dark mode toggle button
 Switch_to_dark_mode_4dec = 切换到暗色模式
 # Hover text for light mode toggle button
@@ -379,16 +327,8 @@ Tap_to_Load_4b05 = 点击加载
 The_Dave_Nostr_AI_assistant_trial_has_ended_____Thanks_for_testing__Zap-enabled_Dave_coming_soon_c6c7 = Dave Nostr AI 助手试用期已经结束 :(。感谢测试！可打闪付款的 Dave 即将来临！
 # Column title for note thread view
 Thread_0f20 = 帖子
-# Display name for thread view
-Thread_9957 = 帖子
 # Link text for thread references
 thread_ad1f = 帖子
-# Generic timeline kind label
-Timeline_b0fc = 时间线
-# Timeline kind label for universe feed
-Universe_0a3e = 宇宙
-# Display name for universe feed
-Universe_d47e = 宇宙
 # Title for universe column
 Universe_e01e = 宇宙
 # Column title for universe feed
@@ -401,8 +341,6 @@ username___at___domain___will_be_used_for_identification_a4fd = "{ $username }" 
 Username_daa7 = 用户名
 # Column title for wallet management
 Wallet_5e50 = 钱包
-# Display name for wallet management
-Wallet_cdca = 钱包
 # Hint for deck name input field
 We_recommend_short_names_083e = 我们推荐使用简短的名称
 # Profile website field label

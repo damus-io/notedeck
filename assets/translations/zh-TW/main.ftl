@@ -7,8 +7,6 @@
 
 # Profile about/bio field label
 About_00c0 = 關於
-# Display name for account management
-Accounts_e233 = 帳戶
 # Column title for account management
 Accounts_f018 = 帳戶
 # Button label to add a relay
@@ -23,16 +21,10 @@ Add_a_wallet_to_continue_d170 = 添加錢包以繼續
 Add_account_1cfc = 新增帳戶
 # Column title for adding new account
 Add_Account_d06c = 新增帳戶
-# Display name for adding account
-Add_Account_d715 = 新增帳戶
 # Column title for adding algorithm column
 Add_Algo_Column_0d75 = 添加算法列
-# Display name for adding column
-Add_Column_c6ff = 添加列
 # Column title for adding new column
 Add_Column_c764 = 添加列
-# Display name for adding deck
-Add_Deck_6e5f = 添加儀表板
 # Column title for adding new deck
 Add_Deck_fabf = 添加儀表板
 # Column title for adding external notifications column
@@ -69,8 +61,6 @@ Broadcast_Local_7e50 = 僅廣播至本地中繼
 Cancel_ed3b = 取消
 # Hover text for editable zap amount
 Click_to_edit_0414 = 點擊編輯
-# Display name for note composition
-Compose_Note_ad11 = 撰寫筆記
 # Column title for note composition
 Compose_Note_c094 = 撰寫筆記
 # Button label to confirm an action
@@ -83,8 +73,6 @@ Connecting_6b7e = 正在連接 ...
 Contact_List_f85a = 聯絡人列表
 # Column title for contact lists
 Contacts_7533 = 聯絡人
-# Timeline kind label for contact lists
-Contacts_8b98 = 聯絡人
 # Column title for last notes per contact
 Contacts__last_notes_3f84 = 聯絡人（最新筆記）
 # Button label to copy logs
@@ -119,12 +107,8 @@ Create_Account_6994 = 創建帳戶
 Create_Deck_16b7 = 創建儀表板
 # Column title for custom timelines
 Custom_a69e = 自訂
-# Display name for custom timelines
-Custom_cb4f = 自訂
 # Column title for zap amount customization
 Customize_Zap_Amount_cfc4 = 自訂打閃金額
-# Display name for zap customization
-Customize_Zap_Amount_ed29 = 自訂打閃金額
 # Column title for support page
 Damus_Support_27c0 = 達摩支持
 # Label for deck name input field
@@ -147,14 +131,10 @@ Display_name_f9d9 = 顯示名稱
 domain___will_be_used_for_identification_b67e = "{ $domain }" 將用於身份識別
 # Column title for editing deck
 Edit_Deck_4018 = 編輯儀表板
-# Display name for editing deck
-Edit_Deck_c9ba = 編輯儀表板
 # Button label to edit a deck
 Edit_Deck_fd93 = 編輯儀表板
 # Button label to edit user profile
 Edit_Profile_49e6 = 編輯個人檔案
-# Display name for profile editing
-Edit_Profile_6699 = 編輯個人檔案
 # Column title for profile editing
 Edit_Profile_8ad4 = 編輯個人檔案
 # Placeholder for hashtag input field
@@ -169,14 +149,8 @@ Enter_your_key_0fca = 請輸入你的密鑰
 Enter_your_public_key__npub___nostr_address__e_g___address____or_private_key__nsec___You_must_enter_your_private_key_to_be_able_to_post__reply__etc_48e9 = 請輸入你的公鑰（npub）、nostr 地址（如 { $address }）、或私鑰（nsec）。你必須輸入你的私鑰才能發貼、回覆等等。
 # Label for find user button
 Find_User_bd12 = 查找用戶
-# Timeline kind label for hashtag feeds
-Hashtag_a0ab = 標籤
-# Display name for hashtag feeds
-Hashtags_617e = 標籤
 # Title for hashtags column
 Hashtags_f8e0 = 標籤
-# Display name for home feed
-Home_3efc = 主頁
 # Title for Home column
 Home_8c19 = 主頁
 # Label for deck icon selection
@@ -203,10 +177,6 @@ k_5K_f7e6 = 5千
 Keep_track_of_your_notes___replies_a334 = 隨時查看你的筆記和回覆
 # Title for last note per user column
 Last_Note_per_User_17ad = 每個用戶的最新筆記
-# Timeline kind label for last notes per pubkey
-Last_Notes_aefe = 最新筆記
-# Display name for last notes per contact
-Last_Per_Pubkey__Contact_33ce = 每個公鑰（聯繫人）的最新筆記
 # Bitcoin Lightning network address field label
 Lightning_network_address__lud16_ea51 = 閃電網絡地址（lud16）
 # Login page title
@@ -239,10 +209,6 @@ Notes_60d2 = 筆記
 Notes___Replies_1ec2 = 筆記和回覆
 # Label for notes and replies filter
 Notes___Replies_6e3b = 筆記和回覆
-# Timeline kind label for notifications
-Notifications_6228 = 通知
-# Display name for notifications
-Notifications_8029 = 通知
 # Column title for notifications
 Notifications_d673 = 通知
 # Title for notifications column
@@ -265,30 +231,20 @@ Please_select_an_icon_655b = 請選擇一個圖標。
 Post_now_8a49 = 立即發布
 # Instruction for copying logs
 Press_the_button_below_to_copy_your_most_recent_logs_to_your_system_s_clipboard__Then_paste_it_into_your_email_322e = 請按下面的按鈕將你最近的日誌複製到剪貼板，然後將其粘貼到你的電子郵件。
-# Display name for user profiles
-Profile_2478 = 個人檔案
-# Timeline kind label for user profiles
-Profile_9027 = 個人檔案
 # Profile picture URL field label
 Profile_picture_81ff = 頭像圖片
 # Column title for quote composition
 Quote_475c = 引用
-# Display name for quote composition
-Quote_a38e = 引用
 # Error message when quote note cannot be found
 Quote_of_unknown_note_e4f0 = 引用未知筆記
 # Label for read-only profile mode
 Read_only_82ff = 只讀
-# Display name for relay management
-Relays_7335 = 中繼器
 # Column title for relay management
 Relays_9d89 = 中繼器
 # Label for relay list section
 Relays_ad5e = 中繼器
 # Column title for reply composition
 Reply_3bf1 = 回覆
-# Display name for reply composition
-Reply_b40f = 回覆
 # Hover text for reply button
 Reply_to_this_note_f5de = 回覆此筆記
 # Error message when reply note cannot be found
@@ -319,12 +275,6 @@ sats_e5ec = 聰
 Save_6f7c = 保存
 # Button label to save profile changes
 Save_changes_00db = 保存變更
-# Display name for search results
-Search_0aa0 = 搜索
-# Display name for search page
-Search_4503 = 搜索
-# Timeline kind label for search results
-Search_a0b8 = 搜索
 # Column title for search page
 Search_c573 = 搜索
 # Placeholder for search notes input field
@@ -367,8 +317,6 @@ Step_2_d08d = 第二步
 Subscribe_to_someone_else_s_notes_d1e9 = 訂閱他人的筆記
 # Column title for subscribing to individual user
 Subscribe_to_someone_s_notes_b3c8 = 訂閱某人的筆記
-# Display name for support page
-Support_a4b4 = 獲取幫助
 # Hover text for dark mode toggle button
 Switch_to_dark_mode_4dec = 切換到暗色模式
 # Hover text for light mode toggle button
@@ -379,16 +327,8 @@ Tap_to_Load_4b05 = 點擊加載
 The_Dave_Nostr_AI_assistant_trial_has_ended_____Thanks_for_testing__Zap-enabled_Dave_coming_soon_c6c7 = Dave Nostr AI 助手試用期已經結束 :(。感謝測試！可打閃付款的 Dave 即將來臨！
 # Column title for note thread view
 Thread_0f20 = 串文
-# Display name for thread view
-Thread_9957 = 串文
 # Link text for thread references
 thread_ad1f = 串文
-# Generic timeline kind label
-Timeline_b0fc = 時間線
-# Timeline kind label for universe feed
-Universe_0a3e = 宇宙
-# Display name for universe feed
-Universe_d47e = 宇宙
 # Title for universe column
 Universe_e01e = 宇宙
 # Column title for universe feed
@@ -401,8 +341,6 @@ username___at___domain___will_be_used_for_identification_a4fd = "{ $username }" 
 Username_daa7 = 用戶名
 # Column title for wallet management
 Wallet_5e50 = 錢包
-# Display name for wallet management
-Wallet_cdca = 錢包
 # Hint for deck name input field
 We_recommend_short_names_083e = 我們推薦使用簡短的名稱
 # Profile website field label

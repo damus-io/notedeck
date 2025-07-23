@@ -7,8 +7,6 @@
 
 # Profile about/bio field label
 About_00c0 = A propos
-# Display name for account management
-Accounts_e233 = Comptes
 # Column title for account management
 Accounts_f018 = Comptes
 # Button label to add a relay
@@ -23,16 +21,10 @@ Add_a_wallet_to_continue_d170 = Ajouter un portefeuille pour continuer
 Add_account_1cfc = Ajouter un compte
 # Column title for adding new account
 Add_Account_d06c = Ajouter un compte
-# Display name for adding account
-Add_Account_d715 = Ajouter un compte
 # Column title for adding algorithm column
 Add_Algo_Column_0d75 = Ajouter une colonne Algo
-# Display name for adding column
-Add_Column_c6ff = Ajouter une colonne
 # Column title for adding new column
 Add_Column_c764 = Ajouter une colonne
-# Display name for adding deck
-Add_Deck_6e5f = Ajouter un deck
 # Column title for adding new deck
 Add_Deck_fabf = Ajouter un deck
 # Column title for adding external notifications column
@@ -69,8 +61,6 @@ Broadcast_Local_7e50 = Diffusion locale
 Cancel_ed3b = Annuler
 # Hover text for editable zap amount
 Click_to_edit_0414 = Cliquer pour modifier
-# Display name for note composition
-Compose_Note_ad11 = Ecrire une note
 # Column title for note composition
 Compose_Note_c094 = Ecrire une note
 # Button label to confirm an action
@@ -83,8 +73,6 @@ Connecting_6b7e = Connexion...
 Contact_List_f85a = Liste de contacts
 # Column title for contact lists
 Contacts_7533 = Contacts
-# Timeline kind label for contact lists
-Contacts_8b98 = Contacts
 # Column title for last notes per contact
 Contacts__last_notes_3f84 = Contacts (dernières notes)
 # Button label to copy logs
@@ -119,12 +107,8 @@ Create_Account_6994 = Créer un compte
 Create_Deck_16b7 = Créer un deck
 # Column title for custom timelines
 Custom_a69e = Personnaliser
-# Display name for custom timelines
-Custom_cb4f = Personnaliser
 # Column title for zap amount customization
 Customize_Zap_Amount_cfc4 = Personnaliser le montant du Zap
-# Display name for zap customization
-Customize_Zap_Amount_ed29 = Personnaliser le montant du Zap
 # Column title for support page
 Damus_Support_27c0 = Assistance Damus
 # Label for deck name input field
@@ -147,14 +131,10 @@ Display_name_f9d9 = Nom d'utilisateur
 domain___will_be_used_for_identification_b67e = "{ $domain }" sera utilisé pour l'identification
 # Column title for editing deck
 Edit_Deck_4018 = Modifier le deck
-# Display name for editing deck
-Edit_Deck_c9ba = Modifier le deck
 # Button label to edit a deck
 Edit_Deck_fd93 = Modifier le deck
 # Button label to edit user profile
 Edit_Profile_49e6 = Modifier le profil
-# Display name for profile editing
-Edit_Profile_6699 = Modifier le profil
 # Column title for profile editing
 Edit_Profile_8ad4 = Modifier le profil
 # Placeholder for hashtag input field
@@ -169,14 +149,8 @@ Enter_your_key_0fca = Entrez votre clé
 Enter_your_public_key__npub___nostr_address__e_g___address____or_private_key__nsec___You_must_enter_your_private_key_to_be_able_to_post__reply__etc_48e9 = Entrez votre clé publique (npub), votre adresse nostr (par exemple { $address }), ou votre clé privée (nsec). Vous devez entrer votre clé privée pour pouvoir poster, répondre, etc.
 # Label for find user button
 Find_User_bd12 = Trouver un utilisateur
-# Timeline kind label for hashtag feeds
-Hashtag_a0ab = Hashtag
-# Display name for hashtag feeds
-Hashtags_617e = Hashtags
 # Title for hashtags column
 Hashtags_f8e0 = Hashtags
-# Display name for home feed
-Home_3efc = Accueil
 # Title for Home column
 Home_8c19 = Accueil
 # Label for deck icon selection
@@ -203,10 +177,6 @@ k_5K_f7e6 = 5K
 Keep_track_of_your_notes___replies_a334 = Gardez une trace de vos notes & réponses
 # Title for last note per user column
 Last_Note_per_User_17ad = Dernière note par utilisateur
-# Timeline kind label for last notes per pubkey
-Last_Notes_aefe = Dernières notes
-# Display name for last notes per contact
-Last_Per_Pubkey__Contact_33ce = Dernière par Pubkey (Contact)
 # Bitcoin Lightning network address field label
 Lightning_network_address__lud16_ea51 = Adresse réseau Lightning (lud16)
 # Login page title
@@ -239,10 +209,6 @@ Notes_60d2 = Notes
 Notes___Replies_1ec2 = Notes & Réponses
 # Label for notes and replies filter
 Notes___Replies_6e3b = Notes & Réponses
-# Timeline kind label for notifications
-Notifications_6228 = Notifications
-# Display name for notifications
-Notifications_8029 = Notifications
 # Column title for notifications
 Notifications_d673 = Notifications
 # Title for notifications column
@@ -265,30 +231,20 @@ Please_select_an_icon_655b = Veuillez choisir une icône.
 Post_now_8a49 = Publier maintenant
 # Instruction for copying logs
 Press_the_button_below_to_copy_your_most_recent_logs_to_your_system_s_clipboard__Then_paste_it_into_your_email_322e = Cliquez sur le bouton ci-dessous pour copier vos données les plus récentes dans le presse-papiers de votre système. Collez-les ensuite dans votre courrier électronique.
-# Display name for user profiles
-Profile_2478 = Profil
-# Timeline kind label for user profiles
-Profile_9027 = Profil
 # Profile picture URL field label
 Profile_picture_81ff = Photo de profil
 # Column title for quote composition
 Quote_475c = Citation
-# Display name for quote composition
-Quote_a38e = Citation
 # Error message when quote note cannot be found
 Quote_of_unknown_note_e4f0 = Citation d'une note inconnue
 # Label for read-only profile mode
 Read_only_82ff = En lecture seule
-# Display name for relay management
-Relays_7335 = Relais
 # Column title for relay management
 Relays_9d89 = Relais
 # Label for relay list section
 Relays_ad5e = Relais
 # Column title for reply composition
 Reply_3bf1 = Répondre
-# Display name for reply composition
-Reply_b40f = Répondre
 # Hover text for reply button
 Reply_to_this_note_f5de = Répondre à cette note
 # Error message when reply note cannot be found
@@ -319,12 +275,6 @@ sats_e5ec = sats
 Save_6f7c = Enregistrer
 # Button label to save profile changes
 Save_changes_00db = Enregistrer les modifications
-# Display name for search results
-Search_0aa0 = Recherche
-# Display name for search page
-Search_4503 = Rechercher
-# Timeline kind label for search results
-Search_a0b8 = Recherche
 # Column title for search page
 Search_c573 = Rechercher
 # Placeholder for search notes input field
@@ -367,8 +317,6 @@ Step_2_d08d = Etape 2
 Subscribe_to_someone_else_s_notes_d1e9 = S'abonner aux notes de quelqu'un d'autre
 # Column title for subscribing to individual user
 Subscribe_to_someone_s_notes_b3c8 = S'abonner aux notes de quelqu'un
-# Display name for support page
-Support_a4b4 = Assistance
 # Hover text for dark mode toggle button
 Switch_to_dark_mode_4dec = Passer en mode sombre
 # Hover text for light mode toggle button
@@ -379,16 +327,8 @@ Tap_to_Load_4b05 = Appuyer pour charger
 The_Dave_Nostr_AI_assistant_trial_has_ended_____Thanks_for_testing__Zap-enabled_Dave_coming_soon_c6c7 = La période d'essai de l'assistant IA Dave Nostr est terminée :(. Merci de l'avoir testé ! Un Dave compatible-Zap sera bientôt disponible !
 # Column title for note thread view
 Thread_0f20 = Fil
-# Display name for thread view
-Thread_9957 = Fil
 # Link text for thread references
 thread_ad1f = fil
-# Generic timeline kind label
-Timeline_b0fc = Chronologie
-# Timeline kind label for universe feed
-Universe_0a3e = Universel
-# Display name for universe feed
-Universe_d47e = Universel
 # Title for universe column
 Universe_e01e = Universel
 # Column title for universe feed
@@ -401,8 +341,6 @@ username___at___domain___will_be_used_for_identification_a4fd = "{ $username }" 
 Username_daa7 = Nom d'utilisateur
 # Column title for wallet management
 Wallet_5e50 = Portefeuille
-# Display name for wallet management
-Wallet_cdca = Portefeuille
 # Hint for deck name input field
 We_recommend_short_names_083e = Nous recommandons des noms courts
 # Profile website field label
