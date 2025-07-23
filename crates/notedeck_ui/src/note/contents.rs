@@ -46,6 +46,9 @@ impl<'a, 'd> NoteContents<'a, 'd> {
 
 impl egui::Widget for &mut NoteContents<'_, '_> {
     fn ui(self, ui: &mut egui::Ui) -> egui::Response {
+        if self.options.contains(NoteOptions::ShowNoteClientTop) {
+            render_client(ui, self.note_context.note_cache, self.note);
+        }
         let result = render_note_contents(
             ui,
             self.note_context,
@@ -54,7 +57,7 @@ impl egui::Widget for &mut NoteContents<'_, '_> {
             self.options,
             self.jobs,
         );
-        if self.options.contains(NoteOptions::ShowNoteClient) {
+        if self.options.contains(NoteOptions::ShowNoteClientBottom) {
             render_client(ui, self.note_context.note_cache, self.note);
         }
         self.action = result.action;

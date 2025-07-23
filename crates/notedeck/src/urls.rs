@@ -68,6 +68,17 @@ impl UrlCache {
             }
         }
     }
+
+    pub fn clear(&mut self) {
+        if self.from_disk_promise.is_none() {
+            let cache = self.cache.clone();
+            std::thread::spawn(move || {
+                if let Ok(mut locked_cache) = cache.write() {
+                    locked_cache.clear();
+                }
+            });
+        }
+    }
 }
 
 fn merge_cache(cur_cache: Arc<RwLock<UrlsToMime>>, from_disk: UrlsToMime) {

@@ -151,7 +151,7 @@ impl ChromePanelAction {
             }
 
             Self::Settings => {
-                Self::columns_navigate(ctx, chrome, notedeck_columns::Route::Relays);
+                Self::columns_navigate(ctx, chrome, notedeck_columns::Route::Settings);
             }
 
             Self::Wallet => {
@@ -775,6 +775,38 @@ fn pfp_button(ctx: &mut AppContext, ui: &mut egui::Ui) -> egui::Response {
     ui.put(helper.get_animation_rect(), &mut widget);
 
     helper.take_animation_response()
+
+    // let selected = ctx.accounts.cache.selected();
+
+    // pfp_resp.context_menu(|ui| {
+    //     for (pk, account) in &ctx.accounts.cache {
+    //         let profile = ctx.ndb.get_profile_by_pubkey(&txn, pk).ok();
+    //         let is_selected = *pk == selected.key.pubkey;
+    //         let has_nsec = account.key.secret_key.is_some();
+
+    //         let profile_peview_view = {
+    //             let max_size = egui::vec2(ui.available_width(), 77.0);
+    //             let resp = ui.allocate_response(max_size, egui::Sense::click());
+    //             ui.allocate_new_ui(UiBuilder::new().max_rect(resp.rect), |ui| {
+    //                 ui.add(
+    //                     &mut ProfilePic::new(ctx.img_cache, get_profile_url(profile.as_ref()))
+    //                         .size(24.0),
+    //                 )
+    //             })
+    //         };
+
+    //         // if let Some(op) = profile_peview_view {
+    //         //     return_op = Some(match op {
+    //         //         ProfilePreviewAction::SwitchTo => AccountsViewResponse::SelectAccount(*pk),
+    //         //         ProfilePreviewAction::RemoveAccount => AccountsViewResponse::RemoveAccount(*pk),
+    //         //     });
+    //         // }
+    //     }
+    //     // if ui.menu_image_button(image, add_contents).clicked() {
+    //     //     // ui.ctx().copy_text(url.to_owned());
+    //     //     ui.close_menu();
+    //     // }
+    // });
 }
 
 /// The section of the chrome sidebar that starts at the

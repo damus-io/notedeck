@@ -7,9 +7,11 @@ use poll_promise::Promise;
 use egui::ColorImage;
 
 use std::collections::HashMap;
-use std::fs::{create_dir_all, File};
+use std::fs::{self, create_dir_all, File};
 use std::sync::mpsc::Receiver;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
+use std::{io, thread};
 
 use hex::ToHex;
 use sha2::Digest;
@@ -220,6 +222,7 @@ pub struct MediaCache {
     pub cache_dir: path::PathBuf,
     pub textures_cache: TexturesCache,
     pub cache_type: MediaCacheType,
+    pub cache_size: Arc<Mutex<Option<u64>>>,
 }
 
 #[derive(Debug, Eq, PartialEq, Clone, Copy)]
@@ -231,10 +234,29 @@ pub enum MediaCacheType {
 impl MediaCache {
     pub fn new(parent_dir: &Path, cache_type: MediaCacheType) -> Self {
         let cache_dir = parent_dir.join(Self::rel_dir(cache_type));
+
+        let cache_dir_clone = cache_dir.clone();
+        let cache_size = Arc::new(Mutex::new(None));
+        let cache_size_clone = Arc::clone(&cache_size);
+
+        thread::spawn(move || {
+            let mut last_checked = Instant::now() - Duration::from_secs(999);
+            loop {
+                // check cache folder size every 60 s
+                if last_checked.elapsed() >= Duration::from_secs(60) {
+                    let size = compute_folder_size(&cache_dir_clone);
+                    *cache_size_clone.lock().unwrap() = Some(size);
+                    last_checked = Instant::now();
+                }
+                thread::sleep(Duration::from_secs(5));
+            }
+        });
+
         Self {
             cache_dir,
             textures_cache: TexturesCache::default(),
             cache_type,
+            cache_size,
         }
     }
 
@@ -331,7 +353,13 @@ impl MediaCache {
                 );
             }
         }
+
         Ok(())
+    }
+
+    fn clear(&mut self) {
+        self.textures_cache.cache.clear();
+        *self.cache_size.try_lock().unwrap() = Some(0);
     }
 }
 
@@ -349,7 +377,28 @@ fn color_image_to_rgba(color_image: ColorImage) -> image::RgbaImage {
         .expect("Failed to create RgbaImage from ColorImage")
 }
 
+fn compute_folder_size<P: AsRef<Path>>(path: P) -> u64 {
+    fn walk(path: &Path) -> u64 {
+        let mut size = 0;
+        if let Ok(entries) = fs::read_dir(path) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if let Ok(metadata) = entry.metadata() {
+                    if metadata.is_file() {
+                        size += metadata.len();
+                    } else if metadata.is_dir() {
+                        size += walk(&path);
+                    }
+                }
+            }
+        }
+        size
+    }
+    walk(path.as_ref())
+}
+
 pub struct Images {
+    pub base_path: path::PathBuf,
     pub static_imgs: MediaCache,
     pub gifs: MediaCache,
     pub urls: UrlMimes,
@@ -360,6 +409,7 @@ impl Images {
     /// path to directory to place [`MediaCache`]s
     pub fn new(path: path::PathBuf) -> Self {
         Self {
+            base_path: path.clone(),
             static_imgs: MediaCache::new(&path, MediaCacheType::Image),
             gifs: MediaCache::new(&path, MediaCacheType::Gif),
             urls: UrlMimes::new(UrlCache::new(path.join(UrlCache::rel_dir()))),
@@ -384,6 +434,26 @@ impl Images {
             MediaCacheType::Image => &mut self.static_imgs,
             MediaCacheType::Gif => &mut self.gifs,
         }
+    }
+
+    pub fn clear_folder_contents(&mut self) -> io::Result<()> {
+        for entry in fs::read_dir(self.base_path.clone())? {
+            let entry = entry?;
+            let path = entry.path();
+
+            if path.is_dir() {
+                fs::remove_dir_all(path)?;
+            } else {
+                fs::remove_file(path)?;
+            }
+        }
+
+        self.urls.cache.clear();
+        self.static_imgs.clear();
+        self.gifs.clear();
+        self.gif_states.clear();
+
+        Ok(())
     }
 }
 
