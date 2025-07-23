@@ -775,7 +775,7 @@ fn render_note_actionbar(
     note_key: NoteKey,
     i18n: &mut Localization,
 ) -> egui::InnerResponse<Option<NoteAction>> {
-    ui.horizontal(|ui| 's: {
+    ui.horizontal(|ui| {
         let reply_resp =
             reply_button(ui, i18n, note_key).on_hover_cursor(egui::CursorIcon::PointingHand);
         let quote_resp =
@@ -783,16 +783,14 @@ fn render_note_actionbar(
 
         let to_noteid = |id: &[u8; 32]| NoteId::new(*id);
         if reply_resp.clicked() {
-            break 's Some(NoteAction::Reply(to_noteid(note_id)));
+            return Some(NoteAction::Reply(to_noteid(note_id)));
         }
 
         if quote_resp.clicked() {
-            break 's Some(NoteAction::Quote(to_noteid(note_id)));
+            return Some(NoteAction::Quote(to_noteid(note_id)));
         }
 
-        let Some(Zapper { zaps, cur_acc }) = zapper else {
-            break 's None;
-        };
+        let Zapper { zaps, cur_acc } = zapper?;
 
         let zap_target = ZapTarget::Note(NoteZapTarget {
             note_id,
@@ -807,7 +805,7 @@ fn render_note_actionbar(
         };
 
         if zap_state.is_err() {
-            break 's Some(NoteAction::Zap(ZapAction::ClearError(target)));
+            return Some(NoteAction::Zap(ZapAction::ClearError(target)));
         }
 
         let zap_resp = {
@@ -825,11 +823,11 @@ fn render_note_actionbar(
         .on_hover_cursor(egui::CursorIcon::PointingHand);
 
         if zap_resp.secondary_clicked() {
-            break 's Some(NoteAction::Zap(ZapAction::CustomizeAmount(target)));
+            return Some(NoteAction::Zap(ZapAction::CustomizeAmount(target)));
         }
 
         if !zap_resp.clicked() {
-            break 's None;
+            return None;
         }
 
         Some(NoteAction::Zap(ZapAction::Send(ZapTargetAmount {
