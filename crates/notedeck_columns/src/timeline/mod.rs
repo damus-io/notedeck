@@ -607,6 +607,7 @@ pub fn fetch_contact_list(
         ContactState::Received {
             contacts: _,
             note_key: _,
+            timestamp: _,
         } => FilterState::GotRemote(filter::GotRemoteType::Contact),
     };
 
@@ -726,6 +727,7 @@ pub fn is_timeline_ready(
             let ContactState::Received {
                 contacts: _,
                 note_key,
+                timestamp: _,
             } = accounts.get_selected_account().data.contacts.get_state()
             else {
                 return false;

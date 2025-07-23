@@ -15,6 +15,7 @@ pub enum ContactState {
     Received {
         contacts: HashSet<Pubkey>,
         note_key: NoteKey,
+        timestamp: u64,
     },
 }
 
@@ -57,6 +58,7 @@ impl Contacts {
             ContactState::Received {
                 contacts,
                 note_key: _,
+                timestamp: _,
             } => {
                 if contacts.contains(other_pubkey) {
                     IsFollowing::Yes
@@ -82,6 +84,18 @@ impl Contacts {
             }
         };
 
+        if let ContactState::Received {
+            contacts: _,
+            note_key: _,
+            timestamp,
+        } = self.get_state()
+        {
+            if *timestamp > note.created_at() {
+                // the current contact list is more up to date than the one we just received. ignore it.
+                return;
+            }
+        }
+
         update_state(&mut self.state, &note, *key);
     }
 
@@ -96,11 +110,17 @@ fn update_state(state: &mut ContactState, note: &Note, key: NoteKey) {
             *state = ContactState::Received {
                 contacts: get_contacts_owned(note),
                 note_key: key,
+                timestamp: note.created_at(),
             };
         }
-        ContactState::Received { contacts, note_key } => {
+        ContactState::Received {
+            contacts,
+            note_key,
+            timestamp,
+        } => {
             update_contacts(contacts, note);
             *note_key = key;
+            *timestamp = note.created_at();
         }
     };
 }
