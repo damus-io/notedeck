@@ -207,6 +207,10 @@ impl Accounts {
         self.cache.selected_mut()
     }
 
+    pub fn get_selected_wallet(&self) -> Option<&ZapWallet> {
+        self.cache.selected().wallet.as_ref()
+    }
+
     pub fn get_selected_wallet_mut(&mut self) -> Option<&mut ZapWallet> {
         self.cache.selected_mut().wallet.as_mut()
     }
