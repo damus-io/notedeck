@@ -24,12 +24,23 @@ pub fn get_wallet_for<'a>(
     global_wallet.wallet.as_ref()
 }
 
-pub fn get_current_wallet<'a>(
+pub fn get_current_wallet_mut<'a>(
     accounts: &'a mut Accounts,
     global_wallet: &'a mut GlobalWallet,
 ) -> Option<&'a mut ZapWallet> {
     let Some(wallet) = accounts.get_selected_wallet_mut() else {
         return global_wallet.wallet.as_mut();
+    };
+
+    Some(wallet)
+}
+
+pub fn get_current_wallet<'a>(
+    accounts: &'a Accounts,
+    global_wallet: &'a GlobalWallet,
+) -> Option<&'a ZapWallet> {
+    let Some(wallet) = accounts.get_selected_wallet() else {
+        return global_wallet.wallet.as_ref();
     };
 
     Some(wallet)

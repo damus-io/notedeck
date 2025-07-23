@@ -20,8 +20,13 @@ pub fn hover_expand(
     (rect, size, response)
 }
 
+#[inline]
+pub fn hover_small_size() -> f32 {
+    14.0
+}
+
 pub fn hover_expand_small(ui: &mut egui::Ui, id: egui::Id) -> (egui::Rect, f32, egui::Response) {
-    let size = 10.0;
+    let size = hover_small_size();
     let expand_size = 5.0;
     let anim_speed = 0.05;
 

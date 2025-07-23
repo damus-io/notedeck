@@ -1,6 +1,6 @@
 use egui::{vec2, CornerRadius, Layout};
 use notedeck::{
-    get_current_wallet, tr, Accounts, DefaultZapMsats, GlobalWallet, Localization,
+    get_current_wallet_mut, tr, Accounts, DefaultZapMsats, GlobalWallet, Localization,
     NotedeckTextStyle, PendingDefaultZapState, Wallet, WalletError, WalletUIState, ZapWallet,
 };
 
@@ -103,7 +103,7 @@ impl WalletAction {
             }
             WalletAction::SetDefaultZapSats(new_default) => 's: {
                 let sats = {
-                    let Some(wallet) = get_current_wallet(accounts, global_wallet) else {
+                    let Some(wallet) = get_current_wallet_mut(accounts, global_wallet) else {
                         break 's;
                     };
 
@@ -138,7 +138,7 @@ impl WalletAction {
                 global_wallet.save_wallet();
             }
             WalletAction::EditDefaultZaps => 's: {
-                let Some(wallet) = get_current_wallet(accounts, global_wallet) else {
+                let Some(wallet) = get_current_wallet_mut(accounts, global_wallet) else {
                     break 's;
                 };
 

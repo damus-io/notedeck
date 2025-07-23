@@ -802,6 +802,7 @@ mod preview {
             let mut note_context = NoteContext {
                 ndb: app.ndb,
                 accounts: app.accounts,
+                global_wallet: app.global_wallet,
                 img_cache: app.img_cache,
                 note_cache: app.note_cache,
                 zaps: app.zaps,

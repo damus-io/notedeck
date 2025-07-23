@@ -5,6 +5,7 @@ pub use action::{MediaAction, NoteAction, ScrollInfo, ZapAction, ZapTargetAmount
 pub use context::{BroadcastContext, ContextSelection, NoteContextSelection};
 
 use crate::Accounts;
+use crate::GlobalWallet;
 use crate::JobPool;
 use crate::Localization;
 use crate::UnknownIds;
@@ -20,6 +21,7 @@ use std::fmt;
 pub struct NoteContext<'d> {
     pub ndb: &'d Ndb,
     pub accounts: &'d Accounts,
+    pub global_wallet: &'d GlobalWallet,
     pub i18n: &'d mut Localization,
     pub img_cache: &'d mut Images,
     pub note_cache: &'d mut NoteCache,

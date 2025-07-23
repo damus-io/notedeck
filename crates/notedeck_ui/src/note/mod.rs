@@ -13,9 +13,12 @@ use crate::{
 
 pub use contents::{render_note_contents, render_note_preview, NoteContents};
 pub use context::NoteContextButton;
+use notedeck::get_current_wallet;
 use notedeck::note::MediaAction;
 use notedeck::note::ZapTargetAmount;
 use notedeck::ui::is_narrow;
+use notedeck::Accounts;
+use notedeck::GlobalWallet;
 use notedeck::Images;
 use notedeck::Localization;
 pub use options::NoteOptions;
@@ -451,18 +454,13 @@ impl<'a, 'd> NoteView<'a, 'd> {
             note_action = contents.action.or(note_action);
 
             if self.options().contains(NoteOptions::ActionBar) {
-                let zapper = {
-                    let cur_acc = self.note_context.accounts.get_selected_account();
-                    let has_wallet = cur_acc.wallet.is_some();
-
-                    has_wallet.then_some(Zapper {
-                        zaps: self.note_context.zaps,
-                        cur_acc: cur_acc.keypair(),
-                    })
-                };
                 note_action = render_note_actionbar(
                     ui,
-                    zapper,
+                    get_zapper(
+                        self.note_context.accounts,
+                        self.note_context.global_wallet,
+                        self.note_context.zaps,
+                    ),
                     self.note.id(),
                     self.note.pubkey(),
                     note_key,
@@ -531,20 +529,14 @@ impl<'a, 'd> NoteView<'a, 'd> {
 
                 note_action = contents.action.or(note_action);
 
-                let zapper = {
-                    let cur_acc = self.note_context.accounts.get_selected_account();
-                    let has_wallet = cur_acc.wallet.is_some();
-
-                    has_wallet.then_some(Zapper {
-                        zaps: self.note_context.zaps,
-                        cur_acc: cur_acc.keypair(),
-                    })
-                };
-
                 if self.options().contains(NoteOptions::ActionBar) {
                     note_action = render_note_actionbar(
                         ui,
-                        zapper,
+                        get_zapper(
+                            self.note_context.accounts,
+                            self.note_context.global_wallet,
+                            self.note_context.zaps,
+                        ),
                         self.note.id(),
                         self.note.pubkey(),
                         note_key,
@@ -609,6 +601,20 @@ impl<'a, 'd> NoteView<'a, 'd> {
             .with_action(note_action)
             .with_pfp(note_ui_resp.pfp_rect)
     }
+}
+
+fn get_zapper<'a>(
+    accounts: &'a Accounts,
+    global_wallet: &'a GlobalWallet,
+    zaps: &'a Zaps,
+) -> Option<Zapper<'a>> {
+    let has_wallet = get_current_wallet(accounts, global_wallet).is_some();
+    let cur_acc = accounts.get_selected_account();
+
+    has_wallet.then_some(Zapper {
+        zaps,
+        cur_acc: cur_acc.keypair(),
+    })
 }
 
 fn get_reposted_note<'a>(ndb: &Ndb, txn: &'a Transaction, note: &Note) -> Option<Note<'a>> {
@@ -769,15 +775,19 @@ struct Zapper<'a> {
 #[profiling::function]
 fn render_note_actionbar(
     ui: &mut egui::Ui,
-    zapper: Option<Zapper>,
+    zapper: Option<Zapper<'_>>,
     note_id: &[u8; 32],
     note_pubkey: &[u8; 32],
     note_key: NoteKey,
     i18n: &mut Localization,
 ) -> egui::InnerResponse<Option<NoteAction>> {
     ui.horizontal(|ui| {
+        ui.set_min_height(26.0);
+        ui.spacing_mut().item_spacing.x = 24.0;
+
         let reply_resp =
             reply_button(ui, i18n, note_key).on_hover_cursor(egui::CursorIcon::PointingHand);
+
         let quote_resp =
             quote_repost_button(ui, i18n, note_key).on_hover_cursor(egui::CursorIcon::PointingHand);
 
@@ -893,7 +903,7 @@ fn quote_repost_button(
     i18n: &mut Localization,
     note_key: NoteKey,
 ) -> egui::Response {
-    let size = 14.0;
+    let size = crate::anim::hover_small_size() + 4.0;
     let expand_size = 5.0;
     let anim_speed = 0.05;
     let id = ui.id().with(("repost_anim", note_key));

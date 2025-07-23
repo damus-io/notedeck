@@ -520,6 +520,7 @@ fn render_nav_body(
         unknown_ids: ctx.unknown_ids,
         clipboard: ctx.clipboard,
         i18n: ctx.i18n,
+        global_wallet: ctx.global_wallet,
     };
     match top {
         Route::Timeline(kind) => {
