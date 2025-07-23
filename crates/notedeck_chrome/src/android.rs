@@ -7,6 +7,7 @@ use notedeck_dave::Dave;
 
 use crate::{app::NotedeckApp, chrome::Chrome, setup::setup_chrome};
 use notedeck::Notedeck;
+use tracing::info;
 
 #[no_mangle]
 #[tokio::main]
@@ -75,7 +76,7 @@ pub async fn android_main(app: AndroidApp) {
             let mut chrome = Chrome::new();
 
             // ensure we recognized all the arguments
-            let completely_unrecognized: Vec<String> = notedeck
+            let _completely_unrecognized: Vec<String> = notedeck
                 .unrecognized_args()
                 .intersection(columns.unrecognized_args())
                 .cloned()
