@@ -2,11 +2,13 @@
 //use egui_android::run_android;
 
 use egui_winit::winit::platform::android::activity::AndroidApp;
+use notedeck::enostr::Error;
 use notedeck_columns::Damus;
 use notedeck_dave::Dave;
 
 use crate::{app::NotedeckApp, chrome::Chrome, setup::setup_chrome};
 use notedeck::Notedeck;
+use tracing::error;
 
 #[no_mangle]
 #[tokio::main]
@@ -80,11 +82,10 @@ pub async fn android_main(app: AndroidApp) {
                 .intersection(columns.unrecognized_args())
                 .cloned()
                 .collect();
-            assert!(
-                completely_unrecognized.is_empty(),
-                "unrecognized args: {:?}",
-                completely_unrecognized
-            );
+            if !completely_unrecognized.is_empty() {
+                error!("Unrecognized arguments: {:?}", completely_unrecognized);
+                return Err(Error::Empty.into());
+            }
 
             chrome.add_app(NotedeckApp::Columns(columns));
             chrome.add_app(NotedeckApp::Dave(dave));
