@@ -1,21 +1,73 @@
 use egui::{vec2, Button, Color32, ComboBox, Frame, Margin, RichText, ThemePreference};
-use notedeck::{tr, Images, LanguageIdentifier, Localization, NotedeckTextStyle, ThemeHandler};
+use notedeck::{tr, Images, LanguageIdentifier, Localization, NotedeckTextStyle, SettingsHandler};
 use notedeck_ui::NoteOptions;
 use strum::Display;
 
 use crate::{nav::RouterAction, Damus, Route};
 
 #[derive(Clone, Copy, PartialEq, Eq, Display)]
-pub enum ShowNoteClientOptions {
+pub enum ShowNoteClientOption {
     Hide,
     Top,
     Bottom,
 }
 
+impl From<ShowNoteClientOption> for String {
+    fn from(value: ShowNoteClientOption) -> Self {
+        match value {
+            ShowNoteClientOption::Hide => "hide".to_string(),
+            ShowNoteClientOption::Top => "top".to_string(),
+            ShowNoteClientOption::Bottom => "bottom".to_string(),
+        }
+    }
+}
+
+impl From<NoteOptions> for ShowNoteClientOption {
+    fn from(note_options: NoteOptions) -> Self {
+        if note_options.contains(NoteOptions::ShowNoteClientTop) {
+            ShowNoteClientOption::Top
+        } else if note_options.contains(NoteOptions::ShowNoteClientBottom) {
+            ShowNoteClientOption::Bottom
+        } else {
+            ShowNoteClientOption::Hide
+        }
+    }
+}
+
+impl From<String> for ShowNoteClientOption {
+    fn from(s: String) -> Self {
+        match s.to_lowercase().as_str() {
+            "hide" => Self::Hide,
+            "top" => Self::Top,
+            "bottom" => Self::Bottom,
+            _ => Self::Hide, // default fallback
+        }
+    }
+}
+
+impl ShowNoteClientOption {
+    pub fn set_note_options(self, note_options: &mut NoteOptions) {
+        match self {
+            Self::Hide => {
+                note_options.set(NoteOptions::ShowNoteClientTop, false);
+                note_options.set(NoteOptions::ShowNoteClientBottom, false);
+            }
+            Self::Bottom => {
+                note_options.set(NoteOptions::ShowNoteClientTop, false);
+                note_options.set(NoteOptions::ShowNoteClientBottom, true);
+            }
+            Self::Top => {
+                note_options.set(NoteOptions::ShowNoteClientTop, true);
+                note_options.set(NoteOptions::ShowNoteClientBottom, false);
+            }
+        }
+    }
+}
+
 pub enum SettingsAction {
-    SetZoom(f32),
+    SetZoomFactor(f32),
     SetTheme(ThemePreference),
-    SetShowNoteClient(ShowNoteClientOptions),
+    SetShowSourceClient(ShowNoteClientOption),
     SetLocale(LanguageIdentifier),
     OpenRelays,
     OpenCacheFolder,
@@ -26,7 +78,7 @@ impl SettingsAction {
     pub fn process_settings_action<'a>(
         self,
         app: &mut Damus,
-        theme_handler: &'a mut ThemeHandler,
+        settings_handler: &'a mut SettingsHandler,
         i18n: &'a mut Localization,
         img_cache: &mut Images,
         ctx: &egui::Context,
@@ -37,34 +89,25 @@ impl SettingsAction {
             SettingsAction::OpenRelays => {
                 route_action = Some(RouterAction::route_to(Route::Relays));
             }
-            SettingsAction::SetZoom(zoom_level) => {
-                ctx.set_zoom_factor(zoom_level);
+            SettingsAction::SetZoomFactor(zoom_factor) => {
+                ctx.set_zoom_factor(zoom_factor);
+                settings_handler.set_zoom_factor(zoom_factor);
             }
-            SettingsAction::SetShowNoteClient(newvalue) => match newvalue {
-                ShowNoteClientOptions::Hide => {
-                    app.note_options.set(NoteOptions::ShowNoteClientTop, false);
-                    app.note_options
-                        .set(NoteOptions::ShowNoteClientBottom, false);
-                }
-                ShowNoteClientOptions::Bottom => {
-                    app.note_options.set(NoteOptions::ShowNoteClientTop, false);
-                    app.note_options
-                        .set(NoteOptions::ShowNoteClientBottom, true);
-                }
-                ShowNoteClientOptions::Top => {
-                    app.note_options.set(NoteOptions::ShowNoteClientTop, true);
-                    app.note_options
-                        .set(NoteOptions::ShowNoteClientBottom, false);
-                }
-            },
+            SettingsAction::SetShowSourceClient(option) => {
+                option.set_note_options(&mut app.note_options);
+
+                settings_handler.set_show_source_client(option);
+            }
             SettingsAction::SetTheme(theme) => {
                 ctx.options_mut(|o| {
                     o.theme_preference = theme;
                 });
-                theme_handler.save(theme);
+                settings_handler.set_theme(theme);
             }
             SettingsAction::SetLocale(language) => {
-                _ = i18n.set_locale(language);
+                if i18n.set_locale(language.clone()).is_ok() {
+                    settings_handler.set_locale(language.to_string());
+                }
             }
             SettingsAction::OpenCacheFolder => {
                 use opener;
@@ -74,6 +117,7 @@ impl SettingsAction {
                 let _ = img_cache.clear_folder_contents();
             }
         }
+        settings_handler.save();
         route_action
     }
 }
@@ -81,7 +125,7 @@ impl SettingsAction {
 pub struct SettingsView<'a> {
     theme: &'a mut String,
     selected_language: &'a mut String,
-    show_note_client: &'a mut ShowNoteClientOptions,
+    show_note_client: &'a mut ShowNoteClientOption,
     i18n: &'a mut Localization,
     img_cache: &'a mut Images,
 }
@@ -91,7 +135,7 @@ impl<'a> SettingsView<'a> {
         img_cache: &'a mut Images,
         selected_language: &'a mut String,
         theme: &'a mut String,
-        show_note_client: &'a mut ShowNoteClientOptions,
+        show_note_client: &'a mut ShowNoteClientOption,
         i18n: &'a mut Localization,
     ) -> Self {
         Self {
@@ -115,20 +159,20 @@ impl<'a> SettingsView<'a> {
         }
     }
 
-    /// Get the localized label for ShowNoteClientOptions
-    fn get_show_note_client_label(&mut self, option: ShowNoteClientOptions) -> String {
+    /// Get the localized label for ShowNoteClientOption
+    fn get_show_note_client_label(&mut self, option: ShowNoteClientOption) -> String {
         match option {
-            ShowNoteClientOptions::Hide => tr!(
+            ShowNoteClientOption::Hide => tr!(
                 self.i18n,
                 "Hide",
                 "Option in settings section to hide the source client label in note display"
             ),
-            ShowNoteClientOptions::Top => tr!(
+            ShowNoteClientOption::Top => tr!(
                 self.i18n,
                 "Top",
                 "Option in settings section to show the source client label at the top of the note"
             ),
-            ShowNoteClientOptions::Bottom => tr!(
+            ShowNoteClientOption::Bottom => tr!(
                 self.i18n,
                 "Bottom",
                 "Option in settings section to show the source client label at the bottom of the note"
@@ -179,7 +223,7 @@ impl<'a> SettingsView<'a> {
                                     .clicked()
                                 {
                                     let new_zoom = (current_zoom - 0.1).max(0.1);
-                                    action = Some(SettingsAction::SetZoom(new_zoom));
+                                    action = Some(SettingsAction::SetZoomFactor(new_zoom));
                                 };
 
                                 ui.label(
@@ -195,7 +239,7 @@ impl<'a> SettingsView<'a> {
                                     .clicked()
                                 {
                                     let new_zoom = (current_zoom + 0.1).min(10.0);
-                                    action = Some(SettingsAction::SetZoom(new_zoom));
+                                    action = Some(SettingsAction::SetZoomFactor(new_zoom));
                                 };
 
                                 if ui
@@ -209,7 +253,7 @@ impl<'a> SettingsView<'a> {
                                     )
                                     .clicked()
                                 {
-                                    action = Some(SettingsAction::SetZoom(1.0));
+                                    action = Some(SettingsAction::SetZoomFactor(1.0));
                                 }
                             });
 
@@ -336,7 +380,7 @@ impl<'a> SettingsView<'a> {
                                 ui.end_row();
 
                                 if !notedeck::ui::is_compiled_as_mobile() &&
-                                    ui.button(RichText::new(tr!(self.i18n, "View folder:", "Label for view folder button, Storage settings section"))
+                                    ui.button(RichText::new(tr!(self.i18n, "View folder", "Label for view folder button, Storage settings section"))
                                         .text_style(NotedeckTextStyle::Small.text_style())).clicked() {
                                     action = Some(SettingsAction::OpenCacheFolder);
                                 }
@@ -419,9 +463,9 @@ impl<'a> SettingsView<'a> {
                                 );
 
                                 for option in [
-                                    ShowNoteClientOptions::Hide,
-                                    ShowNoteClientOptions::Top,
-                                    ShowNoteClientOptions::Bottom,
+                                    ShowNoteClientOption::Hide,
+                                    ShowNoteClientOption::Top,
+                                    ShowNoteClientOption::Bottom,
                                 ] {
                                     let label = self.get_show_note_client_label(option);
 
@@ -434,7 +478,7 @@ impl<'a> SettingsView<'a> {
                                         )
                                         .changed()
                                     {
-                                        action = Some(SettingsAction::SetShowNoteClient(option));
+                                        action = Some(SettingsAction::SetShowSourceClient(option));
                                     }
                                 }
                             });

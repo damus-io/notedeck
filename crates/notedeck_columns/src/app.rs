@@ -15,6 +15,8 @@ use crate::{
     Result,
 };
 
+use crate::ui::settings::ShowNoteClientOption;
+
 use egui_extras::{Size, StripBuilder};
 use enostr::{ClientMessage, PoolRelay, Pubkey, RelayEvent, RelayMessage, RelayPool};
 use nostrdb::Transaction;
@@ -506,11 +508,14 @@ impl Damus {
         );
         note_options.set(
             NoteOptions::ShowNoteClientTop,
-            parsed_args.is_flag_set(ColumnsFlag::ShowNoteClientTop),
+            ShowNoteClientOption::Top == app_context.settings_handler.show_source_client().into()
+                || parsed_args.is_flag_set(ColumnsFlag::ShowNoteClientTop),
         );
         note_options.set(
             NoteOptions::ShowNoteClientBottom,
-            parsed_args.is_flag_set(ColumnsFlag::ShowNoteClientBottom),
+            ShowNoteClientOption::Bottom
+                == app_context.settings_handler.show_source_client().into()
+                || parsed_args.is_flag_set(ColumnsFlag::ShowNoteClientBottom),
         );
         options.set(AppOptions::Debug, app_context.args.debug);
         options.set(
