@@ -9,6 +9,7 @@ use re_memory::AccountingAllocator;
 static GLOBAL: AccountingAllocator<std::alloc::System> =
     AccountingAllocator::new(std::alloc::System);
 
+use notedeck::enostr::Error;
 use notedeck::{DataPath, DataPathType, Notedeck};
 use notedeck_chrome::{
     setup::{generate_native_options, setup_chrome},
@@ -16,6 +17,7 @@ use notedeck_chrome::{
 };
 use notedeck_columns::Damus;
 use notedeck_dave::Dave;
+use tracing::error;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::EnvFilter;
 
@@ -104,10 +106,10 @@ async fn main() {
                 .intersection(columns.unrecognized_args())
                 .cloned()
                 .collect();
-            assert!(
-                completely_unrecognized.is_empty(),
-                "unrecognized args: {completely_unrecognized:?}"
-            );
+            if !completely_unrecognized.is_empty() {
+                error!("Unrecognized arguments: {:?}", completely_unrecognized);
+                return Err(Error::Empty.into());
+            }
 
             chrome.add_app(NotedeckApp::Columns(columns));
             chrome.add_app(NotedeckApp::Dave(dave));
@@ -211,17 +213,6 @@ mod tests {
         let unrecognized_args = notedeck.unrecognized_args().clone();
         let mut app_ctx = notedeck.app_context();
         let app = Damus::new(&mut app_ctx, &args);
-
-        // ensure we recognized all the arguments
-        let completely_unrecognized: Vec<String> = unrecognized_args
-            .intersection(app.unrecognized_args())
-            .cloned()
-            .collect();
-        assert!(
-            completely_unrecognized.is_empty(),
-            "unrecognized args: {:?}",
-            completely_unrecognized
-        );
 
         assert_eq!(app.columns(app_ctx.accounts).columns().len(), 2);
 
