@@ -1047,3 +1047,29 @@ fn get_scroll_id(
         Route::Settings => None,
     }
 }
+
+/// Does the corresponding View for the route use a egui::Frame to wrap the ScrollArea?
+/// TODO(kernelkind): this is quite hacky...
+fn route_uses_frame(route: &Route) -> bool {
+    match route {
+        Route::Accounts(accounts_route) => match accounts_route {
+            crate::accounts::AccountsRoute::Accounts => true,
+            crate::accounts::AccountsRoute::AddAccount => false,
+        },
+        Route::Relays => true,
+        Route::Timeline(_) => false,
+        Route::Thread(_) => false,
+        Route::Reply(_) => false,
+        Route::Quote(_) => false,
+        Route::Settings => false,
+        Route::ComposeNote => false,
+        Route::AddColumn(_) => false,
+        Route::EditProfile(_) => false,
+        Route::Support => false,
+        Route::NewDeck => false,
+        Route::Search => false,
+        Route::EditDeck(_) => false,
+        Route::Wallet(_) => false,
+        Route::CustomizeZapAmount(_) => false,
+    }
+}
