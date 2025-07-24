@@ -405,32 +405,13 @@ fn direct_replies_filter_non_root(
     let tmp_selected = *selected_note_id;
     nostrdb::Filter::new()
         .kinds([1])
-        .custom(move |n: nostrdb::Note<'_>| {
-            for tag in n.tags() {
-                if tag.count() < 4 {
-                    continue;
-                }
-
-                let Some("e") = tag.get_str(0) else {
-                    continue;
-                };
-
-                let Some(tagged_id) = tag.get_id(1) else {
-                    continue;
-                };
-
-                if *tagged_id != tmp_selected {
-                    // NOTE: if these aren't dereferenced a segfault occurs...
-                    continue;
-                }
-
-                if let Some(data) = tag.get_str(3) {
-                    if data == "reply" {
-                        return true;
-                    }
-                }
+        .custom(move |note: nostrdb::Note<'_>| {
+            let reply = nostrdb::NoteReply::new(note.tags());
+            if reply.is_reply_to_root() {
+                return false;
             }
-            false
+
+            reply.reply().is_some_and(|r| r.id == &tmp_selected)
         })
         .event(root_id)
         .build()
@@ -448,42 +429,13 @@ fn direct_replies_filter_non_root(
 ///     let tmp = *root_id;
 ///     .custom(move |_| { tmp })       // ✅
 fn direct_replies_filter_root(root_id: &[u8; 32]) -> nostrdb::Filter {
-    let tmp_root = *root_id;
+    let moved_root_id = *root_id;
     nostrdb::Filter::new()
         .kinds([1])
-        .custom(move |n: nostrdb::Note<'_>| {
-            let mut contains_root = false;
-            for tag in n.tags() {
-                if tag.count() < 4 {
-                    continue;
-                }
-
-                let Some("e") = tag.get_str(0) else {
-                    continue;
-                };
-
-                if let Some(s) = tag.get_str(3) {
-                    if s == "reply" {
-                        return false;
-                    }
-                }
-
-                let Some(tagged_id) = tag.get_id(1) else {
-                    continue;
-                };
-
-                if *tagged_id != tmp_root {
-                    continue;
-                }
-
-                if let Some(s) = tag.get_str(3) {
-                    if s == "root" {
-                        contains_root = true;
-                    }
-                }
-            }
-
-            contains_root
+        .custom(move |note: nostrdb::Note<'_>| {
+            nostrdb::NoteReply::new(note.tags())
+                .reply_to_root()
+                .is_some_and(|r| r.id == &moved_root_id)
         })
         .event(root_id)
         .build()
