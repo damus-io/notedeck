@@ -3,12 +3,11 @@ use crate::i18n::Localization;
 use crate::persist::{AppSizeHandler, ZoomHandler};
 use crate::wallet::GlobalWallet;
 use crate::zaps::Zaps;
-use crate::JobPool;
 use crate::{
     frame_history::FrameHistory, AccountStorage, Accounts, AppContext, Args, DataPath,
-    DataPathType, Directory, Images, NoteAction, NoteCache, RelayDebugView, ThemeHandler,
-    UnknownIds,
+    DataPathType, Directory, Images, NoteAction, NoteCache, RelayDebugView, UnknownIds,
 };
+use crate::{JobPool, SettingsHandler};
 use egui::Margin;
 use egui::ThemePreference;
 use egui_winit::clipboard::Clipboard;
@@ -19,6 +18,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 use std::rc::Rc;
 use tracing::{error, info};
+use unic_langid::{LanguageIdentifier, LanguageIdentifierError};
 
 pub enum AppAction {
     Note(NoteAction),
@@ -40,7 +40,7 @@ pub struct Notedeck {
     global_wallet: GlobalWallet,
     path: DataPath,
     args: Args,
-    theme: ThemeHandler,
+    settings_handler: SettingsHandler,
     app: Option<Rc<RefCell<dyn App>>>,
     zoom: ZoomHandler,
     app_size: AppSizeHandler,
@@ -159,7 +159,10 @@ impl Notedeck {
             1024usize * 1024usize * 1024usize * 1024usize
         };
 
-        let theme = ThemeHandler::new(&path);
+        let mut settings_handler = SettingsHandler::new(&path);
+
+        settings_handler.load();
+
         let config = Config::new().set_ingester_threads(2).set_mapsize(map_size);
 
         let keystore = if parsed_args.use_keystore {
@@ -231,6 +234,16 @@ impl Notedeck {
 
         // Initialize localization
         let mut i18n = Localization::new();
+
+        let setting_locale: Result<LanguageIdentifier, LanguageIdentifierError> =
+            settings_handler.locale().parse();
+
+        if setting_locale.is_ok() {
+            if let Err(err) = i18n.set_locale(setting_locale.unwrap()) {
+                error!("{err}");
+            }
+        }
+
         if let Some(locale) = &parsed_args.locale {
             if let Err(err) = i18n.set_locale(locale.to_owned()) {
                 error!("{err}");
@@ -250,7 +263,7 @@ impl Notedeck {
             global_wallet,
             path: path.clone(),
             args: parsed_args,
-            theme,
+            settings_handler,
             app: None,
             zoom,
             app_size,
@@ -279,7 +292,7 @@ impl Notedeck {
             global_wallet: &mut self.global_wallet,
             path: &self.path,
             args: &self.args,
-            theme: &mut self.theme,
+            settings_handler: &mut self.settings_handler,
             clipboard: &mut self.clipboard,
             zaps: &mut self.zaps,
             frame_history: &mut self.frame_history,
@@ -297,7 +310,7 @@ impl Notedeck {
     }
 
     pub fn theme(&self) -> ThemePreference {
-        self.theme.load()
+        self.settings_handler.theme()
     }
 
     pub fn unrecognized_args(&self) -> &BTreeSet<String> {

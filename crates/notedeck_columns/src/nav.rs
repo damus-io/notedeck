@@ -20,7 +20,7 @@ use crate::{
         note::{custom_zap::CustomZapView, NewPostAction, PostAction, PostType},
         profile::EditProfileView,
         search::{FocusState, SearchView},
-        settings::{SettingsAction, ShowNoteClientOptions},
+        settings::{SettingsAction, ShowSourceClientOption},
         support::SupportView,
         wallet::{get_default_zap_state, WalletAction, WalletState, WalletView},
         RelayView, SettingsView,
@@ -35,7 +35,6 @@ use notedeck::{
     get_current_default_msats, tr, ui::is_narrow, Accounts, AppContext, NoteAction, NoteContext,
     RelayAction,
 };
-use notedeck_ui::NoteOptions;
 use tracing::error;
 
 /// The result of processing a nav response
@@ -483,9 +482,13 @@ fn process_render_nav_action(
                 .process_relay_action(ui.ctx(), ctx.pool, action);
             None
         }
-        RenderNavAction::SettingsAction(action) => {
-            action.process_settings_action(app, ctx.theme, ctx.i18n, ctx.img_cache, ui.ctx())
-        }
+        RenderNavAction::SettingsAction(action) => action.process_settings_action(
+            app,
+            ctx.settings_handler,
+            ctx.i18n,
+            ctx.img_cache,
+            ui.ctx(),
+        ),
     };
 
     if let Some(action) = router_action {
@@ -580,14 +583,7 @@ fn render_nav_body(
             .map(RenderNavAction::RelayAction),
 
         Route::Settings => {
-            let mut show_note_client = if app.note_options.contains(NoteOptions::ShowNoteClientTop)
-            {
-                ShowNoteClientOptions::Top
-            } else if app.note_options.contains(NoteOptions::ShowNoteClientBottom) {
-                ShowNoteClientOptions::Bottom
-            } else {
-                ShowNoteClientOptions::Hide
-            };
+            let mut show_note_client: ShowSourceClientOption = app.note_options.into();
 
             let mut theme: String = (if ui.visuals().dark_mode {
                 "Dark"

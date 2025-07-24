@@ -1,6 +1,6 @@
 use crate::{
     account::accounts::Accounts, frame_history::FrameHistory, i18n::Localization,
-    wallet::GlobalWallet, zaps::Zaps, Args, DataPath, Images, JobPool, NoteCache, ThemeHandler,
+    wallet::GlobalWallet, zaps::Zaps, Args, DataPath, Images, JobPool, NoteCache, SettingsHandler,
     UnknownIds,
 };
 use egui_winit::clipboard::Clipboard;
@@ -20,7 +20,7 @@ pub struct AppContext<'a> {
     pub global_wallet: &'a mut GlobalWallet,
     pub path: &'a DataPath,
     pub args: &'a Args,
-    pub theme: &'a mut ThemeHandler,
+    pub settings_handler: &'a mut SettingsHandler,
     pub clipboard: &'a mut Clipboard,
     pub zaps: &'a mut Zaps,
     pub frame_history: &'a mut FrameHistory,

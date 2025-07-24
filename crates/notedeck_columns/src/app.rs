@@ -10,7 +10,7 @@ use crate::{
     subscriptions::{SubKind, Subscriptions},
     support::Support,
     timeline::{self, kind::ListKind, thread::Threads, TimelineCache, TimelineKind},
-    ui::{self, DesktopSidePanel, SidePanelAction},
+    ui::{self, DesktopSidePanel, ShowSourceClientOption, SidePanelAction},
     view_state::ViewState,
     Result,
 };
@@ -467,11 +467,14 @@ impl Damus {
         );
         note_options.set(
             NoteOptions::ShowNoteClientTop,
-            parsed_args.is_flag_set(ColumnsFlag::ShowNoteClientTop),
+            ShowSourceClientOption::Top == app_context.settings_handler.show_source_client().into()
+                || parsed_args.is_flag_set(ColumnsFlag::ShowNoteClientTop),
         );
         note_options.set(
             NoteOptions::ShowNoteClientBottom,
-            parsed_args.is_flag_set(ColumnsFlag::ShowNoteClientBottom),
+            ShowSourceClientOption::Bottom
+                == app_context.settings_handler.show_source_client().into()
+                || parsed_args.is_flag_set(ColumnsFlag::ShowNoteClientBottom),
         );
         options.set(AppOptions::Debug, app_context.args.debug);
         options.set(
