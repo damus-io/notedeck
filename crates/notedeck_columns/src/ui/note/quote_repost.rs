@@ -4,6 +4,7 @@ use crate::{
     ui::{self},
 };
 
+use egui::ScrollArea;
 use enostr::{FilledKeypair, NoteId};
 use notedeck::NoteContext;
 use notedeck_ui::{jobs::JobsCache, NoteOptions};
@@ -13,7 +14,7 @@ pub struct QuoteRepostView<'a, 'd> {
     poster: FilledKeypair<'a>,
     draft: &'a mut Draft,
     quoting_note: &'a nostrdb::Note<'a>,
-    id_source: Option<egui::Id>,
+    scroll_id: egui::Id,
     inner_rect: egui::Rect,
     note_options: NoteOptions,
     jobs: &'a mut JobsCache,
@@ -29,22 +30,36 @@ impl<'a, 'd> QuoteRepostView<'a, 'd> {
         inner_rect: egui::Rect,
         note_options: NoteOptions,
         jobs: &'a mut JobsCache,
+        col: usize,
     ) -> Self {
-        let id_source: Option<egui::Id> = None;
         QuoteRepostView {
             note_context,
             poster,
             draft,
             quoting_note,
-            id_source,
+            scroll_id: QuoteRepostView::scroll_id(col, quoting_note.id()),
             inner_rect,
             note_options,
             jobs,
         }
     }
 
+    fn id(col: usize, note_id: &[u8; 32]) -> egui::Id {
+        egui::Id::new(("quote_repost", col, note_id))
+    }
+
+    pub fn scroll_id(col: usize, note_id: &[u8; 32]) -> egui::Id {
+        QuoteRepostView::id(col, note_id).with("scroll")
+    }
+
     pub fn show(&mut self, ui: &mut egui::Ui) -> PostResponse {
-        let id = self.id();
+        ScrollArea::vertical()
+            .id_salt(self.scroll_id)
+            .show(ui, |ui| self.show_internal(ui))
+            .inner
+    }
+
+    fn show_internal(&mut self, ui: &mut egui::Ui) -> PostResponse {
         let quoting_note_id = self.quoting_note.id();
 
         let post_resp = ui::PostView::new(
@@ -56,18 +71,7 @@ impl<'a, 'd> QuoteRepostView<'a, 'd> {
             self.note_options,
             self.jobs,
         )
-        .id_source(id)
-        .ui(self.quoting_note.txn().unwrap(), ui);
+        .ui_no_scroll(self.quoting_note.txn().unwrap(), ui);
         post_resp
-    }
-
-    pub fn id_source(mut self, id: egui::Id) -> Self {
-        self.id_source = Some(id);
-        self
-    }
-
-    pub fn id(&self) -> egui::Id {
-        self.id_source
-            .unwrap_or_else(|| egui::Id::new("quote-repost-view"))
     }
 }
