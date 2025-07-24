@@ -498,7 +498,8 @@ impl<'a, 'd> NoteView<'a, 'd> {
                     profile,
                     self.show_unread_indicator,
                 );
-                ui.horizontal(|ui| 's: {
+
+                ui.horizontal_wrapped(|ui| 's: {
                     ui.spacing_mut().item_spacing.x = if is_narrow(ui.ctx()) { 1.0 } else { 2.0 };
 
                     let note_reply = self
