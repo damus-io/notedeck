@@ -151,6 +151,7 @@ impl<'a, 'd> SearchView<'a, 'd> {
 
     fn show_search_results(&mut self, ui: &mut egui::Ui) -> Option<NoteAction> {
         egui::ScrollArea::vertical()
+            .id_salt(SearchView::scroll_id())
             .show(ui, |ui| {
                 let reversed = false;
                 TimelineTabView::new(
@@ -164,6 +165,10 @@ impl<'a, 'd> SearchView<'a, 'd> {
                 .show(ui)
             })
             .inner
+    }
+
+    pub fn scroll_id() -> egui::Id {
+        egui::Id::new("search_results")
     }
 }
 

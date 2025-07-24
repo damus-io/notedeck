@@ -59,8 +59,12 @@ impl<'a, 'd> ProfileView<'a, 'd> {
         }
     }
 
+    pub fn scroll_id(col_id: usize, profile_pubkey: &Pubkey) -> egui::Id {
+        egui::Id::new(("profile_scroll", col_id, profile_pubkey))
+    }
+
     pub fn ui(&mut self, ui: &mut egui::Ui) -> Option<ProfileViewAction> {
-        let scroll_id = egui::Id::new(("profile_scroll", self.col_id, self.pubkey));
+        let scroll_id = ProfileView::scroll_id(self.col_id, self.pubkey);
         let offset_id = scroll_id.with("scroll_offset");
 
         let mut scroll_area = ScrollArea::vertical().id_salt(scroll_id);
