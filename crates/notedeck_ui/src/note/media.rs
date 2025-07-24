@@ -6,8 +6,8 @@ use egui::{
 };
 use notedeck::{
     fonts::get_font_size, note::MediaAction, show_one_error_message, supported_mime_hosted_at_url,
-    tr, GifState, GifStateMap, Images, JobPool, Localization, MediaCache, MediaCacheType,
-    NotedeckTextStyle, TexturedImage, TexturesCache, UrlMimes,
+    tr, ui::is_narrow, GifState, GifStateMap, Images, JobPool, Localization, MediaCache,
+    MediaCacheType, NotedeckTextStyle, TexturedImage, TexturesCache, UrlMimes,
 };
 
 use crate::{
@@ -751,7 +751,7 @@ fn render_media(
                 }
             }
             ObfuscatedTexture::Default => {
-                ui.add(texture_to_image(image.get_first_texture(), height));
+                ui.add(texture_to_image(ui, image.get_first_texture(), height));
                 Some(MediaUIAction::DoneLoading)
             }
         },
@@ -774,7 +774,9 @@ fn render_media(
         MediaRenderState::Obfuscated(obfuscated_texture) => {
             let resp = match obfuscated_texture {
                 ObfuscatedTexture::Blur(texture_handle) => {
-                    let resp = ui.add(texture_to_image(texture_handle, height));
+                    let img = texture_to_image(ui, texture_handle, height);
+
+                    let resp = ui.add(img);
                     render_blur_text(ui, i18n, url, resp.rect)
                 }
                 ObfuscatedTexture::Default => render_default_blur(ui, i18n, height, url),
@@ -889,7 +891,12 @@ fn render_default_blur(
 }
 
 fn render_default_blur_bg(ui: &mut egui::Ui, height: f32, url: &str, shimmer: bool) -> egui::Rect {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(height, height), egui::Sense::click());
+    let width = if is_narrow(ui.ctx()) {
+        ui.available_width()
+    } else {
+        height
+    };
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::click());
 
     let painter = ui.painter_at(rect);
 
@@ -977,7 +984,8 @@ fn render_success_media(
     i18n: &mut Localization,
 ) -> Response {
     let texture = handle_repaint(ui, retrieve_latest_texture(url, gifs, tex));
-    let img = texture_to_image(texture, height);
+    let img = texture_to_image(ui, texture, height);
+
     let img_resp = ui.add(Button::image(img).frame(false));
 
     copy_link(i18n, url, &img_resp);
@@ -985,11 +993,17 @@ fn render_success_media(
     img_resp
 }
 
-fn texture_to_image(tex: &TextureHandle, max_height: f32) -> egui::Image {
-    Image::new(tex)
+fn texture_to_image<'a>(ui: &egui::Ui, tex: &TextureHandle, max_height: f32) -> egui::Image<'a> {
+    let mut img = Image::new(tex)
         .max_height(max_height)
         .corner_radius(5.0)
-        .maintain_aspect_ratio(true)
+        .maintain_aspect_ratio(true);
+
+    if is_narrow(ui.ctx()) {
+        img = img.max_width(ui.available_width());
+    }
+
+    img
 }
 
 static BLUR_SHIMMER_ID: fn(&str) -> egui::Id = |url| egui::Id::new(("blur_shimmer", url));
@@ -1012,7 +1026,7 @@ fn shimmer_blurhash(tex: &TextureHandle, ui: &mut egui::Ui, url: &str, max_heigh
     let cur_alpha = get_blur_current_alpha(ui, url);
 
     let scaled = ScaledTexture::new(tex, max_height);
-    let img = scaled.get_image();
+    let img = scaled.get_image(ui);
     show_blurhash_with_alpha(ui, img, cur_alpha);
 }
 
@@ -1040,7 +1054,8 @@ fn render_blur_transition(
 ) -> FinishedTransition {
     let scaled_texture = ScaledTexture::new(image_texture, max_height);
 
-    let blur_img = texture_to_image(blur_texture, max_height);
+    let blur_img = texture_to_image(ui, blur_texture, max_height);
+
     match get_blur_transition_state(ui.ctx(), url) {
         BlurTransitionState::StoppingShimmer { cur_alpha } => {
             show_blurhash_with_alpha(ui, blur_img, cur_alpha);
@@ -1077,8 +1092,8 @@ impl<'a> ScaledTexture<'a> {
         }
     }
 
-    pub fn get_image(&self) -> Image {
-        texture_to_image(self.tex, self.max_height)
+    pub fn get_image(&self, ui: &egui::Ui) -> Image {
+        texture_to_image(ui, self.tex, self.max_height)
             .max_size(self.scaled_size)
             .shrink_to_fit()
     }
@@ -1099,7 +1114,7 @@ fn render_blur_fade(
             .animate()
     };
 
-    let img = image_texture.get_image();
+    let img = image_texture.get_image(ui);
 
     let blur_img = blur_img.tint(fade_color(cur_alpha));
 
