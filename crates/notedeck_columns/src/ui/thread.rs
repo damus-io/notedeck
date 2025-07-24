@@ -120,7 +120,10 @@ impl<'a, 'd> ThreadView<'a, 'd> {
             .unwrap()
             .list;
 
-        let notes = note_builder.into_notes(&mut self.threads.seen_flags);
+        let notes = note_builder.into_notes(
+            self.note_options.contains(NoteOptions::RepliesNewestFirst),
+            &mut self.threads.seen_flags,
+        );
 
         if !full_chain {
             // TODO(kernelkind): insert UI denoting we don't have the full chain yet
@@ -228,7 +231,11 @@ impl<'a> ThreadNoteBuilder<'a> {
         self.replies.push(note);
     }
 
-    pub fn into_notes(mut self, seen_flags: &mut NoteSeenFlags) -> ThreadNotes<'a> {
+    pub fn into_notes(
+        mut self,
+        replies_newer_first: bool,
+        seen_flags: &mut NoteSeenFlags,
+    ) -> ThreadNotes<'a> {
         let mut notes = Vec::new();
 
         let selected_is_root = self.chain.is_empty();
@@ -250,6 +257,11 @@ impl<'a> ThreadNoteBuilder<'a> {
             },
             unread_and_have_replies: false,
         });
+
+        if replies_newer_first {
+            self.replies
+                .sort_by(|a, b| b.created_at().cmp(&a.created_at()));
+        }
 
         for reply in self.replies {
             notes.push(ThreadNote {

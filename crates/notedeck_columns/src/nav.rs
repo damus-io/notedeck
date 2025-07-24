@@ -20,7 +20,7 @@ use crate::{
         note::{custom_zap::CustomZapView, NewPostAction, PostAction, PostType},
         profile::EditProfileView,
         search::{FocusState, SearchView},
-        settings::{SettingsAction, ShowSourceClientOption},
+        settings::SettingsAction,
         support::SupportView,
         wallet::{get_default_zap_state, WalletAction, WalletState, WalletView},
         RelayView, SettingsView,
@@ -583,26 +583,11 @@ fn render_nav_body(
             .map(RenderNavAction::RelayAction),
 
         Route::Settings => {
-            let mut show_note_client: ShowSourceClientOption = app.note_options.into();
+            let mut settings = ctx.settings_handler.get_settings_mut();
 
-            let mut theme: String = (if ui.visuals().dark_mode {
-                "Dark"
-            } else {
-                "Light"
-            })
-            .into();
-
-            let mut selected_language: String = ctx.i18n.get_current_locale().to_string();
-
-            SettingsView::new(
-                ctx.img_cache,
-                &mut selected_language,
-                &mut theme,
-                &mut show_note_client,
-                ctx.i18n,
-            )
-            .ui(ui)
-            .map(RenderNavAction::SettingsAction)
+            SettingsView::new(ctx.i18n, ctx.img_cache, &mut settings)
+                .ui(ui)
+                .map(RenderNavAction::SettingsAction)
         }
         Route::Reply(id) => {
             let txn = if let Ok(txn) = Transaction::new(ctx.ndb) {

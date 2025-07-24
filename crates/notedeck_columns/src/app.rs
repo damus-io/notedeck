@@ -14,13 +14,12 @@ use crate::{
     view_state::ViewState,
     Result,
 };
-
 use egui_extras::{Size, StripBuilder};
 use enostr::{ClientMessage, PoolRelay, Pubkey, RelayEvent, RelayMessage, RelayPool};
 use nostrdb::Transaction;
 use notedeck::{
     tr, ui::is_narrow, Accounts, AppAction, AppContext, DataPath, DataPathType, FilterState,
-    Localization, UnknownIds,
+    Localization, SettingsHandler, UnknownIds,
 };
 use notedeck_ui::{jobs::JobsCache, NoteOptions};
 use std::collections::{BTreeSet, HashMap};
@@ -406,6 +405,11 @@ impl Damus {
         let mut options = AppOptions::default();
         let tmp_columns = !parsed_args.columns.is_empty();
         options.set(AppOptions::TmpColumns, tmp_columns);
+        options.set(AppOptions::Debug, app_context.args.debug);
+        options.set(
+            AppOptions::SinceOptimize,
+            parsed_args.is_flag_set(ColumnsFlag::SinceOptimize),
+        );
 
         let decks_cache = if tmp_columns {
             info!("DecksCache: loading from command line arguments");
@@ -450,37 +454,11 @@ impl Damus {
             //    cache.add_deck_default(*pk);
             //}
         };
+        let settings_handler = &app_context.settings_handler;
 
         let support = Support::new(app_context.path);
-        let mut note_options = NoteOptions::default();
-        note_options.set(
-            NoteOptions::Textmode,
-            parsed_args.is_flag_set(ColumnsFlag::Textmode),
-        );
-        note_options.set(
-            NoteOptions::ScrambleText,
-            parsed_args.is_flag_set(ColumnsFlag::Scramble),
-        );
-        note_options.set(
-            NoteOptions::HideMedia,
-            parsed_args.is_flag_set(ColumnsFlag::NoMedia),
-        );
-        note_options.set(
-            NoteOptions::ShowNoteClientTop,
-            ShowSourceClientOption::Top == app_context.settings_handler.show_source_client().into()
-                || parsed_args.is_flag_set(ColumnsFlag::ShowNoteClientTop),
-        );
-        note_options.set(
-            NoteOptions::ShowNoteClientBottom,
-            ShowSourceClientOption::Bottom
-                == app_context.settings_handler.show_source_client().into()
-                || parsed_args.is_flag_set(ColumnsFlag::ShowNoteClientBottom),
-        );
-        options.set(AppOptions::Debug, app_context.args.debug);
-        options.set(
-            AppOptions::SinceOptimize,
-            parsed_args.is_flag_set(ColumnsFlag::SinceOptimize),
-        );
+
+        let note_options = get_note_options(parsed_args, settings_handler);
 
         let jobs = JobsCache::default();
 
@@ -562,6 +540,39 @@ impl Damus {
     }
 }
 
+fn get_note_options(args: ColumnsArgs, settings_handler: &&mut SettingsHandler) -> NoteOptions {
+    let mut note_options = NoteOptions::default();
+
+    note_options.set(
+        NoteOptions::Textmode,
+        args.is_flag_set(ColumnsFlag::Textmode),
+    );
+    note_options.set(
+        NoteOptions::ScrambleText,
+        args.is_flag_set(ColumnsFlag::Scramble),
+    );
+    note_options.set(
+        NoteOptions::HideMedia,
+        args.is_flag_set(ColumnsFlag::NoMedia),
+    );
+    note_options.set(
+        NoteOptions::ShowNoteClientTop,
+        ShowSourceClientOption::Top == settings_handler.show_source_client().into()
+            || args.is_flag_set(ColumnsFlag::ShowNoteClientTop),
+    );
+    note_options.set(
+        NoteOptions::ShowNoteClientBottom,
+        ShowSourceClientOption::Bottom == settings_handler.show_source_client().into()
+            || args.is_flag_set(ColumnsFlag::ShowNoteClientBottom),
+    );
+
+    note_options.set(
+        NoteOptions::RepliesNewestFirst,
+        settings_handler.show_replies_newest_first(),
+    );
+    note_options
+}
+
 /*
 fn circle_icon(ui: &mut egui::Ui, openness: f32, response: &egui::Response) {
     let stroke = ui.style().interact(&response).fg_stroke;
@@ -583,6 +594,7 @@ fn render_damus_mobile(
     let mut app_action: Option<AppAction> = None;
 
     let active_col = app.columns_mut(app_ctx.i18n, app_ctx.accounts).selected as usize;
+
     if !app.columns(app_ctx.accounts).columns().is_empty() {
         let r = nav::render_nav(
             active_col,

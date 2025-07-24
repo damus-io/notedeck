@@ -29,6 +29,7 @@ pub struct Settings {
     pub locale: String,
     pub zoom_factor: f32,
     pub show_source_client: String,
+    pub show_replies_newest_first: bool,
 }
 
 impl Default for Settings {
@@ -38,10 +39,12 @@ impl Default for Settings {
             theme: DEFAULT_THEME,
             locale: DEFAULT_LOCALE.to_string(),
             zoom_factor: DEFAULT_ZOOM_FACTOR,
-            show_source_client: "Hide".to_string(),
+            show_source_client: DEFAULT_SHOW_SOURCE_CLIENT.to_string(),
+            show_replies_newest_first: false,
         }
     }
 }
+
 pub struct SettingsHandler {
     directory: Directory,
     current_settings: Option<Settings>,
@@ -129,7 +132,7 @@ impl SettingsHandler {
         };
     }
 
-    fn get_settings_mut(&mut self) -> &mut Settings {
+    pub fn get_settings_mut(&mut self) -> &mut Settings {
         if self.current_settings.is_none() {
             self.current_settings = Some(Settings::default());
         }
@@ -159,6 +162,11 @@ impl SettingsHandler {
         S: Into<String>,
     {
         self.get_settings_mut().show_source_client = option.into();
+        self.save();
+    }
+
+    pub fn set_show_replies_newest_first(&mut self, value: bool) {
+        self.get_settings_mut().show_replies_newest_first = value;
         self.save();
     }
 
@@ -202,6 +210,13 @@ impl SettingsHandler {
             .as_ref()
             .map(|s| s.show_source_client.to_string())
             .unwrap_or(DEFAULT_SHOW_SOURCE_CLIENT.to_string())
+    }
+
+    pub fn show_replies_newest_first(&self) -> bool {
+        self.current_settings
+            .as_ref()
+            .map(|s| s.show_replies_newest_first)
+            .unwrap_or(false)
     }
 
     pub fn is_loaded(&self) -> bool {

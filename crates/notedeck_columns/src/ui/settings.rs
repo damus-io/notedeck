@@ -1,5 +1,7 @@
-use egui::{vec2, Button, Color32, ComboBox, Frame, Margin, RichText, ThemePreference};
-use notedeck::{tr, Images, LanguageIdentifier, Localization, NotedeckTextStyle, SettingsHandler};
+use egui::{vec2, Button, Color32, ComboBox, Frame, Margin, RichText, ScrollArea, ThemePreference};
+use notedeck::{
+    tr, Images, LanguageIdentifier, Localization, NotedeckTextStyle, Settings, SettingsHandler,
+};
 use notedeck_ui::NoteOptions;
 use strum::Display;
 
@@ -85,6 +87,7 @@ pub enum SettingsAction {
     SetTheme(ThemePreference),
     SetShowSourceClient(ShowSourceClientOption),
     SetLocale(LanguageIdentifier),
+    SetRepliestNewestFirst(bool),
     OpenRelays,
     OpenCacheFolder,
     ClearCacheFolder,
@@ -123,6 +126,11 @@ impl SettingsAction {
                     settings_handler.set_locale(language.to_string());
                 }
             }
+            Self::SetRepliestNewestFirst(value) => {
+                app.note_options.set(NoteOptions::RepliesNewestFirst, value);
+                settings_handler.set_show_replies_newest_first(value);
+                settings_handler.save();
+            }
             Self::OpenCacheFolder => {
                 use opener;
                 let _ = opener::open(img_cache.base_path.clone());
@@ -137,9 +145,7 @@ impl SettingsAction {
 }
 
 pub struct SettingsView<'a> {
-    theme: &'a mut String,
-    selected_language: &'a mut String,
-    show_note_client: &'a mut ShowSourceClientOption,
+    settings: &'a mut Settings,
     i18n: &'a mut Localization,
     img_cache: &'a mut Images,
 }
@@ -169,17 +175,17 @@ where
 
 impl<'a> SettingsView<'a> {
     pub fn new(
-        img_cache: &'a mut Images,
-        selected_language: &'a mut String,
-        theme: &'a mut String,
-        show_note_client: &'a mut ShowSourceClientOption,
         i18n: &'a mut Localization,
+        img_cache: &'a mut Images,
+        settings: &'a mut Settings,
+        // theme: &'a mut String,
+        // show_note_client: &'a mut ShowSourceClientOption,
+        // show_wide: &'a mut bool,
+        // show_replies_newest_first: &'a mut bool,
     ) -> Self {
         Self {
-            show_note_client,
-            theme,
+            settings,
             img_cache,
-            selected_language,
             i18n,
         }
     }
@@ -260,11 +266,8 @@ impl<'a> SettingsView<'a> {
                 ComboBox::from_label("")
                     .selected_text(tr!(
                         self.i18n,
-                        &self.selected_language.clone(),
-                        &format!(
-                            "Display name for {} language",
-                            self.selected_language.clone()
-                        )
+                        &self.settings.locale.clone(),
+                        &format!("Display name for {} language", self.settings.locale.clone())
                     ))
                     .show_ui(ui, |ui| {
                         for lang in available_locales {
@@ -275,7 +278,7 @@ impl<'a> SettingsView<'a> {
                                 &format!("Display name for {} language", lang_str.clone())
                             );
                             if ui
-                                .selectable_value(self.selected_language, lang_str, display_name)
+                                .selectable_value(&mut self.settings.locale, lang_str, display_name)
                                 .clicked()
                             {
                                 action = Some(SettingsAction::SetLocale(lang.to_owned()))
@@ -290,10 +293,11 @@ impl<'a> SettingsView<'a> {
                     "Theme:",
                     "Label for theme, Appearance settings section",
                 ));
+
                 if ui
                     .selectable_value(
-                        self.theme,
-                        THEME_LIGHT.into(),
+                        &mut self.settings.theme,
+                        ThemePreference::Light,
                         small_richtext(
                             self.i18n,
                             THEME_LIGHT.into(),
@@ -304,10 +308,11 @@ impl<'a> SettingsView<'a> {
                 {
                     action = Some(SettingsAction::SetTheme(ThemePreference::Light));
                 }
+
                 if ui
                     .selectable_value(
-                        self.theme,
-                        THEME_DARK.into(),
+                        &mut self.settings.theme,
+                        ThemePreference::Dark,
                         small_richtext(
                             self.i18n,
                             THEME_DARK.into(),
@@ -421,11 +426,32 @@ impl<'a> SettingsView<'a> {
 
         let title = tr!(self.i18n, "Others", "Label for others settings section");
         settings_group(ui, title, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(small_richtext(
+                    self.i18n,
+                    "Sort replies newest first",
+                    "Label for Sort replies newest first, others settings section",
+                ));
+
+                if ui
+                    .toggle_value(
+                        &mut self.settings.show_replies_newest_first,
+                        RichText::new(tr!(self.i18n, "ON", "ON"))
+                            .text_style(NotedeckTextStyle::Small.text_style()),
+                    )
+                    .changed()
+                {
+                    action = Some(SettingsAction::SetRepliestNewestFirst(
+                        self.settings.show_replies_newest_first,
+                    ));
+                }
+            });
+
             ui.horizontal_wrapped(|ui| {
                 ui.label(small_richtext(
                     self.i18n,
-                    "Show source client",
-                    "Label for Show source client, others settings section",
+                    "Source client",
+                    "Label for Source client, others settings section",
                 ));
 
                 for option in [
@@ -434,10 +460,12 @@ impl<'a> SettingsView<'a> {
                     ShowSourceClientOption::Bottom,
                 ] {
                     let label = option.clone().label(self.i18n);
+                    let mut current: ShowSourceClientOption =
+                        self.settings.show_source_client.clone().into();
 
                     if ui
                         .selectable_value(
-                            self.show_note_client,
+                            &mut current,
                             option,
                             RichText::new(label).text_style(NotedeckTextStyle::Small.text_style()),
                         )
@@ -478,27 +506,29 @@ impl<'a> SettingsView<'a> {
         Frame::default()
             .inner_margin(Margin::symmetric(10, 10))
             .show(ui, |ui| {
-                if let Some(new_action) = self.appearance_section(ui) {
-                    action = Some(new_action);
-                }
+                ScrollArea::vertical().show(ui, |ui| {
+                    if let Some(new_action) = self.appearance_section(ui) {
+                        action = Some(new_action);
+                    }
 
-                ui.add_space(5.0);
+                    ui.add_space(5.0);
 
-                if let Some(new_action) = self.storage_section(ui) {
-                    action = Some(new_action);
-                }
+                    if let Some(new_action) = self.storage_section(ui) {
+                        action = Some(new_action);
+                    }
 
-                ui.add_space(5.0);
+                    ui.add_space(5.0);
 
-                if let Some(new_action) = self.other_options_section(ui) {
-                    action = Some(new_action);
-                }
+                    if let Some(new_action) = self.other_options_section(ui) {
+                        action = Some(new_action);
+                    }
 
-                ui.add_space(10.0);
+                    ui.add_space(10.0);
 
-                if let Some(new_action) = self.manage_relays_section(ui) {
-                    action = Some(new_action);
-                }
+                    if let Some(new_action) = self.manage_relays_section(ui) {
+                        action = Some(new_action);
+                    }
+                });
             });
 
         action
