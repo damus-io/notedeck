@@ -64,6 +64,9 @@ Algorithmic_feeds_to_aid_in_note_discovery_d344 = {"["}Àlgóríthmíç fééds 
 # Label for zap amount input field
 Amount_70f0 = {"["}Àmóúñt{"]"}
 
+# Label for appearance settings section
+Appearance_4c7f = {"["}Àppéàràñçé{"]"}
+
 # Button to send message to Dave AI assistant
 Ask_b7f4 = {"["}Àsk{"]"}
 
@@ -85,11 +88,23 @@ Broadcast_Local_7e50 = {"["}Bróàdçàst Lóçàl{"]"}
 # Button label to cancel an action
 Cancel_ed3b = {"["}Çàñçél{"]"}
 
+# Label for cancel clear cache, Storage settings section
+Cancel_fd8b = {"["}Çàñçél{"]"}
+
+# Label for clear cache button, Storage settings section
+Clear_cache_dccb = {"["}Çléàr çàçhé{"]"}
+
 # Hover text for editable zap amount
 Click_to_edit_0414 = {"["}Çlíçk tó édít{"]"}
 
 # Column title for note composition
 Compose_Note_c094 = {"["}Çómpósé Ñóté{"]"}
+
+# Label for configure relays, settings section
+Configure_relays_d156 = {"["}Çóñfígúré rélàys{"]"}
+
+# Label for confirm clear cache, Storage settings section
+Confirm_9d9d = {"["}Çóñfírm{"]"}
 
 # Button label to confirm an action
 Confirm_f8a6 = {"["}Çóñfírm{"]"}
@@ -163,6 +178,9 @@ Customize_Zap_Amount_cfc4 = {"["}Çústómízé Zàp Àmóúñt{"]"}
 # Column title for support page
 Damus_Support_27c0 = {"["}Dàmús Súppórt{"]"}
 
+# Label for Theme Dark, Appearance settings section
+Dark_85fe = {"["}Dàrk{"]"}
+
 # Label for deck name input field
 Deck_name_cd32 = {"["}Déçk ñàmé{"]"}
 
@@ -229,6 +247,9 @@ Home_8c19 = {"["}Hómé{"]"}
 # Label for deck icon selection
 Icon_b0ab = {"["}Íçóñ{"]"}
 
+# Label for Image cache size, Storage settings section
+Image_cache_size_3004 = {"["}Ímàgé çàçhé sízé:{"]"}
+
 # Title for individual user column
 Individual_b776 = {"["}Íñdívídúàl{"]"}
 
@@ -259,8 +280,14 @@ k_5K_f7e6 = {"["}5K{"]"}
 # Description for your notes column
 Keep_track_of_your_notes___replies_a334 = {"["}Kéép tràçk óf yóúr ñótés & réplíés{"]"}
 
+# Label for language, Appearance settings section
+Language_e264 = {"["}Làñgúàgé:{"]"}
+
 # Title for last note per user column
 Last_Note_per_User_17ad = {"["}Làst Ñóté pér Úsér{"]"}
+
+# Label for Theme Light, Appearance settings section
+Light_7475 = {"["}Líght{"]"}
 
 # Bitcoin Lightning network address field label
 Lightning_network_address__lud16_ea51 = {"["}Líghtñíñg ñétwórk àddréss (lúd16){"]"}
@@ -324,6 +351,9 @@ Open_Email_25e9 = {"["}Ópéñ Émàíl{"]"}
 
 # Instruction to open email client
 Open_your_default_email_client_to_get_help_from_the_Damus_team_68dc = {"["}Ópéñ yóúr défàúlt émàíl çlíéñt tó gét hélp fróm thé Dàmús téàm{"]"}
+
+# Label for others settings section
+Others_7267 = {"["}Óthérs{"]"}
 
 # Placeholder text for NWC URI input
 Paste_your_NWC_URI_here_b471 = {"["}Pàsté yóúr ÑWÇ ÚRÍ héré...{"]"}
@@ -394,6 +424,9 @@ Repost_this_note_8e56 = {"["}Répóst thís ñóté{"]"}
 # Label for reposted notes
 Reposted_61c8 = {"["}Répóstéd{"]"}
 
+# Label for reset zoom level, Appearance settings section
+Reset_62d4 = {"["}Rését{"]"}
+
 # Heading for support section
 Running_into_a_bug_1796 = {"["}Rúññíñg íñtó à búg?{"]"}
 
@@ -426,6 +459,12 @@ See_the_whole_nostr_universe_7694 = {"["}Séé thé whólé ñóstr úñívérs�
 
 # Button label to send a zap
 Send_1ea4 = {"["}Séñd{"]"}
+
+# Column title for app settings
+Settings_7a4f = {"["}Séttíñgs{"]"}
+
+# Label for Show source client, others settings section
+Show_source_client_9e31 = {"["}Shów sóúrçé çlíéñt{"]"}
 
 # Description for last note per user column
 Show_the_last_note_for_each_user_from_a_list_50e7 = {"["}Shów thé làst ñóté fór éàçh úsér fróm à líst{"]"}
@@ -466,6 +505,9 @@ Step_1_8656 = {"["}Stép 1{"]"}
 # Step 2 label in support instructions
 Step_2_d08d = {"["}Stép 2{"]"}
 
+# Label for storage settings section
+Storage_ed65 = {"["}Stóràgé{"]"}
+
 # Column title for subscribing to external user
 Subscribe_to_someone_else_s_notes_d1e9 = {"["}Súbsçríbé tó sóméóñé élsé's ñótés{"]"}
 
@@ -483,6 +525,9 @@ Tap_to_Load_4b05 = {"["}Tàp tó Lóàd{"]"}
 
 # Message shown when Dave trial period has ended
 The_Dave_Nostr_AI_assistant_trial_has_ended_____Thanks_for_testing__Zap-enabled_Dave_coming_soon_c6c7 = {"["}Thé Dàvé Ñóstr ÀÍ àssístàñt tríàl hàs éñdéd :(. Thàñks fór téstíñg! Zàp-éñàbléd Dàvé çómíñg sóóñ!{"]"}
+
+# Label for theme, Appearance settings section
+Theme_4aac = {"["}Thémé:{"]"}
 
 # Column title for note thread view
 Thread_0f20 = {"["}Thréàd{"]"}
@@ -504,6 +549,9 @@ username___at___domain___will_be_used_for_identification_a4fd = {"["}"{$username
 
 # Profile username field label
 Username_daa7 = {"["}Úsérñàmé{"]"}
+
+# Label for view folder button, Storage settings section
+View_folder_9742 = {"["}Víéw fóldér:{"]"}
 
 # Column title for wallet management
 Wallet_5e50 = {"["}Wàllét{"]"}
@@ -531,6 +579,9 @@ Zap_16b4 = {"["}Zàp{"]"}
 
 # Hover text for zap button
 Zap_this_note_42b2 = {"["}Zàp thís ñóté{"]"}
+
+# Label for zoom level, Appearance settings section
+Zoom_Level_29a8 = {"["}Zóóm Lévél:{"]"}
 
 # Pluralized strings
 
