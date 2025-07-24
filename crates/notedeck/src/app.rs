@@ -159,9 +159,7 @@ impl Notedeck {
             1024usize * 1024usize * 1024usize * 1024usize
         };
 
-        let mut settings_handler = SettingsHandler::new(&path);
-
-        settings_handler.load();
+        let settings_handler = SettingsHandler::new(&path).load();
 
         let config = Config::new().set_ingester_threads(2).set_mapsize(map_size);
 
