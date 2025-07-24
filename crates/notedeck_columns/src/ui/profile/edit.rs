@@ -24,9 +24,14 @@ impl<'a> EditProfileView<'a> {
         }
     }
 
+    pub fn scroll_id() -> egui::Id {
+        egui::Id::new("edit_profile")
+    }
+
     // return true to save
     pub fn ui(&mut self, ui: &mut egui::Ui) -> bool {
         ScrollArea::vertical()
+            .id_salt(EditProfileView::scroll_id())
             .show(ui, |ui| {
                 banner(ui, self.state.banner(), 188.0);
 

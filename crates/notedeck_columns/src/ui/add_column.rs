@@ -64,14 +64,14 @@ enum AddColumnOption {
     Individual(PubkeySource),
 }
 
-#[derive(Clone, Copy, Eq, PartialEq, Debug, Default)]
+#[derive(Clone, Copy, Eq, PartialEq, Debug, Default, Hash)]
 pub enum AddAlgoRoute {
     #[default]
     Base,
     LastPerPubkey,
 }
 
-#[derive(Clone, Copy, Eq, PartialEq, Debug)]
+#[derive(Clone, Copy, Eq, PartialEq, Debug, Hash)]
 pub enum AddColumnRoute {
     Base,
     UndecidedNotification,
@@ -187,8 +187,13 @@ impl<'a> AddColumnView<'a> {
         }
     }
 
+    pub fn scroll_id(route: &AddColumnRoute) -> egui::Id {
+        egui::Id::new(("add_column", route))
+    }
+
     pub fn ui(&mut self, ui: &mut Ui) -> Option<AddColumnResponse> {
         ScrollArea::vertical()
+            .id_salt(AddColumnView::scroll_id(&AddColumnRoute::Base))
             .show(ui, |ui| {
                 let mut selected_option: Option<AddColumnResponse> = None;
                 for column_option_data in self.get_base_options(ui) {

@@ -36,6 +36,7 @@ impl RelayView<'_> {
                 ui.add_space(8.0);
 
                 egui::ScrollArea::vertical()
+                    .id_salt(RelayView::scroll_id())
                     .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
                     .auto_shrink([false; 2])
                     .show(ui, |ui| {
@@ -50,6 +51,10 @@ impl RelayView<'_> {
             });
 
         action
+    }
+
+    pub fn scroll_id() -> egui::Id {
+        egui::Id::new("relay_scroll")
     }
 }
 

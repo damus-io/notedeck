@@ -12,6 +12,7 @@ pub mod column;
 mod deck_state;
 mod decks;
 mod draft;
+mod drag;
 mod key_parsing;
 pub mod login_manager;
 mod media_upload;

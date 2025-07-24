@@ -4,26 +4,28 @@ use crate::{
     column::ColumnsAction,
     deck_state::DeckState,
     decks::{Deck, DecksAction, DecksCache},
+    drag::{get_drag_id, get_drag_id_through_frame},
     options::AppOptions,
     profile::{ProfileAction, SaveProfileChanges},
     route::{Route, Router, SingletonRouter},
     timeline::{
         route::{render_thread_route, render_timeline_route},
-        TimelineCache,
+        TimelineCache, TimelineKind,
     },
     ui::{
         self,
-        add_column::render_add_column_routes,
+        add_column::{render_add_column_routes, AddColumnView},
         column::NavTitle,
         configure_deck::ConfigureDeckView,
         edit_deck::{EditDeckResponse, EditDeckView},
-        note::{custom_zap::CustomZapView, NewPostAction, PostAction, PostType},
+        note::{custom_zap::CustomZapView, NewPostAction, PostAction, PostType, QuoteRepostView},
         profile::EditProfileView,
         search::{FocusState, SearchView},
         settings::{SettingsAction, ShowNoteClientOptions},
         support::SupportView,
         wallet::{get_default_zap_state, WalletAction, WalletState, WalletView},
-        RelayView, SettingsView,
+        AccountsView, PostReplyView, PostView, ProfileView, RelayView, SettingsView, ThreadView,
+        TimelineView,
     },
     Damus,
 };
@@ -631,27 +633,22 @@ fn render_nav_body(
                 return None;
             };
 
-            let id = egui::Id::new(("post", col, note.key().unwrap()));
             let poster = ctx.accounts.selected_filled()?;
 
             let action = {
                 let draft = app.drafts.reply_mut(note.id());
 
-                let response = egui::ScrollArea::vertical()
-                    .show(ui, |ui| {
-                        ui::PostReplyView::new(
-                            &mut note_context,
-                            poster,
-                            draft,
-                            &note,
-                            inner_rect,
-                            app.note_options,
-                            &mut app.jobs,
-                        )
-                        .id_source(id)
-                        .show(ui)
-                    })
-                    .inner;
+                let response = ui::PostReplyView::new(
+                    &mut note_context,
+                    poster,
+                    draft,
+                    &note,
+                    inner_rect,
+                    app.note_options,
+                    &mut app.jobs,
+                    col,
+                )
+                .show(ui);
 
                 response.action
             };
@@ -672,26 +669,20 @@ fn render_nav_body(
                 return None;
             };
 
-            let id = egui::Id::new(("post", col, note.key().unwrap()));
-
             let poster = ctx.accounts.selected_filled()?;
             let draft = app.drafts.quote_mut(note.id());
 
-            let response = egui::ScrollArea::vertical()
-                .show(ui, |ui| {
-                    crate::ui::note::QuoteRepostView::new(
-                        &mut note_context,
-                        poster,
-                        draft,
-                        &note,
-                        inner_rect,
-                        app.note_options,
-                        &mut app.jobs,
-                    )
-                    .id_source(id)
-                    .show(ui)
-                })
-                .inner;
+            let response = crate::ui::note::QuoteRepostView::new(
+                &mut note_context,
+                poster,
+                draft,
+                &note,
+                inner_rect,
+                app.note_options,
+                &mut app.jobs,
+                col,
+            )
+            .show(ui);
 
             response.action.map(Into::into)
         }
@@ -964,47 +955,165 @@ pub fn render_nav(
         }
     };
 
-    let nav_response = Nav::new(
-        &app.columns(ctx.accounts)
-            .column(col)
-            .router()
-            .routes()
-            .clone(),
-    )
-    .navigating(
-        app.columns_mut(ctx.i18n, ctx.accounts)
-            .column_mut(col)
-            .router_mut()
-            .navigating,
-    )
-    .returning(
-        app.columns_mut(ctx.i18n, ctx.accounts)
-            .column_mut(col)
-            .router_mut()
-            .returning,
-    )
-    .id_source(egui::Id::new(("nav", col)))
-    .show_mut(ui, |ui, render_type, nav| match render_type {
-        NavUiType::Title => NavTitle::new(
-            ctx.ndb,
-            ctx.img_cache,
-            get_active_columns_mut(ctx.i18n, ctx.accounts, &mut app.decks_cache),
-            nav.routes(),
-            col,
-            ctx.i18n,
-        )
-        .show_move_button(!narrow)
-        .show_delete_button(!narrow)
-        .show(ui),
+    let routes = app
+        .columns(ctx.accounts)
+        .column(col)
+        .router()
+        .routes()
+        .clone();
+    let nav = Nav::new(&routes).id_source(egui::Id::new(("nav", col)));
 
-        NavUiType::Body => {
-            if let Some(top) = nav.routes().last() {
-                render_nav_body(ui, app, ctx, top, nav.routes().len(), col, inner_rect)
-            } else {
-                None
+    let drag_ids = 's: {
+        let Some(top_route) = &routes.last().cloned() else {
+            break 's None;
+        };
+
+        let Some(scroll_id) = get_scroll_id(
+            top_route,
+            app.columns(ctx.accounts)
+                .column(col)
+                .router()
+                .routes()
+                .len(),
+            &app.timeline_cache,
+            col,
+        ) else {
+            break 's None;
+        };
+
+        let vertical_drag_id = if route_uses_frame(top_route) {
+            get_drag_id_through_frame(ui, scroll_id)
+        } else {
+            get_drag_id(ui, scroll_id)
+        };
+
+        let horizontal_drag_id = nav.drag_id(ui);
+
+        let drag = &mut get_active_columns_mut(ctx.i18n, ctx.accounts, &mut app.decks_cache)
+            .column_mut(col)
+            .drag;
+
+        drag.update(horizontal_drag_id, vertical_drag_id, ui.ctx());
+
+        Some((horizontal_drag_id, vertical_drag_id))
+    };
+
+    let nav_response = nav
+        .navigating(
+            app.columns_mut(ctx.i18n, ctx.accounts)
+                .column_mut(col)
+                .router_mut()
+                .navigating,
+        )
+        .returning(
+            app.columns_mut(ctx.i18n, ctx.accounts)
+                .column_mut(col)
+                .router_mut()
+                .returning,
+        )
+        .show_mut(ui, |ui, render_type, nav| match render_type {
+            NavUiType::Title => NavTitle::new(
+                ctx.ndb,
+                ctx.img_cache,
+                get_active_columns_mut(ctx.i18n, ctx.accounts, &mut app.decks_cache),
+                nav.routes(),
+                col,
+                ctx.i18n,
+            )
+            .show_move_button(!narrow)
+            .show_delete_button(!narrow)
+            .show(ui),
+
+            NavUiType::Body => {
+                if let Some(top) = nav.routes().last() {
+                    render_nav_body(ui, app, ctx, top, nav.routes().len(), col, inner_rect)
+                } else {
+                    None
+                }
             }
-        }
-    });
+        });
+
+    if let Some((horizontal_drag_id, vertical_drag_id)) = drag_ids {
+        let drag = &mut get_active_columns_mut(ctx.i18n, ctx.accounts, &mut app.decks_cache)
+            .column_mut(col)
+            .drag;
+        drag.check_for_drag_start(ui.ctx(), horizontal_drag_id, vertical_drag_id);
+    }
 
     RenderNavResponse::new(col, NotedeckNavResponse::Nav(Box::new(nav_response)))
+}
+
+fn get_scroll_id(
+    top: &Route,
+    depth: usize,
+    timeline_cache: &TimelineCache,
+    col: usize,
+) -> Option<egui::Id> {
+    match top {
+        Route::Timeline(timeline_kind) => match timeline_kind {
+            TimelineKind::List(_)
+            | TimelineKind::Search(_)
+            | TimelineKind::Algo(_)
+            | TimelineKind::Notifications(_)
+            | TimelineKind::Universe
+            | TimelineKind::Hashtag(_)
+            | TimelineKind::Generic(_) => {
+                TimelineView::scroll_id(timeline_cache, timeline_kind, col)
+            }
+            TimelineKind::Profile(pubkey) => {
+                if depth > 1 {
+                    Some(ProfileView::scroll_id(col, pubkey))
+                } else {
+                    TimelineView::scroll_id(timeline_cache, timeline_kind, col)
+                }
+            }
+        },
+        Route::Thread(thread_selection) => Some(ThreadView::scroll_id(
+            thread_selection.selected_or_root(),
+            col,
+        )),
+        Route::Accounts(accounts_route) => match accounts_route {
+            crate::accounts::AccountsRoute::Accounts => Some(AccountsView::scroll_id()),
+            crate::accounts::AccountsRoute::AddAccount => None,
+        },
+        Route::Reply(note_id) => Some(PostReplyView::scroll_id(col, note_id.bytes())),
+        Route::Quote(note_id) => Some(QuoteRepostView::scroll_id(col, note_id.bytes())),
+        Route::Relays => Some(RelayView::scroll_id()),
+        Route::ComposeNote => Some(PostView::scroll_id()),
+        Route::AddColumn(add_column_route) => Some(AddColumnView::scroll_id(add_column_route)),
+        Route::EditProfile(_) => Some(EditProfileView::scroll_id()),
+        Route::Support => None,
+        Route::NewDeck => Some(ConfigureDeckView::scroll_id()),
+        Route::Search => Some(SearchView::scroll_id()),
+        Route::EditDeck(_) => None,
+        Route::Wallet(_) => None,
+        Route::CustomizeZapAmount(_) => None,
+        Route::Settings => None,
+    }
+}
+
+/// Does the corresponding View for the route use a egui::Frame to wrap the ScrollArea?
+/// TODO(kernelkind): this is quite hacky...
+fn route_uses_frame(route: &Route) -> bool {
+    match route {
+        Route::Accounts(accounts_route) => match accounts_route {
+            crate::accounts::AccountsRoute::Accounts => true,
+            crate::accounts::AccountsRoute::AddAccount => false,
+        },
+        Route::Relays => true,
+        Route::Timeline(_) => false,
+        Route::Thread(_) => false,
+        Route::Reply(_) => false,
+        Route::Quote(_) => false,
+        Route::Settings => false,
+        Route::ComposeNote => false,
+        Route::AddColumn(_) => false,
+        Route::EditProfile(_) => false,
+        Route::Support => false,
+        Route::NewDeck => false,
+        Route::Search => false,
+        Route::EditDeck(_) => false,
+        Route::Wallet(_) => false,
+        Route::CustomizeZapAmount(_) => false,
+    }
 }

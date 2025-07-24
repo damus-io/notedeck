@@ -4,7 +4,7 @@ use crate::ui::{
     note::{PostAction, PostResponse, PostType},
 };
 
-use egui::{Rect, Response, Ui};
+use egui::{Rect, Response, ScrollArea, Ui};
 use enostr::{FilledKeypair, NoteId};
 use notedeck::NoteContext;
 use notedeck_ui::jobs::JobsCache;
@@ -15,7 +15,7 @@ pub struct PostReplyView<'a, 'd> {
     poster: FilledKeypair<'a>,
     draft: &'a mut Draft,
     note: &'a nostrdb::Note<'a>,
-    id_source: Option<egui::Id>,
+    scroll_id: egui::Id,
     inner_rect: egui::Rect,
     note_options: NoteOptions,
     jobs: &'a mut JobsCache,
@@ -31,31 +31,37 @@ impl<'a, 'd> PostReplyView<'a, 'd> {
         inner_rect: egui::Rect,
         note_options: NoteOptions,
         jobs: &'a mut JobsCache,
+        col: usize,
     ) -> Self {
-        let id_source: Option<egui::Id> = None;
         PostReplyView {
             note_context,
             poster,
             draft,
             note,
-            id_source,
+            scroll_id: PostReplyView::scroll_id(col, note.id()),
             inner_rect,
             note_options,
             jobs,
         }
     }
 
-    pub fn id_source(mut self, id: egui::Id) -> Self {
-        self.id_source = Some(id);
-        self
+    fn id(col: usize, note_id: &[u8; 32]) -> egui::Id {
+        egui::Id::new(("reply_view", col, note_id))
     }
 
-    pub fn id(&self) -> egui::Id {
-        self.id_source
-            .unwrap_or_else(|| egui::Id::new("post-reply-view"))
+    pub fn scroll_id(col: usize, note_id: &[u8; 32]) -> egui::Id {
+        PostReplyView::id(col, note_id).with("scroll")
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui) -> PostResponse {
+        ScrollArea::vertical()
+            .id_salt(self.scroll_id)
+            .show(ui, |ui| self.show_internal(ui))
+            .inner
+    }
+
+    // no scroll
+    fn show_internal(&mut self, ui: &mut egui::Ui) -> PostResponse {
         ui.vertical(|ui| {
             let avail_rect = ui.available_rect_before_wrap();
 
@@ -81,7 +87,6 @@ impl<'a, 'd> PostReplyView<'a, 'd> {
                 })
                 .inner;
 
-            let id = self.id();
             let replying_to = self.note.id();
             let rect_before_post = ui.min_rect();
 
@@ -95,8 +100,7 @@ impl<'a, 'd> PostReplyView<'a, 'd> {
                     self.note_options,
                     self.jobs,
                 )
-                .id_source(id)
-                .ui(self.note.txn().unwrap(), ui)
+                .ui_no_scroll(self.note.txn().unwrap(), ui)
             };
 
             post_response.action = post_response

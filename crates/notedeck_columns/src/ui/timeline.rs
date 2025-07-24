@@ -74,6 +74,15 @@ impl<'a, 'd> TimelineView<'a, 'd> {
         self.reverse = true;
         self
     }
+
+    pub fn scroll_id(
+        timeline_cache: &TimelineCache,
+        timeline_id: &TimelineKind,
+        col: usize,
+    ) -> Option<egui::Id> {
+        let timeline = timeline_cache.get(timeline_id)?;
+        Some(egui::Id::new(("tlscroll", timeline.view_id(col))))
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -95,7 +104,9 @@ fn timeline_ui(
 
     */
 
-    let scroll_id = {
+    let scroll_id = TimelineView::scroll_id(timeline_cache, timeline_id, col)?;
+
+    {
         let timeline = if let Some(timeline) = timeline_cache.get_mut(timeline_id) {
             timeline
         } else {
@@ -114,8 +125,6 @@ fn timeline_ui(
 
         // need this for some reason??
         ui.add_space(3.0);
-
-        egui::Id::new(("tlscroll", timeline.view_id(col)))
     };
 
     let show_top_button_id = ui.id().with((scroll_id, "at_top"));
