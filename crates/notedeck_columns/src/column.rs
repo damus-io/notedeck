@@ -156,11 +156,9 @@ impl Columns {
 
     // Get the first router in the columns if there are columns present.
     // Otherwise, create a new column picker and return the router
-    pub fn get_first_router(&mut self) -> &mut Router<Route> {
-        if self.columns.is_empty() {
-            self.new_column_picker();
-        }
-        self.columns[0].router_mut()
+    pub fn get_selected_router(&mut self) -> &mut Router<Route> {
+        self.ensure_column();
+        self.selected_mut().router_mut()
     }
 
     #[inline]
@@ -181,19 +179,25 @@ impl Columns {
         Some(&self.columns[self.selected as usize])
     }
 
-    #[inline]
-    pub fn selected_mut(&mut self) -> Option<&mut Column> {
+    // TODO(jb55): switch to non-empty container for columns?
+    fn ensure_column(&mut self) {
         if self.columns.is_empty() {
-            return None;
+            self.new_column_picker();
         }
-        Some(&mut self.columns[self.selected as usize])
+    }
+
+    /// Get the selected column. If you're looking to route something
+    /// and you're not sure which one to choose, use this one
+    #[inline]
+    pub fn selected_mut(&mut self) -> &mut Column {
+        self.ensure_column();
+        assert!(self.selected < self.columns.len() as i32);
+        &mut self.columns[self.selected as usize]
     }
 
     #[inline]
     pub fn column_mut(&mut self, ind: usize) -> &mut Column {
-        if self.columns.is_empty() {
-            self.new_column_picker();
-        }
+        self.ensure_column();
         &mut self.columns[ind]
     }
 

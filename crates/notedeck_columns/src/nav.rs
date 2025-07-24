@@ -771,7 +771,7 @@ fn render_nav_body(
 
                 new_deck_state.clear();
                 get_active_columns_mut(ctx.i18n, ctx.accounts, &mut app.decks_cache)
-                    .get_first_router()
+                    .get_selected_router()
                     .go_back();
             }
             resp
@@ -802,7 +802,7 @@ fn render_nav_body(
                     }
                 }
                 get_active_columns_mut(ctx.i18n, ctx.accounts, &mut app.decks_cache)
-                    .get_first_router()
+                    .get_selected_router()
                     .go_back();
             }
 

@@ -35,7 +35,7 @@ impl DecksCache {
         accounts: &notedeck::Accounts,
     ) -> Option<&mut Column> {
         self.active_columns_mut(i18n, accounts)
-            .and_then(|ad| ad.selected_mut())
+            .map(|ad| ad.selected_mut())
     }
 
     pub fn selected_column(&self, accounts: &notedeck::Accounts) -> Option<&Column> {

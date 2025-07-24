@@ -187,7 +187,7 @@ impl<'a> DesktopSidePanel<'a> {
         action: SidePanelAction,
         i18n: &mut Localization,
     ) -> Option<SwitchingAction> {
-        let router = get_active_columns_mut(i18n, accounts, decks_cache).get_first_router();
+        let router = get_active_columns_mut(i18n, accounts, decks_cache).get_selected_router();
         let mut switching_response = None;
         match action {
             /*
@@ -280,7 +280,7 @@ impl<'a> DesktopSidePanel<'a> {
                     {
                         edit_deck
                             .columns_mut()
-                            .get_first_router()
+                            .get_selected_router()
                             .route_to(Route::EditDeck(index));
                     } else {
                         error!("Cannot push EditDeck route to index {}", index);
