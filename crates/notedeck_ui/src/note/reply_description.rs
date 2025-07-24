@@ -7,16 +7,16 @@ use notedeck::{tr, NoteAction, NoteContext};
 
 // Rich text segment types for internationalized rendering
 #[derive(Debug, Clone)]
-pub enum TextSegment {
+pub enum TextSegment<'a> {
     Plain(String),
-    UserMention([u8; 32]),       // pubkey
-    ThreadUserMention([u8; 32]), // pubkey
-    NoteLink([u8; 32]),
-    ThreadLink([u8; 32]),
+    UserMention(Option<&'a [u8; 32]>),       // pubkey
+    ThreadUserMention(Option<&'a [u8; 32]>), // pubkey
+    NoteLink(Option<&'a [u8; 32]>),
+    ThreadLink(Option<&'a [u8; 32]>),
 }
 
 // Helper function to parse i18n template strings with placeholders
-fn parse_i18n_template(template: &str) -> Vec<TextSegment> {
+fn parse_i18n_template(template: &str) -> Vec<TextSegment<'_>> {
     let mut segments = Vec::new();
     let mut current_text = String::new();
     let mut chars = template.chars().peekable();
@@ -41,10 +41,10 @@ fn parse_i18n_template(template: &str) -> Vec<TextSegment> {
             // Handle different placeholder types
             match placeholder.as_str() {
                 // Placeholder values will be filled later.
-                "user" => segments.push(TextSegment::UserMention([0; 32])),
-                "thread_user" => segments.push(TextSegment::ThreadUserMention([0; 32])),
-                "note" => segments.push(TextSegment::NoteLink([0; 32])),
-                "thread" => segments.push(TextSegment::ThreadLink([0; 32])),
+                "user" => segments.push(TextSegment::UserMention(None)),
+                "thread_user" => segments.push(TextSegment::ThreadUserMention(None)),
+                "note" => segments.push(TextSegment::NoteLink(None)),
+                "thread" => segments.push(TextSegment::ThreadLink(None)),
                 _ => {
                     // Unknown placeholder, treat as plain text
                     current_text.push_str(&format!("{{{placeholder}}}"));
@@ -64,39 +64,45 @@ fn parse_i18n_template(template: &str) -> Vec<TextSegment> {
 }
 
 // Helper function to fill in the actual data for placeholders
-fn fill_template_data(
-    mut segments: Vec<TextSegment>,
-    reply_pubkey: &[u8; 32],
-    reply_note_id: &[u8; 32],
-    root_pubkey: Option<&[u8; 32]>,
-    root_note_id: Option<&[u8; 32]>,
-) -> Vec<TextSegment> {
-    for segment in &mut segments {
+fn fill_template_data<'a>(
+    segments: &mut [TextSegment<'a>],
+    reply_pubkey: &'a [u8; 32],
+    reply_note_id: &'a [u8; 32],
+    root_pubkey: Option<&'a [u8; 32]>,
+    root_note_id: Option<&'a [u8; 32]>,
+) {
+    for segment in segments {
         match segment {
-            TextSegment::UserMention(pubkey) if *pubkey == [0; 32] => {
-                *pubkey = *reply_pubkey;
+            TextSegment::UserMention(pubkey) => {
+                if pubkey.is_none() {
+                    *pubkey = Some(reply_pubkey);
+                }
             }
-            TextSegment::ThreadUserMention(pubkey) if *pubkey == [0; 32] => {
-                *pubkey = *root_pubkey.unwrap_or(reply_pubkey);
+            TextSegment::ThreadUserMention(pubkey) => {
+                if pubkey.is_none() {
+                    *pubkey = Some(root_pubkey.unwrap_or(reply_pubkey));
+                }
             }
-            TextSegment::NoteLink(note_id) if *note_id == [0; 32] => {
-                *note_id = *reply_note_id;
+            TextSegment::NoteLink(note_id) => {
+                if note_id.is_none() {
+                    *note_id = Some(reply_note_id);
+                }
             }
-            TextSegment::ThreadLink(note_id) if *note_id == [0; 32] => {
-                *note_id = *root_note_id.unwrap_or(reply_note_id);
+            TextSegment::ThreadLink(note_id) => {
+                if note_id.is_none() {
+                    *note_id = Some(root_note_id.unwrap_or(reply_note_id));
+                }
             }
-            _ => {}
+            TextSegment::Plain(_) => {}
         }
     }
-
-    segments
 }
 
 // Main rendering function for text segments
 #[allow(clippy::too_many_arguments)]
 fn render_text_segments(
     ui: &mut egui::Ui,
-    segments: &[TextSegment],
+    segments: &[TextSegment<'_>],
     txn: &Transaction,
     note_context: &mut NoteContext,
     note_options: NoteOptions,
@@ -117,17 +123,25 @@ fn render_text_segments(
                 );
             }
             TextSegment::UserMention(pubkey) | TextSegment::ThreadUserMention(pubkey) => {
-                let action = Mention::new(note_context.ndb, note_context.img_cache, txn, pubkey)
-                    .size(size)
-                    .selectable(selectable)
-                    .show(ui);
+                let action = Mention::new(
+                    note_context.ndb,
+                    note_context.img_cache,
+                    txn,
+                    pubkey.expect("expected pubkey"),
+                )
+                .size(size)
+                .selectable(selectable)
+                .show(ui);
 
                 if action.is_some() {
                     note_action = action;
                 }
             }
             TextSegment::NoteLink(note_id) => {
-                if let Ok(note) = note_context.ndb.get_note_by_id(txn, note_id) {
+                if let Ok(note) = note_context
+                    .ndb
+                    .get_note_by_id(txn, note_id.expect("expected text segment note_id"))
+                {
                     let r = ui.add(
                         Label::new(
                             RichText::new(tr!(
@@ -158,7 +172,10 @@ fn render_text_segments(
                 }
             }
             TextSegment::ThreadLink(note_id) => {
-                if let Ok(note) = note_context.ndb.get_note_by_id(txn, note_id) {
+                if let Ok(note) = note_context
+                    .ndb
+                    .get_note_by_id(txn, note_id.expect("expected text segment threadlink"))
+                {
                     let r = ui.add(
                         Label::new(
                             RichText::new(tr!(
@@ -231,7 +248,7 @@ pub fn reply_desc(
         );
     };
 
-    let segments = if note_reply.is_reply_to_root() {
+    if note_reply.is_reply_to_root() {
         // Template: "replying to {user}'s {thread}"
         let template = tr!(
             note_context.i18n,
@@ -240,13 +257,23 @@ pub fn reply_desc(
             user = "{user}",
             thread = "{thread}"
         );
-        let segments = parse_i18n_template(&template);
+        let mut segments = parse_i18n_template(&template);
         fill_template_data(
-            segments,
+            &mut segments,
             reply_note.pubkey(),
             reply.id,
             None,
             Some(reply.id),
+        );
+        render_text_segments(
+            ui,
+            &segments,
+            txn,
+            note_context,
+            note_options,
+            jobs,
+            size,
+            selectable,
         )
     } else if let Some(root) = note_reply.root() {
         if let Ok(root_note) = note_context.ndb.get_note_by_id(txn, root.id) {
@@ -259,8 +286,18 @@ pub fn reply_desc(
                     user = "{user}",
                     note = "{note}"
                 );
-                let segments = parse_i18n_template(&template);
-                fill_template_data(segments, reply_note.pubkey(), reply.id, None, None)
+                let mut segments = parse_i18n_template(&template);
+                fill_template_data(&mut segments, reply_note.pubkey(), reply.id, None, None);
+                render_text_segments(
+                    ui,
+                    &segments,
+                    txn,
+                    note_context,
+                    note_options,
+                    jobs,
+                    size,
+                    selectable,
+                )
             } else {
                 // Template: "replying to {reply_user}'s {note} in {thread_user}'s {thread}"
                 // This would need more sophisticated placeholder handling
@@ -273,13 +310,23 @@ pub fn reply_desc(
                     thread_user = "{thread_user}",
                     thread = "{thread}"
                 );
-                let segments = parse_i18n_template(&template);
+                let mut segments = parse_i18n_template(&template);
                 fill_template_data(
-                    segments,
+                    &mut segments,
                     reply_note.pubkey(),
                     reply.id,
                     Some(root_note.pubkey()),
                     Some(root.id),
+                );
+                render_text_segments(
+                    ui,
+                    &segments,
+                    txn,
+                    note_context,
+                    note_options,
+                    jobs,
+                    size,
+                    selectable,
                 )
             }
         } else {
@@ -290,8 +337,18 @@ pub fn reply_desc(
                 "Template for replying to user in unknown thread",
                 user = "{user}"
             );
-            let segments = parse_i18n_template(&template);
-            fill_template_data(segments, reply_note.pubkey(), reply.id, None, None)
+            let mut segments = parse_i18n_template(&template);
+            fill_template_data(&mut segments, reply_note.pubkey(), reply.id, None, None);
+            render_text_segments(
+                ui,
+                &segments,
+                txn,
+                note_context,
+                note_options,
+                jobs,
+                size,
+                selectable,
+            )
         }
     } else {
         // Fallback
@@ -301,18 +358,17 @@ pub fn reply_desc(
             "Fallback template for replying to user",
             user = "{user}"
         );
-        let segments = parse_i18n_template(&template);
-        fill_template_data(segments, reply_note.pubkey(), reply.id, None, None)
-    };
-
-    render_text_segments(
-        ui,
-        &segments,
-        txn,
-        note_context,
-        note_options,
-        jobs,
-        size,
-        selectable,
-    )
+        let mut segments = parse_i18n_template(&template);
+        fill_template_data(&mut segments, reply_note.pubkey(), reply.id, None, None);
+        render_text_segments(
+            ui,
+            &segments,
+            txn,
+            note_context,
+            note_options,
+            jobs,
+            size,
+            selectable,
+        )
+    }
 }
