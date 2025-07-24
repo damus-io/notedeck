@@ -699,7 +699,7 @@ fn chrome_handle_app_action(
             );
 
             if let Some(action) = m_action {
-                let col = cols.column_mut(0);
+                let col = cols.selected_mut();
 
                 action.process(&mut col.router, &mut col.sheet_router);
             }
@@ -723,7 +723,7 @@ fn columns_route_to_profile(
         .active_columns_mut(ctx.i18n, ctx.accounts)
         .unwrap();
 
-    let router = cols.get_first_router();
+    let router = cols.get_selected_router();
     if router.routes().iter().any(|r| {
         matches!(
             r,
@@ -754,7 +754,7 @@ fn columns_route_to_profile(
     );
 
     if let Some(action) = m_action {
-        let col = cols.column_mut(0);
+        let col = cols.selected_mut();
 
         action.process(&mut col.router, &mut col.sheet_router);
     }
