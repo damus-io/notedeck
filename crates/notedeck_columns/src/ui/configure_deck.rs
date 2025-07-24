@@ -33,6 +33,10 @@ impl<'a> ConfigureDeckView<'a> {
         self
     }
 
+    pub fn scroll_id() -> egui::Id {
+        egui::Id::new("configure-deck")
+    }
+
     pub fn ui(&mut self, ui: &mut Ui) -> Option<ConfigureDeckResponse> {
         let title_font = egui::FontId::new(
             notedeck::fonts::get_font_size(ui.ctx(), &NotedeckTextStyle::Heading4),
@@ -261,6 +265,7 @@ fn glyph_options_ui(
 ) -> Option<char> {
     let mut selected_glyph = None;
     egui::ScrollArea::vertical()
+        .id_salt(ConfigureDeckView::scroll_id())
         .max_height(max_height)
         .show(ui, |ui| {
             let max_width = ui.available_width();

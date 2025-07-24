@@ -52,11 +52,16 @@ impl<'a> AccountsView<'a> {
 
             ui.add_space(8.0);
             scroll_area()
+                .id_salt(AccountsView::scroll_id())
                 .show(ui, |ui| {
                     Self::show_accounts(ui, self.accounts, self.ndb, self.img_cache, self.i18n)
                 })
                 .inner
         })
+    }
+
+    pub fn scroll_id() -> egui::Id {
+        egui::Id::new("accounts")
     }
 
     fn show_accounts(
