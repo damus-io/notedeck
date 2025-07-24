@@ -64,6 +64,9 @@ Algorithmic_feeds_to_aid_in_note_discovery_d344 = Algorithmic feeds to aid in no
 # Label for zap amount input field
 Amount_70f0 = Amount
 
+# Label for appearance settings section
+Appearance_4c7f = Appearance
+
 # Button to send message to Dave AI assistant
 Ask_b7f4 = Ask
 
@@ -85,11 +88,23 @@ Broadcast_Local_7e50 = Broadcast Local
 # Button label to cancel an action
 Cancel_ed3b = Cancel
 
+# Label for cancel clear cache, Storage settings section
+Cancel_fd8b = Cancel
+
+# Label for clear cache button, Storage settings section
+Clear_cache_dccb = Clear cache
+
 # Hover text for editable zap amount
 Click_to_edit_0414 = Click to edit
 
 # Column title for note composition
 Compose_Note_c094 = Compose Note
+
+# Label for configure relays, settings section
+Configure_relays_d156 = Configure relays
+
+# Label for confirm clear cache, Storage settings section
+Confirm_9d9d = Confirm
 
 # Button label to confirm an action
 Confirm_f8a6 = Confirm
@@ -163,6 +178,9 @@ Customize_Zap_Amount_cfc4 = Customize Zap Amount
 # Column title for support page
 Damus_Support_27c0 = Damus Support
 
+# Label for Theme Dark, Appearance settings section
+Dark_85fe = Dark
+
 # Label for deck name input field
 Deck_name_cd32 = Deck name
 
@@ -229,6 +247,9 @@ Home_8c19 = Home
 # Label for deck icon selection
 Icon_b0ab = Icon
 
+# Label for Image cache size, Storage settings section
+Image_cache_size_3004 = Image cache size:
+
 # Title for individual user column
 Individual_b776 = Individual
 
@@ -259,8 +280,14 @@ k_5K_f7e6 = 5K
 # Description for your notes column
 Keep_track_of_your_notes___replies_a334 = Keep track of your notes & replies
 
+# Label for language, Appearance settings section
+Language_e264 = Language:
+
 # Title for last note per user column
 Last_Note_per_User_17ad = Last Note per User
+
+# Label for Theme Light, Appearance settings section
+Light_7475 = Light
 
 # Bitcoin Lightning network address field label
 Lightning_network_address__lud16_ea51 = Lightning network address (lud16)
@@ -324,6 +351,9 @@ Open_Email_25e9 = Open Email
 
 # Instruction to open email client
 Open_your_default_email_client_to_get_help_from_the_Damus_team_68dc = Open your default email client to get help from the Damus team
+
+# Label for others settings section
+Others_7267 = Others
 
 # Placeholder text for NWC URI input
 Paste_your_NWC_URI_here_b471 = Paste your NWC URI here...
@@ -394,6 +424,9 @@ Repost_this_note_8e56 = Repost this note
 # Label for reposted notes
 Reposted_61c8 = Reposted
 
+# Label for reset zoom level, Appearance settings section
+Reset_62d4 = Reset
+
 # Heading for support section
 Running_into_a_bug_1796 = Running into a bug?
 
@@ -426,6 +459,12 @@ See_the_whole_nostr_universe_7694 = See the whole nostr universe
 
 # Button label to send a zap
 Send_1ea4 = Send
+
+# Column title for app settings
+Settings_7a4f = Settings
+
+# Label for Show source client, others settings section
+Show_source_client_9e31 = Show source client
 
 # Description for last note per user column
 Show_the_last_note_for_each_user_from_a_list_50e7 = Show the last note for each user from a list
@@ -466,6 +505,9 @@ Step_1_8656 = Step 1
 # Step 2 label in support instructions
 Step_2_d08d = Step 2
 
+# Label for storage settings section
+Storage_ed65 = Storage
+
 # Column title for subscribing to external user
 Subscribe_to_someone_else_s_notes_d1e9 = Subscribe to someone else's notes
 
@@ -483,6 +525,9 @@ Tap_to_Load_4b05 = Tap to Load
 
 # Message shown when Dave trial period has ended
 The_Dave_Nostr_AI_assistant_trial_has_ended_____Thanks_for_testing__Zap-enabled_Dave_coming_soon_c6c7 = The Dave Nostr AI assistant trial has ended :(. Thanks for testing! Zap-enabled Dave coming soon!
+
+# Label for theme, Appearance settings section
+Theme_4aac = Theme:
 
 # Column title for note thread view
 Thread_0f20 = Thread
@@ -504,6 +549,9 @@ username___at___domain___will_be_used_for_identification_a4fd = "{$username}" at
 
 # Profile username field label
 Username_daa7 = Username
+
+# Label for view folder button, Storage settings section
+View_folder_9742 = View folder:
 
 # Column title for wallet management
 Wallet_5e50 = Wallet
@@ -531,6 +579,9 @@ Zap_16b4 = Zap
 
 # Hover text for zap button
 Zap_this_note_42b2 = Zap this note
+
+# Label for zoom level, Appearance settings section
+Zoom_Level_29a8 = Zoom Level:
 
 # Pluralized strings
 
