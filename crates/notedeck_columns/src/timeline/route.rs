@@ -87,8 +87,8 @@ pub fn render_thread_route(
         note_options,
         note_context,
         jobs,
+        col,
     )
-    .id_source(col)
     .ui(ui)
     .map(Into::into)
 }

@@ -14,7 +14,6 @@ pub struct ThreadView<'a, 'd> {
     selected_note_id: &'a [u8; 32],
     note_options: NoteOptions,
     col: usize,
-    id_source: egui::Id,
     note_context: &'a mut NoteContext<'d>,
     jobs: &'a mut JobsCache,
 }
@@ -27,37 +26,33 @@ impl<'a, 'd> ThreadView<'a, 'd> {
         note_options: NoteOptions,
         note_context: &'a mut NoteContext<'d>,
         jobs: &'a mut JobsCache,
+        col: usize,
     ) -> Self {
-        let id_source = egui::Id::new("threadscroll_threadview");
         ThreadView {
             threads,
             selected_note_id,
             note_options,
-            id_source,
             note_context,
             jobs,
-            col: 0,
+            col,
         }
     }
 
-    pub fn id_source(mut self, col: usize) -> Self {
-        self.col = col;
-        self.id_source = egui::Id::new(("threadscroll", col));
-        self
+    pub fn scroll_id(selected_note_id: &[u8; 32], col: usize) -> egui::Id {
+        egui::Id::new(("threadscroll", selected_note_id, col))
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui) -> Option<NoteAction> {
         let txn = Transaction::new(self.note_context.ndb).expect("txn");
 
+        let scroll_id = ThreadView::scroll_id(self.selected_note_id, self.col);
         let mut scroll_area = egui::ScrollArea::vertical()
-            .id_salt(self.id_source)
+            .id_salt(scroll_id)
             .animated(false)
             .auto_shrink([false, false])
             .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible);
 
-        let offset_id = self
-            .id_source
-            .with(("scroll_offset", self.selected_note_id));
+        let offset_id = scroll_id.with(("scroll_offset", self.selected_note_id));
 
         if let Some(offset) = ui.data(|i| i.get_temp::<f32>(offset_id)) {
             scroll_area = scroll_area.vertical_scroll_offset(offset);
