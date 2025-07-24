@@ -35,7 +35,6 @@ pub struct PostView<'a, 'd> {
     draft: &'a mut Draft,
     post_type: PostType,
     poster: FilledKeypair<'a>,
-    id_source: Option<egui::Id>,
     inner_rect: egui::Rect,
     note_options: NoteOptions,
     jobs: &'a mut JobsCache,
@@ -112,12 +111,10 @@ impl<'a, 'd> PostView<'a, 'd> {
         note_options: NoteOptions,
         jobs: &'a mut JobsCache,
     ) -> Self {
-        let id_source: Option<egui::Id> = None;
         PostView {
             note_context,
             draft,
             poster,
-            id_source,
             post_type,
             inner_rect,
             note_options,
@@ -125,9 +122,12 @@ impl<'a, 'd> PostView<'a, 'd> {
         }
     }
 
-    pub fn id_source(mut self, id_source: impl std::hash::Hash) -> Self {
-        self.id_source = Some(egui::Id::new(id_source));
-        self
+    fn id() -> egui::Id {
+        egui::Id::new("post")
+    }
+
+    pub fn scroll_id() -> egui::Id {
+        PostView::id().with("scroll")
     }
 
     fn editbox(&mut self, txn: &nostrdb::Transaction, ui: &mut egui::Ui) -> egui::Response {
@@ -213,7 +213,8 @@ impl<'a, 'd> PostView<'a, 'd> {
 
         let focused = out.response.has_focus();
 
-        ui.ctx().data_mut(|d| d.insert_temp(self.id(), focused));
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(PostView::id(), focused));
 
         out.response
     }
@@ -305,11 +306,7 @@ impl<'a, 'd> PostView<'a, 'd> {
 
     fn focused(&self, ui: &egui::Ui) -> bool {
         ui.ctx()
-            .data(|d| d.get_temp::<bool>(self.id()).unwrap_or(false))
-    }
-
-    fn id(&self) -> egui::Id {
-        self.id_source.unwrap_or_else(|| egui::Id::new("post"))
+            .data(|d| d.get_temp::<bool>(PostView::id()).unwrap_or(false))
     }
 
     pub fn outer_margin() -> i8 {
@@ -321,6 +318,13 @@ impl<'a, 'd> PostView<'a, 'd> {
     }
 
     pub fn ui(&mut self, txn: &Transaction, ui: &mut egui::Ui) -> PostResponse {
+        ScrollArea::vertical()
+            .id_salt(PostView::scroll_id())
+            .show(ui, |ui| self.ui_no_scroll(txn, ui))
+            .inner
+    }
+
+    pub fn ui_no_scroll(&mut self, txn: &Transaction, ui: &mut egui::Ui) -> PostResponse {
         let focused = self.focused(ui);
         let stroke = if focused {
             ui.visuals().selection.stroke

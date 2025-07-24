@@ -631,27 +631,22 @@ fn render_nav_body(
                 return None;
             };
 
-            let id = egui::Id::new(("post", col, note.key().unwrap()));
             let poster = ctx.accounts.selected_filled()?;
 
             let action = {
                 let draft = app.drafts.reply_mut(note.id());
 
-                let response = egui::ScrollArea::vertical()
-                    .show(ui, |ui| {
-                        ui::PostReplyView::new(
-                            &mut note_context,
-                            poster,
-                            draft,
-                            &note,
-                            inner_rect,
-                            app.note_options,
-                            &mut app.jobs,
-                        )
-                        .id_source(id)
-                        .show(ui)
-                    })
-                    .inner;
+                let response = ui::PostReplyView::new(
+                    &mut note_context,
+                    poster,
+                    draft,
+                    &note,
+                    inner_rect,
+                    app.note_options,
+                    &mut app.jobs,
+                    col,
+                )
+                .show(ui);
 
                 response.action
             };
@@ -672,26 +667,20 @@ fn render_nav_body(
                 return None;
             };
 
-            let id = egui::Id::new(("post", col, note.key().unwrap()));
-
             let poster = ctx.accounts.selected_filled()?;
             let draft = app.drafts.quote_mut(note.id());
 
-            let response = egui::ScrollArea::vertical()
-                .show(ui, |ui| {
-                    crate::ui::note::QuoteRepostView::new(
-                        &mut note_context,
-                        poster,
-                        draft,
-                        &note,
-                        inner_rect,
-                        app.note_options,
-                        &mut app.jobs,
-                    )
-                    .id_source(id)
-                    .show(ui)
-                })
-                .inner;
+            let response = crate::ui::note::QuoteRepostView::new(
+                &mut note_context,
+                poster,
+                draft,
+                &note,
+                inner_rect,
+                app.note_options,
+                &mut app.jobs,
+                col,
+            )
+            .show(ui);
 
             response.action.map(Into::into)
         }
