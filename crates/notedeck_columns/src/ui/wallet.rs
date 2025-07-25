@@ -207,7 +207,7 @@ fn show_no_wallet(
     state: &mut WalletUIState,
     show_local_only: bool,
 ) -> Option<WalletAction> {
-    ui.horizontal_wrapped(|ui| 's: {
+    ui.horizontal_wrapped(|ui| {
         let text_edit = egui::TextEdit::singleline(&mut state.buf)
             .hint_text(
                 egui::RichText::new(tr!(
@@ -226,7 +226,7 @@ fn show_no_wallet(
         ui.add(text_edit);
 
         let Some(error_msg) = &state.error_msg else {
-            break 's;
+            return;
         };
 
         let error_str = match error_msg {
