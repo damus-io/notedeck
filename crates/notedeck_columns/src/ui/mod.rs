@@ -26,6 +26,7 @@ pub use preview::{Preview, PreviewApp, PreviewConfig};
 pub use profile::ProfileView;
 pub use relay::RelayView;
 pub use settings::SettingsView;
+pub use settings::ShowSourceClientOption;
 pub use side_panel::{DesktopSidePanel, SidePanelAction};
 pub use thread::ThreadView;
 pub use timeline::TimelineView;

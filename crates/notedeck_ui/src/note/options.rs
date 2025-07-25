@@ -25,6 +25,8 @@ bitflags! {
         /// Show note's client in the note header
         const ShowNoteClientTop  = 1 << 12;
         const ShowNoteClientBottom  = 1 << 13;
+
+        const RepliesNewestFirst = 1 << 14;
     }
 }
 

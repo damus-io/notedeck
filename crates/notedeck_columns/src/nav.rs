@@ -21,7 +21,7 @@ use crate::{
         note::{custom_zap::CustomZapView, NewPostAction, PostAction, PostType, QuoteRepostView},
         profile::EditProfileView,
         search::{FocusState, SearchView},
-        settings::{SettingsAction, ShowNoteClientOptions},
+        settings::SettingsAction,
         support::SupportView,
         wallet::{get_default_zap_state, WalletAction, WalletState, WalletView},
         AccountsView, PostReplyView, PostView, ProfileView, RelayView, SettingsView, ThreadView,
@@ -37,7 +37,6 @@ use notedeck::{
     get_current_default_msats, tr, ui::is_narrow, Accounts, AppContext, NoteAction, NoteContext,
     RelayAction,
 };
-use notedeck_ui::NoteOptions;
 use tracing::error;
 
 /// The result of processing a nav response
@@ -485,9 +484,13 @@ fn process_render_nav_action(
                 .process_relay_action(ui.ctx(), ctx.pool, action);
             None
         }
-        RenderNavAction::SettingsAction(action) => {
-            action.process_settings_action(app, ctx.theme, ctx.i18n, ctx.img_cache, ui.ctx())
-        }
+        RenderNavAction::SettingsAction(action) => action.process_settings_action(
+            app,
+            ctx.settings_handler,
+            ctx.i18n,
+            ctx.img_cache,
+            ui.ctx(),
+        ),
     };
 
     if let Some(action) = router_action {
@@ -582,33 +585,11 @@ fn render_nav_body(
             .map(RenderNavAction::RelayAction),
 
         Route::Settings => {
-            let mut show_note_client = if app.note_options.contains(NoteOptions::ShowNoteClientTop)
-            {
-                ShowNoteClientOptions::Top
-            } else if app.note_options.contains(NoteOptions::ShowNoteClientBottom) {
-                ShowNoteClientOptions::Bottom
-            } else {
-                ShowNoteClientOptions::Hide
-            };
+            let mut settings = ctx.settings_handler.get_settings_mut();
 
-            let mut theme: String = (if ui.visuals().dark_mode {
-                "Dark"
-            } else {
-                "Light"
-            })
-            .into();
-
-            let mut selected_language: String = ctx.i18n.get_current_locale().to_string();
-
-            SettingsView::new(
-                ctx.img_cache,
-                &mut selected_language,
-                &mut theme,
-                &mut show_note_client,
-                ctx.i18n,
-            )
-            .ui(ui)
-            .map(RenderNavAction::SettingsAction)
+            SettingsView::new(ctx.i18n, ctx.img_cache, &mut settings)
+                .ui(ui)
+                .map(RenderNavAction::SettingsAction)
         }
         Route::Reply(id) => {
             let txn = if let Ok(txn) = Transaction::new(ctx.ndb) {
