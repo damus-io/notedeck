@@ -106,19 +106,58 @@ pub fn round_image(image: &mut ColorImage) {
     }
 }
 
+/// If the image's longest dimension is greater than max_edge, downscale
+fn resize_image_if_too_big(
+    image: image::DynamicImage,
+    max_edge: u32,
+    filter: FilterType,
+) -> image::DynamicImage {
+    // if we have no size hint, resize to something reasonable
+    let w = image.width();
+    let h = image.height();
+    let long = w.max(h);
+
+    if long > max_edge {
+        let scale = max_edge as f32 / long as f32;
+        let new_w = (w as f32 * scale).round() as u32;
+        let new_h = (h as f32 * scale).round() as u32;
+
+        image.resize(new_w, new_h, filter)
+    } else {
+        image
+    }
+}
+
+///
+/// Process an image, resizing so we don't blow up video memory or even crash
+///
+/// For profile pictures, make them round and small to fit the size hint
+/// For everything else, either:
+///
+///   - resize to the size hint
+///   - keep the size if the longest dimension is less than MAX_IMG_LENGTH
+///   - resize if any larger, using [`resize_image_if_too_big`]
+///
 #[profiling::function]
-fn process_pfp_bitmap(imgtyp: ImageType, mut image: image::DynamicImage) -> ColorImage {
+fn process_image(imgtyp: ImageType, mut image: image::DynamicImage) -> ColorImage {
+    const MAX_IMG_LENGTH: u32 = 512;
+    const FILTER_TYPE: FilterType = FilterType::CatmullRom;
+
     match imgtyp {
-        ImageType::Content => {
-            let image_buffer = image.clone().into_rgba8();
-            let color_image = ColorImage::from_rgba_unmultiplied(
+        ImageType::Content(size_hint) => {
+            let image = match size_hint {
+                None => resize_image_if_too_big(image, MAX_IMG_LENGTH, FILTER_TYPE),
+                Some((w, h)) => image.resize(w, h, FILTER_TYPE),
+            };
+
+            let image_buffer = image.into_rgba8();
+            ColorImage::from_rgba_unmultiplied(
                 [
                     image_buffer.width() as usize,
                     image_buffer.height() as usize,
                 ],
                 image_buffer.as_flat_samples().as_slice(),
-            );
-            color_image
+            )
         }
         ImageType::Profile(size) => {
             // Crop square
@@ -154,7 +193,8 @@ fn parse_img_response(
     let content_type = response.content_type().unwrap_or_default();
     let size_hint = match imgtyp {
         ImageType::Profile(size) => SizeHint::Size(size, size),
-        ImageType::Content => SizeHint::default(),
+        ImageType::Content(Some((w, h))) => SizeHint::Size(w, h),
+        ImageType::Content(None) => SizeHint::default(),
     };
 
     if content_type.starts_with("image/svg") {
@@ -167,7 +207,7 @@ fn parse_img_response(
     } else if content_type.starts_with("image/") {
         profiling::scope!("load_from_memory");
         let dyn_image = image::load_from_memory(&response.bytes)?;
-        Ok(process_pfp_bitmap(imgtyp, dyn_image))
+        Ok(process_image(imgtyp, dyn_image))
     } else {
         Err(format!("Expected image, found content-type {content_type:?}").into())
     }
@@ -351,8 +391,8 @@ pub fn fetch_binary_from_disk(path: PathBuf) -> Result<Vec<u8>, notedeck::Error>
 pub enum ImageType {
     /// Profile Image (size)
     Profile(u32),
-    /// Content Image
-    Content,
+    /// Content Image with optional size hint
+    Content(Option<(u32, u32)>),
 }
 
 pub fn fetch_img(
@@ -411,7 +451,7 @@ fn fetch_img_from_net(
                         &cache_path,
                         gif_bytes,
                         true,
-                        move |img| process_pfp_bitmap(imgtyp, img),
+                        move |img| process_image(imgtyp, img),
                     )
                 }
             }
