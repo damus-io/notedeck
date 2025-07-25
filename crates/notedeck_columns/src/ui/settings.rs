@@ -75,9 +75,9 @@ impl ShowSourceClientOption {
 
     fn label<'a>(&self, i18n: &'a mut Localization) -> String {
         match self {
-            Self::Hide => tr!(i18n, "Hide", "Hide client source label"),
-            Self::Top => tr!(i18n, "Top", "Client source at top"),
-            Self::Bottom => tr!(i18n, "Bottom", "Client source at bottom"),
+            Self::Hide => tr!(i18n, "Hide", "Option in settings section to hide the source client label in note display"),
+            Self::Top => tr!(i18n, "Top", "Option in settings section to show the source client label at the top of the note"),
+            Self::Bottom => tr!(i18n, "Bottom", "Option in settings section to show the source client label at the bottom of the note"),
         }
     }
 }
