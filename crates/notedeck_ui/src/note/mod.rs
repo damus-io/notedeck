@@ -429,7 +429,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
                             break 's;
                         }
 
-                        ui.horizontal(|ui| {
+                        ui.horizontal_wrapped(|ui| {
                             note_action = reply_desc(
                                 ui,
                                 txn,
