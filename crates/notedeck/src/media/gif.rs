@@ -3,37 +3,32 @@ use std::{
     time::{Instant, SystemTime},
 };
 
+use crate::{GifState, GifStateMap, TextureState, TexturedImage, TexturesCache};
 use egui::TextureHandle;
-use notedeck::{GifState, GifStateMap, TexturedImage};
 
-pub struct LatextTexture<'a> {
-    pub texture: &'a TextureHandle,
-    pub request_next_repaint: Option<SystemTime>,
-}
-
-/// This is necessary because other repaint calls can effectively steal our repaint request.
-/// So we must keep on requesting to repaint at our desired time to ensure our repaint goes through.
-/// See [`egui::Context::request_repaint_after`]
-pub fn handle_repaint<'a>(ui: &egui::Ui, latest: LatextTexture<'a>) -> &'a TextureHandle {
-    if let Some(_repaint) = latest.request_next_repaint {
-        // 24fps for gif is fine
-        ui.ctx()
-            .request_repaint_after(std::time::Duration::from_millis(41));
-    }
-    latest.texture
-}
-
-#[must_use = "caller should pass the return value to `gif::handle_repaint`"]
-pub fn retrieve_latest_texture<'a>(
+pub fn ensure_latest_texture_from_cache(
+    ui: &egui::Ui,
     url: &str,
-    gifs: &'a mut GifStateMap,
-    cached_image: &'a mut TexturedImage,
-) -> LatextTexture<'a> {
-    match cached_image {
-        TexturedImage::Static(texture) => LatextTexture {
-            texture,
-            request_next_repaint: None,
-        },
+    gifs: &mut GifStateMap,
+    textures: &mut TexturesCache,
+) -> Option<TextureHandle> {
+    let tstate = textures.cache.get_mut(url)?;
+
+    let TextureState::Loaded(img) = tstate.into() else {
+        return None;
+    };
+
+    Some(ensure_latest_texture(ui, url, gifs, img))
+}
+
+pub fn ensure_latest_texture(
+    ui: &egui::Ui,
+    url: &str,
+    gifs: &mut GifStateMap,
+    img: &mut TexturedImage,
+) -> TextureHandle {
+    match img {
+        TexturedImage::Static(handle) => handle.clone(),
         TexturedImage::Animated(animation) => {
             if let Some(receiver) = &animation.receiver {
                 loop {
@@ -115,12 +110,12 @@ pub fn retrieve_latest_texture<'a>(
 
             if let Some(req) = request_next_repaint {
                 tracing::trace!("requesting repaint for {url} after {req:?}");
+                // 24fps for gif is fine
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_millis(41));
             }
 
-            LatextTexture {
-                texture,
-                request_next_repaint,
-            }
+            texture.clone()
         }
     }
 }

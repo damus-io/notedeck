@@ -12,6 +12,8 @@ mod frame_history;
 pub mod i18n;
 mod imgcache;
 mod job_pool;
+mod jobs;
+pub mod media;
 mod muted;
 pub mod name;
 pub mod note;
@@ -47,10 +49,18 @@ pub use filter::{FilterState, FilterStates, UnifiedSubscription};
 pub use fonts::NamedFontFamily;
 pub use i18n::{CacheStats, FluentArgs, FluentValue, LanguageIdentifier, Localization};
 pub use imgcache::{
-    Animation, GifState, GifStateMap, ImageFrame, Images, LoadableTextureState, MediaCache,
-    MediaCacheType, TextureFrame, TextureState, TexturedImage, TexturesCache,
+    get_render_state, Animation, GifState, GifStateMap, ImageFrame, Images, LatestTexture,
+    LoadableTextureState, MediaCache, MediaCacheType, RenderState, TextureFrame, TextureState,
+    TexturedImage, TexturesCache,
 };
 pub use job_pool::JobPool;
+pub use jobs::{
+    BlurhashParams, Job, JobError, JobId, JobParams, JobParamsOwned, JobState, JobsCache,
+};
+pub use media::{
+    compute_blurhash, update_imeta_blurhashes, ImageMetadata, ImageType, MediaAction,
+    ObfuscationType, PixelDimensions, PointDimensions, RenderableMedia,
+};
 pub use muted::{MuteFun, Muted};
 pub use name::NostrName;
 pub use note::{

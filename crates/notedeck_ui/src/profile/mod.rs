@@ -113,7 +113,7 @@ pub fn banner(ui: &mut egui::Ui, banner_url: Option<&str>, height: f32) -> egui:
         banner_url
             .and_then(|url| banner_texture(ui, url))
             .map(|texture| {
-                crate::images::aspect_fill(
+                notedeck::media::images::aspect_fill(
                     ui,
                     egui::Sense::hover(),
                     texture.id,

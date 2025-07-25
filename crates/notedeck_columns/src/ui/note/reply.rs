@@ -6,8 +6,7 @@ use crate::ui::{
 
 use egui::{Rect, Response, ScrollArea, Ui};
 use enostr::{FilledKeypair, NoteId};
-use notedeck::NoteContext;
-use notedeck_ui::jobs::JobsCache;
+use notedeck::{JobsCache, NoteContext};
 use notedeck_ui::{NoteOptions, NoteView, ProfilePic};
 
 pub struct PostReplyView<'a, 'd> {

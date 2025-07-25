@@ -6,8 +6,8 @@ use crate::{
 
 use egui::ScrollArea;
 use enostr::{FilledKeypair, NoteId};
-use notedeck::NoteContext;
-use notedeck_ui::{jobs::JobsCache, NoteOptions};
+use notedeck::{JobsCache, NoteContext};
+use notedeck_ui::NoteOptions;
 
 pub struct QuoteRepostView<'a, 'd> {
     note_context: &'a mut NoteContext<'d>,

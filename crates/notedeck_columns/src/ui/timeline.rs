@@ -3,7 +3,7 @@ use egui::{vec2, Direction, Layout, Pos2, Stroke};
 use egui_tabs::TabColor;
 use nostrdb::Transaction;
 use notedeck::ui::is_narrow;
-use notedeck_ui::jobs::JobsCache;
+use notedeck::JobsCache;
 use std::f32::consts::PI;
 use tracing::{error, warn};
 

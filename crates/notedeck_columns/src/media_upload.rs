@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 use url::Url;
 
 use crate::Error;
-use notedeck_ui::images::fetch_binary_from_disk;
+use notedeck::media::images::fetch_binary_from_disk;
 
 pub const NOSTR_BUILD_URL: fn() -> Url = || Url::parse("http://nostr.build").unwrap();
 const NIP96_WELL_KNOWN: &str = ".well-known/nostr/nip96.json";
@@ -143,7 +143,7 @@ pub fn nip96_upload(
         Err(e) => {
             return Promise::from_ready(Err(Error::Generic(format!(
                 "could not read contents of file to upload: {e}"
-            ))))
+            ))));
         }
     };
 

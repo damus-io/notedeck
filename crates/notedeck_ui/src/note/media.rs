@@ -1,24 +1,22 @@
-use std::{collections::HashMap, path::Path};
+use std::path::Path;
 
-use egui::{
-    Button, Color32, Context, CornerRadius, FontId, Image, Response, RichText, Sense,
-    TextureHandle, UiBuilder, Window,
-};
+use egui::{Button, Color32, Context, CornerRadius, FontId, Image, Response, TextureHandle};
 use notedeck::{
-    fonts::get_font_size, note::MediaAction, show_one_error_message, supported_mime_hosted_at_url,
-    tr, GifState, GifStateMap, Images, JobPool, Localization, MediaCache, MediaCacheType,
-    NotedeckTextStyle, TexturedImage, TexturesCache, UrlMimes,
+    compute_blurhash, fonts::get_font_size, show_one_error_message, tr, BlurhashParams,
+    GifStateMap, Images, Job, JobId, JobParams, JobPool, JobState, JobsCache, Localization,
+    MediaAction, MediaCacheType, NotedeckTextStyle, ObfuscationType, PointDimensions,
+    RenderableMedia, TexturedImage, TexturesCache,
 };
 
-use crate::{
-    app_images,
-    blur::{compute_blurhash, Blur, ObfuscationType, PointDimensions},
-    colors::PINK,
-    gif::{handle_repaint, retrieve_latest_texture},
-    images::{fetch_no_pfp_promise, get_render_state, ImageType},
-    jobs::{BlurhashParams, Job, JobId, JobParams, JobState, JobsCache},
-    AnimationHelper, PulseAlpha,
-};
+use notedeck::media::gif::ensure_latest_texture;
+use notedeck::media::images::{fetch_no_pfp_promise, ImageType};
+
+use crate::{app_images, AnimationHelper, PulseAlpha};
+
+pub enum MediaViewAction {
+    /// Used to handle escape presses when the media viewer is open
+    EscapePressed,
+}
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn image_carousel(
@@ -36,7 +34,6 @@ pub(crate) fn image_carousel(
     let height = 360.0;
     let width = ui.available_width();
 
-    let show_popup = get_show_popup(ui, popup_id(carousel_id));
     let mut action = None;
 
     //let has_touch_screen = ui.ctx().input(|i| i.has_touch_screen());
@@ -46,6 +43,7 @@ pub(crate) fn image_carousel(
             .id_salt(carousel_id)
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
+                    let mut media_action: Option<(usize, MediaUIAction)> = None;
                     for (i, media) in medias.iter().enumerate() {
                         let RenderableMedia {
                             url,
@@ -57,7 +55,6 @@ pub(crate) fn image_carousel(
                             MediaCacheType::Image => &mut img_cache.static_imgs,
                             MediaCacheType::Gif => &mut img_cache.gifs,
                         };
-
                         let media_state = get_content_media_render_state(
                             ui,
                             job_pool,
@@ -68,7 +65,7 @@ pub(crate) fn image_carousel(
                             url,
                             *media_type,
                             &cache.cache_dir,
-                            blur_type.clone(),
+                            blur_type,
                         );
 
                         if let Some(cur_action) = render_media(
@@ -79,20 +76,18 @@ pub(crate) fn image_carousel(
                             height,
                             i18n,
                         ) {
-                            // clicked the media, lets set the active index
-                            if let MediaUIAction::Clicked = cur_action {
-                                set_show_popup(ui, popup_id(carousel_id), true);
-                                set_selected_index(ui, selection_id(carousel_id), i);
-                            }
-
-                            action = cur_action.to_media_action(
-                                ui.ctx(),
-                                url,
-                                *media_type,
-                                cache,
-                                ImageType::Content(Some((width as u32, height as u32))),
-                            );
+                            media_action = Some((i, cur_action));
                         }
+                    }
+
+                    if let Some((i, media_action)) = &media_action {
+                        action = media_action.to_media_action(
+                            ui.ctx(),
+                            medias,
+                            *i,
+                            img_cache,
+                            ImageType::Content(Some((width as u32, height as u32))),
+                        );
                     }
                 })
                 .response
@@ -100,22 +95,6 @@ pub(crate) fn image_carousel(
             .inner
     });
 
-    if show_popup {
-        if medias.is_empty() {
-            return None;
-        };
-
-        let current_image_index = update_selected_image_index(ui, carousel_id, medias.len() as i32);
-
-        show_full_screen_media(
-            ui,
-            medias,
-            current_image_index,
-            img_cache,
-            carousel_id,
-            i18n,
-        );
-    }
     action
 }
 
@@ -130,143 +109,52 @@ impl MediaUIAction {
     pub fn to_media_action(
         &self,
         ctx: &egui::Context,
-        url: &str,
-        cache_type: MediaCacheType,
-        cache: &mut MediaCache,
+        medias: &[RenderableMedia],
+        selected: usize,
+        img_cache: &Images,
         img_type: ImageType,
     ) -> Option<MediaAction> {
         match self {
-            MediaUIAction::Clicked => {
-                tracing::debug!("{} clicked", url);
-                None
-            }
+            MediaUIAction::Clicked => Some(MediaAction::ViewMedias(
+                medias.iter().map(|m| m.url.to_owned()).collect(),
+            )),
 
-            MediaUIAction::Unblur => Some(MediaAction::FetchImage {
-                url: url.to_owned(),
-                cache_type,
-                no_pfp_promise: crate::images::fetch_img(
+            MediaUIAction::Unblur => {
+                let url = &medias[selected].url;
+                let cache = img_cache.get_cache(medias[selected].media_type);
+                let cache_type = cache.cache_type;
+                let no_pfp_promise = notedeck::media::images::fetch_img(
                     &cache.cache_dir,
                     ctx,
                     url,
                     img_type,
                     cache_type,
-                ),
-            }),
+                );
+                Some(MediaAction::FetchImage {
+                    url: url.to_owned(),
+                    cache_type,
+                    no_pfp_promise,
+                })
+            }
+
             MediaUIAction::Error => {
                 if !matches!(img_type, ImageType::Profile(_)) {
                     return None;
                 };
 
+                let cache = img_cache.get_cache(medias[selected].media_type);
+                let cache_type = cache.cache_type;
                 Some(MediaAction::FetchImage {
-                    url: url.to_owned(),
+                    url: medias[selected].url.to_owned(),
                     cache_type,
                     no_pfp_promise: fetch_no_pfp_promise(ctx, cache),
                 })
             }
             MediaUIAction::DoneLoading => Some(MediaAction::DoneLoading {
-                url: url.to_owned(),
-                cache_type,
+                url: medias[selected].url.to_owned(),
+                cache_type: img_cache.get_cache(medias[selected].media_type).cache_type,
             }),
         }
-    }
-}
-
-fn show_full_screen_media(
-    ui: &mut egui::Ui,
-    medias: &[RenderableMedia],
-    index: usize,
-    img_cache: &mut Images,
-    carousel_id: egui::Id,
-    i18n: &mut Localization,
-) {
-    Window::new("image_popup")
-        .title_bar(false)
-        .fixed_size(ui.ctx().screen_rect().size())
-        .fixed_pos(ui.ctx().screen_rect().min)
-        .frame(egui::Frame::NONE)
-        .show(ui.ctx(), |ui| {
-            ui.centered_and_justified(|ui| 's: {
-                let image_url = medias[index].url;
-
-                let media_type = medias[index].media_type;
-                tracing::trace!(
-                    "show_full_screen_media using img {} @ {} for carousel_id {:?}",
-                    image_url,
-                    index,
-                    carousel_id
-                );
-
-                let cur_state = get_render_state(
-                    ui.ctx(),
-                    img_cache,
-                    media_type,
-                    image_url,
-                    ImageType::Content(None),
-                );
-
-                let notedeck::TextureState::Loaded(textured_image) = cur_state.texture_state else {
-                    break 's;
-                };
-
-                render_full_screen_media(
-                    ui,
-                    medias.len(),
-                    index,
-                    textured_image,
-                    cur_state.gifs,
-                    image_url,
-                    carousel_id,
-                    i18n,
-                );
-            })
-        });
-}
-
-fn set_selected_index(ui: &mut egui::Ui, sel_id: egui::Id, index: usize) {
-    ui.data_mut(|d| {
-        d.insert_temp(sel_id, index);
-    });
-}
-
-fn get_selected_index(ui: &egui::Ui, selection_id: egui::Id) -> usize {
-    ui.data(|d| d.get_temp(selection_id).unwrap_or(0))
-}
-
-/// Checks to see if we have any left/right key presses and updates the carousel index
-fn update_selected_image_index(ui: &mut egui::Ui, carousel_id: egui::Id, num_urls: i32) -> usize {
-    if num_urls > 1 {
-        let (next_image, prev_image) = ui.data(|data| {
-            (
-                data.get_temp(carousel_id.with("next_image"))
-                    .unwrap_or_default(),
-                data.get_temp(carousel_id.with("prev_image"))
-                    .unwrap_or_default(),
-            )
-        });
-
-        if next_image
-            || ui.input(|i| i.key_pressed(egui::Key::ArrowRight) || i.key_pressed(egui::Key::L))
-        {
-            let ind = select_next_media(ui, carousel_id, num_urls, 1);
-            tracing::debug!("carousel selecting right {}/{}", ind + 1, num_urls);
-            if next_image {
-                ui.data_mut(|data| data.remove_temp::<bool>(carousel_id.with("next_image")));
-            }
-            ind
-        } else if prev_image
-            || ui.input(|i| i.key_pressed(egui::Key::ArrowLeft) || i.key_pressed(egui::Key::H))
-        {
-            let ind = select_next_media(ui, carousel_id, num_urls, -1);
-            tracing::debug!("carousel selecting left {}/{}", ind + 1, num_urls);
-            if prev_image {
-                ui.data_mut(|data| data.remove_temp::<bool>(carousel_id.with("prev_image")));
-            }
-            ind
-        } else {
-            get_selected_index(ui, selection_id(carousel_id))
-        }
-    } else {
-        0
     }
 }
 
@@ -281,11 +169,11 @@ pub fn get_content_media_render_state<'a>(
     url: &'a str,
     cache_type: MediaCacheType,
     cache_dir: &Path,
-    obfuscation_type: ObfuscationType<'a>,
+    obfuscation_type: &'a ObfuscationType,
 ) -> MediaRenderState<'a> {
     let render_type = if media_trusted {
         cache.handle_and_get_or_insert_loadable(url, || {
-            crate::images::fetch_img(
+            notedeck::media::images::fetch_img(
                 cache_dir,
                 ui.ctx(),
                 url,
@@ -332,7 +220,7 @@ pub fn get_content_media_render_state<'a>(
 fn get_obfuscated<'a>(
     ui: &mut egui::Ui,
     url: &str,
-    obfuscation_type: ObfuscationType<'a>,
+    obfuscation_type: &'a ObfuscationType,
     job_pool: &'a mut JobPool,
     jobs: &'a mut JobsCache,
     height: f32,
@@ -342,7 +230,7 @@ fn get_obfuscated<'a>(
     };
 
     let params = BlurhashParams {
-        blurhash: renderable_blur.blurhash,
+        blurhash: &renderable_blur.blurhash,
         url,
         ctx: ui.ctx(),
     };
@@ -377,336 +265,6 @@ fn get_obfuscated<'a>(
     };
 
     ObfuscatedTexture::Blur(texture_handle)
-}
-
-// simple selector memory
-fn select_next_media(
-    ui: &mut egui::Ui,
-    carousel_id: egui::Id,
-    num_urls: i32,
-    direction: i32,
-) -> usize {
-    let sel_id = selection_id(carousel_id);
-    let current = get_selected_index(ui, sel_id) as i32;
-    let next = current + direction;
-    let next = if next >= num_urls {
-        0
-    } else if next < 0 {
-        num_urls - 1
-    } else {
-        next
-    };
-
-    if next != current {
-        set_selected_index(ui, sel_id, next as usize);
-    }
-
-    next as usize
-}
-
-#[allow(clippy::too_many_arguments)]
-fn render_full_screen_media(
-    ui: &mut egui::Ui,
-    num_urls: usize,
-    index: usize,
-    renderable_media: &mut TexturedImage,
-    gifs: &mut HashMap<String, GifState>,
-    image_url: &str,
-    carousel_id: egui::Id,
-    i18n: &mut Localization,
-) {
-    const TOP_BAR_HEIGHT: f32 = 30.0;
-    const BOTTOM_BAR_HEIGHT: f32 = 60.0;
-
-    let screen_rect = ui.ctx().screen_rect();
-    let screen_size = screen_rect.size();
-
-    // Escape key closes popup
-    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-        ui.ctx().memory_mut(|mem| {
-            mem.data.insert_temp(carousel_id.with("show_popup"), false);
-        });
-    }
-
-    // Draw background
-    ui.painter()
-        .rect_filled(screen_rect, 0.0, Color32::from_black_alpha(230));
-
-    let background_response = ui.interact(
-        screen_rect,
-        carousel_id.with("background"),
-        egui::Sense::click(),
-    );
-
-    // Zoom & pan state
-    let zoom_id = carousel_id.with("zoom_level");
-    let pan_id = carousel_id.with("pan_offset");
-
-    let mut zoom: f32 = ui
-        .ctx()
-        .memory(|mem| mem.data.get_temp(zoom_id).unwrap_or(1.0));
-    let mut pan_offset = ui
-        .ctx()
-        .memory(|mem| mem.data.get_temp(pan_id).unwrap_or(egui::Vec2::ZERO));
-
-    // Handle scroll to zoom
-    if ui.input(|i| i.pointer.hover_pos()).is_some() {
-        let scroll_delta = ui.input(|i| i.smooth_scroll_delta);
-        if scroll_delta.y != 0.0 {
-            let zoom_factor = if scroll_delta.y > 0.0 { 1.05 } else { 0.95 };
-            zoom = (zoom * zoom_factor).clamp(0.1, 5.0);
-            if zoom <= 1.0 {
-                pan_offset = egui::Vec2::ZERO;
-            }
-            ui.ctx().memory_mut(|mem| {
-                mem.data.insert_temp(zoom_id, zoom);
-                mem.data.insert_temp(pan_id, pan_offset);
-            });
-        }
-    }
-
-    // Fetch image
-    let texture = handle_repaint(
-        ui,
-        retrieve_latest_texture(image_url, gifs, renderable_media),
-    );
-
-    let texture_size = texture.size_vec2();
-
-    let topbar_rect = egui::Rect::from_min_max(
-        screen_rect.min + egui::vec2(0.0, 0.0),
-        screen_rect.min + egui::vec2(screen_size.x, TOP_BAR_HEIGHT),
-    );
-
-    let topbar_response = ui.interact(
-        topbar_rect,
-        carousel_id.with("topbar"),
-        egui::Sense::click(),
-    );
-
-    let mut keep_popup_open = false;
-    if topbar_response.clicked() {
-        keep_popup_open = true;
-    }
-
-    ui.allocate_new_ui(
-        UiBuilder::new()
-            .max_rect(topbar_rect)
-            .layout(egui::Layout::top_down(egui::Align::RIGHT)),
-        |ui| {
-            let color = ui.style().visuals.noninteractive().fg_stroke.color;
-
-            ui.add_space(10.0);
-
-            ui.horizontal(|ui| {
-                let label_reponse = ui
-                    .label(RichText::new(image_url).color(color).small())
-                    .on_hover_text(image_url);
-                if label_reponse.double_clicked()
-                    || label_reponse.clicked()
-                    || label_reponse.hovered()
-                {
-                    keep_popup_open = true;
-
-                    ui.ctx().copy_text(image_url.to_owned());
-                }
-            });
-        },
-    );
-
-    // Calculate available rect for image
-    let image_rect = egui::Rect::from_min_max(
-        screen_rect.min + egui::vec2(0.0, TOP_BAR_HEIGHT),
-        screen_rect.max - egui::vec2(0.0, BOTTOM_BAR_HEIGHT),
-    );
-
-    let image_area_size = image_rect.size();
-    let scale = (image_area_size.x / texture_size.x)
-        .min(image_area_size.y / texture_size.y)
-        .min(1.0);
-    let scaled_size = texture_size * scale * zoom;
-
-    let visible_width = scaled_size.x.min(image_area_size.x);
-    let visible_height = scaled_size.y.min(image_area_size.y);
-
-    let max_pan_x = ((scaled_size.x - visible_width) / 2.0).max(0.0);
-    let max_pan_y = ((scaled_size.y - visible_height) / 2.0).max(0.0);
-
-    pan_offset.x = if max_pan_x > 0.0 {
-        pan_offset.x.clamp(-max_pan_x, max_pan_x)
-    } else {
-        0.0
-    };
-    pan_offset.y = if max_pan_y > 0.0 {
-        pan_offset.y.clamp(-max_pan_y, max_pan_y)
-    } else {
-        0.0
-    };
-
-    let render_rect = egui::Rect::from_center_size(
-        image_rect.center(),
-        egui::vec2(visible_width, visible_height),
-    );
-
-    // Compute UVs for zoom & pan
-    let uv_min = egui::pos2(
-        0.5 - (visible_width / scaled_size.x) / 2.0 + pan_offset.x / scaled_size.x,
-        0.5 - (visible_height / scaled_size.y) / 2.0 + pan_offset.y / scaled_size.y,
-    );
-    let uv_max = egui::pos2(
-        uv_min.x + visible_width / scaled_size.x,
-        uv_min.y + visible_height / scaled_size.y,
-    );
-
-    // Paint image
-    ui.painter().image(
-        texture.id(),
-        render_rect,
-        egui::Rect::from_min_max(uv_min, uv_max),
-        Color32::WHITE,
-    );
-
-    // image actions
-    let response = ui.interact(
-        render_rect,
-        carousel_id.with("img"),
-        Sense::click_and_drag(),
-    );
-
-    let swipe_accum_id = carousel_id.with("swipe_accum");
-    let mut swipe_delta = ui.ctx().memory(|mem| {
-        mem.data
-            .get_temp::<egui::Vec2>(swipe_accum_id)
-            .unwrap_or(egui::Vec2::ZERO)
-    });
-
-    // Handle pan via drag
-    if response.dragged() {
-        let delta = response.drag_delta();
-        swipe_delta += delta;
-        ui.ctx().memory_mut(|mem| {
-            mem.data.insert_temp(swipe_accum_id, swipe_delta);
-        });
-        pan_offset -= delta;
-        pan_offset.x = pan_offset.x.clamp(-max_pan_x, max_pan_x);
-        pan_offset.y = pan_offset.y.clamp(-max_pan_y, max_pan_y);
-        ui.ctx()
-            .memory_mut(|mem| mem.data.insert_temp(pan_id, pan_offset));
-    }
-
-    // Double click to reset
-    if response.double_clicked() {
-        zoom = 1.0;
-        pan_offset = egui::Vec2::ZERO;
-        ui.ctx().memory_mut(|mem| {
-            mem.data.insert_temp(pan_id, pan_offset);
-            mem.data.insert_temp(zoom_id, zoom);
-        });
-    }
-
-    let swipe_threshold = 50.0;
-    if response.drag_stopped() {
-        if swipe_delta.x.abs() > swipe_threshold && swipe_delta.y.abs() < swipe_threshold {
-            if swipe_delta.x < 0.0 {
-                ui.ctx().data_mut(|data| {
-                    keep_popup_open = true;
-                    data.insert_temp(carousel_id.with("next_image"), true);
-                });
-            } else if swipe_delta.x > 0.0 {
-                ui.ctx().data_mut(|data| {
-                    keep_popup_open = true;
-                    data.insert_temp(carousel_id.with("prev_image"), true);
-                });
-            }
-        }
-
-        ui.ctx().memory_mut(|mem| {
-            mem.data.remove::<egui::Vec2>(swipe_accum_id);
-        });
-    }
-
-    // bottom bar
-    if num_urls > 1 {
-        let bottom_rect = egui::Rect::from_min_max(
-            screen_rect.max - egui::vec2(screen_size.x, BOTTOM_BAR_HEIGHT),
-            screen_rect.max,
-        );
-
-        let full_response = ui.interact(
-            bottom_rect,
-            carousel_id.with("bottom_bar"),
-            egui::Sense::click(),
-        );
-
-        if full_response.clicked() {
-            keep_popup_open = true;
-        }
-
-        let mut clicked_index: Option<usize> = None;
-
-        #[allow(deprecated)]
-        ui.allocate_ui_at_rect(bottom_rect, |ui| {
-            let dot_radius = 7.0;
-            let dot_spacing = 20.0;
-            let color_active = PINK;
-            let color_inactive: Color32 = ui.style().visuals.widgets.inactive.bg_fill;
-
-            let center = bottom_rect.center();
-
-            for i in 0..num_urls {
-                let distance = egui::vec2(
-                    (i as f32 - (num_urls as f32 - 1.0) / 2.0) * dot_spacing,
-                    0.0,
-                );
-                let pos = center + distance;
-
-                let circle_color = if i == index {
-                    color_active
-                } else {
-                    color_inactive
-                };
-
-                let circle_rect = egui::Rect::from_center_size(
-                    pos,
-                    egui::vec2(dot_radius * 2.0, dot_radius * 2.0),
-                );
-
-                let resp = ui.interact(circle_rect, carousel_id.with(i), egui::Sense::click());
-
-                ui.painter().circle_filled(pos, dot_radius, circle_color);
-
-                if i != index && resp.hovered() {
-                    ui.painter()
-                        .circle_stroke(pos, dot_radius + 2.0, (1.0, PINK));
-                }
-
-                if resp.clicked() {
-                    keep_popup_open = true;
-                    if i != index {
-                        clicked_index = Some(i);
-                    }
-                }
-            }
-        });
-
-        if let Some(new_index) = clicked_index {
-            ui.ctx().data_mut(|data| {
-                data.insert_temp(selection_id(carousel_id), new_index);
-            });
-        }
-    }
-
-    if keep_popup_open || response.clicked() {
-        ui.data_mut(|data| {
-            data.insert_temp(carousel_id.with("show_popup"), true);
-        });
-    } else if background_response.clicked() || response.clicked_elsewhere() {
-        ui.data_mut(|data| {
-            data.insert_temp(carousel_id.with("show_popup"), false);
-        });
-    }
-
-    copy_link(i18n, image_url, &response);
 }
 
 fn copy_link(i18n: &mut Localization, url: &str, img_resp: &Response) {
@@ -905,12 +463,6 @@ fn render_default_blur_bg(ui: &mut egui::Ui, height: f32, url: &str, shimmer: bo
     rect
 }
 
-pub(crate) struct RenderableMedia<'a> {
-    url: &'a str,
-    media_type: MediaCacheType,
-    obfuscation_type: ObfuscationType<'a>,
-}
-
 pub enum MediaRenderState<'a> {
     ActualImage(&'a mut TexturedImage),
     Transitioning {
@@ -927,14 +479,15 @@ pub enum ObfuscatedTexture<'a> {
     Default,
 }
 
+/*
 pub(crate) fn find_renderable_media<'a>(
     urls: &mut UrlMimes,
-    blurhashes: &'a HashMap<&'a str, Blur<'a>>,
+    imeta: &'a HashMap<String, ImageMetadata>,
     url: &'a str,
-) -> Option<RenderableMedia<'a>> {
+) -> Option<RenderableMedia> {
     let media_type = supported_mime_hosted_at_url(urls, url)?;
 
-    let obfuscation_type = match blurhashes.get(url) {
+    let obfuscation_type = match imeta.get(url) {
         Some(blur) => ObfuscationType::Blurhash(blur.clone()),
         None => ObfuscationType::Default,
     };
@@ -945,28 +498,7 @@ pub(crate) fn find_renderable_media<'a>(
         obfuscation_type,
     })
 }
-
-#[inline]
-fn selection_id(carousel_id: egui::Id) -> egui::Id {
-    carousel_id.with("sel")
-}
-
-/// get the popup carousel window state
-#[inline]
-fn get_show_popup(ui: &egui::Ui, popup_id: egui::Id) -> bool {
-    ui.data(|data| data.get_temp(popup_id).unwrap_or(false))
-}
-
-/// set the popup carousel window state
-#[inline]
-fn set_show_popup(ui: &mut egui::Ui, popup_id: egui::Id, show_popup: bool) {
-    ui.data_mut(|data| data.insert_temp(popup_id, show_popup));
-}
-
-#[inline]
-fn popup_id(carousel_id: egui::Id) -> egui::Id {
-    carousel_id.with("show_popup")
-}
+*/
 
 fn render_success_media(
     ui: &mut egui::Ui,
@@ -976,8 +508,8 @@ fn render_success_media(
     height: f32,
     i18n: &mut Localization,
 ) -> Response {
-    let texture = handle_repaint(ui, retrieve_latest_texture(url, gifs, tex));
-    let img = texture_to_image(texture, height);
+    let texture = ensure_latest_texture(ui, url, gifs, tex);
+    let img = texture_to_image(&texture, height);
     let img_resp = ui.add(Button::image(img).frame(false));
 
     copy_link(i18n, url, &img_resp);

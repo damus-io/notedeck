@@ -23,6 +23,7 @@ impl JobPool {
     pub fn new(num_threads: usize) -> Self {
         let (tx, rx) = mpsc::channel::<Job>();
 
+        // TODO(jb55) why not mpmc here !???
         let arc_rx = Arc::new(Mutex::new(rx));
         for _ in 0..num_threads {
             let arc_rx_clone = arc_rx.clone();

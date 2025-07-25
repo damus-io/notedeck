@@ -20,9 +20,12 @@ use enostr::{ClientMessage, PoolRelay, Pubkey, RelayEvent, RelayMessage, RelayPo
 use nostrdb::Transaction;
 use notedeck::{
     tr, ui::is_narrow, Accounts, AppAction, AppContext, DataPath, DataPathType, FilterState,
-    Localization, UnknownIds,
+    Images, JobsCache, Localization, UnknownIds,
 };
-use notedeck_ui::{jobs::JobsCache, NoteOptions};
+use notedeck_ui::{
+    media::{MediaViewer, MediaViewerState},
+    NoteOptions,
+};
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 use std::time::Duration;
@@ -365,10 +368,41 @@ fn render_damus(
         render_damus_desktop(damus, app_ctx, ui)
     };
 
+    fullscreen_media_viewer_ui(
+        ui,
+        &mut damus.options,
+        &mut damus.view_state.media_viewer,
+        app_ctx.img_cache,
+    );
+
     // We use this for keeping timestamps and things up to date
     ui.ctx().request_repaint_after(Duration::from_secs(5));
 
     app_action
+}
+
+/// Present a fullscreen media viewer if the FullscreenMedia AppOptions flag is set. This is
+/// typically set by image carousels using a MediaAction's on_view_media callback when
+/// an image is clicked
+fn fullscreen_media_viewer_ui(
+    ui: &mut egui::Ui,
+    options: &mut AppOptions,
+    viewer_state: &mut MediaViewerState,
+    img_cache: &mut Images,
+) {
+    if !options.contains(AppOptions::FullscreenMedia) || viewer_state.urls.is_empty() {
+        return;
+    }
+
+    // Close it?
+    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        options.set(AppOptions::FullscreenMedia, false);
+        return;
+    }
+
+    MediaViewer::new(viewer_state)
+        .fullscreen(true)
+        .ui(img_cache, ui);
 }
 
 /*

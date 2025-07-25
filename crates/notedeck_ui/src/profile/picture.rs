@@ -1,8 +1,9 @@
-use crate::gif::{handle_repaint, retrieve_latest_texture};
-use crate::images::{fetch_no_pfp_promise, get_render_state, ImageType};
 use egui::{vec2, InnerResponse, Sense, Stroke, TextureHandle};
 
-use notedeck::note::MediaAction;
+use notedeck::get_render_state;
+use notedeck::media::gif::ensure_latest_texture;
+use notedeck::media::images::{fetch_no_pfp_promise, ImageType};
+use notedeck::MediaAction;
 use notedeck::{show_one_error_message, supported_mime_hosted_at_url, Images};
 
 pub struct ProfilePic<'cache, 'url> {
@@ -140,12 +141,9 @@ fn render_pfp(
             )
         }
         notedeck::TextureState::Loaded(textured_image) => {
-            let texture_handle = handle_repaint(
-                ui,
-                retrieve_latest_texture(url, cur_state.gifs, textured_image),
-            );
+            let texture_handle = ensure_latest_texture(ui, url, cur_state.gifs, textured_image);
 
-            egui::InnerResponse::new(None, pfp_image(ui, texture_handle, ui_size, border, sense))
+            egui::InnerResponse::new(None, pfp_image(ui, &texture_handle, ui_size, border, sense))
         }
     }
 }

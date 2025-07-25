@@ -1,6 +1,7 @@
 use crate::{
     column::Columns,
     nav::{RouterAction, RouterType},
+    options::AppOptions,
     route::Route,
     timeline::{
         thread::{
@@ -8,6 +9,7 @@ use crate::{
         },
         ThreadSelection, TimelineCache, TimelineKind,
     },
+    view_state::ViewState,
 };
 
 use enostr::{NoteId, Pubkey, RelayPool};
@@ -51,6 +53,8 @@ fn execute_note_action(
     global_wallet: &mut GlobalWallet,
     zaps: &mut Zaps,
     images: &mut Images,
+    view_state: &mut ViewState,
+    app_options: &mut AppOptions,
     router_type: RouterType,
     ui: &mut egui::Ui,
     col: usize,
@@ -153,7 +157,12 @@ fn execute_note_action(
             }
         },
         NoteAction::Media(media_action) => {
-            media_action.process(images);
+            media_action.on_view_media(|medias| {
+                view_state.media_viewer.urls = medias;
+                app_options.set(AppOptions::FullscreenMedia, true);
+            });
+
+            media_action.process_default_media_actions(images)
         }
     }
 
@@ -180,6 +189,8 @@ pub fn execute_and_process_note_action(
     global_wallet: &mut GlobalWallet,
     zaps: &mut Zaps,
     images: &mut Images,
+    view_state: &mut ViewState,
+    app_options: &mut AppOptions,
     ui: &mut egui::Ui,
 ) -> Option<RouterAction> {
     let router_type = {
@@ -204,6 +215,8 @@ pub fn execute_and_process_note_action(
         global_wallet,
         zaps,
         images,
+        view_state,
+        app_options,
         router_type,
         ui,
         col,

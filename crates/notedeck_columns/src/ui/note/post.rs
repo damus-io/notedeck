@@ -14,13 +14,12 @@ use egui::{
 };
 use enostr::{FilledKeypair, FullKeypair, NoteId, Pubkey, RelayPool};
 use nostrdb::{Ndb, Transaction};
+use notedeck::media::gif::ensure_latest_texture;
+use notedeck::{get_render_state, JobsCache, PixelDimensions, RenderState};
+
 use notedeck_ui::{
     app_images,
-    blur::PixelDimensions,
     context_menu::{input_context, PasteBehavior},
-    gif::{handle_repaint, retrieve_latest_texture},
-    images::{get_render_state, RenderState},
-    jobs::JobsCache,
     note::render_note_preview,
     NoteOptions, ProfilePic,
 };
@@ -471,7 +470,7 @@ impl<'a, 'd> PostView<'a, 'd> {
                 self.note_context.img_cache,
                 cache_type,
                 url,
-                notedeck_ui::images::ImageType::Content(Some((width, height))),
+                notedeck::ImageType::Content(Some((width, height))),
             );
 
             render_post_view_media(
@@ -595,12 +594,10 @@ fn render_post_view_media(
             .to_points(ui.pixels_per_point())
             .to_vec();
 
-            let texture_handle = handle_repaint(
-                ui,
-                retrieve_latest_texture(url, render_state.gifs, renderable_media),
-            );
+            let texture_handle =
+                ensure_latest_texture(ui, url, render_state.gifs, renderable_media);
             let img_resp = ui.add(
-                egui::Image::new(texture_handle)
+                egui::Image::new(&texture_handle)
                     .max_size(size)
                     .corner_radius(12.0),
             );

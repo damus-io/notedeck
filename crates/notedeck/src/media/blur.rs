@@ -5,8 +5,8 @@ use nostrdb::Note;
 use crate::jobs::{Job, JobError, JobParamsOwned};
 
 #[derive(Clone)]
-pub struct Blur<'a> {
-    pub blurhash: &'a str,
+pub struct ImageMetadata {
+    pub blurhash: String,
     pub dimensions: Option<PixelDimensions>, // width and height in pixels
 }
 
@@ -44,7 +44,7 @@ impl PointDimensions {
     }
 }
 
-impl Blur<'_> {
+impl ImageMetadata {
     pub fn scaled_pixel_dimensions(
         &self,
         ui: &egui::Ui,
@@ -75,9 +75,8 @@ impl Blur<'_> {
     }
 }
 
-pub fn imeta_blurhashes<'a>(note: &'a Note) -> HashMap<&'a str, Blur<'a>> {
-    let mut blurs = HashMap::new();
-
+/// Find blurhashes in image metadata and update our cache
+pub fn update_imeta_blurhashes(note: &Note, blurs: &mut HashMap<String, ImageMetadata>) {
     for tag in note.tags() {
         let mut tag_iter = tag.into_iter();
         if tag_iter
@@ -93,13 +92,11 @@ pub fn imeta_blurhashes<'a>(note: &'a Note) -> HashMap<&'a str, Blur<'a>> {
             continue;
         };
 
-        blurs.insert(url, blur);
+        blurs.insert(url.to_string(), blur);
     }
-
-    blurs
 }
 
-fn find_blur(tag_iter: nostrdb::TagIter) -> Option<(&str, Blur)> {
+fn find_blur(tag_iter: nostrdb::TagIter<'_>) -> Option<(String, ImageMetadata)> {
     let mut url = None;
     let mut blurhash = None;
     let mut dims = None;
@@ -138,21 +135,21 @@ fn find_blur(tag_iter: nostrdb::TagIter) -> Option<(&str, Blur)> {
     });
 
     Some((
-        url,
-        Blur {
-            blurhash,
+        url.to_string(),
+        ImageMetadata {
+            blurhash: blurhash.to_string(),
             dimensions,
         },
     ))
 }
 
 #[derive(Clone)]
-pub enum ObfuscationType<'a> {
-    Blurhash(Blur<'a>),
+pub enum ObfuscationType {
+    Blurhash(ImageMetadata),
     Default,
 }
 
-pub(crate) fn compute_blurhash(
+pub fn compute_blurhash(
     params: Option<JobParamsOwned>,
     dims: PixelDimensions,
 ) -> Result<Job, JobError> {
@@ -185,9 +182,9 @@ fn generate_blurhash_texturehandle(
     url: &str,
     width: u32,
     height: u32,
-) -> notedeck::Result<egui::TextureHandle> {
+) -> Result<egui::TextureHandle, crate::Error> {
     let bytes = blurhash::decode(blurhash, width, height, 1.0)
-        .map_err(|e| notedeck::Error::Generic(e.to_string()))?;
+        .map_err(|e| crate::Error::Generic(e.to_string()))?;
 
     let img = egui::ColorImage::from_rgba_unmultiplied([width as usize, height as usize], &bytes);
     Ok(ctx.load_texture(url, img, Default::default()))

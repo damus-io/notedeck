@@ -2,8 +2,8 @@ use egui::InnerResponse;
 use egui_virtual_list::VirtualList;
 use nostrdb::{Note, Transaction};
 use notedeck::note::root_note_id_from_selected_id;
+use notedeck::JobsCache;
 use notedeck::{NoteAction, NoteContext};
-use notedeck_ui::jobs::JobsCache;
 use notedeck_ui::note::NoteResponse;
 use notedeck_ui::{NoteOptions, NoteView};
 

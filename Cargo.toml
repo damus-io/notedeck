@@ -82,6 +82,8 @@ hashbrown = "0.15.2"
 openai-api-rs = "6.0.3"
 re_memory = "0.23.4"
 oot_bitset = "0.1.1"
+blurhash = "0.2.3"
+
 
 [profile.small]
 inherits = 'release'

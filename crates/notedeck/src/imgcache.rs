@@ -1,4 +1,9 @@
+use crate::media::gif::ensure_latest_texture_from_cache;
+use crate::media::images::ImageType;
 use crate::urls::{UrlCache, UrlMimes};
+use crate::ImageMetadata;
+use crate::ObfuscationType;
+use crate::RenderableMedia;
 use crate::Result;
 use egui::TextureHandle;
 use image::{Delay, Frame};
@@ -21,7 +26,7 @@ use tracing::warn;
 
 #[derive(Default)]
 pub struct TexturesCache {
-    cache: hashbrown::HashMap<String, TextureStateInternal>,
+    pub cache: hashbrown::HashMap<String, TextureStateInternal>,
 }
 
 impl TexturesCache {
@@ -139,6 +144,12 @@ pub enum TextureState<'a> {
     Pending,
     Error(&'a crate::Error),
     Loaded(&'a mut TexturedImage),
+}
+
+impl<'a> TextureState<'a> {
+    pub fn is_loaded(&self) -> bool {
+        matches!(self, Self::Loaded(_))
+    }
 }
 
 impl<'a> From<&'a mut TextureStateInternal> for TextureState<'a> {
@@ -402,6 +413,8 @@ pub struct Images {
     pub static_imgs: MediaCache,
     pub gifs: MediaCache,
     pub urls: UrlMimes,
+    /// cached imeta data
+    pub metadata: HashMap<String, ImageMetadata>,
     pub gif_states: GifStateMap,
 }
 
@@ -414,12 +427,65 @@ impl Images {
             gifs: MediaCache::new(&path, MediaCacheType::Gif),
             urls: UrlMimes::new(UrlCache::new(path.join(UrlCache::rel_dir()))),
             gif_states: Default::default(),
+            metadata: Default::default(),
         }
     }
 
     pub fn migrate_v0(&self) -> Result<()> {
         self.static_imgs.migrate_v0()?;
         self.gifs.migrate_v0()
+    }
+
+    pub fn get_renderable_media(&mut self, url: &str) -> Option<RenderableMedia> {
+        Self::find_renderable_media(&mut self.urls, &self.metadata, url)
+    }
+
+    pub fn find_renderable_media(
+        urls: &mut UrlMimes,
+        imeta: &HashMap<String, ImageMetadata>,
+        url: &str,
+    ) -> Option<RenderableMedia> {
+        let media_type = crate::urls::supported_mime_hosted_at_url(urls, url)?;
+
+        let obfuscation_type = match imeta.get(url) {
+            Some(blur) => ObfuscationType::Blurhash(blur.clone()),
+            None => ObfuscationType::Default,
+        };
+
+        Some(RenderableMedia {
+            url: url.to_string(),
+            media_type,
+            obfuscation_type,
+        })
+    }
+
+    pub fn latest_texture(
+        &mut self,
+        ui: &mut egui::Ui,
+        url: &str,
+        img_type: ImageType,
+    ) -> Option<TextureHandle> {
+        let cache_type = crate::urls::supported_mime_hosted_at_url(&mut self.urls, url)?;
+
+        let cache_dir = self.get_cache(cache_type).cache_dir.clone();
+        let is_loaded = self
+            .get_cache_mut(cache_type)
+            .textures_cache
+            .handle_and_get_or_insert(url, || {
+                crate::media::images::fetch_img(&cache_dir, ui.ctx(), url, img_type, cache_type)
+            })
+            .is_loaded();
+
+        if !is_loaded {
+            return None;
+        }
+
+        let cache = match cache_type {
+            MediaCacheType::Image => &mut self.static_imgs,
+            MediaCacheType::Gif => &mut self.gifs,
+        };
+
+        ensure_latest_texture_from_cache(ui, url, &mut self.gif_states, &mut cache.textures_cache)
     }
 
     pub fn get_cache(&self, cache_type: MediaCacheType) -> &MediaCache {
@@ -464,4 +530,36 @@ pub struct GifState {
     pub last_frame_duration: Duration,
     pub next_frame_time: Option<SystemTime>,
     pub last_frame_index: usize,
+}
+
+pub struct LatestTexture {
+    pub texture: TextureHandle,
+    pub request_next_repaint: Option<SystemTime>,
+}
+
+pub fn get_render_state<'a>(
+    ctx: &egui::Context,
+    images: &'a mut Images,
+    cache_type: MediaCacheType,
+    url: &str,
+    img_type: ImageType,
+) -> RenderState<'a> {
+    let cache = match cache_type {
+        MediaCacheType::Image => &mut images.static_imgs,
+        MediaCacheType::Gif => &mut images.gifs,
+    };
+
+    let texture_state = cache.textures_cache.handle_and_get_or_insert(url, || {
+        crate::media::images::fetch_img(&cache.cache_dir, ctx, url, img_type, cache_type)
+    });
+
+    RenderState {
+        texture_state,
+        gifs: &mut images.gif_states,
+    }
+}
+
+pub struct RenderState<'a> {
+    pub texture_state: TextureState<'a>,
+    pub gifs: &'a mut GifStateMap,
 }

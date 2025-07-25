@@ -4,7 +4,6 @@ pub mod media;
 pub mod options;
 pub mod reply_description;
 
-use crate::jobs::JobsCache;
 use crate::{app_images, secondary_label};
 use crate::{
     profile::name::one_line_display_name_widget, widgets::x_button, ProfilePic, ProfilePreview,
@@ -14,13 +13,14 @@ use crate::{
 pub use contents::{render_note_contents, render_note_preview, NoteContents};
 pub use context::NoteContextButton;
 use notedeck::get_current_wallet;
-use notedeck::note::MediaAction;
 use notedeck::note::ZapTargetAmount;
 use notedeck::ui::is_narrow;
 use notedeck::Accounts;
 use notedeck::GlobalWallet;
 use notedeck::Images;
+use notedeck::JobsCache;
 use notedeck::Localization;
+use notedeck::MediaAction;
 pub use options::NoteOptions;
 pub use reply_description::reply_desc;
 

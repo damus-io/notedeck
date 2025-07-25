@@ -1,6 +1,6 @@
+use crate::JobPool;
 use egui::TextureHandle;
 use hashbrown::{hash_map::RawEntryMut, HashMap};
-use notedeck::JobPool;
 use poll_promise::Promise;
 
 #[derive(Default)]

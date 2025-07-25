@@ -6,8 +6,8 @@ use crate::{
 };
 
 use enostr::Pubkey;
-use notedeck::NoteContext;
-use notedeck_ui::{jobs::JobsCache, NoteOptions};
+use notedeck::{JobsCache, NoteContext};
+use notedeck_ui::NoteOptions;
 
 #[allow(clippy::too_many_arguments)]
 pub fn render_timeline_route(

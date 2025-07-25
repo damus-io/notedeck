@@ -1,19 +1,15 @@
-use std::cell::OnceCell;
-
 use crate::{
-    blur::imeta_blurhashes,
-    jobs::JobsCache,
     note::{NoteAction, NoteOptions, NoteResponse, NoteView},
     secondary_label,
 };
+use notedeck::{JobsCache, RenderableMedia};
 
 use egui::{Color32, Hyperlink, RichText};
 use nostrdb::{BlockType, Mention, Note, NoteKey, Transaction};
 use tracing::warn;
 
-use notedeck::{IsFollowing, NoteCache, NoteContext};
-
-use super::media::{find_renderable_media, image_carousel, RenderableMedia};
+use super::media::image_carousel;
+use notedeck::{update_imeta_blurhashes, IsFollowing, NoteCache, NoteContext};
 
 pub struct NoteContents<'a, 'd> {
     note_context: &'a mut NoteContext<'d>,
@@ -127,11 +123,11 @@ pub fn render_note_preview(
 
 #[allow(clippy::too_many_arguments)]
 #[profiling::function]
-pub fn render_note_contents(
+pub fn render_note_contents<'a>(
     ui: &mut egui::Ui,
     note_context: &mut NoteContext,
     txn: &Transaction,
-    note: &Note,
+    note: &'a Note,
     options: NoteOptions,
     jobs: &mut JobsCache,
 ) -> NoteResponse {
@@ -152,7 +148,6 @@ pub fn render_note_contents(
     }
 
     let mut supported_medias: Vec<RenderableMedia> = vec![];
-    let blurhashes = OnceCell::new();
 
     let response = ui.horizontal_wrapped(|ui| {
         let blocks = if let Ok(blocks) = note_context.ndb.get_blocks_by_key(txn, note_key) {
@@ -223,15 +218,15 @@ pub fn render_note_contents(
                     let mut found_supported = || -> bool {
                         let url = block.as_str();
 
-                        let blurs = blurhashes.get_or_init(|| imeta_blurhashes(note));
+                        if !note_context.img_cache.metadata.contains_key(url) {
+                            update_imeta_blurhashes(note, &mut note_context.img_cache.metadata);
+                        }
 
-                        let Some(media_type) =
-                            find_renderable_media(&mut note_context.img_cache.urls, blurs, url)
-                        else {
+                        let Some(media) = note_context.img_cache.get_renderable_media(url) else {
                             return false;
                         };
 
-                        supported_medias.push(media_type);
+                        supported_medias.push(media);
                         true
                     };
 
@@ -311,6 +306,7 @@ pub fn render_note_contents(
                 .key
                 .pubkey
                 .bytes();
+
         let trusted_media = is_self
             || note_context
                 .accounts

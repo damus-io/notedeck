@@ -13,12 +13,11 @@ use crate::{
     ui::timeline::{tabs_ui, TimelineTabView},
 };
 use notedeck::{
-    name::get_display_name, profile::get_profile_url, IsFollowing, NoteAction, NoteContext,
-    NotedeckTextStyle,
+    name::get_display_name, profile::get_profile_url, IsFollowing, JobsCache, NoteAction,
+    NoteContext, NotedeckTextStyle,
 };
 use notedeck_ui::{
     app_images,
-    jobs::JobsCache,
     profile::{about_section_widget, banner, display_name_widget},
     NoteOptions, ProfilePic,
 };

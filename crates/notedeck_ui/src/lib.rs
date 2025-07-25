@@ -1,13 +1,11 @@
 pub mod anim;
 pub mod app_images;
-pub mod blur;
 pub mod colors;
 pub mod constants;
 pub mod context_menu;
-pub mod gif;
 pub mod icons;
 pub mod images;
-pub mod jobs;
+pub mod media;
 pub mod mention;
 pub mod note;
 pub mod profile;

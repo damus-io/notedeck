@@ -4,8 +4,10 @@ use crate::{
 };
 use egui::{Align, Key, KeyboardShortcut, Layout, Modifiers};
 use nostrdb::{Ndb, Transaction};
-use notedeck::{tr, Accounts, AppContext, Images, Localization, NoteAction, NoteContext};
-use notedeck_ui::{app_images, icons::search_icon, jobs::JobsCache, NoteOptions, ProfilePic};
+use notedeck::{
+    tr, Accounts, AppContext, Images, JobsCache, Localization, NoteAction, NoteContext,
+};
+use notedeck_ui::{app_images, icons::search_icon, NoteOptions, ProfilePic};
 
 /// DaveUi holds all of the data it needs to render itself
 pub struct DaveUi<'a> {

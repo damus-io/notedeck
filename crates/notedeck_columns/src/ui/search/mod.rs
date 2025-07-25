@@ -5,11 +5,11 @@ use state::TypingType;
 use crate::{timeline::TimelineTab, ui::timeline::TimelineTabView};
 use egui_winit::clipboard::Clipboard;
 use nostrdb::{Filter, Ndb, Transaction};
-use notedeck::{tr, tr_plural, Localization, NoteAction, NoteContext, NoteRef};
+use notedeck::{tr, tr_plural, JobsCache, Localization, NoteAction, NoteContext, NoteRef};
+
 use notedeck_ui::{
     context_menu::{input_context, PasteBehavior},
     icons::search_icon,
-    jobs::JobsCache,
     padding, NoteOptions,
 };
 use std::time::{Duration, Instant};
