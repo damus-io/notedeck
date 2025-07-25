@@ -476,12 +476,12 @@ pub fn get_render_state<'a>(
         MediaCacheType::Gif => &mut images.gifs,
     };
 
-    let cur_state = cache.textures_cache.handle_and_get_or_insert(url, || {
+    let texture_state = cache.textures_cache.handle_and_get_or_insert(url, || {
         crate::images::fetch_img(&cache.cache_dir, ctx, url, img_type, cache_type)
     });
 
     RenderState {
-        texture_state: cur_state,
+        texture_state,
         gifs: &mut images.gif_states,
     }
 }
