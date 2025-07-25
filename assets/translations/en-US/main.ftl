@@ -79,6 +79,9 @@ Banner_52ef = Banner
 # Beta version label
 BETA_8e5d = BETA
 
+# Option in settings section to show the source client label at the bottom of the note
+Bottom_33c8 = Bottom
+
 # Broadcast the note to all connected relays
 Broadcast_fe43 = Broadcast
 
@@ -240,6 +243,9 @@ Find_User_bd12 = Find User
 
 # Title for hashtags column
 Hashtags_f8e0 = Hashtags
+
+# Option in settings section to hide the source client label in note display
+Hide_281d = Hide
 
 # Title for Home column
 Home_8c19 = Home
@@ -534,6 +540,9 @@ Thread_0f20 = Thread
 
 # Link text for thread references
 thread_ad1f = thread
+
+# Option in settings section to show the source client label at the top of the note
+Top_6aeb = Top
 
 # Title for universe column
 Universe_e01e = Universe

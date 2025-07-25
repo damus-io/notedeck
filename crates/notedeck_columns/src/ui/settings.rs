@@ -115,6 +115,27 @@ impl<'a> SettingsView<'a> {
         }
     }
 
+    /// Get the localized label for ShowNoteClientOptions
+    fn get_show_note_client_label(&mut self, option: ShowNoteClientOptions) -> String {
+        match option {
+            ShowNoteClientOptions::Hide => tr!(
+                self.i18n,
+                "Hide",
+                "Option in settings section to hide the source client label in note display"
+            ),
+            ShowNoteClientOptions::Top => tr!(
+                self.i18n,
+                "Top",
+                "Option in settings section to show the source client label at the top of the note"
+            ),
+            ShowNoteClientOptions::Bottom => tr!(
+                self.i18n,
+                "Bottom",
+                "Option in settings section to show the source client label at the bottom of the note"
+            ),
+        }.to_string()
+    }
+
     pub fn ui(&mut self, ui: &mut egui::Ui) -> Option<SettingsAction> {
         let id = ui.id();
         let mut action = None;
@@ -402,7 +423,7 @@ impl<'a> SettingsView<'a> {
                                     ShowNoteClientOptions::Top,
                                     ShowNoteClientOptions::Bottom,
                                 ] {
-                                    let label = option.clone().to_string();
+                                    let label = self.get_show_note_client_label(option);
 
                                     if ui
                                         .selectable_value(
