@@ -344,7 +344,12 @@ impl<'a, 'd> NoteView<'a, 'd> {
                     1.0,
                     ui.visuals().noninteractive().bg_stroke.color,
                 ))
-                .show(ui, |ui| self.show_impl(ui))
+                .show(ui, |ui| {
+                    if is_narrow(ui.ctx()) {
+                        ui.set_width(ui.available_width());
+                    }
+                    self.show_impl(ui)
+                })
                 .inner
         } else {
             self.show_impl(ui)
