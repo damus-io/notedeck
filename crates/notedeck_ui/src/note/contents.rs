@@ -7,11 +7,11 @@ use crate::{
     secondary_label,
 };
 
-use egui::{Color32, Hyperlink, RichText};
+use egui::{vec2, Color32, Hyperlink, RichText};
 use nostrdb::{BlockType, Mention, Note, NoteKey, Transaction};
 use tracing::warn;
 
-use notedeck::{IsFollowing, NoteCache, NoteContext};
+use notedeck::{IsFollowing, NoteCache, NoteContext, NotedeckTextStyle};
 
 use super::media::{find_renderable_media, image_carousel, RenderableMedia};
 
@@ -163,9 +163,9 @@ pub fn render_note_contents(
             return;
         };
 
-        ui.spacing_mut().item_spacing.x = 0.0;
+        ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
 
-        for block in blocks.iter(note) {
+        'block_loop: for block in blocks.iter(note) {
             match block.blocktype() {
                 BlockType::MentionBech32 => match block.as_mention().unwrap() {
                     Mention::Profile(profile) => {
@@ -263,17 +263,28 @@ pub fn render_note_contents(
                         current_len += block_str.len();
                         block_str
                     };
-
+                    if block_str.trim().len() == 0 {
+                        continue 'block_loop;
+                    }
                     if options.contains(NoteOptions::ScrambleText) {
                         ui.add(
-                            egui::Label::new(rot13(block_str))
-                                .wrap()
-                                .selectable(selectable),
+                            egui::Label::new(
+                                RichText::new(rot13(block_str))
+                                    .text_style(NotedeckTextStyle::Body.text_style()),
+                            )
+                            .wrap()
+                            .selectable(selectable),
                         );
                     } else {
-                        ui.add(egui::Label::new(block_str).wrap().selectable(selectable));
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(block_str)
+                                    .text_style(NotedeckTextStyle::Body.text_style()),
+                            )
+                            .wrap()
+                            .selectable(selectable),
+                        );
                     }
-
                     // don't render any more blocks
                     if truncate {
                         break;
