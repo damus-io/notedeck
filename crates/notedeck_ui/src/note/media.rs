@@ -1,8 +1,8 @@
 use std::{collections::HashMap, path::Path};
 
 use egui::{
-    Button, Color32, Context, CornerRadius, FontId, Image, Response, RichText, Sense,
-    TextureHandle, UiBuilder, Window,
+    vec2, Button, Color32, Context, CornerRadius, FontId, Image, Response, RichText, Sense,
+    TextureHandle, UiBuilder, Vec2, Window,
 };
 use notedeck::{
     fonts::get_font_size, note::MediaAction, show_one_error_message, supported_mime_hosted_at_url,
@@ -33,14 +33,17 @@ pub(crate) fn image_carousel(
 ) -> Option<MediaAction> {
     // let's make sure everything is within our area
 
-    let height = 360.0;
-    let width = ui.available_width();
+    let size = {
+        let height = 360.0;
+        let width = ui.available_width();
+        egui::vec2(width, height)
+    };
 
     let show_popup = get_show_popup(ui, popup_id(carousel_id));
     let mut action = None;
 
     //let has_touch_screen = ui.ctx().input(|i| i.has_touch_screen());
-    ui.add_sized([width, height], |ui: &mut egui::Ui| {
+    ui.add_sized(size, |ui: &mut egui::Ui| {
         egui::ScrollArea::horizontal()
             .drag_to_scroll(false)
             .id_salt(carousel_id)
@@ -63,7 +66,7 @@ pub(crate) fn image_carousel(
                             job_pool,
                             jobs,
                             trusted_media,
-                            height,
+                            size,
                             &mut cache.textures_cache,
                             url,
                             *media_type,
@@ -76,7 +79,7 @@ pub(crate) fn image_carousel(
                             &mut img_cache.gif_states,
                             media_state,
                             url,
-                            height,
+                            size,
                             i18n,
                         ) {
                             // clicked the media, lets set the active index
@@ -90,7 +93,7 @@ pub(crate) fn image_carousel(
                                 url,
                                 *media_type,
                                 cache,
-                                ImageType::Content(Some((width as u32, height as u32))),
+                                ImageType::Content(Some((size.x as u32, size.y as u32))),
                             );
                         }
                     }
@@ -276,7 +279,7 @@ pub fn get_content_media_render_state<'a>(
     job_pool: &'a mut JobPool,
     jobs: &'a mut JobsCache,
     media_trusted: bool,
-    height: f32,
+    size: Vec2,
     cache: &'a mut TexturesCache,
     url: &'a str,
     cache_type: MediaCacheType,
@@ -302,7 +305,7 @@ pub fn get_content_media_render_state<'a>(
             obfuscation_type,
             job_pool,
             jobs,
-            height,
+            size,
         ));
     };
 
@@ -313,11 +316,11 @@ pub fn get_content_media_render_state<'a>(
             obfuscation_type,
             job_pool,
             jobs,
-            height,
+            size,
         )),
         notedeck::LoadableTextureState::Error(e) => MediaRenderState::Error(e),
         notedeck::LoadableTextureState::Loading { actual_image_tex } => {
-            let obfuscation = get_obfuscated(ui, url, obfuscation_type, job_pool, jobs, height);
+            let obfuscation = get_obfuscated(ui, url, obfuscation_type, job_pool, jobs, size);
             MediaRenderState::Transitioning {
                 image: actual_image_tex,
                 obfuscation,
@@ -335,7 +338,7 @@ fn get_obfuscated<'a>(
     obfuscation_type: ObfuscationType<'a>,
     job_pool: &'a mut JobPool,
     jobs: &'a mut JobsCache,
-    height: f32,
+    size: Vec2,
 ) -> ObfuscatedTexture<'a> {
     let ObfuscationType::Blurhash(renderable_blur) = obfuscation_type else {
         return ObfuscatedTexture::Default;
@@ -348,8 +351,8 @@ fn get_obfuscated<'a>(
     };
 
     let available_points = PointDimensions {
-        x: ui.available_width(),
-        y: height,
+        x: size.x,
+        y: size.y,
     };
 
     let pixel_sizes = renderable_blur.scaled_pixel_dimensions(ui, available_points);
@@ -731,12 +734,12 @@ fn render_media(
     gifs: &mut GifStateMap,
     render_state: MediaRenderState,
     url: &str,
-    height: f32,
+    size: egui::Vec2,
     i18n: &mut Localization,
 ) -> Option<MediaUIAction> {
     match render_state {
         MediaRenderState::ActualImage(image) => {
-            if render_success_media(ui, url, image, gifs, height, i18n).clicked() {
+            if render_success_media(ui, url, image, gifs, size, i18n).clicked() {
                 Some(MediaUIAction::Clicked)
             } else {
                 None
@@ -744,29 +747,31 @@ fn render_media(
         }
         MediaRenderState::Transitioning { image, obfuscation } => match obfuscation {
             ObfuscatedTexture::Blur(texture) => {
-                if render_blur_transition(ui, url, height, texture, image.get_first_texture()) {
+                if render_blur_transition(ui, url, size, texture, image.get_first_texture()) {
                     Some(MediaUIAction::DoneLoading)
                 } else {
                     None
                 }
             }
             ObfuscatedTexture::Default => {
-                ui.add(texture_to_image(ui, image.get_first_texture(), height));
+                let scaled =
+                    ScaledTexture::new(image.get_first_texture(), size, is_narrow(ui.ctx()));
+                ui.add(scaled.get_image());
                 Some(MediaUIAction::DoneLoading)
             }
         },
         MediaRenderState::Error(e) => {
-            ui.allocate_space(egui::vec2(height, height));
+            ui.allocate_space(size);
             show_one_error_message(ui, &format!("Could not render media {url}: {e}"));
             Some(MediaUIAction::Error)
         }
         MediaRenderState::Shimmering(obfuscated_texture) => {
             match obfuscated_texture {
                 ObfuscatedTexture::Blur(texture_handle) => {
-                    shimmer_blurhash(texture_handle, ui, url, height);
+                    shimmer_blurhash(texture_handle, ui, url, size);
                 }
                 ObfuscatedTexture::Default => {
-                    render_default_blur_bg(ui, height, url, true);
+                    render_default_blur_bg(ui, size, url, true);
                 }
             }
             None
@@ -774,12 +779,12 @@ fn render_media(
         MediaRenderState::Obfuscated(obfuscated_texture) => {
             let resp = match obfuscated_texture {
                 ObfuscatedTexture::Blur(texture_handle) => {
-                    let img = texture_to_image(ui, texture_handle, height);
+                    let scaled = ScaledTexture::new(texture_handle, size, is_narrow(ui.ctx()));
 
-                    let resp = ui.add(img);
+                    let resp = ui.add(scaled.get_image());
                     render_blur_text(ui, i18n, url, resp.rect)
                 }
-                ObfuscatedTexture::Default => render_default_blur(ui, i18n, height, url),
+                ObfuscatedTexture::Default => render_default_blur(ui, i18n, size, url),
             };
 
             if resp
@@ -883,20 +888,26 @@ fn render_blur_text(
 fn render_default_blur(
     ui: &mut egui::Ui,
     i18n: &mut Localization,
-    height: f32,
+    size: egui::Vec2,
     url: &str,
 ) -> egui::Response {
-    let rect = render_default_blur_bg(ui, height, url, false);
+    let rect = render_default_blur_bg(ui, size, url, false);
     render_blur_text(ui, i18n, url, rect)
 }
 
-fn render_default_blur_bg(ui: &mut egui::Ui, height: f32, url: &str, shimmer: bool) -> egui::Rect {
-    let width = if is_narrow(ui.ctx()) {
-        ui.available_width()
+fn render_default_blur_bg(
+    ui: &mut egui::Ui,
+    size: egui::Vec2,
+    url: &str,
+    shimmer: bool,
+) -> egui::Rect {
+    let size = if is_narrow(ui.ctx()) {
+        size
     } else {
-        height
+        vec2(size.y, size.y)
     };
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::click());
+
+    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::click());
 
     let painter = ui.painter_at(rect);
 
@@ -980,30 +991,25 @@ fn render_success_media(
     url: &str,
     tex: &mut TexturedImage,
     gifs: &mut GifStateMap,
-    height: f32,
+    size: Vec2,
     i18n: &mut Localization,
 ) -> Response {
     let texture = handle_repaint(ui, retrieve_latest_texture(url, gifs, tex));
-    let img = texture_to_image(ui, texture, height);
 
-    let img_resp = ui.add(Button::image(img).frame(false));
+    let scaled = ScaledTexture::new(texture, size, is_narrow(ui.ctx()));
+
+    let img_resp = ui.add(Button::image(scaled.get_image()).frame(false));
 
     copy_link(i18n, url, &img_resp);
 
     img_resp
 }
 
-fn texture_to_image<'a>(ui: &egui::Ui, tex: &TextureHandle, max_height: f32) -> egui::Image<'a> {
-    let mut img = Image::new(tex)
-        .max_height(max_height)
+fn texture_to_image<'a>(tex: &TextureHandle, size: Vec2) -> egui::Image<'a> {
+    Image::new(tex)
         .corner_radius(5.0)
-        .maintain_aspect_ratio(true);
-
-    if is_narrow(ui.ctx()) {
-        img = img.max_width(ui.available_width());
-    }
-
-    img
+        .fit_to_exact_size(size)
+        .maintain_aspect_ratio(true)
 }
 
 static BLUR_SHIMMER_ID: fn(&str) -> egui::Id = |url| egui::Id::new(("blur_shimmer", url));
@@ -1022,11 +1028,11 @@ fn get_blur_current_alpha(ui: &mut egui::Ui, url: &str) -> u8 {
         .animate()
 }
 
-fn shimmer_blurhash(tex: &TextureHandle, ui: &mut egui::Ui, url: &str, max_height: f32) {
+fn shimmer_blurhash(tex: &TextureHandle, ui: &mut egui::Ui, url: &str, size: Vec2) {
     let cur_alpha = get_blur_current_alpha(ui, url);
 
-    let scaled = ScaledTexture::new(tex, max_height);
-    let img = scaled.get_image(ui);
+    let scaled = ScaledTexture::new(tex, size, is_narrow(ui.ctx()));
+    let img = scaled.get_image();
     show_blurhash_with_alpha(ui, img, cur_alpha);
 }
 
@@ -1048,54 +1054,60 @@ type FinishedTransition = bool;
 fn render_blur_transition(
     ui: &mut egui::Ui,
     url: &str,
-    max_height: f32,
+    size: Vec2,
     blur_texture: &TextureHandle,
     image_texture: &TextureHandle,
 ) -> FinishedTransition {
-    let scaled_texture = ScaledTexture::new(image_texture, max_height);
+    let scaled_texture = ScaledTexture::new(image_texture, size, is_narrow(ui.ctx()));
 
-    let blur_img = texture_to_image(ui, blur_texture, max_height);
+    let scaled_blur_img = ScaledTexture::new(blur_texture, size, is_narrow(ui.ctx()));
 
     match get_blur_transition_state(ui.ctx(), url) {
         BlurTransitionState::StoppingShimmer { cur_alpha } => {
-            show_blurhash_with_alpha(ui, blur_img, cur_alpha);
+            show_blurhash_with_alpha(ui, scaled_blur_img.get_image(), cur_alpha);
             false
         }
-        BlurTransitionState::FadingBlur => render_blur_fade(ui, url, blur_img, &scaled_texture),
+        BlurTransitionState::FadingBlur => {
+            render_blur_fade(ui, url, scaled_blur_img.get_image(), &scaled_texture)
+        }
     }
 }
 
 struct ScaledTexture<'a> {
     tex: &'a TextureHandle,
-    max_height: f32,
-    pub scaled_size: egui::Vec2,
+    size: Vec2,
+    pub scaled_size: Vec2,
 }
 
 impl<'a> ScaledTexture<'a> {
-    pub fn new(tex: &'a TextureHandle, max_height: f32) -> Self {
-        let scaled_size = {
-            let mut size = tex.size_vec2();
+    pub fn new(tex: &'a TextureHandle, max_size: Vec2, is_narrow: bool) -> Self {
+        let tex_size = tex.size_vec2();
 
-            if size.y > max_height {
-                let old_y = size.y;
-                size.y = max_height;
-                size.x *= max_height / old_y;
+        let scaled_size = if !is_narrow {
+            if tex_size.y > max_size.y {
+                let scale = max_size.y / tex_size.y;
+                tex_size * scale
+            } else {
+                tex_size
             }
-
-            size
+        } else {
+            if tex_size.x < max_size.x || tex_size.x > max_size.x {
+                let scale = max_size.x / tex_size.x;
+                tex_size * scale
+            } else {
+                tex_size
+            }
         };
 
         Self {
             tex,
-            max_height,
+            size: max_size,
             scaled_size,
         }
     }
 
-    pub fn get_image(&self, ui: &egui::Ui) -> Image {
-        texture_to_image(ui, self.tex, self.max_height)
-            .max_size(self.scaled_size)
-            .shrink_to_fit()
+    pub fn get_image(&self) -> Image {
+        texture_to_image(self.tex, self.size).fit_to_exact_size(self.scaled_size)
     }
 }
 
@@ -1114,7 +1126,7 @@ fn render_blur_fade(
             .animate()
     };
 
-    let img = image_texture.get_image(ui);
+    let img = image_texture.get_image();
 
     let blur_img = blur_img.tint(fade_color(cur_alpha));
 
