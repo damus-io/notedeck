@@ -79,6 +79,9 @@ Banner_52ef = {"["}Bàññér{"]"}
 # Beta version label
 BETA_8e5d = {"["}BÉTÀ{"]"}
 
+# Option in settings section to show the source client label at the bottom of the note
+Bottom_33c8 = {"["}Bóttóm{"]"}
+
 # Broadcast the note to all connected relays
 Broadcast_fe43 = {"["}Bróàdçàst{"]"}
 
@@ -240,6 +243,9 @@ Find_User_bd12 = {"["}Fíñd Úsér{"]"}
 
 # Title for hashtags column
 Hashtags_f8e0 = {"["}Hàshtàgs{"]"}
+
+# Option in settings section to hide the source client label in note display
+Hide_281d = {"["}Hídé{"]"}
 
 # Title for Home column
 Home_8c19 = {"["}Hómé{"]"}
@@ -534,6 +540,9 @@ Thread_0f20 = {"["}Thréàd{"]"}
 
 # Link text for thread references
 thread_ad1f = {"["}thréàd{"]"}
+
+# Option in settings section to show the source client label at the top of the note
+Top_6aeb = {"["}Tóp{"]"}
 
 # Title for universe column
 Universe_e01e = {"["}Úñívérsé{"]"}
