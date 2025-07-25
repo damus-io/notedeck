@@ -5,8 +5,8 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use unic_langid::{langid, LanguageIdentifier};
 
-const EN_XA: LanguageIdentifier = langid!("en-XA");
 const EN_US: LanguageIdentifier = langid!("en-US");
+const EN_XA: LanguageIdentifier = langid!("en-XA");
 const DE: LanguageIdentifier = langid!("de");
 const ES_419: LanguageIdentifier = langid!("es-419");
 const ES_ES: LanguageIdentifier = langid!("es-ES");
@@ -15,6 +15,16 @@ const TH: LanguageIdentifier = langid!("TH");
 const ZH_CN: LanguageIdentifier = langid!("ZH_CN");
 const ZH_TW: LanguageIdentifier = langid!("ZH_TW");
 const NUM_FTLS: usize = 9;
+
+const EN_US_NATIVE_NAME: &str = "English (US)";
+const EN_XA_NATIVE_NAME: &str = "Éñglísh (Pséúdólóçàlé)";
+const DE_NATIVE_NAME: &str = "Deutsch";
+const ES_419_NATIVE_NAME: &str = "Español (Latinoamérica)";
+const ES_ES_NATIVE_NAME: &str = "Español (España)";
+const FR_NATIVE_NAME: &str = "Français";
+const TH_NATIVE_NAME: &str = "ภาษาไทย";
+const ZH_CN_NATIVE_NAME: &str = "简体中文";
+const ZH_TW_NATIVE_NAME: &str = "繁體中文";
 
 struct StaticBundle {
     identifier: LanguageIdentifier,
@@ -70,6 +80,8 @@ pub struct Localization {
     available_locales: Vec<LanguageIdentifier>,
     /// Fallback locale
     fallback_locale: LanguageIdentifier,
+    /// Native names for locales
+    locale_native_names: HashMap<LanguageIdentifier, String>,
 
     /// Cached string results per locale (only for strings without arguments)
     string_cache: HashMap<LanguageIdentifier, HashMap<String, String>>,
@@ -100,10 +112,23 @@ impl Default for Localization {
             ZH_TW.clone(),
         ];
 
+        let locale_native_names = HashMap::from([
+            (EN_US, EN_US_NATIVE_NAME.to_owned()),
+            (EN_XA, EN_XA_NATIVE_NAME.to_owned()),
+            (DE, DE_NATIVE_NAME.to_owned()),
+            (ES_419, ES_419_NATIVE_NAME.to_owned()),
+            (ES_ES, ES_ES_NATIVE_NAME.to_owned()),
+            (FR, FR_NATIVE_NAME.to_owned()),
+            (TH, TH_NATIVE_NAME.to_owned()),
+            (ZH_CN, ZH_CN_NATIVE_NAME.to_owned()),
+            (ZH_TW, ZH_TW_NATIVE_NAME.to_owned()),
+        ]);
+
         Self {
             current_locale: default_locale.to_owned(),
             available_locales,
             fallback_locale,
+            locale_native_names,
             use_isolating: true,
             normalized_key_cache: HashMap::new(),
             string_cache: HashMap::new(),
@@ -389,6 +414,10 @@ impl Localization {
     /// Gets the fallback locale
     pub fn get_fallback_locale(&self) -> &LanguageIdentifier {
         &self.fallback_locale
+    }
+
+    pub fn get_locale_native_name(&self, locale: &LanguageIdentifier) -> Option<&str> {
+        self.locale_native_names.get(locale).map(|s| s.as_str())
     }
 
     /// Gets cache statistics for monitoring performance

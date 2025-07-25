@@ -103,6 +103,18 @@ impl<'a> SettingsView<'a> {
         }
     }
 
+    /// Get the localized name for a language identifier
+    fn get_selected_language_name(&mut self) -> String {
+        if let Ok(lang_id) = self.selected_language.parse::<LanguageIdentifier>() {
+            self.i18n
+                .get_locale_native_name(&lang_id)
+                .map(|s| s.to_owned())
+                .unwrap_or_else(|| lang_id.to_string())
+        } else {
+            self.selected_language.clone()
+        }
+    }
+
     pub fn ui(&mut self, ui: &mut egui::Ui) -> Option<SettingsAction> {
         let id = ui.id();
         let mut action = None;
@@ -190,19 +202,22 @@ impl<'a> SettingsView<'a> {
                                         .text_style(NotedeckTextStyle::Small.text_style()),
                                 );
                                 ComboBox::from_label("")
-                                    .selected_text(self.selected_language.to_owned())
+                                    .selected_text(self.get_selected_language_name())
                                     .show_ui(ui, |ui| {
                                         for lang in self.i18n.get_available_locales() {
+                                            let name = self.i18n
+                                                .get_locale_native_name(lang)
+                                                .map(|s| s.to_owned())
+                                                .unwrap_or_else(|| lang.to_string());
                                             if ui
                                                 .selectable_value(
                                                     self.selected_language,
                                                     lang.to_string(),
-                                                    lang.to_string(),
+                                                    &name,
                                                 )
                                                 .clicked()
                                             {
-                                                action =
-                                                    Some(SettingsAction::SetLocale(lang.to_owned()))
+                                                action = Some(SettingsAction::SetLocale(lang.to_owned()))
                                             }
                                         }
                                     })
