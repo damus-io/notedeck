@@ -849,7 +849,7 @@ fn render_nav_body(
                 }
             };
 
-            WalletView::new(state, ctx.i18n)
+            WalletView::new(state, ctx.i18n, ctx.clipboard)
                 .ui(ui)
                 .map(RenderNavAction::WalletAction)
         }

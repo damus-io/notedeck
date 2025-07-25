@@ -1,4 +1,5 @@
 use egui::{vec2, CornerRadius, Layout};
+use egui_winit::clipboard::Clipboard;
 use notedeck::{
     get_current_wallet_mut, tr, Accounts, DefaultZapMsats, GlobalWallet, Localization,
     NotedeckTextStyle, PendingDefaultZapState, Wallet, WalletError, WalletUIState, ZapWallet,
@@ -154,11 +155,20 @@ impl WalletAction {
 pub struct WalletView<'a> {
     state: WalletState<'a>,
     i18n: &'a mut Localization,
+    clipboard: &'a mut Clipboard,
 }
 
 impl<'a> WalletView<'a> {
-    pub fn new(state: WalletState<'a>, i18n: &'a mut Localization) -> Self {
-        Self { state, i18n }
+    pub fn new(
+        state: WalletState<'a>,
+        i18n: &'a mut Localization,
+        clipboard: &'a mut Clipboard,
+    ) -> Self {
+        Self {
+            state,
+            i18n,
+            clipboard,
+        }
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui) -> Option<WalletAction> {
@@ -184,7 +194,7 @@ impl<'a> WalletView<'a> {
             WalletState::NoWallet {
                 state,
                 show_local_only,
-            } => show_no_wallet(ui, self.i18n, state, *show_local_only),
+            } => show_no_wallet(ui, self.i18n, state, *show_local_only, self.clipboard),
         }
     }
 }
@@ -206,8 +216,11 @@ fn show_no_wallet(
     i18n: &mut Localization,
     state: &mut WalletUIState,
     show_local_only: bool,
+    clipboard: &mut Clipboard,
 ) -> Option<WalletAction> {
     ui.horizontal_wrapped(|ui| {
+        use notedeck_ui::context_menu::{input_context, PasteBehavior};
+
         let text_edit = egui::TextEdit::singleline(&mut state.buf)
             .hint_text(
                 egui::RichText::new(tr!(
@@ -223,7 +236,13 @@ fn show_no_wallet(
             .margin(egui::Margin::same(12))
             .password(true);
 
-        ui.add(text_edit);
+        // add paste context menu
+        input_context(
+            &ui.add(text_edit),
+            clipboard,
+            &mut state.buf,
+            PasteBehavior::Clear,
+        );
 
         let Some(error_msg) = &state.error_msg else {
             return;
