@@ -471,7 +471,7 @@ impl<'a, 'd> PostView<'a, 'd> {
                 self.note_context.img_cache,
                 cache_type,
                 url,
-                notedeck_ui::images::ImageType::Content,
+                notedeck_ui::images::ImageType::Content(Some((width, height))),
             );
 
             render_post_view_media(

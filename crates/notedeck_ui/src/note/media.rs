@@ -90,7 +90,7 @@ pub(crate) fn image_carousel(
                                 url,
                                 *media_type,
                                 cache,
-                                ImageType::Content,
+                                ImageType::Content(Some((width as u32, height as u32))),
                             );
                         }
                     }
@@ -201,7 +201,7 @@ fn show_full_screen_media(
                     img_cache,
                     media_type,
                     image_url,
-                    ImageType::Content,
+                    ImageType::Content(None),
                 );
 
                 let notedeck::TextureState::Loaded(textured_image) = cur_state.texture_state else {
@@ -285,7 +285,13 @@ pub fn get_content_media_render_state<'a>(
 ) -> MediaRenderState<'a> {
     let render_type = if media_trusted {
         cache.handle_and_get_or_insert_loadable(url, || {
-            crate::images::fetch_img(cache_dir, ui.ctx(), url, ImageType::Content, cache_type)
+            crate::images::fetch_img(
+                cache_dir,
+                ui.ctx(),
+                url,
+                ImageType::Content(None),
+                cache_type,
+            )
         })
     } else if let Some(render_type) = cache.get_and_handle(url) {
         render_type
