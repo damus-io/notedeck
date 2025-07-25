@@ -45,6 +45,8 @@ Algo_2452 = 算法
 Algorithmic_feeds_to_aid_in_note_discovery_d344 = 用于帮助发现笔记的算法源
 # Label for zap amount input field
 Amount_70f0 = 金额
+# Label for appearance settings section
+Appearance_4c7f = 外观
 # Button to send message to Dave AI assistant
 Ask_b7f4 = 询问
 # Placeholder text for Dave AI input field
@@ -53,16 +55,26 @@ Ask_dave_anything_33d1 = 向 Dave 提问任何问题…
 Banner_52ef = 横幅
 # Beta version label
 BETA_8e5d = BETA
+# Option in settings section to show the source client label at the bottom of the note
+Bottom_33c8 = 底部
 # Broadcast the note to all connected relays
 Broadcast_fe43 = 广播
 # Broadcast the note only to local network relays
 Broadcast_Local_7e50 = 仅广播至本地中继
 # Button label to cancel an action
 Cancel_ed3b = 取消
+# Label for cancel clear cache, Storage settings section
+Cancel_fd8b = 取消
+# Label for clear cache button, Storage settings section
+Clear_cache_dccb = 清除缓存
 # Hover text for editable zap amount
 Click_to_edit_0414 = 点击以编辑
 # Column title for note composition
 Compose_Note_c094 = 撰写笔记
+# Label for configure relays, settings section
+Configure_relays_d156 = 配置中继器
+# Label for confirm clear cache, Storage settings section
+Confirm_9d9d = 确认
 # Button label to confirm an action
 Confirm_f8a6 = 确认
 # Status label for connected relay
@@ -111,6 +123,8 @@ Custom_a69e = 自定义
 Customize_Zap_Amount_cfc4 = 自定义打闪金额
 # Column title for support page
 Damus_Support_27c0 = 达摩支持
+# Label for Theme Dark, Appearance settings section
+Dark_85fe = 暗色
 # Label for deck name input field
 Deck_name_cd32 = 仪表板名称
 # Label for decks section in side panel
@@ -151,10 +165,14 @@ Enter_your_public_key__npub___nostr_address__e_g___address____or_private_key__ns
 Find_User_bd12 = 查找用户
 # Title for hashtags column
 Hashtags_f8e0 = 标签
+# Option in settings section to hide the source client label in note display
+Hide_281d = 隐藏
 # Title for Home column
 Home_8c19 = 主页
 # Label for deck icon selection
 Icon_b0ab = 图标
+# Label for Image cache size, Storage settings section
+Image_cache_size_3004 = 图像缓存大小：
 # Title for individual user column
 Individual_b776 = 个人
 # Error message for invalid zap amount
@@ -175,8 +193,12 @@ k_50K_c2dc = 5万
 k_5K_f7e6 = 5千
 # Description for your notes column
 Keep_track_of_your_notes___replies_a334 = 随时查看你的笔记和回复
+# Label for language, Appearance settings section
+Language_e264 = 语言：
 # Title for last note per user column
 Last_Note_per_User_17ad = 每个用户的最新笔记
+# Label for Theme Light, Appearance settings section
+Light_7475 = 亮色
 # Bitcoin Lightning network address field label
 Lightning_network_address__lud16_ea51 = 闪电网络地址（lud16）
 # Login page title
@@ -219,6 +241,8 @@ now_2181 = 刚刚
 Open_Email_25e9 = 打开电子邮箱
 # Instruction to open email client
 Open_your_default_email_client_to_get_help_from_the_Damus_team_68dc = 打开你的默认电子邮件客户端以获得达摩团队的帮助
+# Label for others settings section
+Others_7267 = 其它
 # Placeholder text for NWC URI input
 Paste_your_NWC_URI_here_b471 = 在此粘贴你的 NWC URI...
 # Error message for missing deck name
@@ -265,6 +289,8 @@ replying_to_a_note_e0bc = 正在回复笔记
 Repost_this_note_8e56 = 转发此笔记
 # Label for reposted notes
 Reposted_61c8 = 已转发
+# Label for reset zoom level, Appearance settings section
+Reset_62d4 = 重置
 # Heading for support section
 Running_into_a_bug_1796 = 遇到故障了吗？
 # Label for satoshis (Bitcoin unit) for custom zap amount input field
@@ -287,6 +313,10 @@ See_notes_from_your_contacts_ac16 = 查看来自你的联系人的笔记
 See_the_whole_nostr_universe_7694 = 查看整个 nostr 宇宙
 # Button label to send a zap
 Send_1ea4 = 发送
+# Column title for app settings
+Settings_7a4f = 设置
+# Label for Show source client, others settings section
+Show_source_client_9e31 = 显示来源客户端
 # Description for last note per user column
 Show_the_last_note_for_each_user_from_a_list_50e7 = 显示列表中每个用户的最新一条笔记
 # Button label to sign out of account
@@ -313,6 +343,8 @@ Stay_up_to_date_with_your_notifications_and_mentions_e73e = 获取你的通知�
 Step_1_8656 = 第一步
 # Step 2 label in support instructions
 Step_2_d08d = 第二步
+# Label for storage settings section
+Storage_ed65 = 存储
 # Column title for subscribing to external user
 Subscribe_to_someone_else_s_notes_d1e9 = 订阅他人的笔记
 # Column title for subscribing to individual user
@@ -325,10 +357,14 @@ Switch_to_light_mode_72ce = 切换到亮色模式
 Tap_to_Load_4b05 = 点击加载
 # Message shown when Dave trial period has ended
 The_Dave_Nostr_AI_assistant_trial_has_ended_____Thanks_for_testing__Zap-enabled_Dave_coming_soon_c6c7 = Dave Nostr AI 助手试用期已经结束 :(。感谢测试！可打闪付款的 Dave 即将来临！
+# Label for theme, Appearance settings section
+Theme_4aac = 主题：
 # Column title for note thread view
 Thread_0f20 = 帖子
 # Link text for thread references
 thread_ad1f = 帖子
+# Option in settings section to show the source client label at the top of the note
+Top_6aeb = 顶部
 # Title for universe column
 Universe_e01e = 宇宙
 # Column title for universe feed
@@ -339,6 +375,8 @@ Use_this_wallet_for_the_current_account_only_61dc = 此钱包仅限用于当前�
 username___at___domain___will_be_used_for_identification_a4fd = "{ $username }" 于 "{ $domain }" 将被用于身份识别
 # Profile username field label
 Username_daa7 = 用户名
+# Label for view folder button, Storage settings section
+View_folder_9742 = 查看文件夹：
 # Column title for wallet management
 Wallet_5e50 = 钱包
 # Hint for deck name input field
@@ -357,6 +395,8 @@ Your_Notifications_080d = 你的通知
 Zap_16b4 = 打闪
 # Hover text for zap button
 Zap_this_note_42b2 = 打闪此笔记
+# Label for zoom level, Appearance settings section
+Zoom_Level_29a8 = 缩放大小：
 
 # Pluralized strings
 

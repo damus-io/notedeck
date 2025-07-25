@@ -26,11 +26,11 @@ Add_Algo_Column_0d75 = Añadir columna algorítmica
 # Column title for adding new column
 Add_Column_c764 = Añadir columna
 # Column title for adding new deck
-Add_Deck_fabf = Añadir Deck
+Add_Deck_fabf = Añadir deck
 # Column title for adding external notifications column
 Add_External_Notifications_Column_41ae = Añadir columna de notificaciones externas
 # Column title for adding hashtag column
-Add_Hashtag_Column_ebf4 = Añadir columna de hashtag
+Add_Hashtag_Column_ebf4 = Añadir columna de hashtags
 # Column title for adding last notes column
 Add_Last_Notes_Column_bbad = Añadir columna de últimas notas
 # Column title for adding notifications column
@@ -84,7 +84,7 @@ Copy_Note_ID_6b45 = Copiar ID de nota
 # Copy the raw note data in JSON format to clipboard
 Copy_Note_JSON_9e4e = Copiar JSON de nota
 # Copy the author's public key to clipboard
-Copy_Pubkey_9cc4 = Copiar Pubkey
+Copy_Pubkey_9cc4 = Copiar pubkey
 # Copy the text content of the note to clipboard
 Copy_Text_f81c = Copiar texto
 # Relative time in days
@@ -94,7 +94,7 @@ count_h_3ecb = { $count }h
 # Relative time in minutes
 count_m_b41e = { $count }m
 # Relative time in months
-count_mo_7aba = { $count }ms
+count_mo_7aba = { $count }mes
 # Relative time in seconds
 count_s_aa26 = { $count }s
 # Relative time in weeks
@@ -104,23 +104,23 @@ count_y_9408 = { $count }a
 # Button to create a new account
 Create_Account_6994 = Crear cuenta
 # Button label to create a new deck
-Create_Deck_16b7 = Crear Deck
+Create_Deck_16b7 = Crear deck
 # Column title for custom timelines
 Custom_a69e = Personalizado
 # Column title for zap amount customization
-Customize_Zap_Amount_cfc4 = Personalizar monto de zap
+Customize_Zap_Amount_cfc4 = Personalizar cantidad de zap
 # Column title for support page
 Damus_Support_27c0 = Ayuda de Damus
 # Label for deck name input field
-Deck_name_cd32 = Nombre del Deck
+Deck_name_cd32 = Nombre del deck
 # Label for decks section in side panel
 DECKS_1fad = DECKS
 # Label for default zap amount input
-Default_amount_per_zap_399d = Monto predeterminado por zap:
+Default_amount_per_zap_399d = Cantidad predeterminada por zap:
 # Name of the default deck feed
 Default_Deck_fcca = Deck predeterminado
 # Button label to delete a deck
-Delete_Deck_bb29 = Eliminar Deck
+Delete_Deck_bb29 = Eliminar deck
 # Tooltip for deleting a column
 Delete_this_column_8d5a = Eliminar esta columna
 # Button label to delete a wallet
@@ -130,9 +130,9 @@ Display_name_f9d9 = Nombre para mostrar
 # Domain identification message
 domain___will_be_used_for_identification_b67e = "{ $domain }" se utilizará para la identificación
 # Column title for editing deck
-Edit_Deck_4018 = Editar Deck
+Edit_Deck_4018 = Editar deck
 # Button label to edit a deck
-Edit_Deck_fd93 = Editar Deck
+Edit_Deck_fd93 = Editar deck
 # Button label to edit user profile
 Edit_Profile_49e6 = Editar perfil
 # Column title for profile editing
@@ -154,11 +154,11 @@ Hashtags_f8e0 = Hashtags
 # Title for Home column
 Home_8c19 = Inicio
 # Label for deck icon selection
-Icon_b0ab = Ícono
+Icon_b0ab = Icono
 # Title for individual user column
 Individual_b776 = Individual
 # Error message for invalid zap amount
-Invalid_amount_6630 = Importe no válido
+Invalid_amount_6630 = Cantidad no válida
 # Error message for invalid key input
 Invalid_key_4726 = Clave no válida.
 # Error message for invalid Nostr Wallet Connect URI
@@ -184,11 +184,11 @@ Login_9eef = Inicio de sesión
 # Login button text
 Login_now___let_s_do_this_5630 = Inicia sesión ahora, ¡manos a la obra!
 # Text shown on blurred media from unfollowed users
-Media_from_someone_you_don_t_follow_5611 = Medios de alguien que no sigues
+Media_from_someone_you_don_t_follow_5611 = Contenido multimedia de alguien que no sigues
 # Tooltip for moving a column
 Moves_this_column_to_another_position_0d4b = Mueve esta columna a otra posición
 # Title for the user's deck
-My_Deck_4ac5 = Mi Deck
+My_Deck_4ac5 = Mi deck
 # Label asking if the user is new to Nostr. Underneath this label is a button to create an account.
 New_to_Nostr_a2fd = ¿Primera vez en Nostr?
 # NIP-05 identity field label
@@ -220,11 +220,11 @@ Open_Email_25e9 = Abrir correo electrónico
 # Instruction to open email client
 Open_your_default_email_client_to_get_help_from_the_Damus_team_68dc = Abre tu cliente de correo predeterminado para recibir ayuda del equipo de Damus
 # Placeholder text for NWC URI input
-Paste_your_NWC_URI_here_b471 = Pega tu URI NWC aquí...
+Paste_your_NWC_URI_here_b471 = Pega tu NWC URI aquí...
 # Error message for missing deck name
 Please_create_a_name_for_the_deck_38e7 = Crea un nombre para el Deck.
 # Error message for missing deck name and icon
-Please_create_a_name_for_the_deck_and_select_an_icon_0add = Crea un nombre para el Deck y selecciona un icono.
+Please_create_a_name_for_the_deck_and_select_an_icon_0add = Crea un nombre para el deck y selecciona un icono.
 # Error message for missing deck icon
 Please_select_an_icon_655b = Selecciona un icono.
 # Button label to post a note
@@ -250,7 +250,7 @@ Reply_to_this_note_f5de = Responder a esta nota
 # Error message when reply note cannot be found
 Reply_to_unknown_note_4401 = Responder a nota desconocida
 # Fallback template for replying to user
-replying_to__user_15ab = responder a { $user }
+replying_to__user_15ab = respondiendo a { $user }
 # Template for replying to user in unknown thread
 replying_to__user__in_someone_s_thread_e148 = respondiendo a { $user } en la conversación de alguien
 # Template for replying to note in different user's thread
@@ -356,7 +356,7 @@ Your_Notifications_080d = Tus notificaciones
 # Heading for zap (tip) action
 Zap_16b4 = Zap
 # Hover text for zap button
-Zap_this_note_42b2 = Enviar zap a esta nota
+Zap_this_note_42b2 = Enviar un zap a esta nota
 
 # Pluralized strings
 
