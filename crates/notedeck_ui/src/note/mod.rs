@@ -782,6 +782,7 @@ fn render_note_actionbar(
     i18n: &mut Localization,
 ) -> egui::InnerResponse<Option<NoteAction>> {
     ui.horizontal(|ui| {
+        ui.label(RichText::new("").text_style(egui::TextStyle::Small));
         ui.set_min_height(26.0);
         ui.spacing_mut().item_spacing.x = 24.0;
 
