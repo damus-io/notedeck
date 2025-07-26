@@ -74,7 +74,6 @@ impl<'a> MentionPickerView<'a> {
                 let inner_margin_size = 8.0;
                 egui::Frame::NONE
                     .fill(ui.visuals().panel_fill)
-                    .inner_margin(inner_margin_size)
                     .show(ui, |ui| {
                         let width = rect.width() - (2.0 * inner_margin_size);
 
