@@ -17,6 +17,7 @@ pub enum SettingsAction {
     SetTheme(ThemePreference),
     SetShowNoteClient(ShowNoteClientOptions),
     SetLocale(LanguageIdentifier),
+    SetShowFullDate(bool),
     OpenRelays,
     OpenCacheFolder,
     ClearCacheFolder,
@@ -39,6 +40,10 @@ impl SettingsAction {
             }
             SettingsAction::SetZoom(zoom_level) => {
                 ctx.set_zoom_factor(zoom_level);
+            }
+            SettingsAction::SetShowFullDate(show_full_date) => {
+                app.note_options
+                    .set(NoteOptions::ShowFullDate, show_full_date);
             }
             SettingsAction::SetShowNoteClient(newvalue) => match newvalue {
                 ShowNoteClientOptions::Hide => {
@@ -79,27 +84,30 @@ impl SettingsAction {
 }
 
 pub struct SettingsView<'a> {
+    i18n: &'a mut Localization,
+    img_cache: &'a mut Images,
     theme: &'a mut String,
     selected_language: &'a mut String,
     show_note_client: &'a mut ShowNoteClientOptions,
-    i18n: &'a mut Localization,
-    img_cache: &'a mut Images,
+    show_full_date: &'a mut bool,
 }
 
 impl<'a> SettingsView<'a> {
     pub fn new(
+        i18n: &'a mut Localization,
         img_cache: &'a mut Images,
         selected_language: &'a mut String,
         theme: &'a mut String,
         show_note_client: &'a mut ShowNoteClientOptions,
-        i18n: &'a mut Localization,
+        show_full_date: &'a mut bool,
     ) -> Self {
         Self {
-            show_note_client,
-            theme,
-            img_cache,
-            selected_language,
             i18n,
+            img_cache,
+            theme,
+            show_note_client,
+            selected_language,
+            show_full_date,
         }
     }
 
@@ -362,14 +370,30 @@ impl<'a> SettingsView<'a> {
                         ui.label(
                             RichText::new(tr!(
                                             self.i18n,
-                                            "Others",
-                                         "Label for others settings section"
+                                            "Note options",
+                                         "Label for note options settings section"
                                         ))
                                 .text_style(NotedeckTextStyle::Body.text_style()),
                         );
                         ui.separator();
                         ui.vertical(|ui| {
                             ui.spacing_mut().item_spacing = vec2(10.0, 10.0);
+
+                        ui.horizontal(|ui| {
+                                ui.label(RichText::new(
+                                    tr!(
+                                            self.i18n,
+                                            "Show full date on notes",
+                                            "Label for Show full date on notes, others settings section"
+                                        ))
+                                        .text_style(NotedeckTextStyle::Small.text_style()));
+
+                                        if ui
+                                            .toggle_value(self.show_full_date, RichText::new(tr!(self.i18n, "ON", "ON" ))
+                                            .text_style(NotedeckTextStyle::Small.text_style())).changed() {
+                                            action = Some(SettingsAction::SetShowFullDate(*self.show_full_date));
+                                        }
+                            });
 
                             ui.horizontal_wrapped(|ui| {
                                 ui.label(

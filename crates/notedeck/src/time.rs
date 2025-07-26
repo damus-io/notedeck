@@ -1,4 +1,5 @@
 use crate::{tr, Localization};
+use chrono::DateTime;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 // Time duration constants in seconds
@@ -81,6 +82,14 @@ fn time_ago_between(i18n: &mut Localization, timestamp: u64, now: u64) -> String
     } else {
         time_str
     }
+}
+
+pub fn time_format(_i18n: &mut Localization, timestamp: i64) -> String {
+    // TODO: format this using the selected locale
+    DateTime::from_timestamp(timestamp, 0)
+        .unwrap()
+        .format("%Y-%m-%d %H:%M:%S")
+        .to_string()
 }
 
 pub fn time_ago_since(i18n: &mut Localization, timestamp: u64) -> String {

@@ -582,6 +582,13 @@ fn render_nav_body(
             .map(RenderNavAction::RelayAction),
 
         Route::Settings => {
+            let mut selected_language = ctx.i18n.get_current_locale().to_string();
+            let mut theme: String = (if ui.visuals().dark_mode {
+                "Dark"
+            } else {
+                "Light"
+            })
+            .into();
             let mut show_note_client = if app.note_options.contains(NoteOptions::ShowNoteClientTop)
             {
                 ShowNoteClientOptions::Top
@@ -590,22 +597,15 @@ fn render_nav_body(
             } else {
                 ShowNoteClientOptions::Hide
             };
-
-            let mut theme: String = (if ui.visuals().dark_mode {
-                "Dark"
-            } else {
-                "Light"
-            })
-            .into();
-
-            let mut selected_language: String = ctx.i18n.get_current_locale().to_string();
+            let mut show_full_date = app.note_options.contains(NoteOptions::ShowFullDate);
 
             SettingsView::new(
+                ctx.i18n,
                 ctx.img_cache,
                 &mut selected_language,
                 &mut theme,
                 &mut show_note_client,
-                ctx.i18n,
+                &mut show_full_date,
             )
             .ui(ui)
             .map(RenderNavAction::SettingsAction)
