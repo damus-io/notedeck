@@ -11,19 +11,21 @@ use notedeck_ui::{
 };
 use tracing::error;
 
-pub struct SearchResultsView<'a> {
+/// Displays user profiles for the user to pick from.
+/// Useful for manually typing a username and selecting the profile desired
+pub struct MentionPickerView<'a> {
     ndb: &'a Ndb,
     txn: &'a Transaction,
     img_cache: &'a mut Images,
     results: &'a Vec<&'a [u8; 32]>,
 }
 
-pub enum SearchResultsResponse {
+pub enum MentionPickerResponse {
     SelectResult(Option<usize>),
     DeleteMention,
 }
 
-impl<'a> SearchResultsView<'a> {
+impl<'a> MentionPickerView<'a> {
     pub fn new(
         img_cache: &'a mut Images,
         ndb: &'a Ndb,
@@ -38,8 +40,8 @@ impl<'a> SearchResultsView<'a> {
         }
     }
 
-    fn show(&mut self, ui: &mut egui::Ui, width: f32) -> SearchResultsResponse {
-        let mut search_results_selection = None;
+    fn show(&mut self, ui: &mut egui::Ui, width: f32) -> MentionPickerResponse {
+        let mut selection = None;
         ui.vertical(|ui| {
             for (i, res) in self.results.iter().enumerate() {
                 let profile = match self.ndb.get_profile_by_pubkey(self.txn, res) {
@@ -54,16 +56,16 @@ impl<'a> SearchResultsView<'a> {
                     .add(user_result(&profile, self.img_cache, i, width))
                     .clicked()
                 {
-                    search_results_selection = Some(i)
+                    selection = Some(i)
                 }
             }
         });
 
-        SearchResultsResponse::SelectResult(search_results_selection)
+        MentionPickerResponse::SelectResult(selection)
     }
 
-    pub fn show_in_rect(&mut self, rect: egui::Rect, ui: &mut egui::Ui) -> SearchResultsResponse {
-        let widget_id = ui.id().with("search_results");
+    pub fn show_in_rect(&mut self, rect: egui::Rect, ui: &mut egui::Ui) -> MentionPickerResponse {
+        let widget_id = ui.id().with("mention_results");
         let area_resp = egui::Area::new(widget_id)
             .order(egui::Order::Foreground)
             .fixed_pos(rect.left_top())
@@ -104,7 +106,7 @@ impl<'a> SearchResultsView<'a> {
                         ui.advance_cursor_after_rect(rect);
 
                         if close_button_resp {
-                            SearchResultsResponse::DeleteMention
+                            MentionPickerResponse::DeleteMention
                         } else {
                             scroll_resp.inner
                         }

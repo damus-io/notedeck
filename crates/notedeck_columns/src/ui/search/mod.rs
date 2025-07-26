@@ -19,7 +19,7 @@ mod state;
 
 pub use state::{FocusState, SearchQueryState, SearchState};
 
-use super::search_results::{SearchResultsResponse, SearchResultsView};
+use super::mentions_picker::{MentionPickerResponse, MentionPickerView};
 
 pub struct SearchView<'a, 'd> {
     query: &'a mut SearchQueryState,
@@ -76,7 +76,7 @@ impl<'a, 'd> SearchView<'a, 'd> {
                     break 's;
                 };
 
-                let search_res = SearchResultsView::new(
+                let search_res = MentionPickerView::new(
                     self.note_context.img_cache,
                     self.note_context.ndb,
                     self.txn,
@@ -85,7 +85,7 @@ impl<'a, 'd> SearchView<'a, 'd> {
                 .show_in_rect(ui.available_rect_before_wrap(), ui);
 
                 search_action = match search_res {
-                    SearchResultsResponse::SelectResult(Some(index)) => {
+                    MentionPickerResponse::SelectResult(Some(index)) => {
                         let Some(pk_bytes) = results.get(index) else {
                             break 's;
                         };
@@ -103,8 +103,8 @@ impl<'a, 'd> SearchView<'a, 'd> {
                             new_search_text: format!("@{username}"),
                         })
                     }
-                    SearchResultsResponse::DeleteMention => Some(SearchAction::CloseMention),
-                    SearchResultsResponse::SelectResult(None) => break 's,
+                    MentionPickerResponse::DeleteMention => Some(SearchAction::CloseMention),
+                    MentionPickerResponse::SelectResult(None) => break 's,
                 };
             }
             SearchState::PerformSearch(search_type) => {
