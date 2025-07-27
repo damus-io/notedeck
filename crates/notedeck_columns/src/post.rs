@@ -363,8 +363,10 @@ impl PostBuffer {
         let text_chars_inserted = self.insert_text(full_name, text_start_index);
         self.select_full_mention(mention_key, pk);
 
+        let space_chars_inserted = self.insert_text(" ", text_start_index + text_chars_inserted);
+
         Some(MentionSelectedResponse {
-            next_cursor_index: text_start_index + text_chars_inserted,
+            next_cursor_index: text_start_index + text_chars_inserted + space_chars_inserted,
         })
     }
 
@@ -955,9 +957,9 @@ mod tests {
         assert_eq!(buf.mentions.len(), 1);
         assert_eq!(buf.mentions.get(&0).unwrap().bounds(), 0..3);
         buf.select_mention_and_replace_name(0, "jb55", JB55());
-        assert_eq!(buf.as_str(), "@jb55");
+        assert_eq!(buf.as_str(), "@jb55 ");
 
-        buf.insert_text(" test", 5);
+        buf.insert_text("test", 6);
         assert_eq!(buf.as_str(), "@jb55 test");
 
         assert_eq!(buf.mentions.len(), 1);
@@ -1239,16 +1241,20 @@ mod tests {
 
         buf.insert_text("@jb", 0);
         buf.select_mention_and_replace_name(0, "jb55", JB55());
-        buf.insert_text(" test ", 5);
+        buf.insert_text("test ", 6);
+        assert_eq!(buf.as_str(), "@jb55 test ");
         buf.insert_text("@kernel", 11);
         buf.select_mention_and_replace_name(1, "KernelKind", KK());
-        buf.insert_text(" test", 22);
+        assert_eq!(buf.as_str(), "@jb55 test @KernelKind ");
 
+        buf.insert_text("test", 23);
         assert_eq!(buf.as_str(), "@jb55 test @KernelKind test");
+
         assert_eq!(buf.mentions.len(), 2);
 
-        buf.insert_text(" ", 5);
         buf.insert_text("@els", 6);
+        assert_eq!(buf.as_str(), "@jb55 @elstest @KernelKind test");
+
         assert_eq!(buf.mentions.len(), 3);
         assert_eq!(buf.mentions.get(&2).unwrap().bounds(), 6..10);
         buf.select_mention_and_replace_name(2, "elsat", JB55());
