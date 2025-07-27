@@ -45,57 +45,62 @@ pub(crate) fn image_carousel(
             .drag_to_scroll(false)
             .id_salt(carousel_id)
             .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    for (i, media) in medias.iter().enumerate() {
-                        let RenderableMedia {
-                            url,
-                            media_type,
-                            obfuscation_type: blur_type,
-                        } = media;
+                let response = ui
+                    .horizontal(|ui| {
+                        let spacing = ui.spacing_mut();
+                        spacing.item_spacing.x = 8.0;
+                        for (i, media) in medias.iter().enumerate() {
+                            let RenderableMedia {
+                                url,
+                                media_type,
+                                obfuscation_type: blur_type,
+                            } = media;
 
-                        let cache = match media_type {
-                            MediaCacheType::Image => &mut img_cache.static_imgs,
-                            MediaCacheType::Gif => &mut img_cache.gifs,
-                        };
+                            let cache = match media_type {
+                                MediaCacheType::Image => &mut img_cache.static_imgs,
+                                MediaCacheType::Gif => &mut img_cache.gifs,
+                            };
 
-                        let media_state = get_content_media_render_state(
-                            ui,
-                            job_pool,
-                            jobs,
-                            trusted_media,
-                            height,
-                            &mut cache.textures_cache,
-                            url,
-                            *media_type,
-                            &cache.cache_dir,
-                            blur_type.clone(),
-                        );
-
-                        if let Some(cur_action) = render_media(
-                            ui,
-                            &mut img_cache.gif_states,
-                            media_state,
-                            url,
-                            height,
-                            i18n,
-                        ) {
-                            // clicked the media, lets set the active index
-                            if let MediaUIAction::Clicked = cur_action {
-                                set_show_popup(ui, popup_id(carousel_id), true);
-                                set_selected_index(ui, selection_id(carousel_id), i);
-                            }
-
-                            action = cur_action.to_media_action(
-                                ui.ctx(),
+                            let media_state = get_content_media_render_state(
+                                ui,
+                                job_pool,
+                                jobs,
+                                trusted_media,
+                                height,
+                                &mut cache.textures_cache,
                                 url,
                                 *media_type,
-                                cache,
-                                ImageType::Content(Some((width as u32, height as u32))),
+                                &cache.cache_dir,
+                                blur_type.clone(),
                             );
+
+                            if let Some(cur_action) = render_media(
+                                ui,
+                                &mut img_cache.gif_states,
+                                media_state,
+                                url,
+                                height,
+                                i18n,
+                            ) {
+                                // clicked the media, lets set the active index
+                                if let MediaUIAction::Clicked = cur_action {
+                                    set_show_popup(ui, popup_id(carousel_id), true);
+                                    set_selected_index(ui, selection_id(carousel_id), i);
+                                }
+
+                                action = cur_action.to_media_action(
+                                    ui.ctx(),
+                                    url,
+                                    *media_type,
+                                    cache,
+                                    ImageType::Content(Some((width as u32, height as u32))),
+                                );
+                            }
                         }
-                    }
-                })
-                .response
+                    })
+                    .response;
+                ui.add_space(8.0);
+                response
             })
             .inner
     });
