@@ -5,7 +5,6 @@ use crate::post::{downcast_post_buffer, MentionType, NewPost};
 use crate::ui::mentions_picker::MentionPickerView;
 use crate::ui::{self, Preview, PreviewConfig};
 use crate::Result;
-
 use egui::{
     text::{CCursorRange, LayoutJob},
     text_edit::TextEditOutput,
@@ -16,18 +15,22 @@ use enostr::{FilledKeypair, FullKeypair, NoteId, Pubkey, RelayPool};
 use nostrdb::{Ndb, Transaction};
 use notedeck::media::gif::ensure_latest_texture;
 use notedeck::{get_render_state, JobsCache, PixelDimensions, RenderState};
-
+use notedeck::{
+    name::get_display_name, supported_mime_hosted_at_url, tr, Localization, NoteAction, NoteContext,
+};
 use notedeck_ui::{
     app_images,
     context_menu::{input_context, PasteBehavior},
     note::render_note_preview,
     NoteOptions, ProfilePic,
 };
-
-use notedeck::{
-    name::get_display_name, supported_mime_hosted_at_url, tr, Localization, NoteAction, NoteContext,
-};
 use tracing::error;
+#[cfg(target_os = "android")]
+use {
+    crate::media_upload::{nostrbuild_nip96_upload_bytes, MediaPath},
+    notedeck::platform::android::try_open_file_picker,
+    notedeck::platform::get_next_selected_file,
+};
 
 pub struct PostView<'a, 'd> {
     note_context: &'a mut NoteContext<'d>,
@@ -327,6 +330,28 @@ impl<'a, 'd> PostView<'a, 'd> {
     }
 
     pub fn ui(&mut self, txn: &Transaction, ui: &mut egui::Ui) -> PostResponse {
+        #[cfg(any(target_os = "android"))]
+        {
+            while let Some((display_name, content)) = get_next_selected_file() {
+                use std::path::PathBuf;
+
+                match MediaPath::new(PathBuf::from(display_name)) {
+                    Ok(media_path) => {
+                        let promise = nostrbuild_nip96_upload_bytes(
+                            self.poster.secret_key.secret_bytes(),
+                            media_path,
+                            content,
+                        );
+                        self.draft.uploading_media.push(promise);
+                    }
+                    Err(e) => {
+                        error!("{e}");
+                        self.draft.upload_errors.push(e.to_string());
+                    }
+                }
+            }
+        }
+
         ScrollArea::vertical()
             .id_salt(PostView::scroll_id())
             .show(ui, |ui| self.ui_no_scroll(txn, ui))
@@ -521,6 +546,10 @@ impl<'a, 'd> PostView<'a, 'd> {
                         }
                     }
                 }
+            }
+            #[cfg(any(target_os = "android"))]
+            {
+                try_open_file_picker();
             }
         }
     }

@@ -55,6 +55,8 @@ tokio = { workspace = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = { workspace = true }
+crossbeam-channel = "0.5"
+ndk-context = "0.1"
 
 [features]
 puffin = ["puffin_egui", "dep:puffin"]

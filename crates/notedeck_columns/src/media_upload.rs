@@ -172,6 +172,37 @@ pub fn nostrbuild_nip96_upload(
     promise
 }
 
+#[cfg(any(target_os = "android"))]
+pub fn nostrbuild_nip96_upload_bytes(
+    seckey: [u8; 32],
+    media_path: MediaPath,
+    file_bytes: Vec<i8>,
+) -> Promise<Result<Nip94Event, Error>> {
+    let (sender, promise) = Promise::new();
+    std::thread::spawn(move || {
+        let upload_url = match get_nostr_build_upload_url().block_and_take() {
+            Ok(url) => url,
+            Err(e) => {
+                sender.send(Err(Error::Generic(format!(
+                    "could not get nostrbuild upload url: {e}"
+                ))));
+                return;
+            }
+        };
+
+        let res = internal_nip96_upload(
+            seckey,
+            upload_url,
+            media_path,
+            file_bytes.into_iter().map(|b| b as u8).collect(),
+        )
+        .block_and_take();
+
+        sender.send(res);
+    });
+    promise
+}
+
 fn internal_nip96_upload(
     seckey: [u8; 32],
     upload_url: String,
