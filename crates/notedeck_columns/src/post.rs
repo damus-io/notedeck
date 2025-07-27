@@ -1,4 +1,8 @@
-use egui::{text::LayoutJob, TextBuffer, TextFormat};
+use egui::{
+    text::{CCursor, CCursorRange, LayoutJob},
+    text_edit::TextEditOutput,
+    TextBuffer, TextEdit, TextFormat,
+};
 use enostr::{FullKeypair, Pubkey};
 use nostrdb::{Note, NoteBuilder, NoteReply};
 use std::{
@@ -270,6 +274,36 @@ impl Default for PostBuffer {
     }
 }
 
+/// New cursor index (indexed by characters) after operation is performed
+#[must_use = "must call MentionSelectedResponse::process"]
+pub struct MentionSelectedResponse {
+    pub next_cursor_index: usize,
+}
+
+impl MentionSelectedResponse {
+    pub fn process(&self, ctx: &egui::Context, text_edit_output: &TextEditOutput) {
+        let text_edit_id = text_edit_output.response.id;
+        let Some(mut before_state) = TextEdit::load_state(ctx, text_edit_id) else {
+            return;
+        };
+
+        let mut new_cursor = text_edit_output
+            .galley
+            .from_ccursor(CCursor::new(self.next_cursor_index));
+        new_cursor.ccursor.prefer_next_row = true;
+
+        before_state
+            .cursor
+            .set_char_range(Some(CCursorRange::one(CCursor::new(
+                self.next_cursor_index,
+            ))));
+
+        ctx.memory_mut(|mem| mem.request_focus(text_edit_id));
+
+        TextEdit::store_state(ctx, text_edit_id, before_state);
+    }
+}
+
 impl PostBuffer {
     pub fn get_new_mentions_key(&mut self) -> usize {
         let prev = self.mentions_key;
@@ -319,15 +353,19 @@ impl PostBuffer {
         mention_key: usize,
         full_name: &str,
         pk: Pubkey,
-    ) {
-        if let Some(info) = self.mentions.get(&mention_key) {
-            let text_start_index = info.start_index + 1;
-            self.delete_char_range(text_start_index..info.end_index);
-            self.insert_text(full_name, text_start_index);
-            self.select_full_mention(mention_key, pk);
-        } else {
+    ) -> Option<MentionSelectedResponse> {
+        let Some(info) = self.mentions.get(&mention_key) else {
             error!("Error selecting mention for index: {mention_key}. Have the following mentions: {:?}", self.mentions);
-        }
+            return None;
+        };
+        let text_start_index = info.start_index + 1; // increment by one to exclude the mention indicator, '@'
+        self.delete_char_range(text_start_index..info.end_index);
+        let text_chars_inserted = self.insert_text(full_name, text_start_index);
+        self.select_full_mention(mention_key, pk);
+
+        Some(MentionSelectedResponse {
+            next_cursor_index: text_start_index + text_chars_inserted,
+        })
     }
 
     pub fn delete_mention(&mut self, mention_key: usize) {
