@@ -69,7 +69,13 @@ pub async fn android_main(app: AndroidApp) {
         Box::new(move |cc| {
             let ctx = &cc.egui_ctx;
             let mut notedeck = Notedeck::new(ctx, path, &app_args);
-            setup_chrome(ctx, &notedeck.args(), notedeck.theme());
+            setup_chrome(
+                ctx,
+                &notedeck.args(),
+                notedeck.theme(),
+                notedeck.note_body_font_size(),
+                notedeck.zoom_factor(),
+            );
 
             let context = &mut notedeck.app_context();
             let dave = Dave::new(cc.wgpu_render_state.as_ref());

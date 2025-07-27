@@ -452,11 +452,11 @@ impl Damus {
             //    cache.add_deck_default(*pk);
             //}
         };
-        let settings_handler = &app_context.settings_handler;
+        let settings = &app_context.settings;
 
         let support = Support::new(app_context.path);
 
-        let note_options = get_note_options(parsed_args, settings_handler);
+        let note_options = get_note_options(parsed_args, settings);
 
         let jobs = JobsCache::default();
 

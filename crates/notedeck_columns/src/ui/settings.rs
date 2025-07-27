@@ -1,11 +1,20 @@
-use egui::{vec2, Button, Color32, ComboBox, Frame, Margin, RichText, ScrollArea, ThemePreference};
-use notedeck::{
-    tr, Images, LanguageIdentifier, Localization, NotedeckTextStyle, Settings, SettingsHandler,
+use egui::{
+    vec2, Button, Color32, ComboBox, FontId, Frame, Margin, RichText, ScrollArea, ThemePreference,
 };
-use notedeck_ui::NoteOptions;
+use enostr::NoteId;
+use nostrdb::Transaction;
+use notedeck::{
+    tr,
+    ui::{is_narrow, richtext_small},
+    Images, LanguageIdentifier, Localization, NoteContext, NotedeckTextStyle, Settings,
+    SettingsHandler, DEFAULT_NOTE_BODY_FONT_SIZE,
+};
+use notedeck_ui::{jobs::JobsCache, NoteOptions, NoteView};
 use strum::Display;
 
 use crate::{nav::RouterAction, Damus, Route};
+
+const PREVIEW_NOTE_ID: &str = "note1edjc8ggj07hwv77g2405uh6j2jkk5aud22gktxrvc2wnre4vdwgqzlv2gw";
 
 const THEME_LIGHT: &str = "Light";
 const THEME_DARK: &str = "Dark";
@@ -88,6 +97,7 @@ pub enum SettingsAction {
     SetShowSourceClient(ShowSourceClientOption),
     SetLocale(LanguageIdentifier),
     SetRepliestNewestFirst(bool),
+    SetNoteBodyFontSize(f32),
     OpenRelays,
     OpenCacheFolder,
     ClearCacheFolder,
@@ -97,7 +107,7 @@ impl SettingsAction {
     pub fn process_settings_action<'a>(
         self,
         app: &mut Damus,
-        settings_handler: &'a mut SettingsHandler,
+        settings: &'a mut SettingsHandler,
         i18n: &'a mut Localization,
         img_cache: &mut Images,
         ctx: &egui::Context,
@@ -110,26 +120,25 @@ impl SettingsAction {
             }
             Self::SetZoomFactor(zoom_factor) => {
                 ctx.set_zoom_factor(zoom_factor);
-                settings_handler.set_zoom_factor(zoom_factor);
+                settings.set_zoom_factor(zoom_factor);
             }
             Self::SetShowSourceClient(option) => {
                 option.set_note_options(&mut app.note_options);
 
-                settings_handler.set_show_source_client(option);
+                settings.set_show_source_client(option);
             }
             Self::SetTheme(theme) => {
                 ctx.set_theme(theme);
-                settings_handler.set_theme(theme);
+                settings.set_theme(theme);
             }
             Self::SetLocale(language) => {
                 if i18n.set_locale(language.clone()).is_ok() {
-                    settings_handler.set_locale(language.to_string());
+                    settings.set_locale(language.to_string());
                 }
             }
             Self::SetRepliestNewestFirst(value) => {
                 app.note_options.set(NoteOptions::RepliesNewestFirst, value);
-                settings_handler.set_show_replies_newest_first(value);
-                settings_handler.save();
+                settings.set_show_replies_newest_first(value);
             }
             Self::OpenCacheFolder => {
                 use opener;
@@ -138,20 +147,26 @@ impl SettingsAction {
             Self::ClearCacheFolder => {
                 let _ = img_cache.clear_folder_contents();
             }
+            Self::SetNoteBodyFontSize(size) => {
+                let mut style = (*ctx.style()).clone();
+                style.text_styles.insert(
+                    NotedeckTextStyle::NoteBody.text_style(),
+                    FontId::proportional(size),
+                );
+                ctx.set_style(style);
+
+                settings.set_note_body_font_size(size);
+            }
         }
-        settings_handler.save();
         route_action
     }
 }
 
 pub struct SettingsView<'a> {
     settings: &'a mut Settings,
-    i18n: &'a mut Localization,
-    img_cache: &'a mut Images,
-}
-
-fn small_richtext(i18n: &'_ mut Localization, text: &str, comment: &str) -> RichText {
-    RichText::new(tr!(i18n, text, comment)).text_style(NotedeckTextStyle::Small.text_style())
+    note_context: &'a mut NoteContext<'a>,
+    note_options: &'a mut NoteOptions,
+    jobs: &'a mut JobsCache,
 }
 
 fn settings_group<S>(ui: &mut egui::Ui, title: S, contents: impl FnOnce(&mut egui::Ui))
@@ -175,33 +190,92 @@ where
 
 impl<'a> SettingsView<'a> {
     pub fn new(
-        i18n: &'a mut Localization,
-        img_cache: &'a mut Images,
         settings: &'a mut Settings,
+        note_context: &'a mut NoteContext<'a>,
+        note_options: &'a mut NoteOptions,
+        jobs: &'a mut JobsCache,
     ) -> Self {
         Self {
             settings,
-            img_cache,
-            i18n,
+            note_context,
+            note_options,
+            jobs,
         }
     }
 
     pub fn appearance_section(&mut self, ui: &mut egui::Ui) -> Option<SettingsAction> {
         let mut action = None;
         let title = tr!(
-            self.i18n,
+            self.note_context.i18n,
             "Appearance",
             "Label for appearance settings section",
         );
         settings_group(ui, title, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(richtext_small(tr!(
+                    self.note_context.i18n,
+                    "Font size:",
+                    "Label for font size, Appearance settings section",
+                )));
+
+                if ui
+                    .add(
+                        egui::Slider::new(&mut self.settings.note_body_font_size, 8.0..=32.0)
+                            .text(""),
+                    )
+                    .changed()
+                {
+                    action = Some(SettingsAction::SetNoteBodyFontSize(
+                        self.settings.note_body_font_size,
+                    ));
+                };
+
+                if ui
+                    .button(richtext_small(tr!(
+                        self.note_context.i18n,
+                        "Reset",
+                        "Label for reset note body font size, Appearance settings section",
+                    )))
+                    .clicked()
+                {
+                    action = Some(SettingsAction::SetNoteBodyFontSize(
+                        DEFAULT_NOTE_BODY_FONT_SIZE,
+                    ));
+                }
+            });
+
+            let txn = Transaction::new(self.note_context.ndb).unwrap();
+            if let Some(note_id) = NoteId::from_bech(PREVIEW_NOTE_ID) {
+                if let Ok(preview_note) =
+                    self.note_context.ndb.get_note_by_id(&txn, &note_id.bytes())
+                {
+                    notedeck_ui::padding(8.0, ui, |ui| {
+                        if is_narrow(ui.ctx()) {
+                            ui.set_max_width(ui.available_width());
+                        }
+
+                        NoteView::new(
+                            self.note_context,
+                            &preview_note,
+                            self.note_options.clone(),
+                            self.jobs,
+                        )
+                        .actionbar(false)
+                        .options_button(false)
+                        .show(ui);
+                    });
+                    ui.separator();
+                }
+            }
+
             let current_zoom = ui.ctx().zoom_factor();
 
             ui.horizontal(|ui| {
-                ui.label(small_richtext(
-                    self.i18n,
+                ui.label(richtext_small(tr!(
+                    self.note_context.i18n,
                     "Zoom Level:",
                     "Label for zoom level, Appearance settings section",
-                ));
+                )));
 
                 let min_reached = current_zoom <= MIN_ZOOM;
                 let max_reached = current_zoom >= MAX_ZOOM;
@@ -238,11 +312,11 @@ impl<'a> SettingsView<'a> {
                 };
 
                 if ui
-                    .button(small_richtext(
-                        self.i18n,
+                    .button(richtext_small(tr!(
+                        self.note_context.i18n,
                         "Reset",
                         "Label for reset zoom level, Appearance settings section",
-                    ))
+                    )))
                     .clicked()
                 {
                     action = Some(SettingsAction::SetZoomFactor(RESET_ZOOM));
@@ -250,18 +324,23 @@ impl<'a> SettingsView<'a> {
             });
 
             ui.horizontal(|ui| {
-                ui.label(small_richtext(
-                    self.i18n,
+                ui.label(richtext_small(tr!(
+                    self.note_context.i18n,
                     "Language:",
                     "Label for language, Appearance settings section",
-                ));
+                )));
 
-                let available_locales: Vec<_> =
-                    self.i18n.get_available_locales().iter().cloned().collect();
+                let available_locales: Vec<_> = self
+                    .note_context
+                    .i18n
+                    .get_available_locales()
+                    .iter()
+                    .cloned()
+                    .collect();
 
                 ComboBox::from_label("")
                     .selected_text(tr!(
-                        self.i18n,
+                        self.note_context.i18n,
                         &self.settings.locale.clone(),
                         &format!("Display name for {} language", self.settings.locale.clone())
                     ))
@@ -269,7 +348,7 @@ impl<'a> SettingsView<'a> {
                         for lang in available_locales {
                             let lang_str = lang.to_string();
                             let display_name = tr!(
-                                self.i18n,
+                                self.note_context.i18n,
                                 &lang_str.clone(),
                                 &format!("Display name for {} language", lang_str.clone())
                             );
@@ -284,21 +363,21 @@ impl<'a> SettingsView<'a> {
             });
 
             ui.horizontal(|ui| {
-                ui.label(small_richtext(
-                    self.i18n,
+                ui.label(richtext_small(tr!(
+                    self.note_context.i18n,
                     "Theme:",
                     "Label for theme, Appearance settings section",
-                ));
+                )));
 
                 if ui
                     .selectable_value(
                         &mut self.settings.theme,
                         ThemePreference::Light,
-                        small_richtext(
-                            self.i18n,
-                            THEME_LIGHT.into(),
+                        richtext_small(tr!(
+                            self.note_context.i18n,
+                            THEME_LIGHT,
                             "Label for Theme Light, Appearance settings section",
-                        ),
+                        )),
                     )
                     .clicked()
                 {
@@ -309,11 +388,11 @@ impl<'a> SettingsView<'a> {
                     .selectable_value(
                         &mut self.settings.theme,
                         ThemePreference::Dark,
-                        small_richtext(
-                            self.i18n,
-                            THEME_DARK.into(),
+                        richtext_small(tr!(
+                            self.note_context.i18n,
+                            THEME_DARK,
                             "Label for Theme Dark, Appearance settings section",
-                        ),
+                        )),
                     )
                     .clicked()
                 {
@@ -328,18 +407,28 @@ impl<'a> SettingsView<'a> {
     pub fn storage_section(&mut self, ui: &mut egui::Ui) -> Option<SettingsAction> {
         let id = ui.id();
         let mut action: Option<SettingsAction> = None;
-        let title = tr!(self.i18n, "Storage", "Label for storage settings section");
+        let title = tr!(
+            self.note_context.i18n,
+            "Storage",
+            "Label for storage settings section"
+        );
         settings_group(ui, title, |ui| {
             ui.horizontal_wrapped(|ui| {
-                let static_imgs_size = self.img_cache.static_imgs.cache_size.lock().unwrap();
+                let static_imgs_size = self
+                    .note_context
+                    .img_cache
+                    .static_imgs
+                    .cache_size
+                    .lock()
+                    .unwrap();
 
-                let gifs_size = self.img_cache.gifs.cache_size.lock().unwrap();
+                let gifs_size = self.note_context.img_cache.gifs.cache_size.lock().unwrap();
 
                 ui.label(
                     RichText::new(format!(
                         "{} {}",
                         tr!(
-                            self.i18n,
+                            self.note_context.i18n,
                             "Image cache size:",
                             "Label for Image cache size, Storage settings section"
                         ),
@@ -356,22 +445,22 @@ impl<'a> SettingsView<'a> {
 
                 if !notedeck::ui::is_compiled_as_mobile()
                     && ui
-                        .button(small_richtext(
-                            self.i18n,
+                        .button(richtext_small(tr!(
+                            self.note_context.i18n,
                             "View folder",
                             "Label for view folder button, Storage settings section",
-                        ))
+                        )))
                         .clicked()
                 {
                     action = Some(SettingsAction::OpenCacheFolder);
                 }
 
                 let clearcache_resp = ui.button(
-                    small_richtext(
-                        self.i18n,
+                    richtext_small(tr!(
+                        self.note_context.i18n,
                         "Clear cache",
                         "Label for clear cache button, Storage settings section",
-                    )
+                    ))
                     .color(Color32::LIGHT_RED),
                 );
 
@@ -384,7 +473,7 @@ impl<'a> SettingsView<'a> {
                     let mut confirm_pressed = false;
                     clearcache_resp.show_tooltip_ui(|ui| {
                         let confirm_resp = ui.button(tr!(
-                            self.i18n,
+                            self.note_context.i18n,
                             "Confirm",
                             "Label for confirm clear cache, Storage settings section"
                         ));
@@ -395,7 +484,7 @@ impl<'a> SettingsView<'a> {
                         if confirm_resp.clicked()
                             || ui
                                 .button(tr!(
-                                    self.i18n,
+                                    self.note_context.i18n,
                                     "Cancel",
                                     "Label for cancel clear cache, Storage settings section"
                                 ))
@@ -420,19 +509,23 @@ impl<'a> SettingsView<'a> {
     fn other_options_section(&mut self, ui: &mut egui::Ui) -> Option<SettingsAction> {
         let mut action = None;
 
-        let title = tr!(self.i18n, "Others", "Label for others settings section");
+        let title = tr!(
+            self.note_context.i18n,
+            "Others",
+            "Label for others settings section"
+        );
         settings_group(ui, title, |ui| {
             ui.horizontal(|ui| {
-                ui.label(small_richtext(
-                    self.i18n,
+                ui.label(richtext_small(tr!(
+                    self.note_context.i18n,
                     "Sort replies newest first",
                     "Label for Sort replies newest first, others settings section",
-                ));
+                )));
 
                 if ui
                     .toggle_value(
                         &mut self.settings.show_replies_newest_first,
-                        RichText::new(tr!(self.i18n, "ON", "ON"))
+                        RichText::new(tr!(self.note_context.i18n, "ON", "ON"))
                             .text_style(NotedeckTextStyle::Small.text_style()),
                     )
                     .changed()
@@ -444,18 +537,18 @@ impl<'a> SettingsView<'a> {
             });
 
             ui.horizontal_wrapped(|ui| {
-                ui.label(small_richtext(
-                    self.i18n,
+                ui.label(richtext_small(tr!(
+                    self.note_context.i18n,
                     "Source client",
                     "Label for Source client, others settings section",
-                ));
+                )));
 
                 for option in [
                     ShowSourceClientOption::Hide,
                     ShowSourceClientOption::Top,
                     ShowSourceClientOption::Bottom,
                 ] {
-                    let label = option.clone().label(self.i18n);
+                    let label = option.clone().label(self.note_context.i18n);
                     let mut current: ShowSourceClientOption =
                         self.settings.show_source_client.clone().into();
 
@@ -482,11 +575,11 @@ impl<'a> SettingsView<'a> {
         if ui
             .add_sized(
                 [ui.available_width(), 30.0],
-                Button::new(small_richtext(
-                    self.i18n,
+                Button::new(richtext_small(tr!(
+                    self.note_context.i18n,
                     "Configure relays",
                     "Label for configure relays, settings section",
-                )),
+                ))),
             )
             .clicked()
         {

@@ -98,7 +98,13 @@ async fn main() {
             let columns = Damus::new(&mut notedeck.app_context(), &args);
             let dave = Dave::new(cc.wgpu_render_state.as_ref());
 
-            setup_chrome(ctx, notedeck.args(), notedeck.theme());
+            setup_chrome(
+                ctx,
+                notedeck.args(),
+                notedeck.theme(),
+                notedeck.note_body_font_size(),
+                notedeck.zoom_factor(),
+            );
 
             // ensure we recognized all the arguments
             let completely_unrecognized: Vec<String> = notedeck

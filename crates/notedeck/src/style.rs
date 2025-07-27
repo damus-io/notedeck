@@ -15,6 +15,7 @@ pub enum NotedeckTextStyle {
     Button,
     Small,
     Tiny,
+    NoteBody,
 }
 
 impl NotedeckTextStyle {
@@ -29,6 +30,7 @@ impl NotedeckTextStyle {
             Self::Button => TextStyle::Button,
             Self::Small => TextStyle::Small,
             Self::Tiny => TextStyle::Name("Tiny".into()),
+            Self::NoteBody => TextStyle::Name("NoteBody".into()),
         }
     }
 
@@ -43,6 +45,7 @@ impl NotedeckTextStyle {
             Self::Button => FontFamily::Proportional,
             Self::Small => FontFamily::Proportional,
             Self::Tiny => FontFamily::Proportional,
+            Self::NoteBody => FontFamily::Proportional,
         }
     }
 
