@@ -51,6 +51,7 @@ bitflags = { workspace = true }
 regex = "1"
 chrono = { workspace = true }
 indexmap = {workspace = true}
+crossbeam-channel = "0.5"
 
 [dev-dependencies]
 tempfile = { workspace = true }
@@ -59,6 +60,7 @@ tokio = { workspace = true }
 [target.'cfg(target_os = "android")'.dependencies]
 jni = { workspace = true }
 android-activity = { workspace = true }
+ndk-context = "0.1"
 
 [features]
 puffin = ["puffin_egui", "dep:puffin"]

@@ -1,5 +1,12 @@
+use crate::{platform::file::SelectedMedia, Error};
+
 #[cfg(target_os = "android")]
 pub mod android;
+pub mod file;
+
+pub fn get_next_selected_file() -> Option<Result<SelectedMedia, Error>> {
+    file::get_next_selected_file()
+}
 
 const VIRT_HEIGHT: i32 = 400;
 

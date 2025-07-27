@@ -8,12 +8,11 @@ use notedeck::Notedeck;
 
 #[no_mangle]
 #[tokio::main]
-pub async fn android_main(app: AndroidApp) {
+pub async fn android_main(android_app: AndroidApp) {
     //use tracing_logcat::{LogcatMakeWriter, LogcatTag};
     use tracing_subscriber::{prelude::*, EnvFilter};
 
     std::env::set_var("RUST_BACKTRACE", "full");
-    //std::env::set_var("DAVE_ENDPOINT", "http://ollama.jb55.com/v1");
     //std::env::set_var("DAVE_MODEL", "hhao/qwen2.5-coder-tools:latest");
     std::env::set_var(
         "RUST_LOG",
@@ -42,7 +41,7 @@ pub async fn android_main(app: AndroidApp) {
         .with(fmt_layer)
         .init();
 
-    let path = app.internal_data_path().expect("data path");
+    let path = android_app.internal_data_path().expect("data path");
     let mut options = eframe::NativeOptions {
         depth_buffer: 24,
         ..eframe::NativeOptions::default()
@@ -55,17 +54,18 @@ pub async fn android_main(app: AndroidApp) {
     //    builder.with_android_app(app_clone_for_event_loop);
     //}));
 
-    options.android_app = Some(app.clone());
+    options.android_app = Some(android_app.clone());
 
-    let app_args = get_app_args(app.clone());
+    let app_args = get_app_args();
 
     let _res = eframe::run_native(
         "Damus Notedeck",
         options,
         Box::new(move |cc| {
             let ctx = &cc.egui_ctx;
+
             let mut notedeck = Notedeck::new(ctx, path, &app_args);
-            notedeck.set_android_context(app.clone());
+            notedeck.set_android_context(android_app);
             notedeck.setup(ctx);
             let chrome = Chrome::new_with_apps(cc, &app_args, &mut notedeck)?;
             notedeck.set_app(chrome);
@@ -104,7 +104,7 @@ Using internal storage would be better but it seems hard to get the config file 
 the device ...
 */
 
-fn get_app_args(_app: AndroidApp) -> Vec<String> {
+fn get_app_args() -> Vec<String> {
     vec!["argv0-placeholder".to_string()]
     /*
     use serde_json::value;

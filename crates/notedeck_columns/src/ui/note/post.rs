@@ -1,11 +1,9 @@
 use crate::draft::{Draft, Drafts, MentionHint};
-#[cfg(not(target_os = "android"))]
-use crate::media_upload::{nostrbuild_nip96_upload, MediaPath};
+use crate::media_upload::nostrbuild_nip96_upload;
 use crate::post::{downcast_post_buffer, MentionType, NewPost};
 use crate::ui::mentions_picker::MentionPickerView;
 use crate::ui::{self, Preview, PreviewConfig};
 use crate::Result;
-
 use egui::{
     text::{CCursorRange, LayoutJob},
     text_edit::TextEditOutput,
@@ -16,19 +14,22 @@ use enostr::{FilledKeypair, FullKeypair, NoteId, Pubkey, RelayPool};
 use nostrdb::{Ndb, Transaction};
 use notedeck::media::gif::ensure_latest_texture;
 use notedeck::media::AnimationMode;
+#[cfg(target_os = "android")]
+use notedeck::platform::android::try_open_file_picker;
+use notedeck::platform::get_next_selected_file;
 use notedeck::{get_render_state, JobsCache, PixelDimensions, RenderState};
-
+use notedeck::{
+    name::get_display_name, supported_mime_hosted_at_url, tr, Localization, NoteAction, NoteContext,
+};
 use notedeck_ui::{
     app_images,
     context_menu::{input_context, PasteBehavior},
     note::render_note_preview,
     NoteOptions, ProfilePic,
 };
-
-use notedeck::{
-    name::get_display_name, supported_mime_hosted_at_url, tr, Localization, NoteAction, NoteContext,
-};
 use tracing::error;
+#[cfg(not(target_os = "android"))]
+use {notedeck::platform::file::emit_selected_file, notedeck::platform::file::SelectedMedia};
 
 pub struct PostView<'a, 'd> {
     note_context: &'a mut NoteContext<'d>,
@@ -341,6 +342,22 @@ impl<'a, 'd> PostView<'a, 'd> {
     }
 
     pub fn ui(&mut self, txn: &Transaction, ui: &mut egui::Ui) -> PostResponse {
+        while let Some(selected_file) = get_next_selected_file() {
+            match selected_file {
+                Ok(selected_media) => {
+                    let promise = nostrbuild_nip96_upload(
+                        self.poster.secret_key.secret_bytes(),
+                        selected_media,
+                    );
+                    self.draft.uploading_media.push(promise);
+                }
+                Err(e) => {
+                    error!("{e}");
+                    self.draft.upload_errors.push(e.to_string());
+                }
+            }
+        }
+
         ScrollArea::vertical()
             .id_salt(PostView::scroll_id())
             .show(ui, |ui| self.ui_no_scroll(txn, ui))
@@ -521,21 +538,13 @@ impl<'a, 'd> PostView<'a, 'd> {
             {
                 if let Some(files) = rfd::FileDialog::new().pick_files() {
                     for file in files {
-                        match MediaPath::new(file) {
-                            Ok(media_path) => {
-                                let promise = nostrbuild_nip96_upload(
-                                    self.poster.secret_key.secret_bytes(),
-                                    media_path,
-                                );
-                                self.draft.uploading_media.push(promise);
-                            }
-                            Err(e) => {
-                                error!("{e}");
-                                self.draft.upload_errors.push(e.to_string());
-                            }
-                        }
+                        emit_selected_file(SelectedMedia::from_path(file));
                     }
                 }
+            }
+            #[cfg(target_os = "android")]
+            {
+                try_open_file_picker();
             }
         }
     }

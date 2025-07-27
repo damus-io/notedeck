@@ -10,6 +10,10 @@ description = "A tweetdeck-style notedeck app"
 [lib]
 crate-type = ["lib", "cdylib"]
 
+[target.'cfg(target_os = "android")'.dependencies]
+jni = { workspace = true }
+ndk-context = "0.1"
+
 [dependencies]
 opener = { workspace = true }
 rmpv = { workspace = true }
