@@ -10,11 +10,12 @@ const EN_XA: LanguageIdentifier = langid!("en-XA");
 const DE: LanguageIdentifier = langid!("de");
 const ES_419: LanguageIdentifier = langid!("es-419");
 const ES_ES: LanguageIdentifier = langid!("es-ES");
-const FR: LanguageIdentifier = langid!("FR");
-const TH: LanguageIdentifier = langid!("TH");
-const ZH_CN: LanguageIdentifier = langid!("ZH_CN");
-const ZH_TW: LanguageIdentifier = langid!("ZH_TW");
-const NUM_FTLS: usize = 9;
+const FR: LanguageIdentifier = langid!("fr");
+const PT_BR: LanguageIdentifier = langid!("pt-BR");
+const TH: LanguageIdentifier = langid!("th");
+const ZH_CN: LanguageIdentifier = langid!("zh-CN");
+const ZH_TW: LanguageIdentifier = langid!("zh-TW");
+const NUM_FTLS: usize = 10;
 
 const EN_US_NATIVE_NAME: &str = "English (US)";
 const EN_XA_NATIVE_NAME: &str = "Éñglísh (Pséúdólóçàlé)";
@@ -22,6 +23,7 @@ const DE_NATIVE_NAME: &str = "Deutsch";
 const ES_419_NATIVE_NAME: &str = "Español (Latinoamérica)";
 const ES_ES_NATIVE_NAME: &str = "Español (España)";
 const FR_NATIVE_NAME: &str = "Français";
+const PT_BR_NATIVE_NAME: &str = "Português (Brasil)";
 const TH_NATIVE_NAME: &str = "ภาษาไทย";
 const ZH_CN_NATIVE_NAME: &str = "简体中文";
 const ZH_TW_NATIVE_NAME: &str = "繁體中文";
@@ -55,6 +57,10 @@ const FTLS: [StaticBundle; NUM_FTLS] = [
     StaticBundle {
         identifier: FR,
         ftl: include_str!("../../../../assets/translations/fr/main.ftl"),
+    },
+    StaticBundle {
+        identifier: PT_BR,
+        ftl: include_str!("../../../../assets/translations/pt-BR/main.ftl"),
     },
     StaticBundle {
         identifier: TH,
@@ -107,6 +113,7 @@ impl Default for Localization {
             ES_419.clone(),
             ES_ES.clone(),
             FR.clone(),
+            PT_BR.clone(),
             TH.clone(),
             ZH_CN.clone(),
             ZH_TW.clone(),
@@ -119,6 +126,7 @@ impl Default for Localization {
             (ES_419, ES_419_NATIVE_NAME.to_owned()),
             (ES_ES, ES_ES_NATIVE_NAME.to_owned()),
             (FR, FR_NATIVE_NAME.to_owned()),
+            (PT_BR, PT_BR_NATIVE_NAME.to_owned()),
             (TH, TH_NATIVE_NAME.to_owned()),
             (ZH_CN, ZH_CN_NATIVE_NAME.to_owned()),
             (ZH_TW, ZH_TW_NATIVE_NAME.to_owned()),
