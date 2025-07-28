@@ -88,7 +88,7 @@ pub fn time_format(_i18n: &mut Localization, timestamp: i64) -> String {
     // TODO: format this using the selected locale
     DateTime::from_timestamp(timestamp, 0)
         .unwrap()
-        .format("%Y-%m-%d %H:%M:%S")
+        .format("%l:%M %p %b %d, %Y")
         .to_string()
 }
 
