@@ -390,7 +390,7 @@ fn fullscreen_media_viewer_ui(
     viewer_state: &mut MediaViewerState,
     img_cache: &mut Images,
 ) {
-    if !options.contains(AppOptions::FullscreenMedia) || viewer_state.urls.is_empty() {
+    if !options.contains(AppOptions::FullscreenMedia) || viewer_state.media_info.medias.is_empty() {
         return;
     }
 

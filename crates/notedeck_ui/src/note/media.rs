@@ -10,6 +10,7 @@ use notedeck::{
 
 use notedeck::media::gif::ensure_latest_texture;
 use notedeck::media::images::{fetch_no_pfp_promise, ImageType};
+use notedeck::media::{MediaInfo, ViewMediaInfo};
 
 use crate::{app_images, AnimationHelper, PulseAlpha};
 
@@ -43,7 +44,9 @@ pub(crate) fn image_carousel(
             .id_salt(carousel_id)
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
+                    let mut media_infos: Vec<MediaInfo> = Vec::with_capacity(medias.len());
                     let mut media_action: Option<(usize, MediaUIAction)> = None;
+
                     for (i, media) in medias.iter().enumerate() {
                         let RenderableMedia {
                             url,
@@ -68,23 +71,32 @@ pub(crate) fn image_carousel(
                             blur_type,
                         );
 
-                        if let Some(cur_action) = render_media(
+                        let media_response = render_media(
                             ui,
                             &mut img_cache.gif_states,
                             media_state,
                             url,
                             height,
                             i18n,
-                        ) {
-                            media_action = Some((i, cur_action));
+                        );
+
+                        if let Some(action) = media_response.inner {
+                            media_action = Some((i, action))
                         }
+
+                        let rect = media_response.response.rect;
+                        media_infos.push(MediaInfo {
+                            url: url.clone(),
+                            original_position: rect,
+                        })
                     }
 
-                    if let Some((i, media_action)) = &media_action {
-                        action = media_action.to_media_action(
+                    if let Some((i, media_action)) = media_action {
+                        action = media_action.into_media_action(
                             ui.ctx(),
                             medias,
-                            *i,
+                            media_infos,
+                            i,
                             img_cache,
                             ImageType::Content(Some((width as u32, height as u32))),
                         );
@@ -106,18 +118,24 @@ enum MediaUIAction {
 }
 
 impl MediaUIAction {
-    pub fn to_media_action(
-        &self,
+    pub fn into_media_action(
+        self,
         ctx: &egui::Context,
         medias: &[RenderableMedia],
+        responses: Vec<MediaInfo>,
         selected: usize,
         img_cache: &Images,
         img_type: ImageType,
     ) -> Option<MediaAction> {
         match self {
-            MediaUIAction::Clicked => Some(MediaAction::ViewMedias(
-                medias.iter().map(|m| m.url.to_owned()).collect(),
-            )),
+            // We've clicked on some media, let's package up
+            // all of the rendered media responses, and send
+            // them to the ViewMedias action so that our fullscreen
+            // media viewer can smoothly transition from them
+            MediaUIAction::Clicked => Some(MediaAction::ViewMedias(ViewMediaInfo {
+                clicked_index: selected,
+                medias: responses,
+            })),
 
             MediaUIAction::Unblur => {
                 let url = &medias[selected].url;
@@ -291,44 +309,44 @@ fn render_media(
     url: &str,
     height: f32,
     i18n: &mut Localization,
-) -> Option<MediaUIAction> {
+) -> egui::InnerResponse<Option<MediaUIAction>> {
     match render_state {
         MediaRenderState::ActualImage(image) => {
-            if render_success_media(ui, url, image, gifs, height, i18n).clicked() {
-                Some(MediaUIAction::Clicked)
+            let resp = render_success_media(ui, url, image, gifs, height, i18n);
+            if resp.clicked() {
+                egui::InnerResponse::new(Some(MediaUIAction::Clicked), resp)
             } else {
-                None
+                egui::InnerResponse::new(None, resp)
             }
         }
         MediaRenderState::Transitioning { image, obfuscation } => match obfuscation {
             ObfuscatedTexture::Blur(texture) => {
-                if render_blur_transition(ui, url, height, texture, image.get_first_texture()) {
-                    Some(MediaUIAction::DoneLoading)
+                let resp =
+                    render_blur_transition(ui, url, height, texture, image.get_first_texture());
+                if resp.inner {
+                    egui::InnerResponse::new(Some(MediaUIAction::DoneLoading), resp.response)
                 } else {
-                    None
+                    egui::InnerResponse::new(None, resp.response)
                 }
             }
-            ObfuscatedTexture::Default => {
-                ui.add(texture_to_image(image.get_first_texture(), height));
-                Some(MediaUIAction::DoneLoading)
-            }
+            ObfuscatedTexture::Default => egui::InnerResponse::new(
+                Some(MediaUIAction::DoneLoading),
+                ui.add(texture_to_image(image.get_first_texture(), height)),
+            ),
         },
         MediaRenderState::Error(e) => {
-            ui.allocate_space(egui::vec2(height, height));
+            let resp = ui.allocate_response(egui::vec2(height, height), egui::Sense::click());
             show_one_error_message(ui, &format!("Could not render media {url}: {e}"));
-            Some(MediaUIAction::Error)
+            egui::InnerResponse::new(Some(MediaUIAction::Error), resp)
         }
-        MediaRenderState::Shimmering(obfuscated_texture) => {
-            match obfuscated_texture {
-                ObfuscatedTexture::Blur(texture_handle) => {
-                    shimmer_blurhash(texture_handle, ui, url, height);
-                }
-                ObfuscatedTexture::Default => {
-                    render_default_blur_bg(ui, height, url, true);
-                }
+        MediaRenderState::Shimmering(obfuscated_texture) => match obfuscated_texture {
+            ObfuscatedTexture::Blur(texture_handle) => {
+                egui::InnerResponse::new(None, shimmer_blurhash(texture_handle, ui, url, height))
             }
-            None
-        }
+            ObfuscatedTexture::Default => {
+                egui::InnerResponse::new(None, render_default_blur_bg(ui, height, url, true))
+            }
+        },
         MediaRenderState::Obfuscated(obfuscated_texture) => {
             let resp = match obfuscated_texture {
                 ObfuscatedTexture::Blur(texture_handle) => {
@@ -338,13 +356,11 @@ fn render_media(
                 ObfuscatedTexture::Default => render_default_blur(ui, i18n, height, url),
             };
 
-            if resp
-                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                .clicked()
-            {
-                Some(MediaUIAction::Unblur)
+            let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+            if resp.clicked() {
+                egui::InnerResponse::new(Some(MediaUIAction::Unblur), resp)
             } else {
-                None
+                egui::InnerResponse::new(None, resp)
             }
         }
     }
@@ -442,12 +458,17 @@ fn render_default_blur(
     height: f32,
     url: &str,
 ) -> egui::Response {
-    let rect = render_default_blur_bg(ui, height, url, false);
-    render_blur_text(ui, i18n, url, rect)
+    let response = render_default_blur_bg(ui, height, url, false);
+    render_blur_text(ui, i18n, url, response.rect)
 }
 
-fn render_default_blur_bg(ui: &mut egui::Ui, height: f32, url: &str, shimmer: bool) -> egui::Rect {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(height, height), egui::Sense::click());
+fn render_default_blur_bg(
+    ui: &mut egui::Ui,
+    height: f32,
+    url: &str,
+    shimmer: bool,
+) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(height, height), egui::Sense::click());
 
     let painter = ui.painter_at(rect);
 
@@ -460,7 +481,7 @@ fn render_default_blur_bg(ui: &mut egui::Ui, height: f32, url: &str, shimmer: bo
 
     painter.rect_filled(rect, CornerRadius::same(8), color);
 
-    rect
+    response
 }
 
 pub enum MediaRenderState<'a> {
@@ -540,24 +561,28 @@ fn get_blur_current_alpha(ui: &mut egui::Ui, url: &str) -> u8 {
         .animate()
 }
 
-fn shimmer_blurhash(tex: &TextureHandle, ui: &mut egui::Ui, url: &str, max_height: f32) {
+fn shimmer_blurhash(
+    tex: &TextureHandle,
+    ui: &mut egui::Ui,
+    url: &str,
+    max_height: f32,
+) -> egui::Response {
     let cur_alpha = get_blur_current_alpha(ui, url);
 
     let scaled = ScaledTexture::new(tex, max_height);
     let img = scaled.get_image();
-    show_blurhash_with_alpha(ui, img, cur_alpha);
+    show_blurhash_with_alpha(ui, img, cur_alpha)
 }
 
 fn fade_color(alpha: u8) -> egui::Color32 {
     Color32::from_rgba_unmultiplied(255, 255, 255, alpha)
 }
 
-fn show_blurhash_with_alpha(ui: &mut egui::Ui, img: Image, alpha: u8) {
+fn show_blurhash_with_alpha(ui: &mut egui::Ui, img: Image, alpha: u8) -> egui::Response {
     let cur_color = fade_color(alpha);
-
     let img = img.tint(cur_color);
 
-    ui.add(img);
+    ui.add(img)
 }
 
 type FinishedTransition = bool;
@@ -569,14 +594,13 @@ fn render_blur_transition(
     max_height: f32,
     blur_texture: &TextureHandle,
     image_texture: &TextureHandle,
-) -> FinishedTransition {
+) -> egui::InnerResponse<FinishedTransition> {
     let scaled_texture = ScaledTexture::new(image_texture, max_height);
 
     let blur_img = texture_to_image(blur_texture, max_height);
     match get_blur_transition_state(ui.ctx(), url) {
         BlurTransitionState::StoppingShimmer { cur_alpha } => {
-            show_blurhash_with_alpha(ui, blur_img, cur_alpha);
-            false
+            egui::InnerResponse::new(false, show_blurhash_with_alpha(ui, blur_img, cur_alpha))
         }
         BlurTransitionState::FadingBlur => render_blur_fade(ui, url, blur_img, &scaled_texture),
     }
@@ -621,7 +645,7 @@ fn render_blur_fade(
     url: &str,
     blur_img: Image,
     image_texture: &ScaledTexture,
-) -> FinishedTransition {
+) -> egui::InnerResponse<FinishedTransition> {
     let blur_fade_id = ui.id().with(("blur_fade", url));
 
     let cur_alpha = {
@@ -637,12 +661,12 @@ fn render_blur_fade(
 
     let alloc_size = image_texture.scaled_size;
 
-    let (rect, _) = ui.allocate_exact_size(alloc_size, egui::Sense::hover());
+    let (rect, resp) = ui.allocate_exact_size(alloc_size, egui::Sense::hover());
 
     img.paint_at(ui, rect);
     blur_img.paint_at(ui, rect);
 
-    cur_alpha == 0
+    egui::InnerResponse::new(cur_alpha == 0, resp)
 }
 
 fn get_blur_transition_state(ctx: &Context, url: &str) -> BlurTransitionState {

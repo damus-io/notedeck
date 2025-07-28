@@ -1,11 +1,12 @@
 use egui::{pos2, Color32, Rect};
+use notedeck::media::{MediaInfo, ViewMediaInfo};
 use notedeck::{ImageType, Images};
 
 /// State used in the MediaViewer ui widget.
-///
 #[derive(Default)]
 pub struct MediaViewerState {
-    pub urls: Vec<String>,
+    /// When
+    pub media_info: ViewMediaInfo,
     pub scene_rect: Option<Rect>,
 }
 
@@ -60,7 +61,7 @@ impl<'a> MediaViewer<'a> {
         let resp = egui::Scene::new()
             .zoom_range(0.0..=10.0) // enhance 🔬
             .show(ui, &mut scene_rect, |ui| {
-                self.render_image_tiles(images, ui);
+                Self::render_image_tiles(&self.state.media_info.medias, images, ui);
             });
 
         self.state.scene_rect = Some(scene_rect);
@@ -74,8 +75,10 @@ impl<'a> MediaViewer<'a> {
     /// TODO(jb55): Let's improve image tiling over time, spiraling outward. We
     /// should have a way to click "next" and have the scene smoothly transition and
     /// focus on the next image
-    fn render_image_tiles(&self, images: &mut Images, ui: &mut egui::Ui) {
-        for url in &self.state.urls {
+    fn render_image_tiles(infos: &[MediaInfo], images: &mut Images, ui: &mut egui::Ui) {
+        for info in infos {
+            let url = &info.url;
+
             // fetch image texture
             let Some(texture) = images.latest_texture(ui, url, ImageType::Content(None)) else {
                 continue;

@@ -158,7 +158,8 @@ fn execute_note_action(
         },
         NoteAction::Media(media_action) => {
             media_action.on_view_media(|medias| {
-                view_state.media_viewer.urls = medias;
+                view_state.media_viewer.media_info = medias.clone();
+                tracing::debug!("on_view_media {:?}", &medias);
                 app_options.set(AppOptions::FullscreenMedia, true);
             });
 
