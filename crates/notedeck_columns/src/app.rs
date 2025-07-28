@@ -396,7 +396,7 @@ fn fullscreen_media_viewer_ui(
 
     // Close it?
     if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-        options.set(AppOptions::FullscreenMedia, false);
+        fullscreen_media_close(options, viewer_state);
         return;
     }
 
@@ -405,8 +405,14 @@ fn fullscreen_media_viewer_ui(
         .ui(img_cache, ui);
 
     if resp.clicked() {
-        options.set(AppOptions::FullscreenMedia, false);
+        fullscreen_media_close(options, viewer_state);
     }
+}
+
+/// Close the fullscreen media player. This also resets the scene_rect state
+fn fullscreen_media_close(options: &mut AppOptions, state: &mut MediaViewerState) {
+    options.set(AppOptions::FullscreenMedia, false);
+    state.scene_rect = None;
 }
 
 /*
