@@ -32,7 +32,7 @@ image = { workspace = true }
 indexmap = { workspace = true }
 nostrdb = { workspace = true }
 notedeck_ui = { workspace = true }
-open = { workspace = true }
+robius-open = { workspace = true }
 poll-promise = { workspace = true }
 puffin = { workspace = true, optional = true }
 puffin_egui = { workspace = true, optional = true }

@@ -28,7 +28,7 @@ impl Support {
 }
 
 static MAX_LOG_LINES: usize = 500;
-static SUPPORT_EMAIL: &str = "support@damus.io";
+pub static SUPPORT_EMAIL: &str = "support+notedeck@damus.io";
 static EMAIL_TEMPLATE: &str = concat!("version ", env!("CARGO_PKG_VERSION"), "\nCommit hash: ", env!("GIT_COMMIT_HASH"), "\n\nDescribe the bug you have encountered:\n<-- your statement here -->\n\n===== Paste your log below =====\n\n");
 
 impl Support {

@@ -63,6 +63,12 @@ short_description = "The nostr browser"
 identifier = "com.damus.notedeck"
 icon = ["assets/app_icon.icns"]
 
+[package.metadata.android.manifest.queries]
+intent = [
+    { action = ["android.intent.action.MAIN"] },
+]
+
+
 [package.metadata.android]
 package = "com.damus.app"
 apk_name = "Notedeck"

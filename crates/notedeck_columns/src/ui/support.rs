@@ -1,9 +1,9 @@
+use crate::support::{Support, SUPPORT_EMAIL};
 use egui::{vec2, Button, Label, Layout, RichText};
 use notedeck::{tr, Localization, NamedFontFamily, NotedeckTextStyle};
 use notedeck_ui::{colors::PINK, padding};
+use robius_open::Uri;
 use tracing::error;
-
-use crate::support::Support;
 
 pub struct SupportView<'a> {
     support: &'a mut Support,
@@ -44,15 +44,21 @@ impl<'a> SupportView<'a> {
                     "Open your default email client to get help from the Damus team",
                     "Instruction to open email client"
                 ));
+
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(tr!(self.i18n, "Support email:", "Support email address",));
+                    ui.label(RichText::new(SUPPORT_EMAIL).color(PINK))
+                });
+
                 let size = vec2(120.0, 40.0);
                 ui.allocate_ui_with_layout(size, Layout::top_down(egui::Align::Center), |ui| {
                     let font_size =
                         notedeck::fonts::get_font_size(ui.ctx(), &NotedeckTextStyle::Body);
                     let button_resp = ui.add(open_email_button(self.i18n, font_size, size));
                     if button_resp.clicked() {
-                        if let Err(e) = open::that(self.support.get_mailto_url()) {
+                        if let Err(e) = Uri::new(self.support.get_mailto_url()).open() {
                             error!(
-                                "Failed to open URL {} because: {}",
+                                "Failed to open URL {} because: {:?}",
                                 self.support.get_mailto_url(),
                                 e
                             );

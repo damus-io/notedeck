@@ -6,6 +6,7 @@ use enostr::Pubkey;
 use nostrdb::{ProfileRecord, Transaction};
 use notedeck::{tr, Localization};
 use notedeck_ui::profile::follow_button;
+use robius_open::Uri;
 use tracing::error;
 
 use crate::{
@@ -285,8 +286,8 @@ fn handle_link(ui: &mut egui::Ui, website_url: &str) {
         .interact(Sense::click())
         .clicked()
     {
-        if let Err(e) = open::that(website_url) {
-            error!("Failed to open URL {} because: {}", website_url, e);
+        if let Err(e) = Uri::new(website_url).open() {
+            error!("Failed to open URL {} because: {:?}", website_url, e);
         };
     }
 }
