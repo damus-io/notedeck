@@ -48,8 +48,12 @@ impl MediaViewerState {
 
     /// How much is our media viewer open
     pub fn open_amount(&self, ui: &mut egui::Ui) -> f32 {
-        ui.ctx()
-            .animate_bool_responsive(self.anim_id, self.flags.contains(MediaViewerFlags::Open))
+        ui.ctx().animate_bool_with_time_and_easing(
+            self.anim_id,
+            self.flags.contains(MediaViewerFlags::Open),
+            0.5,
+            egui::emath::easing::cubic_out,
+        )
     }
 
     /// Should we show the control even if we're closed?
@@ -144,7 +148,7 @@ impl<'a> MediaViewer<'a> {
         ui.painter().rect_filled(
             avail_rect,
             0.0,
-            egui::Color32::from_black_alpha((128.0 * open_amount) as u8),
+            egui::Color32::from_black_alpha((200.0 * open_amount) as u8),
         );
 
         let scene = egui::Scene::new().zoom_range(zoom_range);
