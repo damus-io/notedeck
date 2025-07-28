@@ -400,9 +400,13 @@ fn fullscreen_media_viewer_ui(
         return;
     }
 
-    MediaViewer::new(viewer_state)
+    let resp = MediaViewer::new(viewer_state)
         .fullscreen(true)
         .ui(img_cache, ui);
+
+    if resp.clicked() {
+        options.set(AppOptions::FullscreenMedia, false);
+    }
 }
 
 /*

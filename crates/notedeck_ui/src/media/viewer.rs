@@ -6,16 +6,17 @@ use notedeck::{ImageType, Images};
 #[derive(Default)]
 pub struct MediaViewerState {
     pub urls: Vec<String>,
+    pub scene_rect: Option<Rect>,
 }
 
 /// A panning, scrolling, optionally fullscreen, and tiling media viewer
 pub struct MediaViewer<'a> {
-    state: &'a MediaViewerState,
+    state: &'a mut MediaViewerState,
     fullscreen: bool,
 }
 
 impl<'a> MediaViewer<'a> {
-    pub fn new(state: &'a MediaViewerState) -> Self {
+    pub fn new(state: &'a mut MediaViewerState) -> Self {
         let fullscreen = false;
         Self { state, fullscreen }
     }
@@ -25,40 +26,46 @@ impl<'a> MediaViewer<'a> {
         self
     }
 
-    pub fn ui(&self, images: &mut Images, ui: &mut egui::Ui) {
+    pub fn ui(&mut self, images: &mut Images, ui: &mut egui::Ui) -> egui::Response {
         if self.fullscreen {
             egui::Window::new("Media Viewer")
                 .title_bar(false)
                 .fixed_size(ui.ctx().screen_rect().size())
                 .fixed_pos(ui.ctx().screen_rect().min)
                 .frame(egui::Frame::NONE)
-                .show(ui.ctx(), |ui| self.ui_content(images, ui));
+                .show(ui.ctx(), |ui| self.ui_content(images, ui))
+                .unwrap() // SAFETY: we are always open
+                .inner
+                .unwrap()
         } else {
-            self.ui_content(images, ui);
+            self.ui_content(images, ui)
         }
     }
 
-    fn ui_content(&self, images: &mut Images, ui: &mut egui::Ui) {
+    fn ui_content(&mut self, images: &mut Images, ui: &mut egui::Ui) -> egui::Response {
         let avail_rect = ui.available_rect_before_wrap();
+        //let id = ui.id().with("media_viewer");
 
-        // TODO: id_salt
-        let id = ui.id().with("media_viewer");
-        let mut scene_rect = ui.ctx().data(|d| d.get_temp(id)).unwrap_or(avail_rect);
-        let prev = scene_rect;
+        let mut scene_rect = if let Some(scene_rect) = self.state.scene_rect {
+            scene_rect
+        } else {
+            self.state.scene_rect = Some(avail_rect);
+            avail_rect
+        };
 
         // Draw background
         ui.painter()
             .rect_filled(avail_rect, 0.0, egui::Color32::from_black_alpha(128));
 
-        egui::Scene::new()
+        let resp = egui::Scene::new()
             .zoom_range(0.0..=10.0) // enhance 🔬
             .show(ui, &mut scene_rect, |ui| {
                 self.render_image_tiles(images, ui);
             });
 
-        if scene_rect != prev {
-            ui.ctx().data_mut(|d| d.insert_temp(id, scene_rect));
-        }
+        self.state.scene_rect = Some(scene_rect);
+
+        resp.response
     }
 
     ///
@@ -89,21 +96,11 @@ impl<'a> MediaViewer<'a> {
                 let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
 
                 // image actions
-                /*
-                let response = ui.interact(
-                    render_rect,
-                    carousel_id.with("img"),
-                    Sense::click(),
-                );
+                //let response = ui.interact(render_rect, carousel_id.with("img"), Sense::click());
 
+                /*
                 if response.clicked() {
-                    ui.data_mut(|data| {
-                        data.insert_temp(carousel_id.with("show_popup"), true);
-                    });
-                } else if background_response.clicked() || response.clicked_elsewhere() {
-                    ui.data_mut(|data| {
-                        data.insert_temp(carousel_id.with("show_popup"), false);
-                    });
+                } else if background_response.clicked() {
                 }
                 */
 
