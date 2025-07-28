@@ -16,9 +16,6 @@ bitflags! {
 
         /// Should we scroll to top on the active column?
         const ScrollToTop   = 1 << 3;
-
-        /// Are we showing fullscreen media?
-        const FullscreenMedia  = 1 << 4;
     }
 }
 

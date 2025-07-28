@@ -23,7 +23,7 @@ use notedeck::{
     Images, JobsCache, Localization, UnknownIds,
 };
 use notedeck_ui::{
-    media::{MediaViewer, MediaViewerState},
+    media::{MediaViewer, MediaViewerFlags, MediaViewerState},
     NoteOptions,
 };
 use std::collections::{BTreeSet, HashMap};
@@ -368,12 +368,7 @@ fn render_damus(
         render_damus_desktop(damus, app_ctx, ui)
     };
 
-    fullscreen_media_viewer_ui(
-        ui,
-        &mut damus.options,
-        &mut damus.view_state.media_viewer,
-        app_ctx.img_cache,
-    );
+    fullscreen_media_viewer_ui(ui, &mut damus.view_state.media_viewer, app_ctx.img_cache);
 
     // We use this for keeping timestamps and things up to date
     ui.ctx().request_repaint_after(Duration::from_secs(5));
@@ -386,33 +381,35 @@ fn render_damus(
 /// an image is clicked
 fn fullscreen_media_viewer_ui(
     ui: &mut egui::Ui,
-    options: &mut AppOptions,
-    viewer_state: &mut MediaViewerState,
+    state: &mut MediaViewerState,
     img_cache: &mut Images,
 ) {
-    if !options.contains(AppOptions::FullscreenMedia) || viewer_state.media_info.medias.is_empty() {
+    if !state.should_show(ui) {
+        if state.scene_rect.is_some() {
+            // if we shouldn't show yet we will have a scene
+            // rect, then we should clear it for next time
+            tracing::debug!("fullscreen_media_viewer_ui: resetting scene rect");
+            state.scene_rect = None;
+        }
         return;
     }
 
     // Close it?
     if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-        fullscreen_media_close(options, viewer_state);
+        fullscreen_media_close(state);
         return;
     }
 
-    let resp = MediaViewer::new(viewer_state)
-        .fullscreen(true)
-        .ui(img_cache, ui);
+    let resp = MediaViewer::new(state).fullscreen(true).ui(img_cache, ui);
 
     if resp.clicked() {
-        fullscreen_media_close(options, viewer_state);
+        fullscreen_media_close(state);
     }
 }
 
 /// Close the fullscreen media player. This also resets the scene_rect state
-fn fullscreen_media_close(options: &mut AppOptions, state: &mut MediaViewerState) {
-    options.set(AppOptions::FullscreenMedia, false);
-    state.scene_rect = None;
+fn fullscreen_media_close(state: &mut MediaViewerState) {
+    state.flags.set(MediaViewerFlags::Open, false);
 }
 
 /*

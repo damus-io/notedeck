@@ -1,7 +1,6 @@
 use crate::{
     column::Columns,
     nav::{RouterAction, RouterType},
-    options::AppOptions,
     route::Route,
     timeline::{
         thread::{
@@ -18,6 +17,7 @@ use notedeck::{
     get_wallet_for, note::ZapTargetAmount, Accounts, GlobalWallet, Images, NoteAction, NoteCache,
     NoteZapTargetOwned, UnknownIds, ZapAction, ZapTarget, ZappingError, Zaps,
 };
+use notedeck_ui::media::MediaViewerFlags;
 use tracing::error;
 
 pub struct NewNotes {
@@ -54,7 +54,6 @@ fn execute_note_action(
     zaps: &mut Zaps,
     images: &mut Images,
     view_state: &mut ViewState,
-    app_options: &mut AppOptions,
     router_type: RouterType,
     ui: &mut egui::Ui,
     col: usize,
@@ -160,7 +159,10 @@ fn execute_note_action(
             media_action.on_view_media(|medias| {
                 view_state.media_viewer.media_info = medias.clone();
                 tracing::debug!("on_view_media {:?}", &medias);
-                app_options.set(AppOptions::FullscreenMedia, true);
+                view_state
+                    .media_viewer
+                    .flags
+                    .set(MediaViewerFlags::Open, true);
             });
 
             media_action.process_default_media_actions(images)
@@ -191,7 +193,6 @@ pub fn execute_and_process_note_action(
     zaps: &mut Zaps,
     images: &mut Images,
     view_state: &mut ViewState,
-    app_options: &mut AppOptions,
     ui: &mut egui::Ui,
 ) -> Option<RouterAction> {
     let router_type = {
@@ -217,7 +218,6 @@ pub fn execute_and_process_note_action(
         zaps,
         images,
         view_state,
-        app_options,
         router_type,
         ui,
         col,
