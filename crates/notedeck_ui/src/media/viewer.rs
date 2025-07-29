@@ -212,11 +212,13 @@ impl<'a> MediaViewer<'a> {
 
             // the area the next image will be put in.
             let mut img_rect = ui.available_rect_before_wrap();
+            /*
             if !ui.is_rect_visible(img_rect) {
                 // just stop rendering images if we're going out of the scene
                 // basic culling when we have lots of images
                 break;
             }
+            */
 
             {
                 let size = texture.size_vec2();
