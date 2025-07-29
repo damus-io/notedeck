@@ -454,20 +454,28 @@ impl<'a, 'd> NoteView<'a, 'd> {
             note_action = contents.action.or(note_action);
 
             if self.options().contains(NoteOptions::ActionBar) {
-                note_action = render_note_actionbar(
-                    ui,
-                    get_zapper(
-                        self.note_context.accounts,
-                        self.note_context.global_wallet,
-                        self.note_context.zaps,
-                    ),
-                    self.note.id(),
-                    self.note.pubkey(),
-                    note_key,
-                    self.note_context.i18n,
-                )
-                .inner
-                .or(note_action);
+                note_action = ui
+                    .horizontal_wrapped(|ui| {
+                        // NOTE(jb55): without this we get a weird artifact where
+                        // there subsequent lines start sinking leftward off the screen.
+                        // question: WTF? question 2: WHY?
+                        ui.allocate_space(egui::vec2(0.0, 0.0));
+
+                        render_note_actionbar(
+                            ui,
+                            get_zapper(
+                                self.note_context.accounts,
+                                self.note_context.global_wallet,
+                                self.note_context.zaps,
+                            ),
+                            self.note.id(),
+                            self.note.pubkey(),
+                            note_key,
+                            self.note_context.i18n,
+                        )
+                    })
+                    .inner
+                    .or(note_action);
             }
 
             NoteUiResponse {
@@ -531,20 +539,23 @@ impl<'a, 'd> NoteView<'a, 'd> {
                 note_action = contents.action.or(note_action);
 
                 if self.options().contains(NoteOptions::ActionBar) {
-                    note_action = render_note_actionbar(
-                        ui,
-                        get_zapper(
-                            self.note_context.accounts,
-                            self.note_context.global_wallet,
-                            self.note_context.zaps,
-                        ),
-                        self.note.id(),
-                        self.note.pubkey(),
-                        note_key,
-                        self.note_context.i18n,
-                    )
-                    .inner
-                    .or(note_action);
+                    note_action = ui
+                        .horizontal_wrapped(|ui| {
+                            render_note_actionbar(
+                                ui,
+                                get_zapper(
+                                    self.note_context.accounts,
+                                    self.note_context.global_wallet,
+                                    self.note_context.zaps,
+                                ),
+                                self.note.id(),
+                                self.note.pubkey(),
+                                note_key,
+                                self.note_context.i18n,
+                            )
+                        })
+                        .inner
+                        .or(note_action);
                 }
 
                 NoteUiResponse {
@@ -781,76 +792,68 @@ fn render_note_actionbar(
     note_pubkey: &[u8; 32],
     note_key: NoteKey,
     i18n: &mut Localization,
-) -> egui::InnerResponse<Option<NoteAction>> {
-    ui.horizontal(|ui| {
-        // NOTE(jb55): without this we get a weird artifact where
-        // there subsequent lines start sinking leftward off the screen.
-        // question: WTF? question 2: WHY?
-        ui.allocate_space(egui::vec2(0.0, 0.0));
+) -> Option<NoteAction> {
+    ui.set_min_height(26.0);
+    ui.spacing_mut().item_spacing.x = 24.0;
 
-        ui.set_min_height(26.0);
-        ui.spacing_mut().item_spacing.x = 24.0;
+    let reply_resp =
+        reply_button(ui, i18n, note_key).on_hover_cursor(egui::CursorIcon::PointingHand);
 
-        let reply_resp =
-            reply_button(ui, i18n, note_key).on_hover_cursor(egui::CursorIcon::PointingHand);
+    let quote_resp =
+        quote_repost_button(ui, i18n, note_key).on_hover_cursor(egui::CursorIcon::PointingHand);
 
-        let quote_resp =
-            quote_repost_button(ui, i18n, note_key).on_hover_cursor(egui::CursorIcon::PointingHand);
+    let to_noteid = |id: &[u8; 32]| NoteId::new(*id);
+    if reply_resp.clicked() {
+        return Some(NoteAction::Reply(to_noteid(note_id)));
+    }
 
-        let to_noteid = |id: &[u8; 32]| NoteId::new(*id);
-        if reply_resp.clicked() {
-            return Some(NoteAction::Reply(to_noteid(note_id)));
-        }
+    if quote_resp.clicked() {
+        return Some(NoteAction::Quote(to_noteid(note_id)));
+    }
 
-        if quote_resp.clicked() {
-            return Some(NoteAction::Quote(to_noteid(note_id)));
-        }
+    let Zapper { zaps, cur_acc } = zapper?;
 
-        let Zapper { zaps, cur_acc } = zapper?;
+    let zap_target = ZapTarget::Note(NoteZapTarget {
+        note_id,
+        zap_recipient: note_pubkey,
+    });
 
-        let zap_target = ZapTarget::Note(NoteZapTarget {
-            note_id,
-            zap_recipient: note_pubkey,
-        });
+    let zap_state = zaps.any_zap_state_for(cur_acc.pubkey.bytes(), zap_target);
 
-        let zap_state = zaps.any_zap_state_for(cur_acc.pubkey.bytes(), zap_target);
+    let target = NoteZapTargetOwned {
+        note_id: to_noteid(note_id),
+        zap_recipient: Pubkey::new(*note_pubkey),
+    };
 
-        let target = NoteZapTargetOwned {
-            note_id: to_noteid(note_id),
-            zap_recipient: Pubkey::new(*note_pubkey),
-        };
+    if zap_state.is_err() {
+        return Some(NoteAction::Zap(ZapAction::ClearError(target)));
+    }
 
-        if zap_state.is_err() {
-            return Some(NoteAction::Zap(ZapAction::ClearError(target)));
-        }
+    let zap_resp = {
+        cur_acc.secret_key.as_ref()?;
 
-        let zap_resp = {
-            cur_acc.secret_key.as_ref()?;
-
-            match zap_state {
-                Ok(any_zap_state) => ui.add(zap_button(i18n, any_zap_state, note_id)),
-                Err(err) => {
-                    let (rect, _) =
-                        ui.allocate_at_least(egui::vec2(10.0, 10.0), egui::Sense::click());
-                    ui.add(x_button(rect)).on_hover_text(err.to_string())
-                }
+        match zap_state {
+            Ok(any_zap_state) => ui.add(zap_button(i18n, any_zap_state, note_id)),
+            Err(err) => {
+                let (rect, _) = ui.allocate_at_least(egui::vec2(10.0, 10.0), egui::Sense::click());
+                ui.add(x_button(rect)).on_hover_text(err.to_string())
             }
         }
-        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    }
+    .on_hover_cursor(egui::CursorIcon::PointingHand);
 
-        if zap_resp.secondary_clicked() {
-            return Some(NoteAction::Zap(ZapAction::CustomizeAmount(target)));
-        }
+    if zap_resp.secondary_clicked() {
+        return Some(NoteAction::Zap(ZapAction::CustomizeAmount(target)));
+    }
 
-        if !zap_resp.clicked() {
-            return None;
-        }
+    if !zap_resp.clicked() {
+        return None;
+    }
 
-        Some(NoteAction::Zap(ZapAction::Send(ZapTargetAmount {
-            target,
-            specified_msats: None,
-        })))
-    })
+    Some(NoteAction::Zap(ZapAction::Send(ZapTargetAmount {
+        target,
+        specified_msats: None,
+    })))
 }
 
 #[profiling::function]
