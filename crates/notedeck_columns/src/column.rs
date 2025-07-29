@@ -116,6 +116,14 @@ impl Columns {
         )]));
     }
 
+    pub fn new_column_at_with_route(&mut self, col: usize, route: Route) {
+        if col >= self.columns.len() {
+            self.add_column(Column::new(vec![route]));
+        } else {
+            self.add_column_at(Column::new(vec![route]), col as u32);
+        }
+    }
+
     pub fn insert_intermediary_routes(
         &mut self,
         timeline_cache: &mut TimelineCache,
@@ -239,6 +247,7 @@ impl Columns {
 
         if self.columns.is_empty() {
             self.new_column_picker();
+            self.selected = 0;
         }
 
         kinds_to_pop

@@ -229,10 +229,10 @@ impl Threads {
         txn: &Transaction,
         unknown_ids: &mut UnknownIds,
         col: usize,
-    ) {
+    ) -> bool {
         let Some(selected_key) = selected.key() else {
             tracing::error!("Selected note did not have a key");
-            return;
+            return false;
         };
 
         let reply = note_cache
@@ -246,14 +246,14 @@ impl Threads {
             .expect("should be guarenteed to exist from `Self::fill_reply_chain_recursive`");
 
         let Some(sub) = self.subs.get_local(col) else {
-            tracing::error!("Was expecting to find local sub");
-            return;
+            tracing::error!("Was expecting to find local sub {}", col);
+            return true;
         };
 
         let keys = ndb.poll_for_notes(sub.sub, 10);
 
         if keys.is_empty() {
-            return;
+            return false;
         }
 
         tracing::info!("Got {} new notes", keys.len());
@@ -267,6 +267,7 @@ impl Threads {
             unknown_ids,
             note_cache,
         );
+        false
     }
 
     fn fill_reply_chain_recursive(

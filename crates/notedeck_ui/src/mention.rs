@@ -2,9 +2,12 @@ use crate::ProfilePreview;
 use egui::Sense;
 use enostr::Pubkey;
 use nostrdb::{Ndb, Transaction};
-use notedeck::{name::get_display_name, Images, NoteAction, NotedeckTextStyle};
+use notedeck::{
+    name::get_display_name, tr, Images, Localization, NoteAction, NotedeckTextStyle, OpenColumnInfo,
+};
 
 pub struct Mention<'a> {
+    i18n: &'a mut Localization,
     ndb: &'a Ndb,
     img_cache: &'a mut Images,
     txn: &'a Transaction,
@@ -15,6 +18,7 @@ pub struct Mention<'a> {
 
 impl<'a> Mention<'a> {
     pub fn new(
+        i18n: &'a mut Localization,
         ndb: &'a Ndb,
         img_cache: &'a mut Images,
         txn: &'a Transaction,
@@ -23,6 +27,7 @@ impl<'a> Mention<'a> {
         let size = None;
         let selectable = true;
         Mention {
+            i18n,
             ndb,
             img_cache,
             txn,
@@ -44,6 +49,7 @@ impl<'a> Mention<'a> {
 
     pub fn show(self, ui: &mut egui::Ui) -> Option<NoteAction> {
         mention_ui(
+            self.i18n,
             self.ndb,
             self.img_cache,
             self.txn,
@@ -58,6 +64,7 @@ impl<'a> Mention<'a> {
 #[allow(clippy::too_many_arguments)]
 #[profiling::function]
 fn mention_ui(
+    i18n: &mut Localization,
     ndb: &Ndb,
     img_cache: &mut Images,
     txn: &Transaction,
@@ -82,7 +89,7 @@ fn mention_ui(
         text = text.size(size);
     }
 
-    let resp = ui
+    let mut resp = ui
         .add(
             egui::Label::new(text)
                 .sense(Sense::click())
@@ -91,8 +98,25 @@ fn mention_ui(
         .on_hover_cursor(egui::CursorIcon::PointingHand);
 
     let note_action = if resp.clicked() {
-        Some(NoteAction::Profile(Pubkey::new(*pk)))
+        if ui.input(|i| (i.modifiers.ctrl || i.modifiers.command)) {
+            Some(NoteAction::OpenColumn(OpenColumnInfo::Profile(
+                Pubkey::new(*pk),
+            )))
+        } else {
+            Some(NoteAction::Profile(Pubkey::new(*pk)))
+        }
     } else {
+        if ui.input(|i| (i.modifiers.ctrl || i.modifiers.command)) {
+            resp = resp.on_hover_text_at_pointer(format!(
+                "{} + Click {}",
+                if ui.input(|i| (i.modifiers.command)) {
+                    "Command"
+                } else {
+                    "Ctrl"
+                },
+                tr!(i18n, "to open profile in a new column", "")
+            ));
+        }
         None
     };
 
