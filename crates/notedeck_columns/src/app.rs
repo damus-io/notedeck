@@ -396,15 +396,9 @@ fn fullscreen_media_viewer_ui(
         return;
     }
 
-    // Close it?
-    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-        fullscreen_media_close(state);
-        return;
-    }
-
     let resp = MediaViewer::new(state).fullscreen(true).ui(img_cache, ui);
 
-    if resp.clicked() {
+    if resp.clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
         fullscreen_media_close(state);
     }
 }
