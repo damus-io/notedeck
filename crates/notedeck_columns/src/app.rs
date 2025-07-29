@@ -362,6 +362,10 @@ fn render_damus(
     app_ctx: &mut AppContext<'_>,
     ui: &mut egui::Ui,
 ) -> Option<AppAction> {
+    damus
+        .note_options
+        .set(NoteOptions::Wide, is_narrow(ui.ctx()));
+
     let app_action = if notedeck::ui::is_narrow(ui.ctx()) {
         render_damus_mobile(damus, app_ctx, ui)
     } else {
