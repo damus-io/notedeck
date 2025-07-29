@@ -234,7 +234,7 @@ impl<'a> SettingsView<'a> {
                                                 .selectable_value(
                                                     self.selected_language,
                                                     lang.to_string(),
-                                                    &name,
+                                                    name,
                                                 )
                                                 .clicked()
                                             {
