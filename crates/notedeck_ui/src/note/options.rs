@@ -34,7 +34,6 @@ impl Default for NoteOptions {
             | NoteOptions::HasNotePreviews
             | NoteOptions::ActionBar
             | NoteOptions::Truncate
-            | NoteOptions::Wide
     }
 }
 
