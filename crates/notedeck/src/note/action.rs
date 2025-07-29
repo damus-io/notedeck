@@ -9,6 +9,25 @@ pub struct ScrollInfo {
     pub offset: Vec2,
 }
 
+#[derive(Debug, PartialEq)]
+pub enum OpenColumnInfo {
+    /// User has clicked the quote reply action
+    Reply(NoteId),
+
+    /// User has clicked the quote repost action
+    Quote(NoteId),
+
+    /// User has clicked a hashtag
+    Hashtag(String),
+
+    /// User has clicked a profile
+    Profile(Pubkey),
+
+    Note {
+        note_id: NoteId,
+    },
+}
+
 #[derive(Debug)]
 pub enum NoteAction {
     /// User has clicked the quote reply action
@@ -24,7 +43,10 @@ pub enum NoteAction {
     Profile(Pubkey),
 
     /// User has clicked a note link
-    Note { note_id: NoteId, preview: bool },
+    Note {
+        note_id: NoteId,
+        preview: bool,
+    },
 
     /// User has selected some context option
     Context(ContextSelection),
@@ -37,6 +59,8 @@ pub enum NoteAction {
 
     /// User scrolled the timeline
     Scroll(ScrollInfo),
+
+    OpenColumn(OpenColumnInfo),
 }
 
 impl NoteAction {

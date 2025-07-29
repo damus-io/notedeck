@@ -103,6 +103,12 @@ impl ChromePanelAction {
         if let Some(c) = chrome.get_columns_app().and_then(|columns| {
             columns
                 .decks_cache
+                .active_columns_mut(ctx.i18n, ctx.accounts)
+                .unwrap()
+                .selected = 0;
+
+            columns
+                .decks_cache
                 .selected_column_mut(ctx.i18n, ctx.accounts)
         }) {
             if c.router().routes().iter().any(|r| r == &route) {
@@ -847,7 +853,7 @@ fn chrome_handle_app_action(
             if let Some(action) = m_action {
                 let col = cols.selected_mut();
 
-                action.process(&mut col.router, &mut col.sheet_router);
+                action.process(0, &mut col.router, &mut col.sheet_router);
             }
         }
     }
@@ -903,7 +909,7 @@ fn columns_route_to_profile(
     if let Some(action) = m_action {
         let col = cols.selected_mut();
 
-        action.process(&mut col.router, &mut col.sheet_router);
+        action.process(0, &mut col.router, &mut col.sheet_router);
     }
 }
 

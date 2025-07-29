@@ -76,6 +76,17 @@ impl<'a> NavTitle<'a> {
     }
 
     fn title_bar(&mut self, ui: &mut egui::Ui) -> Option<RenderNavAction> {
+        let col_idx = 1 + self.col_id;
+        ui.add_enabled(
+            false,
+            egui::Button::new(
+                RichText::new(col_idx.to_string())
+                    .text_style(NotedeckTextStyle::Small.text_style()),
+            )
+            .fill(ui.visuals().noninteractive().bg_fill)
+            .corner_radius(8.0),
+        );
+
         let item_spacing = 8.0;
         ui.spacing_mut().item_spacing.x = item_spacing;
 

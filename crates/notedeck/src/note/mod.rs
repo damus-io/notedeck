@@ -1,7 +1,7 @@
 mod action;
 mod context;
 
-pub use action::{NoteAction, ScrollInfo, ZapAction, ZapTargetAmount};
+pub use action::{NoteAction, OpenColumnInfo, ScrollInfo, ZapAction, ZapTargetAmount};
 pub use context::{BroadcastContext, ContextSelection, NoteContextSelection};
 
 use crate::Accounts;

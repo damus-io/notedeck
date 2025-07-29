@@ -124,6 +124,7 @@ fn render_text_segments(
             }
             TextSegment::UserMention(pubkey) | TextSegment::ThreadUserMention(pubkey) => {
                 let action = Mention::new(
+                    note_context.i18n,
                     note_context.ndb,
                     note_context.img_cache,
                     txn,
