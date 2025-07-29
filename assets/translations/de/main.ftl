@@ -6,7 +6,7 @@
 # Regular strings
 
 # Profile about/bio field label
-About_00c0 = Über
+About_00c0 = Über mich
 # Column title for account management
 Accounts_f018 = Konten
 # Button label to add a relay
@@ -88,7 +88,7 @@ Copy_Pubkey_9cc4 = Pubkey kopieren
 # Copy the text content of the note to clipboard
 Copy_Text_f81c = Text kopieren
 # Relative time in days
-count_d_b9be = { $count }T.
+count_d_b9be = { $count }Tg.
 # Relative time in hours
 count_h_3ecb = { $count }Std.
 # Relative time in minutes
@@ -328,7 +328,7 @@ Tap_to_Load_4b05 = Zum Laden antippen
 # Message shown when Dave trial period has ended
 The_Dave_Nostr_AI_assistant_trial_has_ended_____Thanks_for_testing__Zap-enabled_Dave_coming_soon_c6c7 = Die Testphase des Dave Nostr KI-Assistenten ist beendet :(. Vielen Dank fürs Ausprobieren! Zap-fähiger Dave kommt bald!
 # Column title for note thread view
-Thread_0f20 = Unterhaltungen
+Thread_0f20 = Unterhaltung
 # Link text for thread references
 thread_ad1f = Unterhaltung
 # Title for universe column

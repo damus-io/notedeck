@@ -45,6 +45,8 @@ Algo_2452 = อัลกอฯ
 Algorithmic_feeds_to_aid_in_note_discovery_d344 = ฟีดแบบอัลกอริทึมที่ช่วยในการค้นหาโน้ต
 # Label for zap amount input field
 Amount_70f0 = จำนวน
+# Label for appearance settings section
+Appearance_4c7f = รูปลักษณ์
 # Button to send message to Dave AI assistant
 Ask_b7f4 = ถาม
 # Placeholder text for Dave AI input field
@@ -53,16 +55,26 @@ Ask_dave_anything_33d1 = ถามเดฟได้ทุกเรื่อง.
 Banner_52ef = ภาพปก
 # Beta version label
 BETA_8e5d = เบต้า
+# Option in settings section to show the source client label at the bottom of the note
+Bottom_33c8 = ด้านล่าง
 # Broadcast the note to all connected relays
 Broadcast_fe43 = เผยแพร่
 # Broadcast the note only to local network relays
 Broadcast_Local_7e50 = เผยแพร่เฉพาะที่
 # Button label to cancel an action
 Cancel_ed3b = ยกเลิก
+# Label for cancel clear cache, Storage settings section
+Cancel_fd8b = ยกเลิก
+# Label for clear cache button, Storage settings section
+Clear_cache_dccb = ล้างแคช
 # Hover text for editable zap amount
 Click_to_edit_0414 = คลิกเพื่อแก้ไข
 # Column title for note composition
 Compose_Note_c094 = เขียนโน้ต
+# Label for configure relays, settings section
+Configure_relays_d156 = กำหนดค่ารีเลย์
+# Label for confirm clear cache, Storage settings section
+Confirm_9d9d = ยืนยัน
 # Button label to confirm an action
 Confirm_f8a6 = ยืนยัน
 # Status label for connected relay
@@ -111,6 +123,8 @@ Custom_a69e = กำหนดเอง
 Customize_Zap_Amount_cfc4 = กำหนดจำนวน Zap
 # Column title for support page
 Damus_Support_27c0 = ฝ่ายสนับสนุน Damus
+# Label for Theme Dark, Appearance settings section
+Dark_85fe = มืด
 # Label for deck name input field
 Deck_name_cd32 = ชื่อ Deck
 # Label for decks section in side panel
@@ -153,10 +167,14 @@ Enter_your_public_key__npub___nostr_address__e_g___address____or_private_key__ns
 Find_User_bd12 = ค้นหาผู้ใช้
 # Title for hashtags column
 Hashtags_f8e0 = แฮชแท็ก
+# Option in settings section to hide the source client label in note display
+Hide_281d = ซ่อน
 # Title for Home column
 Home_8c19 = หน้าแรก
 # Label for deck icon selection
 Icon_b0ab = ไอคอน
+# Label for Image cache size, Storage settings section
+Image_cache_size_3004 = ขนาดแคชรูปภาพ:
 # Title for individual user column
 Individual_b776 = ปัจเจคบุคคล
 # Error message for invalid zap amount
@@ -177,8 +195,12 @@ k_50K_c2dc = 50K
 k_5K_f7e6 = 5K
 # Description for your notes column
 Keep_track_of_your_notes___replies_a334 = ติดตามโน้ตและการตอบกลับของคุณ
+# Label for language, Appearance settings section
+Language_e264 = ภาษา:
 # Title for last note per user column
 Last_Note_per_User_17ad = โน้ตล่าสุดของผู้ใช้แต่ละคน
+# Label for Theme Light, Appearance settings section
+Light_7475 = สว่าง
 # Bitcoin Lightning network address field label
 Lightning_network_address__lud16_ea51 = ที่อยู่ Lightning Network (lud16)
 # Login page title
@@ -221,6 +243,8 @@ now_2181 = เมื่อสักครู่
 Open_Email_25e9 = เปิดอีเมล
 # Instruction to open email client
 Open_your_default_email_client_to_get_help_from_the_Damus_team_68dc = เปิดโปรแกรมอีเมลของคุณเพื่อรับความช่วยเหลือจากทีม Damus
+# Label for others settings section
+Others_7267 = อื่นๆ
 # Placeholder text for NWC URI input
 Paste_your_NWC_URI_here_b471 = วาง NWC URI ของคุณที่นี่...
 # Error message for missing deck name
@@ -267,6 +291,8 @@ replying_to_a_note_e0bc = ตอบกลับโน้ต
 Repost_this_note_8e56 = รีโพสต์โน้ตนี้
 # Label for reposted notes
 Reposted_61c8 = รีโพสต์แล้ว
+# Label for reset zoom level, Appearance settings section
+Reset_62d4 = รีเซ็ต
 # Heading for support section
 Running_into_a_bug_1796 = พบปัญหาในการใช้งานใช่ไหม?
 # Label for satoshis (Bitcoin unit) for custom zap amount input field
@@ -289,6 +315,10 @@ See_notes_from_your_contacts_ac16 = ดูโน้ตจากผู้ติ�
 See_the_whole_nostr_universe_7694 = ท่องจักรวาล Nostr ทั้งหมด
 # Button label to send a zap
 Send_1ea4 = ส่ง
+# Column title for app settings
+Settings_7a4f = การตั้งค่า
+# Label for Show source client, others settings section
+Show_source_client_9e31 = แสดงไคลเอนต์ต้นทาง
 # Description for last note per user column
 Show_the_last_note_for_each_user_from_a_list_50e7 = แสดงโน้ตล่าสุดของผู้ใช้แต่ละคนจากรายการ
 # Button label to sign out of account
@@ -315,6 +345,8 @@ Stay_up_to_date_with_your_notifications_and_mentions_e73e = ติดตาม�
 Step_1_8656 = ขั้นตอนที่ 1
 # Step 2 label in support instructions
 Step_2_d08d = ขั้นตอนที่ 2
+# Label for storage settings section
+Storage_ed65 = พื้นที่จัดเก็บ
 # Column title for subscribing to external user
 Subscribe_to_someone_else_s_notes_d1e9 = ติดตามโน้ตของผู้อื่น
 # Column title for subscribing to individual user
@@ -327,10 +359,14 @@ Switch_to_light_mode_72ce = เปลี่ยนเป็นโหมดสว�
 Tap_to_Load_4b05 = แตะเพื่อโหลด
 # Message shown when Dave trial period has ended
 The_Dave_Nostr_AI_assistant_trial_has_ended_____Thanks_for_testing__Zap-enabled_Dave_coming_soon_c6c7 = ช่วงทดลองใช้ผู้ช่วย AI 'Dave Nostr' ได้สิ้นสุดลงแล้ว :( ขอบคุณที่ร่วมทดสอบ! Dave ที่รองรับการ Zap กำลังจะมาเร็วๆ นี้!
+# Label for theme, Appearance settings section
+Theme_4aac = ธีม:
 # Column title for note thread view
 Thread_0f20 = เธรด
 # Link text for thread references
 thread_ad1f = เธรด
+# Option in settings section to show the source client label at the top of the note
+Top_6aeb = ด้านบน
 # Title for universe column
 Universe_e01e = จักรวาล
 # Column title for universe feed
@@ -341,6 +377,8 @@ Use_this_wallet_for_the_current_account_only_61dc = ใช้วอลเล็�
 username___at___domain___will_be_used_for_identification_a4fd = "{ $username }" ที่ "{ $domain }" จะถูกใช้สำหรับการระบุตัวตน
 # Profile username field label
 Username_daa7 = ชื่อผู้ใช้
+# Label for view folder button, Storage settings section
+View_folder_9742 = ดูโฟลเดอร์:
 # Column title for wallet management
 Wallet_5e50 = วอลเล็ต
 # Hint for deck name input field
@@ -359,6 +397,8 @@ Your_Notifications_080d = การแจ้งเตือนของคุณ
 Zap_16b4 = Zap
 # Hover text for zap button
 Zap_this_note_42b2 = Zap โน้ตนี้
+# Label for zoom level, Appearance settings section
+Zoom_Level_29a8 = ระดับการซูม:
 
 # Pluralized strings
 
