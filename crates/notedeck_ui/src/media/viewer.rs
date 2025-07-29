@@ -51,7 +51,7 @@ impl MediaViewerState {
         ui.ctx().animate_bool_with_time_and_easing(
             self.anim_id,
             self.flags.contains(MediaViewerFlags::Open),
-            0.5,
+            0.3,
             egui::emath::easing::cubic_out,
         )
     }
