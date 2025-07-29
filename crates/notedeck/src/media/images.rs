@@ -137,7 +137,7 @@ fn resize_image_if_too_big(
 ///
 #[profiling::function]
 fn process_image(imgtyp: ImageType, mut image: image::DynamicImage) -> ColorImage {
-    const MAX_IMG_LENGTH: u32 = 512;
+    const MAX_IMG_LENGTH: u32 = 2048;
     const FILTER_TYPE: FilterType = FilterType::CatmullRom;
 
     match imgtyp {
