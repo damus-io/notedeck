@@ -1,6 +1,8 @@
 use std::path::Path;
 
-use egui::{Button, Color32, Context, CornerRadius, FontId, Image, Response, TextureHandle};
+use egui::{
+    vec2, Button, Color32, Context, CornerRadius, FontId, Image, Response, TextureHandle, Vec2,
+};
 use notedeck::{
     compute_blurhash, fonts::get_font_size, show_one_error_message, tr, BlurhashParams,
     GifStateMap, Images, Job, JobId, JobParams, JobPool, JobState, JobsCache, Localization,
@@ -11,6 +13,7 @@ use notedeck::{
 use notedeck::media::gif::ensure_latest_texture;
 use notedeck::media::images::{fetch_no_pfp_promise, ImageType};
 use notedeck::media::{MediaInfo, ViewMediaInfo};
+use notedeck::ui::is_narrow;
 
 use crate::{app_images, AnimationHelper, PulseAlpha};
 
@@ -32,13 +35,16 @@ pub(crate) fn image_carousel(
 ) -> Option<MediaAction> {
     // let's make sure everything is within our area
 
-    let height = 360.0;
-    let width = ui.available_width();
+    let size = {
+        let height = 360.0;
+        let width = ui.available_width();
+        egui::vec2(width, height)
+    };
 
     let mut action = None;
 
     //let has_touch_screen = ui.ctx().input(|i| i.has_touch_screen());
-    ui.add_sized([width, height], |ui: &mut egui::Ui| {
+    ui.add_sized(size, |ui: &mut egui::Ui| {
         egui::ScrollArea::horizontal()
             .drag_to_scroll(false)
             .id_salt(carousel_id)
@@ -63,7 +69,7 @@ pub(crate) fn image_carousel(
                             job_pool,
                             jobs,
                             trusted_media,
-                            height,
+                            size,
                             &mut cache.textures_cache,
                             url,
                             *media_type,
@@ -76,7 +82,7 @@ pub(crate) fn image_carousel(
                             &mut img_cache.gif_states,
                             media_state,
                             url,
-                            height,
+                            size,
                             i18n,
                         );
 
@@ -98,7 +104,7 @@ pub(crate) fn image_carousel(
                             media_infos,
                             i,
                             img_cache,
-                            ImageType::Content(Some((width as u32, height as u32))),
+                            ImageType::Content(Some((size.x as u32, size.y as u32))),
                         );
                     }
                 })
@@ -182,7 +188,7 @@ pub fn get_content_media_render_state<'a>(
     job_pool: &'a mut JobPool,
     jobs: &'a mut JobsCache,
     media_trusted: bool,
-    height: f32,
+    size: Vec2,
     cache: &'a mut TexturesCache,
     url: &'a str,
     cache_type: MediaCacheType,
@@ -208,7 +214,7 @@ pub fn get_content_media_render_state<'a>(
             obfuscation_type,
             job_pool,
             jobs,
-            height,
+            size,
         ));
     };
 
@@ -219,11 +225,11 @@ pub fn get_content_media_render_state<'a>(
             obfuscation_type,
             job_pool,
             jobs,
-            height,
+            size,
         )),
         notedeck::LoadableTextureState::Error(e) => MediaRenderState::Error(e),
         notedeck::LoadableTextureState::Loading { actual_image_tex } => {
-            let obfuscation = get_obfuscated(ui, url, obfuscation_type, job_pool, jobs, height);
+            let obfuscation = get_obfuscated(ui, url, obfuscation_type, job_pool, jobs, size);
             MediaRenderState::Transitioning {
                 image: actual_image_tex,
                 obfuscation,
@@ -241,7 +247,7 @@ fn get_obfuscated<'a>(
     obfuscation_type: &'a ObfuscationType,
     job_pool: &'a mut JobPool,
     jobs: &'a mut JobsCache,
-    height: f32,
+    size: Vec2,
 ) -> ObfuscatedTexture<'a> {
     let ObfuscationType::Blurhash(renderable_blur) = obfuscation_type else {
         return ObfuscatedTexture::Default;
@@ -254,8 +260,8 @@ fn get_obfuscated<'a>(
     };
 
     let available_points = PointDimensions {
-        x: ui.available_width(),
-        y: height,
+        x: size.x,
+        y: size.y,
     };
 
     let pixel_sizes = renderable_blur.scaled_pixel_dimensions(ui, available_points);
@@ -307,12 +313,12 @@ fn render_media(
     gifs: &mut GifStateMap,
     render_state: MediaRenderState,
     url: &str,
-    height: f32,
+    size: egui::Vec2,
     i18n: &mut Localization,
 ) -> egui::InnerResponse<Option<MediaUIAction>> {
     match render_state {
         MediaRenderState::ActualImage(image) => {
-            let resp = render_success_media(ui, url, image, gifs, height, i18n);
+            let resp = render_success_media(ui, url, image, gifs, size, i18n);
             if resp.clicked() {
                 egui::InnerResponse::new(Some(MediaUIAction::Clicked), resp)
             } else {
@@ -322,38 +328,46 @@ fn render_media(
         MediaRenderState::Transitioning { image, obfuscation } => match obfuscation {
             ObfuscatedTexture::Blur(texture) => {
                 let resp =
-                    render_blur_transition(ui, url, height, texture, image.get_first_texture());
+                    render_blur_transition(ui, url, size, texture, image.get_first_texture());
                 if resp.inner {
                     egui::InnerResponse::new(Some(MediaUIAction::DoneLoading), resp.response)
                 } else {
                     egui::InnerResponse::new(None, resp.response)
                 }
             }
-            ObfuscatedTexture::Default => egui::InnerResponse::new(
-                Some(MediaUIAction::DoneLoading),
-                ui.add(texture_to_image(image.get_first_texture(), height)),
-            ),
+            ObfuscatedTexture::Default => {
+                let scaled = ScaledTexture::new(
+                    image.get_first_texture(),
+                    size,
+                    notedeck::ui::is_narrow(ui.ctx()),
+                );
+                let resp = ui.add(scaled.get_image());
+                egui::InnerResponse::new(Some(MediaUIAction::DoneLoading), resp)
+            }
         },
         MediaRenderState::Error(e) => {
-            let resp = ui.allocate_response(egui::vec2(height, height), egui::Sense::click());
+            let response = ui.allocate_response(size, egui::Sense::hover());
             show_one_error_message(ui, &format!("Could not render media {url}: {e}"));
-            egui::InnerResponse::new(Some(MediaUIAction::Error), resp)
+            egui::InnerResponse::new(Some(MediaUIAction::Error), response)
         }
         MediaRenderState::Shimmering(obfuscated_texture) => match obfuscated_texture {
             ObfuscatedTexture::Blur(texture_handle) => {
-                egui::InnerResponse::new(None, shimmer_blurhash(texture_handle, ui, url, height))
+                egui::InnerResponse::new(None, shimmer_blurhash(texture_handle, ui, url, size))
             }
             ObfuscatedTexture::Default => {
-                egui::InnerResponse::new(None, render_default_blur_bg(ui, height, url, true))
+                egui::InnerResponse::new(None, render_default_blur_bg(ui, size, url, true))
             }
         },
         MediaRenderState::Obfuscated(obfuscated_texture) => {
             let resp = match obfuscated_texture {
                 ObfuscatedTexture::Blur(texture_handle) => {
-                    let resp = ui.add(texture_to_image(texture_handle, height));
+                    let scaled =
+                        ScaledTexture::new(texture_handle, size, notedeck::ui::is_narrow(ui.ctx()));
+
+                    let resp = ui.add(scaled.get_image());
                     render_blur_text(ui, i18n, url, resp.rect)
                 }
-                ObfuscatedTexture::Default => render_default_blur(ui, i18n, height, url),
+                ObfuscatedTexture::Default => render_default_blur(ui, i18n, size, url),
             };
 
             let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
@@ -455,20 +469,26 @@ fn render_blur_text(
 fn render_default_blur(
     ui: &mut egui::Ui,
     i18n: &mut Localization,
-    height: f32,
+    size: egui::Vec2,
     url: &str,
 ) -> egui::Response {
-    let response = render_default_blur_bg(ui, height, url, false);
+    let response = render_default_blur_bg(ui, size, url, false);
     render_blur_text(ui, i18n, url, response.rect)
 }
 
 fn render_default_blur_bg(
     ui: &mut egui::Ui,
-    height: f32,
+    size: egui::Vec2,
     url: &str,
     shimmer: bool,
 ) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(height, height), egui::Sense::click());
+    let size = if notedeck::ui::is_narrow(ui.ctx()) {
+        size
+    } else {
+        vec2(size.y, size.y)
+    };
+
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
 
     let painter = ui.painter_at(rect);
 
@@ -526,22 +546,24 @@ fn render_success_media(
     url: &str,
     tex: &mut TexturedImage,
     gifs: &mut GifStateMap,
-    height: f32,
+    size: Vec2,
     i18n: &mut Localization,
 ) -> Response {
     let texture = ensure_latest_texture(ui, url, gifs, tex);
-    let img = texture_to_image(&texture, height);
-    let img_resp = ui.add(Button::image(img).frame(false));
+
+    let scaled = ScaledTexture::new(&texture, size, is_narrow(ui.ctx()));
+
+    let img_resp = ui.add(Button::image(scaled.get_image()).frame(false));
 
     copy_link(i18n, url, &img_resp);
 
     img_resp
 }
 
-fn texture_to_image(tex: &TextureHandle, max_height: f32) -> egui::Image {
+fn texture_to_image<'a>(tex: &TextureHandle, size: Vec2) -> egui::Image<'a> {
     Image::new(tex)
-        .max_height(max_height)
         .corner_radius(5.0)
+        .fit_to_exact_size(size)
         .maintain_aspect_ratio(true)
 }
 
@@ -565,11 +587,11 @@ fn shimmer_blurhash(
     tex: &TextureHandle,
     ui: &mut egui::Ui,
     url: &str,
-    max_height: f32,
+    size: Vec2,
 ) -> egui::Response {
     let cur_alpha = get_blur_current_alpha(ui, url);
 
-    let scaled = ScaledTexture::new(tex, max_height);
+    let scaled = ScaledTexture::new(tex, size, is_narrow(ui.ctx()));
     let img = scaled.get_image();
     show_blurhash_with_alpha(ui, img, cur_alpha)
 }
@@ -591,52 +613,57 @@ type FinishedTransition = bool;
 fn render_blur_transition(
     ui: &mut egui::Ui,
     url: &str,
-    max_height: f32,
+    size: Vec2,
     blur_texture: &TextureHandle,
     image_texture: &TextureHandle,
 ) -> egui::InnerResponse<FinishedTransition> {
-    let scaled_texture = ScaledTexture::new(image_texture, max_height);
+    let scaled_texture = ScaledTexture::new(image_texture, size, is_narrow(ui.ctx()));
+    let scaled_blur_img = ScaledTexture::new(blur_texture, size, is_narrow(ui.ctx()));
 
-    let blur_img = texture_to_image(blur_texture, max_height);
     match get_blur_transition_state(ui.ctx(), url) {
-        BlurTransitionState::StoppingShimmer { cur_alpha } => {
-            egui::InnerResponse::new(false, show_blurhash_with_alpha(ui, blur_img, cur_alpha))
+        BlurTransitionState::StoppingShimmer { cur_alpha } => egui::InnerResponse::new(
+            false,
+            show_blurhash_with_alpha(ui, scaled_blur_img.get_image(), cur_alpha),
+        ),
+        BlurTransitionState::FadingBlur => {
+            render_blur_fade(ui, url, scaled_blur_img.get_image(), &scaled_texture)
         }
-        BlurTransitionState::FadingBlur => render_blur_fade(ui, url, blur_img, &scaled_texture),
     }
 }
 
 struct ScaledTexture<'a> {
     tex: &'a TextureHandle,
-    max_height: f32,
-    pub scaled_size: egui::Vec2,
+    size: Vec2,
+    pub scaled_size: Vec2,
 }
 
 impl<'a> ScaledTexture<'a> {
-    pub fn new(tex: &'a TextureHandle, max_height: f32) -> Self {
-        let scaled_size = {
-            let mut size = tex.size_vec2();
+    pub fn new(tex: &'a TextureHandle, max_size: Vec2, is_narrow: bool) -> Self {
+        let tex_size = tex.size_vec2();
 
-            if size.y > max_height {
-                let old_y = size.y;
-                size.y = max_height;
-                size.x *= max_height / old_y;
+        let scaled_size = if !is_narrow {
+            if tex_size.y > max_size.y {
+                let scale = max_size.y / tex_size.y;
+                tex_size * scale
+            } else {
+                tex_size
             }
-
-            size
+        } else if tex_size.x != max_size.x {
+            let scale = max_size.x / tex_size.x;
+            tex_size * scale
+        } else {
+            tex_size
         };
 
         Self {
             tex,
-            max_height,
+            size: max_size,
             scaled_size,
         }
     }
 
     pub fn get_image(&self) -> Image {
-        texture_to_image(self.tex, self.max_height)
-            .max_size(self.scaled_size)
-            .shrink_to_fit()
+        texture_to_image(self.tex, self.size).fit_to_exact_size(self.scaled_size)
     }
 }
 
