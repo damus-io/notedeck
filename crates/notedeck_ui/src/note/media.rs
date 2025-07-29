@@ -10,10 +10,10 @@ use notedeck::{
     RenderableMedia, TexturedImage, TexturesCache,
 };
 
+use crate::NoteOptions;
 use notedeck::media::gif::ensure_latest_texture;
 use notedeck::media::images::{fetch_no_pfp_promise, ImageType};
 use notedeck::media::{MediaInfo, ViewMediaInfo};
-use notedeck::ui::is_narrow;
 
 use crate::{app_images, AnimationHelper, PulseAlpha};
 
@@ -23,7 +23,7 @@ pub enum MediaViewAction {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn image_carousel(
+pub fn image_carousel(
     ui: &mut egui::Ui,
     img_cache: &mut Images,
     job_pool: &mut JobPool,
@@ -32,6 +32,7 @@ pub(crate) fn image_carousel(
     carousel_id: egui::Id,
     trusted_media: bool,
     i18n: &mut Localization,
+    note_options: NoteOptions,
 ) -> Option<MediaAction> {
     // let's make sure everything is within our area
 
@@ -84,6 +85,7 @@ pub(crate) fn image_carousel(
                             url,
                             size,
                             i18n,
+                            note_options.contains(NoteOptions::Wide),
                         );
 
                         if let Some(action) = media_response.inner {
@@ -315,10 +317,11 @@ fn render_media(
     url: &str,
     size: egui::Vec2,
     i18n: &mut Localization,
+    is_scaled: bool,
 ) -> egui::InnerResponse<Option<MediaUIAction>> {
     match render_state {
         MediaRenderState::ActualImage(image) => {
-            let resp = render_success_media(ui, url, image, gifs, size, i18n);
+            let resp = render_success_media(ui, url, image, gifs, size, i18n, is_scaled);
             if resp.clicked() {
                 egui::InnerResponse::new(Some(MediaUIAction::Clicked), resp)
             } else {
@@ -327,8 +330,14 @@ fn render_media(
         }
         MediaRenderState::Transitioning { image, obfuscation } => match obfuscation {
             ObfuscatedTexture::Blur(texture) => {
-                let resp =
-                    render_blur_transition(ui, url, size, texture, image.get_first_texture());
+                let resp = render_blur_transition(
+                    ui,
+                    url,
+                    size,
+                    texture,
+                    image.get_first_texture(),
+                    is_scaled,
+                );
                 if resp.inner {
                     egui::InnerResponse::new(Some(MediaUIAction::DoneLoading), resp.response)
                 } else {
@@ -336,11 +345,7 @@ fn render_media(
                 }
             }
             ObfuscatedTexture::Default => {
-                let scaled = ScaledTexture::new(
-                    image.get_first_texture(),
-                    size,
-                    notedeck::ui::is_narrow(ui.ctx()),
-                );
+                let scaled = ScaledTexture::new(image.get_first_texture(), size, is_scaled);
                 let resp = ui.add(scaled.get_image());
                 egui::InnerResponse::new(Some(MediaUIAction::DoneLoading), resp)
             }
@@ -351,23 +356,27 @@ fn render_media(
             egui::InnerResponse::new(Some(MediaUIAction::Error), response)
         }
         MediaRenderState::Shimmering(obfuscated_texture) => match obfuscated_texture {
-            ObfuscatedTexture::Blur(texture_handle) => {
-                egui::InnerResponse::new(None, shimmer_blurhash(texture_handle, ui, url, size))
-            }
+            ObfuscatedTexture::Blur(texture_handle) => egui::InnerResponse::new(
+                None,
+                shimmer_blurhash(texture_handle, ui, url, size, is_scaled),
+            ),
             ObfuscatedTexture::Default => {
-                egui::InnerResponse::new(None, render_default_blur_bg(ui, size, url, true))
+                let shimmer = true;
+                egui::InnerResponse::new(
+                    None,
+                    render_default_blur_bg(ui, size, url, shimmer, is_scaled),
+                )
             }
         },
         MediaRenderState::Obfuscated(obfuscated_texture) => {
             let resp = match obfuscated_texture {
                 ObfuscatedTexture::Blur(texture_handle) => {
-                    let scaled =
-                        ScaledTexture::new(texture_handle, size, notedeck::ui::is_narrow(ui.ctx()));
+                    let scaled = ScaledTexture::new(texture_handle, size, is_scaled);
 
                     let resp = ui.add(scaled.get_image());
                     render_blur_text(ui, i18n, url, resp.rect)
                 }
-                ObfuscatedTexture::Default => render_default_blur(ui, i18n, size, url),
+                ObfuscatedTexture::Default => render_default_blur(ui, i18n, size, url, is_scaled),
             };
 
             let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
@@ -471,8 +480,10 @@ fn render_default_blur(
     i18n: &mut Localization,
     size: egui::Vec2,
     url: &str,
+    is_scaled: bool,
 ) -> egui::Response {
-    let response = render_default_blur_bg(ui, size, url, false);
+    let shimmer = false;
+    let response = render_default_blur_bg(ui, size, url, shimmer, is_scaled);
     render_blur_text(ui, i18n, url, response.rect)
 }
 
@@ -481,8 +492,9 @@ fn render_default_blur_bg(
     size: egui::Vec2,
     url: &str,
     shimmer: bool,
+    is_scaled: bool,
 ) -> egui::Response {
-    let size = if notedeck::ui::is_narrow(ui.ctx()) {
+    let size = if is_scaled {
         size
     } else {
         vec2(size.y, size.y)
@@ -548,10 +560,11 @@ fn render_success_media(
     gifs: &mut GifStateMap,
     size: Vec2,
     i18n: &mut Localization,
+    is_scaled: bool,
 ) -> Response {
     let texture = ensure_latest_texture(ui, url, gifs, tex);
 
-    let scaled = ScaledTexture::new(&texture, size, is_narrow(ui.ctx()));
+    let scaled = ScaledTexture::new(&texture, size, is_scaled);
 
     let img_resp = ui.add(Button::image(scaled.get_image()).frame(false));
 
@@ -588,10 +601,11 @@ fn shimmer_blurhash(
     ui: &mut egui::Ui,
     url: &str,
     size: Vec2,
+    is_scaled: bool,
 ) -> egui::Response {
     let cur_alpha = get_blur_current_alpha(ui, url);
 
-    let scaled = ScaledTexture::new(tex, size, is_narrow(ui.ctx()));
+    let scaled = ScaledTexture::new(tex, size, is_scaled);
     let img = scaled.get_image();
     show_blurhash_with_alpha(ui, img, cur_alpha)
 }
@@ -616,9 +630,10 @@ fn render_blur_transition(
     size: Vec2,
     blur_texture: &TextureHandle,
     image_texture: &TextureHandle,
+    is_scaled: bool,
 ) -> egui::InnerResponse<FinishedTransition> {
-    let scaled_texture = ScaledTexture::new(image_texture, size, is_narrow(ui.ctx()));
-    let scaled_blur_img = ScaledTexture::new(blur_texture, size, is_narrow(ui.ctx()));
+    let scaled_texture = ScaledTexture::new(image_texture, size, is_scaled);
+    let scaled_blur_img = ScaledTexture::new(blur_texture, size, is_scaled);
 
     match get_blur_transition_state(ui.ctx(), url) {
         BlurTransitionState::StoppingShimmer { cur_alpha } => egui::InnerResponse::new(

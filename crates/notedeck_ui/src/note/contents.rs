@@ -323,6 +323,7 @@ pub fn render_note_contents<'a>(
             carousel_id,
             trusted_media,
             note_context.i18n,
+            options,
         );
         ui.add_space(2.0);
     }
