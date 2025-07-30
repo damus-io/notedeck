@@ -10,7 +10,7 @@ const ZOOM_FACTOR_FILE: &str = "zoom_level.json";
 const SETTINGS_FILE: &str = "settings.json";
 
 const DEFAULT_THEME: ThemePreference = ThemePreference::Dark;
-const DEFAULT_LOCALE: &str = "es-US";
+const DEFAULT_LOCALE: &str = "en-US";
 const DEFAULT_ZOOM_FACTOR: f32 = 1.0;
 const DEFAULT_SHOW_SOURCE_CLIENT: &str = "hide";
 const DEFAULT_SHOW_REPLIES_NEWEST_FIRST: bool = false;
