@@ -10,12 +10,10 @@ use crate::{
     subscriptions::{SubKind, Subscriptions},
     support::Support,
     timeline::{self, kind::ListKind, thread::Threads, TimelineCache, TimelineKind},
-    ui::{self, DesktopSidePanel, SidePanelAction},
+    ui::{self, DesktopSidePanel, ShowSourceClientOption, SidePanelAction},
     view_state::ViewState,
     Result,
 };
-
-use crate::ui::settings::ShowNoteClientOption;
 
 use egui_extras::{Size, StripBuilder};
 use enostr::{ClientMessage, PoolRelay, Pubkey, RelayEvent, RelayMessage, RelayPool};
@@ -506,12 +504,12 @@ impl Damus {
         );
         note_options.set(
             NoteOptions::ShowNoteClientTop,
-            ShowNoteClientOption::Top == app_context.settings_handler.show_source_client().into()
+            ShowSourceClientOption::Top == app_context.settings_handler.show_source_client().into()
                 || parsed_args.is_flag_set(ColumnsFlag::ShowNoteClientTop),
         );
         note_options.set(
             NoteOptions::ShowNoteClientBottom,
-            ShowNoteClientOption::Bottom
+            ShowSourceClientOption::Bottom
                 == app_context.settings_handler.show_source_client().into()
                 || parsed_args.is_flag_set(ColumnsFlag::ShowNoteClientBottom),
         );

@@ -6,35 +6,35 @@ use strum::Display;
 use crate::{nav::RouterAction, Damus, Route};
 
 #[derive(Clone, Copy, PartialEq, Eq, Display)]
-pub enum ShowNoteClientOption {
+pub enum ShowSourceClientOption {
     Hide,
     Top,
     Bottom,
 }
 
-impl From<ShowNoteClientOption> for String {
-    fn from(value: ShowNoteClientOption) -> Self {
-        match value {
-            ShowNoteClientOption::Hide => "hide".to_string(),
-            ShowNoteClientOption::Top => "top".to_string(),
-            ShowNoteClientOption::Bottom => "bottom".to_string(),
+impl Into<String> for ShowSourceClientOption {
+    fn into(self) -> String {
+        match self {
+            Self::Hide => "hide".to_string(),
+            Self::Top => "top".to_string(),
+            Self::Bottom => "bottom".to_string(),
         }
     }
 }
 
-impl From<NoteOptions> for ShowNoteClientOption {
+impl From<NoteOptions> for ShowSourceClientOption {
     fn from(note_options: NoteOptions) -> Self {
         if note_options.contains(NoteOptions::ShowNoteClientTop) {
-            ShowNoteClientOption::Top
+            ShowSourceClientOption::Top
         } else if note_options.contains(NoteOptions::ShowNoteClientBottom) {
-            ShowNoteClientOption::Bottom
+            ShowSourceClientOption::Bottom
         } else {
-            ShowNoteClientOption::Hide
+            ShowSourceClientOption::Hide
         }
     }
 }
 
-impl From<String> for ShowNoteClientOption {
+impl From<String> for ShowSourceClientOption {
     fn from(s: String) -> Self {
         match s.to_lowercase().as_str() {
             "hide" => Self::Hide,
@@ -45,7 +45,7 @@ impl From<String> for ShowNoteClientOption {
     }
 }
 
-impl ShowNoteClientOption {
+impl ShowSourceClientOption {
     pub fn set_note_options(self, note_options: &mut NoteOptions) {
         match self {
             Self::Hide => {
@@ -67,7 +67,7 @@ impl ShowNoteClientOption {
 pub enum SettingsAction {
     SetZoomFactor(f32),
     SetTheme(ThemePreference),
-    SetShowSourceClient(ShowNoteClientOption),
+    SetShowSourceClient(ShowSourceClientOption),
     SetLocale(LanguageIdentifier),
     OpenRelays,
     OpenCacheFolder,
@@ -125,7 +125,7 @@ impl SettingsAction {
 pub struct SettingsView<'a> {
     theme: &'a mut String,
     selected_language: &'a mut String,
-    show_note_client: &'a mut ShowNoteClientOption,
+    show_note_client: &'a mut ShowSourceClientOption,
     i18n: &'a mut Localization,
     img_cache: &'a mut Images,
 }
@@ -135,7 +135,7 @@ impl<'a> SettingsView<'a> {
         img_cache: &'a mut Images,
         selected_language: &'a mut String,
         theme: &'a mut String,
-        show_note_client: &'a mut ShowNoteClientOption,
+        show_note_client: &'a mut ShowSourceClientOption,
         i18n: &'a mut Localization,
     ) -> Self {
         Self {
@@ -160,19 +160,19 @@ impl<'a> SettingsView<'a> {
     }
 
     /// Get the localized label for ShowNoteClientOption
-    fn get_show_note_client_label(&mut self, option: ShowNoteClientOption) -> String {
+    fn get_show_note_client_label(&mut self, option: ShowSourceClientOption) -> String {
         match option {
-            ShowNoteClientOption::Hide => tr!(
+            ShowSourceClientOption::Hide => tr!(
                 self.i18n,
                 "Hide",
                 "Option in settings section to hide the source client label in note display"
             ),
-            ShowNoteClientOption::Top => tr!(
+            ShowSourceClientOption::Top => tr!(
                 self.i18n,
                 "Top",
                 "Option in settings section to show the source client label at the top of the note"
             ),
-            ShowNoteClientOption::Bottom => tr!(
+            ShowSourceClientOption::Bottom => tr!(
                 self.i18n,
                 "Bottom",
                 "Option in settings section to show the source client label at the bottom of the note"
@@ -463,9 +463,9 @@ impl<'a> SettingsView<'a> {
                                 );
 
                                 for option in [
-                                    ShowNoteClientOption::Hide,
-                                    ShowNoteClientOption::Top,
-                                    ShowNoteClientOption::Bottom,
+                                    ShowSourceClientOption::Hide,
+                                    ShowSourceClientOption::Top,
+                                    ShowSourceClientOption::Bottom,
                                 ] {
                                     let label = self.get_show_note_client_label(option);
 

@@ -21,7 +21,7 @@ use crate::{
         note::{custom_zap::CustomZapView, NewPostAction, PostAction, PostType, QuoteRepostView},
         profile::EditProfileView,
         search::{FocusState, SearchView},
-        settings::SettingsAction,
+        settings::{SettingsAction, ShowSourceClientOption},
         support::SupportView,
         wallet::{get_default_zap_state, WalletAction, WalletState, WalletView},
         AccountsView, PostReplyView, PostView, ProfileView, RelayView, SettingsView, ThreadView,
@@ -29,8 +29,6 @@ use crate::{
     },
     Damus,
 };
-
-use crate::ui::settings::ShowNoteClientOption;
 
 use egui_nav::{Nav, NavAction, NavResponse, NavUiType, Percent, PopupResponse, PopupSheet};
 use enostr::ProfileState;
@@ -588,7 +586,7 @@ fn render_nav_body(
             .map(RenderNavAction::RelayAction),
 
         Route::Settings => {
-            let mut show_note_client: ShowNoteClientOption = app.note_options.into();
+            let mut show_note_client: ShowSourceClientOption = app.note_options.into();
 
             let mut theme: String = (if ui.visuals().dark_mode {
                 "Dark"
