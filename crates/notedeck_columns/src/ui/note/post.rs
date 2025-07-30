@@ -2,7 +2,7 @@ use crate::draft::{Draft, Drafts, MentionHint};
 #[cfg(not(target_os = "android"))]
 use crate::media_upload::{nostrbuild_nip96_upload, MediaPath};
 use crate::post::{downcast_post_buffer, MentionType, NewPost};
-use crate::ui::search_results::SearchResultsView;
+use crate::ui::mentions_picker::MentionPickerView;
 use crate::ui::{self, Preview, PreviewConfig};
 use crate::Result;
 
@@ -218,6 +218,7 @@ impl<'a, 'd> PostView<'a, 'd> {
         out.response
     }
 
+    // Displays the mention picker and handles when one is selected.
     fn show_mention_hints(
         &mut self,
         txn: &nostrdb::Transaction,
@@ -273,7 +274,7 @@ impl<'a, 'd> PostView<'a, 'd> {
             return;
         };
 
-        let resp = SearchResultsView::new(
+        let resp = MentionPickerView::new(
             self.note_context.img_cache,
             self.note_context.ndb,
             txn,
@@ -281,25 +282,34 @@ impl<'a, 'd> PostView<'a, 'd> {
         )
         .show_in_rect(hint_rect, ui);
 
+        let mut selection_made = None;
         match resp {
-            ui::search_results::SearchResultsResponse::SelectResult(selection) => {
+            ui::mentions_picker::MentionPickerResponse::SelectResult(selection) => {
                 if let Some(hint_index) = selection {
                     if let Some(pk) = res.get(hint_index) {
                         let record = self.note_context.ndb.get_profile_by_pubkey(txn, pk);
 
-                        self.draft.buffer.select_mention_and_replace_name(
-                            mention.index,
-                            get_display_name(record.ok().as_ref()).name(),
-                            Pubkey::new(**pk),
-                        );
+                        if let Some(made_selection) =
+                            self.draft.buffer.select_mention_and_replace_name(
+                                mention.index,
+                                get_display_name(record.ok().as_ref()).name(),
+                                Pubkey::new(**pk),
+                            )
+                        {
+                            selection_made = Some(made_selection);
+                        }
                         self.draft.cur_mention_hint = None;
                     }
                 }
             }
 
-            ui::search_results::SearchResultsResponse::DeleteMention => {
+            ui::mentions_picker::MentionPickerResponse::DeleteMention => {
                 self.draft.buffer.delete_mention(mention.index)
             }
+        }
+
+        if let Some(selection) = selection_made {
+            selection.process(ui.ctx(), textedit_output);
         }
     }
 

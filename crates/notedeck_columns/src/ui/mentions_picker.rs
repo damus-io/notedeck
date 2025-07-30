@@ -11,19 +11,21 @@ use notedeck_ui::{
 };
 use tracing::error;
 
-pub struct SearchResultsView<'a> {
+/// Displays user profiles for the user to pick from.
+/// Useful for manually typing a username and selecting the profile desired
+pub struct MentionPickerView<'a> {
     ndb: &'a Ndb,
     txn: &'a Transaction,
     img_cache: &'a mut Images,
     results: &'a Vec<&'a [u8; 32]>,
 }
 
-pub enum SearchResultsResponse {
+pub enum MentionPickerResponse {
     SelectResult(Option<usize>),
     DeleteMention,
 }
 
-impl<'a> SearchResultsView<'a> {
+impl<'a> MentionPickerView<'a> {
     pub fn new(
         img_cache: &'a mut Images,
         ndb: &'a Ndb,
@@ -38,8 +40,8 @@ impl<'a> SearchResultsView<'a> {
         }
     }
 
-    fn show(&mut self, ui: &mut egui::Ui, width: f32) -> SearchResultsResponse {
-        let mut search_results_selection = None;
+    fn show(&mut self, ui: &mut egui::Ui, width: f32) -> MentionPickerResponse {
+        let mut selection = None;
         ui.vertical(|ui| {
             for (i, res) in self.results.iter().enumerate() {
                 let profile = match self.ndb.get_profile_by_pubkey(self.txn, res) {
@@ -54,16 +56,16 @@ impl<'a> SearchResultsView<'a> {
                     .add(user_result(&profile, self.img_cache, i, width))
                     .clicked()
                 {
-                    search_results_selection = Some(i)
+                    selection = Some(i)
                 }
             }
         });
 
-        SearchResultsResponse::SelectResult(search_results_selection)
+        MentionPickerResponse::SelectResult(selection)
     }
 
-    pub fn show_in_rect(&mut self, rect: egui::Rect, ui: &mut egui::Ui) -> SearchResultsResponse {
-        let widget_id = ui.id().with("search_results");
+    pub fn show_in_rect(&mut self, rect: egui::Rect, ui: &mut egui::Ui) -> MentionPickerResponse {
+        let widget_id = ui.id().with("mention_results");
         let area_resp = egui::Area::new(widget_id)
             .order(egui::Order::Foreground)
             .fixed_pos(rect.left_top())
@@ -72,10 +74,10 @@ impl<'a> SearchResultsView<'a> {
                 let inner_margin_size = 8.0;
                 egui::Frame::NONE
                     .fill(ui.visuals().panel_fill)
-                    .inner_margin(inner_margin_size)
                     .show(ui, |ui| {
                         let width = rect.width() - (2.0 * inner_margin_size);
 
+                        ui.allocate_space(vec2(ui.available_width(), inner_margin_size));
                         let close_button_resp = {
                             let close_button_size = 16.0;
                             let (close_section_rect, _) = ui.allocate_exact_size(
@@ -95,16 +97,16 @@ impl<'a> SearchResultsView<'a> {
                             .inner
                         };
 
-                        ui.add_space(8.0);
+                        ui.allocate_space(vec2(ui.available_width(), inner_margin_size));
 
                         let scroll_resp = ScrollArea::vertical()
-                            .max_width(width)
+                            .max_width(rect.width())
                             .auto_shrink(Vec2b::FALSE)
                             .show(ui, |ui| self.show(ui, width));
                         ui.advance_cursor_after_rect(rect);
 
                         if close_button_resp {
-                            SearchResultsResponse::DeleteMention
+                            MentionPickerResponse::DeleteMention
                         } else {
                             scroll_resp.inner
                         }
@@ -128,7 +130,18 @@ fn user_result<'a>(
         let spacing = 8.0;
         let body_font_size = get_font_size(ui.ctx(), &NotedeckTextStyle::Body);
 
-        let helper = AnimationHelper::new(ui, ("user_result", index), vec2(width, max_image));
+        let animation_rect = {
+            let max_width = ui.available_width();
+            let extra_width = (max_width - width) / 2.0;
+            let left = ui.cursor().left();
+            let (rect, _) =
+                ui.allocate_exact_size(vec2(width + extra_width, max_image), egui::Sense::click());
+
+            let (_, right) = rect.split_left_right_at_x(left + extra_width);
+            right
+        };
+
+        let helper = AnimationHelper::new_from_rect(ui, ("user_result", index), animation_rect);
 
         let icon_rect = {
             let r = helper.get_animation_rect();

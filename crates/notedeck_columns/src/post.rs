@@ -1,4 +1,8 @@
-use egui::{text::LayoutJob, TextBuffer, TextFormat};
+use egui::{
+    text::{CCursor, CCursorRange, LayoutJob},
+    text_edit::TextEditOutput,
+    TextBuffer, TextEdit, TextFormat,
+};
 use enostr::{FullKeypair, Pubkey};
 use nostrdb::{Note, NoteBuilder, NoteReply};
 use std::{
@@ -270,6 +274,36 @@ impl Default for PostBuffer {
     }
 }
 
+/// New cursor index (indexed by characters) after operation is performed
+#[must_use = "must call MentionSelectedResponse::process"]
+pub struct MentionSelectedResponse {
+    pub next_cursor_index: usize,
+}
+
+impl MentionSelectedResponse {
+    pub fn process(&self, ctx: &egui::Context, text_edit_output: &TextEditOutput) {
+        let text_edit_id = text_edit_output.response.id;
+        let Some(mut before_state) = TextEdit::load_state(ctx, text_edit_id) else {
+            return;
+        };
+
+        let mut new_cursor = text_edit_output
+            .galley
+            .from_ccursor(CCursor::new(self.next_cursor_index));
+        new_cursor.ccursor.prefer_next_row = true;
+
+        before_state
+            .cursor
+            .set_char_range(Some(CCursorRange::one(CCursor::new(
+                self.next_cursor_index,
+            ))));
+
+        ctx.memory_mut(|mem| mem.request_focus(text_edit_id));
+
+        TextEdit::store_state(ctx, text_edit_id, before_state);
+    }
+}
+
 impl PostBuffer {
     pub fn get_new_mentions_key(&mut self) -> usize {
         let prev = self.mentions_key;
@@ -319,15 +353,21 @@ impl PostBuffer {
         mention_key: usize,
         full_name: &str,
         pk: Pubkey,
-    ) {
-        if let Some(info) = self.mentions.get(&mention_key) {
-            let text_start_index = info.start_index + 1;
-            self.delete_char_range(text_start_index..info.end_index);
-            self.insert_text(full_name, text_start_index);
-            self.select_full_mention(mention_key, pk);
-        } else {
+    ) -> Option<MentionSelectedResponse> {
+        let Some(info) = self.mentions.get(&mention_key) else {
             error!("Error selecting mention for index: {mention_key}. Have the following mentions: {:?}", self.mentions);
-        }
+            return None;
+        };
+        let text_start_index = info.start_index + 1; // increment by one to exclude the mention indicator, '@'
+        self.delete_char_range(text_start_index..info.end_index);
+        let text_chars_inserted = self.insert_text(full_name, text_start_index);
+        self.select_full_mention(mention_key, pk);
+
+        let space_chars_inserted = self.insert_text(" ", text_start_index + text_chars_inserted);
+
+        Some(MentionSelectedResponse {
+            next_cursor_index: text_start_index + text_chars_inserted + space_chars_inserted,
+        })
     }
 
     pub fn delete_mention(&mut self, mention_key: usize) {
@@ -917,9 +957,9 @@ mod tests {
         assert_eq!(buf.mentions.len(), 1);
         assert_eq!(buf.mentions.get(&0).unwrap().bounds(), 0..3);
         buf.select_mention_and_replace_name(0, "jb55", JB55());
-        assert_eq!(buf.as_str(), "@jb55");
+        assert_eq!(buf.as_str(), "@jb55 ");
 
-        buf.insert_text(" test", 5);
+        buf.insert_text("test", 6);
         assert_eq!(buf.as_str(), "@jb55 test");
 
         assert_eq!(buf.mentions.len(), 1);
@@ -1201,16 +1241,20 @@ mod tests {
 
         buf.insert_text("@jb", 0);
         buf.select_mention_and_replace_name(0, "jb55", JB55());
-        buf.insert_text(" test ", 5);
+        buf.insert_text("test ", 6);
+        assert_eq!(buf.as_str(), "@jb55 test ");
         buf.insert_text("@kernel", 11);
         buf.select_mention_and_replace_name(1, "KernelKind", KK());
-        buf.insert_text(" test", 22);
+        assert_eq!(buf.as_str(), "@jb55 test @KernelKind ");
 
+        buf.insert_text("test", 23);
         assert_eq!(buf.as_str(), "@jb55 test @KernelKind test");
+
         assert_eq!(buf.mentions.len(), 2);
 
-        buf.insert_text(" ", 5);
         buf.insert_text("@els", 6);
+        assert_eq!(buf.as_str(), "@jb55 @elstest @KernelKind test");
+
         assert_eq!(buf.mentions.len(), 3);
         assert_eq!(buf.mentions.get(&2).unwrap().bounds(), 6..10);
         buf.select_mention_and_replace_name(2, "elsat", JB55());
