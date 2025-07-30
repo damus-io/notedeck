@@ -5,6 +5,14 @@ use strum::Display;
 
 use crate::{nav::RouterAction, Damus, Route};
 
+const THEME_LIGHT: &str = "Light";
+const THEME_DARK: &str = "Dark";
+
+const MIN_ZOOM: f32 = 0.5;
+const MAX_ZOOM: f32 = 3.0;
+const ZOOM_STEP: f32 = 0.1;
+const RESET_ZOOM: f32 = 1.0;
+
 #[derive(Clone, Copy, PartialEq, Eq, Display)]
 pub enum ShowSourceClientOption {
     Hide,
@@ -62,6 +70,26 @@ impl ShowSourceClientOption {
             }
         }
     }
+
+    fn label<'a>(&self, i18n: &'a mut Localization) -> String {
+        match self {
+           ShowSourceClientOption::Hide => tr!(
+                i18n,
+                "Hide",
+                "Option in settings section to hide the source client label in note display"
+            ),
+            ShowSourceClientOption::Top => tr!(
+                i18n,
+                "Top",
+                "Option in settings section to show the source client label at the top of the note"
+            ),
+            ShowSourceClientOption::Bottom => tr!(
+                i18n,
+                "Bottom",
+                "Option in settings section to show the source client label at the bottom of the note"
+            ),
+        }
+    }
 }
 
 pub enum SettingsAction {
@@ -86,34 +114,32 @@ impl SettingsAction {
         let mut route_action: Option<RouterAction> = None;
 
         match self {
-            SettingsAction::OpenRelays => {
+            Self::OpenRelays => {
                 route_action = Some(RouterAction::route_to(Route::Relays));
             }
-            SettingsAction::SetZoomFactor(zoom_factor) => {
+            Self::SetZoomFactor(zoom_factor) => {
                 ctx.set_zoom_factor(zoom_factor);
                 settings_handler.set_zoom_factor(zoom_factor);
             }
-            SettingsAction::SetShowSourceClient(option) => {
+            Self::SetShowSourceClient(option) => {
                 option.set_note_options(&mut app.note_options);
 
                 settings_handler.set_show_source_client(option);
             }
-            SettingsAction::SetTheme(theme) => {
-                ctx.options_mut(|o| {
-                    o.theme_preference = theme;
-                });
+            Self::SetTheme(theme) => {
+                ctx.set_theme(theme);
                 settings_handler.set_theme(theme);
             }
-            SettingsAction::SetLocale(language) => {
+            Self::SetLocale(language) => {
                 if i18n.set_locale(language.clone()).is_ok() {
                     settings_handler.set_locale(language.to_string());
                 }
             }
-            SettingsAction::OpenCacheFolder => {
+            Self::OpenCacheFolder => {
                 use opener;
                 let _ = opener::open(img_cache.base_path.clone());
             }
-            SettingsAction::ClearCacheFolder => {
+            Self::ClearCacheFolder => {
                 let _ = img_cache.clear_folder_contents();
             }
         }
@@ -182,27 +208,6 @@ impl<'a> SettingsView<'a> {
         }
     }
 
-    /// Get the localized label for ShowNoteClientOption
-    fn get_show_note_client_label(&mut self, option: ShowSourceClientOption) -> String {
-        match option {
-            ShowSourceClientOption::Hide => tr!(
-                self.i18n,
-                "Hide",
-                "Option in settings section to hide the source client label in note display"
-            ),
-            ShowSourceClientOption::Top => tr!(
-                self.i18n,
-                "Top",
-                "Option in settings section to show the source client label at the top of the note"
-            ),
-            ShowSourceClientOption::Bottom => tr!(
-                self.i18n,
-                "Bottom",
-                "Option in settings section to show the source client label at the bottom of the note"
-            ),
-        }.to_string()
-    }
-
     pub fn appearance_section(&mut self, ui: &mut egui::Ui) -> Option<SettingsAction> {
         let mut action = None;
         let title = tr!(
@@ -220,11 +225,19 @@ impl<'a> SettingsView<'a> {
                     "Label for zoom level, Appearance settings section",
                 ));
 
+                let min_reached = current_zoom <= MIN_ZOOM;
+                let max_reached = current_zoom >= MAX_ZOOM;
+
                 if ui
-                    .button(RichText::new("-").text_style(NotedeckTextStyle::Small.text_style()))
+                    .add_enabled(
+                        !min_reached,
+                        Button::new(
+                            RichText::new("-").text_style(NotedeckTextStyle::Small.text_style()),
+                        ),
+                    )
                     .clicked()
                 {
-                    let new_zoom = (current_zoom - 0.1).max(0.1);
+                    let new_zoom = (current_zoom - ZOOM_STEP).max(MIN_ZOOM);
                     action = Some(SettingsAction::SetZoomFactor(new_zoom));
                 };
 
@@ -234,10 +247,15 @@ impl<'a> SettingsView<'a> {
                 );
 
                 if ui
-                    .button(RichText::new("+").text_style(NotedeckTextStyle::Small.text_style()))
+                    .add_enabled(
+                        !max_reached,
+                        Button::new(
+                            RichText::new("+").text_style(NotedeckTextStyle::Small.text_style()),
+                        ),
+                    )
                     .clicked()
                 {
-                    let new_zoom = (current_zoom + 0.1).min(10.0);
+                    let new_zoom = (current_zoom + ZOOM_STEP).min(MAX_ZOOM);
                     action = Some(SettingsAction::SetZoomFactor(new_zoom));
                 };
 
@@ -249,7 +267,7 @@ impl<'a> SettingsView<'a> {
                     ))
                     .clicked()
                 {
-                    action = Some(SettingsAction::SetZoomFactor(1.0));
+                    action = Some(SettingsAction::SetZoomFactor(RESET_ZOOM));
                 }
             });
 
@@ -288,10 +306,10 @@ impl<'a> SettingsView<'a> {
                 if ui
                     .selectable_value(
                         self.theme,
-                        "Light".into(),
+                        THEME_LIGHT.into(),
                         small_richtext(
                             self.i18n,
-                            "Light",
+                            THEME_LIGHT.into(),
                             "Label for Theme Light, Appearance settings section",
                         ),
                     )
@@ -302,10 +320,10 @@ impl<'a> SettingsView<'a> {
                 if ui
                     .selectable_value(
                         self.theme,
-                        "Dark".into(),
+                        THEME_DARK.into(),
                         small_richtext(
                             self.i18n,
-                            "Dark",
+                            THEME_DARK.into(),
                             "Label for Theme Dark, Appearance settings section",
                         ),
                     )
@@ -428,13 +446,12 @@ impl<'a> SettingsView<'a> {
                     ShowSourceClientOption::Top,
                     ShowSourceClientOption::Bottom,
                 ] {
-                    let label = self.get_show_note_client_label(option);
-
                     if ui
                         .selectable_value(
                             self.show_note_client,
                             option,
-                            RichText::new(label).text_style(NotedeckTextStyle::Small.text_style()),
+                            RichText::new(option.label(self.i18n))
+                                .text_style(NotedeckTextStyle::Small.text_style()),
                         )
                         .changed()
                     {

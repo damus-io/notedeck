@@ -84,9 +84,9 @@ impl SettingsHandler {
         }
     }
 
-    pub fn load(&mut self) {
+    pub fn load(mut self) -> Self {
         if self.migrate_to_settings_file().is_ok() {
-            return;
+            return self;
         }
 
         match self.directory.get_file(SETTINGS_FILE.to_string()) {
@@ -107,6 +107,8 @@ impl SettingsHandler {
                 self.current_settings = Some(Settings::default());
             }
         }
+
+        self
     }
 
     pub fn save(&self) {
