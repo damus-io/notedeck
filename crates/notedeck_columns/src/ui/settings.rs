@@ -278,6 +278,7 @@ impl<'a> SettingsView<'a> {
                     "Label for language, Appearance settings section",
                 ));
 
+                //
                 ComboBox::from_label("")
                     .selected_text(self.get_selected_language_name())
                     .show_ui(ui, |ui| {
@@ -294,7 +295,7 @@ impl<'a> SettingsView<'a> {
                                 action = Some(SettingsAction::SetLocale(lang.to_owned()))
                             }
                         }
-                    })
+                    });
             });
 
             ui.horizontal(|ui| {
