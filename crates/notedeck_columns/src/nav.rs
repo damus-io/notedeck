@@ -15,7 +15,7 @@ use crate::{
     ui::{
         self,
         add_column::{render_add_column_routes, AddColumnView},
-        column::NavTitle,
+        column::{NavTitle, RemoveColumnType},
         configure_deck::ConfigureDeckView,
         edit_deck::{EditDeckResponse, EditDeckView},
         note::{custom_zap::CustomZapView, NewPostAction, PostAction, PostType, QuoteRepostView},
@@ -56,7 +56,7 @@ impl ProcessNavResult {
 #[allow(clippy::enum_variant_names)]
 pub enum RenderNavAction {
     Back,
-    RemoveColumn,
+    RemoveColumn(RemoveColumnType),
     /// The response when the user interacts with a pfp in the nav header
     PfpClicked,
     PostAction(NewPostAction),
@@ -422,8 +422,26 @@ fn process_render_nav_action(
     let router_action = match action {
         RenderNavAction::Back => Some(RouterAction::GoBack),
         RenderNavAction::PfpClicked => Some(RouterAction::PfpClicked),
-        RenderNavAction::RemoveColumn => {
-            let kinds_to_pop = app.columns_mut(ctx.i18n, ctx.accounts).delete_column(col);
+        RenderNavAction::RemoveColumn(rtype) => {
+            let mut kinds_to_pop: Vec<TimelineKind> = vec![];
+            let columns = app.columns_mut(ctx.i18n, ctx.accounts);
+            match rtype {
+                RemoveColumnType::All => {
+                    kinds_to_pop.append(&mut columns.delete_all_columns());
+                }
+                RemoveColumnType::Current => {
+                    kinds_to_pop.append(&mut columns.delete_column(col));
+                }
+                RemoveColumnType::Other => {
+                    kinds_to_pop.append(&mut columns.delete_other(col));
+                }
+                RemoveColumnType::Left => {
+                    kinds_to_pop.append(&mut columns.delete_dir(col, true));
+                }
+                RemoveColumnType::Right => {
+                    kinds_to_pop.append(&mut columns.delete_dir(col, false));
+                }
+            }
 
             for kind in &kinds_to_pop {
                 if let Err(err) = app.timeline_cache.pop(kind, ctx.ndb, ctx.pool) {
