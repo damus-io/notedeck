@@ -178,10 +178,6 @@ impl<'a> SettingsView<'a> {
         i18n: &'a mut Localization,
         img_cache: &'a mut Images,
         settings: &'a mut Settings,
-        // theme: &'a mut String,
-        // show_note_client: &'a mut ShowSourceClientOption,
-        // show_wide: &'a mut bool,
-        // show_replies_newest_first: &'a mut bool,
     ) -> Self {
         Self {
             settings,
