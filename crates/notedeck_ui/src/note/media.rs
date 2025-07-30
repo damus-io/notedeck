@@ -50,67 +50,73 @@ pub fn image_carousel(
             .drag_to_scroll(false)
             .id_salt(carousel_id)
             .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    let mut media_infos: Vec<MediaInfo> = Vec::with_capacity(medias.len());
-                    let mut media_action: Option<(usize, MediaUIAction)> = None;
+                let response = ui
+                    .horizontal(|ui| {
+                        let spacing = ui.spacing_mut();
+                        spacing.item_spacing.x = 8.0;
 
-                    for (i, media) in medias.iter().enumerate() {
-                        let RenderableMedia {
-                            url,
-                            media_type,
-                            obfuscation_type: blur_type,
-                        } = media;
+                        let mut media_infos: Vec<MediaInfo> = Vec::with_capacity(medias.len());
+                        let mut media_action: Option<(usize, MediaUIAction)> = None;
 
-                        let cache = match media_type {
-                            MediaCacheType::Image => &mut img_cache.static_imgs,
-                            MediaCacheType::Gif => &mut img_cache.gifs,
-                        };
-                        let media_state = get_content_media_render_state(
-                            ui,
-                            job_pool,
-                            jobs,
-                            trusted_media,
-                            size,
-                            &mut cache.textures_cache,
-                            url,
-                            *media_type,
-                            &cache.cache_dir,
-                            blur_type,
-                        );
+                        for (i, media) in medias.iter().enumerate() {
+                            let RenderableMedia {
+                                url,
+                                media_type,
+                                obfuscation_type: blur_type,
+                            } = media;
 
-                        let media_response = render_media(
-                            ui,
-                            &mut img_cache.gif_states,
-                            media_state,
-                            url,
-                            size,
-                            i18n,
-                            note_options.contains(NoteOptions::Wide),
-                        );
+                            let cache = match media_type {
+                                MediaCacheType::Image => &mut img_cache.static_imgs,
+                                MediaCacheType::Gif => &mut img_cache.gifs,
+                            };
+                            let media_state = get_content_media_render_state(
+                                ui,
+                                job_pool,
+                                jobs,
+                                trusted_media,
+                                size,
+                                &mut cache.textures_cache,
+                                url,
+                                *media_type,
+                                &cache.cache_dir,
+                                blur_type,
+                            );
 
-                        if let Some(action) = media_response.inner {
-                            media_action = Some((i, action))
+                            let media_response = render_media(
+                                ui,
+                                &mut img_cache.gif_states,
+                                media_state,
+                                url,
+                                size,
+                                i18n,
+                                note_options.contains(NoteOptions::Wide),
+                            );
+
+                            if let Some(action) = media_response.inner {
+                                media_action = Some((i, action))
+                            }
+
+                            let rect = media_response.response.rect;
+                            media_infos.push(MediaInfo {
+                                url: url.clone(),
+                                original_position: rect,
+                            })
                         }
 
-                        let rect = media_response.response.rect;
-                        media_infos.push(MediaInfo {
-                            url: url.clone(),
-                            original_position: rect,
-                        })
-                    }
-
-                    if let Some((i, media_action)) = media_action {
-                        action = media_action.into_media_action(
-                            ui.ctx(),
-                            medias,
-                            media_infos,
-                            i,
-                            img_cache,
-                            ImageType::Content(Some((size.x as u32, size.y as u32))),
-                        );
-                    }
-                })
-                .response
+                        if let Some((i, media_action)) = media_action {
+                            action = media_action.into_media_action(
+                                ui.ctx(),
+                                medias,
+                                media_infos,
+                                i,
+                                img_cache,
+                                ImageType::Content(Some((size.x as u32, size.y as u32))),
+                            );
+                        }
+                    })
+                    .response;
+                ui.add_space(8.0);
+                response
             })
             .inner
     });
