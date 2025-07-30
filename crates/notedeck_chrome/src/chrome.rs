@@ -113,8 +113,7 @@ impl ChromePanelAction {
         match self {
             Self::SaveTheme(theme) => {
                 ui.ctx().set_theme(*theme);
-                ctx.settings_handler.set_theme(*theme);
-                ctx.settings_handler.save();
+                ctx.settings.set_theme(*theme);
             }
 
             Self::Toolbar(toolbar_action) => match toolbar_action {

@@ -1,18 +1,23 @@
 use crate::{
-    storage::{self, delete_file},
-    DataPath, DataPathType, Directory,
+    storage::delete_file, timed_serializer::TimedSerializer, DataPath, DataPathType, Directory,
 };
 use egui::ThemePreference;
 use serde::{Deserialize, Serialize};
 use tracing::{error, info};
 
 const THEME_FILE: &str = "theme.txt";
+const ZOOM_FACTOR_FILE: &str = "zoom_level.json";
 const SETTINGS_FILE: &str = "settings.json";
 
 const DEFAULT_THEME: ThemePreference = ThemePreference::Dark;
 const DEFAULT_LOCALE: &str = "es-US";
 const DEFAULT_ZOOM_FACTOR: f32 = 1.0;
 const DEFAULT_SHOW_SOURCE_CLIENT: &str = "hide";
+const DEFAULT_SHOW_REPLIES_NEWEST_FIRST: bool = false;
+#[cfg(any(target_os = "android", target_os = "ios"))]
+pub const DEFAULT_NOTE_BODY_FONT_SIZE: f32 = 13.0;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub const DEFAULT_NOTE_BODY_FONT_SIZE: f32 = 16.0;
 
 fn deserialize_theme(serialized_theme: &str) -> Option<ThemePreference> {
     match serialized_theme {
@@ -23,72 +28,96 @@ fn deserialize_theme(serialized_theme: &str) -> Option<ThemePreference> {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, PartialEq, Clone)]
 pub struct Settings {
     pub theme: ThemePreference,
     pub locale: String,
     pub zoom_factor: f32,
     pub show_source_client: String,
     pub show_replies_newest_first: bool,
+    pub note_body_font_size: f32,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        // Use the same fallback theme as before
         Self {
             theme: DEFAULT_THEME,
             locale: DEFAULT_LOCALE.to_string(),
             zoom_factor: DEFAULT_ZOOM_FACTOR,
             show_source_client: DEFAULT_SHOW_SOURCE_CLIENT.to_string(),
-            show_replies_newest_first: false,
+            show_replies_newest_first: DEFAULT_SHOW_REPLIES_NEWEST_FIRST,
+            note_body_font_size: DEFAULT_NOTE_BODY_FONT_SIZE,
         }
     }
 }
 
 pub struct SettingsHandler {
     directory: Directory,
+    serializer: TimedSerializer<Settings>,
     current_settings: Option<Settings>,
 }
 
 impl SettingsHandler {
-    fn read_legacy_theme(&self) -> Option<ThemePreference> {
+    fn read_from_theme_file(&self) -> Option<ThemePreference> {
         match self.directory.get_file(THEME_FILE.to_string()) {
             Ok(contents) => deserialize_theme(contents.trim()),
             Err(_) => None,
         }
     }
 
-    fn migrate_to_settings_file(&mut self) -> Result<(), ()> {
+    fn read_from_zomfactor_file(&self) -> Option<f32> {
+        match self.directory.get_file(ZOOM_FACTOR_FILE.to_string()) {
+            Ok(contents) => serde_json::from_str::<f32>(&contents).ok(),
+            Err(_) => None,
+        }
+    }
+
+    fn migrate_to_settings_file(&mut self) -> bool {
+        let mut settings = Settings::default();
+        let mut migrated = false;
         // if theme.txt exists migrate
-        if let Some(theme_from_file) = self.read_legacy_theme() {
+        if let Some(theme_from_file) = self.read_from_theme_file() {
             info!("migrating theme preference from theme.txt file");
             _ = delete_file(&self.directory.file_path, THEME_FILE.to_string());
 
-            self.current_settings = Some(Settings {
-                theme: theme_from_file,
-                ..Settings::default()
-            });
-
-            self.save();
-
-            Ok(())
+            settings.theme = theme_from_file;
+            migrated = true;
         } else {
-            Err(())
+            info!("theme.txt file not found, using default theme");
+        };
+
+        // if zoom_factor.txt exists migrate
+        if let Some(zom_factor) = self.read_from_zomfactor_file() {
+            info!("migrating theme preference from zom_factor file");
+            _ = delete_file(&self.directory.file_path, ZOOM_FACTOR_FILE.to_string());
+
+            settings.zoom_factor = zom_factor;
+            migrated = true;
+        } else {
+            info!("zoom_factor.txt exists migrate file not found, using default zoom factor");
+        };
+
+        if migrated {
+            self.current_settings = Some(settings);
+            self.try_save_settings();
         }
+        migrated
     }
 
     pub fn new(path: &DataPath) -> Self {
         let directory = Directory::new(path.path(DataPathType::Setting));
-        let current_settings: Option<Settings> = None;
+        let serializer =
+            TimedSerializer::new(path, DataPathType::Setting, "settings.json".to_owned());
 
         Self {
             directory,
-            current_settings,
+            serializer,
+            current_settings: None,
         }
     }
 
     pub fn load(mut self) -> Self {
-        if self.migrate_to_settings_file().is_ok() {
+        if self.migrate_to_settings_file() {
             return self;
         }
 
@@ -114,22 +143,9 @@ impl SettingsHandler {
         self
     }
 
-    pub fn save(&self) {
-        let settings = self.current_settings.as_ref().unwrap();
-        match serde_json::to_string(settings) {
-            Ok(serialized) => {
-                if let Err(e) = storage::write_file(
-                    &self.directory.file_path,
-                    SETTINGS_FILE.to_string(),
-                    &serialized,
-                ) {
-                    error!("Could not save settings: {}", e);
-                } else {
-                    info!("Settings saved successfully");
-                }
-            }
-            Err(e) => error!("Failed to serialize settings: {}", e),
-        };
+    pub(crate) fn try_save_settings(&mut self) {
+        let settings = self.get_settings_mut().clone();
+        self.serializer.try_save(settings);
     }
 
     pub fn get_settings_mut(&mut self) -> &mut Settings {
@@ -141,7 +157,7 @@ impl SettingsHandler {
 
     pub fn set_theme(&mut self, theme: ThemePreference) {
         self.get_settings_mut().theme = theme;
-        self.save();
+        self.try_save_settings();
     }
 
     pub fn set_locale<S>(&mut self, locale: S)
@@ -149,12 +165,12 @@ impl SettingsHandler {
         S: Into<String>,
     {
         self.get_settings_mut().locale = locale.into();
-        self.save();
+        self.try_save_settings();
     }
 
     pub fn set_zoom_factor(&mut self, zoom_factor: f32) {
         self.get_settings_mut().zoom_factor = zoom_factor;
-        self.save();
+        self.try_save_settings();
     }
 
     pub fn set_show_source_client<S>(&mut self, option: S)
@@ -162,12 +178,17 @@ impl SettingsHandler {
         S: Into<String>,
     {
         self.get_settings_mut().show_source_client = option.into();
-        self.save();
+        self.try_save_settings();
     }
 
     pub fn set_show_replies_newest_first(&mut self, value: bool) {
         self.get_settings_mut().show_replies_newest_first = value;
-        self.save();
+        self.try_save_settings();
+    }
+
+    pub fn set_note_body_font_size(&mut self, value: f32) {
+        self.get_settings_mut().note_body_font_size = value;
+        self.try_save_settings();
     }
 
     pub fn update_batch<F>(&mut self, update_fn: F)
@@ -176,12 +197,12 @@ impl SettingsHandler {
     {
         let settings = self.get_settings_mut();
         update_fn(settings);
-        self.save();
+        self.try_save_settings();
     }
 
     pub fn update_settings(&mut self, new_settings: Settings) {
         self.current_settings = Some(new_settings);
-        self.save();
+        self.try_save_settings();
     }
 
     pub fn theme(&self) -> ThemePreference {
@@ -216,10 +237,17 @@ impl SettingsHandler {
         self.current_settings
             .as_ref()
             .map(|s| s.show_replies_newest_first)
-            .unwrap_or(false)
+            .unwrap_or(DEFAULT_SHOW_REPLIES_NEWEST_FIRST)
     }
 
     pub fn is_loaded(&self) -> bool {
         self.current_settings.is_some()
+    }
+
+    pub fn note_body_font_size(&self) -> f32 {
+        self.current_settings
+            .as_ref()
+            .map(|s| s.note_body_font_size)
+            .unwrap_or(DEFAULT_NOTE_BODY_FONT_SIZE)
     }
 }

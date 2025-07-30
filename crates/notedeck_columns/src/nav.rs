@@ -485,13 +485,9 @@ fn process_render_nav_action(
                 .process_relay_action(ui.ctx(), ctx.pool, action);
             None
         }
-        RenderNavAction::SettingsAction(action) => action.process_settings_action(
-            app,
-            ctx.settings_handler,
-            ctx.i18n,
-            ctx.img_cache,
-            ui.ctx(),
-        ),
+        RenderNavAction::SettingsAction(action) => {
+            action.process_settings_action(app, ctx.settings, ctx.i18n, ctx.img_cache, ui.ctx())
+        }
     };
 
     if let Some(action) = router_action {
@@ -585,13 +581,14 @@ fn render_nav_body(
             .ui(ui)
             .map(RenderNavAction::RelayAction),
 
-        Route::Settings => {
-            let mut settings = ctx.settings_handler.get_settings_mut();
-
-            SettingsView::new(ctx.i18n, ctx.img_cache, &mut settings)
-                .ui(ui)
-                .map(RenderNavAction::SettingsAction)
-        }
+        Route::Settings => SettingsView::new(
+            &mut ctx.settings.get_settings_mut(),
+            &mut note_context,
+            &mut app.note_options,
+            &mut app.jobs,
+        )
+        .ui(ui)
+        .map(RenderNavAction::SettingsAction),
         Route::Reply(id) => {
             let txn = if let Ok(txn) = Transaction::new(ctx.ndb) {
                 txn

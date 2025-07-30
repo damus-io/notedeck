@@ -2,7 +2,7 @@ use crate::ProfilePreview;
 use egui::Sense;
 use enostr::Pubkey;
 use nostrdb::{Ndb, Transaction};
-use notedeck::{name::get_display_name, Images, NoteAction};
+use notedeck::{name::get_display_name, Images, NoteAction, NotedeckTextStyle};
 
 pub struct Mention<'a> {
     ndb: &'a Ndb,
@@ -75,7 +75,9 @@ fn mention_ui(
         get_display_name(profile.as_ref()).username_or_displayname()
     );
 
-    let mut text = egui::RichText::new(name).color(link_color);
+    let mut text = egui::RichText::new(name)
+        .color(link_color)
+        .text_style(NotedeckTextStyle::NoteBody.text_style());
     if let Some(size) = size {
         text = text.size(size);
     }

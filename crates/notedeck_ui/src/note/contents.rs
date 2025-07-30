@@ -4,7 +4,7 @@ use crate::{
 };
 use notedeck::{JobsCache, RenderableMedia};
 
-use egui::{vec2, Color32, Hyperlink, RichText};
+use egui::{vec2, Color32, Hyperlink, Label, RichText};
 use nostrdb::{BlockType, Mention, Note, NoteKey, Transaction};
 use tracing::warn;
 
@@ -42,6 +42,8 @@ impl<'a, 'd> NoteContents<'a, 'd> {
 
 impl egui::Widget for &mut NoteContents<'_, '_> {
     fn ui(self, ui: &mut egui::Ui) -> egui::Response {
+        ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
+
         if self.options.contains(NoteOptions::ShowNoteClientTop) {
             render_client(ui, self.note_context.note_cache, self.note);
         }
@@ -200,13 +202,24 @@ pub fn render_note_contents<'a>(
                     }
 
                     _ => {
-                        ui.colored_label(link_color, format!("@{}", &block.as_str()[..16]));
+                        ui.colored_label(
+                            link_color,
+                            RichText::new(format!("@{}", &block.as_str()[..16]))
+                                .text_style(NotedeckTextStyle::NoteBody.text_style()),
+                        );
                     }
                 },
 
                 BlockType::Hashtag => {
+                    if block.as_str().trim().len() == 0 {
+                        continue 'block_loop;
+                    }
                     let resp = ui
-                        .colored_label(link_color, format!("#{}", block.as_str()))
+                        .colored_label(
+                            link_color,
+                            RichText::new(format!("#{}", block.as_str()))
+                                .text_style(NotedeckTextStyle::NoteBody.text_style()),
+                        )
                         .on_hover_cursor(egui::CursorIcon::PointingHand);
 
                     if resp.clicked() {
@@ -231,8 +244,13 @@ pub fn render_note_contents<'a>(
                     };
 
                     if hide_media || !found_supported() {
+                        if block.as_str().trim().len() == 0 {
+                            continue 'block_loop;
+                        }
                         ui.add(Hyperlink::from_label_and_url(
-                            RichText::new(block.as_str()).color(link_color),
+                            RichText::new(block.as_str())
+                                .color(link_color)
+                                .text_style(NotedeckTextStyle::NoteBody.text_style()),
                             block.as_str(),
                         ));
                     }
@@ -263,18 +281,18 @@ pub fn render_note_contents<'a>(
                     }
                     if options.contains(NoteOptions::ScrambleText) {
                         ui.add(
-                            egui::Label::new(
+                            Label::new(
                                 RichText::new(rot13(block_str))
-                                    .text_style(NotedeckTextStyle::Body.text_style()),
+                                    .text_style(NotedeckTextStyle::NoteBody.text_style()),
                             )
                             .wrap()
                             .selectable(selectable),
                         );
                     } else {
                         ui.add(
-                            egui::Label::new(
+                            Label::new(
                                 RichText::new(block_str)
-                                    .text_style(NotedeckTextStyle::Body.text_style()),
+                                    .text_style(NotedeckTextStyle::NoteBody.text_style()),
                             )
                             .wrap()
                             .selectable(selectable),

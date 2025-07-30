@@ -20,7 +20,7 @@ pub struct AppContext<'a> {
     pub global_wallet: &'a mut GlobalWallet,
     pub path: &'a DataPath,
     pub args: &'a Args,
-    pub settings_handler: &'a mut SettingsHandler,
+    pub settings: &'a mut SettingsHandler,
     pub clipboard: &'a mut Clipboard,
     pub zaps: &'a mut Zaps,
     pub frame_history: &'a mut FrameHistory,

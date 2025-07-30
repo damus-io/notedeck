@@ -2,16 +2,16 @@ use crate::debouncer::Debouncer;
 use crate::{storage, DataPath, DataPathType, Directory};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
-use tracing::info; // Adjust this import path as needed
+use tracing::info;
 
-pub struct TimedSerializer<T: PartialEq + Copy + Serialize + for<'de> Deserialize<'de>> {
+pub struct TimedSerializer<T: PartialEq + Clone + Serialize + for<'de> Deserialize<'de>> {
     directory: Directory,
     file_name: String,
     debouncer: Debouncer,
     saved_item: Option<T>,
 }
 
-impl<T: PartialEq + Copy + Serialize + for<'de> Deserialize<'de>> TimedSerializer<T> {
+impl<T: PartialEq + Clone + Serialize + for<'de> Deserialize<'de>> TimedSerializer<T> {
     pub fn new(path: &DataPath, path_type: DataPathType, file_name: String) -> Self {
         let directory = Directory::new(path.path(path_type));
         let delay = Duration::from_millis(1000);
@@ -30,11 +30,11 @@ impl<T: PartialEq + Copy + Serialize + for<'de> Deserialize<'de>> TimedSerialize
         self
     }
 
-    // returns whether successful
+    /// Returns whether it actually wrote the new value
     pub fn try_save(&mut self, cur_item: T) -> bool {
         if self.debouncer.should_act() {
-            if let Some(saved_item) = self.saved_item {
-                if saved_item != cur_item {
+            if let Some(ref saved_item) = self.saved_item {
+                if *saved_item != cur_item {
                     return self.save(cur_item);
                 }
             } else {
@@ -45,8 +45,8 @@ impl<T: PartialEq + Copy + Serialize + for<'de> Deserialize<'de>> TimedSerialize
     }
 
     pub fn get_item(&self) -> Option<T> {
-        if self.saved_item.is_some() {
-            return self.saved_item;
+        if let Some(ref item) = self.saved_item {
+            return Some(item.clone());
         }
         if let Ok(file_contents) = self.directory.get_file(self.file_name.clone()) {
             if let Ok(item) = serde_json::from_str::<T>(&file_contents) {

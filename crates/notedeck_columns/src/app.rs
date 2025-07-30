@@ -18,9 +18,13 @@ use egui_extras::{Size, StripBuilder};
 use enostr::{ClientMessage, PoolRelay, Pubkey, RelayEvent, RelayMessage, RelayPool};
 use nostrdb::Transaction;
 use notedeck::{
-    tr, ui::is_narrow, Accounts, AppAction, AppContext, DataPath, DataPathType, FilterState, Images, JobsCache, Localization, SettingsHandler, UnknownIds
+    tr, ui::is_narrow, Accounts, AppAction, AppContext, DataPath, DataPathType, FilterState,
+    Images, JobsCache, Localization, SettingsHandler, UnknownIds,
 };
-use notedeck_ui::{media::{MediaViewer, MediaViewerFlags, MediaViewerState}, NoteOptions};
+use notedeck_ui::{
+    media::{MediaViewer, MediaViewerFlags, MediaViewerState},
+    NoteOptions,
+};
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 use std::time::Duration;
@@ -487,11 +491,11 @@ impl Damus {
             //    cache.add_deck_default(*pk);
             //}
         };
-        let settings_handler = &app_context.settings_handler;
+        let settings = &app_context.settings;
 
         let support = Support::new(app_context.path);
 
-        let note_options = get_note_options(parsed_args, settings_handler);
+        let note_options = get_note_options(parsed_args, settings);
 
         let jobs = JobsCache::default();
 
