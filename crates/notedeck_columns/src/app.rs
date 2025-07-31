@@ -19,7 +19,7 @@ use enostr::{ClientMessage, PoolRelay, Pubkey, RelayEvent, RelayMessage, RelayPo
 use nostrdb::Transaction;
 use notedeck::{
     tr, ui::is_narrow, Accounts, AppAction, AppContext, DataPath, DataPathType, FilterState,
-    Images, JobsCache, Localization, SettingsHandler, UnknownIds,
+    Images, JobsCache, Localization, NotedeckOptions, SettingsHandler, UnknownIds,
 };
 use notedeck_ui::{
     media::{MediaViewer, MediaViewerFlags, MediaViewerState},
@@ -442,7 +442,10 @@ impl Damus {
         let mut options = AppOptions::default();
         let tmp_columns = !parsed_args.columns.is_empty();
         options.set(AppOptions::TmpColumns, tmp_columns);
-        options.set(AppOptions::Debug, app_context.args.debug);
+        options.set(
+            AppOptions::Debug,
+            app_context.args.options.contains(NotedeckOptions::Debug),
+        );
         options.set(
             AppOptions::SinceOptimize,
             parsed_args.is_flag_set(ColumnsFlag::SinceOptimize),

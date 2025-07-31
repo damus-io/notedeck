@@ -6,12 +6,14 @@ use egui::{vec2, Button, Color32, Label, Layout, Rect, RichText, ThemePreference
 use egui_extras::{Size, StripBuilder};
 use nostrdb::{ProfileRecord, Transaction};
 use notedeck::{
-    tr, App, AppAction, AppContext, Localization, NotedeckTextStyle, UserAccount, WalletType,
+    tr, App, AppAction, AppContext, Localization, NotedeckOptions, NotedeckTextStyle, UserAccount,
+    WalletType,
 };
 use notedeck_columns::{
     column::SelectionResult, timeline::kind::ListKind, timeline::TimelineKind, Damus,
 };
 use notedeck_dave::{Dave, DaveAvatar};
+use notedeck_notebook::Notebook;
 use notedeck_ui::{app_images, AnimationHelper, ProfilePic};
 
 static ICON_WIDTH: f32 = 40.0;
@@ -199,9 +201,27 @@ impl Chrome {
         None
     }
 
+    fn get_notebook(&mut self) -> Option<&mut Notebook> {
+        for app in &mut self.apps {
+            if let NotedeckApp::Notebook(notebook) = app {
+                return Some(notebook);
+            }
+        }
+
+        None
+    }
+
     fn switch_to_dave(&mut self) {
         for (i, app) in self.apps.iter().enumerate() {
             if let NotedeckApp::Dave(_) = app {
+                self.active = i as i32;
+            }
+        }
+    }
+
+    fn switch_to_notebook(&mut self) {
+        for (i, app) in self.apps.iter().enumerate() {
+            if let NotedeckApp::Notebook(_) = app {
                 self.active = i as i32;
             }
         }
@@ -428,13 +448,11 @@ impl Chrome {
         ui.add(milestone_name(i18n));
         ui.add_space(16.0);
         //let dark_mode = ui.ctx().style().visuals.dark_mode;
+        if columns_button(ui)
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .clicked()
         {
-            if columns_button(ui)
-                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                .clicked()
-            {
-                self.active = 0;
-            }
+            self.active = 0;
         }
         ui.add_space(32.0);
 
@@ -444,6 +462,16 @@ impl Chrome {
                 .on_hover_cursor(egui::CursorIcon::PointingHand);
             if dave_resp.clicked() {
                 self.switch_to_dave();
+            }
+        }
+        //ui.add_space(32.0);
+
+        if let Some(_notebook) = self.get_notebook() {
+            if notebook_button(ui)
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .clicked()
+            {
+                self.switch_to_notebook();
             }
         }
     }
@@ -579,6 +607,16 @@ fn accounts_button(ui: &mut egui::Ui) -> egui::Response {
         24.0,
         app_images::accounts_image().tint(ui.visuals().text_color()),
         app_images::accounts_image(),
+        ui,
+    )
+}
+
+fn notebook_button(ui: &mut egui::Ui) -> egui::Response {
+    expanding_button(
+        "notebook-button",
+        40.0,
+        app_images::algo_image(),
+        app_images::algo_image(),
         ui,
     )
 }
@@ -861,7 +899,7 @@ fn bottomup_sidebar(
         .add(wallet_button())
         .on_hover_cursor(egui::CursorIcon::PointingHand);
 
-    if ctx.args.debug {
+    if ctx.args.options.contains(NotedeckOptions::Debug) {
         ui.weak(format!("{}", ctx.frame_history.fps() as i32));
         ui.weak(format!(
             "{:10.1}",

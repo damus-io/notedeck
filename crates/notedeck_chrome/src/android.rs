@@ -5,6 +5,7 @@ use egui_winit::winit::platform::android::activity::AndroidApp;
 use notedeck::enostr::Error;
 use notedeck_columns::Damus;
 use notedeck_dave::Dave;
+use notedeck_notebook::Notebook;
 
 use crate::{app::NotedeckApp, chrome::Chrome, setup::setup_chrome};
 use notedeck::Notedeck;
@@ -80,6 +81,7 @@ pub async fn android_main(app: AndroidApp) {
             let context = &mut notedeck.app_context();
             let dave = Dave::new(cc.wgpu_render_state.as_ref());
             let columns = Damus::new(context, &app_args);
+            let notebook = Notebook::new();
             let mut chrome = Chrome::new();
 
             // ensure we recognized all the arguments
@@ -93,8 +95,15 @@ pub async fn android_main(app: AndroidApp) {
                 return Err(Error::Empty.into());
             }
 
-            chrome.add_app(NotedeckApp::Columns(columns));
-            chrome.add_app(NotedeckApp::Dave(dave));
+            chrome.add_app(NotedeckApp::Columns(Box::new(columns)));
+            chrome.add_app(NotedeckApp::Dave(Box::new(dave)));
+
+            if notedeck
+                .options()
+                .contains(NotedeckOptions::FeaturesNotebook)
+            {
+                chrome.add_app(NotedeckApp::Notebook(Box::default()));
+            }
 
             // test dav
             chrome.set_active(0);

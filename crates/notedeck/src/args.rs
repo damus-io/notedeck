@@ -1,23 +1,15 @@
 use std::collections::BTreeSet;
 
+use crate::NotedeckOptions;
 use enostr::{Keypair, Pubkey, SecretKey};
 use tracing::error;
 use unic_langid::{LanguageIdentifier, LanguageIdentifierError};
 
 pub struct Args {
     pub relays: Vec<String>,
-    pub is_mobile: Option<bool>,
     pub locale: Option<LanguageIdentifier>,
-    pub show_note_client: bool,
     pub keys: Vec<Keypair>,
-    pub light: bool,
-    pub debug: bool,
-    pub relay_debug: bool,
-
-    /// Enable when running tests so we don't panic on app startup
-    pub tests: bool,
-
-    pub use_keystore: bool,
+    pub options: NotedeckOptions,
     pub dbpath: Option<String>,
     pub datapath: Option<String>,
 }
@@ -28,14 +20,8 @@ impl Args {
         let mut unrecognized_args = BTreeSet::new();
         let mut res = Args {
             relays: vec![],
-            is_mobile: None,
             keys: vec![],
-            light: false,
-            show_note_client: false,
-            debug: false,
-            relay_debug: false,
-            tests: false,
-            use_keystore: true,
+            options: NotedeckOptions::default(),
             dbpath: None,
             datapath: None,
             locale: None,
@@ -47,9 +33,9 @@ impl Args {
             let arg = &args[i];
 
             if arg == "--mobile" {
-                res.is_mobile = Some(true);
+                res.options.set(NotedeckOptions::Mobile, true);
             } else if arg == "--light" {
-                res.light = true;
+                res.options.set(NotedeckOptions::LightTheme, true);
             } else if arg == "--locale" {
                 i += 1;
                 let Some(locale) = args.get(i) else {
@@ -68,11 +54,11 @@ impl Args {
                     }
                 }
             } else if arg == "--dark" {
-                res.light = false;
+                res.options.set(NotedeckOptions::LightTheme, false);
             } else if arg == "--debug" {
-                res.debug = true;
+                res.options.set(NotedeckOptions::Debug, true);
             } else if arg == "--testrunner" {
-                res.tests = true;
+                res.options.set(NotedeckOptions::Tests, true);
             } else if arg == "--pub" || arg == "--npub" {
                 i += 1;
                 let pubstr = if let Some(next_arg) = args.get(i) {
@@ -135,11 +121,13 @@ impl Args {
                 };
                 res.relays.push(relay.clone());
             } else if arg == "--no-keystore" {
-                res.use_keystore = false;
+                res.options.set(NotedeckOptions::UseKeystore, true);
             } else if arg == "--relay-debug" {
-                res.relay_debug = true;
-            } else if arg == "--show-note-client" {
-                res.show_note_client = true;
+                res.options.set(NotedeckOptions::RelayDebug, true);
+            } else if arg == "--show-client" {
+                res.options.set(NotedeckOptions::ShowClient, true);
+            } else if arg == "--notebook" {
+                res.options.set(NotedeckOptions::FeatureNotebook, true);
             } else {
                 unrecognized_args.insert(arg.clone());
             }
