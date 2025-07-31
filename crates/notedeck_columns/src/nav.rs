@@ -582,7 +582,7 @@ fn render_nav_body(
             .map(RenderNavAction::RelayAction),
 
         Route::Settings => SettingsView::new(
-            &mut ctx.settings.get_settings_mut(),
+            ctx.settings.get_settings_mut(),
             &mut note_context,
             &mut app.note_options,
             &mut app.jobs,

@@ -211,7 +211,7 @@ pub fn render_note_contents<'a>(
                 },
 
                 BlockType::Hashtag => {
-                    if block.as_str().trim().len() == 0 {
+                    if block.as_str().trim().is_empty() {
                         continue 'block_loop;
                     }
                     let resp = ui
@@ -244,7 +244,7 @@ pub fn render_note_contents<'a>(
                     };
 
                     if hide_media || !found_supported() {
-                        if block.as_str().trim().len() == 0 {
+                        if block.as_str().trim().is_empty() {
                             continue 'block_loop;
                         }
                         ui.add(Hyperlink::from_label_and_url(
@@ -276,7 +276,7 @@ pub fn render_note_contents<'a>(
                         current_len += block_str.len();
                         block_str
                     };
-                    if block_str.trim().len() == 0 {
+                    if block_str.trim().is_empty() {
                         continue 'block_loop;
                     }
                     if options.contains(NoteOptions::ScrambleText) {

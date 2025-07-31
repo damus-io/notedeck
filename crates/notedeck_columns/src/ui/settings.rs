@@ -31,12 +31,12 @@ pub enum ShowSourceClientOption {
     Bottom,
 }
 
-impl Into<String> for ShowSourceClientOption {
-    fn into(self) -> String {
-        match self {
-            Self::Hide => "hide".to_string(),
-            Self::Top => "top".to_string(),
-            Self::Bottom => "bottom".to_string(),
+impl From<ShowSourceClientOption> for String {
+    fn from(show_option: ShowSourceClientOption) -> Self {
+        match show_option {
+            ShowSourceClientOption::Hide => "hide".to_string(),
+            ShowSourceClientOption::Top => "top".to_string(),
+            ShowSourceClientOption::Bottom => "bottom".to_string(),
         }
     }
 }
@@ -82,11 +82,23 @@ impl ShowSourceClientOption {
         }
     }
 
-    fn label<'a>(&self, i18n: &'a mut Localization) -> String {
+    fn label(&self, i18n: &mut Localization) -> String {
         match self {
-            Self::Hide => tr!(i18n, "Hide", "Option in settings section to hide the source client label in note display"),
-            Self::Top => tr!(i18n, "Top", "Option in settings section to show the source client label at the top of the note"),
-            Self::Bottom => tr!(i18n, "Bottom", "Option in settings section to show the source client label at the bottom of the note"),
+            Self::Hide => tr!(
+                i18n,
+                "Hide",
+                "Option in settings section to hide the source client label in note display"
+            ),
+            Self::Top => tr!(
+                i18n,
+                "Top",
+                "Option in settings section to show the source client label at the top of the note"
+            ),
+            Self::Bottom => tr!(
+                i18n,
+                "Bottom",
+                "Option in settings section to show the source client label at the bottom of the note"
+            ),
         }
     }
 }
@@ -260,7 +272,7 @@ impl<'a> SettingsView<'a> {
             let txn = Transaction::new(self.note_context.ndb).unwrap();
             if let Some(note_id) = NoteId::from_bech(PREVIEW_NOTE_ID) {
                 if let Ok(preview_note) =
-                    self.note_context.ndb.get_note_by_id(&txn, &note_id.bytes())
+                    self.note_context.ndb.get_note_by_id(&txn, note_id.bytes())
                 {
                     notedeck_ui::padding(8.0, ui, |ui| {
                         if is_narrow(ui.ctx()) {
@@ -270,7 +282,7 @@ impl<'a> SettingsView<'a> {
                         NoteView::new(
                             self.note_context,
                             &preview_note,
-                            self.note_options.clone(),
+                            *self.note_options,
                             self.jobs,
                         )
                         .actionbar(false)

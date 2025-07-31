@@ -255,7 +255,7 @@ impl<'a> ThreadNoteBuilder<'a> {
 
         if replies_newer_first {
             self.replies
-                .sort_by(|a, b| b.created_at().cmp(&a.created_at()));
+                .sort_by_key(|b| std::cmp::Reverse(b.created_at()));
         }
 
         for reply in self.replies {
