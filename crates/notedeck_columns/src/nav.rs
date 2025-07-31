@@ -545,6 +545,8 @@ fn render_nav_body(
                 scroll_to_top,
             );
 
+            app.timeline_cache.set_fresh(kind);
+
             // always clear the scroll_to_top request
             if scroll_to_top {
                 app.options.remove(AppOptions::ScrollToTop);
