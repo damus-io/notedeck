@@ -1,14 +1,12 @@
 //#[cfg(target_os = "android")]
 //use egui_android::run_android;
 
+use crate::{app::NotedeckApp, chrome::Chrome, setup::setup_chrome};
 use egui_winit::winit::platform::android::activity::AndroidApp;
 use notedeck::enostr::Error;
+use notedeck::Notedeck;
 use notedeck_columns::Damus;
 use notedeck_dave::Dave;
-
-use crate::{app::NotedeckApp, chrome::Chrome, setup::setup_chrome};
-use notedeck::Notedeck;
-
 use tracing::error;
 
 #[no_mangle]
@@ -18,7 +16,6 @@ pub async fn android_main(android_app: AndroidApp) {
     use tracing_subscriber::{prelude::*, EnvFilter};
 
     std::env::set_var("RUST_BACKTRACE", "full");
-    //std::env::set_var("DAVE_ENDPOINT", "http://ollama.jb55.com/v1");
     //std::env::set_var("DAVE_MODEL", "hhao/qwen2.5-coder-tools:latest");
     std::env::set_var(
         "RUST_LOG",

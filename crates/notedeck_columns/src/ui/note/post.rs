@@ -1,6 +1,5 @@
 use crate::draft::{Draft, Drafts, MentionHint};
-#[cfg(not(target_os = "android"))]
-use crate::media_upload::{nostrbuild_nip96_upload, MediaPath};
+use crate::media_upload::nostrbuild_nip96_upload;
 use crate::post::{downcast_post_buffer, MentionType, NewPost};
 use crate::ui::mentions_picker::MentionPickerView;
 use crate::ui::{self, Preview, PreviewConfig};
@@ -14,6 +13,9 @@ use egui::{
 use enostr::{FilledKeypair, FullKeypair, NoteId, Pubkey, RelayPool};
 use nostrdb::{Ndb, Transaction};
 use notedeck::media::gif::ensure_latest_texture;
+#[cfg(target_os = "android")]
+use notedeck::platform::android::try_open_file_picker;
+use notedeck::platform::get_next_selected_file;
 use notedeck::{get_render_state, JobsCache, PixelDimensions, RenderState};
 use notedeck::{
     name::get_display_name, supported_mime_hosted_at_url, tr, Localization, NoteAction, NoteContext,
@@ -25,12 +27,8 @@ use notedeck_ui::{
     NoteOptions, ProfilePic,
 };
 use tracing::error;
-#[cfg(target_os = "android")]
-use {
-    crate::media_upload::{nostrbuild_nip96_upload_bytes, MediaPath},
-    notedeck::platform::android::try_open_file_picker,
-    notedeck::platform::get_next_selected_file,
-};
+#[cfg(not(target_os = "android"))]
+use {notedeck::platform::file::emit_selected_file, notedeck::platform::file::SelectedMedia};
 
 pub struct PostView<'a, 'd> {
     note_context: &'a mut NoteContext<'d>,
@@ -330,24 +328,18 @@ impl<'a, 'd> PostView<'a, 'd> {
     }
 
     pub fn ui(&mut self, txn: &Transaction, ui: &mut egui::Ui) -> PostResponse {
-        #[cfg(any(target_os = "android"))]
-        {
-            while let Some((display_name, content)) = get_next_selected_file() {
-                use std::path::PathBuf;
-
-                match MediaPath::new(PathBuf::from(display_name)) {
-                    Ok(media_path) => {
-                        let promise = nostrbuild_nip96_upload_bytes(
-                            self.poster.secret_key.secret_bytes(),
-                            media_path,
-                            content,
-                        );
-                        self.draft.uploading_media.push(promise);
-                    }
-                    Err(e) => {
-                        error!("{e}");
-                        self.draft.upload_errors.push(e.to_string());
-                    }
+        while let Some(selected_file) = get_next_selected_file() {
+            match selected_file {
+                Ok(selected_media) => {
+                    let promise = nostrbuild_nip96_upload(
+                        self.poster.secret_key.secret_bytes(),
+                        selected_media,
+                    );
+                    self.draft.uploading_media.push(promise);
+                }
+                Err(e) => {
+                    error!("{e}");
+                    self.draft.upload_errors.push(e.to_string());
                 }
             }
         }
@@ -531,19 +523,7 @@ impl<'a, 'd> PostView<'a, 'd> {
             {
                 if let Some(files) = rfd::FileDialog::new().pick_files() {
                     for file in files {
-                        match MediaPath::new(file) {
-                            Ok(media_path) => {
-                                let promise = nostrbuild_nip96_upload(
-                                    self.poster.secret_key.secret_bytes(),
-                                    media_path,
-                                );
-                                self.draft.uploading_media.push(promise);
-                            }
-                            Err(e) => {
-                                error!("{e}");
-                                self.draft.upload_errors.push(e.to_string());
-                            }
-                        }
+                        emit_selected_file(SelectedMedia::from_path(file));
                     }
                 }
             }

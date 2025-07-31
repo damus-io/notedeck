@@ -48,6 +48,7 @@ unic-langid = { workspace = true }
 once_cell = { workspace = true }
 md5 = { workspace = true }
 regex = "1"
+crossbeam-channel = "0.5"
 
 [dev-dependencies]
 tempfile = { workspace = true }
@@ -55,7 +56,6 @@ tokio = { workspace = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = { workspace = true }
-crossbeam-channel = "0.5"
 ndk-context = "0.1"
 
 [features]

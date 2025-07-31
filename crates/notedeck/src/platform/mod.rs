@@ -1,14 +1,11 @@
+use crate::{platform::file::SelectedMedia, Error};
+
 #[cfg(target_os = "android")]
 pub mod android;
+pub mod file;
 
-#[cfg(target_os = "android")]
-pub fn get_next_selected_file() -> Option<(String, Vec<i8>)> {
-    android::get_next_selected_file()
-}
-
-#[cfg(not(target_os = "android"))]
-pub fn get_next_selected_file() -> Option<(String, Vec<i8>)> {
-    None
+pub fn get_next_selected_file() -> Option<Result<SelectedMedia, Error>> {
+    file::get_next_selected_file()
 }
 
 #[cfg(target_os = "android")]

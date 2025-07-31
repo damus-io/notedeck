@@ -5,6 +5,8 @@ import android.content.Intent;
 import android.database.Cursor;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.ParcelFileDescriptor;
+import android.provider.OpenableColumns;
 import android.util.Log;
 import android.view.MotionEvent;
 import android.view.View;
@@ -19,6 +21,7 @@ import androidx.core.view.WindowInsetsControllerCompat;
 import com.google.androidgamesdk.GameActivity;
 
 import java.io.ByteArrayOutputStream;
+import java.io.FileDescriptor;
 import java.io.IOException;
 import java.io.InputStream;
 
@@ -45,26 +48,12 @@ public class MainActivity extends GameActivity {
     }
 
     private void processSelectedFile(Uri uri) {
-        String uri_str = uri.toString();
-
         try {
-            byte[] content = readUriContent(uri);
-            Object[] uri_info = getUriInfo(uri);
-
-            if (content != null && uri_info != null) {
-                Log.d("MainActivity", "Read " + content.length + " bytes from " + uri_str);
-
-                nativeOnFilePickedWithContent(uri_info, content);
-            } else {
-                Log.e("MainActivity", "Failed to read content from " + uri_str);
-
-                nativeOnFilePickedFailed(uri_str, "Failed to read content");
-            }
-
+            nativeOnFilePickedWithContent(this.getUriInfo(uri), readUriContent(uri));
         } catch (Exception e) {
-            Log.e("MainActivity", "Error processing file: " + uri_str, e);
+            Log.e("MainActivity", "Error processing file: " + uri.toString(), e);
 
-            nativeOnFilePickedFailed(uri_str, e.toString());
+            nativeOnFilePickedFailed(uri.toString(), e.toString());
         }
     }
 
@@ -73,18 +62,15 @@ public class MainActivity extends GameActivity {
             throw new Exception("uri should start with content://");
         }
 
-        String[] projections = {"_display_name",
-                "_size", "mime_type"};
-
-        Cursor cursor = getContentResolver().query(uri, projections, null, null, null);
+        Cursor cursor = getContentResolver().query(uri, null, null, null, null);
 
         while (cursor.moveToNext()) {
             Object[] info = new Object[3];
 
-            int col_idx = cursor.getColumnIndex("_display_name");
+            int col_idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
             info[0] = cursor.getString(col_idx);
 
-            col_idx = cursor.getColumnIndex("_size");
+            col_idx = cursor.getColumnIndex(OpenableColumns.SIZE);
             info[1] = cursor.getLong(col_idx);
 
             col_idx = cursor.getColumnIndex("mime_type");

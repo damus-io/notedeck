@@ -238,7 +238,10 @@ impl SupportedMimeType {
         {
             Ok(Self { mime })
         } else {
-            Err(Error::Generic("Unsupported mime type".to_owned()))
+            Err(Error::Generic(format!(
+                "{} Unsupported mime type",
+                extension
+            )))
         }
     }
 

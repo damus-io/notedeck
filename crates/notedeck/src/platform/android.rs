@@ -1,50 +1,13 @@
-use crossbeam_channel::{unbounded, Receiver, Sender};
+use crate::platform::{file::emit_selected_file, SelectedMedia};
 use jni::{
-    objects::{JByteArray, JClass, JObject, JObjectArray, JString, JValue},
+    objects::{JByteArray, JClass, JObject, JObjectArray, JString},
     JNIEnv,
 };
-use once_cell::sync::Lazy;
-
 use std::sync::atomic::{AtomicI32, Ordering};
 use tracing::{debug, error, info};
 
 pub fn get_jvm() -> jni::JavaVM {
     unsafe { jni::JavaVM::from_raw(ndk_context::android_context().vm().cast()) }.unwrap()
-}
-
-pub struct SelectedFileChannel {
-    sender: Sender<(String, Vec<i8>)>,
-    receiver: Receiver<(String, Vec<i8>)>,
-}
-
-impl SelectedFileChannel {
-    pub fn new() -> Self {
-        let (sender, receiver) = unbounded();
-        Self { sender, receiver }
-    }
-
-    pub fn new_selected_file(&self, uri: String, content: Vec<i8>) {
-        let _ = self.sender.send((uri, content));
-    }
-
-    pub fn try_receive(&self) -> Option<(String, Vec<i8>)> {
-        self.receiver.try_recv().ok()
-    }
-
-    pub fn receive(&self) -> Option<(String, Vec<i8>)> {
-        self.receiver.recv().ok()
-    }
-}
-
-pub static SELECTED_FILE_CHANNEL: Lazy<SelectedFileChannel> =
-    Lazy::new(|| SelectedFileChannel::new());
-
-pub fn emit_selected_file(uri: String, content: Vec<i8>) {
-    SELECTED_FILE_CHANNEL.new_selected_file(uri, content);
-}
-
-pub fn get_next_selected_file() -> Option<(String, Vec<i8>)> {
-    SELECTED_FILE_CHANNEL.try_receive()
 }
 
 // Thread-safe static global
@@ -102,31 +65,17 @@ pub extern "C" fn Java_com_damus_notedeck_MainActivity_nativeOnFilePickedWithCon
     };
 
     if let Some(display_name) = display_name {
-        let size: Option<i64> = {
-            let obj = env.get_object_array_element(&juri_info, 1).unwrap();
-            if obj.is_null() {
-                None
-            } else {
-                Some(
-                    JValue::Object(&env.get_object_array_element(&juri_info, 0).unwrap())
-                        .j()
-                        .unwrap_or(0),
-                )
-            }
-        };
-
         let length = env.get_array_length(&jcontent).unwrap() as usize;
         let mut content: Vec<i8> = vec![0; length];
         env.get_byte_array_region(&jcontent, 0, &mut content)
             .unwrap();
 
-        debug!(
-            "selected file: {:?} ({} bytes)",
-            display_name,
-            size.unwrap_or(0)
-        );
+        debug!("selected file: {display_name:?} ({length:?} bytes)",);
 
-        emit_selected_file(display_name, content.clone());
+        emit_selected_file(SelectedMedia::from_bytes(
+            display_name,
+            content.into_iter().map(|b| b as u8).collect(),
+        ));
     } else {
         error!("Received null file name");
     }
