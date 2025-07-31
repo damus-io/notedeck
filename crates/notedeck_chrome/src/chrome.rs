@@ -583,6 +583,21 @@ fn expanding_button(
     helper.take_animation_response()
 }
 
+fn paint_unseen_indicator(ui: &mut egui::Ui, rect: egui::Rect, radius: f32) {
+    let center = rect.center();
+    let top_right = rect.right_top();
+    let distance = center.distance(top_right);
+    let midpoint = {
+        let mut cur = center;
+        cur.x += distance / 2.0;
+        cur.y -= distance / 2.0;
+        cur
+    };
+
+    let painter = ui.painter_at(rect);
+    painter.circle_filled(midpoint, radius, notedeck_ui::colors::PINK);
+}
+
 fn support_button(ui: &mut egui::Ui) -> egui::Response {
     expanding_button(
         "help-button",
