@@ -1,12 +1,18 @@
 use crate::{fonts, theme};
 
 use eframe::NativeOptions;
-use egui::ThemePreference;
-use notedeck::{AppSizeHandler, DataPath};
+use egui::{FontId, ThemePreference};
+use notedeck::{AppSizeHandler, DataPath, NotedeckTextStyle};
 use notedeck_ui::app_images;
 use tracing::info;
 
-pub fn setup_chrome(ctx: &egui::Context, args: &notedeck::Args, theme: ThemePreference) {
+pub fn setup_chrome(
+    ctx: &egui::Context,
+    args: &notedeck::Args,
+    theme: ThemePreference,
+    note_body_font_size: f32,
+    zoom_factor: f32,
+) {
     let is_mobile = args
         .is_mobile
         .unwrap_or(notedeck::ui::is_compiled_as_mobile());
@@ -31,6 +37,15 @@ pub fn setup_chrome(ctx: &egui::Context, args: &notedeck::Args, theme: ThemePref
     ctx.set_visuals_of(egui::Theme::Light, theme::light_mode());
 
     setup_cc(ctx, is_mobile);
+
+    ctx.set_zoom_factor(zoom_factor);
+
+    let mut style = (*ctx.style()).clone();
+    style.text_styles.insert(
+        NotedeckTextStyle::NoteBody.text_style(),
+        FontId::proportional(note_body_font_size),
+    );
+    ctx.set_style(style);
 }
 
 pub fn setup_cc(ctx: &egui::Context, is_mobile: bool) {
@@ -39,7 +54,6 @@ pub fn setup_cc(ctx: &egui::Context, is_mobile: bool) {
     if notedeck::ui::is_compiled_as_mobile() {
         ctx.set_pixels_per_point(ctx.pixels_per_point() + 0.2);
     }
-
     //ctx.set_pixels_per_point(1.0);
     //
     //

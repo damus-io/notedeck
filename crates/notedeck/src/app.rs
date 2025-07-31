@@ -1,13 +1,13 @@
 use crate::account::FALLBACK_PUBKEY;
 use crate::i18n::Localization;
-use crate::persist::{AppSizeHandler, ZoomHandler};
+use crate::persist::{AppSizeHandler, SettingsHandler};
 use crate::wallet::GlobalWallet;
 use crate::zaps::Zaps;
+use crate::JobPool;
 use crate::{
     frame_history::FrameHistory, AccountStorage, Accounts, AppContext, Args, DataPath,
     DataPathType, Directory, Images, NoteAction, NoteCache, RelayDebugView, UnknownIds,
 };
-use crate::{JobPool, SettingsHandler};
 use egui::Margin;
 use egui::ThemePreference;
 use egui_winit::clipboard::Clipboard;
@@ -40,9 +40,8 @@ pub struct Notedeck {
     global_wallet: GlobalWallet,
     path: DataPath,
     args: Args,
-    settings_handler: SettingsHandler,
+    settings: SettingsHandler,
     app: Option<Rc<RefCell<dyn App>>>,
-    zoom: ZoomHandler,
     app_size: AppSizeHandler,
     unrecognized_args: BTreeSet<String>,
     clipboard: Clipboard,
@@ -99,7 +98,15 @@ impl eframe::App for Notedeck {
 
         render_notedeck(self, ctx);
 
-        self.zoom.try_save_zoom_factor(ctx);
+        self.settings.update_batch(|settings| {
+            settings.zoom_factor = ctx.zoom_factor();
+            settings.locale = self.i18n.get_current_locale().to_string();
+            settings.theme = if ctx.style().visuals.dark_mode {
+                ThemePreference::Dark
+            } else {
+                ThemePreference::Light
+            };
+        });
         self.app_size.try_save_app_size(ctx);
 
         if self.args.relay_debug {
@@ -159,9 +166,7 @@ impl Notedeck {
             1024usize * 1024usize * 1024usize * 1024usize
         };
 
-        let mut settings_handler = SettingsHandler::new(&path);
-
-        settings_handler.load();
+        let settings = SettingsHandler::new(&path).load();
 
         let config = Config::new().set_ingester_threads(2).set_mapsize(map_size);
 
@@ -216,12 +221,8 @@ impl Notedeck {
 
         let img_cache = Images::new(img_cache_dir);
         let note_cache = NoteCache::default();
-        let zoom = ZoomHandler::new(&path);
-        let app_size = AppSizeHandler::new(&path);
 
-        if let Some(z) = zoom.get_zoom_factor() {
-            ctx.set_zoom_factor(z);
-        }
+        let app_size = AppSizeHandler::new(&path);
 
         // migrate
         if let Err(e) = img_cache.migrate_v0() {
@@ -236,7 +237,7 @@ impl Notedeck {
         let mut i18n = Localization::new();
 
         let setting_locale: Result<LanguageIdentifier, LanguageIdentifierError> =
-            settings_handler.locale().parse();
+            settings.locale().parse();
 
         if setting_locale.is_ok() {
             if let Err(err) = i18n.set_locale(setting_locale.unwrap()) {
@@ -263,9 +264,8 @@ impl Notedeck {
             global_wallet,
             path: path.clone(),
             args: parsed_args,
-            settings_handler,
+            settings,
             app: None,
-            zoom,
             app_size,
             unrecognized_args,
             frame_history: FrameHistory::default(),
@@ -292,7 +292,7 @@ impl Notedeck {
             global_wallet: &mut self.global_wallet,
             path: &self.path,
             args: &self.args,
-            settings_handler: &mut self.settings_handler,
+            settings: &mut self.settings,
             clipboard: &mut self.clipboard,
             zaps: &mut self.zaps,
             frame_history: &mut self.frame_history,
@@ -310,7 +310,15 @@ impl Notedeck {
     }
 
     pub fn theme(&self) -> ThemePreference {
-        self.settings_handler.theme()
+        self.settings.theme()
+    }
+
+    pub fn note_body_font_size(&self) -> f32 {
+        self.settings.note_body_font_size()
+    }
+
+    pub fn zoom_factor(&self) -> f32 {
+        self.settings.zoom_factor()
     }
 
     pub fn unrecognized_args(&self) -> &BTreeSet<String> {

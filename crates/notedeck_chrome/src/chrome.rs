@@ -112,11 +112,8 @@ impl ChromePanelAction {
     fn process(&self, ctx: &mut AppContext, chrome: &mut Chrome, ui: &mut egui::Ui) {
         match self {
             Self::SaveTheme(theme) => {
-                ui.ctx().options_mut(|o| {
-                    o.theme_preference = *theme;
-                });
-                ctx.settings_handler.set_theme(*theme);
-                ctx.settings_handler.save();
+                ui.ctx().set_theme(*theme);
+                ctx.settings.set_theme(*theme);
             }
 
             Self::Toolbar(toolbar_action) => match toolbar_action {

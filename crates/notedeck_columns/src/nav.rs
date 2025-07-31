@@ -30,8 +30,6 @@ use crate::{
     Damus,
 };
 
-use crate::ui::settings::ShowNoteClientOption;
-
 use egui_nav::{Nav, NavAction, NavResponse, NavUiType, Percent, PopupResponse, PopupSheet};
 use enostr::ProfileState;
 use nostrdb::{Filter, Ndb, Transaction};
@@ -487,13 +485,9 @@ fn process_render_nav_action(
                 .process_relay_action(ui.ctx(), ctx.pool, action);
             None
         }
-        RenderNavAction::SettingsAction(action) => action.process_settings_action(
-            app,
-            ctx.settings_handler,
-            ctx.i18n,
-            ctx.img_cache,
-            ui.ctx(),
-        ),
+        RenderNavAction::SettingsAction(action) => {
+            action.process_settings_action(app, ctx.settings, ctx.i18n, ctx.img_cache, ui.ctx())
+        }
     };
 
     if let Some(action) = router_action {
@@ -587,28 +581,14 @@ fn render_nav_body(
             .ui(ui)
             .map(RenderNavAction::RelayAction),
 
-        Route::Settings => {
-            let mut show_note_client: ShowNoteClientOption = app.note_options.into();
-
-            let mut theme: String = (if ui.visuals().dark_mode {
-                "Dark"
-            } else {
-                "Light"
-            })
-            .into();
-
-            let mut selected_language: String = ctx.i18n.get_current_locale().to_string();
-
-            SettingsView::new(
-                ctx.img_cache,
-                &mut selected_language,
-                &mut theme,
-                &mut show_note_client,
-                ctx.i18n,
-            )
-            .ui(ui)
-            .map(RenderNavAction::SettingsAction)
-        }
+        Route::Settings => SettingsView::new(
+            &mut ctx.settings.get_settings_mut(),
+            &mut note_context,
+            &mut app.note_options,
+            &mut app.jobs,
+        )
+        .ui(ui)
+        .map(RenderNavAction::SettingsAction),
         Route::Reply(id) => {
             let txn = if let Ok(txn) = Transaction::new(ctx.ndb) {
                 txn
