@@ -363,13 +363,17 @@ impl<'a, 'd> NoteView<'a, 'd> {
         note: &Note,
         profile: &Result<nostrdb::ProfileRecord<'_>, nostrdb::Error>,
         show_unread_indicator: bool,
+        flags: NoteOptions,
     ) {
         let horiz_resp = ui
             .horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = if is_narrow(ui.ctx()) { 1.0 } else { 2.0 };
-                ui.add(Username::new(i18n, profile.as_ref().ok(), note.pubkey()).abbreviated(20));
-
-                render_notetime(ui, i18n, note.created_at(), true)
+                let response = ui
+                    .add(Username::new(i18n, profile.as_ref().ok(), note.pubkey()).abbreviated(20));
+                if !flags.contains(NoteOptions::ShowCreatedAtBottom) {
+                    return render_notetime(ui, i18n, note.created_at(), true).response;
+                }
+                response
             })
             .response;
 
@@ -417,6 +421,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
                                         self.note,
                                         profile,
                                         self.show_unread_indicator,
+                                        self.flags,
                                     );
                                 })
                                 .response
@@ -503,6 +508,8 @@ impl<'a, 'd> NoteView<'a, 'd> {
             let pfp_rect = pfp_resp.bounding_rect;
             let mut note_action: Option<NoteAction> = pfp_resp.into_action(self.note.pubkey());
 
+            self.flags.set(NoteOptions::ShowCreatedAtBottom, false);
+
             ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
                 NoteView::note_header(
                     ui,
@@ -510,6 +517,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
                     self.note,
                     profile,
                     self.show_unread_indicator,
+                    self.flags,
                 );
 
                 ui.horizontal_wrapped(|ui| 's: {
