@@ -471,11 +471,9 @@ impl TimelineKind {
             },
 
             // TODO: still need to update this to fetch likes, zaps, etc
-            TimelineKind::Notifications(pubkey) => FilterState::ready(vec![Filter::new()
-                .pubkeys([pubkey.bytes()])
-                .kinds([1])
-                .limit(default_limit())
-                .build()]),
+            TimelineKind::Notifications(pubkey) => {
+                FilterState::ready(vec![notifications_filter(pubkey)])
+            }
 
             TimelineKind::Hashtag(hashtag) => {
                 let filters = hashtag
@@ -573,11 +571,7 @@ impl TimelineKind {
             )),
 
             TimelineKind::Notifications(pk) => {
-                let notifications_filter = Filter::new()
-                    .pubkeys([pk.bytes()])
-                    .kinds([1])
-                    .limit(default_limit())
-                    .build();
+                let notifications_filter = notifications_filter(&pk);
 
                 Some(Timeline::new(
                     TimelineKind::notifications(pk),
@@ -626,6 +620,14 @@ impl TimelineKind {
             TimelineKind::Hashtag(hashtag) => ColumnTitle::formatted(hashtag.join(" ").to_string()),
         }
     }
+}
+
+pub fn notifications_filter(pk: &Pubkey) -> Filter {
+    Filter::new()
+        .pubkeys([pk.bytes()])
+        .kinds([1])
+        .limit(default_limit())
+        .build()
 }
 
 #[derive(Debug)]
