@@ -18,6 +18,7 @@ mod muted;
 pub mod name;
 pub mod note;
 mod notecache;
+mod options;
 mod persist;
 pub mod platform;
 pub mod profile;
@@ -68,6 +69,7 @@ pub use note::{
     RootIdError, RootNoteId, RootNoteIdBuf, ScrollInfo, ZapAction,
 };
 pub use notecache::{CachedNote, NoteCache};
+pub use options::NotedeckOptions;
 pub use persist::*;
 pub use profile::get_profile_url;
 pub use relay_debug::RelayDebugView;

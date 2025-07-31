@@ -4,6 +4,7 @@ use crate::persist::{AppSizeHandler, SettingsHandler};
 use crate::wallet::GlobalWallet;
 use crate::zaps::Zaps;
 use crate::JobPool;
+use crate::NotedeckOptions;
 use crate::{
     frame_history::FrameHistory, AccountStorage, Accounts, AppContext, Args, DataPath,
     DataPathType, Directory, Images, NoteAction, NoteCache, RelayDebugView, UnknownIds,
@@ -109,7 +110,7 @@ impl eframe::App for Notedeck {
         });
         self.app_size.try_save_app_size(ctx);
 
-        if self.args.relay_debug {
+        if self.args.options.contains(NotedeckOptions::RelayDebug) {
             if self.pool.debug.is_none() {
                 self.pool.use_debug();
             }
@@ -170,7 +171,7 @@ impl Notedeck {
 
         let config = Config::new().set_ingester_threads(2).set_mapsize(map_size);
 
-        let keystore = if parsed_args.use_keystore {
+        let keystore = if parsed_args.options.contains(NotedeckOptions::UseKeystore) {
             let keys_path = path.path(DataPathType::Keys);
             let selected_key_path = path.path(DataPathType::SelectedKey);
             Some(AccountStorage::new(
@@ -274,6 +275,10 @@ impl Notedeck {
             job_pool,
             i18n,
         }
+    }
+
+    pub fn options(&self) -> NotedeckOptions {
+        self.args.options
     }
 
     pub fn app<A: App + 'static>(mut self, app: A) -> Self {

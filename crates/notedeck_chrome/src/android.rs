@@ -97,7 +97,13 @@ pub async fn android_main(app: AndroidApp) {
 
             chrome.add_app(NotedeckApp::Columns(Box::new(columns)));
             chrome.add_app(NotedeckApp::Dave(Box::new(dave)));
-            chrome.add_app(NotedeckApp::Notebook(Box::new(notebook)));
+
+            if notedeck
+                .options()
+                .contains(NotedeckOptions::FeaturesNotebook)
+            {
+                chrome.add_app(NotedeckApp::Notebook(Box::default()));
+            }
 
             // test dav
             chrome.set_active(0);

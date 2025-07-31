@@ -2,7 +2,7 @@ use crate::{fonts, theme};
 
 use eframe::NativeOptions;
 use egui::{FontId, ThemePreference};
-use notedeck::{AppSizeHandler, DataPath, NotedeckTextStyle};
+use notedeck::{AppSizeHandler, DataPath, NotedeckOptions, NotedeckTextStyle};
 use notedeck_ui::app_images;
 use tracing::info;
 
@@ -13,16 +13,20 @@ pub fn setup_chrome(
     note_body_font_size: f32,
     zoom_factor: f32,
 ) {
-    let is_mobile = args
-        .is_mobile
-        .unwrap_or(notedeck::ui::is_compiled_as_mobile());
+    let is_mobile =
+        args.options.contains(NotedeckOptions::Mobile) || notedeck::ui::is_compiled_as_mobile();
 
     let is_oled = notedeck::ui::is_oled();
 
     // Some people have been running notedeck in debug, let's catch that!
-    if !args.tests && cfg!(debug_assertions) && !args.debug {
+    if !args.options.contains(NotedeckOptions::Tests)
+        && cfg!(debug_assertions)
+        && !args.options.contains(NotedeckOptions::Debug)
+    {
         println!("--- WELCOME TO DAMUS NOTEDECK! ---");
-        println!("It looks like are running notedeck in debug mode, unless you are a developer, this is not likely what you want.");
+        println!(
+            "It looks like are running notedeck in debug mode, unless you are a developer, this is not likely what you want."
+        );
         println!("If you are a developer, run `cargo run -- --debug` to skip this message.");
         println!("For everyone else, try again with `cargo run --release`. Enjoy!");
         println!("---------------------------------");

@@ -3483,6 +3483,7 @@ dependencies = [
  "base32",
  "bech32",
  "bincode",
+ "bitflags 2.9.1",
  "blurhash",
  "dirs",
  "eframe",

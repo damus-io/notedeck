@@ -6,7 +6,8 @@ use egui::{vec2, Button, Color32, Label, Layout, Rect, RichText, ThemePreference
 use egui_extras::{Size, StripBuilder};
 use nostrdb::{ProfileRecord, Transaction};
 use notedeck::{
-    tr, App, AppAction, AppContext, Localization, NotedeckTextStyle, UserAccount, WalletType,
+    tr, App, AppAction, AppContext, Localization, NotedeckOptions, NotedeckTextStyle, UserAccount,
+    WalletType,
 };
 use notedeck_columns::{
     column::SelectionResult, timeline::kind::ListKind, timeline::TimelineKind, Damus,
@@ -612,10 +613,10 @@ fn accounts_button(ui: &mut egui::Ui) -> egui::Response {
 
 fn notebook_button(ui: &mut egui::Ui) -> egui::Response {
     expanding_button(
-        "columns-button",
+        "notebook-button",
         40.0,
-        app_images::new_message_image(),
-        app_images::new_message_image(),
+        app_images::algo_image(),
+        app_images::algo_image(),
         ui,
     )
 }
@@ -898,7 +899,7 @@ fn bottomup_sidebar(
         .add(wallet_button())
         .on_hover_cursor(egui::CursorIcon::PointingHand);
 
-    if ctx.args.debug {
+    if ctx.args.options.contains(NotedeckOptions::Debug) {
         ui.weak(format!("{}", ctx.frame_history.fps() as i32));
         ui.weak(format!(
             "{:10.1}",
