@@ -477,6 +477,38 @@ impl Chrome {
     }
 }
 
+fn unseen_notification(
+    columns: Option<&mut Damus>,
+    ndb: &nostrdb::Ndb,
+    current_pk: notedeck::enostr::Pubkey,
+) -> bool {
+    let Some(columns) = columns else {
+        return false;
+    };
+
+    let Some(tl) = columns
+        .timeline_cache
+        .get_mut(&TimelineKind::Notifications(current_pk))
+    else {
+        return false;
+    };
+
+    let freshness = &mut tl.current_view_mut().freshness;
+    freshness.update(|timestamp_last_viewed| {
+        let filter = notedeck_columns::timeline::kind::notifications_filter(&current_pk)
+            .since_mut(timestamp_last_viewed);
+        let txn = Transaction::new(ndb).expect("txn");
+
+        let Some(res) = ndb.query(&txn, &[filter], 1).ok() else {
+            return false;
+        };
+
+        !res.is_empty()
+    });
+
+    freshness.has_unseen()
+}
+
 impl notedeck::App for Chrome {
     fn update(&mut self, ctx: &mut notedeck::AppContext, ui: &mut egui::Ui) -> Option<AppAction> {
         if let Some(action) = self.show(ctx, ui) {
