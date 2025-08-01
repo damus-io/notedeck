@@ -12,7 +12,9 @@ use notedeck::{
     UserAccount, WalletType,
 };
 use notedeck_columns::{
-    column::SelectionResult, timeline::kind::ListKind, timeline::TimelineKind, Damus,
+    column::SelectionResult,
+    timeline::{kind::ListKind, TimelineKind},
+    Damus,
 };
 use notedeck_dave::{Dave, DaveAvatar};
 use notedeck_notebook::Notebook;
@@ -385,7 +387,12 @@ impl Chrome {
                 });
 
                 strip.cell(|ui| {
-                    if let Some(action) = self.toolbar(ui) {
+                    let pk = ctx.accounts.get_selected_account().key.pubkey;
+
+                    let unseen_notification =
+                        unseen_notification(self.get_columns_app(), ctx.ndb, pk);
+
+                    if let Some(action) = self.toolbar(ui, unseen_notification) {
                         got_action = Some(ChromePanelAction::Toolbar(action))
                     }
                 });
@@ -394,7 +401,7 @@ impl Chrome {
         got_action
     }
 
-    fn toolbar(&mut self, ui: &mut egui::Ui) -> Option<ToolbarAction> {
+    fn toolbar(&mut self, ui: &mut egui::Ui, unseen_notification: bool) -> Option<ToolbarAction> {
         use egui_tabs::{TabColor, Tabs};
 
         let rect = ui.available_rect_before_wrap();
@@ -438,7 +445,9 @@ impl Chrome {
                             action = Some(ToolbarAction::Dave);
                         }
                     }
-                } else if index == 2 && notifications_button(ui, btn_size).clicked() {
+                } else if index == 2
+                    && notifications_button(ui, btn_size, unseen_notification).clicked()
+                {
                     action = Some(ToolbarAction::Notifications);
                 }
 
@@ -519,6 +528,38 @@ impl Chrome {
     }
 }
 
+fn unseen_notification(
+    columns: Option<&mut Damus>,
+    ndb: &nostrdb::Ndb,
+    current_pk: notedeck::enostr::Pubkey,
+) -> bool {
+    let Some(columns) = columns else {
+        return false;
+    };
+
+    let Some(tl) = columns
+        .timeline_cache
+        .get_mut(&TimelineKind::Notifications(current_pk))
+    else {
+        return false;
+    };
+
+    let freshness = &mut tl.current_view_mut().freshness;
+    freshness.update(|timestamp_last_viewed| {
+        let filter = notedeck_columns::timeline::kind::notifications_filter(&current_pk)
+            .since_mut(timestamp_last_viewed);
+        let txn = Transaction::new(ndb).expect("txn");
+
+        let Some(res) = ndb.query(&txn, &[filter], 1).ok() else {
+            return false;
+        };
+
+        !res.is_empty()
+    });
+
+    freshness.has_unseen()
+}
+
 impl notedeck::App for Chrome {
     fn update(&mut self, ctx: &mut notedeck::AppContext, ui: &mut egui::Ui) -> Option<AppAction> {
         if let Some(action) = self.show(ctx, ui) {
@@ -572,6 +613,7 @@ fn expanding_button(
     light_img: egui::Image,
     dark_img: egui::Image,
     ui: &mut egui::Ui,
+    unseen_indicator: bool,
 ) -> egui::Response {
     let max_size = ICON_WIDTH * ICON_EXPANSION_MULTIPLE; // max size of the widget
     let img = if ui.visuals().dark_mode {
@@ -583,14 +625,32 @@ fn expanding_button(
     let helper = AnimationHelper::new(ui, name, egui::vec2(max_size, max_size));
 
     let cur_img_size = helper.scale_1d_pos(img_size);
-    img.paint_at(
-        ui,
-        helper
-            .get_animation_rect()
-            .shrink((max_size - cur_img_size) / 2.0),
-    );
+
+    let paint_rect = helper
+        .get_animation_rect()
+        .shrink((max_size - cur_img_size) / 2.0);
+    img.paint_at(ui, paint_rect);
+
+    if unseen_indicator {
+        paint_unseen_indicator(ui, paint_rect, helper.scale_1d_pos(3.0));
+    }
 
     helper.take_animation_response()
+}
+
+fn paint_unseen_indicator(ui: &mut egui::Ui, rect: egui::Rect, radius: f32) {
+    let center = rect.center();
+    let top_right = rect.right_top();
+    let distance = center.distance(top_right);
+    let midpoint = {
+        let mut cur = center;
+        cur.x += distance / 2.0;
+        cur.y -= distance / 2.0;
+        cur
+    };
+
+    let painter = ui.painter_at(rect);
+    painter.circle_filled(midpoint, radius, notedeck_ui::colors::PINK);
 }
 
 fn support_button(ui: &mut egui::Ui) -> egui::Response {
@@ -600,6 +660,7 @@ fn support_button(ui: &mut egui::Ui) -> egui::Response {
         app_images::help_light_image(),
         app_images::help_dark_image(),
         ui,
+        false,
     )
 }
 
@@ -610,16 +671,18 @@ fn settings_button(ui: &mut egui::Ui) -> egui::Response {
         app_images::settings_light_image(),
         app_images::settings_dark_image(),
         ui,
+        false,
     )
 }
 
-fn notifications_button(ui: &mut egui::Ui, size: f32) -> egui::Response {
+fn notifications_button(ui: &mut egui::Ui, size: f32, unseen_indicator: bool) -> egui::Response {
     expanding_button(
         "notifications-button",
         size,
         app_images::notifications_light_image(),
         app_images::notifications_dark_image(),
         ui,
+        unseen_indicator,
     )
 }
 
@@ -630,6 +693,7 @@ fn home_button(ui: &mut egui::Ui, size: f32) -> egui::Response {
         app_images::home_light_image(),
         app_images::home_dark_image(),
         ui,
+        false,
     )
 }
 
@@ -640,6 +704,7 @@ fn columns_button(ui: &mut egui::Ui) -> egui::Response {
         app_images::columns_image(),
         app_images::columns_image(),
         ui,
+        false,
     )
 }
 
@@ -650,6 +715,7 @@ fn accounts_button(ui: &mut egui::Ui) -> egui::Response {
         app_images::accounts_image().tint(ui.visuals().text_color()),
         app_images::accounts_image(),
         ui,
+        false,
     )
 }
 
@@ -660,6 +726,7 @@ fn notebook_button(ui: &mut egui::Ui) -> egui::Response {
         app_images::algo_image(),
         app_images::algo_image(),
         ui,
+        false,
     )
 }
 

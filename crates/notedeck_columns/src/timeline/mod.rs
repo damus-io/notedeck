@@ -8,6 +8,7 @@ use crate::{
 
 use notedeck::{
     contacts::hybrid_contacts_filter,
+    debouncer::Debouncer,
     filter::{self, HybridFilter},
     tr, Accounts, CachedNote, ContactState, FilterError, FilterState, FilterStates, Localization,
     NoteCache, NoteRef, UnknownIds,
@@ -16,8 +17,11 @@ use notedeck::{
 use egui_virtual_list::VirtualList;
 use enostr::{PoolRelay, Pubkey, RelayPool};
 use nostrdb::{Filter, Ndb, Note, NoteKey, Transaction};
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::{
+    cell::RefCell,
+    time::{Duration, UNIX_EPOCH},
+};
+use std::{rc::Rc, time::SystemTime};
 
 use tracing::{debug, error, info, warn};
 
@@ -103,6 +107,7 @@ pub struct TimelineTab {
     pub selection: i32,
     pub filter: ViewFilter,
     pub list: Rc<RefCell<VirtualList>>,
+    pub freshness: NotesFreshness,
 }
 
 impl TimelineTab {
@@ -138,6 +143,7 @@ impl TimelineTab {
             selection,
             filter,
             list,
+            freshness: NotesFreshness::default(),
         }
     }
 
@@ -779,4 +785,102 @@ pub fn is_timeline_ready(
             true
         }
     }
+}
+
+#[derive(Debug)]
+pub struct NotesFreshness {
+    debouncer: Debouncer,
+    state: NotesFreshnessState,
+}
+
+#[derive(Debug)]
+enum NotesFreshnessState {
+    Fresh {
+        timestamp_viewed: u64,
+    },
+    Stale {
+        have_unseen: bool,
+        timestamp_last_viewed: u64,
+    },
+}
+
+impl Default for NotesFreshness {
+    fn default() -> Self {
+        Self {
+            debouncer: Debouncer::new(Duration::from_secs(2)),
+            state: NotesFreshnessState::Stale {
+                have_unseen: true,
+                timestamp_last_viewed: 0,
+            },
+        }
+    }
+}
+
+impl NotesFreshness {
+    pub fn set_fresh(&mut self) {
+        if !self.debouncer.should_act() {
+            return;
+        }
+        self.state = NotesFreshnessState::Fresh {
+            timestamp_viewed: timestamp_now(),
+        };
+        self.debouncer.bounce();
+    }
+
+    pub fn update(&mut self, check_have_unseen: impl FnOnce(u64) -> bool) {
+        if !self.debouncer.should_act() {
+            return;
+        }
+
+        match &self.state {
+            NotesFreshnessState::Fresh { timestamp_viewed } => {
+                let Ok(dur) = SystemTime::now()
+                    .duration_since(UNIX_EPOCH + Duration::from_secs(*timestamp_viewed))
+                else {
+                    return;
+                };
+
+                if dur > Duration::from_secs(2) {
+                    self.state = NotesFreshnessState::Stale {
+                        have_unseen: check_have_unseen(*timestamp_viewed),
+                        timestamp_last_viewed: *timestamp_viewed,
+                    };
+                }
+            }
+            NotesFreshnessState::Stale {
+                have_unseen,
+                timestamp_last_viewed,
+            } => {
+                if *have_unseen {
+                    return;
+                }
+
+                self.state = NotesFreshnessState::Stale {
+                    have_unseen: check_have_unseen(*timestamp_last_viewed),
+                    timestamp_last_viewed: *timestamp_last_viewed,
+                };
+            }
+        }
+
+        self.debouncer.bounce();
+    }
+
+    pub fn has_unseen(&self) -> bool {
+        match &self.state {
+            NotesFreshnessState::Fresh {
+                timestamp_viewed: _,
+            } => false,
+            NotesFreshnessState::Stale {
+                have_unseen,
+                timestamp_last_viewed: _,
+            } => *have_unseen,
+        }
+    }
+}
+
+fn timestamp_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or(Duration::ZERO)
+        .as_secs()
 }

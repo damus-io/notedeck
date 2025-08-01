@@ -221,6 +221,14 @@ impl TimelineCache {
     pub fn num_timelines(&self) -> usize {
         self.timelines.len()
     }
+
+    pub fn set_fresh(&mut self, kind: &TimelineKind) {
+        let Some(tl) = self.get_mut(kind) else {
+            return;
+        };
+
+        tl.current_view_mut().freshness.set_fresh();
+    }
 }
 
 /// Look for new thread notes since our last fetch
