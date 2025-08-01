@@ -3,6 +3,7 @@ use crate::i18n::Localization;
 use crate::persist::{AppSizeHandler, SettingsHandler};
 use crate::wallet::GlobalWallet;
 use crate::zaps::Zaps;
+use crate::Error;
 use crate::JobPool;
 use crate::NotedeckOptions;
 use crate::{
@@ -252,9 +253,6 @@ impl Notedeck {
             }
         }
 
-        // Initialize global i18n context
-        //crate::i18n::init_global_i18n(i18n.clone());
-
         Self {
             ndb,
             img_cache,
@@ -277,8 +275,42 @@ impl Notedeck {
         }
     }
 
+    /// Setup egui context
+    pub fn setup(&self, ctx: &egui::Context) {
+        // Initialize global i18n context
+        //crate::i18n::init_global_i18n(i18n.clone());
+        crate::setup::setup_egui_context(
+            ctx,
+            self.args.options,
+            self.theme(),
+            self.note_body_font_size(),
+            self.zoom_factor(),
+        );
+    }
+
+    /// ensure we recognized all the arguments
+    pub fn check_args(&self, other_app_args: &BTreeSet<String>) -> Result<(), Error> {
+        let completely_unrecognized: Vec<String> = self
+            .unrecognized_args()
+            .intersection(other_app_args)
+            .cloned()
+            .collect();
+        if !completely_unrecognized.is_empty() {
+            let err = format!("Unrecognized arguments: {:?}", completely_unrecognized);
+            tracing::error!("{}", &err);
+            return Err(Error::Generic(err));
+        }
+
+        Ok(())
+    }
+
+    #[inline]
     pub fn options(&self) -> NotedeckOptions {
         self.args.options
+    }
+
+    pub fn has_option(&self, option: NotedeckOptions) -> bool {
+        self.options().contains(option)
     }
 
     pub fn app<A: App + 'static>(mut self, app: A) -> Self {

@@ -7,7 +7,7 @@ use notedeck_columns::Damus;
 use notedeck_dave::Dave;
 use notedeck_notebook::Notebook;
 
-use crate::{app::NotedeckApp, chrome::Chrome, setup::setup_chrome};
+use crate::{app::NotedeckApp, chrome::Chrome, setup::setup_egui_context};
 use notedeck::Notedeck;
 use tracing::error;
 
@@ -70,44 +70,9 @@ pub async fn android_main(app: AndroidApp) {
         Box::new(move |cc| {
             let ctx = &cc.egui_ctx;
             let mut notedeck = Notedeck::new(ctx, path, &app_args);
-            setup_chrome(
-                ctx,
-                &notedeck.args(),
-                notedeck.theme(),
-                notedeck.note_body_font_size(),
-                notedeck.zoom_factor(),
-            );
+            notedeck.setup()?;
 
-            let context = &mut notedeck.app_context();
-            let dave = Dave::new(cc.wgpu_render_state.as_ref());
-            let columns = Damus::new(context, &app_args);
-            let notebook = Notebook::new();
-            let mut chrome = Chrome::new();
-
-            // ensure we recognized all the arguments
-            let completely_unrecognized: Vec<String> = notedeck
-                .unrecognized_args()
-                .intersection(columns.unrecognized_args())
-                .cloned()
-                .collect();
-            if !completely_unrecognized.is_empty() {
-                error!("Unrecognized arguments: {:?}", completely_unrecognized);
-                return Err(Error::Empty.into());
-            }
-
-            chrome.add_app(NotedeckApp::Columns(Box::new(columns)));
-            chrome.add_app(NotedeckApp::Dave(Box::new(dave)));
-
-            if notedeck
-                .options()
-                .contains(NotedeckOptions::FeaturesNotebook)
-            {
-                chrome.add_app(NotedeckApp::Notebook(Box::default()));
-            }
-
-            // test dav
-            chrome.set_active(0);
-
+            let chrome = Chrome::new_with_apps(&mut notedeck);
             notedeck.set_app(chrome);
 
             Ok(Box::new(notedeck))

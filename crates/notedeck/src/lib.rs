@@ -25,6 +25,7 @@ pub mod profile;
 pub mod relay_debug;
 pub mod relayspec;
 mod result;
+mod setup;
 pub mod storage;
 mod style;
 pub mod theme;

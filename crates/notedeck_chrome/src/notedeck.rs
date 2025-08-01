@@ -9,15 +9,8 @@ use re_memory::AccountingAllocator;
 static GLOBAL: AccountingAllocator<std::alloc::System> =
     AccountingAllocator::new(std::alloc::System);
 
-use notedeck::enostr::Error;
-use notedeck::{DataPath, DataPathType, Notedeck, NotedeckOptions};
-use notedeck_chrome::{
-    setup::{generate_native_options, setup_chrome},
-    Chrome, NotedeckApp,
-};
-use notedeck_columns::Damus;
-use notedeck_dave::Dave;
-use tracing::error;
+use notedeck::{DataPath, DataPathType, Notedeck};
+use notedeck_chrome::{setup::generate_native_options, Chrome};
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::EnvFilter;
 
@@ -93,42 +86,8 @@ async fn main() {
             let ctx = &cc.egui_ctx;
 
             let mut notedeck = Notedeck::new(ctx, base_path, &args);
-
-            let mut chrome = Chrome::new();
-            let columns = Damus::new(&mut notedeck.app_context(), &args);
-            let dave = Dave::new(cc.wgpu_render_state.as_ref());
-
-            setup_chrome(
-                ctx,
-                notedeck.args(),
-                notedeck.theme(),
-                notedeck.note_body_font_size(),
-                notedeck.zoom_factor(),
-            );
-
-            // ensure we recognized all the arguments
-            let completely_unrecognized: Vec<String> = notedeck
-                .unrecognized_args()
-                .intersection(columns.unrecognized_args())
-                .cloned()
-                .collect();
-            if !completely_unrecognized.is_empty() {
-                error!("Unrecognized arguments: {:?}", completely_unrecognized);
-                return Err(Error::Empty.into());
-            }
-
-            chrome.add_app(NotedeckApp::Columns(Box::new(columns)));
-            chrome.add_app(NotedeckApp::Dave(Box::new(dave)));
-
-            if notedeck
-                .options()
-                .contains(NotedeckOptions::FeatureNotebook)
-            {
-                chrome.add_app(NotedeckApp::Notebook(Box::default()));
-            }
-
-            chrome.set_active(0);
-
+            notedeck.setup(ctx);
+            let chrome = Chrome::new_with_apps(cc, &args, &mut notedeck)?;
             notedeck.set_app(chrome);
 
             Ok(Box::new(notedeck))
@@ -162,7 +121,8 @@ pub fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{Damus, Notedeck};
+    use super::Notedeck;
+    use notedeck_columns::Damus;
     use std::path::{Path, PathBuf};
 
     fn create_tmp_dir() -> PathBuf {

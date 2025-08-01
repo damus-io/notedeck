@@ -2,12 +2,14 @@
 //#[cfg(target_arch = "wasm32")]
 //use wasm_bindgen::prelude::*;
 use crate::app::NotedeckApp;
+use eframe::CreationContext;
 use egui::{vec2, Button, Color32, Label, Layout, Rect, RichText, ThemePreference, Widget};
 use egui_extras::{Size, StripBuilder};
 use nostrdb::{ProfileRecord, Transaction};
+use notedeck::Error;
 use notedeck::{
-    tr, App, AppAction, AppContext, Localization, NotedeckOptions, NotedeckTextStyle, UserAccount,
-    WalletType,
+    tr, App, AppAction, AppContext, Localization, Notedeck, NotedeckOptions, NotedeckTextStyle,
+    UserAccount, WalletType,
 };
 use notedeck_columns::{
     column::SelectionResult, timeline::kind::ListKind, timeline::TimelineKind, Damus,
@@ -168,9 +170,49 @@ impl ChromePanelAction {
     }
 }
 
+/// Some people have been running notedeck in debug, let's catch that!
+fn stop_debug_mode(options: NotedeckOptions) {
+    if !options.contains(NotedeckOptions::Tests)
+        && cfg!(debug_assertions)
+        && !options.contains(NotedeckOptions::Debug)
+    {
+        println!("--- WELCOME TO DAMUS NOTEDECK! ---");
+        println!(
+            "It looks like are running notedeck in debug mode, unless you are a developer, this is not likely what you want."
+        );
+        println!("If you are a developer, run `cargo run -- --debug` to skip this message.");
+        println!("For everyone else, try again with `cargo run --release`. Enjoy!");
+        println!("---------------------------------");
+        panic!();
+    }
+}
+
 impl Chrome {
-    pub fn new() -> Self {
-        Chrome::default()
+    /// Create a new chrome with the default app setup
+    pub fn new_with_apps(
+        cc: &CreationContext,
+        app_args: &[String],
+        notedeck: &mut Notedeck,
+    ) -> Result<Self, Error> {
+        stop_debug_mode(notedeck.options());
+
+        let context = &mut notedeck.app_context();
+        let dave = Dave::new(cc.wgpu_render_state.as_ref());
+        let columns = Damus::new(context, app_args);
+        let mut chrome = Chrome::default();
+
+        notedeck.check_args(columns.unrecognized_args())?;
+
+        chrome.add_app(NotedeckApp::Columns(Box::new(columns)));
+        chrome.add_app(NotedeckApp::Dave(Box::new(dave)));
+
+        if notedeck.has_option(NotedeckOptions::FeatureNotebook) {
+            chrome.add_app(NotedeckApp::Notebook(Box::default()));
+        }
+
+        chrome.set_active(0);
+
+        Ok(chrome)
     }
 
     pub fn toggle(&mut self) {
