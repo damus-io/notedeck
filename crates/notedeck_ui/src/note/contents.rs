@@ -1,15 +1,16 @@
+use super::media::image_carousel;
 use crate::{
     note::{NoteAction, NoteOptions, NoteResponse, NoteView},
     secondary_label,
 };
-use notedeck::{JobsCache, RenderableMedia};
-
 use egui::{Color32, Hyperlink, Label, RichText};
 use nostrdb::{BlockType, Mention, Note, NoteKey, Transaction};
+use notedeck::{
+    tr, update_imeta_blurhashes, IsFollowing, NoteCache, NoteContext, NotedeckTextStyle,
+    OpenColumnInfo,
+};
+use notedeck::{JobsCache, RenderableMedia};
 use tracing::warn;
-
-use super::media::image_carousel;
-use notedeck::{update_imeta_blurhashes, IsFollowing, NoteCache, NoteContext, NotedeckTextStyle};
 
 pub struct NoteContents<'a, 'd> {
     note_context: &'a mut NoteContext<'d>,
@@ -163,6 +164,7 @@ pub fn render_note_contents<'a>(
                 BlockType::MentionBech32 => match block.as_mention().unwrap() {
                     Mention::Profile(profile) => {
                         let act = crate::Mention::new(
+                            note_context.i18n,
                             note_context.ndb,
                             note_context.img_cache,
                             txn,
@@ -177,6 +179,7 @@ pub fn render_note_contents<'a>(
 
                     Mention::Pubkey(npub) => {
                         let act = crate::Mention::new(
+                            note_context.i18n,
                             note_context.ndb,
                             note_context.img_cache,
                             txn,
@@ -219,7 +222,25 @@ pub fn render_note_contents<'a>(
                         .on_hover_cursor(egui::CursorIcon::PointingHand);
 
                     if resp.clicked() {
-                        note_action = Some(NoteAction::Hashtag(block.as_str().to_string()));
+                        if ui.input(|i| i.modifiers.ctrl) || ui.input(|i| i.modifiers.command) {
+                            note_action = Some(NoteAction::OpenColumn(OpenColumnInfo::Hashtag(
+                                block.as_str().to_string(),
+                            )));
+                        } else {
+                            note_action = Some(NoteAction::Hashtag(block.as_str().to_string()));
+                        }
+                    } else {
+                        if ui.input(|i| i.modifiers.ctrl) || ui.input(|i| i.modifiers.command) {
+                            resp.on_hover_text_at_pointer(format!(
+                                "{} + Click {}",
+                                if ui.input(|i| (i.modifiers.command)) {
+                                    "Command"
+                                } else {
+                                    "Ctrl"
+                                },
+                                tr!(note_context.i18n, "to open hashtag in a new column", "")
+                            ));
+                        }
                     }
                 }
 

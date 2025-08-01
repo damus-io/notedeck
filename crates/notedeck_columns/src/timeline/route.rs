@@ -84,16 +84,9 @@ pub fn render_thread_route(
     // We need the reply lines in threads
     note_options.set(NoteOptions::Wide, false);
 
-    ui::ThreadView::new(
-        threads,
-        selection.selected_or_root(),
-        note_options,
-        note_context,
-        jobs,
-        col,
-    )
-    .ui(ui)
-    .map(Into::into)
+    ui::ThreadView::new(threads, selection, note_options, note_context, jobs, col)
+        .ui(ui)
+        .map(Into::into)
 }
 
 #[allow(clippy::too_many_arguments)]

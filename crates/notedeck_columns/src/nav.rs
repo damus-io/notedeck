@@ -10,6 +10,7 @@ use crate::{
     route::{Route, Router, SingletonRouter},
     timeline::{
         route::{render_thread_route, render_timeline_route},
+        thread::Threads,
         TimelineCache, TimelineKind,
     },
     ui::{
@@ -35,14 +36,16 @@ use enostr::ProfileState;
 use nostrdb::{Filter, Ndb, Transaction};
 use notedeck::{
     get_current_default_msats, tr, ui::is_narrow, Accounts, AppContext, NoteAction, NoteContext,
-    RelayAction,
+    OpenColumnInfo, RelayAction,
 };
 use tracing::error;
 
 /// The result of processing a nav response
+#[derive(PartialEq)]
 pub enum ProcessNavResult {
     SwitchOccurred,
     PfpClicked,
+    OpenColumn((usize, OpenColumnInfo)),
 }
 
 impl ProcessNavResult {
@@ -328,6 +331,7 @@ fn handle_navigating_edit_profile(ndb: &Ndb, accounts: &Accounts, app: &mut Damu
 }
 
 pub enum RouterAction {
+    MissingThreadSub,
     GoBack,
     /// We clicked on a pfp in a route. We currently don't carry any
     /// information about the pfp since we only use it for toggling the
@@ -338,6 +342,7 @@ pub enum RouterAction {
         route: Route,
         make_new: bool,
     },
+    OpenColumn(OpenColumnInfo),
 }
 
 pub enum RouterType {
@@ -356,10 +361,23 @@ fn go_back(stack: &mut Router<Route>, sheet: &mut SingletonRouter<Route>) {
 impl RouterAction {
     pub fn process(
         self,
+        col: usize,
+        ctx: &mut AppContext,
+        threads: &mut Threads,
         stack_router: &mut Router<Route>,
         sheet_router: &mut SingletonRouter<Route>,
     ) -> Option<ProcessNavResult> {
         match self {
+            RouterAction::MissingThreadSub => {
+                if let Route::Thread(ts) = stack_router.top() {
+                    let txn = Transaction::new(&ctx.ndb).expect("Transaction expected");
+                    if let Some(result) = threads.open(ctx.ndb, &txn, ctx.pool, ts, true, col) {
+                        result.process(threads, ctx.ndb, &txn, ctx.unknown_ids, ctx.note_cache);
+                    }
+                    tracing::info!("missing thread local sub {} created", col);
+                }
+                None
+            }
             RouterAction::GoBack => {
                 go_back(stack_router, sheet_router);
 
@@ -398,6 +416,7 @@ impl RouterAction {
                 }
                 None
             }
+            RouterAction::OpenColumn(info) => Some(ProcessNavResult::OpenColumn((col, info))),
         }
     }
 
@@ -496,7 +515,7 @@ fn process_render_nav_action(
         let router = &mut cols.router;
         let sheet_router = &mut cols.sheet_router;
 
-        action.process(router, sheet_router)
+        action.process(col, ctx, &mut app.threads, router, sheet_router)
     } else {
         None
     }
@@ -592,7 +611,7 @@ fn render_nav_body(
         .ui(ui)
         .map(RenderNavAction::SettingsAction),
         Route::Reply(id) => {
-            let txn = if let Ok(txn) = Transaction::new(ctx.ndb) {
+            let txn = if let Ok(txn) = Transaction::new(note_context.ndb) {
                 txn
             } else {
                 ui.label(tr!(

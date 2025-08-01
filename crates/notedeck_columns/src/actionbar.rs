@@ -30,6 +30,27 @@ pub enum NotesOpenResult {
     Thread(NewThreadNotes),
 }
 
+impl NotesOpenResult {
+    pub fn process(
+        self,
+        threads: &mut Threads,
+        ndb: &Ndb,
+        note_cache: &mut NoteCache,
+        txn: &Transaction,
+        timeline_cache: &mut TimelineCache,
+        unknown_ids: &mut UnknownIds,
+    ) {
+        match self {
+            NotesOpenResult::Timeline(timeline_open_result) => {
+                timeline_open_result.process(ndb, note_cache, txn, timeline_cache, unknown_ids);
+            }
+            NotesOpenResult::Thread(thread_open_result) => {
+                thread_open_result.process(threads, ndb, txn, unknown_ids, note_cache);
+            }
+        }
+    }
+}
+
 pub enum TimelineOpenResult {
     NewNotes(NewNotes),
 }
@@ -63,6 +84,7 @@ fn execute_note_action(
     let can_post = accounts.get_selected_account().key.secret_key.is_some();
 
     match action {
+        NoteAction::MissingThreadSub => router_action = Some(RouterAction::MissingThreadSub),
         NoteAction::Scroll(ref scroll_info) => {
             tracing::trace!("timeline scroll {scroll_info:?}")
         }
@@ -80,6 +102,9 @@ fn execute_note_action(
             timeline_res = timeline_cache
                 .open(ndb, note_cache, txn, pool, &kind)
                 .map(NotesOpenResult::Timeline);
+        }
+        NoteAction::OpenColumn(args) => {
+            router_action = Some(RouterAction::OpenColumn(args));
         }
         NoteAction::Note { note_id, preview } => 'ex: {
             let Ok(thread_selection) = ThreadSelection::from_note_id(ndb, note_cache, txn, note_id)
@@ -224,14 +249,7 @@ pub fn execute_and_process_note_action(
     );
 
     if let Some(br) = resp.timeline_res {
-        match br {
-            NotesOpenResult::Timeline(timeline_open_result) => {
-                timeline_open_result.process(ndb, note_cache, txn, timeline_cache, unknown_ids);
-            }
-            NotesOpenResult::Thread(thread_open_result) => {
-                thread_open_result.process(threads, ndb, txn, unknown_ids, note_cache);
-            }
-        }
+        br.process(threads, &ndb, note_cache, txn, timeline_cache, unknown_ids);
     }
 
     resp.router_action

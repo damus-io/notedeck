@@ -114,7 +114,7 @@ impl ThreadSubs {
 
                     if scope.root_id.bytes() != id.root_id.bytes() {
                         tracing::error!(
-                            "Somehow the current scope's root is not equal to the selected note's root. scope's root: {:?}, thread's root: {:?}",
+                            "ReturnType::Drag: Somehow the current scope's root is not equal to the selected note's root. scope's root: {:?}, thread's root: {:?}",
                             scope.root_id.hex(),
                             id.root_id.bytes()
                         );
@@ -137,7 +137,7 @@ impl ThreadSubs {
 
                 if scope.root_id.bytes() != id.root_id.bytes() {
                     tracing::error!(
-                        "Somehow the current scope's root is not equal to the selected note's root. scope's root: {:?}, thread's root: {:?}",
+                        "ReturnType::Click: Somehow the current scope's root is not equal to the selected note's root. scope's root: {:?}, thread's root: {:?}",
                         scope.root_id.hex(),
                         id.root_id.bytes()
                     );
@@ -192,7 +192,7 @@ fn sub_current_scope(
 
     if selection.root_id.bytes() != cur_scope.root_id.bytes() {
         tracing::error!(
-            "Somehow the current scope's root is not equal to the selected note's root"
+            "sub_current_scope: Somehow the current scope's root is not equal to the selected note's root"
         );
     }
 
