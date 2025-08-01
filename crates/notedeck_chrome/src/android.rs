@@ -2,20 +2,15 @@
 //use egui_android::run_android;
 
 use egui_winit::winit::platform::android::activity::AndroidApp;
-use notedeck::enostr::Error;
-use notedeck_columns::Damus;
-use notedeck_dave::Dave;
-use notedeck_notebook::Notebook;
 
-use crate::{app::NotedeckApp, chrome::Chrome, setup::setup_egui_context};
+use crate::chrome::Chrome;
 use notedeck::Notedeck;
-use tracing::error;
 
 #[no_mangle]
 #[tokio::main]
 pub async fn android_main(app: AndroidApp) {
     //use tracing_logcat::{LogcatMakeWriter, LogcatTag};
-    use tracing_subscriber::{prelude::*, EnvFilter};
+    use tracing_subscriber::{EnvFilter, prelude::*};
 
     std::env::set_var("RUST_BACKTRACE", "full");
     //std::env::set_var("DAVE_ENDPOINT", "http://ollama.jb55.com/v1");
@@ -70,9 +65,8 @@ pub async fn android_main(app: AndroidApp) {
         Box::new(move |cc| {
             let ctx = &cc.egui_ctx;
             let mut notedeck = Notedeck::new(ctx, path, &app_args);
-            notedeck.setup()?;
-
-            let chrome = Chrome::new_with_apps(&mut notedeck);
+            notedeck.setup(ctx);
+            let chrome = Chrome::new_with_apps(cc, &app_args, &mut notedeck)?;
             notedeck.set_app(chrome);
 
             Ok(Box::new(notedeck))
