@@ -376,7 +376,7 @@ username___at___domain___will_be_used_for_identification_a4fd = "{ $username }" 
 # Profile username field label
 Username_daa7 = 用戶名
 # Label for view folder button, Storage settings section
-View_folder_9742 = 查看文件夾：
+View_folder_9742 = 查看文件夾
 # Column title for wallet management
 Wallet_5e50 = 錢包
 # Hint for deck name input field

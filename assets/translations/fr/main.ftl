@@ -376,7 +376,7 @@ username___at___domain___will_be_used_for_identification_a4fd = "{ $username }" 
 # Profile username field label
 Username_daa7 = Nom d'utilisateur
 # Label for view folder button, Storage settings section
-View_folder_9742 = Voir le dossier :
+View_folder_9742 = Voir le dossier
 # Column title for wallet management
 Wallet_5e50 = Portefeuille
 # Hint for deck name input field

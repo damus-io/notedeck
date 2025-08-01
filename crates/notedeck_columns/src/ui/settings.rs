@@ -16,9 +16,6 @@ use crate::{nav::RouterAction, Damus, Route};
 
 const PREVIEW_NOTE_ID: &str = "note1edjc8ggj07hwv77g2405uh6j2jkk5aud22gktxrvc2wnre4vdwgqzlv2gw";
 
-const THEME_LIGHT: &str = "Light";
-const THEME_DARK: &str = "Dark";
-
 const MIN_ZOOM: f32 = 0.5;
 const MAX_ZOOM: f32 = 3.0;
 const ZOOM_STEP: f32 = 0.1;
@@ -389,7 +386,7 @@ impl<'a> SettingsView<'a> {
                         ThemePreference::Light,
                         richtext_small(tr!(
                             self.note_context.i18n,
-                            THEME_LIGHT,
+                            "Light",
                             "Label for Theme Light, Appearance settings section",
                         )),
                     )
@@ -404,7 +401,7 @@ impl<'a> SettingsView<'a> {
                         ThemePreference::Dark,
                         richtext_small(tr!(
                             self.note_context.i18n,
-                            THEME_DARK,
+                            "Dark",
                             "Label for Theme Dark, Appearance settings section",
                         )),
                     )
@@ -532,15 +529,19 @@ impl<'a> SettingsView<'a> {
             ui.horizontal(|ui| {
                 ui.label(richtext_small(tr!(
                     self.note_context.i18n,
-                    "Sort replies newest first",
+                    "Sort replies newest first:",
                     "Label for Sort replies newest first, others settings section",
                 )));
 
                 if ui
                     .toggle_value(
                         &mut self.settings.show_replies_newest_first,
-                        RichText::new(tr!(self.note_context.i18n, "ON", "ON"))
-                            .text_style(NotedeckTextStyle::Small.text_style()),
+                        RichText::new(tr!(
+                            self.note_context.i18n,
+                            "On",
+                            "Setting to turn on sorting replies so that the newest are shown first"
+                        ))
+                        .text_style(NotedeckTextStyle::Small.text_style()),
                     )
                     .changed()
                 {
@@ -553,7 +554,7 @@ impl<'a> SettingsView<'a> {
             ui.horizontal_wrapped(|ui| {
                 ui.label(richtext_small(tr!(
                     self.note_context.i18n,
-                    "Source client",
+                    "Source client:",
                     "Label for Source client, others settings section",
                 )));
 
