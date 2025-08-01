@@ -241,6 +241,9 @@ Enter_your_public_key__npub___nostr_address__e_g___address____or_private_key__ns
 # Label for find user button
 Find_User_bd12 = Find User
 
+# Label for font size, Appearance settings section
+Font_size_dd73 = Font size:
+
 # Title for hashtags column
 Hashtags_f8e0 = Hashtags
 
@@ -352,6 +355,9 @@ Notifications_ef56 = Notifications
 # Relative time for very recent events (less than 3 seconds)
 now_2181 = now
 
+# Setting to turn on sorting replies so that the newest are shown first
+On_f412 = On
+
 # Button label to open email client
 Open_Email_25e9 = Open Email
 
@@ -430,6 +436,9 @@ Repost_this_note_8e56 = Repost this note
 # Label for reposted notes
 Reposted_61c8 = Reposted
 
+# Label for reset note body font size, Appearance settings section
+Reset_4e60 = Reset
+
 # Label for reset zoom level, Appearance settings section
 Reset_62d4 = Reset
 
@@ -469,9 +478,6 @@ Send_1ea4 = Send
 # Column title for app settings
 Settings_7a4f = Settings
 
-# Label for Show source client, others settings section
-Show_source_client_9e31 = Show source client
-
 # Description for last note per user column
 Show_the_last_note_for_each_user_from_a_list_50e7 = Show the last note for each user from a list
 
@@ -483,6 +489,12 @@ Someone_else_s_Notes_7e5f = Someone else's Notes
 
 # Title for someone else's notifications column
 Someone_else_s_Notifications_82e6 = Someone else's Notifications
+
+# Label for Sort replies newest first, others settings section
+Sort_replies_newest_first_b6c3 = Sort replies newest first:
+
+# Label for Source client, others settings section
+Source_client_fb2b = Source client:
 
 # Description for contact list column
 Source_the_last_note_for_each_user_in_your_contact_list_e157 = Source the last note for each user in your contact list
@@ -519,6 +531,9 @@ Subscribe_to_someone_else_s_notes_d1e9 = Subscribe to someone else's notes
 
 # Column title for subscribing to individual user
 Subscribe_to_someone_s_notes_b3c8 = Subscribe to someone's notes
+
+# Support email address
+Support_email_44d9 = Support email:
 
 # Hover text for dark mode toggle button
 Switch_to_dark_mode_4dec = Switch to dark mode
@@ -560,7 +575,7 @@ username___at___domain___will_be_used_for_identification_a4fd = "{$username}" at
 Username_daa7 = Username
 
 # Label for view folder button, Storage settings section
-View_folder_9742 = View folder:
+View_folder_9742 = View folder
 
 # Column title for wallet management
 Wallet_5e50 = Wallet
