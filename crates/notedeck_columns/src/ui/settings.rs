@@ -270,6 +270,7 @@ impl<'a> SettingsView<'a> {
             });
 
             let txn = Transaction::new(self.note_context.ndb).unwrap();
+
             if let Some(note_id) = NoteId::from_bech(PREVIEW_NOTE_ID) {
                 if let Ok(preview_note) =
                     self.note_context.ndb.get_note_by_id(&txn, note_id.bytes())
@@ -277,17 +278,17 @@ impl<'a> SettingsView<'a> {
                     notedeck_ui::padding(8.0, ui, |ui| {
                         if is_narrow(ui.ctx()) {
                             ui.set_max_width(ui.available_width());
-                        }
 
-                        NoteView::new(
-                            self.note_context,
-                            &preview_note,
-                            *self.note_options,
-                            self.jobs,
-                        )
-                        .actionbar(false)
-                        .options_button(false)
-                        .show(ui);
+                            NoteView::new(
+                                self.note_context,
+                                &preview_note,
+                                *self.note_options,
+                                self.jobs,
+                            )
+                            .actionbar(false)
+                            .options_button(false)
+                            .show(ui);
+                        }
                     });
                     ui.separator();
                 }

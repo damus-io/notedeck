@@ -292,6 +292,7 @@ struct ThreadNote<'a> {
 
 impl<'a> ThreadNote<'a> {
     fn options(&self, mut cur_options: NoteOptions) -> NoteOptions {
+        cur_options.set(NoteOptions::ShowCreatedAtBottom, true);
         match self.note_type {
             ThreadNoteType::Chain { root: _ } => cur_options,
             ThreadNoteType::Selected { root: _ } => {

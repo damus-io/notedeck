@@ -591,6 +591,7 @@ fn render_nav_body(
         )
         .ui(ui)
         .map(RenderNavAction::SettingsAction),
+
         Route::Reply(id) => {
             let txn = if let Ok(txn) = Transaction::new(ctx.ndb) {
                 txn
