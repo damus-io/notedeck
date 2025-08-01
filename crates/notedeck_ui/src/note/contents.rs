@@ -4,7 +4,7 @@ use crate::{
 };
 use notedeck::{JobsCache, RenderableMedia};
 
-use egui::{vec2, Color32, Hyperlink, Label, RichText};
+use egui::{Color32, Hyperlink, Label, RichText};
 use nostrdb::{BlockType, Mention, Note, NoteKey, Transaction};
 use tracing::warn;
 
@@ -42,8 +42,6 @@ impl<'a, 'd> NoteContents<'a, 'd> {
 
 impl egui::Widget for &mut NoteContents<'_, '_> {
     fn ui(self, ui: &mut egui::Ui) -> egui::Response {
-        ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
-
         if self.options.contains(NoteOptions::ShowNoteClientTop) {
             render_client(ui, self.note_context.note_cache, self.note);
         }
@@ -159,8 +157,6 @@ pub fn render_note_contents<'a>(
             ui.weak(note.content());
             return;
         };
-
-        ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
 
         'block_loop: for block in blocks.iter(note) {
             match block.blocktype() {
