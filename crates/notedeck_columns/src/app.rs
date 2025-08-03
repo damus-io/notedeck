@@ -494,14 +494,10 @@ impl Damus {
             //    cache.add_deck_default(*pk);
             //}
         };
-        let settings = &app_context.settings;
 
         let support = Support::new(app_context.path);
-
-        let note_options = get_note_options(parsed_args, settings);
-
+        let note_options = get_note_options(parsed_args, app_context.settings);
         let jobs = JobsCache::default();
-
         let threads = Threads::default();
 
         Self {
@@ -580,7 +576,7 @@ impl Damus {
     }
 }
 
-fn get_note_options(args: ColumnsArgs, settings_handler: &&mut SettingsHandler) -> NoteOptions {
+fn get_note_options(args: ColumnsArgs, settings_handler: &mut SettingsHandler) -> NoteOptions {
     let mut note_options = NoteOptions::default();
 
     note_options.set(
