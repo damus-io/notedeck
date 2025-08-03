@@ -1,15 +1,15 @@
+use super::media::image_carousel;
 use crate::{
     note::{NoteAction, NoteOptions, NoteResponse, NoteView},
     secondary_label,
 };
-use notedeck::{JobsCache, RenderableMedia};
-
 use egui::{Color32, Hyperlink, Label, RichText};
 use nostrdb::{BlockType, Mention, Note, NoteKey, Transaction};
+use notedeck::{
+    time_format, update_imeta_blurhashes, IsFollowing, NoteCache, NoteContext, NotedeckTextStyle,
+};
+use notedeck::{JobsCache, RenderableMedia};
 use tracing::warn;
-
-use super::media::image_carousel;
-use notedeck::{update_imeta_blurhashes, IsFollowing, NoteCache, NoteContext, NotedeckTextStyle};
 
 pub struct NoteContents<'a, 'd> {
     note_context: &'a mut NoteContext<'d>,
@@ -42,8 +42,13 @@ impl<'a, 'd> NoteContents<'a, 'd> {
 
 impl egui::Widget for &mut NoteContents<'_, '_> {
     fn ui(self, ui: &mut egui::Ui) -> egui::Response {
+        let create_at_bottom = self.options.contains(NoteOptions::ShowCreatedAtBottom);
         if self.options.contains(NoteOptions::ShowNoteClientTop) {
-            render_client(ui, self.note_context.note_cache, self.note);
+            render_client(ui, self.note_context.note_cache, self.note, false);
+        }
+        // bottom created at only on selected note
+        if create_at_bottom {
+            self.options.set(NoteOptions::ShowCreatedAtBottom, false);
         }
         let result = render_note_contents(
             ui,
@@ -53,21 +58,39 @@ impl egui::Widget for &mut NoteContents<'_, '_> {
             self.options,
             self.jobs,
         );
-        if self.options.contains(NoteOptions::ShowNoteClientBottom) {
-            render_client(ui, self.note_context.note_cache, self.note);
-        }
+        ui.horizontal(|ui| {
+            if create_at_bottom {
+                secondary_label(
+                    ui,
+                    time_format(self.note_context.i18n, self.note.created_at()),
+                );
+            }
+
+            if self.options.contains(NoteOptions::ShowNoteClientBottom) {
+                render_client(
+                    ui,
+                    self.note_context.note_cache,
+                    self.note,
+                    create_at_bottom,
+                );
+            }
+        });
+
         self.action = result.action;
         result.response
     }
 }
 
 #[profiling::function]
-fn render_client(ui: &mut egui::Ui, note_cache: &mut NoteCache, note: &Note) {
+fn render_client(ui: &mut egui::Ui, note_cache: &mut NoteCache, note: &Note, before: bool) {
     let cached_note = note_cache.cached_note_or_insert_mut(note.key().unwrap(), note);
 
     match cached_note.client.as_deref() {
         Some(client) if !client.is_empty() => {
             ui.horizontal(|ui| {
+                if before {
+                    secondary_label(ui, "⋅");
+                }
                 secondary_label(ui, format!("via {client}"));
             });
         }

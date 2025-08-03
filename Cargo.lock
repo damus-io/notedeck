@@ -3485,6 +3485,7 @@ dependencies = [
  "bincode",
  "bitflags 2.9.1",
  "blurhash",
+ "chrono",
  "dirs",
  "eframe",
  "egui",
