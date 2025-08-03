@@ -37,6 +37,7 @@ use notedeck::{
     get_current_default_msats, tr, ui::is_narrow, Accounts, AppContext, NoteAction, NoteContext,
     RelayAction,
 };
+use notedeck_ui::NoteOptions;
 use tracing::error;
 
 /// The result of processing a nav response
@@ -620,13 +621,16 @@ fn render_nav_body(
             let action = {
                 let draft = app.drafts.reply_mut(note.id());
 
+                let mut options = app.note_options;
+                options.set(NoteOptions::Wide, false);
+
                 let response = ui::PostReplyView::new(
                     &mut note_context,
                     poster,
                     draft,
                     &note,
                     inner_rect,
-                    app.note_options,
+                    options,
                     &mut app.jobs,
                     col,
                 )
