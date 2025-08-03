@@ -592,12 +592,12 @@ fn get_note_options(args: ColumnsArgs, settings_handler: &mut SettingsHandler) -
         args.is_flag_set(ColumnsFlag::NoMedia),
     );
     note_options.set(
-        NoteOptions::ShowNoteClientTop,
+        NoteOptions::ClientNameTop,
         ShowSourceClientOption::Top == settings_handler.show_source_client().into()
             || args.is_flag_set(ColumnsFlag::ShowNoteClientTop),
     );
     note_options.set(
-        NoteOptions::ShowNoteClientBottom,
+        NoteOptions::ClientNameBottom,
         ShowSourceClientOption::Bottom == settings_handler.show_source_client().into()
             || args.is_flag_set(ColumnsFlag::ShowNoteClientBottom),
     );

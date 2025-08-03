@@ -23,13 +23,13 @@ bitflags! {
         /// will end with a ... and a "Show more" button.
         const Truncate        = 1 << 11;
         /// Show note's client in the note content
-        const ShowNoteClientTop  = 1 << 12;
-        const ShowNoteClientBottom  = 1 << 13;
+        const ClientNameTop  = 1 << 12;
+        const ClientNameBottom  = 1 << 13;
 
         const RepliesNewestFirst = 1 << 14;
 
-        // Show note's created at note bottom
-        const ShowCreatedAtBottom  = 1 << 15;
+        /// Show note's full created at date at the bottom
+        const FullCreatedDate  = 1 << 15;
     }
 }
 

@@ -43,9 +43,9 @@ impl From<ShowSourceClientOption> for String {
 
 impl From<NoteOptions> for ShowSourceClientOption {
     fn from(note_options: NoteOptions) -> Self {
-        if note_options.contains(NoteOptions::ShowNoteClientTop) {
+        if note_options.contains(NoteOptions::ClientNameTop) {
             ShowSourceClientOption::Top
-        } else if note_options.contains(NoteOptions::ShowNoteClientBottom) {
+        } else if note_options.contains(NoteOptions::ClientNameBottom) {
             ShowSourceClientOption::Bottom
         } else {
             ShowSourceClientOption::Hide
@@ -68,16 +68,16 @@ impl ShowSourceClientOption {
     pub fn set_note_options(self, note_options: &mut NoteOptions) {
         match self {
             Self::Hide => {
-                note_options.set(NoteOptions::ShowNoteClientTop, false);
-                note_options.set(NoteOptions::ShowNoteClientBottom, false);
+                note_options.set(NoteOptions::ClientNameTop, false);
+                note_options.set(NoteOptions::ClientNameBottom, false);
             }
             Self::Bottom => {
-                note_options.set(NoteOptions::ShowNoteClientTop, false);
-                note_options.set(NoteOptions::ShowNoteClientBottom, true);
+                note_options.set(NoteOptions::ClientNameTop, false);
+                note_options.set(NoteOptions::ClientNameBottom, true);
             }
             Self::Top => {
-                note_options.set(NoteOptions::ShowNoteClientTop, true);
-                note_options.set(NoteOptions::ShowNoteClientBottom, false);
+                note_options.set(NoteOptions::ClientNameTop, true);
+                note_options.set(NoteOptions::ClientNameBottom, false);
             }
         }
     }

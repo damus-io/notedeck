@@ -5,6 +5,7 @@ use crate::{
 };
 use egui::{Color32, Hyperlink, Label, RichText};
 use nostrdb::{BlockType, Mention, Note, NoteKey, Transaction};
+use notedeck::Localization;
 use notedeck::{
     time_format, update_imeta_blurhashes, IsFollowing, NoteCache, NoteContext, NotedeckTextStyle,
 };
@@ -42,14 +43,6 @@ impl<'a, 'd> NoteContents<'a, 'd> {
 
 impl egui::Widget for &mut NoteContents<'_, '_> {
     fn ui(self, ui: &mut egui::Ui) -> egui::Response {
-        let create_at_bottom = self.options.contains(NoteOptions::ShowCreatedAtBottom);
-        if self.options.contains(NoteOptions::ShowNoteClientTop) {
-            render_client(ui, self.note_context.note_cache, self.note, false);
-        }
-        // bottom created at only on selected note
-        if create_at_bottom {
-            self.options.set(NoteOptions::ShowCreatedAtBottom, false);
-        }
         let result = render_note_contents(
             ui,
             self.note_context,
@@ -58,44 +51,27 @@ impl egui::Widget for &mut NoteContents<'_, '_> {
             self.options,
             self.jobs,
         );
-        ui.horizontal(|ui| {
-            if create_at_bottom {
-                secondary_label(
-                    ui,
-                    time_format(self.note_context.i18n, self.note.created_at()),
-                );
-            }
-
-            if self.options.contains(NoteOptions::ShowNoteClientBottom) {
-                render_client(
-                    ui,
-                    self.note_context.note_cache,
-                    self.note,
-                    create_at_bottom,
-                );
-            }
-        });
-
         self.action = result.action;
         result.response
     }
 }
 
-#[profiling::function]
-fn render_client(ui: &mut egui::Ui, note_cache: &mut NoteCache, note: &Note, before: bool) {
+fn render_client_name(ui: &mut egui::Ui, note_cache: &mut NoteCache, note: &Note, before: bool) {
     let cached_note = note_cache.cached_note_or_insert_mut(note.key().unwrap(), note);
 
-    match cached_note.client.as_deref() {
-        Some(client) if !client.is_empty() => {
-            ui.horizontal(|ui| {
-                if before {
-                    secondary_label(ui, "⋅");
-                }
-                secondary_label(ui, format!("via {client}"));
-            });
-        }
-        _ => return,
+    let Some(client) = cached_note.client.as_ref() else {
+        return;
+    };
+
+    if client.is_empty() {
+        return;
     }
+
+    if before {
+        secondary_label(ui, "⋅");
+    }
+
+    secondary_label(ui, format!("via {client}"));
 }
 
 /// Render an inline note preview with a border. These are used when
@@ -144,9 +120,57 @@ pub fn render_note_preview(
         .show(ui)
 }
 
+/// Render note contents and surrounding info (client name, full date timestamp)
+fn render_note_contents(
+    ui: &mut egui::Ui,
+    note_context: &mut NoteContext,
+    txn: &Transaction,
+    note: &Note,
+    options: NoteOptions,
+    jobs: &mut JobsCache,
+) -> NoteResponse {
+    if options.contains(NoteOptions::ClientNameTop) {
+        let before_date = false;
+        render_client_name(ui, note_context.note_cache, note, before_date);
+    }
+
+    let response = render_undecorated_note_contents(ui, note_context, txn, note, options, jobs);
+
+    ui.horizontal_wrapped(|ui| {
+        note_bottom_metadata_ui(
+            ui,
+            note_context.i18n,
+            note_context.note_cache,
+            note,
+            options,
+        );
+    });
+
+    response
+}
+
+/// Client name, full timestamp, etc
+fn note_bottom_metadata_ui(
+    ui: &mut egui::Ui,
+    i18n: &mut Localization,
+    note_cache: &mut NoteCache,
+    note: &Note,
+    options: NoteOptions,
+) {
+    let show_full_date = options.contains(NoteOptions::FullCreatedDate);
+
+    if show_full_date {
+        secondary_label(ui, time_format(i18n, note.created_at()));
+    }
+
+    if options.contains(NoteOptions::ClientNameBottom) {
+        render_client_name(ui, note_cache, note, show_full_date);
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 #[profiling::function]
-pub fn render_note_contents<'a>(
+fn render_undecorated_note_contents<'a>(
     ui: &mut egui::Ui,
     note_context: &mut NoteContext,
     txn: &Transaction,

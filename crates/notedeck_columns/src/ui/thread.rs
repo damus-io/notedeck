@@ -292,12 +292,12 @@ struct ThreadNote<'a> {
 
 impl<'a> ThreadNote<'a> {
     fn options(&self, mut cur_options: NoteOptions) -> NoteOptions {
-        cur_options.set(NoteOptions::ShowCreatedAtBottom, true);
         match self.note_type {
             ThreadNoteType::Chain { root: _ } => cur_options,
             ThreadNoteType::Selected { root: _ } => {
                 cur_options.set(NoteOptions::Wide, true);
                 cur_options.set(NoteOptions::SelectableText, true);
+                cur_options.set(NoteOptions::FullCreatedDate, true);
                 cur_options
             }
             ThreadNoteType::Reply => cur_options,
