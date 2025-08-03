@@ -296,7 +296,7 @@ impl Notedeck {
             .cloned()
             .collect();
         if !completely_unrecognized.is_empty() {
-            let err = format!("Unrecognized arguments: {:?}", completely_unrecognized);
+            let err = format!("Unrecognized arguments: {completely_unrecognized:?}");
             tracing::error!("{}", &err);
             return Err(Error::Generic(err));
         }
