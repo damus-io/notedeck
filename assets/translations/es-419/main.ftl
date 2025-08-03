@@ -45,6 +45,8 @@ Algo_2452 = Algo
 Algorithmic_feeds_to_aid_in_note_discovery_d344 = Feeds algorítmicos para ayudar en el descubrimiento de notas
 # Label for zap amount input field
 Amount_70f0 = Cantidad
+# Label for appearance settings section
+Appearance_4c7f = Aspecto
 # Button to send message to Dave AI assistant
 Ask_b7f4 = Preguntar
 # Placeholder text for Dave AI input field
@@ -53,16 +55,26 @@ Ask_dave_anything_33d1 = Pregúntale cualquier cosa a Dave...
 Banner_52ef = Banner
 # Beta version label
 BETA_8e5d = BETA
+# Option in settings section to show the source client label at the bottom of the note
+Bottom_33c8 = Parte inferior
 # Broadcast the note to all connected relays
 Broadcast_fe43 = Transmitir
 # Broadcast the note only to local network relays
 Broadcast_Local_7e50 = Transmitir localmente
 # Button label to cancel an action
 Cancel_ed3b = Cancelar
+# Label for cancel clear cache, Storage settings section
+Cancel_fd8b = Cancelar
+# Label for clear cache button, Storage settings section
+Clear_cache_dccb = Limpiar caché
 # Hover text for editable zap amount
 Click_to_edit_0414 = Haz clic para editar
 # Column title for note composition
 Compose_Note_c094 = Redactar nota
+# Label for configure relays, settings section
+Configure_relays_d156 = Configurar relés
+# Label for confirm clear cache, Storage settings section
+Confirm_9d9d = Confirmar
 # Button label to confirm an action
 Confirm_f8a6 = Confirmar
 # Status label for connected relay
@@ -111,6 +123,8 @@ Custom_a69e = Personalizado
 Customize_Zap_Amount_cfc4 = Personalizar cantidad de zap
 # Column title for support page
 Damus_Support_27c0 = Ayuda de Damus
+# Label for Theme Dark, Appearance settings section
+Dark_85fe = Oscuro
 # Label for deck name input field
 Deck_name_cd32 = Nombre del deck
 # Label for decks section in side panel
@@ -151,10 +165,14 @@ Enter_your_public_key__npub___nostr_address__e_g___address____or_private_key__ns
 Find_User_bd12 = Buscar usuario
 # Title for hashtags column
 Hashtags_f8e0 = Hashtags
+# Option in settings section to hide the source client label in note display
+Hide_281d = Ocultar
 # Title for Home column
 Home_8c19 = Inicio
 # Label for deck icon selection
 Icon_b0ab = Ícono
+# Label for Image cache size, Storage settings section
+Image_cache_size_3004 = Tamaño de caché de imágenes:
 # Title for individual user column
 Individual_b776 = Individual
 # Error message for invalid zap amount
@@ -175,8 +193,12 @@ k_50K_c2dc = 50.000
 k_5K_f7e6 = 5.000
 # Description for your notes column
 Keep_track_of_your_notes___replies_a334 = Haz seguimiento de tus notas y respuestas
+# Label for language, Appearance settings section
+Language_e264 = Idioma:
 # Title for last note per user column
 Last_Note_per_User_17ad = Última nota por usuario
+# Label for Theme Light, Appearance settings section
+Light_7475 = Claro
 # Bitcoin Lightning network address field label
 Lightning_network_address__lud16_ea51 = Dirección de la red Lightning (lud16)
 # Login page title
@@ -219,6 +241,8 @@ now_2181 = ahora
 Open_Email_25e9 = Abrir correo electrónico
 # Instruction to open email client
 Open_your_default_email_client_to_get_help_from_the_Damus_team_68dc = Abre tu cliente de correo predeterminado para recibir ayuda del equipo de Damus
+# Label for others settings section
+Others_7267 = Otros
 # Placeholder text for NWC URI input
 Paste_your_NWC_URI_here_b471 = Pega tu NWC URI aquí...
 # Error message for missing deck name
@@ -265,6 +289,8 @@ replying_to_a_note_e0bc = respondiendo a una nota
 Repost_this_note_8e56 = Volver a publicar esta nota
 # Label for reposted notes
 Reposted_61c8 = Publicadas de nuevo
+# Label for reset zoom level, Appearance settings section
+Reset_62d4 = Restablecer
 # Heading for support section
 Running_into_a_bug_1796 = ¿Encontraste un error?
 # Label for satoshis (Bitcoin unit) for custom zap amount input field
@@ -287,6 +313,10 @@ See_notes_from_your_contacts_ac16 = Ver notas de tus contactos
 See_the_whole_nostr_universe_7694 = Ver todo el universo de nostr
 # Button label to send a zap
 Send_1ea4 = Enviar
+# Column title for app settings
+Settings_7a4f = Configuración
+# Label for Show source client, others settings section
+Show_source_client_9e31 = Mostrar cliente de origen
 # Description for last note per user column
 Show_the_last_note_for_each_user_from_a_list_50e7 = Mostrar la última nota para cada usuario de una lista
 # Button label to sign out of account
@@ -313,6 +343,8 @@ Stay_up_to_date_with_your_notifications_and_mentions_e73e = Mantente al día con
 Step_1_8656 = Paso 1
 # Step 2 label in support instructions
 Step_2_d08d = Paso 2
+# Label for storage settings section
+Storage_ed65 = Almacenamiento
 # Column title for subscribing to external user
 Subscribe_to_someone_else_s_notes_d1e9 = Suscribirse a las notas de otra persona
 # Column title for subscribing to individual user
@@ -325,10 +357,14 @@ Switch_to_light_mode_72ce = Cambiar a modo claro
 Tap_to_Load_4b05 = Toca para cargar
 # Message shown when Dave trial period has ended
 The_Dave_Nostr_AI_assistant_trial_has_ended_____Thanks_for_testing__Zap-enabled_Dave_coming_soon_c6c7 = La prueba del asistente de IA Dave de Nostr finalizó :(. ¡Gracias por probarlo! ¡Dave con zaps estará disponible muy pronto!
+# Label for theme, Appearance settings section
+Theme_4aac = Tema:
 # Column title for note thread view
 Thread_0f20 = Conversación
 # Link text for thread references
 thread_ad1f = conversación
+# Option in settings section to show the source client label at the top of the note
+Top_6aeb = Parte superior
 # Title for universe column
 Universe_e01e = Universo
 # Column title for universe feed
@@ -339,6 +375,8 @@ Use_this_wallet_for_the_current_account_only_61dc = Usar esta billetera solo par
 username___at___domain___will_be_used_for_identification_a4fd = Se utilizará "{ $username }" en "{ $domain }" para la identificación
 # Profile username field label
 Username_daa7 = Nombre de usuario
+# Label for view folder button, Storage settings section
+View_folder_9742 = Ver carpeta
 # Column title for wallet management
 Wallet_5e50 = Billetera
 # Hint for deck name input field
@@ -357,6 +395,8 @@ Your_Notifications_080d = Tus notificaciones
 Zap_16b4 = Zap
 # Hover text for zap button
 Zap_this_note_42b2 = Enviar un zap a esta nota
+# Label for zoom level, Appearance settings section
+Zoom_Level_29a8 = Nivel de zoom:
 
 # Pluralized strings
 
