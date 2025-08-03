@@ -192,6 +192,8 @@ fn render_undecorated_note_contents<'a>(
     let mut supported_medias: Vec<RenderableMedia> = vec![];
 
     let response = ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+
         let blocks = if let Ok(blocks) = note_context.ndb.get_blocks_by_key(txn, note_key) {
             blocks
         } else {
