@@ -10,7 +10,7 @@ use crate::{
     subscriptions::{SubKind, Subscriptions},
     support::Support,
     timeline::{self, kind::ListKind, thread::Threads, TimelineCache, TimelineKind},
-    ui::{self, DesktopSidePanel, ShowSourceClientOption, SidePanelAction},
+    ui::{self, DesktopSidePanel, SidePanelAction},
     view_state::ViewState,
     Result,
 };
@@ -591,17 +591,6 @@ fn get_note_options(args: ColumnsArgs, settings_handler: &mut SettingsHandler) -
         NoteOptions::HideMedia,
         args.is_flag_set(ColumnsFlag::NoMedia),
     );
-    note_options.set(
-        NoteOptions::ClientNameTop,
-        ShowSourceClientOption::Top == settings_handler.show_source_client().into()
-            || args.is_flag_set(ColumnsFlag::ShowNoteClientTop),
-    );
-    note_options.set(
-        NoteOptions::ClientNameBottom,
-        ShowSourceClientOption::Bottom == settings_handler.show_source_client().into()
-            || args.is_flag_set(ColumnsFlag::ShowNoteClientBottom),
-    );
-
     note_options.set(
         NoteOptions::RepliesNewestFirst,
         settings_handler.show_replies_newest_first(),

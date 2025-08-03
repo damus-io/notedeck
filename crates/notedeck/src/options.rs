@@ -20,9 +20,6 @@ bitflags! {
         /// Use keystore?
         const UseKeystore = 1 << 4;
 
-        /// Show client on notes?
-        const ShowClient = 1 << 5;
-
         /// Simulate is_compiled_as_mobile ?
         const Mobile = 1 << 6;
 

@@ -39,10 +39,8 @@ pub struct NoteView<'a, 'd> {
     note_context: &'a mut NoteContext<'d>,
     parent: Option<NoteKey>,
     note: &'a nostrdb::Note<'a>,
-    framed: bool,
     flags: NoteOptions,
     jobs: &'a mut JobsCache,
-    show_unread_indicator: bool,
 }
 
 pub struct NoteResponse {
@@ -89,13 +87,9 @@ impl<'a, 'd> NoteView<'a, 'd> {
     pub fn new(
         note_context: &'a mut NoteContext<'d>,
         note: &'a nostrdb::Note<'a>,
-        mut flags: NoteOptions,
+        flags: NoteOptions,
         jobs: &'a mut JobsCache,
     ) -> Self {
-        flags.set(NoteOptions::ActionBar, true);
-        flags.set(NoteOptions::HasNotePreviews, true);
-
-        let framed = false;
         let parent: Option<NoteKey> = None;
 
         Self {
@@ -103,9 +97,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
             parent,
             note,
             flags,
-            framed,
             jobs,
-            show_unread_indicator: false,
         }
     }
 
@@ -118,88 +110,118 @@ impl<'a, 'd> NoteView<'a, 'd> {
             .options_button(true)
             .is_preview(true)
             .full_date(false)
+            .client_name(false)
     }
 
+    pub fn selected_style(self, selected: bool) -> Self {
+        self.wide(selected)
+            .full_date(selected)
+            .client_name(selected)
+    }
+
+    #[inline]
     pub fn textmode(mut self, enable: bool) -> Self {
         self.options_mut().set(NoteOptions::Textmode, enable);
         self
     }
 
+    #[inline]
+    pub fn client_name(mut self, enable: bool) -> Self {
+        self.options_mut().set(NoteOptions::ClientName, enable);
+        self
+    }
+
+    #[inline]
     pub fn full_date(mut self, enable: bool) -> Self {
         self.options_mut().set(NoteOptions::FullCreatedDate, enable);
         self
     }
 
+    #[inline]
     pub fn actionbar(mut self, enable: bool) -> Self {
         self.options_mut().set(NoteOptions::ActionBar, enable);
         self
     }
 
+    #[inline]
     pub fn hide_media(mut self, enable: bool) -> Self {
         self.options_mut().set(NoteOptions::HideMedia, enable);
         self
     }
 
+    #[inline]
     pub fn frame(mut self, enable: bool) -> Self {
-        self.framed = enable;
+        self.options_mut().set(NoteOptions::Framed, enable);
         self
     }
 
+    #[inline]
     pub fn truncate(mut self, enable: bool) -> Self {
         self.options_mut().set(NoteOptions::Truncate, enable);
         self
     }
 
+    #[inline]
     pub fn small_pfp(mut self, enable: bool) -> Self {
         self.options_mut().set(NoteOptions::SmallPfp, enable);
         self
     }
 
+    #[inline]
     pub fn medium_pfp(mut self, enable: bool) -> Self {
         self.options_mut().set(NoteOptions::MediumPfp, enable);
         self
     }
 
+    #[inline]
     pub fn note_previews(mut self, enable: bool) -> Self {
         self.options_mut().set(NoteOptions::HasNotePreviews, enable);
         self
     }
 
+    #[inline]
     pub fn selectable_text(mut self, enable: bool) -> Self {
         self.options_mut().set(NoteOptions::SelectableText, enable);
         self
     }
 
+    #[inline]
     pub fn wide(mut self, enable: bool) -> Self {
         self.options_mut().set(NoteOptions::Wide, enable);
         self
     }
 
+    #[inline]
     pub fn options_button(mut self, enable: bool) -> Self {
         self.options_mut().set(NoteOptions::OptionsButton, enable);
         self
     }
 
+    #[inline]
+    pub fn unread_indicator(mut self, enable: bool) -> Self {
+        self.options_mut().set(NoteOptions::UnreadIndicator, enable);
+        self
+    }
+
+    #[inline]
     pub fn options(&self) -> NoteOptions {
         self.flags
     }
 
+    #[inline]
     pub fn options_mut(&mut self) -> &mut NoteOptions {
         &mut self.flags
     }
 
+    #[inline]
     pub fn parent(mut self, parent: NoteKey) -> Self {
         self.parent = Some(parent);
         self
     }
 
+    #[inline]
     pub fn is_preview(mut self, is_preview: bool) -> Self {
         self.options_mut().set(NoteOptions::IsPreview, is_preview);
-        self
-    }
-
-    pub fn unread_indicator(mut self, show_unread_indicator: bool) -> Self {
-        self.show_unread_indicator = show_unread_indicator;
         self
     }
 
@@ -340,7 +362,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
     pub fn show(&mut self, ui: &mut egui::Ui) -> NoteResponse {
         if self.options().contains(NoteOptions::Textmode) {
             NoteResponse::new(self.textmode_ui(ui))
-        } else if self.framed {
+        } else if self.options().contains(NoteOptions::Framed) {
             egui::Frame::new()
                 .fill(ui.visuals().noninteractive().weak_bg_fill)
                 .inner_margin(egui::Margin::same(8))
@@ -368,7 +390,6 @@ impl<'a, 'd> NoteView<'a, 'd> {
         i18n: &mut Localization,
         note: &Note,
         profile: &Result<nostrdb::ProfileRecord<'_>, nostrdb::Error>,
-        show_unread_indicator: bool,
         flags: NoteOptions,
     ) {
         let horiz_resp = ui
@@ -383,19 +404,17 @@ impl<'a, 'd> NoteView<'a, 'd> {
             })
             .response;
 
-        if !show_unread_indicator {
-            return;
+        if flags.contains(NoteOptions::UnreadIndicator) {
+            let radius = 4.0;
+            let circle_center = {
+                let mut center = horiz_resp.rect.right_center();
+                center.x += radius + 4.0;
+                center
+            };
+
+            ui.painter()
+                .circle_filled(circle_center, radius, crate::colors::PINK);
         }
-
-        let radius = 4.0;
-        let circle_center = {
-            let mut center = horiz_resp.rect.right_center();
-            center.x += radius + 4.0;
-            center
-        };
-
-        ui.painter()
-            .circle_filled(circle_center, radius, crate::colors::PINK);
     }
 
     fn wide_ui(
@@ -426,7 +445,6 @@ impl<'a, 'd> NoteView<'a, 'd> {
                                         self.note_context.i18n,
                                         self.note,
                                         profile,
-                                        self.show_unread_indicator,
                                         self.flags,
                                     );
                                 })
@@ -515,14 +533,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
             let mut note_action: Option<NoteAction> = pfp_resp.into_action(self.note.pubkey());
 
             ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
-                NoteView::note_header(
-                    ui,
-                    self.note_context.i18n,
-                    self.note,
-                    profile,
-                    self.show_unread_indicator,
-                    self.flags,
-                );
+                NoteView::note_header(ui, self.note_context.i18n, self.note, profile, self.flags);
 
                 ui.horizontal_wrapped(|ui| 's: {
                     ui.spacing_mut().item_spacing.x = if is_narrow(ui.ctx()) { 1.0 } else { 2.0 };

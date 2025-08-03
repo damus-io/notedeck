@@ -10,7 +10,6 @@ use notedeck::{
     SettingsHandler, DEFAULT_NOTE_BODY_FONT_SIZE,
 };
 use notedeck_ui::{NoteOptions, NoteView};
-use strum::Display;
 
 use crate::{nav::RouterAction, Damus, Route};
 
@@ -21,89 +20,9 @@ const MAX_ZOOM: f32 = 3.0;
 const ZOOM_STEP: f32 = 0.1;
 const RESET_ZOOM: f32 = 1.0;
 
-#[derive(Clone, Copy, PartialEq, Eq, Display)]
-pub enum ShowSourceClientOption {
-    Hide,
-    Top,
-    Bottom,
-}
-
-impl From<ShowSourceClientOption> for String {
-    fn from(show_option: ShowSourceClientOption) -> Self {
-        match show_option {
-            ShowSourceClientOption::Hide => "hide".to_string(),
-            ShowSourceClientOption::Top => "top".to_string(),
-            ShowSourceClientOption::Bottom => "bottom".to_string(),
-        }
-    }
-}
-
-impl From<NoteOptions> for ShowSourceClientOption {
-    fn from(note_options: NoteOptions) -> Self {
-        if note_options.contains(NoteOptions::ClientNameTop) {
-            ShowSourceClientOption::Top
-        } else if note_options.contains(NoteOptions::ClientNameBottom) {
-            ShowSourceClientOption::Bottom
-        } else {
-            ShowSourceClientOption::Hide
-        }
-    }
-}
-
-impl From<String> for ShowSourceClientOption {
-    fn from(s: String) -> Self {
-        match s.to_lowercase().as_str() {
-            "hide" => Self::Hide,
-            "top" => Self::Top,
-            "bottom" => Self::Bottom,
-            _ => Self::Hide, // default fallback
-        }
-    }
-}
-
-impl ShowSourceClientOption {
-    pub fn set_note_options(self, note_options: &mut NoteOptions) {
-        match self {
-            Self::Hide => {
-                note_options.set(NoteOptions::ClientNameTop, false);
-                note_options.set(NoteOptions::ClientNameBottom, false);
-            }
-            Self::Bottom => {
-                note_options.set(NoteOptions::ClientNameTop, false);
-                note_options.set(NoteOptions::ClientNameBottom, true);
-            }
-            Self::Top => {
-                note_options.set(NoteOptions::ClientNameTop, true);
-                note_options.set(NoteOptions::ClientNameBottom, false);
-            }
-        }
-    }
-
-    fn label(&self, i18n: &mut Localization) -> String {
-        match self {
-            Self::Hide => tr!(
-                i18n,
-                "Hide",
-                "Option in settings section to hide the source client label in note display"
-            ),
-            Self::Top => tr!(
-                i18n,
-                "Top",
-                "Option in settings section to show the source client label at the top of the note"
-            ),
-            Self::Bottom => tr!(
-                i18n,
-                "Bottom",
-                "Option in settings section to show the source client label at the bottom of the note"
-            ),
-        }
-    }
-}
-
 pub enum SettingsAction {
     SetZoomFactor(f32),
     SetTheme(ThemePreference),
-    SetShowSourceClient(ShowSourceClientOption),
     SetLocale(LanguageIdentifier),
     SetRepliestNewestFirst(bool),
     SetNoteBodyFontSize(f32),
@@ -130,11 +49,6 @@ impl SettingsAction {
             Self::SetZoomFactor(zoom_factor) => {
                 ctx.set_zoom_factor(zoom_factor);
                 settings.set_zoom_factor(zoom_factor);
-            }
-            Self::SetShowSourceClient(option) => {
-                option.set_note_options(&mut app.note_options);
-
-                settings.set_show_source_client(option);
             }
             Self::SetTheme(theme) => {
                 ctx.set_theme(theme);
@@ -549,35 +463,6 @@ impl<'a> SettingsView<'a> {
                     action = Some(SettingsAction::SetRepliestNewestFirst(
                         self.settings.show_replies_newest_first,
                     ));
-                }
-            });
-
-            ui.horizontal_wrapped(|ui| {
-                ui.label(richtext_small(tr!(
-                    self.note_context.i18n,
-                    "Source client:",
-                    "Label for Source client, others settings section",
-                )));
-
-                for option in [
-                    ShowSourceClientOption::Hide,
-                    ShowSourceClientOption::Top,
-                    ShowSourceClientOption::Bottom,
-                ] {
-                    let mut current: ShowSourceClientOption =
-                        self.settings.show_source_client.clone().into();
-
-                    if ui
-                        .selectable_value(
-                            &mut current,
-                            option,
-                            RichText::new(option.label(self.note_context.i18n))
-                                .text_style(NotedeckTextStyle::Small.text_style()),
-                        )
-                        .changed()
-                    {
-                        action = Some(SettingsAction::SetShowSourceClient(option));
-                    }
                 }
             });
         });

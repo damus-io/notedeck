@@ -129,11 +129,6 @@ fn render_note_contents(
     options: NoteOptions,
     jobs: &mut JobsCache,
 ) -> NoteResponse {
-    if options.contains(NoteOptions::ClientNameTop) {
-        let before_date = false;
-        render_client_name(ui, note_context.note_cache, note, before_date);
-    }
-
     let response = render_undecorated_note_contents(ui, note_context, txn, note, options, jobs);
 
     ui.horizontal_wrapped(|ui| {
@@ -163,7 +158,7 @@ fn note_bottom_metadata_ui(
         secondary_label(ui, time_format(i18n, note.created_at()));
     }
 
-    if options.contains(NoteOptions::ClientNameBottom) {
+    if options.contains(NoteOptions::ClientName) {
         render_client_name(ui, note_cache, note, show_full_date);
     }
 }

@@ -279,6 +279,12 @@ enum ThreadNoteType {
     Reply,
 }
 
+impl ThreadNoteType {
+    fn is_selected(&self) -> bool {
+        matches!(self, ThreadNoteType::Selected { .. })
+    }
+}
+
 struct ThreadNotes<'a> {
     notes: Vec<ThreadNote<'a>>,
     selected_index: usize,
@@ -313,6 +319,7 @@ impl<'a> ThreadNote<'a> {
     ) -> NoteResponse {
         let inner = notedeck_ui::padding(8.0, ui, |ui| {
             NoteView::new(note_context, &self.note, self.options(flags), jobs)
+                .selected_style(self.note_type.is_selected())
                 .unread_indicator(self.unread_and_have_replies)
                 .show(ui)
         });

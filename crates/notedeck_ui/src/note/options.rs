@@ -23,13 +23,18 @@ bitflags! {
         /// will end with a ... and a "Show more" button.
         const Truncate        = 1 << 11;
         /// Show note's client in the note content
-        const ClientNameTop  = 1 << 12;
-        const ClientNameBottom  = 1 << 13;
+        const ClientName  = 1 << 12;
 
-        const RepliesNewestFirst = 1 << 14;
+        const RepliesNewestFirst = 1 << 13;
 
         /// Show note's full created at date at the bottom
-        const FullCreatedDate  = 1 << 15;
+        const FullCreatedDate  = 1 << 14;
+
+        /// Note has a framed border
+        const Framed = 1 << 15;
+
+        /// Note has a framed border
+        const UnreadIndicator = 1 << 16;
     }
 }
 

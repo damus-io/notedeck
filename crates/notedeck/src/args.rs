@@ -124,8 +124,6 @@ impl Args {
                 res.options.set(NotedeckOptions::UseKeystore, true);
             } else if arg == "--relay-debug" {
                 res.options.set(NotedeckOptions::RelayDebug, true);
-            } else if arg == "--show-client" {
-                res.options.set(NotedeckOptions::ShowClient, true);
             } else if arg == "--notebook" {
                 res.options.set(NotedeckOptions::FeatureNotebook, true);
             } else {
