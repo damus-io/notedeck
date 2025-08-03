@@ -21,6 +21,7 @@ use notedeck::Images;
 use notedeck::JobsCache;
 use notedeck::Localization;
 use notedeck::MediaAction;
+use notedeck::OpenColumnInfo;
 pub use options::NoteOptions;
 pub use reply_description::reply_desc;
 
@@ -412,7 +413,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
                     let pfp_resp = self.pfp(note_key, profile, ui);
                     let pfp_rect = pfp_resp.bounding_rect;
                     note_action = pfp_resp
-                        .into_action(self.note.pubkey())
+                        .into_action(self.note_context.i18n, self.note.pubkey())
                         .or(note_action.take());
 
                     let size = ui.available_size();
@@ -512,7 +513,8 @@ impl<'a, 'd> NoteView<'a, 'd> {
         ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
             let pfp_resp = self.pfp(note_key, profile, ui);
             let pfp_rect = pfp_resp.bounding_rect;
-            let mut note_action: Option<NoteAction> = pfp_resp.into_action(self.note.pubkey());
+            let mut note_action: Option<NoteAction> =
+                pfp_resp.into_action(self.note_context.i18n, self.note.pubkey());
 
             ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
                 NoteView::note_header(
@@ -622,9 +624,23 @@ impl<'a, 'd> NoteView<'a, 'd> {
             }
         }
 
-        note_action = note_hitbox_clicked(ui, hitbox_id, &response.response.rect, maybe_hitbox)
-            .then_some(NoteAction::note(NoteId::new(*self.note.id())))
-            .or(note_action);
+        note_action = note_hitbox_clicked(
+            ui,
+            self.note_context.i18n,
+            hitbox_id,
+            &response.response.rect,
+            maybe_hitbox,
+        )
+        .then(|| {
+            if ui.input(|i| (i.modifiers.ctrl || i.modifiers.command)) {
+                NoteAction::OpenColumn(OpenColumnInfo::Note {
+                    note_id: NoteId::new(*self.note.id()),
+                })
+            } else {
+                NoteAction::note(NoteId::new(*self.note.id()))
+            }
+        })
+        .or(note_action);
 
         NoteResponse::new(response.response)
             .with_action(note_action)
@@ -684,9 +700,34 @@ struct PfpResponse {
 }
 
 impl PfpResponse {
-    fn into_action(self, note_pk: &[u8; 32]) -> Option<NoteAction> {
+    fn into_action(self, i18n: &mut Localization, note_pk: &[u8; 32]) -> Option<NoteAction> {
         if self.response.clicked() {
-            return Some(NoteAction::Profile(Pubkey::new(*note_pk)));
+            if self
+                .response
+                .ctx
+                .input(|i| (i.modifiers.ctrl || i.modifiers.command))
+            {
+                return Some(NoteAction::OpenColumn(OpenColumnInfo::Profile(
+                    Pubkey::new(*note_pk),
+                )));
+            } else {
+                return Some(NoteAction::Profile(Pubkey::new(*note_pk)));
+            }
+        } else if self
+            .response
+            .ctx
+            .input(|i| (i.modifiers.ctrl || i.modifiers.command))
+        {
+            let pre = if self.response.ctx.input(|i| (i.modifiers.command)) {
+                "Command"
+            } else {
+                "Ctrl"
+            };
+            self.response.on_hover_text_at_pointer(format!(
+                "{} + Click {}",
+                pre,
+                tr!(i18n, "to open profile in a new column", "")
+            ));
         }
 
         self.action.map(NoteAction::Media)
@@ -779,6 +820,7 @@ fn maybe_note_hitbox(ui: &mut egui::Ui, hitbox_id: egui::Id) -> Option<Response>
 
 fn note_hitbox_clicked(
     ui: &mut egui::Ui,
+    i18n: &mut Localization,
     hitbox_id: egui::Id,
     note_rect: &Rect,
     maybe_hitbox: Option<Response>,
@@ -791,7 +833,25 @@ fn note_hitbox_clicked(
 
     // If there was an hitbox and it was clicked open the thread
     match maybe_hitbox {
-        Some(hitbox) => hitbox.clicked(),
+        Some(hitbox) => {
+            let clicked = hitbox.clicked();
+            if !clicked
+                && hitbox
+                    .ctx
+                    .input(|i| (i.modifiers.command || i.modifiers.ctrl))
+            {
+                hitbox.on_hover_text_at_pointer(format!(
+                    "{} + Click {}",
+                    if ui.input(|i| (i.modifiers.command)) {
+                        "Command"
+                    } else {
+                        "Ctrl"
+                    },
+                    tr!(i18n, "to open note in a new column", "")
+                ));
+            }
+            clicked
+        }
         _ => false,
     }
 }
@@ -821,11 +881,23 @@ fn render_note_actionbar(
 
     let to_noteid = |id: &[u8; 32]| NoteId::new(*id);
     if reply_resp.clicked() {
-        return Some(NoteAction::Reply(to_noteid(note_id)));
+        if ui.input(|i| (i.modifiers.ctrl || i.modifiers.command)) {
+            return Some(NoteAction::OpenColumn(OpenColumnInfo::Reply(to_noteid(
+                note_id,
+            ))));
+        } else {
+            return Some(NoteAction::Reply(to_noteid(note_id)));
+        }
     }
 
     if quote_resp.clicked() {
-        return Some(NoteAction::Quote(to_noteid(note_id)));
+        if ui.input(|i| (i.modifiers.ctrl || i.modifiers.command)) {
+            return Some(NoteAction::OpenColumn(OpenColumnInfo::Quote(to_noteid(
+                note_id,
+            ))));
+        } else {
+            return Some(NoteAction::Quote(to_noteid(note_id)));
+        }
     }
 
     let Zapper { zaps, cur_acc } = zapper?;

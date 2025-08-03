@@ -35,14 +35,16 @@ use enostr::ProfileState;
 use nostrdb::{Filter, Ndb, Transaction};
 use notedeck::{
     get_current_default_msats, tr, ui::is_narrow, Accounts, AppContext, NoteAction, NoteContext,
-    RelayAction,
+    OpenColumnInfo, RelayAction,
 };
 use tracing::error;
 
 /// The result of processing a nav response
+#[derive(PartialEq)]
 pub enum ProcessNavResult {
     SwitchOccurred,
     PfpClicked,
+    OpenColumn((usize, OpenColumnInfo)),
 }
 
 impl ProcessNavResult {
@@ -338,6 +340,7 @@ pub enum RouterAction {
         route: Route,
         make_new: bool,
     },
+    OpenColumn(OpenColumnInfo),
 }
 
 pub enum RouterType {
@@ -356,6 +359,7 @@ fn go_back(stack: &mut Router<Route>, sheet: &mut SingletonRouter<Route>) {
 impl RouterAction {
     pub fn process(
         self,
+        col: usize,
         stack_router: &mut Router<Route>,
         sheet_router: &mut SingletonRouter<Route>,
     ) -> Option<ProcessNavResult> {
@@ -398,6 +402,7 @@ impl RouterAction {
                 }
                 None
             }
+            RouterAction::OpenColumn(info) => Some(ProcessNavResult::OpenColumn((col, info))),
         }
     }
 
@@ -496,7 +501,7 @@ fn process_render_nav_action(
         let router = &mut cols.router;
         let sheet_router = &mut cols.sheet_router;
 
-        action.process(router, sheet_router)
+        action.process(col, router, sheet_router)
     } else {
         None
     }
@@ -593,7 +598,7 @@ fn render_nav_body(
         .map(RenderNavAction::SettingsAction),
 
         Route::Reply(id) => {
-            let txn = if let Ok(txn) = Transaction::new(ctx.ndb) {
+            let txn = if let Ok(txn) = Transaction::new(note_context.ndb) {
                 txn
             } else {
                 ui.label(tr!(
