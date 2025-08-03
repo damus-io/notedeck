@@ -117,10 +117,16 @@ impl<'a, 'd> NoteView<'a, 'd> {
             .note_previews(false)
             .options_button(true)
             .is_preview(true)
+            .full_date(false)
     }
 
     pub fn textmode(mut self, enable: bool) -> Self {
         self.options_mut().set(NoteOptions::Textmode, enable);
+        self
+    }
+
+    pub fn full_date(mut self, enable: bool) -> Self {
+        self.options_mut().set(NoteOptions::FullCreatedDate, enable);
         self
     }
 
