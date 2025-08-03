@@ -22,11 +22,23 @@ pub struct NewPost {
     pub mentions: Vec<Pubkey>,
 }
 
+fn client_variant() -> &'static str {
+    #[cfg(target_os = "android")]
+    {
+        "Damus Android"
+    }
+
+    #[cfg(not(target_os = "android"))]
+    {
+        "Damus Notedeck"
+    }
+}
+
 fn add_client_tag(builder: NoteBuilder<'_>) -> NoteBuilder<'_> {
     builder
         .start_tag()
         .tag_str("client")
-        .tag_str("Damus Notedeck")
+        .tag_str(client_variant())
 }
 
 impl NewPost {
