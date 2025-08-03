@@ -464,6 +464,8 @@ impl<'a, 'd> NoteView<'a, 'd> {
                         }
 
                         ui.horizontal_wrapped(|ui| {
+                            ui.spacing_mut().item_spacing.x = 0.0;
+
                             note_action = reply_desc(
                                 ui,
                                 txn,
@@ -536,7 +538,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
                 NoteView::note_header(ui, self.note_context.i18n, self.note, profile, self.flags);
 
                 ui.horizontal_wrapped(|ui| 's: {
-                    ui.spacing_mut().item_spacing.x = if is_narrow(ui.ctx()) { 1.0 } else { 2.0 };
+                    ui.spacing_mut().item_spacing.x = 1.0;
 
                     let note_reply = self
                         .note_context
