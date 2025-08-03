@@ -33,7 +33,7 @@ bitflags! {
         /// Note has a framed border
         const Framed = 1 << 15;
 
-        /// Note has a framed border
+        /// Note has an unread reply indicator
         const UnreadIndicator = 1 << 16;
     }
 }
