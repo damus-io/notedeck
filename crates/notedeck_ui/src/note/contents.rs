@@ -181,7 +181,7 @@ pub fn render_note_contents<'a>(
             return;
         };
 
-        'block_loop: for block in blocks.iter(note) {
+        for block in blocks.iter(note) {
             match block.blocktype() {
                 BlockType::MentionBech32 => match block.as_mention().unwrap() {
                     Mention::Profile(profile) => {
@@ -231,7 +231,7 @@ pub fn render_note_contents<'a>(
 
                 BlockType::Hashtag => {
                     if block.as_str().trim().is_empty() {
-                        continue 'block_loop;
+                        continue;
                     }
                     let resp = ui
                         .colored_label(
@@ -264,7 +264,7 @@ pub fn render_note_contents<'a>(
 
                     if hide_media || !found_supported() {
                         if block.as_str().trim().is_empty() {
-                            continue 'block_loop;
+                            continue;
                         }
                         ui.add(Hyperlink::from_label_and_url(
                             RichText::new(block.as_str())
@@ -296,7 +296,7 @@ pub fn render_note_contents<'a>(
                         block_str
                     };
                     if block_str.trim().is_empty() {
-                        continue 'block_loop;
+                        continue;
                     }
                     if options.contains(NoteOptions::ScrambleText) {
                         ui.add(
