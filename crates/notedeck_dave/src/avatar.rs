@@ -13,6 +13,7 @@ use std::borrow::Cow;
 pub struct DaveAvatar {
     rotation: Quaternion,
     rot_dir: Vec3,
+    logical_time: f32,
 }
 
 // Matrix utilities for perspective projection
@@ -246,6 +247,7 @@ impl DaveAvatar {
         };
 
         Self {
+            logical_time: 0.0,
             rotation: initial_rot,
             rot_dir: Vec3::new(0.0, 0.0, 0.0),
         }
@@ -354,6 +356,8 @@ impl DaveAvatar {
             -1.0
         };
 
+        self.logical_time += ui.ctx().input(|i| i.stable_dt.min(0.1));
+
         // Add paint callback
         ui.painter().add(egui_wgpu::Callback::new_paint_callback(
             rect,
@@ -361,7 +365,7 @@ impl DaveAvatar {
                 view_proj,
                 model,
                 camera_pos,
-                time: ui.ctx().input(|i| i.time as f32),
+                time: self.logical_time,
                 is_light: [is_light, 0.0, 0.0, 0.0],
             },
         ));
