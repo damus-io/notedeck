@@ -1,9 +1,14 @@
 use std::num::NonZeroU64;
 
+use crate::mesh;
 use crate::{Quaternion, Vec3};
-use eframe::egui_wgpu::{self, wgpu};
+use eframe::egui_wgpu::{
+    self,
+    wgpu::{self, util::DeviceExt},
+};
 use egui::{Rect, Response};
 use rand::Rng;
+use std::borrow::Cow;
 
 pub struct DaveAvatar {
     rotation: Quaternion,
@@ -56,138 +61,18 @@ fn matrix_multiply(a: &[f32; 16], b: &[f32; 16]) -> [f32; 16] {
 impl DaveAvatar {
     pub fn new(wgpu_render_state: &egui_wgpu::RenderState) -> Self {
         let device = &wgpu_render_state.device;
+        const BINDING_SIZE: u64 = 256;
 
         // Create shader module with improved shader code
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("cube_shader"),
-            source: wgpu::ShaderSource::Wgsl(
-                r#"
-struct Uniforms {
-    model_view_proj: mat4x4<f32>,
-    model: mat4x4<f32>,    // Added model matrix for correct normal transformation
-};
-
-@group(0) @binding(0)
-var<uniform> uniforms: Uniforms;
-
-struct VertexOutput {
-    @builtin(position) position: vec4<f32>,
-    @location(0) normal: vec3<f32>,
-    @location(1) world_pos: vec3<f32>,
-};
-
-@vertex
-fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
-    // Define cube vertices (-0.5 to 0.5 in each dimension)
-    var positions = array<vec3<f32>, 8>(
-        vec3<f32>(-0.5, -0.5, -0.5),  // 0: left bottom back
-        vec3<f32>(0.5, -0.5, -0.5),   // 1: right bottom back
-        vec3<f32>(-0.5, 0.5, -0.5),   // 2: left top back
-        vec3<f32>(0.5, 0.5, -0.5),    // 3: right top back
-        vec3<f32>(-0.5, -0.5, 0.5),   // 4: left bottom front
-        vec3<f32>(0.5, -0.5, 0.5),    // 5: right bottom front
-        vec3<f32>(-0.5, 0.5, 0.5),    // 6: left top front
-        vec3<f32>(0.5, 0.5, 0.5)      // 7: right top front
-    );
-    
-    // Define indices for the 12 triangles (6 faces * 2 triangles)
-    var indices = array<u32, 36>(
-        // back face (Z-)
-        0, 2, 1, 1, 2, 3,
-        // front face (Z+)
-        4, 5, 6, 5, 7, 6,
-        // left face (X-)
-        0, 4, 2, 2, 4, 6,
-        // right face (X+)
-        1, 3, 5, 3, 7, 5,
-        // bottom face (Y-)
-        0, 1, 4, 1, 5, 4,
-        // top face (Y+)
-        2, 6, 3, 3, 6, 7
-    );
-    
-    // Define normals for each face
-    var face_normals = array<vec3<f32>, 6>(
-        vec3<f32>(0.0, 0.0, -1.0),  // back face (Z-)
-        vec3<f32>(0.0, 0.0, 1.0),   // front face (Z+)
-        vec3<f32>(-1.0, 0.0, 0.0),  // left face (X-)
-        vec3<f32>(1.0, 0.0, 0.0),   // right face (X+)
-        vec3<f32>(0.0, -1.0, 0.0),  // bottom face (Y-)
-        vec3<f32>(0.0, 1.0, 0.0)    // top face (Y+)
-    );
-
-    var output: VertexOutput;
-    
-    // Get vertex from indices
-    let index = indices[vertex_index];
-    let position = positions[index];
-    
-    // Determine which face this vertex belongs to
-    let face_index = vertex_index / 6u;
-    
-    // Apply transformations
-    output.position = uniforms.model_view_proj * vec4<f32>(position, 1.0);
-    
-    // Transform normal to world space
-    // Extract the 3x3 rotation part from the 4x4 model matrix
-    let normal_matrix = mat3x3<f32>(
-        uniforms.model[0].xyz,
-        uniforms.model[1].xyz,
-        uniforms.model[2].xyz
-    );
-    output.normal = normalize(normal_matrix * face_normals[face_index]);
-    
-    // Pass world position for lighting calculations
-    output.world_pos = (uniforms.model * vec4<f32>(position, 1.0)).xyz;
-    
-    return output;
-}
-
-@fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    // Material properties
-    let material_color = vec3<f32>(1.0, 1.0, 1.0);  // White color
-    let ambient_strength = 0.2;
-    let diffuse_strength = 0.7;
-    let specular_strength = 0.2;
-    let shininess = 20.0;
-    
-    // Light properties
-    let light_pos = vec3<f32>(2.0, 2.0, 2.0);  // Light positioned diagonally above and to the right
-    let light_color = vec3<f32>(1.0, 1.0, 1.0); // White light
-    
-    // View position (camera)
-    let view_pos = vec3<f32>(0.0, 0.0, 3.0);   // Camera position
-    
-    // Calculate ambient lighting
-    let ambient = ambient_strength * light_color;
-    
-    // Calculate diffuse lighting
-    let normal = normalize(in.normal);  // Renormalize the interpolated normal
-    let light_dir = normalize(light_pos - in.world_pos);
-    let diff = max(dot(normal, light_dir), 0.0);
-    let diffuse = diffuse_strength * diff * light_color;
-    
-    // Calculate specular lighting
-    let view_dir = normalize(view_pos - in.world_pos);
-    let reflect_dir = reflect(-light_dir, normal);
-    let spec = pow(max(dot(view_dir, reflect_dir), 0.0), shininess);
-    let specular = specular_strength * spec * light_color;
-    
-    // Combine lighting components
-    let result = (ambient + diffuse + specular) * material_color;
-    
-    return vec4<f32>(result, 1.0);
-}
-"#
-                .into(),
-            ),
+            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("dave.wgsl"))),
         });
 
         // Create uniform buffer for MVP matrix and model matrix
         let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("cube_uniform_buffer"),
-            size: 128, // Two 4x4 matrices of f32 (2 * 16 * 4 bytes)
+            size: BINDING_SIZE, // Two 4x4 matrices of f32 (2 * 16 * 4 bytes)
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -197,11 +82,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             label: Some("cube_bind_group_layout"),
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
-                    min_binding_size: NonZeroU64::new(128),
+                    min_binding_size: NonZeroU64::new(BINDING_SIZE),
                 },
                 count: None,
             }],
@@ -224,6 +109,18 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             push_constant_ranges: &[],
         });
 
+        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("cube_vertices"),
+            contents: bytemuck::cast_slice(&mesh::CUBE_VERTICES),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+
+        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("cube_indices"),
+            contents: bytemuck::cast_slice(&mesh::CUBE_INDICES),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+
         // Create render pipeline
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("cube_pipeline"),
@@ -231,7 +128,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: Some("vs_main"),
-                buffers: &[], // No vertex buffer - vertices are in the shader
+                buffers: &[mesh::Vertex::LAYOUT],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -274,6 +171,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                 pipeline,
                 bind_group,
                 uniform_buffer,
+                vertex_buffer,
+                index_buffer,
             });
 
         let initial_rot = {
@@ -364,7 +263,7 @@ impl DaveAvatar {
         }
 
         // Create model matrix from rotation quaternion
-        let model_matrix = self.rotation.to_matrix4();
+        let model = self.rotation.to_matrix4();
 
         // Create projection matrix with proper depth range
         // Adjust aspect ratio based on rect dimensions
@@ -372,20 +271,28 @@ impl DaveAvatar {
         let projection = perspective_matrix(std::f32::consts::PI / 4.0, aspect, 0.1, 100.0);
 
         // Create view matrix (move camera back a bit)
-        let view_matrix = [
-            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, -3.0, 1.0,
+        let camera_pos = [0.0, 0.0, 3.0, 0.0];
+
+        // Right-handed look-at at origin; view is a translate by -camera_pos
+        let [cx, cy, cz, _] = camera_pos;
+
+        #[rustfmt::skip]
+        let view = [
+            1.0, 0.0, 0.0, 0.0,
+            0.0, 1.0, 0.0, 0.0,
+            0.0, 0.0, 1.0, 0.0,
+            -cx, -cy, -cz, 1.0,
         ];
 
-        // Combine matrices: projection * view * model
-        let mv_matrix = matrix_multiply(&view_matrix, &model_matrix);
-        let mvp_matrix = matrix_multiply(&projection, &mv_matrix);
+        let view_proj = matrix_multiply(&projection, &view);
 
         // Add paint callback
         ui.painter().add(egui_wgpu::Callback::new_paint_callback(
             rect,
-            CubeCallback {
-                mvp_matrix,
-                model_matrix,
+            GpuData {
+                view_proj,
+                model,
+                camera_pos,
             },
         ));
 
@@ -394,12 +301,15 @@ impl DaveAvatar {
 }
 
 // Callback implementation
-struct CubeCallback {
-    mvp_matrix: [f32; 16],   // Model-View-Projection matrix
-    model_matrix: [f32; 16], // Model matrix for lighting calculations
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct GpuData {
+    view_proj: [f32; 16], // Model-View-Projection matrix
+    model: [f32; 16],     // Model matrix for lighting calculations
+    camera_pos: [f32; 4], // xyz + pad
 }
 
-impl egui_wgpu::CallbackTrait for CubeCallback {
+impl egui_wgpu::CallbackTrait for GpuData {
     fn prepare(
         &self,
         _device: &wgpu::Device,
@@ -410,21 +320,8 @@ impl egui_wgpu::CallbackTrait for CubeCallback {
     ) -> Vec<wgpu::CommandBuffer> {
         let resources: &CubeRenderResources = resources.get().unwrap();
 
-        // Create a combined uniform buffer with both matrices
-        let mut uniform_data = [0.0f32; 32]; // Space for two 4x4 matrices
-
-        // Copy MVP matrix to first 16 floats
-        uniform_data[0..16].copy_from_slice(&self.mvp_matrix);
-
-        // Copy model matrix to next 16 floats
-        uniform_data[16..32].copy_from_slice(&self.model_matrix);
-
         // Update uniform buffer with both matrices
-        queue.write_buffer(
-            &resources.uniform_buffer,
-            0,
-            bytemuck::cast_slice(&uniform_data),
-        );
+        queue.write_buffer(&resources.uniform_buffer, 0, bytemuck::bytes_of(self));
 
         Vec::new()
     }
@@ -439,7 +336,9 @@ impl egui_wgpu::CallbackTrait for CubeCallback {
 
         render_pass.set_pipeline(&resources.pipeline);
         render_pass.set_bind_group(0, &resources.bind_group, &[]);
-        render_pass.draw(0..36, 0..1); // 36 vertices for a cube (6 faces * 2 triangles * 3 vertices)
+        render_pass.set_vertex_buffer(0, resources.vertex_buffer.slice(..));
+        render_pass.set_index_buffer(resources.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+        render_pass.draw_indexed(0..mesh::CUBE_INDICES.len() as u32, 0, 0..1); // 36 vertices for a cube (6 faces * 2 triangles * 3 vertices)
     }
 }
 
@@ -448,4 +347,6 @@ struct CubeRenderResources {
     pipeline: wgpu::RenderPipeline,
     bind_group: wgpu::BindGroup,
     uniform_buffer: wgpu::Buffer,
+    vertex_buffer: wgpu::Buffer,
+    index_buffer: wgpu::Buffer,
 }

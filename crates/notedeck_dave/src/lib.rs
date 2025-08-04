@@ -27,6 +27,7 @@ pub use vec3::Vec3;
 
 mod avatar;
 mod config;
+mod mesh;
 mod messages;
 mod quaternion;
 mod tools;
