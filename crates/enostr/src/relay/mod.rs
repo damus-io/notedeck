@@ -135,7 +135,7 @@ pub fn setup_multicast_relay(
     std::thread::spawn(move || {
         let mut events = Events::with_capacity(1);
         loop {
-            if let Err(err) = poll.poll(&mut events, Some(Duration::from_millis(100))) {
+            if let Err(err) = poll.poll(&mut events, None) {
                 error!("multicast socket poll error: {err}. ending multicast poller.");
                 return;
             }
