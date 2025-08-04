@@ -52,17 +52,26 @@ impl<'a, 'd> ThreadView<'a, 'd> {
             .auto_shrink([false, false])
             .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible);
 
-        let offset_id = scroll_id.with(("scroll_offset", self.selected_note_id));
-
-        if let Some(offset) = ui.data(|i| i.get_temp::<f32>(offset_id)) {
-            scroll_area = scroll_area.vertical_scroll_offset(offset);
+        if let Some(thread) = self.threads.threads.get_mut(&self.selected_note_id) {
+            if let Some(new_offset) = thread.set_scroll_offset.take() {
+                scroll_area = scroll_area.vertical_scroll_offset(new_offset);
+            }
         }
 
         let output = scroll_area.show(ui, |ui| self.notes(ui, &txn));
 
-        ui.data_mut(|d| d.insert_temp(offset_id, output.state.offset.y));
+        let mut resp = output.inner;
 
-        output.inner
+        if let Some(NoteAction::Note {
+            note_id: _,
+            preview: _,
+            scroll_offset,
+        }) = &mut resp
+        {
+            *scroll_offset = output.state.offset.y;
+        }
+
+        resp
     }
 
     fn notes(&mut self, ui: &mut egui::Ui, txn: &Transaction) -> Option<NoteAction> {
