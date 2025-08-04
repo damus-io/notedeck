@@ -22,7 +22,7 @@ pub fn ensure_latest_texture_from_cache(
 }
 
 pub fn ensure_latest_texture(
-    ui: &egui::Ui,
+    _ui: &egui::Ui,
     url: &str,
     gifs: &mut GifStateMap,
     img: &mut TexturedImage,
@@ -108,7 +108,7 @@ pub fn ensure_latest_texture(
                 gifs.insert(url.to_owned(), new_state);
             }
 
-            if let Some(req) = request_next_repaint {
+            if let Some(_req) = request_next_repaint {
                 // TODO(jb55): make a continuous gif rendering setting
                 // 24fps for gif is fine
                 /*
