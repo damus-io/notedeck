@@ -23,6 +23,7 @@ pub struct ThreadNode {
     pub prev: ParentState,
     pub have_all_ancestors: bool,
     pub list: VirtualList,
+    pub set_scroll_offset: Option<f32>,
 }
 
 #[derive(Clone)]
@@ -132,7 +133,13 @@ impl ThreadNode {
             prev: parent,
             have_all_ancestors: false,
             list: VirtualList::new(),
+            set_scroll_offset: None,
         }
+    }
+
+    pub fn with_offset(mut self, offset: f32) -> Self {
+        self.set_scroll_offset = Some(offset);
+        self
     }
 }
 
