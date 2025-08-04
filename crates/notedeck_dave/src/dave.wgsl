@@ -36,9 +36,9 @@ fn vs_main(
 
     // Gentle, coherent drift so it breathes
     let drift = vec3<f32>(
-        0.06 * sin(0.9 * t + seed * 1.3),
-        0.05 * sin(1.1 * t + seed * 2.1),
-        0.06 * cos(0.7 * t + seed * 0.7)
+        0.03 * sin(0.9 * t + seed * 1.3),
+        0.02 * sin(1.1 * t + seed * 2.1),
+        0.03 * cos(0.7 * t + seed * 0.7)
     );
 
     // Final instance position on/near the sphere

@@ -88,7 +88,7 @@ fn generate_dave_instances(instance_count: u32) -> Vec<mesh::Instance> {
         // Use base_pos as *direction*; shader will normalize/scale anyway
         let base_pos = [r * theta.cos(), z, r * theta.sin()];
 
-        let scale = 0.03;
+        let scale = 0.002;
 
         //let scale = scale + scale_var + rng.random::<f32>() * scale; // slightly smaller cubes
         let seed = rng.random::<f32>() * 1000.0;
@@ -115,7 +115,7 @@ impl DaveAvatar {
         const BINDING_SIZE: u64 = 256;
 
         let device = &wgpu_render_state.device;
-        let instance_count: u32 = 256;
+        let instance_count: u32 = 100000;
         let instances = generate_dave_instances(instance_count);
 
         // Create shader module with improved shader code
