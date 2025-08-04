@@ -109,10 +109,13 @@ pub fn ensure_latest_texture(
             }
 
             if let Some(req) = request_next_repaint {
-                tracing::trace!("requesting repaint for {url} after {req:?}");
+                // TODO(jb55): make a continuous gif rendering setting
                 // 24fps for gif is fine
+                /*
+                tracing::trace!("requesting repaint for {url} after {req:?}");
                 ui.ctx()
                     .request_repaint_after(std::time::Duration::from_millis(41));
+                */
             }
 
             texture.clone()
