@@ -27,7 +27,7 @@ pub use vec3::Vec3;
 
 mod avatar;
 mod config;
-mod mesh;
+pub(crate) mod mesh;
 mod messages;
 mod quaternion;
 mod tools;
@@ -180,6 +180,15 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     }
 
     fn ui(&mut self, app_ctx: &mut AppContext, ui: &mut egui::Ui) -> DaveResponse {
+        /*
+        let rect = ui.available_rect_before_wrap();
+        if let Some(av) = self.avatar.as_mut() {
+            av.render(rect, ui);
+            ui.ctx().request_repaint();
+        }
+        DaveResponse::default()
+            */
+
         DaveUi::new(self.model_config.trial, &self.chat, &mut self.input).ui(
             app_ctx,
             &mut self.jobs,

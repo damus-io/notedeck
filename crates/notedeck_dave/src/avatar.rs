@@ -58,10 +58,64 @@ fn matrix_multiply(a: &[f32; 16], b: &[f32; 16]) -> [f32; 16] {
     result
 }
 
+fn lerp3(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
+    [
+        a[0] + (b[0] - a[0]) * t,
+        a[1] + (b[1] - a[1]) * t,
+        a[2] + (b[2] - a[2]) * t,
+    ]
+}
+
+fn generate_dave_instances(instance_count: u32) -> Vec<mesh::Instance> {
+    let mut rng = rand::rng();
+    let mut instances = Vec::with_capacity(instance_count as usize);
+
+    // Logo gradient endpoints (0–1 range)
+    const C0: [f32; 3] = [53.0 / 255.0, 77.0 / 255.0, 235.0 / 255.0]; // rgb(53, 77, 235)
+    const C1: [f32; 3] = [229.0 / 255.0, 20.0 / 255.0, 205.0 / 255.0]; // rgb(229, 20, 205)
+    let golden_angle = std::f32::consts::PI * (3.0 - 5.0_f32.sqrt());
+
+    for i in 0..instance_count {
+        let i_f = (i as f32) + 0.5;
+        let n = instance_count as f32;
+
+        // Fibonacci sphere (unit directions)
+        let z = 1.0 - (2.0 * i_f) / n;
+        let r = (1.0 - z * z).sqrt();
+        let theta = golden_angle * i_f;
+
+        // Use base_pos as *direction*; shader will normalize/scale anyway
+        let base_pos = [r * theta.cos(), z, r * theta.sin()];
+
+        let scale = 0.03;
+
+        //let scale = scale + scale_var + rng.random::<f32>() * scale; // slightly smaller cubes
+        let seed = rng.random::<f32>() * 1000.0;
+
+        // damus logo gradient
+        let t_base = (z + 1.0) * 0.5; // 0..1
+        let t_jitter = (rng.random::<f32>() - 0.5) * 0.06; // ±0.03
+        let t = (t_base + t_jitter).clamp(0.0, 1.0);
+        let color = lerp3(C0, C1, t);
+
+        instances.push(mesh::Instance {
+            base_pos,
+            scale,
+            seed,
+            color,
+        });
+    }
+
+    instances
+}
+
 impl DaveAvatar {
     pub fn new(wgpu_render_state: &egui_wgpu::RenderState) -> Self {
-        let device = &wgpu_render_state.device;
         const BINDING_SIZE: u64 = 256;
+
+        let device = &wgpu_render_state.device;
+        let instance_count: u32 = 256;
+        let instances = generate_dave_instances(instance_count);
 
         // Create shader module with improved shader code
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -115,6 +169,12 @@ impl DaveAvatar {
             usage: wgpu::BufferUsages::VERTEX,
         });
 
+        let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("cube_instances"),
+            contents: bytemuck::cast_slice(&instances),
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        });
+
         let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("cube_indices"),
             contents: bytemuck::cast_slice(&mesh::CUBE_INDICES),
@@ -128,7 +188,7 @@ impl DaveAvatar {
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: Some("vs_main"),
-                buffers: &[mesh::Vertex::LAYOUT],
+                buffers: &[mesh::Vertex::LAYOUT, mesh::Instance::LAYOUT],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -171,8 +231,10 @@ impl DaveAvatar {
                 pipeline,
                 bind_group,
                 uniform_buffer,
+                instance_buffer,
                 vertex_buffer,
                 index_buffer,
+                instance_count,
             });
 
         let initial_rot = {
@@ -182,6 +244,7 @@ impl DaveAvatar {
             // Apply rotations (order matters)
             y_rotation.multiply(&x_rotation)
         };
+
         Self {
             rotation: initial_rot,
             rot_dir: Vec3::new(0.0, 0.0, 0.0),
@@ -271,10 +334,10 @@ impl DaveAvatar {
         let projection = perspective_matrix(std::f32::consts::PI / 4.0, aspect, 0.1, 100.0);
 
         // Create view matrix (move camera back a bit)
-        let camera_pos = [0.0, 0.0, 3.0, 0.0];
+        let camera_pos = [0.0, 0.0, 1.5];
 
         // Right-handed look-at at origin; view is a translate by -camera_pos
-        let [cx, cy, cz, _] = camera_pos;
+        let [cx, cy, cz] = camera_pos;
 
         #[rustfmt::skip]
         let view = [
@@ -285,6 +348,11 @@ impl DaveAvatar {
         ];
 
         let view_proj = matrix_multiply(&projection, &view);
+        let is_light = if ui.ctx().theme() == egui::Theme::Light {
+            1.0
+        } else {
+            -1.0
+        };
 
         // Add paint callback
         ui.painter().add(egui_wgpu::Callback::new_paint_callback(
@@ -293,6 +361,8 @@ impl DaveAvatar {
                 view_proj,
                 model,
                 camera_pos,
+                time: ui.ctx().input(|i| i.time as f32),
+                is_light: [is_light, 0.0, 0.0, 0.0],
             },
         ));
 
@@ -306,7 +376,9 @@ impl DaveAvatar {
 struct GpuData {
     view_proj: [f32; 16], // Model-View-Projection matrix
     model: [f32; 16],     // Model matrix for lighting calculations
-    camera_pos: [f32; 4], // xyz + pad
+    camera_pos: [f32; 3], // xyz
+    time: f32,
+    is_light: [f32; 4],
 }
 
 impl egui_wgpu::CallbackTrait for GpuData {
@@ -337,8 +409,13 @@ impl egui_wgpu::CallbackTrait for GpuData {
         render_pass.set_pipeline(&resources.pipeline);
         render_pass.set_bind_group(0, &resources.bind_group, &[]);
         render_pass.set_vertex_buffer(0, resources.vertex_buffer.slice(..));
+        render_pass.set_vertex_buffer(1, resources.instance_buffer.slice(..));
         render_pass.set_index_buffer(resources.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-        render_pass.draw_indexed(0..mesh::CUBE_INDICES.len() as u32, 0, 0..1); // 36 vertices for a cube (6 faces * 2 triangles * 3 vertices)
+        render_pass.draw_indexed(
+            0..mesh::CUBE_INDICES.len() as u32,
+            0,
+            0..resources.instance_count,
+        );
     }
 }
 
@@ -347,6 +424,8 @@ struct CubeRenderResources {
     pipeline: wgpu::RenderPipeline,
     bind_group: wgpu::BindGroup,
     uniform_buffer: wgpu::Buffer,
+    instance_buffer: wgpu::Buffer,
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
+    instance_count: u32,
 }

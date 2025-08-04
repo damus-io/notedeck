@@ -19,6 +19,29 @@ impl Vertex {
     };
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct Instance {
+    pub base_pos: [f32; 3],
+    pub scale: f32,
+    pub seed: f32,
+    pub color: [f32; 3],
+}
+
+impl Instance {
+    pub const ATTRS: [wgpu::VertexAttribute; 4] = wgpu::vertex_attr_array![
+        2 => Float32x3, // base_pos
+        3 => Float32,   // scale
+        4 => Float32,   // seed
+        5 => Float32x3  // color
+    ];
+    pub const LAYOUT: wgpu::VertexBufferLayout<'static> = wgpu::VertexBufferLayout {
+        array_stride: std::mem::size_of::<Instance>() as wgpu::BufferAddress,
+        step_mode: wgpu::VertexStepMode::Instance,
+        attributes: &Self::ATTRS,
+    };
+}
+
 // 6 faces * 4 verts. Each face has a constant normal.
 #[rustfmt::skip]
 pub const CUBE_VERTICES: [Vertex; 24] = [
