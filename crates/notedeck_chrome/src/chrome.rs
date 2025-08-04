@@ -19,6 +19,7 @@ use notedeck_columns::{
 use notedeck_dave::{Dave, DaveAvatar};
 use notedeck_notebook::Notebook;
 use notedeck_ui::{app_images, AnimationHelper, ProfilePic};
+use std::collections::HashMap;
 
 static ICON_WIDTH: f32 = 40.0;
 pub static ICON_EXPANSION_MULTIPLE: f32 = 1.2;
@@ -28,15 +29,18 @@ pub struct Chrome {
     open: bool,
     tab_selected: i32,
     apps: Vec<NotedeckApp>,
+    pub repaint_causes: HashMap<egui::RepaintCause, u64>,
 
     #[cfg(feature = "memory")]
     show_memory_debug: bool,
+    show_repaint_debug: bool,
 }
 
 impl Default for Chrome {
     fn default() -> Self {
         Self {
             active: 0,
+            repaint_causes: Default::default(),
             tab_selected: 0,
             // sidemenu is not open by default on mobile/narrow uis
             open: !notedeck::ui::is_compiled_as_mobile(),
@@ -44,6 +48,7 @@ impl Default for Chrome {
 
             #[cfg(feature = "memory")]
             show_memory_debug: false,
+            show_repaint_debug: false,
         }
     }
 }
@@ -959,7 +964,7 @@ fn pfp_button(ctx: &mut AppContext, ui: &mut egui::Ui) -> egui::Response {
 /// The section of the chrome sidebar that starts at the
 /// bottom and goes up
 fn bottomup_sidebar(
-    _chrome: &mut Chrome,
+    chrome: &mut Chrome,
     ctx: &mut AppContext,
     ui: &mut egui::Ui,
 ) -> Option<ChromePanelAction> {
@@ -1009,11 +1014,30 @@ fn bottomup_sidebar(
         .on_hover_cursor(egui::CursorIcon::PointingHand);
 
     if ctx.args.options.contains(NotedeckOptions::Debug) {
-        ui.weak(format!("{}", ctx.frame_history.fps() as i32));
-        ui.weak(format!(
-            "{:10.1}",
-            ctx.frame_history.mean_frame_time() * 1e3
-        ));
+        let r = ui
+            .weak(format!("{}", ctx.frame_history.fps() as i32))
+            .union(ui.weak(format!(
+                "{:10.1}",
+                ctx.frame_history.mean_frame_time() * 1e3
+            )))
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
+
+        if r.clicked() {
+            chrome.show_repaint_debug = !chrome.show_repaint_debug;
+        }
+
+        if chrome.show_repaint_debug {
+            for cause in ui.ctx().repaint_causes() {
+                chrome
+                    .repaint_causes
+                    .entry(cause)
+                    .and_modify(|rc| {
+                        *rc += 1;
+                    })
+                    .or_insert(1);
+            }
+            repaint_causes_window(ui, &chrome.repaint_causes)
+        }
 
         #[cfg(feature = "memory")]
         {
@@ -1024,14 +1048,14 @@ fn bottomup_sidebar(
                     .on_hover_cursor(egui::CursorIcon::PointingHand)
                     .clicked()
                 {
-                    _chrome.show_memory_debug = !_chrome.show_memory_debug;
+                    chrome.show_memory_debug = !chrome.show_memory_debug;
                 }
             }
             if let Some(resident) = mem_use.resident {
                 ui.weak(format!("{}", format_bytes(resident as f64)));
             }
 
-            if _chrome.show_memory_debug {
+            if chrome.show_memory_debug {
                 egui::Window::new("Memory Debug").show(ui.ctx(), memory_debug_ui);
             }
         }
@@ -1150,4 +1174,47 @@ pub fn format_bytes(number_of_bytes: f64) -> String {
         let decimals = (10.0 * number_of_bytes < 40.0_f64.exp2()) as usize;
         format!("{:.*} GiB", decimals, number_of_bytes / 30.0_f64.exp2())
     }
+}
+
+fn repaint_causes_window(ui: &mut egui::Ui, causes: &HashMap<egui::RepaintCause, u64>) {
+    egui::Window::new("Repaint Causes").show(ui.ctx(), |ui| {
+        use egui_extras::{Column, TableBuilder};
+        TableBuilder::new(ui)
+            .column(Column::auto().at_least(600.0).resizable(true))
+            .column(Column::auto().at_least(50.0).resizable(true))
+            .column(Column::auto().at_least(50.0).resizable(true))
+            .column(Column::remainder())
+            .header(20.0, |mut header| {
+                header.col(|ui| {
+                    ui.heading("file");
+                });
+                header.col(|ui| {
+                    ui.heading("line");
+                });
+                header.col(|ui| {
+                    ui.heading("count");
+                });
+                header.col(|ui| {
+                    ui.heading("reason");
+                });
+            })
+            .body(|mut body| {
+                for (cause, hits) in causes.iter() {
+                    body.row(30.0, |mut row| {
+                        row.col(|ui| {
+                            ui.label(cause.file.to_string());
+                        });
+                        row.col(|ui| {
+                            ui.label(format!("{}", cause.line));
+                        });
+                        row.col(|ui| {
+                            ui.label(format!("{hits}"));
+                        });
+                        row.col(|ui| {
+                            ui.label(format!("{}", &cause.reason));
+                        });
+                    });
+                }
+            });
+    });
 }

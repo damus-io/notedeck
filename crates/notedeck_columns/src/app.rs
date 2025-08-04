@@ -27,7 +27,6 @@ use notedeck_ui::{
 };
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
-use std::time::Duration;
 use tracing::{debug, error, info, trace, warn};
 use uuid::Uuid;
 
@@ -374,7 +373,7 @@ fn render_damus(
     fullscreen_media_viewer_ui(ui, &mut damus.view_state.media_viewer, app_ctx.img_cache);
 
     // We use this for keeping timestamps and things up to date
-    ui.ctx().request_repaint_after(Duration::from_secs(5));
+    //ui.ctx().request_repaint_after(Duration::from_secs(5));
 
     app_action
 }

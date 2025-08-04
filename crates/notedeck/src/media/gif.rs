@@ -151,12 +151,11 @@ pub fn ensure_latest_texture(
                 gifs.insert(url.to_owned(), new_state);
             }
 
-            if let Some(req) = next_state.repaint_at {
-                // TODO(jb55): make a continuous gif rendering setting
-                // 24fps for gif is fine
-                tracing::trace!("requesting repaint for {url} after {req:?}");
-                ui.ctx()
-                    .request_repaint_after(std::time::Duration::from_millis(41));
+            if let Some(repaint) = next_state.repaint_at {
+                tracing::trace!("requesting repaint for {url} after {repaint:?}");
+                if let Ok(dur) = repaint.duration_since(SystemTime::now()) {
+                    ui.ctx().request_repaint_after(dur);
+                }
             }
 
             next_state.texture

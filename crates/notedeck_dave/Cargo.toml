@@ -23,3 +23,4 @@ rand = "0.9.0"
 bytemuck = "1.22.0"
 futures = "0.3.31"
 #reqwest = "0.12.15"
+egui_extras = { workspace = true }

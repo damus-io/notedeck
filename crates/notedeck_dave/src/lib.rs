@@ -344,11 +344,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
 impl notedeck::App for Dave {
     fn update(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> Option<AppAction> {
-        /*
-        self.app
-            .frame_history
-            .on_new_frame(ctx.input(|i| i.time), frame.info().cpu_usage);
-        */
         let mut app_action: Option<AppAction> = None;
 
         // always insert system prompt if we have no context
