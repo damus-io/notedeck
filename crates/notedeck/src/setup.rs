@@ -13,8 +13,7 @@ pub fn setup_egui_context(
     zoom_factor: f32,
 ) {
     let is_mobile = options.contains(NotedeckOptions::Mobile) || crate::ui::is_compiled_as_mobile();
-
-    let is_oled = crate::ui::is_oled();
+    let is_oled = crate::ui::is_oled(is_mobile);
 
     ctx.options_mut(|o| {
         tracing::info!("Loaded theme {:?} from disk", theme);
