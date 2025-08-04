@@ -195,6 +195,7 @@ fn strip_note_action(action: NoteAction) -> Option<NoteAction> {
         NoteAction::Note {
             note_id: _,
             preview: false,
+            scroll_offset: _,
         }
     ) {
         return None;
