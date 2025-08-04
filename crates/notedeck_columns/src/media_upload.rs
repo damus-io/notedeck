@@ -1,17 +1,16 @@
 #![cfg_attr(target_os = "android", allow(dead_code, unused_variables))]
 
-use std::path::PathBuf;
-
+use crate::Error;
 use base64::{prelude::BASE64_URL_SAFE, Engine};
 use ehttp::Request;
 use nostrdb::{Note, NoteBuilder};
-use notedeck::SupportedMimeType;
+use notedeck::{
+    media::images::fetch_binary_from_disk,
+    platform::file::{MediaFrom, SelectedMedia},
+};
 use poll_promise::Promise;
 use sha2::{Digest, Sha256};
 use url::Url;
-
-use crate::Error;
-use notedeck::media::images::fetch_binary_from_disk;
 
 pub const NOSTR_BUILD_URL: fn() -> Url = || Url::parse("http://nostr.build").unwrap();
 const NIP96_WELL_KNOWN: &str = ".well-known/nostr/nip96.json";
@@ -94,15 +93,15 @@ fn create_nip98_note(seckey: &[u8; 32], upload_url: String, payload_hash: String
 
 fn create_nip96_request(
     upload_url: &str,
-    media_path: MediaPath,
+    file_name: &str,
+    media_type: &str,
     file_contents: Vec<u8>,
     nip98_base64: &str,
 ) -> ehttp::Request {
     let boundary = "----boundary";
 
     let mut body = format!(
-        "--{}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{}\"\r\nContent-Type: {}\r\n\r\n",
-        boundary, media_path.file_name, media_path.media_type.to_mime()
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{file_name}\"\r\nContent-Type: {media_type}\r\n\r\n",
     )
     .into_bytes();
     body.extend(file_contents);
@@ -134,25 +133,14 @@ fn sha256_hex(contents: &Vec<u8>) -> String {
 pub fn nip96_upload(
     seckey: [u8; 32],
     upload_url: String,
-    media_path: MediaPath,
+    selected_media: SelectedMedia,
 ) -> Promise<Result<Nip94Event, Error>> {
-    let bytes_res = fetch_binary_from_disk(media_path.full_path.clone());
-
-    let file_bytes = match bytes_res {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            return Promise::from_ready(Err(Error::Generic(format!(
-                "could not read contents of file to upload: {e}"
-            ))));
-        }
-    };
-
-    internal_nip96_upload(seckey, upload_url, media_path, file_bytes)
+    internal_nip96_upload(seckey, upload_url, selected_media)
 }
 
 pub fn nostrbuild_nip96_upload(
     seckey: [u8; 32],
-    media_path: MediaPath,
+    selected_media: SelectedMedia,
 ) -> Promise<Result<Nip94Event, Error>> {
     let (sender, promise) = Promise::new();
     std::thread::spawn(move || {
@@ -166,7 +154,7 @@ pub fn nostrbuild_nip96_upload(
             }
         };
 
-        let res = nip96_upload(seckey, upload_url, media_path).block_and_take();
+        let res = nip96_upload(seckey, upload_url, selected_media).block_and_take();
         sender.send(res);
     });
     promise
@@ -175,9 +163,21 @@ pub fn nostrbuild_nip96_upload(
 fn internal_nip96_upload(
     seckey: [u8; 32],
     upload_url: String,
-    media_path: MediaPath,
-    file_contents: Vec<u8>,
+    selected_media: SelectedMedia,
 ) -> Promise<Result<Nip94Event, Error>> {
+    let file_name = selected_media.file_name;
+    let mime_type = selected_media.media_type.to_mime();
+    let bytes_res = bytes_from_media(selected_media.from);
+
+    let file_contents = match bytes_res {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            return Promise::from_ready(Err(Error::Generic(format!(
+                "could not read contents of file to upload: {e}"
+            ))));
+        }
+    };
+
     let file_hash = sha256_hex(&file_contents);
     let nip98_note = create_nip98_note(&seckey, upload_url.to_owned(), file_hash);
 
@@ -186,7 +186,13 @@ fn internal_nip96_upload(
         Err(e) => return Promise::from_ready(Err(Error::Generic(e.to_string()))),
     };
 
-    let request = create_nip96_request(&upload_url, media_path, file_contents, &nip98_base64);
+    let request = create_nip96_request(
+        &upload_url,
+        &file_name,
+        mime_type,
+        file_contents,
+        &nip98_base64,
+    );
 
     let (sender, promise) = Promise::new();
 
@@ -232,33 +238,10 @@ fn find_nip94_ev_in_json(json: String) -> Result<Nip94Event, Error> {
     }
 }
 
-#[derive(Debug)]
-pub struct MediaPath {
-    full_path: PathBuf,
-    file_name: String,
-    media_type: SupportedMimeType,
-}
-
-impl MediaPath {
-    pub fn new(path: PathBuf) -> Result<Self, Error> {
-        if let Some(ex) = path.extension().and_then(|f| f.to_str()) {
-            let media_type = SupportedMimeType::from_extension(ex)?;
-            let file_name = path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or(&format!("file.{ex}"))
-                .to_owned();
-
-            Ok(MediaPath {
-                full_path: path,
-                file_name,
-                media_type,
-            })
-        } else {
-            Err(Error::Generic(format!(
-                "{path:?} does not have an extension"
-            )))
-        }
+pub fn bytes_from_media(media: MediaFrom) -> Result<Vec<u8>, notedeck::Error> {
+    match media {
+        MediaFrom::PathBuf(full_path) => fetch_binary_from_disk(full_path.clone()),
+        MediaFrom::Memory(bytes) => Ok(bytes),
     }
 }
 
@@ -349,7 +332,7 @@ mod tests {
     use enostr::FullKeypair;
 
     use crate::media_upload::{
-        get_upload_url_from_provider, nostrbuild_nip96_upload, MediaPath, NOSTR_BUILD_URL,
+        get_upload_url_from_provider, nostrbuild_nip96_upload, SelectedMedia, NOSTR_BUILD_URL,
     };
 
     use super::internal_nip96_upload;
@@ -368,7 +351,7 @@ mod tests {
     fn test_internal_nip96() {
         // just a random image to test image upload
         let file_path = PathBuf::from_str("../../../assets/damus_rounded_80.png").unwrap();
-        let media_path = MediaPath::new(file_path).unwrap();
+        let selected_media = SelectedMedia::from_path(file_path).unwrap();
         let img_bytes = include_bytes!("../../../assets/damus_rounded_80.png");
         let promise = get_upload_url_from_provider(NOSTR_BUILD_URL());
         let kp = FullKeypair::generate();
@@ -378,8 +361,7 @@ mod tests {
             let promise = internal_nip96_upload(
                 kp.secret_key.secret_bytes(),
                 upload_url.to_string(),
-                media_path,
-                img_bytes.to_vec(),
+                selected_media,
             );
             let res = promise.block_until_ready();
             assert!(res.is_ok())
@@ -395,11 +377,11 @@ mod tests {
         let file_path =
             fs::canonicalize(PathBuf::from_str("../../assets/damus_rounded_80.png").unwrap())
                 .unwrap();
-        let media_path = MediaPath::new(file_path).unwrap();
+        let selected_media = SelectedMedia::from_path(file_path).unwrap();
         let kp = FullKeypair::generate();
         println!("Using pubkey: {:?}", kp.pubkey);
 
-        let promise = nostrbuild_nip96_upload(kp.secret_key.secret_bytes(), media_path);
+        let promise = nostrbuild_nip96_upload(kp.secret_key.secret_bytes(), selected_media);
 
         let out = promise.block_and_take();
         assert!(out.is_ok());

@@ -8,12 +8,11 @@ use notedeck::Notedeck;
 
 #[no_mangle]
 #[tokio::main]
-pub async fn android_main(app: AndroidApp) {
+pub async fn android_main(android_app: AndroidApp) {
     //use tracing_logcat::{LogcatMakeWriter, LogcatTag};
     use tracing_subscriber::{prelude::*, EnvFilter};
 
     std::env::set_var("RUST_BACKTRACE", "full");
-    //std::env::set_var("DAVE_ENDPOINT", "http://ollama.jb55.com/v1");
     //std::env::set_var("DAVE_MODEL", "hhao/qwen2.5-coder-tools:latest");
     std::env::set_var(
         "RUST_LOG",
@@ -42,7 +41,7 @@ pub async fn android_main(app: AndroidApp) {
         .with(fmt_layer)
         .init();
 
-    let path = app.internal_data_path().expect("data path");
+    let path = android_app.internal_data_path().expect("data path");
     let mut options = eframe::NativeOptions {
         depth_buffer: 24,
         ..eframe::NativeOptions::default()
@@ -55,15 +54,16 @@ pub async fn android_main(app: AndroidApp) {
     //    builder.with_android_app(app_clone_for_event_loop);
     //}));
 
-    options.android_app = Some(app.clone());
+    options.android_app = Some(android_app.clone());
 
-    let app_args = get_app_args(app);
+    let app_args = get_app_args(android_app);
 
     let _res = eframe::run_native(
         "Damus Notedeck",
         options,
         Box::new(move |cc| {
             let ctx = &cc.egui_ctx;
+
             let mut notedeck = Notedeck::new(ctx, path, &app_args);
             notedeck.setup(ctx);
             let chrome = Chrome::new_with_apps(cc, &app_args, &mut notedeck)?;
