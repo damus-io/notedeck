@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-package.version = "0.5.9"
+package.version = "0.6.0"
 members = [
     "crates/notedeck",
     "crates/notedeck_chrome",
