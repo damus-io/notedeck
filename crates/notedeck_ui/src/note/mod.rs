@@ -240,7 +240,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
             let (_id, rect) = ui.allocate_space(egui::vec2(50.0, 20.0));
             ui.allocate_rect(rect, Sense::hover());
             ui.put(rect, |ui: &mut egui::Ui| {
-                render_notetime(ui, self.note_context.i18n, self.note.created_at(), false).response
+                render_notetime(ui, self.note_context.i18n, self.note.created_at(), false)
             });
             let (_id, rect) = ui.allocate_space(egui::vec2(150.0, 20.0));
             ui.allocate_rect(rect, Sense::hover());
@@ -398,7 +398,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
                 let response = ui
                     .add(Username::new(i18n, profile.as_ref().ok(), note.pubkey()).abbreviated(20));
                 if !flags.contains(NoteOptions::FullCreatedDate) {
-                    return render_notetime(ui, i18n, note.created_at(), true).response;
+                    return render_notetime(ui, i18n, note.created_at(), true);
                 }
                 response
             })
@@ -892,18 +892,18 @@ fn render_notetime(
     i18n: &mut Localization,
     created_at: u64,
     before: bool,
-) -> egui::InnerResponse<()> {
-    ui.horizontal(|ui| {
-        if before {
-            secondary_label(ui, "⋅");
-        }
-
-        secondary_label(ui, notedeck::time_ago_since(i18n, created_at));
-
-        if !before {
-            secondary_label(ui, "⋅");
-        }
-    })
+) -> Response {
+    if before {
+        secondary_label(
+            ui,
+            format!(" ⋅ {}", notedeck::time_ago_since(i18n, created_at)),
+        )
+    } else {
+        secondary_label(
+            ui,
+            format!("{} ⋅ ", notedeck::time_ago_since(i18n, created_at)),
+        )
+    }
 }
 
 fn reply_button(ui: &mut egui::Ui, i18n: &mut Localization, note_key: NoteKey) -> egui::Response {

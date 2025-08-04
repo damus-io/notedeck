@@ -206,6 +206,7 @@ fn render_undecorated_note_contents<'a>(
             match block.blocktype() {
                 BlockType::MentionBech32 => match block.as_mention().unwrap() {
                     Mention::Profile(profile) => {
+                        profiling::scope!("profile-block");
                         let act = crate::Mention::new(
                             note_context.ndb,
                             note_context.img_cache,
@@ -220,6 +221,7 @@ fn render_undecorated_note_contents<'a>(
                     }
 
                     Mention::Pubkey(npub) => {
+                        profiling::scope!("pubkey-block");
                         let act = crate::Mention::new(
                             note_context.ndb,
                             note_context.img_cache,
@@ -251,6 +253,7 @@ fn render_undecorated_note_contents<'a>(
                 },
 
                 BlockType::Hashtag => {
+                    profiling::scope!("hashtag-block");
                     if block.as_str().trim().is_empty() {
                         continue;
                     }
@@ -268,6 +271,7 @@ fn render_undecorated_note_contents<'a>(
                 }
 
                 BlockType::Url => {
+                    profiling::scope!("url-block");
                     let mut found_supported = || -> bool {
                         let url = block.as_str();
 
@@ -297,6 +301,7 @@ fn render_undecorated_note_contents<'a>(
                 }
 
                 BlockType::Text => {
+                    profiling::scope!("text-block");
                     // truncate logic
                     let mut truncate = false;
                     let block_str = if options.contains(NoteOptions::Truncate)

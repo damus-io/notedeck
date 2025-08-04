@@ -56,7 +56,7 @@ pub fn hline_with_width(ui: &egui::Ui, range: egui::Rangef) {
     ui.painter().hline(range, resize_y, stroke);
 }
 
-pub fn secondary_label(ui: &mut egui::Ui, s: impl Into<String>) {
+pub fn secondary_label(ui: &mut egui::Ui, s: impl Into<String>) -> egui::Response {
     let color = ui.style().visuals.noninteractive().fg_stroke.color;
-    ui.add(Label::new(RichText::new(s).size(10.0).color(color)).selectable(false));
+    ui.add(Label::new(RichText::new(s).size(10.0).color(color)).selectable(false))
 }

@@ -116,7 +116,7 @@ fn render_text_segments(
     let link_color = visuals.hyperlink_color;
 
     for segment in segments {
-        match segment {
+        match &segment {
             TextSegment::Plain(text) => {
                 ui.add(
                     Label::new(RichText::new(text).size(size).color(color)).selectable(selectable),
