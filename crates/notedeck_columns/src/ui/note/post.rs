@@ -15,6 +15,7 @@ use egui::{
 use enostr::{FilledKeypair, FullKeypair, NoteId, Pubkey, RelayPool};
 use nostrdb::{Ndb, Transaction};
 use notedeck::media::gif::ensure_latest_texture;
+use notedeck::media::AnimationMode;
 use notedeck::{get_render_state, JobsCache, PixelDimensions, RenderState};
 
 use notedeck_ui::{
@@ -37,6 +38,7 @@ pub struct PostView<'a, 'd> {
     inner_rect: egui::Rect,
     note_options: NoteOptions,
     jobs: &'a mut JobsCache,
+    animation_mode: AnimationMode,
 }
 
 #[derive(Clone)]
@@ -110,6 +112,11 @@ impl<'a, 'd> PostView<'a, 'd> {
         note_options: NoteOptions,
         jobs: &'a mut JobsCache,
     ) -> Self {
+        let animation_mode = if note_options.contains(NoteOptions::NoAnimations) {
+            AnimationMode::NoAnimation
+        } else {
+            AnimationMode::Continuous { fps: None }
+        };
         PostView {
             note_context,
             draft,
@@ -117,6 +124,7 @@ impl<'a, 'd> PostView<'a, 'd> {
             post_type,
             inner_rect,
             note_options,
+            animation_mode,
             jobs,
         }
     }
@@ -127,6 +135,11 @@ impl<'a, 'd> PostView<'a, 'd> {
 
     pub fn scroll_id() -> egui::Id {
         PostView::id().with("scroll")
+    }
+
+    pub fn animation_mode(mut self, animation_mode: AnimationMode) -> Self {
+        self.animation_mode = animation_mode;
+        self
     }
 
     fn editbox(&mut self, txn: &nostrdb::Transaction, ui: &mut egui::Ui) -> egui::Response {
@@ -492,6 +505,7 @@ impl<'a, 'd> PostView<'a, 'd> {
                 height,
                 cur_state,
                 url,
+                self.animation_mode,
             )
         }
         to_remove.reverse();
@@ -582,6 +596,7 @@ fn render_post_view_media(
     height: u32,
     render_state: RenderState,
     url: &str,
+    animation_mode: AnimationMode,
 ) {
     match render_state.texture_state {
         notedeck::TextureState::Pending => {
@@ -605,7 +620,7 @@ fn render_post_view_media(
             .to_vec();
 
             let texture_handle =
-                ensure_latest_texture(ui, url, render_state.gifs, renderable_media);
+                ensure_latest_texture(ui, url, render_state.gifs, renderable_media, animation_mode);
             let img_resp = ui.add(
                 egui::Image::new(&texture_handle)
                     .max_size(size)

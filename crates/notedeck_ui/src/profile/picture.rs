@@ -3,6 +3,7 @@ use egui::{vec2, InnerResponse, Sense, Stroke, TextureHandle};
 use notedeck::get_render_state;
 use notedeck::media::gif::ensure_latest_texture;
 use notedeck::media::images::{fetch_no_pfp_promise, ImageType};
+use notedeck::media::AnimationMode;
 use notedeck::MediaAction;
 use notedeck::{show_one_error_message, supported_mime_hosted_at_url, Images};
 
@@ -12,12 +13,21 @@ pub struct ProfilePic<'cache, 'url> {
     size: f32,
     sense: Sense,
     border: Option<Stroke>,
+    animation_mode: AnimationMode,
     pub action: Option<MediaAction>,
 }
 
 impl egui::Widget for &mut ProfilePic<'_, '_> {
     fn ui(self, ui: &mut egui::Ui) -> egui::Response {
-        let inner = render_pfp(ui, self.cache, self.url, self.size, self.border, self.sense);
+        let inner = render_pfp(
+            ui,
+            self.cache,
+            self.url,
+            self.size,
+            self.border,
+            self.sense,
+            self.animation_mode,
+        );
 
         self.action = inner.inner;
 
@@ -35,6 +45,7 @@ impl<'cache, 'url> ProfilePic<'cache, 'url> {
             sense,
             url,
             size,
+            animation_mode: AnimationMode::Reactive,
             border: None,
             action: None,
         }
@@ -42,6 +53,11 @@ impl<'cache, 'url> ProfilePic<'cache, 'url> {
 
     pub fn sense(mut self, sense: Sense) -> Self {
         self.sense = sense;
+        self
+    }
+
+    pub fn animation_mode(mut self, mode: AnimationMode) -> Self {
+        self.animation_mode = mode;
         self
     }
 
@@ -109,6 +125,7 @@ fn render_pfp(
     ui_size: f32,
     border: Option<Stroke>,
     sense: Sense,
+    animation_mode: AnimationMode,
 ) -> InnerResponse<Option<MediaAction>> {
     // We will want to downsample these so it's not blurry on hi res displays
     let img_size = 128u32;
@@ -141,7 +158,8 @@ fn render_pfp(
             )
         }
         notedeck::TextureState::Loaded(textured_image) => {
-            let texture_handle = ensure_latest_texture(ui, url, cur_state.gifs, textured_image);
+            let texture_handle =
+                ensure_latest_texture(ui, url, cur_state.gifs, textured_image, animation_mode);
 
             egui::InnerResponse::new(None, pfp_image(ui, &texture_handle, ui_size, border, sense))
         }

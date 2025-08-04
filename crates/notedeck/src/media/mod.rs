@@ -12,3 +12,21 @@ pub use blur::{
 };
 pub use images::ImageType;
 pub use renderable::RenderableMedia;
+
+#[derive(Copy, Clone, Debug)]
+pub enum AnimationMode {
+    /// Only render when scrolling, network activity, etc
+    Reactive,
+
+    /// Continuous with an optional target fps
+    Continuous { fps: Option<f32> },
+
+    /// Disable animation
+    NoAnimation,
+}
+
+impl AnimationMode {
+    pub fn can_animate(&self) -> bool {
+        !matches!(self, Self::NoAnimation)
+    }
+}

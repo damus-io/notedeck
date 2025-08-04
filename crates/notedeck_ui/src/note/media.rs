@@ -13,6 +13,7 @@ use notedeck::{
 use crate::NoteOptions;
 use notedeck::media::gif::ensure_latest_texture;
 use notedeck::media::images::{fetch_no_pfp_promise, ImageType};
+use notedeck::media::AnimationMode;
 use notedeck::media::{MediaInfo, ViewMediaInfo};
 
 use crate::{app_images, AnimationHelper, PulseAlpha};
@@ -82,6 +83,18 @@ pub fn image_carousel(
                                 blur_type,
                             );
 
+                            let animation_mode = if note_options.contains(NoteOptions::NoAnimations)
+                            {
+                                AnimationMode::NoAnimation
+                            } else {
+                                // if animations aren't disabled, we cap it at 24fps for gifs in carousels
+                                let fps = match media_type {
+                                    MediaCacheType::Gif => Some(24.0),
+                                    MediaCacheType::Image => None,
+                                };
+                                AnimationMode::Continuous { fps }
+                            };
+
                             let media_response = render_media(
                                 ui,
                                 &mut img_cache.gif_states,
@@ -90,6 +103,7 @@ pub fn image_carousel(
                                 size,
                                 i18n,
                                 note_options.contains(NoteOptions::Wide),
+                                animation_mode,
                             );
 
                             if let Some(action) = media_response.inner {
@@ -324,10 +338,12 @@ fn render_media(
     size: egui::Vec2,
     i18n: &mut Localization,
     is_scaled: bool,
+    animation_mode: AnimationMode,
 ) -> egui::InnerResponse<Option<MediaUIAction>> {
     match render_state {
         MediaRenderState::ActualImage(image) => {
-            let resp = render_success_media(ui, url, image, gifs, size, i18n, is_scaled);
+            let resp =
+                render_success_media(ui, url, image, gifs, size, i18n, is_scaled, animation_mode);
             if resp.clicked() {
                 egui::InnerResponse::new(Some(MediaUIAction::Clicked), resp)
             } else {
@@ -559,6 +575,7 @@ pub(crate) fn find_renderable_media<'a>(
 }
 */
 
+#[allow(clippy::too_many_arguments)]
 fn render_success_media(
     ui: &mut egui::Ui,
     url: &str,
@@ -567,8 +584,9 @@ fn render_success_media(
     size: Vec2,
     i18n: &mut Localization,
     is_scaled: bool,
+    animation_mode: AnimationMode,
 ) -> Response {
-    let texture = ensure_latest_texture(ui, url, gifs, tex);
+    let texture = ensure_latest_texture(ui, url, gifs, tex, animation_mode);
 
     let scaled = ScaledTexture::new(&texture, size, is_scaled);
 

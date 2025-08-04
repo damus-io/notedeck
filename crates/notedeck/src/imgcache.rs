@@ -1,5 +1,6 @@
 use crate::media::gif::ensure_latest_texture_from_cache;
 use crate::media::images::ImageType;
+use crate::media::AnimationMode;
 use crate::urls::{UrlCache, UrlMimes};
 use crate::ImageMetadata;
 use crate::ObfuscationType;
@@ -464,6 +465,7 @@ impl Images {
         ui: &mut egui::Ui,
         url: &str,
         img_type: ImageType,
+        animation_mode: AnimationMode,
     ) -> Option<TextureHandle> {
         let cache_type = crate::urls::supported_mime_hosted_at_url(&mut self.urls, url)?;
 
@@ -485,7 +487,13 @@ impl Images {
             MediaCacheType::Gif => &mut self.gifs,
         };
 
-        ensure_latest_texture_from_cache(ui, url, &mut self.gif_states, &mut cache.textures_cache)
+        ensure_latest_texture_from_cache(
+            ui,
+            url,
+            &mut self.gif_states,
+            &mut cache.textures_cache,
+            animation_mode,
+        )
     }
 
     pub fn get_cache(&self, cache_type: MediaCacheType) -> &MediaCache {

@@ -1,6 +1,6 @@
 use bitflags::bitflags;
 use egui::{emath::TSTransform, pos2, Color32, Rangef, Rect};
-use notedeck::media::{MediaInfo, ViewMediaInfo};
+use notedeck::media::{AnimationMode, MediaInfo, ViewMediaInfo};
 use notedeck::{ImageType, Images};
 
 bitflags! {
@@ -176,7 +176,12 @@ impl<'a> MediaViewer<'a> {
     /// we have image layouts
     fn first_image_rect(ui: &mut egui::Ui, media: &MediaInfo, images: &mut Images) -> Rect {
         // fetch image texture
-        let Some(texture) = images.latest_texture(ui, &media.url, ImageType::Content(None)) else {
+        let Some(texture) = images.latest_texture(
+            ui,
+            &media.url,
+            ImageType::Content(None),
+            AnimationMode::NoAnimation,
+        ) else {
             tracing::error!("could not get latest texture in first_image_rect");
             return Rect::ZERO;
         };
@@ -206,7 +211,14 @@ impl<'a> MediaViewer<'a> {
             let url = &info.url;
 
             // fetch image texture
-            let Some(texture) = images.latest_texture(ui, url, ImageType::Content(None)) else {
+
+            // we want to continually redraw things in the gallery
+            let Some(texture) = images.latest_texture(
+                ui,
+                url,
+                ImageType::Content(None),
+                AnimationMode::Continuous { fps: None }, // media viewer has continuous rendering
+            ) else {
                 continue;
             };
 

@@ -35,6 +35,9 @@ bitflags! {
 
         /// Note has an unread reply indicator
         const UnreadIndicator = 1 << 16;
+
+        /// no animation override (accessibility)
+        const NoAnimations = 1 << 17;
     }
 }
 
