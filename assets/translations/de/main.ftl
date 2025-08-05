@@ -45,6 +45,8 @@ Algo_2452 = Algorithmus
 Algorithmic_feeds_to_aid_in_note_discovery_d344 = Algorithmische Feeds zur Hilfe bei der Entdeckung von Notizen
 # Label for zap amount input field
 Amount_70f0 = Menge
+# Label for appearance settings section
+Appearance_4c7f = Darstellung
 # Button to send message to Dave AI assistant
 Ask_b7f4 = Fragen
 # Placeholder text for Dave AI input field
@@ -59,10 +61,18 @@ Broadcast_fe43 = Senden
 Broadcast_Local_7e50 = Lokal senden
 # Button label to cancel an action
 Cancel_ed3b = Abbrechen
+# Label for cancel clear cache, Storage settings section
+Cancel_fd8b = Abbrechen
+# Label for clear cache button, Storage settings section
+Clear_cache_dccb = Zwischenspeicher leeren
 # Hover text for editable zap amount
 Click_to_edit_0414 = Zum Bearbeiten anklicken
 # Column title for note composition
 Compose_Note_c094 = Notiz erstellen
+# Label for configure relays, settings section
+Configure_relays_d156 = Relays konfigurieren
+# Label for confirm clear cache, Storage settings section
+Confirm_9d9d = Bestätigen
 # Button label to confirm an action
 Confirm_f8a6 = Bestätigen
 # Status label for connected relay
@@ -88,19 +98,19 @@ Copy_Pubkey_9cc4 = Pubkey kopieren
 # Copy the text content of the note to clipboard
 Copy_Text_f81c = Text kopieren
 # Relative time in days
-count_d_b9be = { $count }Tg.
+count_d_b9be = { $count }T
 # Relative time in hours
-count_h_3ecb = { $count }Std.
+count_h_3ecb = { $count }h
 # Relative time in minutes
-count_m_b41e = { $count }Min.
+count_m_b41e = { $count }min
 # Relative time in months
-count_mo_7aba = { $count }Mon.
+count_mo_7aba = { $count }M
 # Relative time in seconds
-count_s_aa26 = { $count }Sek.
+count_s_aa26 = { $count }s
 # Relative time in weeks
-count_w_7468 = { $count }Wo.
+count_w_7468 = { $count }W
 # Relative time in years
-count_y_9408 = { $count }J.
+count_y_9408 = { $count }J
 # Button to create a new account
 Create_Account_6994 = Konto erstellen
 # Button label to create a new deck
@@ -111,6 +121,8 @@ Custom_a69e = Benutzerdefiniert
 Customize_Zap_Amount_cfc4 = Zap-Betrag anpassen
 # Column title for support page
 Damus_Support_27c0 = Damus Support
+# Label for Theme Dark, Appearance settings section
+Dark_85fe = Dunkel
 # Label for deck name input field
 Deck_name_cd32 = Deck-Name
 # Label for decks section in side panel
@@ -151,12 +163,16 @@ Enter_your_public_key__npub___nostr_address__e_g___address____or_private_key__ns
     Für das Veröffentlichen von Beiträgen und andere Aktionen ist dein privater Schlüssel erforderlich.
 # Label for find user button
 Find_User_bd12 = Profil finden
+# Label for font size, Appearance settings section
+Font_size_dd73 = Schriftgröße:
 # Title for hashtags column
 Hashtags_f8e0 = Hashtags
 # Title for Home column
 Home_8c19 = Startseite
 # Label for deck icon selection
 Icon_b0ab = Symbol
+# Label for Image cache size, Storage settings section
+Image_cache_size_3004 = Bildcache Größe:
 # Title for individual user column
 Individual_b776 = Individuell
 # Error message for invalid zap amount
@@ -177,8 +193,12 @@ k_50K_c2dc = 50K
 k_5K_f7e6 = 5K
 # Description for your notes column
 Keep_track_of_your_notes___replies_a334 = Behalte den Überblick über deine Notizen & Antworten
+# Label for language, Appearance settings section
+Language_e264 = Sprache:
 # Title for last note per user column
 Last_Note_per_User_17ad = Letzte Notiz pro Profil
+# Label for Theme Light, Appearance settings section
+Light_7475 = Hell
 # Bitcoin Lightning network address field label
 Lightning_network_address__lud16_ea51 = Lightning-Netzwerkadresse (lud16)
 # Login page title
@@ -216,11 +236,15 @@ Notifications_d673 = Benachrichtigungen
 # Title for notifications column
 Notifications_ef56 = Benachrichtigungen
 # Relative time for very recent events (less than 3 seconds)
-now_2181 = Jetzt
+now_2181 = Gerade eben
+# Setting to turn on sorting replies so that the newest are shown first
+On_f412 = An
 # Button label to open email client
 Open_Email_25e9 = E-Mail öffnen
 # Instruction to open email client
 Open_your_default_email_client_to_get_help_from_the_Damus_team_68dc = Öffne deinen Standard-E-Mail-Client, um Hilfe vom Damus-Team zu erhalten
+# Label for others settings section
+Others_7267 = Andere
 # Placeholder text for NWC URI input
 Paste_your_NWC_URI_here_b471 = Füge hier deine NWC-URI ein...
 # Error message for missing deck name
@@ -267,6 +291,10 @@ replying_to_a_note_e0bc = Antwort auf eine Notiz
 Repost_this_note_8e56 = Diese Notiz teilen
 # Label for reposted notes
 Reposted_61c8 = Teilen
+# Label for reset note body font size, Appearance settings section
+Reset_4e60 = Zurücksetzen
+# Label for reset zoom level, Appearance settings section
+Reset_62d4 = Zurücksetzen
 # Heading for support section
 Running_into_a_bug_1796 = Ein Fehler aufgetreten?
 # Label for satoshis (Bitcoin unit) for custom zap amount input field
@@ -289,6 +317,8 @@ See_notes_from_your_contacts_ac16 = Notizen von deinen Kontakten ansehen
 See_the_whole_nostr_universe_7694 = Sieh dir das ganze Nostr-Universum an
 # Button label to send a zap
 Send_1ea4 = Senden
+# Column title for app settings
+Settings_7a4f = Einstellungen
 # Description for last note per user column
 Show_the_last_note_for_each_user_from_a_list_50e7 = Zeige die letzte Notiz für jedes Profil aus einer Liste
 # Button label to sign out of account
@@ -297,6 +327,8 @@ Sign_out_337b = Abmelden
 Someone_else_s_Notes_7e5f = Notizen anderer Profile
 # Title for someone else's notifications column
 Someone_else_s_Notifications_82e6 = Mitteilungen anderer Profile
+# Label for Sort replies newest first, others settings section
+Sort_replies_newest_first_b6c3 = Neueste Antworten zuerst sortieren:
 # Description for contact list column
 Source_the_last_note_for_each_user_in_your_contact_list_e157 = Die letzte Notiz für jedes Profil aus deiner Kontaktliste anzeigen
 # Description for hashtags column
@@ -315,10 +347,14 @@ Stay_up_to_date_with_your_notifications_and_mentions_e73e = Bleib bei deinen Ben
 Step_1_8656 = Schritt 1
 # Step 2 label in support instructions
 Step_2_d08d = Schritt 2
+# Label for storage settings section
+Storage_ed65 = Speicher
 # Column title for subscribing to external user
 Subscribe_to_someone_else_s_notes_d1e9 = Abonniere die Notizen eines anderen
 # Column title for subscribing to individual user
 Subscribe_to_someone_s_notes_b3c8 = Abonniere die Notizen von jemandem
+# Support email address
+Support_email_44d9 = E-Mail Support:
 # Hover text for dark mode toggle button
 Switch_to_dark_mode_4dec = Zum Dunkelmodus wechseln
 # Hover text for light mode toggle button
@@ -327,6 +363,8 @@ Switch_to_light_mode_72ce = Zum Hellmodus wechseln
 Tap_to_Load_4b05 = Zum Laden antippen
 # Message shown when Dave trial period has ended
 The_Dave_Nostr_AI_assistant_trial_has_ended_____Thanks_for_testing__Zap-enabled_Dave_coming_soon_c6c7 = Die Testphase des Dave Nostr KI-Assistenten ist beendet :(. Vielen Dank fürs Ausprobieren! Zap-fähiger Dave kommt bald!
+# Label for theme, Appearance settings section
+Theme_4aac = Design:
 # Column title for note thread view
 Thread_0f20 = Unterhaltung
 # Link text for thread references
@@ -341,6 +379,8 @@ Use_this_wallet_for_the_current_account_only_61dc = Diese Wallet nur für das ak
 username___at___domain___will_be_used_for_identification_a4fd = "{ $username }" bei "{ $domain }" wird für die Identifikation verwendet werden
 # Profile username field label
 Username_daa7 = Benutzername
+# Label for view folder button, Storage settings section
+View_folder_9742 = Ordner anzeigen
 # Column title for wallet management
 Wallet_5e50 = Wallet
 # Hint for deck name input field
@@ -359,6 +399,8 @@ Your_Notifications_080d = Deine Benachrichtigungen
 Zap_16b4 = Zap
 # Hover text for zap button
 Zap_this_note_42b2 = Zappe diese Notiz
+# Label for zoom level, Appearance settings section
+Zoom_Level_29a8 = Zoomstufe:
 
 # Pluralized strings
 

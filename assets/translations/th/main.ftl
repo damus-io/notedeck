@@ -55,8 +55,6 @@ Ask_dave_anything_33d1 = ถามเดฟได้ทุกเรื่อง.
 Banner_52ef = ภาพปก
 # Beta version label
 BETA_8e5d = เบต้า
-# Option in settings section to show the source client label at the bottom of the note
-Bottom_33c8 = ด้านล่าง
 # Broadcast the note to all connected relays
 Broadcast_fe43 = เผยแพร่
 # Broadcast the note only to local network relays
@@ -165,10 +163,10 @@ Enter_your_public_key__npub___nostr_address__e_g___address____or_private_key__ns
     คุณจำเป็นต้องใส่คีย์ส่วนตัวเพื่อทำการโพสต์, ตอบกลับ และอื่นๆ
 # Label for find user button
 Find_User_bd12 = ค้นหาผู้ใช้
+# Label for font size, Appearance settings section
+Font_size_dd73 = Font size:
 # Title for hashtags column
 Hashtags_f8e0 = แฮชแท็ก
-# Option in settings section to hide the source client label in note display
-Hide_281d = ซ่อน
 # Title for Home column
 Home_8c19 = หน้าแรก
 # Label for deck icon selection
@@ -239,6 +237,8 @@ Notifications_d673 = การแจ้งเตือน
 Notifications_ef56 = การแจ้งเตือน
 # Relative time for very recent events (less than 3 seconds)
 now_2181 = เมื่อสักครู่
+# Setting to turn on sorting replies so that the newest are shown first
+On_f412 = On
 # Button label to open email client
 Open_Email_25e9 = เปิดอีเมล
 # Instruction to open email client
@@ -291,6 +291,8 @@ replying_to_a_note_e0bc = ตอบกลับโน้ต
 Repost_this_note_8e56 = รีโพสต์โน้ตนี้
 # Label for reposted notes
 Reposted_61c8 = รีโพสต์แล้ว
+# Label for reset note body font size, Appearance settings section
+Reset_4e60 = Reset
 # Label for reset zoom level, Appearance settings section
 Reset_62d4 = รีเซ็ต
 # Heading for support section
@@ -317,8 +319,6 @@ See_the_whole_nostr_universe_7694 = ท่องจักรวาล Nostr ท�
 Send_1ea4 = ส่ง
 # Column title for app settings
 Settings_7a4f = การตั้งค่า
-# Label for Show source client, others settings section
-Show_source_client_9e31 = แสดงไคลเอนต์ต้นทาง
 # Description for last note per user column
 Show_the_last_note_for_each_user_from_a_list_50e7 = แสดงโน้ตล่าสุดของผู้ใช้แต่ละคนจากรายการ
 # Button label to sign out of account
@@ -327,6 +327,8 @@ Sign_out_337b = ออกจากระบบ
 Someone_else_s_Notes_7e5f = โน้ตของผู้อื่น
 # Title for someone else's notifications column
 Someone_else_s_Notifications_82e6 = การแจ้งเตือนของผู้อื่น
+# Label for Sort replies newest first, others settings section
+Sort_replies_newest_first_b6c3 = Sort replies newest first:
 # Description for contact list column
 Source_the_last_note_for_each_user_in_your_contact_list_e157 = ดึงโน้ตล่าสุดของผู้ใช้แต่ละคนในรายชื่อผู้ติดต่อ
 # Description for hashtags column
@@ -351,6 +353,8 @@ Storage_ed65 = พื้นที่จัดเก็บ
 Subscribe_to_someone_else_s_notes_d1e9 = ติดตามโน้ตของผู้อื่น
 # Column title for subscribing to individual user
 Subscribe_to_someone_s_notes_b3c8 = ติดตามโน้ตของผู้อื่น
+# Support email address
+Support_email_44d9 = Support email:
 # Hover text for dark mode toggle button
 Switch_to_dark_mode_4dec = เปลี่ยนเป็นโหมดมืด
 # Hover text for light mode toggle button
@@ -365,8 +369,6 @@ Theme_4aac = ธีม:
 Thread_0f20 = เธรด
 # Link text for thread references
 thread_ad1f = เธรด
-# Option in settings section to show the source client label at the top of the note
-Top_6aeb = ด้านบน
 # Title for universe column
 Universe_e01e = จักรวาล
 # Column title for universe feed
