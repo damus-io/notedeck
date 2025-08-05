@@ -79,9 +79,6 @@ Banner_52ef = Banner
 # Beta version label
 BETA_8e5d = BETA
 
-# Option in settings section to show the source client label at the bottom of the note
-Bottom_33c8 = Bottom
-
 # Broadcast the note to all connected relays
 Broadcast_fe43 = Broadcast
 
@@ -246,9 +243,6 @@ Font_size_dd73 = Font size:
 
 # Title for hashtags column
 Hashtags_f8e0 = Hashtags
-
-# Option in settings section to hide the source client label in note display
-Hide_281d = Hide
 
 # Title for Home column
 Home_8c19 = Home
@@ -493,9 +487,6 @@ Someone_else_s_Notifications_82e6 = Someone else's Notifications
 # Label for Sort replies newest first, others settings section
 Sort_replies_newest_first_b6c3 = Sort replies newest first:
 
-# Label for Source client, others settings section
-Source_client_fb2b = Source client:
-
 # Description for contact list column
 Source_the_last_note_for_each_user_in_your_contact_list_e157 = Source the last note for each user in your contact list
 
@@ -555,9 +546,6 @@ Thread_0f20 = Thread
 
 # Link text for thread references
 thread_ad1f = thread
-
-# Option in settings section to show the source client label at the top of the note
-Top_6aeb = Top
 
 # Title for universe column
 Universe_e01e = Universe
