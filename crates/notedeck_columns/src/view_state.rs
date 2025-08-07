@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use enostr::Pubkey;
+use notedeck_ui::nip51_set::Nip51SetUiCache;
 
 use crate::deck_state::DeckState;
 use crate::login_manager::AcquireKeyState;
@@ -25,6 +26,9 @@ pub struct ViewState {
     /// fullscreen media viewier, as well as any other state we want to
     /// keep track of
     pub media_viewer: MediaViewerState,
+
+    /// Keep track of checkbox state of follow pack onboarding
+    pub follow_packs: Nip51SetUiCache,
 }
 
 impl ViewState {
