@@ -9,6 +9,7 @@ license = "GPLv3"
 description = "The nostr browser"
 
 [dependencies]
+bitflags = { workspace = true }
 eframe = { workspace = true }
 egui_tabs = { workspace = true }
 egui_extras = { workspace = true }

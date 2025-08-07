@@ -3532,6 +3532,7 @@ dependencies = [
 name = "notedeck_chrome"
 version = "0.6.0"
 dependencies = [
+ "bitflags 2.9.1",
  "eframe",
  "egui",
  "egui-winit",

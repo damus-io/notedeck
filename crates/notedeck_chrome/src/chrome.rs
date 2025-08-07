@@ -2,6 +2,7 @@
 //#[cfg(target_arch = "wasm32")]
 //use wasm_bindgen::prelude::*;
 use crate::app::NotedeckApp;
+use crate::ChromeOptions;
 use eframe::CreationContext;
 use egui::{vec2, Button, Color32, Label, Layout, Rect, RichText, ThemePreference, Widget};
 use egui_extras::{Size, StripBuilder};
@@ -24,33 +25,13 @@ use std::collections::HashMap;
 static ICON_WIDTH: f32 = 40.0;
 pub static ICON_EXPANSION_MULTIPLE: f32 = 1.2;
 
+#[derive(Default)]
 pub struct Chrome {
     active: i32,
-    open: bool,
     tab_selected: i32,
+    options: ChromeOptions,
     apps: Vec<NotedeckApp>,
     pub repaint_causes: HashMap<egui::RepaintCause, u64>,
-
-    #[cfg(feature = "memory")]
-    show_memory_debug: bool,
-    show_repaint_debug: bool,
-}
-
-impl Default for Chrome {
-    fn default() -> Self {
-        Self {
-            active: 0,
-            repaint_causes: Default::default(),
-            tab_selected: 0,
-            // sidemenu is not open by default on mobile/narrow uis
-            open: !notedeck::ui::is_compiled_as_mobile(),
-            apps: vec![],
-
-            #[cfg(feature = "memory")]
-            show_memory_debug: false,
-            show_repaint_debug: false,
-        }
-    }
 }
 
 /// When you click the toolbar button, these actions
@@ -223,7 +204,7 @@ impl Chrome {
     }
 
     pub fn toggle(&mut self) {
-        self.open = !self.open;
+        self.options.toggle(ChromeOptions::IsOpen);
     }
 
     pub fn add_app(&mut self, app: NotedeckApp) {
@@ -366,7 +347,9 @@ impl Chrome {
     fn amount_open(&self, ui: &mut egui::Ui) -> f32 {
         let open_id = egui::Id::new("chrome_open");
         let side_panel_width: f32 = 74.0;
-        ui.ctx().animate_bool(open_id, self.open) * side_panel_width
+        ui.ctx()
+            .animate_bool(open_id, self.options.contains(ChromeOptions::IsOpen))
+            * side_panel_width
     }
 
     fn toolbar_height() -> f32 {
@@ -477,12 +460,25 @@ impl Chrome {
     fn show(&mut self, ctx: &mut AppContext, ui: &mut egui::Ui) -> Option<ChromePanelAction> {
         ui.spacing_mut().item_spacing.x = 0.0;
 
-        if notedeck::ui::is_narrow(ui.ctx()) {
+        if ctx.args.options.contains(NotedeckOptions::Debug)
+            && ui.ctx().input(|i| i.key_pressed(egui::Key::Backtick))
+        {
+            self.options.toggle(ChromeOptions::VirtualKeyboard);
+        }
+
+        let r = if notedeck::ui::is_narrow(ui.ctx()) {
             self.toolbar_chrome(ctx, ui)
         } else {
             let amt_open = self.amount_open(ui);
             self.panel(ctx, StripBuilder::new(ui), amt_open)
+        };
+
+        // virtual keyboard
+        if self.options.contains(ChromeOptions::VirtualKeyboard) {
+            virtual_keyboard_ui(ui);
         }
+
+        r
     }
 
     fn topdown_sidebar(&mut self, ui: &mut egui::Ui, i18n: &mut Localization) {
@@ -497,7 +493,7 @@ impl Chrome {
 
         if ui.add(expand_side_panel_button()).clicked() {
             //self.active = (self.active + 1) % (self.apps.len() as i32);
-            self.open = !self.open;
+            self.options.toggle(ChromeOptions::IsOpen);
         }
 
         ui.add_space(4.0);
@@ -1023,10 +1019,10 @@ fn bottomup_sidebar(
             .on_hover_cursor(egui::CursorIcon::PointingHand);
 
         if r.clicked() {
-            chrome.show_repaint_debug = !chrome.show_repaint_debug;
+            chrome.options.toggle(ChromeOptions::RepaintDebug);
         }
 
-        if chrome.show_repaint_debug {
+        if chrome.options.contains(ChromeOptions::RepaintDebug) {
             for cause in ui.ctx().repaint_causes() {
                 chrome
                     .repaint_causes
@@ -1216,5 +1212,23 @@ fn repaint_causes_window(ui: &mut egui::Ui, causes: &HashMap<egui::RepaintCause,
                     });
                 }
             });
+    });
+}
+
+fn virtual_keyboard_ui(ui: &mut egui::Ui) {
+    let height = notedeck::platform::virtual_keyboard_height(true);
+    let screen_rect = ui.ctx().screen_rect();
+
+    let min = egui::Pos2::new(0.0, screen_rect.max.y - height as f32);
+    let rect = Rect::from_min_max(min, screen_rect.max);
+    let painter = ui.painter_at(rect);
+
+    painter.rect_filled(rect, 0.0, Color32::from_black_alpha(200));
+
+    ui.put(rect, |ui: &mut egui::Ui| {
+        ui.centered_and_justified(|ui| {
+            ui.label("This is a keyboard");
+        })
+        .response
     });
 }
