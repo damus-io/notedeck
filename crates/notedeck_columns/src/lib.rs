@@ -18,6 +18,7 @@ pub mod login_manager;
 mod media_upload;
 mod multi_subscriber;
 mod nav;
+mod onboarding;
 pub mod options;
 mod post;
 mod profile;
