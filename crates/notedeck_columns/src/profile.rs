@@ -218,18 +218,30 @@ fn send_note_builder(builder: NoteBuilder, ndb: &Ndb, pool: &mut RelayPool, kp: 
     pool.send(event);
 }
 
-pub fn send_new_contact_list(kp: FilledKeypair, ndb: &Ndb, pool: &mut RelayPool) {
-    let builder = construct_new_contact_list(kp.pubkey);
+pub fn send_new_contact_list(
+    kp: FilledKeypair,
+    ndb: &Ndb,
+    pool: &mut RelayPool,
+    mut pks_to_follow: Vec<Pubkey>,
+) {
+    if !pks_to_follow.contains(kp.pubkey) {
+        pks_to_follow.push(*kp.pubkey);
+    }
+
+    let builder = construct_new_contact_list(pks_to_follow);
 
     send_note_builder(builder, ndb, pool, kp);
 }
 
-fn construct_new_contact_list<'a>(pk: &'a Pubkey) -> NoteBuilder<'a> {
-    NoteBuilder::new()
+fn construct_new_contact_list<'a>(pks: Vec<Pubkey>) -> NoteBuilder<'a> {
+    let mut builder = NoteBuilder::new()
         .content("")
         .kind(3)
-        .options(NoteBuildOptions::default())
-        .start_tag()
-        .tag_str("p")
-        .tag_str(&pk.hex())
+        .options(NoteBuildOptions::default());
+
+    for pk in pks {
+        builder = builder.start_tag().tag_str("p").tag_str(&pk.hex());
+    }
+
+    builder
 }
