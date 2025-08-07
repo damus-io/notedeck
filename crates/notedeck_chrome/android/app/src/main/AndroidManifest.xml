@@ -8,7 +8,7 @@
         android:theme="@style/Theme.MaterialComponents.DayNight.NoActionBar">
         <activity
             android:name=".MainActivity"
-            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode|fontScale|smallestScreenSize"
             android:exported="true"
             android:launchMode="singleTask"
         >
