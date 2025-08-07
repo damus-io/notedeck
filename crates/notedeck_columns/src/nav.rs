@@ -1,5 +1,5 @@
 use crate::{
-    accounts::{render_accounts_route, AccountsAction},
+    accounts::{render_accounts_route, AccountsAction, AccountsResponse},
     app::{get_active_columns_mut, get_decks_mut},
     column::ColumnsAction,
     deck_state::DeckState,
@@ -19,6 +19,7 @@ use crate::{
         configure_deck::ConfigureDeckView,
         edit_deck::{EditDeckResponse, EditDeckView},
         note::{custom_zap::CustomZapView, NewPostAction, PostAction, PostType, QuoteRepostView},
+        onboarding::FollowPackOnboardingView,
         profile::EditProfileView,
         search::{FocusState, SearchView},
         settings::SettingsAction,
@@ -85,14 +86,21 @@ impl SwitchingAction {
         match &self {
             SwitchingAction::Accounts(account_action) => match account_action {
                 AccountsAction::Switch(switch_action) => {
-                    let txn = Transaction::new(ctx.ndb).expect("txn");
-                    ctx.accounts.select_account(
-                        &switch_action.switch_to,
-                        ctx.ndb,
-                        &txn,
-                        ctx.pool,
-                        ui_ctx,
-                    );
+                    {
+                        let txn = Transaction::new(ctx.ndb).expect("txn");
+                        ctx.accounts.select_account(
+                            &switch_action.switch_to,
+                            ctx.ndb,
+                            &txn,
+                            ctx.pool,
+                            ui_ctx,
+                        );
+                    }
+
+                    if switch_action.switching_to_new {
+                        decks_cache.add_deck_default(ctx, timeline_cache, switch_action.switch_to);
+                    }
+
                     // pop nav after switch
                     get_active_columns_mut(ctx.i18n, ctx.accounts, decks_cache)
                         .column_mut(switch_action.source_column)
@@ -564,21 +572,33 @@ fn render_nav_body(
             &mut note_context,
             &mut app.jobs,
         ),
-        Route::Accounts(amr) => {
-            let mut action = render_accounts_route(
+        Route::Accounts(amr) => 's: {
+            let Some(action) = render_accounts_route(
                 ui,
                 ctx,
-                col,
-                &mut app.decks_cache,
-                &mut app.timeline_cache,
+                &mut app.jobs,
                 &mut app.view_state.login,
+                &app.onboarding,
+                &mut app.view_state.follow_packs,
                 *amr,
-            );
-            let txn = Transaction::new(ctx.ndb).expect("txn");
-            action.process_action(ctx.unknown_ids, ctx.ndb, &txn);
-            action
-                .accounts_action
-                .map(|f| RenderNavAction::SwitchingAction(SwitchingAction::Accounts(f)))
+            ) else {
+                break 's None;
+            };
+
+            match action {
+                AccountsResponse::ViewProfile(pubkey) => {
+                    Some(RenderNavAction::NoteAction(NoteAction::Profile(pubkey)))
+                }
+                AccountsResponse::Account(accounts_route_response) => {
+                    let mut action = accounts_route_response.process(ctx, app, col);
+
+                    let txn = Transaction::new(ctx.ndb).expect("txn");
+                    action.process_action(ctx.unknown_ids, ctx.ndb, &txn);
+                    action
+                        .accounts_action
+                        .map(|f| RenderNavAction::SwitchingAction(SwitchingAction::Accounts(f)))
+                }
+            }
         }
         Route::Relays => RelayView::new(ctx.pool, &mut app.view_state.id_string_map, ctx.i18n)
             .ui(ui)
@@ -1061,6 +1081,9 @@ fn get_scroll_id(
         Route::Accounts(accounts_route) => match accounts_route {
             crate::accounts::AccountsRoute::Accounts => Some(AccountsView::scroll_id()),
             crate::accounts::AccountsRoute::AddAccount => None,
+            crate::accounts::AccountsRoute::Onboarding => {
+                Some(FollowPackOnboardingView::scroll_id())
+            }
         },
         Route::Reply(note_id) => Some(PostReplyView::scroll_id(col, note_id.bytes())),
         Route::Quote(note_id) => Some(QuoteRepostView::scroll_id(col, note_id.bytes())),
@@ -1085,6 +1108,7 @@ fn route_uses_frame(route: &Route) -> bool {
         Route::Accounts(accounts_route) => match accounts_route {
             crate::accounts::AccountsRoute::Accounts => true,
             crate::accounts::AccountsRoute::AddAccount => false,
+            crate::accounts::AccountsRoute::Onboarding => false,
         },
         Route::Relays => true,
         Route::Timeline(_) => false,

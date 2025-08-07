@@ -278,6 +278,11 @@ impl Route {
                     "Add Account",
                     "Column title for adding new account"
                 )),
+                AccountsRoute::Onboarding => ColumnTitle::formatted(tr!(
+                    i18n,
+                    "Onboarding",
+                    "Column title for finding users to follow"
+                )),
             },
             Route::ComposeNote => ColumnTitle::formatted(tr!(
                 i18n,

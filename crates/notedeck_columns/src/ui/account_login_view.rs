@@ -1,4 +1,5 @@
 use crate::login_manager::AcquireKeyState;
+use crate::ui::onboarding::FollowPacksResponse;
 use crate::ui::{Preview, PreviewConfig};
 use egui::{
     Align, Button, Color32, Frame, InnerResponse, Layout, Margin, RichText, TextEdit, Vec2,
@@ -18,7 +19,8 @@ pub struct AccountLoginView<'a> {
 }
 
 pub enum AccountLoginResponse {
-    CreateNew,
+    CreatingNew,
+    Onboarding(FollowPacksResponse),
     LoginWith(Keypair),
 }
 
@@ -96,7 +98,7 @@ impl<'a> AccountLoginView<'a> {
         });
 
         if self.manager.check_for_create_new() {
-            return Some(AccountLoginResponse::CreateNew);
+            return Some(AccountLoginResponse::CreatingNew);
         }
 
         if let Some(keypair) = self.manager.get_login_keypair() {

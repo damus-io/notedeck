@@ -7,10 +7,16 @@ pub enum AccountsRouteResponse {
     AddAccount(AccountLoginResponse),
 }
 
+pub enum AccountsResponse {
+    ViewProfile(enostr::Pubkey),
+    Account(AccountsRouteResponse),
+}
+
 #[derive(Debug, Eq, PartialEq, Clone, Copy, Serialize, Deserialize)]
 pub enum AccountsRoute {
     Accounts,
     AddAccount,
+    Onboarding,
 }
 
 impl AccountsRoute {
@@ -19,6 +25,7 @@ impl AccountsRoute {
         match self {
             Self::Accounts => &["accounts", "show"],
             Self::AddAccount => &["accounts", "new"],
+            Self::Onboarding => &["accounts", "onboarding"],
         }
     }
 }
