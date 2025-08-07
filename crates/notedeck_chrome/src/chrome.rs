@@ -1,25 +1,25 @@
 // Entry point for wasm
 //#[cfg(target_arch = "wasm32")]
 //use wasm_bindgen::prelude::*;
-use crate::app::NotedeckApp;
 use crate::ChromeOptions;
+use crate::app::NotedeckApp;
 use eframe::CreationContext;
-use egui::{vec2, Button, Color32, Label, Layout, Rect, RichText, ThemePreference, Widget};
+use egui::{Button, Color32, Label, Layout, Rect, RichText, ThemePreference, Widget, vec2};
 use egui_extras::{Size, StripBuilder};
 use nostrdb::{ProfileRecord, Transaction};
 use notedeck::Error;
 use notedeck::{
-    tr, App, AppAction, AppContext, Localization, Notedeck, NotedeckOptions, NotedeckTextStyle,
-    UserAccount, WalletType,
+    App, AppAction, AppContext, Localization, Notedeck, NotedeckOptions, NotedeckTextStyle,
+    UserAccount, WalletType, tr,
 };
 use notedeck_columns::{
-    column::SelectionResult,
-    timeline::{kind::ListKind, TimelineKind},
     Damus,
+    column::SelectionResult,
+    timeline::{TimelineKind, kind::ListKind},
 };
 use notedeck_dave::{Dave, DaveAvatar};
 use notedeck_notebook::Notebook;
-use notedeck_ui::{app_images, AnimationHelper, ProfilePic};
+use notedeck_ui::{AnimationHelper, ProfilePic, app_images};
 use std::collections::HashMap;
 
 static ICON_WIDTH: f32 = 40.0;
@@ -473,8 +473,29 @@ impl Chrome {
             self.panel(ctx, StripBuilder::new(ui), amt_open)
         };
 
+        let has_virt_keyboard = self.options.contains(ChromeOptions::VirtualKeyboard);
+        // move screen up if virtual keyboard intersects with input_rect
+        if let Some(vkb_rect) = notedeck::platform::virtual_keyboard_rect(ui, has_virt_keyboard) {
+            if let Some(input_rect) = notedeck_ui::input_rect(ui) {
+                if input_rect.intersects(vkb_rect) {
+                    //tracing::info!("input box intersects");
+                    let keyboard_height = vkb_rect.height();
+                    virtual_keyboard_ui(ui);
+                    /*
+                    ui.ctx().transform_layer_shapes(
+                        ui.layer_id(),
+                        egui::emath::TSTransform::from_translation(egui::Vec2::new(
+                            0.0,
+                            -keyboard_height,
+                        )),
+                    );
+                    */
+                }
+            }
+        }
+
         // virtual keyboard
-        if self.options.contains(ChromeOptions::VirtualKeyboard) {
+        if has_virt_keyboard {
             virtual_keyboard_ui(ui);
         }
 
@@ -1216,14 +1237,13 @@ fn repaint_causes_window(ui: &mut egui::Ui, causes: &HashMap<egui::RepaintCause,
 }
 
 fn virtual_keyboard_ui(ui: &mut egui::Ui) {
-    let height = notedeck::platform::virtual_keyboard_height(true);
-    let screen_rect = ui.ctx().screen_rect();
+    let Some(rect) = notedeck::platform::virtual_keyboard_rect(ui, true) else {
+        return;
+    };
 
-    let min = egui::Pos2::new(0.0, screen_rect.max.y - height as f32);
-    let rect = Rect::from_min_max(min, screen_rect.max);
     let painter = ui.painter_at(rect);
 
-    painter.rect_filled(rect, 0.0, Color32::from_black_alpha(200));
+    painter.rect_filled(rect, 0.0, Color32::RED);
 
     ui.put(rect, |ui: &mut egui::Ui| {
         ui.centered_and_justified(|ui| {

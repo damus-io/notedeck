@@ -59,32 +59,38 @@ pub struct Damus {
     pub unrecognized_args: BTreeSet<String>,
 }
 
-fn handle_key_events(input: &egui::InputState, columns: &mut Columns) {
+fn handle_egui_events(input: &egui::InputState, columns: &mut Columns) {
     for event in &input.raw.events {
-        if let egui::Event::Key {
-            key, pressed: true, ..
-        } = event
-        {
-            match key {
-                egui::Key::J => {
-                    columns.select_down();
+        match event {
+            egui::Event::Key { key, pressed, .. } if *pressed => {
+                match key {
+                    egui::Key::J => {
+                        columns.select_down();
+                    }
+                    egui::Key::K => {
+                        columns.select_up();
+                    }
+                    egui::Key::H => {
+                        columns.select_left();
+                    }
+                    egui::Key::L => {
+                        columns.select_left();
+                    }
+                    egui::Key::BrowserBack | egui::Key::Escape => {
+                        columns.get_selected_router().go_back();
+                    }
+                    _ => {}
                 }
-                egui::Key::K => {
-                    columns.select_up();
-                }
-                egui::Key::H => {
-                    columns.select_left();
-                }
-                egui::Key::L => {
-                    columns.select_left();
-                }
-                egui::Key::BrowserBack | egui::Key::Escape => {
-                    columns.get_selected_router().go_back();
-                }
-                _ => {}
             }
+
+            egui::Event::InsetsChanged => {
+                tracing::debug!("insets have changed!");
+            }
+
+            _ => {}
         }
     }
+
 }
 
 fn try_process_event(
@@ -94,7 +100,7 @@ fn try_process_event(
 ) -> Result<()> {
     let current_columns =
         get_active_columns_mut(app_ctx.i18n, app_ctx.accounts, &mut damus.decks_cache);
-    ctx.input(|i| handle_key_events(i, current_columns));
+    ctx.input(|i| handle_egui_events(i, current_columns));
 
     let ctx2 = ctx.clone();
     let wakeup = move || {

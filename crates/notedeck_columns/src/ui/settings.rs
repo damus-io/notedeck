@@ -147,7 +147,7 @@ impl<'a> SettingsView<'a> {
             "Label for appearance settings section",
         );
         settings_group(ui, title, |ui| {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label(richtext_small(tr!(
                     self.note_context.i18n,
                     "Font size:",
@@ -207,7 +207,7 @@ impl<'a> SettingsView<'a> {
 
             let current_zoom = ui.ctx().zoom_factor();
 
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label(richtext_small(tr!(
                     self.note_context.i18n,
                     "Zoom Level:",
@@ -260,7 +260,7 @@ impl<'a> SettingsView<'a> {
                 }
             });
 
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label(richtext_small(tr!(
                     self.note_context.i18n,
                     "Language:",
@@ -288,7 +288,7 @@ impl<'a> SettingsView<'a> {
                     });
             });
 
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label(richtext_small(tr!(
                     self.note_context.i18n,
                     "Theme:",
@@ -441,7 +441,7 @@ impl<'a> SettingsView<'a> {
             "Label for others settings section"
         );
         settings_group(ui, title, |ui| {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label(richtext_small(tr!(
                     self.note_context.i18n,
                     "Sort replies newest first:",

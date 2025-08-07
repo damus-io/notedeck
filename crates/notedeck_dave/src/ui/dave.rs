@@ -5,9 +5,9 @@ use crate::{
 use egui::{Align, Key, KeyboardShortcut, Layout, Modifiers};
 use nostrdb::{Ndb, Transaction};
 use notedeck::{
-    tr, Accounts, AppContext, Images, JobsCache, Localization, NoteAction, NoteContext,
+    Accounts, AppContext, Images, JobsCache, Localization, NoteAction, NoteContext, tr,
 };
-use notedeck_ui::{app_images, icons::search_icon, NoteOptions, ProfilePic};
+use notedeck_ui::{NoteOptions, ProfilePic, app_images, icons::search_icon};
 
 /// DaveUi holds all of the data it needs to render itself
 pub struct DaveUi<'a> {
@@ -342,6 +342,7 @@ impl<'a> DaveUi<'a> {
                         )
                         .frame(false),
                 );
+                notedeck_ui::set_input_rect(ui, r.rect);
 
                 if r.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                     DaveResponse::send()

@@ -60,3 +60,17 @@ pub fn secondary_label(ui: &mut egui::Ui, s: impl Into<String>) -> egui::Respons
     let color = ui.style().visuals.noninteractive().fg_stroke.color;
     ui.add(Label::new(RichText::new(s).size(10.0).color(color)).selectable(false))
 }
+
+const INPUT_RECT_KEY: &str = "notedeck_input_rect";
+
+/// Set the last input rect for keyboard visibility purposes. We use this to move the screen up if
+/// a soft keyboard intersects with the input box
+pub fn set_input_rect(ui: &mut egui::Ui, rect: egui::Rect) {
+    ui.data_mut(|d| d.insert_temp(egui::Id::new(INPUT_RECT_KEY), rect));
+}
+
+/// Set the last input rect for keyboard visibility purposes. We use this to move the screen up if
+/// a soft keyboard intersects with the input box
+pub fn input_rect(ui: &mut egui::Ui) -> Option<egui::Rect> {
+    ui.data(|d| d.get_temp(egui::Id::new(INPUT_RECT_KEY)))
+}

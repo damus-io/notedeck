@@ -16,7 +16,7 @@ pub extern "C" fn Java_com_damus_notedeck_KeyboardHeightHelper_nativeKeyboardHei
     debug!("updating virtual keyboard height {}", height);
 
     // Convert and store atomically
-    KEYBOARD_HEIGHT.store(height, Ordering::SeqCst);
+    KEYBOARD_HEIGHT.store(height.max(0), Ordering::SeqCst);
 }
 
 /// Gets the current Android virtual keyboard height. Useful for transforming
@@ -24,3 +24,4 @@ pub extern "C" fn Java_com_damus_notedeck_KeyboardHeightHelper_nativeKeyboardHei
 pub fn virtual_keyboard_height() -> i32 {
     KEYBOARD_HEIGHT.load(Ordering::SeqCst)
 }
+
