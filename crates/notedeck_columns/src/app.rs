@@ -4,6 +4,7 @@ use crate::{
     decks::{Decks, DecksCache},
     draft::Drafts,
     nav::{self, ProcessNavResult},
+    onboarding::Onboarding,
     options::AppOptions,
     route::Route,
     storage,
@@ -57,6 +58,9 @@ pub struct Damus {
     pub note_options: NoteOptions,
 
     pub unrecognized_args: BTreeSet<String>,
+
+    /// keep track of follow packs
+    pub onboarding: Onboarding,
 }
 
 fn handle_key_events(input: &egui::InputState, columns: &mut Columns) {
@@ -163,6 +167,10 @@ fn try_process_event(
         } else {
             // TODO: show loading?
         }
+    }
+
+    if let Some(follow_packs) = damus.onboarding.get_follow_packs_mut() {
+        follow_packs.poll_for_notes(app_ctx.ndb, app_ctx.unknown_ids);
     }
 
     if app_ctx.unknown_ids.ready_to_send() {
@@ -513,6 +521,7 @@ impl Damus {
             unrecognized_args,
             jobs,
             threads,
+            onboarding: Onboarding::default(),
         }
     }
 
@@ -563,6 +572,7 @@ impl Damus {
             unrecognized_args: BTreeSet::default(),
             jobs: JobsCache::default(),
             threads: Threads::default(),
+            onboarding: Onboarding::default(),
         }
     }
 
