@@ -59,7 +59,7 @@ impl<'a> AccountLoginView<'a> {
                     let text_edit_width = available_width - button_width;
 
                     let textedit_resp = ui.add_sized([text_edit_width, 40.0], login_textedit(self.manager, self.i18n));
-                    input_context(&textedit_resp, self.clipboard, self.manager.input_buffer(), PasteBehavior::Clear);
+                    input_context(ui, &textedit_resp, self.clipboard, self.manager.input_buffer(), PasteBehavior::Clear);
 
                     if eye_button(ui, self.manager.password_visible()).clicked() {
                         self.manager.toggle_password_visibility();

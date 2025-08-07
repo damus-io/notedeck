@@ -311,7 +311,7 @@ fn search_box(
                             .frame(false),
                     );
 
-                    input_context(&response, clipboard, input, PasteBehavior::Append);
+                    input_context(ui, &response, clipboard, input, PasteBehavior::Append);
 
                     let mut requested_focus = false;
                     if focus_state == FocusState::ShouldRequestFocus {

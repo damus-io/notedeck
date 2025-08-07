@@ -27,4 +27,4 @@ push-android-config:
 android: jni
 	cd $(ANDROID_DIR) && ./gradlew installDebug
 	adb shell am start -n com.damus.notedeck/.MainActivity
-	adb logcat -v color -s RustStdoutStderr -s threaded_app | tee logcat.txt
+	adb logcat -v color -s GameActivity -s RustStdoutStderr -s threaded_app | tee logcat.txt

@@ -342,6 +342,7 @@ impl<'a> DaveUi<'a> {
                         )
                         .frame(false),
                 );
+                notedeck_ui::include_input(ui, &r);
 
                 if r.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                     DaveResponse::send()

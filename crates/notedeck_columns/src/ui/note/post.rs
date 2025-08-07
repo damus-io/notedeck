@@ -209,6 +209,7 @@ impl<'a, 'd> PostView<'a, 'd> {
         let out = textedit.show(ui);
 
         input_context(
+            ui,
             &out.response,
             self.note_context.clipboard,
             &mut self.draft.buffer.text_buffer,

@@ -832,7 +832,7 @@ fn render_nav_body(
                 return action;
             };
 
-            if EditProfileView::new(ctx.i18n, state, ctx.img_cache).ui(ui) {
+            if EditProfileView::new(ctx.i18n, state, ctx.img_cache, ctx.clipboard).ui(ui) {
                 if let Some(state) = app.view_state.pubkey_to_profile_state.get(kp.pubkey) {
                     action = Some(RenderNavAction::ProfileAction(ProfileAction::SaveChanges(
                         SaveProfileChanges::new(kp.to_full(), state.clone()),

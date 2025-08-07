@@ -62,3 +62,34 @@ pub fn secondary_label(ui: &mut egui::Ui, s: impl Into<String>) -> egui::Respons
     let color = ui.style().visuals.noninteractive().fg_stroke.color;
     ui.add(Label::new(RichText::new(s).size(10.0).color(color)).selectable(false))
 }
+
+const INPUT_RECT_KEY: &str = "notedeck_input_rect";
+
+/// Includes an input rect for keyboard visibility purposes. We use this to move the screen up if
+/// a soft keyboard intersects with the input box
+pub fn include_input(ui: &mut egui::Ui, resp: &egui::Response) {
+    // only include input if we have focus
+    if !resp.has_focus() {
+        return;
+    }
+
+    ui.data_mut(|d| {
+        let id = egui::Id::new(INPUT_RECT_KEY);
+        match d.get_temp::<egui::Rect>(id) {
+            Some(r) => d.insert_temp(id, resp.rect.union(r)),
+            None => d.insert_temp(id, resp.rect),
+        }
+    })
+}
+
+/// Set the last input rect for keyboard visibility purposes. We use this to move the screen up if
+/// a soft keyboard intersects with the input box
+pub fn input_rect(ui: &mut egui::Ui) -> Option<egui::Rect> {
+    ui.data(|d| d.get_temp(egui::Id::new(INPUT_RECT_KEY)))
+}
+
+/// Set the last input rect for keyboard visibility purposes. We use this to move the screen up if
+/// a soft keyboard intersects with the input box
+pub fn clear_input_rect(ui: &mut egui::Ui) {
+    ui.data_mut(|d| d.remove::<egui::Rect>(egui::Id::new(INPUT_RECT_KEY)))
+}

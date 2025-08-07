@@ -1,12 +1,15 @@
 use core::f32;
 
 use egui::{vec2, Button, CornerRadius, Layout, Margin, RichText, ScrollArea, TextEdit};
+use egui_winit::clipboard::Clipboard;
 use enostr::ProfileState;
 use notedeck::{profile::unwrap_profile_url, tr, Images, Localization, NotedeckTextStyle};
+use notedeck_ui::context_menu::{input_context, PasteBehavior};
 use notedeck_ui::{profile::banner, ProfilePic};
 
 pub struct EditProfileView<'a> {
     state: &'a mut ProfileState,
+    clipboard: &'a mut Clipboard,
     img_cache: &'a mut Images,
     i18n: &'a mut Localization,
 }
@@ -16,11 +19,13 @@ impl<'a> EditProfileView<'a> {
         i18n: &'a mut Localization,
         state: &'a mut ProfileState,
         img_cache: &'a mut Images,
+        clipboard: &'a mut Clipboard,
     ) -> Self {
         Self {
             i18n,
             state,
             img_cache,
+            clipboard,
         }
     }
 
@@ -95,14 +100,14 @@ impl<'a> EditProfileView<'a> {
                 )
                 .as_str(),
             ));
-            ui.add(singleline_textedit(self.state.str_mut("display_name")));
+            singleline_textedit(ui, self.state.str_mut("display_name"), self.clipboard);
         });
 
         in_frame(ui, |ui| {
             ui.add(label(
                 tr!(self.i18n, "Username", "Profile username field label").as_str(),
             ));
-            ui.add(singleline_textedit(self.state.str_mut("name")));
+            singleline_textedit(ui, self.state.str_mut("name"), self.clipboard);
         });
 
         in_frame(ui, |ui| {
@@ -114,28 +119,28 @@ impl<'a> EditProfileView<'a> {
                 )
                 .as_str(),
             ));
-            ui.add(multiline_textedit(self.state.str_mut("picture")));
+            multiline_textedit(ui, self.state.str_mut("picture"), self.clipboard);
         });
 
         in_frame(ui, |ui| {
             ui.add(label(
                 tr!(self.i18n, "Banner", "Profile banner URL field label").as_str(),
             ));
-            ui.add(multiline_textedit(self.state.str_mut("banner")));
+            multiline_textedit(ui, self.state.str_mut("banner"), self.clipboard);
         });
 
         in_frame(ui, |ui| {
             ui.add(label(
                 tr!(self.i18n, "About", "Profile about/bio field label").as_str(),
             ));
-            ui.add(multiline_textedit(self.state.str_mut("about")));
+            multiline_textedit(ui, self.state.str_mut("about"), self.clipboard);
         });
 
         in_frame(ui, |ui| {
             ui.add(label(
                 tr!(self.i18n, "Website", "Profile website field label").as_str(),
             ));
-            ui.add(singleline_textedit(self.state.str_mut("website")));
+            singleline_textedit(ui, self.state.str_mut("website"), self.clipboard);
         });
 
         in_frame(ui, |ui| {
@@ -147,7 +152,7 @@ impl<'a> EditProfileView<'a> {
                 )
                 .as_str(),
             ));
-            ui.add(multiline_textedit(self.state.str_mut("lud16")));
+            multiline_textedit(ui, self.state.str_mut("lud16"), self.clipboard);
         });
 
         in_frame(ui, |ui| {
@@ -159,7 +164,8 @@ impl<'a> EditProfileView<'a> {
                 )
                 .as_str(),
             ));
-            ui.add(singleline_textedit(self.state.str_mut("nip05")));
+
+            singleline_textedit(ui, self.state.str_mut("nip05"), self.clipboard);
 
             let Some(nip05) = self.state.nip05() else {
                 return;
@@ -208,21 +214,29 @@ fn label(text: &str) -> impl egui::Widget + '_ {
     }
 }
 
-fn singleline_textedit(data: &mut String) -> impl egui::Widget + '_ {
-    TextEdit::singleline(data)
-        .min_size(vec2(0.0, 40.0))
-        .vertical_align(egui::Align::Center)
-        .margin(Margin::symmetric(12, 10))
-        .desired_width(f32::INFINITY)
+fn singleline_textedit(ui: &mut egui::Ui, data: &mut String, clipboard: &mut Clipboard) {
+    let r = ui.add(
+        TextEdit::singleline(data)
+            .min_size(vec2(0.0, 40.0))
+            .vertical_align(egui::Align::Center)
+            .margin(Margin::symmetric(12, 10))
+            .desired_width(f32::INFINITY),
+    );
+
+    input_context(ui, &r, clipboard, data, PasteBehavior::Clear);
 }
 
-fn multiline_textedit(data: &mut String) -> impl egui::Widget + '_ {
-    TextEdit::multiline(data)
-        // .min_size(vec2(0.0, 40.0))
-        .vertical_align(egui::Align::TOP)
-        .margin(Margin::symmetric(12, 10))
-        .desired_width(f32::INFINITY)
-        .desired_rows(1)
+fn multiline_textedit(ui: &mut egui::Ui, data: &mut String, clipboard: &mut Clipboard) {
+    let r = ui.add(
+        TextEdit::multiline(data)
+            // .min_size(vec2(0.0, 40.0))
+            .vertical_align(egui::Align::TOP)
+            .margin(Margin::symmetric(12, 10))
+            .desired_width(f32::INFINITY)
+            .desired_rows(1),
+    );
+
+    input_context(ui, &r, clipboard, data, PasteBehavior::Clear);
 }
 
 fn in_frame(ui: &mut egui::Ui, contents: impl FnOnce(&mut egui::Ui)) {

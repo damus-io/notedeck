@@ -22,6 +22,9 @@ use std::rc::Rc;
 use tracing::{error, info};
 use unic_langid::{LanguageIdentifier, LanguageIdentifierError};
 
+#[cfg(target_os = "android")]
+use android_activity::AndroidApp;
+
 pub enum AppAction {
     Note(NoteAction),
     ToggleChrome,
@@ -51,6 +54,9 @@ pub struct Notedeck {
     frame_history: FrameHistory,
     job_pool: JobPool,
     i18n: Localization,
+
+    #[cfg(target_os = "android")]
+    android_app: Option<AndroidApp>,
 }
 
 /// Our chrome, which is basically nothing
@@ -138,6 +144,11 @@ fn setup_puffin() {
 }
 
 impl Notedeck {
+    #[cfg(target_os = "android")]
+    pub fn set_android_context(&mut self, context: AndroidApp) {
+        self.android_app = Some(context);
+    }
+
     pub fn new<P: AsRef<Path>>(ctx: &egui::Context, data_path: P, args: &[String]) -> Self {
         #[cfg(feature = "puffin")]
         setup_puffin();
@@ -272,6 +283,8 @@ impl Notedeck {
             zaps,
             job_pool,
             i18n,
+            #[cfg(target_os = "android")]
+            android_app: None,
         }
     }
 
@@ -335,6 +348,8 @@ impl Notedeck {
             frame_history: &mut self.frame_history,
             job_pool: &mut self.job_pool,
             i18n: &mut self.i18n,
+            #[cfg(target_os = "android")]
+            android: self.android_app.as_ref().unwrap().clone(),
         }
     }
 

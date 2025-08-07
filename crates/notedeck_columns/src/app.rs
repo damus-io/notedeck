@@ -64,18 +64,15 @@ pub struct Damus {
     pub onboarding: Onboarding,
 }
 
-fn handle_key_events(input: &egui::InputState, columns: &mut Columns) {
+fn handle_egui_events(input: &egui::InputState, columns: &mut Columns) {
     for event in &input.raw.events {
-        #[allow(clippy::collapsible_match)]
-        if let egui::Event::Key {
-            key, pressed: true, ..
-        } = event
-        {
-            match key {
-                /*
+        match event {
+            egui::Event::Key { key, pressed, .. } if *pressed => match key {
                 egui::Key::J => {
-                    columns.select_down();
+                    //columns.select_down();
+                    {}
                 }
+                /*
                 egui::Key::K => {
                     columns.select_up();
                 }
@@ -90,7 +87,13 @@ fn handle_key_events(input: &egui::InputState, columns: &mut Columns) {
                     columns.get_selected_router().go_back();
                 }
                 _ => {}
+            },
+
+            egui::Event::InsetsChanged => {
+                tracing::debug!("insets have changed!");
             }
+
+            _ => {}
         }
     }
 }
@@ -102,7 +105,7 @@ fn try_process_event(
 ) -> Result<()> {
     let current_columns =
         get_active_columns_mut(app_ctx.i18n, app_ctx.accounts, &mut damus.decks_cache);
-    ctx.input(|i| handle_key_events(i, current_columns));
+    ctx.input(|i| handle_egui_events(i, current_columns));
 
     let ctx2 = ctx.clone();
     let wakeup = move || {

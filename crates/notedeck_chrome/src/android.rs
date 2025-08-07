@@ -17,7 +17,7 @@ pub async fn android_main(app: AndroidApp) {
     //std::env::set_var("DAVE_MODEL", "hhao/qwen2.5-coder-tools:latest");
     std::env::set_var(
         "RUST_LOG",
-        "egui=debug,egui-winit=debug,notedeck=debug,notedeck_columns=debug,notedeck_chrome=debug,enostr=debug,android_activity=debug",
+        "egui=debug,egui-winit=debug,winit=debug,notedeck=debug,notedeck_columns=debug,notedeck_chrome=debug,enostr=debug,android_activity=debug",
     );
 
     //std::env::set_var(
@@ -57,7 +57,7 @@ pub async fn android_main(app: AndroidApp) {
 
     options.android_app = Some(app.clone());
 
-    let app_args = get_app_args(app);
+    let app_args = get_app_args(app.clone());
 
     let _res = eframe::run_native(
         "Damus Notedeck",
@@ -65,6 +65,7 @@ pub async fn android_main(app: AndroidApp) {
         Box::new(move |cc| {
             let ctx = &cc.egui_ctx;
             let mut notedeck = Notedeck::new(ctx, path, &app_args);
+            notedeck.set_android_context(app.clone());
             notedeck.setup(ctx);
             let chrome = Chrome::new_with_apps(cc, &app_args, &mut notedeck)?;
             notedeck.set_app(chrome);

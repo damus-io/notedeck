@@ -8,6 +8,7 @@ use egui::{vec2, Button, Color32, Label, Layout, Rect, RichText, ThemePreference
 use egui_extras::{Size, StripBuilder};
 use nostrdb::{ProfileRecord, Transaction};
 use notedeck::Error;
+use notedeck::SoftKeyboardContext;
 use notedeck::{
     tr, App, AppAction, AppContext, Localization, Notedeck, NotedeckOptions, NotedeckTextStyle,
     UserAccount, WalletType,
@@ -267,9 +268,40 @@ impl Chrome {
         let amt_open = self.amount_open(ui);
         let r = self.panel(ctx, StripBuilder::new(ui), amt_open);
 
-        // virtual keyboard
-        if self.options.contains(ChromeOptions::VirtualKeyboard) {
-            virtual_keyboard_ui(ui);
+        let skb_ctx = if self.options.contains(ChromeOptions::VirtualKeyboard) {
+            SoftKeyboardContext::Virtual
+        } else {
+            SoftKeyboardContext::Platform {
+                ppp: ui.ctx().pixels_per_point(),
+            }
+        };
+
+        // move screen up if virtual keyboard intersects with input_rect
+        let screen_rect = ui.ctx().screen_rect();
+        let mut keyboard_height = 0.0;
+        if let Some(vkb_rect) = ctx.soft_keyboard_rect(screen_rect, skb_ctx.clone()) {
+            if let SoftKeyboardContext::Virtual = skb_ctx {
+                virtual_keyboard_ui(ui, vkb_rect);
+            }
+            if let Some(input_rect) = notedeck_ui::input_rect(ui) {
+                if input_rect.intersects(vkb_rect) {
+                    tracing::debug!("screen:{screen_rect} skb:{vkb_rect}");
+                    keyboard_height = vkb_rect.height();
+                }
+            }
+        } else {
+            // clear last input box position state
+            notedeck_ui::clear_input_rect(ui);
+        }
+
+        let anim_height =
+            ui.ctx()
+                .animate_value_with_time(egui::Id::new("keyboard_anim"), keyboard_height, 0.1);
+        if anim_height > 0.0 {
+            ui.ctx().transform_layer_shapes(
+                ui.layer_id(),
+                egui::emath::TSTransform::from_translation(egui::Vec2::new(0.0, -anim_height)),
+            );
         }
 
         r
@@ -912,12 +944,7 @@ fn repaint_causes_window(ui: &mut egui::Ui, causes: &HashMap<egui::RepaintCause,
     });
 }
 
-fn virtual_keyboard_ui(ui: &mut egui::Ui) {
-    let height = notedeck::platform::virtual_keyboard_height(true);
-    let screen_rect = ui.ctx().screen_rect();
-
-    let min = egui::Pos2::new(0.0, screen_rect.max.y - height as f32);
-    let rect = Rect::from_min_max(min, screen_rect.max);
+fn virtual_keyboard_ui(ui: &mut egui::Ui, rect: egui::Rect) {
     let painter = ui.painter_at(rect);
 
     painter.rect_filled(rect, 0.0, Color32::from_black_alpha(200));

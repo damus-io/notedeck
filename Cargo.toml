@@ -88,7 +88,7 @@ openai-api-rs = "6.0.3"
 re_memory = "0.23.4"
 oot_bitset = "0.1.1"
 blurhash = "0.2.3"
-
+android-activity = { git = "https://github.com/damus-io/android-activity", rev = "092a83b747937a2890ac219617a4252c001842ea", features = [ "game-activity" ] }
 
 [profile.small]
 inherits = 'release'
@@ -106,15 +106,15 @@ strip = true        # Strip symbols from binary*
 #egui_extras = { path = "/home/jb55/dev/github/emilk/egui/crates/egui_extras" }
 #epaint = { path = "/home/jb55/dev/github/emilk/egui/crates/epaint" }
 
-egui = { git = "https://github.com/damus-io/egui", rev = "a67ab901e197ce13948ff7d00aa6e07e31a68ccd" }
-eframe = { git = "https://github.com/damus-io/egui", rev = "a67ab901e197ce13948ff7d00aa6e07e31a68ccd" }
-egui-winit = { git = "https://github.com/damus-io/egui", rev = "a67ab901e197ce13948ff7d00aa6e07e31a68ccd" }
-egui-wgpu = { git = "https://github.com/damus-io/egui", rev = "a67ab901e197ce13948ff7d00aa6e07e31a68ccd" }
-egui_extras = { git = "https://github.com/damus-io/egui", rev = "a67ab901e197ce13948ff7d00aa6e07e31a68ccd" }
-epaint = { git = "https://github.com/damus-io/egui", rev = "a67ab901e197ce13948ff7d00aa6e07e31a68ccd" }
+egui = { git = "https://github.com/damus-io/egui", rev = "c1f9e565aa17a7a8b40736602b6ea8a52876f46f" }
+eframe = { git = "https://github.com/damus-io/egui", rev = "c1f9e565aa17a7a8b40736602b6ea8a52876f46f" }
+egui-winit = { git = "https://github.com/damus-io/egui", rev = "c1f9e565aa17a7a8b40736602b6ea8a52876f46f" }
+egui-wgpu = { git = "https://github.com/damus-io/egui", rev = "c1f9e565aa17a7a8b40736602b6ea8a52876f46f" }
+egui_extras = { git = "https://github.com/damus-io/egui", rev = "c1f9e565aa17a7a8b40736602b6ea8a52876f46f" }
+epaint = { git = "https://github.com/damus-io/egui", rev = "c1f9e565aa17a7a8b40736602b6ea8a52876f46f" }
 puffin = { git = "https://github.com/jb55/puffin", package = "puffin", rev = "c6a6242adaf90b6292c0f462d2acd34d96d224d2" }
 puffin_egui = { git = "https://github.com/jb55/puffin", package = "puffin_egui", rev = "c6a6242adaf90b6292c0f462d2acd34d96d224d2" }
-#winit = { git = "https://github.com/damus-io/winit", rev = "14d61a74bee0c9863abe7ef28efae2c4d8bd3743" }
+#winit = { git = "https://github.com/damus-io/winit", rev = "701a43d3c6479b0a3869acd2cebbfd410d399a59" }
 #winit = { path = "/home/jb55/dev/github/rust-windowing/winit" }
-android-activity = { git = "https://github.com/damus-io/android-activity", rev = "a8948332c7c551303d32eb26a59d0abd676e47a5" }
+#android-activity = { git = "https://github.com/damus-io/android-activity", rev = "f56c974aa5182d5fbd361879f5899eb8f11a37ec" }
 #android-activity = { path = "/home/jb55/dev/github/rust-mobile/android-activity/android-activity" }

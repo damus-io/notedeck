@@ -26,12 +26,15 @@ public class MainActivity extends GameActivity {
   @Override
   protected void onCreate(Bundle savedInstanceState) {
       // Shrink view so it does not get covered by insets.
+      super.onCreate(savedInstanceState);
 
       setupInsets();
+
       //setupFullscreen()
-      keyboardHelper = new KeyboardHeightHelper(this);
+
+      //keyboardHelper = new KeyboardHeightHelper(this);
       
-      super.onCreate(savedInstanceState);
+
   }
 
   private void setupFullscreen() {
@@ -61,6 +64,18 @@ public class MainActivity extends GameActivity {
   }
 
   private void setupInsets() {
+
+      // NOTE(jb55): This is needed for keyboard visibility. Without this the
+      // window still gets the right insets, but they’re consumed before they
+      // reach the NDK side.
+      //WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
+
+      // NOTE(jb55): This is needed for keyboard visibility. If the bars are
+      // permanently gone, Android routes the keyboard over the GL surface and
+      // doesn’t change insets.
+      //WindowInsetsControllerCompat ic = WindowCompat.getInsetsController(getWindow(), getWindow().getDecorView());
+      //ic.setSystemBarsBehavior(WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+
       View content = getContent();
       ViewCompat.setOnApplyWindowInsetsListener(content, (v, windowInsets) -> {
         Insets insets = windowInsets.getInsets(WindowInsetsCompat.Type.systemBars());
@@ -72,12 +87,13 @@ public class MainActivity extends GameActivity {
         mlp.rightMargin = insets.right;
         v.setLayoutParams(mlp);
 
-        return WindowInsetsCompat.CONSUMED;
+        return windowInsets;
       });
 
-      WindowCompat.setDecorFitsSystemWindows(getWindow(), true);
+      WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
   }
   
+  /*
   @Override
   public void onResume() {
       super.onResume();
@@ -95,6 +111,7 @@ public class MainActivity extends GameActivity {
       super.onDestroy();
       keyboardHelper.close();
   }
+  */
 
   @Override
   public boolean onTouchEvent(MotionEvent event) {

@@ -57,6 +57,7 @@ tokio = { workspace = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = { workspace = true }
+android-activity = { workspace = true }
 
 [features]
 puffin = ["puffin_egui", "dep:puffin"]

@@ -20,6 +20,7 @@ fn handle_paste(clipboard: &mut Clipboard, input: &mut String, paste_behavior: P
 }
 
 pub fn input_context(
+    ui: &mut egui::Ui,
     response: &egui::Response,
     clipboard: &mut Clipboard,
     input: &mut String,
@@ -46,4 +47,7 @@ pub fn input_context(
     if response.middle_clicked() {
         handle_paste(clipboard, input, paste_behavior)
     }
+
+    // for keyboard visibility
+    crate::include_input(ui, response)
 }

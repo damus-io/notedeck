@@ -237,8 +237,10 @@ fn show_no_wallet(
             .password(true);
 
         // add paste context menu
+        let text_edit_resp = ui.add(text_edit);
         input_context(
-            &ui.add(text_edit),
+            ui,
+            &text_edit_resp,
             clipboard,
             &mut state.buf,
             PasteBehavior::Clear,
@@ -388,13 +390,17 @@ fn show_default_zap(
                     };
 
                     let id = ui.id().with("default_zap_amount");
-                    ui.add(
-                        egui::TextEdit::singleline(text)
-                            .desired_width(desired_width)
-                            .margin(egui::Margin::same(8))
-                            .font(font)
-                            .id(id),
-                    );
+
+                    {
+                        let r = ui.add(
+                            egui::TextEdit::singleline(text)
+                                .desired_width(desired_width)
+                                .margin(egui::Margin::same(8))
+                                .font(font)
+                                .id(id));
+
+                        notedeck_ui::include_input(ui, &r);
+                    }
 
                     ui.memory_mut(|m| m.request_focus(id));
 

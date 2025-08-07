@@ -46,7 +46,7 @@ pub use account::relay::RelayAction;
 pub use account::FALLBACK_PUBKEY;
 pub use app::{App, AppAction, Notedeck};
 pub use args::Args;
-pub use context::AppContext;
+pub use context::{AppContext, SoftKeyboardContext};
 pub use error::{show_one_error_message, Error, FilterError, ZapError};
 pub use filter::{FilterState, FilterStates, UnifiedSubscription};
 pub use fonts::NamedFontFamily;
