@@ -55,8 +55,6 @@ Ask_dave_anything_33d1 = 向 Dave 提问任何问题…
 Banner_52ef = 横幅
 # Beta version label
 BETA_8e5d = BETA
-# Option in settings section to show the source client label at the bottom of the note
-Bottom_33c8 = 底部
 # Broadcast the note to all connected relays
 Broadcast_fe43 = 广播
 # Broadcast the note only to local network relays
@@ -163,10 +161,10 @@ Enter_your_key_0fca = 请输入你的密钥
 Enter_your_public_key__npub___nostr_address__e_g___address____or_private_key__nsec___You_must_enter_your_private_key_to_be_able_to_post__reply__etc_48e9 = 请输入你的公钥（npub）、nostr 地址（如 { $address }）、或私钥(nsec)。 你必须输入你的私钥才能发帖、回复等等。
 # Label for find user button
 Find_User_bd12 = 查找用户
+# Label for font size, Appearance settings section
+Font_size_dd73 = 字体大小：
 # Title for hashtags column
 Hashtags_f8e0 = 标签
-# Option in settings section to hide the source client label in note display
-Hide_281d = 隐藏
 # Title for Home column
 Home_8c19 = 主页
 # Label for deck icon selection
@@ -237,6 +235,8 @@ Notifications_d673 = 通知
 Notifications_ef56 = 通知
 # Relative time for very recent events (less than 3 seconds)
 now_2181 = 刚刚
+# Setting to turn on sorting replies so that the newest are shown first
+On_f412 = 开启
 # Button label to open email client
 Open_Email_25e9 = 打开电子邮箱
 # Instruction to open email client
@@ -289,6 +289,8 @@ replying_to_a_note_e0bc = 正在回复笔记
 Repost_this_note_8e56 = 转发此笔记
 # Label for reposted notes
 Reposted_61c8 = 已转发
+# Label for reset note body font size, Appearance settings section
+Reset_4e60 = 重置
 # Label for reset zoom level, Appearance settings section
 Reset_62d4 = 重置
 # Heading for support section
@@ -315,8 +317,6 @@ See_the_whole_nostr_universe_7694 = 查看整个 nostr 宇宙
 Send_1ea4 = 发送
 # Column title for app settings
 Settings_7a4f = 设置
-# Label for Show source client, others settings section
-Show_source_client_9e31 = 显示来源客户端
 # Description for last note per user column
 Show_the_last_note_for_each_user_from_a_list_50e7 = 显示列表中每个用户的最新一条笔记
 # Button label to sign out of account
@@ -325,6 +325,8 @@ Sign_out_337b = 登出
 Someone_else_s_Notes_7e5f = 其他人的笔记
 # Title for someone else's notifications column
 Someone_else_s_Notifications_82e6 = 其他人的通知
+# Label for Sort replies newest first, others settings section
+Sort_replies_newest_first_b6c3 = 按最新排序回复：
 # Description for contact list column
 Source_the_last_note_for_each_user_in_your_contact_list_e157 = 获取你的联系人列表中每个用户的最新一条笔记
 # Description for hashtags column
@@ -349,6 +351,8 @@ Storage_ed65 = 存储
 Subscribe_to_someone_else_s_notes_d1e9 = 订阅他人的笔记
 # Column title for subscribing to individual user
 Subscribe_to_someone_s_notes_b3c8 = 订阅某人的笔记
+# Support email address
+Support_email_44d9 = 支持电子邮件：
 # Hover text for dark mode toggle button
 Switch_to_dark_mode_4dec = 切换到暗色模式
 # Hover text for light mode toggle button
@@ -363,8 +367,6 @@ Theme_4aac = 主题：
 Thread_0f20 = 帖子
 # Link text for thread references
 thread_ad1f = 帖子
-# Option in settings section to show the source client label at the top of the note
-Top_6aeb = 顶部
 # Title for universe column
 Universe_e01e = 宇宙
 # Column title for universe feed

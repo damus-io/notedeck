@@ -55,8 +55,6 @@ Ask_dave_anything_33d1 = Demandez à Dave n'importe quoi...
 Banner_52ef = Bannière
 # Beta version label
 BETA_8e5d = BETA
-# Option in settings section to show the source client label at the bottom of the note
-Bottom_33c8 = En bas
 # Broadcast the note to all connected relays
 Broadcast_fe43 = Diffusion
 # Broadcast the note only to local network relays
@@ -163,10 +161,10 @@ Enter_your_key_0fca = Entrez votre clé
 Enter_your_public_key__npub___nostr_address__e_g___address____or_private_key__nsec___You_must_enter_your_private_key_to_be_able_to_post__reply__etc_48e9 = Entrez votre clé publique (npub), votre adresse nostr (par exemple { $address }), ou votre clé privée (nsec). Vous devez entrer votre clé privée pour pouvoir poster, répondre, etc.
 # Label for find user button
 Find_User_bd12 = Trouver un utilisateur
+# Label for font size, Appearance settings section
+Font_size_dd73 = Taille du texte :
 # Title for hashtags column
 Hashtags_f8e0 = Hashtags
-# Option in settings section to hide the source client label in note display
-Hide_281d = Masquer
 # Title for Home column
 Home_8c19 = Accueil
 # Label for deck icon selection
@@ -237,6 +235,8 @@ Notifications_d673 = Notifications
 Notifications_ef56 = Notifications
 # Relative time for very recent events (less than 3 seconds)
 now_2181 = maintenant
+# Setting to turn on sorting replies so that the newest are shown first
+On_f412 = Activé
 # Button label to open email client
 Open_Email_25e9 = Ouvrir Email
 # Instruction to open email client
@@ -289,6 +289,8 @@ replying_to_a_note_e0bc = répondre à une note
 Repost_this_note_8e56 = Republier cette note
 # Label for reposted notes
 Reposted_61c8 = Republier
+# Label for reset note body font size, Appearance settings section
+Reset_4e60 = Réinitialiser
 # Label for reset zoom level, Appearance settings section
 Reset_62d4 = Réinitialiser
 # Heading for support section
@@ -315,8 +317,6 @@ See_the_whole_nostr_universe_7694 = Voir l'ensemble de l'univers nostr
 Send_1ea4 = Envoyer
 # Column title for app settings
 Settings_7a4f = Paramètres
-# Label for Show source client, others settings section
-Show_source_client_9e31 = Afficher le client source
 # Description for last note per user column
 Show_the_last_note_for_each_user_from_a_list_50e7 = Afficher la dernière note de chaque utilisateur à partir d'une liste
 # Button label to sign out of account
@@ -325,6 +325,8 @@ Sign_out_337b = Se déconnecter
 Someone_else_s_Notes_7e5f = Notes de quelqu'un d'autre
 # Title for someone else's notifications column
 Someone_else_s_Notifications_82e6 = Notifications de quelqu'un d'autre
+# Label for Sort replies newest first, others settings section
+Sort_replies_newest_first_b6c3 = Trier les réponses les plus récentes en premier :
 # Description for contact list column
 Source_the_last_note_for_each_user_in_your_contact_list_e157 = Source de la dernière note pour chaque utilisateur de votre liste de contacts
 # Description for hashtags column
@@ -349,6 +351,8 @@ Storage_ed65 = Stockage
 Subscribe_to_someone_else_s_notes_d1e9 = S'abonner aux notes de quelqu'un d'autre
 # Column title for subscribing to individual user
 Subscribe_to_someone_s_notes_b3c8 = S'abonner aux notes de quelqu'un
+# Support email address
+Support_email_44d9 = Adresse email de l'assistance :
 # Hover text for dark mode toggle button
 Switch_to_dark_mode_4dec = Passer en mode sombre
 # Hover text for light mode toggle button
@@ -363,8 +367,6 @@ Theme_4aac = Thème :
 Thread_0f20 = Fil
 # Link text for thread references
 thread_ad1f = fil
-# Option in settings section to show the source client label at the top of the note
-Top_6aeb = En haut
 # Title for universe column
 Universe_e01e = Universel
 # Column title for universe feed
