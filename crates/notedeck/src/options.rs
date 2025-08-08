@@ -26,6 +26,9 @@ bitflags! {
         // ===== Feature Flags ======
         /// Is notebook enabled?
         const FeatureNotebook = 1 << 32;
+
+        /// Is clndash enabled?
+        const FeatureClnDash = 1 << 33;
     }
 }
 

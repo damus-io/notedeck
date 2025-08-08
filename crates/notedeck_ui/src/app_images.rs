@@ -15,6 +15,10 @@ pub fn accounts_image() -> Image<'static> {
     Image::new(include_image!("../../../assets/icons/accounts.png"))
 }
 
+pub fn cln_image() -> Image<'static> {
+    Image::new(include_image!("../../../assets/icons/clnlogo.svg"))
+}
+
 pub fn add_column_dark_image() -> Image<'static> {
     Image::new(include_image!(
         "../../../assets/icons/add_column_dark_4x.png"

@@ -2338,6 +2338,12 @@ checksum = "8a9ee70c43aaf417c914396645a0fa852624801b24ebb7ae78fe8272889ac888"
 
 [[package]]
 name = "hashbrown"
+version = "0.13.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "43a3c133739dddd0d2990f9a4bdf8eb4b21ef50e4851ca85ab661199821d510e"
+
+[[package]]
+name = "hashbrown"
 version = "0.15.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5971ac85611da7067dbfcabef3c70ebb5606018acd9e2a3903a0da507521e0d5"
@@ -3065,6 +3071,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4ce301924b7887e9d637144fdade93f9dfff9b60981d4ac161db09720d39aa5"
 
 [[package]]
+name = "lnsocket"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1a88bd51e5bb3753f89b0d3e73baa565064c5a9f5b2aad3ab3f3db5fffb89955"
+dependencies = [
+ "bitcoin",
+ "hashbrown 0.13.2",
+ "hex",
+ "lightning-types",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "lock_api"
 version = "0.4.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3540,6 +3562,7 @@ dependencies = [
  "egui_tabs",
  "nostrdb",
  "notedeck",
+ "notedeck_clndash",
  "notedeck_columns",
  "notedeck_dave",
  "notedeck_notebook",
@@ -3557,6 +3580,20 @@ dependencies = [
  "tracing-appender",
  "tracing-logcat",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "notedeck_clndash"
+version = "0.6.0"
+dependencies = [
+ "eframe",
+ "egui",
+ "lnsocket",
+ "notedeck",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

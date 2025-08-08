@@ -1,0 +1,15 @@
+[package]
+name = "notedeck_clndash"
+edition = "2024"
+version.workspace = true
+
+[dependencies]
+egui = { workspace = true }
+notedeck = { workspace = true }
+#notedeck_ui = { workspace = true }
+eframe = { workspace = true }
+lnsocket = "0.3.0"
+tracing = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }

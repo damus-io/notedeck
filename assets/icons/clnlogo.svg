@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!-- Created with Inkscape (http://www.inkscape.org/) -->
+
+<svg
+   width="256mm"
+   height="256mm"
+   viewBox="0 0 256 256"
+   version="1.1"
+   id="svg1"
+   inkscape:version="1.4.2 (ebf0e940d0, 2025-05-08)"
+   sodipodi:docname="clnlogo.svg"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <sodipodi:namedview
+     id="namedview1"
+     pagecolor="#ffffff"
+     bordercolor="#666666"
+     borderopacity="1.0"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     inkscape:document-units="mm"
+     inkscape:zoom="1.078823"
+     inkscape:cx="396.72867"
+     inkscape:cy="561.25984"
+     inkscape:window-width="2020"
+     inkscape:window-height="1420"
+     inkscape:window-x="270"
+     inkscape:window-y="20"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="layer1" />
+  <defs
+     id="defs1" />
+  <g
+     inkscape:label="Layer 1"
+     inkscape:groupmode="layer"
+     id="layer1"
+     transform="matrix(1.0800571,0,0,1.0347966,-2.6149197,-3.0116377)"
+     style="display:inline">
+    <g
+       id="g4"
+       transform="matrix(0.43515072,0,0,0.43515072,68.289343,9.0200629)">
+      <path
+         class="st1"
+         d="M 214.6,0 2.2,285.8 246.4,222.3 100.1,222.4 Z"
+         id="path3"
+         style="fill:#f0d003" />
+      <path
+         fill="#fffae6"
+         d="M 31.8,550.7 244.1,264.9 0,328.4 146.3,328.3 Z"
+         id="path4" />
+    </g>
+  </g>
+</svg>

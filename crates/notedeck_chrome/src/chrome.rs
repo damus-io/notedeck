@@ -18,7 +18,6 @@ use notedeck_columns::{
     Damus,
 };
 use notedeck_dave::{Dave, DaveAvatar};
-use notedeck_notebook::Notebook;
 use notedeck_ui::{app_images, AnimationHelper, ProfilePic};
 use std::collections::HashMap;
 
@@ -198,6 +197,10 @@ impl Chrome {
             chrome.add_app(NotedeckApp::Notebook(Box::default()));
         }
 
+        if notedeck.has_option(NotedeckOptions::FeatureClnDash) {
+            chrome.add_app(NotedeckApp::ClnDash(Box::default()));
+        }
+
         chrome.set_active(0);
 
         Ok(chrome)
@@ -231,27 +234,9 @@ impl Chrome {
         None
     }
 
-    fn get_notebook(&mut self) -> Option<&mut Notebook> {
-        for app in &mut self.apps {
-            if let NotedeckApp::Notebook(notebook) = app {
-                return Some(notebook);
-            }
-        }
-
-        None
-    }
-
     fn switch_to_dave(&mut self) {
         for (i, app) in self.apps.iter().enumerate() {
             if let NotedeckApp::Dave(_) = app {
-                self.active = i as i32;
-            }
-        }
-    }
-
-    fn switch_to_notebook(&mut self) {
-        for (i, app) in self.apps.iter().enumerate() {
-            if let NotedeckApp::Notebook(_) = app {
                 self.active = i as i32;
             }
         }
@@ -498,32 +483,32 @@ impl Chrome {
 
         ui.add_space(4.0);
         ui.add(milestone_name(i18n));
-        ui.add_space(16.0);
         //let dark_mode = ui.ctx().style().visuals.dark_mode;
-        if columns_button(ui)
-            .on_hover_cursor(egui::CursorIcon::PointingHand)
-            .clicked()
-        {
-            self.active = 0;
-        }
-        ui.add_space(32.0);
 
-        if let Some(dave) = self.get_dave() {
-            let rect = dave_sidebar_rect(ui);
-            let dave_resp = dave_button(dave.avatar_mut(), ui, rect)
-                .on_hover_cursor(egui::CursorIcon::PointingHand);
-            if dave_resp.clicked() {
-                self.switch_to_dave();
-            }
-        }
-        //ui.add_space(32.0);
+        for (i, app) in self.apps.iter_mut().enumerate() {
+            let r = match app {
+                NotedeckApp::Columns(_columns_app) => columns_button(ui),
 
-        if let Some(_notebook) = self.get_notebook() {
-            if notebook_button(ui)
-                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                .clicked()
-            {
-                self.switch_to_notebook();
+                NotedeckApp::Dave(dave) => {
+                    ui.add_space(24.0);
+                    let rect = dave_sidebar_rect(ui);
+                    dave_button(dave.avatar_mut(), ui, rect)
+                }
+
+                NotedeckApp::ClnDash(_clndash) => clndash_button(ui),
+
+                NotedeckApp::Notebook(_notebook) => notebook_button(ui),
+
+                NotedeckApp::Other(_other) => {
+                    // app provides its own button rendering ui?
+                    panic!("TODO: implement other apps")
+                }
+            };
+
+            ui.add_space(4.0);
+
+            if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                self.active = i as i32;
             }
         }
     }
@@ -715,6 +700,17 @@ fn accounts_button(ui: &mut egui::Ui) -> egui::Response {
         24.0,
         app_images::accounts_image().tint(ui.visuals().text_color()),
         app_images::accounts_image(),
+        ui,
+        false,
+    )
+}
+
+fn clndash_button(ui: &mut egui::Ui) -> egui::Response {
+    expanding_button(
+        "clndash-button",
+        24.0,
+        app_images::cln_image(),
+        app_images::cln_image(),
         ui,
         false,
     )
