@@ -9,6 +9,7 @@ use crate::{
     ui::{self},
 };
 
+use egui::Color32;
 use egui::{Margin, Response, RichText, Sense, Stroke, UiBuilder};
 use enostr::Pubkey;
 use nostrdb::{Ndb, Transaction};
@@ -96,7 +97,7 @@ impl<'a> NavTitle<'a> {
         if let Some(resp) = title_resp {
             tracing::debug!("got title response {resp:?}");
             match resp {
-                TitleResponse::RemoveColumn => Some(RenderNavAction::RemoveColumn),
+                TitleResponse::RemoveColumn(rtype) => Some(RenderNavAction::RemoveColumn(rtype)),
                 TitleResponse::PfpClicked => Some(RenderNavAction::PfpClicked),
                 TitleResponse::MoveColumn(to_index) => {
                     let from = self.col_id;
@@ -185,7 +186,7 @@ impl<'a> NavTitle<'a> {
         animation_resp
     }
 
-    fn delete_button_section(&mut self, ui: &mut egui::Ui) -> bool {
+    fn delete_button_section(&mut self, ui: &mut egui::Ui) -> Option<RemoveColumnType> {
         let id = ui.id().with("title");
 
         let delete_button_resp = self.delete_column_button(ui, 32.0);
@@ -194,36 +195,108 @@ impl<'a> NavTitle<'a> {
         }
 
         if ui.data_mut(|d| *d.get_temp_mut_or_default(id)) {
-            let mut confirm_pressed = false;
-            delete_button_resp.show_tooltip_ui(|ui| {
-                let confirm_resp = ui.button(tr!(
-                    self.i18n,
-                    "Confirm",
-                    "Button label to confirm an action"
-                ));
-                if confirm_resp.clicked() {
-                    confirm_pressed = true;
-                }
+            let mut rtype: Option<RemoveColumnType> = None;
+            let hot_key_pressed = ui.input(|i| (i.modifiers.ctrl || i.modifiers.command));
 
-                if confirm_resp.clicked()
-                    || ui
-                        .button(tr!(self.i18n, "Cancel", "Button label to cancel an action"))
-                        .clicked()
-                {
-                    ui.data_mut(|d| d.insert_temp(id, false));
+            delete_button_resp.show_tooltip_ui(|ui| {
+                ui.horizontal(|ui| {
+                    let confirm_resp = ui.button(
+                        RichText::new(if hot_key_pressed {
+                            tr!(
+                                self.i18n,
+                                "Remove all columns",
+                                "Button label to remove all columns an action"
+                            )
+                        } else {
+                            tr!(self.i18n, "Confirm", "Button label to confirm an action")
+                        })
+                        .color(Color32::LIGHT_RED),
+                    );
+
+                    if confirm_resp.clicked() {
+                        rtype = if !hot_key_pressed {
+                            Some(RemoveColumnType::Current)
+                        } else {
+                            Some(RemoveColumnType::All)
+                        };
+                    }
+
+                    if confirm_resp.clicked()
+                        || ui
+                            .button(tr!(self.i18n, "Cancel", "Button label to cancel an action"))
+                            .clicked()
+                    {
+                        ui.data_mut(|d| d.insert_temp(id, false));
+                    }
+                });
+
+                if hot_key_pressed {
+                    ui.separator();
+
+                    ui.horizontal(|ui| {
+                        if ui
+                            .button(tr!(
+                                self.i18n,
+                                "Other",
+                                "Button label to delete other columns an action"
+                            ))
+                            .on_hover_text(tr!(
+                                self.i18n,
+                                "Delete other columns",
+                                "Button hover text to delete other columns an action"
+                            ))
+                            .clicked()
+                        {
+                            rtype = Some(RemoveColumnType::Other);
+                        }
+
+                        if ui
+                            .button(tr!(
+                                self.i18n,
+                                "Left",
+                                "Button label to delete left columns an action"
+                            ))
+                            .on_hover_text(tr!(
+                                self.i18n,
+                                "Delete left columns",
+                                "Button hover text to delete left columns an action"
+                            ))
+                            .clicked()
+                        {
+                            rtype = Some(RemoveColumnType::Left);
+                        }
+
+                        if ui
+                            .button(tr!(
+                                self.i18n,
+                                "Right",
+                                "Button label to delete right columns an action"
+                            ))
+                            .on_hover_text(tr!(
+                                self.i18n,
+                                "Delete right columns",
+                                "Button hover text to delete right columns an action"
+                            ))
+                            .clicked()
+                        {
+                            rtype = Some(RemoveColumnType::Right);
+                        }
+                    });
                 }
             });
-            if !confirm_pressed && delete_button_resp.clicked_elsewhere() {
+
+            if delete_button_resp.clicked_elsewhere() {
                 ui.data_mut(|d| d.insert_temp(id, false));
             }
-            confirm_pressed
+
+            rtype
         } else {
             delete_button_resp.on_hover_text(tr!(
                 self.i18n,
                 "Delete this column",
                 "Tooltip for deleting a column"
             ));
-            false
+            None
         }
     }
 
@@ -588,7 +661,7 @@ impl<'a> NavTitle<'a> {
                 self.title_presentation(ui, top, 32.0)
             } else {
                 let mut move_col: Option<usize> = None;
-                let mut remove_col = false;
+                let mut remove_col: Option<RemoveColumnType> = None;
 
                 if self.should_show_move_button() {
                     move_col = self.move_button_section(ui);
@@ -599,8 +672,8 @@ impl<'a> NavTitle<'a> {
 
                 if let Some(col) = move_col {
                     Some(TitleResponse::MoveColumn(col))
-                } else if remove_col {
-                    Some(TitleResponse::RemoveColumn)
+                } else if let Some(remove_col) = remove_col {
+                    Some(TitleResponse::RemoveColumn(remove_col))
                 } else {
                     None
                 }
@@ -633,8 +706,17 @@ impl<'a> NavTitle<'a> {
 }
 
 #[derive(Debug)]
+pub enum RemoveColumnType {
+    All,
+    Current,
+    Other,
+    Left,
+    Right,
+}
+
+#[derive(Debug)]
 enum TitleResponse {
-    RemoveColumn,
+    RemoveColumn(RemoveColumnType),
     PfpClicked,
     MoveColumn(usize),
 }
