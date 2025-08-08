@@ -3072,9 +3072,9 @@ checksum = "b4ce301924b7887e9d637144fdade93f9dfff9b60981d4ac161db09720d39aa5"
 
 [[package]]
 name = "lnsocket"
-version = "0.3.0"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1a88bd51e5bb3753f89b0d3e73baa565064c5a9f5b2aad3ab3f3db5fffb89955"
+checksum = "6a373bcde8b65d6db11a0cd0f70dd4a24af854dd7a112b0a51258593c65f48ff"
 dependencies = [
  "bitcoin",
  "hashbrown 0.13.2",

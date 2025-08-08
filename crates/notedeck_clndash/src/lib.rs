@@ -3,14 +3,19 @@ use lnsocket::bitcoin::secp256k1::{PublicKey, SecretKey, rand};
 use lnsocket::{CommandoClient, LNSocket};
 use notedeck::{AppAction, AppContext};
 use serde_json::{Value, json};
+use std::collections::HashMap;
 use std::str::FromStr;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+
+type JsonCache = HashMap<String, String>;
 
 #[derive(Default)]
 pub struct ClnDash {
     initialized: bool,
     connection_state: ConnectionState,
     get_info: Option<String>,
+    peer_channels: Option<Vec<Value>>,
+    json_cache: JsonCache,
     channel: Option<Channel>,
 }
 
@@ -27,7 +32,8 @@ struct Channel {
 
 /// Responses from the socket
 enum ClnResponse {
-    GetInfo(Result<Value, String>),
+    GetInfo(Value),
+    ListPeerChannels(Value),
 }
 
 enum ConnectionState {
@@ -36,8 +42,10 @@ enum ConnectionState {
     Active,
 }
 
+#[derive(Eq, PartialEq, Clone, Debug)]
 enum Request {
     GetInfo,
+    ListPeerChannels,
 }
 
 enum Event {
@@ -92,11 +100,15 @@ impl ClnDash {
         egui::Frame::new()
             .inner_margin(egui::Margin::same(50))
             .show(ui, |ui| {
-                connection_state_ui(ui, &self.connection_state);
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    connection_state_ui(ui, &self.connection_state);
 
-                if let Some(info) = self.get_info.as_ref() {
-                    get_info_ui(ui, info);
-                }
+                    channels_ui(ui, &mut self.json_cache, &self.peer_channels);
+
+                    if let Some(info) = self.get_info.as_ref() {
+                        get_info_ui(ui, info);
+                    }
+                });
             });
     }
 
@@ -127,8 +139,10 @@ impl ClnDash {
                     }
                 };
 
-            let rune = "Vns1Zxvidr4J8pP2ZCg3Wjp2SyGyyf5RHgvFG8L36yM9MzMmbWV0aG9kPWdldGluZm8="; // getinfo only atm
-            let commando = CommandoClient::spawn(lnsocket, rune);
+            let rune = std::env::var("RUNE").unwrap_or(
+                "Vns1Zxvidr4J8pP2ZCg3Wjp2SyGyyf5RHgvFG8L36yM9MzMmbWV0aG9kPWdldGluZm8=".to_string(),
+            );
+            let commando = CommandoClient::spawn(lnsocket, &rune);
 
             loop {
                 match req_rx.recv().await {
@@ -139,18 +153,32 @@ impl ClnDash {
                         break;
                     }
 
-                    Some(req) => match req {
-                        Request::GetInfo => match commando.call("getinfo", json!({})).await {
-                            Ok(v) => {
-                                let _ = event_tx.send(Event::Response(ClnResponse::GetInfo(Ok(v))));
+                    Some(req) => {
+                        tracing::debug!("calling {req:?}");
+                        match req {
+                            Request::GetInfo => match commando.call("getinfo", json!({})).await {
+                                Ok(v) => {
+                                    let _ = event_tx.send(Event::Response(ClnResponse::GetInfo(v)));
+                                }
+                                Err(err) => {
+                                    tracing::error!("get_info error {}", err);
+                                }
+                            },
+
+                            Request::ListPeerChannels => {
+                                match commando.call("listpeerchannels", json!({})).await {
+                                    Ok(v) => {
+                                        let _ = event_tx.send(Event::Response(
+                                            ClnResponse::ListPeerChannels(v),
+                                        ));
+                                    }
+                                    Err(err) => {
+                                        tracing::error!("listpeerchannels error {}", err);
+                                    }
+                                }
                             }
-                            Err(err) => {
-                                let _ = event_tx.send(Event::Ended {
-                                    reason: err.to_string(),
-                                });
-                            }
-                        },
-                    },
+                        }
+                    }
                 }
             }
         });
@@ -170,14 +198,17 @@ impl ClnDash {
                 Event::Connected => {
                     self.connection_state = ConnectionState::Active;
                     let _ = channel.req_tx.send(Request::GetInfo);
+                    let _ = channel.req_tx.send(Request::ListPeerChannels);
                 }
 
                 Event::Response(resp) => match resp {
-                    ClnResponse::GetInfo(value) => {
-                        let Ok(value) = value else {
-                            return;
-                        };
+                    ClnResponse::ListPeerChannels(chans) => {
+                        if let Some(vs) = chans["channels"].as_array() {
+                            self.peer_channels = Some(vs.to_owned());
+                        }
+                    }
 
+                    ClnResponse::GetInfo(value) => {
                         if let Ok(s) = serde_json::to_string_pretty(&value) {
                             self.get_info = Some(s);
                         }
@@ -192,4 +223,29 @@ fn get_info_ui(ui: &mut egui::Ui, info: &str) {
     ui.horizontal_wrapped(|ui| {
         ui.add(Label::new(info).wrap_mode(egui::TextWrapMode::Wrap));
     });
+}
+
+fn channel_ui(ui: &mut egui::Ui, cache: &mut JsonCache, channel: &Value) {
+    let short_channel_id = channel["short_channel_id"].as_str().unwrap_or("??");
+
+    egui::CollapsingHeader::new(format!("channel {short_channel_id}"))
+        .id_salt(("section", short_channel_id))
+        .show(ui, |ui| {
+            let json: &String = cache
+                .entry(short_channel_id.to_owned())
+                .or_insert_with(|| serde_json::to_string_pretty(channel).unwrap());
+
+            ui.add(Label::new(json).wrap_mode(egui::TextWrapMode::Wrap));
+        });
+}
+
+fn channels_ui(ui: &mut egui::Ui, json_cache: &mut JsonCache, channels: &Option<Vec<Value>>) {
+    let Some(channels) = channels else {
+        ui.label("no channels");
+        return;
+    };
+
+    for channel in channels {
+        channel_ui(ui, json_cache, channel);
+    }
 }
