@@ -25,7 +25,7 @@ pub struct ClnDash {
     initialized: bool,
     connection_state: ConnectionState,
     get_info: Option<String>,
-    channels: Option<Channels>,
+    channels: Option<Result<Channels, lnsocket::Error>>,
     channel: Option<CommChannel>,
     last_summary: Option<Summary>,
 }
@@ -44,7 +44,7 @@ struct CommChannel {
 /// Responses from the socket
 enum ClnResponse {
     GetInfo(Value),
-    ListPeerChannels(Channels),
+    ListPeerChannels(Result<Channels, lnsocket::Error>),
 }
 
 #[derive(Deserialize, Serialize)]
@@ -123,7 +123,7 @@ impl ClnDash {
             .show(ui, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     connection_state_ui(ui, &self.connection_state);
-                    if let Some(ch) = self.channels.as_ref() {
+                    if let Some(Ok(ch)) = self.channels.as_ref() {
                         let summary = compute_summary(ch);
                         summary_cards_ui(ui, &summary, self.last_summary.as_ref());
                         ui.add_space(8.0);
@@ -191,20 +191,15 @@ impl ClnDash {
                             },
 
                             Request::ListPeerChannels => {
-                                match commando.call("listpeerchannels", json!({})).await {
-                                    Ok(v) => {
-                                        let peer_channels: Vec<ListPeerChannel> =
-                                            serde_json::from_value(v["channels"].clone()).unwrap();
-                                        let _ = event_tx.send(Event::Response(
-                                            ClnResponse::ListPeerChannels(to_channels(
-                                                peer_channels,
-                                            )),
-                                        ));
-                                    }
-                                    Err(err) => {
-                                        tracing::error!("listpeerchannels error {}", err);
-                                    }
-                                }
+                                let peer_channels =
+                                    commando.call("listpeerchannels", json!({})).await;
+                                let channels = peer_channels.map(|v| {
+                                    let peer_channels: Vec<ListPeerChannel> =
+                                        serde_json::from_value(v["channels"].clone()).unwrap();
+                                    to_channels(peer_channels)
+                                });
+                                let _ = event_tx
+                                    .send(Event::Response(ClnResponse::ListPeerChannels(channels)));
                             }
                         }
                     }
@@ -232,7 +227,7 @@ impl ClnDash {
 
                 Event::Response(resp) => match resp {
                     ClnResponse::ListPeerChannels(chans) => {
-                        if let Some(prev) = self.channels.as_ref() {
+                        if let Some(Ok(prev)) = self.channels.as_ref() {
                             self.last_summary = Some(compute_summary(prev));
                         }
                         self.channels = Some(chans);
@@ -338,18 +333,28 @@ fn human_sat(msat: i64) -> String {
     }
 }
 
-fn channels_ui(ui: &mut egui::Ui, channels: &Option<Channels>) {
-    let Some(channels) = channels else {
-        ui.label("no channels");
-        return;
-    };
+fn channels_ui(ui: &mut egui::Ui, channels: &Option<Result<Channels, lnsocket::Error>>) {
+    match channels {
+        Some(Ok(channels)) => {
+            if channels.channels.is_empty() {
+                ui.label("no channels yet...");
+                return;
+            }
 
-    for channel in &channels.channels {
-        channel_ui(ui, channel, channels.max_total_msat);
+            for channel in &channels.channels {
+                channel_ui(ui, channel, channels.max_total_msat);
+            }
+
+            ui.label(format!("available out {}", human_sat(channels.avail_out)));
+            ui.label(format!("available in {}", human_sat(channels.avail_in)));
+        }
+        Some(Err(err)) => {
+            ui.label(format!("error fetching channels: {err}"));
+        }
+        None => {
+            ui.label("no channels yet...");
+        }
     }
-
-    ui.label(format!("available out {}", human_sat(channels.avail_out)));
-    ui.label(format!("available in {}", human_sat(channels.avail_in)));
 }
 
 fn to_channels(peer_channels: Vec<ListPeerChannel>) -> Channels {
