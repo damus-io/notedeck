@@ -27,6 +27,7 @@ pub struct ClnDash {
     get_info: Option<String>,
     channels: Option<Channels>,
     channel: Option<CommChannel>,
+    last_summary: Option<Summary>,
 }
 
 impl Default for ConnectionState {
@@ -82,6 +83,7 @@ impl notedeck::App for ClnDash {
     fn update(&mut self, _ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> Option<AppAction> {
         if !self.initialized {
             self.connection_state = ConnectionState::Connecting;
+
             self.setup_connection();
             self.initialized = true;
         }
@@ -121,6 +123,11 @@ impl ClnDash {
             .show(ui, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     connection_state_ui(ui, &self.connection_state);
+                    if let Some(ch) = self.channels.as_ref() {
+                        let summary = compute_summary(ch);
+                        summary_cards_ui(ui, &summary, self.last_summary.as_ref());
+                        ui.add_space(8.0);
+                    }
                     channels_ui(ui, &self.channels);
 
                     if let Some(info) = self.get_info.as_ref() {
@@ -225,6 +232,9 @@ impl ClnDash {
 
                 Event::Response(resp) => match resp {
                     ClnResponse::ListPeerChannels(chans) => {
+                        if let Some(prev) = self.channels.as_ref() {
+                            self.last_summary = Some(compute_summary(prev));
+                        }
                         self.channels = Some(chans);
                     }
 
@@ -380,5 +390,132 @@ fn to_channels(peer_channels: Vec<ListPeerChannel>) -> Channels {
         avail_out,
         avail_in,
         channels,
+    }
+}
+
+fn summary_cards_ui(ui: &mut egui::Ui, s: &Summary, prev: Option<&Summary>) {
+    let old = prev.cloned().unwrap_or_default();
+    let items: [(&str, String, Option<String>); 6] = [
+        (
+            "Total capacity",
+            human_sat(s.total_msat),
+            prev.map(|_| delta_str(s.total_msat, old.total_msat)),
+        ),
+        (
+            "Avail out",
+            human_sat(s.avail_out_msat),
+            prev.map(|_| delta_str(s.avail_out_msat, old.avail_out_msat)),
+        ),
+        (
+            "Avail in",
+            human_sat(s.avail_in_msat),
+            prev.map(|_| delta_str(s.avail_in_msat, old.avail_in_msat)),
+        ),
+        ("# Channels", s.channel_count.to_string(), None),
+        ("Largest", human_sat(s.largest_msat), None),
+        (
+            "Outbound %",
+            format!("{:.0}%", s.outbound_pct * 100.0),
+            None,
+        ),
+    ];
+
+    // --- responsive columns ---
+    let min_card = 160.0;
+    let cols = ((ui.available_width() / min_card).floor() as usize).max(1);
+
+    egui::Grid::new("summary_grid")
+        .num_columns(cols)
+        .min_col_width(min_card)
+        .spacing(egui::vec2(8.0, 8.0))
+        .show(ui, |ui| {
+            let items_len = items.len();
+            for (i, (t, v, d)) in items.into_iter().enumerate() {
+                card_cell(ui, t, v, d, min_card);
+
+                // End the row when we filled a row worth of cells
+                if (i + 1) % cols == 0 {
+                    ui.end_row();
+                }
+            }
+
+            // If the last row wasn't full, close it anyway
+            if items_len % cols != 0 {
+                ui.end_row();
+            }
+        });
+}
+
+fn card_cell(ui: &mut egui::Ui, title: &str, value: String, delta: Option<String>, min_card: f32) {
+    let weak = ui.visuals().weak_text_color();
+    egui::Frame::group(ui.style())
+        .fill(ui.visuals().extreme_bg_color)
+        .corner_radius(egui::CornerRadius::same(10))
+        .inner_margin(egui::Margin::same(10))
+        .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
+        .show(ui, |ui| {
+            ui.set_min_width(min_card);
+            ui.vertical(|ui| {
+                ui.add(
+                    egui::Label::new(egui::RichText::new(title).small().color(weak))
+                        .wrap_mode(egui::TextWrapMode::Wrap),
+                );
+                ui.add_space(4.0);
+                ui.add(
+                    egui::Label::new(egui::RichText::new(value).strong().size(18.0))
+                        .wrap_mode(egui::TextWrapMode::Wrap),
+                );
+                if let Some(d) = delta {
+                    ui.add_space(2.0);
+                    ui.add(
+                        egui::Label::new(egui::RichText::new(d).small().color(weak))
+                            .wrap_mode(egui::TextWrapMode::Wrap),
+                    );
+                }
+            });
+            ui.set_min_height(20.0);
+        });
+}
+
+#[derive(Clone, Default)]
+struct Summary {
+    total_msat: i64,
+    avail_out_msat: i64,
+    avail_in_msat: i64,
+    channel_count: usize,
+    largest_msat: i64,
+    outbound_pct: f32, // fraction of total capacity
+}
+
+fn compute_summary(ch: &Channels) -> Summary {
+    let total_msat: i64 = ch.channels.iter().map(|c| c.original.total_msat).sum();
+    let largest_msat: i64 = ch
+        .channels
+        .iter()
+        .map(|c| c.original.total_msat)
+        .max()
+        .unwrap_or(0);
+    let outbound_pct = if total_msat > 0 {
+        ch.avail_out as f32 / total_msat as f32
+    } else {
+        0.0
+    };
+
+    Summary {
+        total_msat,
+        avail_out_msat: ch.avail_out,
+        avail_in_msat: ch.avail_in,
+        channel_count: ch.channels.len(),
+        largest_msat,
+        outbound_pct,
+    }
+}
+
+fn delta_str(new: i64, old: i64) -> String {
+    let d = new - old;
+    match d.cmp(&0) {
+        std::cmp::Ordering::Greater => format!("↑ {}", human_sat(d)),
+        std::cmp::Ordering::Less => format!("↓ {}", human_sat(-d)),
+        std::cmp::Ordering::Equal => "·".into(),
     }
 }
