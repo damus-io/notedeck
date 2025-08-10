@@ -3035,6 +3035,7 @@ dependencies = [
  "bech32",
  "bitcoin",
  "lightning-types",
+ "serde",
 ]
 
 [[package]]
@@ -3072,9 +3073,9 @@ checksum = "b4ce301924b7887e9d637144fdade93f9dfff9b60981d4ac161db09720d39aa5"
 
 [[package]]
 name = "lnsocket"
-version = "0.4.0"
+version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a373bcde8b65d6db11a0cd0f70dd4a24af854dd7a112b0a51258593c65f48ff"
+checksum = "724c7fba2188a49ab31316e52dd410d4d3168b8e6482aa2ac3889dd840d28712"
 dependencies = [
  "bitcoin",
  "hashbrown 0.13.2",
@@ -3588,6 +3589,8 @@ version = "0.6.0"
 dependencies = [
  "eframe",
  "egui",
+ "egui_extras",
+ "lightning-invoice",
  "lnsocket",
  "notedeck",
  "serde",

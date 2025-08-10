@@ -81,7 +81,7 @@ mime_guess = "2.0.5"
 pretty_assertions = "1.4.1"
 jni = "0.21.1"
 profiling = "1.0"
-lightning-invoice = "0.33.1"
+lightning-invoice = { version = "0.33.1", features = ["serde"] }
 secp256k1 = "0.30.0"
 hashbrown = "0.15.2"
 openai-api-rs = "6.0.3"
