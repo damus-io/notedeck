@@ -226,6 +226,51 @@ impl Columns {
         self.selected += 1;
     }
 
+    pub fn delete_all_columns(&mut self) -> Vec<TimelineKind> {
+        let cols: &mut Vec<Column> = self.columns_mut();
+        let num_cols = cols.len();
+
+        let mut kinds_to_pop: Vec<TimelineKind> = vec![];
+        for i in (0..num_cols).rev() {
+            kinds_to_pop.append(self.delete_column(i).as_mut());
+        }
+        self.selected = 0;
+        if self.columns.is_empty() {
+            self.new_column_picker();
+        }
+        kinds_to_pop
+    }
+
+    pub fn delete_other(&mut self, index: usize) -> Vec<TimelineKind> {
+        let cols = self.columns_mut();
+        let num_cols = cols.len();
+
+        let mut kinds_to_pop: Vec<TimelineKind> = vec![];
+        'col_loop: for i in (0..num_cols).rev() {
+            if i == index {
+                continue 'col_loop;
+            }
+            kinds_to_pop.append(self.delete_column(i).as_mut());
+        }
+        self.selected = 0;
+        kinds_to_pop
+    }
+
+    pub fn delete_dir(&mut self, index: usize, left: bool) -> Vec<TimelineKind> {
+        let cols = self.columns_mut();
+        let num_cols = cols.len();
+
+        let mut kinds_to_pop: Vec<TimelineKind> = vec![];
+        let cols = if left { 0..index } else { index + 1..num_cols };
+        for i in cols.rev() {
+            if i < num_cols {
+                kinds_to_pop.append(self.delete_column(i).as_mut());
+            }
+        }
+        self.selected = 0;
+        kinds_to_pop
+    }
+
     #[must_use = "you must call timeline_cache.pop() for each returned value"]
     pub fn delete_column(&mut self, index: usize) -> Vec<TimelineKind> {
         let mut kinds_to_pop: Vec<TimelineKind> = vec![];
