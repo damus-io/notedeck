@@ -7,7 +7,7 @@ clndash is a weird little experiment: a [notedeck](https://github.com/jb55/noted
 No HTTP. No nginx. No VPS.
 Just open clndash, point it at your node, and boom — you’re in.
 
-<img src="https://jb55.com/s/476285c50d06c3ce.png" width="75%" />
+<img src="https://jb55.com/s/476285c50d06c3ce.png" width="50%" />
 
 ---
 
