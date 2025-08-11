@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use bitflags::bitflags;
 use egui::{
     vec2, Button, Color32, Context, CornerRadius, FontId, Image, Response, TextureHandle, Vec2,
 };
@@ -102,7 +103,11 @@ pub fn image_carousel(
                                 url,
                                 size,
                                 i18n,
-                                note_options.contains(NoteOptions::Wide),
+                                if note_options.contains(NoteOptions::Wide) {
+                                    ScaledTextureFlags::SCALE_TO_WIDTH
+                                } else {
+                                    ScaledTextureFlags::empty()
+                                },
                                 animation_mode,
                             );
 
@@ -337,13 +342,21 @@ fn render_media(
     url: &str,
     size: egui::Vec2,
     i18n: &mut Localization,
-    is_scaled: bool,
+    scale_flags: ScaledTextureFlags,
     animation_mode: AnimationMode,
 ) -> egui::InnerResponse<Option<MediaUIAction>> {
     match render_state {
         MediaRenderState::ActualImage(image) => {
-            let resp =
-                render_success_media(ui, url, image, gifs, size, i18n, is_scaled, animation_mode);
+            let resp = render_success_media(
+                ui,
+                url,
+                image,
+                gifs,
+                size,
+                i18n,
+                scale_flags,
+                animation_mode,
+            );
             if resp.clicked() {
                 egui::InnerResponse::new(Some(MediaUIAction::Clicked), resp)
             } else {
@@ -358,7 +371,7 @@ fn render_media(
                     size,
                     texture,
                     image.get_first_texture(),
-                    is_scaled,
+                    scale_flags,
                 );
                 if resp.inner {
                     egui::InnerResponse::new(Some(MediaUIAction::DoneLoading), resp.response)
@@ -367,7 +380,7 @@ fn render_media(
                 }
             }
             ObfuscatedTexture::Default => {
-                let scaled = ScaledTexture::new(image.get_first_texture(), size, is_scaled);
+                let scaled = ScaledTexture::new(image.get_first_texture(), size, scale_flags);
                 let resp = ui.add(scaled.get_image());
                 egui::InnerResponse::new(Some(MediaUIAction::DoneLoading), resp)
             }
@@ -380,25 +393,37 @@ fn render_media(
         MediaRenderState::Shimmering(obfuscated_texture) => match obfuscated_texture {
             ObfuscatedTexture::Blur(texture_handle) => egui::InnerResponse::new(
                 None,
-                shimmer_blurhash(texture_handle, ui, url, size, is_scaled),
+                shimmer_blurhash(texture_handle, ui, url, size, scale_flags),
             ),
             ObfuscatedTexture::Default => {
                 let shimmer = true;
                 egui::InnerResponse::new(
                     None,
-                    render_default_blur_bg(ui, size, url, shimmer, is_scaled),
+                    render_default_blur_bg(
+                        ui,
+                        size,
+                        url,
+                        shimmer,
+                        scale_flags.contains(ScaledTextureFlags::SCALE_TO_WIDTH),
+                    ),
                 )
             }
         },
         MediaRenderState::Obfuscated(obfuscated_texture) => {
             let resp = match obfuscated_texture {
                 ObfuscatedTexture::Blur(texture_handle) => {
-                    let scaled = ScaledTexture::new(texture_handle, size, is_scaled);
+                    let scaled = ScaledTexture::new(texture_handle, size, scale_flags);
 
                     let resp = ui.add(scaled.get_image());
                     render_blur_text(ui, i18n, url, resp.rect)
                 }
-                ObfuscatedTexture::Default => render_default_blur(ui, i18n, size, url, is_scaled),
+                ObfuscatedTexture::Default => render_default_blur(
+                    ui,
+                    i18n,
+                    size,
+                    url,
+                    scale_flags.contains(ScaledTextureFlags::SCALE_TO_WIDTH),
+                ),
             };
 
             let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
@@ -583,12 +608,12 @@ fn render_success_media(
     gifs: &mut GifStateMap,
     size: Vec2,
     i18n: &mut Localization,
-    is_scaled: bool,
+    scale_flags: ScaledTextureFlags,
     animation_mode: AnimationMode,
 ) -> Response {
     let texture = ensure_latest_texture(ui, url, gifs, tex, animation_mode);
 
-    let scaled = ScaledTexture::new(&texture, size, is_scaled);
+    let scaled = ScaledTexture::new(&texture, size, scale_flags);
 
     let img_resp = ui.add(Button::image(scaled.get_image()).frame(false));
 
@@ -625,11 +650,11 @@ fn shimmer_blurhash(
     ui: &mut egui::Ui,
     url: &str,
     size: Vec2,
-    is_scaled: bool,
+    scale_flags: ScaledTextureFlags,
 ) -> egui::Response {
     let cur_alpha = get_blur_current_alpha(ui, url);
 
-    let scaled = ScaledTexture::new(tex, size, is_scaled);
+    let scaled = ScaledTexture::new(tex, size, scale_flags);
     let img = scaled.get_image();
     show_blurhash_with_alpha(ui, img, cur_alpha)
 }
@@ -654,10 +679,10 @@ fn render_blur_transition(
     size: Vec2,
     blur_texture: &TextureHandle,
     image_texture: &TextureHandle,
-    is_scaled: bool,
+    scale_flags: ScaledTextureFlags,
 ) -> egui::InnerResponse<FinishedTransition> {
-    let scaled_texture = ScaledTexture::new(image_texture, size, is_scaled);
-    let scaled_blur_img = ScaledTexture::new(blur_texture, size, is_scaled);
+    let scaled_texture = ScaledTexture::new(image_texture, size, scale_flags);
+    let scaled_blur_img = ScaledTexture::new(blur_texture, size, scale_flags);
 
     match get_blur_transition_state(ui.ctx(), url) {
         BlurTransitionState::StoppingShimmer { cur_alpha } => egui::InnerResponse::new(
@@ -676,11 +701,20 @@ struct ScaledTexture<'a> {
     pub scaled_size: Vec2,
 }
 
+bitflags! {
+    #[repr(transparent)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub struct ScaledTextureFlags: u8 {
+        const SCALE_TO_WIDTH = 1u8;
+        const RESPECT_MAX_DIMS = 2u8;
+    }
+}
+
 impl<'a> ScaledTexture<'a> {
-    pub fn new(tex: &'a TextureHandle, max_size: Vec2, is_narrow: bool) -> Self {
+    pub fn new(tex: &'a TextureHandle, max_size: Vec2, flags: ScaledTextureFlags) -> Self {
         let tex_size = tex.size_vec2();
 
-        let scaled_size = if !is_narrow {
+        let scaled_size = if !flags.contains(ScaledTextureFlags::SCALE_TO_WIDTH) {
             if tex_size.y > max_size.y {
                 let scale = max_size.y / tex_size.y;
                 tex_size * scale
