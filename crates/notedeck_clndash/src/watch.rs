@@ -1,4 +1,4 @@
-use crate::event::Invoice;
+use crate::invoice::Invoice;
 use lnsocket::CallOpts;
 use lnsocket::CommandoClient;
 use serde::Deserialize;
