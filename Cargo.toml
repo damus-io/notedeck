@@ -37,7 +37,7 @@ ewebsock = { version = "0.2.0", features = ["tls"] }
 fluent = "0.17.0"
 fluent-resmgr = "0.0.8"
 fluent-langneg = "0.13"
-hex = "0.4.3"
+hex = { version = "0.4.3", features = ["serde"] }
 image = { version = "0.25", features = ["jpeg", "png", "webp"] }
 indexmap = "2.6.0"
 log = "0.4.17"

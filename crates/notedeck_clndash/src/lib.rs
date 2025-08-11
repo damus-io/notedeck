@@ -7,11 +7,13 @@ use crate::event::ListPeerChannel;
 use crate::event::Request;
 use crate::watch::fetch_paid_invoices;
 
-use egui::{Color32, Label, RichText};
+use egui::{Color32, Label, RichText, Widget};
 use lnsocket::bitcoin::secp256k1::{PublicKey, SecretKey, rand};
 use lnsocket::{CommandoClient, LNSocket};
+use nostrdb::Ndb;
 use notedeck::{AppAction, AppContext};
 use serde_json::json;
+use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
@@ -65,9 +67,17 @@ pub struct ClnDash {
     summary: LoadingState<Summary, lnsocket::Error>,
     get_info: LoadingState<String, lnsocket::Error>,
     channels: LoadingState<Channels, lnsocket::Error>,
-    channel: Option<CommChannel>,
     invoices: LoadingState<Vec<Invoice>, lnsocket::Error>,
+    channel: Option<CommChannel>,
     last_summary: Option<Summary>,
+    // invoice label to zapreq id
+    invoice_zap_reqs: HashMap<String, [u8; 32]>,
+}
+
+#[derive(serde::Deserialize)]
+pub struct ZapReqId {
+    #[serde(with = "hex::serde")]
+    id: [u8; 32],
 }
 
 impl Default for ConnectionState {
@@ -88,7 +98,7 @@ enum ConnectionState {
 }
 
 impl notedeck::App for ClnDash {
-    fn update(&mut self, _ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> Option<AppAction> {
+    fn update(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> Option<AppAction> {
         if !self.initialized {
             self.connection_state = ConnectionState::Connecting;
 
@@ -96,9 +106,9 @@ impl notedeck::App for ClnDash {
             self.initialized = true;
         }
 
-        self.process_events();
+        self.process_events(ctx.ndb);
 
-        self.show(ui);
+        self.show(ui, ctx);
 
         None
     }
@@ -144,14 +154,14 @@ fn summary_ui(
 }
 
 impl ClnDash {
-    fn show(&mut self, ui: &mut egui::Ui) {
+    fn show(&mut self, ui: &mut egui::Ui, ctx: &mut AppContext) {
         egui::Frame::new()
             .inner_margin(egui::Margin::same(20))
             .show(ui, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     connection_state_ui(ui, &self.connection_state);
                     summary_ui(ui, self.last_summary.as_ref(), &self.summary);
-                    invoices_ui(ui, &self.invoices);
+                    invoices_ui(ui, &self.invoice_zap_reqs, ctx, &self.invoices);
                     channels_ui(ui, &self.channels);
                     get_info_ui(ui, &self.get_info);
                 });
@@ -251,7 +261,7 @@ impl ClnDash {
         });
     }
 
-    fn process_events(&mut self) {
+    fn process_events(&mut self, ndb: &Ndb) {
         let Some(channel) = &mut self.channel else {
             return;
         };
@@ -289,6 +299,23 @@ impl ClnDash {
                     }
 
                     ClnResponse::PaidInvoices(invoices) => {
+                        // process zap requests
+
+                        if let Ok(invoices) = &invoices {
+                            for invoice in invoices {
+                                let zap_req_id: Option<ZapReqId> =
+                                    serde_json::from_str(&invoice.description).ok();
+                                if let Some(zap_req_id) = zap_req_id {
+                                    self.invoice_zap_reqs
+                                        .insert(invoice.label.clone(), zap_req_id.id);
+                                    let _ = ndb.process_event(&format!(
+                                        "[\"EVENT\",\"a\",{}]",
+                                        &invoice.description
+                                    ));
+                                }
+                            }
+                        }
+
                         self.invoices = LoadingState::from_result(invoices);
                     }
                 },
@@ -600,7 +627,12 @@ fn delta_str(new: i64, old: i64) -> String {
     }
 }
 
-fn invoices_ui(ui: &mut egui::Ui, invoices: &LoadingState<Vec<Invoice>, lnsocket::Error>) {
+fn invoices_ui(
+    ui: &mut egui::Ui,
+    invoice_notes: &HashMap<String, [u8; 32]>,
+    ctx: &mut AppContext,
+    invoices: &LoadingState<Vec<Invoice>, lnsocket::Error>,
+) {
     match invoices {
         LoadingState::Loading => {
             ui.label("loading invoices...");
@@ -618,17 +650,23 @@ fn invoices_ui(ui: &mut egui::Ui, invoices: &LoadingState<Vec<Invoice>, lnsocket
                 .column(Column::remainder())
                 .header(20.0, |mut header| {
                     header.col(|ui| {
-                        ui.heading("Description");
+                        ui.strong("description");
                     });
                     header.col(|ui| {
-                        ui.heading("Amount");
+                        ui.strong("amount");
                     });
                 })
                 .body(|mut body| {
                     for invoice in invoices {
-                        body.row(30.0, |mut row| {
+                        body.row(20.0, |mut row| {
                             row.col(|ui| {
-                                ui.label(invoice.description.clone());
+                                if invoice.description.starts_with("{") {
+                                    ui.label("Zap!").on_hover_ui_at_pointer(|ui| {
+                                        note_hover_ui(ui, &invoice.label, ctx, invoice_notes);
+                                    });
+                                } else {
+                                    ui.label(&invoice.description);
+                                }
                             });
                             row.col(|ui| match invoice.bolt11.amount_milli_satoshis() {
                                 None => {
@@ -643,4 +681,72 @@ fn invoices_ui(ui: &mut egui::Ui, invoices: &LoadingState<Vec<Invoice>, lnsocket
                 });
         }
     }
+}
+
+fn note_hover_ui(
+    ui: &mut egui::Ui,
+    label: &str,
+    ctx: &mut AppContext,
+    invoice_notes: &HashMap<String, [u8; 32]>,
+) -> Option<notedeck::NoteAction> {
+    let zap_req_id = invoice_notes.get(label)?;
+
+    let Ok(txn) = nostrdb::Transaction::new(ctx.ndb) else {
+        return None;
+    };
+
+    let Ok(zapreq_note) = ctx.ndb.get_note_by_id(&txn, zap_req_id) else {
+        return None;
+    };
+
+    for tag in zapreq_note.tags() {
+        let Some("e") = tag.get_str(0) else {
+            continue;
+        };
+
+        let Some(target_id) = tag.get_id(1) else {
+            continue;
+        };
+
+        let Ok(note) = ctx.ndb.get_note_by_id(&txn, target_id) else {
+            return None;
+        };
+
+        let author = ctx
+            .ndb
+            .get_profile_by_pubkey(&txn, zapreq_note.pubkey())
+            .ok();
+
+        // TODO(jb55): make this less horrible
+        let mut note_context = notedeck::NoteContext {
+            ndb: ctx.ndb,
+            accounts: ctx.accounts,
+            img_cache: ctx.img_cache,
+            note_cache: ctx.note_cache,
+            zaps: ctx.zaps,
+            pool: ctx.pool,
+            job_pool: ctx.job_pool,
+            unknown_ids: ctx.unknown_ids,
+            clipboard: ctx.clipboard,
+            i18n: ctx.i18n,
+            global_wallet: ctx.global_wallet,
+        };
+
+        let mut jobs = notedeck::JobsCache::default();
+        let options = notedeck_ui::NoteOptions::default();
+
+        notedeck_ui::ProfilePic::from_profile_or_default(note_context.img_cache, author.as_ref())
+            .ui(ui);
+
+        let nostr_name = notedeck::name::get_display_name(author.as_ref());
+        ui.label(format!("{} zapped you", nostr_name.name()));
+
+        return notedeck_ui::NoteView::new(&mut note_context, &note, options, &mut jobs)
+            .preview_style()
+            .hide_media(true)
+            .show(ui)
+            .action;
+    }
+
+    None
 }

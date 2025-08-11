@@ -14,5 +14,8 @@ tokio = { workspace = true }
 serde = { workspace = true }
 egui_extras = { workspace = true }
 lightning-invoice = { workspace = true }
+hex = { workspace = true }
+nostrdb = { workspace = true }
+notedeck_ui = { workspace = true }
 
 lnsocket = "0.5.1"
