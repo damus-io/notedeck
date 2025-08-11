@@ -54,7 +54,7 @@ If you’re reading this and still excited — you’re the exact audience.
    export CLNDASH_HOST="node.example.com:9735"
    export CLNDASH_RUNE="your_rune_here"
    ```
-3. Run clndash inside notedeck.
+3. Run clndash inside notedeck by calling notedeck with the `--clndash` argument.
 4. Bask in the glow of real-time LN data over an LN connection.
 
 ---
