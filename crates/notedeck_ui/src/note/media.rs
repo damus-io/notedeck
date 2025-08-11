@@ -743,6 +743,10 @@ impl<'a> ScaledTexture<'a> {
     pub fn new(tex: &'a TextureHandle, max_size: Vec2, flags: ScaledTextureFlags) -> Self {
         let tex_size = tex.size_vec2();
 
+        if flags.contains(ScaledTextureFlags::RESPECT_MAX_DIMS) {
+            return Self::respecting_max(tex, max_size);
+        }
+
         let scaled_size = if !flags.contains(ScaledTextureFlags::SCALE_TO_WIDTH) {
             if tex_size.y > max_size.y {
                 let scale = max_size.y / tex_size.y;
@@ -756,6 +760,19 @@ impl<'a> ScaledTexture<'a> {
         } else {
             tex_size
         };
+
+        Self {
+            tex,
+            size: max_size,
+            scaled_size,
+        }
+    }
+
+    pub fn respecting_max(tex: &'a TextureHandle, max_size: Vec2) -> Self {
+        let tex_size = tex.size_vec2();
+
+        let s = (max_size.x / tex_size.x).min(max_size.y / tex_size.y);
+        let scaled_size = tex_size * s;
 
         Self {
             tex,
