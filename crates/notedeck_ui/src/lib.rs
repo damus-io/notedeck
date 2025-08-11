@@ -7,6 +7,7 @@ pub mod icons;
 pub mod images;
 pub mod media;
 pub mod mention;
+pub mod nip51_set;
 pub mod note;
 pub mod profile;
 mod username;

@@ -1,15 +1,19 @@
 use enostr::{FullKeypair, Pubkey};
 use nostrdb::{Ndb, Transaction};
 
-use notedeck::{Accounts, AppContext, Localization, SingleUnkIdAction, UnknownIds};
+use notedeck::{Accounts, AppContext, JobsCache, Localization, SingleUnkIdAction, UnknownIds};
+use notedeck_ui::nip51_set::Nip51SetUiCache;
 
+pub use crate::accounts::route::AccountsResponse;
 use crate::app::get_active_columns_mut;
 use crate::decks::DecksCache;
+use crate::onboarding::Onboarding;
 use crate::profile::send_new_contact_list;
+use crate::subscriptions::Subscriptions;
+use crate::ui::onboarding::{FollowPackOnboardingView, FollowPacksResponse, OnboardingResponse};
 use crate::{
     login_manager::AcquireKeyState,
     route::Route,
-    timeline::TimelineCache,
     ui::{
         account_login_view::{AccountLoginResponse, AccountLoginView},
         accounts::{AccountsView, AccountsViewResponse},
@@ -37,6 +41,7 @@ pub struct SwitchAccountAction {
 
     /// The account to switch to
     pub switch_to: Pubkey,
+    pub switching_to_new: bool,
 }
 
 impl SwitchAccountAction {
@@ -44,7 +49,13 @@ impl SwitchAccountAction {
         SwitchAccountAction {
             source_column,
             switch_to,
+            switching_to_new: false,
         }
+    }
+
+    pub fn switching_to_new(mut self) -> Self {
+        self.switching_to_new = true;
+        self
     }
 }
 
@@ -65,13 +76,13 @@ pub struct AddAccountAction {
 pub fn render_accounts_route(
     ui: &mut egui::Ui,
     app_ctx: &mut AppContext,
-    col: usize,
-    decks: &mut DecksCache,
-    timeline_cache: &mut TimelineCache,
+    jobs: &mut JobsCache,
     login_state: &mut AcquireKeyState,
+    onboarding: &Onboarding,
+    follow_packs_ui: &mut Nip51SetUiCache,
     route: AccountsRoute,
-) -> AddAccountAction {
-    let resp = match route {
+) -> Option<AccountsResponse> {
+    match route {
         AccountsRoute::Accounts => AccountsView::new(
             app_ctx.ndb,
             app_ctx.accounts,
@@ -80,47 +91,33 @@ pub fn render_accounts_route(
         )
         .ui(ui)
         .inner
-        .map(AccountsRouteResponse::Accounts),
-
+        .map(AccountsRouteResponse::Accounts)
+        .map(AccountsResponse::Account),
         AccountsRoute::AddAccount => {
             AccountLoginView::new(login_state, app_ctx.clipboard, app_ctx.i18n)
                 .ui(ui)
                 .inner
                 .map(AccountsRouteResponse::AddAccount)
+                .map(AccountsResponse::Account)
         }
-    };
-
-    if let Some(resp) = resp {
-        match resp {
-            AccountsRouteResponse::Accounts(response) => {
-                let action = process_accounts_view_response(
-                    app_ctx.i18n,
-                    app_ctx.accounts,
-                    decks,
-                    col,
-                    response,
-                );
-                AddAccountAction {
-                    accounts_action: action,
-                    unk_id_action: SingleUnkIdAction::no_action(),
-                }
+        AccountsRoute::Onboarding => FollowPackOnboardingView::new(
+            onboarding,
+            follow_packs_ui,
+            app_ctx.ndb,
+            app_ctx.img_cache,
+            app_ctx.i18n,
+            app_ctx.job_pool,
+            jobs,
+        )
+        .ui(ui)
+        .map(|r| match r {
+            OnboardingResponse::FollowPacks(follow_packs_response) => {
+                AccountsResponse::Account(AccountsRouteResponse::AddAccount(
+                    AccountLoginResponse::Onboarding(follow_packs_response),
+                ))
             }
-            AccountsRouteResponse::AddAccount(response) => {
-                let action =
-                    process_login_view_response(app_ctx, timeline_cache, decks, col, response);
-                *login_state = Default::default();
-                let router = get_active_columns_mut(app_ctx.i18n, app_ctx.accounts, decks)
-                    .column_mut(col)
-                    .router_mut();
-                router.go_back();
-                action
-            }
-        }
-    } else {
-        AddAccountAction {
-            accounts_action: None,
-            unk_id_action: SingleUnkIdAction::no_action(),
-        }
+            OnboardingResponse::ViewProfile(pubkey) => AccountsResponse::ViewProfile(pubkey),
+        }),
     }
 }
 
@@ -155,31 +152,53 @@ pub fn process_accounts_view_response(
 
 pub fn process_login_view_response(
     app_ctx: &mut AppContext,
-    timeline_cache: &mut TimelineCache,
     decks: &mut DecksCache,
+    subs: &mut Subscriptions,
+    onboarding: &mut Onboarding,
     col: usize,
     response: AccountLoginResponse,
 ) -> AddAccountAction {
-    let (r, pubkey) = match response {
-        AccountLoginResponse::CreateNew => {
-            let kp = FullKeypair::generate();
-            let pubkey = kp.pubkey;
-            send_new_contact_list(kp.to_filled(), app_ctx.ndb, app_ctx.pool);
-            (app_ctx.accounts.add_account(kp.to_keypair()), pubkey)
-        }
-        AccountLoginResponse::LoginWith(keypair) => {
-            let pubkey = keypair.pubkey;
-            (app_ctx.accounts.add_account(keypair), pubkey)
-        }
-    };
+    let cur_router = get_active_columns_mut(app_ctx.i18n, app_ctx.accounts, decks)
+        .column_mut(col)
+        .router_mut();
 
-    decks.add_deck_default(app_ctx, timeline_cache, pubkey);
+    let r = match response {
+        AccountLoginResponse::LoginWith(keypair) => {
+            cur_router.go_back();
+            app_ctx.accounts.add_account(keypair)
+        }
+        AccountLoginResponse::CreatingNew => {
+            cur_router.route_to(Route::Accounts(AccountsRoute::Onboarding));
+
+            onboarding.process(app_ctx.pool, app_ctx.ndb, subs, app_ctx.unknown_ids);
+
+            None
+        }
+        AccountLoginResponse::Onboarding(onboarding_response) => match onboarding_response {
+            FollowPacksResponse::NoFollowPacks => {
+                onboarding.process(app_ctx.pool, app_ctx.ndb, subs, app_ctx.unknown_ids);
+                None
+            }
+            FollowPacksResponse::UserSelectedPacks(nip51_sets_ui_state) => {
+                let pks_to_follow = nip51_sets_ui_state.get_all_selected();
+
+                let kp = FullKeypair::generate();
+
+                send_new_contact_list(kp.to_filled(), app_ctx.ndb, app_ctx.pool, pks_to_follow);
+                cur_router.go_back();
+                onboarding.end_onboarding(app_ctx.pool, app_ctx.ndb);
+
+                app_ctx.accounts.add_account(kp.to_keypair())
+            }
+        },
+    };
 
     if let Some(action) = r {
         AddAccountAction {
             accounts_action: Some(AccountsAction::Switch(SwitchAccountAction {
                 source_column: col,
                 switch_to: action.switch_to,
+                switching_to_new: true,
             })),
             unk_id_action: action.unk_id_action,
         }
@@ -187,6 +206,44 @@ pub fn process_login_view_response(
         AddAccountAction {
             accounts_action: None,
             unk_id_action: SingleUnkIdAction::NoAction,
+        }
+    }
+}
+
+impl AccountsRouteResponse {
+    pub fn process(
+        self,
+        app_ctx: &mut AppContext,
+        app: &mut crate::Damus,
+        col: usize,
+    ) -> AddAccountAction {
+        match self {
+            AccountsRouteResponse::Accounts(response) => {
+                let action = process_accounts_view_response(
+                    app_ctx.i18n,
+                    app_ctx.accounts,
+                    &mut app.decks_cache,
+                    col,
+                    response,
+                );
+                AddAccountAction {
+                    accounts_action: action,
+                    unk_id_action: notedeck::SingleUnkIdAction::no_action(),
+                }
+            }
+            AccountsRouteResponse::AddAccount(response) => {
+                let action = process_login_view_response(
+                    app_ctx,
+                    &mut app.decks_cache,
+                    &mut app.subscriptions,
+                    &mut app.onboarding,
+                    col,
+                    response,
+                );
+                app.view_state.login = Default::default();
+
+                action
+            }
         }
     }
 }

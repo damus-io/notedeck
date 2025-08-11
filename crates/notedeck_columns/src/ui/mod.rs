@@ -7,6 +7,7 @@ pub mod edit_deck;
 pub mod images;
 pub mod mentions_picker;
 pub mod note;
+pub mod onboarding;
 pub mod post;
 pub mod preview;
 pub mod profile;

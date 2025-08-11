@@ -16,6 +16,7 @@ mod jobs;
 pub mod media;
 mod muted;
 pub mod name;
+mod nip51_set;
 pub mod note;
 mod notecache;
 mod options;
@@ -65,6 +66,7 @@ pub use media::{
 };
 pub use muted::{MuteFun, Muted};
 pub use name::NostrName;
+pub use nip51_set::{create_nip51_set, Nip51Set, Nip51SetCache};
 pub use note::{
     BroadcastContext, ContextSelection, NoteAction, NoteContext, NoteContextSelection, NoteRef,
     RootIdError, RootNoteId, RootNoteIdBuf, ScrollInfo, ZapAction,
