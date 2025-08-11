@@ -2,7 +2,8 @@ use std::path::Path;
 
 use bitflags::bitflags;
 use egui::{
-    vec2, Button, Color32, Context, CornerRadius, FontId, Image, Response, TextureHandle, Vec2,
+    vec2, Button, Color32, Context, CornerRadius, FontId, Image, InnerResponse, Response,
+    TextureHandle, Vec2,
 };
 use notedeck::{
     compute_blurhash, fonts::get_font_size, show_one_error_message, tr, BlurhashParams,
@@ -61,54 +62,25 @@ pub fn image_carousel(
                         let mut media_action: Option<(usize, MediaUIAction)> = None;
 
                         for (i, media) in medias.iter().enumerate() {
-                            let RenderableMedia {
-                                url,
-                                media_type,
-                                obfuscation_type: blur_type,
-                            } = media;
-
-                            let cache = match media_type {
-                                MediaCacheType::Image => &mut img_cache.static_imgs,
-                                MediaCacheType::Gif => &mut img_cache.gifs,
-                            };
-                            let media_state = get_content_media_render_state(
-                                ui,
-                                job_pool,
-                                jobs,
-                                trusted_media,
-                                size,
-                                &mut cache.textures_cache,
-                                url,
-                                *media_type,
-                                &cache.cache_dir,
-                                blur_type,
-                            );
-
-                            let animation_mode = if note_options.contains(NoteOptions::NoAnimations)
-                            {
-                                AnimationMode::NoAnimation
-                            } else {
-                                // if animations aren't disabled, we cap it at 24fps for gifs in carousels
-                                let fps = match media_type {
-                                    MediaCacheType::Gif => Some(24.0),
-                                    MediaCacheType::Image => None,
-                                };
-                                AnimationMode::Continuous { fps }
-                            };
-
                             let media_response = render_media(
                                 ui,
-                                &mut img_cache.gif_states,
-                                media_state,
-                                url,
-                                size,
+                                img_cache,
+                                job_pool,
+                                jobs,
+                                media,
+                                trusted_media,
                                 i18n,
+                                size,
+                                if note_options.contains(NoteOptions::NoAnimations) {
+                                    Some(AnimationMode::NoAnimation)
+                                } else {
+                                    None
+                                },
                                 if note_options.contains(NoteOptions::Wide) {
                                     ScaledTextureFlags::SCALE_TO_WIDTH
                                 } else {
                                     ScaledTextureFlags::empty()
                                 },
-                                animation_mode,
                             );
 
                             if let Some(action) = media_response.inner {
@@ -117,7 +89,7 @@ pub fn image_carousel(
 
                             let rect = media_response.response.rect;
                             media_infos.push(MediaInfo {
-                                url: url.clone(),
+                                url: media.url.clone(),
                                 original_position: rect,
                             })
                         }
@@ -143,7 +115,64 @@ pub fn image_carousel(
     action
 }
 
-enum MediaUIAction {
+#[allow(clippy::too_many_arguments)]
+pub fn render_media(
+    ui: &mut egui::Ui,
+    img_cache: &mut Images,
+    job_pool: &mut JobPool,
+    jobs: &mut JobsCache,
+    media: &RenderableMedia,
+    trusted_media: bool,
+    i18n: &mut Localization,
+    size: Vec2,
+    animation_mode: Option<AnimationMode>,
+    scale_flags: ScaledTextureFlags,
+) -> InnerResponse<Option<MediaUIAction>> {
+    let RenderableMedia {
+        url,
+        media_type,
+        obfuscation_type: blur_type,
+    } = media;
+
+    let cache = match media_type {
+        MediaCacheType::Image => &mut img_cache.static_imgs,
+        MediaCacheType::Gif => &mut img_cache.gifs,
+    };
+    let media_state = get_content_media_render_state(
+        ui,
+        job_pool,
+        jobs,
+        trusted_media,
+        size,
+        &mut cache.textures_cache,
+        url,
+        *media_type,
+        &cache.cache_dir,
+        blur_type,
+    );
+
+    let animation_mode = animation_mode.unwrap_or_else(|| {
+        // if animations aren't disabled, we cap it at 24fps for gifs in carousels
+        let fps = match media_type {
+            MediaCacheType::Gif => Some(24.0),
+            MediaCacheType::Image => None,
+        };
+        AnimationMode::Continuous { fps }
+    });
+
+    render_media_internal(
+        ui,
+        &mut img_cache.gif_states,
+        media_state,
+        url,
+        size,
+        i18n,
+        scale_flags,
+        animation_mode,
+    )
+}
+
+pub enum MediaUIAction {
     Unblur,
     Error,
     DoneLoading,
@@ -335,7 +364,7 @@ fn copy_link(i18n: &mut Localization, url: &str, img_resp: &Response) {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn render_media(
+fn render_media_internal(
     ui: &mut egui::Ui,
     gifs: &mut GifStateMap,
     render_state: MediaRenderState,
