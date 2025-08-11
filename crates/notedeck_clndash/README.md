@@ -51,6 +51,7 @@ If you’re reading this and still excited — you’re the exact audience.
 2. Set them as environment variables:
 
    ```bash
+   export CLNDASH_ID="03f3c108ccd536b8526841f0a5c58212bb9e6584a1eb493080e7c1cc34f82dad71"
    export CLNDASH_HOST="node.example.com:9735"
    export CLNDASH_RUNE="your_rune_here"
    ```

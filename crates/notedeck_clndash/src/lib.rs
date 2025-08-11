@@ -97,9 +97,9 @@ impl ClnDash {
 
         tokio::spawn(async move {
             let key = SecretKey::new(&mut rand::thread_rng());
-            let their_pubkey = PublicKey::from_str(
-                "03f3c108ccd536b8526841f0a5c58212bb9e6584a1eb493080e7c1cc34f82dad71",
-            )
+            let their_pubkey = PublicKey::from_str(&std::env::var("CLNDASH_ID").unwrap_or(
+                "03f3c108ccd536b8526841f0a5c58212bb9e6584a1eb493080e7c1cc34f82dad71".to_string(),
+            ))
             .unwrap();
 
             let host = std::env::var("CLNDASH_HOST").unwrap_or("ln.damus.io:9735".to_string());
