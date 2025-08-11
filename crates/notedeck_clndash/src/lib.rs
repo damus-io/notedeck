@@ -102,22 +102,22 @@ impl ClnDash {
             )
             .unwrap();
 
-            let lnsocket =
-                match LNSocket::connect_and_init(key, their_pubkey, "ln.damus.io:9735").await {
-                    Err(err) => {
-                        let _ = event_tx.send(Event::Ended {
-                            reason: err.to_string(),
-                        });
-                        return;
-                    }
+            let host = std::env::var("CLNDASH_HOST").unwrap_or("ln.damus.io:9735".to_string());
+            let lnsocket = match LNSocket::connect_and_init(key, their_pubkey, &host).await {
+                Err(err) => {
+                    let _ = event_tx.send(Event::Ended {
+                        reason: err.to_string(),
+                    });
+                    return;
+                }
 
-                    Ok(lnsocket) => {
-                        let _ = event_tx.send(Event::Connected);
-                        lnsocket
-                    }
-                };
+                Ok(lnsocket) => {
+                    let _ = event_tx.send(Event::Connected);
+                    lnsocket
+                }
+            };
 
-            let rune = std::env::var("RUNE").unwrap_or(
+            let rune = std::env::var("CLNDASH_RUNE").unwrap_or(
                 "Vns1Zxvidr4J8pP2ZCg3Wjp2SyGyyf5RHgvFG8L36yM9MzMmbWV0aG9kPWdldGluZm8=".to_string(),
             );
             let commando = Arc::new(CommandoClient::spawn(lnsocket, &rune));
