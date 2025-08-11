@@ -2,7 +2,7 @@
 
 Your Core Lightning dashboard, **without the server nonsense**.
 
-clndash is a weird little experiment: a [notedeck](https://github.com/jb55/notedeck) app that talks to your node **directly over the Lightning Network** using [`lnsocket-rs`](https://github.com/jb55/lnsocket-rs) + [Commando][commando] RPCs.
+clndash is a weird little experiment: a [notedeck][notedeck] app that talks to your node **directly over the Lightning Network** using [lnsocket][lnsocket] + [Commando][commando] RPCs.
 
 No HTTP. No nginx. No VPS.
 Just open clndash, point it at your node, and boom — you’re in.
@@ -21,7 +21,7 @@ And because LN is already a secure, encrypted connection layer — why not just 
 
 ## 🔥 Features (as of today)
 
-* **Plug-and-play LN connection** – powered by [`lnsocket-rs`](https://github.com/jb55/lnsocket-rs)
+* **Plug-and-play LN connection** – powered by [lnsocket][lnsocket]
 * **Commando RPC** – all dashboard data is fetched directly from your CLN node over Lightning
 * **Channel overview** – total capacity, inbound/outbound liquidity, largest channel, and pretty bars
 * **Invoices** – shows recent paid invoices (with zap previews if they came from Nostr)
@@ -70,4 +70,7 @@ If you’re reading this and still excited — you’re the exact audience.
 If you like living on the edge of LN/Nostr tooling, you’ll like this.
 If you don’t… you’ll probably want to wait a bit.
 
+
 [commando]: https://docs.corelightning.org/reference/commando
+[lnsocket]: https://github.com/jb55/lnsocket-rs
+[notedeck]: https://github.com/damus-io/notedeck
