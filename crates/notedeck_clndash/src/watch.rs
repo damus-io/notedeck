@@ -109,7 +109,7 @@ pub async fn fetch_paid_invoices(
         results.push(res.map_err(|_| lnsocket::Error::Io(std::io::ErrorKind::Interrupted))??);
     }
 
-    results.sort_by(|a, b| a.updated_index.cmp(&b.updated_index));
+    results.sort_by(|a, b| a.updated_index.cmp(&b.updated_index).reverse());
 
     Ok(results)
 }

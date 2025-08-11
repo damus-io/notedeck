@@ -276,7 +276,7 @@ impl ClnDash {
                     self.connection_state = ConnectionState::Active;
                     let _ = channel.req_tx.send(Request::GetInfo);
                     let _ = channel.req_tx.send(Request::ListPeerChannels);
-                    let _ = channel.req_tx.send(Request::PaidInvoices(30));
+                    let _ = channel.req_tx.send(Request::PaidInvoices(100));
                 }
 
                 Event::Response(resp) => match resp {
@@ -648,6 +648,7 @@ fn invoices_ui(
             TableBuilder::new(ui)
                 .column(Column::auto().resizable(true))
                 .column(Column::remainder())
+                .vscroll(false)
                 .header(20.0, |mut header| {
                     header.col(|ui| {
                         ui.strong("description");
