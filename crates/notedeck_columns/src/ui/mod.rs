@@ -17,6 +17,7 @@ pub mod side_panel;
 pub mod support;
 pub mod thread;
 pub mod timeline;
+pub mod toolbar;
 pub mod wallet;
 pub mod widgets;
 
