@@ -13,6 +13,7 @@ mod username;
 pub mod widgets;
 
 pub use anim::{AnimationHelper, PulseAlpha};
+pub use icons::{expanding_button, ICON_EXPANSION_MULTIPLE, ICON_WIDTH};
 pub use mention::Mention;
 pub use note::{NoteContents, NoteOptions, NoteView};
 pub use profile::{ProfilePic, ProfilePreview};

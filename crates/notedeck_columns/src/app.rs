@@ -10,7 +10,8 @@ use crate::{
     subscriptions::{SubKind, Subscriptions},
     support::Support,
     timeline::{self, kind::ListKind, thread::Threads, TimelineCache, TimelineKind},
-    ui::{self, DesktopSidePanel, SidePanelAction},
+    toolbar::unseen_notification,
+    ui::{self, toolbar::toolbar, DesktopSidePanel, SidePanelAction},
     view_state::ViewState,
     Result,
 };
@@ -622,36 +623,56 @@ fn render_damus_mobile(
 ) -> Option<AppAction> {
     //let routes = app.timelines[0].routes.clone();
 
-    let rect = ui.available_rect_before_wrap();
+    let active_col = app.columns_mut(app_ctx.i18n, app_ctx.accounts).selected as usize;
     let mut app_action: Option<AppAction> = None;
 
-    let active_col = app.columns_mut(app_ctx.i18n, app_ctx.accounts).selected as usize;
+    StripBuilder::new(ui)
+        .size(Size::remainder()) // top cell
+        .size(Size::exact(Damus::toolbar_height())) // bottom cell
+        .vertical(|mut strip| {
+            strip.cell(|ui| {
+                let rect = ui.available_rect_before_wrap();
+                if !app.columns(app_ctx.accounts).columns().is_empty() {
+                    let r = nav::render_nav(
+                        active_col,
+                        ui.available_rect_before_wrap(),
+                        app,
+                        app_ctx,
+                        ui,
+                    )
+                    .process_render_nav_response(app, app_ctx, ui);
+                    if let Some(r) = &r {
+                        match r {
+                            ProcessNavResult::SwitchOccurred => {
+                                if !app.options.contains(AppOptions::TmpColumns) {
+                                    storage::save_decks_cache(app_ctx.path, &app.decks_cache);
+                                }
+                            }
 
-    if !app.columns(app_ctx.accounts).columns().is_empty() {
-        let r = nav::render_nav(
-            active_col,
-            ui.available_rect_before_wrap(),
-            app,
-            app_ctx,
-            ui,
-        )
-        .process_render_nav_response(app, app_ctx, ui);
-        if let Some(r) = &r {
-            match r {
-                ProcessNavResult::SwitchOccurred => {
-                    if !app.options.contains(AppOptions::TmpColumns) {
-                        storage::save_decks_cache(app_ctx.path, &app.decks_cache);
+                            ProcessNavResult::PfpClicked => {
+                                app_action = Some(AppAction::ToggleChrome);
+                            }
+                        }
                     }
                 }
 
-                ProcessNavResult::PfpClicked => {
-                    app_action = Some(AppAction::ToggleChrome);
-                }
-            }
-        }
-    }
+                hovering_post_button(ui, app, app_ctx, rect);
+            });
 
-    hovering_post_button(ui, app, app_ctx, rect);
+            strip.cell(|ui| {
+                let unseen_notif = unseen_notification(
+                    app,
+                    app_ctx.ndb,
+                    app_ctx.accounts.get_selected_account().key.pubkey,
+                );
+
+                let resp = toolbar(ui, unseen_notif);
+
+                if let Some(action) = resp {
+                    action.process(app, app_ctx);
+                }
+            });
+        });
 
     app_action
 }

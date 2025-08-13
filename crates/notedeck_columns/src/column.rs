@@ -75,30 +75,6 @@ impl Columns {
     /// Select the column based on the timeline kind.
     ///
     /// TODO: add timeline if missing?
-    pub fn select_by_kind(&mut self, kind: &TimelineKind) -> SelectionResult {
-        for (i, col) in self.columns.iter().enumerate() {
-            for route in col.router().routes() {
-                if let Some(timeline) = route.timeline_id() {
-                    if timeline == kind {
-                        tracing::info!("selecting {kind:?} column");
-                        if self.selected as usize == i {
-                            return SelectionResult::AlreadySelected(i);
-                        } else {
-                            self.select_column(i as i32);
-                            return SelectionResult::NewSelection(i);
-                        }
-                    }
-                }
-            }
-        }
-
-        tracing::error!("failed to select {kind:?} column");
-        SelectionResult::Failed
-    }
-
-    /// Select the column based on the timeline kind.
-    ///
-    /// TODO: add timeline if missing?
     pub fn select_by_route(&mut self, desired_route: Route) -> SelectionResult {
         for (i, col) in self.columns.iter().enumerate() {
             for route in col.router().routes() {
