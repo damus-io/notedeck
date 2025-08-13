@@ -659,8 +659,10 @@ fn hovering_post_button(
     let button_y = ui
         .ctx()
         .animate_bool_responsive(btn_id, should_show_compose);
-    rect.min.x = rect.max.x - if is_narrow(ui.ctx()) { 60.0 } else { 100.0 };
-    rect.min.y = rect.max.y - 100.0 * button_y;
+
+    rect.min.x = rect.max.x - (if is_narrow(ui.ctx()) { 60.0 } else { 100.0 } * button_y);
+    rect.min.y = rect.max.y - 100.0;
+    rect.max.x += 48.0 * (1.0 - button_y);
 
     let darkmode = ui.ctx().style().visuals.dark_mode;
 
