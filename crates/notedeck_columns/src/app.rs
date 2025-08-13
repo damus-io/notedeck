@@ -573,6 +573,14 @@ impl Damus {
     pub fn unrecognized_args(&self) -> &BTreeSet<String> {
         &self.unrecognized_args
     }
+
+    pub fn toolbar_height() -> f32 {
+        48.0
+    }
+
+    pub fn initially_selected_toolbar_index() -> i32 {
+        0
+    }
 }
 
 fn get_note_options(args: ColumnsArgs, settings_handler: &mut SettingsHandler) -> NoteOptions {
