@@ -332,11 +332,11 @@ fn add_column_button() -> impl Widget {
     }
 }
 
-pub fn search_button() -> impl Widget {
-    |ui: &mut egui::Ui| -> egui::Response {
+pub fn search_button_impl(color: egui::Color32, line_width: f32) -> impl Widget {
+    move |ui: &mut egui::Ui| -> egui::Response {
         let max_size = ICON_WIDTH * ICON_EXPANSION_MULTIPLE; // max size of the widget
-        let min_line_width_circle = 1.5; // width of the magnifying glass
-        let min_line_width_handle = 1.5;
+        let min_line_width_circle = line_width; // width of the magnifying glass
+        let min_line_width_handle = line_width;
         let helper = AnimationHelper::new(ui, "search-button", vec2(max_size, max_size));
 
         let painter = ui.painter_at(helper.get_animation_rect());
@@ -359,8 +359,8 @@ pub fn search_button() -> impl Widget {
         let handle_pos_2 =
             circle_center + (handle_vec * (cur_outer_circle_radius + cur_handle_length));
 
-        let circle_stroke = Stroke::new(cur_line_width_circle, colors::MID_GRAY);
-        let handle_stroke = Stroke::new(cur_line_width_handle, colors::MID_GRAY);
+        let circle_stroke = Stroke::new(cur_line_width_circle, color);
+        let handle_stroke = Stroke::new(cur_line_width_handle, color);
 
         painter.line_segment([handle_pos_1, handle_pos_2], handle_stroke);
         painter.circle(
@@ -375,6 +375,10 @@ pub fn search_button() -> impl Widget {
             .on_hover_cursor(CursorIcon::PointingHand)
             .on_hover_text("Open search")
     }
+}
+
+pub fn search_button() -> impl Widget {
+    search_button_impl(colors::MID_GRAY, 1.5)
 }
 
 // TODO: convert to responsive button when expanded side panel impl is finished
