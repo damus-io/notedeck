@@ -96,6 +96,38 @@ impl Columns {
         SelectionResult::Failed
     }
 
+    /// Select the column based on the timeline kind.
+    ///
+    /// TODO: add timeline if missing?
+    pub fn select_by_route(&mut self, desired_route: Route) -> SelectionResult {
+        for (i, col) in self.columns.iter().enumerate() {
+            for route in col.router().routes() {
+                if *route == desired_route {
+                    if self.selected as usize == i {
+                        return SelectionResult::AlreadySelected(i);
+                    } else {
+                        self.select_column(i as i32);
+                        return SelectionResult::NewSelection(i);
+                    }
+                }
+            }
+        }
+
+        if matches!(&desired_route, Route::Timeline(_))
+            || matches!(&desired_route, Route::Thread(_))
+        {
+            // these require additional handling to add state
+            tracing::error!("failed to select {desired_route:?} column");
+            return SelectionResult::Failed;
+        }
+
+        self.add_column(Column::new(vec![desired_route]));
+
+        let selected_index = self.columns.len() - 1;
+        self.select_column(selected_index as i32);
+        SelectionResult::NewSelection(selected_index)
+    }
+
     pub fn add_new_timeline_column(
         &mut self,
         timeline_cache: &mut TimelineCache,
