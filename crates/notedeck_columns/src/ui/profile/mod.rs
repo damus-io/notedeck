@@ -73,7 +73,7 @@ impl<'a, 'd> ProfileView<'a, 'd> {
             scroll_area = scroll_area.vertical_scroll_offset(offset);
         }
 
-        let output = scroll_area.show(ui, |ui| {
+        let output = scroll_area.show(ui, |ui| 's: {
             let mut action = None;
             let txn = Transaction::new(self.note_context.ndb).expect("txn");
             let profile = self
@@ -85,15 +85,13 @@ impl<'a, 'd> ProfileView<'a, 'd> {
             if let Some(profile_view_action) = self.profile_body(ui, profile.as_ref()) {
                 action = Some(profile_view_action);
             }
-            let profile_timeline = self
+
+            let Some(profile_timeline) = self
                 .timeline_cache
-                .notes(
-                    self.note_context.ndb,
-                    self.note_context.note_cache,
-                    &txn,
-                    &TimelineKind::Profile(*self.pubkey),
-                )
-                .get_ptr();
+                .get_mut(&TimelineKind::Profile(*self.pubkey))
+            else {
+                break 's action;
+            };
 
             profile_timeline.selected_view = tabs_ui(
                 ui,

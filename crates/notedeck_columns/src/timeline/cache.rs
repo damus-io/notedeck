@@ -113,7 +113,7 @@ impl TimelineCache {
     }
 
     /// Get and/or update the notes associated with this timeline
-    pub fn notes<'a>(
+    fn notes<'a>(
         &'a mut self,
         ndb: &Ndb,
         note_cache: &mut NoteCache,
