@@ -33,32 +33,6 @@ pub mod thread;
 pub use cache::TimelineCache;
 pub use kind::{ColumnTitle, PubkeySource, ThreadSelection, TimelineKind};
 
-//#[derive(Debug, Hash, Clone, Eq, PartialEq)]
-//pub type TimelineId = TimelineKind;
-
-/*
-
-impl TimelineId {
-    pub fn kind(&self) -> &TimelineKind {
-        &self.kind
-    }
-
-    pub fn new(id: TimelineKind) -> Self {
-        TimelineId(id)
-    }
-
-    pub fn profile(pubkey: Pubkey) -> Self {
-        TimelineId::new(TimelineKind::Profile(PubkeySource::pubkey(pubkey)))
-    }
-}
-
-impl fmt::Display for TimelineId {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "TimelineId({})", self.0)
-    }
-}
-*/
-
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Default)]
 pub enum ViewFilter {
     Notes,
