@@ -67,6 +67,7 @@ fn handle_key_events(input: &egui::InputState, columns: &mut Columns) {
         } = event
         {
             match key {
+                /*
                 egui::Key::J => {
                     columns.select_down();
                 }
@@ -79,6 +80,7 @@ fn handle_key_events(input: &egui::InputState, columns: &mut Columns) {
                 egui::Key::L => {
                     columns.select_left();
                 }
+                */
                 egui::Key::BrowserBack | egui::Key::Escape => {
                     columns.get_selected_router().go_back();
                 }
