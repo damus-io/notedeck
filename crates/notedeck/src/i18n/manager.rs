@@ -11,11 +11,13 @@ const DE: LanguageIdentifier = langid!("de");
 const ES_419: LanguageIdentifier = langid!("es-419");
 const ES_ES: LanguageIdentifier = langid!("es-ES");
 const FR: LanguageIdentifier = langid!("fr");
+const JA: LanguageIdentifier = langid!("ja");
 const PT_BR: LanguageIdentifier = langid!("pt-BR");
+const PT_PT: LanguageIdentifier = langid!("pt-PT");
 const TH: LanguageIdentifier = langid!("th");
 const ZH_CN: LanguageIdentifier = langid!("zh-CN");
 const ZH_TW: LanguageIdentifier = langid!("zh-TW");
-const NUM_FTLS: usize = 10;
+const NUM_FTLS: usize = 12;
 
 const EN_US_NATIVE_NAME: &str = "English (US)";
 const EN_XA_NATIVE_NAME: &str = "Éñglísh (Pséúdólóçàlé)";
@@ -23,7 +25,9 @@ const DE_NATIVE_NAME: &str = "Deutsch";
 const ES_419_NATIVE_NAME: &str = "Español (Latinoamérica)";
 const ES_ES_NATIVE_NAME: &str = "Español (España)";
 const FR_NATIVE_NAME: &str = "Français";
+const JA_NATIVE_NAME: &str = "日本語";
 const PT_BR_NATIVE_NAME: &str = "Português (Brasil)";
+const PT_PT_NATIVE_NAME: &str = "Português (Portugal)";
 const TH_NATIVE_NAME: &str = "ภาษาไทย";
 const ZH_CN_NATIVE_NAME: &str = "简体中文";
 const ZH_TW_NATIVE_NAME: &str = "繁體中文";
@@ -59,8 +63,16 @@ const FTLS: [StaticBundle; NUM_FTLS] = [
         ftl: include_str!("../../../../assets/translations/fr/main.ftl"),
     },
     StaticBundle {
+        identifier: JA,
+        ftl: include_str!("../../../../assets/translations/ja/main.ftl"),
+    },
+    StaticBundle {
         identifier: PT_BR,
         ftl: include_str!("../../../../assets/translations/pt-BR/main.ftl"),
+    },
+    StaticBundle {
+        identifier: PT_PT,
+        ftl: include_str!("../../../../assets/translations/pt-PT/main.ftl"),
     },
     StaticBundle {
         identifier: TH,
@@ -113,7 +125,9 @@ impl Default for Localization {
             ES_419.clone(),
             ES_ES.clone(),
             FR.clone(),
+            JA.clone(),
             PT_BR.clone(),
+            PT_PT.clone(),
             TH.clone(),
             ZH_CN.clone(),
             ZH_TW.clone(),
@@ -126,7 +140,9 @@ impl Default for Localization {
             (ES_419, ES_419_NATIVE_NAME.to_owned()),
             (ES_ES, ES_ES_NATIVE_NAME.to_owned()),
             (FR, FR_NATIVE_NAME.to_owned()),
+            (JA, JA_NATIVE_NAME.to_owned()),
             (PT_BR, PT_BR_NATIVE_NAME.to_owned()),
+            (PT_PT, PT_PT_NATIVE_NAME.to_owned()),
             (TH, TH_NATIVE_NAME.to_owned()),
             (ZH_CN, ZH_CN_NATIVE_NAME.to_owned()),
             (ZH_TW, ZH_TW_NATIVE_NAME.to_owned()),

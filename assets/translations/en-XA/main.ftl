@@ -79,9 +79,6 @@ Banner_52ef = {"["}Bàññér{"]"}
 # Beta version label
 BETA_8e5d = {"["}BÉTÀ{"]"}
 
-# Option in settings section to show the source client label at the bottom of the note
-Bottom_33c8 = {"["}Bóttóm{"]"}
-
 # Broadcast the note to all connected relays
 Broadcast_fe43 = {"["}Bróàdçàst{"]"}
 
@@ -246,9 +243,6 @@ Font_size_dd73 = {"["}Fóñt sízé:{"]"}
 
 # Title for hashtags column
 Hashtags_f8e0 = {"["}Hàshtàgs{"]"}
-
-# Option in settings section to hide the source client label in note display
-Hide_281d = {"["}Hídé{"]"}
 
 # Title for Home column
 Home_8c19 = {"["}Hómé{"]"}
@@ -493,9 +487,6 @@ Someone_else_s_Notifications_82e6 = {"["}Sóméóñé élsé's Ñótífíçàtí
 # Label for Sort replies newest first, others settings section
 Sort_replies_newest_first_b6c3 = {"["}Sórt réplíés ñéwést fírst:{"]"}
 
-# Label for Source client, others settings section
-Source_client_fb2b = {"["}Sóúrçé çlíéñt:{"]"}
-
 # Description for contact list column
 Source_the_last_note_for_each_user_in_your_contact_list_e157 = {"["}Sóúrçé thé làst ñóté fór éàçh úsér íñ yóúr çóñtàçt líst{"]"}
 
@@ -555,9 +546,6 @@ Thread_0f20 = {"["}Thréàd{"]"}
 
 # Link text for thread references
 thread_ad1f = {"["}thréàd{"]"}
-
-# Option in settings section to show the source client label at the top of the note
-Top_6aeb = {"["}Tóp{"]"}
 
 # Title for universe column
 Universe_e01e = {"["}Úñívérsé{"]"}

@@ -55,8 +55,6 @@ Ask_dave_anything_33d1 = 向 Dave 提問任何問題...
 Banner_52ef = 橫幅
 # Beta version label
 BETA_8e5d = 測試版
-# Option in settings section to show the source client label at the bottom of the note
-Bottom_33c8 = 底部
 # Broadcast the note to all connected relays
 Broadcast_fe43 = 廣播
 # Broadcast the note only to local network relays
@@ -163,10 +161,10 @@ Enter_your_key_0fca = 請輸入你的密鑰
 Enter_your_public_key__npub___nostr_address__e_g___address____or_private_key__nsec___You_must_enter_your_private_key_to_be_able_to_post__reply__etc_48e9 = 請輸入你的公鑰（npub）、nostr 地址（如 { $address }）、或私鑰（nsec）。你必須輸入你的私鑰才能發貼、回覆等等。
 # Label for find user button
 Find_User_bd12 = 查找用戶
+# Label for font size, Appearance settings section
+Font_size_dd73 = 字體大小：
 # Title for hashtags column
 Hashtags_f8e0 = 標籤
-# Option in settings section to hide the source client label in note display
-Hide_281d = 隱藏
 # Title for Home column
 Home_8c19 = 主頁
 # Label for deck icon selection
@@ -237,6 +235,8 @@ Notifications_d673 = 通知
 Notifications_ef56 = 通知
 # Relative time for very recent events (less than 3 seconds)
 now_2181 = 剛剛
+# Setting to turn on sorting replies so that the newest are shown first
+On_f412 = 開啟
 # Button label to open email client
 Open_Email_25e9 = 打開電子郵箱
 # Instruction to open email client
@@ -289,6 +289,8 @@ replying_to_a_note_e0bc = 正在回覆筆記
 Repost_this_note_8e56 = 轉發此筆記
 # Label for reposted notes
 Reposted_61c8 = 已轉發
+# Label for reset note body font size, Appearance settings section
+Reset_4e60 = 重置
 # Label for reset zoom level, Appearance settings section
 Reset_62d4 = 重置
 # Heading for support section
@@ -315,8 +317,6 @@ See_the_whole_nostr_universe_7694 = 查看整個 nostr 宇宙
 Send_1ea4 = 發送
 # Column title for app settings
 Settings_7a4f = 設置
-# Label for Show source client, others settings section
-Show_source_client_9e31 = 顯示來源客戶端
 # Description for last note per user column
 Show_the_last_note_for_each_user_from_a_list_50e7 = 顯示列表中每個用戶的最後一條筆記
 # Button label to sign out of account
@@ -325,6 +325,8 @@ Sign_out_337b = 登出
 Someone_else_s_Notes_7e5f = 其他人的筆記
 # Title for someone else's notifications column
 Someone_else_s_Notifications_82e6 = 其他人的通知
+# Label for Sort replies newest first, others settings section
+Sort_replies_newest_first_b6c3 = 按最新排序回覆：
 # Description for contact list column
 Source_the_last_note_for_each_user_in_your_contact_list_e157 = 獲取你的聯繫人列表中每個用戶的最新一條筆記
 # Description for hashtags column
@@ -349,6 +351,8 @@ Storage_ed65 = 儲存
 Subscribe_to_someone_else_s_notes_d1e9 = 訂閱他人的筆記
 # Column title for subscribing to individual user
 Subscribe_to_someone_s_notes_b3c8 = 訂閱某人的筆記
+# Support email address
+Support_email_44d9 = 支持電子郵件：
 # Hover text for dark mode toggle button
 Switch_to_dark_mode_4dec = 切換到暗色模式
 # Hover text for light mode toggle button
@@ -363,8 +367,6 @@ Theme_4aac = 主題：
 Thread_0f20 = 串文
 # Link text for thread references
 thread_ad1f = 串文
-# Option in settings section to show the source client label at the top of the note
-Top_6aeb = 頂部
 # Title for universe column
 Universe_e01e = 宇宙
 # Column title for universe feed

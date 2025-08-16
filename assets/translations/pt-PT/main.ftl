@@ -6,21 +6,21 @@
 # Regular strings
 
 # Profile about/bio field label
-About_00c0 = Sobre 
+About_00c0 = Sobre
 # Column title for account management
 Accounts_f018 = Contas
 # Button label to add a relay
-Add_269d = Transmitir
+Add_269d = Adicionar
 # Label for add column button
-Add_47df = Adicionar coluna
+Add_47df = Adicionar
 # Button label to add a different wallet
-Add_a_different_wallet_that_will_only_be_used_for_this_account_de8d = Adicionar outra carteira a ser usada apenas nesta conta
+Add_a_different_wallet_that_will_only_be_used_for_this_account_de8d = Adicionar uma carteira diferente que será usada apenas para esta conta
 # Error message for missing wallet
-Add_a_wallet_to_continue_d170 = Obrigatório adicionar carteira
+Add_a_wallet_to_continue_d170 = Adicionar uma carteira para continuar
 # Button label to add a new account
-Add_account_1cfc = Adicionar conta nova aqui
+Add_account_1cfc = Adicionar conta
 # Column title for adding new account
-Add_Account_d06c = Adicionar nova conta
+Add_Account_d06c = Adicionar conta
 # Column title for adding algorithm column
 Add_Algo_Column_0d75 = Adicionar coluna de algoritmo
 # Column title for adding new column
@@ -30,35 +30,35 @@ Add_Deck_fabf = Adicionar aba
 # Column title for adding external notifications column
 Add_External_Notifications_Column_41ae = Adicionar coluna de notificações externas
 # Column title for adding hashtag column
-Add_Hashtag_Column_ebf4 = Adicionar coluna de #
+Add_Hashtag_Column_ebf4 = Adicionar coluna de marcadores
 # Column title for adding last notes column
-Add_Last_Notes_Column_bbad = Adicionar última coluna de notas
+Add_Last_Notes_Column_bbad = Adicionar coluna de últimas notas
 # Column title for adding notifications column
 Add_Notifications_Column_79f8 = Adicionar coluna de notificações
 # Button label to add a relay
-Add_relay_269d = Adicionar transmissão
+Add_relay_269d = Adicionar relay
 # Button label to add a wallet
 Add_Wallet_d1be = Adicionar carteira
 # Title for algorithmic feeds column
-Algo_2452 = Algoritmos
+Algo_2452 = Algoritmo
 # Description for algorithmic feeds column
-Algorithmic_feeds_to_aid_in_note_discovery_d344 = Algoritmos para pesquisar notas
+Algorithmic_feeds_to_aid_in_note_discovery_d344 = Fontes de algoritmo para ajudar na descoberta de notas
 # Label for zap amount input field
-Amount_70f0 = Valor
+Amount_70f0 = Quantia
 # Label for appearance settings section
 Appearance_4c7f = Aparência
 # Button to send message to Dave AI assistant
 Ask_b7f4 = Perguntar
 # Placeholder text for Dave AI input field
-Ask_dave_anything_33d1 = Perguntar ao Dave
+Ask_dave_anything_33d1 = Perguntar qualquer coisa...
 # Profile banner URL field label
-Banner_52ef = Destaque
+Banner_52ef = Faixa
 # Beta version label
-BETA_8e5d = Beta
+BETA_8e5d = BETA
 # Broadcast the note to all connected relays
-Broadcast_fe43 = Encaminhar
+Broadcast_fe43 = Transmissão
 # Broadcast the note only to local network relays
-Broadcast_Local_7e50 = Encaminhar especificamente
+Broadcast_Local_7e50 = Transmissão local
 # Button label to cancel an action
 Cancel_ed3b = Cancelar
 # Label for cancel clear cache, Storage settings section
@@ -66,25 +66,25 @@ Cancel_fd8b = Cancelar
 # Label for clear cache button, Storage settings section
 Clear_cache_dccb = Limpar cache
 # Hover text for editable zap amount
-Click_to_edit_0414 = Editar valor
+Click_to_edit_0414 = Clica para editar
 # Column title for note composition
 Compose_Note_c094 = Compor nota
 # Label for configure relays, settings section
-Configure_relays_d156 = Configurar canais
+Configure_relays_d156 = Configurar relays
 # Label for confirm clear cache, Storage settings section
 Confirm_9d9d = Confirmar
 # Button label to confirm an action
 Confirm_f8a6 = Confirmar
 # Status label for connected relay
-Connected_f8cc = Conectar
+Connected_f8cc = Conectado
 # Status label for connecting relay
-Connecting_6b7e = Conectando...
+Connecting_6b7e = A conectar...
 # Title for contact list column
-Contact_List_f85a = Lista de contatos
+Contact_List_f85a = Lista de contactos
 # Column title for contact lists
-Contacts_7533 = Contatos
+Contacts_7533 = Contactos
 # Column title for last notes per contact
-Contacts__last_notes_3f84 = Contatos (últimas notas)
+Contacts__last_notes_3f84 = Contactos (últimas notas)
 # Button label to copy logs
 Copy_a688 = Copiar
 # Button to copy media link to clipboard
@@ -92,35 +92,35 @@ Copy_Link_dc7c = Copiar link
 # Copy the unique note identifier to clipboard
 Copy_Note_ID_6b45 = Copiar ID da nota
 # Copy the raw note data in JSON format to clipboard
-Copy_Note_JSON_9e4e = Copiar nota "JSON"
+Copy_Note_JSON_9e4e = Copiar JSON da nota
 # Copy the author's public key to clipboard
 Copy_Pubkey_9cc4 = Copiar chave pública
 # Copy the text content of the note to clipboard
 Copy_Text_f81c = Copiar texto
 # Relative time in days
-count_d_b9be = { $count }D
+count_d_b9be = { $count }d
 # Relative time in hours
-count_h_3ecb = { $count }H
+count_h_3ecb = { $count }h
 # Relative time in minutes
-count_m_b41e = { $count }M
+count_m_b41e = { $count }m
 # Relative time in months
-count_mo_7aba = { $count }Mes
+count_mo_7aba = { $count } mês(es)
 # Relative time in seconds
-count_s_aa26 = { $count }S
+count_s_aa26 = { $count } s
 # Relative time in weeks
-count_w_7468 = { $count }Sem
+count_w_7468 = { $count } semana(s)
 # Relative time in years
-count_y_9408 = { $count }A
+count_y_9408 = { $count } ano(s)
 # Button to create a new account
 Create_Account_6994 = Criar conta
 # Button label to create a new deck
 Create_Deck_16b7 = Criar aba
 # Column title for custom timelines
-Custom_a69e = Personalizar
+Custom_a69e = Personalizadas
 # Column title for zap amount customization
-Customize_Zap_Amount_cfc4 = Personalizar valor do ZAP
+Customize_Zap_Amount_cfc4 = Personalizar valor do zap
 # Column title for support page
-Damus_Support_27c0 = Ajuda
+Damus_Support_27c0 = Suporte Damus
 # Label for Theme Dark, Appearance settings section
 Dark_85fe = Modo escuro
 # Label for deck name input field
@@ -128,99 +128,99 @@ Deck_name_cd32 = Nome da aba
 # Label for decks section in side panel
 DECKS_1fad = ABAS
 # Label for default zap amount input
-Default_amount_per_zap_399d = Valor padrão de ZAP
+Default_amount_per_zap_399d = Valor padrão por zap:
 # Name of the default deck feed
-Default_Deck_fcca = Nome padrão de abas
+Default_Deck_fcca = Aba padrão
 # Button label to delete a deck
-Delete_Deck_bb29 = Deletar aba
+Delete_Deck_bb29 = Excluir aba
 # Tooltip for deleting a column
-Delete_this_column_8d5a = Deletar esta coluna
+Delete_this_column_8d5a = Apagar esta coluna
 # Button label to delete a wallet
-Delete_Wallet_d1d4 = Deletar carteira
+Delete_Wallet_d1d4 = Eliminar carteira
 # Profile display name field label
-Display_name_f9d9 = Nome de exibição
+Display_name_f9d9 = Nome a mostrar
 # Domain identification message
-domain___will_be_used_for_identification_b67e = "{ $domain }" será utilizado para identificação
+domain___will_be_used_for_identification_b67e = "{ $domain }" será usado para identificação
 # Column title for editing deck
 Edit_Deck_4018 = Editar aba
 # Button label to edit a deck
-Edit_Deck_fd93 = Editar
+Edit_Deck_fd93 = Editar aba
 # Button label to edit user profile
 Edit_Profile_49e6 = Editar perfil
 # Column title for profile editing
 Edit_Profile_8ad4 = Editar perfil
 # Placeholder for hashtag input field
-Enter_the_desired_hashtags_here__for_multiple_space-separated_7a69 = Digite as # desejadas aqui (para múltiplos espaços separados)
+Enter_the_desired_hashtags_here__for_multiple_space-separated_7a69 = Insere aqui os marcadores desejados (para múltiplos com espaços separados)
 # Placeholder for relay input field
-Enter_the_relay_here_1c8b = Insira a retransmissão aqui
+Enter_the_relay_here_1c8b = Insere aqui o relay
 # Hint text to prompt entering the user's public key.
-Enter_the_user_s_key__npub__hex__nip05__here_650c = Digite a chave do usuário (npub, hex, nip05) aqui...
+Enter_the_user_s_key__npub__hex__nip05__here_650c = Insere aqui a chave de utilizador (npub, hex, nip05) 
 # Label for key input field. Key can be public key (npub), private key (nsec), or Nostr address (NIP-05).
-Enter_your_key_0fca = Sua chave aqui
+Enter_your_key_0fca = Insere a tua chave
 # Instructions for entering Nostr credentials
-Enter_your_public_key__npub___nostr_address__e_g___address____or_private_key__nsec___You_must_enter_your_private_key_to_be_able_to_post__reply__etc_48e9 = Insira sua chave pública (npub), endereço do Nostr (e.g. { $address }), ou chave privada (nsec). Você deve digitar sua chave privada para conseguir publicar, responder, etc.
+Enter_your_public_key__npub___nostr_address__e_g___address____or_private_key__nsec___You_must_enter_your_private_key_to_be_able_to_post__reply__etc_48e9 = Insere a tua chave públca (npub), endereço nostr (por exemplo { $address }), ou chave privada (nsec). Tens de inserir a tua chave pública para publicar, responder, etc.
 # Label for find user button
-Find_User_bd12 = Pesquisar usuário
+Find_User_bd12 = Encontrar utilizador
 # Label for font size, Appearance settings section
-Font_size_dd73 = Tamanho da letra
+Font_size_dd73 = Tamanho da letra:
 # Title for hashtags column
-Hashtags_f8e0 = #
+Hashtags_f8e0 = Marcadores
 # Title for Home column
 Home_8c19 = Início
 # Label for deck icon selection
 Icon_b0ab = Ícone
 # Label for Image cache size, Storage settings section
-Image_cache_size_3004 = Tamanho do cache de imagem:
+Image_cache_size_3004 = Tamanho do cache da imagem:
 # Title for individual user column
 Individual_b776 = Individual
 # Error message for invalid zap amount
 Invalid_amount_6630 = Quantia inválida
 # Error message for invalid key input
-Invalid_key_4726 = Chave inválida
+Invalid_key_4726 = Chave inválida.
 # Error message for invalid Nostr Wallet Connect URI
-Invalid_NWC_URI_031b = NWC URI Inválido
+Invalid_NWC_URI_031b = NWC URI inválido.
 # Zap amount button for 100000 sats. Abbreviated because the button is too small to display the full amount.
-k_100K_686c = 100 mil
+k_100K_686c = 100K
 # Zap amount button for 10000 sats. Abbreviated because the button is too small to display the full amount.
-k_10K_f7e6 = 10 mil
+k_10K_f7e6 = 10K
 # Zap amount button for 20000 sats. Abbreviated because the button is too small to display the full amount.
-k_20K_4977 = 20 mil
+k_20K_4977 = 20K
 # Zap amount button for 50000 sats. Abbreviated because the button is too small to display the full amount.
-k_50K_c2dc = 50 mil
+k_50K_c2dc = 50K
 # Zap amount button for 5000 sats. Abbreviated because the button is too small to display the full amount.
-k_5K_f7e6 = 5 mil
+k_5K_f7e6 = 5K
 # Description for your notes column
-Keep_track_of_your_notes___replies_a334 = Acompanhe suas notas e respostas
+Keep_track_of_your_notes___replies_a334 = Acompanha as tuas notas e respostas
 # Label for language, Appearance settings section
-Language_e264 = Idioma
+Language_e264 = Idioma:
 # Title for last note per user column
-Last_Note_per_User_17ad = Última Nota por Usuário
+Last_Note_per_User_17ad = Última nota por utilizador
 # Label for Theme Light, Appearance settings section
 Light_7475 = Modo claro
 # Bitcoin Lightning network address field label
-Lightning_network_address__lud16_ea51 = Endereço de rede de eletrização (lud16)
+Lightning_network_address__lud16_ea51 = Endereço da rede Lightning (lud16)
 # Login page title
-Login_9eef = Entrar
+Login_9eef = Iniciar sessão
 # Login button text
-Login_now___let_s_do_this_5630 = Entrar agora! Vamos nessa!
+Login_now___let_s_do_this_5630 = Entra agora — vamos fazer isto!
 # Text shown on blurred media from unfollowed users
-Media_from_someone_you_don_t_follow_5611 = Conteúdo de pessoas que você não segue
+Media_from_someone_you_don_t_follow_5611 = Conteúdo de alguém que não segues
 # Tooltip for moving a column
-Moves_this_column_to_another_position_0d4b = Mover esta coluna
+Moves_this_column_to_another_position_0d4b = Mover esta coluna para outra posição
 # Title for the user's deck
 My_Deck_4ac5 = Minha aba
 # Label asking if the user is new to Nostr. Underneath this label is a button to create an account.
-New_to_Nostr_a2fd = Novo no Nostr?
+New_to_Nostr_a2fd = Nov@ no Nostr?
 # NIP-05 identity field label
-Nostr_address__NIP-05_identity_74a2 =  Endereço Nostr (Identidade NIP-05)
+Nostr_address__NIP-05_identity_74a2 = Endereço Nostr (identificação NIP-05)
 # Default username when profile is not available
-nostrich_df29 = Nostrich
+nostrich_df29 = nostrich
 # Status label for disconnected relay
-Not_Connected_6292 = Desconectado
+Not_Connected_6292 = Não conectado
 # Link text for note references
-note_cad6 = Nota
+note_cad6 = nota
 # Beta product warning message
-Notedeck_is_a_beta_product__Expect_bugs_and_contact_us_when_you_run_into_issues_a671 = Notedeck é um produto beta. Espere erros e entre em contato conosco quando tiver problemas.
+Notedeck_is_a_beta_product__Expect_bugs_and_contact_us_when_you_run_into_issues_a671 = Notedeck é um produto beta. Espere bugs e contacte-nos quando tiver problemas.
 # Filter label for notes only view
 Notes_03fb = Notas
 # Label for notes-only filter
@@ -234,27 +234,27 @@ Notifications_d673 = Notificações
 # Title for notifications column
 Notifications_ef56 = Notificações
 # Relative time for very recent events (less than 3 seconds)
-now_2181 = Agora
+now_2181 = agora
 # Setting to turn on sorting replies so that the newest are shown first
-On_f412 = Ligar
+On_f412 = Ativado
 # Button label to open email client
-Open_Email_25e9 = Abrir E-mail
+Open_Email_25e9 = Abrir e-mail
 # Instruction to open email client
-Open_your_default_email_client_to_get_help_from_the_Damus_team_68dc = Abra o seu cliente de e-mail padrão para obter ajuda do time Damus
+Open_your_default_email_client_to_get_help_from_the_Damus_team_68dc = Abre o teu cliente de e-mail padrão para obteres ajuda da equipa Damus
 # Label for others settings section
 Others_7267 = Outros
 # Placeholder text for NWC URI input
-Paste_your_NWC_URI_here_b471 = Cole seu URI NWC aqui...
+Paste_your_NWC_URI_here_b471 = Cola o teu NWC URI aqui...
 # Error message for missing deck name
-Please_create_a_name_for_the_deck_38e7 = Por favor, crie um nome para a aba.
+Please_create_a_name_for_the_deck_38e7 = Cria um nome para a aba.
 # Error message for missing deck name and icon
-Please_create_a_name_for_the_deck_and_select_an_icon_0add = Por favor, crie um nome para a aba e selecione um ícone.
+Please_create_a_name_for_the_deck_and_select_an_icon_0add = Cria um nome para a aba e seleciona um ícone.
 # Error message for missing deck icon
-Please_select_an_icon_655b = Favor selecionar um ícone.
+Please_select_an_icon_655b = Seleciona um ícone.
 # Button label to post a note
-Post_now_8a49 = Postar
+Post_now_8a49 = Publicar agora
 # Instruction for copying logs
-Press_the_button_below_to_copy_your_most_recent_logs_to_your_system_s_clipboard__Then_paste_it_into_your_email_322e = Clique abaixo para copiar seus registros mais recentes para a área de transferência do seu sistema. Em seguida, cole-os no seu E-mail.
+Press_the_button_below_to_copy_your_most_recent_logs_to_your_system_s_clipboard__Then_paste_it_into_your_email_322e = Prime o botão abaixo para copiar os teus registos mais recentes para a área de transferência do teu sistema. Depois cola-os no teu e-mail.
 # Profile picture URL field label
 Profile_picture_81ff = Foto de perfil
 # Column title for quote composition
@@ -262,85 +262,85 @@ Quote_475c = Citação
 # Error message when quote note cannot be found
 Quote_of_unknown_note_e4f0 = Citação de nota desconhecida
 # Label for read-only profile mode
-Read_only_82ff = Modo leitura
+Read_only_82ff = Somente leitura
 # Column title for relay management
-Relays_9d89 = Canais
+Relays_9d89 = Relays
 # Label for relay list section
-Relays_ad5e = Canais
+Relays_ad5e = Relays
 # Column title for reply composition
 Reply_3bf1 = Responder
 # Hover text for reply button
-Reply_to_this_note_f5de = Responder esta nota
+Reply_to_this_note_f5de = Responder a esta nota
 # Error message when reply note cannot be found
-Reply_to_unknown_note_4401 = Responder nota desconhecida
+Reply_to_unknown_note_4401 = Responder a nota desconhecida
 # Fallback template for replying to user
-replying_to__user_15ab = Respondendo { $user }
+replying_to__user_15ab = responder a { $user }
 # Template for replying to user in unknown thread
-replying_to__user__in_someone_s_thread_e148 = Respondendo { $user } no tópico de alguém
+replying_to__user__in_someone_s_thread_e148 = responder a { $user } no tópico de alguém
 # Template for replying to note in different user's thread
-replying_to__user__s__note__in__thread_user__s__thread_daa8 = Resposta { $user }de { $note } em { $thread_user }' { $thread }
+replying_to__user__s__note__in__thread_user__s__thread_daa8 = respondendo à { $note } de { $user } no { $thread } de { $thread_user }
 # Template for replying to user's note
-replying_to__user__s__note_ccba = Respondendo { $user }de { $note }
+replying_to__user__s__note_ccba = respondendo à { $note } de { $user }
 # Template for replying to root thread
-replying_to__user__s__thread_444d = Respondendo { $user }de { $thread }
+replying_to__user__s__thread_444d = respondendo ao { $thread } de { $user }
 # Fallback text when reply note is not found
-replying_to_a_note_e0bc = Respondendo nota
+replying_to_a_note_e0bc = respondendo a uma nota
 # Hover text for repost button
-Repost_this_note_8e56 = Republicar nota
+Repost_this_note_8e56 = Republicar esta nota
 # Label for reposted notes
-Reposted_61c8 = Publicada
+Reposted_61c8 = Republicado
 # Label for reset note body font size, Appearance settings section
 Reset_4e60 = Redefinir
 # Label for reset zoom level, Appearance settings section
-Reset_62d4 = Resetar
+Reset_62d4 = Redefinir
 # Heading for support section
-Running_into_a_bug_1796 = Precisa de ajuda?
+Running_into_a_bug_1796 = Encontraste um bug?
 # Label for satoshis (Bitcoin unit) for custom zap amount input field
 SATS_45d7 = SATS
 # Unit label for satoshis (Bitcoin unit) for configuring default zap amount in wallet settings.
 sats_e5ec = sats
 # Button to save default zap amount
-Save_6f7c = Salvar
+Save_6f7c = Guardar
 # Button label to save profile changes
-Save_changes_00db = Salvo
+Save_changes_00db = Guardar alterações
 # Column title for search page
-Search_c573 = Pesquisar
+Search_c573 = Procurar
 # Placeholder for search notes input field
-Search_notes_42a6 = Pesquisar notas...
+Search_notes_42a6 = Procurar notas...
 # Search in progress message
-Searching_for___query_5d18 = Pesquisando por '{ $query }'
+Searching_for___query_5d18 = Procurando por '{ $query }'
 # Description for Home column
-See_notes_from_your_contacts_ac16 = Veja notas dos seus contatos
+See_notes_from_your_contacts_ac16 = Ver notas dos meus contactos
 # Description for universe column
-See_the_whole_nostr_universe_7694 = Veja todo o universo Nostr
+See_the_whole_nostr_universe_7694 = Ver notas de todo o universo nostr
 # Button label to send a zap
 Send_1ea4 = Enviar
 # Column title for app settings
 Settings_7a4f = Configurações
 # Description for last note per user column
-Show_the_last_note_for_each_user_from_a_list_50e7 = Mostrar a última nota para cada usuário de uma lista
+Show_the_last_note_for_each_user_from_a_list_50e7 = Mostrar a última nota para cada utilizador a partir de uma lista
 # Button label to sign out of account
-Sign_out_337b = Sair
+Sign_out_337b = Terminar sessão
 # Title for someone else's notes column
 Someone_else_s_Notes_7e5f = Notas de outra pessoa
 # Title for someone else's notifications column
 Someone_else_s_Notifications_82e6 = Notificações de outra pessoa
 # Label for Sort replies newest first, others settings section
-Sort_replies_newest_first_b6c3 = Ordenar respostas mais recentes primeiro:
+Sort_replies_newest_first_b6c3 = Ordenar respostas mais recentes antes:
 # Description for contact list column
-Source_the_last_note_for_each_user_in_your_contact_list_e157 = Fonte da última nota para cada usuário em sua lista de contatos
+Source_the_last_note_for_each_user_in_your_contact_list_e157 = Origem da última nota para cada utilizador na minha lista
 # Description for hashtags column
-Stay_up_to_date_with_a_certain_hashtag_88e3 = Mantenha-se atualizado com uma certa hashtag
+Stay_up_to_date_with_a_certain_hashtag_88e3 = Atualizações com um dado marcador
 # Description for notifications column
-Stay_up_to_date_with_notifications_and_mentions_6f4e = Ficar atualizado com notificações e menções
+Stay_up_to_date_with_notifications_and_mentions_6f4e = Atualizações com notificações e menções
 # Description for someone else's notes column
-Stay_up_to_date_with_someone_else_s_notes___replies_464c = Mantenha-se atualizado com as notas e respostas de alguém
+Stay_up_to_date_with_someone_else_s_notes___replies_464c = Atualizar-me de notas e respostas de outra pessoa
 # Description for someone else's notifications column
-Stay_up_to_date_with_someone_else_s_notifications_and_mentions_3473 = Mantenha-se atualizado com as notificações e menções de alguém
+Stay_up_to_date_with_someone_else_s_notifications_and_mentions_3473 = Atualizar-me de notificações e menções de outra pessoa
 # Description for individual user column
-Stay_up_to_date_with_someone_s_notes___replies_aa78 = Mantenha-se atualizado com as notas e respostas de alguém
+Stay_up_to_date_with_someone_s_notes___replies_aa78 = Atualizar-me de notas e respostas de outra pessoa
 # Description for your notifications column
-Stay_up_to_date_with_your_notifications_and_mentions_e73e = Mantenha-se atualizado com suas notificações e menções
+Stay_up_to_date_with_your_notifications_and_mentions_e73e = Atualizar-me de notificações e menções
 # Step 1 label in support instructions
 Step_1_8656 = Passo 1
 # Step 2 label in support instructions
@@ -348,55 +348,55 @@ Step_2_d08d = Passo 2
 # Label for storage settings section
 Storage_ed65 = Armazenamento
 # Column title for subscribing to external user
-Subscribe_to_someone_else_s_notes_d1e9 = Inscrever-se em notas de outra pessoa
+Subscribe_to_someone_else_s_notes_d1e9 = Subscrever as notas de outra pessoa
 # Column title for subscribing to individual user
-Subscribe_to_someone_s_notes_b3c8 = Inscrever-se nas notas de alguém
+Subscribe_to_someone_s_notes_b3c8 = Subscrever as notas de alguém
 # Support email address
-Support_email_44d9 = E-mail de suporte
+Support_email_44d9 = E-mail de suporte:
 # Hover text for dark mode toggle button
-Switch_to_dark_mode_4dec = Mudar para modo escuro
+Switch_to_dark_mode_4dec = Mudar para o modo escuro
 # Hover text for light mode toggle button
-Switch_to_light_mode_72ce = Mudar para modo claro
+Switch_to_light_mode_72ce = Mudar para o modo claro
 # Button text to load blurred media
-Tap_to_Load_4b05 = Toque para carregar
+Tap_to_Load_4b05 = Toca para carregar
 # Message shown when Dave trial period has ended
-The_Dave_Nostr_AI_assistant_trial_has_ended_____Thanks_for_testing__Zap-enabled_Dave_coming_soon_c6c7 = O teste do assistente de IA Dave Nostr terminou :(. Obrigado por testar! Em breve teremos Dave habilitado para Zap 
+The_Dave_Nostr_AI_assistant_trial_has_ended_____Thanks_for_testing__Zap-enabled_Dave_coming_soon_c6c7 = O teste do assistente de IA Dave Nost terminou :(. Obrigado por testares! Dave com ativação de ZAPS em breve!
 # Label for theme, Appearance settings section
 Theme_4aac = Tema:
 # Column title for note thread view
-Thread_0f20 = Fio
+Thread_0f20 = Tópico
 # Link text for thread references
-thread_ad1f = Fio
+thread_ad1f = tópico
 # Title for universe column
 Universe_e01e = Universo
 # Column title for universe feed
 Universe_ffaa = Universo
 # Checkbox label for using wallet only for current account
-Use_this_wallet_for_the_current_account_only_61dc = Use esta carteira apenas para a conta atual
+Use_this_wallet_for_the_current_account_only_61dc = Usar esta carteira apenas para a conta atual
 # Username and domain identification message
-username___at___domain___will_be_used_for_identification_a4fd = d = "{ $username }" em "{ $domain }" será usado para identificação
+username___at___domain___will_be_used_for_identification_a4fd = "{ $username }" em "{ $domain }" será usado para identificação
 # Profile username field label
-Username_daa7 = Usuário
+Username_daa7 = Nome de utilizador
 # Label for view folder button, Storage settings section
-View_folder_9742 = Visualizar pasta
+View_folder_9742 = Ver pasta
 # Column title for wallet management
 Wallet_5e50 = Carteira
 # Hint for deck name input field
-We_recommend_short_names_083e = Recomendamos nomes pequenos
+We_recommend_short_names_083e = Recomendamos nomes curtos
 # Profile website field label
-Website_7980 = Site
+Website_7980 = Website
 # Placeholder for note input field
-Write_a_banger_note_here_bad2 = Escreva uma nota criativa aqui.
+Write_a_banger_note_here_bad2 = Escreve uma nota sonante aqui...
 # Placeholder text for key input field
-Your_key_here_81bd = Sua chave aqui...
+Your_key_here_81bd = A tua chave aqui...
 # Title for your notes column
-Your_Notes_f6db = Suas notas
+Your_Notes_f6db = Minhas notas
 # Title for your notifications column
-Your_Notifications_080d = Suas notificações
+Your_Notifications_080d = Minhas notificações
 # Heading for zap (tip) action
 Zap_16b4 = Zap
 # Hover text for zap button
-Zap_this_note_42b2 = Zap esta nota
+Zap_this_note_42b2 = Enviar zaps a esta nota
 # Label for zoom level, Appearance settings section
 Zoom_Level_29a8 = Nível de zoom:
 
@@ -405,6 +405,6 @@ Zoom_Level_29a8 = Nível de zoom:
 # Search results count
 Got__count__results_for___query_85fb =
     { $count ->
-        [one] Obteve um resultado { $count } para '{ $query }'
-       *[other] Obteve { $count } resultados para '{ $query }'
+        [one] { $count } resultado obtido para '{ $query }'
+       *[other] { $count } resultados obtidos para '{ $query }'
     }
