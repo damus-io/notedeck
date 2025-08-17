@@ -62,6 +62,7 @@ pub struct Damus {
 
 fn handle_key_events(input: &egui::InputState, columns: &mut Columns) {
     for event in &input.raw.events {
+        #[allow(clippy::collapsible_match)]
         if let egui::Event::Key {
             key, pressed: true, ..
         } = event
