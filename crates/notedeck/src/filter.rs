@@ -86,6 +86,13 @@ impl FilterStates {
         }
         self.states.insert(relay, state);
     }
+
+    /// For contacts, since that sub is managed elsewhere
+    pub fn set_all_states(&mut self, state: FilterState) {
+        for cur_state in self.states.values_mut() {
+            *cur_state = state.clone();
+        }
+    }
 }
 
 /// We may need to fetch some data from relays before our filter is ready.

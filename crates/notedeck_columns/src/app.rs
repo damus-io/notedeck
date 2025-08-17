@@ -145,7 +145,7 @@ fn try_process_event(
         }
     }
 
-    for (_kind, timeline) in &mut damus.timeline_cache {
+    for (kind, timeline) in &mut damus.timeline_cache {
         let is_ready = timeline::is_timeline_ready(
             app_ctx.ndb,
             app_ctx.pool,
@@ -170,6 +170,9 @@ fn try_process_event(
             }
         } else {
             // TODO: show loading?
+            if matches!(kind, TimelineKind::List(ListKind::Contact(_))) {
+                timeline::fetch_contact_list(&mut damus.subscriptions, timeline, app_ctx.accounts);
+            }
         }
     }
 
@@ -881,7 +884,13 @@ fn timelines_view(
     let mut save_cols = false;
     if let Some(action) = side_panel_action {
         save_cols = save_cols
-            || action.process(&mut app.timeline_cache, &mut app.decks_cache, ctx, ui.ctx());
+            || action.process(
+                &mut app.timeline_cache,
+                &mut app.decks_cache,
+                ctx,
+                &mut app.subscriptions,
+                ui.ctx(),
+            );
     }
 
     let mut app_action: Option<AppAction> = None;

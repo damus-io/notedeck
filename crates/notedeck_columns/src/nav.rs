@@ -8,7 +8,9 @@ use crate::{
     options::AppOptions,
     profile::{ProfileAction, SaveProfileChanges},
     route::{Route, Router, SingletonRouter},
+    subscriptions::Subscriptions,
     timeline::{
+        kind::ListKind,
         route::{render_thread_route, render_timeline_route},
         TimelineCache, TimelineKind,
     },
@@ -81,6 +83,7 @@ impl SwitchingAction {
         timeline_cache: &mut TimelineCache,
         decks_cache: &mut DecksCache,
         ctx: &mut AppContext<'_>,
+        subs: &mut Subscriptions,
         ui_ctx: &egui::Context,
     ) -> bool {
         match &self {
@@ -94,6 +97,15 @@ impl SwitchingAction {
                             &txn,
                             ctx.pool,
                             ui_ctx,
+                        );
+
+                        let contacts_sub = ctx.accounts.get_subs().contacts.remote.clone();
+                        // this is cringe but we're gonna get a new sub manager soon...
+                        subs.subs.insert(
+                            contacts_sub,
+                            crate::subscriptions::SubKind::FetchingContactList(TimelineKind::List(
+                                ListKind::Contact(*ctx.accounts.selected_account_pubkey()),
+                            )),
                         );
                     }
 
@@ -476,6 +488,7 @@ fn process_render_nav_action(
                 &mut app.timeline_cache,
                 &mut app.decks_cache,
                 ctx,
+                &mut app.subscriptions,
                 ui.ctx(),
             ) {
                 return Some(ProcessNavResult::SwitchOccurred);

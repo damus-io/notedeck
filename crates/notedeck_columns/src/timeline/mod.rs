@@ -593,18 +593,14 @@ pub fn send_initial_timeline_filter(
         }
 
         // we need some data first
-        FilterState::NeedsRemote => fetch_contact_list(subs, relay, timeline, accounts),
+        FilterState::NeedsRemote => fetch_contact_list(subs, timeline, accounts),
     }
 }
 
-pub fn fetch_contact_list(
-    subs: &mut Subscriptions,
-    relay: &mut PoolRelay,
-    timeline: &mut Timeline,
-    accounts: &Accounts,
-) {
-    let sub_kind = SubKind::FetchingContactList(timeline.kind.clone());
-    let sub = &accounts.get_subs().contacts;
+pub fn fetch_contact_list(subs: &mut Subscriptions, timeline: &mut Timeline, accounts: &Accounts) {
+    if timeline.filter.get_any_ready().is_some() {
+        return;
+    }
 
     let new_filter_state = match accounts.get_selected_account().data.contacts.get_state() {
         ContactState::Unreceived => {
@@ -617,10 +613,14 @@ pub fn fetch_contact_list(
         } => FilterState::GotRemote(filter::GotRemoteType::Contact),
     };
 
-    timeline
-        .filter
-        .set_relay_state(relay.url().to_string(), new_filter_state);
+    timeline.filter.set_all_states(new_filter_state);
 
+    let sub = &accounts.get_subs().contacts;
+    if subs.subs.contains_key(&sub.remote) {
+        return;
+    }
+
+    let sub_kind = SubKind::FetchingContactList(timeline.kind.clone());
     subs.subs.insert(sub.remote.clone(), sub_kind);
 }
 
