@@ -48,7 +48,7 @@ impl<T, E> LoadingState<T, E> {
 }
 
 #[derive(Serialize, Debug, Clone)]
-pub struct WaitRequest {
+pub struct _WaitRequest {
     pub indexname: String,
     pub subsystem: String,
     pub nextvalue: u64,

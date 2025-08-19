@@ -781,7 +781,7 @@ impl<'a> ScaledTexture<'a> {
         }
     }
 
-    pub fn get_image(&self) -> Image {
+    pub fn get_image(&self) -> Image<'_> {
         texture_to_image(self.tex, self.size).fit_to_exact_size(self.scaled_size)
     }
 }

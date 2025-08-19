@@ -274,7 +274,7 @@ struct RelayInfo<'a> {
     pub status: RelayStatus,
 }
 
-fn get_relay_infos(pool: &RelayPool) -> Vec<RelayInfo> {
+fn get_relay_infos(pool: &RelayPool) -> Vec<RelayInfo<'_>> {
     pool.relays
         .iter()
         .map(|relay| RelayInfo {

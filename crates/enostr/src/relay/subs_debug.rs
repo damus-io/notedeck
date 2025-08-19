@@ -68,7 +68,7 @@ impl From<RelayEvent<'_>> for OwnedRelayEvent {
 }
 
 #[derive(PartialEq, Eq, Hash, Clone)]
-pub struct RelaySub {
+pub struct _RelaySub {
     pub(crate) subid: String,
     pub(crate) filter: String,
 }

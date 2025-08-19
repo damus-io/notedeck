@@ -241,8 +241,8 @@ impl Notedeck {
         let setting_locale: Result<LanguageIdentifier, LanguageIdentifierError> =
             settings.locale().parse();
 
-        if setting_locale.is_ok() {
-            if let Err(err) = i18n.set_locale(setting_locale.unwrap()) {
+        if let Ok(setting_locale) = setting_locale {
+            if let Err(err) = i18n.set_locale(setting_locale) {
                 error!("{err}");
             }
         }

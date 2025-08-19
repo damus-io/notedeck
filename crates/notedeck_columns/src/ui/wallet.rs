@@ -30,7 +30,7 @@ pub enum DefaultZapState<'a> {
     Valid(&'a Msats),                        // in milisats
 }
 
-pub fn get_default_zap_state(default_zap: &mut DefaultZapMsats) -> DefaultZapState {
+pub fn get_default_zap_state(default_zap: &mut DefaultZapMsats) -> DefaultZapState<'_> {
     if default_zap.pending.is_rewriting {
         return DefaultZapState::Pending(&mut default_zap.pending);
     }

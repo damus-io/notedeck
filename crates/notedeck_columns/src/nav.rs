@@ -960,7 +960,7 @@ pub fn render_nav(
                         ctx.ndb,
                         ctx.img_cache,
                         get_active_columns_mut(ctx.i18n, ctx.accounts, &mut app.decks_cache),
-                        &[route.clone()],
+                        std::slice::from_ref(route),
                         col,
                         ctx.i18n,
                     )

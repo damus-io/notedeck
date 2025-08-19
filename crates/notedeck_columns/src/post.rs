@@ -56,7 +56,7 @@ impl NewPost {
         }
     }
 
-    pub fn to_note(&self, seckey: &[u8; 32]) -> Note {
+    pub fn to_note(&self, seckey: &[u8; 32]) -> Note<'_> {
         let mut content = self.content.clone();
         append_urls(&mut content, &self.media);
 
@@ -77,7 +77,7 @@ impl NewPost {
         builder.sign(seckey).build().expect("note should be ok")
     }
 
-    pub fn to_reply(&self, seckey: &[u8; 32], replying_to: &Note) -> Note {
+    pub fn to_reply(&self, seckey: &[u8; 32], replying_to: &Note) -> Note<'_> {
         let mut content = self.content.clone();
         append_urls(&mut content, &self.media);
 
@@ -157,7 +157,7 @@ impl NewPost {
             .expect("expected build to work")
     }
 
-    pub fn to_quote(&self, seckey: &[u8; 32], quoting: &Note) -> Note {
+    pub fn to_quote(&self, seckey: &[u8; 32], quoting: &Note) -> Note<'_> {
         let mut new_content = format!(
             "{}\nnostr:{}",
             self.content,

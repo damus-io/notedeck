@@ -22,7 +22,7 @@ impl UserAccount {
         }
     }
 
-    pub fn keypair(&self) -> KeypairUnowned {
+    pub fn keypair(&self) -> KeypairUnowned<'_> {
         KeypairUnowned {
             pubkey: &self.key.pubkey,
             secret_key: self.key.secret_key.as_ref(),

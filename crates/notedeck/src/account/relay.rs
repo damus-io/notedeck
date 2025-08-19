@@ -36,7 +36,7 @@ impl AccountRelayData {
             .limit()
             .unwrap_or(crate::filter::default_limit()) as i32;
         let nks = ndb
-            .query(txn, &[self.filter.clone()], lim)
+            .query(txn, std::slice::from_ref(&self.filter), lim)
             .expect("query user relays results")
             .iter()
             .map(|qr| qr.note_key)

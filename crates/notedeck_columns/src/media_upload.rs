@@ -75,7 +75,7 @@ pub fn get_nostr_build_upload_url() -> Promise<Result<String, Error>> {
     get_upload_url_from_provider(NOSTR_BUILD_URL())
 }
 
-fn create_nip98_note(seckey: &[u8; 32], upload_url: String, payload_hash: String) -> Note {
+fn create_nip98_note(seckey: &[u8; 32], upload_url: String, payload_hash: String) -> Note<'_> {
     NoteBuilder::new()
         .kind(27235)
         .start_tag()

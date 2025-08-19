@@ -15,7 +15,7 @@ impl SaveProfileChanges {
     pub fn new(kp: FullKeypair, state: ProfileState) -> Self {
         Self { kp, state }
     }
-    pub fn to_note(&self) -> Note {
+    pub fn to_note(&self) -> Note<'_> {
         let sec = &self.kp.secret_key.to_secret_bytes();
         add_client_tag(NoteBuilder::new())
             .kind(0)

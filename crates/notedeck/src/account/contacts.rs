@@ -42,7 +42,7 @@ impl Contacts {
 
     pub(super) fn query(&mut self, ndb: &Ndb, txn: &Transaction) {
         let binding = ndb
-            .query(txn, &[self.filter.clone()], 1)
+            .query(txn, std::slice::from_ref(&self.filter), 1)
             .expect("query user relays results");
 
         let Some(res) = binding.first() else {

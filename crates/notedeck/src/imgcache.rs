@@ -35,7 +35,7 @@ impl TexturesCache {
         &mut self,
         url: &str,
         closure: impl FnOnce() -> Promise<Option<Result<TexturedImage>>>,
-    ) -> LoadableTextureState {
+    ) -> LoadableTextureState<'_> {
         let internal = self.handle_and_get_state_internal(url, true, closure);
 
         internal.into()
@@ -45,7 +45,7 @@ impl TexturesCache {
         &mut self,
         url: &str,
         closure: impl FnOnce() -> Promise<Option<Result<TexturedImage>>>,
-    ) -> TextureState {
+    ) -> TextureState<'_> {
         let internal = self.handle_and_get_state_internal(url, false, closure);
 
         internal.into()
@@ -96,7 +96,7 @@ impl TexturesCache {
         });
     }
 
-    pub fn get_and_handle(&mut self, url: &str) -> Option<LoadableTextureState> {
+    pub fn get_and_handle(&mut self, url: &str) -> Option<LoadableTextureState<'_>> {
         self.cache.get_mut(url).map(|state| {
             handle_occupied(state, true);
             state.into()

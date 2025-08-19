@@ -190,7 +190,7 @@ impl DecksCache {
         &self.fallback_pubkey
     }
 
-    pub fn get_all_decks_mut(&mut self) -> ValuesMut<Pubkey, Decks> {
+    pub fn get_all_decks_mut(&mut self) -> ValuesMut<'_, Pubkey, Decks> {
         self.account_to_decks.values_mut()
     }
 

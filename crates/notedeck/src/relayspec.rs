@@ -77,6 +77,7 @@ impl PartialEq for RelaySpec {
 
 impl Eq for RelaySpec {}
 
+#[allow(clippy::non_canonical_partial_ord_impl)]
 impl PartialOrd for RelaySpec {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.url.cmp(&other.url))

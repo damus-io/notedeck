@@ -532,7 +532,7 @@ impl TimelineKind {
                 let contact_filter = contacts_filter(pk.bytes());
 
                 let results = ndb
-                    .query(txn, &[contact_filter.clone()], 1)
+                    .query(txn, std::slice::from_ref(&contact_filter), 1)
                     .expect("contact query failed?");
 
                 let kind_fn = TimelineKind::last_per_pubkey;
@@ -681,7 +681,7 @@ fn contact_filter_state(txn: &Transaction, ndb: &Ndb, pk: &Pubkey) -> FilterStat
     let contact_filter = contacts_filter(pk);
 
     let results = ndb
-        .query(txn, &[contact_filter.clone()], 1)
+        .query(txn, std::slice::from_ref(&contact_filter), 1)
         .expect("contact query failed?");
 
     if results.is_empty() {
@@ -706,7 +706,7 @@ fn last_per_pubkey_filter_state(ndb: &Ndb, pk: &Pubkey) -> FilterState {
 
     let txn = Transaction::new(ndb).expect("txn");
     let results = ndb
-        .query(&txn, &[contact_filter.clone()], 1)
+        .query(&txn, std::slice::from_ref(&contact_filter), 1)
         .expect("contact query failed?");
 
     if results.is_empty() {
