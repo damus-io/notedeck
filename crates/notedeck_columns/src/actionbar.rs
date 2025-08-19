@@ -3,10 +3,8 @@ use crate::{
     nav::{RouterAction, RouterType},
     route::Route,
     timeline::{
-        thread::{
-            selected_has_at_least_n_replies, InsertionResponse, NoteSeenFlags, ThreadNode, Threads,
-        },
-        ThreadSelection, TimelineCache, TimelineKind,
+        thread::{selected_has_at_least_n_replies, NoteSeenFlags, ThreadNode, Threads},
+        InsertionResponse, ThreadSelection, TimelineCache, TimelineKind,
     },
     view_state::ViewState,
 };

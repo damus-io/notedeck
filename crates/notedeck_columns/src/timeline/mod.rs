@@ -26,11 +26,13 @@ use std::{rc::Rc, time::SystemTime};
 use tracing::{debug, error, info, warn};
 
 pub mod cache;
+mod hybrid_set;
 pub mod kind;
 pub mod route;
 pub mod thread;
 
 pub use cache::TimelineCache;
+pub use hybrid_set::{HybridSet, InsertionResponse};
 pub use kind::{ColumnTitle, PubkeySource, ThreadSelection, TimelineKind};
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Default)]
