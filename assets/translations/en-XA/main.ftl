@@ -352,6 +352,9 @@ now_2181 = {"["}ñów{"]"}
 # Setting to turn on sorting replies so that the newest are shown first
 On_f412 = {"["}Óñ{"]"}
 
+# Column title for finding users to follow
+Onboarding_4a25 = {"["}Óñbóàrdíñg{"]"}
+
 # Button label to open email client
 Open_Email_25e9 = {"["}Ópéñ Émàíl{"]"}
 
@@ -465,6 +468,9 @@ See_notes_from_your_contacts_ac16 = {"["}Séé ñótés fróm yóúr çóñtàç
 
 # Description for universe column
 See_the_whole_nostr_universe_7694 = {"["}Séé thé whólé ñóstr úñívérsé{"]"}
+
+# Button to select all profiles in follow pack
+Select_All_a319 = {"["}Séléçt Àll{"]"}
 
 # Button label to send a zap
 Send_1ea4 = {"["}Séñd{"]"}

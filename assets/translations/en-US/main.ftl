@@ -352,6 +352,9 @@ now_2181 = now
 # Setting to turn on sorting replies so that the newest are shown first
 On_f412 = On
 
+# Column title for finding users to follow
+Onboarding_4a25 = Onboarding
+
 # Button label to open email client
 Open_Email_25e9 = Open Email
 
@@ -465,6 +468,9 @@ See_notes_from_your_contacts_ac16 = See notes from your contacts
 
 # Description for universe column
 See_the_whole_nostr_universe_7694 = See the whole nostr universe
+
+# Button to select all profiles in follow pack
+Select_All_a319 = Select All
 
 # Button label to send a zap
 Send_1ea4 = Send
