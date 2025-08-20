@@ -3,6 +3,7 @@
 //use wasm_bindgen::prelude::*;
 use crate::app::NotedeckApp;
 use crate::ChromeOptions;
+use bitflags::bitflags;
 use eframe::CreationContext;
 use egui::{vec2, Button, Color32, Label, Layout, Rect, RichText, ThemePreference, Widget};
 use egui_extras::{Size, StripBuilder};
@@ -25,6 +26,10 @@ pub struct Chrome {
     active: i32,
     options: ChromeOptions,
     apps: Vec<NotedeckApp>,
+
+    /// The state of the soft keyboard animation
+    soft_kb_anim_state: AnimState,
+
     pub repaint_causes: HashMap<egui::RepaintCause, u64>,
 }
 
@@ -35,6 +40,14 @@ pub enum ChromePanelAction {
     Wallet,
     SaveTheme(ThemePreference),
     Profile(notedeck::enostr::Pubkey),
+}
+
+bitflags! {
+    #[repr(transparent)]
+    #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+    pub struct SidebarOptions: u8 {
+        const Compact = 1 << 0;
+    }
 }
 
 impl ChromePanelAction {
@@ -174,6 +187,7 @@ impl Chrome {
         app_ctx: &mut AppContext,
         builder: StripBuilder,
         amt_open: f32,
+        amt_keyboard_open: f32,
     ) -> Option<ChromePanelAction> {
         let mut got_action: Option<ChromePanelAction> = None;
 
@@ -204,9 +218,17 @@ impl Chrome {
                                     self.topdown_sidebar(ui, app_ctx.i18n);
                                 })
                             });
+
                             vstrip.cell(|ui| {
                                 ui.with_layout(Layout::bottom_up(egui::Align::Center), |ui| {
-                                    if let Some(action) = bottomup_sidebar(self, app_ctx, ui) {
+                                    let options = if amt_keyboard_open > 0.0 {
+                                        SidebarOptions::Compact
+                                    } else {
+                                        SidebarOptions::default()
+                                    };
+                                    if let Some(action) =
+                                        bottomup_sidebar(self, app_ctx, ui, options)
+                                    {
                                         got_action = Some(action);
                                     }
                                 });
@@ -250,7 +272,6 @@ impl Chrome {
             .animate_bool(open_id, self.options.contains(ChromeOptions::IsOpen))
             * side_panel_width
     }
-
     /// Show the side menu or bar, depending on if we're on a narrow
     /// or wide screen.
     ///
@@ -259,52 +280,54 @@ impl Chrome {
     fn show(&mut self, ctx: &mut AppContext, ui: &mut egui::Ui) -> Option<ChromePanelAction> {
         ui.spacing_mut().item_spacing.x = 0.0;
 
-        if ctx.args.options.contains(NotedeckOptions::Debug)
-            && ui.ctx().input(|i| i.key_pressed(egui::Key::Backtick))
-        {
-            self.options.toggle(ChromeOptions::VirtualKeyboard);
-        }
-
         let amt_open = self.amount_open(ui);
-        let r = self.panel(ctx, StripBuilder::new(ui), amt_open);
+        let skb_anim =
+            keyboard_visibility(ui, ctx, &mut self.options, &mut self.soft_kb_anim_state);
 
-        let skb_ctx = if self.options.contains(ChromeOptions::VirtualKeyboard) {
-            SoftKeyboardContext::Virtual
+        let virtual_keyboard = self.options.contains(ChromeOptions::VirtualKeyboard);
+        let keyboard_height = if self.options.contains(ChromeOptions::KeyboardVisibility) {
+            skb_anim.anim_height
         } else {
-            SoftKeyboardContext::Platform {
-                ppp: ui.ctx().pixels_per_point(),
-            }
+            0.0
         };
 
-        // move screen up if virtual keyboard intersects with input_rect
-        let screen_rect = ui.ctx().screen_rect();
-        let mut keyboard_height = 0.0;
-        if let Some(vkb_rect) = ctx.soft_keyboard_rect(screen_rect, skb_ctx.clone()) {
-            if let SoftKeyboardContext::Virtual = skb_ctx {
-                virtual_keyboard_ui(ui, vkb_rect);
+        // if the soft keyboard is open, shrink the chrome contents
+        let mut action: Option<ChromePanelAction> = None;
+        // build a strip to carve out the soft keyboard inset
+        StripBuilder::new(ui)
+            .size(Size::remainder())
+            .size(Size::exact(keyboard_height))
+            .vertical(|mut strip| {
+                // the actual content, shifted up because of the soft keyboard
+                strip.cell(|ui| {
+                    action = self.panel(ctx, StripBuilder::new(ui), amt_open, keyboard_height);
+                });
+
+                // the filler space taken up by the soft keyboard
+                strip.cell(|ui| {
+                    // keyboard-visibility virtual keyboard
+                    if virtual_keyboard && keyboard_height > 0.0 {
+                        tracing::debug!("got here");
+                        virtual_keyboard_ui(ui, ui.available_rect_before_wrap())
+                    }
+                });
+            });
+
+        // hovering virtual keyboard
+        if virtual_keyboard {
+            if let Some(mut kb_rect) = skb_anim.skb_rect {
+                let kb_height = if self.options.contains(ChromeOptions::KeyboardVisibility) {
+                    keyboard_height
+                } else {
+                    400.0
+                };
+                kb_rect.min.y = kb_rect.max.y - kb_height;
+                tracing::debug!("hovering virtual kb_height:{keyboard_height} kb_rect:{kb_rect}");
+                virtual_keyboard_ui(ui, kb_rect)
             }
-            if let Some(input_rect) = notedeck_ui::input_rect(ui) {
-                if input_rect.intersects(vkb_rect) {
-                    tracing::debug!("screen:{screen_rect} skb:{vkb_rect}");
-                    keyboard_height = vkb_rect.height();
-                }
-            }
-        } else {
-            // clear last input box position state
-            notedeck_ui::clear_input_rect(ui);
         }
 
-        let anim_height =
-            ui.ctx()
-                .animate_value_with_time(egui::Id::new("keyboard_anim"), keyboard_height, 0.1);
-        if anim_height > 0.0 {
-            ui.ctx().transform_layer_shapes(
-                ui.layer_id(),
-                egui::emath::TSTransform::from_translation(egui::Vec2::new(0.0, -anim_height)),
-            );
-        }
-
-        r
+        action
     }
 
     fn topdown_sidebar(&mut self, ui: &mut egui::Ui, i18n: &mut Localization) {
@@ -652,38 +675,6 @@ fn pfp_button(ctx: &mut AppContext, ui: &mut egui::Ui) -> egui::Response {
     ui.put(helper.get_animation_rect(), &mut widget);
 
     helper.take_animation_response()
-
-    // let selected = ctx.accounts.cache.selected();
-
-    // pfp_resp.context_menu(|ui| {
-    //     for (pk, account) in &ctx.accounts.cache {
-    //         let profile = ctx.ndb.get_profile_by_pubkey(&txn, pk).ok();
-    //         let is_selected = *pk == selected.key.pubkey;
-    //         let has_nsec = account.key.secret_key.is_some();
-
-    //         let profile_peview_view = {
-    //             let max_size = egui::vec2(ui.available_width(), 77.0);
-    //             let resp = ui.allocate_response(max_size, egui::Sense::click());
-    //             ui.allocate_new_ui(UiBuilder::new().max_rect(resp.rect), |ui| {
-    //                 ui.add(
-    //                     &mut ProfilePic::new(ctx.img_cache, get_profile_url(profile.as_ref()))
-    //                         .size(24.0),
-    //                 )
-    //             })
-    //         };
-
-    //         // if let Some(op) = profile_peview_view {
-    //         //     return_op = Some(match op {
-    //         //         ProfilePreviewAction::SwitchTo => AccountsViewResponse::SelectAccount(*pk),
-    //         //         ProfilePreviewAction::RemoveAccount => AccountsViewResponse::RemoveAccount(*pk),
-    //         //     });
-    //         // }
-    //     }
-    //     // if ui.menu_image_button(image, add_contents).clicked() {
-    //     //     // ui.ctx().copy_text(url.to_owned());
-    //     //     ui.close_menu();
-    //     // }
-    // });
 }
 
 /// The section of the chrome sidebar that starts at the
@@ -692,10 +683,23 @@ fn bottomup_sidebar(
     chrome: &mut Chrome,
     ctx: &mut AppContext,
     ui: &mut egui::Ui,
+    options: SidebarOptions,
 ) -> Option<ChromePanelAction> {
     ui.add_space(8.0);
 
     let pfp_resp = pfp_button(ctx, ui).on_hover_cursor(egui::CursorIcon::PointingHand);
+
+    // we skip this whole function in compact mode
+    if options.contains(SidebarOptions::Compact) {
+        return if pfp_resp.clicked() {
+            Some(ChromePanelAction::Profile(
+                ctx.accounts.get_selected_account().key.pubkey,
+            ))
+        } else {
+            None
+        };
+    }
+
     let accounts_resp = accounts_button(ui).on_hover_cursor(egui::CursorIcon::PointingHand);
     let settings_resp = settings_button(ui).on_hover_cursor(egui::CursorIcon::PointingHand);
 
@@ -955,4 +959,219 @@ fn virtual_keyboard_ui(ui: &mut egui::Ui, rect: egui::Rect) {
         })
         .response
     });
+}
+
+struct SoftKeyboardAnim {
+    skb_rect: Option<Rect>,
+    anim_height: f32,
+}
+
+#[derive(Copy, Default, Clone, Eq, PartialEq, Debug)]
+enum AnimState {
+    /// It finished opening
+    Opened,
+
+    /// We started to open
+    StartOpen,
+
+    /// We started to close
+    StartClose,
+
+    /// We finished openning
+    FinishedOpen,
+
+    /// We finished to close
+    FinishedClose,
+
+    /// It finished closing
+    #[default]
+    Closed,
+
+    /// We are animating towards open
+    Opening,
+
+    /// We are animating towards close
+    Closing,
+}
+
+impl SoftKeyboardAnim {
+    /// Advance the FSM based on current (anim_height) vs target (skb_rect.height()).
+    /// Start*/Finished* are one-tick edge states used for signaling.
+    fn changed(&self, state: AnimState) -> AnimState {
+        const EPS: f32 = 0.01;
+
+        let target = self.skb_rect.map_or(0.0, |r| r.height());
+        let current = self.anim_height;
+
+        let done = (current - target).abs() <= EPS;
+        let going_up = target > current + EPS;
+        let going_down = current > target + EPS;
+        let target_is_closed = target <= EPS;
+
+        match state {
+            // Resting states: emit a Start* edge only when a move is requested,
+            // and pick direction by the sign of (target - current).
+            AnimState::Opened => {
+                if done {
+                    AnimState::Opened
+                } else if going_up {
+                    AnimState::StartOpen
+                } else {
+                    AnimState::StartClose
+                }
+            }
+            AnimState::Closed => {
+                if done {
+                    AnimState::Closed
+                } else if going_up {
+                    AnimState::StartOpen
+                } else {
+                    AnimState::StartClose
+                }
+            }
+
+            // Edge → flow
+            AnimState::StartOpen => AnimState::Opening,
+            AnimState::StartClose => AnimState::Closing,
+
+            // Flow states: finish when we hit the target; if the target jumps across,
+            // emit the opposite Start* to signal a reversal.
+            AnimState::Opening => {
+                if done {
+                    if target_is_closed {
+                        AnimState::FinishedClose
+                    } else {
+                        AnimState::FinishedOpen
+                    }
+                } else if going_down {
+                    // target moved below current mid-flight → reversal
+                    AnimState::StartClose
+                } else {
+                    AnimState::Opening
+                }
+            }
+            AnimState::Closing => {
+                if done {
+                    if target_is_closed {
+                        AnimState::FinishedClose
+                    } else {
+                        AnimState::FinishedOpen
+                    }
+                } else if going_up {
+                    // target moved above current mid-flight → reversal
+                    AnimState::StartOpen
+                } else {
+                    AnimState::Closing
+                }
+            }
+
+            // Finish edges collapse to the stable resting states on the next tick.
+            AnimState::FinishedOpen => AnimState::Opened,
+            AnimState::FinishedClose => AnimState::Closed,
+        }
+    }
+}
+
+/// How "open" the softkeyboard is. This is an animated value
+fn soft_keyboard_anim(
+    ui: &mut egui::Ui,
+    ctx: &mut AppContext,
+    chrome_options: &mut ChromeOptions,
+) -> SoftKeyboardAnim {
+    let skb_ctx = if chrome_options.contains(ChromeOptions::VirtualKeyboard) {
+        SoftKeyboardContext::Virtual
+    } else {
+        SoftKeyboardContext::Platform {
+            ppp: ui.ctx().pixels_per_point(),
+        }
+    };
+
+    // move screen up if virtual keyboard intersects with input_rect
+    let screen_rect = ui.ctx().screen_rect();
+    let mut skb_rect: Option<Rect> = None;
+
+    let keyboard_height =
+        if let Some(vkb_rect) = ctx.soft_keyboard_rect(screen_rect, skb_ctx.clone()) {
+            skb_rect = Some(vkb_rect);
+            vkb_rect.height()
+        } else {
+            0.0
+        };
+
+    let anim_height =
+        ui.ctx()
+            .animate_value_with_time(egui::Id::new("keyboard_anim"), keyboard_height, 0.1);
+
+    SoftKeyboardAnim {
+        anim_height,
+        skb_rect,
+    }
+}
+
+fn try_toggle_virtual_keyboard(
+    ctx: &egui::Context,
+    options: NotedeckOptions,
+    chrome_options: &mut ChromeOptions,
+) {
+    // handle virtual keyboard toggle here because why not
+    if options.contains(NotedeckOptions::Debug) && ctx.input(|i| i.key_pressed(egui::Key::F1)) {
+        chrome_options.toggle(ChromeOptions::VirtualKeyboard);
+    }
+}
+
+/// All the logic which handles our keyboard visibility
+fn keyboard_visibility(
+    ui: &mut egui::Ui,
+    ctx: &mut AppContext,
+    options: &mut ChromeOptions,
+    soft_kb_anim_state: &mut AnimState,
+) -> SoftKeyboardAnim {
+    try_toggle_virtual_keyboard(ui.ctx(), ctx.args.options, options);
+
+    let soft_kb_anim = soft_keyboard_anim(ui, ctx, options);
+
+    let prev_state = *soft_kb_anim_state;
+    let current_state = soft_kb_anim.changed(prev_state);
+    *soft_kb_anim_state = current_state;
+
+    if prev_state != current_state {
+        tracing::debug!("soft kb state {prev_state:?} -> {current_state:?}");
+    }
+
+    match current_state {
+        // we finished
+        AnimState::FinishedOpen => {}
+
+        // on first open, we setup our scroll target
+        AnimState::StartOpen => {
+            // when we first open the keyboard, check to see if the target soft
+            // keyboard rect (the height at full open) intersects with any
+            // input response rects from last frame
+            //
+            // If we do, then we set a bit that we need keyboard visibility.
+            // We will use this bit to resize the screen based on the soft
+            // keyboard animation state
+            if let Some(skb_rect) = soft_kb_anim.skb_rect {
+                if let Some(input_rect) = notedeck_ui::input_rect(ui) {
+                    options.set(
+                        ChromeOptions::KeyboardVisibility,
+                        input_rect.intersects(skb_rect),
+                    )
+                }
+            }
+        }
+
+        AnimState::FinishedClose => {
+            // clear last input box position state
+            notedeck_ui::clear_input_rect(ui);
+        }
+
+        AnimState::Closing => {}
+        AnimState::Opened => {}
+        AnimState::Closed => {}
+        AnimState::Opening => {}
+        AnimState::StartClose => {}
+    };
+
+    soft_kb_anim
 }

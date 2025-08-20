@@ -55,6 +55,7 @@ impl<'a, 'd> PostReplyView<'a, 'd> {
     pub fn show(&mut self, ui: &mut egui::Ui) -> PostResponse {
         ScrollArea::vertical()
             .id_salt(self.scroll_id)
+            .stick_to_bottom(true)
             .show(ui, |ui| self.show_internal(ui))
             .inner
     }
@@ -121,7 +122,7 @@ impl<'a, 'd> PostReplyView<'a, 'd> {
             // large and things start breaking. I think this is an ok
             // solution but there could be a better one.
             //
-            ui.add_space(500.0);
+            //ui.add_space(500.0);
 
             post_response
         })

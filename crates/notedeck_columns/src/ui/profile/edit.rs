@@ -37,6 +37,7 @@ impl<'a> EditProfileView<'a> {
     pub fn ui(&mut self, ui: &mut egui::Ui) -> bool {
         ScrollArea::vertical()
             .id_salt(EditProfileView::scroll_id())
+            .stick_to_bottom(true)
             .show(ui, |ui| {
                 banner(ui, self.state.banner(), 188.0);
 

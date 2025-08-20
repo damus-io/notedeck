@@ -40,6 +40,14 @@ pub enum SoftKeyboardContext {
     Platform { ppp: f32 },
 }
 
+impl SoftKeyboardContext {
+    pub fn platform(context: &egui::Context) -> Self {
+        Self::Platform {
+            ppp: context.pixels_per_point(),
+        }
+    }
+}
+
 impl<'a> AppContext<'a> {
     pub fn soft_keyboard_rect(&self, screen_rect: Rect, ctx: SoftKeyboardContext) -> Option<Rect> {
         match ctx {
@@ -53,8 +61,13 @@ impl<'a> AppContext<'a> {
                 #[cfg(target_os = "android")]
                 {
                     use android_activity::InsetType;
+
+                    // not sure why I need this, it seems to be consistently off by some amount of
+                    // pixels ?
+                    let fudge = 0.0;
+
                     let inset = self.android.get_window_insets(InsetType::Ime);
-                    let height = inset.bottom as f32 / ppp;
+                    let height = (inset.bottom as f32 / ppp) - fudge;
                     skb_rect_from_screen_rect(screen_rect, height)
                 }
 

@@ -644,10 +644,20 @@ fn render_damus_mobile(
 
     let active_col = app.columns_mut(app_ctx.i18n, app_ctx.accounts).selected as usize;
     let mut app_action: Option<AppAction> = None;
+    // don't show toolbar if soft keyboard is open
+    let skb_rect = app_ctx.soft_keyboard_rect(
+        ui.ctx().screen_rect(),
+        notedeck::SoftKeyboardContext::platform(ui.ctx()),
+    );
+    let toolbar_height = if skb_rect.is_none() {
+        Damus::toolbar_height()
+    } else {
+        0.0
+    };
 
     StripBuilder::new(ui)
         .size(Size::remainder()) // top cell
-        .size(Size::exact(Damus::toolbar_height())) // bottom cell
+        .size(Size::exact(toolbar_height)) // bottom cell
         .vertical(|mut strip| {
             strip.cell(|ui| {
                 let rect = ui.available_rect_before_wrap();
@@ -678,17 +688,22 @@ fn render_damus_mobile(
                 hovering_post_button(ui, app, app_ctx, rect);
             });
 
-            strip.cell(|ui| {
+            strip.cell(|ui| 'brk: {
+                if toolbar_height <= 0.0 {
+                    break 'brk;
+                }
+
                 let unseen_notif = unseen_notification(
                     app,
                     app_ctx.ndb,
                     app_ctx.accounts.get_selected_account().key.pubkey,
                 );
 
-                let resp = toolbar(ui, unseen_notif);
-
-                if let Some(action) = resp {
-                    action.process(app, app_ctx);
+                if skb_rect.is_none() {
+                    let resp = toolbar(ui, unseen_notif);
+                    if let Some(action) = resp {
+                        action.process(app, app_ctx);
+                    }
                 }
             });
         });

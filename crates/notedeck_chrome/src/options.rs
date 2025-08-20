@@ -20,6 +20,9 @@ bitflags! {
 
         /// Repaint debug
         const RepaintDebug = 1 << 3;
+
+        /// We need soft keyboard visibility
+        const KeyboardVisibility = 1 << 4;
     }
 }
 
