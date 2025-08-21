@@ -307,7 +307,6 @@ impl Chrome {
                 strip.cell(|ui| {
                     // keyboard-visibility virtual keyboard
                     if virtual_keyboard && keyboard_height > 0.0 {
-                        tracing::debug!("got here");
                         virtual_keyboard_ui(ui, ui.available_rect_before_wrap())
                     }
                 });
