@@ -164,7 +164,7 @@ Enter_your_public_key__npub___nostr_address__e_g___address____or_private_key__ns
 # Label for find user button
 Find_User_bd12 = ค้นหาผู้ใช้
 # Label for font size, Appearance settings section
-Font_size_dd73 = Font size:
+Font_size_dd73 = ขนาดตัวอักษร:
 # Title for hashtags column
 Hashtags_f8e0 = แฮชแท็ก
 # Title for Home column
@@ -238,7 +238,9 @@ Notifications_ef56 = การแจ้งเตือน
 # Relative time for very recent events (less than 3 seconds)
 now_2181 = เมื่อสักครู่
 # Setting to turn on sorting replies so that the newest are shown first
-On_f412 = On
+On_f412 = เปิด
+# Column title for finding users to follow
+Onboarding_4a25 = เริ่มใช้
 # Button label to open email client
 Open_Email_25e9 = เปิดอีเมล
 # Instruction to open email client
@@ -292,7 +294,7 @@ Repost_this_note_8e56 = รีโพสต์โน้ตนี้
 # Label for reposted notes
 Reposted_61c8 = รีโพสต์แล้ว
 # Label for reset note body font size, Appearance settings section
-Reset_4e60 = Reset
+Reset_4e60 = รีเซ็ต
 # Label for reset zoom level, Appearance settings section
 Reset_62d4 = รีเซ็ต
 # Heading for support section
@@ -315,6 +317,8 @@ Searching_for___query_5d18 = กำลังค้นหา '{ $query }'
 See_notes_from_your_contacts_ac16 = ดูโน้ตจากผู้ติดต่อของคุณ
 # Description for universe column
 See_the_whole_nostr_universe_7694 = ท่องจักรวาล Nostr ทั้งหมด
+# Button to select all profiles in follow pack
+Select_All_a319 = เลือกทั้งหมด
 # Button label to send a zap
 Send_1ea4 = ส่ง
 # Column title for app settings
@@ -328,7 +332,7 @@ Someone_else_s_Notes_7e5f = โน้ตของผู้อื่น
 # Title for someone else's notifications column
 Someone_else_s_Notifications_82e6 = การแจ้งเตือนของผู้อื่น
 # Label for Sort replies newest first, others settings section
-Sort_replies_newest_first_b6c3 = Sort replies newest first:
+Sort_replies_newest_first_b6c3 = เรียงการตอบกลับจากใหม่ที่สุดไปเก่าที่สุด
 # Description for contact list column
 Source_the_last_note_for_each_user_in_your_contact_list_e157 = ดึงโน้ตล่าสุดของผู้ใช้แต่ละคนในรายชื่อผู้ติดต่อ
 # Description for hashtags column
@@ -354,7 +358,7 @@ Subscribe_to_someone_else_s_notes_d1e9 = ติดตามโน้ตของ
 # Column title for subscribing to individual user
 Subscribe_to_someone_s_notes_b3c8 = ติดตามโน้ตของผู้อื่น
 # Support email address
-Support_email_44d9 = Support email:
+Support_email_44d9 = อีเมลฝ่ายสนับสนุน:
 # Hover text for dark mode toggle button
 Switch_to_dark_mode_4dec = เปลี่ยนเป็นโหมดมืด
 # Hover text for light mode toggle button
