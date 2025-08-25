@@ -156,10 +156,8 @@ impl<'a, 'd> SearchView<'a, 'd> {
         egui::ScrollArea::vertical()
             .id_salt(SearchView::scroll_id())
             .show(ui, |ui| {
-                let reversed = false;
                 TimelineTabView::new(
                     &self.query.notes,
-                    reversed,
                     self.note_options,
                     self.txn,
                     self.note_context,

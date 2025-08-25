@@ -26,7 +26,6 @@ pub struct TimelineView<'a, 'd> {
     timeline_id: &'a TimelineKind,
     timeline_cache: &'a mut TimelineCache,
     note_options: NoteOptions,
-    reverse: bool,
     note_context: &'a mut NoteContext<'d>,
     jobs: &'a mut JobsCache,
     col: usize,
@@ -43,13 +42,11 @@ impl<'a, 'd> TimelineView<'a, 'd> {
         jobs: &'a mut JobsCache,
         col: usize,
     ) -> Self {
-        let reverse = false;
         let scroll_to_top = false;
         TimelineView {
             timeline_id,
             timeline_cache,
             note_options,
-            reverse,
             note_context,
             jobs,
             col,
@@ -62,7 +59,6 @@ impl<'a, 'd> TimelineView<'a, 'd> {
             ui,
             self.timeline_id,
             self.timeline_cache,
-            self.reverse,
             self.note_options,
             self.note_context,
             self.jobs,
@@ -73,11 +69,6 @@ impl<'a, 'd> TimelineView<'a, 'd> {
 
     pub fn scroll_to_top(mut self, enable: bool) -> Self {
         self.scroll_to_top = enable;
-        self
-    }
-
-    pub fn reversed(mut self) -> Self {
-        self.reverse = true;
         self
     }
 
@@ -96,7 +87,6 @@ fn timeline_ui(
     ui: &mut egui::Ui,
     timeline_id: &TimelineKind,
     timeline_cache: &mut TimelineCache,
-    reversed: bool,
     note_options: NoteOptions,
     note_context: &mut NoteContext,
     jobs: &mut JobsCache,
@@ -192,7 +182,6 @@ fn timeline_ui(
 
         TimelineTabView::new(
             timeline.current_view(),
-            reversed,
             note_options,
             &txn,
             note_context,
@@ -386,7 +375,6 @@ fn shrink_range_to_width(range: egui::Rangef, width: f32) -> egui::Rangef {
 
 pub struct TimelineTabView<'a, 'd> {
     tab: &'a TimelineTab,
-    reversed: bool,
     note_options: NoteOptions,
     txn: &'a Transaction,
     note_context: &'a mut NoteContext<'d>,
@@ -397,7 +385,6 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         tab: &'a TimelineTab,
-        reversed: bool,
         note_options: NoteOptions,
         txn: &'a Transaction,
         note_context: &'a mut NoteContext<'d>,
@@ -405,7 +392,6 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
     ) -> Self {
         Self {
             tab,
-            reversed,
             note_options,
             txn,
             note_context,

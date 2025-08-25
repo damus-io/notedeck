@@ -114,7 +114,6 @@ impl<'a, 'd> ProfileView<'a, 'd> {
 
             if let Some(note_action) = TimelineTabView::new(
                 profile_timeline.current_view(),
-                reversed,
                 self.note_options,
                 &txn,
                 self.note_context,
