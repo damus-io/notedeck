@@ -777,14 +777,14 @@ fn bottomup_sidebar(
                     .on_hover_cursor(egui::CursorIcon::PointingHand)
                     .clicked()
                 {
-                    chrome.show_memory_debug = !chrome.show_memory_debug;
+                    chrome.options.toggle(ChromeOptions::MemoryDebug);
                 }
             }
             if let Some(resident) = mem_use.resident {
                 ui.weak(format!("{}", format_bytes(resident as f64)));
             }
 
-            if chrome.show_memory_debug {
+            if chrome.options.contains(ChromeOptions::MemoryDebug) {
                 egui::Window::new("Memory Debug").show(ui.ctx(), memory_debug_ui);
             }
         }
