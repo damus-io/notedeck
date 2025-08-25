@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use crate::{
     column::Columns,
     nav::{RouterAction, RouterType},
@@ -28,8 +30,9 @@ pub enum NotesOpenResult {
     Thread(NewThreadNotes),
 }
 
-pub enum TimelineOpenResult {
-    NewNotes(NewNotes),
+pub struct TimelineOpenResult {
+    new_notes: Option<NewNotes>,
+    new_pks: Option<HashSet<Pubkey>>,
 }
 
 struct NoteActionResponse {
@@ -268,7 +271,24 @@ fn clear_zap_error(sender: &Pubkey, zaps: &mut Zaps, target: &NoteZapTargetOwned
 
 impl TimelineOpenResult {
     pub fn new_notes(notes: Vec<NoteKey>, id: TimelineKind) -> Self {
-        Self::NewNotes(NewNotes::new(notes, id))
+        Self {
+            new_notes: Some(NewNotes { id, notes }),
+            new_pks: None,
+        }
+    }
+
+    pub fn new_pks(pks: HashSet<Pubkey>) -> Self {
+        Self {
+            new_notes: None,
+            new_pks: Some(pks),
+        }
+    }
+
+    pub fn insert_pks(&mut self, pks: HashSet<Pubkey>) {
+        match &mut self.new_pks {
+            Some(cur_pks) => cur_pks.extend(pks),
+            None => self.new_pks = Some(pks),
+        }
     }
 
     pub fn process(
@@ -279,11 +299,17 @@ impl TimelineOpenResult {
         storage: &mut TimelineCache,
         unknown_ids: &mut UnknownIds,
     ) {
-        match self {
-            // update the thread for next render if we have new notes
-            TimelineOpenResult::NewNotes(new_notes) => {
-                new_notes.process(storage, ndb, txn, unknown_ids, note_cache);
-            }
+        // update the thread for next render if we have new notes
+        if let Some(new_notes) = &self.new_notes {
+            new_notes.process(storage, ndb, txn, unknown_ids, note_cache);
+        }
+
+        let Some(pks) = &self.new_pks else {
+            return;
+        };
+
+        for pk in pks {
+            unknown_ids.add_pubkey_if_missing(ndb, txn, pk);
         }
     }
 }
