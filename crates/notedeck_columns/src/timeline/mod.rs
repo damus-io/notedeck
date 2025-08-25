@@ -26,14 +26,16 @@ use std::{rc::Rc, time::SystemTime};
 use tracing::{debug, error, info, warn};
 
 pub mod cache;
-mod hybrid_set;
 pub mod kind;
+mod note_units;
 pub mod route;
 pub mod thread;
+mod unit;
 
 pub use cache::TimelineCache;
-pub use hybrid_set::{HybridSet, InsertionResponse};
 pub use kind::{ColumnTitle, PubkeySource, ThreadSelection, TimelineKind};
+pub use note_units::{InsertionResponse, NoteUnits};
+pub use unit::{CompositeUnit, NoteUnit, ReactionUnit};
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Default)]
 pub enum ViewFilter {

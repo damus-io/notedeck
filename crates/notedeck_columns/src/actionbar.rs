@@ -385,7 +385,7 @@ pub fn process_thread_notes(
             created_at,
         };
 
-        if thread.replies.contains(&note_ref) {
+        if thread.replies.contains_key(&note_ref.key) {
             continue;
         }
 
