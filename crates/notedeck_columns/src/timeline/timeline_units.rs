@@ -143,7 +143,6 @@ fn to_reaction<'a>(
         };
 
         note_reacted_to = Some(react_to_id);
-        break;
     }
 
     let reacted_to_noteid = note_reacted_to?;
