@@ -195,13 +195,13 @@ impl UnknownIds {
         }
     }
 
-    pub fn add_pubkey_if_missing(&mut self, ndb: &Ndb, txn: &Transaction, pubkey: &Pubkey) {
+    pub fn add_pubkey_if_missing(&mut self, ndb: &Ndb, txn: &Transaction, pubkey: &[u8; 32]) {
         // we already have this profile, skip
         if ndb.get_profile_by_pubkey(txn, pubkey).is_ok() {
             return;
         }
 
-        let unknown_id = UnknownId::Pubkey(*pubkey);
+        let unknown_id = UnknownId::Pubkey(Pubkey::new(*pubkey));
         if self.ids.contains_key(&unknown_id) {
             return;
         }

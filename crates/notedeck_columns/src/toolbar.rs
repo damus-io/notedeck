@@ -6,6 +6,7 @@ use crate::{
     Damus, Route,
 };
 
+// TODO(kernelkind): should account for mutes
 pub fn unseen_notification(
     columns: &mut Damus,
     ndb: &nostrdb::Ndb,

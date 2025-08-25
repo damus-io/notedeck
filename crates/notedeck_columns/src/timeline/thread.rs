@@ -1,8 +1,3 @@
-use std::{
-    collections::{BTreeSet, HashSet},
-    hash::Hash,
-};
-
 use egui_nav::ReturnType;
 use egui_virtual_list::VirtualList;
 use enostr::{NoteId, RelayPool};
@@ -13,13 +8,13 @@ use notedeck::{NoteCache, NoteRef, UnknownIds};
 use crate::{
     actionbar::{process_thread_notes, NewThreadNotes},
     multi_subscriber::ThreadSubs,
-    timeline::MergeKind,
+    timeline::{note_units::NoteUnits, unit::NoteUnit, InsertionResponse},
 };
 
 use super::ThreadSelection;
 
 pub struct ThreadNode {
-    pub replies: HybridSet<NoteRef>,
+    pub replies: SingleNoteUnits,
     pub prev: ParentState,
     pub have_all_ancestors: bool,
     pub list: VirtualList,
@@ -33,103 +28,10 @@ pub enum ParentState {
     Parent(NoteId),
 }
 
-/// Affords:
-/// - O(1) contains
-/// - O(log n) sorted insertion
-pub struct HybridSet<T> {
-    reversed: bool,
-    lookup: HashSet<T>,   // fast deduplication
-    ordered: BTreeSet<T>, // sorted iteration
-}
-
-impl<T> Default for HybridSet<T> {
-    fn default() -> Self {
-        Self {
-            reversed: Default::default(),
-            lookup: Default::default(),
-            ordered: Default::default(),
-        }
-    }
-}
-
-pub enum InsertionResponse {
-    AlreadyExists,
-    Merged(MergeKind),
-}
-
-impl<T: Copy + Ord + Eq + Hash> HybridSet<T> {
-    pub fn insert(&mut self, val: T) -> InsertionResponse {
-        if !self.lookup.insert(val) {
-            return InsertionResponse::AlreadyExists;
-        }
-
-        let front_insertion = match self.ordered.iter().next() {
-            Some(first) => (val >= *first) == self.reversed,
-            None => true,
-        };
-
-        self.ordered.insert(val); // O(log n)
-
-        InsertionResponse::Merged(if front_insertion {
-            MergeKind::FrontInsert
-        } else {
-            MergeKind::Spliced
-        })
-    }
-}
-
-impl<T: Eq + Hash> HybridSet<T> {
-    pub fn contains(&self, val: &T) -> bool {
-        self.lookup.contains(val) // O(1)
-    }
-}
-
-impl<T> HybridSet<T> {
-    pub fn iter(&self) -> HybridIter<'_, T> {
-        HybridIter {
-            inner: self.ordered.iter(),
-            reversed: self.reversed,
-        }
-    }
-
-    pub fn new(reversed: bool) -> Self {
-        Self {
-            reversed,
-            ..Default::default()
-        }
-    }
-}
-
-impl<'a, T> IntoIterator for &'a HybridSet<T> {
-    type Item = &'a T;
-    type IntoIter = HybridIter<'a, T>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.iter()
-    }
-}
-
-pub struct HybridIter<'a, T> {
-    inner: std::collections::btree_set::Iter<'a, T>,
-    reversed: bool,
-}
-
-impl<'a, T> Iterator for HybridIter<'a, T> {
-    type Item = &'a T;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.reversed {
-            self.inner.next_back()
-        } else {
-            self.inner.next()
-        }
-    }
-}
-
 impl ThreadNode {
     pub fn new(parent: ParentState) -> Self {
         Self {
-            replies: HybridSet::new(true),
+            replies: SingleNoteUnits::new(true),
             prev: parent,
             have_all_ancestors: false,
             list: VirtualList::new(),
@@ -485,5 +387,36 @@ impl NoteSeenFlags {
 
     pub fn contains(&self, note_id: &[u8; 32]) -> bool {
         self.flags.contains_key(&note_id)
+    }
+}
+
+#[derive(Default)]
+pub struct SingleNoteUnits {
+    units: NoteUnits,
+}
+
+impl SingleNoteUnits {
+    pub fn new(reversed: bool) -> Self {
+        Self {
+            units: NoteUnits::new_with_cap(0, reversed),
+        }
+    }
+
+    pub fn insert(&mut self, note_ref: NoteRef) -> InsertionResponse {
+        self.units.merge_single_unit(note_ref)
+    }
+
+    pub fn values(&self) -> impl Iterator<Item = &NoteRef> {
+        self.units.values().filter_map(|entry| {
+            if let NoteUnit::Single(note_ref) = entry {
+                Some(note_ref)
+            } else {
+                None
+            }
+        })
+    }
+
+    pub fn contains_key(&self, k: &NoteKey) -> bool {
+        self.units.contains_key(k)
     }
 }

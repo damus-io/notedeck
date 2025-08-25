@@ -183,7 +183,6 @@ mod tests {
 
         let ctx = egui::Context::default();
         let mut notedeck = Notedeck::new(&ctx, &tmpdir, &args);
-        let unrecognized_args = notedeck.unrecognized_args().clone();
         let mut app_ctx = notedeck.app_context();
         let app = Damus::new(&mut app_ctx, &args);
 

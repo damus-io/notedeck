@@ -709,6 +709,7 @@ pub fn render_add_column_routes(
                     ctx.note_cache,
                     app.options.contains(AppOptions::SinceOptimize),
                     ctx.accounts,
+                    ctx.unknown_ids,
                 );
 
                 app.columns_mut(ctx.i18n, ctx.accounts)
@@ -749,6 +750,7 @@ pub fn render_add_column_routes(
                             ctx.note_cache,
                             app.options.contains(AppOptions::SinceOptimize),
                             ctx.accounts,
+                            ctx.unknown_ids,
                         );
 
                         app.columns_mut(ctx.i18n, ctx.accounts)

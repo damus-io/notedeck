@@ -625,7 +625,7 @@ impl TimelineKind {
 pub fn notifications_filter(pk: &Pubkey) -> Filter {
     Filter::new()
         .pubkeys([pk.bytes()])
-        .kinds([1])
+        .kinds([1, 7])
         .limit(default_limit())
         .build()
 }

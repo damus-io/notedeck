@@ -267,6 +267,11 @@ impl Accounts {
         Box::new(move |note: &Note, thread: &[u8; 32]| muted.is_muted(note, thread))
     }
 
+    pub fn mute(&self) -> Box<Arc<crate::Muted>> {
+        let account_data = self.get_selected_account_data();
+        Box::new(Arc::clone(&account_data.muted.muted))
+    }
+
     pub fn send_initial_filters(&mut self, pool: &mut RelayPool, relay_url: &str) {
         let data = &self.get_selected_account().data;
         // send the active account's relay list subscription

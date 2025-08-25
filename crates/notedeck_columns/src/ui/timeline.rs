@@ -1,13 +1,19 @@
 use egui::containers::scroll_area::ScrollBarVisibility;
-use egui::{vec2, Direction, Layout, Pos2, Stroke};
+use egui::{vec2, Direction, Layout, Pos2, ScrollArea, Sense, Stroke};
 use egui_tabs::TabColor;
-use nostrdb::Transaction;
+use enostr::Pubkey;
+use nostrdb::{ProfileRecord, Transaction};
+use notedeck::name::get_display_name;
 use notedeck::ui::is_narrow;
-use notedeck::JobsCache;
+use notedeck::{JobsCache, Muted, NoteRef};
+use notedeck_ui::app_images::like_image;
+use notedeck_ui::{padding, ProfilePic};
 use std::f32::consts::PI;
 use tracing::{error, warn};
 
-use crate::timeline::{TimelineCache, TimelineKind, TimelineTab, ViewFilter};
+use crate::timeline::{
+    CompositeUnit, NoteUnit, ReactionUnit, TimelineCache, TimelineKind, TimelineTab, ViewFilter,
+};
 use notedeck::{
     note::root_note_id_from_selected_id, tr, Localization, NoteAction, NoteContext, ScrollInfo,
 };
@@ -20,7 +26,6 @@ pub struct TimelineView<'a, 'd> {
     timeline_id: &'a TimelineKind,
     timeline_cache: &'a mut TimelineCache,
     note_options: NoteOptions,
-    reverse: bool,
     note_context: &'a mut NoteContext<'d>,
     jobs: &'a mut JobsCache,
     col: usize,
@@ -37,13 +42,11 @@ impl<'a, 'd> TimelineView<'a, 'd> {
         jobs: &'a mut JobsCache,
         col: usize,
     ) -> Self {
-        let reverse = false;
         let scroll_to_top = false;
         TimelineView {
             timeline_id,
             timeline_cache,
             note_options,
-            reverse,
             note_context,
             jobs,
             col,
@@ -56,7 +59,6 @@ impl<'a, 'd> TimelineView<'a, 'd> {
             ui,
             self.timeline_id,
             self.timeline_cache,
-            self.reverse,
             self.note_options,
             self.note_context,
             self.jobs,
@@ -67,11 +69,6 @@ impl<'a, 'd> TimelineView<'a, 'd> {
 
     pub fn scroll_to_top(mut self, enable: bool) -> Self {
         self.scroll_to_top = enable;
-        self
-    }
-
-    pub fn reversed(mut self) -> Self {
-        self.reverse = true;
         self
     }
 
@@ -90,7 +87,6 @@ fn timeline_ui(
     ui: &mut egui::Ui,
     timeline_id: &TimelineKind,
     timeline_cache: &mut TimelineCache,
-    reversed: bool,
     note_options: NoteOptions,
     note_context: &mut NoteContext,
     jobs: &mut JobsCache,
@@ -186,7 +182,6 @@ fn timeline_ui(
 
         TimelineTabView::new(
             timeline.current_view(),
-            reversed,
             note_options,
             &txn,
             note_context,
@@ -380,7 +375,6 @@ fn shrink_range_to_width(range: egui::Rangef, width: f32) -> egui::Rangef {
 
 pub struct TimelineTabView<'a, 'd> {
     tab: &'a TimelineTab,
-    reversed: bool,
     note_options: NoteOptions,
     txn: &'a Transaction,
     note_context: &'a mut NoteContext<'d>,
@@ -391,7 +385,6 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         tab: &'a TimelineTab,
-        reversed: bool,
         note_options: NoteOptions,
         txn: &'a Transaction,
         note_context: &'a mut NoteContext<'d>,
@@ -399,7 +392,6 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
     ) -> Self {
         Self {
             tab,
-            reversed,
             note_options,
             txn,
             note_context,
@@ -409,57 +401,30 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
 
     pub fn show(&mut self, ui: &mut egui::Ui) -> Option<NoteAction> {
         let mut action: Option<NoteAction> = None;
-        let len = self.tab.notes.len();
+        let len = self.tab.units.len();
 
-        let is_muted = self.note_context.accounts.mutefun();
+        let mute = self.note_context.accounts.mute();
 
         self.tab
             .list
             .borrow_mut()
-            .ui_custom_layout(ui, len, |ui, start_index| {
+            .ui_custom_layout(ui, len, |ui, index| {
+                // tracing::info!("rendering index: {index}");
                 ui.spacing_mut().item_spacing.y = 0.0;
                 ui.spacing_mut().item_spacing.x = 4.0;
 
-                let ind = if self.reversed {
-                    len - start_index - 1
-                } else {
-                    start_index
+                let Some(entry) = self.tab.units.get(index) else {
+                    return 0;
                 };
 
-                let note_key = self.tab.notes[ind].key;
+                match self.render_entry(ui, entry, &mute) {
+                    RenderEntryResponse::Unsuccessful => return 0,
 
-                let note =
-                    if let Ok(note) = self.note_context.ndb.get_note_by_key(self.txn, note_key) {
-                        note
-                    } else {
-                        warn!("failed to query note {:?}", note_key);
-                        return 0;
-                    };
-
-                // should we mute the thread? we might not have it!
-                let muted = if let Ok(root_id) = root_note_id_from_selected_id(
-                    self.note_context.ndb,
-                    self.note_context.note_cache,
-                    self.txn,
-                    note.id(),
-                ) {
-                    is_muted(&note, root_id.bytes())
-                } else {
-                    false
-                };
-
-                if !muted {
-                    notedeck_ui::padding(8.0, ui, |ui| {
-                        let resp =
-                            NoteView::new(self.note_context, &note, self.note_options, self.jobs)
-                                .show(ui);
-
-                        if let Some(note_action) = resp.action {
-                            action = Some(note_action)
+                    RenderEntryResponse::Success(note_action) => {
+                        if let Some(cur_action) = note_action {
+                            action = Some(cur_action);
                         }
-                    });
-
-                    notedeck_ui::hline(ui);
+                    }
                 }
 
                 1
@@ -467,4 +432,198 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
 
         action
     }
+
+    fn render_entry(
+        &mut self,
+        ui: &mut egui::Ui,
+        entry: &NoteUnit,
+        mute: &std::sync::Arc<Muted>,
+    ) -> RenderEntryResponse {
+        match entry {
+            NoteUnit::Single(note_ref) => render_note(
+                ui,
+                self.note_context,
+                self.note_options,
+                self.jobs,
+                mute,
+                self.txn,
+                note_ref,
+            ),
+            NoteUnit::Composite(composite) => match composite {
+                CompositeUnit::Reaction(reaction_unit) => render_reaction_cluster(
+                    ui,
+                    self.note_context,
+                    self.note_options,
+                    self.jobs,
+                    mute,
+                    self.txn,
+                    reaction_unit,
+                ),
+            },
+        }
+    }
+}
+
+fn render_note(
+    ui: &mut egui::Ui,
+    note_context: &mut NoteContext,
+    note_options: NoteOptions,
+    jobs: &mut JobsCache,
+    mute: &std::sync::Arc<Muted>,
+    txn: &Transaction,
+    note_ref: &NoteRef,
+) -> RenderEntryResponse {
+    let note = if let Ok(note) = note_context.ndb.get_note_by_key(txn, note_ref.key) {
+        note
+    } else {
+        warn!("failed to query note {:?}", note_ref.key);
+        return RenderEntryResponse::Unsuccessful;
+    };
+
+    let muted = if let Ok(root_id) =
+        root_note_id_from_selected_id(note_context.ndb, note_context.note_cache, txn, note.id())
+    {
+        mute.is_muted(&note, root_id.bytes())
+    } else {
+        false
+    };
+
+    if muted {
+        return RenderEntryResponse::Success(None);
+    }
+
+    let mut action = None;
+    notedeck_ui::padding(8.0, ui, |ui| {
+        let resp = NoteView::new(note_context, &note, note_options, jobs).show(ui);
+
+        if let Some(note_action) = resp.action {
+            action = Some(note_action);
+        }
+    });
+
+    notedeck_ui::hline(ui);
+
+    RenderEntryResponse::Success(action)
+}
+
+fn render_reaction_cluster(
+    ui: &mut egui::Ui,
+    note_context: &mut NoteContext,
+    note_options: NoteOptions,
+    jobs: &mut JobsCache,
+    mute: &std::sync::Arc<Muted>,
+    txn: &Transaction,
+    reaction: &ReactionUnit,
+) -> RenderEntryResponse {
+    let reacted_to_key = reaction.note_reacted_to.key;
+    let reacted_to_note = if let Ok(note) = note_context.ndb.get_note_by_key(txn, reacted_to_key) {
+        note
+    } else {
+        warn!("failed to query note {:?}", reacted_to_key);
+        return RenderEntryResponse::Unsuccessful;
+    };
+
+    let profiles_to_show: Vec<ProfileEntry> = reaction
+        .reactions
+        .values()
+        .filter(|r| !mute.is_pk_muted(r.sender.bytes()))
+        .map(|r| &r.sender)
+        .map(|p| ProfileEntry {
+            record: note_context.ndb.get_profile_by_pubkey(txn, p.bytes()).ok(),
+            pk: p,
+        })
+        .collect();
+
+    let first_name = get_display_name(profiles_to_show.iter().find_map(|opt| opt.record.as_ref()))
+        .name()
+        .to_string();
+    let num_profiles_other = profiles_to_show.len() - 1;
+
+    let mut action = None;
+    padding(8.0, ui, |ui| {
+        ui.allocate_ui_with_layout(
+            vec2(ui.available_width(), 32.0),
+            Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                ui.vertical(|ui| {
+                    ui.add_space(16.0);
+                    ui.add_sized(vec2(32.0, 32.0), like_image());
+                });
+
+                ui.add_space(16.0);
+
+                ui.horizontal(|ui| {
+                    ScrollArea::horizontal()
+                        .scroll_bar_visibility(ScrollBarVisibility::AlwaysHidden)
+                        .show(ui, |ui| {
+                            for entry in profiles_to_show {
+                                let resp = ui.add(
+                                    &mut ProfilePic::from_profile_or_default(
+                                        note_context.img_cache,
+                                        entry.record.as_ref(),
+                                    )
+                                    .sense(Sense::click()),
+                                );
+
+                                if resp.clicked() {
+                                    action = Some(NoteAction::Profile(*entry.pk))
+                                }
+                            }
+                        });
+                });
+            },
+        );
+
+        let note_type_desc = if note_context
+            .accounts
+            .get_selected_account()
+            .key
+            .pubkey
+            .bytes()
+            != reacted_to_note.pubkey()
+        {
+            "note you were tagged in"
+        } else {
+            "your note"
+        };
+
+        ui.add_space(2.0);
+        ui.horizontal(|ui| {
+            ui.add_space(52.0);
+
+            ui.horizontal_wrapped(|ui| {
+                if num_profiles_other > 0 {
+                    ui.label(format!(
+                        "{first_name} and {num_profiles_other} others reacted to {note_type_desc}",
+                    ));
+                } else {
+                    ui.label(format!("{first_name} reacted to {note_type_desc}"));
+                }
+            });
+        });
+
+        ui.add_space(16.0);
+
+        ui.horizontal(|ui| {
+            ui.add_space(48.0);
+            let resp = NoteView::new(note_context, &reacted_to_note, note_options, jobs).show(ui);
+
+            if let Some(note_action) = resp.action {
+                action = Some(note_action);
+            }
+        });
+    });
+
+    notedeck_ui::hline(ui);
+    RenderEntryResponse::Success(action)
+}
+
+enum RenderEntryResponse {
+    Unsuccessful,
+    Success(Option<NoteAction>),
+}
+
+struct ProfileEntry<'a> {
+    record: Option<ProfileRecord<'a>>,
+    pk: &'a Pubkey,
 }

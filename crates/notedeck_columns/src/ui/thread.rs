@@ -111,7 +111,7 @@ impl<'a, 'd> ThreadView<'a, 'd> {
             parent_state = ParentState::Unknown;
         }
 
-        for note_ref in &cur_node.replies {
+        for note_ref in cur_node.replies.values() {
             if let Ok(note) = self.note_context.ndb.get_note_by_key(txn, note_ref.key) {
                 note_builder.add_reply(note);
             }
