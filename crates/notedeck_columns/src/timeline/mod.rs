@@ -552,7 +552,7 @@ pub fn send_initial_timeline_filter(
                 // notes than the limit, we might want to backfill
                 // older notes
                 if can_since_optimize && filter::should_since_optimize(lim, notes.len()) {
-                    filter = filter::since_optimize_filter(filter, notes);
+                    filter = filter::since_optimize_filter(filter, Some(&notes[0]));
                 } else {
                     warn!("Skipping since optimization for {:?}: number of local notes is less than limit, attempting to backfill.", &timeline.kind);
                 }
