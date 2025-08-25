@@ -1,7 +1,7 @@
 use crate::{
     actionbar::TimelineOpenResult,
     error::Error,
-    timeline::{Timeline, TimelineKind},
+    timeline::{Timeline, TimelineKind, UnknownPksOwned},
 };
 
 use notedeck::{filter, FilterState, NoteCache, NoteRef};
@@ -90,17 +90,19 @@ impl TimelineCache {
         ndb: &Ndb,
         notes: &[NoteRef],
         note_cache: &mut NoteCache,
-    ) {
+    ) -> Option<UnknownPksOwned> {
         let mut timeline = if let Some(timeline) = id.clone().into_timeline(txn, ndb) {
             timeline
         } else {
             error!("Error creating timeline from {:?}", &id);
-            return;
+            return None;
         };
 
         // insert initial notes into timeline
-        timeline.insert_new(txn, ndb, note_cache, notes);
+        let res = timeline.insert_new(txn, ndb, note_cache, notes);
         self.timelines.insert(id, timeline);
+
+        res
     }
 
     pub fn insert(&mut self, id: TimelineKind, timeline: Timeline) {
@@ -119,13 +121,16 @@ impl TimelineCache {
         note_cache: &mut NoteCache,
         txn: &Transaction,
         id: &TimelineKind,
-    ) -> Vitality<'a, Timeline> {
+    ) -> GetNotesResponse<'a> {
         // we can't use the naive hashmap entry API here because lookups
         // require a copy, wait until we have a raw entry api. We could
         // also use hashbrown?
 
         if self.timelines.contains_key(id) {
-            return Vitality::Stale(self.get_expected_mut(id));
+            return GetNotesResponse {
+                vitality: Vitality::Stale(self.get_expected_mut(id)),
+                unknown_pks: None,
+            };
         }
 
         let notes = if let FilterState::Ready(filters) = id.filters(txn, ndb) {
@@ -149,9 +154,12 @@ impl TimelineCache {
             info!("found NotesHolder with {} notes", notes.len());
         }
 
-        self.insert_new(id.to_owned(), txn, ndb, &notes, note_cache);
+        let unknown_pks = self.insert_new(id.to_owned(), txn, ndb, &notes, note_cache);
 
-        Vitality::Fresh(self.get_expected_mut(id))
+        GetNotesResponse {
+            vitality: Vitality::Fresh(self.get_expected_mut(id)),
+            unknown_pks,
+        }
     }
 
     /// Open a timeline, this is another way of saying insert a timeline
@@ -166,11 +174,12 @@ impl TimelineCache {
         pool: &mut RelayPool,
         id: &TimelineKind,
     ) -> Option<TimelineOpenResult> {
-        let (open_result, timeline) = match self.notes(ndb, note_cache, txn, id) {
+        let notes_resp = self.notes(ndb, note_cache, txn, id);
+        let (mut open_result, timeline) = match notes_resp.vitality {
             Vitality::Stale(timeline) => {
                 // The timeline cache is stale, let's update it
                 let notes = find_new_notes(
-                    timeline.all_or_any_notes(),
+                    timeline.all_or_any_entries().latest(),
                     timeline.subscription.get_filter()?.local(),
                     txn,
                     ndb,
@@ -207,6 +216,13 @@ impl TimelineCache {
 
         timeline.subscription.increment();
 
+        if let Some(unknowns) = notes_resp.unknown_pks {
+            match &mut open_result {
+                Some(o) => o.insert_pks(unknowns.pks),
+                None => open_result = Some(TimelineOpenResult::new_pks(unknowns.pks)),
+            }
+        }
+
         open_result
     }
 
@@ -231,18 +247,22 @@ impl TimelineCache {
     }
 }
 
+pub struct GetNotesResponse<'a> {
+    vitality: Vitality<'a, Timeline>,
+    unknown_pks: Option<UnknownPksOwned>,
+}
+
 /// Look for new thread notes since our last fetch
 fn find_new_notes(
-    notes: &[NoteRef],
+    latest: Option<&NoteRef>,
     filters: &[Filter],
     txn: &Transaction,
     ndb: &Ndb,
 ) -> Vec<NoteRef> {
-    if notes.is_empty() {
+    let Some(last_note) = latest else {
         return vec![];
-    }
+    };
 
-    let last_note = notes[0];
     let filters = filter::make_filters_since(filters, last_note.created_at + 1);
 
     if let Ok(results) = ndb.query(txn, &filters, 1000) {

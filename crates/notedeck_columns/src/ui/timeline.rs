@@ -415,57 +415,30 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
 
     pub fn show(&mut self, ui: &mut egui::Ui) -> Option<NoteAction> {
         let mut action: Option<NoteAction> = None;
-        let len = self.tab.notes.len();
+        let len = self.tab.units.len();
 
-        let is_muted = self.note_context.accounts.mutefun();
+        let mute = self.note_context.accounts.mute();
 
         self.tab
             .list
             .borrow_mut()
-            .ui_custom_layout(ui, len, |ui, start_index| {
+            .ui_custom_layout(ui, len, |ui, index| {
+                // tracing::info!("rendering index: {index}");
                 ui.spacing_mut().item_spacing.y = 0.0;
                 ui.spacing_mut().item_spacing.x = 4.0;
 
-                let ind = if self.reversed {
-                    len - start_index - 1
-                } else {
-                    start_index
+                let Some(entry) = self.tab.units.get(index) else {
+                    return 0;
                 };
 
-                let note_key = self.tab.notes[ind].key;
+                match self.render_entry(ui, entry, &mute) {
+                    RenderEntryResponse::Unsuccessful => return 0,
 
-                let note =
-                    if let Ok(note) = self.note_context.ndb.get_note_by_key(self.txn, note_key) {
-                        note
-                    } else {
-                        warn!("failed to query note {:?}", note_key);
-                        return 0;
-                    };
-
-                // should we mute the thread? we might not have it!
-                let muted = if let Ok(root_id) = root_note_id_from_selected_id(
-                    self.note_context.ndb,
-                    self.note_context.note_cache,
-                    self.txn,
-                    note.id(),
-                ) {
-                    is_muted(&note, root_id.bytes())
-                } else {
-                    false
-                };
-
-                if !muted {
-                    notedeck_ui::padding(8.0, ui, |ui| {
-                        let resp =
-                            NoteView::new(self.note_context, &note, self.note_options, self.jobs)
-                                .show(ui);
-
-                        if let Some(note_action) = resp.action {
-                            action = Some(note_action)
+                    RenderEntryResponse::Success(note_action) => {
+                        if let Some(cur_action) = note_action {
+                            action = Some(cur_action);
                         }
-                    });
-
-                    notedeck_ui::hline(ui);
+                    }
                 }
 
                 1

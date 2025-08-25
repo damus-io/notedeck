@@ -2,7 +2,7 @@ use crate::{
     error::Error,
     multi_subscriber::TimelineSub,
     subscriptions::{self, SubKind, Subscriptions},
-    timeline::kind::ListKind,
+    timeline::{kind::ListKind, note_units::InsertManyResponse, timeline_units::NotePayload},
     Result,
 };
 
@@ -19,6 +19,7 @@ use enostr::{PoolRelay, Pubkey, RelayPool};
 use nostrdb::{Filter, Ndb, Note, NoteKey, Transaction};
 use std::{
     cell::RefCell,
+    collections::HashSet,
     time::{Duration, UNIX_EPOCH},
 };
 use std::{rc::Rc, time::SystemTime};
@@ -36,6 +37,7 @@ mod unit;
 pub use cache::TimelineCache;
 pub use kind::{ColumnTitle, PubkeySource, ThreadSelection, TimelineKind};
 pub use note_units::{InsertionResponse, NoteUnits};
+pub use timeline_units::{TimelineUnits, UnknownPks};
 pub use unit::{CompositeUnit, NoteUnit, ReactionUnit};
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Default)]
@@ -82,7 +84,7 @@ impl ViewFilter {
 /// be captured by a Filter itself.
 #[derive(Default, Debug)]
 pub struct TimelineTab {
-    pub notes: Vec<NoteRef>,
+    pub units: TimelineUnits,
     pub selection: i32,
     pub filter: ViewFilter,
     pub list: Rc<RefCell<VirtualList>>,
@@ -115,10 +117,9 @@ impl TimelineTab {
         list.hide_on_resize(None);
         list.over_scan(50.0);
         let list = Rc::new(RefCell::new(list));
-        let notes: Vec<NoteRef> = Vec::with_capacity(cap);
 
         TimelineTab {
-            notes,
+            units: TimelineUnits::with_capacity(cap),
             selection,
             filter,
             list,
@@ -126,45 +127,54 @@ impl TimelineTab {
         }
     }
 
-    fn insert(&mut self, new_refs: &[NoteRef], reversed: bool) {
-        if new_refs.is_empty() {
-            return;
+    fn insert<'a>(
+        &mut self,
+        payloads: Vec<&'a NotePayload>,
+        ndb: &Ndb,
+        txn: &Transaction,
+        reversed: bool,
+    ) -> Option<UnknownPks<'a>> {
+        if payloads.is_empty() {
+            return None;
         }
-        let num_prev_items = self.notes.len();
-        let (notes, merge_kind) = crate::timeline::merge_sorted_vecs(&self.notes, new_refs);
 
-        self.notes = notes;
-        let new_items = self.notes.len() - num_prev_items;
+        let num_refs = payloads.len();
 
-        // TODO: technically items could have been added inbetween
-        if new_items > 0 {
-            let mut list = self.list.borrow_mut();
+        let resp = self.units.merge_new_notes(payloads, ndb, txn);
 
-            match merge_kind {
-                // TODO: update egui_virtual_list to support spliced inserts
-                MergeKind::Spliced => {
-                    debug!(
-                        "spliced when inserting {} new notes, resetting virtual list",
-                        new_refs.len()
-                    );
-                    list.reset();
-                }
-                MergeKind::FrontInsert => {
-                    // only run this logic if we're reverse-chronological
-                    // reversed in this case means chronological, since the
-                    // default is reverse-chronological. yeah it's confusing.
-                    if !reversed {
-                        debug!("inserting {} new notes at start", new_refs.len());
-                        list.items_inserted_at_start(new_items);
-                    }
+        let InsertManyResponse::Some {
+            entries_merged,
+            merge_kind,
+        } = resp.insertion_response
+        else {
+            return resp.tl_response;
+        };
+
+        let mut list = self.list.borrow_mut();
+
+        match merge_kind {
+            // TODO: update egui_virtual_list to support spliced inserts
+            MergeKind::Spliced => {
+                debug!("spliced when inserting {num_refs} new notes, resetting virtual list",);
+                list.reset();
+            }
+            MergeKind::FrontInsert => {
+                // only run this logic if we're reverse-chronological
+                // reversed in this case means chronological, since the
+                // default is reverse-chronological. yeah it's confusing.
+                if !reversed {
+                    debug!("inserting {num_refs} new notes at start");
+                    list.items_inserted_at_start(entries_merged);
                 }
             }
-        }
+        };
+
+        resp.tl_response
     }
 
     pub fn select_down(&mut self) {
         debug!("select_down {}", self.selection + 1);
-        if self.selection + 1 > self.notes.len() as i32 {
+        if self.selection + 1 > self.units.len() as i32 {
             return;
         }
 
@@ -178,6 +188,14 @@ impl TimelineTab {
         }
 
         self.selection -= 1;
+    }
+}
+
+impl<'a> UnknownPks<'a> {
+    pub fn process(&self, unknown_ids: &mut UnknownIds, ndb: &Ndb, txn: &Transaction) {
+        for pk in &self.unknown_pks {
+            unknown_ids.add_pubkey_if_missing(ndb, txn, pk);
+        }
     }
 }
 
@@ -272,15 +290,20 @@ impl Timeline {
 
     /// Get the note refs for NotesAndReplies. If we only have Notes, then
     /// just return that instead
-    pub fn all_or_any_notes(&self) -> &[NoteRef] {
-        self.notes(ViewFilter::NotesAndReplies).unwrap_or_else(|| {
-            self.notes(ViewFilter::Notes)
-                .expect("should have at least notes")
-        })
+    pub fn all_or_any_entries(&self) -> &TimelineUnits {
+        self.entries(ViewFilter::NotesAndReplies)
+            .unwrap_or_else(|| {
+                self.entries(ViewFilter::Notes)
+                    .expect("should have at least notes")
+            })
     }
 
-    pub fn notes(&self, view: ViewFilter) -> Option<&[NoteRef]> {
-        self.view(view).map(|v| &*v.notes)
+    pub fn entries(&self, view: ViewFilter) -> Option<&TimelineUnits> {
+        self.view(view).map(|v| &v.units)
+    }
+
+    pub fn latest_note(&self, view: ViewFilter) -> Option<&NoteRef> {
+        self.view(view).and_then(|v| v.units.latest())
     }
 
     pub fn view(&self, view: ViewFilter) -> Option<&TimelineTab> {
@@ -299,7 +322,7 @@ impl Timeline {
         ndb: &Ndb,
         note_cache: &mut NoteCache,
         notes: &[NoteRef],
-    ) {
+    ) -> Option<UnknownPksOwned> {
         let filters = {
             let views = &self.views;
             let filters: Vec<fn(&CachedNote, &Note) -> bool> =
@@ -307,6 +330,7 @@ impl Timeline {
             filters
         };
 
+        let mut unknown_pks = HashSet::new();
         for note_ref in notes {
             for (view, filter) in filters.iter().enumerate() {
                 if let Ok(note) = ndb.get_note_by_key(txn, note_ref.key) {
@@ -314,11 +338,32 @@ impl Timeline {
                         note_cache.cached_note_or_insert_mut(note_ref.key, &note),
                         &note,
                     ) {
-                        self.views[view].notes.push(*note_ref)
+                        if let Some(resp) = self.views[view]
+                            .units
+                            .merge_new_notes(
+                                vec![&NotePayload {
+                                    note,
+                                    key: note_ref.key,
+                                }],
+                                ndb,
+                                txn,
+                            )
+                            .tl_response
+                        {
+                            let pks: HashSet<Pubkey> = resp
+                                .unknown_pks
+                                .into_iter()
+                                .map(|r| Pubkey::new(*r))
+                                .collect();
+
+                            unknown_pks.extend(pks);
+                        }
                     }
                 }
             }
         }
+
+        Some(UnknownPksOwned { pks: unknown_pks })
     }
 
     /// The main function used for inserting notes into timelines. Handles
@@ -333,7 +378,7 @@ impl Timeline {
         note_cache: &mut NoteCache,
         reversed: bool,
     ) -> Result<()> {
-        let mut new_refs: Vec<(Note, NoteRef)> = Vec::with_capacity(new_note_ids.len());
+        let mut payloads: Vec<NotePayload> = Vec::with_capacity(new_note_ids.len());
 
         for key in new_note_ids {
             let note = if let Ok(note) = ndb.get_note_by_key(txn, *key) {
@@ -350,35 +395,32 @@ impl Timeline {
             // into the timeline
             UnknownIds::update_from_note(txn, ndb, unknown_ids, note_cache, &note);
 
-            let created_at = note.created_at();
-            new_refs.push((
-                note,
-                NoteRef {
-                    key: *key,
-                    created_at,
-                },
-            ));
+            payloads.push(NotePayload { note, key: *key });
         }
 
         for view in &mut self.views {
             match view.filter {
                 ViewFilter::NotesAndReplies => {
-                    let refs: Vec<NoteRef> = new_refs.iter().map(|(_note, nr)| *nr).collect();
-
-                    view.insert(&refs, reversed);
+                    let res: Vec<&NotePayload<'_>> = payloads.iter().collect();
+                    if let Some(res) = view.insert(res, ndb, txn, reversed) {
+                        res.process(unknown_ids, ndb, txn);
+                    }
                 }
 
                 ViewFilter::Notes => {
-                    let mut filtered_refs = Vec::with_capacity(new_refs.len());
-                    for (note, nr) in &new_refs {
-                        let cached_note = note_cache.cached_note_or_insert(nr.key, note);
+                    let mut filtered_payloads = Vec::with_capacity(payloads.len());
+                    for payload in &payloads {
+                        let cached_note =
+                            note_cache.cached_note_or_insert(payload.key, &payload.note);
 
-                        if ViewFilter::filter_notes(cached_note, note) {
-                            filtered_refs.push(*nr);
+                        if ViewFilter::filter_notes(cached_note, &payload.note) {
+                            filtered_payloads.push(payload);
                         }
                     }
 
-                    view.insert(&filtered_refs, reversed);
+                    if let Some(res) = view.insert(filtered_payloads, ndb, txn, reversed) {
+                        res.process(unknown_ids, ndb, txn);
+                    }
                 }
             }
         }
@@ -412,6 +454,18 @@ impl Timeline {
         }
 
         self.insert(&new_note_ids, ndb, txn, unknown_ids, note_cache, reversed)
+    }
+}
+
+pub struct UnknownPksOwned {
+    pub pks: HashSet<Pubkey>,
+}
+
+impl UnknownPksOwned {
+    pub fn process(&self, ndb: &Ndb, txn: &Transaction, unknown_ids: &mut UnknownIds) {
+        self.pks
+            .iter()
+            .for_each(|p| unknown_ids.add_pubkey_if_missing(ndb, txn, p));
     }
 }
 
@@ -544,7 +598,7 @@ pub fn send_initial_timeline_filter(
                     filter = filter.limit_mut(lim);
                 }
 
-                let notes = timeline.all_or_any_notes();
+                let entries = timeline.all_or_any_entries();
 
                 // Should we since optimize? Not always. For example
                 // if we only have a few notes locally. One way to
@@ -552,8 +606,8 @@ pub fn send_initial_timeline_filter(
                 // and seeing what its limit is. If we have less
                 // notes than the limit, we might want to backfill
                 // older notes
-                if can_since_optimize && filter::should_since_optimize(lim, notes.len()) {
-                    filter = filter::since_optimize_filter(filter, Some(&notes[0]));
+                if can_since_optimize && filter::should_since_optimize(lim, entries.len()) {
+                    filter = filter::since_optimize_filter(filter, entries.latest());
                 } else {
                     warn!("Skipping since optimization for {:?}: number of local notes is less than limit, attempting to backfill.", &timeline.kind);
                 }
@@ -635,7 +689,9 @@ fn setup_initial_timeline(
         .map(NoteRef::from_query_result)
         .collect();
 
-    timeline.insert_new(txn, ndb, note_cache, &notes);
+    if let Some(pks) = timeline.insert_new(txn, ndb, note_cache, &notes) {
+        pks.process(ndb, txn, unknown_ids);
+    }
 
     Ok(())
 }

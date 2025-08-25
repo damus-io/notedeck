@@ -2,7 +2,10 @@ use egui::{vec2, Align, Color32, CornerRadius, RichText, Stroke, TextEdit};
 use enostr::{NoteId, Pubkey};
 use state::TypingType;
 
-use crate::{timeline::TimelineTab, ui::timeline::TimelineTabView};
+use crate::{
+    timeline::{TimelineTab, TimelineUnits},
+    ui::timeline::TimelineTabView,
+};
 use egui_winit::clipboard::Clipboard;
 use nostrdb::{Filter, Ndb, Transaction};
 use notedeck::{tr, tr_plural, JobsCache, Localization, NoteAction, NoteContext, NoteRef};
@@ -125,7 +128,7 @@ impl<'a, 'd> SearchView<'a, 'd> {
                     "Got {count} result for '{query}'",  // one
                     "Got {count} results for '{query}'", // other
                     "Search results count",              // comment
-                    self.query.notes.notes.len(),        // count
+                    self.query.notes.units.len(),        // count
                     query = &self.query.string
                 ));
                 note_action = self.show_search_results(ui);
@@ -190,7 +193,7 @@ fn execute_search(
         return;
     };
 
-    tab.notes = note_refs;
+    tab.units = TimelineUnits::from_refs_single(note_refs);
     tab.list.borrow_mut().reset();
     ctx.request_repaint();
 }
