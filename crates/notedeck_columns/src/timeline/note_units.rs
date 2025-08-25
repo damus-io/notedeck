@@ -322,8 +322,8 @@ mod tests {
             Pubkey::new(out)
         }
 
-        fn fragment(&mut self, reacted_to: NoteRef) -> String {
-            let frag = NoteUnitFragment::Composite(CompositeFragment::Reaction(ReactionFragment {
+        fn build_fragment(&mut self, reacted_to: NoteRef) -> NoteUnitFragment {
+            NoteUnitFragment::Composite(CompositeFragment::Reaction(ReactionFragment {
                 noteref_reacted_to: reacted_to,
                 reaction_note_ref: NoteRef {
                     key: NoteKey::new(self.counter()),
@@ -333,13 +333,32 @@ mod tests {
                     reaction: "+".to_owned(),
                     sender: self.random_sender(),
                 },
-            }));
+            }))
+        }
+
+        fn fragment(&mut self, reacted_to: NoteRef) -> String {
+            let frag = self.build_fragment(reacted_to);
             let id = Uuid::new_v4().to_string();
             self.frags.insert(id.clone(), frag.clone());
 
             self.units.merge_fragments(vec![frag]);
 
             id
+        }
+
+        fn fragments_pair(&mut self, reacted_to: NoteRef) -> (String, String) {
+            let frag1 = self.build_fragment(reacted_to);
+            let frag2 = self.build_fragment(reacted_to);
+
+            self.units
+                .merge_fragments(vec![frag1.clone(), frag2.clone()]);
+
+            let id1 = Uuid::new_v4().to_string();
+            self.frags.insert(id1.clone(), frag1);
+            let id2 = Uuid::new_v4().to_string();
+            self.frags.insert(id2.clone(), frag2);
+
+            (id1, id2)
         }
 
         fn generate_reaction_note(&mut self) -> NoteRef {
@@ -507,5 +526,27 @@ mod tests {
         builder.aeq(2, Expect::Single(&single2));
         builder.aeq(3, Expect::Single(&single1));
         builder.aeq(4, Expect::Single(&single0));
+    }
+
+    #[test]
+    fn test3() {
+        let mut builder = UnitBuilder::default();
+        let reaction_note1 = builder.generate_reaction_note();
+
+        let single1 = builder.insert_note();
+        builder.aeq(0, Expect::Single(&single1));
+
+        let reac0 = builder.fragment(reaction_note1);
+        builder.aeq(0, Expect::Reaction(vec![&reac0]));
+        builder.aeq(1, Expect::Single(&single1));
+
+        let (reac1, reac2) = builder.fragments_pair(reaction_note1);
+        builder.aeq(0, Expect::Reaction(vec![&reac0, &reac1, &reac2]));
+        builder.aeq(1, Expect::Single(&single1));
+
+        let single2 = builder.insert_note();
+        builder.aeq(0, Expect::Single(&single2));
+        builder.aeq(1, Expect::Reaction(vec![&reac0, &reac1, &reac2]));
+        builder.aeq(2, Expect::Single(&single1));
     }
 }
