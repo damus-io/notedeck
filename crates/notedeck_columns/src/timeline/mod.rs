@@ -30,6 +30,7 @@ pub mod kind;
 mod note_units;
 pub mod route;
 pub mod thread;
+mod timeline_units;
 mod unit;
 
 pub use cache::TimelineCache;
