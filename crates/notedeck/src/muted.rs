@@ -80,4 +80,8 @@ impl Muted {
 
         false
     }
+
+    pub fn is_pk_muted(&self, pk: &[u8; 32]) -> bool {
+        self.pubkeys.contains(pk)
+    }
 }
