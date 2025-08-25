@@ -140,7 +140,16 @@ impl ColumnsArgs {
                 } else if column_name == "universe" {
                     debug!("got universe column");
                     res.columns
-                        .push(ArgColumn::Timeline(TimelineKind::Universe))
+                        .push(ArgColumn::Timeline(TimelineKind::Universe));
+                } else if let Some(hashtag) = column_name.strip_prefix("hashtag:") {
+                    let hashtags: Vec<String> = hashtag
+                        .split(",")
+                        .map(str::trim)
+                        .filter(|p| !p.is_empty())
+                        .map(ToOwned::to_owned)
+                        .collect();
+                    res.columns
+                        .push(ArgColumn::Timeline(TimelineKind::Hashtag(hashtags)));
                 } else if let Some(profile_pk_str) = column_name.strip_prefix("profile:") {
                     if let Ok(pubkey) = Pubkey::parse(profile_pk_str) {
                         info!("got profile column for user {}", pubkey.hex());
