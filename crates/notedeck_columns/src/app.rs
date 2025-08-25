@@ -155,6 +155,7 @@ fn try_process_event(
             app_ctx.note_cache,
             timeline,
             app_ctx.accounts,
+            app_ctx.unknown_ids,
         );
 
         if is_ready {
@@ -222,6 +223,7 @@ fn update_damus(damus: &mut Damus, app_ctx: &mut AppContext<'_>, ctx: &egui::Con
                 app_ctx.ndb,
                 app_ctx.note_cache,
                 &mut damus.timeline_cache,
+                app_ctx.unknown_ids,
             ) {
                 warn!("update_damus init: {err}");
             }

@@ -471,10 +471,11 @@ pub fn setup_new_timeline(
     note_cache: &mut NoteCache,
     since_optimize: bool,
     accounts: &Accounts,
+    unknown_ids: &mut UnknownIds,
 ) {
     // if we're ready, setup local subs
-    if is_timeline_ready(ndb, pool, note_cache, timeline, accounts) {
-        if let Err(err) = setup_timeline_nostrdb_sub(ndb, txn, note_cache, timeline) {
+    if is_timeline_ready(ndb, pool, note_cache, timeline, accounts, unknown_ids) {
+        if let Err(err) = setup_timeline_nostrdb_sub(ndb, txn, note_cache, timeline, unknown_ids) {
             error!("setup_new_timeline: {err}");
         }
     }
@@ -608,6 +609,7 @@ fn setup_initial_timeline(
     txn: &Transaction,
     timeline: &mut Timeline,
     note_cache: &mut NoteCache,
+    unknown_ids: &mut UnknownIds,
     filters: &HybridFilter,
 ) -> Result<()> {
     // some timelines are one-shot and a refreshed, like last_per_pubkey algo feed
@@ -642,10 +644,11 @@ pub fn setup_initial_nostrdb_subs(
     ndb: &Ndb,
     note_cache: &mut NoteCache,
     timeline_cache: &mut TimelineCache,
+    unknown_ids: &mut UnknownIds,
 ) -> Result<()> {
     for (_kind, timeline) in timeline_cache {
         let txn = Transaction::new(ndb).expect("txn");
-        if let Err(err) = setup_timeline_nostrdb_sub(ndb, &txn, note_cache, timeline) {
+        if let Err(err) = setup_timeline_nostrdb_sub(ndb, &txn, note_cache, timeline, unknown_ids) {
             error!("setup_initial_nostrdb_subs: {err}");
         }
     }
@@ -658,6 +661,7 @@ fn setup_timeline_nostrdb_sub(
     txn: &Transaction,
     note_cache: &mut NoteCache,
     timeline: &mut Timeline,
+    unknown_ids: &mut UnknownIds,
 ) -> Result<()> {
     let filter_state = timeline
         .filter
@@ -665,7 +669,7 @@ fn setup_timeline_nostrdb_sub(
         .ok_or(Error::App(notedeck::Error::empty_contact_list()))?
         .to_owned();
 
-    setup_initial_timeline(ndb, txn, timeline, note_cache, &filter_state)?;
+    setup_initial_timeline(ndb, txn, timeline, note_cache, unknown_ids, &filter_state)?;
 
     Ok(())
 }
@@ -680,6 +684,7 @@ pub fn is_timeline_ready(
     note_cache: &mut NoteCache,
     timeline: &mut Timeline,
     accounts: &Accounts,
+    unknown_ids: &mut UnknownIds,
 ) -> bool {
     // TODO: we should debounce the filter states a bit to make sure we have
     // seen all of the different contact lists from each relay
@@ -753,7 +758,8 @@ pub fn is_timeline_ready(
             // queries and setup the local subscription
             info!("Found contact list! Setting up local and remote contact list query");
             let txn = Transaction::new(ndb).expect("txn");
-            setup_initial_timeline(ndb, &txn, timeline, note_cache, &filter).expect("setup init");
+            setup_initial_timeline(ndb, &txn, timeline, note_cache, unknown_ids, &filter)
+                .expect("setup init");
             timeline
                 .filter
                 .set_relay_state(relay_id, FilterState::ready_hybrid(filter.clone()));
