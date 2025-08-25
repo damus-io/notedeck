@@ -77,8 +77,12 @@ impl NoteUnits {
             return InsertManyResponse::Zero;
         }
 
+        let mut touched = Vec::new();
         if !touched_indices.is_empty() {
-            self.order.retain(|i| !touched_indices.contains(i));
+            touched = touched_indices.to_vec();
+            touched.sort_unstable(); // sort for later reinsertion
+            touched.dedup();
+            self.order.retain(|i| touched.binary_search(i).is_err()); // temporarily remove touched from Self::order
         }
 
         units.sort_unstable();
@@ -95,17 +99,20 @@ impl NoteUnits {
             new_order.push(idx);
         }
 
-        let front_insertion = if self.order.is_empty() || new_order.is_empty() {
-            true
-        } else if !self.reversed {
-            let first_new = *new_order.first().unwrap();
-            let last_old = *self.order.last().unwrap();
-            self.storage[first_new] >= self.storage[last_old]
-        } else {
-            let last_new = *new_order.last().unwrap();
-            let first_old = *self.order.first().unwrap();
-            self.storage[last_new] <= self.storage[first_old]
-        };
+        let inserted_new = new_order.len();
+
+        let front_insertion = inserted_new > 0
+            && if self.order.is_empty() || new_order.is_empty() {
+                true
+            } else if !self.reversed {
+                let first_new = *new_order.first().unwrap();
+                let last_old = *self.order.last().unwrap();
+                self.storage[first_new] >= self.storage[last_old]
+            } else {
+                let last_new = *new_order.last().unwrap();
+                let first_old = *self.order.first().unwrap();
+                self.storage[last_new] <= self.storage[first_old]
+            };
 
         let mut merged = Vec::with_capacity(self.order.len() + new_order.len());
         let (mut i, mut j) = (0, 0);
@@ -126,26 +133,26 @@ impl NoteUnits {
         merged.extend_from_slice(&self.order[i..]);
         merged.extend_from_slice(&new_order[j..]);
 
-        for &touched_index in touched_indices {
+        // reinsert touched
+        for touched_index in touched {
             let pos = merged
                 .binary_search_by(|&i2| self.storage[i2].cmp(&self.storage[touched_index]))
                 .unwrap_or_else(|p| p);
             merged.insert(pos, touched_index);
         }
 
-        let inserted = merged.len() - self.order.len();
         self.order = merged;
 
-        if inserted == 0 {
+        if inserted_new == 0 {
             InsertManyResponse::Zero
         } else if front_insertion {
             InsertManyResponse::Some {
-                entries_merged: inserted,
+                entries_merged: inserted_new,
                 merge_kind: MergeKind::FrontInsert,
             }
         } else {
             InsertManyResponse::Some {
-                entries_merged: inserted,
+                entries_merged: inserted_new,
                 merge_kind: MergeKind::Spliced,
             }
         }
