@@ -72,6 +72,18 @@ impl Nip51SetCache {
     pub fn iter(&self) -> impl IntoIterator<Item = &Nip51Set> {
         self.cached_notes.values()
     }
+
+    pub fn len(&self) -> usize {
+        self.cached_notes.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.cached_notes.is_empty()
+    }
+
+    pub fn at_index(&self, index: usize) -> Option<&Nip51Set> {
+        self.cached_notes.get_index(index).map(|(_, s)| s)
+    }
 }
 
 fn add(
