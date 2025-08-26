@@ -38,6 +38,9 @@ bitflags! {
 
         /// no animation override (accessibility)
         const NoAnimations = 1 << 17;
+
+        /// Styled for a notification preview
+        const NotificationPreview = 1 << 18;
     }
 }
 

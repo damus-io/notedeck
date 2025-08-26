@@ -334,14 +334,14 @@ fn render_undecorated_note_contents<'a>(
                             .selectable(selectable),
                         );
                     } else {
-                        ui.add(
-                            Label::new(
-                                RichText::new(block_str)
-                                    .text_style(NotedeckTextStyle::NoteBody.text_style()),
-                            )
-                            .wrap()
-                            .selectable(selectable),
-                        );
+                        let mut richtext = RichText::new(block_str)
+                            .text_style(NotedeckTextStyle::NoteBody.text_style());
+
+                        if options.contains(NoteOptions::NotificationPreview) {
+                            richtext = richtext.color(egui::Color32::from_rgb(0x87, 0x87, 0x8D));
+                        }
+
+                        ui.add(Label::new(richtext).wrap().selectable(selectable));
                     }
                     // don't render any more blocks
                     if truncate {

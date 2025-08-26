@@ -1,5 +1,5 @@
 use egui::containers::scroll_area::ScrollBarVisibility;
-use egui::{vec2, Direction, Layout, Pos2, ScrollArea, Sense, Stroke};
+use egui::{vec2, Direction, Layout, Margin, Pos2, ScrollArea, Sense, Stroke};
 use egui_tabs::TabColor;
 use enostr::Pubkey;
 use nostrdb::{ProfileRecord, Transaction};
@@ -7,7 +7,7 @@ use notedeck::name::get_display_name;
 use notedeck::ui::is_narrow;
 use notedeck::{JobsCache, Muted, NoteRef};
 use notedeck_ui::app_images::like_image;
-use notedeck_ui::{padding, ProfilePic};
+use notedeck_ui::ProfilePic;
 use std::f32::consts::PI;
 use tracing::{error, warn};
 
@@ -540,79 +540,85 @@ fn render_reaction_cluster(
     let num_profiles_other = profiles_to_show.len() - 1;
 
     let mut action = None;
-    padding(8.0, ui, |ui| {
-        ui.allocate_ui_with_layout(
-            vec2(ui.available_width(), 32.0),
-            Layout::left_to_right(egui::Align::Center),
-            |ui| {
-                ui.vertical(|ui| {
+    egui::Frame::new()
+        .inner_margin(Margin::symmetric(8, 4))
+        .show(ui, |ui| {
+            ui.allocate_ui_with_layout(
+                vec2(ui.available_width(), 32.0),
+                Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    ui.vertical(|ui| {
+                        ui.add_space(4.0);
+                        ui.add_sized(vec2(28.0, 28.0), like_image());
+                    });
+
                     ui.add_space(16.0);
-                    ui.add_sized(vec2(32.0, 32.0), like_image());
-                });
 
-                ui.add_space(16.0);
+                    ui.horizontal(|ui| {
+                        ScrollArea::horizontal()
+                            .scroll_bar_visibility(ScrollBarVisibility::AlwaysHidden)
+                            .show(ui, |ui| {
+                                for entry in profiles_to_show {
+                                    let resp = ui.add(
+                                        &mut ProfilePic::from_profile_or_default(
+                                            note_context.img_cache,
+                                            entry.record.as_ref(),
+                                        )
+                                        .size(24.0)
+                                        .sense(Sense::click()),
+                                    );
 
-                ui.horizontal(|ui| {
-                    ScrollArea::horizontal()
-                        .scroll_bar_visibility(ScrollBarVisibility::AlwaysHidden)
-                        .show(ui, |ui| {
-                            for entry in profiles_to_show {
-                                let resp = ui.add(
-                                    &mut ProfilePic::from_profile_or_default(
-                                        note_context.img_cache,
-                                        entry.record.as_ref(),
-                                    )
-                                    .sense(Sense::click()),
-                                );
-
-                                if resp.clicked() {
-                                    action = Some(NoteAction::Profile(*entry.pk))
+                                    if resp.clicked() {
+                                        action = Some(NoteAction::Profile(*entry.pk))
+                                    }
                                 }
-                            }
-                        });
-                });
-            },
-        );
+                            });
+                    });
+                },
+            );
 
-        let note_type_desc = if note_context
-            .accounts
-            .get_selected_account()
-            .key
-            .pubkey
-            .bytes()
-            != reacted_to_note.pubkey()
-        {
-            "note you were tagged in"
-        } else {
-            "your note"
-        };
+            let note_type_desc = if note_context
+                .accounts
+                .get_selected_account()
+                .key
+                .pubkey
+                .bytes()
+                != reacted_to_note.pubkey()
+            {
+                "note you were tagged in"
+            } else {
+                "your note"
+            };
 
-        ui.add_space(2.0);
-        ui.horizontal(|ui| {
-            ui.add_space(52.0);
+            ui.add_space(2.0);
+            ui.horizontal(|ui| {
+                ui.add_space(52.0);
 
-            ui.horizontal_wrapped(|ui| {
-                if num_profiles_other > 0 {
-                    ui.label(format!(
+                ui.horizontal_wrapped(|ui| {
+                    if num_profiles_other > 0 {
+                        ui.label(format!(
                         "{first_name} and {num_profiles_other} others reacted to {note_type_desc}",
                     ));
-                } else {
-                    ui.label(format!("{first_name} reacted to {note_type_desc}"));
+                    } else {
+                        ui.label(format!("{first_name} reacted to {note_type_desc}"));
+                    }
+                });
+            });
+
+            ui.add_space(16.0);
+
+            ui.horizontal(|ui| {
+                ui.add_space(48.0);
+                let options = note_options
+                    .difference(NoteOptions::ActionBar | NoteOptions::OptionsButton)
+                    .union(NoteOptions::NotificationPreview);
+                let resp = NoteView::new(note_context, &reacted_to_note, options, jobs).show(ui);
+
+                if let Some(note_action) = resp.action {
+                    action = Some(note_action);
                 }
             });
         });
-
-        ui.add_space(16.0);
-
-        ui.horizontal(|ui| {
-            ui.add_space(48.0);
-            let resp = NoteView::new(note_context, &reacted_to_note, note_options, jobs).show(ui);
-
-            if let Some(note_action) = resp.action {
-                action = Some(note_action);
-            }
-        });
-    });
 
     notedeck_ui::hline(ui);
     RenderEntryResponse::Success(action)
