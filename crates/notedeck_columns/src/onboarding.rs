@@ -1,3 +1,6 @@
+use std::{cell::RefCell, rc::Rc};
+
+use egui_virtual_list::VirtualList;
 use enostr::{Pubkey, RelayPool};
 use nostrdb::{Filter, Ndb, NoteKey, Transaction};
 use notedeck::{create_nip51_set, filter::default_limit, Nip51SetCache, UnknownIds};
@@ -16,6 +19,7 @@ enum OnboardingState {
 #[derive(Default)]
 pub struct Onboarding {
     state: Option<Result<OnboardingState, OnboardingError>>,
+    pub list: Rc<RefCell<VirtualList>>,
 }
 
 impl Onboarding {
