@@ -83,7 +83,7 @@ impl<'a> Nip51SetWidget<'a> {
 
         let action = egui::Frame::new()
             .corner_radius(CornerRadius::same(8))
-            .fill(ui.visuals().extreme_bg_color)
+            //.fill(ui.visuals().extreme_bg_color)
             .inner_margin(Margin::same(8))
             .show(ui, |ui| {
                 render_pack(
@@ -205,9 +205,14 @@ fn render_pack(
                     )));
                 }
                 if let Some(desc) = &pack.description {
-                    ui.add(egui::Label::new(egui::RichText::new(desc).size(
-                        get_font_size(ui.ctx(), &notedeck::NotedeckTextStyle::Heading3),
-                    )));
+                    ui.add(egui::Label::new(
+                        egui::RichText::new(desc)
+                            .size(get_font_size(
+                                ui.ctx(),
+                                &notedeck::NotedeckTextStyle::Heading3,
+                            ))
+                            .color(ui.visuals().weak_text_color()),
+                    ));
                 }
                 let checked = ui.checkbox(
                     ui_state.get_select_all_state(&pack.identifier),
@@ -234,8 +239,9 @@ fn render_pack(
     };
 
     let mut resp = None;
+    let txn = Transaction::new(ndb).expect("txn");
+
     for pk in &pack.pks {
-        let txn = Transaction::new(ndb).expect("txn");
         let m_profile = ndb.get_profile_by_pubkey(&txn, pk.bytes()).ok();
 
         let cur_state = ui_state.get_pk_selected_state(&pack.identifier, pk);
@@ -252,6 +258,8 @@ fn render_pack(
     resp
 }
 
+const PFP_SIZE: f32 = 32.0;
+
 fn render_profile_item(
     ui: &mut egui::Ui,
     images: &mut Images,
@@ -259,7 +267,7 @@ fn render_profile_item(
     checked: &mut bool,
 ) -> bool {
     let (card_rect, card_resp) =
-        ui.allocate_exact_size(vec2(ui.available_width(), 48.0), egui::Sense::click());
+        ui.allocate_exact_size(vec2(ui.available_width(), PFP_SIZE), egui::Sense::click());
 
     let mut clicked_response = card_resp;
 
@@ -281,13 +289,14 @@ fn render_profile_item(
 
     clicked_response = clicked_response.union(resp.response);
 
-    let (pfp_rect, body_rect) = remaining_rect.split_left_right_at_x(remaining_rect.left() + 48.0);
+    let (pfp_rect, body_rect) =
+        remaining_rect.split_left_right_at_x(remaining_rect.left() + PFP_SIZE);
 
     let _ = ui.allocate_new_ui(UiBuilder::new().max_rect(pfp_rect), |ui| {
         let pfp_resp = ui.add(
             &mut ProfilePic::new(images, get_profile_url(profile))
                 .sense(Sense::click())
-                .size(48.0),
+                .size(PFP_SIZE),
         );
 
         clicked_response = clicked_response.union(pfp_resp);
@@ -308,7 +317,7 @@ fn render_profile_item(
         if let Some(disp) = name.display_name {
             let galley = painter.layout_no_wrap(
                 disp.to_owned(),
-                NotedeckTextStyle::Heading3.get_font_id(ui.ctx()),
+                NotedeckTextStyle::Body.get_font_id(ui.ctx()),
                 ui.visuals().text_color(),
             );
 
