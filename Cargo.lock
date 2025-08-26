@@ -3527,6 +3527,7 @@ dependencies = [
  "hashbrown 0.15.4",
  "hex",
  "image",
+ "indexmap 2.9.0",
  "jni 0.21.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "lightning-invoice",
  "md5",

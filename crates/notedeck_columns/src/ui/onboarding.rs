@@ -5,14 +5,14 @@ use nostrdb::Ndb;
 use notedeck::{Images, JobPool, JobsCache, Localization};
 use notedeck_ui::{
     colors,
-    nip51_set::{Nip51SetUiCache, Nip51SetWidget, Nip51SetWidgetFlags, Nip51SetWidgetResponse},
+    nip51_set::{Nip51SetUiCache, Nip51SetWidget, Nip51SetWidgetAction, Nip51SetWidgetFlags},
 };
 
 use crate::{onboarding::Onboarding, ui::widgets::styled_button};
 
 /// Display Follow Packs for the user to choose from authors trusted by the Damus team
 pub struct FollowPackOnboardingView<'a> {
-    onboarding: &'a Onboarding,
+    onboarding: &'a mut Onboarding,
     ui_state: &'a mut Nip51SetUiCache,
     ndb: &'a Ndb,
     images: &'a mut Images,
@@ -33,7 +33,7 @@ pub enum FollowPacksResponse {
 
 impl<'a> FollowPackOnboardingView<'a> {
     pub fn new(
-        onboarding: &'a Onboarding,
+        onboarding: &'a mut Onboarding,
         ui_state: &'a mut Nip51SetUiCache,
         ndb: &'a Ndb,
         images: &'a mut Images,
@@ -71,24 +71,37 @@ impl<'a> FollowPackOnboardingView<'a> {
             .max_height(max_height)
             .show(ui, |ui| {
                 egui::Frame::new().inner_margin(8.0).show(ui, |ui| {
-                    if let Some(resp) = Nip51SetWidget::new(
-                        follow_pack_state,
-                        self.ui_state,
-                        self.ndb,
-                        self.loc,
-                        self.images,
-                        self.job_pool,
-                        self.jobs,
-                    )
-                    .with_flags(Nip51SetWidgetFlags::TRUST_IMAGES)
-                    .ui(ui)
-                    {
-                        match resp {
-                            Nip51SetWidgetResponse::ViewProfile(pubkey) => {
-                                action = Some(OnboardingResponse::ViewProfile(pubkey));
+                    self.onboarding.list.borrow_mut().ui_custom_layout(
+                        ui,
+                        follow_pack_state.len(),
+                        |ui, index| {
+                            let resp = Nip51SetWidget::new(
+                                follow_pack_state,
+                                self.ui_state,
+                                self.ndb,
+                                self.loc,
+                                self.images,
+                                self.job_pool,
+                                self.jobs,
+                            )
+                            .with_flags(Nip51SetWidgetFlags::TRUST_IMAGES)
+                            .render_at_index(ui, index);
+
+                            if let Some(cur_action) = resp.action {
+                                match cur_action {
+                                    Nip51SetWidgetAction::ViewProfile(pubkey) => {
+                                        action = Some(OnboardingResponse::ViewProfile(pubkey));
+                                    }
+                                }
                             }
-                        }
-                    }
+
+                            if resp.rendered {
+                                1
+                            } else {
+                                0
+                            }
+                        },
+                    );
                 })
             });
 

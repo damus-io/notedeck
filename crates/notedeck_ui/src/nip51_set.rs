@@ -42,7 +42,7 @@ impl Default for Nip51SetWidgetFlags {
     }
 }
 
-pub enum Nip51SetWidgetResponse {
+pub enum Nip51SetWidgetAction {
     ViewProfile(Pubkey),
 }
 
@@ -73,38 +73,73 @@ impl<'a> Nip51SetWidget<'a> {
         self
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui) -> Option<Nip51SetWidgetResponse> {
+    fn render_set(&mut self, ui: &mut egui::Ui, set: &Nip51Set) -> Nip51SetWidgetResponse {
+        if should_skip(set, &self.flags) {
+            return Nip51SetWidgetResponse {
+                action: None,
+                rendered: false,
+            };
+        }
+
+        let action = egui::Frame::new()
+            .corner_radius(CornerRadius::same(8))
+            .fill(ui.visuals().extreme_bg_color)
+            .inner_margin(Margin::same(8))
+            .show(ui, |ui| {
+                render_pack(
+                    ui,
+                    set,
+                    self.ui_state,
+                    self.ndb,
+                    self.images,
+                    self.job_pool,
+                    self.jobs,
+                    self.loc,
+                    self.flags.contains(Nip51SetWidgetFlags::TRUST_IMAGES),
+                )
+            })
+            .inner;
+
+        Nip51SetWidgetResponse {
+            action,
+            rendered: true,
+        }
+    }
+
+    pub fn render_at_index(&mut self, ui: &mut egui::Ui, index: usize) -> Nip51SetWidgetResponse {
+        let Some(set) = self.state.at_index(index) else {
+            return Nip51SetWidgetResponse {
+                action: None,
+                rendered: false,
+            };
+        };
+
+        self.render_set(ui, set)
+    }
+
+    pub fn ui(&mut self, ui: &mut egui::Ui) -> Option<Nip51SetWidgetAction> {
         let mut resp = None;
         for pack in self.state.iter() {
-            if should_skip(pack, &self.flags) {
-                continue;
+            let res = self.render_set(ui, pack);
+
+            if let Some(action) = res.action {
+                resp = Some(action);
             }
 
-            egui::Frame::new()
-                .corner_radius(CornerRadius::same(8))
-                .fill(ui.visuals().extreme_bg_color)
-                .inner_margin(Margin::same(8))
-                .show(ui, |ui| {
-                    if let Some(cur_resp) = render_pack(
-                        ui,
-                        pack,
-                        self.ui_state,
-                        self.ndb,
-                        self.images,
-                        self.job_pool,
-                        self.jobs,
-                        self.loc,
-                        self.flags.contains(Nip51SetWidgetFlags::TRUST_IMAGES),
-                    ) {
-                        resp = Some(cur_resp);
-                    }
-                });
+            if !res.rendered {
+                continue;
+            }
 
             ui.add_space(8.0);
         }
 
         resp
     }
+}
+
+pub struct Nip51SetWidgetResponse {
+    pub action: Option<Nip51SetWidgetAction>,
+    pub rendered: bool,
 }
 
 fn should_skip(set: &Nip51Set, required: &Nip51SetWidgetFlags) -> bool {
@@ -126,7 +161,7 @@ fn render_pack(
     jobs: &mut JobsCache,
     loc: &mut Localization,
     image_trusted: bool,
-) -> Option<Nip51SetWidgetResponse> {
+) -> Option<Nip51SetWidgetAction> {
     let max_img_size = vec2(ui.available_width(), 200.0);
 
     ui.allocate_new_ui(UiBuilder::new(), |ui| 's: {
@@ -210,7 +245,7 @@ fn render_pack(
 
         ui.separator();
         if render_profile_item(ui, images, m_profile.as_ref(), cur_state) {
-            resp = Some(Nip51SetWidgetResponse::ViewProfile(*pk));
+            resp = Some(Nip51SetWidgetAction::ViewProfile(*pk));
         }
     }
 
