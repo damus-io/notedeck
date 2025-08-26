@@ -1,6 +1,5 @@
-use std::collections::HashMap;
-
 use enostr::{Pubkey, RelayPool};
+use indexmap::IndexMap;
 use nostrdb::{Filter, Ndb, Note, Transaction};
 use uuid::Uuid;
 
@@ -10,7 +9,7 @@ use crate::{UnifiedSubscription, UnknownIds};
 #[derive(Debug)]
 pub struct Nip51SetCache {
     pub sub: UnifiedSubscription,
-    cached_notes: HashMap<PackId, Nip51Set>,
+    cached_notes: IndexMap<PackId, Nip51Set>,
 }
 
 type PackId = String;
@@ -24,7 +23,7 @@ impl Nip51SetCache {
         nip51_set_filter: Vec<Filter>,
     ) -> Option<Self> {
         let subid = Uuid::new_v4().to_string();
-        let mut cached_notes = HashMap::default();
+        let mut cached_notes = IndexMap::default();
 
         let notes: Option<Vec<Note>> = if let Ok(results) = ndb.query(txn, &nip51_set_filter, 500) {
             Some(results.into_iter().map(|r| r.note).collect())
@@ -77,7 +76,7 @@ impl Nip51SetCache {
 
 fn add(
     notes: Vec<Note>,
-    cache: &mut HashMap<PackId, Nip51Set>,
+    cache: &mut IndexMap<PackId, Nip51Set>,
     ndb: &Ndb,
     txn: &Transaction,
     unknown_ids: &mut UnknownIds,
