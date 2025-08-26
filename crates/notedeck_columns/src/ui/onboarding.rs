@@ -12,7 +12,7 @@ use crate::{onboarding::Onboarding, ui::widgets::styled_button};
 
 /// Display Follow Packs for the user to choose from authors trusted by the Damus team
 pub struct FollowPackOnboardingView<'a> {
-    onboarding: &'a Onboarding,
+    onboarding: &'a mut Onboarding,
     ui_state: &'a mut Nip51SetUiCache,
     ndb: &'a Ndb,
     images: &'a mut Images,
@@ -33,7 +33,7 @@ pub enum FollowPacksResponse {
 
 impl<'a> FollowPackOnboardingView<'a> {
     pub fn new(
-        onboarding: &'a Onboarding,
+        onboarding: &'a mut Onboarding,
         ui_state: &'a mut Nip51SetUiCache,
         ndb: &'a Ndb,
         images: &'a mut Images,

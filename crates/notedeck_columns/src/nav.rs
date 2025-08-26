@@ -591,7 +591,7 @@ fn render_nav_body(
                 ctx,
                 &mut app.jobs,
                 &mut app.view_state.login,
-                &app.onboarding,
+                &mut app.onboarding,
                 &mut app.view_state.follow_packs,
                 *amr,
             ) else {

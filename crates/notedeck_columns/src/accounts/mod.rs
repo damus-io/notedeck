@@ -78,7 +78,7 @@ pub fn render_accounts_route(
     app_ctx: &mut AppContext,
     jobs: &mut JobsCache,
     login_state: &mut AcquireKeyState,
-    onboarding: &Onboarding,
+    onboarding: &mut Onboarding,
     follow_packs_ui: &mut Nip51SetUiCache,
     route: AccountsRoute,
 ) -> Option<AccountsResponse> {
