@@ -43,7 +43,7 @@ fi
 
 # Build the .app bundle
 echo "Building .app bundle..."
-cargo bundle --release --target $TARGET
+cargo bundle -k notedeck_chrome --release --target $TARGET
 
 # Sign the app
 echo "Codesigning the app..."
