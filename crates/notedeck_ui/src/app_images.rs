@@ -244,3 +244,13 @@ pub fn zap_light_image() -> Image<'static> {
 pub fn like_image() -> Image<'static> {
     Image::new(include_image!("../../../assets/icons/like_icon_4x.png"))
 }
+
+pub fn copy_to_clipboard_image() -> Image<'static> {
+    Image::new(include_image!(
+        "../../../assets/icons/copy-to-clipboard.svg"
+    ))
+}
+
+pub fn copy_to_clipboard_dark_image() -> Image<'static> {
+    copy_to_clipboard_image().tint(Color32::BLACK)
+}
