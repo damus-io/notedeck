@@ -157,7 +157,7 @@ fn login_textedit<'a>(
     text_edit
 }
 
-fn eye_button(ui: &mut egui::Ui, is_visible: bool) -> egui::Response {
+pub fn eye_button(ui: &mut egui::Ui, is_visible: bool) -> egui::Response {
     let is_dark_mode = ui.visuals().dark_mode;
     let icon = if is_visible && is_dark_mode {
         app_images::eye_dark_image()
