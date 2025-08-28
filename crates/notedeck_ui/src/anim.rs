@@ -1,4 +1,4 @@
-use egui::{Pos2, Rect, Response, Sense};
+use egui::{vec2, Pos2, Rect, Response, Sense};
 
 pub fn hover_expand(
     ui: &mut egui::Ui,
@@ -114,6 +114,16 @@ impl AnimationHelper {
 
     pub fn get_animation_rect(&self) -> egui::Rect {
         self.rect
+    }
+
+    pub fn scaled_rect(&self) -> egui::Rect {
+        let min_height = self.rect.height() * (1.0 / self.expansion_multiple);
+        let min_width = self.rect.width() * (1.0 / self.expansion_multiple);
+
+        egui::Rect::from_center_size(
+            self.center,
+            vec2(self.scale_1d_pos(min_width), self.scale_1d_pos(min_height)),
+        )
     }
 
     pub fn center(&self) -> Pos2 {

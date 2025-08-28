@@ -1,6 +1,8 @@
 use egui::{
-    vec2, Button, Color32, ComboBox, FontId, Frame, Margin, RichText, ScrollArea, ThemePreference,
+    vec2, Button, Color32, ComboBox, CornerRadius, FontId, Frame, Layout, Margin, RichText,
+    ScrollArea, TextEdit, ThemePreference,
 };
+use egui_extras::{Size, StripBuilder};
 use enostr::NoteId;
 use nostrdb::Transaction;
 use notedeck::{
@@ -9,9 +11,12 @@ use notedeck::{
     Images, JobsCache, LanguageIdentifier, Localization, NoteContext, NotedeckTextStyle, Settings,
     SettingsHandler, DEFAULT_NOTE_BODY_FONT_SIZE,
 };
-use notedeck_ui::{NoteOptions, NoteView};
+use notedeck_ui::{
+    app_images::{copy_to_clipboard_dark_image, copy_to_clipboard_image},
+    AnimationHelper, NoteOptions, NoteView,
+};
 
-use crate::{nav::RouterAction, Damus, Route};
+use crate::{nav::RouterAction, ui::account_login_view::eye_button, Damus, Route};
 
 const PREVIEW_NOTE_ID: &str = "note1edjc8ggj07hwv77g2405uh6j2jkk5aud22gktxrvc2wnre4vdwgqzlv2gw";
 
@@ -470,6 +475,149 @@ impl<'a> SettingsView<'a> {
         action
     }
 
+    fn keys_section(&mut self, ui: &mut egui::Ui) {
+        let title = tr!(
+            self.note_context.i18n,
+            "Keys",
+            "label for keys setting section"
+        );
+
+        settings_group(ui, title, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(
+                    richtext_small(tr!(
+                        self.note_context.i18n,
+                        "PUBLIC ACCOUNT ID",
+                        "label describing public key"
+                    ))
+                    .color(ui.visuals().gray_out(ui.visuals().text_color())),
+                );
+            });
+
+            let copy_img = if ui.visuals().dark_mode {
+                copy_to_clipboard_image()
+            } else {
+                copy_to_clipboard_dark_image()
+            };
+            let copy_max_size = vec2(16.0, 16.0);
+
+            if let Some(npub) = self.note_context.accounts.selected_account_pubkey().npub() {
+                item_frame(ui).show(ui, |ui| {
+                    StripBuilder::new(ui)
+                        .size(Size::exact(24.0))
+                        .cell_layout(Layout::left_to_right(egui::Align::Center))
+                        .vertical(|mut strip| {
+                            strip.strip(|builder| {
+                                builder
+                                    .size(Size::remainder())
+                                    .size(Size::exact(16.0))
+                                    .cell_layout(Layout::left_to_right(egui::Align::Center))
+                                    .horizontal(|mut strip| {
+                                        strip.cell(|ui| {
+                                            ui.horizontal_wrapped(|ui| {
+                                                ui.label(richtext_small(&npub));
+                                            });
+                                        });
+
+                                        strip.cell(|ui| {
+                                            let helper = AnimationHelper::new(
+                                                ui,
+                                                "copy-to-clipboard-npub",
+                                                copy_max_size,
+                                            );
+
+                                            copy_img.paint_at(ui, helper.scaled_rect());
+
+                                            if helper.take_animation_response().clicked() {
+                                                ui.ctx().copy_text(npub);
+                                            }
+                                        });
+                                    });
+                            });
+                        });
+                });
+            }
+
+            let Some(filled) = self.note_context.accounts.selected_filled() else {
+                return;
+            };
+            let Some(mut nsec) = bech32::encode::<bech32::Bech32>(
+                bech32::Hrp::parse_unchecked("nsec"),
+                &filled.secret_key.secret_bytes(),
+            )
+            .ok() else {
+                return;
+            };
+
+            ui.horizontal_wrapped(|ui| {
+                ui.label(
+                    richtext_small(tr!(
+                        self.note_context.i18n,
+                        "SECRET ACCOUNT LOGIN KEY",
+                        "label describing secret key"
+                    ))
+                    .color(ui.visuals().gray_out(ui.visuals().text_color())),
+                );
+            });
+
+            let is_password_id = ui.id().with("is-password");
+            let is_password = ui
+                .ctx()
+                .data_mut(|d| d.get_temp(is_password_id))
+                .unwrap_or(true);
+
+            item_frame(ui).show(ui, |ui| {
+                StripBuilder::new(ui)
+                    .size(Size::exact(24.0))
+                    .cell_layout(Layout::left_to_right(egui::Align::Center))
+                    .vertical(|mut strip| {
+                        strip.strip(|builder| {
+                            builder
+                                .size(Size::remainder())
+                                .size(Size::exact(48.0))
+                                .cell_layout(Layout::left_to_right(egui::Align::Center))
+                                .horizontal(|mut strip| {
+                                    strip.cell(|ui| {
+                                        if is_password {
+                                            ui.add(
+                                                TextEdit::singleline(&mut nsec)
+                                                    .password(is_password)
+                                                    .interactive(false)
+                                                    .frame(false),
+                                            );
+                                        } else {
+                                            ui.horizontal_wrapped(|ui| {
+                                                ui.label(richtext_small(&nsec));
+                                            });
+                                        }
+                                    });
+
+                                    strip.cell(|ui| {
+                                        let helper = AnimationHelper::new(
+                                            ui,
+                                            "copy-to-clipboard-nsec",
+                                            copy_max_size,
+                                        );
+
+                                        copy_img.paint_at(ui, helper.scaled_rect());
+
+                                        if helper.take_animation_response().clicked() {
+                                            ui.ctx().copy_text(nsec);
+                                        }
+
+                                        if eye_button(ui, is_password).clicked() {
+                                            ui.ctx().data_mut(|d| {
+                                                d.insert_temp(is_password_id, !is_password)
+                                            });
+                                        }
+                                    });
+                                });
+                        });
+                    });
+            });
+        });
+    }
+
     fn manage_relays_section(&mut self, ui: &mut egui::Ui) -> Option<SettingsAction> {
         let mut action = None;
 
@@ -509,6 +657,10 @@ impl<'a> SettingsView<'a> {
 
                     ui.add_space(5.0);
 
+                    self.keys_section(ui);
+
+                    ui.add_space(5.0);
+
                     if let Some(new_action) = self.other_options_section(ui) {
                         action = Some(new_action);
                     }
@@ -541,4 +693,11 @@ pub fn format_size(size_bytes: u64) -> String {
     } else {
         format!("{:.2} GB", size / GB)
     }
+}
+
+fn item_frame(ui: &egui::Ui) -> egui::Frame {
+    Frame::new()
+        .inner_margin(Margin::same(8))
+        .corner_radius(CornerRadius::same(8))
+        .fill(ui.visuals().panel_fill)
 }
