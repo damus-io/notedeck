@@ -292,10 +292,6 @@ fn show_amount(
                 ui.add_space(8.0);
             });
         });
-
-    // let user_changed = cur_input != Some(user_input.clone());
-    ui.memory_mut(|m| m.request_focus(user_input_id));
-    // ui.data_mut(|d| d.insert_temp(id, user_input));
 }
 
 const SELECTION_BUTTONS: [ZapSelectionButton; 8] = [
