@@ -875,33 +875,38 @@ fn render_note_actionbar(
         zap_recipient: Pubkey::new(*note_pubkey),
     };
 
-    if zap_state.is_err() {
-        action = Some(NoteAction::Zap(ZapAction::ClearError(target.clone())));
-    }
-
-    let zap_resp = {
+    {
         cur_acc.secret_key.as_ref()?;
 
         match zap_state {
-            Ok(any_zap_state) => ui.add(zap_button(i18n, any_zap_state, note_id)),
+            Ok(any_zap_state) => {
+                let zap_resp = ui.add(zap_button(i18n, any_zap_state, note_id));
+
+                if zap_resp.secondary_clicked() {
+                    action = Some(NoteAction::Zap(ZapAction::CustomizeAmount(target.clone())));
+                }
+
+                if zap_resp.clicked() {
+                    action = Some(NoteAction::Zap(ZapAction::Send(ZapTargetAmount {
+                        target,
+                        specified_msats: None,
+                    })));
+                }
+
+                zap_resp
+            }
             Err(err) => {
                 let (rect, _) = ui.allocate_at_least(egui::vec2(10.0, 10.0), egui::Sense::click());
-                ui.add(x_button(rect)).on_hover_text(err.to_string())
+                let x_button = ui.add(x_button(rect)).on_hover_text(err.to_string());
+
+                if x_button.clicked() {
+                    action = Some(NoteAction::Zap(ZapAction::ClearError(target.clone())));
+                }
+                x_button
             }
         }
     }
     .on_hover_cursor(egui::CursorIcon::PointingHand);
-
-    if zap_resp.secondary_clicked() {
-        action = Some(NoteAction::Zap(ZapAction::CustomizeAmount(target.clone())));
-    }
-
-    if zap_resp.clicked() {
-        action = Some(NoteAction::Zap(ZapAction::Send(ZapTargetAmount {
-            target,
-            specified_msats: None,
-        })))
-    }
 
     action
 }
