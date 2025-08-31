@@ -841,6 +841,8 @@ fn render_note_actionbar(
     note_key: NoteKey,
     i18n: &mut Localization,
 ) -> Option<NoteAction> {
+    let mut action = None;
+
     ui.set_min_height(26.0);
     ui.spacing_mut().item_spacing.x = 24.0;
 
@@ -852,11 +854,11 @@ fn render_note_actionbar(
 
     let to_noteid = |id: &[u8; 32]| NoteId::new(*id);
     if reply_resp.clicked() {
-        return Some(NoteAction::Reply(to_noteid(note_id)));
+        action = Some(NoteAction::Reply(to_noteid(note_id)));
     }
 
     if quote_resp.clicked() {
-        return Some(NoteAction::Quote(to_noteid(note_id)));
+        action = Some(NoteAction::Quote(to_noteid(note_id)));
     }
 
     let Zapper { zaps, cur_acc } = zapper?;
@@ -874,7 +876,7 @@ fn render_note_actionbar(
     };
 
     if zap_state.is_err() {
-        return Some(NoteAction::Zap(ZapAction::ClearError(target)));
+        action = Some(NoteAction::Zap(ZapAction::ClearError(target.clone())));
     }
 
     let zap_resp = {
@@ -891,17 +893,17 @@ fn render_note_actionbar(
     .on_hover_cursor(egui::CursorIcon::PointingHand);
 
     if zap_resp.secondary_clicked() {
-        return Some(NoteAction::Zap(ZapAction::CustomizeAmount(target)));
+        action = Some(NoteAction::Zap(ZapAction::CustomizeAmount(target.clone())));
     }
 
-    if !zap_resp.clicked() {
-        return None;
+    if zap_resp.clicked() {
+        action = Some(NoteAction::Zap(ZapAction::Send(ZapTargetAmount {
+            target,
+            specified_msats: None,
+        })))
     }
 
-    Some(NoteAction::Zap(ZapAction::Send(ZapTargetAmount {
-        target,
-        specified_msats: None,
-    })))
+    action
 }
 
 #[profiling::function]
