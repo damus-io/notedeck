@@ -1,5 +1,5 @@
-use crate::{zaps::ZapTargetOwned, ZapError};
-use enostr::NoteId;
+use crate::{error::EndpointError, zaps::ZapTargetOwned, ZapError};
+use enostr::{NoteId, Pubkey};
 use nostrdb::NoteBuilder;
 use poll_promise::Promise;
 use serde::Deserialize;
@@ -119,6 +119,39 @@ pub struct LNUrlPayResponseRaw {
     #[allow(dead_code)]
     #[serde(rename = "maxSendable")]
     max_sendable: u64,
+}
+
+impl From<LNUrlPayResponseRaw> for LNUrlPayResponse {
+    fn from(value: LNUrlPayResponseRaw) -> Self {
+        let nostr_pubkey = Pubkey::from_hex(&value.nostr_pubkey)
+            .map_err(|e: enostr::Error| EndpointError(e.to_string()));
+
+        let callback_url = Url::parse(&value.callback_url)
+            .map_err(|e| EndpointError(format!("invalid callback url: {e}")));
+
+        Self {
+            allow_nostr: value.allow_nostr,
+            nostr_pubkey,
+            callback_url,
+            min_sendable: value.min_sendable,
+            max_sendable: value.max_sendable,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct LNUrlPayResponse {
+    pub allow_nostr: bool,
+    pub nostr_pubkey: Result<Pubkey, EndpointError>,
+    pub callback_url: Result<Url, EndpointError>,
+    pub min_sendable: u64,
+    pub max_sendable: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct PayEntry {
+    pub url: Url,
+    pub response: LNUrlPayResponse,
 }
 
 #[derive(Debug, Deserialize)]
