@@ -1,12 +1,19 @@
+use std::collections::HashMap;
+
 use enostr::{NoteId, Pubkey};
 use nostrdb::{Ndb, Transaction};
 use nwc::nostr::nips::nip47::PayInvoiceResponse;
 use poll_promise::Promise;
 use tokio::task::JoinError;
+use url::Url;
 
 use crate::{
     get_wallet_for,
-    zaps::{get_users_zap_address, ZapAddress},
+    zaps::{
+        get_users_zap_address,
+        networking::{LNUrlPayResponse, PayEntry},
+        ZapAddress,
+    },
     Accounts, GlobalWallet, ZapError,
 };
 
@@ -27,6 +34,23 @@ pub struct Zaps {
     zaps: std::collections::HashMap<ZapId, ZapState>,
     in_flight: Vec<ZapPromise>,
     events: Vec<EventResponse>,
+}
+
+/// Cache to hold LNURL payRequest responses from the desired LNURL endpoint
+#[derive(Default)]
+pub struct PayCache {
+    // endpoint URL to response
+    pub pay_responses: HashMap<Url, LNUrlPayResponse>,
+}
+
+impl PayCache {
+    pub fn get_response(&self, url: &Url) -> Option<&LNUrlPayResponse> {
+        self.pay_responses.get(url)
+    }
+
+    pub fn insert(&mut self, entry: PayEntry) {
+        self.pay_responses.insert(entry.url, entry.response);
+    }
 }
 
 fn process_event(
