@@ -11,16 +11,12 @@ use crate::{
     get_wallet_for,
     zaps::{
         get_users_zap_address,
-        networking::{LNUrlPayResponse, PayEntry},
-        ZapAddress,
+        networking::{fetch_invoice_promise, FetchedInvoiceResponse, LNUrlPayResponse, PayEntry},
     },
     Accounts, GlobalWallet, ZapError,
 };
 
-use super::{
-    networking::{fetch_invoice_lnurl, fetch_invoice_lud16, FetchedInvoice, FetchingInvoice},
-    zap::Zap,
-};
+use super::{networking::FetchingInvoice, zap::Zap};
 
 type ZapId = u32;
 
@@ -34,6 +30,8 @@ pub struct Zaps {
     zaps: std::collections::HashMap<ZapId, ZapState>,
     in_flight: Vec<ZapPromise>,
     events: Vec<EventResponse>,
+
+    pay_cache: PayCache,
 }
 
 /// Cache to hold LNURL payRequest responses from the desired LNURL endpoint
@@ -56,6 +54,7 @@ impl PayCache {
 fn process_event(
     id: ZapId,
     event: ZapEvent,
+    cache: &PayCache,
     accounts: &mut Accounts,
     global_wallet: &mut GlobalWallet,
     ndb: &Ndb,
@@ -65,7 +64,7 @@ fn process_event(
         ZapEvent::FetchInvoice {
             zap_ctx,
             sender_relays,
-        } => process_new_zap_event(zap_ctx, accounts, ndb, txn, sender_relays),
+        } => process_new_zap_event(cache, zap_ctx, accounts, ndb, txn, sender_relays),
         ZapEvent::SendNWC {
             zap_ctx,
             req_noteid,
@@ -102,6 +101,7 @@ fn process_event(
 }
 
 fn process_new_zap_event(
+    cache: &PayCache,
     zap_ctx: ZapCtx,
     accounts: &Accounts,
     ndb: &Ndb,
@@ -125,6 +125,7 @@ fn process_new_zap_event(
 
     let id = zap_ctx.id;
     let m_promise = send_note_zap(
+        cache,
         ndb,
         txn,
         note_target,
@@ -134,7 +135,7 @@ fn process_new_zap_event(
     )
     .map(|promise| ZapPromise::FetchingInvoice {
         ctx: zap_ctx,
-        promise,
+        promise: Box::new(promise),
     });
 
     let promise = match m_promise {
@@ -151,6 +152,7 @@ fn process_new_zap_event(
 }
 
 fn send_note_zap(
+    cache: &PayCache,
     ndb: &Ndb,
     txn: &Transaction,
     note_target: NoteZapTargetOwned,
@@ -160,15 +162,14 @@ fn send_note_zap(
 ) -> Result<FetchingInvoice, ZapError> {
     let address = get_users_zap_address(txn, ndb, &note_target.zap_recipient)?;
 
-    let promise = match address {
-        ZapAddress::Lud16(s) => {
-            fetch_invoice_lud16(s, msats, *nsec, ZapTargetOwned::Note(note_target), relays)
-        }
-        ZapAddress::Lud06(s) => {
-            fetch_invoice_lnurl(s, msats, *nsec, ZapTargetOwned::Note(note_target), relays)
-        }
-    };
-    Ok(promise)
+    fetch_invoice_promise(
+        cache,
+        address,
+        msats,
+        *nsec,
+        ZapTargetOwned::Note(note_target),
+        relays,
+    )
 }
 
 fn try_get_promise_response(
@@ -183,7 +184,7 @@ fn try_get_promise_response(
 
     match promise {
         ZapPromise::FetchingInvoice { ctx, promise } => {
-            let result = promise.block_and_take();
+            let result = Box::new(promise.block_and_take());
 
             Some(PromiseResponse::FetchingInvoice { ctx, result })
         }
@@ -286,6 +287,16 @@ impl Zaps {
                 continue;
             };
 
+            if let PromiseResponse::FetchingInvoice { ctx: _, result } = &resp {
+                if let Ok(resp) = &**result {
+                    if let Some(entry) = &resp.pay_entry {
+                        let url = &entry.url;
+                        tracing::info!("inserting {url} in pay cache");
+                        self.pay_cache.insert(entry.clone());
+                    }
+                }
+            }
+
             self.events.push(resp.take_as_event_response());
         }
 
@@ -300,7 +311,15 @@ impl Zaps {
             };
 
             let txn = nostrdb::Transaction::new(ndb).expect("txn");
-            match process_event(event_resp.id, event, accounts, global_wallet, ndb, &txn) {
+            match process_event(
+                event_resp.id,
+                event,
+                &self.pay_cache,
+                accounts,
+                global_wallet,
+                ndb,
+                &txn,
+            ) {
                 NextState::Event(event_resp) => {
                     self.zaps
                         .insert(event_resp.id, ZapState::Pending(event_resp.event));
@@ -497,7 +516,7 @@ impl std::fmt::Display for ZappingError {
 enum ZapPromise {
     FetchingInvoice {
         ctx: ZapCtx,
-        promise: Promise<Result<Result<FetchedInvoice, ZapError>, JoinError>>,
+        promise: Box<Promise<Result<FetchedInvoiceResponse, JoinError>>>,
     },
     SendingNWCInvoice {
         ctx: SendingNWCInvoiceContext,
@@ -508,7 +527,7 @@ enum ZapPromise {
 enum PromiseResponse {
     FetchingInvoice {
         ctx: ZapCtx,
-        result: Result<Result<FetchedInvoice, ZapError>, JoinError>,
+        result: Box<Result<FetchedInvoiceResponse, JoinError>>,
     },
     SendingNWCInvoice {
         ctx: SendingNWCInvoiceContext,
@@ -521,8 +540,8 @@ impl PromiseResponse {
         match self {
             PromiseResponse::FetchingInvoice { ctx, result } => {
                 let id = ctx.id;
-                let event = match result {
-                    Ok(r) => match r {
+                let event = match *result {
+                    Ok(r) => match r.invoice {
                         Ok(invoice) => Ok(ZapEvent::SendNWC {
                             zap_ctx: ctx,
                             req_noteid: invoice.request_noteid,

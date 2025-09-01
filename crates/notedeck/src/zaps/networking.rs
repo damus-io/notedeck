@@ -1,4 +1,8 @@
-use crate::{error::EndpointError, zaps::ZapTargetOwned, ZapError};
+use crate::{
+    error::EndpointError,
+    zaps::{cache::PayCache, ZapAddress, ZapTargetOwned},
+    ZapError,
+};
 use enostr::{NoteId, Pubkey};
 use nostrdb::NoteBuilder;
 use poll_promise::Promise;
@@ -11,7 +15,12 @@ pub struct FetchedInvoice {
     pub request_noteid: NoteId, // note id of kind 9734 request
 }
 
-pub type FetchingInvoice = Promise<Result<Result<FetchedInvoice, ZapError>, JoinError>>;
+pub struct FetchedInvoiceResponse {
+    pub invoice: Result<FetchedInvoice, ZapError>,
+    pub pay_entry: Option<PayEntry>,
+}
+
+pub type FetchingInvoice = Promise<Result<FetchedInvoiceResponse, JoinError>>;
 
 async fn fetch_pay_req_async(url: &Url) -> Result<LNUrlPayResponseRaw, ZapError> {
     let (sender, promise) = Promise::new();
@@ -36,20 +45,9 @@ async fn fetch_pay_req_async(url: &Url) -> Result<LNUrlPayResponseRaw, ZapError>
     tokio::task::block_in_place(|| promise.block_and_take())
 }
 
-async fn fetch_pay_req_from_lud16(lud16: &str) -> Result<LNUrlPayResponseRaw, ZapError> {
-    let url = match generate_endpoint_url(lud16) {
-        Ok(url) => url,
-        Err(e) => return Err(e),
-    };
-
-    fetch_pay_req_async(&url).await
-}
-
 static HRP_LNURL: bech32::Hrp = bech32::Hrp::parse_unchecked("lnurl");
 
-fn lud16_to_lnurl(lud16: &str) -> Result<String, ZapError> {
-    let endpoint_url = generate_endpoint_url(lud16)?;
-
+fn endpoint_url_to_lnurl(endpoint_url: &Url) -> Result<String, ZapError> {
     let url_str = endpoint_url.to_string();
     let data = url_str.as_bytes();
 
@@ -160,51 +158,78 @@ struct LNInvoice {
     invoice: String,
 }
 
-fn endpoint_query_for_invoice<'a>(
-    endpoint_base_url: &'a mut Url,
+fn endpoint_query_for_invoice(
+    endpoint_base_url: &Url,
     msats: u64,
     lnurl: &str,
     note: nostrdb::Note,
-) -> Result<&'a Url, ZapError> {
+) -> Result<Url, ZapError> {
+    let mut new_url = endpoint_base_url.clone();
     let nostr = note
         .json()
         .map_err(|e| ZapError::Serialization(format!("failed note to json: {e}")))?;
 
-    Ok(endpoint_base_url
+    new_url
         .query_pairs_mut()
         .append_pair("amount", &msats.to_string())
         .append_pair("lnurl", lnurl)
         .append_pair("nostr", &nostr)
-        .finish())
+        .finish();
+
+    Ok(new_url)
 }
 
-pub fn fetch_invoice_lud16(
-    lud16: String,
+pub fn fetch_invoice_promise(
+    cache: &PayCache,
+    zap_address: ZapAddress,
     msats: u64,
     sender_nsec: [u8; 32],
     target: ZapTargetOwned,
     relays: Vec<String>,
-) -> FetchingInvoice {
-    Promise::spawn_async(tokio::spawn(async move {
-        fetch_invoice_lud16_async(&lud16, msats, &sender_nsec, target, relays).await
-    }))
-}
+) -> Result<FetchingInvoice, ZapError> {
+    let (url, lnurl) = match zap_address {
+        ZapAddress::Lud16(lud16) => {
+            let url = generate_endpoint_url(&lud16)?;
+            let lnurl = endpoint_url_to_lnurl(&url)?;
+            (url, lnurl)
+        }
+        ZapAddress::Lud06(lnurl) => (convert_lnurl_to_endpoint_url(&lnurl)?, lnurl),
+    };
 
-pub fn fetch_invoice_lnurl(
-    lnurl: String,
-    msats: u64,
-    sender_nsec: [u8; 32],
-    target: ZapTargetOwned,
-    relays: Vec<String>,
-) -> FetchingInvoice {
-    Promise::spawn_async(tokio::spawn(async move {
-        let pay_req = match fetch_pay_req_from_lnurl_async(&lnurl).await {
-            Ok(req) => req,
-            Err(e) => return Err(e),
-        };
+    match cache.get_response(&url) {
+        Some(endpoint_resp) => {
+            tracing::info!("Using existing endpoint response for {url}");
+            let response = endpoint_resp.clone();
+            Ok(Promise::spawn_async(tokio::spawn(async move {
+                fetch_invoice_lnurl_async(
+                    &lnurl,
+                    PayEntry { url, response },
+                    msats,
+                    &sender_nsec,
+                    relays,
+                    target,
+                )
+                .await
+            })))
+        }
+        None => Ok(Promise::spawn_async(tokio::spawn(async move {
+            tracing::info!("querying ln endpoint: {url}");
+            let pay_req = match fetch_pay_req_async(&url).await {
+                Ok(p) => PayEntry {
+                    url,
+                    response: p.into(),
+                },
+                Err(e) => {
+                    return FetchedInvoiceResponse {
+                        invoice: Err(e),
+                        pay_entry: None,
+                    }
+                }
+            };
 
-        fetch_invoice_lnurl_async(&lnurl, &pay_req, msats, &sender_nsec, relays, target).await
-    }))
+            fetch_invoice_lnurl_async(&lnurl, pay_req, msats, &sender_nsec, relays, target).await
+        }))),
+    }
 }
 
 fn convert_lnurl_to_endpoint_url(lnurl: &str) -> Result<Url, ZapError> {
@@ -217,60 +242,51 @@ fn convert_lnurl_to_endpoint_url(lnurl: &str) -> Result<Url, ZapError> {
         .map_err(|e| ZapError::endpoint_error(format!("endpoint url from lnurl is invalid: {e}")))
 }
 
-async fn fetch_pay_req_from_lnurl_async(lnurl: &str) -> Result<LNUrlPayResponseRaw, ZapError> {
-    let url = match convert_lnurl_to_endpoint_url(lnurl) {
-        Ok(u) => u,
-        Err(e) => return Err(e),
-    };
-
-    fetch_pay_req_async(&url).await
-}
-
 async fn fetch_invoice_lnurl_async(
     lnurl: &str,
-    pay_req: &LNUrlPayResponseRaw,
+    pay_entry: PayEntry,
     msats: u64,
     sender_nsec: &[u8; 32],
     relays: Vec<String>,
     target: ZapTargetOwned,
-) -> Result<FetchedInvoice, ZapError> {
-    //let recipient = Pubkey::from_hex(&pay_req.nostr_pubkey)
-    //.map_err(|e| ZapError::EndpointError(format!("invalid pubkey hex from endpoint: {e}")))?;
-
-    let mut base_url = Url::parse(&pay_req.callback_url).map_err(|e| {
-        ZapError::endpoint_error(format!("invalid callback url from endpoint: {e}"))
-    })?;
+) -> FetchedInvoiceResponse {
+    let base_url = match &pay_entry.response.callback_url {
+        Ok(url) => url.clone(),
+        Err(error) => {
+            return FetchedInvoiceResponse {
+                invoice: Err(ZapError::EndpointError(error.clone())),
+                pay_entry: None,
+            };
+        }
+    };
 
     let (query, noteid) = {
         let comment: &str = "";
         let note = make_kind_9734(lnurl, msats, comment, sender_nsec, relays, target);
         let noteid = NoteId::new(*note.id());
-        let query = endpoint_query_for_invoice(&mut base_url, msats, lnurl, note)?;
+        let query = match endpoint_query_for_invoice(&base_url, msats, lnurl, note) {
+            Ok(u) => u,
+            Err(e) => {
+                return FetchedInvoiceResponse {
+                    invoice: Err(e),
+                    pay_entry: Some(pay_entry),
+                }
+            }
+        };
         (query, noteid)
     };
 
-    let res = fetch_invoice(query).await;
-    res.map(|i| FetchedInvoice {
-        invoice: i.invoice,
-        request_noteid: noteid,
-    })
+    let res = fetch_ln_invoice(&query).await;
+    FetchedInvoiceResponse {
+        invoice: res.map(|r| FetchedInvoice {
+            invoice: r.invoice,
+            request_noteid: noteid,
+        }),
+        pay_entry: Some(pay_entry),
+    }
 }
 
-async fn fetch_invoice_lud16_async(
-    lud16: &str,
-    msats: u64,
-    sender_nsec: &[u8; 32],
-    target: ZapTargetOwned,
-    relays: Vec<String>,
-) -> Result<FetchedInvoice, ZapError> {
-    let pay_req = fetch_pay_req_from_lud16(lud16).await?;
-
-    let lnurl = lud16_to_lnurl(lud16)?;
-
-    fetch_invoice_lnurl_async(&lnurl, &pay_req, msats, sender_nsec, relays, target).await
-}
-
-async fn fetch_invoice(req: &Url) -> Result<LNInvoice, ZapError> {
+async fn fetch_ln_invoice(req: &Url) -> Result<LNInvoice, ZapError> {
     let request = ehttp::Request::get(req);
     let (sender, promise) = Promise::new();
     let on_done = move |response: Result<ehttp::Response, String>| {
@@ -331,18 +347,25 @@ fn generate_endpoint_url(lud16: &str) -> Result<Url, ZapError> {
 mod tests {
     use enostr::{FullKeypair, NoteId};
 
-    use crate::zaps::networking::convert_lnurl_to_endpoint_url;
-
-    use super::{
-        fetch_invoice_lnurl, fetch_invoice_lud16, fetch_pay_req_from_lud16, lud16_to_lnurl,
+    use crate::zaps::{
+        cache::PayCache,
+        networking::{
+            convert_lnurl_to_endpoint_url, endpoint_url_to_lnurl, fetch_pay_req_async,
+            generate_endpoint_url,
+        },
     };
+
+    use super::fetch_invoice_promise;
 
     #[ignore] // don't run this test automatically since it sends real http
     #[tokio::test(flavor = "multi_thread")]
     async fn test_get_pay_req() {
         let lud16 = "jb55@sendsats.lol";
 
-        let maybe_res = fetch_pay_req_from_lud16(lud16).await;
+        let url = generate_endpoint_url(lud16);
+        assert!(url.is_ok());
+
+        let maybe_res = fetch_pay_req_async(&url.unwrap()).await;
 
         assert!(maybe_res.is_ok());
 
@@ -362,7 +385,10 @@ mod tests {
     fn test_lnurl() {
         let lud16 = "jb55@sendsats.lol";
 
-        let maybe_lnurl = lud16_to_lnurl(lud16);
+        let url = generate_endpoint_url(lud16);
+        assert!(url.is_ok());
+
+        let maybe_lnurl = endpoint_url_to_lnurl(&url.unwrap());
         assert!(maybe_lnurl.is_ok());
 
         let lnurl = maybe_lnurl.unwrap();
@@ -378,9 +404,11 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create runtime");
 
         let kp = FullKeypair::generate();
+        let mut cache = PayCache::default();
         let maybe_invoice = rt.block_on(async {
-            fetch_invoice_lud16(
-                "jb55@sendsats.lol".to_owned(),
+            fetch_invoice_promise(
+                &mut cache,
+                crate::zaps::ZapAddress::Lud16("jb55@sendsats.lol".to_owned()),
                 1000,
                 FullKeypair::generate().secret_key.to_secret_bytes(),
                 crate::zaps::ZapTargetOwned::Note(crate::NoteZapTargetOwned {
@@ -389,14 +417,18 @@ mod tests {
                 }),
                 vec!["wss://relay.damus.io".to_owned()],
             )
-            .block_and_take()
+            .map(|p| p.block_and_take())
         });
 
         assert!(maybe_invoice.is_ok());
         let inner = maybe_invoice.unwrap();
         assert!(inner.is_ok());
-        let invoice = inner.unwrap();
-        assert!(invoice.invoice.starts_with("lnbc"));
+        let inner = inner.unwrap().invoice;
+        assert!(inner.is_ok());
+
+        let inner = inner.unwrap();
+
+        assert!(inner.invoice.starts_with("lnbc"));
     }
 
     #[test]
@@ -419,9 +451,11 @@ mod tests {
 
         let kp = FullKeypair::generate();
 
+        let mut cache = PayCache::default();
         let maybe_invoice = rt.block_on(async {
-            fetch_invoice_lnurl(
-                lnurl.to_owned(),
+            fetch_invoice_promise(
+                &mut cache,
+                crate::zaps::ZapAddress::Lud06(lnurl.to_owned()),
                 1000,
                 kp.secret_key.to_secret_bytes(),
                 crate::zaps::ZapTargetOwned::Note(crate::NoteZapTargetOwned {
@@ -430,7 +464,7 @@ mod tests {
                 }),
                 [relay.to_owned()].to_vec(),
             )
-            .block_and_take()
+            .map(|p| p.block_and_take())
         });
 
         assert!(maybe_invoice.is_ok());
@@ -439,6 +473,8 @@ mod tests {
         let inner = inner.unwrap().invoice;
         assert!(inner.is_ok());
 
-        assert!(maybe_invoice.unwrap().unwrap().invoice.starts_with("lnbc"));
+        let inner = inner.unwrap();
+
+        assert!(inner.invoice.starts_with("lnbc"));
     }
 }
