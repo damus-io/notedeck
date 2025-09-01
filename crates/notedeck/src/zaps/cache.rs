@@ -4,7 +4,11 @@ use nwc::nostr::nips::nip47::PayInvoiceResponse;
 use poll_promise::Promise;
 use tokio::task::JoinError;
 
-use crate::{get_wallet_for, Accounts, GlobalWallet, ZapError};
+use crate::{
+    get_wallet_for,
+    zaps::{get_users_zap_address, ZapAddress},
+    Accounts, GlobalWallet, ZapError,
+};
 
 use super::{
     networking::{fetch_invoice_lnurl, fetch_invoice_lud16, FetchedInvoice, FetchingInvoice},
@@ -137,24 +141,6 @@ fn send_note_zap(
         }
     };
     Some(promise)
-}
-
-enum ZapAddress {
-    Lud16(String),
-    Lud06(String),
-}
-
-fn get_users_zap_address(txn: &Transaction, ndb: &Ndb, receiver: &Pubkey) -> Option<ZapAddress> {
-    let profile = ndb
-        .get_profile_by_pubkey(txn, receiver.bytes())
-        .ok()?
-        .record()
-        .profile()?;
-
-    profile
-        .lud06()
-        .map(|l| ZapAddress::Lud06(l.to_string()))
-        .or(profile.lud16().map(|l| ZapAddress::Lud16(l.to_string())))
 }
 
 fn try_get_promise_response(
