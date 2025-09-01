@@ -126,7 +126,7 @@ fn send_note_zap(
     nsec: &[u8; 32],
     relays: Vec<String>,
 ) -> Option<FetchingInvoice> {
-    let address = get_users_zap_endpoint(txn, ndb, &note_target.zap_recipient)?;
+    let address = get_users_zap_address(txn, ndb, &note_target.zap_recipient)?;
 
     let promise = match address {
         ZapAddress::Lud16(s) => {
@@ -144,7 +144,7 @@ enum ZapAddress {
     Lud06(String),
 }
 
-fn get_users_zap_endpoint(txn: &Transaction, ndb: &Ndb, receiver: &Pubkey) -> Option<ZapAddress> {
+fn get_users_zap_address(txn: &Transaction, ndb: &Ndb, receiver: &Pubkey) -> Option<ZapAddress> {
     let profile = ndb
         .get_profile_by_pubkey(txn, receiver.bytes())
         .ok()?
