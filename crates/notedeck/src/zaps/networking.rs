@@ -401,6 +401,10 @@ mod tests {
         });
 
         assert!(maybe_invoice.is_ok());
+        let inner = maybe_invoice.unwrap();
+        assert!(inner.is_ok());
+        let inner = inner.unwrap().invoice;
+        assert!(inner.is_ok());
 
         assert!(maybe_invoice.unwrap().unwrap().invoice.starts_with("lnbc"));
     }

@@ -100,7 +100,7 @@ fn process_new_zap_event(
     };
 
     let id = zap_ctx.id;
-    let promise = send_note_zap(
+    let m_promise = send_note_zap(
         ndb,
         txn,
         note_target,
@@ -112,11 +112,15 @@ fn process_new_zap_event(
         ctx: zap_ctx,
         promise,
     });
-    let Some(promise) = promise else {
-        return NextState::Event(EventResponse {
-            id,
-            event: Err(ZappingError::InvalidZapAddress),
-        });
+
+    let promise = match m_promise {
+        Ok(promise) => promise,
+        Err(e) => {
+            return NextState::Event(EventResponse {
+                id,
+                event: Err(ZappingError::InvoiceFetchFailed(e)),
+            });
+        }
     };
 
     NextState::Transition(promise)
@@ -129,7 +133,7 @@ fn send_note_zap(
     msats: u64,
     nsec: &[u8; 32],
     relays: Vec<String>,
-) -> Option<FetchingInvoice> {
+) -> Result<FetchingInvoice, ZapError> {
     let address = get_users_zap_address(txn, ndb, &note_target.zap_recipient)?;
 
     let promise = match address {
@@ -140,7 +144,7 @@ fn send_note_zap(
             fetch_invoice_lnurl(s, msats, *nsec, ZapTargetOwned::Note(note_target), relays)
         }
     };
-    Some(promise)
+    Ok(promise)
 }
 
 fn try_get_promise_response(
