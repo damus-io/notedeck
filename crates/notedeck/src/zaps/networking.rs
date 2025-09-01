@@ -13,7 +13,7 @@ pub struct FetchedInvoice {
 
 pub type FetchingInvoice = Promise<Result<Result<FetchedInvoice, ZapError>, JoinError>>;
 
-async fn fetch_pay_req_async(url: &Url) -> Result<LNUrlPayRequest, ZapError> {
+async fn fetch_pay_req_async(url: &Url) -> Result<LNUrlPayResponseRaw, ZapError> {
     let (sender, promise) = Promise::new();
 
     let on_done = move |response: Result<ehttp::Response, String>| {
@@ -36,7 +36,7 @@ async fn fetch_pay_req_async(url: &Url) -> Result<LNUrlPayRequest, ZapError> {
     tokio::task::block_in_place(|| promise.block_and_take())
 }
 
-async fn fetch_pay_req_from_lud16(lud16: &str) -> Result<LNUrlPayRequest, ZapError> {
+async fn fetch_pay_req_from_lud16(lud16: &str) -> Result<LNUrlPayResponseRaw, ZapError> {
     let url = match generate_endpoint_url(lud16) {
         Ok(url) => url,
         Err(e) => return Err(e),
@@ -100,7 +100,7 @@ fn make_kind_9734<'a>(
 }
 
 #[derive(Debug, Deserialize)]
-pub struct LNUrlPayRequest {
+pub struct LNUrlPayResponseRaw {
     #[allow(dead_code)]
     #[serde(rename = "allowsNostr")]
     allow_nostr: bool,
@@ -184,7 +184,7 @@ fn convert_lnurl_to_endpoint_url(lnurl: &str) -> Result<Url, ZapError> {
         .map_err(|e| ZapError::EndpointError(format!("endpoint url from lnurl is invalid: {e}")))
 }
 
-async fn fetch_pay_req_from_lnurl_async(lnurl: &str) -> Result<LNUrlPayRequest, ZapError> {
+async fn fetch_pay_req_from_lnurl_async(lnurl: &str) -> Result<LNUrlPayResponseRaw, ZapError> {
     let url = match convert_lnurl_to_endpoint_url(lnurl) {
         Ok(u) => u,
         Err(e) => return Err(e),
@@ -195,7 +195,7 @@ async fn fetch_pay_req_from_lnurl_async(lnurl: &str) -> Result<LNUrlPayRequest, 
 
 async fn fetch_invoice_lnurl_async(
     lnurl: &str,
-    pay_req: &LNUrlPayRequest,
+    pay_req: &LNUrlPayResponseRaw,
     msats: u64,
     sender_nsec: &[u8; 32],
     relays: Vec<String>,
