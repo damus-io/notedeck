@@ -33,14 +33,25 @@ pub enum ZapError {
     #[error("invalid lud16")]
     InvalidLud16(String),
     #[error("invalid endpoint response")]
-    EndpointError(String),
+    EndpointError(EndpointError),
     #[error("bech encoding/decoding error")]
     Bech(String),
     #[error("serialization/deserialization problem")]
     Serialization(String),
     #[error("nwc error")]
     NWC(String),
+    #[error("ndb error")]
+    Ndb(String),
 }
+
+impl ZapError {
+    pub fn endpoint_error(error: String) -> ZapError {
+        ZapError::EndpointError(EndpointError(error))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct EndpointError(pub String);
 
 impl From<String> for Error {
     fn from(s: String) -> Self {

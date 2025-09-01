@@ -17,9 +17,9 @@ async fn fetch_pay_req_async(url: &Url) -> Result<LNUrlPayResponseRaw, ZapError>
     let (sender, promise) = Promise::new();
 
     let on_done = move |response: Result<ehttp::Response, String>| {
-        let handle = response.map_err(ZapError::EndpointError).and_then(|resp| {
+        let handle = response.map_err(ZapError::endpoint_error).and_then(|resp| {
             if !resp.ok {
-                return Err(ZapError::EndpointError(format!(
+                return Err(ZapError::endpoint_error(format!(
                     "bad http response: {}",
                     resp.status_text
                 )));
@@ -181,7 +181,7 @@ fn convert_lnurl_to_endpoint_url(lnurl: &str) -> Result<Url, ZapError> {
         String::from_utf8(data).map_err(|e| ZapError::Bech(format!("string conversion: {e}")))?;
 
     Url::parse(&url_str)
-        .map_err(|e| ZapError::EndpointError(format!("endpoint url from lnurl is invalid: {e}")))
+        .map_err(|e| ZapError::endpoint_error(format!("endpoint url from lnurl is invalid: {e}")))
 }
 
 async fn fetch_pay_req_from_lnurl_async(lnurl: &str) -> Result<LNUrlPayResponseRaw, ZapError> {
@@ -204,8 +204,9 @@ async fn fetch_invoice_lnurl_async(
     //let recipient = Pubkey::from_hex(&pay_req.nostr_pubkey)
     //.map_err(|e| ZapError::EndpointError(format!("invalid pubkey hex from endpoint: {e}")))?;
 
-    let mut base_url = Url::parse(&pay_req.callback_url)
-        .map_err(|e| ZapError::EndpointError(format!("invalid callback url from endpoint: {e}")))?;
+    let mut base_url = Url::parse(&pay_req.callback_url).map_err(|e| {
+        ZapError::endpoint_error(format!("invalid callback url from endpoint: {e}"))
+    })?;
 
     let (query, noteid) = {
         let comment: &str = "";
@@ -240,9 +241,9 @@ async fn fetch_invoice(req: &Url) -> Result<LNInvoice, ZapError> {
     let request = ehttp::Request::get(req);
     let (sender, promise) = Promise::new();
     let on_done = move |response: Result<ehttp::Response, String>| {
-        let handle = response.map_err(ZapError::EndpointError).and_then(|resp| {
+        let handle = response.map_err(ZapError::endpoint_error).and_then(|resp| {
             if !resp.ok {
-                return Err(ZapError::EndpointError(format!(
+                return Err(ZapError::endpoint_error(format!(
                     "invalid http response: {}",
                     resp.status_text
                 )));
@@ -290,7 +291,7 @@ fn generate_endpoint_url(lud16: &str) -> Result<Url, ZapError> {
         if use_http { "" } else { "s" }
     );
 
-    Url::parse(&url_str).map_err(|e| ZapError::EndpointError(e.to_string()))
+    Url::parse(&url_str).map_err(|e| ZapError::endpoint_error(e.to_string()))
 }
 
 #[cfg(test)]
