@@ -250,6 +250,42 @@ async fn fetch_invoice_lnurl_async(
     relays: Vec<String>,
     target: ZapTargetOwned,
 ) -> FetchedInvoiceResponse {
+    if !pay_entry.response.allow_nostr {
+        return FetchedInvoiceResponse {
+            invoice: Err(ZapError::endpoint_error(
+                "endpoint does not allow nostr".to_owned(),
+            )),
+            pay_entry: Some(pay_entry),
+        };
+    }
+
+    if let Err(e) = &pay_entry.response.nostr_pubkey {
+        return FetchedInvoiceResponse {
+            invoice: Err(ZapError::EndpointError(e.clone())),
+            pay_entry: Some(pay_entry),
+        };
+    };
+
+    let min_sendable = pay_entry.response.min_sendable;
+    if msats < min_sendable {
+        return FetchedInvoiceResponse {
+            invoice: Err(ZapError::endpoint_error(format!(
+                "zap amount {msats} is less than minimum sendable: {min_sendable} (in msats)"
+            ))),
+            pay_entry: Some(pay_entry),
+        };
+    }
+
+    let max_sendable = pay_entry.response.max_sendable;
+    if msats > max_sendable {
+        return FetchedInvoiceResponse {
+            invoice: Err(ZapError::endpoint_error(format!(
+                "zap amount {msats} is greater than maximum sendable: {max_sendable} (in msats)"
+            ))),
+            pay_entry: Some(pay_entry),
+        };
+    }
+
     let base_url = match &pay_entry.response.callback_url {
         Ok(url) => url.clone(),
         Err(error) => {
