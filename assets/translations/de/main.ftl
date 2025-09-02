@@ -239,6 +239,8 @@ Notifications_ef56 = Benachrichtigungen
 now_2181 = Gerade eben
 # Setting to turn on sorting replies so that the newest are shown first
 On_f412 = An
+# Column title for finding users to follow
+Onboarding_4a25 = Neue Leute finden
 # Button label to open email client
 Open_Email_25e9 = E-Mail öffnen
 # Instruction to open email client
@@ -315,6 +317,8 @@ Searching_for___query_5d18 = Suche nach '{ $query }'
 See_notes_from_your_contacts_ac16 = Notizen von deinen Kontakten ansehen
 # Description for universe column
 See_the_whole_nostr_universe_7694 = Sieh dir das ganze Nostr-Universum an
+# Button to select all profiles in follow pack
+Select_All_a319 = Alle auswählen
 # Button label to send a zap
 Send_1ea4 = Senden
 # Column title for app settings
