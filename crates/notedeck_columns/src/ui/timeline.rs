@@ -12,8 +12,8 @@ use std::f32::consts::PI;
 use tracing::{error, warn};
 
 use crate::timeline::{
-    CompositeType, CompositeUnit, NoteUnit, ReactionUnit, TimelineCache, TimelineKind, TimelineTab,
-    ViewFilter,
+    CompositeType, CompositeUnit, NoteUnit, ReactionUnit, RepostUnit, TimelineCache, TimelineKind,
+    TimelineTab, ViewFilter,
 };
 use notedeck::{
     note::root_note_id_from_selected_id, tr, Localization, NoteAction, NoteContext, ScrollInfo,
@@ -772,6 +772,44 @@ fn render_composite_entry(
 
     notedeck_ui::hline(ui);
     RenderEntryResponse::Success(action)
+}
+
+fn render_repost_cluster(
+    ui: &mut egui::Ui,
+    note_context: &mut NoteContext,
+    note_options: NoteOptions,
+    jobs: &mut JobsCache,
+    mute: &std::sync::Arc<Muted>,
+    txn: &Transaction,
+    repost: &RepostUnit,
+) -> RenderEntryResponse {
+    let reposted_key = repost.note_reposted.key;
+    let reposted_note = if let Ok(note) = note_context.ndb.get_note_by_key(txn, reposted_key) {
+        note
+    } else {
+        warn!("failed to query note {:?}", reposted_key);
+        return RenderEntryResponse::Unsuccessful;
+    };
+
+    let profiles_to_show: Vec<ProfileEntry> = repost
+        .reposts
+        .values()
+        .filter(|r| !mute.is_pk_muted(r.bytes()))
+        .map(|p| ProfileEntry {
+            record: note_context.ndb.get_profile_by_pubkey(txn, p.bytes()).ok(),
+            pk: p,
+        })
+        .collect();
+
+    render_composite_entry(
+        ui,
+        note_context,
+        note_options,
+        jobs,
+        reposted_note,
+        profiles_to_show,
+        CompositeType::Repost,
+    )
 }
 
 enum RenderEntryResponse {
