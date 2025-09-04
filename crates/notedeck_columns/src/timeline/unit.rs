@@ -3,10 +3,7 @@ use std::collections::{BTreeMap, HashSet};
 use enostr::Pubkey;
 use notedeck::NoteRef;
 
-use crate::timeline::{
-    note_units::{CompositeKey, UnitKey},
-    CompositeType,
-};
+use crate::timeline::note_units::{CompositeKey, CompositeType, UnitKey};
 
 /// A `NoteUnit` represents a cohesive piece of data derived from notes
 #[derive(Debug, Clone)]
@@ -136,6 +133,38 @@ impl From<ReactionFragment> for ReactionUnit {
     }
 }
 
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct RepostUnit {
+    pub note_reposted: NoteRef,
+    pub reposts: BTreeMap<NoteRef, Pubkey>, // repost note to sender
+    pub senders: HashSet<Pubkey>,
+}
+
+impl RepostUnit {
+    pub fn get_latest_ref(&self) -> &NoteRef {
+        self.reposts
+            .first_key_value()
+            .map(|(r, _)| r)
+            .unwrap_or(&self.note_reposted)
+    }
+}
+
+impl From<RepostFragment> for RepostUnit {
+    fn from(value: RepostFragment) -> Self {
+        let mut reposts = BTreeMap::new();
+        reposts.insert(value.repost_noteref, value.reposter);
+
+        let mut senders = HashSet::new();
+        senders.insert(value.reposter);
+
+        Self {
+            note_reposted: value.reposted_noteref,
+            reposts,
+            senders,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub enum NoteUnitFragment {
     Single(NoteRef),
@@ -214,4 +243,28 @@ impl ReactionFragment {
 pub struct Reaction {
     pub reaction: String, // can't use char because some emojis are 'grapheme clusters'
     pub sender: Pubkey,
+}
+
+/// Represents a singular repost
+#[derive(Debug, Clone)]
+pub struct RepostFragment {
+    pub reposted_noteref: NoteRef,
+    pub repost_noteref: NoteRef,
+    pub reposter: Pubkey,
+}
+
+impl RepostFragment {
+    pub fn fold_into(self, unit: &mut RepostUnit) {
+        if self.reposted_noteref != unit.note_reposted {
+            tracing::error!("Attempting to fold a repost fragment into a RepostUnit which has a different note reposted: {:?} != {:?}. This should never occur", self.reposted_noteref, unit.note_reposted);
+            return;
+        }
+
+        if unit.senders.contains(&self.reposter) {
+            return;
+        }
+
+        unit.senders.insert(self.reposter);
+        unit.reposts.insert(self.repost_noteref, self.reposter);
+    }
 }

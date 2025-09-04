@@ -38,7 +38,7 @@ pub use cache::TimelineCache;
 pub use kind::{ColumnTitle, PubkeySource, ThreadSelection, TimelineKind};
 pub use note_units::{CompositeType, InsertionResponse, NoteUnits};
 pub use timeline_units::{TimelineUnits, UnknownPks};
-pub use unit::{CompositeUnit, NoteUnit, ReactionUnit};
+pub use unit::{CompositeUnit, NoteUnit, ReactionUnit, RepostUnit};
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Default)]
 pub enum ViewFilter {
