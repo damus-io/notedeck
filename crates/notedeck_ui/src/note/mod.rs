@@ -832,6 +832,62 @@ struct Zapper<'a> {
     cur_acc: KeypairUnowned<'a>,
 }
 
+fn zap_actionbar_button(
+    ui: &mut egui::Ui,
+    note_id: &[u8; 32],
+    note_pubkey: &[u8; 32],
+    zapper: Option<Zapper<'_>>,
+    i18n: &mut Localization,
+) -> Option<NoteAction> {
+    let mut action: Option<NoteAction> = None;
+    let Zapper { zaps, cur_acc } = zapper?;
+
+    let zap_target = ZapTarget::Note(NoteZapTarget {
+        note_id,
+        zap_recipient: note_pubkey,
+    });
+
+    let zap_state = zaps.any_zap_state_for(cur_acc.pubkey.bytes(), zap_target);
+
+    let target = NoteZapTargetOwned {
+        note_id: NoteId::new(*note_id),
+        zap_recipient: Pubkey::new(*note_pubkey),
+    };
+
+    cur_acc.secret_key.as_ref()?;
+
+    match zap_state {
+        Ok(any_zap_state) => {
+            let zap_resp = ui.add(zap_button(i18n, any_zap_state, note_id));
+
+            if zap_resp.secondary_clicked() {
+                action = Some(NoteAction::Zap(ZapAction::CustomizeAmount(target.clone())));
+            }
+
+            if zap_resp.clicked() {
+                action = Some(NoteAction::Zap(ZapAction::Send(ZapTargetAmount {
+                    target,
+                    specified_msats: None,
+                })));
+            }
+
+            zap_resp
+        }
+        Err(err) => {
+            let (rect, _) = ui.allocate_at_least(egui::vec2(10.0, 10.0), egui::Sense::click());
+            let x_button = ui.add(x_button(rect)).on_hover_text(err.to_string());
+
+            if x_button.clicked() {
+                action = Some(NoteAction::Zap(ZapAction::ClearError(target.clone())));
+            }
+            x_button
+        }
+    }
+    .on_hover_cursor(egui::CursorIcon::PointingHand);
+
+    action
+}
+
 #[profiling::function]
 fn render_note_actionbar(
     ui: &mut egui::Ui,
@@ -852,61 +908,15 @@ fn render_note_actionbar(
     let quote_resp =
         quote_repost_button(ui, i18n, note_key).on_hover_cursor(egui::CursorIcon::PointingHand);
 
-    let to_noteid = |id: &[u8; 32]| NoteId::new(*id);
     if reply_resp.clicked() {
-        action = Some(NoteAction::Reply(to_noteid(note_id)));
+        action = Some(NoteAction::Reply(NoteId::new(*note_id)));
     }
 
     if quote_resp.clicked() {
-        action = Some(NoteAction::Quote(to_noteid(note_id)));
+        action = Some(NoteAction::Quote(NoteId::new(*note_id)));
     }
 
-    let Zapper { zaps, cur_acc } = zapper?;
-
-    let zap_target = ZapTarget::Note(NoteZapTarget {
-        note_id,
-        zap_recipient: note_pubkey,
-    });
-
-    let zap_state = zaps.any_zap_state_for(cur_acc.pubkey.bytes(), zap_target);
-
-    let target = NoteZapTargetOwned {
-        note_id: to_noteid(note_id),
-        zap_recipient: Pubkey::new(*note_pubkey),
-    };
-
-    {
-        cur_acc.secret_key.as_ref()?;
-
-        match zap_state {
-            Ok(any_zap_state) => {
-                let zap_resp = ui.add(zap_button(i18n, any_zap_state, note_id));
-
-                if zap_resp.secondary_clicked() {
-                    action = Some(NoteAction::Zap(ZapAction::CustomizeAmount(target.clone())));
-                }
-
-                if zap_resp.clicked() {
-                    action = Some(NoteAction::Zap(ZapAction::Send(ZapTargetAmount {
-                        target,
-                        specified_msats: None,
-                    })));
-                }
-
-                zap_resp
-            }
-            Err(err) => {
-                let (rect, _) = ui.allocate_at_least(egui::vec2(10.0, 10.0), egui::Sense::click());
-                let x_button = ui.add(x_button(rect)).on_hover_text(err.to_string());
-
-                if x_button.clicked() {
-                    action = Some(NoteAction::Zap(ZapAction::ClearError(target.clone())));
-                }
-                x_button
-            }
-        }
-    }
-    .on_hover_cursor(egui::CursorIcon::PointingHand);
+    action = zap_actionbar_button(ui, note_id, note_pubkey, zapper, i18n).or(action);
 
     action
 }
