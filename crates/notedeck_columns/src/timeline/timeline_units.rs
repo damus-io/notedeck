@@ -99,6 +99,15 @@ pub struct NotePayload<'a> {
     pub key: NoteKey,
 }
 
+impl<'a> NotePayload<'a> {
+    pub fn noteref(&self) -> NoteRef {
+        NoteRef {
+            key: self.key,
+            created_at: self.note.created_at(),
+        }
+    }
+}
+
 fn to_fragment<'a>(
     payload: &'a NotePayload,
     ndb: &Ndb,
@@ -147,10 +156,7 @@ fn to_reaction<'a>(
 
     let reacted_to_noteid = note_reacted_to?;
 
-    let reaction_note_ref = NoteRef {
-        key: payload.key,
-        created_at: payload.note.created_at(),
-    };
+    let reaction_note_ref = payload.noteref();
 
     let reacted_to_note = ndb.get_note_by_id(txn, reacted_to_noteid).ok()?;
 
