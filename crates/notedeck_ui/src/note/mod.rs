@@ -677,7 +677,7 @@ fn get_zapper<'a>(
     })
 }
 
-fn get_reposted_note<'a>(ndb: &Ndb, txn: &'a Transaction, note: &Note) -> Option<Note<'a>> {
+pub fn get_reposted_note<'a>(ndb: &Ndb, txn: &'a Transaction, note: &Note) -> Option<Note<'a>> {
     if note.kind() != 6 {
         return None;
     }
