@@ -542,6 +542,54 @@ fn reaction_description(
     }
 }
 
+fn repost_description(
+    loc: &mut Localization,
+    first_name: &str,
+    count: usize,
+    referenced_type: ReferencedNoteType,
+) -> String {
+    match referenced_type {
+        ReferencedNoteType::Tagged => {
+            if count == 0 {
+                tr!(
+                    loc,
+                    "{name} reposted a note you were tagged in",
+                    "repost from user",
+                    name = first_name
+                )
+            } else {
+                tr_plural!(
+                    loc,
+                    "{name} and {count} other reposted a note you were tagged in",
+                    "{name} and {ocunt} others reposted a note you were tagged in",
+                    "describing the amount of reposts a note you were tagged in received",
+                    count,
+                    name = first_name
+                )
+            }
+        }
+        ReferencedNoteType::Yours => {
+            if count == 0 {
+                tr!(
+                    loc,
+                    "{name} reposted your note",
+                    "repost from user",
+                    name = first_name
+                )
+            } else {
+                tr_plural!(
+                    loc,
+                    "{name} and {count} other reposted your note",
+                    "{name} and {count} others reposted your note",
+                    "describing the amount of reposts your note received",
+                    count,
+                    name = first_name
+                )
+            }
+        }
+    }
+}
+
 fn render_note(
     ui: &mut egui::Ui,
     note_context: &mut NoteContext,
