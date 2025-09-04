@@ -143,7 +143,10 @@ pub enum CompositeFragment {
 impl CompositeFragment {
     pub fn fold_into(self, unit: &mut CompositeUnit) {
         match self {
-            CompositeFragment::Reaction(reaction_fragment) => reaction_fragment.fold_into(unit),
+            CompositeFragment::Reaction(reaction_fragment) => {
+                let CompositeUnit::Reaction(reaction_unit) = unit;
+                reaction_fragment.fold_into(reaction_unit);
+            }
         }
     }
 
@@ -178,23 +181,18 @@ pub struct ReactionFragment {
 
 impl ReactionFragment {
     /// Add all the contents of Self into `CompositeUnit`
-    pub fn fold_into(self, unit: &mut CompositeUnit) {
-        match unit {
-            CompositeUnit::Reaction(reaction_unit) => {
-                if self.noteref_reacted_to != reaction_unit.note_reacted_to {
-                    return;
-                }
-
-                if reaction_unit.senders.contains(&self.reaction.sender) {
-                    return;
-                }
-
-                reaction_unit.senders.insert(self.reaction.sender);
-                reaction_unit
-                    .reactions
-                    .insert(self.reaction_note_ref, self.reaction);
-            }
+    pub fn fold_into(self, unit: &mut ReactionUnit) {
+        if self.noteref_reacted_to != unit.note_reacted_to {
+            tracing::error!("Attempting to fold a reaction fragment into a ReactionUnit which as a different note reacted to: {:?} != {:?}. This should never occur", self.noteref_reacted_to, unit.note_reacted_to);
+            return;
         }
+
+        if unit.senders.contains(&self.reaction.sender) {
+            return;
+        }
+
+        unit.senders.insert(self.reaction.sender);
+        unit.reactions.insert(self.reaction_note_ref, self.reaction);
     }
 }
 
