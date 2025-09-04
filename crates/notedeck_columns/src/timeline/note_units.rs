@@ -350,7 +350,7 @@ mod tests {
             Pubkey::new(out)
         }
 
-        fn build_fragment(&mut self, reacted_to: NoteRef) -> NoteUnitFragment {
+        fn build_reac_frag(&mut self, reacted_to: NoteRef) -> NoteUnitFragment {
             NoteUnitFragment::Composite(CompositeFragment::Reaction(ReactionFragment {
                 noteref_reacted_to: reacted_to,
                 reaction_note_ref: NoteRef {
@@ -364,8 +364,8 @@ mod tests {
             }))
         }
 
-        fn fragment(&mut self, reacted_to: NoteRef) -> String {
-            let frag = self.build_fragment(reacted_to);
+        fn insert_reac_frag(&mut self, reacted_to: NoteRef) -> String {
+            let frag = self.build_reac_frag(reacted_to);
             let id = Uuid::new_v4().to_string();
             self.frags.insert(id.clone(), frag.clone());
 
@@ -374,9 +374,9 @@ mod tests {
             id
         }
 
-        fn fragments_pair(&mut self, reacted_to: NoteRef) -> (String, String) {
-            let frag1 = self.build_fragment(reacted_to);
-            let frag2 = self.build_fragment(reacted_to);
+        fn insert_reac_frag_pair(&mut self, reacted_to: NoteRef) -> (String, String) {
+            let frag1 = self.build_reac_frag(reacted_to);
+            let frag2 = self.build_reac_frag(reacted_to);
 
             self.units
                 .merge_fragments(vec![frag1.clone(), frag2.clone()]);
@@ -389,7 +389,7 @@ mod tests {
             (id1, id2)
         }
 
-        fn generate_reaction_note(&mut self) -> NoteRef {
+        fn new_noteref(&mut self) -> NoteRef {
             NoteRef {
                 key: NoteKey::new(self.counter()),
                 created_at: self.counter(),
@@ -470,14 +470,14 @@ mod tests {
     }
 
     #[test]
-    fn test() {
+    fn test_reactions1() {
         let mut builder = UnitBuilder::default();
-        let reaction_note = builder.generate_reaction_note();
+        let reaction_note = builder.new_noteref();
 
         let single0 = builder.insert_note();
         builder.aeq(0, Expect::Single(&single0));
 
-        let reac1 = builder.fragment(reaction_note);
+        let reac1 = builder.insert_reac_frag(reaction_note);
         builder.aeq(0, Expect::Reaction(vec![&reac1]));
         builder.aeq(1, Expect::Single(&single0));
 
@@ -486,7 +486,7 @@ mod tests {
         builder.aeq(1, Expect::Reaction(vec![&reac1]));
         builder.aeq(2, Expect::Single(&single0));
 
-        let reac2 = builder.fragment(reaction_note);
+        let reac2 = builder.insert_reac_frag(reaction_note);
         builder.aeq(0, Expect::Reaction(vec![&reac2, &reac1]));
         builder.aeq(1, Expect::Single(&single1));
         builder.aeq(2, Expect::Single(&single0));
@@ -497,7 +497,7 @@ mod tests {
         builder.aeq(2, Expect::Single(&single1));
         builder.aeq(3, Expect::Single(&single0));
 
-        let reac3 = builder.fragment(reaction_note);
+        let reac3 = builder.insert_reac_frag(reaction_note);
         builder.aeq(0, Expect::Reaction(vec![&reac1, &reac2, &reac3]));
         builder.aeq(1, Expect::Single(&single2));
         builder.aeq(2, Expect::Single(&single1));
@@ -505,19 +505,19 @@ mod tests {
     }
 
     #[test]
-    fn test2() {
+    fn test_reactions2() {
         let mut builder = UnitBuilder::default();
-        let reaction_note1 = builder.generate_reaction_note();
-        let reaction_note2 = builder.generate_reaction_note();
+        let reaction_note1 = builder.new_noteref();
+        let reaction_note2 = builder.new_noteref();
 
         let single0 = builder.insert_note();
         builder.aeq(0, Expect::Single(&single0));
 
-        let reac1_1 = builder.fragment(reaction_note1);
+        let reac1_1 = builder.insert_reac_frag(reaction_note1);
         builder.aeq(0, Expect::Reaction(vec![&reac1_1]));
         builder.aeq(1, Expect::Single(&single0));
 
-        let reac2_1 = builder.fragment(reaction_note2);
+        let reac2_1 = builder.insert_reac_frag(reaction_note2);
         builder.aeq(0, Expect::Reaction(vec![&reac2_1]));
         builder.aeq(1, Expect::Reaction(vec![&reac1_1]));
         builder.aeq(2, Expect::Single(&single0));
@@ -528,7 +528,7 @@ mod tests {
         builder.aeq(2, Expect::Reaction(vec![&reac1_1]));
         builder.aeq(3, Expect::Single(&single0));
 
-        let reac1_2 = builder.fragment(reaction_note1);
+        let reac1_2 = builder.insert_reac_frag(reaction_note1);
         builder.aeq(0, Expect::Reaction(vec![&reac1_2, &reac1_1]));
         builder.aeq(1, Expect::Single(&single1));
         builder.aeq(2, Expect::Reaction(vec![&reac2_1]));
@@ -541,14 +541,14 @@ mod tests {
         builder.aeq(3, Expect::Reaction(vec![&reac2_1]));
         builder.aeq(4, Expect::Single(&single0));
 
-        let reac1_3 = builder.fragment(reaction_note1);
+        let reac1_3 = builder.insert_reac_frag(reaction_note1);
         builder.aeq(0, Expect::Reaction(vec![&reac1_2, &reac1_1, &reac1_3]));
         builder.aeq(1, Expect::Single(&single2));
         builder.aeq(2, Expect::Single(&single1));
         builder.aeq(3, Expect::Reaction(vec![&reac2_1]));
         builder.aeq(4, Expect::Single(&single0));
 
-        let reac2_2 = builder.fragment(reaction_note2);
+        let reac2_2 = builder.insert_reac_frag(reaction_note2);
         builder.aeq(0, Expect::Reaction(vec![&reac2_1, &reac2_2]));
         builder.aeq(1, Expect::Reaction(vec![&reac1_2, &reac1_1, &reac1_3]));
         builder.aeq(2, Expect::Single(&single2));
@@ -557,18 +557,18 @@ mod tests {
     }
 
     #[test]
-    fn test3() {
+    fn test_reactions3() {
         let mut builder = UnitBuilder::default();
-        let reaction_note1 = builder.generate_reaction_note();
+        let reaction_note1 = builder.new_noteref();
 
         let single1 = builder.insert_note();
         builder.aeq(0, Expect::Single(&single1));
 
-        let reac0 = builder.fragment(reaction_note1);
+        let reac0 = builder.insert_reac_frag(reaction_note1);
         builder.aeq(0, Expect::Reaction(vec![&reac0]));
         builder.aeq(1, Expect::Single(&single1));
 
-        let (reac1, reac2) = builder.fragments_pair(reaction_note1);
+        let (reac1, reac2) = builder.insert_reac_frag_pair(reaction_note1);
         builder.aeq(0, Expect::Reaction(vec![&reac0, &reac1, &reac2]));
         builder.aeq(1, Expect::Single(&single1));
 
