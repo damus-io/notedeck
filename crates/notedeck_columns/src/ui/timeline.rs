@@ -5,14 +5,15 @@ use enostr::Pubkey;
 use nostrdb::{ProfileRecord, Transaction};
 use notedeck::name::get_display_name;
 use notedeck::ui::is_narrow;
-use notedeck::{JobsCache, Muted, NoteRef};
+use notedeck::{tr_plural, JobsCache, Muted, NoteRef};
 use notedeck_ui::app_images::like_image;
 use notedeck_ui::ProfilePic;
 use std::f32::consts::PI;
 use tracing::{error, warn};
 
 use crate::timeline::{
-    CompositeUnit, NoteUnit, ReactionUnit, TimelineCache, TimelineKind, TimelineTab, ViewFilter,
+    CompositeType, CompositeUnit, NoteUnit, ReactionUnit, TimelineCache, TimelineKind, TimelineTab,
+    ViewFilter,
 };
 use notedeck::{
     note::root_note_id_from_selected_id, tr, Localization, NoteAction, NoteContext, ScrollInfo,
@@ -464,6 +465,83 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
     }
 }
 
+enum ReferencedNoteType {
+    Tagged,
+    Yours,
+}
+
+impl CompositeType {
+    fn image(&self, darkmode: bool) -> egui::Image<'static> {
+        match self {
+            CompositeType::Reaction => like_image(),
+        }
+    }
+
+    fn description(
+        &self,
+        loc: &mut Localization,
+        first_name: &str,
+        total_count: usize,
+        referenced_type: ReferencedNoteType,
+    ) -> String {
+        let count = total_count - 1;
+
+        match self {
+            CompositeType::Reaction => {
+                reaction_description(loc, first_name, count, referenced_type)
+            }
+        }
+    }
+}
+
+fn reaction_description(
+    loc: &mut Localization,
+    first_name: &str,
+    count: usize,
+    referenced_type: ReferencedNoteType,
+) -> String {
+    match referenced_type {
+        ReferencedNoteType::Tagged => {
+            if count == 0 {
+                tr!(
+                    loc,
+                    "{name} reacted to a note you were tagged in",
+                    "reaction from user to a note you were tagged in",
+                    name = first_name
+                )
+            } else {
+                tr_plural!(
+                    loc,
+                    "{name} and {count} other reacted to a note you were tagged in",
+                    "{name} and {count} others reacted to a note you were tagged in",
+                    "amount of reactions a note you were tagged in received",
+                    count,
+                    name = first_name
+                )
+            }
+        }
+        ReferencedNoteType::Yours => {
+            if count == 0 {
+                tr!(
+                    loc,
+                    "{name} reacted to your note",
+                    "reaction from user to your note",
+                    name = first_name
+                )
+            } else {
+                tr_plural!(
+                    loc,
+                    "{name} and {count} other reacted to your note",
+                    "{name} and {count} others reacted to your note",
+                    "describing the amount of reactions your note received",
+                    count,
+                    name = first_name
+                )
+            }
+        }
+    }
+}
+
 fn render_note(
     ui: &mut egui::Ui,
     note_context: &mut NoteContext,
@@ -534,10 +612,30 @@ fn render_reaction_cluster(
         })
         .collect();
 
+    render_composite_entry(
+        ui,
+        note_context,
+        note_options,
+        jobs,
+        reacted_to_note,
+        profiles_to_show,
+        CompositeType::Reaction,
+    )
+}
+
+fn render_composite_entry(
+    ui: &mut egui::Ui,
+    note_context: &mut NoteContext,
+    note_options: NoteOptions,
+    jobs: &mut JobsCache,
+    underlying_note: nostrdb::Note<'_>,
+    profiles_to_show: Vec<ProfileEntry>,
+    composite_type: CompositeType,
+) -> RenderEntryResponse {
     let first_name = get_display_name(profiles_to_show.iter().find_map(|opt| opt.record.as_ref()))
         .name()
         .to_string();
-    let num_profiles_other = profiles_to_show.len() - 1;
+    let num_profiles = profiles_to_show.len();
 
     let mut action = None;
     egui::Frame::new()
@@ -549,7 +647,10 @@ fn render_reaction_cluster(
                 |ui| {
                     ui.vertical(|ui| {
                         ui.add_space(4.0);
-                        ui.add_sized(vec2(28.0, 28.0), like_image());
+                        ui.add_sized(
+                            vec2(28.0, 28.0),
+                            composite_type.image(ui.visuals().dark_mode),
+                        );
                     });
 
                     ui.add_space(16.0);
@@ -577,17 +678,17 @@ fn render_reaction_cluster(
                 },
             );
 
-            let note_type_desc = if note_context
+            let referenced_type = if note_context
                 .accounts
                 .get_selected_account()
                 .key
                 .pubkey
                 .bytes()
-                != reacted_to_note.pubkey()
+                != underlying_note.pubkey()
             {
-                "note you were tagged in"
+                ReferencedNoteType::Tagged
             } else {
-                "your note"
+                ReferencedNoteType::Yours
             };
 
             ui.add_space(2.0);
@@ -595,13 +696,12 @@ fn render_reaction_cluster(
                 ui.add_space(52.0);
 
                 ui.horizontal_wrapped(|ui| {
-                    if num_profiles_other > 0 {
-                        ui.label(format!(
-                        "{first_name} and {num_profiles_other} others reacted to {note_type_desc}",
-                    ));
-                    } else {
-                        ui.label(format!("{first_name} reacted to {note_type_desc}"));
-                    }
+                    ui.label(composite_type.description(
+                        note_context.i18n,
+                        &first_name,
+                        num_profiles,
+                        referenced_type,
+                    ))
                 });
             });
 
@@ -612,7 +712,7 @@ fn render_reaction_cluster(
                 let options = note_options
                     .difference(NoteOptions::ActionBar | NoteOptions::OptionsButton)
                     .union(NoteOptions::NotificationPreview);
-                let resp = NoteView::new(note_context, &reacted_to_note, options, jobs).show(ui);
+                let resp = NoteView::new(note_context, &underlying_note, options, jobs).show(ui);
 
                 if let Some(note_action) = resp.action {
                     action = Some(note_action);
