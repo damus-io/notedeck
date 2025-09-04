@@ -6,7 +6,7 @@ use nostrdb::{ProfileRecord, Transaction};
 use notedeck::name::get_display_name;
 use notedeck::ui::is_narrow;
 use notedeck::{tr_plural, JobsCache, Muted, NoteRef};
-use notedeck_ui::app_images::like_image;
+use notedeck_ui::app_images::{like_image, repost_image};
 use notedeck_ui::ProfilePic;
 use std::f32::consts::PI;
 use tracing::{error, warn};
@@ -474,6 +474,7 @@ impl CompositeType {
     fn image(&self, darkmode: bool) -> egui::Image<'static> {
         match self {
             CompositeType::Reaction => like_image(),
+            CompositeType::Repost => repost_image(darkmode),
         }
     }
 
@@ -490,6 +491,7 @@ impl CompositeType {
             CompositeType::Reaction => {
                 reaction_description(loc, first_name, count, referenced_type)
             }
+            CompositeType::Repost => repost_description(loc, first_name, count, referenced_type),
         }
     }
 }
