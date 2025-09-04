@@ -8,7 +8,11 @@ use notedeck::{NoteCache, NoteRef, UnknownIds};
 use crate::{
     actionbar::{process_thread_notes, NewThreadNotes},
     multi_subscriber::ThreadSubs,
-    timeline::{note_units::NoteUnits, unit::NoteUnit, InsertionResponse},
+    timeline::{
+        note_units::{NoteUnits, UnitKey},
+        unit::NoteUnit,
+        InsertionResponse,
+    },
 };
 
 use super::ThreadSelection;
@@ -417,6 +421,6 @@ impl SingleNoteUnits {
     }
 
     pub fn contains_key(&self, k: &NoteKey) -> bool {
-        self.units.contains_key(k)
+        self.units.contains_key(&UnitKey::Single(*k))
     }
 }

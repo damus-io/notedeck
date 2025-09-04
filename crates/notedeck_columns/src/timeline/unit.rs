@@ -1,8 +1,12 @@
 use std::collections::{BTreeMap, HashSet};
 
 use enostr::Pubkey;
-use nostrdb::NoteKey;
 use notedeck::NoteRef;
+
+use crate::timeline::{
+    note_units::{CompositeKey, UnitKey},
+    CompositeType,
+};
 
 /// A `NoteUnit` represents a cohesive piece of data derived from notes
 #[derive(Debug, Clone)]
@@ -12,10 +16,10 @@ pub enum NoteUnit {
 }
 
 impl NoteUnit {
-    pub fn key(&self) -> NoteKey {
+    pub fn key(&self) -> UnitKey {
         match self {
-            NoteUnit::Single(note_ref) => note_ref.key,
-            NoteUnit::Composite(clustered_entry) => clustered_entry.key(),
+            NoteUnit::Single(note_ref) => UnitKey::Single(note_ref.key),
+            NoteUnit::Composite(clustered_entry) => UnitKey::Composite(clustered_entry.key()),
         }
     }
 
@@ -79,9 +83,12 @@ impl PartialEq for CompositeUnit {
 }
 
 impl CompositeUnit {
-    pub fn key(&self) -> NoteKey {
+    pub fn key(&self) -> CompositeKey {
         match self {
-            CompositeUnit::Reaction(reaction_entry) => reaction_entry.note_reacted_to.key,
+            CompositeUnit::Reaction(reaction_entry) => CompositeKey {
+                key: reaction_entry.note_reacted_to.key,
+                composite_type: CompositeType::Reaction,
+            },
         }
     }
 }
@@ -150,11 +157,12 @@ impl CompositeFragment {
         }
     }
 
-    pub fn key(&self) -> NoteKey {
+    pub fn key(&self) -> CompositeKey {
         match self {
-            CompositeFragment::Reaction(reaction_fragment) => {
-                reaction_fragment.reaction_note_ref.key
-            }
+            CompositeFragment::Reaction(reaction) => CompositeKey {
+                key: reaction.noteref_reacted_to.key,
+                composite_type: CompositeType::Reaction,
+            },
         }
     }
 
@@ -167,6 +175,12 @@ impl CompositeFragment {
     pub fn get_latest_ref(&self) -> &NoteRef {
         match self {
             CompositeFragment::Reaction(reaction_fragment) => &reaction_fragment.reaction_note_ref,
+        }
+    }
+
+    pub fn get_type(&self) -> CompositeType {
+        match self {
+            CompositeFragment::Reaction(_) => CompositeType::Reaction,
         }
     }
 }

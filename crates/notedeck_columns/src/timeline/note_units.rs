@@ -17,7 +17,7 @@ type StorageIndex = usize;
 pub struct NoteUnits {
     reversed: bool,
     storage: Vec<NoteUnit>,
-    lookup: HashMap<NoteKey, StorageIndex>, // `NoteKey` to index in `NoteUnits::storage`
+    lookup: HashMap<UnitKey, StorageIndex>, // the key to index in `NoteUnits::storage`
     order: Vec<StorageIndex>, // the sorted order of the `NoteUnit`s in `NoteUnits::storage`
 }
 
@@ -30,7 +30,7 @@ impl NoteUnits {
         }
     }
 
-    pub fn contains_key(&self, k: &NoteKey) -> bool {
+    pub fn contains_key(&self, k: &UnitKey) -> bool {
         self.lookup.contains_key(k)
     }
 
@@ -163,7 +163,7 @@ impl NoteUnits {
     /// if `NoteUnitFragment::Composite` exists already, it will fold the fragment into the `CompositeUnit`
     /// otherwise, it will generate the `NoteUnit::CompositeUnit` from the `NoteUnitFragment::Composite`
     pub fn merge_fragments(&mut self, frags: Vec<NoteUnitFragment>) -> InsertManyResponse {
-        let mut to_build: HashMap<NoteKey, CompositeUnit> = HashMap::new(); // new composites by key
+        let mut to_build: HashMap<CompositeKey, CompositeUnit> = HashMap::new(); // new composites by key
         let mut singles_to_build: Vec<NoteRef> = Vec::new();
         let mut singles_seen: HashSet<NoteKey> = HashSet::new();
 
@@ -172,7 +172,7 @@ impl NoteUnits {
             match frag {
                 NoteUnitFragment::Single(note_ref) => {
                     let key = note_ref.key;
-                    if self.lookup.contains_key(&key) {
+                    if self.lookup.contains_key(&UnitKey::Single(key)) {
                         continue;
                     }
                     if singles_seen.insert(key) {
@@ -181,8 +181,9 @@ impl NoteUnits {
                 }
                 NoteUnitFragment::Composite(c_frag) => {
                     let key = c_frag.get_underlying_noteref().key;
+                    let composite_type = c_frag.get_type();
 
-                    if let Some(&storage_idx) = self.lookup.get(&key) {
+                    if let Some(&storage_idx) = self.lookup.get(&UnitKey::Composite(c_frag.key())) {
                         if let Some(NoteUnit::Composite(c_unit)) = self.storage.get_mut(storage_idx)
                         {
                             if c_frag.get_latest_ref() < c_unit.get_latest_ref() {
@@ -194,7 +195,10 @@ impl NoteUnits {
                     }
                     // aggregate for new composite
                     use std::collections::hash_map::Entry;
-                    match to_build.entry(key) {
+                    match to_build.entry(CompositeKey {
+                        key,
+                        composite_type,
+                    }) {
                         Entry::Occupied(mut o) => {
                             c_frag.fold_into(o.get_mut());
                         }
@@ -232,6 +236,23 @@ impl NoteUnits {
         }
         .map(NoteUnit::get_latest_ref)
     }
+}
+
+#[derive(Hash, PartialEq, Eq, Debug)]
+pub struct CompositeKey {
+    pub key: NoteKey,
+    pub composite_type: CompositeType,
+}
+
+#[derive(Hash, PartialEq, Eq, Debug)]
+pub enum CompositeType {
+    Reaction,
+}
+
+#[derive(Hash, PartialEq, Eq, Debug)]
+pub enum UnitKey {
+    Single(NoteKey),
+    Composite(CompositeKey),
 }
 
 pub enum InsertManyResponse {
