@@ -3,10 +3,13 @@ use std::collections::HashSet;
 use enostr::Pubkey;
 use nostrdb::{Ndb, Note, NoteKey, Transaction};
 use notedeck::NoteRef;
+use notedeck_ui::note::get_reposted_note;
 
 use crate::timeline::{
     note_units::{InsertManyResponse, NoteUnits},
-    unit::{CompositeFragment, NoteUnit, NoteUnitFragment, Reaction, ReactionFragment},
+    unit::{
+        CompositeFragment, NoteUnit, NoteUnitFragment, Reaction, ReactionFragment, RepostFragment,
+    },
 };
 
 #[derive(Debug, Default)]
@@ -125,6 +128,7 @@ fn to_fragment<'a>(
             fragment: NoteUnitFragment::Composite(CompositeFragment::Reaction(r.fragment)),
             unknown_pk: Some(r.pk),
         }),
+        6 => to_repost(payload, ndb, txn).map(RepostResponse::into),
         _ => None,
     }
 }
@@ -180,5 +184,59 @@ fn to_reaction<'a>(
 
 pub struct ReactionResponse<'a> {
     fragment: ReactionFragment,
-    pk: &'a [u8; 32],
+    pk: &'a [u8; 32], // reaction sender
+}
+
+pub struct RepostResponse<'a> {
+    fragment: RepostFragment,
+    reposter_pk: &'a [u8; 32],
+}
+
+impl<'a> From<RepostResponse<'a>> for NoteUnitFragmentResponse<'a> {
+    fn from(value: RepostResponse<'a>) -> Self {
+        Self {
+            fragment: NoteUnitFragment::Composite(CompositeFragment::Repost(value.fragment)),
+            unknown_pk: Some(value.reposter_pk),
+        }
+    }
+}
+
+fn to_repost<'a>(
+    payload: &'a NotePayload,
+    ndb: &Ndb,
+    txn: &Transaction,
+) -> Option<RepostResponse<'a>> {
+    let reposted_note = match get_reposted_note(ndb, txn, &payload.note) {
+        Some(r) => r,
+        None => {
+            tracing::error!(
+                "Could not get reposted note for note id {}",
+                enostr::NoteId::new(*payload.note.id()).hex()
+            );
+            return None;
+        }
+    };
+
+    let reposted_key = match reposted_note.key() {
+        Some(r) => r,
+        None => {
+            tracing::error!(
+                "Could not get key of reposted note {}",
+                enostr::NoteId::new(*reposted_note.id()).hex()
+            );
+            return None;
+        }
+    };
+
+    Some(RepostResponse {
+        fragment: RepostFragment {
+            reposted_noteref: NoteRef {
+                key: reposted_key,
+                created_at: reposted_note.created_at(),
+            },
+            repost_noteref: payload.noteref(),
+            reposter: Pubkey::new(*payload.note.pubkey()),
+        },
+        reposter_pk: payload.note.pubkey(),
+    })
 }
