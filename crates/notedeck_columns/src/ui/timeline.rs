@@ -460,6 +460,15 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
                     self.txn,
                     reaction_unit,
                 ),
+                CompositeUnit::Repost(repost_unit) => render_repost_cluster(
+                    ui,
+                    self.note_context,
+                    self.note_options,
+                    self.jobs,
+                    mute,
+                    self.txn,
+                    repost_unit,
+                ),
             },
         }
     }

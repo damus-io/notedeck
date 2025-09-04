@@ -25,6 +25,7 @@ impl NoteUnit {
             NoteUnit::Single(note_ref) => note_ref,
             NoteUnit::Composite(clustered) => match clustered {
                 CompositeUnit::Reaction(reaction_entry) => &reaction_entry.note_reacted_to,
+                CompositeUnit::Repost(repost_unit) => &repost_unit.note_reposted,
             },
         }
     }
@@ -61,12 +62,14 @@ impl PartialOrd for NoteUnit {
 #[derive(Debug, Clone)]
 pub enum CompositeUnit {
     Reaction(ReactionUnit),
+    Repost(RepostUnit),
 }
 
 impl CompositeUnit {
     pub fn get_latest_ref(&self) -> &NoteRef {
         match self {
             CompositeUnit::Reaction(reaction_unit) => reaction_unit.get_latest_ref(),
+            CompositeUnit::Repost(repost_unit) => repost_unit.get_latest_ref(),
         }
     }
 }
@@ -75,6 +78,8 @@ impl PartialEq for CompositeUnit {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Reaction(l0), Self::Reaction(r0)) => l0 == r0,
+            (Self::Repost(l0), Self::Repost(r0)) => l0 == r0,
+            _ => false,
         }
     }
 }
@@ -86,6 +91,10 @@ impl CompositeUnit {
                 key: reaction_entry.note_reacted_to.key,
                 composite_type: CompositeType::Reaction,
             },
+            CompositeUnit::Repost(repost_unit) => CompositeKey {
+                key: repost_unit.note_reposted.key,
+                composite_type: CompositeType::Repost,
+            },
         }
     }
 }
@@ -95,6 +104,9 @@ impl From<CompositeFragment> for CompositeUnit {
         match value {
             CompositeFragment::Reaction(reaction_fragment) => {
                 CompositeUnit::Reaction(reaction_fragment.into())
+            }
+            CompositeFragment::Repost(repost_fragment) => {
+                CompositeUnit::Repost(repost_fragment.into())
             }
         }
     }
@@ -174,14 +186,27 @@ pub enum NoteUnitFragment {
 #[derive(Debug, Clone)]
 pub enum CompositeFragment {
     Reaction(ReactionFragment),
+    Repost(RepostFragment),
 }
 
 impl CompositeFragment {
     pub fn fold_into(self, unit: &mut CompositeUnit) {
         match self {
             CompositeFragment::Reaction(reaction_fragment) => {
-                let CompositeUnit::Reaction(reaction_unit) = unit;
+                let CompositeUnit::Reaction(reaction_unit) = unit else {
+                    tracing::error!("Attempting to fold a reaction fragment into a unit which isn't ReactionUnit. Doing nothing, this should never occur");
+                    return;
+                };
+
                 reaction_fragment.fold_into(reaction_unit);
+            }
+            CompositeFragment::Repost(repost_fragment) => {
+                let CompositeUnit::Repost(repost_unit) = unit else {
+                    tracing::error!("Attempting to fold a repost fragment into a unit which isn't RepostUnit. Doing nothing, this should never occur");
+                    return;
+                };
+
+                repost_fragment.fold_into(repost_unit);
             }
         }
     }
@@ -192,24 +217,31 @@ impl CompositeFragment {
                 key: reaction.noteref_reacted_to.key,
                 composite_type: CompositeType::Reaction,
             },
+            CompositeFragment::Repost(repost) => CompositeKey {
+                key: repost.reposted_noteref.key,
+                composite_type: CompositeType::Repost,
+            },
         }
     }
 
     pub fn get_underlying_noteref(&self) -> &NoteRef {
         match self {
             CompositeFragment::Reaction(reaction_fragment) => &reaction_fragment.noteref_reacted_to,
+            CompositeFragment::Repost(repost_fragment) => &repost_fragment.reposted_noteref,
         }
     }
 
     pub fn get_latest_ref(&self) -> &NoteRef {
         match self {
             CompositeFragment::Reaction(reaction_fragment) => &reaction_fragment.reaction_note_ref,
+            CompositeFragment::Repost(repost_fragment) => &repost_fragment.repost_noteref,
         }
     }
 
     pub fn get_type(&self) -> CompositeType {
         match self {
             CompositeFragment::Reaction(_) => CompositeType::Reaction,
+            CompositeFragment::Repost(_) => CompositeType::Repost,
         }
     }
 }
