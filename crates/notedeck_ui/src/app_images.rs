@@ -183,6 +183,14 @@ pub fn repost_light_image() -> Image<'static> {
     Image::new(include_image!("../../../assets/icons/repost_light_4x.png"))
 }
 
+pub fn repost_image(dark_mode: bool) -> Image<'static> {
+    if dark_mode {
+        repost_dark_image()
+    } else {
+        repost_light_image()
+    }
+}
+
 pub fn reply_dark_image() -> Image<'static> {
     Image::new(include_image!("../../../assets/icons/reply.png"))
 }
