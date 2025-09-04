@@ -325,9 +325,9 @@ mod tests {
     use crate::timeline::{
         unit::{
             CompositeFragment, CompositeUnit, NoteUnit, NoteUnitFragment, Reaction,
-            ReactionFragment, ReactionUnit,
+            ReactionFragment, ReactionUnit, RepostFragment,
         },
-        NoteUnits,
+        NoteUnits, RepostUnit,
     };
 
     #[derive(Default)]
@@ -363,6 +363,25 @@ mod tests {
                     sender: self.random_sender(),
                 },
             }))
+        }
+
+        fn build_repost_frag(&mut self, reposting: NoteRef) -> NoteUnitFragment {
+            NoteUnitFragment::Composite(CompositeFragment::Repost(RepostFragment {
+                reposted_noteref: reposting,
+                repost_noteref: self.new_noteref(),
+                reposter: self.random_sender(),
+            }))
+        }
+
+        fn insert_repost(&mut self, reposting: NoteRef) -> String {
+            let repost = self.build_repost_frag(reposting);
+
+            let id = Uuid::new_v4().to_string();
+            self.frags.insert(id.clone(), repost.clone());
+
+            self.units.merge_fragments(vec![repost]);
+
+            id
         }
 
         fn insert_reac_frag(&mut self, reacted_to: NoteRef) -> String {
@@ -442,6 +461,36 @@ mod tests {
             }))
         }
 
+        fn expected_reposts(&mut self, ids: Vec<&String>) -> NoteUnit {
+            let mut reposts = BTreeMap::new();
+            let mut reposted_id = None;
+            let mut senders = HashSet::new();
+            for id in ids {
+                let NoteUnitFragment::Composite(CompositeFragment::Repost(repost)) =
+                    self.frags.get(id).unwrap()
+                else {
+                    panic!("got something other than repost");
+                };
+
+                if let Some(prev_reposted_id) = reposted_id {
+                    if prev_reposted_id != repost.reposted_noteref {
+                        panic!("internal error");
+                    }
+                }
+
+                reposted_id = Some(repost.reposted_noteref);
+
+                reposts.insert(repost.repost_noteref, repost.reposter);
+                senders.insert(repost.reposter);
+            }
+
+            NoteUnit::Composite(CompositeUnit::Repost(RepostUnit {
+                note_reposted: reposted_id.unwrap(),
+                reposts,
+                senders,
+            }))
+        }
+
         fn expected_single(&mut self, id: &String) -> NoteUnit {
             let Some(NoteUnitFragment::Single(note_ref)) = self.frags.get(id) else {
                 panic!("fail");
@@ -460,6 +509,7 @@ mod tests {
                 match expect {
                     Expect::Single(id) => self.expected_single(id),
                     Expect::Reaction(items) => self.expected_reactions(items),
+                    Expect::Repost(items) => self.expected_reposts(items),
                 }
             );
         }
@@ -468,6 +518,7 @@ mod tests {
     enum Expect<'a> {
         Single(&'a String),
         Reaction(Vec<&'a String>),
+        Repost(Vec<&'a String>),
     }
 
     #[test]
@@ -577,5 +628,41 @@ mod tests {
         builder.aeq(0, Expect::Single(&single2));
         builder.aeq(1, Expect::Reaction(vec![&reac0, &reac1, &reac2]));
         builder.aeq(2, Expect::Single(&single1));
+    }
+
+    #[test]
+    fn test_repost() {
+        let mut builder = UnitBuilder::default();
+        let repost_note = builder.new_noteref();
+
+        let single1 = builder.insert_note();
+        builder.aeq(0, Expect::Single(&single1));
+
+        let repost1 = builder.insert_repost(repost_note);
+        builder.aeq(0, Expect::Repost(vec![&repost1]));
+        builder.aeq(1, Expect::Single(&single1));
+
+        let single2 = builder.insert_note();
+        builder.aeq(0, Expect::Single(&single2));
+        builder.aeq(1, Expect::Repost(vec![&repost1]));
+        builder.aeq(2, Expect::Single(&single1));
+
+        let reac1 = builder.insert_reac_frag(repost_note);
+        builder.aeq(0, Expect::Reaction(vec![&reac1]));
+        builder.aeq(1, Expect::Single(&single2));
+        builder.aeq(2, Expect::Repost(vec![&repost1]));
+        builder.aeq(3, Expect::Single(&single1));
+
+        let repost2 = builder.insert_repost(repost_note);
+        builder.aeq(0, Expect::Repost(vec![&repost1, &repost2]));
+        builder.aeq(1, Expect::Reaction(vec![&reac1]));
+        builder.aeq(2, Expect::Single(&single2));
+        builder.aeq(3, Expect::Single(&single1));
+
+        let reac2 = builder.insert_reac_frag(repost_note);
+        builder.aeq(0, Expect::Reaction(vec![&reac1, &reac2]));
+        builder.aeq(1, Expect::Repost(vec![&repost1, &repost2]));
+        builder.aeq(2, Expect::Single(&single2));
+        builder.aeq(3, Expect::Single(&single1));
     }
 }
