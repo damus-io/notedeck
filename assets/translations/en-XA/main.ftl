@@ -46,6 +46,9 @@ Add_Hashtag_Column_ebf4 = {"["}Àdd Hàshtàg Çólúmñ{"]"}
 # Column title for adding last notes column
 Add_Last_Notes_Column_bbad = {"["}Àdd Làst Ñótés Çólúmñ{"]"}
 
+# Tooltip text for adding a new deck button
+Add_new_deck_f2fc = {"["}Àdd ñéw déçk{"]"}
+
 # Column title for adding notifications column
 Add_Notifications_Column_79f8 = {"["}Àdd Ñótífíçàtíóñs Çólúmñ{"]"}
 
@@ -136,6 +139,9 @@ Copy_Note_ID_6b45 = {"["}Çópy Ñóté ÍD{"]"}
 # Copy the raw note data in JSON format to clipboard
 Copy_Note_JSON_9e4e = {"["}Çópy Ñóté JSÓÑ{"]"}
 
+# Tooltip text for copying npub to clipboard
+Copy_npub_to_clipboard_c105 = {"["}Çópy ñpúb tó çlípbóàrd{"]"}
+
 # Copy the author's public key to clipboard
 Copy_Pubkey_9cc4 = {"["}Çópy Púbkéy{"]"}
 
@@ -207,6 +213,9 @@ Display_name_f9d9 = {"["}Dísplày ñàmé{"]"}
 
 # Domain identification message
 domain___will_be_used_for_identification_b67e = {"["}"{$domain}" wíll bé úséd fór ídéñtífíçàtíóñ{"]"}
+
+# Button to indicate that the user is done going through the onboarding process.
+Done_50dd = {"["}Dóñé{"]"}
 
 # Column title for editing deck
 Edit_Deck_4018 = {"["}Édít Déçk{"]"}
@@ -283,6 +292,9 @@ k_5K_f7e6 = {"["}5K{"]"}
 # Description for your notes column
 Keep_track_of_your_notes___replies_a334 = {"["}Kéép tràçk óf yóúr ñótés & réplíés{"]"}
 
+# label for keys setting section
+Keys_435f = {"["}Kéys{"]"}
+
 # Label for language, Appearance settings section
 Language_e264 = {"["}Làñgúàgé:{"]"}
 
@@ -309,6 +321,18 @@ Moves_this_column_to_another_position_0d4b = {"["}Móvés thís çólúmñ tó �
 
 # Title for the user's deck
 My_Deck_4ac5 = {"["}My Déçk{"]"}
+
+# reaction from user to a note you were tagged in
+name__reacted_to_a_note_you_were_tagged_in_4b62 = {"["}{$name} réàçtéd tó à ñóté yóú wéré tàggéd íñ{"]"}
+
+# reaction from user to your note
+name__reacted_to_your_note_ead9 = {"["}{$name} réàçtéd tó yóúr ñóté{"]"}
+
+# repost from user
+name__reposted_a_note_you_were_tagged_in_1379 = {"["}{$name} répóstéd à ñóté yóú wéré tàggéd íñ{"]"}
+
+# repost from user
+name__reposted_your_note_1379 = {"["}{$name} répóstéd yóúr ñóté{"]"}
 
 # Label asking if the user is new to Nostr. Underneath this label is a button to create an account.
 New_to_Nostr_a2fd = {"["}Ñéw tó Ñóstr?{"]"}
@@ -384,6 +408,9 @@ Press_the_button_below_to_copy_your_most_recent_logs_to_your_system_s_clipboard_
 
 # Profile picture URL field label
 Profile_picture_81ff = {"["}Prófílé píçtúré{"]"}
+
+# label describing public key
+PUBLIC_ACCOUNT_ID_4394 = {"["}PÚBLÍÇ ÀÇÇÓÚÑT ÍD{"]"}
 
 # Column title for quote composition
 Quote_475c = {"["}Qúóté{"]"}
@@ -462,6 +489,9 @@ Search_notes_42a6 = {"["}Séàrçh ñótés...{"]"}
 
 # Search in progress message
 Searching_for___query_5d18 = {"["}Séàrçhíñg fór '{$query}'{"]"}
+
+# label describing secret key
+SECRET_ACCOUNT_LOGIN_KEY_8440 = {"["}SÉÇRÉT ÀÇÇÓÚÑT LÓGÍÑ KÉY{"]"}
 
 # Description for Home column
 See_notes_from_your_contacts_ac16 = {"["}Séé ñótés fróm yóúr çóñtàçts{"]"}
@@ -608,4 +638,36 @@ Got__count__results_for___query_85fb =
     { $count ->
         [one] {"["}Gót {$count} résúlt fór '{$query}'{"]"}
        *[other] {"["}Gót {$count} résúlts fór '{$query}'{"]"}
+    }
+
+
+# amount of reactions a note you were tagged in received
+name__and__count__others_reacted_to_a_note_you_were_tagged_in_181a =
+    { $count ->
+        [one] {"["}{$name} àñd {$count} óthér réàçtéd tó à ñóté yóú wéré tàggéd íñ{"]"}
+       *[other] {"["}{$name} àñd {$count} óthérs réàçtéd tó à ñóté yóú wéré tàggéd íñ{"]"}
+    }
+
+
+# describing the amount of reactions your note received
+name__and__count__others_reacted_to_your_note_0f6a =
+    { $count ->
+        [one] {"["}{$name} àñd {$count} óthér réàçtéd tó yóúr ñóté{"]"}
+       *[other] {"["}{$name} àñd {$count} óthérs réàçtéd tó yóúr ñóté{"]"}
+    }
+
+
+# describing the amount of reposts a note you were tagged in received
+name__and__count__others_reposted_a_note_you_were_tagged_in_08e1 =
+    { $count ->
+        [one] {"["}{$name} àñd {$count} óthér répóstéd à ñóté yóú wéré tàggéd íñ{"]"}
+       *[other] {"["}{$name} àñd {$count} óthérs répóstéd à ñóté yóú wéré tàggéd íñ{"]"}
+    }
+
+
+# describing the amount of reposts your note received
+name__and__count__others_reposted_your_note_70a0 =
+    { $count ->
+        [one] {"["}{$name} àñd {$count} óthér répóstéd yóúr ñóté{"]"}
+       *[other] {"["}{$name} àñd {$count} óthérs répóstéd yóúr ñóté{"]"}
     }
