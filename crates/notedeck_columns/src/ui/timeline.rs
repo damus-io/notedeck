@@ -2,10 +2,10 @@ use egui::containers::scroll_area::ScrollBarVisibility;
 use egui::{vec2, Direction, Layout, Margin, Pos2, ScrollArea, Sense, Stroke};
 use egui_tabs::TabColor;
 use enostr::Pubkey;
-use nostrdb::{ProfileRecord, Transaction};
+use nostrdb::{Note, ProfileRecord, Transaction};
 use notedeck::name::get_display_name;
 use notedeck::ui::is_narrow;
-use notedeck::{tr_plural, JobsCache, Muted, NoteRef};
+use notedeck::{tr_plural, JobsCache, Muted};
 use notedeck_ui::app_images::{like_image, repost_image};
 use notedeck_ui::ProfilePic;
 use std::f32::consts::PI;
@@ -440,15 +440,46 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
         entry: &NoteUnit,
         mute: &std::sync::Arc<Muted>,
     ) -> RenderEntryResponse {
+        let underlying_note = {
+            let underlying_note_key = match entry {
+                NoteUnit::Single(note_ref) => note_ref.key,
+                NoteUnit::Composite(composite_unit) => match composite_unit {
+                    CompositeUnit::Reaction(reaction_unit) => reaction_unit.note_reacted_to.key,
+                    CompositeUnit::Repost(repost_unit) => repost_unit.note_reposted.key,
+                },
+            };
+
+            let Ok(note) = self
+                .note_context
+                .ndb
+                .get_note_by_key(self.txn, underlying_note_key)
+            else {
+                warn!("failed to query note {:?}", underlying_note_key);
+                return RenderEntryResponse::Unsuccessful;
+            };
+
+            note
+        };
+
+        let muted = root_note_id_from_selected_id(
+            self.note_context.ndb,
+            self.note_context.note_cache,
+            self.txn,
+            underlying_note.id(),
+        )
+        .is_ok_and(|root_id| mute.is_muted(&underlying_note, root_id.bytes()));
+
+        if muted {
+            return RenderEntryResponse::Success(None);
+        }
+
         match entry {
-            NoteUnit::Single(note_ref) => render_note(
+            NoteUnit::Single(_) => render_note(
                 ui,
                 self.note_context,
                 self.note_options,
                 self.jobs,
-                mute,
-                self.txn,
-                note_ref,
+                &underlying_note,
             ),
             NoteUnit::Composite(composite) => match composite {
                 CompositeUnit::Reaction(reaction_unit) => render_reaction_cluster(
@@ -458,6 +489,7 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
                     self.jobs,
                     mute,
                     self.txn,
+                    &underlying_note,
                     reaction_unit,
                 ),
                 CompositeUnit::Repost(repost_unit) => render_repost_cluster(
@@ -467,6 +499,7 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
                     self.jobs,
                     mute,
                     self.txn,
+                    &underlying_note,
                     repost_unit,
                 ),
             },
@@ -606,32 +639,11 @@ fn render_note(
     note_context: &mut NoteContext,
     note_options: NoteOptions,
     jobs: &mut JobsCache,
-    mute: &std::sync::Arc<Muted>,
-    txn: &Transaction,
-    note_ref: &NoteRef,
+    note: &Note,
 ) -> RenderEntryResponse {
-    let note = if let Ok(note) = note_context.ndb.get_note_by_key(txn, note_ref.key) {
-        note
-    } else {
-        warn!("failed to query note {:?}", note_ref.key);
-        return RenderEntryResponse::Unsuccessful;
-    };
-
-    let muted = if let Ok(root_id) =
-        root_note_id_from_selected_id(note_context.ndb, note_context.note_cache, txn, note.id())
-    {
-        mute.is_muted(&note, root_id.bytes())
-    } else {
-        false
-    };
-
-    if muted {
-        return RenderEntryResponse::Success(None);
-    }
-
     let mut action = None;
     notedeck_ui::padding(8.0, ui, |ui| {
-        let resp = NoteView::new(note_context, &note, note_options, jobs).show(ui);
+        let resp = NoteView::new(note_context, note, note_options, jobs).show(ui);
 
         if let Some(note_action) = resp.action {
             action = Some(note_action);
@@ -643,6 +655,7 @@ fn render_note(
     RenderEntryResponse::Success(action)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_reaction_cluster(
     ui: &mut egui::Ui,
     note_context: &mut NoteContext,
@@ -650,16 +663,9 @@ fn render_reaction_cluster(
     jobs: &mut JobsCache,
     mute: &std::sync::Arc<Muted>,
     txn: &Transaction,
+    underlying_note: &Note,
     reaction: &ReactionUnit,
 ) -> RenderEntryResponse {
-    let reacted_to_key = reaction.note_reacted_to.key;
-    let reacted_to_note = if let Ok(note) = note_context.ndb.get_note_by_key(txn, reacted_to_key) {
-        note
-    } else {
-        warn!("failed to query note {:?}", reacted_to_key);
-        return RenderEntryResponse::Unsuccessful;
-    };
-
     let profiles_to_show: Vec<ProfileEntry> = reaction
         .reactions
         .values()
@@ -676,7 +682,7 @@ fn render_reaction_cluster(
         note_context,
         note_options,
         jobs,
-        reacted_to_note,
+        underlying_note,
         profiles_to_show,
         CompositeType::Reaction,
     )
@@ -687,7 +693,7 @@ fn render_composite_entry(
     note_context: &mut NoteContext,
     note_options: NoteOptions,
     jobs: &mut JobsCache,
-    underlying_note: nostrdb::Note<'_>,
+    underlying_note: &nostrdb::Note<'_>,
     profiles_to_show: Vec<ProfileEntry>,
     composite_type: CompositeType,
 ) -> RenderEntryResponse {
@@ -771,7 +777,7 @@ fn render_composite_entry(
                 let options = note_options
                     .difference(NoteOptions::ActionBar | NoteOptions::OptionsButton)
                     .union(NoteOptions::NotificationPreview);
-                let resp = NoteView::new(note_context, &underlying_note, options, jobs).show(ui);
+                let resp = NoteView::new(note_context, underlying_note, options, jobs).show(ui);
 
                 if let Some(note_action) = resp.action {
                     action = Some(note_action);
@@ -783,6 +789,7 @@ fn render_composite_entry(
     RenderEntryResponse::Success(action)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_repost_cluster(
     ui: &mut egui::Ui,
     note_context: &mut NoteContext,
@@ -790,16 +797,9 @@ fn render_repost_cluster(
     jobs: &mut JobsCache,
     mute: &std::sync::Arc<Muted>,
     txn: &Transaction,
+    underlying_note: &Note,
     repost: &RepostUnit,
 ) -> RenderEntryResponse {
-    let reposted_key = repost.note_reposted.key;
-    let reposted_note = if let Ok(note) = note_context.ndb.get_note_by_key(txn, reposted_key) {
-        note
-    } else {
-        warn!("failed to query note {:?}", reposted_key);
-        return RenderEntryResponse::Unsuccessful;
-    };
-
     let profiles_to_show: Vec<ProfileEntry> = repost
         .reposts
         .values()
@@ -815,7 +815,7 @@ fn render_repost_cluster(
         note_context,
         note_options,
         jobs,
-        reposted_note,
+        underlying_note,
         profiles_to_show,
         CompositeType::Repost,
     )
