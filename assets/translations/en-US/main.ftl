@@ -46,6 +46,9 @@ Add_Hashtag_Column_ebf4 = Add Hashtag Column
 # Column title for adding last notes column
 Add_Last_Notes_Column_bbad = Add Last Notes Column
 
+# Tooltip text for adding a new deck button
+Add_new_deck_f2fc = Add new deck
+
 # Column title for adding notifications column
 Add_Notifications_Column_79f8 = Add Notifications Column
 
@@ -136,6 +139,9 @@ Copy_Note_ID_6b45 = Copy Note ID
 # Copy the raw note data in JSON format to clipboard
 Copy_Note_JSON_9e4e = Copy Note JSON
 
+# Tooltip text for copying npub to clipboard
+Copy_npub_to_clipboard_c105 = Copy npub to clipboard
+
 # Copy the author's public key to clipboard
 Copy_Pubkey_9cc4 = Copy Pubkey
 
@@ -207,6 +213,9 @@ Display_name_f9d9 = Display name
 
 # Domain identification message
 domain___will_be_used_for_identification_b67e = "{$domain}" will be used for identification
+
+# Button to indicate that the user is done going through the onboarding process.
+Done_50dd = Done
 
 # Column title for editing deck
 Edit_Deck_4018 = Edit Deck
@@ -283,6 +292,9 @@ k_5K_f7e6 = 5K
 # Description for your notes column
 Keep_track_of_your_notes___replies_a334 = Keep track of your notes & replies
 
+# label for keys setting section
+Keys_435f = Keys
+
 # Label for language, Appearance settings section
 Language_e264 = Language:
 
@@ -309,6 +321,18 @@ Moves_this_column_to_another_position_0d4b = Moves this column to another positi
 
 # Title for the user's deck
 My_Deck_4ac5 = My Deck
+
+# reaction from user to a note you were tagged in
+name__reacted_to_a_note_you_were_tagged_in_4b62 = {$name} reacted to a note you were tagged in
+
+# reaction from user to your note
+name__reacted_to_your_note_ead9 = {$name} reacted to your note
+
+# repost from user
+name__reposted_a_note_you_were_tagged_in_1379 = {$name} reposted a note you were tagged in
+
+# repost from user
+name__reposted_your_note_1379 = {$name} reposted your note
 
 # Label asking if the user is new to Nostr. Underneath this label is a button to create an account.
 New_to_Nostr_a2fd = New to Nostr?
@@ -384,6 +408,9 @@ Press_the_button_below_to_copy_your_most_recent_logs_to_your_system_s_clipboard_
 
 # Profile picture URL field label
 Profile_picture_81ff = Profile picture
+
+# label describing public key
+PUBLIC_ACCOUNT_ID_4394 = PUBLIC ACCOUNT ID
 
 # Column title for quote composition
 Quote_475c = Quote
@@ -462,6 +489,9 @@ Search_notes_42a6 = Search notes...
 
 # Search in progress message
 Searching_for___query_5d18 = Searching for '{$query}'
+
+# label describing secret key
+SECRET_ACCOUNT_LOGIN_KEY_8440 = SECRET ACCOUNT LOGIN KEY
 
 # Description for Home column
 See_notes_from_your_contacts_ac16 = See notes from your contacts
@@ -608,4 +638,36 @@ Got__count__results_for___query_85fb =
     { $count ->
         [one] Got {$count} result for '{$query}'
        *[other] Got {$count} results for '{$query}'
+    }
+
+
+# amount of reactions a note you were tagged in received
+name__and__count__others_reacted_to_a_note_you_were_tagged_in_181a =
+    { $count ->
+        [one] {$name} and {$count} other reacted to a note you were tagged in
+       *[other] {$name} and {$count} others reacted to a note you were tagged in
+    }
+
+
+# describing the amount of reactions your note received
+name__and__count__others_reacted_to_your_note_0f6a =
+    { $count ->
+        [one] {$name} and {$count} other reacted to your note
+       *[other] {$name} and {$count} others reacted to your note
+    }
+
+
+# describing the amount of reposts a note you were tagged in received
+name__and__count__others_reposted_a_note_you_were_tagged_in_08e1 =
+    { $count ->
+        [one] {$name} and {$count} other reposted a note you were tagged in
+       *[other] {$name} and {$count} others reposted a note you were tagged in
+    }
+
+
+# describing the amount of reposts your note received
+name__and__count__others_reposted_your_note_70a0 =
+    { $count ->
+        [one] {$name} and {$count} other reposted your note
+       *[other] {$name} and {$count} others reposted your note
     }

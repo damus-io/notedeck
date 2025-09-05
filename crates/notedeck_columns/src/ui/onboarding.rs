@@ -2,7 +2,7 @@ use std::mem;
 
 use egui::{Layout, ScrollArea};
 use nostrdb::Ndb;
-use notedeck::{Images, JobPool, JobsCache, Localization};
+use notedeck::{tr, Images, JobPool, JobsCache, Localization};
 use notedeck_ui::{
     colors,
     nip51_set::{Nip51SetUiCache, Nip51SetWidget, Nip51SetWidgetAction, Nip51SetWidgetFlags},
@@ -107,7 +107,7 @@ impl<'a> FollowPackOnboardingView<'a> {
 
         ui.with_layout(Layout::top_down(egui::Align::Center), |ui| {
             ui.add_space(4.0);
-            if ui.add(styled_button("Done", colors::PINK)).clicked() {
+            if ui.add(styled_button(tr!(self.loc, "Done", "Button to indicate that the user is done going through the onboarding process.").as_str(), colors::PINK)).clicked() {
                 action = Some(OnboardingResponse::FollowPacks(
                     FollowPacksResponse::UserSelectedPacks(mem::take(self.ui_state)),
                 ));
