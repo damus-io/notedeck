@@ -142,12 +142,6 @@ impl FilterState {
         Self::Ready(HybridFilter::unsplit(filter))
     }
 
-    /// The filter is ready, but we have a different local filter from
-    /// our remote one
-    pub fn ready_split(local: Vec<Filter>, remote: Vec<Filter>) -> Self {
-        Self::Ready(HybridFilter::split(local, remote))
-    }
-
     /// Our hybrid filter is ready (either split or unsplit)
     pub fn ready_hybrid(filter: HybridFilter) -> Self {
         Self::Ready(filter)
@@ -260,10 +254,6 @@ impl HybridFilter {
 }
 
 impl FilteredTags {
-    pub fn into_follow_filter(self) -> Vec<Filter> {
-        self.into_filter([1], default_limit())
-    }
-
     // TODO: make this more general
     pub fn into_filter<I>(self, kinds: I, limit: u64) -> Vec<Filter>
     where
