@@ -23,4 +23,4 @@ jobs:
         run: ${{ inputs.additional-setup }}
 
       - name: Run Tests (Native Only)
-        run: cargo test
+        run: cargo test -v
