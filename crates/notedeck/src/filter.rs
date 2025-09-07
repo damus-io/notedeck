@@ -254,6 +254,22 @@ impl HybridFilter {
 }
 
 impl FilteredTags {
+    pub fn into_query_package(self, kind: ValidKind, limit: u64) -> NdbQueryPackage {
+        let mut filters: Vec<Filter> = Vec::with_capacity(2);
+
+        if let Some(authors) = self.authors {
+            filters.push(authors.kinds(vec![kind.kind()]).limit(limit).build())
+        }
+
+        if let Some(hashtags) = self.hashtags {
+            if matches!(&kind, ValidKind::One | ValidKind::Zero) {
+                filters.push(hashtags.kinds(vec![kind.kind()]).limit(limit).build())
+            }
+        }
+
+        NdbQueryPackage { filters, kind }
+    }
+
     // TODO: make this more general
     pub fn into_filter<I>(self, kinds: I, limit: u64) -> Vec<Filter>
     where
@@ -270,6 +286,61 @@ impl FilteredTags {
         }
 
         filters
+    }
+}
+
+/// `Ndb::query` retrieves the most recent notes of one kind until it can't find anymore THEN proceeds to the next kind.
+/// This is not optimal for many scenarios, so this data structure represents data that is packaged optimally for one `Ndb::query`,
+#[derive(Debug, Clone)]
+pub struct NdbQueryPackage {
+    pub kind: ValidKind,
+    pub filters: Vec<Filter>,
+}
+
+impl NdbQueryPackage {
+    pub fn borrow(&self) -> NdbQueryPackageUnowned {
+        NdbQueryPackageUnowned {
+            filters: &self.filters,
+            kind: Some(self.kind.clone()),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct NdbQueryPackageUnowned<'a> {
+    pub kind: Option<ValidKind>,
+    pub filters: &'a Vec<Filter>,
+}
+
+pub struct NdbQueryPackages<'a> {
+    pub packages: Vec<NdbQueryPackageUnowned<'a>>,
+}
+
+impl<'a> NdbQueryPackages<'a> {
+    pub fn combined(&self) -> Vec<Filter> {
+        let mut combined = Vec::new();
+        for package in &self.packages {
+            combined.extend_from_slice(package.filters);
+        }
+
+        combined
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum ValidKind {
+    Zero,
+    One,
+    Six,
+}
+
+impl ValidKind {
+    fn kind(&self) -> u64 {
+        match self {
+            ValidKind::Zero => 0,
+            ValidKind::One => 1,
+            ValidKind::Six => 6,
+        }
     }
 }
 
