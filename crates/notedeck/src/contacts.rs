@@ -1,5 +1,5 @@
 use crate::{
-    filter::{self, HybridFilter},
+    filter::{self, HybridFilter, ValidKind},
     Error,
 };
 use nostrdb::{Filter, Note};
@@ -15,8 +15,14 @@ pub fn hybrid_contacts_filter(
     add_pk: Option<&[u8; 32]>,
     with_hashtags: bool,
 ) -> Result<HybridFilter, Error> {
-    let local = filter::filter_from_tags(note, add_pk, with_hashtags)?
-        .into_filter(vec![1], filter::default_limit());
+    let local = vec![
+        filter::filter_from_tags(note, add_pk, with_hashtags)?
+            .into_query_package(ValidKind::One, filter::default_limit()),
+        filter::filter_from_tags(note, add_pk, with_hashtags)?
+            .into_query_package(ValidKind::Six, filter::default_limit()),
+        filter::filter_from_tags(note, add_pk, with_hashtags)?
+            .into_query_package(ValidKind::Zero, filter::default_limit()),
+    ];
     let remote = filter::filter_from_tags(note, add_pk, with_hashtags)?
         .into_filter(vec![1, 0], filter::default_remote_limit());
 

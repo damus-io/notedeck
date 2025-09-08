@@ -213,7 +213,7 @@ pub struct FilteredTags {
 /// The local and remote filter are related but slightly different
 #[derive(Debug, Clone)]
 pub struct SplitFilter {
-    pub local: Vec<Filter>,
+    pub local: Vec<NdbQueryPackage>,
     pub remote: Vec<Filter>,
 }
 
@@ -230,16 +230,23 @@ impl HybridFilter {
         HybridFilter::Unsplit(filter)
     }
 
-    pub fn split(local: Vec<Filter>, remote: Vec<Filter>) -> Self {
+    pub fn split(local: Vec<NdbQueryPackage>, remote: Vec<Filter>) -> Self {
         HybridFilter::Split(SplitFilter { local, remote })
     }
 
-    pub fn local(&self) -> &[Filter] {
+    pub fn local(&self) -> NdbQueryPackages {
         match self {
-            Self::Split(split) => &split.local,
+            Self::Split(split) => NdbQueryPackages {
+                packages: split.local.iter().map(NdbQueryPackage::borrow).collect(),
+            },
 
             // local as the same as remote in unsplit
-            Self::Unsplit(local) => local,
+            Self::Unsplit(local) => NdbQueryPackages {
+                packages: vec![NdbQueryPackageUnowned {
+                    filters: local,
+                    kind: None,
+                }],
+            },
         }
     }
 

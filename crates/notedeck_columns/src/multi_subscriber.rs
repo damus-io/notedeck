@@ -311,7 +311,7 @@ impl TimelineSub {
         let before = self.state.clone();
         match &mut self.state {
             SubState::NoSub { dependers } => {
-                let Some(sub) = ndb_sub(ndb, filter.local(), "") else {
+                let Some(sub) = ndb_sub(ndb, &filter.local().combined(), "") else {
                     return;
                 };
 
@@ -326,7 +326,7 @@ impl TimelineSub {
                 dependers: _,
             } => {}
             SubState::RemoteOnly { remote, dependers } => {
-                let Some(local) = ndb_sub(ndb, filter.local(), "") else {
+                let Some(local) = ndb_sub(ndb, &filter.local().combined(), "") else {
                     return;
                 };
                 self.state = SubState::Unified {

@@ -676,18 +676,32 @@ fn setup_initial_timeline(
         timeline.subscription, timeline.filter
     );
 
-    let mut lim = 0i32;
-    for filter in filters.local() {
-        lim += filter.limit().unwrap_or(1) as i32;
-    }
+    let notes = {
+        let mut notes = Vec::new();
 
-    debug!("setup_initial_timeline: limit for local filter is {}", lim);
+        for package in filters.local().packages {
+            let mut lim = 0i32;
+            for filter in package.filters {
+                lim += filter.limit().unwrap_or(1) as i32;
+            }
 
-    let notes: Vec<NoteRef> = ndb
-        .query(txn, filters.local(), lim)?
-        .into_iter()
-        .map(NoteRef::from_query_result)
-        .collect();
+            debug!("setup_initial_timeline: limit for local filter is {}", lim);
+
+            let cur_notes: Vec<NoteRef> = ndb
+                .query(txn, package.filters, lim)?
+                .into_iter()
+                .map(NoteRef::from_query_result)
+                .collect();
+            tracing::debug!(
+                "Found {} notes for kind: {:?}",
+                cur_notes.len(),
+                package.kind
+            );
+            notes.extend(&cur_notes);
+        }
+
+        notes
+    };
 
     if let Some(pks) = timeline.insert_new(txn, ndb, note_cache, &notes) {
         pks.process(ndb, txn, unknown_ids);

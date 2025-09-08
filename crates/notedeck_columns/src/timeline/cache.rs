@@ -134,15 +134,22 @@ impl TimelineCache {
         }
 
         let notes = if let FilterState::Ready(filters) = id.filters(txn, ndb) {
-            if let Ok(results) = ndb.query(txn, filters.local(), 1000) {
-                results
-                    .into_iter()
-                    .map(NoteRef::from_query_result)
-                    .collect()
-            } else {
-                debug!("got no results from TimelineCache lookup for {:?}", id);
-                vec![]
+            let mut notes = Vec::new();
+
+            for package in filters.local().packages {
+                if let Ok(results) = ndb.query(txn, package.filters, 1000) {
+                    let cur_notes: Vec<NoteRef> = results
+                        .into_iter()
+                        .map(NoteRef::from_query_result)
+                        .collect();
+
+                    notes.extend(cur_notes);
+                } else {
+                    debug!("got no results from TimelineCache lookup for {:?}", id);
+                }
             }
+
+            notes
         } else {
             // filter is not ready yet
             vec![]
@@ -178,12 +185,20 @@ impl TimelineCache {
         let (mut open_result, timeline) = match notes_resp.vitality {
             Vitality::Stale(timeline) => {
                 // The timeline cache is stale, let's update it
-                let notes = find_new_notes(
-                    timeline.all_or_any_entries().latest(),
-                    timeline.subscription.get_filter()?.local(),
-                    txn,
-                    ndb,
-                );
+                let notes = {
+                    let mut notes = Vec::new();
+                    for package in timeline.subscription.get_filter()?.local().packages {
+                        let cur_notes = find_new_notes(
+                            timeline.all_or_any_entries().latest(),
+                            package.filters,
+                            txn,
+                            ndb,
+                        );
+                        notes.extend(cur_notes);
+                    }
+                    notes
+                };
+
                 let open_result = if notes.is_empty() {
                     None
                 } else {

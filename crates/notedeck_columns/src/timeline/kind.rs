@@ -3,6 +3,7 @@ use crate::search::SearchQuery;
 use crate::timeline::{Timeline, TimelineTab};
 use enostr::{Filter, NoteId, Pubkey};
 use nostrdb::{Ndb, Transaction};
+use notedeck::filter::{NdbQueryPackage, ValidKind};
 use notedeck::{
     contacts::{contacts_filter, hybrid_contacts_filter},
     filter::{self, default_limit, default_remote_limit, HybridFilter},
@@ -728,15 +729,29 @@ fn last_per_pubkey_filter_state(ndb: &Ndb, pk: &Pubkey) -> FilterState {
 }
 
 fn profile_filter(pk: &[u8; 32]) -> HybridFilter {
+    let local = vec![
+        NdbQueryPackage {
+            filters: vec![Filter::new()
+                .authors([pk])
+                .kinds([1])
+                .limit(default_limit())
+                .build()],
+            kind: ValidKind::One,
+        },
+        NdbQueryPackage {
+            filters: vec![Filter::new()
+                .authors([pk])
+                .kinds([6])
+                .limit(default_limit())
+                .build()],
+            kind: ValidKind::Six,
+        },
+    ];
     HybridFilter::split(
+        local,
         vec![Filter::new()
             .authors([pk])
-            .kinds([1])
-            .limit(default_limit())
-            .build()],
-        vec![Filter::new()
-            .authors([pk])
-            .kinds([1, 0])
+            .kinds([1, 6, 0])
             .limit(default_remote_limit())
             .build()],
     )
