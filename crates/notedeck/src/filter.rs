@@ -289,48 +289,43 @@ pub fn last_n_per_pubkey_from_tags(
     kind: u64,
     notes_per_pubkey: u64,
 ) -> Result<Vec<Filter>, Error> {
+    use rand::Rng;
+
     let mut filters: Vec<Filter> = vec![];
+    let mut rng = rand::rng();
 
-    for tag in note.tags() {
-        // TODO: fix arbitrary MAX_FILTER limit in nostrdb
-        if filters.len() == 15 {
-            break;
-        }
+    // TODO: fix arbitrary MAX_FILTER limit in nostrdb
+    const LIMIT: usize = 15;
 
+    for (i, tag) in note.tags().iter().enumerate() {
         if tag.count() < 2 {
             continue;
         }
 
-        let t = if let Some(t) = tag.get_unchecked(0).variant().str() {
-            t
-        } else {
+        let Some("p") = tag.get_str(0) else {
             continue;
         };
 
-        if t == "p" {
-            let author = if let Some(author) = tag.get_unchecked(1).variant().id() {
-                author
-            } else {
-                continue;
-            };
+        let Some(author) = tag.get_id(1) else {
+            continue;
+        };
 
+        let mk_filter = || {
             let mut filter = Filter::new();
-            filter.start_authors_field()?;
-            filter.add_id_element(author)?;
+            let _ = filter.start_authors_field();
+            let _ = filter.add_id_element(author);
             filter.end_field();
-            filters.push(filter.kinds([kind]).limit(notes_per_pubkey).build());
-        } else if t == "t" {
-            let hashtag = if let Some(hashtag) = tag.get_unchecked(1).variant().str() {
-                hashtag
-            } else {
-                continue;
-            };
+            filter.kinds([kind]).limit(notes_per_pubkey).build()
+        };
 
-            let mut filter = Filter::new();
-            filter.start_tags_field('t')?;
-            filter.add_str_element(hashtag)?;
-            filter.end_field();
-            filters.push(filter.kinds([kind]).limit(notes_per_pubkey).build());
+        // since we're limited due to a nostrdb bug, we reservoir sample to keep things interesting
+        if filters.len() < LIMIT {
+            filters.push(mk_filter());
+        } else {
+            let j = rng.random_range(0..=i);
+            if j < LIMIT {
+                filters[j] = mk_filter();
+            }
         }
     }
 
