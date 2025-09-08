@@ -271,18 +271,18 @@ impl FilteredTags {
     }
 
     // TODO: make this more general
-    pub fn into_filter<I>(self, kinds: I, limit: u64) -> Vec<Filter>
-    where
-        I: IntoIterator<Item = u64> + Copy,
-    {
+    pub fn into_filter(self, shared_kinds: Vec<u64>, limit: u64) -> Vec<Filter> {
         let mut filters: Vec<Filter> = Vec::with_capacity(2);
 
         if let Some(authors) = self.authors {
-            filters.push(authors.kinds(kinds).limit(limit).build())
+            let mut author_kinds = shared_kinds.clone();
+            author_kinds.insert(0, 6);
+
+            filters.push(authors.kinds(author_kinds).limit(limit).build())
         }
 
         if let Some(hashtags) = self.hashtags {
-            filters.push(hashtags.kinds(kinds).limit(limit).build())
+            filters.push(hashtags.kinds(shared_kinds).limit(limit).build())
         }
 
         filters
