@@ -209,7 +209,7 @@ fn to_repost<'a>(
     let reposted_note = match get_reposted_note(ndb, txn, &payload.note) {
         Some(r) => r,
         None => {
-            tracing::error!(
+            tracing::debug!(
                 "Could not get reposted note for note id {}",
                 enostr::NoteId::new(*payload.note.id()).hex()
             );
