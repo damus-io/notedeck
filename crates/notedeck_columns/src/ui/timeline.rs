@@ -5,7 +5,7 @@ use enostr::Pubkey;
 use nostrdb::{Note, ProfileRecord, Transaction};
 use notedeck::name::get_display_name;
 use notedeck::ui::is_narrow;
-use notedeck::{tr_plural, JobsCache, Muted};
+use notedeck::{tr_plural, JobsCache, Muted, NotedeckTextStyle};
 use notedeck_ui::app_images::{like_image, repost_image};
 use notedeck_ui::ProfilePic;
 use std::f32::consts::PI;
@@ -188,6 +188,7 @@ fn timeline_ui(
             note_context,
             jobs,
         )
+        .notifications(matches!(timeline_id, TimelineKind::Notifications(_)))
         .show(ui)
     });
 
@@ -375,6 +376,7 @@ fn shrink_range_to_width(range: egui::Rangef, width: f32) -> egui::Rangef {
 }
 
 pub struct TimelineTabView<'a, 'd> {
+    notifications: bool,
     tab: &'a TimelineTab,
     note_options: NoteOptions,
     txn: &'a Transaction,
@@ -392,12 +394,18 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
         jobs: &'a mut JobsCache,
     ) -> Self {
         Self {
+            notifications: false,
             tab,
             note_options,
             txn,
             note_context,
             jobs,
         }
+    }
+
+    pub fn notifications(mut self, notifications: bool) -> Self {
+        self.notifications = notifications;
+        self
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui) -> Option<NoteAction> {
@@ -501,6 +509,7 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
                     self.txn,
                     &underlying_note,
                     repost_unit,
+                    self.notifications,
                 ),
             },
         }
@@ -526,6 +535,7 @@ impl CompositeType {
         first_name: &str,
         total_count: usize,
         referenced_type: ReferencedNoteType,
+        notification: bool,
     ) -> String {
         let count = total_count - 1;
 
@@ -533,7 +543,16 @@ impl CompositeType {
             CompositeType::Reaction => {
                 reaction_description(loc, first_name, count, referenced_type)
             }
-            CompositeType::Repost => repost_description(loc, first_name, count, referenced_type),
+            CompositeType::Repost => repost_description(
+                loc,
+                first_name,
+                count,
+                if notification {
+                    DescriptionType::Notification(referenced_type)
+                } else {
+                    DescriptionType::Other
+                },
+            ),
         }
     }
 }
@@ -586,46 +605,72 @@ fn reaction_description(
     }
 }
 
+enum DescriptionType {
+    Notification(ReferencedNoteType),
+    Other,
+}
+
 fn repost_description(
     loc: &mut Localization,
     first_name: &str,
     count: usize,
-    referenced_type: ReferencedNoteType,
+    description_type: DescriptionType,
 ) -> String {
-    match referenced_type {
-        ReferencedNoteType::Tagged => {
-            if count == 0 {
-                tr!(
-                    loc,
-                    "{name} reposted a note you were tagged in",
-                    "repost from user",
-                    name = first_name
-                )
-            } else {
-                tr_plural!(
-                    loc,
-                    "{name} and {count} other reposted a note you were tagged in",
-                    "{name} and {count} others reposted a note you were tagged in",
-                    "describing the amount of reposts a note you were tagged in received",
-                    count,
-                    name = first_name
-                )
+    match description_type {
+        DescriptionType::Notification(referenced_type) => match referenced_type {
+            ReferencedNoteType::Tagged => {
+                if count == 0 {
+                    tr!(
+                        loc,
+                        "{name} reposted a note you were tagged in",
+                        "repost from user",
+                        name = first_name
+                    )
+                } else {
+                    tr_plural!(
+                        loc,
+                        "{name} and {count} other reposted a note you were tagged in",
+                        "{name} and {count} others reposted a note you were tagged in",
+                        "describing the amount of reposts a note you were tagged in received",
+                        count,
+                        name = first_name
+                    )
+                }
             }
-        }
-        ReferencedNoteType::Yours => {
+            ReferencedNoteType::Yours => {
+                if count == 0 {
+                    tr!(
+                        loc,
+                        "{name} reposted your note",
+                        "repost from user",
+                        name = first_name
+                    )
+                } else {
+                    tr_plural!(
+                        loc,
+                        "{name} and {count} other reposted your note",
+                        "{name} and {count} others reposted your note",
+                        "describing the amount of reposts your note received",
+                        count,
+                        name = first_name
+                    )
+                }
+            }
+        },
+        DescriptionType::Other => {
             if count == 0 {
                 tr!(
                     loc,
-                    "{name} reposted your note",
+                    "{name} reposted",
                     "repost from user",
                     name = first_name
                 )
             } else {
                 tr_plural!(
                     loc,
-                    "{name} and {count} other reposted your note",
-                    "{name} and {count} others reposted your note",
-                    "describing the amount of reposts your note received",
+                    "{name} and {count} other reposted",
+                    "{name} and {count} others reposted",
+                    "describing the amount of reposts a note has",
                     count,
                     name = first_name
                 )
@@ -685,9 +730,11 @@ fn render_reaction_cluster(
         underlying_note,
         profiles_to_show,
         CompositeType::Reaction,
+        true,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_composite_entry(
     ui: &mut egui::Ui,
     note_context: &mut NoteContext,
@@ -696,6 +743,7 @@ fn render_composite_entry(
     underlying_note: &nostrdb::Note<'_>,
     profiles_to_show: Vec<ProfileEntry>,
     composite_type: CompositeType,
+    notification: bool,
 ) -> RenderEntryResponse {
     let first_name = get_display_name(profiles_to_show.iter().find_map(|opt| opt.record.as_ref()))
         .name()
@@ -703,90 +751,171 @@ fn render_composite_entry(
     let num_profiles = profiles_to_show.len();
 
     let mut action = None;
+
+    let referenced_type = if note_context
+        .accounts
+        .get_selected_account()
+        .key
+        .pubkey
+        .bytes()
+        != underlying_note.pubkey()
+    {
+        ReferencedNoteType::Tagged
+    } else {
+        ReferencedNoteType::Yours
+    };
+
     egui::Frame::new()
         .inner_margin(Margin::symmetric(8, 4))
         .show(ui, |ui| {
-            ui.allocate_ui_with_layout(
-                vec2(ui.available_width(), 32.0),
-                Layout::left_to_right(egui::Align::Center),
-                |ui| {
-                    ui.vertical(|ui| {
-                        ui.add_space(4.0);
-                        ui.add_sized(
-                            vec2(28.0, 28.0),
-                            composite_type.image(ui.visuals().dark_mode),
-                        );
-                    });
+            let show_label_newline = ui
+                .horizontal_wrapped(|ui| {
+                    let pfps_resp = ui
+                        .allocate_ui_with_layout(
+                            vec2(ui.available_width(), 32.0),
+                            Layout::left_to_right(egui::Align::Center),
+                            |ui| {
+                                render_profiles(
+                                    ui,
+                                    profiles_to_show,
+                                    &composite_type,
+                                    note_context.img_cache,
+                                )
+                            },
+                        )
+                        .inner;
 
-                    ui.add_space(16.0);
+                    if let Some(cur_action) = pfps_resp.action {
+                        action = Some(cur_action);
+                    }
 
-                    ui.horizontal(|ui| {
-                        ScrollArea::horizontal()
-                            .scroll_bar_visibility(ScrollBarVisibility::AlwaysHidden)
-                            .show(ui, |ui| {
-                                for entry in profiles_to_show {
-                                    let resp = ui.add(
-                                        &mut ProfilePic::from_profile_or_default(
-                                            note_context.img_cache,
-                                            entry.record.as_ref(),
-                                        )
-                                        .size(24.0)
-                                        .sense(Sense::click()),
-                                    );
-
-                                    if resp.clicked() {
-                                        action = Some(NoteAction::Profile(*entry.pk))
-                                    }
-                                }
-                            });
-                    });
-                },
-            );
-
-            let referenced_type = if note_context
-                .accounts
-                .get_selected_account()
-                .key
-                .pubkey
-                .bytes()
-                != underlying_note.pubkey()
-            {
-                ReferencedNoteType::Tagged
-            } else {
-                ReferencedNoteType::Yours
-            };
-
-            ui.add_space(2.0);
-            ui.horizontal(|ui| {
-                ui.add_space(52.0);
-
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(composite_type.description(
+                    let description = composite_type.description(
                         note_context.i18n,
                         &first_name,
                         num_profiles,
                         referenced_type,
-                    ))
+                        notification,
+                    );
+                    let galley = ui.painter().layout_no_wrap(
+                        description.clone(),
+                        NotedeckTextStyle::Body.get_font_id(ui.ctx()),
+                        ui.visuals().text_color(),
+                    );
+
+                    ui.add_space(4.0);
+
+                    let galley_pos = {
+                        let mut galley_pos = ui.next_widget_position();
+                        galley_pos.y = pfps_resp.resp.rect.right_center().y;
+                        galley_pos.y -= galley.rect.height() / 2.0;
+                        galley_pos
+                    };
+
+                    let fits_no_wrap = {
+                        let mut rightmost_pos = galley_pos;
+                        rightmost_pos.x += galley.rect.width();
+
+                        ui.available_rect_before_wrap().contains(rightmost_pos)
+                    };
+
+                    if fits_no_wrap {
+                        ui.painter()
+                            .galley(galley_pos, galley, ui.visuals().text_color());
+                        None
+                    } else {
+                        Some(description)
+                    }
+                })
+                .inner;
+
+            if let Some(desc) = show_label_newline {
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.add_space(48.0);
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(desc);
+                    });
                 });
-            });
+            }
 
             ui.add_space(16.0);
 
-            ui.horizontal(|ui| {
-                ui.add_space(48.0);
-                let options = note_options
-                    .difference(NoteOptions::ActionBar | NoteOptions::OptionsButton)
-                    .union(NoteOptions::NotificationPreview);
-                let resp = NoteView::new(note_context, underlying_note, options, jobs).show(ui);
+            let resp = ui
+                .horizontal(|ui| {
+                    let mut options = note_options;
+                    if notification {
+                        options = options
+                            .difference(NoteOptions::ActionBar | NoteOptions::OptionsButton)
+                            .union(NoteOptions::NotificationPreview);
 
-                if let Some(note_action) = resp.action {
-                    action = Some(note_action);
-                }
-            });
+                        ui.add_space(48.0);
+                    };
+                    NoteView::new(note_context, underlying_note, options, jobs).show(ui)
+                })
+                .inner;
+
+            if let Some(note_action) = resp.action {
+                action.get_or_insert(note_action);
+            }
         });
 
     notedeck_ui::hline(ui);
     RenderEntryResponse::Success(action)
+}
+
+fn render_profiles(
+    ui: &mut egui::Ui,
+    profiles_to_show: Vec<ProfileEntry>,
+    composite_type: &CompositeType,
+    img_cache: &mut notedeck::Images,
+) -> PfpsResponse {
+    let mut action = None;
+    ui.vertical(|ui| {
+        ui.add_space(4.0);
+        ui.add_sized(
+            vec2(28.0, 28.0),
+            composite_type.image(ui.visuals().dark_mode),
+        );
+    });
+
+    ui.add_space(16.0);
+
+    let resp = ui.horizontal(|ui| {
+        ScrollArea::horizontal()
+            .scroll_bar_visibility(ScrollBarVisibility::AlwaysHidden)
+            .show(ui, |ui| {
+                let mut last_pfp_resp = None;
+                for entry in profiles_to_show {
+                    let resp = ui.add(
+                        &mut ProfilePic::from_profile_or_default(img_cache, entry.record.as_ref())
+                            .size(24.0)
+                            .sense(Sense::click()),
+                    );
+
+                    last_pfp_resp = Some(resp.clone());
+
+                    if resp.clicked() {
+                        action = Some(NoteAction::Profile(*entry.pk))
+                    }
+                }
+
+                last_pfp_resp
+            })
+            .inner
+    });
+
+    let resp = if let Some(r) = resp.inner {
+        r
+    } else {
+        resp.response
+    };
+
+    PfpsResponse { action, resp }
+}
+
+struct PfpsResponse {
+    action: Option<NoteAction>,
+    resp: egui::Response,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -799,6 +928,7 @@ fn render_repost_cluster(
     txn: &Transaction,
     underlying_note: &Note,
     repost: &RepostUnit,
+    notifications: bool,
 ) -> RenderEntryResponse {
     let profiles_to_show: Vec<ProfileEntry> = repost
         .reposts
@@ -818,6 +948,7 @@ fn render_repost_cluster(
         underlying_note,
         profiles_to_show,
         CompositeType::Repost,
+        notifications,
     )
 }
 
