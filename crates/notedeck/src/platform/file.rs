@@ -5,7 +5,7 @@ use once_cell::sync::Lazy;
 
 use crate::{Error, SupportedMimeType};
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum MediaFrom {
     PathBuf(PathBuf),
     Memory(Vec<u8>),
