@@ -5,10 +5,7 @@ pub mod options;
 pub mod reply_description;
 
 use crate::{app_images, secondary_label};
-use crate::{
-    profile::name::one_line_display_name_widget, widgets::x_button, ProfilePic, ProfilePreview,
-    PulseAlpha, Username,
-};
+use crate::{widgets::x_button, ProfilePic, ProfilePreview, PulseAlpha, Username};
 
 pub use contents::{render_note_preview, NoteContents};
 pub use context::NoteContextButton;
@@ -25,14 +22,12 @@ pub use options::NoteOptions;
 pub use reply_description::reply_desc;
 
 use egui::emath::{pos2, Vec2};
-use egui::{Id, Pos2, Rect, Response, RichText, Sense};
+use egui::{Id, Pos2, Rect, Response, Sense};
 use enostr::{KeypairUnowned, NoteId, Pubkey};
 use nostrdb::{Ndb, Note, NoteKey, ProfileRecord, Transaction};
 use notedeck::{
-    name::get_display_name,
     note::{NoteAction, NoteContext, ZapAction},
-    tr, AnyZapState, ContextSelection, NoteZapTarget, NoteZapTargetOwned, NotedeckTextStyle,
-    ZapTarget, Zaps,
+    tr, AnyZapState, ContextSelection, NoteZapTarget, NoteZapTargetOwned, ZapTarget, Zaps,
 };
 
 pub struct NoteView<'a, 'd> {
@@ -306,59 +301,6 @@ impl<'a, 'd> NoteView<'a, 'd> {
         }
     }
 
-    fn show_repost(
-        &mut self,
-        ui: &mut egui::Ui,
-        txn: &Transaction,
-        note_to_repost: Note<'_>,
-    ) -> NoteResponse {
-        let profile = self
-            .note_context
-            .ndb
-            .get_profile_by_pubkey(txn, self.note.pubkey());
-
-        let style = NotedeckTextStyle::Small;
-        ui.horizontal(|ui| {
-            ui.vertical(|ui| {
-                ui.add_space(2.0);
-                ui.add_sized([20.0, 20.0], repost_icon(ui.visuals().dark_mode));
-            });
-            ui.add_space(6.0);
-            let resp = ui.add(one_line_display_name_widget(
-                ui.visuals(),
-                get_display_name(profile.as_ref().ok()),
-                style,
-            ));
-            if let Ok(rec) = &profile {
-                resp.on_hover_ui_at_pointer(|ui| {
-                    ui.set_max_width(300.0);
-                    ui.add(ProfilePreview::new(rec, self.note_context.img_cache));
-                });
-            }
-            let color = ui.style().visuals.noninteractive().fg_stroke.color;
-            ui.add_space(4.0);
-            ui.label(
-                RichText::new(tr!(
-                    self.note_context.i18n,
-                    "Reposted",
-                    "Label for reposted notes"
-                ))
-                .color(color)
-                .text_style(style.text_style()),
-            );
-        });
-        NoteView::new(self.note_context, &note_to_repost, self.flags, self.jobs).show(ui)
-    }
-
-    pub fn show_impl(&mut self, ui: &mut egui::Ui) -> NoteResponse {
-        let txn = self.note.txn().expect("txn");
-        if let Some(note_to_repost) = get_reposted_note(self.note_context.ndb, txn, self.note) {
-            self.show_repost(ui, txn, note_to_repost)
-        } else {
-            self.show_standard(ui)
-        }
-    }
-
     pub fn show(&mut self, ui: &mut egui::Ui) -> NoteResponse {
         if self.options().contains(NoteOptions::Textmode) {
             NoteResponse::new(self.textmode_ui(ui))
@@ -376,11 +318,11 @@ impl<'a, 'd> NoteView<'a, 'd> {
                     if is_narrow(ui.ctx()) {
                         ui.set_width(ui.available_width());
                     }
-                    self.show_impl(ui)
+                    self.show_standard(ui)
                 })
                 .inner
         } else {
-            self.show_impl(ui)
+            self.show_standard(ui)
         }
     }
 
