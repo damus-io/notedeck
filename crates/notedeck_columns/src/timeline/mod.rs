@@ -63,7 +63,7 @@ impl ViewFilter {
     }
 
     pub fn filter_notes(cache: &CachedNote, note: &Note) -> bool {
-        !cache.reply.borrow(note.tags()).is_reply()
+        note.kind() == 6 || !cache.reply.borrow(note.tags()).is_reply()
     }
 
     fn identity(_cache: &CachedNote, _note: &Note) -> bool {
