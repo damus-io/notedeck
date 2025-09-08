@@ -605,7 +605,7 @@ fn repost_description(
                 tr_plural!(
                     loc,
                     "{name} and {count} other reposted a note you were tagged in",
-                    "{name} and {ocunt} others reposted a note you were tagged in",
+                    "{name} and {count} others reposted a note you were tagged in",
                     "describing the amount of reposts a note you were tagged in received",
                     count,
                     name = first_name

@@ -120,7 +120,7 @@ impl<'a> DesktopSidePanel<'a> {
                         .color(ui.visuals().noninteractive().fg_stroke.color),
                     ));
                     ui.add_space(8.0);
-                    let add_deck_resp = ui.add(add_deck_button());
+                    let add_deck_resp = ui.add(add_deck_button(self.i18n));
 
                     let decks_inner = ScrollArea::vertical()
                         .max_height(ui.available_height() - (3.0 * (ICON_WIDTH + 12.0)))
@@ -383,7 +383,7 @@ pub fn search_button() -> impl Widget {
 
 // TODO: convert to responsive button when expanded side panel impl is finished
 
-fn add_deck_button() -> impl Widget {
+fn add_deck_button<'a>(i18n: &'a mut Localization) -> impl Widget + 'a {
     |ui: &mut egui::Ui| -> egui::Response {
         let img_size = 40.0;
 
@@ -403,7 +403,11 @@ fn add_deck_button() -> impl Widget {
         helper
             .take_animation_response()
             .on_hover_cursor(CursorIcon::PointingHand)
-            .on_hover_text("Add new deck")
+            .on_hover_text(tr!(
+                i18n,
+                "Add new deck",
+                "Tooltip text for adding a new deck button"
+            ))
     }
 }
 

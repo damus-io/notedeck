@@ -163,7 +163,10 @@ impl<'a, 'd> ProfileView<'a, 'd> {
                             .border(ProfilePic::border_stroke(ui)),
                     );
 
-                    if ui.add(copy_key_widget(&pfp_rect)).clicked() {
+                    if ui
+                        .add(copy_key_widget(&pfp_rect, self.note_context.i18n))
+                        .clicked()
+                    {
                         let to_copy = if let Some(bech) = self.pubkey.npub() {
                             bech
                         } else {
@@ -297,7 +300,10 @@ fn handle_lud16(ui: &mut egui::Ui, lud16: &str) {
         .on_hover_text(lud16);
 }
 
-fn copy_key_widget(pfp_rect: &egui::Rect) -> impl egui::Widget + '_ {
+fn copy_key_widget<'a>(
+    pfp_rect: &'a egui::Rect,
+    i18n: &'a mut Localization,
+) -> impl egui::Widget + 'a {
     |ui: &mut egui::Ui| -> egui::Response {
         let painter = ui.painter();
         #[allow(deprecated)]
@@ -311,7 +317,11 @@ fn copy_key_widget(pfp_rect: &egui::Rect) -> impl egui::Widget + '_ {
                 ui.id().with("custom_painter"),
                 Sense::click(),
             )
-            .on_hover_text("Copy npub to clipboard");
+            .on_hover_text(tr!(
+                i18n,
+                "Copy npub to clipboard",
+                "Tooltip text for copying npub to clipboard"
+            ));
 
         let copy_key_rounding = CornerRadius::same(100);
         let fill_color = if resp.hovered() {
