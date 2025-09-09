@@ -1,5 +1,5 @@
 use egui::containers::scroll_area::ScrollBarVisibility;
-use egui::{vec2, Direction, Layout, Margin, Pos2, ScrollArea, Sense, Stroke};
+use egui::{vec2, Color32, Direction, Layout, Margin, Pos2, ScrollArea, Sense, Stroke};
 use egui_tabs::TabColor;
 use enostr::Pubkey;
 use nostrdb::{Note, ProfileRecord, Transaction};
@@ -7,7 +7,7 @@ use notedeck::name::get_display_name;
 use notedeck::ui::is_narrow;
 use notedeck::{tr_plural, JobsCache, Muted, NotedeckTextStyle};
 use notedeck_ui::app_images::{like_image, repost_image};
-use notedeck_ui::ProfilePic;
+use notedeck_ui::{ProfilePic, ProfilePreview};
 use std::f32::consts::PI;
 use tracing::{error, warn};
 
@@ -525,7 +525,9 @@ impl CompositeType {
     fn image(&self, darkmode: bool) -> egui::Image<'static> {
         match self {
             CompositeType::Reaction => like_image(),
-            CompositeType::Repost => repost_image(darkmode),
+            CompositeType::Repost => {
+                repost_image(darkmode).tint(Color32::from_rgb(0x68, 0xC3, 0x51))
+            }
         }
     }
 
@@ -780,6 +782,7 @@ fn render_composite_entry(
                                     profiles_to_show,
                                     &composite_type,
                                     note_context.img_cache,
+                                    notification,
                                 )
                             },
                         )
@@ -868,17 +871,26 @@ fn render_profiles(
     profiles_to_show: Vec<ProfileEntry>,
     composite_type: &CompositeType,
     img_cache: &mut notedeck::Images,
+    notification: bool,
 ) -> PfpsResponse {
     let mut action = None;
+    if notification {
+        ui.add_space(8.0);
+    }
+
     ui.vertical(|ui| {
-        ui.add_space(4.0);
+        ui.add_space(9.0);
         ui.add_sized(
-            vec2(28.0, 28.0),
+            vec2(20.0, 20.0),
             composite_type.image(ui.visuals().dark_mode),
         );
     });
 
-    ui.add_space(16.0);
+    if notification {
+        ui.add_space(16.0);
+    } else {
+        ui.add_space(2.0);
+    }
 
     let resp = ui.horizontal(|ui| {
         ScrollArea::horizontal()
@@ -886,11 +898,18 @@ fn render_profiles(
             .show(ui, |ui| {
                 let mut last_pfp_resp = None;
                 for entry in profiles_to_show {
-                    let resp = ui.add(
+                    let mut resp = ui.add(
                         &mut ProfilePic::from_profile_or_default(img_cache, entry.record.as_ref())
                             .size(24.0)
                             .sense(Sense::click()),
                     );
+
+                    if let Some(record) = entry.record.as_ref() {
+                        resp = resp.on_hover_ui_at_pointer(|ui| {
+                            ui.set_max_width(300.0);
+                            ui.add(ProfilePreview::new(record, img_cache));
+                        });
+                    }
 
                     last_pfp_resp = Some(resp.clone());
 
