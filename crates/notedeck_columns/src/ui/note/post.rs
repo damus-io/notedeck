@@ -342,6 +342,13 @@ impl<'a, 'd> PostView<'a, 'd> {
     }
 
     pub fn ui(&mut self, txn: &Transaction, ui: &mut egui::Ui) -> PostResponse {
+        ScrollArea::vertical()
+            .id_salt(PostView::scroll_id())
+            .show(ui, |ui| self.ui_no_scroll(txn, ui))
+            .inner
+    }
+
+    pub fn ui_no_scroll(&mut self, txn: &Transaction, ui: &mut egui::Ui) -> PostResponse {
         while let Some(selected_file) = get_next_selected_file() {
             match selected_file {
                 Ok(selected_media) => {
@@ -358,13 +365,6 @@ impl<'a, 'd> PostView<'a, 'd> {
             }
         }
 
-        ScrollArea::vertical()
-            .id_salt(PostView::scroll_id())
-            .show(ui, |ui| self.ui_no_scroll(txn, ui))
-            .inner
-    }
-
-    pub fn ui_no_scroll(&mut self, txn: &Transaction, ui: &mut egui::Ui) -> PostResponse {
         let focused = self.focused(ui);
         let stroke = if focused {
             ui.visuals().selection.stroke
