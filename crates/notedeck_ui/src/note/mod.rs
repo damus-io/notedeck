@@ -37,7 +37,7 @@ use notedeck::{
 
 pub struct NoteView<'a, 'd> {
     note_context: &'a mut NoteContext<'d>,
-    parent: Option<NoteKey>,
+    parent: Option<&'a Note<'a>>,
     note: &'a nostrdb::Note<'a>,
     flags: NoteOptions,
     jobs: &'a mut JobsCache,
@@ -90,7 +90,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
         flags: NoteOptions,
         jobs: &'a mut JobsCache,
     ) -> Self {
-        let parent: Option<NoteKey> = None;
+        let parent: Option<&Note> = None;
 
         Self {
             note_context,
@@ -214,7 +214,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
     }
 
     #[inline]
-    pub fn parent(mut self, parent: NoteKey) -> Self {
+    pub fn parent(mut self, parent: &'a Note<'a>) -> Self {
         self.parent = Some(parent);
         self
     }
@@ -260,6 +260,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
                 self.note_context,
                 txn,
                 self.note,
+                self.parent,
                 self.flags,
                 self.jobs,
             ));
@@ -483,8 +484,14 @@ impl<'a, 'd> NoteView<'a, 'd> {
                 });
             }
 
-            let mut contents =
-                NoteContents::new(self.note_context, txn, self.note, self.flags, self.jobs);
+            let mut contents = NoteContents::new(
+                self.note_context,
+                txn,
+                self.note,
+                self.parent,
+                self.flags,
+                self.jobs,
+            );
 
             ui.add(&mut contents);
 
@@ -577,8 +584,14 @@ impl<'a, 'd> NoteView<'a, 'd> {
                     });
                 }
 
-                let mut contents =
-                    NoteContents::new(self.note_context, txn, self.note, self.flags, self.jobs);
+                let mut contents = NoteContents::new(
+                    self.note_context,
+                    txn,
+                    self.note,
+                    self.parent,
+                    self.flags,
+                    self.jobs,
+                );
                 ui.add(&mut contents);
 
                 note_action = contents.action.or(note_action);
@@ -622,7 +635,12 @@ impl<'a, 'd> NoteView<'a, 'd> {
             .ndb
             .get_profile_by_pubkey(txn, self.note.pubkey());
 
-        let hitbox_id = note_hitbox_id(note_key, self.options(), self.parent);
+        let hitbox_id = note_hitbox_id(
+            note_key,
+            self.options(),
+            self.parent
+                .map(|n| n.key().expect("todo: support non-db notes")),
+        );
         let maybe_hitbox = maybe_note_hitbox(ui, hitbox_id);
 
         // wide design

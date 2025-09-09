@@ -410,7 +410,7 @@ impl<'a, 'd> PostView<'a, 'd> {
                                     self.note_context,
                                     txn,
                                     id.bytes(),
-                                    nostrdb::NoteKey::new(0),
+                                    None,
                                     self.note_options,
                                     self.jobs,
                                 )
