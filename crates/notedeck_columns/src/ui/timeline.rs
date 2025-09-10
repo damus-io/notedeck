@@ -801,7 +801,7 @@ fn render_composite_entry(
                     );
                     let galley = ui.painter().layout_no_wrap(
                         description.clone(),
-                        NotedeckTextStyle::Body.get_font_id(ui.ctx()),
+                        NotedeckTextStyle::Small.get_font_id(ui.ctx()),
                         ui.visuals().text_color(),
                     );
 
