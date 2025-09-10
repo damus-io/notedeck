@@ -4,7 +4,7 @@ use crate::{
     secondary_label,
 };
 use egui::{Color32, Hyperlink, Label, RichText};
-use nostrdb::{BlockType, Mention, Note, NoteKey, Transaction};
+use nostrdb::{BlockType, Mention, Note, Transaction};
 use notedeck::Localization;
 use notedeck::{
     time_format, update_imeta_blurhashes, IsFollowing, NoteCache, NoteContext, NotedeckTextStyle,
@@ -16,6 +16,7 @@ pub struct NoteContents<'a, 'd> {
     note_context: &'a mut NoteContext<'d>,
     txn: &'a Transaction,
     note: &'a Note<'a>,
+    parent: Option<&'a Note<'a>>,
     options: NoteOptions,
     pub action: Option<NoteAction>,
     jobs: &'a mut JobsCache,
@@ -27,6 +28,7 @@ impl<'a, 'd> NoteContents<'a, 'd> {
         note_context: &'a mut NoteContext<'d>,
         txn: &'a Transaction,
         note: &'a Note,
+        parent: Option<&'a Note>,
         options: NoteOptions,
         jobs: &'a mut JobsCache,
     ) -> Self {
@@ -34,6 +36,7 @@ impl<'a, 'd> NoteContents<'a, 'd> {
             note_context,
             txn,
             note,
+            parent,
             options,
             action: None,
             jobs,
@@ -48,6 +51,7 @@ impl egui::Widget for &mut NoteContents<'_, '_> {
             self.note_context,
             self.txn,
             self.note,
+            self.parent,
             self.options,
             self.jobs,
         );
@@ -83,7 +87,7 @@ pub fn render_note_preview(
     note_context: &mut NoteContext,
     txn: &Transaction,
     id: &[u8; 32],
-    parent: NoteKey,
+    parent: Option<&Note>,
     note_options: NoteOptions,
     jobs: &mut JobsCache,
 ) -> NoteResponse {
@@ -114,10 +118,12 @@ pub fn render_note_preview(
             */
     };
 
-    NoteView::new(note_context, &note, note_options, jobs)
-        .preview_style()
-        .parent(parent)
-        .show(ui)
+    let mut view = NoteView::new(note_context, &note, note_options, jobs).preview_style();
+    if let Some(parent) = parent {
+        view = view.parent(parent);
+    }
+
+    view.show(ui)
 }
 
 /// Render note contents and surrounding info (client name, full date timestamp)
@@ -126,10 +132,12 @@ fn render_note_contents(
     note_context: &mut NoteContext,
     txn: &Transaction,
     note: &Note,
+    parent: Option<&Note>,
     options: NoteOptions,
     jobs: &mut JobsCache,
 ) -> NoteResponse {
-    let response = render_undecorated_note_contents(ui, note_context, txn, note, options, jobs);
+    let response =
+        render_undecorated_note_contents(ui, note_context, txn, note, parent, options, jobs);
 
     ui.horizontal_wrapped(|ui| {
         note_bottom_metadata_ui(
@@ -170,6 +178,7 @@ fn render_undecorated_note_contents<'a>(
     note_context: &mut NoteContext,
     txn: &Transaction,
     note: &'a Note,
+    parent: Option<&'a Note>,
     options: NoteOptions,
     jobs: &mut JobsCache,
 ) -> NoteResponse {
@@ -357,7 +366,7 @@ fn render_undecorated_note_contents<'a>(
     });
 
     let preview_note_action = inline_note.and_then(|(id, _)| {
-        render_note_preview(ui, note_context, txn, id, note_key, options, jobs)
+        render_note_preview(ui, note_context, txn, id, Some(note), options, jobs)
             .action
             .map(|a| match a {
                 NoteAction::Note { note_id, .. } => NoteAction::Note {
@@ -382,12 +391,19 @@ fn render_undecorated_note_contents<'a>(
                 .pubkey
                 .bytes();
 
-        let trusted_media = is_self
-            || note_context
-                .accounts
-                .get_selected_account()
-                .is_following(note.pubkey())
-                == IsFollowing::Yes;
+        let trusted_media = {
+            let is_followed = |pk| {
+                matches!(
+                    note_context
+                        .accounts
+                        .get_selected_account()
+                        .is_following(pk),
+                    IsFollowing::Yes
+                )
+            };
+
+            is_self || is_followed(note.pubkey()) || parent.is_some_and(|p| is_followed(p.pubkey()))
+        };
 
         media_action = image_carousel(
             ui,

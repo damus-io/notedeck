@@ -89,7 +89,7 @@ impl TexturesCache {
 
         entry.replace_entry_with(|_, v| {
             let TextureStateInternal::Loading(textured) = v else {
-                return None;
+                return Some(v);
             };
 
             Some(TextureStateInternal::Loaded(textured))
