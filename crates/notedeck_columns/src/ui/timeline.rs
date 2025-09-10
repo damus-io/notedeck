@@ -88,7 +88,7 @@ fn timeline_ui(
     ui: &mut egui::Ui,
     timeline_id: &TimelineKind,
     timeline_cache: &mut TimelineCache,
-    note_options: NoteOptions,
+    mut note_options: NoteOptions,
     note_context: &mut NoteContext,
     jobs: &mut JobsCache,
     col: usize,
@@ -181,6 +181,10 @@ fn timeline_ui(
 
         let txn = Transaction::new(note_context.ndb).expect("failed to create txn");
 
+        if matches!(timeline_id, TimelineKind::Notifications(_)) {
+            note_options.set(NoteOptions::Notification, true)
+        }
+
         TimelineTabView::new(
             timeline.current_view(),
             note_options,
@@ -188,7 +192,6 @@ fn timeline_ui(
             note_context,
             jobs,
         )
-        .notifications(matches!(timeline_id, TimelineKind::Notifications(_)))
         .show(ui)
     });
 
@@ -376,7 +379,6 @@ fn shrink_range_to_width(range: egui::Rangef, width: f32) -> egui::Rangef {
 }
 
 pub struct TimelineTabView<'a, 'd> {
-    notifications: bool,
     tab: &'a TimelineTab,
     note_options: NoteOptions,
     txn: &'a Transaction,
@@ -394,18 +396,12 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
         jobs: &'a mut JobsCache,
     ) -> Self {
         Self {
-            notifications: false,
             tab,
             note_options,
             txn,
             note_context,
             jobs,
         }
-    }
-
-    pub fn notifications(mut self, notifications: bool) -> Self {
-        self.notifications = notifications;
-        self
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui) -> Option<NoteAction> {
@@ -509,7 +505,6 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
                     self.txn,
                     &underlying_note,
                     repost_unit,
-                    self.notifications,
                 ),
             },
         }
@@ -727,12 +722,11 @@ fn render_reaction_cluster(
     render_composite_entry(
         ui,
         note_context,
-        note_options,
+        note_options | NoteOptions::Notification,
         jobs,
         underlying_note,
         profiles_to_show,
         CompositeType::Reaction,
-        true,
     )
 }
 
@@ -745,7 +739,6 @@ fn render_composite_entry(
     underlying_note: &nostrdb::Note<'_>,
     profiles_to_show: Vec<ProfileEntry>,
     composite_type: CompositeType,
-    notification: bool,
 ) -> RenderEntryResponse {
     let first_name = get_display_name(profiles_to_show.iter().find_map(|opt| opt.record.as_ref()))
         .name()
@@ -782,7 +775,7 @@ fn render_composite_entry(
                                     profiles_to_show,
                                     &composite_type,
                                     note_context.img_cache,
-                                    notification,
+                                    note_options.contains(NoteOptions::Notification),
                                 )
                             },
                         )
@@ -797,7 +790,7 @@ fn render_composite_entry(
                         &first_name,
                         num_profiles,
                         referenced_type,
-                        notification,
+                        note_options.contains(NoteOptions::Notification),
                     );
                     let galley = ui.painter().layout_no_wrap(
                         description.clone(),
@@ -846,7 +839,7 @@ fn render_composite_entry(
             let resp = ui
                 .horizontal(|ui| {
                     let mut options = note_options;
-                    if notification {
+                    if options.contains(NoteOptions::Notification) {
                         options = options
                             .difference(NoteOptions::ActionBar | NoteOptions::OptionsButton)
                             .union(NoteOptions::NotificationPreview);
@@ -947,7 +940,6 @@ fn render_repost_cluster(
     txn: &Transaction,
     underlying_note: &Note,
     repost: &RepostUnit,
-    notifications: bool,
 ) -> RenderEntryResponse {
     let profiles_to_show: Vec<ProfileEntry> = repost
         .reposts
@@ -967,7 +959,6 @@ fn render_repost_cluster(
         underlying_note,
         profiles_to_show,
         CompositeType::Repost,
-        notifications,
     )
 }
 

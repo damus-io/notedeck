@@ -39,8 +39,11 @@ bitflags! {
         /// no animation override (accessibility)
         const NoAnimations = 1 << 17;
 
-        /// Styled for a notification preview
+        /// The note should be displayed as a preview of the underlying note of a composite unit
         const NotificationPreview = 1 << 18;
+
+        /// The note is a notification
+        const Notification = 1 << 19;
     }
 }
 

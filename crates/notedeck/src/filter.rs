@@ -234,7 +234,7 @@ impl HybridFilter {
         HybridFilter::Split(SplitFilter { local, remote })
     }
 
-    pub fn local(&self) -> NdbQueryPackages {
+    pub fn local(&self) -> NdbQueryPackages<'_> {
         match self {
             Self::Split(split) => NdbQueryPackages {
                 packages: split.local.iter().map(NdbQueryPackage::borrow).collect(),
@@ -305,7 +305,7 @@ pub struct NdbQueryPackage {
 }
 
 impl NdbQueryPackage {
-    pub fn borrow(&self) -> NdbQueryPackageUnowned {
+    pub fn borrow(&self) -> NdbQueryPackageUnowned<'_> {
         NdbQueryPackageUnowned {
             filters: &self.filters,
             kind: Some(self.kind.clone()),
