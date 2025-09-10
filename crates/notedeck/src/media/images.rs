@@ -305,7 +305,7 @@ fn generate_gif(
             );
 
             if tex_input.send(texture_frame).is_err() {
-                tracing::debug!("AnimationTextureFrame mpsc stopped abruptly");
+                //tracing::debug!("AnimationTextureFrame mpsc stopped abruptly");
                 break;
             }
         }
