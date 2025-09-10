@@ -152,7 +152,9 @@ impl<'a> RelayMessage<'a> {
             return Ok(Self::ok(event_id, status, message));
         }
 
-        Err(Error::DecodeFailed("unrecognized message type".into()))
+        Err(Error::DecodeFailed(format!(
+            "unrecognized message type: '{msg}'"
+        )))
     }
 }
 
