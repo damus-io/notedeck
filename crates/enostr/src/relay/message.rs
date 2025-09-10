@@ -222,15 +222,15 @@ mod tests {
             ),
             (
                 r#"["NOTICE": 404]"#,
-                Err(Error::DecodeFailed("unrecognized message type".into())),
+                Err(Error::DecodeFailed("unrecognized message type: '[\"NOTICE\": 404]'".into())),
             ),
             (
                 r#"["OK","event_id"]"#,
-                Err(Error::DecodeFailed("unrecognized message type".into())),
+                Err(Error::DecodeFailed("unrecognized message type: '[\"OK\",\"event_id\"]'".into())),
             ),
             (
                 r#"["OK","b1a649ebe8b435ec71d3784793f3bbf4b93e64e17568a741aecd4c7ddeafce30"]"#,
-                Err(Error::DecodeFailed("unrecognized message type".into())),
+                Err(Error::DecodeFailed("unrecognized message type: '[\"OK\",\"b1a649ebe8b435ec71d3784793f3bbf4b93e64e17568a741aecd4c7ddeafce30\"]'".into())),
             ),
             (
                 r#"["OK","b1a649ebe8b435ec71d3784793f3bbf4b93e64e17568a741aecd4c7ddeafce30",hello,""]"#,
