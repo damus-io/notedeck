@@ -10,72 +10,74 @@ const ONE_WEEK_IN_SECONDS: u64 = 604_800;
 const ONE_MONTH_IN_SECONDS: u64 = 2_592_000; // 30 days
 const ONE_YEAR_IN_SECONDS: u64 = 31_536_000; // 365 days
 
-// Range boundary constants for match patterns
-const MAX_SECONDS: u64 = ONE_MINUTE_IN_SECONDS - 1;
-const MAX_SECONDS_FOR_MINUTES: u64 = ONE_HOUR_IN_SECONDS - 1;
-const MAX_SECONDS_FOR_HOURS: u64 = ONE_DAY_IN_SECONDS - 1;
-const MAX_SECONDS_FOR_DAYS: u64 = ONE_WEEK_IN_SECONDS - 1;
-const MAX_SECONDS_FOR_WEEKS: u64 = ONE_MONTH_IN_SECONDS - 1;
-const MAX_SECONDS_FOR_MONTHS: u64 = ONE_YEAR_IN_SECONDS - 1;
-
-/// Calculate relative time between two timestamps
+/// Calculate relative time between two timestamps, with two units only
+/// when the scale is large enough (e.g., "1y 6m", "5d 4h"),
+/// but not for hours/minutes/seconds.
 fn time_ago_between(i18n: &mut Localization, timestamp: u64, now: u64) -> String {
-    // Determine if the timestamp is in the future or the past
     let duration = if now >= timestamp {
         now.saturating_sub(timestamp)
     } else {
         timestamp.saturating_sub(now)
     };
 
-    let time_str = match duration {
-        0..=2 => tr!(
+    // Special-case: "now" for < 3 seconds
+    if duration <= 2 {
+        let s = tr!(
             i18n,
             "now",
             "Relative time for very recent events (less than 3 seconds)"
-        ),
-        3..=MAX_SECONDS => tr!(
-            i18n,
-            "{count}s",
-            "Relative time in seconds",
-            count = duration
-        ),
-        ONE_MINUTE_IN_SECONDS..=MAX_SECONDS_FOR_MINUTES => tr!(
-            i18n,
-            "{count}m",
-            "Relative time in minutes",
-            count = duration / ONE_MINUTE_IN_SECONDS
-        ),
-        ONE_HOUR_IN_SECONDS..=MAX_SECONDS_FOR_HOURS => tr!(
-            i18n,
-            "{count}h",
-            "Relative time in hours",
-            count = duration / ONE_HOUR_IN_SECONDS
-        ),
-        ONE_DAY_IN_SECONDS..=MAX_SECONDS_FOR_DAYS => tr!(
-            i18n,
-            "{count}d",
-            "Relative time in days",
-            count = duration / ONE_DAY_IN_SECONDS
-        ),
-        ONE_WEEK_IN_SECONDS..=MAX_SECONDS_FOR_WEEKS => tr!(
-            i18n,
-            "{count}w",
-            "Relative time in weeks",
-            count = duration / ONE_WEEK_IN_SECONDS
-        ),
-        ONE_MONTH_IN_SECONDS..=MAX_SECONDS_FOR_MONTHS => tr!(
-            i18n,
-            "{count}mo",
-            "Relative time in months",
-            count = duration / ONE_MONTH_IN_SECONDS
-        ),
-        _ => tr!(
-            i18n,
-            "{count}y",
-            "Relative time in years",
-            count = duration / ONE_YEAR_IN_SECONDS
-        ),
+        );
+        return if timestamp > now { format!("+{s}") } else { s };
+    }
+
+    // Break into buckets
+    let years = duration / ONE_YEAR_IN_SECONDS;
+    let rem_y = duration % ONE_YEAR_IN_SECONDS;
+
+    let months = rem_y / ONE_MONTH_IN_SECONDS;
+    let rem_m = rem_y % ONE_MONTH_IN_SECONDS;
+
+    let weeks = rem_m / ONE_WEEK_IN_SECONDS;
+    let rem_w = rem_m % ONE_WEEK_IN_SECONDS;
+
+    let days = rem_w / ONE_DAY_IN_SECONDS;
+    let rem_d = rem_w % ONE_DAY_IN_SECONDS;
+
+    let hours = rem_d / ONE_HOUR_IN_SECONDS;
+    let rem_h = rem_d % ONE_HOUR_IN_SECONDS;
+
+    let mins = rem_h / ONE_MINUTE_IN_SECONDS;
+    let secs = rem_h % ONE_MINUTE_IN_SECONDS;
+
+    let mut parts: Vec<String> = Vec::with_capacity(2);
+
+    let mut push_part = |count: u64, key: &str, desc: &str| {
+        if count > 0 && parts.len() < 2 {
+            parts.push(tr!(i18n, key, desc, count = count));
+        }
     };
+
+    if years > 0 {
+        push_part(years, "{count}y", "Relative time in years");
+        push_part(months, "{count}mo", "Relative time in months");
+    } else if months > 0 {
+        push_part(months, "{count}mo", "Relative time in months");
+        push_part(weeks, "{count}w", "Relative time in weeks");
+    } else if weeks > 0 {
+        push_part(weeks, "{count}w", "Relative time in weeks");
+        push_part(days, "{count}d", "Relative time in days");
+    } else if days > 0 {
+        push_part(days, "{count}d", "Relative time in days");
+        push_part(hours, "{count}h", "Relative time in hours");
+    } else if hours > 0 {
+        push_part(hours, "{count}h", "Relative time in hours");
+    } else if mins > 0 {
+        push_part(mins, "{count}m", "Relative time in minutes");
+    } else {
+        push_part(secs.max(1), "{count}s", "Relative time in seconds");
+    }
+
+    let time_str = parts.join(" ");
 
     if timestamp > now {
         format!("+{time_str}")
