@@ -1,8 +1,9 @@
 use egui::containers::scroll_area::ScrollBarVisibility;
-use egui::{vec2, Color32, Direction, Layout, Margin, Pos2, ScrollArea, Sense, Stroke};
+use egui::{vec2, Color32, Direction, Layout, Margin, Pos2, RichText, ScrollArea, Sense, Stroke};
 use egui_tabs::TabColor;
 use enostr::Pubkey;
 use nostrdb::{Note, ProfileRecord, Transaction};
+use notedeck::fonts::get_font_size;
 use notedeck::name::get_display_name;
 use notedeck::ui::is_narrow;
 use notedeck::{tr_plural, JobsCache, Muted, NotedeckTextStyle};
@@ -829,7 +830,10 @@ fn render_composite_entry(
                 ui.horizontal(|ui| {
                     ui.add_space(48.0);
                     ui.horizontal_wrapped(|ui| {
-                        ui.label(desc);
+                        ui.add(egui::Label::new(
+                            RichText::new(desc)
+                                .size(get_font_size(ui.ctx(), &NotedeckTextStyle::Small)),
+                        ));
                     });
                 });
             }
