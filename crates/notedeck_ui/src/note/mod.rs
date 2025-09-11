@@ -255,7 +255,6 @@ impl<'a, 'd> NoteView<'a, 'd> {
                 self.note_context,
                 txn,
                 self.note,
-                self.parent,
                 self.flags,
                 self.jobs,
             ));
@@ -303,6 +302,18 @@ impl<'a, 'd> NoteView<'a, 'd> {
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui) -> NoteResponse {
+        if !self.flags.contains(NoteOptions::TrustMedia) {
+            let acc = self.note_context.accounts.get_selected_account();
+            if self.note.pubkey() == acc.key.pubkey.bytes()
+                || matches!(
+                    acc.is_following(self.note.pubkey()),
+                    notedeck::IsFollowing::Yes
+                )
+            {
+                self.flags = self.flags.union(NoteOptions::TrustMedia);
+            }
+        }
+
         if self.options().contains(NoteOptions::Textmode) {
             NoteResponse::new(self.textmode_ui(ui))
         } else if self.options().contains(NoteOptions::Framed) {
@@ -426,14 +437,8 @@ impl<'a, 'd> NoteView<'a, 'd> {
                 });
             }
 
-            let mut contents = NoteContents::new(
-                self.note_context,
-                txn,
-                self.note,
-                self.parent,
-                self.flags,
-                self.jobs,
-            );
+            let mut contents =
+                NoteContents::new(self.note_context, txn, self.note, self.flags, self.jobs);
 
             ui.add(&mut contents);
 
@@ -526,14 +531,8 @@ impl<'a, 'd> NoteView<'a, 'd> {
                     });
                 }
 
-                let mut contents = NoteContents::new(
-                    self.note_context,
-                    txn,
-                    self.note,
-                    self.parent,
-                    self.flags,
-                    self.jobs,
-                );
+                let mut contents =
+                    NoteContents::new(self.note_context, txn, self.note, self.flags, self.jobs);
                 ui.add(&mut contents);
 
                 note_action = contents.action.or(note_action);
