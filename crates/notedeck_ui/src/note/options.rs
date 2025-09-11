@@ -44,6 +44,9 @@ bitflags! {
 
         /// The note is a notification
         const Notification = 1 << 19;
+
+        /// There is enough trust to show media in this note
+        const TrustMedia = 1 << 20;
     }
 }
 

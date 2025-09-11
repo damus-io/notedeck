@@ -33,7 +33,6 @@ pub fn image_carousel(
     jobs: &mut JobsCache,
     medias: &[RenderableMedia],
     carousel_id: egui::Id,
-    trusted_media: bool,
     i18n: &mut Localization,
     note_options: NoteOptions,
 ) -> Option<MediaAction> {
@@ -68,7 +67,7 @@ pub fn image_carousel(
                                 job_pool,
                                 jobs,
                                 media,
-                                trusted_media,
+                                note_options.contains(NoteOptions::TrustMedia),
                                 i18n,
                                 size,
                                 if note_options.contains(NoteOptions::NoAnimations) {

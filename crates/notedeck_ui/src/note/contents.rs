@@ -4,11 +4,9 @@ use crate::{
     secondary_label,
 };
 use egui::{Color32, Hyperlink, Label, RichText};
-use nostrdb::{BlockType, Mention, Note, Transaction};
+use nostrdb::{BlockType, Mention, Note, NoteKey, Transaction};
 use notedeck::Localization;
-use notedeck::{
-    time_format, update_imeta_blurhashes, IsFollowing, NoteCache, NoteContext, NotedeckTextStyle,
-};
+use notedeck::{time_format, update_imeta_blurhashes, NoteCache, NoteContext, NotedeckTextStyle};
 use notedeck::{JobsCache, RenderableMedia};
 use tracing::warn;
 
@@ -16,7 +14,6 @@ pub struct NoteContents<'a, 'd> {
     note_context: &'a mut NoteContext<'d>,
     txn: &'a Transaction,
     note: &'a Note<'a>,
-    parent: Option<&'a Note<'a>>,
     options: NoteOptions,
     pub action: Option<NoteAction>,
     jobs: &'a mut JobsCache,
@@ -28,7 +25,6 @@ impl<'a, 'd> NoteContents<'a, 'd> {
         note_context: &'a mut NoteContext<'d>,
         txn: &'a Transaction,
         note: &'a Note,
-        parent: Option<&'a Note>,
         options: NoteOptions,
         jobs: &'a mut JobsCache,
     ) -> Self {
@@ -36,7 +32,6 @@ impl<'a, 'd> NoteContents<'a, 'd> {
             note_context,
             txn,
             note,
-            parent,
             options,
             action: None,
             jobs,
@@ -51,7 +46,6 @@ impl egui::Widget for &mut NoteContents<'_, '_> {
             self.note_context,
             self.txn,
             self.note,
-            self.parent,
             self.options,
             self.jobs,
         );
@@ -87,7 +81,7 @@ pub fn render_note_preview(
     note_context: &mut NoteContext,
     txn: &Transaction,
     id: &[u8; 32],
-    parent: Option<&Note>,
+    parent: NoteKey,
     note_options: NoteOptions,
     jobs: &mut JobsCache,
 ) -> NoteResponse {
@@ -118,12 +112,10 @@ pub fn render_note_preview(
             */
     };
 
-    let mut view = NoteView::new(note_context, &note, note_options, jobs).preview_style();
-    if let Some(parent) = parent {
-        view = view.parent(parent);
-    }
-
-    view.show(ui)
+    NoteView::new(note_context, &note, note_options, jobs)
+        .preview_style()
+        .parent(parent)
+        .show(ui)
 }
 
 /// Render note contents and surrounding info (client name, full date timestamp)
@@ -132,12 +124,10 @@ fn render_note_contents(
     note_context: &mut NoteContext,
     txn: &Transaction,
     note: &Note,
-    parent: Option<&Note>,
     options: NoteOptions,
     jobs: &mut JobsCache,
 ) -> NoteResponse {
-    let response =
-        render_undecorated_note_contents(ui, note_context, txn, note, parent, options, jobs);
+    let response = render_undecorated_note_contents(ui, note_context, txn, note, options, jobs);
 
     ui.horizontal_wrapped(|ui| {
         note_bottom_metadata_ui(
@@ -178,7 +168,6 @@ fn render_undecorated_note_contents<'a>(
     note_context: &mut NoteContext,
     txn: &Transaction,
     note: &'a Note,
-    parent: Option<&'a Note>,
     options: NoteOptions,
     jobs: &mut JobsCache,
 ) -> NoteResponse {
@@ -366,7 +355,7 @@ fn render_undecorated_note_contents<'a>(
     });
 
     let preview_note_action = inline_note.and_then(|(id, _)| {
-        render_note_preview(ui, note_context, txn, id, Some(note), options, jobs)
+        render_note_preview(ui, note_context, txn, id, note_key, options, jobs)
             .action
             .map(|a| match a {
                 NoteAction::Note { note_id, .. } => NoteAction::Note {
@@ -383,28 +372,6 @@ fn render_undecorated_note_contents<'a>(
         ui.add_space(2.0);
         let carousel_id = egui::Id::new(("carousel", note.key().expect("expected tx note")));
 
-        let is_self = note.pubkey()
-            == note_context
-                .accounts
-                .get_selected_account()
-                .key
-                .pubkey
-                .bytes();
-
-        let trusted_media = {
-            let is_followed = |pk| {
-                matches!(
-                    note_context
-                        .accounts
-                        .get_selected_account()
-                        .is_following(pk),
-                    IsFollowing::Yes
-                )
-            };
-
-            is_self || is_followed(note.pubkey()) || parent.is_some_and(|p| is_followed(p.pubkey()))
-        };
-
         media_action = image_carousel(
             ui,
             note_context.img_cache,
@@ -412,7 +379,6 @@ fn render_undecorated_note_contents<'a>(
             jobs,
             &supported_medias,
             carousel_id,
-            trusted_media,
             note_context.i18n,
             options,
         );
