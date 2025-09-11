@@ -734,7 +734,7 @@ fn render_reaction_cluster(
 fn render_composite_entry(
     ui: &mut egui::Ui,
     note_context: &mut NoteContext,
-    note_options: NoteOptions,
+    mut note_options: NoteOptions,
     jobs: &mut JobsCache,
     underlying_note: &nostrdb::Note<'_>,
     profiles_to_show: Vec<ProfileEntry>,
@@ -759,6 +759,16 @@ fn render_composite_entry(
     } else {
         ReferencedNoteType::Yours
     };
+
+    if !note_options.contains(NoteOptions::TrustMedia) {
+        let acc = note_context.accounts.get_selected_account();
+        for entry in &profiles_to_show {
+            if matches!(acc.is_following(entry.pk), notedeck::IsFollowing::Yes) {
+                note_options = note_options.union(NoteOptions::TrustMedia);
+                break;
+            }
+        }
+    }
 
     egui::Frame::new()
         .inner_margin(Margin::symmetric(8, 4))
@@ -838,15 +848,14 @@ fn render_composite_entry(
 
             let resp = ui
                 .horizontal(|ui| {
-                    let mut options = note_options;
-                    if options.contains(NoteOptions::Notification) {
-                        options = options
+                    if note_options.contains(NoteOptions::Notification) {
+                        note_options = note_options
                             .difference(NoteOptions::ActionBar | NoteOptions::OptionsButton)
                             .union(NoteOptions::NotificationPreview);
 
                         ui.add_space(48.0);
                     };
-                    NoteView::new(note_context, underlying_note, options, jobs).show(ui)
+                    NoteView::new(note_context, underlying_note, note_options, jobs).show(ui)
                 })
                 .inner;
 
