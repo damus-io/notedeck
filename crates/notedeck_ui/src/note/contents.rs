@@ -4,7 +4,7 @@ use crate::{
     secondary_label,
 };
 use egui::{Color32, Hyperlink, Label, RichText};
-use nostrdb::{BlockType, Mention, Note, Transaction};
+use nostrdb::{BlockType, Mention, Note, NoteKey, Transaction};
 use notedeck::Localization;
 use notedeck::{time_format, update_imeta_blurhashes, NoteCache, NoteContext, NotedeckTextStyle};
 use notedeck::{JobsCache, RenderableMedia};
@@ -81,7 +81,7 @@ pub fn render_note_preview(
     note_context: &mut NoteContext,
     txn: &Transaction,
     id: &[u8; 32],
-    parent: Option<&Note>,
+    parent: NoteKey,
     note_options: NoteOptions,
     jobs: &mut JobsCache,
 ) -> NoteResponse {
@@ -112,12 +112,10 @@ pub fn render_note_preview(
             */
     };
 
-    let mut view = NoteView::new(note_context, &note, note_options, jobs).preview_style();
-    if let Some(parent) = parent {
-        view = view.parent(parent);
-    }
-
-    view.show(ui)
+    NoteView::new(note_context, &note, note_options, jobs)
+        .preview_style()
+        .parent(parent)
+        .show(ui)
 }
 
 /// Render note contents and surrounding info (client name, full date timestamp)
@@ -357,7 +355,7 @@ fn render_undecorated_note_contents<'a>(
     });
 
     let preview_note_action = inline_note.and_then(|(id, _)| {
-        render_note_preview(ui, note_context, txn, id, Some(note), options, jobs)
+        render_note_preview(ui, note_context, txn, id, note_key, options, jobs)
             .action
             .map(|a| match a {
                 NoteAction::Note { note_id, .. } => NoteAction::Note {

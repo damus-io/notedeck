@@ -32,7 +32,7 @@ use notedeck::{
 
 pub struct NoteView<'a, 'd> {
     note_context: &'a mut NoteContext<'d>,
-    parent: Option<&'a Note<'a>>,
+    parent: Option<NoteKey>,
     note: &'a nostrdb::Note<'a>,
     flags: NoteOptions,
     jobs: &'a mut JobsCache,
@@ -85,7 +85,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
         flags: NoteOptions,
         jobs: &'a mut JobsCache,
     ) -> Self {
-        let parent: Option<&Note> = None;
+        let parent: Option<NoteKey> = None;
 
         Self {
             note_context,
@@ -209,7 +209,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
     }
 
     #[inline]
-    pub fn parent(mut self, parent: &'a Note<'a>) -> Self {
+    pub fn parent(mut self, parent: NoteKey) -> Self {
         self.parent = Some(parent);
         self
     }
@@ -576,12 +576,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
             .ndb
             .get_profile_by_pubkey(txn, self.note.pubkey());
 
-        let hitbox_id = note_hitbox_id(
-            note_key,
-            self.options(),
-            self.parent
-                .map(|n| n.key().expect("todo: support non-db notes")),
-        );
+        let hitbox_id = note_hitbox_id(note_key, self.options(), self.parent);
         let maybe_hitbox = maybe_note_hitbox(ui, hitbox_id);
 
         // wide design
