@@ -56,11 +56,12 @@ impl NewPost {
         }
     }
 
-    pub fn to_note(&self, seckey: &[u8; 32]) -> Note<'_> {
-        let mut content = self.content.clone();
+    /// creates a NoteBuilder with all the shared data between note, reply & quote reply
+    fn builder_with_shared_tags<'a>(&self, mut content: String) -> NoteBuilder<'a> {
         append_urls(&mut content, &self.media);
 
-        let mut builder = add_client_tag(NoteBuilder::new()).kind(1).content(&content);
+        let mut builder = NoteBuilder::new().kind(1).content(&content);
+        builder = add_client_tag(builder);
 
         for hashtag in Self::extract_hashtags(&self.content) {
             builder = builder.start_tag().tag_str("t").tag_str(&hashtag);
@@ -74,18 +75,21 @@ impl NewPost {
             builder = add_mention_tags(builder, &self.mentions);
         }
 
+        builder
+    }
+
+    pub fn to_note(&self, seckey: &[u8; 32]) -> Note<'_> {
+        let builder = self.builder_with_shared_tags(self.content.clone());
+
         builder.sign(seckey).build().expect("note should be ok")
     }
 
     pub fn to_reply(&self, seckey: &[u8; 32], replying_to: &Note) -> Note<'_> {
-        let mut content = self.content.clone();
-        append_urls(&mut content, &self.media);
-
-        let builder = add_client_tag(NoteBuilder::new()).kind(1).content(&content);
+        let mut builder = self.builder_with_shared_tags(self.content.clone());
 
         let nip10 = NoteReply::new(replying_to.tags());
 
-        let mut builder = if let Some(root) = nip10.root() {
+        builder = if let Some(root) = nip10.root() {
             builder
                 .start_tag()
                 .tag_str("e")
@@ -143,14 +147,6 @@ impl NewPost {
             builder = builder.start_tag().tag_str("p").tag_str(&hex::encode(id));
         }
 
-        if !self.media.is_empty() {
-            builder = add_imeta_tags(builder, &self.media);
-        }
-
-        if !self.mentions.is_empty() {
-            builder = add_mention_tags(builder, &self.mentions);
-        }
-
         builder
             .sign(seckey)
             .build()
@@ -158,27 +154,13 @@ impl NewPost {
     }
 
     pub fn to_quote(&self, seckey: &[u8; 32], quoting: &Note) -> Note<'_> {
-        let mut new_content = format!(
+        let new_content = format!(
             "{}\nnostr:{}",
             self.content,
             enostr::NoteId::new(*quoting.id()).to_bech().unwrap()
         );
 
-        append_urls(&mut new_content, &self.media);
-
-        let mut builder = NoteBuilder::new().kind(1).content(&new_content);
-
-        for hashtag in Self::extract_hashtags(&self.content) {
-            builder = builder.start_tag().tag_str("t").tag_str(&hashtag);
-        }
-
-        if !self.media.is_empty() {
-            builder = add_imeta_tags(builder, &self.media);
-        }
-
-        if !self.mentions.is_empty() {
-            builder = add_mention_tags(builder, &self.mentions);
-        }
+        let builder = self.builder_with_shared_tags(new_content);
 
         builder
             .start_tag()
