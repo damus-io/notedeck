@@ -118,7 +118,8 @@ fn timeline_ui(
             note_context.i18n,
             timeline.selected_view,
             &timeline.views,
-        );
+        )
+        .inner;
 
         // need this for some reason??
         ui.add_space(3.0);
@@ -276,7 +277,7 @@ pub fn tabs_ui(
     i18n: &mut Localization,
     selected: usize,
     views: &[TimelineTab],
-) -> usize {
+) -> egui::InnerResponse<usize> {
     ui.spacing_mut().item_spacing.y = 0.0;
 
     let tab_res = egui_tabs::Tabs::new(views.len() as i32)
@@ -324,7 +325,9 @@ pub fn tabs_ui(
 
     let sel = tab_res.selected().unwrap_or_default();
 
-    let (underline, underline_y) = tab_res.inner()[sel as usize].inner;
+    let res_inner = &tab_res.inner()[sel as usize];
+
+    let (underline, underline_y) = res_inner.inner;
     let underline_width = underline.span();
 
     let tab_anim_id = ui.id().with("tab_anim");
@@ -351,7 +354,7 @@ pub fn tabs_ui(
 
     ui.painter().hline(underline, underline_y, stroke);
 
-    sel as usize
+    egui::InnerResponse::new(sel as usize, res_inner.response.clone())
 }
 
 fn get_label_width(ui: &mut egui::Ui, text: &str) -> f32 {

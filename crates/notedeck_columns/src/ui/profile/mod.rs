@@ -89,12 +89,13 @@ impl<'a, 'd> ProfileView<'a, 'd> {
                 break 's action;
             };
 
-            profile_timeline.selected_view = tabs_ui(
+            let tabs_resp = tabs_ui(
                 ui,
                 self.note_context.i18n,
                 profile_timeline.selected_view,
                 &profile_timeline.views,
             );
+            profile_timeline.selected_view = tabs_resp.inner;
 
             let reversed = false;
             // poll for new notes and insert them into our existing notes
