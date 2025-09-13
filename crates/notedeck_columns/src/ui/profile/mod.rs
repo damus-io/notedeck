@@ -76,7 +76,9 @@ impl<'a, 'd> ProfileView<'a, 'd> {
                 .get_profile_by_pubkey(&txn, self.pubkey.bytes())
                 .ok();
 
-            if let Some(profile_view_action) = self.profile_body(ui, profile.as_ref()) {
+            if let Some(profile_view_action) =
+                profile_body(ui, self.pubkey, self.note_context, profile.as_ref())
+            {
                 action = Some(profile_view_action);
             }
 
@@ -123,138 +125,136 @@ impl<'a, 'd> ProfileView<'a, 'd> {
 
         output.inner
     }
+}
 
-    fn profile_body(
-        &mut self,
-        ui: &mut egui::Ui,
-        profile: Option<&ProfileRecord<'_>>,
-    ) -> Option<ProfileViewAction> {
-        let mut action = None;
-        ui.vertical(|ui| {
-            banner(
-                ui,
-                profile
-                    .map(|p| p.record().profile())
-                    .and_then(|p| p.and_then(|p| p.banner())),
-                120.0,
-            );
+fn profile_body(
+    ui: &mut egui::Ui,
+    pubkey: &Pubkey,
+    note_context: &mut NoteContext,
+    profile: Option<&ProfileRecord<'_>>,
+) -> Option<ProfileViewAction> {
+    let mut action = None;
+    ui.vertical(|ui| {
+        banner(
+            ui,
+            profile
+                .map(|p| p.record().profile())
+                .and_then(|p| p.and_then(|p| p.banner())),
+            120.0,
+        );
 
-            let padding = 12.0;
-            notedeck_ui::padding(padding, ui, |ui| {
-                let mut pfp_rect = ui.available_rect_before_wrap();
-                let size = 80.0;
-                pfp_rect.set_width(size);
-                pfp_rect.set_height(size);
-                let pfp_rect = pfp_rect.translate(egui::vec2(0.0, -(padding + 2.0 + (size / 2.0))));
+        let padding = 12.0;
+        notedeck_ui::padding(padding, ui, |ui| {
+            let mut pfp_rect = ui.available_rect_before_wrap();
+            let size = 80.0;
+            pfp_rect.set_width(size);
+            pfp_rect.set_height(size);
+            let pfp_rect = pfp_rect.translate(egui::vec2(0.0, -(padding + 2.0 + (size / 2.0))));
 
-                ui.horizontal(|ui| {
-                    ui.put(
-                        pfp_rect,
-                        &mut ProfilePic::new(self.note_context.img_cache, get_profile_url(profile))
-                            .size(size)
-                            .border(ProfilePic::border_stroke(ui)),
-                    );
+            ui.horizontal(|ui| {
+                ui.put(
+                    pfp_rect,
+                    &mut ProfilePic::new(note_context.img_cache, get_profile_url(profile))
+                        .size(size)
+                        .border(ProfilePic::border_stroke(ui)),
+                );
 
-                    if ui
-                        .add(copy_key_widget(&pfp_rect, self.note_context.i18n))
-                        .clicked()
-                    {
-                        let to_copy = if let Some(bech) = self.pubkey.npub() {
-                            bech
-                        } else {
-                            error!("Could not convert Pubkey to bech");
-                            String::new()
-                        };
-                        ui.ctx().copy_text(to_copy)
-                    }
+                if ui
+                    .add(copy_key_widget(&pfp_rect, note_context.i18n))
+                    .clicked()
+                {
+                    let to_copy = if let Some(bech) = pubkey.npub() {
+                        bech
+                    } else {
+                        error!("Could not convert Pubkey to bech");
+                        String::new()
+                    };
+                    ui.ctx().copy_text(to_copy)
+                }
 
-                    ui.with_layout(Layout::right_to_left(egui::Align::RIGHT), |ui| {
-                        ui.add_space(24.0);
+                ui.with_layout(Layout::right_to_left(egui::Align::RIGHT), |ui| {
+                    ui.add_space(24.0);
 
-                        let target_key = self.pubkey;
-                        let selected = self.note_context.accounts.get_selected_account();
+                    let target_key = pubkey;
+                    let selected = note_context.accounts.get_selected_account();
 
-                        let profile_type = if selected.key.secret_key.is_none() {
-                            ProfileType::ReadOnly
-                        } else if &selected.key.pubkey == self.pubkey {
-                            ProfileType::MyProfile
-                        } else {
-                            ProfileType::Followable(selected.is_following(target_key.bytes()))
-                        };
+                    let profile_type = if selected.key.secret_key.is_none() {
+                        ProfileType::ReadOnly
+                    } else if &selected.key.pubkey == pubkey {
+                        ProfileType::MyProfile
+                    } else {
+                        ProfileType::Followable(selected.is_following(target_key.bytes()))
+                    };
 
-                        match profile_type {
-                            ProfileType::MyProfile => {
-                                if ui
-                                    .add(edit_profile_button(self.note_context.i18n))
-                                    .clicked()
-                                {
-                                    action = Some(ProfileViewAction::EditProfile);
-                                }
+                    match profile_type {
+                        ProfileType::MyProfile => {
+                            if ui.add(edit_profile_button(note_context.i18n)).clicked() {
+                                action = Some(ProfileViewAction::EditProfile);
                             }
-                            ProfileType::Followable(is_following) => {
-                                let follow_button = ui.add(follow_button(is_following));
+                        }
+                        ProfileType::Followable(is_following) => {
+                            let follow_button = ui.add(follow_button(is_following));
 
-                                if follow_button.clicked() {
-                                    action = match is_following {
-                                        IsFollowing::Unknown => {
-                                            // don't do anything, we don't have contact list
-                                            None
-                                        }
+                            if follow_button.clicked() {
+                                action = match is_following {
+                                    IsFollowing::Unknown => {
+                                        // don't do anything, we don't have contact list
+                                        None
+                                    }
 
-                                        IsFollowing::Yes => {
-                                            Some(ProfileViewAction::Unfollow(target_key.to_owned()))
-                                        }
+                                    IsFollowing::Yes => {
+                                        Some(ProfileViewAction::Unfollow(target_key.to_owned()))
+                                    }
 
-                                        IsFollowing::No => {
-                                            Some(ProfileViewAction::Follow(target_key.to_owned()))
-                                        }
-                                    };
-                                }
+                                    IsFollowing::No => {
+                                        Some(ProfileViewAction::Follow(target_key.to_owned()))
+                                    }
+                                };
                             }
-                            ProfileType::ReadOnly => {}
                         }
-                    });
-                });
-
-                ui.add_space(18.0);
-
-                ui.add(display_name_widget(&get_display_name(profile), false));
-
-                ui.add_space(8.0);
-
-                ui.add(about_section_widget(profile));
-
-                ui.horizontal_wrapped(|ui| {
-                    let website_url = profile
-                        .as_ref()
-                        .map(|p| p.record().profile())
-                        .and_then(|p| p.and_then(|p| p.website()).filter(|s| !s.is_empty()));
-
-                    let lud16 = profile
-                        .as_ref()
-                        .map(|p| p.record().profile())
-                        .and_then(|p| p.and_then(|p| p.lud16()).filter(|s| !s.is_empty()));
-
-                    if let Some(website_url) = website_url {
-                        ui.horizontal(|ui| {
-                            handle_link(ui, website_url);
-                        });
-                    }
-
-                    if let Some(lud16) = lud16 {
-                        if website_url.is_some() {
-                            ui.end_row();
-                        }
-                        ui.horizontal(|ui| {
-                            handle_lud16(ui, lud16);
-                        });
+                        ProfileType::ReadOnly => {}
                     }
                 });
             });
-        });
 
-        action
-    }
+            ui.add_space(18.0);
+
+            ui.add(display_name_widget(&get_display_name(profile), false));
+
+            ui.add_space(8.0);
+
+            ui.add(about_section_widget(profile));
+
+            ui.horizontal_wrapped(|ui| {
+                let website_url = profile
+                    .as_ref()
+                    .map(|p| p.record().profile())
+                    .and_then(|p| p.and_then(|p| p.website()).filter(|s| !s.is_empty()));
+
+                let lud16 = profile
+                    .as_ref()
+                    .map(|p| p.record().profile())
+                    .and_then(|p| p.and_then(|p| p.lud16()).filter(|s| !s.is_empty()));
+
+                if let Some(website_url) = website_url {
+                    ui.horizontal(|ui| {
+                        handle_link(ui, website_url);
+                    });
+                }
+
+                if let Some(lud16) = lud16 {
+                    if website_url.is_some() {
+                        ui.end_row();
+                    }
+                    ui.horizontal(|ui| {
+                        handle_lud16(ui, lud16);
+                    });
+                }
+            });
+        });
+    });
+
+    action
 }
 
 enum ProfileType {
