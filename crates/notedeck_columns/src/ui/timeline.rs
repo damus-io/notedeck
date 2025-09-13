@@ -151,12 +151,6 @@ fn timeline_ui(
         .auto_shrink([false, false])
         .scroll_bar_visibility(ScrollBarVisibility::AlwaysVisible);
 
-    let offset_id = scroll_id.with("timeline_scroll_offset");
-
-    if let Some(offset) = ui.data(|i| i.get_temp::<f32>(offset_id)) {
-        scroll_area = scroll_area.vertical_scroll_offset(offset);
-    }
-
     if goto_top_resp.is_some_and(|r| r.clicked()) {
         scroll_area = scroll_area.vertical_scroll_offset(0.0);
     }
@@ -194,8 +188,6 @@ fn timeline_ui(
         )
         .show(ui)
     });
-
-    ui.data_mut(|d| d.insert_temp(offset_id, scroll_output.state.offset.y));
 
     let at_top_after_scroll = scroll_output.state.offset.y == 0.0;
     let cur_show_top_button = ui.ctx().data(|d| d.get_temp::<bool>(show_top_button_id));

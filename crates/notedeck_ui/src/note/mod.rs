@@ -749,7 +749,7 @@ fn note_hitbox_id(
 
 fn maybe_note_hitbox(ui: &mut egui::Ui, hitbox_id: egui::Id) -> Option<Response> {
     ui.ctx()
-        .data_mut(|d| d.get_persisted(hitbox_id))
+        .data_mut(|d| d.get_temp(hitbox_id))
         .map(|note_size: Vec2| {
             // The hitbox should extend the entire width of the
             // container.  The hitbox height was cached last layout.

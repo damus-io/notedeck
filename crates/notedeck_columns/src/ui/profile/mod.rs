@@ -65,13 +65,7 @@ impl<'a, 'd> ProfileView<'a, 'd> {
 
     pub fn ui(&mut self, ui: &mut egui::Ui) -> Option<ProfileViewAction> {
         let scroll_id = ProfileView::scroll_id(self.col_id, self.pubkey);
-        let offset_id = scroll_id.with("scroll_offset");
-
-        let mut scroll_area = ScrollArea::vertical().id_salt(scroll_id);
-
-        if let Some(offset) = ui.data(|i| i.get_temp::<f32>(offset_id)) {
-            scroll_area = scroll_area.vertical_scroll_offset(offset);
-        }
+        let scroll_area = ScrollArea::vertical().id_salt(scroll_id);
 
         let output = scroll_area.show(ui, |ui| 's: {
             let mut action = None;
@@ -126,8 +120,6 @@ impl<'a, 'd> ProfileView<'a, 'd> {
 
             action
         });
-
-        ui.data_mut(|d| d.insert_temp(offset_id, output.state.offset.y));
 
         output.inner
     }
