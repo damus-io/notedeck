@@ -39,6 +39,11 @@ pub enum ProfileViewAction {
     Follow(Pubkey),
 }
 
+struct ProfileScrollResponse {
+    body_end_pos: f32,
+    action: Option<ProfileViewAction>,
+}
+
 impl<'a, 'd> ProfileView<'a, 'd> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -65,9 +70,13 @@ impl<'a, 'd> ProfileView<'a, 'd> {
 
     pub fn ui(&mut self, ui: &mut egui::Ui) -> Option<ProfileViewAction> {
         let scroll_id = ProfileView::scroll_id(self.col_id, self.pubkey);
-        let scroll_area = ScrollArea::vertical().id_salt(scroll_id);
+        let scroll_area = ScrollArea::vertical().id_salt(scroll_id).animated(false);
 
-        let output = scroll_area.show(ui, |ui| 's: {
+        let profile_timeline = self
+            .timeline_cache
+            .get_mut(&TimelineKind::Profile(*self.pubkey))?;
+
+        let output = scroll_area.show(ui, |ui| {
             let mut action = None;
             let txn = Transaction::new(self.note_context.ndb).expect("txn");
             let profile = self
@@ -81,13 +90,6 @@ impl<'a, 'd> ProfileView<'a, 'd> {
             {
                 action = Some(profile_view_action);
             }
-
-            let Some(profile_timeline) = self
-                .timeline_cache
-                .get_mut(&TimelineKind::Profile(*self.pubkey))
-            else {
-                break 's action;
-            };
 
             let tabs_resp = tabs_ui(
                 ui,
@@ -121,10 +123,16 @@ impl<'a, 'd> ProfileView<'a, 'd> {
                 action = Some(ProfileViewAction::Note(note_action));
             }
 
-            action
+            ProfileScrollResponse {
+                body_end_pos: tabs_resp.response.rect.bottom(),
+                action,
+            }
         });
 
-        output.inner
+        // only allow front insert when the profile body is fully obstructed
+        profile_timeline.enable_front_insert = output.inner.body_end_pos < ui.clip_rect().top();
+
+        output.inner.action
     }
 }
 
