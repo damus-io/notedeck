@@ -133,6 +133,7 @@ impl TimelineTab {
         ndb: &Ndb,
         txn: &Transaction,
         reversed: bool,
+        use_front_insert: bool,
     ) -> Option<UnknownPks<'a>> {
         if payloads.is_empty() {
             return None;
@@ -158,7 +159,11 @@ impl TimelineTab {
                 debug!("spliced when inserting {num_refs} new notes, resetting virtual list",);
                 list.reset();
             }
-            MergeKind::FrontInsert => {
+            MergeKind::FrontInsert => 's: {
+                if !use_front_insert {
+                    break 's;
+                }
+
                 // only run this logic if we're reverse-chronological
                 // reversed in this case means chronological, since the
                 // default is reverse-chronological. yeah it's confusing.
@@ -210,6 +215,7 @@ pub struct Timeline {
     pub selected_view: usize,
 
     pub subscription: TimelineSub,
+    pub enable_front_insert: bool,
 }
 
 impl Timeline {
@@ -271,12 +277,16 @@ impl Timeline {
         let subscription = TimelineSub::default();
         let selected_view = 0;
 
+        // by default, disabled for profiles since they contain widgets above the list items
+        let enable_front_insert = !matches!(kind, TimelineKind::Profile(_));
+
         Timeline {
             kind,
             filter,
             views,
             subscription,
             selected_view,
+            enable_front_insert,
         }
     }
 
@@ -402,7 +412,9 @@ impl Timeline {
             match view.filter {
                 ViewFilter::NotesAndReplies => {
                     let res: Vec<&NotePayload<'_>> = payloads.iter().collect();
-                    if let Some(res) = view.insert(res, ndb, txn, reversed) {
+                    if let Some(res) =
+                        view.insert(res, ndb, txn, reversed, self.enable_front_insert)
+                    {
                         res.process(unknown_ids, ndb, txn);
                     }
                 }
@@ -418,7 +430,13 @@ impl Timeline {
                         }
                     }
 
-                    if let Some(res) = view.insert(filtered_payloads, ndb, txn, reversed) {
+                    if let Some(res) = view.insert(
+                        filtered_payloads,
+                        ndb,
+                        txn,
+                        reversed,
+                        self.enable_front_insert,
+                    ) {
                         res.process(unknown_ids, ndb, txn);
                     }
                 }

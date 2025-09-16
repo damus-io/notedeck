@@ -101,28 +101,37 @@ impl NoteUnits {
 
         let inserted_new = new_order.len();
 
-        let front_insertion = inserted_new > 0
-            && if self.order.is_empty() || new_order.is_empty() {
-                true
-            } else if !self.reversed {
-                let first_new = *new_order.first().unwrap();
-                let last_old = *self.order.last().unwrap();
-                self.storage[first_new] >= self.storage[last_old]
-            } else {
-                let last_new = *new_order.last().unwrap();
-                let first_old = *self.order.first().unwrap();
-                self.storage[last_new] <= self.storage[first_old]
-            };
+        let front_insertion = if self.order.is_empty() || new_order.is_empty() {
+            !new_order.is_empty()
+        } else if self.reversed {
+            // reversed is true, sorting should occur less recent to most recent (oldest to newest, opposite of `self.order`)
+            let first_new = *new_order.first().unwrap(); // most recent unit of the new order
+            let last_old = *self.order.last().unwrap(); // least recent unit of the current order
+
+            // if the most recent unit of the new order is less recent than the least recent unit of the current order,
+            // all current order units are less recent than the new order units.
+            // In other words, they are all being inserted in the front
+            self.storage[first_new] >= self.storage[last_old]
+        } else {
+            // reversed is false, sorting should occur most recent to least recent (newest to oldest, as it is in `self.order`)
+            let last_new = *new_order.last().unwrap(); // least recent unit of the new order
+            let first_old = *self.order.first().unwrap(); // most recent unit of the current order
+
+            // if the least recent unit of the new order is more recent than the most recent unit of the current order,
+            // all new units are more recent than the current units.
+            // In other words, they are all being inserted in the front
+            self.storage[last_new] <= self.storage[first_old]
+        };
 
         let mut merged = Vec::with_capacity(self.order.len() + new_order.len());
         let (mut i, mut j) = (0, 0);
         while i < self.order.len() && j < new_order.len() {
             let index_left = self.order[i];
             let index_right = new_order[j];
-            let left_item = &self.storage[index_left];
-            let right_item = &self.storage[index_right];
-            if left_item <= right_item {
-                // left_item is newer than right_item
+            let left_unit = &self.storage[index_left];
+            let right_unit = &self.storage[index_right];
+            if left_unit <= right_unit {
+                // the left unit is more recent than (or the same recency as) the right unit
                 merged.push(index_left);
                 i += 1;
             } else {

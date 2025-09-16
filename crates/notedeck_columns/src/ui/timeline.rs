@@ -1,8 +1,9 @@
 use egui::containers::scroll_area::ScrollBarVisibility;
-use egui::{vec2, Color32, Direction, Layout, Margin, Pos2, ScrollArea, Sense, Stroke};
+use egui::{vec2, Color32, Direction, Layout, Margin, Pos2, RichText, ScrollArea, Sense, Stroke};
 use egui_tabs::TabColor;
 use enostr::Pubkey;
 use nostrdb::{Note, ProfileRecord, Transaction};
+use notedeck::fonts::get_font_size;
 use notedeck::name::get_display_name;
 use notedeck::ui::is_narrow;
 use notedeck::{tr_plural, JobsCache, Muted, NotedeckTextStyle};
@@ -118,7 +119,8 @@ fn timeline_ui(
             note_context.i18n,
             timeline.selected_view,
             &timeline.views,
-        );
+        )
+        .inner;
 
         // need this for some reason??
         ui.add_space(3.0);
@@ -150,12 +152,6 @@ fn timeline_ui(
         .animated(false)
         .auto_shrink([false, false])
         .scroll_bar_visibility(ScrollBarVisibility::AlwaysVisible);
-
-    let offset_id = scroll_id.with("timeline_scroll_offset");
-
-    if let Some(offset) = ui.data(|i| i.get_temp::<f32>(offset_id)) {
-        scroll_area = scroll_area.vertical_scroll_offset(offset);
-    }
 
     if goto_top_resp.is_some_and(|r| r.clicked()) {
         scroll_area = scroll_area.vertical_scroll_offset(0.0);
@@ -194,8 +190,6 @@ fn timeline_ui(
         )
         .show(ui)
     });
-
-    ui.data_mut(|d| d.insert_temp(offset_id, scroll_output.state.offset.y));
 
     let at_top_after_scroll = scroll_output.state.offset.y == 0.0;
     let cur_show_top_button = ui.ctx().data(|d| d.get_temp::<bool>(show_top_button_id));
@@ -284,7 +278,7 @@ pub fn tabs_ui(
     i18n: &mut Localization,
     selected: usize,
     views: &[TimelineTab],
-) -> usize {
+) -> egui::InnerResponse<usize> {
     ui.spacing_mut().item_spacing.y = 0.0;
 
     let tab_res = egui_tabs::Tabs::new(views.len() as i32)
@@ -332,7 +326,9 @@ pub fn tabs_ui(
 
     let sel = tab_res.selected().unwrap_or_default();
 
-    let (underline, underline_y) = tab_res.inner()[sel as usize].inner;
+    let res_inner = &tab_res.inner()[sel as usize];
+
+    let (underline, underline_y) = res_inner.inner;
     let underline_width = underline.span();
 
     let tab_anim_id = ui.id().with("tab_anim");
@@ -359,7 +355,7 @@ pub fn tabs_ui(
 
     ui.painter().hline(underline, underline_y, stroke);
 
-    sel as usize
+    egui::InnerResponse::new(sel as usize, res_inner.response.clone())
 }
 
 fn get_label_width(ui: &mut egui::Ui, text: &str) -> f32 {
@@ -734,7 +730,7 @@ fn render_reaction_cluster(
 fn render_composite_entry(
     ui: &mut egui::Ui,
     note_context: &mut NoteContext,
-    note_options: NoteOptions,
+    mut note_options: NoteOptions,
     jobs: &mut JobsCache,
     underlying_note: &nostrdb::Note<'_>,
     profiles_to_show: Vec<ProfileEntry>,
@@ -759,6 +755,16 @@ fn render_composite_entry(
     } else {
         ReferencedNoteType::Yours
     };
+
+    if !note_options.contains(NoteOptions::TrustMedia) {
+        let acc = note_context.accounts.get_selected_account();
+        for entry in &profiles_to_show {
+            if matches!(acc.is_following(entry.pk), notedeck::IsFollowing::Yes) {
+                note_options = note_options.union(NoteOptions::TrustMedia);
+                break;
+            }
+        }
+    }
 
     egui::Frame::new()
         .inner_margin(Margin::symmetric(8, 4))
@@ -829,7 +835,10 @@ fn render_composite_entry(
                 ui.horizontal(|ui| {
                     ui.add_space(48.0);
                     ui.horizontal_wrapped(|ui| {
-                        ui.label(desc);
+                        ui.add(egui::Label::new(
+                            RichText::new(desc)
+                                .size(get_font_size(ui.ctx(), &NotedeckTextStyle::Small)),
+                        ));
                     });
                 });
             }
@@ -838,15 +847,14 @@ fn render_composite_entry(
 
             let resp = ui
                 .horizontal(|ui| {
-                    let mut options = note_options;
-                    if options.contains(NoteOptions::Notification) {
-                        options = options
+                    if note_options.contains(NoteOptions::Notification) {
+                        note_options = note_options
                             .difference(NoteOptions::ActionBar | NoteOptions::OptionsButton)
                             .union(NoteOptions::NotificationPreview);
 
                         ui.add_space(48.0);
                     };
-                    NoteView::new(note_context, underlying_note, options, jobs).show(ui)
+                    NoteView::new(note_context, underlying_note, note_options, jobs).show(ui)
                 })
                 .inner;
 

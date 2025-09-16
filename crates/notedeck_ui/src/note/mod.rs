@@ -32,7 +32,7 @@ use notedeck::{
 
 pub struct NoteView<'a, 'd> {
     note_context: &'a mut NoteContext<'d>,
-    parent: Option<&'a Note<'a>>,
+    parent: Option<NoteKey>,
     note: &'a nostrdb::Note<'a>,
     flags: NoteOptions,
     jobs: &'a mut JobsCache,
@@ -85,7 +85,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
         flags: NoteOptions,
         jobs: &'a mut JobsCache,
     ) -> Self {
-        let parent: Option<&Note> = None;
+        let parent: Option<NoteKey> = None;
 
         Self {
             note_context,
@@ -209,7 +209,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
     }
 
     #[inline]
-    pub fn parent(mut self, parent: &'a Note<'a>) -> Self {
+    pub fn parent(mut self, parent: NoteKey) -> Self {
         self.parent = Some(parent);
         self
     }
@@ -255,7 +255,6 @@ impl<'a, 'd> NoteView<'a, 'd> {
                 self.note_context,
                 txn,
                 self.note,
-                self.parent,
                 self.flags,
                 self.jobs,
             ));
@@ -303,6 +302,18 @@ impl<'a, 'd> NoteView<'a, 'd> {
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui) -> NoteResponse {
+        if !self.flags.contains(NoteOptions::TrustMedia) {
+            let acc = self.note_context.accounts.get_selected_account();
+            if self.note.pubkey() == acc.key.pubkey.bytes()
+                || matches!(
+                    acc.is_following(self.note.pubkey()),
+                    notedeck::IsFollowing::Yes
+                )
+            {
+                self.flags = self.flags.union(NoteOptions::TrustMedia);
+            }
+        }
+
         if self.options().contains(NoteOptions::Textmode) {
             NoteResponse::new(self.textmode_ui(ui))
         } else if self.options().contains(NoteOptions::Framed) {
@@ -426,14 +437,8 @@ impl<'a, 'd> NoteView<'a, 'd> {
                 });
             }
 
-            let mut contents = NoteContents::new(
-                self.note_context,
-                txn,
-                self.note,
-                self.parent,
-                self.flags,
-                self.jobs,
-            );
+            let mut contents =
+                NoteContents::new(self.note_context, txn, self.note, self.flags, self.jobs);
 
             ui.add(&mut contents);
 
@@ -526,14 +531,8 @@ impl<'a, 'd> NoteView<'a, 'd> {
                     });
                 }
 
-                let mut contents = NoteContents::new(
-                    self.note_context,
-                    txn,
-                    self.note,
-                    self.parent,
-                    self.flags,
-                    self.jobs,
-                );
+                let mut contents =
+                    NoteContents::new(self.note_context, txn, self.note, self.flags, self.jobs);
                 ui.add(&mut contents);
 
                 note_action = contents.action.or(note_action);
@@ -577,12 +576,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
             .ndb
             .get_profile_by_pubkey(txn, self.note.pubkey());
 
-        let hitbox_id = note_hitbox_id(
-            note_key,
-            self.options(),
-            self.parent
-                .map(|n| n.key().expect("todo: support non-db notes")),
-        );
+        let hitbox_id = note_hitbox_id(note_key, self.options(), self.parent);
         let maybe_hitbox = maybe_note_hitbox(ui, hitbox_id);
 
         // wide design
@@ -749,7 +743,7 @@ fn note_hitbox_id(
 
 fn maybe_note_hitbox(ui: &mut egui::Ui, hitbox_id: egui::Id) -> Option<Response> {
     ui.ctx()
-        .data_mut(|d| d.get_persisted(hitbox_id))
+        .data_mut(|d| d.get_temp(hitbox_id))
         .map(|note_size: Vec2| {
             // The hitbox should extend the entire width of the
             // container.  The hitbox height was cached last layout.

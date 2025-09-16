@@ -31,7 +31,6 @@ pub fn render_timeline_route(
         | TimelineKind::Generic(_) => {
             let note_action =
                 ui::TimelineView::new(kind, timeline_cache, note_context, note_options, jobs, col)
-                    .scroll_to_top(scroll_to_top)
                     .ui(ui);
 
             note_action.map(RenderNavAction::NoteAction)
