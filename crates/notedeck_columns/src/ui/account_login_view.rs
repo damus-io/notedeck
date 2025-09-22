@@ -6,7 +6,7 @@ use egui::{
 };
 use egui_winit::clipboard::Clipboard;
 use enostr::Keypair;
-use notedeck::{fonts::get_font_size, tr, AppAction, Localization, NotedeckTextStyle};
+use notedeck::{fonts::get_font_size, tr, Localization, NotedeckTextStyle};
 use notedeck_ui::{
     app_images,
     context_menu::{input_context, PasteBehavior},
@@ -173,17 +173,17 @@ pub fn eye_button(ui: &mut egui::Ui, is_visible: bool) -> egui::Response {
 
 mod preview {
     use super::*;
-    use notedeck::{App, AppContext};
+    use notedeck::{App, AppContext, AppResponse};
 
     pub struct AccountLoginPreview {
         manager: AcquireKeyState,
     }
 
     impl App for AccountLoginPreview {
-        fn update(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> Option<AppAction> {
+        fn update(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
             AccountLoginView::new(&mut self.manager, ctx.clipboard, ctx.i18n).ui(ui);
 
-            None
+            AppResponse::none()
         }
     }
 

@@ -20,8 +20,8 @@ use egui_extras::{Size, StripBuilder};
 use enostr::{ClientMessage, PoolRelay, Pubkey, RelayEvent, RelayMessage, RelayPool};
 use nostrdb::Transaction;
 use notedeck::{
-    tr, ui::is_narrow, Accounts, AppAction, AppContext, DataPath, DataPathType, FilterState,
-    Images, JobsCache, Localization, NotedeckOptions, SettingsHandler, UnknownIds,
+    tr, ui::is_narrow, Accounts, AppAction, AppContext, AppResponse, DataPath, DataPathType,
+    FilterState, Images, JobsCache, Localization, NotedeckOptions, SettingsHandler, UnknownIds,
 };
 use notedeck_ui::{
     media::{MediaViewer, MediaViewerFlags, MediaViewerState},
@@ -375,16 +375,12 @@ fn process_message(damus: &mut Damus, ctx: &mut AppContext<'_>, relay: &str, msg
     }
 }
 
-fn render_damus(
-    damus: &mut Damus,
-    app_ctx: &mut AppContext<'_>,
-    ui: &mut egui::Ui,
-) -> Option<AppAction> {
+fn render_damus(damus: &mut Damus, app_ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
     damus
         .note_options
         .set(NoteOptions::Wide, is_narrow(ui.ctx()));
 
-    let app_action = if notedeck::ui::is_narrow(ui.ctx()) {
+    let app_resp = if notedeck::ui::is_narrow(ui.ctx()) {
         render_damus_mobile(damus, app_ctx, ui)
     } else {
         render_damus_desktop(damus, app_ctx, ui)
@@ -395,7 +391,7 @@ fn render_damus(
     // We use this for keeping timestamps and things up to date
     //ui.ctx().request_repaint_after(Duration::from_secs(5));
 
-    app_action
+    app_resp
 }
 
 /// Present a fullscreen media viewer if the FullscreenMedia AppOptions flag is set. This is
@@ -641,9 +637,10 @@ fn render_damus_mobile(
     app: &mut Damus,
     app_ctx: &mut AppContext<'_>,
     ui: &mut egui::Ui,
-) -> Option<AppAction> {
+) -> AppResponse {
     //let routes = app.timelines[0].routes.clone();
 
+    let mut can_take_drag_from = Vec::new();
     let active_col = app.columns_mut(app_ctx.i18n, app_ctx.accounts).selected as usize;
     let mut app_action: Option<AppAction> = None;
     // don't show toolbar if soft keyboard is open
@@ -664,14 +661,17 @@ fn render_damus_mobile(
             strip.cell(|ui| {
                 let rect = ui.available_rect_before_wrap();
                 if !app.columns(app_ctx.accounts).columns().is_empty() {
-                    let r = nav::render_nav(
+                    let resp = nav::render_nav(
                         active_col,
                         ui.available_rect_before_wrap(),
                         app,
                         app_ctx,
                         ui,
-                    )
-                    .process_render_nav_response(app, app_ctx, ui);
+                    );
+
+                    can_take_drag_from.extend(resp.can_take_drag_from());
+
+                    let r = resp.process_render_nav_response(app, app_ctx, ui);
                     if let Some(r) = &r {
                         match r {
                             ProcessNavResult::SwitchOccurred => {
@@ -710,7 +710,7 @@ fn render_damus_mobile(
             });
         });
 
-    app_action
+    AppResponse::action(app_action).drag(can_take_drag_from)
 }
 
 fn hovering_post_button(
@@ -794,7 +794,7 @@ fn render_damus_desktop(
     app: &mut Damus,
     app_ctx: &mut AppContext<'_>,
     ui: &mut egui::Ui,
-) -> Option<AppAction> {
+) -> AppResponse {
     let screen_size = ui.ctx().screen_rect().width();
     let calc_panel_width = (screen_size
         / get_active_columns(app_ctx.accounts, &app.decks_cache).num_columns() as f32)
@@ -823,10 +823,12 @@ fn timelines_view(
     sizes: Size,
     app: &mut Damus,
     ctx: &mut AppContext<'_>,
-) -> Option<AppAction> {
+) -> AppResponse {
     let num_cols = get_active_columns(ctx.accounts, &app.decks_cache).num_columns();
     let mut side_panel_action: Option<nav::SwitchingAction> = None;
     let mut responses = Vec::with_capacity(num_cols);
+
+    let mut can_take_drag_from = Vec::new();
 
     StripBuilder::new(ui)
         .size(Size::exact(ui::side_panel::SIDE_PANEL_WIDTH))
@@ -883,7 +885,9 @@ fn timelines_view(
                         inner.set_right(rect.right() - v_line_stroke.width);
                         inner
                     };
-                    responses.push(nav::render_nav(col_index, inner_rect, app, ctx, ui));
+                    let resp = nav::render_nav(col_index, inner_rect, app, ctx, ui);
+                    can_take_drag_from.extend(resp.can_take_drag_from());
+                    responses.push(resp);
 
                     // vertical line
                     ui.painter()
@@ -937,11 +941,11 @@ fn timelines_view(
         storage::save_decks_cache(ctx.path, &app.decks_cache);
     }
 
-    app_action
+    AppResponse::action(app_action).drag(can_take_drag_from)
 }
 
 impl notedeck::App for Damus {
-    fn update(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> Option<AppAction> {
+    fn update(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
         /*
         self.app
             .frame_history

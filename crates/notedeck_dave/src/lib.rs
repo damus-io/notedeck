@@ -8,7 +8,7 @@ use egui_wgpu::RenderState;
 use enostr::KeypairUnowned;
 use futures::StreamExt;
 use nostrdb::Transaction;
-use notedeck::{AppAction, AppContext, JobsCache};
+use notedeck::{AppAction, AppContext, AppResponse, JobsCache};
 use std::collections::HashMap;
 use std::string::ToString;
 use std::sync::mpsc::{self, Receiver};
@@ -343,7 +343,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 }
 
 impl notedeck::App for Dave {
-    fn update(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> Option<AppAction> {
+    fn update(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
         let mut app_action: Option<AppAction> = None;
 
         // always insert system prompt if we have no context
@@ -374,6 +374,6 @@ impl notedeck::App for Dave {
             self.send_user_message(ctx, ui.ctx());
         }
 
-        app_action
+        AppResponse::action(app_action)
     }
 }

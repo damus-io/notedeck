@@ -31,7 +31,31 @@ pub enum AppAction {
 }
 
 pub trait App {
-    fn update(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> Option<AppAction>;
+    fn update(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse;
+}
+
+#[derive(Default)]
+pub struct AppResponse {
+    pub action: Option<AppAction>,
+    pub can_take_drag_from: Vec<egui::Id>,
+}
+
+impl AppResponse {
+    pub fn none() -> Self {
+        Self::default()
+    }
+
+    pub fn action(action: Option<AppAction>) -> Self {
+        Self {
+            action,
+            can_take_drag_from: Vec::new(),
+        }
+    }
+
+    pub fn drag(mut self, can_take_drag_from: Vec<egui::Id>) -> Self {
+        self.can_take_drag_from.extend(can_take_drag_from);
+        self
+    }
 }
 
 /// Main notedeck app framework

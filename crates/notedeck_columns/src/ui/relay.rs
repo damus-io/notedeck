@@ -292,7 +292,7 @@ fn get_relay_infos(pool: &RelayPool) -> Vec<RelayInfo<'_>> {
 mod preview {
     use super::*;
     use crate::test_data::sample_pool;
-    use notedeck::{App, AppAction, AppContext};
+    use notedeck::{App, AppContext, AppResponse};
 
     pub struct RelayViewPreview {
         pool: RelayPool,
@@ -307,11 +307,11 @@ mod preview {
     }
 
     impl App for RelayViewPreview {
-        fn update(&mut self, app: &mut AppContext<'_>, ui: &mut egui::Ui) -> Option<AppAction> {
+        fn update(&mut self, app: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
             self.pool.try_recv();
             let mut id_string_map = HashMap::new();
             RelayView::new(app.pool, &mut id_string_map, app.i18n).ui(ui);
-            None
+            AppResponse::none()
         }
     }
 

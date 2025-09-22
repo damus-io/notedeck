@@ -8,6 +8,7 @@ use eframe::CreationContext;
 use egui::{vec2, Button, Color32, Label, Layout, Rect, RichText, ThemePreference, Widget};
 use egui_extras::{Size, StripBuilder};
 use nostrdb::{ProfileRecord, Transaction};
+use notedeck::AppResponse;
 use notedeck::Error;
 use notedeck::SoftKeyboardContext;
 use notedeck::{
@@ -255,7 +256,8 @@ impl Chrome {
                     );
                     */
 
-                    if let Some(action) = self.apps[self.active as usize].update(app_ctx, ui) {
+                    let resp = self.apps[self.active as usize].update(app_ctx, ui);
+                    if let Some(action) = resp.action {
                         chrome_handle_app_action(self, app_ctx, action, ui);
                     }
                 });
@@ -378,12 +380,12 @@ impl Chrome {
 }
 
 impl notedeck::App for Chrome {
-    fn update(&mut self, ctx: &mut notedeck::AppContext, ui: &mut egui::Ui) -> Option<AppAction> {
+    fn update(&mut self, ctx: &mut notedeck::AppContext, ui: &mut egui::Ui) -> AppResponse {
         if let Some(action) = self.show(ctx, ui) {
             action.process(ctx, self, ui);
         }
         // TODO: unify this constant with the columns side panel width. ui crate?
-        None
+        AppResponse::none()
     }
 }
 

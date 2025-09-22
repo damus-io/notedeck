@@ -60,7 +60,7 @@ mod preview {
     };
 
     use super::EditDeckView;
-    use notedeck::{App, AppAction, AppContext};
+    use notedeck::{App, AppContext, AppResponse};
 
     pub struct EditDeckPreview {
         state: DeckState,
@@ -75,9 +75,9 @@ mod preview {
     }
 
     impl App for EditDeckPreview {
-        fn update(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> Option<AppAction> {
+        fn update(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
             EditDeckView::new(&mut self.state, ctx.i18n).ui(ui);
-            None
+            AppResponse::none()
         }
     }
 

@@ -1,7 +1,7 @@
 use crate::ui::{edge_ui, node_ui};
 use egui::{Pos2, Rect};
 use jsoncanvas::JsonCanvas;
-use notedeck::{AppAction, AppContext};
+use notedeck::{AppContext, AppResponse};
 
 mod ui;
 
@@ -28,7 +28,7 @@ impl Default for Notebook {
 }
 
 impl notedeck::App for Notebook {
-    fn update(&mut self, _ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> Option<AppAction> {
+    fn update(&mut self, _ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
         //let app_action: Option<AppAction> = None;
 
         if !self.loaded {
@@ -48,7 +48,7 @@ impl notedeck::App for Notebook {
             }
         });
 
-        None
+        AppResponse::none()
     }
 }
 

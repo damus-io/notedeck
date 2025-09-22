@@ -1,4 +1,4 @@
-use notedeck::{AppAction, AppContext};
+use notedeck::{AppContext, AppResponse};
 use notedeck_clndash::ClnDash;
 use notedeck_columns::Damus;
 use notedeck_dave::Dave;
@@ -14,7 +14,7 @@ pub enum NotedeckApp {
 }
 
 impl notedeck::App for NotedeckApp {
-    fn update(&mut self, ctx: &mut AppContext, ui: &mut egui::Ui) -> Option<AppAction> {
+    fn update(&mut self, ctx: &mut AppContext, ui: &mut egui::Ui) -> AppResponse {
         match self {
             NotedeckApp::Dave(dave) => dave.update(ctx, ui),
             NotedeckApp::Columns(columns) => columns.update(ctx, ui),

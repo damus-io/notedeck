@@ -200,6 +200,13 @@ impl RenderNavResponse {
         RenderNavResponse { column, response }
     }
 
+    pub fn can_take_drag_from(&self) -> Vec<egui::Id> {
+        match &self.response {
+            NotedeckNavResponse::Popup(_) => Vec::new(), // TODO(kernelkind): upgrade once popup supports drag ids
+            NotedeckNavResponse::Nav(nav_response) => nav_response.can_take_drag_from.clone(),
+        }
+    }
+
     #[must_use = "Make sure to save columns if result is true"]
     pub fn process_render_nav_response(
         self,

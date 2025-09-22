@@ -13,7 +13,8 @@ use crate::watch::fetch_paid_invoices;
 use lnsocket::bitcoin::secp256k1::{PublicKey, SecretKey, rand};
 use lnsocket::{CommandoClient, LNSocket};
 use nostrdb::Ndb;
-use notedeck::{AppAction, AppContext};
+use notedeck::AppContext;
+use notedeck::AppResponse;
 use serde_json::json;
 use std::collections::HashMap;
 use std::str::FromStr;
@@ -59,7 +60,7 @@ struct CommChannel {
 }
 
 impl notedeck::App for ClnDash {
-    fn update(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> Option<AppAction> {
+    fn update(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
         if !self.initialized {
             self.connection_state = ConnectionState::Connecting;
 
@@ -71,7 +72,7 @@ impl notedeck::App for ClnDash {
 
         self.show(ui, ctx);
 
-        None
+        AppResponse::none()
     }
 }
 
