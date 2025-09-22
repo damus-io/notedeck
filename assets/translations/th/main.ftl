@@ -33,6 +33,8 @@ Add_External_Notifications_Column_41ae = เพิ่มคอลัมน์ก
 Add_Hashtag_Column_ebf4 = เพิ่มคอลัมน์แฮชแท็ก
 # Column title for adding last notes column
 Add_Last_Notes_Column_bbad = เพิ่มคอลัมน์โน้ตล่าสุด
+# Tooltip text for adding a new deck button
+Add_new_deck_f2fc = เพิ่ม deck ใหม่
 # Column title for adding notifications column
 Add_Notifications_Column_79f8 = เพิ่มคอลัมน์การแจ้งเตือน
 # Button label to add a relay
@@ -93,6 +95,8 @@ Copy_Link_dc7c = คัดลอกลิงก์
 Copy_Note_ID_6b45 = คัดลอก โน้ต ID
 # Copy the raw note data in JSON format to clipboard
 Copy_Note_JSON_9e4e = คัดลอก JSON ของโน้ต
+# Tooltip text for copying npub to clipboard
+Copy_npub_to_clipboard_c105 = คัดลอก npub ไปยังคลิปบอร์ด
 # Copy the author's public key to clipboard
 Copy_Pubkey_9cc4 = คัดลอก npub
 # Copy the text content of the note to clipboard
@@ -141,6 +145,8 @@ Delete_Wallet_d1d4 = ลบวอลเล็ต
 Display_name_f9d9 = ชื่อที่แสดง
 # Domain identification message
 domain___will_be_used_for_identification_b67e = { $domain } จะใช้สำหรับการระบุตัวตน
+# Button to indicate that the user is done going through the onboarding process.
+Done_50dd = เสร็จ
 # Column title for editing deck
 Edit_Deck_4018 = แก้ไข Deck
 # Button label to edit a deck
@@ -193,6 +199,8 @@ k_50K_c2dc = 50K
 k_5K_f7e6 = 5K
 # Description for your notes column
 Keep_track_of_your_notes___replies_a334 = ติดตามโน้ตและการตอบกลับของคุณ
+# label for keys setting section
+Keys_435f = คีย์
 # Label for language, Appearance settings section
 Language_e264 = ภาษา:
 # Title for last note per user column
@@ -211,6 +219,14 @@ Media_from_someone_you_don_t_follow_5611 = สื่อจากคนที่�
 Moves_this_column_to_another_position_0d4b = ย้ายคอลัมน์นี้ไปยังตำแหน่งอื่น
 # Title for the user's deck
 My_Deck_4ac5 = Deck ของฉัน
+# reaction from user to a note you were tagged in
+name__reacted_to_a_note_you_were_tagged_in_4b62 = { $name } react ต่อโน้ตที่คุณถูกแท็ก
+# reaction from user to your note
+name__reacted_to_your_note_ead9 = { $name } react ต่อโน้ตของคุณ
+# repost from user
+name__reposted_a_note_you_were_tagged_in_1379 = { $name } รีโพสต์โน้ตที่คุณถูกแท็ก
+# repost from user
+name__reposted_your_note_1379 = { $name } รีโพสต์โน้ตของคุณ
 # Label asking if the user is new to Nostr. Underneath this label is a button to create an account.
 New_to_Nostr_a2fd = มือใหม่สำหรับ Nostr?
 # NIP-05 identity field label
@@ -261,6 +277,8 @@ Post_now_8a49 = โพสต์
 Press_the_button_below_to_copy_your_most_recent_logs_to_your_system_s_clipboard__Then_paste_it_into_your_email_322e = กดปุ่มด้านล่างเพื่อคัดลอกข้อมูลบันทึกล่าสุด ไปยังคลิปบอร์ด จากนั้นนำไปวางในอีเมลของคุณ
 # Profile picture URL field label
 Profile_picture_81ff = รูปโปรไฟล์
+# label describing public key
+PUBLIC_ACCOUNT_ID_4394 = ไอดีบัญชีสาธารณะ
 # Column title for quote composition
 Quote_475c = อ้างอิง
 # Error message when quote note cannot be found
@@ -313,6 +331,8 @@ Search_c573 = ค้นหา
 Search_notes_42a6 = ค้นหาโน้ต...
 # Search in progress message
 Searching_for___query_5d18 = กำลังค้นหา '{ $query }'
+# label describing secret key
+SECRET_ACCOUNT_LOGIN_KEY_8440 = คีย์ลับสำหรับล็อกอินบัญชี
 # Description for Home column
 See_notes_from_your_contacts_ac16 = ดูโน้ตจากผู้ติดต่อของคุณ
 # Description for universe column
@@ -413,4 +433,28 @@ Got__count__results_for___query_85fb =
     { $count ->
         [one] ผลการค้นหา '{ $query }': พบ { $count } รายการ
        *[other] ผลการค้นหา '{ $query }': พบ { $count } รายการ
+    }
+# amount of reactions a note you were tagged in received
+name__and__count__others_reacted_to_a_note_you_were_tagged_in_181a =
+    { $count ->
+        [one] { $name } และอีก { $count } คน reacted ต่อโน้ตที่คุณถูกแท็ก
+       *[other] { $name } และอีก { $count } คน reacted ต่อโน้ตที่คุณถูกแท็ก
+    }
+# describing the amount of reactions your note received
+name__and__count__others_reacted_to_your_note_0f6a =
+    { $count ->
+        [one] { $name } และอีก { $count } คน reacted ต่อโน้ตที่ของคุณ
+       *[other] { $name } และอีก { $count } คน reacted ต่อโน้ตของคุณ
+    }
+# describing the amount of reposts a note you were tagged in received
+name__and__count__others_reposted_a_note_you_were_tagged_in_08e1 =
+    { $count ->
+        [one] { $name } และอีก { $count } คน รีโพสต์โน้ตที่คุณถูกแท็ก
+       *[other] { $name } และอีก { $count } คน รีโพสต์โน้ตที่คุณถูกแท็ก
+    }
+# describing the amount of reposts your note received
+name__and__count__others_reposted_your_note_70a0 =
+    { $count ->
+        [one] { $name } และอีก { $count } คน รีโพสต์โน้ตของคุณ
+       *[other] { $name } และอีก { $count } คน รีโพสต์โน้ตของคุณ
     }

@@ -33,6 +33,8 @@ Add_External_Notifications_Column_41ae = Añadir columna de notificaciones exter
 Add_Hashtag_Column_ebf4 = Añadir columna de hashtags
 # Column title for adding last notes column
 Add_Last_Notes_Column_bbad = Añadir columna de últimas notas
+# Tooltip text for adding a new deck button
+Add_new_deck_f2fc = Añadir nuevo deck
 # Column title for adding notifications column
 Add_Notifications_Column_79f8 = Añadir columna de notificaciones
 # Button label to add a relay
@@ -93,6 +95,8 @@ Copy_Link_dc7c = Copiar enlace
 Copy_Note_ID_6b45 = Copiar ID de nota
 # Copy the raw note data in JSON format to clipboard
 Copy_Note_JSON_9e4e = Copiar JSON de nota
+# Tooltip text for copying npub to clipboard
+Copy_npub_to_clipboard_c105 = Copiar npub al portapapeles
 # Copy the author's public key to clipboard
 Copy_Pubkey_9cc4 = Copiar pubkey
 # Copy the text content of the note to clipboard
@@ -141,6 +145,8 @@ Delete_Wallet_d1d4 = Eliminar monedero
 Display_name_f9d9 = Nombre para mostrar
 # Domain identification message
 domain___will_be_used_for_identification_b67e = "{ $domain }" se utilizará para la identificación
+# Button to indicate that the user is done going through the onboarding process.
+Done_50dd = Listo
 # Column title for editing deck
 Edit_Deck_4018 = Editar deck
 # Button label to edit a deck
@@ -162,7 +168,7 @@ Enter_your_public_key__npub___nostr_address__e_g___address____or_private_key__ns
 # Label for find user button
 Find_User_bd12 = Buscar usuario
 # Label for font size, Appearance settings section
-Font_size_dd73 = Font size:
+Font_size_dd73 = Tamaño de la fuente:
 # Title for hashtags column
 Hashtags_f8e0 = Hashtags
 # Title for Home column
@@ -191,6 +197,8 @@ k_50K_c2dc = 50.000
 k_5K_f7e6 = 5.000
 # Description for your notes column
 Keep_track_of_your_notes___replies_a334 = Haz seguimiento de tus notas y respuestas
+# label for keys setting section
+Keys_435f = Claves
 # Label for language, Appearance settings section
 Language_e264 = Idioma:
 # Title for last note per user column
@@ -209,6 +217,14 @@ Media_from_someone_you_don_t_follow_5611 = Contenido multimedia de alguien que n
 Moves_this_column_to_another_position_0d4b = Mueve esta columna a otra posición
 # Title for the user's deck
 My_Deck_4ac5 = Mi deck
+# reaction from user to a note you were tagged in
+name__reacted_to_a_note_you_were_tagged_in_4b62 = { $name } ha reaccionado a una nota en la que te han etiquetado
+# reaction from user to your note
+name__reacted_to_your_note_ead9 = { $name } ha reaccionado a tu nota
+# repost from user
+name__reposted_a_note_you_were_tagged_in_1379 = { $name } ha vuelto a publicar una nota en la que te han etiquetado
+# repost from user
+name__reposted_your_note_1379 = { $name } ha vuelto a publicar tu nota
 # Label asking if the user is new to Nostr. Underneath this label is a button to create an account.
 New_to_Nostr_a2fd = ¿Primera vez en Nostr?
 # NIP-05 identity field label
@@ -236,7 +252,9 @@ Notifications_ef56 = Notificaciones
 # Relative time for very recent events (less than 3 seconds)
 now_2181 = ahora
 # Setting to turn on sorting replies so that the newest are shown first
-On_f412 = On
+On_f412 = Activado
+# Column title for finding users to follow
+Onboarding_4a25 = Incorporación
 # Button label to open email client
 Open_Email_25e9 = Abrir correo electrónico
 # Instruction to open email client
@@ -257,6 +275,8 @@ Post_now_8a49 = Publicar ahora
 Press_the_button_below_to_copy_your_most_recent_logs_to_your_system_s_clipboard__Then_paste_it_into_your_email_322e = Presiona el siguiente botón para copiar los registros más recientes al portapapeles del sistema. A continuación, pégalos en tu correo electrónico.
 # Profile picture URL field label
 Profile_picture_81ff = Imagen de perfil
+# label describing public key
+PUBLIC_ACCOUNT_ID_4394 = ID DE CUENTA PÚBLICA
 # Column title for quote composition
 Quote_475c = Citar
 # Error message when quote note cannot be found
@@ -290,7 +310,7 @@ Repost_this_note_8e56 = Volver a publicar esta nota
 # Label for reposted notes
 Reposted_61c8 = Publicadas de nuevo
 # Label for reset note body font size, Appearance settings section
-Reset_4e60 = Reset
+Reset_4e60 = Restablecer
 # Label for reset zoom level, Appearance settings section
 Reset_62d4 = Restablecer
 # Heading for support section
@@ -309,10 +329,14 @@ Search_c573 = Búsqueda
 Search_notes_42a6 = Buscar notas...
 # Search in progress message
 Searching_for___query_5d18 = Buscando '{ $query }'
+# label describing secret key
+SECRET_ACCOUNT_LOGIN_KEY_8440 = CLAVE DE INICIO DE SESIÓN DE CUENTA SECRETA
 # Description for Home column
 See_notes_from_your_contacts_ac16 = Ver notas de tus contactos
 # Description for universe column
 See_the_whole_nostr_universe_7694 = Ver todo el universo de nostr
+# Button to select all profiles in follow pack
+Select_All_a319 = Seleccionar todo
 # Button label to send a zap
 Send_1ea4 = Enviar
 # Column title for app settings
@@ -326,7 +350,7 @@ Someone_else_s_Notes_7e5f = Notas de otra persona
 # Title for someone else's notifications column
 Someone_else_s_Notifications_82e6 = Notificaciones de otra persona
 # Label for Sort replies newest first, others settings section
-Sort_replies_newest_first_b6c3 = Sort replies newest first:
+Sort_replies_newest_first_b6c3 = Ordenar las respuestas más recientes primero:
 # Description for contact list column
 Source_the_last_note_for_each_user_in_your_contact_list_e157 = Busca la última nota de cada usuario en tu lista de contactos
 # Description for hashtags column
@@ -352,7 +376,7 @@ Subscribe_to_someone_else_s_notes_d1e9 = Suscribirse a las notas de otra persona
 # Column title for subscribing to individual user
 Subscribe_to_someone_s_notes_b3c8 = Suscribirse a las notas de alguien
 # Support email address
-Support_email_44d9 = Support email:
+Support_email_44d9 = Correo electrónico de ayuda:
 # Hover text for dark mode toggle button
 Switch_to_dark_mode_4dec = Cambiar a modo oscuro
 # Hover text for light mode toggle button
@@ -405,6 +429,30 @@ Zoom_Level_29a8 = Nivel de zoom:
 # Search results count
 Got__count__results_for___query_85fb =
     { $count ->
-        [uno] Obtuvo { $count } resultado para '{ $query }'
-       *[otro] Obtuvo { $count } resultados para '{ $query }'
+        [uno] Se ha obtenido { $count } resultado para '{ $query }'
+       *[otro] Se han obtenido { $count } resultados para '{ $query }'
+    }
+# amount of reactions a note you were tagged in received
+name__and__count__others_reacted_to_a_note_you_were_tagged_in_181a =
+    { $count ->
+        [one] { $name } y { $count } persona más han reaccionado a una nota en la que te han etiquetado
+       *[other] { $name } y { $count } personas más han reaccionado a una nota en la que te han etiquetado
+    }
+# describing the amount of reactions your note received
+name__and__count__others_reacted_to_your_note_0f6a =
+    { $count ->
+        [one] { $name } y { $count } persona más han reaccionado a tu nota
+       *[other] { $name } y { $count } personas más han reaccionado a tu nota
+    }
+# describing the amount of reposts a note you were tagged in received
+name__and__count__others_reposted_a_note_you_were_tagged_in_08e1 =
+    { $count ->
+        [one] { $name } y { $count } persona más han vuelto a publicar una nota en la que te han etiquetado
+       *[other] { $name } y { $count } personas más han vuelto a publicar una nota en la que te han etiquetado
+    }
+# describing the amount of reposts your note received
+name__and__count__others_reposted_your_note_70a0 =
+    { $count ->
+        [one] { $name } y { $count } persona han vuelto a publicar tu nota
+       *[other] { $name } y { $count } personas más han vuelto a publicar tu nota
     }
