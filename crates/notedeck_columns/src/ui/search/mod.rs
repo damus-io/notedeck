@@ -3,6 +3,7 @@ use enostr::{NoteId, Pubkey};
 use state::TypingType;
 
 use crate::{
+    nav::BodyResponse,
     timeline::{TimelineTab, TimelineUnits},
     ui::timeline::TimelineTabView,
 };
@@ -49,11 +50,11 @@ impl<'a, 'd> SearchView<'a, 'd> {
         }
     }
 
-    pub fn show(&mut self, ui: &mut egui::Ui) -> Option<NoteAction> {
+    pub fn show(&mut self, ui: &mut egui::Ui) -> BodyResponse<NoteAction> {
         padding(8.0, ui, |ui| self.show_impl(ui)).inner
     }
 
-    pub fn show_impl(&mut self, ui: &mut egui::Ui) -> Option<NoteAction> {
+    pub fn show_impl(&mut self, ui: &mut egui::Ui) -> BodyResponse<NoteAction> {
         ui.spacing_mut().item_spacing = egui::vec2(0.0, 12.0);
 
         let search_resp = search_box(
@@ -67,7 +68,7 @@ impl<'a, 'd> SearchView<'a, 'd> {
         search_resp.process(self.query);
 
         let mut search_action = None;
-        let mut note_action = None;
+        let mut body_resp = BodyResponse::none();
         match &self.query.state {
             SearchState::New | SearchState::Navigating => {}
             SearchState::Typing(TypingType::Mention(mention_name)) => 's: {
@@ -87,7 +88,11 @@ impl<'a, 'd> SearchView<'a, 'd> {
                 )
                 .show_in_rect(ui.available_rect_before_wrap(), ui);
 
-                search_action = match search_res {
+                let Some(res) = search_res.output else {
+                    break 's;
+                };
+
+                search_action = match res {
                     MentionPickerResponse::SelectResult(Some(index)) => {
                         let Some(pk_bytes) = results.get(index) else {
                             break 's;
@@ -120,7 +125,7 @@ impl<'a, 'd> SearchView<'a, 'd> {
                     &mut self.query.notes,
                 );
                 search_action = Some(SearchAction::Searched);
-                note_action = self.show_search_results(ui);
+                body_resp.insert(self.show_search_results(ui));
             }
             SearchState::Searched => {
                 ui.label(tr_plural!(
@@ -131,7 +136,7 @@ impl<'a, 'd> SearchView<'a, 'd> {
                     self.query.notes.units.len(),        // count
                     query = &self.query.string
                 ));
-                note_action = self.show_search_results(ui);
+                body_resp.insert(self.show_search_results(ui));
             }
             SearchState::Typing(TypingType::AutoSearch) => {
                 ui.label(tr!(
@@ -141,7 +146,7 @@ impl<'a, 'd> SearchView<'a, 'd> {
                     query = &self.query.string
                 ));
 
-                note_action = self.show_search_results(ui);
+                body_resp.insert(self.show_search_results(ui));
             }
         };
 
@@ -149,11 +154,11 @@ impl<'a, 'd> SearchView<'a, 'd> {
             resp.process(self.query);
         }
 
-        note_action
+        body_resp
     }
 
-    fn show_search_results(&mut self, ui: &mut egui::Ui) -> Option<NoteAction> {
-        egui::ScrollArea::vertical()
+    fn show_search_results(&mut self, ui: &mut egui::Ui) -> BodyResponse<NoteAction> {
+        let scroll_out = egui::ScrollArea::vertical()
             .id_salt(SearchView::scroll_id())
             .show(ui, |ui| {
                 TimelineTabView::new(
@@ -164,8 +169,9 @@ impl<'a, 'd> SearchView<'a, 'd> {
                     self.jobs,
                 )
                 .show(ui)
-            })
-            .inner
+            });
+
+        BodyResponse::scroll(scroll_out)
     }
 
     pub fn scroll_id() -> egui::Id {

@@ -7,6 +7,7 @@ use notedeck_ui::nip51_set::Nip51SetUiCache;
 pub use crate::accounts::route::AccountsResponse;
 use crate::app::get_active_columns_mut;
 use crate::decks::DecksCache;
+use crate::nav::BodyResponse;
 use crate::onboarding::Onboarding;
 use crate::profile::send_new_contact_list;
 use crate::subscriptions::Subscriptions;
@@ -81,7 +82,7 @@ pub fn render_accounts_route(
     onboarding: &mut Onboarding,
     follow_packs_ui: &mut Nip51SetUiCache,
     route: AccountsRoute,
-) -> Option<AccountsResponse> {
+) -> BodyResponse<AccountsResponse> {
     match route {
         AccountsRoute::Accounts => AccountsView::new(
             app_ctx.ndb,
@@ -90,15 +91,15 @@ pub fn render_accounts_route(
             app_ctx.i18n,
         )
         .ui(ui)
-        .inner
-        .map(AccountsRouteResponse::Accounts)
-        .map(AccountsResponse::Account),
+        .map_output(AccountsRouteResponse::Accounts)
+        .map_output(AccountsResponse::Account),
         AccountsRoute::AddAccount => {
-            AccountLoginView::new(login_state, app_ctx.clipboard, app_ctx.i18n)
+            let action = AccountLoginView::new(login_state, app_ctx.clipboard, app_ctx.i18n)
                 .ui(ui)
                 .inner
                 .map(AccountsRouteResponse::AddAccount)
-                .map(AccountsResponse::Account)
+                .map(AccountsResponse::Account);
+            BodyResponse::output(action)
         }
         AccountsRoute::Onboarding => FollowPackOnboardingView::new(
             onboarding,
@@ -110,7 +111,7 @@ pub fn render_accounts_route(
             jobs,
         )
         .ui(ui)
-        .map(|r| match r {
+        .map_output(|r| match r {
             OnboardingResponse::FollowPacks(follow_packs_response) => {
                 AccountsResponse::Account(AccountsRouteResponse::AddAccount(
                     AccountLoginResponse::Onboarding(follow_packs_response),

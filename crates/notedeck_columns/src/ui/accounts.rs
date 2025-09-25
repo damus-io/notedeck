@@ -9,6 +9,8 @@ use notedeck_ui::profile::preview::SimpleProfilePreview;
 
 use notedeck_ui::app_images;
 
+use crate::nav::BodyResponse;
+
 pub struct AccountsView<'a> {
     ndb: &'a Ndb,
     accounts: &'a Accounts,
@@ -44,20 +46,26 @@ impl<'a> AccountsView<'a> {
         }
     }
 
-    pub fn ui(&mut self, ui: &mut Ui) -> InnerResponse<Option<AccountsViewResponse>> {
+    pub fn ui(&mut self, ui: &mut Ui) -> BodyResponse<AccountsViewResponse> {
+        let mut out = BodyResponse::none();
         Frame::new().outer_margin(12.0).show(ui, |ui| {
             if let Some(resp) = Self::top_section_buttons_widget(ui, self.i18n).inner {
-                return Some(resp);
+                out.set_output(resp);
             }
 
             ui.add_space(8.0);
-            scroll_area()
+            let scroll_out = scroll_area()
                 .id_salt(AccountsView::scroll_id())
                 .show(ui, |ui| {
                     Self::show_accounts(ui, self.accounts, self.ndb, self.img_cache, self.i18n)
-                })
-                .inner
-        })
+                });
+
+            out.set_scroll_id(&scroll_out);
+            if let Some(scroll_output) = scroll_out.inner {
+                out.set_output(scroll_output);
+            }
+        });
+        out
     }
 
     pub fn scroll_id() -> egui::Id {

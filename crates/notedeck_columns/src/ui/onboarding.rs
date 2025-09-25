@@ -8,7 +8,7 @@ use notedeck_ui::{
     nip51_set::{Nip51SetUiCache, Nip51SetWidget, Nip51SetWidgetAction, Nip51SetWidgetFlags},
 };
 
-use crate::{onboarding::Onboarding, ui::widgets::styled_button};
+use crate::{nav::BodyResponse, onboarding::Onboarding, ui::widgets::styled_button};
 
 /// Display Follow Packs for the user to choose from authors trusted by the Damus team
 pub struct FollowPackOnboardingView<'a> {
@@ -56,17 +56,17 @@ impl<'a> FollowPackOnboardingView<'a> {
         egui::Id::new("follow_pack_onboarding")
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui) -> Option<OnboardingResponse> {
+    pub fn ui(&mut self, ui: &mut egui::Ui) -> BodyResponse<OnboardingResponse> {
         let Some(follow_pack_state) = self.onboarding.get_follow_packs() else {
-            return Some(OnboardingResponse::FollowPacks(
+            return BodyResponse::output(Some(OnboardingResponse::FollowPacks(
                 FollowPacksResponse::NoFollowPacks,
-            ));
+            )));
         };
 
         let max_height = ui.available_height() - 48.0;
 
         let mut action = None;
-        ScrollArea::vertical()
+        let scroll_out = ScrollArea::vertical()
             .id_salt(Self::scroll_id())
             .max_height(max_height)
             .show(ui, |ui| {
@@ -114,6 +114,6 @@ impl<'a> FollowPackOnboardingView<'a> {
             }
         });
 
-        action
+        BodyResponse::output(action).scroll_raw(scroll_out.id)
     }
 }

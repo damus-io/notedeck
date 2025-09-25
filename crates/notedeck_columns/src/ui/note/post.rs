@@ -1,5 +1,6 @@
 use crate::draft::{Draft, Drafts, MentionHint};
 use crate::media_upload::nostrbuild_nip96_upload;
+use crate::nav::BodyResponse;
 use crate::post::{downcast_post_buffer, MentionType, NewPost};
 use crate::ui::mentions_picker::MentionPickerView;
 use crate::ui::{self, Preview, PreviewConfig};
@@ -143,7 +144,7 @@ impl<'a, 'd> PostView<'a, 'd> {
         self
     }
 
-    fn editbox(&mut self, txn: &nostrdb::Transaction, ui: &mut egui::Ui) -> egui::Response {
+    fn editbox(&mut self, txn: &nostrdb::Transaction, ui: &mut egui::Ui) -> EditBoxResponse {
         ui.spacing_mut().item_spacing.x = 12.0;
 
         let pfp_size = 24.0;
@@ -221,37 +222,42 @@ impl<'a, 'd> PostView<'a, 'd> {
             self.draft.buffer.selected_mention = false;
         }
 
-        if let Some(cursor_index) = get_cursor_index(&out.state.cursor.char_range()) {
-            self.show_mention_hints(txn, ui, cursor_index, &out);
-        }
+        let mention_hints_drag_id =
+            if let Some(cursor_index) = get_cursor_index(&out.state.cursor.char_range()) {
+                self.show_mention_hints(txn, ui, cursor_index, &out)
+            } else {
+                None
+            };
 
         let focused = out.response.has_focus();
 
         ui.ctx()
             .data_mut(|d| d.insert_temp(PostView::id(), focused));
 
-        out.response
+        EditBoxResponse {
+            resp: out.response,
+            mention_hints_drag_id,
+        }
     }
 
     // Displays the mention picker and handles when one is selected.
+    // returns the drag id of the mention hint widget
     fn show_mention_hints(
         &mut self,
         txn: &nostrdb::Transaction,
         ui: &mut egui::Ui,
         cursor_index: usize,
         textedit_output: &TextEditOutput,
-    ) {
-        let Some(mention) = self.draft.buffer.get_mention(cursor_index) else {
-            return;
-        };
+    ) -> Option<egui::Id> {
+        let mention = self.draft.buffer.get_mention(cursor_index)?;
 
         if mention.info.mention_type != MentionType::Pending {
-            return;
+            return None;
         }
 
         if ui.ctx().input(|r| r.key_pressed(egui::Key::Escape)) {
             self.draft.buffer.delete_mention(mention.index);
-            return;
+            return None;
         }
 
         let mention_str = self.draft.buffer.get_mention_string(&mention);
@@ -274,10 +280,8 @@ impl<'a, 'd> PostView<'a, 'd> {
         }
 
         let hint_rect = {
-            let hint = if let Some(hint) = &self.draft.cur_mention_hint {
-                hint
-            } else {
-                return;
+            let Some(hint) = &self.draft.cur_mention_hint else {
+                return None;
             };
 
             let mut hint_rect = self.inner_rect;
@@ -285,9 +289,11 @@ impl<'a, 'd> PostView<'a, 'd> {
             hint_rect
         };
 
-        let Ok(res) = self.note_context.ndb.search_profile(txn, mention_str, 10) else {
-            return;
-        };
+        let res = self
+            .note_context
+            .ndb
+            .search_profile(txn, mention_str, 10)
+            .ok()?;
 
         let resp = MentionPickerView::new(
             self.note_context.img_cache,
@@ -298,7 +304,12 @@ impl<'a, 'd> PostView<'a, 'd> {
         .show_in_rect(hint_rect, ui);
 
         let mut selection_made = None;
-        match resp {
+
+        let Some(out) = resp.output else {
+            return resp.drag_id;
+        };
+
+        match out {
             ui::mentions_picker::MentionPickerResponse::SelectResult(selection) => {
                 if let Some(hint_index) = selection {
                     if let Some(pk) = res.get(hint_index) {
@@ -326,6 +337,8 @@ impl<'a, 'd> PostView<'a, 'd> {
         if let Some(selection) = selection_made {
             selection.process(ui.ctx(), textedit_output);
         }
+
+        resp.drag_id
     }
 
     fn focused(&self, ui: &egui::Ui) -> bool {
@@ -341,14 +354,25 @@ impl<'a, 'd> PostView<'a, 'd> {
         12
     }
 
-    pub fn ui(&mut self, txn: &Transaction, ui: &mut egui::Ui) -> PostResponse {
-        ScrollArea::vertical()
+    pub fn ui(&mut self, txn: &Transaction, ui: &mut egui::Ui) -> BodyResponse<PostResponse> {
+        let scroll_out = ScrollArea::vertical()
             .id_salt(PostView::scroll_id())
-            .show(ui, |ui| self.ui_no_scroll(txn, ui))
-            .inner
+            .show(ui, |ui| Some(self.ui_no_scroll(txn, ui)));
+
+        let scroll_id = scroll_out.id;
+        if let Some(inner) = scroll_out.inner {
+            inner // should override the PostView scroll for the mention scroll
+        } else {
+            BodyResponse::none()
+        }
+        .scroll_raw(scroll_id)
     }
 
-    pub fn ui_no_scroll(&mut self, txn: &Transaction, ui: &mut egui::Ui) -> PostResponse {
+    pub fn ui_no_scroll(
+        &mut self,
+        txn: &Transaction,
+        ui: &mut egui::Ui,
+    ) -> BodyResponse<PostResponse> {
         while let Some(selected_file) = get_next_selected_file() {
             match selected_file {
                 Ok(selected_media) => {
@@ -393,7 +417,7 @@ impl<'a, 'd> PostView<'a, 'd> {
             .inner
     }
 
-    fn input_ui(&mut self, txn: &Transaction, ui: &mut egui::Ui) -> PostResponse {
+    fn input_ui(&mut self, txn: &Transaction, ui: &mut egui::Ui) -> BodyResponse<PostResponse> {
         let edit_response = ui.horizontal(|ui| self.editbox(txn, ui)).inner;
 
         let note_response = if let PostType::Quote(id) = self.post_type {
@@ -445,10 +469,14 @@ impl<'a, 'd> PostView<'a, 'd> {
             .and_then(|nr| nr.action.map(PostAction::QuotedNoteAction))
             .or(post_action.map(PostAction::NewPostAction));
 
-        PostResponse {
-            action,
-            edit_response,
+        let mut resp = BodyResponse::output(action);
+        if let Some(drag_id) = edit_response.mention_hints_drag_id {
+            resp.set_drag_id_raw(drag_id);
         }
+        resp.maybe_map_output(|action| PostResponse {
+            action,
+            edit_response: edit_response.resp,
+        })
     }
 
     fn input_buttons(&mut self, ui: &mut egui::Ui) -> Option<NewPostAction> {
@@ -594,6 +622,11 @@ impl<'a, 'd> PostView<'a, 'd> {
             self.draft.upload_errors.remove(i);
         }
     }
+}
+
+struct EditBoxResponse {
+    resp: egui::Response,
+    mention_hints_drag_id: Option<egui::Id>,
 }
 
 #[allow(clippy::too_many_arguments)]

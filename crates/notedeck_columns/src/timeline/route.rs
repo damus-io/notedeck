@@ -1,5 +1,5 @@
 use crate::{
-    nav::RenderNavAction,
+    nav::{BodyResponse, RenderNavAction},
     profile::ProfileAction,
     timeline::{thread::Threads, ThreadSelection, TimelineCache, TimelineKind},
     ui::{self, ProfileView},
@@ -20,7 +20,7 @@ pub fn render_timeline_route(
     note_context: &mut NoteContext,
     jobs: &mut JobsCache,
     scroll_to_top: bool,
-) -> Option<RenderNavAction> {
+) -> BodyResponse<RenderNavAction> {
     match kind {
         TimelineKind::List(_)
         | TimelineKind::Search(_)
@@ -29,11 +29,11 @@ pub fn render_timeline_route(
         | TimelineKind::Universe
         | TimelineKind::Hashtag(_)
         | TimelineKind::Generic(_) => {
-            let note_action =
+            let resp =
                 ui::TimelineView::new(kind, timeline_cache, note_context, note_options, jobs, col)
                     .ui(ui);
 
-            note_action.map(RenderNavAction::NoteAction)
+            resp.map_output(RenderNavAction::NoteAction)
         }
 
         TimelineKind::Profile(pubkey) => {
@@ -49,7 +49,7 @@ pub fn render_timeline_route(
                 )
             } else {
                 // we render profiles like timelines if they are at the root
-                let note_action = ui::TimelineView::new(
+                let resp = ui::TimelineView::new(
                     kind,
                     timeline_cache,
                     note_context,
@@ -60,7 +60,7 @@ pub fn render_timeline_route(
                 .scroll_to_top(scroll_to_top)
                 .ui(ui);
 
-                note_action.map(RenderNavAction::NoteAction)
+                resp.map_output(RenderNavAction::NoteAction)
             }
         }
     }
@@ -75,7 +75,7 @@ pub fn render_thread_route(
     ui: &mut egui::Ui,
     note_context: &mut NoteContext,
     jobs: &mut JobsCache,
-) -> Option<RenderNavAction> {
+) -> BodyResponse<RenderNavAction> {
     // don't truncate thread notes for now, since they are
     // default truncated everywher eelse
     note_options.set(NoteOptions::Truncate, false);
@@ -92,7 +92,7 @@ pub fn render_thread_route(
         col,
     )
     .ui(ui)
-    .map(Into::into)
+    .map_output(RenderNavAction::NoteAction)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -104,7 +104,7 @@ pub fn render_profile_route(
     note_options: NoteOptions,
     note_context: &mut NoteContext,
     jobs: &mut JobsCache,
-) -> Option<RenderNavAction> {
+) -> BodyResponse<RenderNavAction> {
     let profile_view = ProfileView::new(
         pubkey,
         col,
@@ -115,23 +115,19 @@ pub fn render_profile_route(
     )
     .ui(ui);
 
-    if let Some(action) = profile_view {
-        match action {
-            ui::profile::ProfileViewAction::EditProfile => note_context
-                .accounts
-                .get_full(pubkey)
-                .map(|kp| RenderNavAction::ProfileAction(ProfileAction::Edit(kp.to_full()))),
-            ui::profile::ProfileViewAction::Note(note_action) => {
-                Some(RenderNavAction::NoteAction(note_action))
-            }
-            ui::profile::ProfileViewAction::Follow(target_key) => Some(
-                RenderNavAction::ProfileAction(ProfileAction::Follow(target_key)),
-            ),
-            ui::profile::ProfileViewAction::Unfollow(target_key) => Some(
-                RenderNavAction::ProfileAction(ProfileAction::Unfollow(target_key)),
-            ),
+    profile_view.map_output_maybe(|action| match action {
+        ui::profile::ProfileViewAction::EditProfile => note_context
+            .accounts
+            .get_full(pubkey)
+            .map(|kp| RenderNavAction::ProfileAction(ProfileAction::Edit(kp.to_full()))),
+        ui::profile::ProfileViewAction::Note(note_action) => {
+            Some(RenderNavAction::NoteAction(note_action))
         }
-    } else {
-        None
-    }
+        ui::profile::ProfileViewAction::Follow(target_key) => Some(RenderNavAction::ProfileAction(
+            ProfileAction::Follow(target_key),
+        )),
+        ui::profile::ProfileViewAction::Unfollow(target_key) => Some(
+            RenderNavAction::ProfileAction(ProfileAction::Unfollow(target_key)),
+        ),
+    })
 }

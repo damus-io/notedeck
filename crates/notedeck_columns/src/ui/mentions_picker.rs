@@ -11,6 +11,8 @@ use notedeck_ui::{
 };
 use tracing::error;
 
+use crate::nav::BodyResponse;
+
 /// Displays user profiles for the user to pick from.
 /// Useful for manually typing a username and selecting the profile desired
 pub struct MentionPickerView<'a> {
@@ -64,7 +66,11 @@ impl<'a> MentionPickerView<'a> {
         MentionPickerResponse::SelectResult(selection)
     }
 
-    pub fn show_in_rect(&mut self, rect: egui::Rect, ui: &mut egui::Ui) -> MentionPickerResponse {
+    pub fn show_in_rect(
+        &mut self,
+        rect: egui::Rect,
+        ui: &mut egui::Ui,
+    ) -> BodyResponse<MentionPickerResponse> {
         let widget_id = ui.id().with("mention_results");
         let area_resp = egui::Area::new(widget_id)
             .order(egui::Order::Foreground)
@@ -102,14 +108,16 @@ impl<'a> MentionPickerView<'a> {
                         let scroll_resp = ScrollArea::vertical()
                             .max_width(rect.width())
                             .auto_shrink(Vec2b::FALSE)
-                            .show(ui, |ui| self.show(ui, width));
+                            .show(ui, |ui| Some(self.show(ui, width)));
                         ui.advance_cursor_after_rect(rect);
 
-                        if close_button_resp {
-                            MentionPickerResponse::DeleteMention
-                        } else {
-                            scroll_resp.inner
-                        }
+                        BodyResponse::scroll(scroll_resp).map_output(|o| {
+                            if close_button_resp {
+                                MentionPickerResponse::DeleteMention
+                            } else {
+                                o
+                            }
+                        })
                     })
                     .inner
             });

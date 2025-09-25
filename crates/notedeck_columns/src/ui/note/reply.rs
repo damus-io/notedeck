@@ -1,4 +1,5 @@
 use crate::draft::Draft;
+use crate::nav::BodyResponse;
 use crate::ui::{
     self,
     note::{PostAction, PostResponse, PostType},
@@ -52,16 +53,23 @@ impl<'a, 'd> PostReplyView<'a, 'd> {
         PostReplyView::id(col, note_id).with("scroll")
     }
 
-    pub fn show(&mut self, ui: &mut egui::Ui) -> PostResponse {
-        ScrollArea::vertical()
+    pub fn show(&mut self, ui: &mut egui::Ui) -> BodyResponse<PostResponse> {
+        let scroll_out = ScrollArea::vertical()
             .id_salt(self.scroll_id)
             .stick_to_bottom(true)
-            .show(ui, |ui| self.show_internal(ui))
-            .inner
+            .show(ui, |ui| Some(self.show_internal(ui)));
+
+        let scroll_id = scroll_out.id;
+        if let Some(inner) = scroll_out.inner {
+            inner
+        } else {
+            BodyResponse::none()
+        }
+        .scroll_raw(scroll_id)
     }
 
     // no scroll
-    fn show_internal(&mut self, ui: &mut egui::Ui) -> PostResponse {
+    fn show_internal(&mut self, ui: &mut egui::Ui) -> BodyResponse<PostResponse> {
         ui.vertical(|ui| {
             let avail_rect = ui.available_rect_before_wrap();
 
@@ -103,17 +111,22 @@ impl<'a, 'd> PostReplyView<'a, 'd> {
                 .ui_no_scroll(self.note.txn().unwrap(), ui)
             };
 
-            post_response.action = post_response
-                .action
-                .or(quoted_note.action.map(PostAction::QuotedNoteAction));
+            post_response = post_response.map_output(|mut o| {
+                o.action = o
+                    .action
+                    .or(quoted_note.action.map(PostAction::QuotedNoteAction));
+                o
+            });
 
-            reply_line_ui(
-                &rect_before_post,
-                &post_response.edit_response,
-                pfp_offset as f32,
-                &avail_rect,
-                ui,
-            );
+            if let Some(p) = &post_response.output {
+                reply_line_ui(
+                    &rect_before_post,
+                    &p.edit_response,
+                    pfp_offset as f32,
+                    &avail_rect,
+                    ui,
+                );
+            }
 
             //
             // NOTE(jb55): We add some space so that you can scroll to

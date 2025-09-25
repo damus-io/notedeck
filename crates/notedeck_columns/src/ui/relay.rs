@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use crate::nav::BodyResponse;
 use crate::ui::{Preview, PreviewConfig};
 use egui::{Align, Button, CornerRadius, Frame, Id, Layout, Margin, Rgba, RichText, Ui, Vec2};
 use enostr::{RelayPool, RelayStatus};
@@ -17,9 +18,8 @@ pub struct RelayView<'a> {
 }
 
 impl RelayView<'_> {
-    pub fn ui(&mut self, ui: &mut egui::Ui) -> Option<RelayAction> {
-        let mut action = None;
-        Frame::new()
+    pub fn ui(&mut self, ui: &mut egui::Ui) -> BodyResponse<RelayAction> {
+        let scroll_out = Frame::new()
             .inner_margin(Margin::symmetric(10, 0))
             .show(ui, |ui| {
                 ui.add_space(24.0);
@@ -40,6 +40,7 @@ impl RelayView<'_> {
                     .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
                     .auto_shrink([false; 2])
                     .show(ui, |ui| {
+                        let mut action = None;
                         if let Some(relay_to_remove) = self.show_relays(ui) {
                             action = Some(RelayAction::Remove(relay_to_remove));
                         }
@@ -47,10 +48,12 @@ impl RelayView<'_> {
                         if let Some(relay_to_add) = self.show_add_relay_ui(ui) {
                             action = Some(RelayAction::Add(relay_to_add));
                         }
-                    });
-            });
+                        action
+                    })
+            })
+            .inner;
 
-        action
+        BodyResponse::scroll(scroll_out)
     }
 
     pub fn scroll_id() -> egui::Id {

@@ -16,7 +16,11 @@ use notedeck_ui::{
     AnimationHelper, NoteOptions, NoteView,
 };
 
-use crate::{nav::RouterAction, ui::account_login_view::eye_button, Damus, Route};
+use crate::{
+    nav::{BodyResponse, RouterAction},
+    ui::account_login_view::eye_button,
+    Damus, Route,
+};
 
 const PREVIEW_NOTE_ID: &str = "note1edjc8ggj07hwv77g2405uh6j2jkk5aud22gktxrvc2wnre4vdwgqzlv2gw";
 
@@ -638,13 +642,12 @@ impl<'a> SettingsView<'a> {
         action
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui) -> Option<SettingsAction> {
-        let mut action: Option<SettingsAction> = None;
-
-        Frame::default()
+    pub fn ui(&mut self, ui: &mut egui::Ui) -> BodyResponse<SettingsAction> {
+        let scroll_out = Frame::default()
             .inner_margin(Margin::symmetric(10, 10))
             .show(ui, |ui| {
                 ScrollArea::vertical().show(ui, |ui| {
+                    let mut action = None;
                     if let Some(new_action) = self.appearance_section(ui) {
                         action = Some(new_action);
                     }
@@ -670,10 +673,12 @@ impl<'a> SettingsView<'a> {
                     if let Some(new_action) = self.manage_relays_section(ui) {
                         action = Some(new_action);
                     }
-                });
-            });
+                    action
+                })
+            })
+            .inner;
 
-        action
+        BodyResponse::scroll(scroll_out)
     }
 }
 

@@ -12,6 +12,7 @@ use notedeck_ui::{ProfilePic, ProfilePreview};
 use std::f32::consts::PI;
 use tracing::{error, warn};
 
+use crate::nav::BodyResponse;
 use crate::timeline::{
     CompositeType, CompositeUnit, NoteUnit, ReactionUnit, RepostUnit, TimelineCache, TimelineKind,
     TimelineTab, ViewFilter,
@@ -56,7 +57,7 @@ impl<'a, 'd> TimelineView<'a, 'd> {
         }
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui) -> Option<NoteAction> {
+    pub fn ui(&mut self, ui: &mut egui::Ui) -> BodyResponse<NoteAction> {
         timeline_ui(
             ui,
             self.timeline_id,
@@ -94,7 +95,7 @@ fn timeline_ui(
     jobs: &mut JobsCache,
     col: usize,
     scroll_to_top: bool,
-) -> Option<NoteAction> {
+) -> BodyResponse<NoteAction> {
     //padding(4.0, ui, |ui| ui.heading("Notifications"));
     /*
     let font_id = egui::TextStyle::Body.resolve(ui.style());
@@ -102,7 +103,9 @@ fn timeline_ui(
 
     */
 
-    let scroll_id = TimelineView::scroll_id(timeline_cache, timeline_id, col)?;
+    let Some(scroll_id) = TimelineView::scroll_id(timeline_cache, timeline_id, col) else {
+        return BodyResponse::none();
+    };
 
     {
         let timeline = if let Some(timeline) = timeline_cache.get_mut(timeline_id) {
@@ -111,7 +114,7 @@ fn timeline_ui(
             error!("tried to render timeline in column, but timeline was missing");
             // TODO (jb55): render error when timeline is missing?
             // this shouldn't happen...
-            return None;
+            return BodyResponse::none();
         };
 
         timeline.selected_view = tabs_ui(
@@ -204,7 +207,9 @@ fn timeline_ui(
             .data_mut(|d| d.insert_temp(show_top_button_id, true));
     }
 
-    scroll_output.inner.or_else(|| {
+    let scroll_id = scroll_output.id;
+
+    let action = scroll_output.inner.or_else(|| {
         // if we're scrolling, return that as a response. We need this
         // for auto-closing the side menu
 
@@ -215,7 +220,9 @@ fn timeline_ui(
         } else {
             None
         }
-    })
+    });
+
+    BodyResponse::output(action).scroll_raw(scroll_id)
 }
 
 fn goto_top_button(center: Pos2) -> impl egui::Widget {

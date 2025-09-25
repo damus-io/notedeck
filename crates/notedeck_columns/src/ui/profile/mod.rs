@@ -10,6 +10,7 @@ use robius_open::Uri;
 use tracing::error;
 
 use crate::{
+    nav::BodyResponse,
     timeline::{TimelineCache, TimelineKind},
     ui::timeline::{tabs_ui, TimelineTabView},
 };
@@ -68,13 +69,16 @@ impl<'a, 'd> ProfileView<'a, 'd> {
         egui::Id::new(("profile_scroll", col_id, profile_pubkey))
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui) -> Option<ProfileViewAction> {
+    pub fn ui(&mut self, ui: &mut egui::Ui) -> BodyResponse<ProfileViewAction> {
         let scroll_id = ProfileView::scroll_id(self.col_id, self.pubkey);
         let scroll_area = ScrollArea::vertical().id_salt(scroll_id).animated(false);
 
-        let profile_timeline = self
+        let Some(profile_timeline) = self
             .timeline_cache
-            .get_mut(&TimelineKind::Profile(*self.pubkey))?;
+            .get_mut(&TimelineKind::Profile(*self.pubkey))
+        else {
+            return BodyResponse::none();
+        };
 
         let output = scroll_area.show(ui, |ui| {
             let mut action = None;
@@ -132,7 +136,7 @@ impl<'a, 'd> ProfileView<'a, 'd> {
         // only allow front insert when the profile body is fully obstructed
         profile_timeline.enable_front_insert = output.inner.body_end_pos < ui.clip_rect().top();
 
-        output.inner.action
+        BodyResponse::output(output.inner.action).scroll_raw(output.id)
     }
 }
 

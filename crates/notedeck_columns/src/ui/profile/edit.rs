@@ -7,6 +7,8 @@ use notedeck::{profile::unwrap_profile_url, tr, Images, Localization, NotedeckTe
 use notedeck_ui::context_menu::{input_context, PasteBehavior};
 use notedeck_ui::{profile::banner, ProfilePic};
 
+use crate::nav::BodyResponse;
+
 pub struct EditProfileView<'a> {
     state: &'a mut ProfileState,
     clipboard: &'a mut Clipboard,
@@ -34,8 +36,8 @@ impl<'a> EditProfileView<'a> {
     }
 
     // return true to save
-    pub fn ui(&mut self, ui: &mut egui::Ui) -> bool {
-        ScrollArea::vertical()
+    pub fn ui(&mut self, ui: &mut egui::Ui) -> BodyResponse<bool> {
+        let scroll_out = ScrollArea::vertical()
             .id_salt(EditProfileView::scroll_id())
             .stick_to_bottom(true)
             .show(ui, |ui| {
@@ -71,9 +73,9 @@ impl<'a> EditProfileView<'a> {
                     });
                 });
 
-                save
-            })
-            .inner
+                Some(save)
+            });
+        BodyResponse::scroll(scroll_out)
     }
 
     fn inner(&mut self, ui: &mut egui::Ui, padding: f32) {
