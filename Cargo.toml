@@ -28,7 +28,7 @@ egui = { version = "0.31.1", features = ["serde"] }
 egui-wgpu = "0.31.1"
 egui_extras = { version = "0.31.1", features = ["all_loaders"] }
 egui-winit = { version = "0.31.1", features = ["android-game-activity", "clipboard"] }
-egui_nav = { git = "https://github.com/damus-io/egui-nav", rev = "e4231c19dda9e6791d2f7b5cd610b8db5ff9a7f9" }
+egui_nav = { git = "https://github.com/kernelkind/egui-nav", rev = "41e389c77dff7df548299028684cd2ffc32d7987" }
 egui_tabs = { git = "https://github.com/damus-io/egui-tabs", rev = "6eb91740577b374a8a6658c09c9a4181299734d0" }
 #egui_virtual_list = "0.6.0"
 egui_virtual_list = { git = "https://github.com/jb55/hello_egui", rev = "a66b6794f5e707a2f4109633770e02b02fb722e1" }

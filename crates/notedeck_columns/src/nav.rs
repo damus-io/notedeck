@@ -34,7 +34,9 @@ use crate::{
 };
 
 use egui::scroll_area::ScrollAreaOutput;
-use egui_nav::{Nav, NavAction, NavResponse, NavUiType, Percent, PopupResponse, PopupSheet};
+use egui_nav::{
+    Nav, NavAction, NavResponse, NavUiType, Percent, PopupResponse, PopupSheet, RouteResponse,
+};
 use enostr::ProfileState;
 use nostrdb::{Filter, Ndb, Transaction};
 use notedeck::{
@@ -1126,25 +1128,35 @@ pub fn render_nav(
                 .returning,
         )
         .show_mut(ui, |ui, render_type, nav| match render_type {
-            NavUiType::Title => NavTitle::new(
-                ctx.ndb,
-                ctx.img_cache,
-                get_active_columns_mut(ctx.i18n, ctx.accounts, &mut app.decks_cache),
-                nav.routes(),
-                col,
-                ctx.i18n,
-            )
-            .show_move_button(!narrow)
-            .show_delete_button(!narrow)
-            .show(ui),
+            NavUiType::Title => {
+                let action = NavTitle::new(
+                    ctx.ndb,
+                    ctx.img_cache,
+                    get_active_columns_mut(ctx.i18n, ctx.accounts, &mut app.decks_cache),
+                    nav.routes(),
+                    col,
+                    ctx.i18n,
+                )
+                .show_move_button(!narrow)
+                .show_delete_button(!narrow)
+                .show(ui);
+                RouteResponse {
+                    response: action,
+                    can_take_drag_from: Vec::new(),
+                }
+            }
 
             NavUiType::Body => {
-                if let Some(top) = nav.routes().last() {
+                let resp = if let Some(top) = nav.routes().last() {
                     render_nav_body(ui, app, ctx, top, nav.routes().len(), col, inner_rect)
                 } else {
                     BodyResponse::none()
+                };
+
+                RouteResponse {
+                    response: resp.output,
+                    can_take_drag_from: resp.drag_id.map(|d| vec![d]).unwrap_or(Vec::new()),
                 }
-                .output
             }
         });
 
