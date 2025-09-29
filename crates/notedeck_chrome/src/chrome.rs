@@ -5,10 +5,15 @@ use crate::app::NotedeckApp;
 use crate::ChromeOptions;
 use bitflags::bitflags;
 use eframe::CreationContext;
-use egui::{vec2, Button, Color32, Label, Layout, Rect, RichText, ThemePreference, Widget};
+use egui::{
+    vec2, Button, Color32, CornerRadius, Label, Layout, Rect, RichText, ThemePreference, Widget,
+};
 use egui_extras::{Size, StripBuilder};
+use egui_nav::RouteResponse;
+use egui_nav::{NavAction, NavDrawer};
 use nostrdb::{ProfileRecord, Transaction};
 use notedeck::AppResponse;
+use notedeck::DrawerRouter;
 use notedeck::Error;
 use notedeck::SoftKeyboardContext;
 use notedeck::{
@@ -32,6 +37,13 @@ pub struct Chrome {
     soft_kb_anim_state: AnimState,
 
     pub repaint_causes: HashMap<egui::RepaintCause, u64>,
+    nav: DrawerRouter,
+}
+
+#[derive(Clone)]
+enum ChromeRoute {
+    Chrome,
+    App,
 }
 
 pub enum ChromePanelAction {
@@ -186,94 +198,68 @@ impl Chrome {
     fn panel(
         &mut self,
         app_ctx: &mut AppContext,
-        builder: StripBuilder,
-        amt_open: f32,
+        ui: &mut egui::Ui,
         amt_keyboard_open: f32,
     ) -> Option<ChromePanelAction> {
-        let mut got_action: Option<ChromePanelAction> = None;
+        let drawer = NavDrawer::new(&ChromeRoute::App, &ChromeRoute::Chrome)
+            .navigating(self.nav.navigating)
+            .returning(self.nav.returning)
+            .drawer_focused(self.nav.drawer_focused)
+            .opened_offset(100.0);
 
-        builder
-            .size(Size::exact(amt_open)) // collapsible sidebar
-            .size(Size::remainder()) // the main app contents
-            .clip(true)
-            .horizontal(|mut hstrip| {
-                hstrip.cell(|ui| {
-                    let rect = ui.available_rect_before_wrap();
-                    if !ui.visuals().dark_mode {
-                        let rect = ui.available_rect_before_wrap();
-                        ui.painter().rect(
-                            rect,
-                            0,
-                            notedeck_ui::colors::ALMOST_WHITE,
-                            egui::Stroke::new(0.0, Color32::TRANSPARENT),
-                            egui::StrokeKind::Inside,
-                        );
-                    }
-
-                    StripBuilder::new(ui)
-                        .size(Size::remainder())
-                        .size(Size::remainder())
-                        .vertical(|mut vstrip| {
-                            vstrip.cell(|ui| {
-                                _ = ui.vertical_centered(|ui| {
-                                    self.topdown_sidebar(ui, app_ctx.i18n);
-                                })
-                            });
-
-                            vstrip.cell(|ui| {
-                                ui.with_layout(Layout::bottom_up(egui::Align::Center), |ui| {
-                                    let options = if amt_keyboard_open > 0.0 {
-                                        SidebarOptions::Compact
-                                    } else {
-                                        SidebarOptions::default()
-                                    };
-                                    if let Some(action) =
-                                        bottomup_sidebar(self, app_ctx, ui, options)
-                                    {
-                                        got_action = Some(action);
-                                    }
-                                });
-                            });
-                        });
-
-                    // vertical sidebar line
-                    ui.painter().vline(
-                        rect.right(),
-                        rect.y_range(),
-                        ui.visuals().widgets.noninteractive.bg_stroke,
-                    );
+        let resp = drawer.show_mut(ui, |ui, route| match route {
+            ChromeRoute::Chrome => {
+                ui.painter().rect_filled(
+                    ui.available_rect_before_wrap(),
+                    CornerRadius::ZERO,
+                    ui.visuals().panel_fill,
+                );
+                _ = ui.vertical_centered(|ui| {
+                    self.topdown_sidebar(ui, app_ctx.i18n);
                 });
 
-                hstrip.cell(|ui| {
-                    /*
-                    let rect = ui.available_rect_before_wrap();
-                    ui.painter().rect(
-                        rect,
-                        0,
-                        egui::Color32::RED,
-                        egui::Stroke::new(1.0, egui::Color32::BLUE),
-                        egui::StrokeKind::Inside,
-                    );
-                    */
+                ui.with_layout(Layout::bottom_up(egui::Align::Center), |ui| {
+                    let options = if amt_keyboard_open > 0.0 {
+                        SidebarOptions::Compact
+                    } else {
+                        SidebarOptions::default()
+                    };
+                    let response = bottomup_sidebar(self, app_ctx, ui, options);
 
-                    let resp = self.apps[self.active as usize].update(app_ctx, ui);
-                    if let Some(action) = resp.action {
-                        chrome_handle_app_action(self, app_ctx, action, ui);
+                    RouteResponse {
+                        response,
+                        can_take_drag_from: Vec::new(),
                     }
-                });
-            });
+                })
+                .inner
+            }
+            ChromeRoute::App => {
+                let resp = self.apps[self.active as usize].update(app_ctx, ui);
 
-        got_action
+                if let Some(action) = resp.action {
+                    chrome_handle_app_action(self, app_ctx, action, ui);
+                }
+
+                RouteResponse {
+                    response: None,
+                    can_take_drag_from: resp.can_take_drag_from,
+                }
+            }
+        });
+
+        if let Some(action) = resp.action {
+            if matches!(action, NavAction::Returned(_)) {
+                self.nav.closed();
+            } else if let NavAction::Navigating = action {
+                self.nav.navigating = false;
+            } else if let NavAction::Navigated = action {
+                self.nav.opened();
+            }
+        }
+
+        resp.drawer_response?
     }
 
-    /// How far is the chrome panel expanded?
-    fn amount_open(&self, ui: &mut egui::Ui) -> f32 {
-        let open_id = egui::Id::new("chrome_open");
-        let side_panel_width: f32 = 74.0;
-        ui.ctx()
-            .animate_bool(open_id, self.options.contains(ChromeOptions::IsOpen))
-            * side_panel_width
-    }
     /// Show the side menu or bar, depending on if we're on a narrow
     /// or wide screen.
     ///
@@ -282,7 +268,6 @@ impl Chrome {
     fn show(&mut self, ctx: &mut AppContext, ui: &mut egui::Ui) -> Option<ChromePanelAction> {
         ui.spacing_mut().item_spacing.x = 0.0;
 
-        let amt_open = self.amount_open(ui);
         let skb_anim =
             keyboard_visibility(ui, ctx, &mut self.options, &mut self.soft_kb_anim_state);
 
@@ -302,7 +287,7 @@ impl Chrome {
             .vertical(|mut strip| {
                 // the actual content, shifted up because of the soft keyboard
                 strip.cell(|ui| {
-                    action = self.panel(ctx, StripBuilder::new(ui), amt_open, keyboard_height);
+                    action = self.panel(ctx, ui, keyboard_height);
                 });
 
                 // the filler space taken up by the soft keyboard
@@ -374,6 +359,7 @@ impl Chrome {
 
             if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                 self.active = i as i32;
+                self.nav.close();
             }
         }
     }
@@ -383,6 +369,7 @@ impl notedeck::App for Chrome {
     fn update(&mut self, ctx: &mut notedeck::AppContext, ui: &mut egui::Ui) -> AppResponse {
         if let Some(action) = self.show(ctx, ui) {
             action.process(ctx, self, ui);
+            self.nav.close();
         }
         // TODO: unify this constant with the columns side panel width. ui crate?
         AppResponse::none()
