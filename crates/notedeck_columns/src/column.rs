@@ -1,6 +1,5 @@
 use crate::{
     actionbar::TimelineOpenResult,
-    drag::DragSwitch,
     route::{Route, Router, SingletonRouter},
     timeline::{Timeline, TimelineCache, TimelineKind},
 };
@@ -14,7 +13,6 @@ use tracing::warn;
 pub struct Column {
     pub router: Router<Route>,
     pub sheet_router: SingletonRouter<Route>,
-    pub drag: DragSwitch,
 }
 
 impl Column {
@@ -23,7 +21,6 @@ impl Column {
         Column {
             router,
             sheet_router: SingletonRouter::default(),
-            drag: DragSwitch::default(),
         }
     }
 
