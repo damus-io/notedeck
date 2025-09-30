@@ -25,8 +25,12 @@ pub fn unseen_notification(
         profiling::scope!("NotesFreshness::update closure");
         let filter = {
             profiling::scope!("NotesFreshness::update filter instantiation");
-            crate::timeline::kind::notifications_filter(&current_pk)
-                .since_mut(timestamp_last_viewed)
+            enostr::Filter::new_with_capacity(1)
+                .pubkeys([current_pk.bytes()])
+                .kinds(crate::timeline::kind::notification_kinds())
+                .limit(1)
+                .since(timestamp_last_viewed)
+                .build()
         };
         let txn = Transaction::new(ndb).expect("txn");
 
