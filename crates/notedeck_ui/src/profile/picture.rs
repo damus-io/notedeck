@@ -18,6 +18,7 @@ pub struct ProfilePic<'cache, 'url> {
 }
 
 impl egui::Widget for &mut ProfilePic<'_, '_> {
+    #[profiling::function]
     fn ui(self, ui: &mut egui::Ui) -> egui::Response {
         let inner = render_pfp(
             ui,

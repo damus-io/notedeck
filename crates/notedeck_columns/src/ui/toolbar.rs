@@ -3,6 +3,7 @@ use notedeck_ui::icons::{home_button, notifications_button};
 
 use crate::{toolbar::ToolbarAction, ui::side_panel::search_button_impl, Damus};
 
+#[profiling::function]
 pub fn toolbar(ui: &mut egui::Ui, unseen_notification: bool) -> Option<ToolbarAction> {
     use egui_tabs::{TabColor, Tabs};
 

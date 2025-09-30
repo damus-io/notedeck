@@ -446,6 +446,7 @@ impl Timeline {
         Ok(())
     }
 
+    #[profiling::function]
     pub fn poll_notes_into_view(
         &mut self,
         ndb: &Ndb,

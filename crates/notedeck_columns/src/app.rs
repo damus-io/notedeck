@@ -98,6 +98,7 @@ fn handle_egui_events(input: &egui::InputState, columns: &mut Columns) {
     }
 }
 
+#[profiling::function]
 fn try_process_event(
     damus: &mut Damus,
     app_ctx: &mut AppContext<'_>,
@@ -117,6 +118,7 @@ fn try_process_event(
     // NOTE: we don't use the while let loop due to borrow issues
     #[allow(clippy::while_let_loop)]
     loop {
+        profiling::scope!("receiving events");
         let ev = if let Some(ev) = app_ctx.pool.try_recv() {
             ev.into_owned()
         } else {
@@ -203,6 +205,7 @@ fn unknown_id_send(unknown_ids: &mut UnknownIds, pool: &mut RelayPool) {
     pool.send(&msg);
 }
 
+#[profiling::function]
 fn update_damus(damus: &mut Damus, app_ctx: &mut AppContext<'_>, ctx: &egui::Context) {
     app_ctx.img_cache.urls.cache.handle_io();
 
@@ -945,6 +948,7 @@ fn timelines_view(
 }
 
 impl notedeck::App for Damus {
+    #[profiling::function]
     fn update(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
         /*
         self.app

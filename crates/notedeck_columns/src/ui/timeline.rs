@@ -86,6 +86,7 @@ impl<'a, 'd> TimelineView<'a, 'd> {
 }
 
 #[allow(clippy::too_many_arguments)]
+#[profiling::function]
 fn timeline_ui(
     ui: &mut egui::Ui,
     timeline_id: &TimelineKind,
@@ -679,6 +680,7 @@ fn repost_description(
     }
 }
 
+#[profiling::function]
 fn render_note(
     ui: &mut egui::Ui,
     note_context: &mut NoteContext,
@@ -701,6 +703,7 @@ fn render_note(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[profiling::function]
 fn render_reaction_cluster(
     ui: &mut egui::Ui,
     note_context: &mut NoteContext,
@@ -946,6 +949,7 @@ struct PfpsResponse {
 }
 
 #[allow(clippy::too_many_arguments)]
+#[profiling::function]
 fn render_repost_cluster(
     ui: &mut egui::Ui,
     note_context: &mut NoteContext,

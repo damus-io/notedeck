@@ -208,6 +208,7 @@ impl RenderNavResponse {
     }
 
     #[must_use = "Make sure to save columns if result is true"]
+    #[profiling::function]
     pub fn process_render_nav_response(
         self,
         app: &mut Damus,
@@ -1019,6 +1020,7 @@ impl<R> BodyResponse<R> {
 }
 
 #[must_use = "RenderNavResponse must be handled by calling .process_render_nav_response(..)"]
+#[profiling::function]
 pub fn render_nav(
     col: usize,
     inner_rect: egui::Rect,

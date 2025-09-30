@@ -26,6 +26,7 @@ pub enum MediaViewAction {
 }
 
 #[allow(clippy::too_many_arguments)]
+#[profiling::function]
 pub fn image_carousel(
     ui: &mut egui::Ui,
     img_cache: &mut Images,

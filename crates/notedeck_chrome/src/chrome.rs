@@ -82,6 +82,7 @@ impl ChromePanelAction {
         };
     }
 
+    #[profiling::function]
     fn process(&self, ctx: &mut AppContext, chrome: &mut Chrome, ui: &mut egui::Ui) {
         match self {
             Self::SaveTheme(theme) => {
@@ -199,6 +200,7 @@ impl Chrome {
     }
 
     /// The chrome side panel
+    #[profiling::function]
     fn panel(
         &mut self,
         app_ctx: &mut AppContext,
@@ -269,6 +271,7 @@ impl Chrome {
     ///
     /// The side menu should hover over the screen, while the side bar
     /// is collapsible but persistent on the screen.
+    #[profiling::function]
     fn show(&mut self, ctx: &mut AppContext, ui: &mut egui::Ui) -> Option<ChromePanelAction> {
         ui.spacing_mut().item_spacing.x = 0.0;
 

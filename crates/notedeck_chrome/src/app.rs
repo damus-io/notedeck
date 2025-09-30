@@ -14,6 +14,7 @@ pub enum NotedeckApp {
 }
 
 impl notedeck::App for NotedeckApp {
+    #[profiling::function]
     fn update(&mut self, ctx: &mut AppContext, ui: &mut egui::Ui) -> AppResponse {
         match self {
             NotedeckApp::Dave(dave) => dave.update(ctx, ui),
