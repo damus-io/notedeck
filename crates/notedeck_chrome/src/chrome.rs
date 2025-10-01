@@ -165,7 +165,11 @@ impl Chrome {
     }
 
     pub fn toggle(&mut self) {
-        self.options.toggle(ChromeOptions::IsOpen);
+        if self.nav.drawer_focused {
+            self.nav.close();
+        } else {
+            self.nav.open();
+        }
     }
 
     pub fn add_app(&mut self, app: NotedeckApp) {
@@ -327,8 +331,7 @@ impl Chrome {
         }
 
         if ui.add(expand_side_panel_button()).clicked() {
-            //self.active = (self.active + 1) % (self.apps.len() as i32);
-            self.options.toggle(ChromeOptions::IsOpen);
+            self.nav.close();
         }
 
         ui.add_space(4.0);

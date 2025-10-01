@@ -7,9 +7,6 @@ bitflags! {
         /// Is the chrome currently open?
         const NoOptions = 0;
 
-        /// Is the chrome currently open?
-        const IsOpen = 1 << 0;
-
         /// Are we simulating a virtual keyboard? This is mostly for debugging
         /// if we are too lazy to open up a real mobile device with soft
         /// keyboard
@@ -28,11 +25,6 @@ bitflags! {
 
 impl Default for ChromeOptions {
     fn default() -> Self {
-        let mut options = ChromeOptions::NoOptions;
-        options.set(
-            ChromeOptions::IsOpen,
-            !notedeck::ui::is_compiled_as_mobile(),
-        );
-        options
+        ChromeOptions::NoOptions
     }
 }
