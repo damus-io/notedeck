@@ -40,12 +40,15 @@ pub use note_units::{CompositeType, InsertionResponse, NoteUnits};
 pub use timeline_units::{TimelineUnits, UnknownPks};
 pub use unit::{CompositeUnit, NoteUnit, ReactionUnit, RepostUnit};
 
-#[derive(Copy, Clone, Eq, PartialEq, Debug, Default)]
+#[derive(Copy, Clone, Eq, PartialEq, Debug, Default, PartialOrd, Ord)]
 pub enum ViewFilter {
+    MentionsOnly,
     Notes,
 
     #[default]
     NotesAndReplies,
+
+    All,
 }
 
 impl ViewFilter {
@@ -59,6 +62,10 @@ impl ViewFilter {
                     "Filter label for notes and replies view"
                 )
             }
+            ViewFilter::All => tr!(i18n, "All", "Filter label for all notes view"),
+            ViewFilter::MentionsOnly => {
+                tr!(i18n, "Mentions", "Filter label for mentions only view")
+            }
         }
     }
 
@@ -70,10 +77,26 @@ impl ViewFilter {
         true
     }
 
+    fn notes_and_replies(_cache: &CachedNote, note: &Note) -> bool {
+        note.kind() == 1 || note.kind() == 6
+    }
+
+    fn mentions_only(cache: &CachedNote, note: &Note) -> bool {
+        if note.kind() != 1 {
+            return false;
+        }
+
+        let note_reply = cache.reply.borrow(note.tags());
+
+        note_reply.is_reply() || note_reply.mention().is_some()
+    }
+
     pub fn filter(&self) -> fn(&CachedNote, &Note) -> bool {
         match self {
             ViewFilter::Notes => ViewFilter::filter_notes,
-            ViewFilter::NotesAndReplies => ViewFilter::identity,
+            ViewFilter::NotesAndReplies => ViewFilter::notes_and_replies,
+            ViewFilter::All => ViewFilter::identity,
+            ViewFilter::MentionsOnly => ViewFilter::mentions_only,
         }
     }
 }
@@ -108,6 +131,13 @@ impl TimelineTab {
         vec![
             TimelineTab::new(ViewFilter::Notes),
             TimelineTab::new(ViewFilter::NotesAndReplies),
+        ]
+    }
+
+    pub fn notifications() -> Vec<Self> {
+        vec![
+            TimelineTab::new(ViewFilter::All),
+            TimelineTab::new(ViewFilter::MentionsOnly),
         ]
     }
 
@@ -298,14 +328,17 @@ impl Timeline {
         &mut self.views[self.selected_view]
     }
 
-    /// Get the note refs for NotesAndReplies. If we only have Notes, then
-    /// just return that instead
+    /// Get the note refs for the filter with the widest scope
     pub fn all_or_any_entries(&self) -> &TimelineUnits {
-        self.entries(ViewFilter::NotesAndReplies)
-            .unwrap_or_else(|| {
-                self.entries(ViewFilter::Notes)
-                    .expect("should have at least notes")
-            })
+        let widest_filter = self
+            .views
+            .iter()
+            .map(|view| view.filter)
+            .max()
+            .expect("at least one filter exists");
+
+        self.entries(widest_filter)
+            .expect("should have at least notes")
     }
 
     pub fn entries(&self, view: ViewFilter) -> Option<&TimelineUnits> {
@@ -409,37 +442,24 @@ impl Timeline {
         }
 
         for view in &mut self.views {
-            match view.filter {
-                ViewFilter::NotesAndReplies => {
-                    let res: Vec<&NotePayload<'_>> = payloads.iter().collect();
-                    if let Some(res) =
-                        view.insert(res, ndb, txn, reversed, self.enable_front_insert)
-                    {
-                        res.process(unknown_ids, ndb, txn);
-                    }
+            let should_include = view.filter.filter();
+            let mut filtered_payloads = Vec::with_capacity(payloads.len());
+            for payload in &payloads {
+                let cached_note = note_cache.cached_note_or_insert(payload.key, &payload.note);
+
+                if should_include(cached_note, &payload.note) {
+                    filtered_payloads.push(payload);
                 }
+            }
 
-                ViewFilter::Notes => {
-                    let mut filtered_payloads = Vec::with_capacity(payloads.len());
-                    for payload in &payloads {
-                        let cached_note =
-                            note_cache.cached_note_or_insert(payload.key, &payload.note);
-
-                        if ViewFilter::filter_notes(cached_note, &payload.note) {
-                            filtered_payloads.push(payload);
-                        }
-                    }
-
-                    if let Some(res) = view.insert(
-                        filtered_payloads,
-                        ndb,
-                        txn,
-                        reversed,
-                        self.enable_front_insert,
-                    ) {
-                        res.process(unknown_ids, ndb, txn);
-                    }
-                }
+            if let Some(res) = view.insert(
+                filtered_payloads,
+                ndb,
+                txn,
+                reversed,
+                self.enable_front_insert,
+            ) {
+                res.process(unknown_ids, ndb, txn);
             }
         }
 

@@ -577,7 +577,7 @@ impl TimelineKind {
                 Some(Timeline::new(
                     TimelineKind::notifications(pk),
                     FilterState::ready(vec![notifications_filter]),
-                    TimelineTab::only_notes_and_replies(),
+                    TimelineTab::notifications(),
                 ))
             }
 

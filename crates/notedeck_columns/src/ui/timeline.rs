@@ -15,7 +15,7 @@ use tracing::{error, warn};
 use crate::nav::BodyResponse;
 use crate::timeline::{
     CompositeType, CompositeUnit, NoteUnit, ReactionUnit, RepostUnit, TimelineCache, TimelineKind,
-    TimelineTab, ViewFilter,
+    TimelineTab,
 };
 use notedeck::{
     note::root_note_id_from_selected_id, tr, Localization, NoteAction, NoteContext, ScrollInfo,
@@ -302,16 +302,7 @@ pub fn tabs_ui(
 
             let ind = state.index();
 
-            let txt = match views[ind as usize].filter {
-                ViewFilter::Notes => tr!(i18n, "Notes", "Label for notes-only filter"),
-                ViewFilter::NotesAndReplies => {
-                    tr!(
-                        i18n,
-                        "Notes & Replies",
-                        "Label for notes and replies filter"
-                    )
-                }
-            };
+            let txt = views[ind as usize].filter.name(i18n);
 
             let res = ui.add(egui::Label::new(txt.clone()).selectable(false));
 
