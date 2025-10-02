@@ -33,6 +33,8 @@ Add_External_Notifications_Column_41ae = Adicionar coluna de notificações exte
 Add_Hashtag_Column_ebf4 = Adicionar coluna de marcadores
 # Column title for adding last notes column
 Add_Last_Notes_Column_bbad = Adicionar coluna de últimas notas
+# Tooltip text for adding a new deck button
+Add_new_deck_f2fc = Adicionar nova aba
 # Column title for adding notifications column
 Add_Notifications_Column_79f8 = Adicionar coluna de notificações
 # Button label to add a relay
@@ -93,6 +95,8 @@ Copy_Link_dc7c = Copiar link
 Copy_Note_ID_6b45 = Copiar ID da nota
 # Copy the raw note data in JSON format to clipboard
 Copy_Note_JSON_9e4e = Copiar JSON da nota
+# Tooltip text for copying npub to clipboard
+Copy_npub_to_clipboard_c105 = Copiar npub para área de transferência
 # Copy the author's public key to clipboard
 Copy_Pubkey_9cc4 = Copiar chave pública
 # Copy the text content of the note to clipboard
@@ -141,6 +145,8 @@ Delete_Wallet_d1d4 = Eliminar carteira
 Display_name_f9d9 = Nome a mostrar
 # Domain identification message
 domain___will_be_used_for_identification_b67e = "{ $domain }" será usado para identificação
+# Button to indicate that the user is done going through the onboarding process.
+Done_50dd = Concluído
 # Column title for editing deck
 Edit_Deck_4018 = Editar aba
 # Button label to edit a deck
@@ -191,6 +197,8 @@ k_50K_c2dc = 50K
 k_5K_f7e6 = 5K
 # Description for your notes column
 Keep_track_of_your_notes___replies_a334 = Acompanha as tuas notas e respostas
+# label for keys setting section
+Keys_435f = Chaves
 # Label for language, Appearance settings section
 Language_e264 = Idioma:
 # Title for last note per user column
@@ -209,6 +217,14 @@ Media_from_someone_you_don_t_follow_5611 = Conteúdo de alguém que não segues
 Moves_this_column_to_another_position_0d4b = Mover esta coluna para outra posição
 # Title for the user's deck
 My_Deck_4ac5 = Minha aba
+# reaction from user to a note you were tagged in
+name__reacted_to_a_note_you_were_tagged_in_4b62 = { $name } reagiu a uma nota em que te marcaram
+# reaction from user to your note
+name__reacted_to_your_note_ead9 = { $name } reagiu à tua nota
+# repost from user
+name__reposted_a_note_you_were_tagged_in_1379 = { $name } republicou uma nota em que te marcaram
+# repost from user
+name__reposted_your_note_1379 = { $name } republicou a tua nota
 # Label asking if the user is new to Nostr. Underneath this label is a button to create an account.
 New_to_Nostr_a2fd = Nov@ no Nostr?
 # NIP-05 identity field label
@@ -259,6 +275,8 @@ Post_now_8a49 = Publicar agora
 Press_the_button_below_to_copy_your_most_recent_logs_to_your_system_s_clipboard__Then_paste_it_into_your_email_322e = Prime o botão abaixo para copiar os teus registos mais recentes para a área de transferência do teu sistema. Depois cola-os no teu e-mail.
 # Profile picture URL field label
 Profile_picture_81ff = Foto de perfil
+# label describing public key
+PUBLIC_ACCOUNT_ID_4394 = ID da CONTA PÚBLICA
 # Column title for quote composition
 Quote_475c = Citação
 # Error message when quote note cannot be found
@@ -311,6 +329,8 @@ Search_c573 = Procurar
 Search_notes_42a6 = Procurar notas...
 # Search in progress message
 Searching_for___query_5d18 = Procurando por '{ $query }'
+# label describing secret key
+SECRET_ACCOUNT_LOGIN_KEY_8440 = CHAVE SECRETA DE LOGIN DA CONTA
 # Description for Home column
 See_notes_from_your_contacts_ac16 = Ver notas dos meus contactos
 # Description for universe column
@@ -411,4 +431,28 @@ Got__count__results_for___query_85fb =
     { $count ->
         [one] { $count } resultado obtido para '{ $query }'
        *[other] { $count } resultados obtidos para '{ $query }'
+    }
+# amount of reactions a note you were tagged in received
+name__and__count__others_reacted_to_a_note_you_were_tagged_in_181a =
+    { $count ->
+        [one] { $name } e { $count } outro reagiram a uma nota em que te marcaram
+       *[other] { $name } e { $count } outros reagiram a uma nota que te marcaram
+    }
+# describing the amount of reactions your note received
+name__and__count__others_reacted_to_your_note_0f6a =
+    { $count ->
+        [one] { $name } e { $count } outro reagiram à tua nota
+       *[other] { $name } e { $count } outros reagiram à tua nota
+    }
+# describing the amount of reposts a note you were tagged in received
+name__and__count__others_reposted_a_note_you_were_tagged_in_08e1 =
+    { $count ->
+        [one] { $name } e { $count } outro republicaram uma nota em que te marcaram
+       *[other] { $name } e { $count } outros republicaram uma nota que te marcaram
+    }
+# describing the amount of reposts your note received
+name__and__count__others_reposted_your_note_70a0 =
+    { $count ->
+        [one] { $name } e { $count } outro republicaram a tua nota
+       *[other] { $name } e { $count } outros republicaram a tua nota
     }
