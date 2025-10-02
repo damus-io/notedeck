@@ -28,3 +28,10 @@ android: jni
 	cd $(ANDROID_DIR) && ./gradlew installDebug
 	adb shell am start -n com.damus.notedeck/.MainActivity
 	adb logcat -v color -s GameActivity -s RustStdoutStderr -s threaded_app | tee logcat.txt
+
+android-tracy: fake
+	cargo ndk --target arm64-v8a -o $(ANDROID_DIR)/app/src/main/jniLibs/ build --profile release --features tracy
+	cd $(ANDROID_DIR) && ./gradlew installDebug
+	adb shell am start -n com.damus.notedeck/.MainActivity
+	adb forward tcp:8086 tcp:8086
+	adb logcat -v color -s GameActivity -s RustStdoutStderr -s threaded_app | tee logcat.txt

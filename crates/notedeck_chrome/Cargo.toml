@@ -52,6 +52,7 @@ path = "src/notedeck.rs"
 default = []
 memory = ["re_memory"]
 puffin = ["profiling/profile-with-puffin", "dep:puffin"]
+tracy = ["profiling/profile-with-tracy"]
 debug-widget-callstack = ["egui/callstack"]
 debug-interactive-widgets = []
 
