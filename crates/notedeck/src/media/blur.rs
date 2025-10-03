@@ -2,7 +2,10 @@ use std::collections::HashMap;
 
 use nostrdb::Note;
 
-use crate::jobs::{Job, JobError, JobParamsOwned};
+use crate::{
+    jobs::{Job, JobError, JobParamsOwned},
+    media::load_texture_checked,
+};
 
 #[derive(Clone)]
 pub struct ImageMetadata {
@@ -200,5 +203,5 @@ fn generate_blurhash_texturehandle(
         .map_err(|e| crate::Error::Generic(e.to_string()))?;
 
     let img = egui::ColorImage::from_rgba_unmultiplied([width as usize, height as usize], &bytes);
-    Ok(ctx.load_texture(url, img, Default::default()))
+    Ok(load_texture_checked(ctx, url, img, Default::default()))
 }

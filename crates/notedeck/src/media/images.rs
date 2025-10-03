@@ -1,3 +1,4 @@
+use crate::media::load_texture_checked;
 use crate::{Animation, ImageFrame, MediaCache, MediaCacheType, TextureFrame, TexturedImage};
 use egui::{pos2, Color32, ColorImage, Context, Rect, Sense, SizeHint};
 use image::codecs::gif::GifDecoder;
@@ -241,7 +242,8 @@ async fn async_fetch_img_from_disk(
                 image_buffer.width(),
                 image_buffer.height(),
             );
-            Ok(TexturedImage::Static(ctx.load_texture(
+            Ok(TexturedImage::Static(load_texture_checked(
+                &ctx,
                 &url,
                 img,
                 Default::default(),
@@ -365,7 +367,7 @@ fn generate_animation_frame(
 
     TextureFrame {
         delay,
-        texture: ctx.load_texture(format!("{url}{index}"), color_img, Default::default()),
+        texture: load_texture_checked(ctx, format!("{url}{index}"), color_img, Default::default()),
     }
 }
 
@@ -429,8 +431,12 @@ fn fetch_img_from_net(
                 MediaCacheType::Image => {
                     let img = parse_img_response(resp, imgtyp);
                     img.map(|img| {
-                        let texture_handle =
-                            ctx.load_texture(&cloned_url, img.clone(), Default::default());
+                        let texture_handle = load_texture_checked(
+                            &ctx,
+                            &cloned_url,
+                            img.clone(),
+                            Default::default(),
+                        );
 
                         // write to disk
                         std::thread::spawn(move || {
