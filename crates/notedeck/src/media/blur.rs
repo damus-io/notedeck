@@ -23,6 +23,19 @@ impl PixelDimensions {
             y: (self.y as f32) / ppp,
         }
     }
+
+    pub fn clamp_wgpu(mut self) -> PixelDimensions {
+        let val = super::MAX_SIZE_WGPU as u32;
+        if self.x > val {
+            self.x = val;
+        }
+
+        if self.y > val {
+            self.y = val
+        }
+
+        self
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -50,7 +63,7 @@ impl ImageMetadata {
         ui: &egui::Ui,
         available_points: PointDimensions,
     ) -> PixelDimensions {
-        let max_pixels = available_points.to_pixels(ui);
+        let max_pixels = available_points.to_pixels(ui).clamp_wgpu();
 
         let Some(defined_dimensions) = &self.dimensions else {
             return max_pixels;

@@ -30,3 +30,6 @@ impl AnimationMode {
         !matches!(self, Self::NoAnimation)
     }
 }
+
+// max size wgpu can handle without panicing
+pub const MAX_SIZE_WGPU: usize = 8192;
