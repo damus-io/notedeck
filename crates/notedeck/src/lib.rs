@@ -1,3 +1,5 @@
+#![deny(clippy::disallowed_methods)]
+
 pub mod abbrev;
 mod account;
 mod app;

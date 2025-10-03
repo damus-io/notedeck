@@ -47,5 +47,6 @@ pub fn load_texture_checked(
         panic!("The image MUST be less than or equal to {MAX_SIZE_WGPU} pixels in each direction");
     }
 
+    #[allow(clippy::disallowed_methods, reason = "centralized safe wrapper")]
     ctx.load_texture(name, image, options)
 }
