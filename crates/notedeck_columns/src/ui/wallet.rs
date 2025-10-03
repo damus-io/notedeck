@@ -402,7 +402,9 @@ fn show_default_zap(
                         notedeck_ui::include_input(ui, &r);
                     }
 
-                    ui.memory_mut(|m| m.request_focus(id));
+                    if !notedeck::ui::is_narrow(ui.ctx()) { // TODO: this should really be checking if we are using a virtual keyboard instead of narrow
+                        ui.memory_mut(|m| m.request_focus(id));
+                    }
 
                     ui.label(tr!(i18n, "sats", "Unit label for satoshis (Bitcoin unit) for configuring default zap amount in wallet settings."));
 

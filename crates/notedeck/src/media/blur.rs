@@ -2,7 +2,10 @@ use std::collections::HashMap;
 
 use nostrdb::Note;
 
-use crate::jobs::{Job, JobError, JobParamsOwned};
+use crate::{
+    jobs::{Job, JobError, JobParamsOwned},
+    media::load_texture_checked,
+};
 
 #[derive(Clone)]
 pub struct ImageMetadata {
@@ -22,6 +25,19 @@ impl PixelDimensions {
             x: (self.x as f32) / ppp,
             y: (self.y as f32) / ppp,
         }
+    }
+
+    pub fn clamp_wgpu(mut self) -> PixelDimensions {
+        let val = super::MAX_SIZE_WGPU as u32;
+        if self.x > val {
+            self.x = val;
+        }
+
+        if self.y > val {
+            self.y = val
+        }
+
+        self
     }
 }
 
@@ -50,7 +66,7 @@ impl ImageMetadata {
         ui: &egui::Ui,
         available_points: PointDimensions,
     ) -> PixelDimensions {
-        let max_pixels = available_points.to_pixels(ui);
+        let max_pixels = available_points.to_pixels(ui).clamp_wgpu();
 
         let Some(defined_dimensions) = &self.dimensions else {
             return max_pixels;
@@ -187,5 +203,5 @@ fn generate_blurhash_texturehandle(
         .map_err(|e| crate::Error::Generic(e.to_string()))?;
 
     let img = egui::ColorImage::from_rgba_unmultiplied([width as usize, height as usize], &bytes);
-    Ok(ctx.load_texture(url, img, Default::default()))
+    Ok(load_texture_checked(ctx, url, img, Default::default()))
 }
