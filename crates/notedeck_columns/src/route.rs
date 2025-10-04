@@ -627,6 +627,7 @@ pub struct SingletonRouter<R: Clone> {
     route: Option<R>,
     pub returning: bool,
     pub navigating: bool,
+    pub after_action: Option<R>,
 }
 
 impl<R: Clone> SingletonRouter<R> {
@@ -640,8 +641,7 @@ impl<R: Clone> SingletonRouter<R> {
     }
 
     pub fn clear(&mut self) {
-        self.route = None;
-        self.returning = false;
+        *self = Self::default();
     }
 
     pub fn route(&self) -> &Option<R> {
@@ -655,6 +655,7 @@ impl<R: Clone> Default for SingletonRouter<R> {
             route: None,
             returning: false,
             navigating: false,
+            after_action: None,
         }
     }
 }
