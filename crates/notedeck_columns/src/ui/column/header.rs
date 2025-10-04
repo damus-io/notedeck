@@ -491,6 +491,7 @@ impl<'a> NavTitle<'a> {
             Route::Thread(thread_selection) => {
                 Some(self.thread_pfp(ui, thread_selection, pfp_size))
             }
+            Route::RepostDecision(_) => None,
         }
     }
 

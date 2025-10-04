@@ -18,6 +18,7 @@ pub enum Route {
     Accounts(AccountsRoute),
     Reply(NoteId),
     Quote(NoteId),
+    RepostDecision(NoteId),
     Relays,
     Settings,
     ComposeNote,
@@ -132,6 +133,10 @@ impl Route {
                 writer.write_token("wallet");
             }
             Route::CustomizeZapAmount(_) => writer.write_token("customize zap amount"),
+            Route::RepostDecision(note_id) => {
+                writer.write_token("repost_decision");
+                writer.write_token(&note_id.hex());
+            }
         }
     }
 
@@ -181,6 +186,14 @@ impl Route {
                     p.parse_all(|p| {
                         p.parse_token("settings")?;
                         Ok(Route::Settings)
+                    })
+                },
+                |p| {
+                    p.parse_all(|p| {
+                        p.parse_token("repost_decision")?;
+                        let note_id = NoteId::from_hex(p.pull_token()?)
+                            .map_err(|_| ParseError::HexDecodeFailed)?;
+                        Ok(Route::RepostDecision(note_id))
                     })
                 },
                 |p| {
@@ -357,6 +370,11 @@ impl Route {
                 i18n,
                 "Customize Zap Amount",
                 "Column title for zap amount customization"
+            )),
+            Route::RepostDecision(_) => ColumnTitle::formatted(tr!(
+                i18n,
+                "Repost",
+                "Column title for deciding the type of repost"
             )),
         }
     }

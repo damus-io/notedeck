@@ -941,6 +941,9 @@ fn render_nav_body(
                 )))
             })
         }
+        Route::RepostDecision(note_id) => {
+            unimplemented!()
+        }
     }
 }
 
