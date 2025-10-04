@@ -119,7 +119,7 @@ fn execute_note_action(
                 .open(ndb, note_cache, txn, pool, &kind)
                 .map(NotesOpenResult::Timeline);
         }
-        NoteAction::Quote(note_id) => {
+        NoteAction::Repost(note_id) => {
             if can_post {
                 router_action = Some(RouterAction::route_to(Route::quote(note_id)));
             } else {

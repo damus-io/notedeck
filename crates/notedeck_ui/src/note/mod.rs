@@ -867,7 +867,7 @@ fn render_note_actionbar(
     }
 
     if quote_resp.clicked() {
-        action = Some(NoteAction::Quote(NoteId::new(*note_id)));
+        action = Some(NoteAction::Repost(NoteId::new(*note_id)));
     }
 
     action = zap_actionbar_button(ui, note_id, note_pubkey, zapper, i18n).or(action);
