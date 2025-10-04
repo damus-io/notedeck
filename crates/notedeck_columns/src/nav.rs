@@ -363,6 +363,7 @@ pub enum RouterAction {
     /// chrome atm
     PfpClicked,
     RouteTo(Route, RouterType),
+    CloseSheetThenRoute(Route),
     Overlay {
         route: Route,
         make_new: bool,
@@ -425,6 +426,11 @@ impl RouterAction {
                 } else {
                     stack_router.route_to_overlaid(route);
                 }
+                None
+            }
+            RouterAction::CloseSheetThenRoute(route) => {
+                sheet_router.go_back();
+                sheet_router.after_action = Some(route);
                 None
             }
         }
