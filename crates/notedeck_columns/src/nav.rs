@@ -6,6 +6,7 @@ use crate::{
     decks::{Deck, DecksAction, DecksCache},
     options::AppOptions,
     profile::{ProfileAction, SaveProfileChanges},
+    repost::RepostAction,
     route::{Route, Router, SingletonRouter},
     subscriptions::Subscriptions,
     timeline::{
@@ -21,6 +22,7 @@ use crate::{
         edit_deck::{EditDeckResponse, EditDeckView},
         note::{custom_zap::CustomZapView, NewPostAction, PostAction, PostType},
         profile::EditProfileView,
+        repost::RepostDecisionView,
         search::{FocusState, SearchView},
         settings::SettingsAction,
         support::SupportView,
@@ -68,6 +70,7 @@ pub enum RenderNavAction {
     WalletAction(WalletAction),
     RelayAction(RelayAction),
     SettingsAction(SettingsAction),
+    RepostAction(RepostAction),
 }
 
 pub enum SwitchingAction {
@@ -524,6 +527,9 @@ fn process_render_nav_action(
         RenderNavAction::SettingsAction(action) => {
             action.process_settings_action(app, ctx.settings, ctx.i18n, ctx.img_cache, ui.ctx())
         }
+        RenderNavAction::RepostAction(action) => {
+            action.process(ctx.ndb, &ctx.accounts.get_selected_account().key, ctx.pool)
+        }
     };
 
     if let Some(action) = router_action {
@@ -942,7 +948,8 @@ fn render_nav_body(
             })
         }
         Route::RepostDecision(note_id) => {
-            unimplemented!()
+            BodyResponse::output(RepostDecisionView::new(note_id).show(ui))
+                .map_output(RenderNavAction::RepostAction)
         }
     }
 }
