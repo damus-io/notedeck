@@ -12,6 +12,7 @@ pub mod post;
 pub mod preview;
 pub mod profile;
 pub mod relay;
+pub mod repost;
 pub mod search;
 pub mod settings;
 pub mod side_panel;

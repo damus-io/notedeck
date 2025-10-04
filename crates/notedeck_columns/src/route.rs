@@ -1,3 +1,4 @@
+use egui_nav::Percent;
 use enostr::{NoteId, Pubkey};
 use notedeck::{tr, Localization, NoteZapTargetOwned, RootNoteIdBuf, WalletType};
 use std::ops::Range;
@@ -18,6 +19,7 @@ pub enum Route {
     Accounts(AccountsRoute),
     Reply(NoteId),
     Quote(NoteId),
+    RepostDecision(NoteId),
     Relays,
     Settings,
     ComposeNote,
@@ -132,6 +134,10 @@ impl Route {
                 writer.write_token("wallet");
             }
             Route::CustomizeZapAmount(_) => writer.write_token("customize zap amount"),
+            Route::RepostDecision(note_id) => {
+                writer.write_token("repost_decision");
+                writer.write_token(&note_id.hex());
+            }
         }
     }
 
@@ -181,6 +187,14 @@ impl Route {
                     p.parse_all(|p| {
                         p.parse_token("settings")?;
                         Ok(Route::Settings)
+                    })
+                },
+                |p| {
+                    p.parse_all(|p| {
+                        p.parse_token("repost_decision")?;
+                        let note_id = NoteId::from_hex(p.pull_token()?)
+                            .map_err(|_| ParseError::HexDecodeFailed)?;
+                        Ok(Route::RepostDecision(note_id))
                     })
                 },
                 |p| {
@@ -357,6 +371,11 @@ impl Route {
                 i18n,
                 "Customize Zap Amount",
                 "Column title for zap amount customization"
+            )),
+            Route::RepostDecision(_) => ColumnTitle::formatted(tr!(
+                i18n,
+                "Repost",
+                "Column title for deciding the type of repost"
             )),
         }
     }
@@ -627,12 +646,15 @@ pub struct SingletonRouter<R: Clone> {
     route: Option<R>,
     pub returning: bool,
     pub navigating: bool,
+    pub after_action: Option<R>,
+    pub split: egui_nav::Split,
 }
 
 impl<R: Clone> SingletonRouter<R> {
-    pub fn route_to(&mut self, route: R) {
+    pub fn route_to(&mut self, route: R, split: egui_nav::Split) {
         self.navigating = true;
         self.route = Some(route);
+        self.split = split;
     }
 
     pub fn go_back(&mut self) {
@@ -640,8 +662,7 @@ impl<R: Clone> SingletonRouter<R> {
     }
 
     pub fn clear(&mut self) {
-        self.route = None;
-        self.returning = false;
+        *self = Self::default();
     }
 
     pub fn route(&self) -> &Option<R> {
@@ -655,6 +676,8 @@ impl<R: Clone> Default for SingletonRouter<R> {
             route: None,
             returning: false,
             navigating: false,
+            after_action: None,
+            split: egui_nav::Split::PercentFromTop(Percent::new(35).expect("35 <= 100")),
         }
     }
 }

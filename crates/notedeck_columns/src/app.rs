@@ -789,6 +789,7 @@ fn should_show_compose_button(decks: &DecksCache, accounts: &Accounts) -> bool {
         Route::EditDeck(_) => false,
         Route::Wallet(_) => false,
         Route::CustomizeZapAmount(_) => false,
+        Route::RepostDecision(_) => false,
     }
 }
 
