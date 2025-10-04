@@ -243,6 +243,9 @@ fn process_popup_resp(
 
     if let Some(NavAction::Returned(_)) = action.action {
         let column = app.columns_mut(ctx.i18n, ctx.accounts).column_mut(col);
+        if let Some(after_action) = column.sheet_router.after_action.clone() {
+            column.router_mut().route_to(after_action);
+        }
         column.sheet_router.clear();
     } else if let Some(NavAction::Navigating) = action.action {
         let column = app.columns_mut(ctx.i18n, ctx.accounts).column_mut(col);
