@@ -34,7 +34,7 @@ use crate::{
 
 use egui::scroll_area::ScrollAreaOutput;
 use egui_nav::{
-    Nav, NavAction, NavResponse, NavUiType, Percent, PopupResponse, PopupSheet, RouteResponse,
+    Nav, NavAction, NavResponse, NavUiType, PopupResponse, PopupSheet, RouteResponse, Split,
 };
 use enostr::ProfileState;
 use nostrdb::{Filter, Ndb, Transaction};
@@ -377,7 +377,7 @@ pub enum RouterAction {
 }
 
 pub enum RouterType {
-    Sheet,
+    Sheet(Split),
     Stack,
 }
 
@@ -417,8 +417,8 @@ impl RouterAction {
             }
 
             RouterAction::RouteTo(route, router_type) => match router_type {
-                RouterType::Sheet => {
-                    sheet_router.route_to(route);
+                RouterType::Sheet(percent) => {
+                    sheet_router.route_to(route, percent);
                     None
                 }
                 RouterType::Stack => {
@@ -446,8 +446,8 @@ impl RouterAction {
         RouterAction::RouteTo(route, RouterType::Stack)
     }
 
-    pub fn route_to_sheet(route: Route) -> Self {
-        RouterAction::RouteTo(route, RouterType::Sheet)
+    pub fn route_to_sheet(route: Route, split: Split) -> Self {
+        RouterAction::RouteTo(route, RouterType::Sheet(split))
     }
 }
 
@@ -1062,6 +1062,7 @@ pub fn render_nav(
             .sheet_router
             .navigating;
         let returning = app.columns(ctx.accounts).column(col).sheet_router.returning;
+        let split = app.columns(ctx.accounts).column(col).sheet_router.split;
         let bg_route = app
             .columns(ctx.accounts)
             .column(col)
@@ -1074,7 +1075,7 @@ pub fn render_nav(
                 .id_source(egui::Id::new(("nav", col)))
                 .navigating(navigating)
                 .returning(returning)
-                .with_split_percent_from_top(Percent::new(35).expect("35 <= 100"))
+                .with_split(split)
                 .show_mut(ui, |ui, typ, route| match typ {
                     NavUiType::Title => NavTitle::new(
                         ctx.ndb,

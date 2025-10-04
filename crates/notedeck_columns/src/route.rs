@@ -1,3 +1,4 @@
+use egui_nav::Percent;
 use enostr::{NoteId, Pubkey};
 use notedeck::{tr, Localization, NoteZapTargetOwned, RootNoteIdBuf, WalletType};
 use std::ops::Range;
@@ -646,12 +647,14 @@ pub struct SingletonRouter<R: Clone> {
     pub returning: bool,
     pub navigating: bool,
     pub after_action: Option<R>,
+    pub split: egui_nav::Split,
 }
 
 impl<R: Clone> SingletonRouter<R> {
-    pub fn route_to(&mut self, route: R) {
+    pub fn route_to(&mut self, route: R, split: egui_nav::Split) {
         self.navigating = true;
         self.route = Some(route);
+        self.split = split;
     }
 
     pub fn go_back(&mut self) {
@@ -674,6 +677,7 @@ impl<R: Clone> Default for SingletonRouter<R> {
             returning: false,
             navigating: false,
             after_action: None,
+            split: egui_nav::Split::PercentFromTop(Percent::new(35).expect("35 <= 100")),
         }
     }
 }
