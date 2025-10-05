@@ -113,6 +113,18 @@ impl NoteContextButton {
         stationary_arbitrary_menu_button(ui, button_response, |ui| {
             ui.set_max_width(200.0);
 
+            if ui
+                .button(tr!(
+                    i18n,
+                    "Copy Link",
+                    "Copy the damus.io link to this note to clipboard"
+                ))
+                .clicked()
+            {
+                context_selection = Some(NoteContextSelection::CopyLink);
+                ui.close_menu();
+            }
+
             // Debug: Check what the tr! macro returns
             let copy_text = tr!(
                 i18n,

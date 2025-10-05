@@ -165,7 +165,12 @@ fn execute_note_action(
         NoteAction::Context(context) => match ndb.get_note_by_key(txn, context.note_key) {
             Err(err) => tracing::error!("{err}"),
             Ok(note) => {
-                context.action.process(ui, &note, pool);
+                context.action.process(
+                    ui,
+                    &note,
+                    pool,
+                    *accounts.selected_account_pubkey().bytes() == *note.pubkey(),
+                );
             }
         },
         NoteAction::Media(media_action) => {
