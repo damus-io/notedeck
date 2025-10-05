@@ -250,7 +250,7 @@ fn profile_body(
                     .and_then(|p| p.and_then(|p| p.lud16()).filter(|s| !s.is_empty()));
 
                 if let Some(website_url) = website_url {
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         handle_link(ui, website_url);
                     });
                 }
@@ -259,7 +259,7 @@ fn profile_body(
                     if website_url.is_some() {
                         ui.end_row();
                     }
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         handle_lud16(ui, lud16);
                     });
                 }
