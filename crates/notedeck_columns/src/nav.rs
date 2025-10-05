@@ -505,7 +505,7 @@ fn process_render_nav_action(
             }
         }
         RenderNavAction::ProfileAction(profile_action) => {
-            profile_action.process_profile_action(ctx.ndb, ctx.pool, ctx.accounts)
+            profile_action.process_profile_action(ui.ctx(), ctx.ndb, ctx.pool, ctx.accounts)
         }
         RenderNavAction::WalletAction(wallet_action) => {
             wallet_action.process(ctx.accounts, ctx.global_wallet)

@@ -4,8 +4,8 @@ pub use edit::EditProfileView;
 use egui::{vec2, Color32, CornerRadius, Layout, Rect, RichText, ScrollArea, Sense, Stroke};
 use enostr::Pubkey;
 use nostrdb::{ProfileRecord, Transaction};
-use notedeck::{tr, Localization};
-use notedeck_ui::profile::follow_button;
+use notedeck::{tr, Localization, ProfileContext};
+use notedeck_ui::profile::{context::ProfileContextWidget, follow_button};
 use robius_open::Uri;
 use tracing::error;
 
@@ -38,6 +38,7 @@ pub enum ProfileViewAction {
     Note(NoteAction),
     Unfollow(Pubkey),
     Follow(Pubkey),
+    Context(ProfileContext),
 }
 
 struct ProfileScrollResponse {
@@ -148,13 +149,31 @@ fn profile_body(
 ) -> Option<ProfileViewAction> {
     let mut action = None;
     ui.vertical(|ui| {
-        banner(
+        let banner_resp = banner(
             ui,
             profile
                 .map(|p| p.record().profile())
                 .and_then(|p| p.and_then(|p| p.banner())),
             120.0,
         );
+
+        let place_context = {
+            let mut rect = banner_resp.rect;
+            let size = 24.0;
+            rect.set_bottom(rect.top() + size);
+            rect.set_left(rect.right() - size);
+            rect.translate(vec2(-16.0, 16.0))
+        };
+
+        let context_resp = ProfileContextWidget::new(place_context).context_button(ui, pubkey);
+        if let Some(selection) =
+            ProfileContextWidget::context_menu(ui, note_context.i18n, context_resp)
+        {
+            action = Some(ProfileViewAction::Context(ProfileContext {
+                profile: *pubkey,
+                selection,
+            }));
+        }
 
         let padding = 12.0;
         notedeck_ui::padding(padding, ui, |ui| {
