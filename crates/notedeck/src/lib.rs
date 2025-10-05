@@ -77,7 +77,7 @@ pub use note::{
 pub use notecache::{CachedNote, NoteCache};
 pub use options::NotedeckOptions;
 pub use persist::*;
-pub use profile::get_profile_url;
+pub use profile::*;
 pub use relay_debug::RelayDebugView;
 pub use relayspec::RelaySpec;
 pub use result::Result;
