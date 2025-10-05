@@ -1,5 +1,6 @@
 use nostrdb::ProfileRecord;
 
+pub mod context;
 pub mod name;
 pub mod picture;
 pub mod preview;
