@@ -129,5 +129,8 @@ pub fn render_profile_route(
         ui::profile::ProfileViewAction::Unfollow(target_key) => Some(
             RenderNavAction::ProfileAction(ProfileAction::Unfollow(target_key)),
         ),
+        ui::profile::ProfileViewAction::Context(profile_context_selection) => Some(
+            RenderNavAction::ProfileAction(ProfileAction::Context(profile_context_selection)),
+        ),
     })
 }

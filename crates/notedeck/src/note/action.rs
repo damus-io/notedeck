@@ -14,8 +14,8 @@ pub enum NoteAction {
     /// User has clicked the quote reply action
     Reply(NoteId),
 
-    /// User has clicked the quote repost action
-    Quote(NoteId),
+    /// User has clicked the repost button
+    Repost(NoteId),
 
     /// User has clicked a hashtag
     Hashtag(String),

@@ -21,6 +21,7 @@ mod onboarding;
 pub mod options;
 mod post;
 mod profile;
+mod repost;
 mod route;
 mod search;
 mod subscriptions;

@@ -174,7 +174,9 @@ fn show_profile(ui: &mut egui::Ui, images: &mut Images, profile: Option<&Profile
         Layout::left_to_right(egui::Align::Center).with_main_wrap(true),
         |ui| {
             ui.add(&mut ProfilePic::new(images, get_profile_url(profile)).size(max_size));
-            ui.add(display_name_widget(&get_display_name(profile), false));
+            ui.vertical(|ui| {
+                ui.add(display_name_widget(&get_display_name(profile), false));
+            });
         },
     );
 }

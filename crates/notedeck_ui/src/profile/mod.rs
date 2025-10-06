@@ -1,5 +1,6 @@
 use nostrdb::ProfileRecord;
 
+pub mod context;
 pub mod name;
 pub mod picture;
 pub mod preview;
@@ -44,7 +45,7 @@ pub fn display_name_widget<'a>(
                 }
 
                 let nip05_resp = name.nip05.map(|nip05| {
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         ui.spacing_mut().item_spacing.x = 2.0;
 
                         ui.add(app_images::verified_image());

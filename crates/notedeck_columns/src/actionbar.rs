@@ -11,6 +11,7 @@ use crate::{
     view_state::ViewState,
 };
 
+use egui_nav::Percent;
 use enostr::{NoteId, Pubkey, RelayPool};
 use nostrdb::{Ndb, NoteKey, Transaction};
 use notedeck::{
@@ -119,9 +120,12 @@ fn execute_note_action(
                 .open(ndb, note_cache, txn, pool, &kind)
                 .map(NotesOpenResult::Timeline);
         }
-        NoteAction::Quote(note_id) => {
+        NoteAction::Repost(note_id) => {
             if can_post {
-                router_action = Some(RouterAction::route_to(Route::quote(note_id)));
+                router_action = Some(RouterAction::route_to_sheet(
+                    Route::RepostDecision(note_id),
+                    egui_nav::Split::AbsoluteFromBottom(224.0),
+                ));
             } else {
                 router_action = Some(RouterAction::route_to(Route::accounts()));
             }
@@ -143,7 +147,7 @@ fn execute_note_action(
                         break 'a;
                     };
 
-                    if let RouterType::Sheet = router_type {
+                    if let RouterType::Sheet(_) = router_type {
                         router_action = Some(RouterAction::GoBack);
                     }
 
@@ -158,14 +162,22 @@ fn execute_note_action(
                 ZapAction::ClearError(target) => clear_zap_error(&sender, zaps, target),
                 ZapAction::CustomizeAmount(target) => {
                     let route = Route::CustomizeZapAmount(target.to_owned());
-                    router_action = Some(RouterAction::route_to_sheet(route));
+                    router_action = Some(RouterAction::route_to_sheet(
+                        route,
+                        egui_nav::Split::PercentFromTop(Percent::new(35).expect("35 <= 100")),
+                    ));
                 }
             }
         }
         NoteAction::Context(context) => match ndb.get_note_by_key(txn, context.note_key) {
             Err(err) => tracing::error!("{err}"),
             Ok(note) => {
-                context.action.process(ui, &note, pool);
+                context.action.process(
+                    ui,
+                    &note,
+                    pool,
+                    *accounts.selected_account_pubkey().bytes() == *note.pubkey(),
+                );
             }
         },
         NoteAction::Media(media_action) => {
@@ -212,7 +224,7 @@ pub fn execute_and_process_note_action(
         let sheet_router = &mut columns.column_mut(col).sheet_router;
 
         if sheet_router.route().is_some() {
-            RouterType::Sheet
+            RouterType::Sheet(sheet_router.split)
         } else {
             RouterType::Stack
         }

@@ -6,6 +6,7 @@ use crate::{
     decks::{Deck, DecksAction, DecksCache},
     options::AppOptions,
     profile::{ProfileAction, SaveProfileChanges},
+    repost::RepostAction,
     route::{Route, Router, SingletonRouter},
     subscriptions::Subscriptions,
     timeline::{
@@ -21,6 +22,7 @@ use crate::{
         edit_deck::{EditDeckResponse, EditDeckView},
         note::{custom_zap::CustomZapView, NewPostAction, PostAction, PostType},
         profile::EditProfileView,
+        repost::RepostDecisionView,
         search::{FocusState, SearchView},
         settings::SettingsAction,
         support::SupportView,
@@ -32,7 +34,7 @@ use crate::{
 
 use egui::scroll_area::ScrollAreaOutput;
 use egui_nav::{
-    Nav, NavAction, NavResponse, NavUiType, Percent, PopupResponse, PopupSheet, RouteResponse,
+    Nav, NavAction, NavResponse, NavUiType, PopupResponse, PopupSheet, RouteResponse, Split,
 };
 use enostr::ProfileState;
 use nostrdb::{Filter, Ndb, Transaction};
@@ -68,6 +70,7 @@ pub enum RenderNavAction {
     WalletAction(WalletAction),
     RelayAction(RelayAction),
     SettingsAction(SettingsAction),
+    RepostAction(RepostAction),
 }
 
 pub enum SwitchingAction {
@@ -240,6 +243,9 @@ fn process_popup_resp(
 
     if let Some(NavAction::Returned(_)) = action.action {
         let column = app.columns_mut(ctx.i18n, ctx.accounts).column_mut(col);
+        if let Some(after_action) = column.sheet_router.after_action.clone() {
+            column.router_mut().route_to(after_action);
+        }
         column.sheet_router.clear();
     } else if let Some(NavAction::Navigating) = action.action {
         let column = app.columns_mut(ctx.i18n, ctx.accounts).column_mut(col);
@@ -363,6 +369,7 @@ pub enum RouterAction {
     /// chrome atm
     PfpClicked,
     RouteTo(Route, RouterType),
+    CloseSheetThenRoute(Route),
     Overlay {
         route: Route,
         make_new: bool,
@@ -370,7 +377,7 @@ pub enum RouterAction {
 }
 
 pub enum RouterType {
-    Sheet,
+    Sheet(Split),
     Stack,
 }
 
@@ -410,8 +417,8 @@ impl RouterAction {
             }
 
             RouterAction::RouteTo(route, router_type) => match router_type {
-                RouterType::Sheet => {
-                    sheet_router.route_to(route);
+                RouterType::Sheet(percent) => {
+                    sheet_router.route_to(route, percent);
                     None
                 }
                 RouterType::Stack => {
@@ -427,6 +434,11 @@ impl RouterAction {
                 }
                 None
             }
+            RouterAction::CloseSheetThenRoute(route) => {
+                sheet_router.go_back();
+                sheet_router.after_action = Some(route);
+                None
+            }
         }
     }
 
@@ -434,8 +446,8 @@ impl RouterAction {
         RouterAction::RouteTo(route, RouterType::Stack)
     }
 
-    pub fn route_to_sheet(route: Route) -> Self {
-        RouterAction::RouteTo(route, RouterType::Sheet)
+    pub fn route_to_sheet(route: Route, split: Split) -> Self {
+        RouterAction::RouteTo(route, RouterType::Sheet(split))
     }
 }
 
@@ -505,7 +517,7 @@ fn process_render_nav_action(
             }
         }
         RenderNavAction::ProfileAction(profile_action) => {
-            profile_action.process_profile_action(ctx.ndb, ctx.pool, ctx.accounts)
+            profile_action.process_profile_action(ui.ctx(), ctx.ndb, ctx.pool, ctx.accounts)
         }
         RenderNavAction::WalletAction(wallet_action) => {
             wallet_action.process(ctx.accounts, ctx.global_wallet)
@@ -517,6 +529,9 @@ fn process_render_nav_action(
         }
         RenderNavAction::SettingsAction(action) => {
             action.process_settings_action(app, ctx.settings, ctx.i18n, ctx.img_cache, ui.ctx())
+        }
+        RenderNavAction::RepostAction(action) => {
+            action.process(ctx.ndb, &ctx.accounts.get_selected_account().key, ctx.pool)
         }
     };
 
@@ -935,6 +950,10 @@ fn render_nav_body(
                 )))
             })
         }
+        Route::RepostDecision(note_id) => {
+            BodyResponse::output(RepostDecisionView::new(note_id).show(ui))
+                .map_output(RenderNavAction::RepostAction)
+        }
     }
 }
 
@@ -1043,6 +1062,7 @@ pub fn render_nav(
             .sheet_router
             .navigating;
         let returning = app.columns(ctx.accounts).column(col).sheet_router.returning;
+        let split = app.columns(ctx.accounts).column(col).sheet_router.split;
         let bg_route = app
             .columns(ctx.accounts)
             .column(col)
@@ -1055,7 +1075,7 @@ pub fn render_nav(
                 .id_source(egui::Id::new(("nav", col)))
                 .navigating(navigating)
                 .returning(returning)
-                .with_split_percent_from_top(Percent::new(35).expect("35 <= 100"))
+                .with_split(split)
                 .show_mut(ui, |ui, typ, route| match typ {
                     NavUiType::Title => NavTitle::new(
                         ctx.ndb,

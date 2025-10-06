@@ -18,6 +18,7 @@ pub enum NoteContextSelection {
     CopyNoteId,
     CopyNoteJSON,
     Broadcast(BroadcastContext),
+    CopyLink,
 }
 
 #[derive(Debug, Eq, PartialEq, Clone)]
@@ -27,7 +28,13 @@ pub struct ContextSelection {
 }
 
 impl NoteContextSelection {
-    pub fn process(&self, ui: &mut egui::Ui, note: &Note<'_>, pool: &mut RelayPool) {
+    pub fn process(
+        &self,
+        ui: &mut egui::Ui,
+        note: &Note<'_>,
+        pool: &mut RelayPool,
+        note_author_is_selected_acc: bool,
+    ) {
         match self {
             NoteContextSelection::Broadcast(context) => {
                 tracing::info!("Broadcasting note {}", hex::encode(note.id()));
@@ -58,6 +65,25 @@ impl NoteContextSelection {
                 Ok(json) => ui.ctx().copy_text(json),
                 Err(err) => error!("error copying note json: {err}"),
             },
+            NoteContextSelection::CopyLink => {
+                let damus_url = |s| format!("https://damus.io/{s}");
+                if note_author_is_selected_acc {
+                    let nip19event = nostr::nips::nip19::Nip19Event::new(
+                        nostr::event::EventId::from_byte_array(*note.id()),
+                        pool.urls(),
+                    );
+                    let Ok(bech) = nostr::nips::nip19::ToBech32::to_bech32(&nip19event) else {
+                        return;
+                    };
+                    ui.ctx().copy_text(damus_url(bech));
+                } else {
+                    let Some(bech) = NoteId::new(*note.id()).to_bech() else {
+                        return;
+                    };
+
+                    ui.ctx().copy_text(damus_url(bech));
+                }
+            }
         }
     }
 }

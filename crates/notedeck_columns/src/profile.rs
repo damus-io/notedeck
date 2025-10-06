@@ -1,7 +1,7 @@
 use enostr::{FilledKeypair, FullKeypair, ProfileState, Pubkey, RelayPool};
 use nostrdb::{Ndb, Note, NoteBuildOptions, NoteBuilder, Transaction};
 
-use notedeck::{Accounts, ContactState};
+use notedeck::{Accounts, ContactState, ProfileContext};
 use tracing::info;
 
 use crate::{nav::RouterAction, route::Route};
@@ -38,11 +38,13 @@ pub enum ProfileAction {
     SaveChanges(SaveProfileChanges),
     Follow(Pubkey),
     Unfollow(Pubkey),
+    Context(ProfileContext),
 }
 
 impl ProfileAction {
     pub fn process_profile_action(
         &self,
+        ctx: &egui::Context,
         ndb: &Ndb,
         pool: &mut RelayPool,
         accounts: &Accounts,
@@ -75,6 +77,12 @@ impl ProfileAction {
             }
             ProfileAction::Unfollow(target_key) => {
                 Self::send_unfollow_user_event(ndb, pool, accounts, target_key);
+                None
+            }
+            ProfileAction::Context(profile_context) => {
+                profile_context
+                    .selection
+                    .process(ctx, &profile_context.profile);
                 None
             }
         }
