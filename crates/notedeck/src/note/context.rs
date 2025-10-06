@@ -28,7 +28,7 @@ pub struct ContextSelection {
 }
 
 impl NoteContextSelection {
-    pub fn process(
+    pub fn process_selection(
         &self,
         ui: &mut egui::Ui,
         note: &Note<'_>,

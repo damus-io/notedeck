@@ -189,11 +189,11 @@ fn execute_note_action(
         NoteAction::Context(context) => match ndb.get_note_by_key(txn, context.note_key) {
             Err(err) => tracing::error!("{err}"),
             Ok(note) => {
-                context.action.process(
+                context.action.process_selection(
                     ui,
                     &note,
                     pool,
-                    *accounts.selected_account_pubkey().bytes() == *note.pubkey(),
+                    accounts.selected_account_pubkey().bytes() == note.pubkey(),
                 );
             }
         },
