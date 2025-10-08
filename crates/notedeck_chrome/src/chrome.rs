@@ -12,6 +12,7 @@ use egui_extras::{Size, StripBuilder};
 use egui_nav::RouteResponse;
 use egui_nav::{NavAction, NavDrawer};
 use nostrdb::{ProfileRecord, Transaction};
+use notedeck::ui::is_compiled_as_mobile;
 use notedeck::AppResponse;
 use notedeck::DrawerRouter;
 use notedeck::Error;
@@ -211,6 +212,7 @@ impl Chrome {
             .navigating(self.nav.navigating)
             .returning(self.nav.returning)
             .drawer_focused(self.nav.drawer_focused)
+            .drag(is_compiled_as_mobile())
             .opened_offset(100.0);
 
         let resp = drawer.show_mut(ui, |ui, route| match route {
