@@ -12,6 +12,7 @@ use egui_extras::{Size, StripBuilder};
 use egui_nav::RouteResponse;
 use egui_nav::{NavAction, NavDrawer};
 use nostrdb::{ProfileRecord, Transaction};
+use notedeck::ui::is_compiled_as_mobile;
 use notedeck::AppResponse;
 use notedeck::DrawerRouter;
 use notedeck::Error;
@@ -211,6 +212,7 @@ impl Chrome {
             .navigating(self.nav.navigating)
             .returning(self.nav.returning)
             .drawer_focused(self.nav.drawer_focused)
+            .drag(is_compiled_as_mobile())
             .opened_offset(100.0);
 
         let resp = drawer.show_mut(ui, |ui, route| match route {
@@ -287,24 +289,29 @@ impl Chrome {
 
         // if the soft keyboard is open, shrink the chrome contents
         let mut action: Option<ChromePanelAction> = None;
-        // build a strip to carve out the soft keyboard inset
-        StripBuilder::new(ui)
-            .size(Size::remainder())
-            .size(Size::exact(keyboard_height))
-            .vertical(|mut strip| {
-                // the actual content, shifted up because of the soft keyboard
-                strip.cell(|ui| {
-                    action = self.panel(ctx, ui, keyboard_height);
-                });
 
-                // the filler space taken up by the soft keyboard
-                strip.cell(|ui| {
-                    // keyboard-visibility virtual keyboard
-                    if virtual_keyboard && keyboard_height > 0.0 {
-                        virtual_keyboard_ui(ui, ui.available_rect_before_wrap())
-                    }
+        if keyboard_height == 0.0 {
+            action = self.panel(ctx, ui, keyboard_height);
+        } else {
+            // build a strip to carve out the soft keyboard inset
+            StripBuilder::new(ui)
+                .size(Size::remainder())
+                .size(Size::exact(keyboard_height))
+                .vertical(|mut strip| {
+                    // the actual content, shifted up because of the soft keyboard
+                    strip.cell(|ui| {
+                        action = self.panel(ctx, ui, keyboard_height);
+                    });
+
+                    // the filler space taken up by the soft keyboard
+                    strip.cell(|ui| {
+                        // keyboard-visibility virtual keyboard
+                        if virtual_keyboard && keyboard_height > 0.0 {
+                            virtual_keyboard_ui(ui, ui.available_rect_before_wrap())
+                        }
+                    });
                 });
-            });
+        }
 
         // hovering virtual keyboard
         if virtual_keyboard {
