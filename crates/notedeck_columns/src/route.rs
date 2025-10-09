@@ -433,6 +433,14 @@ impl<R: Clone> Router<R> {
         self.routes.push(route);
     }
 
+    pub fn route_instantly(&mut self, route: R) {
+        if self.routes.pop().is_none() {
+            return;
+        }
+
+        self.routes.push(route);
+    }
+
     /// Go back, start the returning process
     pub fn go_back(&mut self) -> Option<R> {
         if self.returning || self.routes.len() == 1 {
