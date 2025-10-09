@@ -91,7 +91,15 @@ fn execute_note_action(
             };
 
             timeline_res = threads
-                .open(ndb, txn, pool, &thread_selection, preview, col)
+                .open(
+                    ndb,
+                    txn,
+                    pool,
+                    &thread_selection,
+                    Some(note_id),
+                    preview,
+                    col,
+                )
                 .map(NotesOpenResult::Thread);
 
             let route = Route::Thread(thread_selection);

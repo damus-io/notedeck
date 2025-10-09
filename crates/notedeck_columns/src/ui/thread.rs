@@ -1,5 +1,6 @@
 use egui::InnerResponse;
 use egui_virtual_list::VirtualList;
+use enostr::NoteId;
 use nostrdb::{Note, Transaction};
 use notedeck::note::root_note_id_from_selected_id;
 use notedeck::JobsCache;
@@ -55,6 +56,10 @@ impl<'a, 'd> ThreadView<'a, 'd> {
 
         let output = scroll_area.show(ui, |ui| self.notes(ui, &txn));
 
+        if let Some(scroll_to) = self.threads.scroll_to.as_mut() {
+            scroll_to.active = false;
+        }
+
         let out_id = output.id;
         let resp = output.inner;
 
@@ -85,6 +90,12 @@ impl<'a, 'd> ThreadView<'a, 'd> {
 
         let full_chain = cur_node.have_all_ancestors;
         let mut note_builder = ThreadNoteBuilder::new(cur_note);
+
+        if let Some(scroll_note) = &self.threads.scroll_to {
+            if scroll_note.active {
+                note_builder = note_builder.scroll_to(&scroll_note.id);
+            }
+        }
 
         let mut parent_state = cur_node.prev.clone();
         while let ParentState::Parent(id) = parent_state {
@@ -153,6 +164,10 @@ fn show_notes(
 
     let is_muted = note_context.accounts.mutefun();
 
+    if let Some(scroll_index) = thread_notes.scroll_to_index {
+        list.scroll_to_item(scroll_index);
+    }
+
     list.ui_custom_layout(ui, notes.len(), |ui, cur_index| {
         let note = &notes[cur_index];
 
@@ -203,6 +218,7 @@ struct ThreadNoteBuilder<'a> {
     chain: Vec<Note<'a>>,
     selected: Note<'a>,
     replies: Vec<Note<'a>>,
+    scroll_to: Option<&'a NoteId>,
 }
 
 impl<'a> ThreadNoteBuilder<'a> {
@@ -211,7 +227,13 @@ impl<'a> ThreadNoteBuilder<'a> {
             chain: Vec::new(),
             selected,
             replies: Vec::new(),
+            scroll_to: None,
         }
+    }
+
+    pub fn scroll_to(mut self, note: &'a NoteId) -> Self {
+        self.scroll_to = Some(note);
+        self
     }
 
     pub fn add_chain(&mut self, note: Note<'a>) {
@@ -228,19 +250,35 @@ impl<'a> ThreadNoteBuilder<'a> {
         seen_flags: &mut NoteSeenFlags,
     ) -> ThreadNotes<'a> {
         let mut notes = Vec::new();
+        let mut scroll_to_index = None;
 
         let selected_is_root = self.chain.is_empty();
         let mut cur_is_root = true;
         while let Some(note) = self.chain.pop() {
+            if let Some(scroll_noteid) = self.scroll_to {
+                if note.id() == scroll_noteid.bytes() {
+                    scroll_to_index = Some(notes.len());
+                    self.scroll_to = None;
+                }
+            }
             notes.push(ThreadNote {
                 unread_and_have_replies: *seen_flags.get(note.id()).unwrap_or(&false),
                 note,
                 note_type: ThreadNoteType::Chain { root: cur_is_root },
             });
+
             cur_is_root = false;
         }
 
         let selected_index = notes.len();
+
+        if let Some(scroll_noteid) = self.scroll_to {
+            if self.selected.id() == scroll_noteid.bytes() {
+                scroll_to_index = Some(selected_index);
+                self.scroll_to = None;
+            }
+        }
+
         notes.push(ThreadNote {
             note: self.selected,
             note_type: ThreadNoteType::Selected {
@@ -255,6 +293,12 @@ impl<'a> ThreadNoteBuilder<'a> {
         }
 
         for reply in self.replies {
+            if let Some(scroll_noteid) = self.scroll_to {
+                if reply.id() == scroll_noteid.bytes() {
+                    scroll_to_index = Some(notes.len());
+                    self.scroll_to = None;
+                }
+            }
             notes.push(ThreadNote {
                 unread_and_have_replies: *seen_flags.get(reply.id()).unwrap_or(&false),
                 note: reply,
@@ -265,6 +309,7 @@ impl<'a> ThreadNoteBuilder<'a> {
         ThreadNotes {
             notes,
             selected_index,
+            scroll_to_index,
         }
     }
 }
@@ -284,6 +329,7 @@ impl ThreadNoteType {
 struct ThreadNotes<'a> {
     notes: Vec<ThreadNote<'a>>,
     selected_index: usize,
+    pub scroll_to_index: Option<usize>,
 }
 
 struct ThreadNote<'a> {

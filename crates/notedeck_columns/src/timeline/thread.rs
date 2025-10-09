@@ -48,6 +48,18 @@ pub struct Threads {
     pub subs: ThreadSubs,
 
     pub seen_flags: NoteSeenFlags,
+    pub scroll_to: Option<ScrollToNote>,
+}
+
+pub struct ScrollToNote {
+    pub id: NoteId,
+    pub active: bool,
+}
+
+impl ScrollToNote {
+    pub fn new(id: NoteId) -> Self {
+        Self { id, active: true }
+    }
 }
 
 impl Threads {
@@ -60,9 +72,14 @@ impl Threads {
         txn: &Transaction,
         pool: &mut RelayPool,
         thread: &ThreadSelection,
+        scroll_to: Option<NoteId>,
         new_scope: bool,
         col: usize,
     ) -> Option<NewThreadNotes> {
+        if let Some(scroll_to) = scroll_to {
+            self.scroll_to = Some(ScrollToNote::new(scroll_to));
+        }
+
         tracing::info!("Opening thread: {:?}", thread);
         let local_sub_filter = if let Some(selected) = &thread.selected_note {
             vec![direct_replies_filter_non_root(
@@ -146,11 +163,22 @@ impl Threads {
             .cached_note_or_insert_mut(selected_key, selected)
             .reply;
 
+        let have_all_ancestors_before = self
+            .threads
+            .get(&selected.id())
+            .map(|t| t.have_all_ancestors)
+            .unwrap_or(true);
         self.fill_reply_chain_recursive(selected, &reply, note_cache, ndb, txn, unknown_ids);
         let node = self
             .threads
             .get_mut(&selected.id())
             .expect("should be guarenteed to exist from `Self::fill_reply_chain_recursive`");
+
+        if have_all_ancestors_before != node.have_all_ancestors {
+            if let Some(scroll_to) = self.scroll_to.as_mut() {
+                scroll_to.active = true;
+            }
+        }
 
         let Some(sub) = self.subs.get_local(col) else {
             tracing::error!("Was expecting to find local sub");
