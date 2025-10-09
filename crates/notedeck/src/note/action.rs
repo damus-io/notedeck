@@ -26,6 +26,11 @@ pub enum NoteAction {
     /// User has clicked a note link
     Note { note_id: NoteId, preview: bool },
 
+    ThreadAutoUnfold {
+        note_id: NoteId,
+        scroll_to: Option<NoteId>,
+    },
+
     /// User has selected some context option
     Context(ContextSelection),
 

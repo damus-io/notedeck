@@ -80,7 +80,6 @@ impl Threads {
             self.scroll_to = Some(ScrollToNote::new(scroll_to));
         }
 
-        tracing::info!("Opening thread: {:?}", thread);
         let local_sub_filter = if let Some(selected) = &thread.selected_note {
             vec![direct_replies_filter_non_root(
                 selected.bytes(),
