@@ -109,8 +109,18 @@ impl<'a, 'd> ThreadView<'a, 'd> {
             parent_state = ParentState::Unknown;
         }
 
+        let mut action = None;
+
+        let only_reply = cur_node.replies.len() == 1;
+
         for note_ref in cur_node.replies.values() {
             if let Ok(note) = self.note_context.ndb.get_note_by_key(txn, note_ref.key) {
+                if only_reply {
+                    action = Some(NoteAction::ThreadAutoUnfold {
+                        note_id: enostr::NoteId::new(*note.id()),
+                        scroll_to: self.threads.scroll_to.as_ref().map(|s| s.id),
+                    });
+                }
                 note_builder.add_reply(note);
             }
         }
@@ -132,7 +142,7 @@ impl<'a, 'd> ThreadView<'a, 'd> {
             ui.colored_label(ui.visuals().error_fg_color, "LOADING NOTES");
         }
 
-        show_notes(
+        action = show_notes(
             ui,
             list,
             &notes,
@@ -141,6 +151,9 @@ impl<'a, 'd> ThreadView<'a, 'd> {
             self.jobs,
             txn,
         )
+        .or(action);
+
+        action
     }
 }
 
