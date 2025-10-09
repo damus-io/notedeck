@@ -442,4 +442,12 @@ impl SingleNoteUnits {
     pub fn contains_key(&self, k: &NoteKey) -> bool {
         self.units.contains_key(&UnitKey::Single(*k))
     }
+
+    pub fn len(&self) -> usize {
+        self.units.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.units.is_empty()
+    }
 }
