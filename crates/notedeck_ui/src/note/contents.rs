@@ -361,7 +361,6 @@ fn render_undecorated_note_contents<'a>(
                 NoteAction::Note { note_id, .. } => NoteAction::Note {
                     note_id,
                     preview: true,
-                    scroll_offset: 0.0,
                 },
                 other => other,
             })

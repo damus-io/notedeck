@@ -22,7 +22,6 @@ pub struct ThreadNode {
     pub prev: ParentState,
     pub have_all_ancestors: bool,
     pub list: VirtualList,
-    pub set_scroll_offset: Option<f32>,
 }
 
 #[derive(Clone)]
@@ -39,13 +38,7 @@ impl ThreadNode {
             prev: parent,
             have_all_ancestors: false,
             list: VirtualList::new(),
-            set_scroll_offset: None,
         }
-    }
-
-    pub fn with_offset(mut self, offset: f32) -> Self {
-        self.set_scroll_offset = Some(offset);
-        self
     }
 }
 
@@ -69,7 +62,6 @@ impl Threads {
         thread: &ThreadSelection,
         new_scope: bool,
         col: usize,
-        scroll_offset: f32,
     ) -> Option<NewThreadNotes> {
         tracing::info!("Opening thread: {:?}", thread);
         let local_sub_filter = if let Some(selected) = &thread.selected_note {
@@ -99,7 +91,7 @@ impl Threads {
             RawEntryMut::Vacant(entry) => {
                 let id = NoteId::new(*selected_note_id);
 
-                let node = ThreadNode::new(ParentState::Unknown).with_offset(scroll_offset);
+                let node = ThreadNode::new(ParentState::Unknown);
                 entry.insert(id, node);
 
                 &local_sub_filter

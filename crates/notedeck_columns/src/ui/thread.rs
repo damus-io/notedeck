@@ -47,31 +47,16 @@ impl<'a, 'd> ThreadView<'a, 'd> {
         let txn = Transaction::new(self.note_context.ndb).expect("txn");
 
         let scroll_id = ThreadView::scroll_id(self.selected_note_id, self.col);
-        let mut scroll_area = egui::ScrollArea::vertical()
+        let scroll_area = egui::ScrollArea::vertical()
             .id_salt(scroll_id)
             .animated(false)
             .auto_shrink([false, false])
             .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible);
 
-        if let Some(thread) = self.threads.threads.get_mut(&self.selected_note_id) {
-            if let Some(new_offset) = thread.set_scroll_offset.take() {
-                scroll_area = scroll_area.vertical_scroll_offset(new_offset);
-            }
-        }
-
         let output = scroll_area.show(ui, |ui| self.notes(ui, &txn));
 
         let out_id = output.id;
-        let mut resp = output.inner;
-
-        if let Some(NoteAction::Note {
-            note_id: _,
-            preview: _,
-            scroll_offset,
-        }) = &mut resp
-        {
-            *scroll_offset = output.state.offset.y;
-        }
+        let resp = output.inner;
 
         BodyResponse::output(resp).scroll_raw(out_id)
     }
@@ -206,7 +191,6 @@ fn strip_note_action(action: NoteAction) -> Option<NoteAction> {
         NoteAction::Note {
             note_id: _,
             preview: false,
-            scroll_offset: _,
         }
     ) {
         return None;

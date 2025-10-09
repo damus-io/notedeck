@@ -83,11 +83,7 @@ fn execute_note_action(
                 .open(ndb, note_cache, txn, pool, &kind)
                 .map(NotesOpenResult::Timeline);
         }
-        NoteAction::Note {
-            note_id,
-            preview,
-            scroll_offset,
-        } => 'ex: {
+        NoteAction::Note { note_id, preview } => 'ex: {
             let Ok(thread_selection) = ThreadSelection::from_note_id(ndb, note_cache, txn, note_id)
             else {
                 tracing::error!("No thread selection for {}?", hex::encode(note_id.bytes()));
@@ -95,15 +91,7 @@ fn execute_note_action(
             };
 
             timeline_res = threads
-                .open(
-                    ndb,
-                    txn,
-                    pool,
-                    &thread_selection,
-                    preview,
-                    col,
-                    scroll_offset,
-                )
+                .open(ndb, txn, pool, &thread_selection, preview, col)
                 .map(NotesOpenResult::Thread);
 
             let route = Route::Thread(thread_selection);
