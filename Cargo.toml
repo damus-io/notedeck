@@ -115,12 +115,12 @@ strip = true        # Strip symbols from binary*
 #egui_extras = { path = "/home/jb55/dev/github/emilk/egui/crates/egui_extras" }
 #epaint = { path = "/home/jb55/dev/github/emilk/egui/crates/epaint" }
 
-egui = { git = "https://github.com/damus-io/egui", rev = "c9073832236dadec21f263ef1f1ffa4d7a159f72" }
-eframe = { git = "https://github.com/damus-io/egui", rev = "c9073832236dadec21f263ef1f1ffa4d7a159f72" }
-egui-winit = { git = "https://github.com/damus-io/egui", rev = "c9073832236dadec21f263ef1f1ffa4d7a159f72" }
-egui-wgpu = { git = "https://github.com/damus-io/egui", rev = "c9073832236dadec21f263ef1f1ffa4d7a159f72" }
-egui_extras = { git = "https://github.com/damus-io/egui", rev = "c9073832236dadec21f263ef1f1ffa4d7a159f72" }
-epaint = { git = "https://github.com/damus-io/egui", rev = "c9073832236dadec21f263ef1f1ffa4d7a159f72" }
+egui = { git = "https://github.com/kernelkind/egui", rev = "e05638c40ef734312b3b3e36397d389d0a78b10b" }
+eframe = { git = "https://github.com/kernelkind/egui", rev = "e05638c40ef734312b3b3e36397d389d0a78b10b" }
+egui-winit = { git = "https://github.com/kernelkind/egui", rev = "e05638c40ef734312b3b3e36397d389d0a78b10b" }
+egui-wgpu = { git = "https://github.com/kernelkind/egui", rev = "e05638c40ef734312b3b3e36397d389d0a78b10b" }
+egui_extras = { git = "https://github.com/kernelkind/egui", rev = "e05638c40ef734312b3b3e36397d389d0a78b10b" }
+epaint = { git = "https://github.com/kernelkind/egui", rev = "e05638c40ef734312b3b3e36397d389d0a78b10b" }
 puffin = { git = "https://github.com/jb55/puffin", package = "puffin", rev = "c6a6242adaf90b6292c0f462d2acd34d96d224d2" }
 puffin_egui = { git = "https://github.com/jb55/puffin", package = "puffin_egui", rev = "c6a6242adaf90b6292c0f462d2acd34d96d224d2" }
 ffmpeg-sys-next = { path = "vendor/ffmpeg-sys-next" }
