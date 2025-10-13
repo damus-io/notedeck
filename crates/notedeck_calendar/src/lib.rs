@@ -19,6 +19,7 @@ pub struct Calendar {
     event_form: EventFormData,
     subscribed: bool,
     feedback_message: Option<String>,
+    selected_event: Option<NoteKey>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -128,6 +129,7 @@ impl Calendar {
             },
             subscribed: false,
             feedback_message: None,
+            selected_event: None,
         }
     }
 
@@ -183,6 +185,14 @@ impl Calendar {
 
     pub fn calendars(&self) -> &[CalendarInfo] {
         &self.calendars
+    }
+
+    pub fn selected_event(&self) -> Option<NoteKey> {
+        self.selected_event
+    }
+
+    pub fn set_selected_event(&mut self, note_key: Option<NoteKey>) {
+        self.selected_event = note_key;
     }
 
     pub fn set_selected_date(&mut self, date: NaiveDate, app_ctx: &mut AppContext) {

@@ -2,6 +2,7 @@ use crate::{Calendar, CalendarEventDisplay, EventTime, EventType, ViewMode};
 use chrono::{Datelike, Local, NaiveDate};
 use egui::{Color32, Frame, Margin, RichText, Sense, Vec2};
 use notedeck::{AppAction, AppContext, AppResponse};
+use nostrdb::NoteKey;
 
 #[derive(Debug, Clone)]
 pub enum CalendarAction {
@@ -85,7 +86,17 @@ impl CalendarUi for Calendar {
                     self.prev_month();
                     self.load_events(app_ctx);
                 }
-                CalendarAction::SelectDate(date) => self.set_selected_date(date, app_ctx),
+                CalendarAction::SelectDate(date) => {
+                    self.set_selected_date(date, app_ctx);
+                    self.set_view_mode(ViewMode::Day);
+                }
+                CalendarAction::SelectEvent(note_key_str) => {
+                    if note_key_str.is_empty() {
+                        self.set_selected_event(None);
+                    } else if let Ok(key) = note_key_str.parse::<u64>() {
+                        self.set_selected_event(Some(NoteKey::new(key)));
+                    }
+                }
                 CalendarAction::ChangeView(mode) => self.set_view_mode(mode),
                 CalendarAction::RefreshEvents => {
                     self.load_events(app_ctx);
@@ -306,7 +317,7 @@ fn week_view_ui(calendar: &Calendar, ui: &mut egui::Ui, actions: &mut Vec<Calend
 
                         egui::ScrollArea::vertical().show(ui, |ui| {
                             for event in events_on_day {
-                                mini_event_ui(event, ui);
+                                mini_event_ui(event, ui, actions);
                             }
                         });
                     });
@@ -322,8 +333,8 @@ fn week_view_ui(calendar: &Calendar, ui: &mut egui::Ui, actions: &mut Vec<Calend
     });
 }
 
-fn mini_event_ui(event: &CalendarEventDisplay, ui: &mut egui::Ui) {
-    Frame::new()
+fn mini_event_ui(event: &CalendarEventDisplay, ui: &mut egui::Ui, actions: &mut Vec<CalendarAction>) {
+    let response = Frame::new()
         .fill(Color32::from_gray(40))
         .inner_margin(Margin::same(4))
         .stroke(egui::Stroke::new(1.0, Color32::from_gray(80)))
@@ -344,14 +355,25 @@ fn mini_event_ui(event: &CalendarEventDisplay, ui: &mut egui::Ui) {
             }
         });
     
+    if response.response.interact(Sense::click()).clicked() {
+        actions.push(CalendarAction::SelectEvent(event.note_key.as_u64().to_string()));
+    }
+    
     ui.add_space(2.0);
 }
 
-fn day_view_ui(calendar: &Calendar, ui: &mut egui::Ui, _actions: &mut Vec<CalendarAction>) {
+fn day_view_ui(calendar: &Calendar, ui: &mut egui::Ui, actions: &mut Vec<CalendarAction>) {
     ui.vertical(|ui| {
         ui.heading(calendar.selected_date().format("%A, %B %d, %Y").to_string());
         
         ui.separator();
+
+        if let Some(selected_key) = calendar.selected_event() {
+            if let Some(event) = calendar.events().iter().find(|e| e.note_key == selected_key) {
+                event_detail_ui(event, ui, actions);
+                return;
+            }
+        }
 
         let events = get_events_on_date(calendar.events(), calendar.selected_date());
         
@@ -360,23 +382,23 @@ fn day_view_ui(calendar: &Calendar, ui: &mut egui::Ui, _actions: &mut Vec<Calend
         } else {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 for event in events {
-                    event_card_ui(event, ui);
+                    event_card_ui(event, ui, actions);
                 }
             });
         }
     });
 }
 
-fn list_view_ui(calendar: &Calendar, ui: &mut egui::Ui, _actions: &mut Vec<CalendarAction>) {
+fn list_view_ui(calendar: &Calendar, ui: &mut egui::Ui, actions: &mut Vec<CalendarAction>) {
     egui::ScrollArea::vertical().show(ui, |ui| {
         for event in calendar.events() {
-            event_card_ui(event, ui);
+            event_card_ui(event, ui, actions);
         }
     });
 }
 
-fn event_card_ui(event: &CalendarEventDisplay, ui: &mut egui::Ui) {
-    Frame::new()
+fn event_card_ui(event: &CalendarEventDisplay, ui: &mut egui::Ui, actions: &mut Vec<CalendarAction>) {
+    let response = Frame::new()
         .fill(Color32::from_gray(30))
         .inner_margin(Margin::same(10))
         .stroke(egui::Stroke::new(1.0, Color32::from_gray(60)))
@@ -435,7 +457,90 @@ fn event_card_ui(event: &CalendarEventDisplay, ui: &mut egui::Ui) {
             });
         });
     
+    if response.response.interact(Sense::click()).clicked() {
+        actions.push(CalendarAction::SelectEvent(event.note_key.as_u64().to_string()));
+    }
+    
     ui.add_space(5.0);
+}
+
+fn event_detail_ui(event: &CalendarEventDisplay, ui: &mut egui::Ui, actions: &mut Vec<CalendarAction>) {
+    egui::ScrollArea::vertical().show(ui, |ui| {
+        if ui.button("← Back to Events").clicked() {
+            actions.push(CalendarAction::SelectEvent(String::new()));
+        }
+        
+        ui.add_space(10.0);
+        
+        Frame::new()
+            .fill(Color32::from_gray(30))
+            .inner_margin(Margin::same(15))
+            .stroke(egui::Stroke::new(2.0, Color32::from_gray(80)))
+            .show(ui, |ui| {
+                let icon = match event.event_type {
+                    EventType::DateBased => "📅",
+                    EventType::TimeBased => "⏰",
+                };
+                ui.heading(format!("{} {}", icon, &event.title));
+                
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(10.0);
+                
+                ui.label(RichText::new("Time").strong().size(14.0));
+                let time_str = format_event_time(&event.start, &event.end);
+                ui.label(RichText::new(time_str).color(Color32::from_gray(180)));
+                
+                ui.add_space(10.0);
+                
+                if !event.location.is_empty() {
+                    ui.label(RichText::new("Location").strong().size(14.0));
+                    for loc in &event.location {
+                        ui.label(RichText::new(format!("📍 {}", loc)).color(Color32::from_gray(180)));
+                    }
+                    if let Some(ref geohash) = event.geohash {
+                        ui.label(RichText::new(format!("Geohash: {}", geohash)).color(Color32::from_gray(160)));
+                    }
+                    ui.add_space(10.0);
+                }
+                
+                if !event.description.is_empty() {
+                    ui.label(RichText::new("Description").strong().size(14.0));
+                    ui.label(RichText::new(&event.description).color(Color32::from_gray(180)));
+                    ui.add_space(10.0);
+                }
+                
+                if !event.participants.is_empty() {
+                    ui.label(RichText::new("Participants").strong().size(14.0));
+                    for participant in &event.participants {
+                        let role = participant.role.as_deref().unwrap_or("participant");
+                        ui.label(RichText::new(format!("👤 {} ({})", &participant.pubkey[..16], role))
+                            .color(Color32::from_gray(180)));
+                    }
+                    ui.add_space(10.0);
+                }
+                
+                if !event.hashtags.is_empty() {
+                    ui.label(RichText::new("Tags").strong().size(14.0));
+                    ui.label(RichText::new(format!("#{}", event.hashtags.join(" #")))
+                        .color(Color32::from_rgb(100, 150, 200)));
+                    ui.add_space(10.0);
+                }
+                
+                if !event.references.is_empty() {
+                    ui.label(RichText::new("References").strong().size(14.0));
+                    for reference in &event.references {
+                        ui.label(RichText::new(format!("🔗 {}", reference))
+                            .color(Color32::from_gray(180)));
+                    }
+                    ui.add_space(10.0);
+                }
+                
+                ui.label(RichText::new(format!("Event ID: {}", event.d_tag))
+                    .size(11.0)
+                    .color(Color32::from_gray(120)));
+            });
+    });
 }
 
 fn get_events_on_date(events: &[CalendarEventDisplay], date: NaiveDate) -> Vec<&CalendarEventDisplay> {
