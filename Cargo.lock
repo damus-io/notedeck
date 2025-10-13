@@ -3589,6 +3589,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "notedeck_calendar"
+version = "0.7.1"
+dependencies = [
+ "chrono",
+ "eframe",
+ "egui",
+ "egui_extras",
+ "enostr",
+ "nostrdb",
+ "notedeck",
+ "notedeck_ui",
+ "serde",
+ "serde_json",
+ "tracing",
+]
+
+[[package]]
 name = "notedeck_chrome"
 version = "0.7.1"
 dependencies = [
@@ -3601,6 +3618,7 @@ dependencies = [
  "egui_tabs",
  "nostrdb",
  "notedeck",
+ "notedeck_calendar",
  "notedeck_clndash",
  "notedeck_columns",
  "notedeck_dave",

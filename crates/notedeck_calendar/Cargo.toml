@@ -1,0 +1,19 @@
+[package]
+name = "notedeck_calendar"
+edition = "2021"
+version.workspace = true
+license = "GPL"
+description = "NIP-52 Calendar Events application for Notedeck"
+
+[dependencies]
+egui = { workspace = true }
+eframe = { workspace = true }
+egui_extras = { workspace = true }
+notedeck = { workspace = true }
+notedeck_ui = { workspace = true }
+nostrdb = { workspace = true }
+enostr = { workspace = true }
+chrono = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }

@@ -9,8 +9,9 @@ members = [
     "crates/notedeck_notebook",
     "crates/notedeck_ui",
     "crates/notedeck_clndash",
+    "crates/notedeck_calendar",
 
-    "crates/enostr", "crates/tokenator", "crates/notedeck_dave", "crates/notedeck_ui", "crates/notedeck_clndash",
+    "crates/enostr", "crates/tokenator", "crates/notedeck_dave", "crates/notedeck_ui", "crates/notedeck_clndash", "crates/notedeck_calendar",
 ]
 
 [workspace.dependencies]
@@ -53,6 +54,7 @@ notedeck_chrome = { path = "crates/notedeck_chrome" }
 notedeck_clndash = { path = "crates/notedeck_clndash" }
 notedeck_columns = { path = "crates/notedeck_columns" }
 notedeck_dave = { path = "crates/notedeck_dave" }
+notedeck_calendar = { path = "crates/notedeck_calendar" }
 notedeck_notebook = { path = "crates/notedeck_notebook" }
 notedeck_ui = { path = "crates/notedeck_ui" }
 tokenator = { path = "crates/tokenator" }

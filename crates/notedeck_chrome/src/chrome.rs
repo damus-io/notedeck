@@ -151,6 +151,7 @@ impl Chrome {
 
         chrome.add_app(NotedeckApp::Columns(Box::new(columns)));
         chrome.add_app(NotedeckApp::Dave(Box::new(dave)));
+        chrome.add_app(NotedeckApp::Calendar(Box::new(notedeck_calendar::Calendar::new())));
 
         if notedeck.has_option(NotedeckOptions::FeatureNotebook) {
             chrome.add_app(NotedeckApp::Notebook(Box::default()));
@@ -351,6 +352,8 @@ impl Chrome {
                     dave_button(dave.avatar_mut(), ui, rect)
                 }
 
+                NotedeckApp::Calendar(_calendar) => calendar_button(ui),
+
                 NotedeckApp::ClnDash(_clndash) => clndash_button(ui),
 
                 NotedeckApp::Notebook(_notebook) => notebook_button(ui),
@@ -450,6 +453,13 @@ fn columns_button(ui: &mut egui::Ui) -> egui::Response {
         ui,
         false,
     )
+}
+
+fn calendar_button(ui: &mut egui::Ui) -> egui::Response {
+    ui.add(
+        egui::Button::new(egui::RichText::new("📅").size(24.0))
+            .frame(false)
+    ).on_hover_text("Calendar")
 }
 
 fn accounts_button(ui: &mut egui::Ui) -> egui::Response {
