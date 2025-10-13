@@ -11,7 +11,25 @@ pub enum CalendarAction {
     ChangeView(ViewMode),
     SelectEvent(String),
     CreateEvent,
+    SubmitEvent(EventCreationData),
+    CancelEventCreation,
     RefreshEvents,
+}
+
+#[derive(Debug, Clone)]
+pub struct EventCreationData {
+    pub event_type: EventType,
+    pub title: String,
+    pub description: String,
+    pub start_date: Option<NaiveDate>,
+    pub start_time: Option<String>,
+    pub end_date: Option<NaiveDate>,
+    pub end_time: Option<String>,
+    pub timezone: Option<String>,
+    pub location: String,
+    pub geohash: String,
+    pub hashtags: String,
+    pub references: String,
 }
 
 #[derive(Debug, Clone)]
@@ -33,15 +51,19 @@ impl CalendarUi for Calendar {
         }
 
         ui.vertical(|ui| {
-            toolbar_ui(self, ui, &mut actions);
-            
-            ui.separator();
-            
-            match self.view_mode() {
-                ViewMode::Month => month_view_ui(self, ui, &mut actions),
-                ViewMode::Week => week_view_ui(self, ui, &mut actions),
-                ViewMode::Day => day_view_ui(self, ui, &mut actions),
-                ViewMode::List => list_view_ui(self, ui, &mut actions),
+            if self.creating_event() {
+                event_creation_form_ui(self, ui, &mut actions);
+            } else {
+                toolbar_ui(self, ui, &mut actions);
+                
+                ui.separator();
+                
+                match self.view_mode() {
+                    ViewMode::Month => month_view_ui(self, ui, &mut actions),
+                    ViewMode::Week => week_view_ui(self, ui, &mut actions),
+                    ViewMode::Day => day_view_ui(self, ui, &mut actions),
+                    ViewMode::List => list_view_ui(self, ui, &mut actions),
+                }
             }
         });
 
@@ -60,6 +82,18 @@ impl CalendarUi for Calendar {
                 CalendarAction::RefreshEvents => {
                     self.load_events(app_ctx);
                     self.load_calendars(app_ctx);
+                }
+                CalendarAction::CreateEvent => {
+                    self.start_creating_event();
+                }
+                CalendarAction::CancelEventCreation => {
+                    self.cancel_creating_event();
+                }
+                CalendarAction::SubmitEvent(data) => {
+                    if let Some(note_id) = Self::create_nip52_event(app_ctx, &data) {
+                        self.cancel_creating_event();
+                        self.load_events(app_ctx);
+                    }
                 }
                 _ => {}
             }
@@ -339,7 +373,35 @@ fn event_card_ui(event: &CalendarEventDisplay, ui: &mut egui::Ui) {
                     ui.label(RichText::new(time_str).color(Color32::from_gray(180)));
 
                     if !event.location.is_empty() {
-                        ui.label(RichText::new(format!("📍 {}", event.location.join(", ")))
+                        let location_text = if let Some(ref geohash) = event.geohash {
+                            format!("📍 {} ({})", event.location.join(", "), geohash)
+                        } else {
+                            format!("📍 {}", event.location.join(", "))
+                        };
+                        ui.label(RichText::new(location_text).color(Color32::from_gray(160)));
+                    }
+
+                    if !event.participants.is_empty() {
+                        let participant_count = event.participants.len();
+                        let hosts: Vec<_> = event.participants.iter()
+                            .filter(|p| p.role.as_deref() == Some("host"))
+                            .collect();
+                        
+                        let participant_text = if !hosts.is_empty() {
+                            format!("👥 {} participants ({} hosts)", participant_count, hosts.len())
+                        } else {
+                            format!("👥 {} participants", participant_count)
+                        };
+                        ui.label(RichText::new(participant_text).color(Color32::from_gray(160)));
+                    }
+
+                    if !event.hashtags.is_empty() {
+                        ui.label(RichText::new(format!("🏷️ {}", event.hashtags.join(" #")))
+                            .color(Color32::from_rgb(100, 150, 200)));
+                    }
+
+                    if !event.references.is_empty() {
+                        ui.label(RichText::new(format!("🔗 {} references", event.references.len()))
                             .color(Color32::from_gray(160)));
                     }
 
@@ -411,5 +473,98 @@ fn format_event_time(start: &EventTime, end: &Option<EventTime>) -> String {
                 format!("{} ({})", dt.format("%Y-%m-%d %H:%M"), tz_str)
             }
         }
+    }
+}
+
+fn event_creation_form_ui(calendar: &mut Calendar, ui: &mut egui::Ui, actions: &mut Vec<CalendarAction>) {
+    ui.heading("Create New Calendar Event");
+    ui.separator();
+
+    egui::ScrollArea::vertical().show(ui, |ui| {
+        let form = calendar.event_form_mut();
+
+        ui.horizontal(|ui| {
+            ui.label("Event Type:");
+            ui.radio_value(&mut form.event_type, EventType::TimeBased, "Time-based (Kind 31923)");
+            ui.radio_value(&mut form.event_type, EventType::DateBased, "Date-based (Kind 31922)");
+        });
+
+        ui.separator();
+
+        ui.label("Title (required):");
+        ui.text_edit_singleline(&mut form.title);
+
+        ui.add_space(10.0);
+
+        ui.label("Description (content):");
+        ui.text_edit_multiline(&mut form.description);
+
+        ui.add_space(10.0);
+
+        ui.label("Start Date (YYYY-MM-DD):");
+        ui.text_edit_singleline(&mut form.start_date);
+
+        if matches!(form.event_type, EventType::TimeBased) {
+            ui.label("Start Time (HH:MM):");
+            ui.text_edit_singleline(&mut form.start_time);
+
+            ui.label("Timezone (IANA, e.g., America/New_York, UTC):");
+            ui.text_edit_singleline(&mut form.timezone);
+        }
+
+        ui.add_space(10.0);
+
+        ui.label("End Date (YYYY-MM-DD, optional):");
+        ui.text_edit_singleline(&mut form.end_date);
+
+        if matches!(form.event_type, EventType::TimeBased) {
+            ui.label("End Time (HH:MM, optional):");
+            ui.text_edit_singleline(&mut form.end_time);
+        }
+
+        ui.add_space(10.0);
+
+        ui.label("Location (optional):");
+        ui.text_edit_singleline(&mut form.location);
+
+        ui.label("Geohash (optional):");
+        ui.text_edit_singleline(&mut form.geohash);
+
+        ui.add_space(10.0);
+
+        ui.label("Hashtags (space-separated, optional):");
+        ui.text_edit_singleline(&mut form.hashtags);
+
+        ui.label("References (comma-separated URLs, optional):");
+        ui.text_edit_singleline(&mut form.references);
+
+        ui.add_space(20.0);
+
+        ui.horizontal(|ui| {
+            if ui.button("Cancel").clicked() {
+                actions.push(CalendarAction::CancelEventCreation);
+            }
+
+            if ui.button("Create Event").clicked() {
+                actions.push(CalendarAction::SubmitEvent(form_to_creation_data(&form)));
+            }
+        });
+    });
+}
+
+fn form_to_creation_data(form: &crate::EventFormData) -> EventCreationData {
+    EventCreationData {
+        event_type: form.event_type.clone(),
+        title: form.title.clone(),
+        description: form.description.clone(),
+        start_date: NaiveDate::parse_from_str(&form.start_date, "%Y-%m-%d").ok(),
+        start_time: if form.start_time.is_empty() { None } else { Some(form.start_time.clone()) },
+        end_date: NaiveDate::parse_from_str(&form.end_date, "%Y-%m-%d").ok(),
+        end_time: if form.end_time.is_empty() { None } else { Some(form.end_time.clone()) },
+        timezone: if form.timezone.is_empty() { None } else { Some(form.timezone.clone()) },
+        location: form.location.clone(),
+        geohash: form.geohash.clone(),
+        hashtags: form.hashtags.clone(),
+        references: form.references.clone(),
     }
 }

@@ -13,6 +13,24 @@ pub struct Calendar {
     events: Vec<CalendarEventDisplay>,
     calendars: Vec<CalendarInfo>,
     selected_calendar: Option<String>,
+    creating_event: bool,
+    event_form: EventFormData,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct EventFormData {
+    pub event_type: EventType,
+    pub title: String,
+    pub description: String,
+    pub start_date: String,
+    pub start_time: String,
+    pub end_date: String,
+    pub end_time: String,
+    pub timezone: String,
+    pub location: String,
+    pub geohash: String,
+    pub hashtags: String,
+    pub references: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -31,15 +49,26 @@ pub struct CalendarEventDisplay {
     pub start: EventTime,
     pub end: Option<EventTime>,
     pub location: Vec<String>,
-    pub participants: Vec<String>,
+    pub geohash: Option<String>,
+    pub participants: Vec<Participant>,
+    pub hashtags: Vec<String>,
+    pub references: Vec<String>,
     pub description: String,
     pub d_tag: String,
 }
 
 #[derive(Debug, Clone)]
+pub struct Participant {
+    pub pubkey: String,
+    pub relay: Option<String>,
+    pub role: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
 pub enum EventType {
-    DateBased,
+    #[default]
     TimeBased,
+    DateBased,
 }
 
 #[derive(Debug, Clone)]
@@ -79,13 +108,47 @@ pub enum FreeBusyStatus {
 
 impl Calendar {
     pub fn new() -> Self {
+        let today = Local::now().date_naive();
         Calendar {
-            selected_date: Local::now().date_naive(),
+            selected_date: today,
             view_mode: ViewMode::Month,
             events: Vec::new(),
             calendars: Vec::new(),
             selected_calendar: None,
+            creating_event: false,
+            event_form: EventFormData {
+                start_date: today.format("%Y-%m-%d").to_string(),
+                end_date: today.format("%Y-%m-%d").to_string(),
+                timezone: "UTC".to_string(),
+                ..Default::default()
+            },
         }
+    }
+
+    pub fn creating_event(&self) -> bool {
+        self.creating_event
+    }
+
+    pub fn event_form(&self) -> &EventFormData {
+        &self.event_form
+    }
+
+    pub fn event_form_mut(&mut self) -> &mut EventFormData {
+        &mut self.event_form
+    }
+
+    pub fn start_creating_event(&mut self) {
+        self.creating_event = true;
+        self.event_form = EventFormData {
+            start_date: self.selected_date.format("%Y-%m-%d").to_string(),
+            end_date: self.selected_date.format("%Y-%m-%d").to_string(),
+            timezone: "UTC".to_string(),
+            ..Default::default()
+        };
+    }
+
+    pub fn cancel_creating_event(&mut self) {
+        self.creating_event = false;
     }
 
     pub fn selected_date(&self) -> NaiveDate {
@@ -234,8 +297,13 @@ impl Calendar {
         let mut title = String::new();
         let mut start: Option<EventTime> = None;
         let mut end: Option<EventTime> = None;
+        let mut start_tzid: Option<String> = None;
+        let mut end_tzid: Option<String> = None;
         let mut location = Vec::new();
+        let mut geohash: Option<String> = None;
         let mut participants = Vec::new();
+        let mut hashtags = Vec::new();
+        let mut references = Vec::new();
         let mut d_tag = String::new();
 
         for tag in note.tags() {
@@ -256,12 +324,22 @@ impl Calendar {
                 }
                 Some("start") => {
                     if let Some(val) = tag.get_str(1) {
-                        start = Self::parse_event_time(val, kind, tag.get_str(2));
+                        start = Self::parse_event_time(val, kind, None);
                     }
                 }
                 Some("end") => {
                     if let Some(val) = tag.get_str(1) {
-                        end = Self::parse_event_time(val, kind, tag.get_str(2));
+                        end = Self::parse_event_time(val, kind, None);
+                    }
+                }
+                Some("start_tzid") => {
+                    if let Some(val) = tag.get_str(1) {
+                        start_tzid = Some(val.to_string());
+                    }
+                }
+                Some("end_tzid") => {
+                    if let Some(val) = tag.get_str(1) {
+                        end_tzid = Some(val.to_string());
                     }
                 }
                 Some("location") => {
@@ -269,26 +347,60 @@ impl Calendar {
                         location.push(val.to_string());
                     }
                 }
-                Some("p") => {
+                Some("g") => {
                     if let Some(val) = tag.get_str(1) {
-                        participants.push(val.to_string());
+                        geohash = Some(val.to_string());
+                    }
+                }
+                Some("p") => {
+                    if let Some(pubkey) = tag.get_str(1) {
+                        participants.push(Participant {
+                            pubkey: pubkey.to_string(),
+                            relay: tag.get_str(2).map(|s| s.to_string()),
+                            role: tag.get_str(3).map(|s| s.to_string()),
+                        });
+                    }
+                }
+                Some("t") => {
+                    if let Some(val) = tag.get_str(1) {
+                        hashtags.push(val.to_string());
+                    }
+                }
+                Some("r") => {
+                    if let Some(val) = tag.get_str(1) {
+                        references.push(val.to_string());
                     }
                 }
                 _ => {}
             }
         }
 
-        start.map(|s| CalendarEventDisplay {
-            note_key: note.key().expect("Note should have key"),
-            event_type,
-            title,
-            start: s,
-            end,
-            location,
-            participants,
-            description: note.content().to_string(),
-            d_tag,
-        })
+        if let Some(mut s) = start {
+            if let EventTime::DateTime(ts, tz_ref) = &mut s {
+                *tz_ref = start_tzid.clone();
+            }
+            
+            if let Some(EventTime::DateTime(_, end_tz_ref)) = &mut end {
+                *end_tz_ref = end_tzid.or_else(|| start_tzid.clone());
+            }
+
+            Some(CalendarEventDisplay {
+                note_key: note.key().expect("Note should have key"),
+                event_type,
+                title,
+                start: s,
+                end,
+                location,
+                geohash,
+                participants,
+                hashtags,
+                references,
+                description: note.content().to_string(),
+                d_tag,
+            })
+        } else {
+            None
+        }
     }
 
     fn parse_event_time(time_str: &str, kind: u32, tz_str: Option<&str>) -> Option<EventTime> {
@@ -301,6 +413,153 @@ impl Calendar {
                 .ok()
                 .map(|ts| EventTime::DateTime(ts, tz_str.map(|s| s.to_string())))
         }
+    }
+
+    pub fn create_nip52_event(app_ctx: &mut AppContext, data: &crate::ui::calendar::EventCreationData) -> Option<String> {
+        use uuid::Uuid;
+        use nostrdb::NoteBuilder;
+        use enostr::ClientMessage;
+
+        let Some(filled_keypair) = app_ctx.accounts.selected_filled() else {
+            return None;
+        };
+
+        let kind = match data.event_type {
+            EventType::DateBased => 31922,
+            EventType::TimeBased => 31923,
+        };
+
+        let d_tag = Uuid::new_v4().to_string();
+
+        let mut builder = NoteBuilder::new()
+            .kind(kind)
+            .content(&data.description);
+
+        builder = builder.start_tag().tag_str("d").tag_str(&d_tag);
+
+        if !data.title.is_empty() {
+            builder = builder.start_tag().tag_str("title").tag_str(&data.title);
+        }
+
+        if let Some(start_date) = &data.start_date {
+            match data.event_type {
+                EventType::DateBased => {
+                    let start_str = start_date.format("%Y-%m-%d").to_string();
+                    builder = builder.start_tag().tag_str("start").tag_str(&start_str);
+
+                    if let Some(end_date) = &data.end_date {
+                        let end_str = end_date.format("%Y-%m-%d").to_string();
+                        builder = builder.start_tag().tag_str("end").tag_str(&end_str);
+                    }
+                }
+                EventType::TimeBased => {
+                    if let Some(start_time) = &data.start_time {
+                        if let Ok(time) = chrono::NaiveTime::parse_from_str(start_time, "%H:%M") {
+                            let datetime = start_date.and_time(time);
+                            
+                            let timestamp = if let Some(ref tz_name) = data.timezone {
+                                if !tz_name.is_empty() {
+                                    if let Ok(tz) = tz_name.parse::<chrono_tz::Tz>() {
+                                        match tz.from_local_datetime(&datetime) {
+                                            chrono::LocalResult::Single(dt) => dt.timestamp(),
+                                            chrono::LocalResult::Ambiguous(dt, _) => dt.timestamp(),
+                                            chrono::LocalResult::None => {
+                                                datetime.and_utc().timestamp()
+                                            }
+                                        }
+                                    } else {
+                                        datetime.and_utc().timestamp()
+                                    }
+                                } else {
+                                    datetime.and_utc().timestamp()
+                                }
+                            } else {
+                                datetime.and_utc().timestamp()
+                            };
+                            
+                            builder = builder.start_tag().tag_str("start").tag_str(&timestamp.to_string());
+
+                            if let Some(tz_val) = &data.timezone {
+                                if !tz_val.is_empty() {
+                                    builder = builder.start_tag().tag_str("start_tzid").tag_str(tz_val);
+                                }
+                            }
+
+                            if let Some(end_date) = &data.end_date {
+                                if let Some(end_time) = &data.end_time {
+                                    if let Ok(end_time_parsed) = chrono::NaiveTime::parse_from_str(end_time, "%H:%M") {
+                                        let end_datetime = end_date.and_time(end_time_parsed);
+                                        
+                                        let end_timestamp = if let Some(ref tz_name) = data.timezone {
+                                            if !tz_name.is_empty() {
+                                                if let Ok(tz) = tz_name.parse::<chrono_tz::Tz>() {
+                                                    match tz.from_local_datetime(&end_datetime) {
+                                                        chrono::LocalResult::Single(dt) => dt.timestamp(),
+                                                        chrono::LocalResult::Ambiguous(dt, _) => dt.timestamp(),
+                                                        chrono::LocalResult::None => {
+                                                            end_datetime.and_utc().timestamp()
+                                                        }
+                                                    }
+                                                } else {
+                                                    end_datetime.and_utc().timestamp()
+                                                }
+                                            } else {
+                                                end_datetime.and_utc().timestamp()
+                                            }
+                                        } else {
+                                            end_datetime.and_utc().timestamp()
+                                        };
+                                        
+                                        builder = builder.start_tag().tag_str("end").tag_str(&end_timestamp.to_string());
+
+                                        if let Some(tz_val) = &data.timezone {
+                                            if !tz_val.is_empty() {
+                                                builder = builder.start_tag().tag_str("end_tzid").tag_str(tz_val);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if !data.location.is_empty() {
+            for loc in data.location.split(',').map(|s| s.trim()) {
+                if !loc.is_empty() {
+                    builder = builder.start_tag().tag_str("location").tag_str(loc);
+                }
+            }
+        }
+
+        if !data.geohash.is_empty() {
+            builder = builder.start_tag().tag_str("g").tag_str(&data.geohash);
+        }
+
+        if !data.hashtags.is_empty() {
+            for tag in data.hashtags.split_whitespace() {
+                builder = builder.start_tag().tag_str("t").tag_str(tag);
+            }
+        }
+
+        if !data.references.is_empty() {
+            for reference in data.references.split(',').map(|s| s.trim()) {
+                if !reference.is_empty() {
+                    builder = builder.start_tag().tag_str("r").tag_str(reference);
+                }
+            }
+        }
+
+        let note = builder
+            .sign(&filled_keypair.secret_key.secret_bytes())
+            .build()?;
+
+        let msg = ClientMessage::event(&note).ok()?;
+        app_ctx.pool.send(&msg);
+
+        Some(d_tag)
     }
 
     fn parse_calendar(note: &Note) -> Option<CalendarInfo> {

@@ -14,6 +14,8 @@ notedeck_ui = { workspace = true }
 nostrdb = { workspace = true }
 enostr = { workspace = true }
 chrono = { workspace = true }
+chrono-tz = "0.10"
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
+uuid = { version = "1.11", features = ["v4"] }

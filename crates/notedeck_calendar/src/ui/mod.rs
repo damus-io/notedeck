@@ -1,3 +1,3 @@
-pub use calendar::{CalendarAction, CalendarResponse, CalendarUi};
+pub use calendar::{CalendarAction, CalendarResponse, CalendarUi, EventCreationData};
 
-mod calendar;
+pub mod calendar;
