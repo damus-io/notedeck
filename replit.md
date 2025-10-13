@@ -139,11 +139,23 @@ Since this is a desktop GUI application, it cannot be run with a display in the 
 
 ## Recent Changes
 
-### 2025-10-13
+### 2025-10-13 (Evening)
+- **Fixed calendar events not displaying**: Added relay message processing loop to ingest events into NostrDB
+- Calendar now properly receives and stores events from Nostr relays
+- Events automatically refresh when new ones arrive from subscriptions
+- Implemented full event lifecycle: subscription → relay response → NostrDB storage → UI display
+
+### 2025-10-13 (Afternoon)  
+- Added user feedback system (success/error messages for event creation)
+- Implemented Back button using AppAction::ToggleChrome for navigation
+- Fixed relay subscription for calendar events (kinds 31922/31923)
+
+### 2025-10-13 (Morning)
 - Initial Replit setup
 - Configured Rust stable toolchain
 - Set up build verification workflow
 - Added Calendar app (notedeck_calendar) for NIP-52 calendar events
+- Implemented comprehensive event creation form with all NIP-52 tags
 
 ## User Preferences
 
