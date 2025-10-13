@@ -1,4 +1,5 @@
 use chrono::{Datelike, Local, NaiveDate, TimeZone};
+use enostr::ClientMessage;
 use notedeck::{AppContext, AppResponse};
 use nostrdb::{Filter, Note, NoteKey, Transaction};
 use serde::{Deserialize, Serialize};
@@ -15,6 +16,8 @@ pub struct Calendar {
     selected_calendar: Option<String>,
     creating_event: bool,
     event_form: EventFormData,
+    subscribed: bool,
+    feedback_message: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -122,6 +125,8 @@ impl Calendar {
                 timezone: "UTC".to_string(),
                 ..Default::default()
             },
+            subscribed: false,
+            feedback_message: None,
         }
     }
 
@@ -155,6 +160,18 @@ impl Calendar {
         self.selected_date
     }
 
+    pub fn feedback_message(&self) -> Option<&String> {
+        self.feedback_message.as_ref()
+    }
+
+    pub fn set_feedback(&mut self, msg: String) {
+        self.feedback_message = Some(msg);
+    }
+
+    pub fn clear_feedback(&mut self) {
+        self.feedback_message = None;
+    }
+
     pub fn view_mode(&self) -> &ViewMode {
         &self.view_mode
     }
@@ -167,7 +184,7 @@ impl Calendar {
         &self.calendars
     }
 
-    pub fn set_selected_date(&mut self, date: NaiveDate, app_ctx: &AppContext) {
+    pub fn set_selected_date(&mut self, date: NaiveDate, app_ctx: &mut AppContext) {
         let month_changed = self.selected_date.month() != date.month() || self.selected_date.year() != date.year();
         self.selected_date = date;
         if month_changed {
@@ -191,7 +208,18 @@ impl Calendar {
         }
     }
 
-    pub fn load_events(&mut self, app_ctx: &AppContext) {
+    pub fn load_events(&mut self, app_ctx: &mut AppContext) {
+        if !self.subscribed {
+            let filter = Filter::new()
+                .kinds(vec![31922, 31923])
+                .build();
+            
+            let sub_id = "calendar-events".to_string();
+            let msg = ClientMessage::req(sub_id, vec![filter]);
+            app_ctx.pool.send(&msg);
+            self.subscribed = true;
+        }
+
         let start_of_month = self.selected_date
             .with_day(1)
             .expect("Failed to get start of month");
@@ -265,7 +293,7 @@ impl Calendar {
         }
     }
 
-    pub fn load_calendars(&mut self, app_ctx: &AppContext) {
+    pub fn load_calendars(&mut self, app_ctx: &mut AppContext) {
         let filter = Filter::new()
             .kinds(vec![31924])
             .limit(100)

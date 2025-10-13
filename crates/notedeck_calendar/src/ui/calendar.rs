@@ -1,7 +1,7 @@
 use crate::{Calendar, CalendarEventDisplay, EventTime, EventType, ViewMode};
 use chrono::{Datelike, Local, NaiveDate};
 use egui::{Color32, Frame, Margin, RichText, Sense, Vec2};
-use notedeck::{AppContext, AppResponse};
+use notedeck::{AppAction, AppContext, AppResponse};
 
 #[derive(Debug, Clone)]
 pub enum CalendarAction {
@@ -44,6 +44,7 @@ pub trait CalendarUi {
 impl CalendarUi for Calendar {
     fn ui(&mut self, app_ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
         let mut actions = Vec::new();
+        let mut app_response = AppResponse::default();
 
         if self.events().is_empty() && self.calendars().is_empty() {
             self.load_events(app_ctx);
@@ -51,10 +52,17 @@ impl CalendarUi for Calendar {
         }
 
         ui.vertical(|ui| {
+            if let Some(msg) = self.feedback_message() {
+                ui.colored_label(Color32::from_rgb(100, 200, 100), msg);
+                ui.add_space(4.0);
+            }
+
             if self.creating_event() {
                 event_creation_form_ui(self, ui, &mut actions);
             } else {
-                toolbar_ui(self, ui, &mut actions);
+                if let Some(action) = toolbar_ui(self, ui, &mut actions) {
+                    app_response.action = Some(action);
+                }
                 
                 ui.separator();
                 
@@ -84,27 +92,39 @@ impl CalendarUi for Calendar {
                     self.load_calendars(app_ctx);
                 }
                 CalendarAction::CreateEvent => {
+                    self.clear_feedback();
                     self.start_creating_event();
                 }
                 CalendarAction::CancelEventCreation => {
                     self.cancel_creating_event();
                 }
                 CalendarAction::SubmitEvent(data) => {
-                    if let Some(note_id) = Self::create_nip52_event(app_ctx, &data) {
+                    if let Some(_note_id) = Self::create_nip52_event(app_ctx, &data) {
+                        self.set_feedback("Event created successfully! It will appear once relays confirm it.".to_string());
                         self.cancel_creating_event();
                         self.load_events(app_ctx);
+                    } else {
+                        self.set_feedback("Failed to create event. Please check your inputs.".to_string());
                     }
                 }
                 _ => {}
             }
         }
 
-        AppResponse::default()
+        app_response
     }
 }
 
-fn toolbar_ui(calendar: &mut Calendar, ui: &mut egui::Ui, actions: &mut Vec<CalendarAction>) {
+fn toolbar_ui(calendar: &mut Calendar, ui: &mut egui::Ui, actions: &mut Vec<CalendarAction>) -> Option<AppAction> {
+    let mut app_action = None;
+    
     ui.horizontal(|ui| {
+        if ui.button("⬅ Back").on_hover_text("Open sidebar to switch apps").clicked() {
+            app_action = Some(AppAction::ToggleChrome);
+        }
+        
+        ui.separator();
+
         if ui.button("◀").clicked() {
             actions.push(CalendarAction::PrevMonth);
         }
@@ -148,6 +168,8 @@ fn toolbar_ui(calendar: &mut Calendar, ui: &mut egui::Ui, actions: &mut Vec<Cale
             }
         });
     });
+    
+    app_action
 }
 
 fn month_view_ui(calendar: &Calendar, ui: &mut egui::Ui, actions: &mut Vec<CalendarAction>) {
