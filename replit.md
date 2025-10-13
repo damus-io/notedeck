@@ -139,6 +139,13 @@ Since this is a desktop GUI application, it cannot be run with a display in the 
 
 ## Recent Changes
 
+### 2025-10-13 (Late Evening)
+- **Added interactive event viewing**: Click events to see detailed information
+- Click events in week view or list view to view full details (title, time, location, participants, tags, description)
+- Added event detail view with back button navigation
+- **Context-aware navigation**: Arrows now navigate by day when in day view, by month in other views
+- Day navigation properly handles month boundaries and refreshes events when crossing months
+
 ### 2025-10-13 (Evening)
 - **Fixed calendar events not displaying**: Added relay message processing loop to ingest events into NostrDB
 - Calendar now properly receives and stores events from Nostr relays
