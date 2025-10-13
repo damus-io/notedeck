@@ -8,6 +8,8 @@ use nostrdb::NoteKey;
 pub enum CalendarAction {
     NextMonth,
     PrevMonth,
+    NextDay,
+    PrevDay,
     SelectDate(NaiveDate),
     ChangeView(ViewMode),
     SelectEvent(String),
@@ -86,6 +88,14 @@ impl CalendarUi for Calendar {
                     self.prev_month();
                     self.load_events(app_ctx);
                 }
+                CalendarAction::NextDay => {
+                    self.next_day(app_ctx);
+                    self.load_events(app_ctx);
+                }
+                CalendarAction::PrevDay => {
+                    self.prev_day(app_ctx);
+                    self.load_events(app_ctx);
+                }
                 CalendarAction::SelectDate(date) => {
                     self.set_selected_date(date, app_ctx);
                     self.set_view_mode(ViewMode::Day);
@@ -118,7 +128,6 @@ impl CalendarUi for Calendar {
                         self.set_feedback("Failed to create event. Please check your inputs.".to_string());
                     }
                 }
-                _ => {}
             }
         }
 
@@ -136,18 +145,33 @@ fn toolbar_ui(calendar: &mut Calendar, ui: &mut egui::Ui, actions: &mut Vec<Cale
         
         ui.separator();
 
-        if ui.button("◀").clicked() {
-            actions.push(CalendarAction::PrevMonth);
+        if calendar.view_mode() == &ViewMode::Day {
+            if ui.button("◀").clicked() {
+                actions.push(CalendarAction::PrevDay);
+            }
+
+            if ui.button("▶").clicked() {
+                actions.push(CalendarAction::NextDay);
+            }
+
+            ui.separator();
+
+            let current_day = calendar.selected_date().format("%A, %B %d, %Y").to_string();
+            ui.label(RichText::new(current_day).size(18.0).strong());
+        } else {
+            if ui.button("◀").clicked() {
+                actions.push(CalendarAction::PrevMonth);
+            }
+
+            if ui.button("▶").clicked() {
+                actions.push(CalendarAction::NextMonth);
+            }
+
+            ui.separator();
+
+            let current_month = calendar.selected_date().format("%B %Y").to_string();
+            ui.label(RichText::new(current_month).size(18.0).strong());
         }
-
-        if ui.button("▶").clicked() {
-            actions.push(CalendarAction::NextMonth);
-        }
-
-        ui.separator();
-
-        let current_month = calendar.selected_date().format("%B %Y").to_string();
-        ui.label(RichText::new(current_month).size(18.0).strong());
 
         ui.separator();
 

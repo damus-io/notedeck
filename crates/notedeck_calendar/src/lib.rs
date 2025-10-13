@@ -219,6 +219,26 @@ impl Calendar {
         }
     }
 
+    pub fn next_day(&mut self, app_ctx: &mut AppContext) {
+        if let Some(next) = self.selected_date.checked_add_days(chrono::Days::new(1)) {
+            let month_changed = self.selected_date.month() != next.month() || self.selected_date.year() != next.year();
+            self.selected_date = next;
+            if month_changed {
+                self.load_events(app_ctx);
+            }
+        }
+    }
+
+    pub fn prev_day(&mut self, app_ctx: &mut AppContext) {
+        if let Some(prev) = self.selected_date.checked_sub_days(chrono::Days::new(1)) {
+            let month_changed = self.selected_date.month() != prev.month() || self.selected_date.year() != prev.year();
+            self.selected_date = prev;
+            if month_changed {
+                self.load_events(app_ctx);
+            }
+        }
+    }
+
     pub fn load_events(&mut self, app_ctx: &mut AppContext) {
         if !self.subscribed {
             let filter = Filter::new()
