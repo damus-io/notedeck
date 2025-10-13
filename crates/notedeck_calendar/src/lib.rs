@@ -1,8 +1,9 @@
 use chrono::{Datelike, Local, NaiveDate, TimeZone};
-use enostr::ClientMessage;
+use enostr::{ClientMessage, RelayEvent, RelayMessage};
 use notedeck::{AppContext, AppResponse};
 use nostrdb::{Filter, Note, NoteKey, Transaction};
 use serde::{Deserialize, Serialize};
+use tracing::{error, info, warn};
 
 pub use ui::{CalendarAction, CalendarResponse, CalendarUi};
 
@@ -638,8 +639,84 @@ impl Default for Calendar {
     }
 }
 
+fn process_relay_messages(ctx: &mut AppContext<'_>) -> bool {
+    let mut received_events = false;
+    
+    loop {
+        let ev = if let Some(ev) = ctx.pool.try_recv() {
+            ev.into_owned()
+        } else {
+            break;
+        };
+
+        match (&ev.event).into() {
+            RelayEvent::Opened => {
+                info!("Calendar: relay {} opened", &ev.relay);
+            }
+            RelayEvent::Closed => {
+                warn!("Calendar: relay {} closed", &ev.relay);
+            }
+            RelayEvent::Error(e) => {
+                error!("Calendar: relay {} error: {}", &ev.relay, e);
+            }
+            RelayEvent::Other(_) => {}
+            RelayEvent::Message(msg) => {
+                if process_relay_message(ctx, &ev.relay, &msg) {
+                    received_events = true;
+                }
+            }
+        }
+    }
+    
+    received_events
+}
+
+fn process_relay_message(ctx: &mut AppContext<'_>, relay_url: &str, msg: &RelayMessage) -> bool {
+    match msg {
+        RelayMessage::Event(subid, ev) => {
+            if subid == &"calendar-events" {
+                if let Err(err) = ctx.ndb.process_event_with(
+                    ev,
+                    nostrdb::IngestMetadata::new()
+                        .client(false)
+                        .relay(relay_url),
+                ) {
+                    error!("error processing calendar event: {}", err);
+                    false
+                } else {
+                    info!("Calendar: received event from {}", relay_url);
+                    true
+                }
+            } else {
+                false
+            }
+        }
+        RelayMessage::Notice(msg) => {
+            info!("Notice from {}: {}", relay_url, msg);
+            false
+        }
+        RelayMessage::OK(_cr) => {
+            false
+        }
+        RelayMessage::Eose(sid) => {
+            info!("EOSE for subscription {} from {}", sid, relay_url);
+            false
+        }
+    }
+}
+
 impl notedeck::App for Calendar {
     fn update(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
+        let received_events = process_relay_messages(ctx);
+        
+        // Initial load: send subscription and load events
+        if !self.subscribed {
+            self.load_events(ctx);
+        } else if received_events {
+            // Reload events when new calendar events arrive from relays
+            self.load_events(ctx);
+        }
+        
         CalendarUi::ui(self, ctx, ui)
     }
 }
