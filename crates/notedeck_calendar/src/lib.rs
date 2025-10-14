@@ -239,6 +239,26 @@ impl Calendar {
         }
     }
 
+    pub fn next_week(&mut self, app_ctx: &mut AppContext) {
+        if let Some(next) = self.selected_date.checked_add_days(chrono::Days::new(7)) {
+            let month_changed = self.selected_date.month() != next.month() || self.selected_date.year() != next.year();
+            self.selected_date = next;
+            if month_changed {
+                self.load_events(app_ctx);
+            }
+        }
+    }
+
+    pub fn prev_week(&mut self, app_ctx: &mut AppContext) {
+        if let Some(prev) = self.selected_date.checked_sub_days(chrono::Days::new(7)) {
+            let month_changed = self.selected_date.month() != prev.month() || self.selected_date.year() != prev.year();
+            self.selected_date = prev;
+            if month_changed {
+                self.load_events(app_ctx);
+            }
+        }
+    }
+
     pub fn load_events(&mut self, app_ctx: &mut AppContext) {
         if !self.subscribed {
             let filter = Filter::new()
@@ -480,8 +500,24 @@ impl Calendar {
         use enostr::ClientMessage;
 
         let Some(filled_keypair) = app_ctx.accounts.selected_filled() else {
+            warn!("Cannot create event: No account selected");
             return None;
         };
+
+        if data.title.is_empty() {
+            warn!("Cannot create event: Title is required");
+            return None;
+        }
+
+        if data.start_date.is_none() {
+            warn!("Cannot create event: Start date is required");
+            return None;
+        }
+
+        if data.event_type == EventType::TimeBased && data.start_time.is_none() {
+            warn!("Cannot create time-based event: Start time is required");
+            return None;
+        }
 
         let kind = match data.event_type {
             EventType::DateBased => 31922,
@@ -617,6 +653,8 @@ impl Calendar {
 
         let msg = ClientMessage::event(&note).ok()?;
         app_ctx.pool.send(&msg);
+
+        info!("Calendar event created and sent to relays: {}", d_tag);
 
         Some(d_tag)
     }

@@ -8,6 +8,8 @@ use nostrdb::NoteKey;
 pub enum CalendarAction {
     NextMonth,
     PrevMonth,
+    NextWeek,
+    PrevWeek,
     NextDay,
     PrevDay,
     SelectDate(NaiveDate),
@@ -88,6 +90,14 @@ impl CalendarUi for Calendar {
                     self.prev_month();
                     self.load_events(app_ctx);
                 }
+                CalendarAction::NextWeek => {
+                    self.next_week(app_ctx);
+                    self.load_events(app_ctx);
+                }
+                CalendarAction::PrevWeek => {
+                    self.prev_week(app_ctx);
+                    self.load_events(app_ctx);
+                }
                 CalendarAction::NextDay => {
                     self.next_day(app_ctx);
                     self.load_events(app_ctx);
@@ -145,32 +155,51 @@ fn toolbar_ui(calendar: &mut Calendar, ui: &mut egui::Ui, actions: &mut Vec<Cale
         
         ui.separator();
 
-        if calendar.view_mode() == &ViewMode::Day {
-            if ui.button("◀").clicked() {
-                actions.push(CalendarAction::PrevDay);
+        match calendar.view_mode() {
+            ViewMode::Day => {
+                if ui.button("◀").clicked() {
+                    actions.push(CalendarAction::PrevDay);
+                }
+
+                if ui.button("▶").clicked() {
+                    actions.push(CalendarAction::NextDay);
+                }
+
+                ui.separator();
+
+                let current_day = calendar.selected_date().format("%A, %B %d, %Y").to_string();
+                ui.label(RichText::new(current_day).size(18.0).strong());
             }
+            ViewMode::Week => {
+                if ui.button("◀").clicked() {
+                    actions.push(CalendarAction::PrevWeek);
+                }
 
-            if ui.button("▶").clicked() {
-                actions.push(CalendarAction::NextDay);
+                if ui.button("▶").clicked() {
+                    actions.push(CalendarAction::NextWeek);
+                }
+
+                ui.separator();
+
+                let week_start = calendar.selected_date() - chrono::Duration::days(calendar.selected_date().weekday().num_days_from_monday() as i64);
+                let week_end = week_start + chrono::Duration::days(6);
+                let week_label = format!("{} - {}", week_start.format("%b %d"), week_end.format("%b %d, %Y"));
+                ui.label(RichText::new(week_label).size(18.0).strong());
             }
+            _ => {
+                if ui.button("◀").clicked() {
+                    actions.push(CalendarAction::PrevMonth);
+                }
 
-            ui.separator();
+                if ui.button("▶").clicked() {
+                    actions.push(CalendarAction::NextMonth);
+                }
 
-            let current_day = calendar.selected_date().format("%A, %B %d, %Y").to_string();
-            ui.label(RichText::new(current_day).size(18.0).strong());
-        } else {
-            if ui.button("◀").clicked() {
-                actions.push(CalendarAction::PrevMonth);
+                ui.separator();
+
+                let current_month = calendar.selected_date().format("%B %Y").to_string();
+                ui.label(RichText::new(current_month).size(18.0).strong());
             }
-
-            if ui.button("▶").clicked() {
-                actions.push(CalendarAction::NextMonth);
-            }
-
-            ui.separator();
-
-            let current_month = calendar.selected_date().format("%B %Y").to_string();
-            ui.label(RichText::new(current_month).size(18.0).strong());
         }
 
         ui.separator();
@@ -329,25 +358,37 @@ fn week_view_ui(calendar: &Calendar, ui: &mut egui::Ui, actions: &mut Vec<Calend
                     frame = frame.fill(Color32::from_rgb(40, 60, 80));
                 }
 
+                let mut event_clicked = false;
                 let response = frame.show(ui, |ui| {
                     ui.vertical(|ui| {
                         let mut text = RichText::new(current_date.day().to_string()).size(16.0);
                         if is_today {
                             text = text.color(Color32::from_rgb(150, 200, 255));
                         }
-                        ui.label(text);
+                        let day_label_response = ui.label(text);
 
                         ui.separator();
 
                         egui::ScrollArea::vertical().show(ui, |ui| {
+                            let actions_before = actions.len();
                             for event in events_on_day {
                                 mini_event_ui(event, ui, actions);
                             }
+                            if actions.len() > actions_before {
+                                for action in &actions[actions_before..] {
+                                    if matches!(action, CalendarAction::SelectEvent(_)) {
+                                        event_clicked = true;
+                                        break;
+                                    }
+                                }
+                            }
                         });
-                    });
+
+                        day_label_response
+                    }).inner
                 });
 
-                if response.response.interact(Sense::click()).clicked() {
+                if !event_clicked && response.response.interact(Sense::click()).clicked() {
                     actions.push(CalendarAction::SelectDate(current_date));
                 }
             });
