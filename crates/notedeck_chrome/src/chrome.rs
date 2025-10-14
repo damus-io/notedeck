@@ -463,8 +463,8 @@ fn accounts_button(ui: &mut egui::Ui) -> egui::Response {
     expanding_button(
         "accounts-button",
         24.0,
-        app_images::accounts_image().tint(ui.visuals().text_color()),
-        app_images::accounts_image(),
+        app_images::profile_image().tint(ui.visuals().text_color()),
+        app_images::profile_image(),
         ui,
         false,
     )

@@ -11,8 +11,8 @@ pub fn add_account_image() -> Image<'static> {
     ))
 }
 
-pub fn accounts_image() -> Image<'static> {
-    Image::new(include_image!("../../../assets/icons/accounts.png"))
+pub fn profile_image() -> Image<'static> {
+    Image::new(include_image!("../../../assets/icons/profile.png"))
 }
 
 pub fn cln_image() -> Image<'static> {
@@ -199,7 +199,7 @@ pub fn reply_light_image() -> Image<'static> {
     Image::new(include_image!("../../../assets/icons/reply-dark.png"))
 }
 
-pub fn profile_image() -> Image<'static> {
+pub fn add_column_individual_image() -> Image<'static> {
     Image::new(include_image!("../../../assets/icons/profile_icon_4x.png"))
 }
 
