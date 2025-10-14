@@ -139,6 +139,18 @@ Since this is a desktop GUI application, it cannot be run with a display in the 
 
 ## Recent Changes
 
+### 2025-10-14 (Early Morning)
+- **Fixed week view navigation**: Arrows now navigate by week (7 days) when in week view
+- Week toolbar displays the correct Monday-Sunday date range, even across month boundaries
+- **Improved click handling in week view**:
+  - Clicking on an event takes you to the event detail view
+  - Clicking on a day (outside event boxes) takes you to day view for that date
+  - Event clicks no longer incorrectly trigger day navigation
+- **Enhanced event creation**:
+  - Added validation for required fields (title, start date)
+  - Time-based events now require start time to be provided
+  - Better error logging for debugging event creation issues
+
 ### 2025-10-13 (Late Evening)
 - **Added interactive event viewing**: Click events to see detailed information
 - Click events in week view or list view to view full details (title, time, location, participants, tags, description)
