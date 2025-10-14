@@ -139,6 +139,17 @@ Since this is a desktop GUI application, it cannot be run with a display in the 
 
 ## Recent Changes
 
+### 2025-10-14 (Late Morning)
+- **Implemented RSVP functionality (NIP-52 kind 31925)**:
+  - Added RSVP data structures (RsvpInfo, RsvpStatusType) with support for Accepted/Declined/Tentative statuses
+  - RSVP loading with proper event scoping using 'a' tag filter to prevent incomplete attendee lists
+  - RSVP creation that sends NIP-52 compliant events with proper 'a' tag and 'status' tag
+  - Display confirmed attendees in event detail view with profile pictures and short names
+  - RSVP buttons (Accept/Decline/Tentative) in event detail view for user interaction
+  - Subscriptions to kind 31925 events for real-time RSVP updates
+- **Made start time required**: All events (date-based and time-based) now require start time to be specified
+- **Added hex crate dependency**: For pubkey hex encoding in event coordinates
+
 ### 2025-10-14 (Early Morning)
 - **Fixed week view navigation**: Arrows now navigate by week (7 days) when in week view
 - Week toolbar displays the correct Monday-Sunday date range, even across month boundaries
