@@ -19,6 +19,7 @@ pub enum CalendarAction {
     SubmitEvent(EventCreationData),
     CancelEventCreation,
     RefreshEvents,
+    SubmitRsvp(String, crate::RsvpStatusType),
 }
 
 #[derive(Debug, Clone)]
@@ -136,6 +137,19 @@ impl CalendarUi for Calendar {
                         self.load_events(app_ctx);
                     } else {
                         self.set_feedback("Failed to create event. Please check your inputs.".to_string());
+                    }
+                }
+                CalendarAction::SubmitRsvp(event_id_str, status) => {
+                    if let Ok(event_key) = event_id_str.parse::<u64>() {
+                        let event_note_key = NoteKey::new(event_key);
+                        if let Some(event) = self.events().iter().find(|e| e.note_key == event_note_key) {
+                            if let Some(_rsvp_id) = Self::create_rsvp(app_ctx, event, status) {
+                                self.set_feedback("RSVP submitted successfully!".to_string());
+                                self.load_events(app_ctx);
+                            } else {
+                                self.set_feedback("Failed to submit RSVP.".to_string());
+                            }
+                        }
                     }
                 }
             }
@@ -601,6 +615,50 @@ fn event_detail_ui(event: &CalendarEventDisplay, ui: &mut egui::Ui, actions: &mu
                     ui.add_space(10.0);
                 }
                 
+                let accepted_rsvps: Vec<_> = event.rsvps.iter()
+                    .filter(|r| matches!(r.status, crate::RsvpStatusType::Accepted))
+                    .collect();
+                
+                if !accepted_rsvps.is_empty() {
+                    ui.label(RichText::new("Confirmed Attendees").strong().size(14.0));
+                    ui.horizontal_wrapped(|ui| {
+                        for rsvp in accepted_rsvps {
+                            ui.label(RichText::new(format!("✓ {}", hex::encode(&rsvp.pubkey[..8])))
+                                .color(Color32::from_rgb(100, 200, 100)));
+                        }
+                    });
+                    ui.add_space(10.0);
+                }
+                
+                ui.separator();
+                ui.add_space(10.0);
+                
+                ui.label(RichText::new("RSVP to this event:").strong().size(14.0));
+                ui.horizontal(|ui| {
+                    if ui.button("✓ Accept").clicked() {
+                        actions.push(CalendarAction::SubmitRsvp(
+                            event.note_key.as_u64().to_string(),
+                            crate::RsvpStatusType::Accepted
+                        ));
+                    }
+                    
+                    if ui.button("? Tentative").clicked() {
+                        actions.push(CalendarAction::SubmitRsvp(
+                            event.note_key.as_u64().to_string(),
+                            crate::RsvpStatusType::Tentative
+                        ));
+                    }
+                    
+                    if ui.button("✗ Decline").clicked() {
+                        actions.push(CalendarAction::SubmitRsvp(
+                            event.note_key.as_u64().to_string(),
+                            crate::RsvpStatusType::Declined
+                        ));
+                    }
+                });
+                
+                ui.add_space(10.0);
+                
                 ui.label(RichText::new(format!("Event ID: {}", event.d_tag))
                     .size(11.0)
                     .color(Color32::from_gray(120)));
@@ -696,13 +754,11 @@ fn event_creation_form_ui(calendar: &mut Calendar, ui: &mut egui::Ui, actions: &
         ui.label("Start Date (YYYY-MM-DD):");
         ui.text_edit_singleline(&mut form.start_date);
 
-        if matches!(form.event_type, EventType::TimeBased) {
-            ui.label("Start Time (HH:MM):");
-            ui.text_edit_singleline(&mut form.start_time);
+        ui.label("Start Time (HH:MM, required):");
+        ui.text_edit_singleline(&mut form.start_time);
 
-            ui.label("Timezone (IANA, e.g., America/New_York, UTC):");
-            ui.text_edit_singleline(&mut form.timezone);
-        }
+        ui.label("Timezone (IANA, e.g., America/New_York, UTC):");
+        ui.text_edit_singleline(&mut form.timezone);
 
         ui.add_space(10.0);
 

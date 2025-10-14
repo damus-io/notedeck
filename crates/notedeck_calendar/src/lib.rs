@@ -60,6 +60,15 @@ pub struct CalendarEventDisplay {
     pub references: Vec<String>,
     pub description: String,
     pub d_tag: String,
+    pub author_pubkey: [u8; 32],
+    pub rsvps: Vec<RsvpInfo>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RsvpInfo {
+    pub pubkey: [u8; 32],
+    pub status: RsvpStatusType,
+    pub note_key: NoteKey,
 }
 
 #[derive(Debug, Clone)]
@@ -261,12 +270,16 @@ impl Calendar {
 
     pub fn load_events(&mut self, app_ctx: &mut AppContext) {
         if !self.subscribed {
-            let filter = Filter::new()
+            let event_filter = Filter::new()
                 .kinds(vec![31922, 31923])
                 .build();
             
+            let rsvp_filter = Filter::new()
+                .kinds(vec![31925])
+                .build();
+            
             let sub_id = "calendar-events".to_string();
-            let msg = ClientMessage::req(sub_id, vec![filter]);
+            let msg = ClientMessage::req(sub_id, vec![event_filter, rsvp_filter]);
             app_ctx.pool.send(&msg);
             self.subscribed = true;
         }
@@ -305,14 +318,87 @@ impl Calendar {
             
             for result in results {
                 if let Ok(note) = app_ctx.ndb.get_note_by_key(&txn, result.note_key) {
-                    if let Some(event) = Self::parse_calendar_event(&note) {
+                    if let Some(mut event) = Self::parse_calendar_event(&note) {
                         if Self::event_intersects_range(&event, view_start, view_end) {
+                            event.rsvps = Self::load_rsvps_for_event(app_ctx, &event, &txn);
                             self.events.push(event);
                         }
                     }
                 }
             }
         };
+    }
+
+    fn load_rsvps_for_event(app_ctx: &mut AppContext, event: &CalendarEventDisplay, txn: &Transaction) -> Vec<RsvpInfo> {
+        let mut rsvps = Vec::new();
+        
+        let event_kind = match event.event_type {
+            EventType::DateBased => 31922,
+            EventType::TimeBased => 31923,
+        };
+        
+        let event_author_hex = hex::encode(event.author_pubkey);
+        let event_coord = format!("{}:{}:{}", event_kind, event_author_hex, event.d_tag);
+        
+        let rsvp_filter = Filter::new()
+            .kinds(vec![31925])
+            .tags([event_coord.as_str()], 'a')
+            .limit(500)
+            .build();
+        
+        if let Ok(results) = app_ctx.ndb.query(txn, &[rsvp_filter], 500) {
+            for result in results {
+                if let Ok(note) = app_ctx.ndb.get_note_by_key(txn, result.note_key) {
+                    if let Some(rsvp_info) = Self::parse_rsvp(&note, &event_coord) {
+                        rsvps.push(rsvp_info);
+                    }
+                }
+            }
+        }
+        
+        rsvps
+    }
+
+    fn parse_rsvp(note: &Note, event_coord: &str) -> Option<RsvpInfo> {
+        let mut references_event = false;
+        let mut status = None;
+        
+        for tag in note.tags() {
+            if tag.count() < 2 {
+                continue;
+            }
+            
+            match tag.get_str(0) {
+                Some("a") => {
+                    if let Some(val) = tag.get_str(1) {
+                        if val == event_coord {
+                            references_event = true;
+                        }
+                    }
+                }
+                Some("status") => {
+                    if let Some(val) = tag.get_str(1) {
+                        status = match val {
+                            "accepted" => Some(RsvpStatusType::Accepted),
+                            "declined" => Some(RsvpStatusType::Declined),
+                            "tentative" => Some(RsvpStatusType::Tentative),
+                            _ => None,
+                        };
+                    }
+                }
+                _ => {}
+            }
+        }
+        
+        if references_event && status.is_some() {
+            Some(RsvpInfo {
+                pubkey: *note.pubkey(),
+                status: status.unwrap(),
+                note_key: note.key().expect("Note should have key"),
+            })
+        } else {
+            None
+        }
     }
 
     fn event_intersects_range(event: &CalendarEventDisplay, view_start: i64, view_end: i64) -> bool {
@@ -476,6 +562,8 @@ impl Calendar {
                 references,
                 description: note.content().to_string(),
                 d_tag,
+                author_pubkey: *note.pubkey(),
+                rsvps: Vec::new(),
             })
         } else {
             None
@@ -514,8 +602,8 @@ impl Calendar {
             return None;
         }
 
-        if data.event_type == EventType::TimeBased && data.start_time.is_none() {
-            warn!("Cannot create time-based event: Start time is required");
+        if data.start_time.is_none() {
+            warn!("Cannot create event: Start time is required");
             return None;
         }
 
@@ -655,6 +743,52 @@ impl Calendar {
         app_ctx.pool.send(&msg);
 
         info!("Calendar event created and sent to relays: {}", d_tag);
+
+        Some(d_tag)
+    }
+
+    pub fn create_rsvp(app_ctx: &mut AppContext, event: &CalendarEventDisplay, status: RsvpStatusType) -> Option<String> {
+        use uuid::Uuid;
+        use nostrdb::NoteBuilder;
+        use enostr::ClientMessage;
+
+        let Some(filled_keypair) = app_ctx.accounts.selected_filled() else {
+            warn!("Cannot create RSVP: No account selected");
+            return None;
+        };
+
+        let event_kind = match event.event_type {
+            EventType::DateBased => 31922,
+            EventType::TimeBased => 31923,
+        };
+
+        let event_author_hex = hex::encode(event.author_pubkey);
+        let event_coord = format!("{}:{}:{}", event_kind, event_author_hex, event.d_tag);
+
+        let d_tag = Uuid::new_v4().to_string();
+
+        let status_str = match status {
+            RsvpStatusType::Accepted => "accepted",
+            RsvpStatusType::Declined => "declined",
+            RsvpStatusType::Tentative => "tentative",
+        };
+
+        let mut builder = NoteBuilder::new()
+            .kind(31925)
+            .content("");
+
+        builder = builder.start_tag().tag_str("d").tag_str(&d_tag);
+        builder = builder.start_tag().tag_str("a").tag_str(&event_coord);
+        builder = builder.start_tag().tag_str("status").tag_str(status_str);
+
+        let note = builder
+            .sign(&filled_keypair.secret_key.secret_bytes())
+            .build()?;
+
+        let msg = ClientMessage::event(&note).ok()?;
+        app_ctx.pool.send(&msg);
+
+        info!("RSVP created and sent to relays: {} for event {}", status_str, event.d_tag);
 
         Some(d_tag)
     }

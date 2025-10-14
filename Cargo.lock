@@ -3608,6 +3608,7 @@ dependencies = [
  "egui",
  "egui_extras",
  "enostr",
+ "hex",
  "nostrdb",
  "notedeck",
  "notedeck_ui",
