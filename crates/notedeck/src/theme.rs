@@ -204,7 +204,6 @@ pub fn add_custom_style(is_mobile: bool, style: &mut Style) {
 
     // debug: show callstack for the current widget on hover if all
     // modifier keys are pressed down.
-    /*
     #[cfg(feature = "debug-widget-callstack")]
     {
         #[cfg(not(debug_assertions))]
@@ -225,7 +224,6 @@ pub fn add_custom_style(is_mobile: bool, style: &mut Style) {
         );
         style.debug.show_interactive_widgets = true;
     }
-    */
 }
 
 pub fn light_mode() -> Visuals {
