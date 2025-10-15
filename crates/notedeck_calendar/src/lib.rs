@@ -1,7 +1,7 @@
 use chrono::{Datelike, Local, NaiveDate, TimeZone};
 use enostr::{ClientMessage, RelayEvent, RelayMessage};
-use nostrdb::{Filter, Note, NoteKey, Transaction};
 use notedeck::{AppContext, AppResponse};
+use nostrdb::{Filter, Note, NoteKey, Transaction};
 use serde::{Deserialize, Serialize};
 use tracing::{error, info, warn};
 
@@ -14,7 +14,7 @@ pub struct Calendar {
     view_mode: ViewMode,
     events: Vec<CalendarEventDisplay>,
     calendars: Vec<CalendarInfo>,
-    _selected_calendar: Option<String>,
+    selected_calendar: Option<String>,
     creating_event: bool,
     event_form: EventFormData,
     subscribed: bool,
@@ -128,7 +128,7 @@ impl Calendar {
             view_mode: ViewMode::Month,
             events: Vec::new(),
             calendars: Vec::new(),
-            _selected_calendar: None,
+            selected_calendar: None,
             creating_event: false,
             event_form: EventFormData {
                 start_date: today.format("%Y-%m-%d").to_string(),
@@ -205,8 +205,7 @@ impl Calendar {
     }
 
     pub fn set_selected_date(&mut self, date: NaiveDate, app_ctx: &mut AppContext) {
-        let month_changed =
-            self.selected_date.month() != date.month() || self.selected_date.year() != date.year();
+        let month_changed = self.selected_date.month() != date.month() || self.selected_date.year() != date.year();
         self.selected_date = date;
         if month_changed {
             self.load_events(app_ctx);
@@ -218,27 +217,20 @@ impl Calendar {
     }
 
     pub fn next_month(&mut self) {
-        if let Some(next) = self
-            .selected_date
-            .checked_add_months(chrono::Months::new(1))
-        {
+        if let Some(next) = self.selected_date.checked_add_months(chrono::Months::new(1)) {
             self.selected_date = next;
         }
     }
 
     pub fn prev_month(&mut self) {
-        if let Some(prev) = self
-            .selected_date
-            .checked_sub_months(chrono::Months::new(1))
-        {
+        if let Some(prev) = self.selected_date.checked_sub_months(chrono::Months::new(1)) {
             self.selected_date = prev;
         }
     }
 
     pub fn next_day(&mut self, app_ctx: &mut AppContext) {
         if let Some(next) = self.selected_date.checked_add_days(chrono::Days::new(1)) {
-            let month_changed = self.selected_date.month() != next.month()
-                || self.selected_date.year() != next.year();
+            let month_changed = self.selected_date.month() != next.month() || self.selected_date.year() != next.year();
             self.selected_date = next;
             if month_changed {
                 self.load_events(app_ctx);
@@ -248,8 +240,7 @@ impl Calendar {
 
     pub fn prev_day(&mut self, app_ctx: &mut AppContext) {
         if let Some(prev) = self.selected_date.checked_sub_days(chrono::Days::new(1)) {
-            let month_changed = self.selected_date.month() != prev.month()
-                || self.selected_date.year() != prev.year();
+            let month_changed = self.selected_date.month() != prev.month() || self.selected_date.year() != prev.year();
             self.selected_date = prev;
             if month_changed {
                 self.load_events(app_ctx);
@@ -259,8 +250,7 @@ impl Calendar {
 
     pub fn next_week(&mut self, app_ctx: &mut AppContext) {
         if let Some(next) = self.selected_date.checked_add_days(chrono::Days::new(7)) {
-            let month_changed = self.selected_date.month() != next.month()
-                || self.selected_date.year() != next.year();
+            let month_changed = self.selected_date.month() != next.month() || self.selected_date.year() != next.year();
             self.selected_date = next;
             if month_changed {
                 self.load_events(app_ctx);
@@ -270,8 +260,7 @@ impl Calendar {
 
     pub fn prev_week(&mut self, app_ctx: &mut AppContext) {
         if let Some(prev) = self.selected_date.checked_sub_days(chrono::Days::new(7)) {
-            let month_changed = self.selected_date.month() != prev.month()
-                || self.selected_date.year() != prev.year();
+            let month_changed = self.selected_date.month() != prev.month() || self.selected_date.year() != prev.year();
             self.selected_date = prev;
             if month_changed {
                 self.load_events(app_ctx);
@@ -281,49 +270,52 @@ impl Calendar {
 
     pub fn load_events(&mut self, app_ctx: &mut AppContext) {
         if !self.subscribed {
-            let event_filter = Filter::new().kinds(vec![31922, 31923]).build();
-
-            let rsvp_filter = Filter::new().kinds(vec![31925]).build();
-
+            let event_filter = Filter::new()
+                .kinds(vec![31922, 31923])
+                .build();
+            
+            let rsvp_filter = Filter::new()
+                .kinds(vec![31925])
+                .build();
+            
             let sub_id = "calendar-events".to_string();
             let msg = ClientMessage::req(sub_id, vec![event_filter, rsvp_filter]);
             app_ctx.pool.send(&msg);
             self.subscribed = true;
         }
 
-        let start_of_month = self
-            .selected_date
+        let start_of_month = self.selected_date
             .with_day(1)
             .expect("Failed to get start of month");
-
-        let end_of_month =
-            if let Some(next_month) = start_of_month.checked_add_months(chrono::Months::new(1)) {
-                next_month
-            } else {
-                start_of_month
-            };
+        
+        let end_of_month = if let Some(next_month) = start_of_month.checked_add_months(chrono::Months::new(1)) {
+            next_month
+        } else {
+            start_of_month
+        };
 
         let days_from_monday = start_of_month.weekday().num_days_from_monday();
         let expanded_start = start_of_month - chrono::Duration::days(days_from_monday as i64);
         let expanded_end = end_of_month + chrono::Duration::days(7);
 
-        let view_start = Local
-            .from_local_datetime(&expanded_start.and_hms_opt(0, 0, 0).unwrap())
-            .unwrap()
-            .timestamp();
+        let view_start = Local.from_local_datetime(
+            &expanded_start.and_hms_opt(0, 0, 0).unwrap()
+        ).unwrap().timestamp();
+        
+        let view_end = Local.from_local_datetime(
+            &expanded_end.and_hms_opt(23, 59, 59).unwrap()
+        ).unwrap().timestamp();
 
-        let view_end = Local
-            .from_local_datetime(&expanded_end.and_hms_opt(23, 59, 59).unwrap())
-            .unwrap()
-            .timestamp();
-
-        let filter = Filter::new().kinds(vec![31922, 31923]).limit(5000).build();
+        let filter = Filter::new()
+            .kinds(vec![31922, 31923])
+            .limit(5000)
+            .build();
 
         let txn = Transaction::new(app_ctx.ndb).expect("Failed to create transaction");
-
+        
         if let Ok(results) = app_ctx.ndb.query(&txn, &[filter], 5000) {
             self.events.clear();
-
+            
             for result in results {
                 if let Ok(note) = app_ctx.ndb.get_note_by_key(&txn, result.note_key) {
                     if let Some(mut event) = Self::parse_calendar_event(&note) {
@@ -337,27 +329,23 @@ impl Calendar {
         };
     }
 
-    fn load_rsvps_for_event(
-        app_ctx: &mut AppContext,
-        event: &CalendarEventDisplay,
-        txn: &Transaction,
-    ) -> Vec<RsvpInfo> {
+    fn load_rsvps_for_event(app_ctx: &mut AppContext, event: &CalendarEventDisplay, txn: &Transaction) -> Vec<RsvpInfo> {
         let mut rsvps = Vec::new();
-
+        
         let event_kind = match event.event_type {
             EventType::DateBased => 31922,
             EventType::TimeBased => 31923,
         };
-
+        
         let event_author_hex = hex::encode(event.author_pubkey);
         let event_coord = format!("{}:{}:{}", event_kind, event_author_hex, event.d_tag);
-
+        
         let rsvp_filter = Filter::new()
             .kinds(vec![31925])
             .tags([event_coord.as_str()], 'a')
             .limit(500)
             .build();
-
+        
         if let Ok(results) = app_ctx.ndb.query(txn, &[rsvp_filter], 500) {
             for result in results {
                 if let Ok(note) = app_ctx.ndb.get_note_by_key(txn, result.note_key) {
@@ -367,19 +355,19 @@ impl Calendar {
                 }
             }
         }
-
+        
         rsvps
     }
 
     fn parse_rsvp(note: &Note, event_coord: &str) -> Option<RsvpInfo> {
         let mut references_event = false;
         let mut status = None;
-
+        
         for tag in note.tags() {
             if tag.count() < 2 {
                 continue;
             }
-
+            
             match tag.get_str(0) {
                 Some("a") => {
                     if let Some(val) = tag.get_str(1) {
@@ -401,7 +389,7 @@ impl Calendar {
                 _ => {}
             }
         }
-
+        
         if references_event && status.is_some() {
             Some(RsvpInfo {
                 pubkey: *note.pubkey(),
@@ -413,27 +401,21 @@ impl Calendar {
         }
     }
 
-    fn event_intersects_range(
-        event: &CalendarEventDisplay,
-        view_start: i64,
-        view_end: i64,
-    ) -> bool {
+    fn event_intersects_range(event: &CalendarEventDisplay, view_start: i64, view_end: i64) -> bool {
         match &event.start {
             EventTime::Date(start_date) => {
-                let event_start = Local
-                    .from_local_datetime(&start_date.and_hms_opt(0, 0, 0).unwrap())
-                    .unwrap()
-                    .timestamp();
-
+                let event_start = Local.from_local_datetime(
+                    &start_date.and_hms_opt(0, 0, 0).unwrap()
+                ).unwrap().timestamp();
+                
                 let event_end = if let Some(EventTime::Date(end_date)) = &event.end {
-                    Local
-                        .from_local_datetime(&end_date.and_hms_opt(23, 59, 59).unwrap())
-                        .unwrap()
-                        .timestamp()
+                    Local.from_local_datetime(
+                        &end_date.and_hms_opt(23, 59, 59).unwrap()
+                    ).unwrap().timestamp()
                 } else {
                     event_start + 86400
                 };
-
+                
                 event_start <= view_end && event_end >= view_start
             }
             EventTime::DateTime(start_ts, _) => {
@@ -442,20 +424,23 @@ impl Calendar {
                 } else {
                     start_ts + 3600
                 };
-
+                
                 *start_ts <= view_end && event_end >= view_start
             }
         }
     }
 
     pub fn load_calendars(&mut self, app_ctx: &mut AppContext) {
-        let filter = Filter::new().kinds(vec![31924]).limit(100).build();
+        let filter = Filter::new()
+            .kinds(vec![31924])
+            .limit(100)
+            .build();
 
         let txn = Transaction::new(app_ctx.ndb).expect("Failed to create transaction");
 
         if let Ok(results) = app_ctx.ndb.query(&txn, &[filter], 100) {
             self.calendars.clear();
-
+            
             for result in results {
                 if let Ok(note) = app_ctx.ndb.get_note_by_key(&txn, result.note_key) {
                     if let Some(calendar) = Self::parse_calendar(&note) {
@@ -556,10 +541,10 @@ impl Calendar {
         }
 
         if let Some(mut s) = start {
-            if let EventTime::DateTime(_ts, tz_ref) = &mut s {
+            if let EventTime::DateTime(ts, tz_ref) = &mut s {
                 *tz_ref = start_tzid.clone();
             }
-
+            
             if let Some(EventTime::DateTime(_, end_tz_ref)) = &mut end {
                 *end_tz_ref = end_tzid.or_else(|| start_tzid.clone());
             }
@@ -591,20 +576,16 @@ impl Calendar {
                 .ok()
                 .map(EventTime::Date)
         } else {
-            time_str
-                .parse::<i64>()
+            time_str.parse::<i64>()
                 .ok()
                 .map(|ts| EventTime::DateTime(ts, tz_str.map(|s| s.to_string())))
         }
     }
 
-    pub fn create_nip52_event(
-        app_ctx: &mut AppContext,
-        data: &crate::ui::calendar::EventCreationData,
-    ) -> Option<String> {
-        use enostr::ClientMessage;
-        use nostrdb::NoteBuilder;
+    pub fn create_nip52_event(app_ctx: &mut AppContext, data: &crate::ui::calendar::EventCreationData) -> Option<String> {
         use uuid::Uuid;
+        use nostrdb::NoteBuilder;
+        use enostr::ClientMessage;
 
         let Some(filled_keypair) = app_ctx.accounts.selected_filled() else {
             warn!("Cannot create event: No account selected");
@@ -633,7 +614,9 @@ impl Calendar {
 
         let d_tag = Uuid::new_v4().to_string();
 
-        let mut builder = NoteBuilder::new().kind(kind).content(&data.description);
+        let mut builder = NoteBuilder::new()
+            .kind(kind)
+            .content(&data.description);
 
         builder = builder.start_tag().tag_str("d").tag_str(&d_tag);
 
@@ -656,7 +639,7 @@ impl Calendar {
                     if let Some(start_time) = &data.start_time {
                         if let Ok(time) = chrono::NaiveTime::parse_from_str(start_time, "%H:%M") {
                             let datetime = start_date.and_time(time);
-
+                            
                             let timestamp = if let Some(ref tz_name) = data.timezone {
                                 if !tz_name.is_empty() {
                                     if let Ok(tz) = tz_name.parse::<chrono_tz::Tz>() {
@@ -676,37 +659,26 @@ impl Calendar {
                             } else {
                                 datetime.and_utc().timestamp()
                             };
-
-                            builder = builder
-                                .start_tag()
-                                .tag_str("start")
-                                .tag_str(&timestamp.to_string());
+                            
+                            builder = builder.start_tag().tag_str("start").tag_str(&timestamp.to_string());
 
                             if let Some(tz_val) = &data.timezone {
                                 if !tz_val.is_empty() {
-                                    builder =
-                                        builder.start_tag().tag_str("start_tzid").tag_str(tz_val);
+                                    builder = builder.start_tag().tag_str("start_tzid").tag_str(tz_val);
                                 }
                             }
 
                             if let Some(end_date) = &data.end_date {
                                 if let Some(end_time) = &data.end_time {
-                                    if let Ok(end_time_parsed) =
-                                        chrono::NaiveTime::parse_from_str(end_time, "%H:%M")
-                                    {
+                                    if let Ok(end_time_parsed) = chrono::NaiveTime::parse_from_str(end_time, "%H:%M") {
                                         let end_datetime = end_date.and_time(end_time_parsed);
-
-                                        let end_timestamp = if let Some(ref tz_name) = data.timezone
-                                        {
+                                        
+                                        let end_timestamp = if let Some(ref tz_name) = data.timezone {
                                             if !tz_name.is_empty() {
                                                 if let Ok(tz) = tz_name.parse::<chrono_tz::Tz>() {
                                                     match tz.from_local_datetime(&end_datetime) {
-                                                        chrono::LocalResult::Single(dt) => {
-                                                            dt.timestamp()
-                                                        }
-                                                        chrono::LocalResult::Ambiguous(dt, _) => {
-                                                            dt.timestamp()
-                                                        }
+                                                        chrono::LocalResult::Single(dt) => dt.timestamp(),
+                                                        chrono::LocalResult::Ambiguous(dt, _) => dt.timestamp(),
                                                         chrono::LocalResult::None => {
                                                             end_datetime.and_utc().timestamp()
                                                         }
@@ -720,18 +692,12 @@ impl Calendar {
                                         } else {
                                             end_datetime.and_utc().timestamp()
                                         };
-
-                                        builder = builder
-                                            .start_tag()
-                                            .tag_str("end")
-                                            .tag_str(&end_timestamp.to_string());
+                                        
+                                        builder = builder.start_tag().tag_str("end").tag_str(&end_timestamp.to_string());
 
                                         if let Some(tz_val) = &data.timezone {
                                             if !tz_val.is_empty() {
-                                                builder = builder
-                                                    .start_tag()
-                                                    .tag_str("end_tzid")
-                                                    .tag_str(tz_val);
+                                                builder = builder.start_tag().tag_str("end_tzid").tag_str(tz_val);
                                             }
                                         }
                                     }
@@ -781,14 +747,10 @@ impl Calendar {
         Some(d_tag)
     }
 
-    pub fn create_rsvp(
-        app_ctx: &mut AppContext,
-        event: &CalendarEventDisplay,
-        status: RsvpStatusType,
-    ) -> Option<String> {
-        use enostr::ClientMessage;
-        use nostrdb::NoteBuilder;
+    pub fn create_rsvp(app_ctx: &mut AppContext, event: &CalendarEventDisplay, status: RsvpStatusType) -> Option<String> {
         use uuid::Uuid;
+        use nostrdb::NoteBuilder;
+        use enostr::ClientMessage;
 
         let Some(filled_keypair) = app_ctx.accounts.selected_filled() else {
             warn!("Cannot create RSVP: No account selected");
@@ -811,7 +773,9 @@ impl Calendar {
             RsvpStatusType::Tentative => "tentative",
         };
 
-        let mut builder = NoteBuilder::new().kind(31925).content("");
+        let mut builder = NoteBuilder::new()
+            .kind(31925)
+            .content("");
 
         builder = builder.start_tag().tag_str("d").tag_str(&d_tag);
         builder = builder.start_tag().tag_str("a").tag_str(&event_coord);
@@ -824,10 +788,7 @@ impl Calendar {
         let msg = ClientMessage::event(&note).ok()?;
         app_ctx.pool.send(&msg);
 
-        info!(
-            "RSVP created and sent to relays: {} for event {}",
-            status_str, event.d_tag
-        );
+        info!("RSVP created and sent to relays: {} for event {}", status_str, event.d_tag);
 
         Some(d_tag)
     }
@@ -882,7 +843,7 @@ impl Default for Calendar {
 
 fn process_relay_messages(ctx: &mut AppContext<'_>) -> bool {
     let mut received_events = false;
-
+    
     loop {
         let ev = if let Some(ev) = ctx.pool.try_recv() {
             ev.into_owned()
@@ -908,7 +869,7 @@ fn process_relay_messages(ctx: &mut AppContext<'_>) -> bool {
             }
         }
     }
-
+    
     received_events
 }
 
@@ -936,7 +897,9 @@ fn process_relay_message(ctx: &mut AppContext<'_>, relay_url: &str, msg: &RelayM
             info!("Notice from {}: {}", relay_url, msg);
             false
         }
-        RelayMessage::OK(_cr) => false,
+        RelayMessage::OK(_cr) => {
+            false
+        }
         RelayMessage::Eose(sid) => {
             info!("EOSE for subscription {} from {}", sid, relay_url);
             false
@@ -947,7 +910,7 @@ fn process_relay_message(ctx: &mut AppContext<'_>, relay_url: &str, msg: &RelayM
 impl notedeck::App for Calendar {
     fn update(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
         let received_events = process_relay_messages(ctx);
-
+        
         // Initial load: send subscription and load events
         if !self.subscribed {
             self.load_events(ctx);
@@ -955,7 +918,7 @@ impl notedeck::App for Calendar {
             // Reload events when new calendar events arrive from relays
             self.load_events(ctx);
         }
-
+        
         CalendarUi::ui(self, ctx, ui)
     }
 }
