@@ -28,6 +28,7 @@ use android_activity::AndroidApp;
 pub enum AppAction {
     Note(NoteAction),
     ToggleChrome,
+    ShowColumns,
 }
 
 pub trait App {

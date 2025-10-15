@@ -20,6 +20,7 @@ use notedeck::{
     tr, App, AppAction, AppContext, Localization, Notedeck, NotedeckOptions, NotedeckTextStyle,
     UserAccount, WalletType,
 };
+use notedeck_calendar::CalendarApp;
 use notedeck_columns::{timeline::TimelineKind, Damus};
 use notedeck_dave::{Dave, DaveAvatar};
 use notedeck_ui::{
@@ -145,11 +146,13 @@ impl Chrome {
         let context = &mut notedeck.app_context();
         let dave = Dave::new(cc.wgpu_render_state.as_ref());
         let columns = Damus::new(context, app_args);
+        let calendar = CalendarApp::new();
         let mut chrome = Chrome::default();
 
         notedeck.check_args(columns.unrecognized_args())?;
 
         chrome.add_app(NotedeckApp::Columns(Box::new(columns)));
+        chrome.add_app(NotedeckApp::Calendar(Box::new(calendar)));
         chrome.add_app(NotedeckApp::Dave(Box::new(dave)));
 
         if notedeck.has_option(NotedeckOptions::FeatureNotebook) {
@@ -342,6 +345,7 @@ impl Chrome {
         //let dark_mode = ui.ctx().style().visuals.dark_mode;
 
         for (i, app) in self.apps.iter_mut().enumerate() {
+            let is_selected = self.active == i as i32;
             let r = match app {
                 NotedeckApp::Columns(_columns_app) => columns_button(ui),
 
@@ -350,6 +354,7 @@ impl Chrome {
                     let rect = dave_sidebar_rect(ui);
                     dave_button(dave.avatar_mut(), ui, rect)
                 }
+                NotedeckApp::Calendar(_calendar) => calendar_button(ui, is_selected),
 
                 NotedeckApp::ClnDash(_clndash) => clndash_button(ui),
 
@@ -450,6 +455,85 @@ fn columns_button(ui: &mut egui::Ui) -> egui::Response {
         ui,
         false,
     )
+}
+
+fn calendar_button(ui: &mut egui::Ui, selected: bool) -> egui::Response {
+    let size = vec2(60.0, 60.0);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    if ui.is_rect_visible(rect) {
+        let visuals = ui.style().interact(&response);
+        let rounding = CornerRadius::same(12);
+        let fill = if selected {
+            ui.visuals().selection.bg_fill
+        } else {
+            visuals.bg_fill
+        };
+        let stroke = if selected {
+            ui.visuals().selection.stroke
+        } else {
+            visuals.bg_stroke
+        };
+        let painter = ui.painter();
+        painter.rect(rect, rounding, fill, stroke, egui::StrokeKind::Middle);
+
+        let header_rect = egui::Rect::from_min_max(
+            rect.min + vec2(8.0, 8.0),
+            egui::pos2(rect.max.x - 8.0, rect.min.y + 8.0 + size.y * 0.25),
+        );
+        let header_rounding = CornerRadius {
+            nw: rounding.nw,
+            ne: rounding.ne,
+            sw: 6,
+            se: 6,
+        };
+        let header_fill = ui.visuals().widgets.active.bg_fill;
+        painter.rect_filled(header_rect, header_rounding, header_fill);
+
+        let binding_color = ui.visuals().text_color();
+        let binding_radius = 3.5;
+        let binding_y = header_rect.top() - binding_radius - 2.0;
+        for x in [header_rect.left() + 10.0, header_rect.right() - 10.0] {
+            painter.circle_filled(egui::pos2(x, binding_y), binding_radius, binding_color);
+        }
+
+        let divider_color = ui.visuals().widgets.noninteractive.fg_stroke.color;
+        painter.line_segment(
+            [
+                egui::pos2(header_rect.left(), header_rect.bottom()),
+                egui::pos2(header_rect.right(), header_rect.bottom()),
+            ],
+            egui::Stroke::new(1.0, divider_color),
+        );
+
+        let grid_rect = egui::Rect::from_min_max(
+            egui::pos2(rect.min.x + 10.0, header_rect.bottom() + 8.0),
+            egui::pos2(rect.max.x - 10.0, rect.max.y - 12.0),
+        );
+        let grid_stroke = egui::Stroke::new(1.3, ui.visuals().text_color());
+
+        for row in 1..3 {
+            let y = egui::lerp(grid_rect.y_range(), row as f32 / 3.0);
+            painter.line_segment(
+                [
+                    egui::pos2(grid_rect.min.x, y),
+                    egui::pos2(grid_rect.max.x, y),
+                ],
+                grid_stroke,
+            );
+        }
+
+        for col in 1..2 {
+            let x = egui::lerp(grid_rect.x_range(), col as f32 / 2.0);
+            painter.line_segment(
+                [
+                    egui::pos2(x, grid_rect.min.y),
+                    egui::pos2(x, grid_rect.max.y),
+                ],
+                grid_stroke,
+            );
+        }
+    }
+    response
 }
 
 fn accounts_button(ui: &mut egui::Ui) -> egui::Response {
@@ -558,6 +642,9 @@ fn chrome_handle_app_action(
     match action {
         AppAction::ToggleChrome => {
             chrome.toggle();
+        }
+        AppAction::ShowColumns => {
+            chrome.switch_to_columns();
         }
 
         AppAction::Note(note_action) => {

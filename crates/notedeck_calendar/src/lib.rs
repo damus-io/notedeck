@@ -1,0 +1,1965 @@
+use chrono::{
+    offset::Offset, DateTime, Datelike, Duration, Local, NaiveDate, NaiveDateTime, NaiveTime,
+    TimeZone, Timelike, Utc,
+};
+use chrono_tz::{Tz, TZ_VARIANTS};
+use egui::{vec2, Color32, CornerRadius, FontId, Stroke};
+use hex::FromHex;
+use nostrdb::{Filter, ProfileRecord, QueryResult, Transaction};
+use notedeck::filter::UnifiedSubscription;
+use notedeck::media::gif::ensure_latest_texture;
+use notedeck::media::{AnimationMode, ImageType};
+use notedeck::{
+    fonts::NamedFontFamily, get_render_state, supported_mime_hosted_at_url, App, AppAction,
+    AppContext, AppResponse, MediaCacheType, TextureState,
+};
+use notedeck_ui::ProfilePic;
+use std::time::{Duration as StdDuration, Instant};
+use tracing::warn;
+use uuid::Uuid;
+
+const FETCH_LIMIT: i32 = 1024;
+const POLL_BATCH_SIZE: usize = 64;
+const REFRESH_INTERVAL: StdDuration = StdDuration::from_secs(30);
+
+#[derive(Debug, Clone)]
+enum CalendarEventTime {
+    AllDay {
+        /// Inclusive start date
+        start: NaiveDate,
+        /// Inclusive end date (normalized from exclusive `end` tag)
+        end: NaiveDate,
+    },
+    Timed {
+        start_utc: NaiveDateTime,
+        end_utc: Option<NaiveDateTime>,
+        start_tzid: Option<String>,
+        end_tzid: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone)]
+struct CalendarParticipant {
+    pubkey_hex: String,
+    role: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct CalendarEvent {
+    id_hex: String,
+    identifier: Option<String>,
+    title: String,
+    title_month: String,
+    title_week: String,
+    title_day: String,
+    summary: Option<String>,
+    summary_preview: Option<String>,
+    description: Option<String>,
+    images: Vec<String>,
+    locations: Vec<String>,
+    hashtags: Vec<String>,
+    references: Vec<String>,
+    participants: Vec<CalendarParticipant>,
+    calendars: Vec<String>,
+    time: CalendarEventTime,
+    author_hex: String,
+    created_at: u64,
+}
+
+impl CalendarEvent {
+    fn start_naive(&self) -> NaiveDateTime {
+        match &self.time {
+            CalendarEventTime::AllDay { start, .. } => start.and_time(NaiveTime::MIN),
+            CalendarEventTime::Timed { start_utc, .. } => *start_utc,
+        }
+    }
+
+    fn duration_text(&self, timezone: &TimeZoneChoice) -> String {
+        match &self.time {
+            CalendarEventTime::AllDay { start, end } => {
+                let start_fmt = start.format("%b %e, %Y");
+                if start == end {
+                    format!("{start_fmt}")
+                } else {
+                    let end_fmt = end.format("%b %e, %Y");
+                    format!("{start_fmt} – {end_fmt}")
+                }
+            }
+            CalendarEventTime::Timed {
+                start_utc, end_utc, ..
+            } => {
+                let start_local = timezone.localize(start_utc);
+                match end_utc {
+                    Some(end) => {
+                        let end_local = timezone.localize(&end);
+                        if start_local.date == end_local.date
+                            && start_local.abbreviation == end_local.abbreviation
+                        {
+                            format!(
+                                "{} {} – {} {}",
+                                start_local.date_text,
+                                start_local.time_text,
+                                end_local.time_text,
+                                start_local.abbreviation
+                            )
+                        } else {
+                            format!(
+                                "{} {} ({}) – {} {} ({})",
+                                start_local.date_text,
+                                start_local.time_text,
+                                start_local.abbreviation,
+                                end_local.date_text,
+                                end_local.time_text,
+                                end_local.abbreviation
+                            )
+                        }
+                    }
+                    None => format!(
+                        "{} {} ({})",
+                        start_local.date_text, start_local.time_text, start_local.abbreviation
+                    ),
+                }
+            }
+        }
+    }
+
+    fn occurs_on(&self, date: NaiveDate, timezone: &TimeZoneChoice) -> bool {
+        match &self.time {
+            CalendarEventTime::AllDay { start, end } => date >= *start && date <= *end,
+            CalendarEventTime::Timed {
+                start_utc, end_utc, ..
+            } => {
+                let start = timezone.localize(start_utc);
+                let end = end_utc
+                    .map(|end| timezone.localize(&end))
+                    .unwrap_or_else(|| start.clone());
+
+                let start_date = start.date;
+                let mut end_date = end.date;
+                if end_date < start_date {
+                    end_date = start_date;
+                }
+
+                date >= start_date && date <= end_date
+            }
+        }
+    }
+
+    fn week_title(&self) -> &str {
+        &self.title_week
+    }
+
+    fn day_title(&self) -> &str {
+        &self.title_day
+    }
+
+    fn month_title(&self) -> &str {
+        &self.title_month
+    }
+
+    fn summary_preview(&self) -> Option<&str> {
+        self.summary_preview.as_deref()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CalendarView {
+    Month,
+    Week,
+    Day,
+    Event,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum TimeZoneChoice {
+    Local,
+    Named(Tz),
+}
+
+impl Default for TimeZoneChoice {
+    fn default() -> Self {
+        Self::Local
+    }
+}
+
+#[derive(Clone)]
+struct LocalizedDateTime {
+    date: NaiveDate,
+    date_text: String,
+    time_text: String,
+    abbreviation: String,
+    time_of_day: NaiveTime,
+}
+
+impl TimeZoneChoice {
+    fn localize(&self, utc: &NaiveDateTime) -> LocalizedDateTime {
+        let dt_utc = Utc.from_utc_datetime(utc);
+        match self {
+            TimeZoneChoice::Local => {
+                let dt_local = dt_utc.with_timezone(&Local);
+                LocalizedDateTime {
+                    date: dt_local.date_naive(),
+                    date_text: dt_local.format("%b %e, %Y").to_string(),
+                    time_text: dt_local.format("%I:%M %p").to_string(),
+                    abbreviation: dt_local.format("%Z").to_string(),
+                    time_of_day: dt_local.time(),
+                }
+            }
+            TimeZoneChoice::Named(tz) => {
+                let dt_named = dt_utc.with_timezone(tz);
+                LocalizedDateTime {
+                    date: dt_named.date_naive(),
+                    date_text: dt_named.format("%b %e, %Y").to_string(),
+                    time_text: dt_named.format("%I:%M %p").to_string(),
+                    abbreviation: dt_named.format("%Z").to_string(),
+                    time_of_day: dt_named.time(),
+                }
+            }
+        }
+    }
+
+    fn label(&self) -> String {
+        match self {
+            TimeZoneChoice::Local => {
+                let now = Local::now();
+                let abbr = now.format("%Z").to_string();
+                if abbreviation_has_letters(&abbr) {
+                    format!("Local Time ({abbr})")
+                } else if let Some(tz) = guess_local_timezone(now) {
+                    format!("Local Time ({})", timezone_abbreviation(tz))
+                } else {
+                    let offset = now.offset().local_minus_utc();
+                    format!("Local Time ({})", format_utc_offset(offset))
+                }
+            }
+            TimeZoneChoice::Named(tz) => {
+                format!("{} ({})", tz.name(), timezone_abbreviation(*tz))
+            }
+        }
+    }
+}
+
+pub struct CalendarApp {
+    subscription: Option<UnifiedSubscription>,
+    events: Vec<CalendarEvent>,
+    view: CalendarView,
+    focus_date: NaiveDate,
+    selected_event: Option<usize>,
+    last_refresh: Option<Instant>,
+    last_poll: Instant,
+    timezone: TimeZoneChoice,
+    timezone_filter: String,
+}
+
+impl CalendarApp {
+    pub fn new() -> Self {
+        let today = Local::now().date_naive();
+        Self {
+            subscription: None,
+            events: Vec::new(),
+            view: CalendarView::Month,
+            focus_date: today,
+            selected_event: None,
+            last_refresh: None,
+            last_poll: Instant::now(),
+            timezone: TimeZoneChoice::default(),
+            timezone_filter: String::new(),
+        }
+    }
+
+    fn filters() -> Vec<Filter> {
+        let mut kinds = Filter::new().kinds([31922, 31923]);
+        kinds = kinds.limit(FETCH_LIMIT as u64);
+        vec![kinds.build()]
+    }
+
+    fn ensure_subscription(&mut self, ctx: &mut AppContext) {
+        if self.subscription.is_some() {
+            return;
+        }
+
+        let filters = Self::filters();
+
+        let sub_id = match ctx.ndb.subscribe(&filters) {
+            Ok(local_sub) => {
+                let remote_id = Uuid::new_v4().to_string();
+                ctx.pool.subscribe(remote_id.clone(), filters);
+                Some(UnifiedSubscription {
+                    local: local_sub,
+                    remote: remote_id,
+                })
+            }
+            Err(err) => {
+                warn!("Calendar: failed to subscribe locally: {err}");
+                None
+            }
+        };
+
+        self.subscription = sub_id;
+        // Force initial refresh so users see events immediately
+        self.last_refresh = None;
+    }
+
+    fn poll_subscription(&mut self, ctx: &mut AppContext) -> bool {
+        let Some(sub) = &self.subscription else {
+            return false;
+        };
+
+        if self.last_poll.elapsed() < StdDuration::from_secs(5) {
+            return false;
+        }
+
+        self.last_poll = Instant::now();
+
+        let new_keys = ctx.ndb.poll_for_notes(sub.local, POLL_BATCH_SIZE as u32);
+        !new_keys.is_empty()
+    }
+
+    fn refresh_if_needed(&mut self, ctx: &mut AppContext) {
+        let poll_triggered = self.poll_subscription(ctx);
+        let due_for_refresh = self
+            .last_refresh
+            .map(|inst| inst.elapsed() >= REFRESH_INTERVAL)
+            .unwrap_or(true);
+
+        if !poll_triggered && !due_for_refresh {
+            return;
+        }
+
+        let txn = match Transaction::new(ctx.ndb) {
+            Ok(txn) => txn,
+            Err(err) => {
+                warn!("Calendar: failed to create transaction: {err}");
+                return;
+            }
+        };
+
+        let filters = Self::filters();
+
+        let results = match ctx.ndb.query(&txn, &filters, FETCH_LIMIT) {
+            Ok(results) => results,
+            Err(err) => {
+                warn!("Calendar: query failed: {err}");
+                return;
+            }
+        };
+
+        let mut events = Vec::new();
+        for result in results {
+            if let Some(event) = parse_calendar_event(result) {
+                events.push(event);
+            }
+        }
+
+        events.sort_by_key(|ev| (ev.start_naive(), ev.created_at));
+        self.events = events;
+
+        if let Some(sel) = self.selected_event {
+            if sel >= self.events.len() {
+                self.selected_event = None;
+            }
+        }
+
+        self.last_refresh = Some(Instant::now());
+    }
+
+    fn events_on(&self, date: NaiveDate) -> Vec<usize> {
+        self.events
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, event)| {
+                if event.occurs_on(date, &self.timezone) {
+                    Some(idx)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    fn view_switcher(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.selectable_value(&mut self.view, CalendarView::Month, "Month");
+            ui.selectable_value(&mut self.view, CalendarView::Week, "Week");
+            ui.selectable_value(&mut self.view, CalendarView::Day, "Day");
+            if self.selected_event.is_some() {
+                ui.selectable_value(&mut self.view, CalendarView::Event, "Event");
+            } else {
+                let disabled_view = self.view;
+                ui.add_enabled(false, egui::SelectableLabel::new(false, "Event"));
+                self.view = match disabled_view {
+                    CalendarView::Event => CalendarView::Day,
+                    other => other,
+                };
+            }
+        });
+    }
+
+    fn navigation_bar(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            if ui.button("◀").clicked() {
+                self.adjust_focus(-1);
+            }
+            if ui.button("Today").clicked() {
+                self.focus_date = Local::now().date_naive();
+            }
+            if ui.button("▶").clicked() {
+                self.adjust_focus(1);
+            }
+        });
+    }
+
+    fn timezone_controls(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.label(format!("Times shown in {}", self.timezone.label()));
+            ui.menu_button("Change time zone", |ui| {
+                ui.set_min_width(240.0);
+                ui.label("Search");
+                ui.text_edit_singleline(&mut self.timezone_filter);
+                ui.add_space(6.0);
+                if ui
+                    .selectable_label(
+                        matches!(self.timezone, TimeZoneChoice::Local),
+                        "Local Time",
+                    )
+                    .clicked()
+                {
+                    self.timezone = TimeZoneChoice::Local;
+                    self.timezone_filter.clear();
+                    ui.close_menu();
+                }
+
+                let filter = self.timezone_filter.to_lowercase();
+                egui::ScrollArea::vertical()
+                    .max_height(240.0)
+                    .show(ui, |ui| {
+                        let mut shown = 0usize;
+                        for tz in TZ_VARIANTS.iter() {
+                            if !filter.is_empty()
+                                && !tz.name().to_lowercase().contains(&filter)
+                            {
+                                continue;
+                            }
+
+                            let abbr = timezone_abbreviation(*tz);
+                            let label = format!("{} ({abbr})", tz.name());
+                            let selected =
+                                matches!(self.timezone, TimeZoneChoice::Named(current) if current == *tz);
+
+                            if ui.selectable_label(selected, label).clicked() {
+                                self.timezone = TimeZoneChoice::Named(*tz);
+                                self.timezone_filter.clear();
+                                ui.close_menu();
+                            }
+
+                            shown += 1;
+                            if shown >= 200 && filter.is_empty() {
+                                break;
+                            }
+                        }
+                    });
+            });
+        });
+        ui.add_space(8.0);
+    }
+
+    fn adjust_focus(&mut self, delta: i32) {
+        match self.view {
+            CalendarView::Month => {
+                let mut month = self.focus_date.month() as i32 + delta;
+                let mut year = self.focus_date.year();
+                while month < 1 {
+                    month += 12;
+                    year -= 1;
+                }
+                while month > 12 {
+                    month -= 12;
+                    year += 1;
+                }
+                let day = self.focus_date.day().min(days_in_month(year, month as u32));
+                self.focus_date = NaiveDate::from_ymd_opt(year, month as u32, day).unwrap();
+            }
+            CalendarView::Week => {
+                self.focus_date =
+                    self.focus_date + Duration::days((delta * 7).try_into().unwrap_or(0));
+            }
+            CalendarView::Day | CalendarView::Event => {
+                self.focus_date = self.focus_date + Duration::days(delta.try_into().unwrap_or(0));
+            }
+        }
+    }
+
+    fn render_month(&mut self, ui: &mut egui::Ui) {
+        let year = self.focus_date.year();
+        let month = self.focus_date.month();
+        let first_day = NaiveDate::from_ymd_opt(year, month, 1).expect("valid month start date");
+        let last_day =
+            NaiveDate::from_ymd_opt(year, month, days_in_month(year, month) as u32).unwrap();
+
+        let start_offset = first_day.weekday().num_days_from_monday() as i64;
+        let grid_start = first_day - Duration::days(start_offset);
+
+        let today = Local::now().date_naive();
+        let selected_id = self
+            .selected_event
+            .and_then(|idx| self.events.get(idx))
+            .map(|ev| ev.id_hex.clone());
+
+        #[derive(Default)]
+        struct MonthCellInfo {
+            date: Option<NaiveDate>,
+            is_today: bool,
+            rows: Vec<(usize, std::sync::Arc<egui::Galley>)>,
+            more: usize,
+            min_height: f32,
+        }
+
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                let header_font = FontId::new(
+                    18.0,
+                    egui::FontFamily::Name(NamedFontFamily::Bold.as_str().into()),
+                );
+                ui.label(
+                    egui::RichText::new(format!("{} {}", first_day.format("%B"), first_day.year()))
+                        .font(header_font.clone()),
+                );
+
+                ui.add_space(4.0);
+                ui.columns(7, |cols| {
+                    for (idx, col) in cols.iter_mut().enumerate() {
+                        col.label(weekday_label(idx));
+                    }
+                });
+
+                ui.separator();
+
+                for week in 0..6 {
+                    let week_offset = (week as i64) * 7;
+                    let mut cell_infos = Vec::with_capacity(7);
+                    let mut row_min_height = 110.0f32;
+                    let approx_cell_width = (ui.available_width() / 7.0).max(60.0);
+
+                    for col_idx in 0..7 {
+                        let cell_date = grid_start + Duration::days(week_offset + col_idx as i64);
+                        if cell_date.month() != month {
+                            cell_infos.push(MonthCellInfo {
+                                min_height: 110.0,
+                                ..Default::default()
+                            });
+                            continue;
+                        }
+
+                        let mut info = MonthCellInfo {
+                            date: Some(cell_date),
+                            is_today: cell_date == today,
+                            min_height: 40.0,
+                            ..Default::default()
+                        };
+
+                        let events = self.events_on(cell_date);
+                        let display_count = events.len().min(3);
+                        ui.fonts(|fonts| {
+                            for idx in events.iter().take(display_count) {
+                                if let Some(event) = self.events.get(*idx) {
+                                    let wrap_width = (approx_cell_width - 12.0).max(32.0);
+                                    let galley = fonts.layout(
+                                        event.month_title().to_owned(),
+                                        FontId::proportional(12.0),
+                                        Color32::WHITE,
+                                        wrap_width,
+                                    );
+                                    let row_height = galley.size().y + 6.0;
+                                    info.min_height += row_height;
+                                    info.rows.push((*idx, galley));
+                                }
+                            }
+                        });
+
+                        info.more = events.len().saturating_sub(display_count);
+                        if info.more > 0 {
+                            info.min_height += 24.0;
+                        }
+
+                        info.min_height = info.min_height.max(110.0);
+                        row_min_height = row_min_height.max(info.min_height);
+                        cell_infos.push(info);
+                    }
+
+                    ui.columns(7, |cols| {
+                        for (col, info) in cols.iter_mut().zip(cell_infos.iter()) {
+                            col.set_min_width(110.0);
+                            let mut frame =
+                                egui::Frame::new().inner_margin(egui::Margin::symmetric(4, 4));
+                            if info.is_today {
+                                frame = frame.fill(Color32::from_rgba_unmultiplied(0, 91, 187, 18));
+                            }
+
+                            frame.show(col, |ui| {
+                                ui.set_min_height(row_min_height);
+                                if let Some(day) = info.date {
+                                    ui.label(
+                                        egui::RichText::new(format!("{}", day.day())).strong(),
+                                    );
+                                    ui.add_space(4.0);
+
+                                    for (event_idx, galley) in &info.rows {
+                                        if let Some(event) = self.events.get(*event_idx) {
+                                            let row_height = galley.size().y + 6.0;
+                                            let item_size =
+                                                egui::vec2(ui.available_width(), row_height);
+                                            let (item_rect, response) = ui.allocate_exact_size(
+                                                item_size,
+                                                egui::Sense::click(),
+                                            );
+
+                                            let is_selected = selected_id
+                                                .as_ref()
+                                                .is_some_and(|id| id == &event.id_hex);
+                                            let visuals = ui
+                                                .style()
+                                                .interact_selectable(&response, is_selected);
+                                            let painter = ui.painter_at(item_rect);
+                                            if visuals.bg_fill != Color32::TRANSPARENT {
+                                                painter.rect_filled(
+                                                    item_rect,
+                                                    CornerRadius::same(4),
+                                                    visuals.bg_fill,
+                                                );
+                                            }
+                                            if visuals.bg_stroke.width > 0.0 {
+                                                painter.rect_stroke(
+                                                    item_rect,
+                                                    CornerRadius::same(4),
+                                                    visuals.bg_stroke,
+                                                    egui::StrokeKind::Inside,
+                                                );
+                                            }
+
+                                            painter.with_clip_rect(item_rect.shrink(1.0)).galley(
+                                                item_rect.left_top() + vec2(2.0, 3.0),
+                                                galley.clone(),
+                                                visuals.text_color(),
+                                            );
+
+                                            let response =
+                                                response.on_hover_text(event.title.as_str());
+                                            if response.clicked() {
+                                                self.selected_event = Some(*event_idx);
+                                                self.view = CalendarView::Event;
+                                                self.focus_date = day;
+                                            }
+                                        }
+                                    }
+
+                                    if info.more > 0 {
+                                        let more_size = egui::vec2(ui.available_width(), 22.0);
+                                        let (more_rect, _) =
+                                            ui.allocate_exact_size(more_size, egui::Sense::hover());
+                                        ui.painter_at(more_rect).text(
+                                            more_rect.left_center(),
+                                            egui::Align2::LEFT_CENTER,
+                                            format!("+{} more", info.more),
+                                            FontId::proportional(12.0),
+                                            ui.visuals().weak_text_color(),
+                                        );
+                                    }
+                                } else {
+                                    ui.allocate_space(egui::vec2(
+                                        ui.available_width(),
+                                        row_min_height,
+                                    ));
+                                }
+                            });
+                        }
+                    });
+
+                    let next_week_start = grid_start + Duration::days(((week + 1) * 7) as i64);
+                    if next_week_start.month() != month && next_week_start > last_day {
+                        break;
+                    }
+                }
+            });
+    }
+
+    fn render_week(&mut self, ui: &mut egui::Ui) {
+        const HOUR_HEIGHT: f32 = 42.0;
+        const ALL_DAY_HEIGHT: f32 = 32.0;
+        const COLUMN_WIDTH: f32 = 150.0;
+        const TIME_COL_WIDTH: f32 = 64.0;
+
+        let week_start = self.focus_date
+            - Duration::days(self.focus_date.weekday().num_days_from_monday() as i64);
+        let today = Local::now().date_naive();
+        let selected_idx = self.selected_event;
+        let total_height = ALL_DAY_HEIGHT + HOUR_HEIGHT * 24.0;
+
+        egui::ScrollArea::both()
+            .id_salt("calendar-week-scroll")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let (time_rect, _) = ui.allocate_exact_size(
+                        vec2(TIME_COL_WIDTH, total_height),
+                        egui::Sense::hover(),
+                    );
+                    let time_painter = ui.painter_at(time_rect);
+                    time_painter.rect_filled(
+                        time_rect,
+                        CornerRadius::same(6),
+                        ui.visuals().extreme_bg_color,
+                    );
+                    for hour in 0..24 {
+                        let y = time_rect.top() + ALL_DAY_HEIGHT + hour as f32 * HOUR_HEIGHT;
+                        time_painter.text(
+                            egui::pos2(time_rect.left() + 6.0, y + 4.0),
+                            egui::Align2::LEFT_TOP,
+                            format!("{:02}:00", hour),
+                            FontId::proportional(12.0),
+                            ui.visuals().weak_text_color(),
+                        );
+                        let stroke = Stroke::new(0.75, ui.visuals().weak_text_color());
+                        time_painter.line_segment(
+                            [
+                                egui::pos2(time_rect.right() - 8.0, y),
+                                egui::pos2(time_rect.right(), y),
+                            ],
+                            stroke,
+                        );
+                    }
+
+                    for day_offset in 0..7 {
+                        let day = week_start + Duration::days(day_offset as i64);
+                        let events = self.events_on(day);
+
+                        let mut all_day_events = Vec::new();
+                        let mut timed_events = Vec::new();
+                        for idx in events {
+                            if matches!(self.events[idx].time, CalendarEventTime::AllDay { .. }) {
+                                all_day_events.push(idx);
+                            } else {
+                                timed_events.push(idx);
+                            }
+                        }
+
+                        let (day_rect, _) = ui.allocate_exact_size(
+                            vec2(COLUMN_WIDTH, total_height),
+                            egui::Sense::hover(),
+                        );
+                        let painter = ui.painter_at(day_rect);
+                        let column_id = ui.make_persistent_id(("calendar-week-column", day));
+                        let column_response =
+                            ui.interact(day_rect, column_id, egui::Sense::click());
+                        let column_clicked = column_response.clicked();
+                        let mut event_clicked = false;
+
+                        if day == today {
+                            painter.rect_filled(
+                                day_rect,
+                                CornerRadius::same(6),
+                                Color32::from_rgba_unmultiplied(0, 91, 187, 18),
+                            );
+                        }
+
+                        let header_rect = egui::Rect::from_min_max(
+                            day_rect.left_top(),
+                            egui::pos2(day_rect.right(), day_rect.top() + 24.0),
+                        );
+                        painter.text(
+                            header_rect.left_center(),
+                            egui::Align2::LEFT_CENTER,
+                            format!("{} {}", weekday_label(day_offset), day.format("%m/%d")),
+                            FontId::proportional(14.0),
+                            ui.visuals().strong_text_color(),
+                        );
+
+                        let all_day_rect = egui::Rect::from_min_max(
+                            egui::pos2(day_rect.left(), day_rect.top() + 24.0),
+                            egui::pos2(day_rect.right(), day_rect.top() + ALL_DAY_HEIGHT),
+                        );
+                        let timeline_rect = egui::Rect::from_min_max(
+                            egui::pos2(day_rect.left(), all_day_rect.bottom()),
+                            day_rect.right_bottom(),
+                        );
+
+                        let grid_stroke = Stroke::new(0.5, ui.visuals().weak_text_color());
+                        for hour in 0..=24 {
+                            let y = timeline_rect.top() + hour as f32 * HOUR_HEIGHT;
+                            painter.line_segment(
+                                [
+                                    egui::pos2(timeline_rect.left(), y),
+                                    egui::pos2(timeline_rect.right(), y),
+                                ],
+                                grid_stroke,
+                            );
+                        }
+
+                        if !all_day_events.is_empty() {
+                            let mut y = all_day_rect.top() + 4.0;
+                            let chip_height = 20.0;
+                            let max_display = 3usize;
+                            for (display_idx, event_idx) in all_day_events.iter().enumerate() {
+                                if display_idx >= max_display {
+                                    let more = all_day_events.len() - max_display;
+                                    painter.text(
+                                        egui::pos2(all_day_rect.left() + 6.0, y),
+                                        egui::Align2::LEFT_TOP,
+                                        format!("+{} more", more),
+                                        FontId::proportional(12.0),
+                                        ui.visuals().weak_text_color(),
+                                    );
+                                    break;
+                                }
+
+                                let chip_rect = egui::Rect::from_min_max(
+                                    egui::pos2(all_day_rect.left() + 6.0, y),
+                                    egui::pos2(all_day_rect.right() - 6.0, y + chip_height),
+                                );
+                                let id =
+                                    ui.make_persistent_id(("calendar_all_day", day, *event_idx));
+                                let response = ui.interact(chip_rect, id, egui::Sense::click());
+                                let is_selected = selected_idx == Some(*event_idx);
+                                let fill = if is_selected {
+                                    ui.visuals().selection.bg_fill
+                                } else {
+                                    ui.visuals().extreme_bg_color
+                                };
+                                let stroke = if is_selected {
+                                    ui.visuals().selection.stroke
+                                } else {
+                                    Stroke::new(1.0, ui.visuals().weak_text_color())
+                                };
+                                painter.rect_filled(chip_rect, CornerRadius::same(6), fill);
+                                painter.rect_stroke(
+                                    chip_rect,
+                                    CornerRadius::same(6),
+                                    stroke,
+                                    egui::StrokeKind::Inside,
+                                );
+                                let chip_clip_rect = chip_rect.shrink2(vec2(4.0, 2.0));
+                                let chip_painter = painter.with_clip_rect(chip_rect.shrink(1.0));
+                                let chip_color = ui.visuals().strong_text_color();
+                                chip_painter.text(
+                                    chip_clip_rect.left_top(),
+                                    egui::Align2::LEFT_TOP,
+                                    self.events[*event_idx].week_title(),
+                                    FontId::proportional(12.0),
+                                    chip_color,
+                                );
+                                if response.clicked() {
+                                    event_clicked = true;
+                                    self.selected_event = Some(*event_idx);
+                                    self.view = CalendarView::Event;
+                                    self.focus_date = day;
+                                }
+                                y += chip_height + 4.0;
+                            }
+                        }
+
+                        for &event_idx in &timed_events {
+                            let event = &self.events[event_idx];
+                            if let Some((start_hour, end_hour)) =
+                                timed_range_on_day(event, &self.timezone, day)
+                            {
+                                let top = timeline_rect.top() + start_hour * HOUR_HEIGHT;
+                                let bottom = timeline_rect.top() + end_hour * HOUR_HEIGHT;
+                                let event_rect = egui::Rect::from_min_max(
+                                    egui::pos2(timeline_rect.left() + 4.0, top + 2.0),
+                                    egui::pos2(timeline_rect.right() - 4.0, bottom - 2.0),
+                                );
+
+                                let id = ui.make_persistent_id(("calendar_timed", day, event_idx));
+                                let response = ui.interact(event_rect, id, egui::Sense::click());
+
+                                let is_selected = selected_idx == Some(event_idx);
+                                let fill = if is_selected {
+                                    ui.visuals().selection.bg_fill
+                                } else {
+                                    ui.visuals().extreme_bg_color
+                                };
+                                let stroke = if is_selected {
+                                    ui.visuals().selection.stroke
+                                } else {
+                                    Stroke::new(1.0, ui.visuals().weak_text_color())
+                                };
+                                painter.rect_filled(event_rect, CornerRadius::same(6), fill);
+                                painter.rect_stroke(
+                                    event_rect,
+                                    CornerRadius::same(6),
+                                    stroke,
+                                    egui::StrokeKind::Inside,
+                                );
+
+                                let clip_rect = event_rect.shrink2(vec2(6.0, 4.0));
+                                let text_painter = painter.with_clip_rect(event_rect.shrink(1.0));
+                                text_painter.text(
+                                    clip_rect.left_top(),
+                                    egui::Align2::LEFT_TOP,
+                                    event.week_title(),
+                                    FontId::proportional(13.0),
+                                    ui.visuals().strong_text_color(),
+                                );
+
+                                if response.clicked() {
+                                    event_clicked = true;
+                                    self.selected_event = Some(event_idx);
+                                    self.view = CalendarView::Event;
+                                    self.focus_date = day;
+                                }
+                            }
+                        }
+
+                        if column_clicked && !event_clicked {
+                            self.focus_date = day;
+                            self.view = CalendarView::Day;
+                        }
+                    }
+                });
+            });
+    }
+
+    fn paint_timed_event_contents(
+        &self,
+        ui: &egui::Ui,
+        painter: &egui::Painter,
+        rect: egui::Rect,
+        event: &CalendarEvent,
+        _time_label: Option<String>,
+    ) {
+        let clip_rect = rect.shrink(1.0);
+        let content_rect = rect.shrink2(vec2(6.0, 4.0));
+        if content_rect.height() <= 12.0 {
+            return;
+        }
+
+        let text_painter = painter.with_clip_rect(clip_rect);
+        let mut cursor_y = content_rect.top();
+        let cursor_x = content_rect.left();
+
+        let title_font = FontId::proportional(13.0);
+        let title_color = ui.visuals().strong_text_color();
+        text_painter.text(
+            egui::pos2(cursor_x, cursor_y),
+            egui::Align2::LEFT_TOP,
+            event.day_title(),
+            title_font.clone(),
+            title_color,
+        );
+        cursor_y += title_font.size + 2.0;
+
+        if let Some(summary) = event.summary_preview() {
+            let summary_font = FontId::proportional(11.0);
+            let summary_color = ui.visuals().weak_text_color();
+            if cursor_y + summary_font.size <= content_rect.bottom() {
+                text_painter.text(
+                    egui::pos2(cursor_x, cursor_y),
+                    egui::Align2::LEFT_TOP,
+                    summary,
+                    summary_font,
+                    summary_color,
+                );
+            }
+        }
+    }
+
+    fn render_day(&mut self, ui: &mut egui::Ui) {
+        const HOUR_HEIGHT: f32 = 42.0;
+        const ALL_DAY_HEIGHT: f32 = 32.0;
+        const TIME_COL_WIDTH: f32 = 64.0;
+        const COLUMN_MIN_WIDTH: f32 = 220.0;
+
+        let day = self.focus_date;
+        let today = Local::now().date_naive();
+        let header = if day == today {
+            format!("Today – {} ({})", day.format("%A"), day)
+        } else {
+            format!("{} ({})", day.format("%A"), day)
+        };
+        ui.heading(header);
+
+        let events = self.events_on(day);
+        if events.is_empty() {
+            ui.label("No events found for this day.");
+        }
+
+        let mut all_day_events = Vec::new();
+        let mut timed_events = Vec::new();
+        for idx in events {
+            if matches!(self.events[idx].time, CalendarEventTime::AllDay { .. }) {
+                all_day_events.push(idx);
+            } else {
+                timed_events.push(idx);
+            }
+        }
+
+        let total_height = ALL_DAY_HEIGHT + HOUR_HEIGHT * 24.0;
+        let selected_idx = self.selected_event;
+
+        egui::ScrollArea::both()
+            .id_salt("calendar-day-scroll")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let (time_rect, _) = ui.allocate_exact_size(
+                        vec2(TIME_COL_WIDTH, total_height),
+                        egui::Sense::hover(),
+                    );
+                    let time_painter = ui.painter_at(time_rect);
+                    time_painter.rect_filled(
+                        time_rect,
+                        CornerRadius::same(6),
+                        ui.visuals().extreme_bg_color,
+                    );
+                    for hour in 0..24 {
+                        let y = time_rect.top() + ALL_DAY_HEIGHT + hour as f32 * HOUR_HEIGHT;
+                        time_painter.text(
+                            egui::pos2(time_rect.left() + 6.0, y + 4.0),
+                            egui::Align2::LEFT_TOP,
+                            format!("{:02}:00", hour),
+                            FontId::proportional(12.0),
+                            ui.visuals().weak_text_color(),
+                        );
+                        let stroke = Stroke::new(0.75, ui.visuals().weak_text_color());
+                        time_painter.line_segment(
+                            [
+                                egui::pos2(time_rect.right() - 8.0, y),
+                                egui::pos2(time_rect.right(), y),
+                            ],
+                            stroke,
+                        );
+                    }
+
+                    let column_width = ui.available_width().max(COLUMN_MIN_WIDTH);
+                    let (day_rect, _) = ui.allocate_exact_size(
+                        vec2(column_width, total_height),
+                        egui::Sense::hover(),
+                    );
+                    let painter = ui.painter_at(day_rect);
+
+                    if day == today {
+                        painter.rect_filled(
+                            day_rect,
+                            CornerRadius::same(6),
+                            Color32::from_rgba_unmultiplied(0, 91, 187, 18),
+                        );
+                    }
+
+                    let header_rect = egui::Rect::from_min_max(
+                        day_rect.left_top(),
+                        egui::pos2(day_rect.right(), day_rect.top() + 24.0),
+                    );
+                    painter.text(
+                        header_rect.left_center(),
+                        egui::Align2::LEFT_CENTER,
+                        format!("{} {}", day.format("%A"), day.format("%m/%d")),
+                        FontId::proportional(14.0),
+                        ui.visuals().strong_text_color(),
+                    );
+
+                    let all_day_rect = egui::Rect::from_min_max(
+                        egui::pos2(day_rect.left(), day_rect.top() + 24.0),
+                        egui::pos2(day_rect.right(), day_rect.top() + ALL_DAY_HEIGHT),
+                    );
+                    let timeline_rect = egui::Rect::from_min_max(
+                        egui::pos2(day_rect.left(), all_day_rect.bottom()),
+                        day_rect.right_bottom(),
+                    );
+
+                    let grid_stroke = Stroke::new(0.5, ui.visuals().weak_text_color());
+                    for hour in 0..=24 {
+                        let y = timeline_rect.top() + hour as f32 * HOUR_HEIGHT;
+                        painter.line_segment(
+                            [
+                                egui::pos2(timeline_rect.left(), y),
+                                egui::pos2(timeline_rect.right(), y),
+                            ],
+                            grid_stroke,
+                        );
+                    }
+
+                    if !all_day_events.is_empty() {
+                        let mut y = all_day_rect.top() + 4.0;
+                        let chip_height = 20.0;
+                        let max_display = 5usize;
+                        for (display_idx, event_idx) in all_day_events.iter().enumerate() {
+                            if display_idx >= max_display {
+                                let more = all_day_events.len() - max_display;
+                                painter.text(
+                                    egui::pos2(all_day_rect.left() + 6.0, y),
+                                    egui::Align2::LEFT_TOP,
+                                    format!("+{} more", more),
+                                    FontId::proportional(12.0),
+                                    ui.visuals().weak_text_color(),
+                                );
+                                break;
+                            }
+
+                            let chip_rect = egui::Rect::from_min_max(
+                                egui::pos2(all_day_rect.left() + 6.0, y),
+                                egui::pos2(all_day_rect.right() - 6.0, y + chip_height),
+                            );
+                            let id =
+                                ui.make_persistent_id(("calendar_day_all_day", day, *event_idx));
+                            let response = ui.interact(chip_rect, id, egui::Sense::click());
+                            let is_selected = selected_idx == Some(*event_idx);
+                            let fill = if is_selected {
+                                ui.visuals().selection.bg_fill
+                            } else {
+                                ui.visuals().extreme_bg_color
+                            };
+                            let stroke = if is_selected {
+                                ui.visuals().selection.stroke
+                            } else {
+                                Stroke::new(1.0, ui.visuals().weak_text_color())
+                            };
+                            painter.rect_filled(chip_rect, CornerRadius::same(6), fill);
+                            painter.rect_stroke(
+                                chip_rect,
+                                CornerRadius::same(6),
+                                stroke,
+                                egui::StrokeKind::Inside,
+                            );
+                            let chip_clip_rect = chip_rect.shrink2(vec2(4.0, 2.0));
+                            let chip_painter = painter.with_clip_rect(chip_rect.shrink(1.0));
+                            chip_painter.text(
+                                chip_clip_rect.left_top(),
+                                egui::Align2::LEFT_TOP,
+                                self.events[*event_idx].day_title(),
+                                FontId::proportional(12.0),
+                                ui.visuals().strong_text_color(),
+                            );
+                            if response.clicked() {
+                                self.selected_event = Some(*event_idx);
+                                self.view = CalendarView::Event;
+                            }
+                            y += chip_height + 4.0;
+                        }
+                    }
+
+                    for &event_idx in &timed_events {
+                        let event = &self.events[event_idx];
+                        if let Some((start_hour, end_hour)) =
+                            timed_range_on_day(event, &self.timezone, day)
+                        {
+                            let top = timeline_rect.top() + start_hour * HOUR_HEIGHT;
+                            let bottom = timeline_rect.top() + end_hour * HOUR_HEIGHT;
+                            let event_rect = egui::Rect::from_min_max(
+                                egui::pos2(timeline_rect.left() + 6.0, top + 2.0),
+                                egui::pos2(timeline_rect.right() - 6.0, bottom - 2.0),
+                            );
+
+                            let id = ui.make_persistent_id(("calendar_day_timed", day, event_idx));
+                            let response = ui.interact(event_rect, id, egui::Sense::click());
+
+                            let is_selected = selected_idx == Some(event_idx);
+                            let fill = if is_selected {
+                                ui.visuals().selection.bg_fill
+                            } else {
+                                ui.visuals().extreme_bg_color
+                            };
+                            let stroke = if is_selected {
+                                ui.visuals().selection.stroke
+                            } else {
+                                Stroke::new(1.0, ui.visuals().weak_text_color())
+                            };
+                            painter.rect_filled(event_rect, CornerRadius::same(6), fill);
+                            painter.rect_stroke(
+                                event_rect,
+                                CornerRadius::same(6),
+                                stroke,
+                                egui::StrokeKind::Inside,
+                            );
+
+                            let time_label = self.timed_label_for_day(event_idx, day);
+                            self.paint_timed_event_contents(
+                                ui, &painter, event_rect, event, time_label,
+                            );
+
+                            if response.clicked() {
+                                self.selected_event = Some(event_idx);
+                                self.view = CalendarView::Event;
+                            }
+                        }
+                    }
+
+                    if all_day_events.is_empty() && timed_events.is_empty() {
+                        painter.text(
+                            timeline_rect.left_top() + vec2(6.0, 6.0),
+                            egui::Align2::LEFT_TOP,
+                            "No events scheduled.",
+                            FontId::proportional(12.0),
+                            ui.visuals().weak_text_color(),
+                        );
+                    }
+                });
+            });
+    }
+
+    fn render_event(&self, ctx: &mut AppContext, ui: &mut egui::Ui) {
+        let Some(idx) = self.selected_event else {
+            ui.label("Select an event from any calendar view to see its details.");
+            return;
+        };
+
+        let Some(event) = self.events.get(idx) else {
+            ui.label("The selected event is no longer available.");
+            return;
+        };
+
+        egui::ScrollArea::vertical()
+            .id_salt(("calendar-event", &event.id_hex))
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.heading(&event.title);
+                ui.label(event.duration_text(&self.timezone));
+                ui.label(format!("Author: {}", event.author_hex));
+                ui.label(format!("Times shown in {}", self.timezone.label()));
+                if let Some(identifier) = &event.identifier {
+                    ui.label(format!("Identifier: {identifier}"));
+                }
+
+                if let CalendarEventTime::Timed {
+                    start_tzid,
+                    end_tzid,
+                    ..
+                } = &event.time
+                {
+                    if let Some(start_id) = start_tzid {
+                        let start_label = humanize_tz_name(start_id);
+                        if let Some(end_id) = end_tzid {
+                            let end_label = humanize_tz_name(end_id);
+                            if end_id != start_id {
+                                ui.label(format!(
+                                    "Original time zone: {start_label} → {end_label}"
+                                ));
+                            } else {
+                                ui.label(format!("Original time zone: {start_label}"));
+                            }
+                        } else {
+                            ui.label(format!("Original time zone: {start_label}"));
+                        }
+                    }
+                }
+
+                ui.separator();
+
+                if let Some(summary) = &event.summary {
+                    ui.label(summary);
+                    ui.separator();
+                }
+
+                if let Some(description) = &event.description {
+                    ui.label(description);
+                    ui.separator();
+                }
+
+                if !event.images.is_empty() {
+                    ui.label(egui::RichText::new("Images").strong());
+                    for image in &event.images {
+                        render_event_image(ctx, ui, image);
+                        ui.add_space(6.0);
+                    }
+                    ui.separator();
+                }
+
+                if !event.locations.is_empty() {
+                    ui.label(egui::RichText::new("Locations").strong());
+                    for loc in &event.locations {
+                        ui.label(loc);
+                    }
+                    ui.separator();
+                }
+
+                render_participants(ctx, ui, &event.participants);
+
+                if !event.hashtags.is_empty() {
+                    ui.horizontal_wrapped(|ui| {
+                        for tag in &event.hashtags {
+                            ui.label(format!("#{tag}"));
+                        }
+                    });
+                }
+
+                if !event.references.is_empty() {
+                    ui.separator();
+                    ui.label(egui::RichText::new("Links").strong());
+                    for reference in &event.references {
+                        ui.hyperlink(reference);
+                    }
+                }
+
+                if !event.calendars.is_empty() {
+                    ui.separator();
+                    ui.label(egui::RichText::new("Calendars").strong());
+                    for cal in &event.calendars {
+                        ui.label(cal);
+                    }
+                }
+            });
+    }
+
+    fn timed_label_for_day(&self, event_idx: usize, day: NaiveDate) -> Option<String> {
+        let event = self.events.get(event_idx)?;
+        let CalendarEventTime::Timed {
+            start_utc, end_utc, ..
+        } = &event.time
+        else {
+            return None;
+        };
+
+        let start_local = self.timezone.localize(start_utc);
+        let end_local = end_utc.map(|end| self.timezone.localize(&end));
+
+        let start_label = if day == start_local.date {
+            start_local.time_text.clone()
+        } else {
+            "00:00".to_string()
+        };
+
+        let end_label = end_local.map(|end| {
+            if day == end.date {
+                end.time_text.clone()
+            } else {
+                "24:00".to_string()
+            }
+        });
+
+        match end_label {
+            Some(label) => {
+                if label == start_label {
+                    Some(start_label)
+                } else {
+                    Some(format!("{start_label} – {label}"))
+                }
+            }
+            None => Some(start_label),
+        }
+    }
+}
+
+impl App for CalendarApp {
+    fn update(&mut self, ctx: &mut AppContext, ui: &mut egui::Ui) -> AppResponse {
+        self.ensure_subscription(ctx);
+        self.refresh_if_needed(ctx);
+
+        let mut action = None;
+        ui.vertical(|ui| {
+            ui.horizontal(|ui| {
+                if ui.button("← Back to Notedeck").clicked() {
+                    action = Some(AppAction::ShowColumns);
+                }
+            });
+
+            ui.separator();
+            self.view_switcher(ui);
+            ui.add_space(8.0);
+            self.navigation_bar(ui);
+            ui.add_space(8.0);
+            self.timezone_controls(ui);
+
+            match self.view {
+                CalendarView::Month => self.render_month(ui),
+                CalendarView::Week => self.render_week(ui),
+                CalendarView::Day => self.render_day(ui),
+                CalendarView::Event => self.render_event(ctx, ui),
+            }
+        });
+
+        if let Some(action) = action {
+            AppResponse::action(Some(action))
+        } else {
+            AppResponse::none()
+        }
+    }
+}
+
+impl Default for CalendarApp {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for CalendarApp {
+    fn drop(&mut self) {
+        // remote subscriptions are cleaned up by relay pool on drop
+    }
+}
+
+fn parse_calendar_event(result: QueryResult<'_>) -> Option<CalendarEvent> {
+    let note = result.note;
+    let note_id = note.id();
+    let author = note.pubkey();
+    let kind = note.kind();
+
+    let mut title = None;
+    let mut d_identifier = None;
+    let mut summary = None;
+    let mut images = Vec::new();
+    let mut locations = Vec::new();
+    let mut hashtags = Vec::new();
+    let mut references = Vec::new();
+    let mut participants = Vec::new();
+    let mut calendars = Vec::new();
+    let mut start_str: Option<String> = None;
+    let mut end_str: Option<String> = None;
+    let mut start_tzid: Option<String> = None;
+    let mut end_tzid: Option<String> = None;
+
+    for tag in note.tags() {
+        if tag.count() < 2 {
+            continue;
+        }
+
+        let Some(name) = tag.get_str(0) else {
+            continue;
+        };
+
+        match name {
+            "d" => {
+                if let Some(id) = tag.get_str(1) {
+                    d_identifier = Some(id.to_owned());
+                }
+            }
+            "title" => {
+                if let Some(t) = tag.get_str(1) {
+                    title = Some(t.to_owned());
+                }
+            }
+            "summary" => {
+                if let Some(s) = tag.get_str(1) {
+                    summary = Some(s.to_owned());
+                }
+            }
+            "image" => {
+                if let Some(img) = tag.get_str(1) {
+                    push_unique(&mut images, img);
+                }
+            }
+            "location" => {
+                if let Some(loc) = tag.get_str(1) {
+                    locations.push(loc.to_owned());
+                }
+            }
+            "g" => {
+                if let Some(gh) = tag.get_str(1) {
+                    locations.push(format!("Geohash: {gh}"));
+                }
+            }
+            "p" => {
+                let pubkey_hex = tag.get_id(1).map(|pk| hex::encode(*pk)).unwrap_or_default();
+                let role = tag.get_str(3).map(|s| s.to_owned());
+                participants.push(CalendarParticipant { pubkey_hex, role });
+            }
+            "t" => {
+                if let Some(hash) = tag.get_str(1) {
+                    hashtags.push(hash.to_owned());
+                }
+            }
+            "r" => {
+                if let Some(url) = tag.get_str(1) {
+                    references.push(url.to_owned());
+                }
+            }
+            "a" => {
+                if let Some(reference) = tag.get_str(1) {
+                    calendars.push(reference.to_owned());
+                }
+            }
+            "start" => {
+                if let Some(s) = tag.get_str(1) {
+                    start_str = Some(s.to_owned());
+                }
+            }
+            "end" => {
+                if let Some(e) = tag.get_str(1) {
+                    end_str = Some(e.to_owned());
+                }
+            }
+            "start_tzid" => {
+                start_tzid = tag.get_str(1).map(|s| s.to_owned());
+            }
+            "end_tzid" => {
+                end_tzid = tag.get_str(1).map(|s| s.to_owned());
+            }
+            _ => {}
+        }
+    }
+
+    title.as_ref()?;
+    start_str.as_ref()?;
+
+    let time = match kind {
+        31922 => {
+            let start_date =
+                NaiveDate::parse_from_str(start_str.as_ref().unwrap(), "%Y-%m-%d").ok()?;
+
+            let end_date = match end_str {
+                Some(ref end) => {
+                    let exclusive = NaiveDate::parse_from_str(end, "%Y-%m-%d").ok()?;
+                    let mut inclusive = exclusive - Duration::days(1);
+                    if inclusive < start_date {
+                        inclusive = start_date;
+                    }
+                    inclusive
+                }
+                None => start_date,
+            };
+
+            CalendarEventTime::AllDay {
+                start: start_date,
+                end: end_date,
+            }
+        }
+        31923 => {
+            let start_ts: i64 = start_str.as_ref()?.parse().ok()?;
+            let start_dt =
+                chrono::DateTime::<Utc>::from_timestamp(start_ts, 0).map(|dt| dt.naive_utc())?;
+
+            let end_dt = match end_str {
+                Some(ref end) => {
+                    let end_ts: i64 = end.parse().ok()?;
+                    chrono::DateTime::<Utc>::from_timestamp(end_ts, 0).map(|dt| {
+                        let naive = dt.naive_utc();
+                        if naive < start_dt {
+                            start_dt
+                        } else {
+                            naive
+                        }
+                    })
+                }
+                None => None,
+            };
+
+            CalendarEventTime::Timed {
+                start_utc: start_dt,
+                end_utc: end_dt,
+                start_tzid,
+                end_tzid,
+            }
+        }
+        _ => return None,
+    };
+
+    let description = if note.content().is_empty() {
+        None
+    } else {
+        Some(note.content().to_string())
+    };
+
+    if let Some(desc) = &description {
+        for url in extract_image_urls(desc) {
+            push_unique(&mut images, &url);
+        }
+    }
+
+    let summary_preview = summary.as_ref().map(|s| wrap_title(s, 30, 3));
+    let title_value = title.unwrap();
+    let title_month = wrap_title(&title_value, 12, 2);
+    let title_week = wrap_title(&title_value, 18, 2);
+    let title_day = wrap_title(&title_value, 26, 4);
+
+    Some(CalendarEvent {
+        id_hex: hex::encode(note_id),
+        identifier: d_identifier,
+        title: title_value,
+        title_month,
+        title_week,
+        title_day,
+        summary_preview,
+        summary,
+        description,
+        images,
+        locations,
+        hashtags,
+        references,
+        participants,
+        calendars,
+        time,
+        author_hex: hex::encode(author),
+        created_at: note.created_at(),
+    })
+}
+
+fn wrap_title(input: &str, max_chars_per_line: usize, max_lines: usize) -> String {
+    if input.is_empty() || max_chars_per_line == 0 || max_lines == 0 {
+        return String::new();
+    }
+
+    let total_limit = max_chars_per_line.saturating_mul(max_lines).max(1);
+    let truncated = truncate_text(input, total_limit);
+    let mut result = String::new();
+    let mut line_len = 0usize;
+    let mut line_count = 1usize;
+    let mut chars = truncated.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if ch == '\n' {
+            if line_count >= max_lines {
+                if !result.ends_with('…') {
+                    result.push('…');
+                }
+                break;
+            }
+            result.push('\n');
+            line_len = 0;
+            line_count += 1;
+            continue;
+        }
+
+        if line_len >= max_chars_per_line {
+            if line_count >= max_lines {
+                if !result.ends_with('…') {
+                    result.push('…');
+                }
+                break;
+            }
+            result.push('\n');
+            line_len = 0;
+            line_count += 1;
+        }
+
+        result.push(ch);
+        line_len += 1;
+
+        if line_count == max_lines
+            && line_len >= max_chars_per_line
+            && chars.peek().is_some()
+            && !result.ends_with('…')
+        {
+            result.pop();
+            result.push('…');
+            break;
+        }
+    }
+
+    result
+}
+
+fn truncate_text(input: &str, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
+
+    let mut chars = input.chars();
+    let mut truncated = String::with_capacity(max_chars + 1);
+    for _ in 0..max_chars {
+        match chars.next() {
+            Some(ch) => truncated.push(ch),
+            None => return truncated,
+        }
+    }
+
+    if chars.next().is_some() {
+        truncated.pop();
+        truncated.push('…');
+    }
+
+    truncated
+}
+
+fn render_event_image(ctx: &mut AppContext, ui: &mut egui::Ui, url: &str) {
+    let cache_type =
+        supported_mime_hosted_at_url(&mut ctx.img_cache.urls, url).unwrap_or(MediaCacheType::Image);
+    let render_state = get_render_state(
+        ui.ctx(),
+        ctx.img_cache,
+        cache_type,
+        url,
+        ImageType::Content(None),
+    );
+
+    match render_state.texture_state {
+        TextureState::Pending => {
+            let width = ui.available_width().min(420.0);
+            let height = width * 0.6;
+            let (rect, _) = ui.allocate_exact_size(vec2(width, height), egui::Sense::hover());
+            let painter = ui.painter();
+            painter.rect_filled(rect, CornerRadius::same(10), ui.visuals().extreme_bg_color);
+            painter.text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "Loading image…",
+                FontId::proportional(14.0),
+                ui.visuals().weak_text_color(),
+            );
+        }
+        TextureState::Error(err) => {
+            ui.colored_label(
+                Color32::from_rgb(220, 70, 70),
+                format!("Failed to load image: {err}"),
+            );
+            ui.hyperlink(url);
+        }
+        TextureState::Loaded(tex) => {
+            let texture =
+                ensure_latest_texture(ui, url, render_state.gifs, tex, AnimationMode::Reactive);
+            let size = texture.size();
+            let width = ui.available_width().min(420.0);
+            let aspect = if size[1] == 0 {
+                1.0
+            } else {
+                size[0] as f32 / size[1] as f32
+            };
+            let height = if aspect > 0.0 {
+                width / aspect
+            } else {
+                width * 0.75
+            };
+            ui.add(
+                egui::Image::new(&texture)
+                    .fit_to_exact_size(vec2(width, height))
+                    .corner_radius(CornerRadius::same(10))
+                    .maintain_aspect_ratio(true),
+            );
+        }
+    }
+}
+
+fn render_participants(
+    ctx: &mut AppContext,
+    ui: &mut egui::Ui,
+    participants: &[CalendarParticipant],
+) {
+    if participants.is_empty() {
+        return;
+    }
+
+    ui.label(egui::RichText::new("Participants").strong());
+
+    match Transaction::new(ctx.ndb) {
+        Ok(txn) => {
+            ui.horizontal_wrapped(|ui| {
+                for participant in participants {
+                    let profile = decode_pubkey_hex(&participant.pubkey_hex)
+                        .and_then(|bytes| ctx.ndb.get_profile_by_pubkey(&txn, &bytes).ok());
+                    let display_name = display_name_from_profile(profile.as_ref())
+                        .unwrap_or_else(|| short_pubkey(&participant.pubkey_hex));
+
+                    ui.vertical(|ui| {
+                        let mut avatar =
+                            ProfilePic::from_profile_or_default(ctx.img_cache, profile.as_ref())
+                                .size(40.0)
+                                .border(ProfilePic::border_stroke(ui));
+                        let response = ui.add(&mut avatar);
+                        response.on_hover_text(&display_name);
+
+                        if let Some(role) = &participant.role {
+                            ui.label(format!("{display_name}\n{role}"));
+                        } else {
+                            ui.label(display_name);
+                        }
+                    });
+                    ui.add_space(8.0);
+                }
+            });
+        }
+        Err(err) => {
+            warn!("Calendar: failed to open transaction for participants: {err}");
+            for participant in participants {
+                ui.label(short_pubkey(&participant.pubkey_hex));
+            }
+        }
+    }
+    ui.separator();
+}
+
+fn push_unique(items: &mut Vec<String>, value: &str) {
+    if items
+        .iter()
+        .any(|existing| existing.eq_ignore_ascii_case(value))
+    {
+        return;
+    }
+    items.push(value.to_owned());
+}
+
+fn extract_image_urls(text: &str) -> Vec<String> {
+    text.split_whitespace()
+        .filter_map(|token| {
+            let trimmed = token.trim_matches(|c: char| ",.;:!?()[]{}<>\"'".contains(c));
+            if is_image_url(trimmed) {
+                Some(trimmed.to_owned())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn is_image_url(url: &str) -> bool {
+    let lower = url.trim().to_ascii_lowercase();
+    if !(lower.starts_with("http://") || lower.starts_with("https://")) {
+        return false;
+    }
+    let stripped = lower.split('?').next().unwrap_or(&lower);
+    stripped.ends_with(".png")
+        || stripped.ends_with(".jpg")
+        || stripped.ends_with(".jpeg")
+        || stripped.ends_with(".gif")
+        || stripped.ends_with(".webp")
+        || stripped.ends_with(".bmp")
+        || stripped.ends_with(".svg")
+}
+
+fn decode_pubkey_hex(hex: &str) -> Option<[u8; 32]> {
+    let bytes = Vec::<u8>::from_hex(hex).ok()?;
+    bytes.try_into().ok()
+}
+
+fn display_name_from_profile(profile: Option<&ProfileRecord<'_>>) -> Option<String> {
+    profile
+        .and_then(|record| record.record().profile())
+        .and_then(|p| p.display_name().or_else(|| p.name()))
+        .map(|s| s.to_string())
+}
+
+fn short_pubkey(hex: &str) -> String {
+    if hex.len() <= 12 {
+        hex.to_owned()
+    } else {
+        format!("{}…{}", &hex[..8], &hex[hex.len() - 4..])
+    }
+}
+
+fn timezone_abbreviation(tz: Tz) -> String {
+    let dt = tz.from_utc_datetime(&Utc::now().naive_utc());
+    let abbr = dt.format("%Z").to_string();
+    if abbreviation_has_letters(&abbr) {
+        abbr
+    } else if let Some(code) = fallback_short_code(tz.name()) {
+        code.to_string()
+    } else {
+        format_utc_offset(dt.offset().fix().local_minus_utc())
+    }
+}
+
+fn abbreviation_has_letters(value: &str) -> bool {
+    value.chars().any(|c| c.is_ascii_alphabetic())
+}
+
+fn format_utc_offset(offset_seconds: i32) -> String {
+    let hours = offset_seconds / 3600;
+    let minutes = (offset_seconds.abs() % 3600) / 60;
+    format!("UTC{:+02}:{:02}", hours, minutes)
+}
+
+fn fallback_short_code(name: &str) -> Option<&'static str> {
+    match name {
+        "America/New_York" | "US/Eastern" | "EST" => Some("ET"),
+        "America/Detroit" | "America/Kentucky/Louisville" | "America/Toronto" => Some("ET"),
+        "America/Chicago" | "US/Central" => Some("CT"),
+        "America/Indiana/Knox" | "America/Indiana/Tell_City" => Some("CT"),
+        "America/Denver" | "US/Mountain" => Some("MT"),
+        "America/Phoenix" => Some("MT"),
+        "America/Los_Angeles" | "US/Pacific" => Some("PT"),
+        "America/Anchorage" | "America/Juneau" => Some("AKT"),
+        "America/Adak" => Some("HAT"),
+        "Pacific/Honolulu" | "US/Hawaii" => Some("HT"),
+        "America/Indiana/Indianapolis" => Some("ET"),
+        "America/Boise" => Some("MT"),
+        _ => None,
+    }
+}
+
+fn humanize_tz_name(name: &str) -> String {
+    if let Ok(tz) = name.parse::<Tz>() {
+        timezone_abbreviation(tz)
+    } else if let Some(code) = fallback_short_code(name) {
+        code.to_string()
+    } else if let Some(last) = name.rsplit('/').next() {
+        last.replace('_', " ")
+    } else {
+        name.to_string()
+    }
+}
+
+fn guess_local_timezone(now: DateTime<Local>) -> Option<Tz> {
+    let offset = now.offset().local_minus_utc();
+    for tz in TZ_VARIANTS.iter() {
+        let dt = tz.from_utc_datetime(&now.naive_utc());
+        let candidate_offset = dt.offset().fix().local_minus_utc();
+        if candidate_offset == offset {
+            let abbr = dt.format("%Z").to_string();
+            if abbreviation_has_letters(&abbr) || fallback_short_code(tz.name()).is_some() {
+                return Some(*tz);
+            }
+        }
+    }
+    None
+}
+
+fn hours_from_time(time: NaiveTime) -> f32 {
+    time.hour() as f32
+        + time.minute() as f32 / 60.0
+        + time.second() as f32 / 3600.0
+        + time.nanosecond() as f32 / 3_600_000_000_000.0
+}
+
+fn timed_range_on_day(
+    event: &CalendarEvent,
+    timezone: &TimeZoneChoice,
+    day: NaiveDate,
+) -> Option<(f32, f32)> {
+    let CalendarEventTime::Timed {
+        start_utc, end_utc, ..
+    } = &event.time
+    else {
+        return None;
+    };
+
+    let start_local = timezone.localize(start_utc);
+    let end_local = end_utc
+        .map(|end| timezone.localize(&end))
+        .unwrap_or_else(|| timezone.localize(start_utc));
+
+    if day < start_local.date || day > end_local.date {
+        return None;
+    }
+
+    let mut start_hours = if day == start_local.date {
+        hours_from_time(start_local.time_of_day)
+    } else {
+        0.0
+    };
+
+    let mut end_hours = if day == end_local.date {
+        hours_from_time(end_local.time_of_day)
+    } else {
+        24.0
+    };
+
+    if end_utc.is_none() && day == start_local.date {
+        end_hours = (start_hours + 1.0).min(24.0);
+    }
+
+    start_hours = start_hours.clamp(0.0, 24.0);
+    end_hours = end_hours.clamp(0.0, 24.0);
+
+    if end_hours <= start_hours {
+        end_hours = (start_hours + 0.5).min(24.0).max(start_hours + 0.1);
+    }
+
+    Some((start_hours, end_hours))
+}
+
+fn weekday_label(idx: usize) -> &'static str {
+    match idx {
+        0 => "Mon",
+        1 => "Tue",
+        2 => "Wed",
+        3 => "Thu",
+        4 => "Fri",
+        5 => "Sat",
+        6 => "Sun",
+        _ => "",
+    }
+}
+
+fn days_in_month(year: i32, month: u32) -> u32 {
+    let next_month = if month == 12 { 1 } else { month + 1 };
+    let next_year = if month == 12 { year + 1 } else { year };
+    let first_next = NaiveDate::from_ymd_opt(next_year, next_month, 1).unwrap();
+    let last_current = first_next - Duration::days(1);
+    last_current.day()
+}
