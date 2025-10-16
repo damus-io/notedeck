@@ -383,8 +383,7 @@ pub fn parse_calendar_event(note: &Note<'_>) -> Option<CalendarEvent> {
         }
         31923 => {
             let start_ts: i64 = start_str.as_ref()?.parse().ok()?;
-            let start_dt =
-                DateTime::<Utc>::from_timestamp(start_ts, 0).map(|dt| dt.naive_utc())?;
+            let start_dt = DateTime::<Utc>::from_timestamp(start_ts, 0).map(|dt| dt.naive_utc())?;
 
             let end_dt = match end_str {
                 Some(ref end) => {

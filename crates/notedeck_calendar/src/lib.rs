@@ -1,11 +1,12 @@
 mod model;
+mod views;
 
 use chrono::{
     offset::Offset, DateTime, Datelike, Duration, Local, NaiveDate, NaiveDateTime, NaiveTime,
     TimeZone, Timelike, Utc,
 };
 use chrono_tz::{Tz, TZ_VARIANTS};
-use egui::{scroll_area::ScrollAreaOutput, vec2, Color32, CornerRadius, FontId, Stroke};
+use egui::{scroll_area::ScrollAreaOutput, vec2, Color32, CornerRadius, FontId};
 use hex::FromHex;
 use nostrdb::{Filter, IngestMetadata, Note, ProfileRecord, Transaction};
 use notedeck::enostr::ClientMessage;
@@ -13,17 +14,20 @@ use notedeck::filter::UnifiedSubscription;
 use notedeck::media::gif::ensure_latest_texture;
 use notedeck::media::{AnimationMode, ImageType};
 use notedeck::{
-    fonts::NamedFontFamily, get_render_state, supported_mime_hosted_at_url, App, AppAction,
-    AppContext, AppResponse, MediaCacheType, TextureState,
+    get_render_state, supported_mime_hosted_at_url, App, AppAction, AppContext, AppResponse,
+    MediaCacheType, TextureState,
 };
 use notedeck_ui::ProfilePic;
 use std::sync::Arc;
 use std::time::{Duration as StdDuration, Instant};
-use std::{borrow::Cow, collections::{HashMap, HashSet}};
+use std::{
+    borrow::Cow,
+    collections::{HashMap, HashSet},
+};
 use tracing::warn;
 use uuid::Uuid;
 
-use crate::model::{
+use model::{
     event_naddr, event_nevent, match_rsvps_for_event, parse_calendar_event, parse_calendar_rsvp,
     wrap_title, CalendarEvent, CalendarEventTime, CalendarParticipant, CalendarRsvp, RsvpFeedback,
     RsvpStatus,
@@ -404,8 +408,11 @@ impl CalendarApp {
             return;
         }
 
-        let valid_ids: HashSet<String> =
-            self.events.iter().map(|event| event.id_hex.clone()).collect();
+        let valid_ids: HashSet<String> = self
+            .events
+            .iter()
+            .map(|event| event.id_hex.clone())
+            .collect();
         self.month_galley_cache
             .retain(|(event_id, _), _| valid_ids.contains(event_id));
     }
@@ -440,7 +447,11 @@ impl CalendarApp {
                 continue;
             }
 
-            let mut day = if event_start < start { start } else { event_start };
+            let mut day = if event_start < start {
+                start
+            } else {
+                event_start
+            };
             let last = if event_end > end { end } else { event_end };
 
             while day <= last {
@@ -668,8 +679,7 @@ impl CalendarApp {
             event_mut.rsvps = match_rsvps_for_event(event_mut, &relevant);
         }
 
-        self.pending_rsvps
-            .insert(new_rsvp.id_hex.clone(), new_rsvp);
+        self.pending_rsvps.insert(new_rsvp.id_hex.clone(), new_rsvp);
 
         self.rsvp_pending = false;
         self.set_rsvp_feedback(RsvpFeedback::Success(format!(
@@ -804,444 +814,6 @@ impl CalendarApp {
         }
     }
 
-    fn render_month(&mut self, ui: &mut egui::Ui) -> ScrollAreaOutput<()> {
-        let year = self.focus_date.year();
-        let month = self.focus_date.month();
-        let first_day = NaiveDate::from_ymd_opt(year, month, 1).expect("valid month start date");
-        let last_day =
-            NaiveDate::from_ymd_opt(year, month, days_in_month(year, month) as u32).unwrap();
-
-        let start_offset = first_day.weekday().num_days_from_monday() as i64;
-        let grid_start = first_day - Duration::days(start_offset);
-        let grid_end = grid_start + Duration::days(6 * 7 - 1);
-
-        let today = Local::now().date_naive();
-        let selected_id = self
-            .selected_event
-            .and_then(|idx| self.events.get(idx))
-            .map(|ev| ev.id_hex.clone());
-        let events_by_day = self.collect_events_by_day(grid_start, grid_end);
-
-        #[derive(Default)]
-        struct MonthCellInfo {
-            date: Option<NaiveDate>,
-            is_today: bool,
-            rows: Vec<(usize, Arc<egui::Galley>)>,
-            more: usize,
-            min_height: f32,
-        }
-
-        egui::ScrollArea::vertical()
-            .id_salt("calendar-month-scroll")
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                let header_font = FontId::new(
-                    18.0,
-                    egui::FontFamily::Name(NamedFontFamily::Bold.as_str().into()),
-                );
-                ui.label(
-                    egui::RichText::new(format!("{} {}", first_day.format("%B"), first_day.year()))
-                        .font(header_font.clone()),
-                );
-
-                ui.add_space(4.0);
-                ui.columns(7, |cols| {
-                    for (idx, col) in cols.iter_mut().enumerate() {
-                        col.label(weekday_label(idx));
-                    }
-                });
-
-                ui.separator();
-
-                for week in 0..6 {
-                    let week_offset = (week as i64) * 7;
-                    let mut cell_infos = Vec::with_capacity(7);
-                    let mut row_min_height = 110.0f32;
-                    let approx_cell_width = (ui.available_width() / 7.0).max(60.0);
-
-                    for col_idx in 0..7 {
-                        let cell_date = grid_start + Duration::days(week_offset + col_idx as i64);
-                        if cell_date.month() != month {
-                            cell_infos.push(MonthCellInfo {
-                                min_height: 110.0,
-                                ..Default::default()
-                            });
-                            continue;
-                        }
-
-                        let mut info = MonthCellInfo {
-                            date: Some(cell_date),
-                            is_today: cell_date == today,
-                            min_height: 40.0,
-                            ..Default::default()
-                        };
-
-                        if let Some(events) = events_by_day.get(&cell_date) {
-                            let display_count = events.len().min(3);
-                            ui.fonts(|fonts| {
-                                for idx in events.iter().take(display_count) {
-                                    let wrap_width = (approx_cell_width - 12.0).max(32.0);
-                                    let (event_id, title) = if let Some(event) = self.events.get(*idx)
-                                    {
-                                        (event.id_hex.clone(), event.month_title().to_owned())
-                                    } else {
-                                        continue;
-                                    };
-
-                                    let galley = self.month_title_galley(
-                                        fonts,
-                                        &event_id,
-                                        &title,
-                                        wrap_width,
-                                    );
-                                    let row_height = galley.size().y + 6.0;
-                                    info.min_height += row_height;
-                                    info.rows.push((*idx, galley));
-                                }
-                            });
-                            info.more = events.len().saturating_sub(display_count);
-                            if info.more > 0 {
-                                info.min_height += 24.0;
-                            }
-                        }
-
-                        info.min_height = info.min_height.max(110.0);
-                        row_min_height = row_min_height.max(info.min_height);
-                        cell_infos.push(info);
-                    }
-
-                    ui.columns(7, |cols| {
-                        for (col, info) in cols.iter_mut().zip(cell_infos.iter()) {
-                            col.set_min_width(110.0);
-                            let mut frame =
-                                egui::Frame::new().inner_margin(egui::Margin::symmetric(4, 4));
-                            if info.is_today {
-                                frame = frame.fill(Color32::from_rgba_unmultiplied(0, 91, 187, 18));
-                            }
-
-                            frame.show(col, |ui| {
-                                ui.set_min_height(row_min_height);
-                                if let Some(day) = info.date {
-                                    ui.label(
-                                        egui::RichText::new(format!("{}", day.day())).strong(),
-                                    );
-                                    ui.add_space(4.0);
-
-                                    for (event_idx, galley) in &info.rows {
-                                        if let Some(event) = self.events.get(*event_idx) {
-                                            let row_height = galley.size().y + 6.0;
-                                            let item_size =
-                                                egui::vec2(ui.available_width(), row_height);
-                                            let (item_rect, response) = ui.allocate_exact_size(
-                                                item_size,
-                                                egui::Sense::click(),
-                                            );
-
-                                            let is_selected = selected_id
-                                                .as_ref()
-                                                .is_some_and(|id| id == &event.id_hex);
-                                            let visuals = ui
-                                                .style()
-                                                .interact_selectable(&response, is_selected);
-                                            let painter = ui.painter_at(item_rect);
-                                            if visuals.bg_fill != Color32::TRANSPARENT {
-                                                painter.rect_filled(
-                                                    item_rect,
-                                                    CornerRadius::same(4),
-                                                    visuals.bg_fill,
-                                                );
-                                            }
-                                            if visuals.bg_stroke.width > 0.0 {
-                                                painter.rect_stroke(
-                                                    item_rect,
-                                                    CornerRadius::same(4),
-                                                    visuals.bg_stroke,
-                                                    egui::StrokeKind::Inside,
-                                                );
-                                            }
-
-                                            painter.with_clip_rect(item_rect.shrink(1.0)).galley(
-                                                item_rect.left_top() + vec2(2.0, 3.0),
-                                                galley.clone(),
-                                                visuals.text_color(),
-                                            );
-
-                                            let response =
-                                                response.on_hover_text(event.title.as_str());
-                                            if response.clicked() {
-                                                self.selected_event = Some(*event_idx);
-                                                self.view = CalendarView::Event;
-                                                self.focus_date = day;
-                                            }
-                                        }
-                                    }
-
-                                    if info.more > 0 {
-                                        let more_size = egui::vec2(ui.available_width(), 22.0);
-                                        let (more_rect, _) =
-                                            ui.allocate_exact_size(more_size, egui::Sense::hover());
-                                        ui.painter_at(more_rect).text(
-                                            more_rect.left_center(),
-                                            egui::Align2::LEFT_CENTER,
-                                            format!("+{} more", info.more),
-                                            FontId::proportional(12.0),
-                                            ui.visuals().weak_text_color(),
-                                        );
-                                    }
-                                } else {
-                                    ui.allocate_space(egui::vec2(
-                                        ui.available_width(),
-                                        row_min_height,
-                                    ));
-                                }
-                            });
-                        }
-                    });
-
-                    let next_week_start = grid_start + Duration::days(((week + 1) * 7) as i64);
-                    if next_week_start.month() != month && next_week_start > last_day {
-                        break;
-                    }
-                }
-            })
-    }
-
-    fn render_week(&mut self, ui: &mut egui::Ui) -> ScrollAreaOutput<()> {
-        const HOUR_HEIGHT: f32 = 42.0;
-        const ALL_DAY_HEIGHT: f32 = 32.0;
-        const COLUMN_WIDTH: f32 = 150.0;
-        const TIME_COL_WIDTH: f32 = 64.0;
-
-        let week_start = self.focus_date
-            - Duration::days(self.focus_date.weekday().num_days_from_monday() as i64);
-        let today = Local::now().date_naive();
-        let selected_idx = self.selected_event;
-        let total_height = ALL_DAY_HEIGHT + HOUR_HEIGHT * 24.0;
-
-        egui::ScrollArea::both()
-            .id_salt("calendar-week-scroll")
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    let (time_rect, _) = ui.allocate_exact_size(
-                        vec2(TIME_COL_WIDTH, total_height),
-                        egui::Sense::hover(),
-                    );
-                    let time_painter = ui.painter_at(time_rect);
-                    time_painter.rect_filled(
-                        time_rect,
-                        CornerRadius::same(6),
-                        ui.visuals().extreme_bg_color,
-                    );
-                    for hour in 0..24 {
-                        let y = time_rect.top() + ALL_DAY_HEIGHT + hour as f32 * HOUR_HEIGHT;
-                        time_painter.text(
-                            egui::pos2(time_rect.left() + 6.0, y + 4.0),
-                            egui::Align2::LEFT_TOP,
-                            format!("{:02}:00", hour),
-                            FontId::proportional(12.0),
-                            ui.visuals().weak_text_color(),
-                        );
-                        let stroke = Stroke::new(0.75, ui.visuals().weak_text_color());
-                        time_painter.line_segment(
-                            [
-                                egui::pos2(time_rect.right() - 8.0, y),
-                                egui::pos2(time_rect.right(), y),
-                            ],
-                            stroke,
-                        );
-                    }
-
-                    for day_offset in 0..7 {
-                        let day = week_start + Duration::days(day_offset as i64);
-                        let events = self.events_on(day);
-
-                        let mut all_day_events = Vec::new();
-                        let mut timed_events = Vec::new();
-                        for idx in events {
-                            if matches!(self.events[idx].time, CalendarEventTime::AllDay { .. }) {
-                                all_day_events.push(idx);
-                            } else {
-                                timed_events.push(idx);
-                            }
-                        }
-
-                        let (day_rect, _) = ui.allocate_exact_size(
-                            vec2(COLUMN_WIDTH, total_height),
-                            egui::Sense::hover(),
-                        );
-                        let painter = ui.painter_at(day_rect);
-                        let column_id = ui.make_persistent_id(("calendar-week-column", day));
-                        let column_response =
-                            ui.interact(day_rect, column_id, egui::Sense::click());
-                        let column_clicked = column_response.clicked();
-                        let mut event_clicked = false;
-
-                        if day == today {
-                            painter.rect_filled(
-                                day_rect,
-                                CornerRadius::same(6),
-                                Color32::from_rgba_unmultiplied(0, 91, 187, 18),
-                            );
-                        }
-
-                        let header_rect = egui::Rect::from_min_max(
-                            day_rect.left_top(),
-                            egui::pos2(day_rect.right(), day_rect.top() + 24.0),
-                        );
-                        painter.text(
-                            header_rect.left_center(),
-                            egui::Align2::LEFT_CENTER,
-                            format!("{} {}", weekday_label(day_offset), day.format("%m/%d")),
-                            FontId::proportional(14.0),
-                            ui.visuals().strong_text_color(),
-                        );
-
-                        let all_day_rect = egui::Rect::from_min_max(
-                            egui::pos2(day_rect.left(), day_rect.top() + 24.0),
-                            egui::pos2(day_rect.right(), day_rect.top() + ALL_DAY_HEIGHT),
-                        );
-                        let timeline_rect = egui::Rect::from_min_max(
-                            egui::pos2(day_rect.left(), all_day_rect.bottom()),
-                            day_rect.right_bottom(),
-                        );
-
-                        let grid_stroke = Stroke::new(0.5, ui.visuals().weak_text_color());
-                        for hour in 0..=24 {
-                            let y = timeline_rect.top() + hour as f32 * HOUR_HEIGHT;
-                            painter.line_segment(
-                                [
-                                    egui::pos2(timeline_rect.left(), y),
-                                    egui::pos2(timeline_rect.right(), y),
-                                ],
-                                grid_stroke,
-                            );
-                        }
-
-                        if !all_day_events.is_empty() {
-                            let mut y = all_day_rect.top() + 4.0;
-                            let chip_height = 20.0;
-                            let max_display = 3usize;
-                            for (display_idx, event_idx) in all_day_events.iter().enumerate() {
-                                if display_idx >= max_display {
-                                    let more = all_day_events.len() - max_display;
-                                    painter.text(
-                                        egui::pos2(all_day_rect.left() + 6.0, y),
-                                        egui::Align2::LEFT_TOP,
-                                        format!("+{} more", more),
-                                        FontId::proportional(12.0),
-                                        ui.visuals().weak_text_color(),
-                                    );
-                                    break;
-                                }
-
-                                let chip_rect = egui::Rect::from_min_max(
-                                    egui::pos2(all_day_rect.left() + 6.0, y),
-                                    egui::pos2(all_day_rect.right() - 6.0, y + chip_height),
-                                );
-                                let id =
-                                    ui.make_persistent_id(("calendar_all_day", day, *event_idx));
-                                let response = ui.interact(chip_rect, id, egui::Sense::click());
-                                let is_selected = selected_idx == Some(*event_idx);
-                                let fill = if is_selected {
-                                    ui.visuals().selection.bg_fill
-                                } else {
-                                    ui.visuals().extreme_bg_color
-                                };
-                                let stroke = if is_selected {
-                                    ui.visuals().selection.stroke
-                                } else {
-                                    Stroke::new(1.0, ui.visuals().weak_text_color())
-                                };
-                                painter.rect_filled(chip_rect, CornerRadius::same(6), fill);
-                                painter.rect_stroke(
-                                    chip_rect,
-                                    CornerRadius::same(6),
-                                    stroke,
-                                    egui::StrokeKind::Inside,
-                                );
-                                let chip_clip_rect = chip_rect.shrink2(vec2(4.0, 2.0));
-                                let chip_painter = painter.with_clip_rect(chip_rect.shrink(1.0));
-                                let chip_color = ui.visuals().strong_text_color();
-                                chip_painter.text(
-                                    chip_clip_rect.left_top(),
-                                    egui::Align2::LEFT_TOP,
-                                    self.events[*event_idx].week_title(),
-                                    FontId::proportional(12.0),
-                                    chip_color,
-                                );
-                                if response.clicked() {
-                                    event_clicked = true;
-                                    self.selected_event = Some(*event_idx);
-                                    self.view = CalendarView::Event;
-                                    self.focus_date = day;
-                                }
-                                y += chip_height + 4.0;
-                            }
-                        }
-
-                        for &event_idx in &timed_events {
-                            let event = &self.events[event_idx];
-                            if let Some((start_hour, end_hour)) =
-                                timed_range_on_day(event, &self.timezone, day)
-                            {
-                                let top = timeline_rect.top() + start_hour * HOUR_HEIGHT;
-                                let bottom = timeline_rect.top() + end_hour * HOUR_HEIGHT;
-                                let event_rect = egui::Rect::from_min_max(
-                                    egui::pos2(timeline_rect.left() + 4.0, top + 2.0),
-                                    egui::pos2(timeline_rect.right() - 4.0, bottom - 2.0),
-                                );
-
-                                let id = ui.make_persistent_id(("calendar_timed", day, event_idx));
-                                let response = ui.interact(event_rect, id, egui::Sense::click());
-
-                                let is_selected = selected_idx == Some(event_idx);
-                                let fill = if is_selected {
-                                    ui.visuals().selection.bg_fill
-                                } else {
-                                    ui.visuals().extreme_bg_color
-                                };
-                                let stroke = if is_selected {
-                                    ui.visuals().selection.stroke
-                                } else {
-                                    Stroke::new(1.0, ui.visuals().weak_text_color())
-                                };
-                                painter.rect_filled(event_rect, CornerRadius::same(6), fill);
-                                painter.rect_stroke(
-                                    event_rect,
-                                    CornerRadius::same(6),
-                                    stroke,
-                                    egui::StrokeKind::Inside,
-                                );
-
-                                let clip_rect = event_rect.shrink2(vec2(6.0, 4.0));
-                                let text_painter = painter.with_clip_rect(event_rect.shrink(1.0));
-                                text_painter.text(
-                                    clip_rect.left_top(),
-                                    egui::Align2::LEFT_TOP,
-                                    event.week_title(),
-                                    FontId::proportional(13.0),
-                                    ui.visuals().strong_text_color(),
-                                );
-
-                                if response.clicked() {
-                                    event_clicked = true;
-                                    self.selected_event = Some(event_idx);
-                                    self.view = CalendarView::Event;
-                                    self.focus_date = day;
-                                }
-                            }
-                        }
-
-                        if column_clicked && !event_clicked {
-                            self.focus_date = day;
-                            self.view = CalendarView::Day;
-                        }
-                    }
-                });
-            })
-    }
-
     fn paint_timed_event_contents(
         &self,
         ui: &egui::Ui,
@@ -1302,239 +874,6 @@ impl CalendarApp {
         }
     }
 
-    fn render_day(&mut self, ui: &mut egui::Ui) -> ScrollAreaOutput<()> {
-        const HOUR_HEIGHT: f32 = 42.0;
-        const ALL_DAY_HEIGHT: f32 = 32.0;
-        const TIME_COL_WIDTH: f32 = 64.0;
-        const COLUMN_MIN_WIDTH: f32 = 220.0;
-
-        let day = self.focus_date;
-        let today = Local::now().date_naive();
-        let header = if day == today {
-            format!("Today – {} ({})", day.format("%A"), day)
-        } else {
-            format!("{} ({})", day.format("%A"), day)
-        };
-        ui.heading(header);
-
-        let events = self.events_on(day);
-        if events.is_empty() {
-            ui.label("No events found for this day.");
-        }
-
-        let mut all_day_events = Vec::new();
-        let mut timed_events = Vec::new();
-        for idx in events {
-            if matches!(self.events[idx].time, CalendarEventTime::AllDay { .. }) {
-                all_day_events.push(idx);
-            } else {
-                timed_events.push(idx);
-            }
-        }
-
-        let total_height = ALL_DAY_HEIGHT + HOUR_HEIGHT * 24.0;
-        let selected_idx = self.selected_event;
-
-        egui::ScrollArea::both()
-            .id_salt("calendar-day-scroll")
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    let (time_rect, _) = ui.allocate_exact_size(
-                        vec2(TIME_COL_WIDTH, total_height),
-                        egui::Sense::hover(),
-                    );
-                    let time_painter = ui.painter_at(time_rect);
-                    time_painter.rect_filled(
-                        time_rect,
-                        CornerRadius::same(6),
-                        ui.visuals().extreme_bg_color,
-                    );
-                    for hour in 0..24 {
-                        let y = time_rect.top() + ALL_DAY_HEIGHT + hour as f32 * HOUR_HEIGHT;
-                        time_painter.text(
-                            egui::pos2(time_rect.left() + 6.0, y + 4.0),
-                            egui::Align2::LEFT_TOP,
-                            format!("{:02}:00", hour),
-                            FontId::proportional(12.0),
-                            ui.visuals().weak_text_color(),
-                        );
-                        let stroke = Stroke::new(0.75, ui.visuals().weak_text_color());
-                        time_painter.line_segment(
-                            [
-                                egui::pos2(time_rect.right() - 8.0, y),
-                                egui::pos2(time_rect.right(), y),
-                            ],
-                            stroke,
-                        );
-                    }
-
-                    let column_width = ui.available_width().max(COLUMN_MIN_WIDTH);
-                    let (day_rect, _) = ui.allocate_exact_size(
-                        vec2(column_width, total_height),
-                        egui::Sense::hover(),
-                    );
-                    let painter = ui.painter_at(day_rect);
-
-                    if day == today {
-                        painter.rect_filled(
-                            day_rect,
-                            CornerRadius::same(6),
-                            Color32::from_rgba_unmultiplied(0, 91, 187, 18),
-                        );
-                    }
-
-                    let header_rect = egui::Rect::from_min_max(
-                        day_rect.left_top(),
-                        egui::pos2(day_rect.right(), day_rect.top() + 24.0),
-                    );
-                    painter.text(
-                        header_rect.left_center(),
-                        egui::Align2::LEFT_CENTER,
-                        format!("{} {}", day.format("%A"), day.format("%m/%d")),
-                        FontId::proportional(14.0),
-                        ui.visuals().strong_text_color(),
-                    );
-
-                    let all_day_rect = egui::Rect::from_min_max(
-                        egui::pos2(day_rect.left(), day_rect.top() + 24.0),
-                        egui::pos2(day_rect.right(), day_rect.top() + ALL_DAY_HEIGHT),
-                    );
-                    let timeline_rect = egui::Rect::from_min_max(
-                        egui::pos2(day_rect.left(), all_day_rect.bottom()),
-                        day_rect.right_bottom(),
-                    );
-
-                    let grid_stroke = Stroke::new(0.5, ui.visuals().weak_text_color());
-                    for hour in 0..=24 {
-                        let y = timeline_rect.top() + hour as f32 * HOUR_HEIGHT;
-                        painter.line_segment(
-                            [
-                                egui::pos2(timeline_rect.left(), y),
-                                egui::pos2(timeline_rect.right(), y),
-                            ],
-                            grid_stroke,
-                        );
-                    }
-
-                    if !all_day_events.is_empty() {
-                        let mut y = all_day_rect.top() + 4.0;
-                        let chip_height = 20.0;
-                        let max_display = 5usize;
-                        for (display_idx, event_idx) in all_day_events.iter().enumerate() {
-                            if display_idx >= max_display {
-                                let more = all_day_events.len() - max_display;
-                                painter.text(
-                                    egui::pos2(all_day_rect.left() + 6.0, y),
-                                    egui::Align2::LEFT_TOP,
-                                    format!("+{} more", more),
-                                    FontId::proportional(12.0),
-                                    ui.visuals().weak_text_color(),
-                                );
-                                break;
-                            }
-
-                            let chip_rect = egui::Rect::from_min_max(
-                                egui::pos2(all_day_rect.left() + 6.0, y),
-                                egui::pos2(all_day_rect.right() - 6.0, y + chip_height),
-                            );
-                            let id =
-                                ui.make_persistent_id(("calendar_day_all_day", day, *event_idx));
-                            let response = ui.interact(chip_rect, id, egui::Sense::click());
-                            let is_selected = selected_idx == Some(*event_idx);
-                            let fill = if is_selected {
-                                ui.visuals().selection.bg_fill
-                            } else {
-                                ui.visuals().extreme_bg_color
-                            };
-                            let stroke = if is_selected {
-                                ui.visuals().selection.stroke
-                            } else {
-                                Stroke::new(1.0, ui.visuals().weak_text_color())
-                            };
-                            painter.rect_filled(chip_rect, CornerRadius::same(6), fill);
-                            painter.rect_stroke(
-                                chip_rect,
-                                CornerRadius::same(6),
-                                stroke,
-                                egui::StrokeKind::Inside,
-                            );
-                            let chip_clip_rect = chip_rect.shrink2(vec2(4.0, 2.0));
-                            let chip_painter = painter.with_clip_rect(chip_rect.shrink(1.0));
-                            chip_painter.text(
-                                chip_clip_rect.left_top(),
-                                egui::Align2::LEFT_TOP,
-                                self.events[*event_idx].day_title(),
-                                FontId::proportional(12.0),
-                                ui.visuals().strong_text_color(),
-                            );
-                            if response.clicked() {
-                                self.selected_event = Some(*event_idx);
-                                self.view = CalendarView::Event;
-                            }
-                            y += chip_height + 4.0;
-                        }
-                    }
-
-                    for &event_idx in &timed_events {
-                        let event = &self.events[event_idx];
-                        if let Some((start_hour, end_hour)) =
-                            timed_range_on_day(event, &self.timezone, day)
-                        {
-                            let top = timeline_rect.top() + start_hour * HOUR_HEIGHT;
-                            let bottom = timeline_rect.top() + end_hour * HOUR_HEIGHT;
-                            let event_rect = egui::Rect::from_min_max(
-                                egui::pos2(timeline_rect.left() + 6.0, top + 2.0),
-                                egui::pos2(timeline_rect.right() - 6.0, bottom - 2.0),
-                            );
-
-                            let id = ui.make_persistent_id(("calendar_day_timed", day, event_idx));
-                            let response = ui.interact(event_rect, id, egui::Sense::click());
-
-                            let is_selected = selected_idx == Some(event_idx);
-                            let fill = if is_selected {
-                                ui.visuals().selection.bg_fill
-                            } else {
-                                ui.visuals().extreme_bg_color
-                            };
-                            let stroke = if is_selected {
-                                ui.visuals().selection.stroke
-                            } else {
-                                Stroke::new(1.0, ui.visuals().weak_text_color())
-                            };
-                            painter.rect_filled(event_rect, CornerRadius::same(6), fill);
-                            painter.rect_stroke(
-                                event_rect,
-                                CornerRadius::same(6),
-                                stroke,
-                                egui::StrokeKind::Inside,
-                            );
-
-                            let time_label = self.timed_label_for_day(event_idx, day);
-                            self.paint_timed_event_contents(
-                                ui, &painter, event_rect, event, time_label,
-                            );
-
-                            if response.clicked() {
-                                self.selected_event = Some(event_idx);
-                                self.view = CalendarView::Event;
-                            }
-                        }
-                    }
-
-                    if all_day_events.is_empty() && timed_events.is_empty() {
-                        painter.text(
-                            timeline_rect.left_top() + vec2(6.0, 6.0),
-                            egui::Align2::LEFT_TOP,
-                            "No events scheduled.",
-                            FontId::proportional(12.0),
-                            ui.visuals().weak_text_color(),
-                        );
-                    }
-                });
-            })
-    }
-
     fn render_event(
         &mut self,
         ctx: &mut AppContext,
@@ -1554,104 +893,104 @@ impl CalendarApp {
 
         Some(
             egui::ScrollArea::vertical()
-            .id_salt(("calendar-event", &event_snapshot.id_hex))
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                let event = &event_snapshot;
-                ui.heading(&event.title);
-                ui.label(event.duration_text(&self.timezone));
-                render_author(ctx, ui, &event.author_hex);
-                ui.label(format!("Times shown in {}", self.timezone.label()));
-                if let Some(naddr) = event_naddr(event) {
-                    ui.label(format!("Identifier (naddr): {naddr}"));
-                } else if let Some(identifier) = &event.identifier {
-                    ui.label(format!("Identifier: {identifier}"));
-                }
-                if let Some(nevent) = event_nevent(event) {
-                    ui.label(format!("Event (nevent): {nevent}"));
-                }
+                .id_salt(("calendar-event", &event_snapshot.id_hex))
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    let event = &event_snapshot;
+                    ui.heading(&event.title);
+                    ui.label(event.duration_text(&self.timezone));
+                    render_author(ctx, ui, &event.author_hex);
+                    ui.label(format!("Times shown in {}", self.timezone.label()));
+                    if let Some(naddr) = event_naddr(event) {
+                        ui.label(format!("Identifier (naddr): {naddr}"));
+                    } else if let Some(identifier) = &event.identifier {
+                        ui.label(format!("Identifier: {identifier}"));
+                    }
+                    if let Some(nevent) = event_nevent(event) {
+                        ui.label(format!("Event (nevent): {nevent}"));
+                    }
 
-                if let CalendarEventTime::Timed {
-                    start_tzid,
-                    end_tzid,
-                    ..
-                } = &event.time
-                {
-                    if let Some(start_id) = start_tzid {
-                        let start_label = humanize_tz_name(start_id);
-                        if let Some(end_id) = end_tzid {
-                            let end_label = humanize_tz_name(end_id);
-                            if end_id != start_id {
-                                ui.label(format!(
-                                    "Original time zone: {start_label} → {end_label}"
-                                ));
+                    if let CalendarEventTime::Timed {
+                        start_tzid,
+                        end_tzid,
+                        ..
+                    } = &event.time
+                    {
+                        if let Some(start_id) = start_tzid {
+                            let start_label = humanize_tz_name(start_id);
+                            if let Some(end_id) = end_tzid {
+                                let end_label = humanize_tz_name(end_id);
+                                if end_id != start_id {
+                                    ui.label(format!(
+                                        "Original time zone: {start_label} → {end_label}"
+                                    ));
+                                } else {
+                                    ui.label(format!("Original time zone: {start_label}"));
+                                }
                             } else {
                                 ui.label(format!("Original time zone: {start_label}"));
                             }
-                        } else {
-                            ui.label(format!("Original time zone: {start_label}"));
                         }
                     }
-                }
 
-                ui.separator();
-                self.render_rsvp_controls(ctx, ui, idx, event);
-                ui.separator();
-
-                if let Some(summary) = &event.summary {
-                    ui.label(summary);
                     ui.separator();
-                }
-
-                if let Some(description) = &event.description {
-                    ui.label(description);
+                    self.render_rsvp_controls(ctx, ui, idx, event);
                     ui.separator();
-                }
 
-                if !event.images.is_empty() {
-                    ui.label(egui::RichText::new("Images").strong());
-                    for image in &event.images {
-                        render_event_image(ctx, ui, image);
-                        ui.add_space(6.0);
+                    if let Some(summary) = &event.summary {
+                        ui.label(summary);
+                        ui.separator();
                     }
-                    ui.separator();
-                }
 
-                if !event.locations.is_empty() {
-                    ui.label(egui::RichText::new("Locations").strong());
-                    for loc in &event.locations {
-                        ui.label(loc);
+                    if let Some(description) = &event.description {
+                        ui.label(description);
+                        ui.separator();
                     }
-                    ui.separator();
-                }
 
-                render_rsvps(ctx, ui, &event.rsvps);
-                render_participants(ctx, ui, &event.participants);
-
-                if !event.hashtags.is_empty() {
-                    ui.horizontal_wrapped(|ui| {
-                        for tag in &event.hashtags {
-                            ui.label(format!("#{tag}"));
+                    if !event.images.is_empty() {
+                        ui.label(egui::RichText::new("Images").strong());
+                        for image in &event.images {
+                            render_event_image(ctx, ui, image);
+                            ui.add_space(6.0);
                         }
-                    });
-                }
-
-                if !event.references.is_empty() {
-                    ui.separator();
-                    ui.label(egui::RichText::new("Links").strong());
-                    for reference in &event.references {
-                        ui.hyperlink(reference);
+                        ui.separator();
                     }
-                }
 
-                if !event.calendars.is_empty() {
-                    ui.separator();
-                    ui.label(egui::RichText::new("Calendars").strong());
-                    for cal in &event.calendars {
-                        ui.label(cal);
+                    if !event.locations.is_empty() {
+                        ui.label(egui::RichText::new("Locations").strong());
+                        for loc in &event.locations {
+                            ui.label(loc);
+                        }
+                        ui.separator();
                     }
-                }
-            }),
+
+                    render_rsvps(ctx, ui, &event.rsvps);
+                    render_participants(ctx, ui, &event.participants);
+
+                    if !event.hashtags.is_empty() {
+                        ui.horizontal_wrapped(|ui| {
+                            for tag in &event.hashtags {
+                                ui.label(format!("#{tag}"));
+                            }
+                        });
+                    }
+
+                    if !event.references.is_empty() {
+                        ui.separator();
+                        ui.label(egui::RichText::new("Links").strong());
+                        for reference in &event.references {
+                            ui.hyperlink(reference);
+                        }
+                    }
+
+                    if !event.calendars.is_empty() {
+                        ui.separator();
+                        ui.label(egui::RichText::new("Calendars").strong());
+                        for cal in &event.calendars {
+                            ui.label(cal);
+                        }
+                    }
+                }),
         )
     }
 
