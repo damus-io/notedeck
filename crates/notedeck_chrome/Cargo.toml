@@ -20,6 +20,7 @@ notedeck_ui = { workspace = true }
 notedeck_dave = { workspace = true }
 notedeck_notebook = { workspace = true }
 notedeck_clndash = { workspace = true }
+notedeck_calendar = { workspace = true }
 notedeck = { workspace = true }
 nostrdb = { workspace = true }
 puffin = { workspace = true, optional = true }
