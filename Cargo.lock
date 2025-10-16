@@ -3618,6 +3618,7 @@ dependencies = [
  "chrono-tz",
  "egui",
  "hex",
+ "nostr 0.37.0",
  "nostrdb",
  "notedeck",
  "notedeck_ui",

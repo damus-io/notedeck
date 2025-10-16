@@ -5,7 +5,12 @@ use chrono::{
 use chrono_tz::{Tz, TZ_VARIANTS};
 use egui::{vec2, Color32, CornerRadius, FontId, Stroke};
 use hex::FromHex;
-use nostrdb::{Filter, ProfileRecord, QueryResult, Transaction};
+use nostr::event::id::EventId;
+use nostr::nips::nip01::Coordinate as Nip01Coordinate;
+use nostr::nips::nip19::{Nip19Event, ToBech32};
+use nostr::{Kind as NostrKind, PublicKey};
+use nostrdb::{Filter, IngestMetadata, Note, ProfileRecord, Transaction};
+use notedeck::enostr::ClientMessage;
 use notedeck::filter::UnifiedSubscription;
 use notedeck::media::gif::ensure_latest_texture;
 use notedeck::media::{AnimationMode, ImageType};
@@ -15,12 +20,14 @@ use notedeck::{
 };
 use notedeck_ui::ProfilePic;
 use std::time::{Duration as StdDuration, Instant};
+use std::{borrow::Cow, collections::HashMap};
 use tracing::warn;
 use uuid::Uuid;
 
 const FETCH_LIMIT: i32 = 1024;
 const POLL_BATCH_SIZE: usize = 64;
-const REFRESH_INTERVAL: StdDuration = StdDuration::from_secs(30);
+const POLL_INTERVAL: StdDuration = StdDuration::from_secs(5);
+const RSVP_FEEDBACK_TTL: StdDuration = StdDuration::from_secs(8);
 
 #[derive(Debug, Clone)]
 enum CalendarEventTime {
@@ -45,7 +52,96 @@ struct CalendarParticipant {
 }
 
 #[derive(Debug, Clone)]
+struct CalendarRsvp {
+    id_hex: String,
+    attendee_hex: String,
+    status: RsvpStatus,
+    created_at: u64,
+    coordinate_kind: Option<u32>,
+    coordinate_author_hex: Option<String>,
+    coordinate_identifier: Option<String>,
+    event_id_hex: Option<String>,
+}
+
+impl CalendarRsvp {
+    fn is_newer_than(&self, other: &Self) -> bool {
+        self.created_at > other.created_at
+            || (self.created_at == other.created_at && self.id_hex > other.id_hex)
+    }
+
+    fn is_confirmed(&self) -> bool {
+        matches!(self.status, RsvpStatus::Accepted)
+    }
+
+    fn matches_event(&self, event: &CalendarEvent) -> bool {
+        if let Some(event_id) = &self.event_id_hex {
+            if event_id == &event.id_hex {
+                return true;
+            }
+        }
+
+        match (
+            self.coordinate_kind,
+            self.coordinate_author_hex.as_deref(),
+            self.coordinate_identifier.as_deref(),
+            event.identifier.as_deref(),
+        ) {
+            (Some(kind), Some(author), Some(identifier), Some(event_identifier)) => {
+                kind == event.kind
+                    && author.eq_ignore_ascii_case(&event.author_hex)
+                    && identifier == event_identifier
+            }
+            _ => false,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+enum RsvpFeedback {
+    Success(String),
+    Error(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RsvpStatus {
+    Accepted,
+    Declined,
+    Tentative,
+    Unknown,
+}
+
+impl RsvpStatus {
+    fn from_tag(value: &str) -> Self {
+        match value.to_ascii_lowercase().as_str() {
+            "accepted" => RsvpStatus::Accepted,
+            "declined" => RsvpStatus::Declined,
+            "tentative" => RsvpStatus::Tentative,
+            _ => RsvpStatus::Unknown,
+        }
+    }
+
+    fn as_str(&self) -> &'static str {
+        match self {
+            RsvpStatus::Accepted => "accepted",
+            RsvpStatus::Declined => "declined",
+            RsvpStatus::Tentative => "tentative",
+            RsvpStatus::Unknown => "unknown",
+        }
+    }
+
+    fn display_label(&self) -> &'static str {
+        match self {
+            RsvpStatus::Accepted => "Accepted",
+            RsvpStatus::Declined => "Declined",
+            RsvpStatus::Tentative => "Tentative",
+            RsvpStatus::Unknown => "Unknown",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 struct CalendarEvent {
+    kind: u32,
     id_hex: String,
     identifier: Option<String>,
     title: String,
@@ -60,6 +156,7 @@ struct CalendarEvent {
     hashtags: Vec<String>,
     references: Vec<String>,
     participants: Vec<CalendarParticipant>,
+    rsvps: Vec<CalendarRsvp>,
     calendars: Vec<String>,
     time: CalendarEventTime,
     author_hex: String,
@@ -242,13 +339,17 @@ impl TimeZoneChoice {
 pub struct CalendarApp {
     subscription: Option<UnifiedSubscription>,
     events: Vec<CalendarEvent>,
+    all_rsvps: HashMap<String, CalendarRsvp>,
+    pending_rsvps: HashMap<String, CalendarRsvp>,
     view: CalendarView,
     focus_date: NaiveDate,
     selected_event: Option<usize>,
-    last_refresh: Option<Instant>,
     last_poll: Instant,
+    initialized: bool,
     timezone: TimeZoneChoice,
     timezone_filter: String,
+    rsvp_feedback: Option<(Instant, RsvpFeedback)>,
+    rsvp_pending: bool,
 }
 
 impl CalendarApp {
@@ -257,18 +358,22 @@ impl CalendarApp {
         Self {
             subscription: None,
             events: Vec::new(),
+            all_rsvps: HashMap::new(),
+            pending_rsvps: HashMap::new(),
             view: CalendarView::Month,
             focus_date: today,
             selected_event: None,
-            last_refresh: None,
             last_poll: Instant::now(),
+            initialized: false,
             timezone: TimeZoneChoice::default(),
             timezone_filter: String::new(),
+            rsvp_feedback: None,
+            rsvp_pending: false,
         }
     }
 
     fn filters() -> Vec<Filter> {
-        let mut kinds = Filter::new().kinds([31922, 31923]);
+        let mut kinds = Filter::new().kinds([31922, 31923, 31925]);
         kinds = kinds.limit(FETCH_LIMIT as u64);
         vec![kinds.build()]
     }
@@ -296,36 +401,13 @@ impl CalendarApp {
         };
 
         self.subscription = sub_id;
-        // Force initial refresh so users see events immediately
-        self.last_refresh = None;
+        self.initialized = false;
     }
 
-    fn poll_subscription(&mut self, ctx: &mut AppContext) -> bool {
-        let Some(sub) = &self.subscription else {
-            return false;
-        };
-
-        if self.last_poll.elapsed() < StdDuration::from_secs(5) {
-            return false;
-        }
-
-        self.last_poll = Instant::now();
-
-        let new_keys = ctx.ndb.poll_for_notes(sub.local, POLL_BATCH_SIZE as u32);
-        !new_keys.is_empty()
-    }
-
-    fn refresh_if_needed(&mut self, ctx: &mut AppContext) {
-        let poll_triggered = self.poll_subscription(ctx);
-        let due_for_refresh = self
-            .last_refresh
-            .map(|inst| inst.elapsed() >= REFRESH_INTERVAL)
-            .unwrap_or(true);
-
-        if !poll_triggered && !due_for_refresh {
+    fn load_initial_events(&mut self, ctx: &mut AppContext) {
+        if self.initialized {
             return;
         }
-
         let txn = match Transaction::new(ctx.ndb) {
             Ok(txn) => txn,
             Err(err) => {
@@ -345,22 +427,392 @@ impl CalendarApp {
         };
 
         let mut events = Vec::new();
+        let mut rsvps = HashMap::new();
         for result in results {
-            if let Some(event) = parse_calendar_event(result) {
-                events.push(event);
+            let note = result.note;
+            let kind = note.kind();
+            match kind {
+                31922 | 31923 => {
+                    if let Some(event) = parse_calendar_event(&note) {
+                        events.push(event);
+                    }
+                }
+                31925 => {
+                    if let Some(rsvp) = parse_calendar_rsvp(&note) {
+                        rsvps.insert(rsvp.id_hex.clone(), rsvp);
+                    }
+                }
+                _ => {}
             }
         }
 
-        events.sort_by_key(|ev| (ev.start_naive(), ev.created_at));
+        let mut fulfilled = Vec::new();
+        for (id, pending) in self.pending_rsvps.iter() {
+            if rsvps.contains_key(id) {
+                fulfilled.push(id.clone());
+            } else {
+                rsvps.insert(id.clone(), pending.clone());
+            }
+        }
+        for id in fulfilled {
+            self.pending_rsvps.remove(&id);
+        }
+
+        self.all_rsvps = rsvps;
+
+        for event in events.iter_mut() {
+            self.populate_event_rsvps(event);
+        }
+
         self.events = events;
+        self.resort_events();
+        self.initialized = true;
+    }
 
-        if let Some(sel) = self.selected_event {
-            if sel >= self.events.len() {
-                self.selected_event = None;
+    fn poll_for_new_notes(&mut self, ctx: &mut AppContext) {
+        let Some(sub) = &self.subscription else {
+            return;
+        };
+
+        if self.last_poll.elapsed() < POLL_INTERVAL {
+            return;
+        }
+
+        self.last_poll = Instant::now();
+
+        let new_keys = ctx.ndb.poll_for_notes(sub.local, POLL_BATCH_SIZE as u32);
+        if new_keys.is_empty() {
+            return;
+        }
+
+        let txn = match Transaction::new(ctx.ndb) {
+            Ok(txn) => txn,
+            Err(err) => {
+                warn!("Calendar: failed to create transaction for poll: {err}");
+                return;
+            }
+        };
+
+        for key in new_keys {
+            match ctx.ndb.get_note_by_key(&txn, key) {
+                Ok(note) => self.process_note(&note),
+                Err(err) => warn!("Calendar: missing note for key {:?}: {err}", key),
             }
         }
 
-        self.last_refresh = Some(Instant::now());
+        self.resort_events();
+    }
+
+    fn process_note(&mut self, note: &Note<'_>) {
+        match note.kind() {
+            31922 | 31923 => {
+                if let Some(mut event) = parse_calendar_event(note) {
+                    self.populate_event_rsvps(&mut event);
+                    self.upsert_event(event);
+                }
+            }
+            31925 => {
+                if let Some(rsvp) = parse_calendar_rsvp(note) {
+                    self.apply_rsvp(rsvp);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn upsert_event(&mut self, event: CalendarEvent) {
+        if let Some(idx) = self.find_event_index(&event) {
+            self.events[idx] = event;
+        } else {
+            self.events.push(event);
+        }
+    }
+
+    fn find_event_index(&self, event: &CalendarEvent) -> Option<usize> {
+        if let Some(identifier) = &event.identifier {
+            self.events.iter().position(|existing| {
+                existing.kind == event.kind
+                    && existing
+                        .identifier
+                        .as_ref()
+                        .map(|id| id.eq_ignore_ascii_case(identifier))
+                        .unwrap_or(false)
+                    && existing.author_hex.eq_ignore_ascii_case(&event.author_hex)
+            })
+        } else {
+            self.events
+                .iter()
+                .position(|existing| existing.id_hex == event.id_hex)
+        }
+    }
+
+    fn apply_rsvp(&mut self, rsvp: CalendarRsvp) {
+        let id = rsvp.id_hex.clone();
+        self.all_rsvps.insert(id.clone(), rsvp.clone());
+        self.pending_rsvps.remove(&id);
+
+        let mut updates = Vec::new();
+        for (idx, event) in self.events.iter().enumerate() {
+            if rsvp.matches_event(event) {
+                updates.push((idx, self.relevant_rsvps_for(event)));
+            }
+        }
+
+        for (idx, relevant) in updates {
+            if let Some(event_mut) = self.events.get_mut(idx) {
+                event_mut.rsvps = match_rsvps_for_event(event_mut, &relevant);
+            }
+        }
+    }
+
+    fn relevant_rsvps_for(&self, event: &CalendarEvent) -> Vec<CalendarRsvp> {
+        self.all_rsvps
+            .values()
+            .filter(|rsvp| rsvp.matches_event(event))
+            .cloned()
+            .collect()
+    }
+
+    fn populate_event_rsvps(&self, event: &mut CalendarEvent) {
+        let relevant = self.relevant_rsvps_for(event);
+        event.rsvps = match_rsvps_for_event(event, &relevant);
+    }
+
+    fn resort_events(&mut self) {
+        let selected_id = self
+            .selected_event
+            .and_then(|idx| self.events.get(idx).map(|ev| ev.id_hex.clone()));
+
+        self.events
+            .sort_by_key(|ev| (ev.start_naive(), ev.created_at));
+
+        if let Some(id) = selected_id {
+            self.selected_event = self.events.iter().position(|ev| ev.id_hex == id);
+        } else {
+            self.selected_event = None;
+        }
+    }
+
+    fn prune_rsvp_feedback(&mut self) {
+        if let Some((timestamp, _)) = self.rsvp_feedback {
+            if timestamp.elapsed() >= RSVP_FEEDBACK_TTL {
+                self.rsvp_feedback = None;
+            }
+        }
+    }
+
+    fn set_rsvp_feedback(&mut self, feedback: RsvpFeedback) {
+        self.rsvp_feedback = Some((Instant::now(), feedback));
+    }
+
+    fn current_user_rsvp(
+        &mut self,
+        ctx: &mut AppContext,
+        event: &CalendarEvent,
+    ) -> Option<RsvpStatus> {
+        let user_hex = ctx.accounts.selected_account_pubkey().hex();
+        event
+            .rsvps
+            .iter()
+            .find(|r| r.attendee_hex.eq_ignore_ascii_case(&user_hex))
+            .map(|r| r.status)
+    }
+
+    fn render_rsvp_controls(
+        &mut self,
+        ctx: &mut AppContext,
+        ui: &mut egui::Ui,
+        event_idx: usize,
+        event: &CalendarEvent,
+    ) {
+        ui.label(egui::RichText::new("RSVP").strong());
+
+        if event.identifier.is_none() {
+            ui.label("This event is missing a calendar identifier; RSVP is unavailable.");
+            return;
+        }
+
+        let has_writable_account = ctx.accounts.selected_filled().is_some();
+        let current_status = self.current_user_rsvp(ctx, event);
+
+        match current_status {
+            Some(status) if status != RsvpStatus::Unknown => {
+                ui.label(format!("Your response: {}", status.display_label()));
+            }
+            _ => {
+                ui.label("You have not responded yet.");
+            }
+        }
+
+        if !has_writable_account {
+            ui.colored_label(
+                ui.visuals().warn_fg_color,
+                "Select an account with its private key to RSVP.",
+            );
+        }
+
+        if self.rsvp_pending {
+            ui.label("Sending RSVP…");
+        }
+
+        if let Some((_, feedback)) = &self.rsvp_feedback {
+            match feedback {
+                RsvpFeedback::Success(msg) => {
+                    ui.colored_label(ui.visuals().hyperlink_color, msg);
+                }
+                RsvpFeedback::Error(msg) => {
+                    ui.colored_label(Color32::from_rgb(220, 70, 70), msg);
+                }
+            }
+        }
+
+        let allow_buttons = has_writable_account && !self.rsvp_pending;
+
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(allow_buttons, egui::Button::new("Accept"))
+                .clicked()
+            {
+                self.submit_rsvp(ctx, event_idx, event, RsvpStatus::Accepted, Some("busy"));
+            }
+
+            if ui
+                .add_enabled(allow_buttons, egui::Button::new("Maybe"))
+                .clicked()
+            {
+                self.submit_rsvp(ctx, event_idx, event, RsvpStatus::Tentative, Some("free"));
+            }
+
+            if ui
+                .add_enabled(allow_buttons, egui::Button::new("Decline"))
+                .clicked()
+            {
+                self.submit_rsvp(ctx, event_idx, event, RsvpStatus::Declined, None);
+            }
+        });
+    }
+
+    fn submit_rsvp(
+        &mut self,
+        ctx: &mut AppContext,
+        event_idx: usize,
+        event: &CalendarEvent,
+        status: RsvpStatus,
+        freebusy: Option<&str>,
+    ) {
+        if self.rsvp_pending {
+            return;
+        }
+
+        let Some(identifier) = &event.identifier else {
+            self.set_rsvp_feedback(RsvpFeedback::Error(
+                "Event is missing calendar identifier; unable to RSVP.".to_string(),
+            ));
+            return;
+        };
+
+        let Some(filled) = ctx.accounts.selected_filled() else {
+            self.set_rsvp_feedback(RsvpFeedback::Error(
+                "Select an account with its private key to RSVP.".to_string(),
+            ));
+            return;
+        };
+
+        let account = filled.to_full();
+        self.rsvp_pending = true;
+
+        let coordinate = format!("{}:{}:{}", event.kind, event.author_hex, identifier);
+        let mut builder = nostrdb::NoteBuilder::new().kind(31925).content("");
+
+        builder = builder.start_tag().tag_str("a").tag_str(&coordinate);
+        builder = builder.start_tag().tag_str("e").tag_str(&event.id_hex);
+
+        builder = builder.start_tag().tag_str("p").tag_str(&event.author_hex);
+
+        builder = builder
+            .start_tag()
+            .tag_str("status")
+            .tag_str(status.as_str());
+        builder = builder.start_tag().tag_str("L").tag_str("status");
+        builder = builder
+            .start_tag()
+            .tag_str("l")
+            .tag_str(status.as_str())
+            .tag_str("status");
+
+        if let Some(fb) = freebusy {
+            builder = builder.start_tag().tag_str("fb").tag_str(fb);
+            builder = builder.start_tag().tag_str("L").tag_str("freebusy");
+            builder = builder
+                .start_tag()
+                .tag_str("l")
+                .tag_str(fb)
+                .tag_str("freebusy");
+        }
+
+        builder = builder
+            .start_tag()
+            .tag_str("d")
+            .tag_str(&Uuid::new_v4().to_string());
+
+        let secret_bytes = account.secret_key.secret_bytes();
+        let Some(note) = builder.sign(&secret_bytes).build() else {
+            self.rsvp_pending = false;
+            self.set_rsvp_feedback(RsvpFeedback::Error(
+                "Failed to build RSVP event.".to_string(),
+            ));
+            return;
+        };
+
+        let Ok(event_msg) = ClientMessage::event(&note) else {
+            self.rsvp_pending = false;
+            self.set_rsvp_feedback(RsvpFeedback::Error(
+                "Failed to serialize RSVP event.".to_string(),
+            ));
+            return;
+        };
+
+        if let Ok(json) = event_msg.to_json() {
+            let _ = ctx
+                .ndb
+                .process_event_with(&json, IngestMetadata::new().client(true));
+        }
+
+        ctx.pool.send(&event_msg);
+
+        let attendee_hex = account.pubkey.hex();
+        let new_rsvp = CalendarRsvp {
+            id_hex: hex::encode(note.id()),
+            attendee_hex: attendee_hex.clone(),
+            status,
+            created_at: note.created_at(),
+            coordinate_kind: Some(event.kind),
+            coordinate_author_hex: Some(event.author_hex.clone()),
+            coordinate_identifier: event.identifier.clone(),
+            event_id_hex: Some(event.id_hex.clone()),
+        };
+
+        self.all_rsvps
+            .insert(new_rsvp.id_hex.clone(), new_rsvp.clone());
+
+        let relevant = self
+            .events
+            .get(event_idx)
+            .map(|event| self.relevant_rsvps_for(event))
+            .unwrap_or_default();
+
+        if let Some(event_mut) = self.events.get_mut(event_idx) {
+            event_mut.rsvps = match_rsvps_for_event(event_mut, &relevant);
+        }
+
+        self.pending_rsvps
+            .insert(new_rsvp.id_hex.clone(), new_rsvp);
+
+        self.rsvp_pending = false;
+        self.set_rsvp_feedback(RsvpFeedback::Success(format!(
+            "{} RSVP sent",
+            status.display_label()
+        )));
     }
 
     fn events_on(&self, date: NaiveDate) -> Vec<usize> {
@@ -927,37 +1379,53 @@ impl CalendarApp {
         event: &CalendarEvent,
         _time_label: Option<String>,
     ) {
-        let clip_rect = rect.shrink(1.0);
         let content_rect = rect.shrink2(vec2(6.0, 4.0));
         if content_rect.height() <= 12.0 {
             return;
         }
 
-        let text_painter = painter.with_clip_rect(clip_rect);
+        let max_width = content_rect.width().max(1.0);
         let mut cursor_y = content_rect.top();
-        let cursor_x = content_rect.left();
+        let origin_x = content_rect.left();
+        let text_painter = painter.with_clip_rect(rect.shrink(1.0));
 
-        let title_font = FontId::proportional(13.0);
         let title_color = ui.visuals().strong_text_color();
+        let title_text: Cow<'_, str> = if max_width <= 220.0 {
+            Cow::Borrowed(event.day_title())
+        } else {
+            let chars_per_line = ((max_width / 7.0).floor() as usize).clamp(12, 96);
+            let max_lines = if max_width > 360.0 { 6 } else { 4 };
+            Cow::Owned(wrap_title(&event.title, chars_per_line, max_lines))
+        };
+
         text_painter.text(
-            egui::pos2(cursor_x, cursor_y),
+            egui::pos2(origin_x, cursor_y),
             egui::Align2::LEFT_TOP,
-            event.day_title(),
-            title_font.clone(),
+            title_text.as_ref(),
+            FontId::proportional(13.0),
             title_color,
         );
-        cursor_y += title_font.size + 2.0;
 
-        if let Some(summary) = event.summary_preview() {
-            let summary_font = FontId::proportional(11.0);
-            let summary_color = ui.visuals().weak_text_color();
-            if cursor_y + summary_font.size <= content_rect.bottom() {
+        cursor_y += 16.0;
+
+        let summary_text: Option<Cow<'_, str>> = if max_width <= 220.0 {
+            event.summary_preview().map(Cow::Borrowed)
+        } else {
+            event.summary.as_deref().map(|summary| {
+                let chars_per_line = ((max_width / 8.0).floor() as usize).clamp(16, 128);
+                let max_lines = if max_width > 360.0 { 5 } else { 3 };
+                Cow::Owned(wrap_title(summary, chars_per_line, max_lines))
+            })
+        };
+
+        if let Some(summary_display) = summary_text {
+            if !summary_display.is_empty() {
                 text_painter.text(
-                    egui::pos2(cursor_x, cursor_y),
+                    egui::pos2(origin_x, cursor_y),
                     egui::Align2::LEFT_TOP,
-                    summary,
-                    summary_font,
-                    summary_color,
+                    summary_display.as_ref(),
+                    FontId::proportional(11.0),
+                    ui.visuals().weak_text_color(),
                 );
             }
         }
@@ -1196,27 +1664,35 @@ impl CalendarApp {
             });
     }
 
-    fn render_event(&self, ctx: &mut AppContext, ui: &mut egui::Ui) {
+    fn render_event(&mut self, ctx: &mut AppContext, ui: &mut egui::Ui) {
         let Some(idx) = self.selected_event else {
             ui.label("Select an event from any calendar view to see its details.");
             return;
         };
 
-        let Some(event) = self.events.get(idx) else {
+        self.prune_rsvp_feedback();
+
+        let Some(event_snapshot) = self.events.get(idx).cloned() else {
             ui.label("The selected event is no longer available.");
             return;
         };
 
         egui::ScrollArea::vertical()
-            .id_salt(("calendar-event", &event.id_hex))
+            .id_salt(("calendar-event", &event_snapshot.id_hex))
             .auto_shrink([false, false])
             .show(ui, |ui| {
+                let event = &event_snapshot;
                 ui.heading(&event.title);
                 ui.label(event.duration_text(&self.timezone));
-                ui.label(format!("Author: {}", event.author_hex));
+                render_author(ctx, ui, &event.author_hex);
                 ui.label(format!("Times shown in {}", self.timezone.label()));
-                if let Some(identifier) = &event.identifier {
+                if let Some(naddr) = event_naddr(event) {
+                    ui.label(format!("Identifier (naddr): {naddr}"));
+                } else if let Some(identifier) = &event.identifier {
                     ui.label(format!("Identifier: {identifier}"));
+                }
+                if let Some(nevent) = event_nevent(event) {
+                    ui.label(format!("Event (nevent): {nevent}"));
                 }
 
                 if let CalendarEventTime::Timed {
@@ -1242,6 +1718,8 @@ impl CalendarApp {
                     }
                 }
 
+                ui.separator();
+                self.render_rsvp_controls(ctx, ui, idx, event);
                 ui.separator();
 
                 if let Some(summary) = &event.summary {
@@ -1271,6 +1749,7 @@ impl CalendarApp {
                     ui.separator();
                 }
 
+                render_rsvps(ctx, ui, &event.rsvps);
                 render_participants(ctx, ui, &event.participants);
 
                 if !event.hashtags.is_empty() {
@@ -1341,7 +1820,8 @@ impl CalendarApp {
 impl App for CalendarApp {
     fn update(&mut self, ctx: &mut AppContext, ui: &mut egui::Ui) -> AppResponse {
         self.ensure_subscription(ctx);
-        self.refresh_if_needed(ctx);
+        self.load_initial_events(ctx);
+        self.poll_for_new_notes(ctx);
 
         let mut action = None;
         ui.vertical(|ui| {
@@ -1386,8 +1866,7 @@ impl Drop for CalendarApp {
     }
 }
 
-fn parse_calendar_event(result: QueryResult<'_>) -> Option<CalendarEvent> {
-    let note = result.note;
+fn parse_calendar_event(note: &Note<'_>) -> Option<CalendarEvent> {
     let note_id = note.id();
     let author = note.pubkey();
     let kind = note.kind();
@@ -1558,8 +2037,10 @@ fn parse_calendar_event(result: QueryResult<'_>) -> Option<CalendarEvent> {
     let title_month = wrap_title(&title_value, 12, 2);
     let title_week = wrap_title(&title_value, 18, 2);
     let title_day = wrap_title(&title_value, 26, 4);
+    let author_hex = hex::encode(author);
 
     Some(CalendarEvent {
+        kind,
         id_hex: hex::encode(note_id),
         identifier: d_identifier,
         title: title_value,
@@ -1574,11 +2055,131 @@ fn parse_calendar_event(result: QueryResult<'_>) -> Option<CalendarEvent> {
         hashtags,
         references,
         participants,
+        rsvps: Vec::new(),
         calendars,
         time,
-        author_hex: hex::encode(author),
+        author_hex,
         created_at: note.created_at(),
     })
+}
+
+fn parse_calendar_rsvp(note: &Note<'_>) -> Option<CalendarRsvp> {
+    let note_id = note.id();
+    let attendee_hex = hex::encode(note.pubkey());
+
+    let mut coordinate_kind = None;
+    let mut coordinate_author_hex = None;
+    let mut coordinate_identifier = None;
+    let mut status_str = None;
+    let mut event_id_hex = None;
+
+    for tag in note.tags() {
+        if tag.count() < 2 {
+            continue;
+        }
+
+        let Some(name) = tag.get_str(0) else {
+            continue;
+        };
+        let name_lower = name.to_ascii_lowercase();
+
+        match name_lower.as_str() {
+            "a" if coordinate_kind.is_none() => {
+                if let Some(value) = tag.get_str(1) {
+                    if let Some((kind, author_hex, identifier)) = parse_event_coordinate(value) {
+                        coordinate_kind = Some(kind);
+                        coordinate_author_hex = Some(author_hex);
+                        coordinate_identifier = Some(identifier);
+                    }
+                }
+            }
+            "e" if event_id_hex.is_none() => {
+                if let Some(value) = tag.get_str(1) {
+                    event_id_hex = Some(value.to_owned());
+                }
+            }
+            "status" => {
+                if let Some(value) = tag.get_str(1) {
+                    status_str = Some(value.to_owned());
+                }
+            }
+            "l" => {
+                if tag.count() >= 3 {
+                    if let Some(label) = tag.get_str(2) {
+                        if label.eq_ignore_ascii_case("status") {
+                            if let Some(value) = tag.get_str(1) {
+                                status_str = Some(value.to_owned());
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let status_value = status_str?;
+    let status_enum = RsvpStatus::from_tag(status_value.trim());
+
+    Some(CalendarRsvp {
+        id_hex: hex::encode(note_id),
+        attendee_hex,
+        status: status_enum,
+        created_at: note.created_at(),
+        coordinate_kind,
+        coordinate_author_hex,
+        coordinate_identifier,
+        event_id_hex: event_id_hex.map(|id| id.trim().to_ascii_lowercase()),
+    })
+}
+
+fn parse_event_coordinate(value: &str) -> Option<(u32, String, String)> {
+    let mut parts = value.splitn(3, ':');
+    let kind_str = parts.next()?;
+    let pubkey_str = parts.next()?;
+    let identifier = parts.next()?.trim().to_string();
+
+    if identifier.is_empty() {
+        return None;
+    }
+
+    let kind: u32 = kind_str.parse().ok()?;
+    if kind != 31922 && kind != 31923 {
+        return None;
+    }
+
+    Some((kind, pubkey_str.to_ascii_lowercase(), identifier))
+}
+
+fn match_rsvps_for_event(event: &CalendarEvent, rsvps: &[CalendarRsvp]) -> Vec<CalendarRsvp> {
+    let mut best_by_attendee: HashMap<String, CalendarRsvp> = HashMap::new();
+
+    for rsvp in rsvps {
+        if !rsvp.matches_event(event) {
+            continue;
+        }
+
+        let entry = best_by_attendee
+            .entry(rsvp.attendee_hex.clone())
+            .or_insert_with(|| rsvp.clone());
+
+        if rsvp.is_newer_than(entry) {
+            *entry = rsvp.clone();
+        }
+    }
+
+    let mut confirmed: Vec<CalendarRsvp> = best_by_attendee
+        .into_values()
+        .filter(|rsvp| rsvp.is_confirmed())
+        .collect();
+
+    confirmed.sort_by(|a, b| {
+        a.created_at
+            .cmp(&b.created_at)
+            .then_with(|| a.attendee_hex.cmp(&b.attendee_hex))
+    });
+
+    confirmed
 }
 
 fn wrap_title(input: &str, max_chars_per_line: usize, max_lines: usize) -> String {
@@ -1658,6 +2259,26 @@ fn truncate_text(input: &str, max_chars: usize) -> String {
     truncated
 }
 
+fn event_nevent(event: &CalendarEvent) -> Option<String> {
+    let event_id = EventId::from_hex(&event.id_hex).ok()?;
+    let mut nip19 = Nip19Event::new(event_id, Vec::<String>::new());
+    if let Ok(author) = PublicKey::from_hex(&event.author_hex) {
+        nip19 = nip19.author(author);
+    }
+    let kind = u16::try_from(event.kind).ok()?;
+    nip19 = nip19.kind(NostrKind::from(kind));
+    nip19.to_bech32().ok()
+}
+
+fn event_naddr(event: &CalendarEvent) -> Option<String> {
+    let identifier = event.identifier.as_ref()?;
+    let author = PublicKey::from_hex(&event.author_hex).ok()?;
+    let kind = u16::try_from(event.kind).ok()?;
+    let mut coordinate = Nip01Coordinate::new(NostrKind::from(kind), author);
+    coordinate.identifier = identifier.clone();
+    coordinate.to_bech32().ok()
+}
+
 fn render_event_image(ctx: &mut AppContext, ui: &mut egui::Ui, url: &str) {
     let cache_type =
         supported_mime_hosted_at_url(&mut ctx.img_cache.urls, url).unwrap_or(MediaCacheType::Image);
@@ -1714,6 +2335,86 @@ fn render_event_image(ctx: &mut AppContext, ui: &mut egui::Ui, url: &str) {
             );
         }
     }
+}
+
+fn render_author(ctx: &mut AppContext, ui: &mut egui::Ui, author_hex: &str) {
+    ui.label(egui::RichText::new("Author").strong());
+
+    match Transaction::new(ctx.ndb) {
+        Ok(txn) => {
+            let profile = decode_pubkey_hex(author_hex)
+                .and_then(|bytes| ctx.ndb.get_profile_by_pubkey(&txn, &bytes).ok());
+            render_author_entry(ctx, ui, author_hex, profile.as_ref());
+        }
+        Err(err) => {
+            warn!("Calendar: failed to open transaction for author: {err}");
+            render_author_entry(ctx, ui, author_hex, None);
+        }
+    }
+
+    ui.add_space(6.0);
+}
+
+fn render_author_entry(
+    ctx: &mut AppContext,
+    ui: &mut egui::Ui,
+    author_hex: &str,
+    profile: Option<&ProfileRecord<'_>>,
+) {
+    let display_name =
+        display_name_from_profile(profile).unwrap_or_else(|| short_pubkey(author_hex));
+
+    ui.horizontal(|ui| {
+        let mut avatar = ProfilePic::from_profile_or_default(ctx.img_cache, profile)
+            .size(48.0)
+            .border(ProfilePic::border_stroke(ui));
+        let response = ui.add(&mut avatar);
+        response.on_hover_text(&display_name);
+        ui.label(display_name);
+    });
+    ui.add_space(4.0);
+}
+
+fn render_rsvps(ctx: &mut AppContext, ui: &mut egui::Ui, rsvps: &[CalendarRsvp]) {
+    ui.label(egui::RichText::new("Confirmed Attendees").strong());
+
+    if !rsvps.iter().any(|r| r.is_confirmed()) {
+        ui.label("No confirmed RSVPs yet.");
+        ui.separator();
+        return;
+    }
+
+    match Transaction::new(ctx.ndb) {
+        Ok(txn) => {
+            ui.horizontal_wrapped(|ui| {
+                for rsvp in rsvps.iter().filter(|r| r.is_confirmed()) {
+                    let profile = decode_pubkey_hex(&rsvp.attendee_hex)
+                        .and_then(|bytes| ctx.ndb.get_profile_by_pubkey(&txn, &bytes).ok());
+                    let display_name = display_name_from_profile(profile.as_ref())
+                        .unwrap_or_else(|| short_pubkey(&rsvp.attendee_hex));
+
+                    ui.vertical(|ui| {
+                        let mut avatar =
+                            ProfilePic::from_profile_or_default(ctx.img_cache, profile.as_ref())
+                                .size(40.0)
+                                .border(ProfilePic::border_stroke(ui));
+                        let response = ui.add(&mut avatar);
+                        response.on_hover_text(&display_name);
+                        ui.label(display_name);
+                    });
+                    ui.add_space(8.0);
+                }
+            });
+        }
+        Err(err) => {
+            warn!("Calendar: failed to open transaction for RSVPs: {err}");
+            for rsvp in rsvps.iter().filter(|r| r.is_confirmed()) {
+                ui.label(short_pubkey(&rsvp.attendee_hex));
+            }
+        }
+    }
+
+    ui.separator();
 }
 
 fn render_participants(
