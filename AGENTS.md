@@ -62,7 +62,7 @@ This document captures the current architecture, coding conventions, and design 
 ### Dave Agent Patterns (Template for Future Agents)
 
 - **Structured tool system** (`crates/notedeck_dave/src/tools.rs`): Defines tool metadata, JSON argument parsing, and execution into typed responses. Great reference for agent capabilities (search, present notes).
-- **Streaming UI**: Uses `mpsc` channels to surface streaming AI output while continuing to render frames (`developer-guide.md`).
+- **Streaming UI**: Uses `mpsc` channels to surface streaming AI output while continuing to render frames (`crates/notedeck_dave/docs/developer-guide.md`).
 - **Custom rendering**: Demonstrates embedding WebGPU callbacks for 3D avatars while remaining within egui’s lifecycle.
 
 ## Coding Conventions & Practices
