@@ -3,7 +3,7 @@ use chrono::{
     TimeZone, Timelike, Utc,
 };
 use chrono_tz::{Tz, TZ_VARIANTS};
-use egui::{vec2, Color32, CornerRadius, FontId, Stroke};
+use egui::{scroll_area::ScrollAreaOutput, vec2, Color32, CornerRadius, FontId, Stroke};
 use hex::FromHex;
 use nostr::event::id::EventId;
 use nostr::nips::nip01::Coordinate as Nip01Coordinate;
@@ -19,8 +19,9 @@ use notedeck::{
     AppContext, AppResponse, MediaCacheType, TextureState,
 };
 use notedeck_ui::ProfilePic;
+use std::sync::Arc;
 use std::time::{Duration as StdDuration, Instant};
-use std::{borrow::Cow, collections::HashMap};
+use std::{borrow::Cow, collections::{HashMap, HashSet}};
 use tracing::warn;
 use uuid::Uuid;
 
@@ -220,6 +221,28 @@ impl CalendarEvent {
         }
     }
 
+    fn date_span(&self, timezone: &TimeZoneChoice) -> (NaiveDate, NaiveDate) {
+        match &self.time {
+            CalendarEventTime::AllDay { start, end } => (*start, *end),
+            CalendarEventTime::Timed {
+                start_utc, end_utc, ..
+            } => {
+                let start_local = timezone.localize(start_utc);
+                let end_local = end_utc
+                    .map(|end| timezone.localize(&end))
+                    .unwrap_or_else(|| start_local.clone());
+
+                let start_date = start_local.date;
+                let mut end_date = end_local.date;
+                if end_date < start_date {
+                    end_date = start_date;
+                }
+
+                (start_date, end_date)
+            }
+        }
+    }
+
     fn occurs_on(&self, date: NaiveDate, timezone: &TimeZoneChoice) -> bool {
         match &self.time {
             CalendarEventTime::AllDay { start, end } => date >= *start && date <= *end,
@@ -341,6 +364,7 @@ pub struct CalendarApp {
     events: Vec<CalendarEvent>,
     all_rsvps: HashMap<String, CalendarRsvp>,
     pending_rsvps: HashMap<String, CalendarRsvp>,
+    month_galley_cache: HashMap<(String, u16), Arc<egui::Galley>>,
     view: CalendarView,
     focus_date: NaiveDate,
     selected_event: Option<usize>,
@@ -360,6 +384,7 @@ impl CalendarApp {
             events: Vec::new(),
             all_rsvps: HashMap::new(),
             pending_rsvps: HashMap::new(),
+            month_galley_cache: HashMap::new(),
             view: CalendarView::Month,
             focus_date: today,
             selected_event: None,
@@ -521,6 +546,9 @@ impl CalendarApp {
     }
 
     fn upsert_event(&mut self, event: CalendarEvent) {
+        let event_id = event.id_hex.clone();
+        self.purge_month_cache_for(&event_id);
+
         if let Some(idx) = self.find_event_index(&event) {
             self.events[idx] = event;
         } else {
@@ -591,6 +619,89 @@ impl CalendarApp {
         } else {
             self.selected_event = None;
         }
+
+        self.prune_month_galley_cache();
+    }
+
+    fn month_title_galley(
+        &mut self,
+        fonts: &egui::text::Fonts,
+        event_id: &str,
+        title: &str,
+        width: f32,
+    ) -> Arc<egui::Galley> {
+        let width_key = width.round().clamp(0.0, u16::MAX as f32) as u16;
+        let key = (event_id.to_owned(), width_key);
+
+        if let Some(existing) = self.month_galley_cache.get(&key) {
+            return existing.clone();
+        }
+
+        let galley = fonts.layout(
+            title.to_owned(),
+            FontId::proportional(12.0),
+            Color32::WHITE,
+            width,
+        );
+        self.month_galley_cache.insert(key, galley.clone());
+        galley
+    }
+
+    fn prune_month_galley_cache(&mut self) {
+        if self.month_galley_cache.is_empty() {
+            return;
+        }
+
+        let valid_ids: HashSet<String> =
+            self.events.iter().map(|event| event.id_hex.clone()).collect();
+        self.month_galley_cache
+            .retain(|(event_id, _), _| valid_ids.contains(event_id));
+    }
+
+    fn purge_month_cache_for(&mut self, event_id: &str) {
+        if self.month_galley_cache.is_empty() {
+            return;
+        }
+
+        let to_remove: Vec<(String, u16)> = self
+            .month_galley_cache
+            .keys()
+            .filter(|(id, _)| id == event_id)
+            .cloned()
+            .collect();
+
+        for key in to_remove {
+            self.month_galley_cache.remove(&key);
+        }
+    }
+
+    fn collect_events_by_day(
+        &self,
+        start: NaiveDate,
+        end: NaiveDate,
+    ) -> HashMap<NaiveDate, Vec<usize>> {
+        let mut map: HashMap<NaiveDate, Vec<usize>> = HashMap::new();
+
+        for (idx, event) in self.events.iter().enumerate() {
+            let (event_start, event_end) = event.date_span(&self.timezone);
+            if event_end < start || event_start > end {
+                continue;
+            }
+
+            let mut day = if event_start < start { start } else { event_start };
+            let last = if event_end > end { end } else { event_end };
+
+            while day <= last {
+                map.entry(day).or_default().push(idx);
+                day = day + Duration::days(1);
+            }
+        }
+
+        map
+    }
+
+    fn scroll_drag_id(id: egui::Id) -> egui::Id {
+        id.with("area")
     }
 
     fn prune_rsvp_feedback(&mut self) {
@@ -941,7 +1052,7 @@ impl CalendarApp {
         }
     }
 
-    fn render_month(&mut self, ui: &mut egui::Ui) {
+    fn render_month(&mut self, ui: &mut egui::Ui) -> ScrollAreaOutput<()> {
         let year = self.focus_date.year();
         let month = self.focus_date.month();
         let first_day = NaiveDate::from_ymd_opt(year, month, 1).expect("valid month start date");
@@ -950,23 +1061,26 @@ impl CalendarApp {
 
         let start_offset = first_day.weekday().num_days_from_monday() as i64;
         let grid_start = first_day - Duration::days(start_offset);
+        let grid_end = grid_start + Duration::days(6 * 7 - 1);
 
         let today = Local::now().date_naive();
         let selected_id = self
             .selected_event
             .and_then(|idx| self.events.get(idx))
             .map(|ev| ev.id_hex.clone());
+        let events_by_day = self.collect_events_by_day(grid_start, grid_end);
 
         #[derive(Default)]
         struct MonthCellInfo {
             date: Option<NaiveDate>,
             is_today: bool,
-            rows: Vec<(usize, std::sync::Arc<egui::Galley>)>,
+            rows: Vec<(usize, Arc<egui::Galley>)>,
             more: usize,
             min_height: f32,
         }
 
         egui::ScrollArea::vertical()
+            .id_salt("calendar-month-scroll")
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 let header_font = FontId::new(
@@ -1010,28 +1124,33 @@ impl CalendarApp {
                             ..Default::default()
                         };
 
-                        let events = self.events_on(cell_date);
-                        let display_count = events.len().min(3);
-                        ui.fonts(|fonts| {
-                            for idx in events.iter().take(display_count) {
-                                if let Some(event) = self.events.get(*idx) {
+                        if let Some(events) = events_by_day.get(&cell_date) {
+                            let display_count = events.len().min(3);
+                            ui.fonts(|fonts| {
+                                for idx in events.iter().take(display_count) {
                                     let wrap_width = (approx_cell_width - 12.0).max(32.0);
-                                    let galley = fonts.layout(
-                                        event.month_title().to_owned(),
-                                        FontId::proportional(12.0),
-                                        Color32::WHITE,
+                                    let (event_id, title) = if let Some(event) = self.events.get(*idx)
+                                    {
+                                        (event.id_hex.clone(), event.month_title().to_owned())
+                                    } else {
+                                        continue;
+                                    };
+
+                                    let galley = self.month_title_galley(
+                                        fonts,
+                                        &event_id,
+                                        &title,
                                         wrap_width,
                                     );
                                     let row_height = galley.size().y + 6.0;
                                     info.min_height += row_height;
                                     info.rows.push((*idx, galley));
                                 }
+                            });
+                            info.more = events.len().saturating_sub(display_count);
+                            if info.more > 0 {
+                                info.min_height += 24.0;
                             }
-                        });
-
-                        info.more = events.len().saturating_sub(display_count);
-                        if info.more > 0 {
-                            info.min_height += 24.0;
                         }
 
                         info.min_height = info.min_height.max(110.0);
@@ -1132,10 +1251,10 @@ impl CalendarApp {
                         break;
                     }
                 }
-            });
+            })
     }
 
-    fn render_week(&mut self, ui: &mut egui::Ui) {
+    fn render_week(&mut self, ui: &mut egui::Ui) -> ScrollAreaOutput<()> {
         const HOUR_HEIGHT: f32 = 42.0;
         const ALL_DAY_HEIGHT: f32 = 32.0;
         const COLUMN_WIDTH: f32 = 150.0;
@@ -1368,7 +1487,7 @@ impl CalendarApp {
                         }
                     }
                 });
-            });
+            })
     }
 
     fn paint_timed_event_contents(
@@ -1431,7 +1550,7 @@ impl CalendarApp {
         }
     }
 
-    fn render_day(&mut self, ui: &mut egui::Ui) {
+    fn render_day(&mut self, ui: &mut egui::Ui) -> ScrollAreaOutput<()> {
         const HOUR_HEIGHT: f32 = 42.0;
         const ALL_DAY_HEIGHT: f32 = 32.0;
         const TIME_COL_WIDTH: f32 = 64.0;
@@ -1661,23 +1780,28 @@ impl CalendarApp {
                         );
                     }
                 });
-            });
+            })
     }
 
-    fn render_event(&mut self, ctx: &mut AppContext, ui: &mut egui::Ui) {
+    fn render_event(
+        &mut self,
+        ctx: &mut AppContext,
+        ui: &mut egui::Ui,
+    ) -> Option<ScrollAreaOutput<()>> {
         let Some(idx) = self.selected_event else {
             ui.label("Select an event from any calendar view to see its details.");
-            return;
+            return None;
         };
 
         self.prune_rsvp_feedback();
 
         let Some(event_snapshot) = self.events.get(idx).cloned() else {
             ui.label("The selected event is no longer available.");
-            return;
+            return None;
         };
 
-        egui::ScrollArea::vertical()
+        Some(
+            egui::ScrollArea::vertical()
             .id_salt(("calendar-event", &event_snapshot.id_hex))
             .auto_shrink([false, false])
             .show(ui, |ui| {
@@ -1775,7 +1899,8 @@ impl CalendarApp {
                         ui.label(cal);
                     }
                 }
-            });
+            }),
+        )
     }
 
     fn timed_label_for_day(&self, event_idx: usize, day: NaiveDate) -> Option<String> {
@@ -1824,6 +1949,7 @@ impl App for CalendarApp {
         self.poll_for_new_notes(ctx);
 
         let mut action = None;
+        let mut drag_ids = Vec::new();
         ui.vertical(|ui| {
             ui.horizontal(|ui| {
                 if ui.button("← Back to Notedeck").clicked() {
@@ -1839,18 +1965,33 @@ impl App for CalendarApp {
             self.timezone_controls(ui);
 
             match self.view {
-                CalendarView::Month => self.render_month(ui),
-                CalendarView::Week => self.render_week(ui),
-                CalendarView::Day => self.render_day(ui),
-                CalendarView::Event => self.render_event(ctx, ui),
+                CalendarView::Month => {
+                    let output = self.render_month(ui);
+                    drag_ids.push(Self::scroll_drag_id(output.id));
+                }
+                CalendarView::Week => {
+                    let output = self.render_week(ui);
+                    drag_ids.push(Self::scroll_drag_id(output.id));
+                }
+                CalendarView::Day => {
+                    let output = self.render_day(ui);
+                    drag_ids.push(Self::scroll_drag_id(output.id));
+                }
+                CalendarView::Event => {
+                    if let Some(output) = self.render_event(ctx, ui) {
+                        drag_ids.push(Self::scroll_drag_id(output.id));
+                    }
+                }
             }
         });
 
-        if let Some(action) = action {
+        let response = if let Some(action) = action {
             AppResponse::action(Some(action))
         } else {
             AppResponse::none()
-        }
+        };
+
+        response.drag(drag_ids)
     }
 }
 
