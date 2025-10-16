@@ -30,7 +30,7 @@ This document captures the current architecture, coding conventions, and design 
 
 - **Database**: `nostrdb::Ndb` is the primary storage/query engine. Transactions are short-lived (`Transaction::new`) and most reads flow through caches.
 - **Caches**:
-  - `NoteCache` (nip10/thread metadata),
+  - `NoteCache` (NIP-10/thread metadata),
   - `Images` (image/GIF cache),
   - `UnknownIds` (tracks pubkeys/notes discovered via tags),
   - `JobsCache` (Columns-specific async job state).
