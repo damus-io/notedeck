@@ -24,7 +24,7 @@ This document captures the current architecture, coding conventions, and design 
 
 - **Chrome shell** (`crates/notedeck_chrome/src/chrome.rs`): wraps multiple `App` instances, draws sidebar navigation, and forwards egui `update` passes to the active app.
 - **`NotedeckApp` enum** (`crates/notedeck_chrome/src/app.rs`) defines the shipping app roster (Columns/Damus, Dave, others) and provides constructors for wiring new apps.
-- **Preview system & theming** (`crates/notedeck_chrome/src/preview.rs`, `theme.rs`) centralize look-and-feel, font loading, and debug previews.
+- **Preview system & theming** (`crates/notedeck_chrome/src/preview.rs`, `crates/notedeck_chrome/src/theme.rs`) centralize look-and-feel, font loading, and debug previews.
 
 ### Nostr Data & Networking
 
