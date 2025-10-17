@@ -14,6 +14,9 @@ pub enum NoteAction {
     /// User has clicked the quote reply action
     Reply(NoteId),
 
+    /// User has clicked the like/reaction button
+    React(ReactAction),
+
     /// User has clicked the repost button
     Repost(NoteId),
 
