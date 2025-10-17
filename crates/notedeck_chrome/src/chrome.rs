@@ -22,6 +22,7 @@ use notedeck::{
 };
 use notedeck_columns::{timeline::TimelineKind, Damus};
 use notedeck_dave::{Dave, DaveAvatar};
+use notedeck_livestreams::LivestreamsApp;
 use notedeck_ui::{
     app_images, expanding_button, AnimationHelper, ProfilePic, ICON_EXPANSION_MULTIPLE, ICON_WIDTH,
 };
@@ -145,11 +146,13 @@ impl Chrome {
         let context = &mut notedeck.app_context();
         let dave = Dave::new(cc.wgpu_render_state.as_ref());
         let columns = Damus::new(context, app_args);
+        let livestreams = LivestreamsApp::new();
         let mut chrome = Chrome::default();
 
         notedeck.check_args(columns.unrecognized_args())?;
 
         chrome.add_app(NotedeckApp::Columns(Box::new(columns)));
+        chrome.add_app(NotedeckApp::Livestreams(Box::new(livestreams)));
         chrome.add_app(NotedeckApp::Dave(Box::new(dave)));
 
         if notedeck.has_option(NotedeckOptions::FeatureNotebook) {
@@ -199,6 +202,14 @@ impl Chrome {
         self.active = app;
     }
 
+    fn background_columns_update(&mut self, app_ctx: &mut AppContext, egui_ctx: &egui::Context) {
+        for app in &mut self.apps {
+            if let NotedeckApp::Columns(columns) = app {
+                columns.pump_relay_events(app_ctx, egui_ctx);
+            }
+        }
+    }
+
     /// The chrome side panel
     #[profiling::function]
     fn panel(
@@ -240,6 +251,7 @@ impl Chrome {
                 .inner
             }
             ChromeRoute::App => {
+                self.background_columns_update(app_ctx, ui.ctx());
                 let resp = self.apps[self.active as usize].update(app_ctx, ui);
 
                 if let Some(action) = resp.action {
@@ -344,6 +356,7 @@ impl Chrome {
         for (i, app) in self.apps.iter_mut().enumerate() {
             let r = match app {
                 NotedeckApp::Columns(_columns_app) => columns_button(ui),
+                NotedeckApp::Livestreams(_streams_app) => livestream_button(ui),
 
                 NotedeckApp::Dave(dave) => {
                     ui.add_space(24.0);
@@ -480,6 +493,17 @@ fn notebook_button(ui: &mut egui::Ui) -> egui::Response {
         40.0,
         app_images::algo_image(),
         app_images::algo_image(),
+        ui,
+        false,
+    )
+}
+
+fn livestream_button(ui: &mut egui::Ui) -> egui::Response {
+    expanding_button(
+        "livestream-button",
+        40.0,
+        app_images::livestream_image(),
+        app_images::livestream_image(),
         ui,
         false,
     )
