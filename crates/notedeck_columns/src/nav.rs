@@ -368,6 +368,7 @@ pub enum RouterAction {
     /// information about the pfp since we only use it for toggling the
     /// chrome atm
     PfpClicked,
+    RouteInstantly(Route),
     RouteTo(Route, RouterType),
     CloseSheetThenRoute(Route),
     Overlay {
@@ -437,6 +438,10 @@ impl RouterAction {
             RouterAction::CloseSheetThenRoute(route) => {
                 sheet_router.go_back();
                 sheet_router.after_action = Some(route);
+                None
+            }
+            RouterAction::RouteInstantly(route) => {
+                stack_router.route_instantly(route);
                 None
             }
         }

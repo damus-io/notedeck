@@ -22,7 +22,6 @@ pub struct ThreadNode {
     pub prev: ParentState,
     pub have_all_ancestors: bool,
     pub list: VirtualList,
-    pub set_scroll_offset: Option<f32>,
 }
 
 #[derive(Clone)]
@@ -34,18 +33,14 @@ pub enum ParentState {
 
 impl ThreadNode {
     pub fn new(parent: ParentState) -> Self {
+        let mut list = VirtualList::new();
+        list.hide_on_resize(None);
         Self {
             replies: SingleNoteUnits::new(true),
             prev: parent,
             have_all_ancestors: false,
-            list: VirtualList::new(),
-            set_scroll_offset: None,
+            list,
         }
-    }
-
-    pub fn with_offset(mut self, offset: f32) -> Self {
-        self.set_scroll_offset = Some(offset);
-        self
     }
 }
 
@@ -55,6 +50,18 @@ pub struct Threads {
     pub subs: ThreadSubs,
 
     pub seen_flags: NoteSeenFlags,
+    pub scroll_to: Option<ScrollToNote>,
+}
+
+pub struct ScrollToNote {
+    pub id: NoteId,
+    pub active: bool,
+}
+
+impl ScrollToNote {
+    pub fn new(id: NoteId) -> Self {
+        Self { id, active: true }
+    }
 }
 
 impl Threads {
@@ -67,11 +74,14 @@ impl Threads {
         txn: &Transaction,
         pool: &mut RelayPool,
         thread: &ThreadSelection,
+        scroll_to: Option<NoteId>,
         new_scope: bool,
         col: usize,
-        scroll_offset: f32,
     ) -> Option<NewThreadNotes> {
-        tracing::info!("Opening thread: {:?}", thread);
+        if let Some(scroll_to) = scroll_to {
+            self.scroll_to = Some(ScrollToNote::new(scroll_to));
+        }
+
         let local_sub_filter = if let Some(selected) = &thread.selected_note {
             vec![direct_replies_filter_non_root(
                 selected.bytes(),
@@ -99,7 +109,7 @@ impl Threads {
             RawEntryMut::Vacant(entry) => {
                 let id = NoteId::new(*selected_note_id);
 
-                let node = ThreadNode::new(ParentState::Unknown).with_offset(scroll_offset);
+                let node = ThreadNode::new(ParentState::Unknown);
                 entry.insert(id, node);
 
                 &local_sub_filter
@@ -154,11 +164,22 @@ impl Threads {
             .cached_note_or_insert_mut(selected_key, selected)
             .reply;
 
+        let have_all_ancestors_before = self
+            .threads
+            .get(&selected.id())
+            .map(|t| t.have_all_ancestors)
+            .unwrap_or(true);
         self.fill_reply_chain_recursive(selected, &reply, note_cache, ndb, txn, unknown_ids);
         let node = self
             .threads
             .get_mut(&selected.id())
             .expect("should be guarenteed to exist from `Self::fill_reply_chain_recursive`");
+
+        if have_all_ancestors_before != node.have_all_ancestors {
+            if let Some(scroll_to) = self.scroll_to.as_mut() {
+                scroll_to.active = true;
+            }
+        }
 
         let Some(sub) = self.subs.get_local(col) else {
             tracing::error!("Was expecting to find local sub");
@@ -422,5 +443,13 @@ impl SingleNoteUnits {
 
     pub fn contains_key(&self, k: &NoteKey) -> bool {
         self.units.contains_key(&UnitKey::Single(*k))
+    }
+
+    pub fn len(&self) -> usize {
+        self.units.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.units.is_empty()
     }
 }
