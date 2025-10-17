@@ -7,7 +7,7 @@ use notedeck::fonts::get_font_size;
 use notedeck::name::get_display_name;
 use notedeck::ui::is_narrow;
 use notedeck::{tr_plural, JobsCache, Muted, NotedeckTextStyle};
-use notedeck_ui::app_images::{like_image, repost_image};
+use notedeck_ui::app_images::{like_image_filled, repost_image};
 use notedeck_ui::{ProfilePic, ProfilePreview};
 use std::f32::consts::PI;
 use tracing::{error, warn};
@@ -514,7 +514,7 @@ enum ReferencedNoteType {
 impl CompositeType {
     fn image(&self, darkmode: bool) -> egui::Image<'static> {
         match self {
-            CompositeType::Reaction => like_image(),
+            CompositeType::Reaction => like_image_filled(),
             CompositeType::Repost => {
                 repost_image(darkmode).tint(Color32::from_rgb(0x68, 0xC3, 0x51))
             }

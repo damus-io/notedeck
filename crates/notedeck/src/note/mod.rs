@@ -1,7 +1,7 @@
 mod action;
 mod context;
 
-pub use action::{NoteAction, ScrollInfo, ZapAction, ZapTargetAmount};
+pub use action::{NoteAction, ReactAction, ScrollInfo, ZapAction, ZapTargetAmount};
 pub use context::{BroadcastContext, ContextSelection, NoteContextSelection};
 
 use crate::Accounts;
@@ -211,4 +211,10 @@ pub fn event_tag<'a>(ev: &nostrdb::Note<'a>, name: &str) -> Option<&'a str> {
 
         tag.get_str(1)
     })
+}
+
+/// Temporary way of checking whether a user has sent a reaction.
+/// Should be replaced with nostrdb metadata
+pub fn reaction_sent_id(sender_pk: &enostr::Pubkey, note_reacted_to: &[u8; 32]) -> egui::Id {
+    egui::Id::new(("sent-reaction-id", note_reacted_to, sender_pk))
 }
