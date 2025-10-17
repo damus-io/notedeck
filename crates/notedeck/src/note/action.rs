@@ -53,6 +53,18 @@ impl NoteAction {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct ReactAction {
+    pub note_id: NoteId,
+    pub content: &'static str,
+}
+
+impl ReactAction {
+    pub const fn new(note_id: NoteId, content: &'static str) -> Self {
+        Self { note_id, content }
+    }
+}
+
 #[derive(Debug, Eq, PartialEq, Clone)]
 pub enum ZapAction {
     Send(ZapTargetAmount),
