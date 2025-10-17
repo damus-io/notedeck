@@ -53,6 +53,7 @@ chrono = { workspace = true }
 indexmap = {workspace = true}
 rand = {workspace = true}
 crossbeam-channel = "0.5"
+notedeck_media_gst = { path = "../notedeck_media_gst" }
 
 [dev-dependencies]
 tempfile = { workspace = true }

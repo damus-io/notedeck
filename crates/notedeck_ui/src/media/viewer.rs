@@ -1,7 +1,15 @@
 use bitflags::bitflags;
-use egui::{emath::TSTransform, pos2, Color32, Rangef, Rect};
+use egui::{
+    emath::TSTransform, pos2, Align2, Color32, CornerRadius, FontId, Rangef, Rect, Sense,
+    TextureHandle,
+};
 use notedeck::media::{AnimationMode, MediaInfo, ViewMediaInfo};
-use notedeck::{ImageType, Images};
+use notedeck::{ImageType, Images, RenderableMediaKind, VideoManager, VideoStatus};
+
+use crate::media::{
+    draw_error_overlay, draw_pause_overlay, draw_play_overlay, load_video_texture_state,
+    store_video_texture_state,
+};
 
 bitflags! {
     #[repr(transparent)]
@@ -90,23 +98,33 @@ impl<'a> MediaViewer<'a> {
         self
     }
 
-    pub fn ui(&mut self, images: &mut Images, ui: &mut egui::Ui) -> egui::Response {
+    pub fn ui(
+        &mut self,
+        images: &mut Images,
+        video: &mut VideoManager,
+        ui: &mut egui::Ui,
+    ) -> egui::Response {
         if self.state.flags.contains(MediaViewerFlags::Fullscreen) {
             egui::Window::new("Media Viewer")
                 .title_bar(false)
                 .fixed_size(ui.ctx().screen_rect().size())
                 .fixed_pos(ui.ctx().screen_rect().min)
                 .frame(egui::Frame::NONE)
-                .show(ui.ctx(), |ui| self.ui_content(images, ui))
+                .show(ui.ctx(), |ui| self.ui_content(images, video, ui))
                 .unwrap() // SAFETY: we are always open
                 .inner
                 .unwrap()
         } else {
-            self.ui_content(images, ui)
+            self.ui_content(images, video, ui)
         }
     }
 
-    fn ui_content(&mut self, images: &mut Images, ui: &mut egui::Ui) -> egui::Response {
+    fn ui_content(
+        &mut self,
+        images: &mut Images,
+        video: &mut VideoManager,
+        ui: &mut egui::Ui,
+    ) -> egui::Response {
         let avail_rect = ui.available_rect_before_wrap();
 
         let scene_rect = if let Some(scene_rect) = self.state.scene_rect {
@@ -161,7 +179,13 @@ impl<'a> MediaViewer<'a> {
         */
 
         let resp = scene.show(ui, &mut trans_rect, |ui| {
-            Self::render_image_tiles(&self.state.media_info.medias, images, ui, open_amount);
+            Self::render_image_tiles(
+                &self.state.media_info.medias,
+                images,
+                video,
+                ui,
+                open_amount,
+            );
         });
 
         self.state.scene_rect = Some(trans_rect);
@@ -204,60 +228,176 @@ impl<'a> MediaViewer<'a> {
     fn render_image_tiles(
         infos: &[MediaInfo],
         images: &mut Images,
+        video: &mut VideoManager,
         ui: &mut egui::Ui,
         open_amount: f32,
     ) {
         for info in infos {
             let url = &info.url;
 
-            // fetch image texture
-
-            // we want to continually redraw things in the gallery
-            let Some(texture) = images.latest_texture(
-                ui,
-                url,
-                ImageType::Content(None),
-                AnimationMode::Continuous { fps: None }, // media viewer has continuous rendering
-            ) else {
+            let Some(renderable) = images.get_renderable_media(url) else {
                 continue;
             };
 
-            // the area the next image will be put in.
-            let mut img_rect = ui.available_rect_before_wrap();
-            /*
-            if !ui.is_rect_visible(img_rect) {
-                // just stop rendering images if we're going out of the scene
-                // basic culling when we have lots of images
-                break;
-            }
-            */
+            match renderable.kind {
+                RenderableMediaKind::Image(_) => {
+                    // we want to continually redraw things in the gallery
+                    let Some(texture) = images.latest_texture(
+                        ui,
+                        url,
+                        ImageType::Content(None),
+                        AnimationMode::Continuous { fps: None }, // media viewer has continuous rendering
+                    ) else {
+                        continue;
+                    };
 
-            {
-                let size = texture.size_vec2();
-                img_rect.set_height(size.y);
-                img_rect.set_width(size.x);
-                let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+                    // the area the next image will be put in.
+                    let mut img_rect = ui.available_rect_before_wrap();
 
-                // image actions
-                //let response = ui.interact(render_rect, carousel_id.with("img"), Sense::click());
+                    let size = texture.size_vec2();
+                    img_rect.set_height(size.y);
+                    img_rect.set_width(size.x);
+                    let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
 
-                /*
-                if response.clicked() {
-                } else if background_response.clicked() {
+                    ui.painter().image(
+                        texture.id(),
+                        img_rect,
+                        uv,
+                        Color32::from_white_alpha((open_amount * 255.0) as u8),
+                    );
+
+                    ui.advance_cursor_after_rect(img_rect);
                 }
-                */
+                RenderableMediaKind::Video(_) => {
+                    let persist_id = ui.make_persistent_id(("viewer-video", url));
+                    let mut textures = load_video_texture_state(ui.ctx(), persist_id);
 
-                // Paint image
-                ui.painter().image(
-                    texture.id(),
-                    img_rect,
-                    uv,
-                    Color32::from_white_alpha((open_amount * 255.0) as u8),
-                );
+                    let handle = match textures.handle {
+                        Some(handle) => handle,
+                        None => match video.ensure_player_from_str(url) {
+                            Ok(handle) => {
+                                textures.ensure_handle(handle);
+                                handle
+                            }
+                            Err(_) => {
+                                Self::draw_viewer_placeholder(ui, url, open_amount);
+                                continue;
+                            }
+                        },
+                    };
+                    textures.ensure_handle(handle);
 
-                ui.advance_cursor_after_rect(img_rect);
+                    let video_state = video.state(handle);
+
+                    let mut status = VideoStatus::Opening;
+                    let mut aspect: Option<f32> = None;
+                    let mut active_texture: Option<TextureHandle> = None;
+
+                    if let Some(state) = video_state.as_ref() {
+                        status = state.status.clone();
+
+                        if let Some(frame) = state.current_frame.as_ref() {
+                            if frame.height > 0 {
+                                aspect = Some(frame.width as f32 / frame.height as f32);
+                            }
+                            active_texture = Some(textures.frame_texture(ui, handle, frame));
+                        }
+
+                        if active_texture.is_none() {
+                            if let Some(frame) = state.poster.as_ref() {
+                                if frame.height > 0 {
+                                    aspect = Some(frame.width as f32 / frame.height as f32);
+                                }
+                                active_texture = Some(textures.poster_texture(ui, handle, frame));
+                            }
+                        }
+                    }
+
+                    let mut video_rect = ui.available_rect_before_wrap();
+                    let width = video_rect.width();
+                    let height = aspect
+                        .filter(|aspect| *aspect > f32::EPSILON)
+                        .map(|aspect| width / aspect)
+                        .unwrap_or_else(|| width * 9.0 / 16.0);
+                    video_rect.set_height(height);
+
+                    let tint = Color32::from_white_alpha((open_amount * 255.0) as u8);
+
+                    if let Some(texture) = active_texture.clone() {
+                        ui.painter().image(
+                            texture.id(),
+                            video_rect,
+                            Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+                            tint,
+                        );
+                    } else {
+                        ui.painter().rect_filled(
+                            video_rect,
+                            CornerRadius::same(6),
+                            Color32::from_black_alpha((open_amount * 120.0) as u8 + 20),
+                        );
+                        ui.painter().text(
+                            video_rect.center(),
+                            Align2::CENTER_CENTER,
+                            "Loading video…",
+                            FontId::proportional(16.0),
+                            tint,
+                        );
+                    }
+
+                    match &status {
+                        VideoStatus::Failed(message) => {
+                            draw_error_overlay(ui.painter(), video_rect, message)
+                        }
+                        VideoStatus::Playing => draw_pause_overlay(ui.painter(), video_rect),
+                        _ => draw_play_overlay(ui.painter(), video_rect),
+                    }
+
+                    let response = ui.interact(
+                        video_rect,
+                        ui.make_persistent_id(("viewer-video-hit", url)),
+                        Sense::click(),
+                    );
+                    if response.clicked() {
+                        match status {
+                            VideoStatus::Playing => video.pause(handle),
+                            VideoStatus::Failed(_) => {}
+                            _ => video.play(handle),
+                        }
+                        ui.ctx().request_repaint();
+                    }
+
+                    store_video_texture_state(ui.ctx(), persist_id, textures);
+                    ui.advance_cursor_after_rect(video_rect);
+                }
             }
         }
+    }
+
+    fn draw_viewer_placeholder(ui: &mut egui::Ui, _url: &str, open_amount: f32) {
+        let mut rect = ui.available_rect_before_wrap();
+        let width = rect.width();
+        let height = if width.is_finite() && width > 0.0 {
+            width * 9.0 / 16.0
+        } else {
+            240.0
+        };
+        rect.set_height(height);
+
+        let alpha = (open_amount * 120.0) as u8 + 20;
+        ui.painter().rect_filled(
+            rect,
+            CornerRadius::same(6),
+            Color32::from_black_alpha(alpha),
+        );
+        ui.painter().text(
+            rect.center(),
+            Align2::CENTER_CENTER,
+            "Unable to load video",
+            FontId::proportional(16.0),
+            Color32::from_white_alpha(alpha.saturating_add(60)),
+        );
+        ui.advance_cursor_after_rect(rect);
     }
 }
 

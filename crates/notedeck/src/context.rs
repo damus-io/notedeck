@@ -1,7 +1,7 @@
 use crate::{
     account::accounts::Accounts, frame_history::FrameHistory, i18n::Localization,
     wallet::GlobalWallet, zaps::Zaps, Args, DataPath, Images, JobPool, NoteCache, SettingsHandler,
-    UnknownIds,
+    UnknownIds, VideoManager,
 };
 use egui_winit::clipboard::Clipboard;
 
@@ -29,6 +29,7 @@ pub struct AppContext<'a> {
     pub frame_history: &'a mut FrameHistory,
     pub job_pool: &'a mut JobPool,
     pub i18n: &'a mut Localization,
+    pub video: &'a mut VideoManager,
 
     #[cfg(target_os = "android")]
     pub android: AndroidApp,

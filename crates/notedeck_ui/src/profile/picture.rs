@@ -132,6 +132,7 @@ fn render_pfp(
     let img_size = 128u32;
 
     let cache_type = supported_mime_hosted_at_url(&mut img_cache.urls, url)
+        .and_then(|kind| kind.as_cache_type())
         .unwrap_or(notedeck::MediaCacheType::Image);
 
     let cur_state = get_render_state(

@@ -523,13 +523,20 @@ impl<'a, 'd> PostView<'a, 'd> {
                 (300, 300)
             };
 
-            let Some(cache_type) =
+            let Some(kind) =
                 supported_mime_hosted_at_url(&mut self.note_context.img_cache.urls, &media.url)
             else {
                 self.draft
                     .upload_errors
                     .push("Uploaded media is not supported.".to_owned());
                 error!("Unsupported mime type at url: {}", &media.url);
+                continue;
+            };
+            let Some(cache_type) = kind.as_cache_type() else {
+                self.draft
+                    .upload_errors
+                    .push("Uploaded media type is not yet supported in the composer.".to_owned());
+                error!("Unsupported composer media kind at url: {}", &media.url);
                 continue;
             };
 
@@ -878,6 +885,7 @@ mod preview {
                 pool: app.pool,
                 job_pool: app.job_pool,
                 unknown_ids: app.unknown_ids,
+                video: app.video,
                 clipboard: app.clipboard,
                 i18n: app.i18n,
             };

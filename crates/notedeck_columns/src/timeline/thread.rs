@@ -310,7 +310,7 @@ pub fn selected_has_at_least_n_replies(
         return false;
     };
 
-    res.len() >= n.into()
+    res.len() >= usize::from(n)
 }
 
 fn direct_replies_filter_non_root(

@@ -109,6 +109,7 @@ pub fn render_accounts_route(
             app_ctx.i18n,
             app_ctx.job_pool,
             jobs,
+            app_ctx.video,
         )
         .ui(ui)
         .map_output(|r| match r {

@@ -375,6 +375,7 @@ fn render_undecorated_note_contents<'a>(
         media_action = image_carousel(
             ui,
             note_context.img_cache,
+            note_context.video,
             note_context.job_pool,
             jobs,
             &supported_medias,
