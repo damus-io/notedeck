@@ -1,0 +1,15 @@
+[package]
+name = "notedeck_media_gst"
+version = { workspace = true }
+edition = "2021"
+description = "GStreamer-backed media playback plumbing for Notedeck"
+
+[dependencies]
+crossbeam-channel = "0.5"
+glib = "0.19"
+gstreamer = { version = "0.22", features = ["v1_20"] }
+gstreamer-app = { version = "0.22", features = ["v1_20"] }
+gstreamer-video = { version = "0.22", features = ["v1_20"] }
+once_cell = { workspace = true }
+tracing = { workspace = true }
+url = { workspace = true }

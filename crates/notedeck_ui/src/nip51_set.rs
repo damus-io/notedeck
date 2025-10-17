@@ -5,7 +5,7 @@ use hashbrown::{hash_map::RawEntryMut, HashMap};
 use nostrdb::{Ndb, ProfileRecord, Transaction};
 use notedeck::{
     fonts::get_font_size, get_profile_url, name::get_display_name, tr, Images, JobPool, JobsCache,
-    Localization, Nip51Set, Nip51SetCache, NotedeckTextStyle,
+    Localization, Nip51Set, Nip51SetCache, NotedeckTextStyle, VideoManager,
 };
 
 use crate::{
@@ -21,6 +21,7 @@ pub struct Nip51SetWidget<'a> {
     loc: &'a mut Localization,
     job_pool: &'a mut JobPool,
     jobs: &'a mut JobsCache,
+    video: &'a mut VideoManager,
     flags: Nip51SetWidgetFlags,
 }
 
@@ -55,6 +56,7 @@ impl<'a> Nip51SetWidget<'a> {
         images: &'a mut Images,
         job_pool: &'a mut JobPool,
         jobs: &'a mut JobsCache,
+        video: &'a mut VideoManager,
     ) -> Self {
         Self {
             state,
@@ -64,6 +66,7 @@ impl<'a> Nip51SetWidget<'a> {
             images,
             job_pool,
             jobs,
+            video,
             flags: Nip51SetWidgetFlags::default(),
         }
     }
@@ -92,6 +95,7 @@ impl<'a> Nip51SetWidget<'a> {
                     self.ui_state,
                     self.ndb,
                     self.images,
+                    self.video,
                     self.job_pool,
                     self.jobs,
                     self.loc,
@@ -157,6 +161,7 @@ fn render_pack(
     ui_state: &mut Nip51SetUiCache,
     ndb: &Ndb,
     images: &mut Images,
+    video: &mut VideoManager,
     job_pool: &mut JobPool,
     jobs: &mut JobsCache,
     loc: &mut Localization,
@@ -175,6 +180,7 @@ fn render_pack(
         let media_rect = render_media(
             ui,
             images,
+            video,
             job_pool,
             jobs,
             &media,

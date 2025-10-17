@@ -11,7 +11,7 @@ use egui::TextBuffer;
 use poll_promise::Promise;
 use url::Url;
 
-use crate::{Error, MediaCacheType};
+use crate::{Error, MediaCacheType, RenderableMediaKind, VideoMedia};
 
 const FILE_NAME: &str = "urls.bin";
 const SAVE_INTERVAL: Duration = Duration::from_secs(60);
@@ -228,15 +228,20 @@ impl UrlMimes {
 #[derive(Debug)]
 pub struct SupportedMimeType {
     mime: mime_guess::Mime,
+    kind: RenderableMediaKind,
 }
 
 impl SupportedMimeType {
     pub fn from_extension(extension: &str) -> Result<Self, Error> {
-        if let Some(mime) = mime_guess::from_ext(extension)
-            .first()
-            .filter(is_mime_supported)
-        {
-            Ok(Self { mime })
+        if let Some(mime) = mime_guess::from_ext(extension).first() {
+            if let Some(kind) = media_kind_from_mime(&mime) {
+                Ok(Self {
+                    mime: mime.clone(),
+                    kind,
+                })
+            } else {
+                Err(Error::Generic(format!("Unsupported mime type {mime}")))
+            }
         } else {
             Err(Error::Generic(
                 format!("{extension} Unsupported mime type",),
@@ -245,8 +250,8 @@ impl SupportedMimeType {
     }
 
     pub fn from_mime(mime: mime_guess::mime::Mime) -> Result<Self, Error> {
-        if is_mime_supported(&mime) {
-            Ok(Self { mime })
+        if let Some(kind) = media_kind_from_mime(&mime) {
+            Ok(Self { mime, kind })
         } else {
             Err(Error::Generic("Unsupported mime type".to_owned()))
         }
@@ -256,17 +261,27 @@ impl SupportedMimeType {
         self.mime.essence_str()
     }
 
-    pub fn to_cache_type(&self) -> MediaCacheType {
-        if self.mime == mime_guess::mime::IMAGE_GIF {
-            MediaCacheType::Gif
-        } else {
-            MediaCacheType::Image
-        }
+    pub fn kind(&self) -> RenderableMediaKind {
+        self.kind.clone()
     }
 }
 
-fn is_mime_supported(mime: &mime_guess::Mime) -> bool {
-    mime.type_() == mime_guess::mime::IMAGE
+fn media_kind_from_mime(mime: &mime_guess::Mime) -> Option<RenderableMediaKind> {
+    use mime_guess::mime;
+
+    if mime.type_() == mime::IMAGE {
+        if mime.subtype() == mime::GIF {
+            Some(RenderableMediaKind::Image(MediaCacheType::Gif))
+        } else {
+            Some(RenderableMediaKind::Image(MediaCacheType::Image))
+        }
+    } else if mime.type_() == mime::VIDEO && mime.subtype() == mime::MP4 {
+        Some(RenderableMediaKind::Video(VideoMedia::mp4()))
+    } else if mime.type_() == mime::APPLICATION && mime.subtype().as_str() == "mp4" {
+        Some(RenderableMediaKind::Video(VideoMedia::mp4()))
+    } else {
+        None
+    }
 }
 
 fn url_has_supported_mime(url: &str) -> MimeHostedAtUrl {
@@ -278,7 +293,7 @@ fn url_has_supported_mime(url: &str) -> MimeHostedAtUrl {
                     .and_then(|ext| ext.to_str())
                 {
                     if let Ok(supported) = SupportedMimeType::from_extension(ext) {
-                        return MimeHostedAtUrl::Yes(supported.to_cache_type());
+                        return MimeHostedAtUrl::Yes(supported.kind());
                     } else {
                         return MimeHostedAtUrl::No;
                     }
@@ -289,23 +304,21 @@ fn url_has_supported_mime(url: &str) -> MimeHostedAtUrl {
     MimeHostedAtUrl::Maybe
 }
 
-pub fn supported_mime_hosted_at_url(urls: &mut UrlMimes, url: &str) -> Option<MediaCacheType> {
+pub fn supported_mime_hosted_at_url(urls: &mut UrlMimes, url: &str) -> Option<RenderableMediaKind> {
     match url_has_supported_mime(url) {
-        MimeHostedAtUrl::Yes(cache_type) => Some(cache_type),
+        MimeHostedAtUrl::Yes(kind) => Some(kind),
         MimeHostedAtUrl::Maybe => urls
             .get(url)
             .and_then(|s| s.parse::<mime_guess::mime::Mime>().ok())
             .and_then(|mime: mime_guess::mime::Mime| {
-                SupportedMimeType::from_mime(mime)
-                    .ok()
-                    .map(|s| s.to_cache_type())
+                SupportedMimeType::from_mime(mime).ok().map(|s| s.kind())
             }),
         MimeHostedAtUrl::No => None,
     }
 }
 
 enum MimeHostedAtUrl {
-    Yes(MediaCacheType),
+    Yes(RenderableMediaKind),
     Maybe,
     No,
 }

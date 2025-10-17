@@ -2,16 +2,20 @@ use std::path::Path;
 
 use bitflags::bitflags;
 use egui::{
-    vec2, Button, Color32, Context, CornerRadius, FontId, Image, InnerResponse, Response,
-    TextureHandle, Vec2,
+    pos2, vec2, Align2, Button, Color32, Context, CornerRadius, FontId, Image, InnerResponse, Rect,
+    Response, Sense, TextureHandle, Vec2,
 };
 use notedeck::{
     compute_blurhash, fonts::get_font_size, show_one_error_message, tr, BlurhashParams,
     GifStateMap, Images, Job, JobId, JobParams, JobPool, JobState, JobsCache, Localization,
     MediaAction, MediaCacheType, NotedeckTextStyle, ObfuscationType, PointDimensions,
-    RenderableMedia, TexturedImage, TexturesCache,
+    RenderableMedia, RenderableMediaKind, TexturedImage, TexturesCache, VideoManager, VideoStatus,
 };
 
+use crate::media::{
+    draw_error_overlay, draw_pause_overlay, draw_play_overlay, fit_rect_to_aspect,
+    load_video_texture_state, store_video_texture_state,
+};
 use crate::NoteOptions;
 use notedeck::media::gif::ensure_latest_texture;
 use notedeck::media::images::{fetch_no_pfp_promise, ImageType};
@@ -30,6 +34,7 @@ pub enum MediaViewAction {
 pub fn image_carousel(
     ui: &mut egui::Ui,
     img_cache: &mut Images,
+    video: &mut VideoManager,
     job_pool: &mut JobPool,
     jobs: &mut JobsCache,
     medias: &[RenderableMedia],
@@ -65,6 +70,7 @@ pub fn image_carousel(
                             let media_response = render_media(
                                 ui,
                                 img_cache,
+                                video,
                                 job_pool,
                                 jobs,
                                 media,
@@ -119,6 +125,7 @@ pub fn image_carousel(
 pub fn render_media(
     ui: &mut egui::Ui,
     img_cache: &mut Images,
+    video: &mut VideoManager,
     job_pool: &mut JobPool,
     jobs: &mut JobsCache,
     media: &RenderableMedia,
@@ -128,48 +135,178 @@ pub fn render_media(
     animation_mode: Option<AnimationMode>,
     scale_flags: ScaledTextureFlags,
 ) -> InnerResponse<Option<MediaUIAction>> {
-    let RenderableMedia {
-        url,
-        media_type,
-        obfuscation_type: blur_type,
-    } = media;
+    match &media.kind {
+        RenderableMediaKind::Image(media_type) => {
+            let cache = match media_type {
+                MediaCacheType::Image => &mut img_cache.static_imgs,
+                MediaCacheType::Gif => &mut img_cache.gifs,
+            };
+            let media_state = get_content_media_render_state(
+                ui,
+                job_pool,
+                jobs,
+                trusted_media,
+                size,
+                &mut cache.textures_cache,
+                &media.url,
+                *media_type,
+                &cache.cache_dir,
+                &media.obfuscation_type,
+            );
 
-    let cache = match media_type {
-        MediaCacheType::Image => &mut img_cache.static_imgs,
-        MediaCacheType::Gif => &mut img_cache.gifs,
+            let animation_mode = animation_mode.unwrap_or_else(|| {
+                // if animations aren't disabled, we cap it at 24fps for gifs in carousels
+                let fps = match media_type {
+                    MediaCacheType::Gif => Some(24.0),
+                    MediaCacheType::Image => None,
+                };
+                AnimationMode::Continuous { fps }
+            });
+
+            render_media_internal(
+                ui,
+                &mut img_cache.gif_states,
+                media_state,
+                &media.url,
+                size,
+                i18n,
+                scale_flags,
+                animation_mode,
+            )
+        }
+        RenderableMediaKind::Video(_video) => render_video(ui, video, &media.url, size, i18n),
+    }
+}
+
+fn render_video(
+    ui: &mut egui::Ui,
+    video: &mut VideoManager,
+    url: &str,
+    size: Vec2,
+    i18n: &mut Localization,
+) -> InnerResponse<Option<MediaUIAction>> {
+    if !video.is_enabled() {
+        let response = ui.allocate_ui(size, |ui| {
+            ui.centered_and_justified(|ui| {
+                ui.label(tr!(
+                    i18n,
+                    "Video playback unavailable",
+                    "Shown when the video backend is disabled"
+                ));
+            });
+        });
+        return InnerResponse::new(None, response.response);
+    }
+
+    let persist_id = ui.make_persistent_id(("inline-video", url));
+    let mut textures = load_video_texture_state(ui.ctx(), persist_id);
+
+    let handle = match textures.handle {
+        Some(handle) => handle,
+        None => match video.ensure_player_from_str(url) {
+            Ok(handle) => {
+                textures.ensure_handle(handle);
+                handle
+            }
+            Err(err) => {
+                let response = ui.allocate_ui(size, |ui| {
+                    ui.centered_and_justified(|ui| {
+                        ui.label(format!("Invalid video URL: {err}"));
+                    });
+                });
+                store_video_texture_state(ui.ctx(), persist_id, textures);
+                return InnerResponse::new(None, response.response);
+            }
+        },
     };
-    let media_state = get_content_media_render_state(
-        ui,
-        job_pool,
-        jobs,
-        trusted_media,
-        size,
-        &mut cache.textures_cache,
-        url,
-        *media_type,
-        &cache.cache_dir,
-        blur_type,
+    textures.ensure_handle(handle);
+
+    let video_state = video.state(handle);
+
+    let mut status = VideoStatus::Opening;
+    let mut aspect: Option<f32> = None;
+    let mut active_texture: Option<TextureHandle> = None;
+
+    if let Some(state) = video_state.as_ref() {
+        status = state.status.clone();
+
+        if let Some(frame) = state.current_frame.as_ref() {
+            if frame.height > 0 {
+                aspect = Some(frame.width as f32 / frame.height as f32);
+            }
+            active_texture = Some(textures.frame_texture(ui, handle, frame));
+        }
+
+        if active_texture.is_none() {
+            if let Some(frame) = state.poster.as_ref() {
+                if frame.height > 0 {
+                    aspect = Some(frame.width as f32 / frame.height as f32);
+                }
+                active_texture = Some(textures.poster_texture(ui, handle, frame));
+            }
+        }
+    }
+
+    let (outer_rect, _) = ui.allocate_exact_size(size, Sense::hover());
+    let video_rect = aspect
+        .filter(|aspect| *aspect > f32::EPSILON)
+        .map(|aspect| fit_rect_to_aspect(outer_rect, aspect))
+        .unwrap_or(outer_rect);
+
+    if let Some(texture) = active_texture.clone() {
+        ui.painter().image(
+            texture.id(),
+            video_rect,
+            Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+            Color32::WHITE,
+        );
+    } else {
+        draw_video_placeholder(ui, video_rect, i18n);
+    }
+
+    match &status {
+        VideoStatus::Failed(message) => draw_error_overlay(ui.painter(), video_rect, message),
+        VideoStatus::Playing => draw_pause_overlay(ui.painter(), video_rect),
+        _ => draw_play_overlay(ui.painter(), video_rect),
+    }
+
+    let response = ui.interact(
+        video_rect,
+        ui.make_persistent_id(("inline-video-hitbox", url)),
+        Sense::click(),
     );
 
-    let animation_mode = animation_mode.unwrap_or_else(|| {
-        // if animations aren't disabled, we cap it at 24fps for gifs in carousels
-        let fps = match media_type {
-            MediaCacheType::Gif => Some(24.0),
-            MediaCacheType::Image => None,
-        };
-        AnimationMode::Continuous { fps }
-    });
+    let mut action = None;
+    if response.double_clicked() {
+        action = Some(MediaUIAction::Clicked);
+    } else if response.clicked() {
+        match status {
+            VideoStatus::Playing => video.pause(handle),
+            VideoStatus::Failed(_) => {}
+            _ => video.play(handle),
+        }
+        ui.ctx().request_repaint();
+    }
 
-    render_media_internal(
-        ui,
-        &mut img_cache.gif_states,
-        media_state,
-        url,
-        size,
-        i18n,
-        scale_flags,
-        animation_mode,
-    )
+    store_video_texture_state(ui.ctx(), persist_id, textures);
+
+    InnerResponse::new(action, response)
+}
+
+fn draw_video_placeholder(ui: &egui::Ui, rect: Rect, i18n: &mut Localization) {
+    ui.painter()
+        .rect_filled(rect, CornerRadius::same(6), ui.visuals().extreme_bg_color);
+    ui.painter().text(
+        rect.center(),
+        Align2::CENTER_CENTER,
+        tr!(
+            i18n,
+            "Loading video…",
+            "Placeholder text while a video poster frame is loading"
+        ),
+        FontId::proportional(14.0),
+        ui.visuals().text_color(),
+    );
 }
 
 pub enum MediaUIAction {
@@ -200,8 +337,11 @@ impl MediaUIAction {
             })),
 
             MediaUIAction::Unblur => {
+                let Some(cache_type) = medias[selected].kind.as_cache_type() else {
+                    return None;
+                };
                 let url = &medias[selected].url;
-                let cache = img_cache.get_cache(medias[selected].media_type);
+                let cache = img_cache.get_cache(cache_type);
                 let cache_type = cache.cache_type;
                 let no_pfp_promise = notedeck::media::images::fetch_img(
                     &cache.cache_dir,
@@ -218,11 +358,13 @@ impl MediaUIAction {
             }
 
             MediaUIAction::Error => {
-                if !matches!(img_type, ImageType::Profile(_)) {
+                let Some(cache_type) = medias[selected].kind.as_cache_type() else {
+                    if matches!(img_type, ImageType::Profile(_)) {
+                        tracing::warn!("Received MediaUIAction::Error for non-image media");
+                    }
                     return None;
                 };
-
-                let cache = img_cache.get_cache(medias[selected].media_type);
+                let cache = img_cache.get_cache(cache_type);
                 let cache_type = cache.cache_type;
                 Some(MediaAction::FetchImage {
                     url: medias[selected].url.to_owned(),
@@ -232,7 +374,14 @@ impl MediaUIAction {
             }
             MediaUIAction::DoneLoading => Some(MediaAction::DoneLoading {
                 url: medias[selected].url.to_owned(),
-                cache_type: img_cache.get_cache(medias[selected].media_type).cache_type,
+                cache_type: img_cache
+                    .get_cache(
+                        medias[selected]
+                            .kind
+                            .as_cache_type()
+                            .expect("DoneLoading should only occur for cached media"),
+                    )
+                    .cache_type,
             }),
         }
     }
@@ -623,7 +772,7 @@ pub(crate) fn find_renderable_media<'a>(
 
     Some(RenderableMedia {
         url,
-        media_type,
+        kind: media_type,
         obfuscation_type,
     })
 }

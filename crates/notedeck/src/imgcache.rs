@@ -4,8 +4,8 @@ use crate::media::AnimationMode;
 use crate::urls::{UrlCache, UrlMimes};
 use crate::ImageMetadata;
 use crate::ObfuscationType;
-use crate::RenderableMedia;
 use crate::Result;
+use crate::{RenderableMedia, RenderableMediaKind};
 use egui::TextureHandle;
 use image::{Delay, Frame};
 use poll_promise::Promise;
@@ -446,16 +446,15 @@ impl Images {
         imeta: &HashMap<String, ImageMetadata>,
         url: &str,
     ) -> Option<RenderableMedia> {
-        let media_type = crate::urls::supported_mime_hosted_at_url(urls, url)?;
-
-        let obfuscation_type = match imeta.get(url) {
-            Some(blur) => ObfuscationType::Blurhash(blur.clone()),
-            None => ObfuscationType::Default,
+        let media_kind = crate::urls::supported_mime_hosted_at_url(urls, url)?;
+        let obfuscation_type = match (&media_kind, imeta.get(url)) {
+            (RenderableMediaKind::Image(_), Some(blur)) => ObfuscationType::Blurhash(blur.clone()),
+            _ => ObfuscationType::Default,
         };
 
         Some(RenderableMedia {
             url: url.to_string(),
-            media_type,
+            kind: media_kind,
             obfuscation_type,
         })
     }
@@ -467,7 +466,11 @@ impl Images {
         img_type: ImageType,
         animation_mode: AnimationMode,
     ) -> Option<TextureHandle> {
-        let cache_type = crate::urls::supported_mime_hosted_at_url(&mut self.urls, url)?;
+        let media_kind = crate::urls::supported_mime_hosted_at_url(&mut self.urls, url)?;
+        let cache_type = match media_kind {
+            RenderableMediaKind::Image(cache_type) => cache_type,
+            RenderableMediaKind::Video(_) => return None,
+        };
 
         let cache_dir = self.get_cache(cache_type).cache_dir.clone();
         let is_loaded = self

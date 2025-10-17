@@ -9,7 +9,7 @@ use crate::GlobalWallet;
 use crate::JobPool;
 use crate::Localization;
 use crate::UnknownIds;
-use crate::{notecache::NoteCache, zaps::Zaps, Images};
+use crate::{notecache::NoteCache, zaps::Zaps, Images, VideoManager};
 use enostr::{NoteId, RelayPool};
 use nostrdb::{Ndb, Note, NoteKey, QueryResult, Transaction};
 use std::borrow::Borrow;
@@ -29,6 +29,7 @@ pub struct NoteContext<'d> {
     pub pool: &'d mut RelayPool,
     pub job_pool: &'d mut JobPool,
     pub unknown_ids: &'d mut UnknownIds,
+    pub video: &'d mut VideoManager,
     pub clipboard: &'d mut egui_winit::clipboard::Clipboard,
 }
 

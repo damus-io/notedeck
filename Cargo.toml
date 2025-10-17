@@ -9,6 +9,7 @@ members = [
     "crates/notedeck_notebook",
     "crates/notedeck_ui",
     "crates/notedeck_clndash",
+    "crates/notedeck_media_gst",
 
     "crates/enostr", "crates/tokenator", "crates/notedeck_dave", "crates/notedeck_ui", "crates/notedeck_clndash",
 ]

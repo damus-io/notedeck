@@ -51,6 +51,7 @@ pub fn note_hover_ui(
             pool: ctx.pool,
             job_pool: ctx.job_pool,
             unknown_ids: ctx.unknown_ids,
+            video: ctx.video,
             clipboard: ctx.clipboard,
             i18n: ctx.i18n,
             global_wallet: ctx.global_wallet,

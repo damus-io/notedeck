@@ -8,7 +8,8 @@ use crate::JobPool;
 use crate::NotedeckOptions;
 use crate::{
     frame_history::FrameHistory, AccountStorage, Accounts, AppContext, Args, DataPath,
-    DataPathType, Directory, Images, NoteAction, NoteCache, RelayDebugView, UnknownIds,
+    DataPathType, Directory, Images, NoteAction, NoteCache, RelayDebugView, UnknownIds, VideoEvent,
+    VideoManager, VideoManagerConfig, VideoStatus,
 };
 use egui::Margin;
 use egui::ThemePreference;
@@ -19,7 +20,7 @@ use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::rc::Rc;
-use tracing::{error, info};
+use tracing::{error, info, trace};
 use unic_langid::{LanguageIdentifier, LanguageIdentifierError};
 
 #[cfg(target_os = "android")]
@@ -78,6 +79,7 @@ pub struct Notedeck {
     frame_history: FrameHistory,
     job_pool: JobPool,
     i18n: Localization,
+    video: VideoManager,
 
     #[cfg(target_os = "android")]
     android_app: Option<AndroidApp>,
@@ -129,6 +131,20 @@ impl eframe::App for Notedeck {
             .process(&mut self.accounts, &mut self.global_wallet, &self.ndb);
 
         render_notedeck(self, ctx);
+
+        for event in self.video.drain_events() {
+            match &event {
+                VideoEvent::FrameReady { .. } | VideoEvent::PosterReady { .. } => {
+                    ctx.request_repaint();
+                }
+                VideoEvent::StateChanged(state) => {
+                    trace!(id = ?state.id, status = ?state.status, "video state change");
+                    if matches!(state.status, VideoStatus::Playing | VideoStatus::Opening) {
+                        ctx.request_repaint();
+                    }
+                }
+            }
+        }
 
         self.settings.update_batch(|settings| {
             settings.zoom_factor = ctx.zoom_factor();
@@ -269,6 +285,7 @@ impl Notedeck {
         let global_wallet = GlobalWallet::new(&path);
         let zaps = Zaps::default();
         let job_pool = JobPool::default();
+        let video = VideoManager::new(VideoManagerConfig::default());
 
         // Initialize localization
         let mut i18n = Localization::new();
@@ -307,6 +324,7 @@ impl Notedeck {
             zaps,
             job_pool,
             i18n,
+            video,
             #[cfg(target_os = "android")]
             android_app: None,
         }
@@ -372,6 +390,7 @@ impl Notedeck {
             frame_history: &mut self.frame_history,
             job_pool: &mut self.job_pool,
             i18n: &mut self.i18n,
+            video: &mut self.video,
             #[cfg(target_os = "android")]
             android: self.android_app.as_ref().unwrap().clone(),
         }

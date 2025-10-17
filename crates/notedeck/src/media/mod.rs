@@ -12,7 +12,7 @@ pub use blur::{
 };
 use egui::{ColorImage, TextureHandle};
 pub use images::ImageType;
-pub use renderable::RenderableMedia;
+pub use renderable::{RenderableMedia, RenderableMediaKind, VideoCodec, VideoMedia};
 
 #[derive(Copy, Clone, Debug)]
 pub enum AnimationMode {

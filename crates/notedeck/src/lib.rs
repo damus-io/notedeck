@@ -65,7 +65,8 @@ pub use jobs::{
 };
 pub use media::{
     compute_blurhash, update_imeta_blurhashes, ImageMetadata, ImageType, MediaAction,
-    ObfuscationType, PixelDimensions, PointDimensions, RenderableMedia,
+    ObfuscationType, PixelDimensions, PointDimensions, RenderableMedia, RenderableMediaKind,
+    VideoCodec, VideoMedia,
 };
 pub use muted::{MuteFun, Muted};
 pub use name::NostrName;
@@ -104,4 +105,7 @@ pub use zaps::{
 pub use enostr;
 pub use nostrdb;
 
+pub use notedeck_media_gst::{
+    VideoEvent, VideoFrame, VideoHandle, VideoManager, VideoManagerConfig, VideoState, VideoStatus,
+};
 pub use zaps::Zaps;
