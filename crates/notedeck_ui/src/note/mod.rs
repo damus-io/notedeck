@@ -923,6 +923,42 @@ fn reply_button(ui: &mut egui::Ui, i18n: &mut Localization, note_key: NoteKey) -
     resp.union(put_resp)
 }
 
+fn like_button(
+    ui: &mut egui::Ui,
+    i18n: &mut Localization,
+    note_key: NoteKey,
+    filled: bool,
+) -> egui::Response {
+    let img = {
+        let img = if filled {
+            app_images::like_image_filled()
+        } else {
+            app_images::like_image()
+        };
+
+        if ui.visuals().dark_mode {
+            img.tint(ui.visuals().text_color())
+        } else {
+            img
+        }
+    };
+
+    let (rect, size, resp) =
+        crate::anim::hover_expand_small(ui, ui.id().with(("like_anim", note_key)));
+
+    // align rect to note contents
+    let expand_size = 5.0; // from hover_expand_small
+    let rect = rect.translate(egui::vec2(-(expand_size / 2.0), 0.0));
+
+    let put_resp = ui.put(rect, img.max_width(size)).on_hover_text(tr!(
+        i18n,
+        "Like this note",
+        "Hover text for like button"
+    ));
+
+    resp.union(put_resp)
+}
+
 fn repost_icon(dark_mode: bool) -> egui::Image<'static> {
     if dark_mode {
         app_images::repost_dark_image()
