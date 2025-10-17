@@ -33,11 +33,13 @@ pub enum ParentState {
 
 impl ThreadNode {
     pub fn new(parent: ParentState) -> Self {
+        let mut list = VirtualList::new();
+        list.hide_on_resize(None);
         Self {
             replies: SingleNoteUnits::new(true),
             prev: parent,
             have_all_ancestors: false,
-            list: VirtualList::new(),
+            list,
         }
     }
 }
