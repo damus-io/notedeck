@@ -12,11 +12,13 @@ use crate::{
 };
 
 use egui_nav::Percent;
-use enostr::{NoteId, Pubkey, RelayPool};
-use nostrdb::{Ndb, NoteKey, Transaction};
+use enostr::{FilledKeypair, NoteId, Pubkey, RelayPool};
+use nostrdb::{IngestMetadata, Ndb, NoteBuilder, NoteKey, Transaction};
 use notedeck::{
-    get_wallet_for, note::ZapTargetAmount, Accounts, GlobalWallet, Images, NoteAction, NoteCache,
-    NoteZapTargetOwned, UnknownIds, ZapAction, ZapTarget, ZappingError, Zaps,
+    get_wallet_for,
+    note::{ReactAction, ZapTargetAmount},
+    Accounts, GlobalWallet, Images, NoteAction, NoteCache, NoteZapTargetOwned, UnknownIds,
+    ZapAction, ZapTarget, ZappingError, Zaps,
 };
 use notedeck_ui::media::MediaViewerFlags;
 use tracing::error;
@@ -260,6 +262,94 @@ pub fn execute_and_process_note_action(
     }
 
     resp.router_action
+}
+
+fn send_reaction_event(
+    ndb: &mut Ndb,
+    txn: &Transaction,
+    pool: &mut RelayPool,
+    kp: FilledKeypair<'_>,
+    reaction: &ReactAction,
+) -> Result<(), String> {
+    let Ok(note) = ndb.get_note_by_id(txn, reaction.note_id.bytes()) else {
+        return Err(format!("noteid {:?} not found in ndb", reaction.note_id));
+    };
+
+    let target_pubkey = Pubkey::new(*note.pubkey());
+    let relay_hint: Option<String> = note.relays(txn).next().map(|s| s.to_owned());
+    let target_kind = note.kind();
+    let d_tag_value = find_addressable_d_tag(&note);
+
+    let mut builder = NoteBuilder::new().kind(7).content(reaction.content);
+
+    builder = builder
+        .start_tag()
+        .tag_str("e")
+        .tag_id(reaction.note_id.bytes())
+        .tag_str(relay_hint.as_deref().unwrap_or(""))
+        .tag_str(&target_pubkey.hex());
+
+    builder = builder
+        .start_tag()
+        .tag_str("p")
+        .tag_id(target_pubkey.bytes());
+
+    if let Some(relay) = relay_hint.as_deref() {
+        builder = builder.tag_str(relay);
+    }
+
+    // we don't support addressable events yet... but why not future proof it?
+    if let Some(d_value) = d_tag_value.as_deref() {
+        let coordinates = format!("{}:{}:{}", target_kind, target_pubkey.hex(), d_value);
+
+        builder = builder.start_tag().tag_str("a").tag_str(&coordinates);
+
+        if let Some(relay) = relay_hint.as_deref() {
+            builder = builder.tag_str(relay);
+        }
+    }
+
+    builder = builder
+        .start_tag()
+        .tag_str("k")
+        .tag_str(&target_kind.to_string());
+
+    let note = builder
+        .sign(&kp.secret_key.secret_bytes())
+        .build()
+        .ok_or_else(|| "failed to build reaction event".to_owned())?;
+
+    let Ok(event) = &enostr::ClientMessage::event(&note) else {
+        return Err("failed to convert reaction note into client message".to_owned());
+    };
+
+    let Ok(json) = event.to_json() else {
+        return Err("failed to serialize reaction event to json".to_owned());
+    };
+
+    let _ = ndb.process_event_with(&json, IngestMetadata::new().client(true));
+
+    pool.send(event);
+
+    Ok(())
+}
+
+fn find_addressable_d_tag(note: &nostrdb::Note<'_>) -> Option<String> {
+    for tag in note.tags() {
+        if tag.count() < 2 {
+            continue;
+        }
+
+        if tag.get_unchecked(0).variant().str() != Some("d") {
+            continue;
+        }
+
+        if let Some(value) = tag.get_unchecked(1).variant().str() {
+            return Some(value.to_owned());
+        }
+    }
+
+    None
 }
 
 fn send_zap(
