@@ -18,6 +18,7 @@ egui = { workspace = true }
 notedeck_columns = { workspace = true }
 notedeck_ui = { workspace = true }
 notedeck_dave = { workspace = true }
+notedeck_livestreams = { workspace = true }
 notedeck_notebook = { workspace = true }
 notedeck_clndash = { workspace = true }
 notedeck = { workspace = true }
@@ -55,6 +56,7 @@ puffin = ["profiling/profile-with-puffin", "dep:puffin"]
 tracy = ["profiling/profile-with-tracy"]
 debug-widget-callstack = ["egui/callstack"]
 debug-interactive-widgets = []
+inline-playback = ["notedeck_livestreams/inline-playback"]
 
 [target.'cfg(target_os = "android")'.dependencies]
 tracing-logcat = "0.1.0"
