@@ -10,7 +10,7 @@ use crate::{widgets::x_button, ProfilePic, ProfilePreview, PulseAlpha, Username}
 pub use contents::{render_note_preview, NoteContents};
 pub use context::NoteContextButton;
 use notedeck::get_current_wallet;
-use notedeck::note::ZapTargetAmount;
+use notedeck::note::{reaction_sent_id, ZapTargetAmount};
 use notedeck::ui::is_narrow;
 use notedeck::Accounts;
 use notedeck::GlobalWallet;
@@ -26,7 +26,7 @@ use egui::{Id, Pos2, Rect, Response, Sense};
 use enostr::{KeypairUnowned, NoteId, Pubkey};
 use nostrdb::{Ndb, Note, NoteKey, ProfileRecord, Transaction};
 use notedeck::{
-    note::{NoteAction, NoteContext, ZapAction},
+    note::{NoteAction, NoteContext, ReactAction, ZapAction},
     tr, AnyZapState, ContextSelection, NoteZapTarget, NoteZapTargetOwned, ZapTarget, Zaps,
 };
 
@@ -461,6 +461,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
                             ),
                             self.note.id(),
                             self.note.pubkey(),
+                            self.note_context.accounts.selected_account_pubkey(),
                             note_key,
                             self.note_context.i18n,
                         )
@@ -549,6 +550,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
                                 ),
                                 self.note.id(),
                                 self.note.pubkey(),
+                                self.note_context.accounts.selected_account_pubkey(),
                                 note_key,
                                 self.note_context.i18n,
                             )
@@ -848,6 +850,7 @@ fn render_note_actionbar(
     zapper: Option<Zapper<'_>>,
     note_id: &[u8; 32],
     note_pubkey: &[u8; 32],
+    current_user_pubkey: &Pubkey,
     note_key: NoteKey,
     i18n: &mut Localization,
 ) -> Option<NoteAction> {
@@ -859,11 +862,26 @@ fn render_note_actionbar(
     let reply_resp =
         reply_button(ui, i18n, note_key).on_hover_cursor(egui::CursorIcon::PointingHand);
 
+    let filled = ui
+        .ctx()
+        .data(|d| d.get_temp(reaction_sent_id(current_user_pubkey, note_id)))
+        == Some(true);
+
+    let like_resp =
+        like_button(ui, i18n, note_key, filled).on_hover_cursor(egui::CursorIcon::PointingHand);
+
     let quote_resp =
         quote_repost_button(ui, i18n, note_key).on_hover_cursor(egui::CursorIcon::PointingHand);
 
     if reply_resp.clicked() {
         action = Some(NoteAction::Reply(NoteId::new(*note_id)));
+    }
+
+    if like_resp.clicked() {
+        action = Some(NoteAction::React(ReactAction::new(
+            NoteId::new(*note_id),
+            "🤙🏻",
+        )));
     }
 
     if quote_resp.clicked() {
