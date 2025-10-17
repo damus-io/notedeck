@@ -41,6 +41,10 @@ pub fn algo_image() -> Image<'static> {
     Image::new(include_image!("../../../assets/icons/algo.png"))
 }
 
+pub fn livestream_image() -> Image<'static> {
+    Image::new(include_image!("../../../assets/icons/sparkle.svg"))
+}
+
 pub fn columns_image() -> Image<'static> {
     Image::new(include_image!("../../../assets/icons/columns_80.png"))
 }

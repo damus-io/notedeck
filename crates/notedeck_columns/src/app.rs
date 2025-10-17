@@ -98,101 +98,6 @@ fn handle_egui_events(input: &egui::InputState, columns: &mut Columns) {
     }
 }
 
-#[profiling::function]
-fn try_process_event(
-    damus: &mut Damus,
-    app_ctx: &mut AppContext<'_>,
-    ctx: &egui::Context,
-) -> Result<()> {
-    let current_columns =
-        get_active_columns_mut(app_ctx.i18n, app_ctx.accounts, &mut damus.decks_cache);
-    ctx.input(|i| handle_egui_events(i, current_columns));
-
-    let ctx2 = ctx.clone();
-    let wakeup = move || {
-        ctx2.request_repaint();
-    };
-
-    app_ctx.pool.keepalive_ping(wakeup);
-
-    // NOTE: we don't use the while let loop due to borrow issues
-    #[allow(clippy::while_let_loop)]
-    loop {
-        profiling::scope!("receiving events");
-        let ev = if let Some(ev) = app_ctx.pool.try_recv() {
-            ev.into_owned()
-        } else {
-            break;
-        };
-
-        match (&ev.event).into() {
-            RelayEvent::Opened => {
-                app_ctx
-                    .accounts
-                    .send_initial_filters(app_ctx.pool, &ev.relay);
-
-                timeline::send_initial_timeline_filters(
-                    damus.options.contains(AppOptions::SinceOptimize),
-                    &mut damus.timeline_cache,
-                    &mut damus.subscriptions,
-                    app_ctx.pool,
-                    &ev.relay,
-                    app_ctx.accounts,
-                );
-            }
-            // TODO: handle reconnects
-            RelayEvent::Closed => warn!("{} connection closed", &ev.relay),
-            RelayEvent::Error(e) => error!("{}: {}", &ev.relay, e),
-            RelayEvent::Other(msg) => trace!("other event {:?}", &msg),
-            RelayEvent::Message(msg) => {
-                process_message(damus, app_ctx, &ev.relay, &msg);
-            }
-        }
-    }
-
-    for (kind, timeline) in &mut damus.timeline_cache {
-        let is_ready = timeline::is_timeline_ready(
-            app_ctx.ndb,
-            app_ctx.pool,
-            app_ctx.note_cache,
-            timeline,
-            app_ctx.accounts,
-            app_ctx.unknown_ids,
-        );
-
-        if is_ready {
-            let txn = Transaction::new(app_ctx.ndb).expect("txn");
-            // only thread timelines are reversed
-            let reversed = false;
-
-            if let Err(err) = timeline.poll_notes_into_view(
-                app_ctx.ndb,
-                &txn,
-                app_ctx.unknown_ids,
-                app_ctx.note_cache,
-                reversed,
-            ) {
-                error!("poll_notes_into_view: {err}");
-            }
-        } else {
-            // TODO: show loading?
-            if matches!(kind, TimelineKind::List(ListKind::Contact(_))) {
-                timeline::fetch_contact_list(&mut damus.subscriptions, timeline, app_ctx.accounts);
-            }
-        }
-    }
-
-    if let Some(follow_packs) = damus.onboarding.get_follow_packs_mut() {
-        follow_packs.poll_for_notes(app_ctx.ndb, app_ctx.unknown_ids);
-    }
-
-    if app_ctx.unknown_ids.ready_to_send() {
-        unknown_id_send(app_ctx.unknown_ids, app_ctx.pool);
-    }
-
-    Ok(())
-}
-
 fn unknown_id_send(unknown_ids: &mut UnknownIds, pool: &mut RelayPool) {
     debug!("unknown_id_send called on: {:?}", &unknown_ids);
     let filter = unknown_ids.filter().expect("filter");
@@ -235,9 +140,7 @@ fn update_damus(damus: &mut Damus, app_ctx: &mut AppContext<'_>, ctx: &egui::Con
         DamusState::Initialized => (),
     };
 
-    if let Err(err) = try_process_event(damus, app_ctx, ctx) {
-        error!("error processing event: {}", err);
-    }
+    damus.pump_relay_events(app_ctx, ctx);
 }
 
 fn handle_eose(
@@ -601,6 +504,104 @@ impl Damus {
 
     pub fn initially_selected_toolbar_index() -> i32 {
         0
+    }
+
+    #[profiling::function]
+    pub fn process_relay_events(
+        &mut self,
+        app_ctx: &mut AppContext<'_>,
+        ctx: &egui::Context,
+    ) -> Result<()> {
+        let current_columns =
+            get_active_columns_mut(app_ctx.i18n, app_ctx.accounts, &mut self.decks_cache);
+        ctx.input(|i| handle_egui_events(i, current_columns));
+
+        let ctx2 = ctx.clone();
+        let wakeup = move || {
+            ctx2.request_repaint();
+        };
+
+        app_ctx.pool.keepalive_ping(wakeup);
+
+        // NOTE: we don't use the while let loop due to borrow issues
+        #[allow(clippy::while_let_loop)]
+        loop {
+            profiling::scope!("receiving events");
+            let ev = if let Some(ev) = app_ctx.pool.try_recv() {
+                ev.into_owned()
+            } else {
+                break;
+            };
+
+            match (&ev.event).into() {
+                RelayEvent::Opened => {
+                    app_ctx
+                        .accounts
+                        .send_initial_filters(app_ctx.pool, &ev.relay);
+
+                    timeline::send_initial_timeline_filters(
+                        self.options.contains(AppOptions::SinceOptimize),
+                        &mut self.timeline_cache,
+                        &mut self.subscriptions,
+                        app_ctx.pool,
+                        &ev.relay,
+                        app_ctx.accounts,
+                    );
+                }
+                // TODO: handle reconnects
+                RelayEvent::Closed => warn!("{} connection closed", &ev.relay),
+                RelayEvent::Error(e) => error!("{}: {}", &ev.relay, e),
+                RelayEvent::Other(msg) => trace!("other event {:?}", &msg),
+                RelayEvent::Message(msg) => {
+                    process_message(self, app_ctx, &ev.relay, &msg);
+                }
+            }
+        }
+
+        for (kind, timeline) in &mut self.timeline_cache {
+            let is_ready = timeline::is_timeline_ready(
+                app_ctx.ndb,
+                app_ctx.pool,
+                app_ctx.note_cache,
+                timeline,
+                app_ctx.accounts,
+                app_ctx.unknown_ids,
+            );
+
+            if is_ready {
+                let txn = Transaction::new(app_ctx.ndb).expect("txn");
+                // only thread timelines are reversed
+                let reversed = false;
+
+                if let Err(err) = timeline.poll_notes_into_view(
+                    app_ctx.ndb,
+                    &txn,
+                    app_ctx.unknown_ids,
+                    app_ctx.note_cache,
+                    reversed,
+                ) {
+                    error!("poll_notes_into_view: {err}");
+                }
+            } else if matches!(kind, TimelineKind::List(ListKind::Contact(_))) {
+                timeline::fetch_contact_list(&mut self.subscriptions, timeline, app_ctx.accounts);
+            }
+        }
+
+        if let Some(follow_packs) = self.onboarding.get_follow_packs_mut() {
+            follow_packs.poll_for_notes(app_ctx.ndb, app_ctx.unknown_ids);
+        }
+
+        if app_ctx.unknown_ids.ready_to_send() {
+            unknown_id_send(app_ctx.unknown_ids, app_ctx.pool);
+        }
+
+        Ok(())
+    }
+
+    pub fn pump_relay_events(&mut self, app_ctx: &mut AppContext<'_>, ctx: &egui::Context) {
+        if let Err(err) = self.process_relay_events(app_ctx, ctx) {
+            error!("error processing event: {}", err);
+        }
     }
 }
 

@@ -13,6 +13,7 @@ A modern, multiplatform Nostr client built with Rust. Notedeck provides a featur
 
 - **Multi-column Layout**: TweetDeck-style interface for viewing different Nostr content
 - **Dave AI Assistant**: AI-powered assistant that can search and analyze Nostr content
+- **Livestream Browser**: View-only NIP-53 livestream directory with status, schedules, and participant details
 - **Profile Management**: View and edit Nostr profiles
 - **Media Support**: View and upload images with GIF support
 - **Lightning Integration**: Zap (tip) content creators with Bitcoin Lightning
@@ -98,6 +99,26 @@ Detailed developer documentation is available in each crate:
 - [Notedeck Columns](./crates/notedeck_columns/DEVELOPER.md)
 - [Dave AI Assistant](./crates/notedeck_dave/docs/README.md)
 - [UI Components](./crates/notedeck_ui/docs/components.md)
+
+## 🛠️ Troubleshooting
+
+### Linux inline playback shows black video while audio works
+
+On some Linux systems the GPU video acceleration stack (VAAPI) can misbehave. When GStreamer picks the VAAPI decoder it may return a frozen desktop frame instead of the stream, so both Notedeck and `gst-launch-1.0` render black video even though the audio continues.
+
+Workaround: force GStreamer to stay on software decoding before launching Notedeck.
+
+```bash
+export GST_VAAPI_DISABLE=1
+export LIBVA_DRIVER_NAME=dummy
+export GST_PLUGIN_FEATURE_RANK=vaapidecodebin:0,vaapih264dec:0,vaapipostproc:0,vaapisink:0
+
+RUST_LOG=notedeck_livestreams=debug \
+cargo run -p notedeck_chrome --release --features inline-playback -- \
+  --debug --datapath ./target/
+```
+
+You can use the same environment variables with `gst-launch-1.0 playbin … video-sink='videoconvert ! ximagesink'` to confirm the stream renders correctly. Android builds do **not** use VAAPI—they rely on the platform's MediaCodec decoders instead—so this issue is limited to Linux desktops.
 
 ## 🔄 Release Status
 
