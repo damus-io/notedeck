@@ -16,7 +16,7 @@ use enostr::{FilledKeypair, NoteId, Pubkey, RelayPool};
 use nostrdb::{IngestMetadata, Ndb, NoteBuilder, NoteKey, Transaction};
 use notedeck::{
     get_wallet_for,
-    note::{ReactAction, ZapTargetAmount},
+    note::{reaction_sent_id, ReactAction, ZapTargetAmount},
     Accounts, GlobalWallet, Images, NoteAction, NoteCache, NoteZapTargetOwned, UnknownIds,
     ZapAction, ZapTarget, ZappingError, Zaps,
 };
@@ -74,6 +74,21 @@ fn execute_note_action(
         NoteAction::Reply(note_id) => {
             if can_post {
                 router_action = Some(RouterAction::route_to(Route::reply(note_id)));
+            } else {
+                router_action = Some(RouterAction::route_to(Route::accounts()));
+            }
+        }
+        NoteAction::React(react_action) => {
+            if let Some(filled) = accounts.selected_filled() {
+                if let Err(err) = send_reaction_event(ndb, txn, pool, filled, &react_action) {
+                    tracing::error!("Failed to send reaction: {err}");
+                }
+                ui.ctx().data_mut(|d| {
+                    d.insert_temp(
+                        reaction_sent_id(filled.pubkey, react_action.note_id.bytes()),
+                        true,
+                    )
+                });
             } else {
                 router_action = Some(RouterAction::route_to(Route::accounts()));
             }
