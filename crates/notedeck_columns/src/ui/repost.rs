@@ -1,13 +1,12 @@
 use std::f32::consts::PI;
 
 use egui::{
-    epaint::PathShape, pos2, vec2, CornerRadius, Layout, Margin, Pos2, RichText, Sense, Shape,
-    Stroke,
+    epaint::PathShape, pos2, vec2, CornerRadius, Layout, Margin, RichText, Sense, Shape, Stroke,
 };
 use egui_extras::StripBuilder;
 use enostr::NoteId;
 use notedeck::{fonts::get_font_size, NotedeckTextStyle};
-use notedeck_ui::app_images;
+use notedeck_ui::{app_images, galley_centered_pos};
 
 use crate::repost::RepostAction;
 
@@ -91,7 +90,7 @@ impl<'a> RepostDecisionView<'a> {
                             );
 
                             painter.galley(
-                                galley_top_left_from_center(&galley, resp.rect.center()),
+                                galley_centered_pos(&galley, resp.rect.center()),
                                 galley,
                                 ui.visuals().text_color(),
                             );
@@ -105,14 +104,6 @@ impl<'a> RepostDecisionView<'a> {
 
         action
     }
-}
-
-fn galley_top_left_from_center(galley: &std::sync::Arc<egui::Galley>, center: Pos2) -> Pos2 {
-    let mut top_left = center;
-    top_left.x -= galley.rect.width() / 2.0;
-    top_left.y -= galley.rect.height() / 2.0;
-
-    top_left
 }
 
 fn repost_item_text(text: &str) -> impl egui::Widget + use<'_> {

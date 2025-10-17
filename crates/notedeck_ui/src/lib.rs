@@ -20,7 +20,7 @@ pub use note::{NoteContents, NoteOptions, NoteView};
 pub use profile::{ProfilePic, ProfilePreview};
 pub use username::Username;
 
-use egui::{Label, Margin, RichText};
+use egui::{Label, Margin, Pos2, RichText};
 
 /// This is kind of like the Widget trait but is meant for larger top-level
 /// views that are typically stateful.
@@ -92,4 +92,14 @@ pub fn input_rect(ui: &mut egui::Ui) -> Option<egui::Rect> {
 /// a soft keyboard intersects with the input box
 pub fn clear_input_rect(ui: &mut egui::Ui) {
     ui.data_mut(|d| d.remove::<egui::Rect>(egui::Id::new(INPUT_RECT_KEY)))
+}
+
+/// Center the galley on the center pos, returning the position of the top left position of the galley,
+/// for the `painter.galley(..)`
+pub fn galley_centered_pos(galley: &std::sync::Arc<egui::Galley>, center: Pos2) -> Pos2 {
+    let mut top_left = center;
+    top_left.x -= galley.rect.width() / 2.0;
+    top_left.y -= galley.rect.height() / 2.0;
+
+    top_left
 }
