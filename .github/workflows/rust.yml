@@ -68,7 +68,11 @@ jobs:
       os: macos-latest
       additional-setup: |
         brew update
-        brew install ffmpeg nasm pkg-config sdl2
+        brew install nasm pkg-config sdl2 ffmpeg@6
+        FFMPEG_PREFIX="$(brew --prefix ffmpeg@6)"
+        echo "PKG_CONFIG_PATH=${FFMPEG_PREFIX}/lib/pkgconfig:${PKG_CONFIG_PATH:-}" >> $GITHUB_ENV
+        echo "LIBRARY_PATH=${FFMPEG_PREFIX}/lib:${LIBRARY_PATH:-}" >> $GITHUB_ENV
+        echo "C_INCLUDE_PATH=${FFMPEG_PREFIX}/include:${C_INCLUDE_PATH:-}" >> $GITHUB_ENV
 
   windows-test:
     name: Test (Windows)
@@ -184,7 +188,11 @@ jobs:
       - name: Install Required Tools
         run: |
           brew update
-          brew install create-dmg ffmpeg nasm pkg-config sdl2
+          brew install create-dmg nasm pkg-config sdl2 ffmpeg@6
+          FFMPEG_PREFIX="$(brew --prefix ffmpeg@6)"
+          echo "PKG_CONFIG_PATH=${FFMPEG_PREFIX}/lib/pkgconfig:${PKG_CONFIG_PATH:-}" >> $GITHUB_ENV
+          echo "LIBRARY_PATH=${FFMPEG_PREFIX}/lib:${LIBRARY_PATH:-}" >> $GITHUB_ENV
+          echo "C_INCLUDE_PATH=${FFMPEG_PREFIX}/include:${C_INCLUDE_PATH:-}" >> $GITHUB_ENV
           cargo install cargo-bundle
           rustup target add ${{ matrix.arch }}-apple-darwin
 
