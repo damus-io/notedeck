@@ -83,15 +83,22 @@ impl CalendarApp {
                             ui.fonts(|fonts| {
                                 for idx in events.iter().take(display_count) {
                                     let wrap_width = (approx_cell_width - 12.0).max(32.0);
-                                    let (event_id, title) =
+                                    let (event_id, status, title) =
                                         if let Some(event) = self.events.get(*idx) {
-                                            (event.id_hex.clone(), event.month_title().to_owned())
+                                            let status = self.current_user_rsvp(event);
+                                            let annotated = Self::annotate_title_with_status(
+                                                event.month_title(),
+                                                status,
+                                            )
+                                            .into_owned();
+                                            (event.id_hex.clone(), status, annotated)
                                         } else {
                                             continue;
                                         };
 
-                                    let galley = self
-                                        .month_title_galley(fonts, &event_id, &title, wrap_width);
+                                    let galley = self.month_title_galley(
+                                        fonts, &event_id, status, &title, wrap_width,
+                                    );
                                     let row_height = galley.size().y + 6.0;
                                     info.min_height += row_height;
                                     info.rows.push((*idx, galley));

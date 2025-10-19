@@ -9,6 +9,11 @@ pub struct Contacts {
     pub(super) state: ContactState,
 }
 
+pub struct ContactSnapshot<'a> {
+    pub contacts: &'a HashSet<Pubkey>,
+    pub timestamp: u64,
+}
+
 #[derive(Clone)]
 pub enum ContactState {
     Unreceived,
@@ -101,6 +106,20 @@ impl Contacts {
 
     pub fn get_state(&self) -> &ContactState {
         &self.state
+    }
+
+    pub fn snapshot(&self) -> Option<ContactSnapshot<'_>> {
+        match &self.state {
+            ContactState::Received {
+                contacts,
+                timestamp,
+                ..
+            } => Some(ContactSnapshot {
+                contacts,
+                timestamp: *timestamp,
+            }),
+            ContactState::Unreceived => None,
+        }
     }
 }
 

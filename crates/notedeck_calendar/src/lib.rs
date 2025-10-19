@@ -26,7 +26,7 @@ use notedeck::media::gif::ensure_latest_texture;
 use notedeck::media::{AnimationMode, ImageType};
 use notedeck::{
     get_render_state, supported_mime_hosted_at_url, App, AppAction, AppContext, AppResponse,
-    MediaCacheType, TextureState,
+    MediaCacheType, TextureState, WebOfTrustBuilder,
 };
 use notedeck_ui::{
     app_images::{copy_to_clipboard_dark_image, copy_to_clipboard_image},
@@ -53,8 +53,9 @@ use model::{
 const FETCH_LIMIT: i32 = 1024;
 const POLL_BATCH_SIZE: usize = 64;
 const POLL_INTERVAL: StdDuration = StdDuration::from_secs(5);
-const RSVP_FEEDBACK_TTL: StdDuration = StdDuration::from_secs(8);
 const EVENT_CREATION_FEEDBACK_TTL: StdDuration = StdDuration::from_secs(10);
+const WOT_CACHE_TTL: StdDuration = StdDuration::from_secs(60);
+const DEFAULT_WOT_DEPTH: u8 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DraftEventType {
@@ -542,12 +543,28 @@ pub struct CalendarApp {
     initialized: bool,
     timezone: TimeZoneChoice,
     timezone_filter: String,
-    rsvp_feedback: Option<(Instant, RsvpFeedback)>,
+    rsvp_feedback: Option<(String, RsvpFeedback)>,
     rsvp_pending: bool,
     creating_event: bool,
     creation_feedback: Option<(Instant, EventCreationFeedback)>,
     creation_pending: bool,
     event_draft: CalendarEventDraft,
+    wot_only: bool,
+    wot_cache: Option<WebOfTrustCache>,
+    user_pubkey_hex: String,
+}
+
+struct WebOfTrustCache {
+    trusted_hex: HashSet<String>,
+    source_timestamp: Option<u64>,
+    computed_at: Instant,
+    root_hex: String,
+}
+
+impl WebOfTrustCache {
+    fn contains(&self, hex: &str) -> bool {
+        self.trusted_hex.contains(hex)
+    }
 }
 
 impl CalendarApp {
@@ -572,6 +589,9 @@ impl CalendarApp {
             creation_feedback: None,
             creation_pending: false,
             event_draft: CalendarEventDraft::new(),
+            wot_only: true,
+            wot_cache: None,
+            user_pubkey_hex: String::new(),
         }
     }
 
@@ -579,6 +599,66 @@ impl CalendarApp {
         let mut kinds = Filter::new().kinds([31922, 31923, 31925]);
         kinds = kinds.limit(FETCH_LIMIT as u64);
         vec![kinds.build()]
+    }
+
+    fn ensure_wot_cache(&mut self, ctx: &mut AppContext) {
+        if !self.wot_only {
+            self.wot_cache = None;
+            return;
+        }
+
+        let root_pk = ctx.accounts.selected_account_pubkey().clone();
+        let root_hex = hex::encode(root_pk.bytes());
+        let snapshot = ctx.accounts.get_selected_account().data.contacts.snapshot();
+        let snapshot_timestamp = snapshot.as_ref().map(|snap| snap.timestamp);
+
+        let needs_refresh = match &self.wot_cache {
+            Some(cache) => {
+                cache.root_hex != root_hex
+                    || cache.source_timestamp != snapshot_timestamp
+                    || cache.computed_at.elapsed() >= WOT_CACHE_TTL
+            }
+            None => true,
+        };
+
+        if !needs_refresh {
+            return;
+        }
+
+        let txn = match Transaction::new(ctx.ndb) {
+            Ok(txn) => txn,
+            Err(err) => {
+                warn!("Calendar: failed to open transaction for web-of-trust cache: {err}");
+                let mut trusted = HashSet::new();
+                trusted.insert(root_hex.clone());
+                self.wot_cache = Some(WebOfTrustCache {
+                    trusted_hex: trusted,
+                    source_timestamp: snapshot_timestamp,
+                    computed_at: Instant::now(),
+                    root_hex,
+                });
+                return;
+            }
+        };
+
+        let mut builder = WebOfTrustBuilder::new(ctx.ndb, &txn, root_pk);
+        builder = builder.max_depth(DEFAULT_WOT_DEPTH).include_self(true);
+
+        if let Some(snapshot) = snapshot {
+            builder = builder.with_seed_contacts(snapshot.contacts.clone());
+        }
+
+        let mut trusted_hex = builder.build().to_hex_set();
+        if !trusted_hex.contains(&root_hex) {
+            trusted_hex.insert(root_hex.clone());
+        }
+
+        self.wot_cache = Some(WebOfTrustCache {
+            trusted_hex,
+            source_timestamp: snapshot_timestamp,
+            computed_at: Instant::now(),
+            root_hex,
+        });
     }
 
     fn ensure_subscription(&mut self, ctx: &mut AppContext) {
@@ -758,6 +838,7 @@ impl CalendarApp {
         self.pending_rsvps.remove(&id);
 
         let mut updates = Vec::new();
+        let mut purge_ids = Vec::new();
         for (idx, event) in self.events.iter().enumerate() {
             if rsvp.matches_event(event) {
                 updates.push((idx, self.relevant_rsvps_for(event)));
@@ -767,7 +848,12 @@ impl CalendarApp {
         for (idx, relevant) in updates {
             if let Some(event_mut) = self.events.get_mut(idx) {
                 event_mut.rsvps = match_rsvps_for_event(event_mut, &relevant);
+                purge_ids.push(event_mut.id_hex.clone());
             }
+        }
+
+        for id in purge_ids {
+            self.purge_month_cache_for(&id);
         }
     }
 
@@ -805,11 +891,13 @@ impl CalendarApp {
         &mut self,
         fonts: &egui::text::Fonts,
         event_id: &str,
+        status: Option<RsvpStatus>,
         title: &str,
         width: f32,
     ) -> Arc<egui::Galley> {
         let width_key = width.round().clamp(0.0, u16::MAX as f32) as u16;
-        let key = (event_id.to_owned(), width_key);
+        let cache_id = format!("{}:{}", event_id, Self::status_cache_suffix(status));
+        let key = (cache_id.clone(), width_key);
 
         if let Some(existing) = self.month_galley_cache.get(&key) {
             return existing.clone();
@@ -836,7 +924,7 @@ impl CalendarApp {
             .map(|event| event.id_hex.clone())
             .collect();
         self.month_galley_cache
-            .retain(|(event_id, _), _| valid_ids.contains(event_id));
+            .retain(|(cache_id, _), _| valid_ids.iter().any(|valid| cache_id.starts_with(valid)));
     }
 
     fn purge_month_cache_for(&mut self, event_id: &str) {
@@ -847,7 +935,7 @@ impl CalendarApp {
         let to_remove: Vec<(String, u16)> = self
             .month_galley_cache
             .keys()
-            .filter(|(id, _)| id == event_id)
+            .filter(|(cache_id, _)| cache_id.starts_with(event_id))
             .cloned()
             .collect();
 
@@ -864,6 +952,10 @@ impl CalendarApp {
         let mut map: HashMap<NaiveDate, Vec<usize>> = HashMap::new();
 
         for (idx, event) in self.events.iter().enumerate() {
+            if !self.is_event_visible(event) {
+                continue;
+            }
+
             let (event_start, event_end) = event.date_span(&self.timezone);
             if event_end < start || event_start > end {
                 continue;
@@ -889,14 +981,6 @@ impl CalendarApp {
         id.with("area")
     }
 
-    fn prune_rsvp_feedback(&mut self) {
-        if let Some((timestamp, _)) = self.rsvp_feedback {
-            if timestamp.elapsed() >= RSVP_FEEDBACK_TTL {
-                self.rsvp_feedback = None;
-            }
-        }
-    }
-
     fn prune_creation_feedback(&mut self) {
         if let Some((timestamp, _)) = self.creation_feedback {
             if timestamp.elapsed() >= EVENT_CREATION_FEEDBACK_TTL {
@@ -905,8 +989,8 @@ impl CalendarApp {
         }
     }
 
-    fn set_rsvp_feedback(&mut self, feedback: RsvpFeedback) {
-        self.rsvp_feedback = Some((Instant::now(), feedback));
+    fn set_rsvp_feedback(&mut self, event_id: String, feedback: RsvpFeedback) {
+        self.rsvp_feedback = Some((event_id, feedback));
     }
 
     fn set_creation_feedback(&mut self, feedback: EventCreationFeedback) {
@@ -1600,17 +1684,43 @@ impl CalendarApp {
         Ok(wrapped_count)
     }
 
-    fn current_user_rsvp(
-        &mut self,
-        ctx: &mut AppContext,
-        event: &CalendarEvent,
-    ) -> Option<RsvpStatus> {
-        let user_hex = ctx.accounts.selected_account_pubkey().hex();
+    fn current_user_rsvp(&self, event: &CalendarEvent) -> Option<RsvpStatus> {
+        if self.user_pubkey_hex.is_empty() {
+            return None;
+        }
+
         event
             .rsvps
             .iter()
-            .find(|r| r.attendee_hex.eq_ignore_ascii_case(&user_hex))
+            .find(|r| r.attendee_hex.eq_ignore_ascii_case(&self.user_pubkey_hex))
             .map(|r| r.status)
+    }
+
+    fn status_label(status: Option<RsvpStatus>) -> Option<&'static str> {
+        match status {
+            Some(RsvpStatus::Accepted) => Some("Accepted"),
+            Some(RsvpStatus::Declined) => Some("Declined"),
+            Some(RsvpStatus::Tentative) => Some("Maybe"),
+            _ => None,
+        }
+    }
+
+    fn annotate_title_with_status<'a>(base: &'a str, status: Option<RsvpStatus>) -> Cow<'a, str> {
+        if let Some(label) = Self::status_label(status) {
+            Cow::Owned(format!("{base} · {label}"))
+        } else {
+            Cow::Borrowed(base)
+        }
+    }
+
+    fn status_cache_suffix(status: Option<RsvpStatus>) -> &'static str {
+        match status {
+            Some(RsvpStatus::Accepted) => "acc",
+            Some(RsvpStatus::Declined) => "dec",
+            Some(RsvpStatus::Tentative) => "tent",
+            Some(RsvpStatus::Unknown) => "unk",
+            None => "none",
+        }
     }
 
     fn render_rsvp_controls(
@@ -1628,7 +1738,7 @@ impl CalendarApp {
         }
 
         let has_writable_account = ctx.accounts.selected_filled().is_some();
-        let current_status = self.current_user_rsvp(ctx, event);
+        let current_status = self.current_user_rsvp(event);
 
         match current_status {
             Some(status) if status != RsvpStatus::Unknown => {
@@ -1650,13 +1760,15 @@ impl CalendarApp {
             ui.label("Sending RSVP…");
         }
 
-        if let Some((_, feedback)) = &self.rsvp_feedback {
-            match feedback {
-                RsvpFeedback::Success(msg) => {
-                    ui.colored_label(ui.visuals().hyperlink_color, msg);
-                }
-                RsvpFeedback::Error(msg) => {
-                    ui.colored_label(Color32::from_rgb(220, 70, 70), msg);
+        if let Some((feedback_event_id, feedback)) = &self.rsvp_feedback {
+            if feedback_event_id == &event.id_hex {
+                match feedback {
+                    RsvpFeedback::Success(msg) => {
+                        ui.colored_label(ui.visuals().hyperlink_color, msg);
+                    }
+                    RsvpFeedback::Error(msg) => {
+                        ui.colored_label(Color32::from_rgb(220, 70, 70), msg);
+                    }
                 }
             }
         }
@@ -1700,16 +1812,20 @@ impl CalendarApp {
         }
 
         let Some(identifier) = &event.identifier else {
-            self.set_rsvp_feedback(RsvpFeedback::Error(
-                "Event is missing calendar identifier; unable to RSVP.".to_string(),
-            ));
+            self.set_rsvp_feedback(
+                event.id_hex.clone(),
+                RsvpFeedback::Error(
+                    "Event is missing calendar identifier; unable to RSVP.".to_string(),
+                ),
+            );
             return;
         };
 
         let Some(filled) = ctx.accounts.selected_filled() else {
-            self.set_rsvp_feedback(RsvpFeedback::Error(
-                "Select an account with its private key to RSVP.".to_string(),
-            ));
+            self.set_rsvp_feedback(
+                event.id_hex.clone(),
+                RsvpFeedback::Error("Select an account with its private key to RSVP.".to_string()),
+            );
             return;
         };
 
@@ -1753,17 +1869,19 @@ impl CalendarApp {
         let secret_bytes = account.secret_key.secret_bytes();
         let Some(note) = builder.sign(&secret_bytes).build() else {
             self.rsvp_pending = false;
-            self.set_rsvp_feedback(RsvpFeedback::Error(
-                "Failed to build RSVP event.".to_string(),
-            ));
+            self.set_rsvp_feedback(
+                event.id_hex.clone(),
+                RsvpFeedback::Error("Failed to build RSVP event.".to_string()),
+            );
             return;
         };
 
         let Ok(event_msg) = ClientMessage::event(&note) else {
             self.rsvp_pending = false;
-            self.set_rsvp_feedback(RsvpFeedback::Error(
-                "Failed to serialize RSVP event.".to_string(),
-            ));
+            self.set_rsvp_feedback(
+                event.id_hex.clone(),
+                RsvpFeedback::Error("Failed to serialize RSVP event.".to_string()),
+            );
             return;
         };
 
@@ -1803,10 +1921,38 @@ impl CalendarApp {
         self.pending_rsvps.insert(new_rsvp.id_hex.clone(), new_rsvp);
 
         self.rsvp_pending = false;
-        self.set_rsvp_feedback(RsvpFeedback::Success(format!(
-            "{} RSVP sent",
-            status.display_label()
-        )));
+        self.set_rsvp_feedback(
+            event.id_hex.clone(),
+            RsvpFeedback::Success(format!("{} RSVP sent", status.display_label())),
+        );
+    }
+
+    fn is_event_visible(&self, event: &CalendarEvent) -> bool {
+        if !self.wot_only {
+            return true;
+        }
+
+        self.wot_cache
+            .as_ref()
+            .map(|cache| cache.contains(&event.author_hex))
+            .unwrap_or(true)
+    }
+
+    fn ensure_selected_event_visible(&mut self) {
+        if let Some(idx) = self.selected_event {
+            let visible = self
+                .events
+                .get(idx)
+                .map(|event| self.is_event_visible(event))
+                .unwrap_or(false);
+
+            if !visible {
+                self.selected_event = None;
+                if matches!(self.view, CalendarView::Event) {
+                    self.view = CalendarView::Day;
+                }
+            }
+        }
     }
 
     fn events_on(&self, date: NaiveDate) -> Vec<usize> {
@@ -1814,7 +1960,7 @@ impl CalendarApp {
             .iter()
             .enumerate()
             .filter_map(|(idx, event)| {
-                if event.occurs_on(date, &self.timezone) {
+                if self.is_event_visible(event) && event.occurs_on(date, &self.timezone) {
                     Some(idx)
                 } else {
                     None
@@ -1953,13 +2099,20 @@ impl CalendarApp {
         let origin_x = content_rect.left();
         let text_painter = painter.with_clip_rect(rect.shrink(1.0));
 
+        let status = self.current_user_rsvp(event);
         let title_color = ui.visuals().strong_text_color();
-        let title_text: Cow<'_, str> = if max_width <= 220.0 {
+        let base_title: Cow<'_, str> = if max_width <= 220.0 {
             Cow::Borrowed(event.day_title())
         } else {
             let chars_per_line = ((max_width / 7.0).floor() as usize).clamp(12, 96);
             let max_lines = if max_width > 360.0 { 6 } else { 4 };
             Cow::Owned(wrap_title(&event.title, chars_per_line, max_lines))
+        };
+
+        let title_text: Cow<'_, str> = if let Some(label) = Self::status_label(status) {
+            Cow::Owned(format!("{} · {}", base_title, label))
+        } else {
+            base_title
         };
 
         text_painter.text(
@@ -2004,8 +2157,6 @@ impl CalendarApp {
             ui.label("Select an event from any calendar view to see its details.");
             return None;
         };
-
-        self.prune_rsvp_feedback();
 
         let Some(event_snapshot) = self.events.get(idx).cloned() else {
             ui.label("The selected event is no longer available.");
@@ -2200,14 +2351,23 @@ impl CalendarApp {
 
 impl App for CalendarApp {
     fn update(&mut self, ctx: &mut AppContext, ui: &mut egui::Ui) -> AppResponse {
+        let new_user_hex = hex::encode(ctx.accounts.selected_account_pubkey_bytes());
+        if self.user_pubkey_hex != new_user_hex {
+            self.user_pubkey_hex = new_user_hex;
+            self.wot_cache = None;
+        }
+
         self.ensure_subscription(ctx);
         self.load_initial_events(ctx);
         self.poll_for_new_notes(ctx);
         self.prune_creation_feedback();
+        self.ensure_wot_cache(ctx);
+        self.ensure_selected_event_visible();
 
         let mut action = None;
         let mut drag_ids = Vec::new();
         let mut open_creation_requested = false;
+        let mut wot_changed = false;
         ui.vertical(|ui| {
             ui.horizontal(|ui| {
                 if ui.button("← Back to Notedeck").clicked() {
@@ -2240,6 +2400,29 @@ impl App for CalendarApp {
             self.navigation_bar(ui);
             ui.add_space(8.0);
             self.timezone_controls(ui);
+            ui.horizontal(|ui| {
+                let toggle_response = ui.add(IosSwitch::new(&mut self.wot_only));
+                if toggle_response.changed() {
+                    self.wot_cache = None;
+                    wot_changed = true;
+                }
+
+                let state_label = if self.wot_only {
+                    "Friends-of-friends"
+                } else {
+                    "Nostr calendar firehose"
+                };
+                ui.add_space(6.0);
+                ui.label(state_label);
+                ui.add_space(4.0);
+                let tooltip = if self.wot_only {
+                    "Friends-of-friends: Limit events to authors you follow and their followers."
+                } else {
+                    "Display all calendar events from your relay list."
+                };
+                Self::info_icon(ui, tooltip);
+            });
+            ui.add_space(8.0);
 
             match self.view {
                 CalendarView::Month => {
@@ -2262,6 +2445,11 @@ impl App for CalendarApp {
             }
         });
 
+        if wot_changed {
+            self.ensure_wot_cache(ctx);
+            self.ensure_selected_event_visible();
+        }
+
         if open_creation_requested {
             if !self.creating_event {
                 self.event_draft.reset_preserving_type();
@@ -2278,6 +2466,28 @@ impl App for CalendarApp {
         };
 
         response.drag(drag_ids)
+    }
+}
+
+impl CalendarApp {
+    fn info_icon(ui: &mut egui::Ui, tooltip: &str) -> egui::Response {
+        let size = vec2(18.0, 18.0);
+        let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
+        let painter = ui.painter_at(rect);
+        let visuals = ui.style().visuals.clone();
+
+        let radius = size.x * 0.5;
+        painter.circle_filled(rect.center(), radius, visuals.selection.bg_fill);
+        painter.circle_stroke(rect.center(), radius, visuals.selection.stroke);
+        painter.text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "i",
+            FontId::proportional(12.0),
+            visuals.strong_text_color(),
+        );
+
+        response.on_hover_text(tooltip)
     }
 }
 

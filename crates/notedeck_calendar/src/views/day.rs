@@ -161,12 +161,16 @@ impl CalendarApp {
                                 stroke,
                                 egui::StrokeKind::Inside,
                             );
+                            let event = &self.events[*event_idx];
+                            let status = self.current_user_rsvp(event);
+                            let annotated =
+                                Self::annotate_title_with_status(event.day_title(), status);
                             let chip_clip_rect = chip_rect.shrink2(vec2(4.0, 2.0));
                             let chip_painter = painter.with_clip_rect(chip_rect.shrink(1.0));
                             chip_painter.text(
                                 chip_clip_rect.left_top(),
                                 egui::Align2::LEFT_TOP,
-                                self.events[*event_idx].day_title(),
+                                annotated.as_ref(),
                                 FontId::proportional(12.0),
                                 ui.visuals().strong_text_color(),
                             );

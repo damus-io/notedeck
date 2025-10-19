@@ -160,13 +160,17 @@ impl CalendarApp {
                                     stroke,
                                     egui::StrokeKind::Inside,
                                 );
+                                let event = &self.events[*event_idx];
+                                let status = self.current_user_rsvp(event);
+                                let annotated =
+                                    Self::annotate_title_with_status(event.week_title(), status);
                                 let chip_clip_rect = chip_rect.shrink2(vec2(4.0, 2.0));
                                 let chip_painter = painter.with_clip_rect(chip_rect.shrink(1.0));
                                 let chip_color = ui.visuals().strong_text_color();
                                 chip_painter.text(
                                     chip_clip_rect.left_top(),
                                     egui::Align2::LEFT_TOP,
-                                    self.events[*event_idx].week_title(),
+                                    annotated.as_ref(),
                                     FontId::proportional(12.0),
                                     chip_color,
                                 );
@@ -216,10 +220,14 @@ impl CalendarApp {
 
                                 let clip_rect = event_rect.shrink2(vec2(6.0, 4.0));
                                 let text_painter = painter.with_clip_rect(event_rect.shrink(1.0));
+                                let annotated = Self::annotate_title_with_status(
+                                    event.week_title(),
+                                    self.current_user_rsvp(event),
+                                );
                                 text_painter.text(
                                     clip_rect.left_top(),
                                     egui::Align2::LEFT_TOP,
-                                    event.week_title(),
+                                    annotated.as_ref(),
                                     FontId::proportional(13.0),
                                     ui.visuals().strong_text_color(),
                                 );
