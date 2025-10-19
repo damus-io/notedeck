@@ -69,6 +69,10 @@ jobs:
       additional-setup: |
         brew update
         brew install nasm pkg-config sdl2
+        SDL_PREFIX="$(brew --prefix sdl2)"
+        echo "PKG_CONFIG_PATH=${SDL_PREFIX}/lib/pkgconfig:${PKG_CONFIG_PATH:-}" >> $GITHUB_ENV
+        echo "LIBRARY_PATH=${SDL_PREFIX}/lib:${LIBRARY_PATH:-}" >> $GITHUB_ENV
+        echo "C_INCLUDE_PATH=${SDL_PREFIX}/include:${C_INCLUDE_PATH:-}" >> $GITHUB_ENV
 
   windows-test:
     name: Test (Windows)
@@ -185,6 +189,10 @@ jobs:
         run: |
           brew update
           brew install create-dmg nasm pkg-config sdl2
+          SDL_PREFIX="$(brew --prefix sdl2)"
+          echo "PKG_CONFIG_PATH=${SDL_PREFIX}/lib/pkgconfig:${PKG_CONFIG_PATH:-}" >> $GITHUB_ENV
+          echo "LIBRARY_PATH=${SDL_PREFIX}/lib:${LIBRARY_PATH:-}" >> $GITHUB_ENV
+          echo "C_INCLUDE_PATH=${SDL_PREFIX}/include:${C_INCLUDE_PATH:-}" >> $GITHUB_ENV
           cargo install cargo-bundle
           rustup target add ${{ matrix.arch }}-apple-darwin
 
