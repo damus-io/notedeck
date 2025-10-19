@@ -3,6 +3,11 @@ pub mod context;
 pub mod media;
 pub mod options;
 pub mod reply_description;
+#[cfg(any(target_os = "android", target_os = "windows"))]
+#[path = "video_stub.rs"]
+pub mod video;
+#[cfg(not(any(target_os = "android", target_os = "windows")))]
+pub mod video;
 
 use crate::{app_images, secondary_label};
 use crate::{widgets::x_button, ProfilePic, ProfilePreview, PulseAlpha, Username};

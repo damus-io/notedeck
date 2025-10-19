@@ -21,8 +21,10 @@ image = { workspace = true }
 bitflags = { workspace = true }
 enostr = { workspace = true }
 hashbrown = { workspace = true }
-egui-video = { workspace = true }
 hex = { workspace = true }
 sha2 = { workspace = true }
 ureq = { workspace = true }
+
+[target.'cfg(all(not(target_os = "android"), not(target_os = "windows")))'.dependencies]
+egui-video = { workspace = true }
 sdl2 = { workspace = true }

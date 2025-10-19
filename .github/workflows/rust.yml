@@ -18,6 +18,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt,clippy
+      - name: Install FFmpeg build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config nasm yasm ffmpeg libavcodec-dev libavformat-dev libavutil-dev libswresample-dev libswscale-dev libsdl2-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libspeechd-dev libxkbcommon-dev libssl-dev
       - run: |
           cargo fmt --all -- --check
           cargo clippy
@@ -39,6 +43,10 @@ jobs:
         uses: android-actions/setup-android@v3
       - name: Add android rust target
         run: rustup target add aarch64-linux-android
+      - name: Install FFmpeg build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config nasm yasm
       - name: Install Cargo NDK
         run: cargo install cargo-ndk
       - name: Run tests
@@ -50,19 +58,27 @@ jobs:
     with:
       os: ubuntu-22.04
       additional-setup: |
-        sudo apt-get install libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libspeechd-dev libxkbcommon-dev libssl-dev
+        sudo apt-get update
+        sudo apt-get install -y pkg-config nasm yasm ffmpeg libavcodec-dev libavformat-dev libavutil-dev libswresample-dev libswscale-dev libsdl2-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libspeechd-dev libxkbcommon-dev libssl-dev
 
   macos-test:
     name: Test (macOS)
     uses: ./.github/workflows/build-and-test.yml
     with:
       os: macos-latest
+      additional-setup: |
+        brew update
+        brew install ffmpeg nasm pkg-config sdl2
 
   windows-test:
     name: Test (Windows)
     uses: ./.github/workflows/build-and-test.yml
     with:
       os: windows-latest
+      additional-setup: |
+        choco install nasm --no-progress --yes
+        choco install yasm --no-progress --yes
+        choco install pkgconfiglite --no-progress --yes
 
   packaging:
     name: rpm/deb
@@ -84,6 +100,7 @@ jobs:
       - name: Install Packaging Tools
         run: |
           sudo apt-get update
+          sudo apt-get install -y pkg-config nasm yasm ffmpeg libavcodec-dev libavformat-dev libavutil-dev libswresample-dev libswscale-dev libsdl2-dev
           if [ "${{ matrix.arch }}" != "$(uname -m)" ]; then
             sudo apt-get install -y gcc-${{ matrix.arch }}-linux-gnu g++-aarch64-linux-gnu
             rustup target add ${{ matrix.arch }}-unknown-linux-gnu
@@ -166,7 +183,8 @@ jobs:
 
       - name: Install Required Tools
         run: |
-          brew install create-dmg
+          brew update
+          brew install create-dmg ffmpeg nasm pkg-config sdl2
           cargo install cargo-bundle
           rustup target add ${{ matrix.arch }}-apple-darwin
 
@@ -202,6 +220,12 @@ jobs:
       # Checkout the repository
       - name: Checkout Code
         uses: actions/checkout@v4
+
+      - name: Install FFmpeg build dependencies
+        run: |
+          choco install nasm --no-progress --yes
+          choco install yasm --no-progress --yes
+          choco install pkgconfiglite --no-progress --yes
 
       # Build cache
       - name: Rust cache
@@ -306,4 +330,3 @@ jobs:
           put $ARTIFACTS/DamusNotedeckInstaller-aarch64.exe/*
           bye
           EOF
-

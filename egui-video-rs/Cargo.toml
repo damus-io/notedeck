@@ -15,9 +15,6 @@ from_bytes = ["dep:tempfile"]
 
 [dependencies]
 egui = { workspace = true }
-ffmpeg-next = { workspace = true, default-features = false, features = ["codec", "format", "software-resampling", "software-scaling"] }
-sdl2 = { workspace = true }
-ffmpeg-sys-next = { workspace = true, default-features = false, features = ["avcodec", "avformat", "swresample", "swscale"] }
 anyhow = "1.0.66"
 timer = "0.2.0"
 chrono = "0.4.22"
@@ -25,3 +22,8 @@ tempfile = {version = "3.3.0", optional = true}
 ringbuf = "0.3.1"
 parking_lot = "0.12.1"
 itertools = "0.10.5"
+
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
+ffmpeg-next = { workspace = true, default-features = false, features = ["codec", "format", "software-resampling", "software-scaling"] }
+sdl2 = { workspace = true }
+ffmpeg-sys-next = { workspace = true, default-features = false, features = ["avcodec", "avformat", "swresample", "swscale"] }
