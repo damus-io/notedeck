@@ -14,3 +14,4 @@ tracing = { workspace = true }
 uuid = { workspace = true }
 hex = { workspace = true }
 nostr = { workspace = true }
+iana-time-zone = { workspace = true }

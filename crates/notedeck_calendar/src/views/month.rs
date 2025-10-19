@@ -120,9 +120,16 @@ impl CalendarApp {
                             frame.show(col, |ui| {
                                 ui.set_min_height(row_min_height);
                                 if let Some(day) = info.date {
-                                    ui.label(
+                                    let day_label = egui::Label::new(
                                         egui::RichText::new(format!("{}", day.day())).strong(),
-                                    );
+                                    )
+                                    .sense(egui::Sense::click());
+                                    let response = ui.add(day_label);
+                                    if response.clicked() {
+                                        self.view = CalendarView::Day;
+                                        self.focus_date = day;
+                                        self.selected_event = None;
+                                    }
                                     ui.add_space(4.0);
 
                                     for (event_idx, galley) in &info.rows {

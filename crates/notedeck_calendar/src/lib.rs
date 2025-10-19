@@ -2,14 +2,16 @@ mod model;
 mod views;
 
 use chrono::{
-    offset::Offset, DateTime, Datelike, Duration, Local, NaiveDate, NaiveDateTime, NaiveTime,
-    TimeZone, Timelike, Utc,
+    offset::{LocalResult, Offset},
+    DateTime, Datelike, Duration, Local, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Timelike,
+    Utc,
 };
 use chrono_tz::{Tz, TZ_VARIANTS};
 use egui::{scroll_area::ScrollAreaOutput, vec2, Color32, CornerRadius, FontId};
 use hex::FromHex;
+use iana_time_zone::get_timezone;
 use nostrdb::{Filter, IngestMetadata, Note, ProfileRecord, Transaction};
-use notedeck::enostr::ClientMessage;
+use notedeck::enostr::{ClientMessage, FullKeypair};
 use notedeck::filter::UnifiedSubscription;
 use notedeck::media::gif::ensure_latest_texture;
 use notedeck::media::{AnimationMode, ImageType};
@@ -17,7 +19,10 @@ use notedeck::{
     get_render_state, supported_mime_hosted_at_url, App, AppAction, AppContext, AppResponse,
     MediaCacheType, TextureState,
 };
-use notedeck_ui::ProfilePic;
+use notedeck_ui::{
+    app_images::{copy_to_clipboard_dark_image, copy_to_clipboard_image},
+    AnimationHelper, ProfilePic,
+};
 use std::sync::Arc;
 use std::time::{Duration as StdDuration, Instant};
 use std::{
@@ -37,6 +42,189 @@ const FETCH_LIMIT: i32 = 1024;
 const POLL_BATCH_SIZE: usize = 64;
 const POLL_INTERVAL: StdDuration = StdDuration::from_secs(5);
 const RSVP_FEEDBACK_TTL: StdDuration = StdDuration::from_secs(8);
+const EVENT_CREATION_FEEDBACK_TTL: StdDuration = StdDuration::from_secs(10);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DraftEventType {
+    AllDay,
+    Timed,
+}
+
+impl DraftEventType {
+    fn as_kind(&self) -> u32 {
+        match self {
+            DraftEventType::AllDay => 31922,
+            DraftEventType::Timed => 31923,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct CalendarEventDraft {
+    event_type: DraftEventType,
+    identifier: String,
+    title: String,
+    summary: String,
+    description: String,
+    locations_text: String,
+    images_text: String,
+    hashtags_text: String,
+    references_text: String,
+    calendars_text: String,
+    participants_text: String,
+    start_date: String,
+    end_date: String,
+    start_time: String,
+    end_time: String,
+    include_end: bool,
+    start_tzid: String,
+    end_tzid: String,
+}
+
+impl CalendarEventDraft {
+    fn with_kind(event_type: DraftEventType) -> Self {
+        let today = Local::now().date_naive();
+        let now = Local::now().time();
+        let default_time = format!("{:02}:{:02}", now.hour(), now.minute());
+        let guessed = default_timezone_name();
+
+        CalendarEventDraft {
+            event_type,
+            identifier: Self::new_identifier(),
+            title: String::new(),
+            summary: String::new(),
+            description: String::new(),
+            locations_text: String::new(),
+            images_text: String::new(),
+            hashtags_text: String::new(),
+            references_text: String::new(),
+            calendars_text: String::new(),
+            participants_text: String::new(),
+            start_date: today.format("%Y-%m-%d").to_string(),
+            end_date: String::new(),
+            start_time: default_time.clone(),
+            end_time: default_time,
+            include_end: false,
+            start_tzid: guessed.clone(),
+            end_tzid: guessed,
+        }
+    }
+
+    fn new() -> Self {
+        Self::with_kind(DraftEventType::Timed)
+    }
+
+    fn reset_preserving_type(&mut self) {
+        let event_type = self.event_type;
+        *self = Self::with_kind(event_type);
+    }
+
+    fn new_identifier() -> String {
+        Uuid::new_v4().simple().to_string()
+    }
+
+    fn parsed_locations(&self) -> Vec<String> {
+        self.locations_text
+            .lines()
+            .map(|line| line.trim())
+            .filter(|line| !line.is_empty())
+            .map(|line| line.to_owned())
+            .collect()
+    }
+
+    fn parsed_images(&self) -> Vec<String> {
+        self.images_text
+            .lines()
+            .map(|line| line.trim())
+            .filter(|line| !line.is_empty())
+            .map(|line| line.to_owned())
+            .collect()
+    }
+
+    fn parsed_hashtags(&self) -> Vec<String> {
+        self.hashtags_text
+            .split_whitespace()
+            .map(|tag| tag.trim_matches('#').to_ascii_lowercase())
+            .filter(|tag| !tag.is_empty())
+            .collect()
+    }
+
+    fn parsed_references(&self) -> Vec<String> {
+        self.references_text
+            .lines()
+            .map(|line| line.trim())
+            .filter(|line| !line.is_empty())
+            .map(|line| line.to_owned())
+            .collect()
+    }
+
+    fn parsed_calendars(&self) -> Vec<String> {
+        self.calendars_text
+            .lines()
+            .map(|line| line.trim())
+            .filter(|line| !line.is_empty())
+            .map(|line| line.to_owned())
+            .collect()
+    }
+
+    fn parsed_participants(&self) -> Result<Vec<(String, Option<String>)>, String> {
+        let mut participants = Vec::new();
+        for (idx, line) in self.participants_text.lines().enumerate() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+
+            let mut parts = trimmed.splitn(2, ',');
+            let pubkey = parts.next().unwrap().trim();
+            if pubkey.len() != 64 || !pubkey.chars().all(|c| c.is_ascii_hexdigit()) {
+                return Err(format!(
+                    "Participant pubkey on line {} must be 64 hex characters.",
+                    idx + 1
+                ));
+            }
+
+            let role = parts
+                .next()
+                .map(|r| r.trim().to_string())
+                .filter(|r| !r.is_empty());
+
+            participants.push((pubkey.to_lowercase(), role));
+        }
+
+        Ok(participants)
+    }
+
+    fn parse_required_date(value: &str, field: &str) -> Result<NaiveDate, String> {
+        NaiveDate::parse_from_str(value.trim(), "%Y-%m-%d")
+            .map_err(|_| format!("{field} must use YYYY-MM-DD format"))
+    }
+
+    fn parse_optional_date(value: &str, field: &str) -> Result<Option<NaiveDate>, String> {
+        if value.trim().is_empty() {
+            Ok(None)
+        } else {
+            Self::parse_required_date(value, field).map(Some)
+        }
+    }
+
+    fn parse_required_time(value: &str, field: &str) -> Result<NaiveTime, String> {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            return Err(format!("{field} is required"));
+        }
+
+        NaiveTime::parse_from_str(trimmed, "%H:%M")
+            .or_else(|_| NaiveTime::parse_from_str(trimmed, "%H:%M:%S"))
+            .map_err(|_| format!("{field} must use HH:MM or HH:MM:SS format"))
+    }
+}
+
+#[derive(Debug, Clone)]
+enum EventCreationFeedback {
+    Success(String),
+    Error(String),
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CalendarView {
@@ -130,6 +318,10 @@ pub struct CalendarApp {
     timezone_filter: String,
     rsvp_feedback: Option<(Instant, RsvpFeedback)>,
     rsvp_pending: bool,
+    creating_event: bool,
+    creation_feedback: Option<(Instant, EventCreationFeedback)>,
+    creation_pending: bool,
+    event_draft: CalendarEventDraft,
 }
 
 impl CalendarApp {
@@ -150,6 +342,10 @@ impl CalendarApp {
             timezone_filter: String::new(),
             rsvp_feedback: None,
             rsvp_pending: false,
+            creating_event: false,
+            creation_feedback: None,
+            creation_pending: false,
+            event_draft: CalendarEventDraft::new(),
         }
     }
 
@@ -475,8 +671,454 @@ impl CalendarApp {
         }
     }
 
+    fn prune_creation_feedback(&mut self) {
+        if let Some((timestamp, _)) = self.creation_feedback {
+            if timestamp.elapsed() >= EVENT_CREATION_FEEDBACK_TTL {
+                self.creation_feedback = None;
+            }
+        }
+    }
+
     fn set_rsvp_feedback(&mut self, feedback: RsvpFeedback) {
         self.rsvp_feedback = Some((Instant::now(), feedback));
+    }
+
+    fn set_creation_feedback(&mut self, feedback: EventCreationFeedback) {
+        self.creation_feedback = Some((Instant::now(), feedback));
+    }
+
+    fn render_event_creation_window(&mut self, ctx: &mut AppContext, egui_ctx: &egui::Context) {
+        self.prune_creation_feedback();
+        if !self.creating_event {
+            return;
+        }
+
+        let mut open = true;
+        egui::Window::new("Create Calendar Event")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(true)
+            .show(egui_ctx, |ui| {
+                egui::ScrollArea::vertical()
+                    .max_height(500.0)
+                    .show(ui, |ui| {
+                        self.render_event_creation_contents(ctx, ui);
+                    });
+            });
+
+        if !open {
+            self.creating_event = false;
+        }
+    }
+
+    fn render_event_creation_contents(&mut self, ctx: &mut AppContext, ui: &mut egui::Ui) {
+        let has_writable_account = ctx.accounts.selected_filled().is_some();
+
+        if !has_writable_account {
+            ui.colored_label(
+                ui.visuals().warn_fg_color,
+                "Select an account with its private key to publish events.",
+            );
+            ui.add_space(6.0);
+        }
+
+        if self.creation_pending {
+            ui.label("Publishing event…");
+        }
+
+        if let Some((_, feedback)) = &self.creation_feedback {
+            match feedback {
+                EventCreationFeedback::Success(msg) => {
+                    ui.colored_label(ui.visuals().hyperlink_color, msg);
+                }
+                EventCreationFeedback::Error(msg) => {
+                    ui.colored_label(Color32::from_rgb(220, 70, 70), msg);
+                }
+            }
+        }
+
+        ui.separator();
+
+        ui.label("Fields marked with * are required.");
+        ui.add_space(6.0);
+
+        ui.horizontal(|ui| {
+            ui.label("Event type*");
+            ui.selectable_value(
+                &mut self.event_draft.event_type,
+                DraftEventType::Timed,
+                "Timed",
+            );
+            ui.selectable_value(
+                &mut self.event_draft.event_type,
+                DraftEventType::AllDay,
+                "All-day",
+            );
+        });
+
+        ui.add_space(6.0);
+
+        ui.horizontal(|ui| {
+            ui.label("Identifier*");
+            ui.text_edit_singleline(&mut self.event_draft.identifier);
+            if ui
+                .button("Regenerate")
+                .on_hover_text("Generate a new identifier")
+                .clicked()
+            {
+                self.event_draft.identifier = CalendarEventDraft::new_identifier();
+            }
+        });
+
+        ui.add_space(6.0);
+
+        ui.label("Title*");
+        ui.text_edit_singleline(&mut self.event_draft.title);
+
+        ui.add_space(6.0);
+
+        ui.label("Summary");
+        ui.text_edit_singleline(&mut self.event_draft.summary);
+
+        ui.add_space(6.0);
+
+        ui.label("Description");
+        ui.text_edit_multiline(&mut self.event_draft.description)
+            .on_hover_text("Free-form description for the event body");
+
+        ui.add_space(12.0);
+
+        match self.event_draft.event_type {
+            DraftEventType::AllDay => {
+                ui.label("Start date (YYYY-MM-DD)*");
+                ui.text_edit_singleline(&mut self.event_draft.start_date);
+
+                ui.add_space(6.0);
+
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut self.event_draft.include_end, "Specify end date");
+                    if self.event_draft.include_end {
+                        ui.label("(inclusive)");
+                    }
+                });
+
+                if self.event_draft.include_end {
+                    ui.label("End date (YYYY-MM-DD)");
+                    ui.text_edit_singleline(&mut self.event_draft.end_date);
+                } else {
+                    self.event_draft.end_date.clear();
+                }
+            }
+            DraftEventType::Timed => {
+                ui.label("Start date (YYYY-MM-DD)*");
+                ui.text_edit_singleline(&mut self.event_draft.start_date);
+                ui.add_space(4.0);
+                ui.label("Start time (HH:MM)*");
+                ui.text_edit_singleline(&mut self.event_draft.start_time);
+
+                ui.add_space(6.0);
+
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut self.event_draft.include_end, "Specify end time");
+                    if self.event_draft.include_end {
+                        ui.label("(end is exclusive)");
+                    }
+                });
+
+                if self.event_draft.include_end {
+                    ui.label("End date (YYYY-MM-DD, blank = same day)");
+                    ui.text_edit_singleline(&mut self.event_draft.end_date);
+                    ui.add_space(4.0);
+                    ui.label("End time (HH:MM)*");
+                    ui.text_edit_singleline(&mut self.event_draft.end_time);
+                } else {
+                    self.event_draft.end_date.clear();
+                }
+
+                ui.add_space(6.0);
+
+                ui.label("Start time zone (IANA identifier)");
+                ui.text_edit_singleline(&mut self.event_draft.start_tzid);
+                ui.add_space(4.0);
+                ui.label("End time zone (optional, overrides start)");
+                ui.text_edit_singleline(&mut self.event_draft.end_tzid);
+            }
+        }
+
+        ui.add_space(12.0);
+        ui.separator();
+        ui.add_space(6.0);
+
+        ui.label("Locations (one per line)");
+        ui.text_edit_multiline(&mut self.event_draft.locations_text);
+
+        ui.add_space(6.0);
+        ui.label("Image URLs (one per line)");
+        ui.text_edit_multiline(&mut self.event_draft.images_text);
+
+        ui.add_space(6.0);
+        ui.label("Hashtags (space separated, without #)");
+        ui.text_edit_singleline(&mut self.event_draft.hashtags_text);
+
+        ui.add_space(6.0);
+        ui.label("References / links (one per line)");
+        ui.text_edit_multiline(&mut self.event_draft.references_text);
+
+        ui.add_space(6.0);
+        ui.label("Calendars to request (enter full 'a' coordinate per line)");
+        ui.text_edit_multiline(&mut self.event_draft.calendars_text);
+
+        ui.add_space(6.0);
+        ui.label("Participants (hex pubkey[,role] per line)");
+        ui.text_edit_multiline(&mut self.event_draft.participants_text);
+
+        ui.add_space(12.0);
+        ui.separator();
+        ui.add_space(6.0);
+
+        ui.horizontal(|ui| {
+            if ui.button("Cancel").clicked() {
+                self.creating_event = false;
+            }
+
+            let can_publish = has_writable_account && !self.creation_pending;
+            if ui
+                .add_enabled(can_publish, egui::Button::new("Publish event"))
+                .clicked()
+            {
+                self.submit_event_creation(ctx);
+            }
+        });
+    }
+
+    fn submit_event_creation(&mut self, ctx: &mut AppContext) {
+        if self.creation_pending {
+            return;
+        }
+
+        if self.event_draft.identifier.trim().is_empty() {
+            self.set_creation_feedback(EventCreationFeedback::Error(
+                "Identifier is required.".to_string(),
+            ));
+            return;
+        }
+
+        if self.event_draft.title.trim().is_empty() {
+            self.set_creation_feedback(EventCreationFeedback::Error(
+                "Title is required.".to_string(),
+            ));
+            return;
+        }
+
+        let Some(filled) = ctx.accounts.selected_filled() else {
+            self.set_creation_feedback(EventCreationFeedback::Error(
+                "Select an account with its private key to publish events.".to_string(),
+            ));
+            return;
+        };
+
+        let account = filled.to_full();
+        self.creation_pending = true;
+
+        match self.build_calendar_event_note(&self.event_draft, &account) {
+            Ok((note, mut event)) => {
+                self.populate_event_rsvps(&mut event);
+                let new_event_id = event.id_hex.clone();
+                let focus_date = event.date_span(&self.timezone).0;
+
+                let Ok(event_msg) = ClientMessage::event(&note) else {
+                    self.creation_pending = false;
+                    self.set_creation_feedback(EventCreationFeedback::Error(
+                        "Failed to serialize calendar event.".to_string(),
+                    ));
+                    return;
+                };
+
+                if let Ok(json) = event_msg.to_json() {
+                    let _ = ctx
+                        .ndb
+                        .process_event_with(&json, IngestMetadata::new().client(true));
+                }
+
+                ctx.pool.send(&event_msg);
+
+                self.upsert_event(event);
+                self.resort_events();
+                if let Some(idx) = self.events.iter().position(|ev| ev.id_hex == new_event_id) {
+                    self.selected_event = Some(idx);
+                    self.view = CalendarView::Event;
+                }
+                self.focus_date = focus_date;
+
+                self.creation_pending = false;
+                self.creating_event = false;
+                self.event_draft.reset_preserving_type();
+
+                self.set_creation_feedback(EventCreationFeedback::Success(
+                    "Calendar event published.".to_string(),
+                ));
+            }
+            Err(err) => {
+                self.creation_pending = false;
+                self.set_creation_feedback(EventCreationFeedback::Error(err));
+            }
+        }
+    }
+
+    fn build_calendar_event_note(
+        &self,
+        draft: &CalendarEventDraft,
+        account: &FullKeypair,
+    ) -> Result<(nostrdb::Note<'static>, CalendarEvent), String> {
+        let identifier = draft.identifier.trim();
+        if identifier.is_empty() {
+            return Err("Identifier is required.".to_string());
+        }
+
+        let title = draft.title.trim();
+        if title.is_empty() {
+            return Err("Title is required.".to_string());
+        }
+
+        let summary = draft.summary.trim();
+        let content_owned = draft.description.clone();
+        let mut builder = nostrdb::NoteBuilder::new()
+            .kind(draft.event_type.as_kind())
+            .content(content_owned.as_str());
+
+        builder = builder.start_tag().tag_str("d").tag_str(identifier);
+        builder = builder.start_tag().tag_str("title").tag_str(title);
+
+        if !summary.is_empty() {
+            builder = builder.start_tag().tag_str("summary").tag_str(summary);
+        }
+
+        for loc in draft.parsed_locations() {
+            builder = builder.start_tag().tag_str("location").tag_str(&loc);
+        }
+
+        for image in draft.parsed_images() {
+            builder = builder.start_tag().tag_str("image").tag_str(&image);
+        }
+
+        for hashtag in draft.parsed_hashtags() {
+            builder = builder.start_tag().tag_str("t").tag_str(&hashtag);
+        }
+
+        for reference in draft.parsed_references() {
+            builder = builder.start_tag().tag_str("r").tag_str(&reference);
+        }
+
+        for calendar in draft.parsed_calendars() {
+            builder = builder.start_tag().tag_str("a").tag_str(&calendar);
+        }
+
+        for (pubkey, role) in draft.parsed_participants()? {
+            let mut tag_builder = builder.start_tag().tag_str("p").tag_str(&pubkey);
+            if let Some(role_value) = role {
+                tag_builder = tag_builder.tag_str("").tag_str(&role_value);
+            }
+            builder = tag_builder;
+        }
+
+        match draft.event_type {
+            DraftEventType::AllDay => {
+                let start_date =
+                    CalendarEventDraft::parse_required_date(&draft.start_date, "Start date")?;
+
+                let mut end_date = if draft.include_end {
+                    CalendarEventDraft::parse_optional_date(&draft.end_date, "End date")?
+                        .unwrap_or(start_date)
+                } else {
+                    start_date
+                };
+
+                if end_date < start_date {
+                    return Err("End date cannot be before start date.".to_string());
+                }
+
+                builder = builder
+                    .start_tag()
+                    .tag_str("start")
+                    .tag_str(&start_date.format("%Y-%m-%d").to_string());
+
+                if end_date > start_date {
+                    end_date = end_date + Duration::days(1);
+                    builder = builder
+                        .start_tag()
+                        .tag_str("end")
+                        .tag_str(&end_date.format("%Y-%m-%d").to_string());
+                }
+            }
+            DraftEventType::Timed => {
+                let start_date =
+                    CalendarEventDraft::parse_required_date(&draft.start_date, "Start date")?;
+                let start_time =
+                    CalendarEventDraft::parse_required_time(&draft.start_time, "Start time")?;
+                let start_naive = start_date.and_time(start_time);
+                let start_tz_trimmed = draft.start_tzid.trim();
+
+                let (start_ts, start_tz_tag) =
+                    resolve_timestamp(start_naive, start_tz_trimmed, "Start time")?;
+                builder = builder
+                    .start_tag()
+                    .tag_str("start")
+                    .tag_str(&start_ts.to_string());
+
+                if let Some(tz_value) = start_tz_tag {
+                    if !tz_value.is_empty() {
+                        builder = builder.start_tag().tag_str("start_tzid").tag_str(&tz_value);
+                    }
+                }
+
+                if draft.include_end {
+                    let end_time =
+                        CalendarEventDraft::parse_required_time(&draft.end_time, "End time")?;
+
+                    let end_date = if draft.end_date.trim().is_empty() {
+                        start_date
+                    } else {
+                        CalendarEventDraft::parse_required_date(&draft.end_date, "End date")?
+                    };
+
+                    let end_naive = end_date.and_time(end_time);
+                    let end_tz_trimmed = draft.end_tzid.trim();
+                    let tz_for_end = if end_tz_trimmed.is_empty() {
+                        start_tz_trimmed
+                    } else {
+                        end_tz_trimmed
+                    };
+                    let (end_ts, end_tz_tag) =
+                        resolve_timestamp(end_naive, tz_for_end, "End time")?;
+
+                    if end_ts < start_ts {
+                        return Err("End time must be after start time.".to_string());
+                    }
+
+                    builder = builder
+                        .start_tag()
+                        .tag_str("end")
+                        .tag_str(&end_ts.to_string());
+
+                    if !end_tz_trimmed.is_empty() {
+                        if let Some(tz_value) = end_tz_tag {
+                            builder = builder.start_tag().tag_str("end_tzid").tag_str(&tz_value);
+                        }
+                    }
+                }
+            }
+        }
+
+        let secret_bytes = account.secret_key.secret_bytes();
+        let Some(note) = builder.sign(&secret_bytes).build() else {
+            return Err("Failed to build calendar event.".to_string());
+        };
+
+        let Some(event) = parse_calendar_event(&note) else {
+            return Err("Failed to parse calendar event after building.".to_string());
+        };
+
+        Ok((note, event))
     }
 
     fn current_user_rsvp(
@@ -902,12 +1544,26 @@ impl CalendarApp {
                     render_author(ctx, ui, &event.author_hex);
                     ui.label(format!("Times shown in {}", self.timezone.label()));
                     if let Some(naddr) = event_naddr(event) {
-                        ui.label(format!("Identifier (naddr): {naddr}"));
+                        self.copy_identifier_row(
+                            ctx,
+                            ui,
+                            "Identifier (naddr):",
+                            &naddr,
+                            &event_snapshot.id_hex,
+                            "naddr",
+                        );
                     } else if let Some(identifier) = &event.identifier {
                         ui.label(format!("Identifier: {identifier}"));
                     }
                     if let Some(nevent) = event_nevent(event) {
-                        ui.label(format!("Event (nevent): {nevent}"));
+                        self.copy_identifier_row(
+                            ctx,
+                            ui,
+                            "Event (nevent):",
+                            &nevent,
+                            &event_snapshot.id_hex,
+                            "nevent",
+                        );
                     }
 
                     if let CalendarEventTime::Timed {
@@ -1031,6 +1687,36 @@ impl CalendarApp {
             None => Some(start_label),
         }
     }
+
+    fn copy_identifier_row(
+        &self,
+        ctx: &mut AppContext,
+        ui: &mut egui::Ui,
+        label: &str,
+        value: &str,
+        event_id: &str,
+        suffix: &str,
+    ) {
+        ui.horizontal(|ui| {
+            ui.label(label);
+            ui.monospace(truncated_identifier(value));
+            ui.add_space(4.0);
+
+            let copy_img = if ui.visuals().dark_mode {
+                copy_to_clipboard_image()
+            } else {
+                copy_to_clipboard_dark_image()
+            };
+
+            let animation_id = format!("copy-{suffix}-{event_id}");
+            let helper = AnimationHelper::new(ui, animation_id, vec2(16.0, 16.0));
+            copy_img.paint_at(ui, helper.scaled_rect());
+
+            if helper.take_animation_response().clicked() {
+                let _ = ctx.clipboard.set_text(value.to_owned());
+            }
+        });
+    }
 }
 
 impl App for CalendarApp {
@@ -1038,9 +1724,11 @@ impl App for CalendarApp {
         self.ensure_subscription(ctx);
         self.load_initial_events(ctx);
         self.poll_for_new_notes(ctx);
+        self.prune_creation_feedback();
 
         let mut action = None;
         let mut drag_ids = Vec::new();
+        let mut open_creation_requested = false;
         ui.vertical(|ui| {
             ui.horizontal(|ui| {
                 if ui.button("← Back to Notedeck").clicked() {
@@ -1051,6 +1739,25 @@ impl App for CalendarApp {
             ui.separator();
             self.view_switcher(ui);
             ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.button("New Event").clicked() {
+                    open_creation_requested = true;
+                }
+
+                if self.creation_pending {
+                    ui.label("Publishing event…");
+                } else if let Some((_, feedback)) = &self.creation_feedback {
+                    match feedback {
+                        EventCreationFeedback::Success(message) => {
+                            ui.colored_label(ui.visuals().hyperlink_color, message);
+                        }
+                        EventCreationFeedback::Error(message) => {
+                            ui.colored_label(Color32::from_rgb(220, 70, 70), message);
+                        }
+                    }
+                }
+            });
+            ui.add_space(6.0);
             self.navigation_bar(ui);
             ui.add_space(8.0);
             self.timezone_controls(ui);
@@ -1075,6 +1782,15 @@ impl App for CalendarApp {
                 }
             }
         });
+
+        if open_creation_requested {
+            if !self.creating_event {
+                self.event_draft.reset_preserving_type();
+            }
+            self.creating_event = true;
+        }
+
+        self.render_event_creation_window(ctx, ui.ctx());
 
         let response = if let Some(action) = action {
             AppResponse::action(Some(action))
@@ -1282,6 +1998,107 @@ fn render_participants(
         }
     }
     ui.separator();
+}
+
+fn resolve_timestamp(
+    naive: NaiveDateTime,
+    tzid: &str,
+    label: &str,
+) -> Result<(i64, Option<String>), String> {
+    let trimmed = tzid.trim();
+    if trimmed.is_empty() {
+        return Ok((Utc.from_utc_datetime(&naive).timestamp(), None));
+    }
+
+    let tz: Tz = trimmed
+        .parse()
+        .map_err(|_| format!("{label} has unknown time zone '{trimmed}'."))?;
+
+    match tz.from_local_datetime(&naive) {
+        LocalResult::Single(dt) => Ok((
+            dt.with_timezone(&Utc).timestamp(),
+            Some(trimmed.to_string()),
+        )),
+        LocalResult::Ambiguous(first, second) => {
+            let chosen = if first <= second { first } else { second };
+            Ok((
+                chosen.with_timezone(&Utc).timestamp(),
+                Some(trimmed.to_string()),
+            ))
+        }
+        LocalResult::None => Err(format!(
+            "{label} {naive} does not exist in time zone {trimmed} due to an offset transition.",
+        )),
+    }
+}
+
+fn truncated_identifier(value: &str) -> String {
+    if value.len() <= 16 {
+        return value.to_owned();
+    }
+
+    let prefix = &value[..8];
+    let suffix = &value[value.len().saturating_sub(8)..];
+    format!("{prefix}…{suffix}")
+}
+
+fn default_timezone_name() -> String {
+    if let Ok(name) = get_timezone() {
+        if !name.trim().is_empty() {
+            return name;
+        }
+    }
+
+    guess_local_timezone(Local::now())
+        .map(|tz| tz.name().to_string())
+        .unwrap_or_else(|| "UTC".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn timed_events_use_kind_31923() {
+        let app = CalendarApp::new();
+        let account = FullKeypair::generate();
+        let mut draft = CalendarEventDraft::with_kind(DraftEventType::Timed);
+        draft.title = "Meeting".to_string();
+        draft.description = "Discuss roadmap".to_string();
+
+        let (note, event) = app
+            .build_calendar_event_note(&draft, &account)
+            .expect("should build timed event");
+
+        assert_eq!(note.kind(), DraftEventType::Timed.as_kind());
+        assert_eq!(event.kind, DraftEventType::Timed.as_kind());
+    }
+
+    #[test]
+    fn all_day_events_use_kind_31922() {
+        let app = CalendarApp::new();
+        let account = FullKeypair::generate();
+        let mut draft = CalendarEventDraft::with_kind(DraftEventType::AllDay);
+        draft.title = "Holiday".to_string();
+        draft.description = "Out of office".to_string();
+        draft.include_end = true;
+        draft.end_date = draft.start_date.clone();
+
+        let (note, event) = app
+            .build_calendar_event_note(&draft, &account)
+            .expect("should build all-day event");
+
+        assert_eq!(note.kind(), DraftEventType::AllDay.as_kind());
+        assert_eq!(event.kind, DraftEventType::AllDay.as_kind());
+    }
+
+    #[test]
+    fn draft_defaults_use_local_timezone() {
+        let draft = CalendarEventDraft::new();
+        let expected = default_timezone_name();
+        assert_eq!(draft.start_tzid, expected);
+        assert_eq!(draft.end_tzid, expected);
+    }
 }
 
 fn decode_pubkey_hex(hex: &str) -> Option<[u8; 32]> {
