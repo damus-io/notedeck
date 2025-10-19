@@ -27,3 +27,7 @@ itertools = "0.10.5"
 ffmpeg-next = { workspace = true, default-features = false, features = ["codec", "format", "software-resampling", "software-scaling"] }
 sdl2 = { workspace = true }
 ffmpeg-sys-next = { workspace = true, default-features = false, features = ["avcodec", "avformat", "swresample", "swscale", "build"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+ndk = { workspace = true }
+ndk-sys = { workspace = true }
