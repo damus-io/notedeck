@@ -21,3 +21,8 @@ image = { workspace = true }
 bitflags = { workspace = true }
 enostr = { workspace = true }
 hashbrown = { workspace = true }
+egui-video = { workspace = true }
+hex = { workspace = true }
+sha2 = { workspace = true }
+ureq = { workspace = true }
+sdl2 = { workspace = true }
