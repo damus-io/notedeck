@@ -25,9 +25,9 @@ use std::time::UNIX_EPOCH;
 use timer::{Guard, Timer};
 
 #[cfg(feature = "from_bytes")]
-use tempfile::NamedTempFile;
-#[cfg(feature = "from_bytes")]
 use std::io::Write;
+#[cfg(feature = "from_bytes")]
+use tempfile::NamedTempFile;
 
 fn format_duration(dur: Duration) -> String {
     let dt = DateTime::<Utc>::from(UNIX_EPOCH) + dur;
