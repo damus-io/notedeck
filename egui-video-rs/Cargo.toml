@@ -1,0 +1,27 @@
+[package]
+name = "egui-video"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "a video library for egui"
+repository = "https://github.com/bu5hm4nn/egui-video"
+readme = "README.md"
+authors = ["n00kii", "bu5hm4nn"]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[features]
+from_bytes = ["dep:tempfile"]
+
+[dependencies]
+egui = { workspace = true }
+ffmpeg-next = { workspace = true, default-features = false, features = ["codec", "format", "software-resampling", "software-scaling"] }
+sdl2 = { workspace = true }
+ffmpeg-sys-next = { workspace = true, default-features = false, features = ["avcodec", "avformat", "swresample", "swscale"] }
+anyhow = "1.0.66"
+timer = "0.2.0"
+chrono = "0.4.22"
+tempfile = {version = "3.3.0", optional = true}
+ringbuf = "0.3.1"
+parking_lot = "0.12.1"
+itertools = "0.10.5"

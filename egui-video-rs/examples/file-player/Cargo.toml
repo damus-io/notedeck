@@ -1,0 +1,18 @@
+[package]
+name = "file-player"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+tracing-subscriber = "0.3"
+egui-video = { path = "../../" }
+ffmpeg-next = { workspace = true }
+egui = { workspace = true }
+eframe = { workspace = true }
+rfd = { workspace = true }
+sdl2 = { workspace = true, features = [ "bundled" ] }
+
+[profile.dev]
+opt-level = 3
