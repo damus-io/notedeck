@@ -7,9 +7,18 @@ use chrono::{
     Utc,
 };
 use chrono_tz::{Tz, TZ_VARIANTS};
-use egui::{scroll_area::ScrollAreaOutput, vec2, Color32, CornerRadius, FontId};
+use egui::{
+    pos2, scroll_area::ScrollAreaOutput, vec2, Color32, CornerRadius, FontId, Key, Response, Sense,
+    Stroke, StrokeKind, Ui, Vec2, Widget,
+};
 use hex::FromHex;
 use iana_time_zone::get_timezone;
+use nostr::nips::nip19::{FromBech32, Nip19};
+use nostr::nips::nip44::{self, Version as Nip44Version};
+use nostr::nips::nip59::RANGE_RANDOM_TIMESTAMP_TWEAK;
+use nostr::{
+    Event as NostrEvent, JsonUtil, Keys as NostrKeys, PublicKey as NostrPublicKey, UnsignedEvent,
+};
 use nostrdb::{Filter, IngestMetadata, Note, ProfileRecord, Transaction};
 use notedeck::enostr::{ClientMessage, FullKeypair};
 use notedeck::filter::UnifiedSubscription;
@@ -23,13 +32,16 @@ use notedeck_ui::{
     app_images::{copy_to_clipboard_dark_image, copy_to_clipboard_image},
     AnimationHelper, ProfilePic,
 };
+use rand::Rng;
+use serde_json::Value;
 use std::sync::Arc;
-use std::time::{Duration as StdDuration, Instant};
+use std::time::{Duration as StdDuration, Instant, SystemTime, UNIX_EPOCH};
 use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
 };
 use tracing::warn;
+use urlencoding::encode;
 use uuid::Uuid;
 
 use model::{
@@ -71,7 +83,8 @@ struct CalendarEventDraft {
     hashtags_text: String,
     references_text: String,
     calendars_text: String,
-    participants_text: String,
+    participants: Vec<(String, Option<String>)>,
+    participant_input: String,
     start_date: String,
     end_date: String,
     start_time: String,
@@ -79,6 +92,7 @@ struct CalendarEventDraft {
     include_end: bool,
     start_tzid: String,
     end_tzid: String,
+    is_private: bool,
 }
 
 impl CalendarEventDraft {
@@ -99,7 +113,8 @@ impl CalendarEventDraft {
             hashtags_text: String::new(),
             references_text: String::new(),
             calendars_text: String::new(),
-            participants_text: String::new(),
+            participants: Vec::new(),
+            participant_input: String::new(),
             start_date: today.format("%Y-%m-%d").to_string(),
             end_date: String::new(),
             start_time: default_time.clone(),
@@ -107,6 +122,7 @@ impl CalendarEventDraft {
             include_end: false,
             start_tzid: guessed.clone(),
             end_tzid: guessed,
+            is_private: false,
         }
     }
 
@@ -116,7 +132,9 @@ impl CalendarEventDraft {
 
     fn reset_preserving_type(&mut self) {
         let event_type = self.event_type;
+        let is_private = self.is_private;
         *self = Self::with_kind(event_type);
+        self.is_private = is_private;
     }
 
     fn new_identifier() -> String {
@@ -167,32 +185,169 @@ impl CalendarEventDraft {
             .collect()
     }
 
-    fn parsed_participants(&self) -> Result<Vec<(String, Option<String>)>, String> {
+    fn parsed_participants(&self) -> Vec<(String, Option<String>)> {
+        self.participants.clone()
+    }
+
+    fn parse_participant_lines(value: &str) -> Result<Vec<(String, Option<String>)>, String> {
         let mut participants = Vec::new();
-        for (idx, line) in self.participants_text.lines().enumerate() {
+        for (idx, line) in value.lines().enumerate() {
             let trimmed = line.trim();
             if trimmed.is_empty() {
                 continue;
             }
 
             let mut parts = trimmed.splitn(2, ',');
-            let pubkey = parts.next().unwrap().trim();
-            if pubkey.len() != 64 || !pubkey.chars().all(|c| c.is_ascii_hexdigit()) {
+            let identifier = parts.next().unwrap().trim();
+            if identifier.is_empty() {
                 return Err(format!(
-                    "Participant pubkey on line {} must be 64 hex characters.",
+                    "Participant entry on line {} is missing an identifier.",
                     idx + 1
                 ));
             }
+
+            let pubkey_hex = Self::parse_participant_identifier(identifier).map_err(|err| {
+                format!(
+                    "Participant entry on line {} could not be parsed: {err}",
+                    idx + 1
+                )
+            })?;
 
             let role = parts
                 .next()
                 .map(|r| r.trim().to_string())
                 .filter(|r| !r.is_empty());
 
-            participants.push((pubkey.to_lowercase(), role));
+            participants.push((pubkey_hex, role));
         }
 
         Ok(participants)
+    }
+
+    fn absorb_participant_input(&mut self) {
+        if self.participant_input.trim().is_empty() {
+            return;
+        }
+
+        if let Ok(entries) = Self::parse_participant_lines(&self.participant_input) {
+            for (hex, role) in entries {
+                if !self
+                    .participants
+                    .iter()
+                    .any(|(existing, _)| existing.eq_ignore_ascii_case(&hex))
+                {
+                    self.participants.push((hex, role));
+                }
+            }
+            self.participant_input.clear();
+        }
+    }
+
+    fn parse_participant_identifier(value: &str) -> Result<String, String> {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            return Err("Identifier is empty.".to_string());
+        }
+
+        if trimmed.len() == 64 && trimmed.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Ok(trimmed.to_ascii_lowercase());
+        }
+
+        if let Ok(pk) = NostrPublicKey::parse(trimmed) {
+            return Ok(pk.to_hex());
+        }
+
+        let without_prefix = trimmed.strip_prefix("nostr:").unwrap_or(trimmed);
+
+        if without_prefix.starts_with("nprofile") {
+            match Nip19::from_bech32(without_prefix) {
+                Ok(Nip19::Profile(profile)) => return Ok(profile.public_key.to_hex()),
+                Ok(_) => {
+                    return Err("Identifier decoded to an unexpected NIP-19 variant.".to_string())
+                }
+                Err(err) => {
+                    return Err(format!("Invalid nprofile identifier: {err}"));
+                }
+            }
+        }
+
+        if without_prefix.contains('@') {
+            return Self::resolve_nip05_identifier(without_prefix);
+        }
+
+        Err("Identifier must be a hex pubkey, npub, nprofile, or NIP-05 address.".to_string())
+    }
+
+    fn resolve_nip05_identifier(value: &str) -> Result<String, String> {
+        let trimmed = value.trim_start_matches('@');
+        let mut parts = trimmed.split('@');
+        let raw_name = parts
+            .next()
+            .ok_or_else(|| "NIP-05 identifier is missing a username.".to_string())?;
+        let domain = parts
+            .next()
+            .ok_or_else(|| "NIP-05 identifier is missing a domain.".to_string())?;
+        if parts.next().is_some() {
+            return Err("NIP-05 identifier contains extra '@' characters.".to_string());
+        }
+
+        if domain.trim().is_empty() {
+            return Err("NIP-05 identifier is missing a domain.".to_string());
+        }
+
+        let name = if raw_name.trim().is_empty() {
+            "_"
+        } else {
+            raw_name.trim()
+        };
+
+        let normalized_name = name.to_ascii_lowercase();
+        let normalized_domain = domain.trim().to_ascii_lowercase();
+
+        let url = format!(
+            "https://{}/.well-known/nostr.json?name={}",
+            normalized_domain,
+            encode(&normalized_name)
+        );
+
+        let response = ureq::get(&url)
+            .call()
+            .map_err(|err| format!("Failed to resolve NIP-05 '{value}': {err}"))?;
+
+        if !(200..=299).contains(&response.status()) {
+            return Err(format!(
+                "Failed to resolve NIP-05 '{value}': HTTP {}",
+                response.status()
+            ));
+        }
+
+        let json: Value = response
+            .into_json()
+            .map_err(|err| format!("Failed to decode NIP-05 response: {err}"))?;
+
+        let names = json
+            .get("names")
+            .and_then(Value::as_object)
+            .ok_or_else(|| "NIP-05 response missing a 'names' section.".to_string())?;
+
+        if let Some(mapped) = names.get(&normalized_name).and_then(Value::as_str) {
+            return Self::validate_pubkey_hex(mapped, value);
+        }
+
+        Err(format!(
+            "NIP-05 identifier '{value}' was not found on {normalized_domain}."
+        ))
+    }
+
+    fn validate_pubkey_hex(value: &str, context: &str) -> Result<String, String> {
+        let trimmed = value.trim();
+        if trimmed.len() == 64 && trimmed.chars().all(|c| c.is_ascii_hexdigit()) {
+            Ok(trimmed.to_ascii_lowercase())
+        } else {
+            Err(format!(
+                "Identifier '{context}' resolved to a non-hex public key."
+            ))
+        }
     }
 
     fn parse_required_date(value: &str, field: &str) -> Result<NaiveDate, String> {
@@ -217,6 +372,77 @@ impl CalendarEventDraft {
         NaiveTime::parse_from_str(trimmed, "%H:%M")
             .or_else(|_| NaiveTime::parse_from_str(trimmed, "%H:%M:%S"))
             .map_err(|_| format!("{field} must use HH:MM or HH:MM:SS format"))
+    }
+}
+
+struct IosSwitch<'a> {
+    value: &'a mut bool,
+    size: Vec2,
+}
+
+impl<'a> IosSwitch<'a> {
+    fn new(value: &'a mut bool) -> Self {
+        Self {
+            value,
+            size: vec2(52.0, 32.0),
+        }
+    }
+}
+
+impl<'a> Widget for IosSwitch<'a> {
+    fn ui(self, ui: &mut Ui) -> Response {
+        let (rect, mut response) = ui.allocate_exact_size(self.size, Sense::click());
+        response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+
+        if response.clicked()
+            || (response.has_focus()
+                && ui.input(|i| i.key_pressed(Key::Space) || i.key_pressed(Key::Enter)))
+        {
+            *self.value = !*self.value;
+            response.mark_changed();
+        }
+
+        let t = ui.ctx().animate_bool(response.id, *self.value);
+        let visuals = &ui.style().visuals;
+        let painter = ui.painter();
+        let h = rect.height();
+        let rounding: CornerRadius = (h * 0.5).into();
+
+        let off_col = visuals.widgets.inactive.bg_fill;
+        let on_col = visuals.selection.bg_fill;
+        let track_col = egui::ecolor::tint_color_towards(off_col, on_col);
+        painter.rect(rect, rounding, track_col, Stroke::NONE, StrokeKind::Inside);
+
+        let knob_margin = 2.0;
+        let knob_d = h - knob_margin * 2.0;
+        let knob_r = knob_d * 0.5;
+        let left_x = rect.left() + knob_margin + knob_r;
+        let right_x = rect.right() - knob_margin - knob_r;
+        let knob_x = egui::lerp(left_x..=right_x, t);
+        let knob_center = pos2(knob_x, rect.center().y);
+
+        painter.circle_filled(
+            knob_center + vec2(0.0, 1.0),
+            knob_r + 1.0,
+            Color32::from_black_alpha(30),
+        );
+        painter.circle_filled(knob_center, knob_r, visuals.extreme_bg_color);
+        painter.circle_stroke(
+            knob_center,
+            knob_r,
+            Stroke::new(1.0, Color32::from_black_alpha(40)),
+        );
+
+        if response.has_focus() {
+            painter.rect_stroke(
+                rect.expand(2.0),
+                rounding,
+                Stroke::new(1.0, visuals.selection.stroke.color),
+                StrokeKind::Inside,
+            );
+        }
+
+        response
     }
 }
 
@@ -759,14 +985,44 @@ impl CalendarApp {
         ui.add_space(6.0);
 
         ui.horizontal(|ui| {
-            ui.label("Identifier*");
-            ui.text_edit_singleline(&mut self.event_draft.identifier);
-            if ui
-                .button("Regenerate")
-                .on_hover_text("Generate a new identifier")
-                .clicked()
-            {
-                self.event_draft.identifier = CalendarEventDraft::new_identifier();
+            ui.label("Visibility");
+            let toggle_response = ui.add(IosSwitch::new(&mut self.event_draft.is_private));
+            if toggle_response.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+
+            let visibility_text = if self.event_draft.is_private {
+                "Private event"
+            } else {
+                "Public event"
+            };
+
+            ui.add_space(8.0);
+            ui.label(visibility_text);
+
+            let tooltip_text = if self.event_draft.is_private {
+                "Private events are only visible to you, and the invited participants."
+            } else {
+                "Public events are visible to anyone."
+            };
+
+            let info = egui::Label::new(
+                egui::RichText::new("i")
+                    .strong()
+                    .color(ui.visuals().weak_text_color()),
+            )
+            .sense(egui::Sense::click());
+
+            let response = ui.add(info);
+            if response.hovered() || response.clicked() {
+                egui::show_tooltip_at_pointer(
+                    ui.ctx(),
+                    ui.layer_id(),
+                    response.id,
+                    |ui: &mut egui::Ui| {
+                        ui.label(tooltip_text);
+                    },
+                );
             }
         });
 
@@ -869,8 +1125,87 @@ impl CalendarApp {
         ui.text_edit_multiline(&mut self.event_draft.calendars_text);
 
         ui.add_space(6.0);
-        ui.label("Participants (hex pubkey[,role] per line)");
-        ui.text_edit_multiline(&mut self.event_draft.participants_text);
+        ui.label("Participants (npub / nprofile / NIP-05 / hex[,role] per line)");
+        let parsed_participants = self.event_draft.parsed_participants();
+        let txn = Transaction::new(ctx.ndb).ok();
+        ui.add_space(6.0);
+
+        let mut removal: Option<usize> = None;
+        let mut pending_absorb = false;
+
+        ui.horizontal_wrapped(|ui| {
+            for (idx, (hex, role)) in parsed_participants.iter().enumerate() {
+                let (profile, name) =
+                    if let (Some(bytes), Some(txn)) = (decode_pubkey_hex(hex), txn.as_ref()) {
+                        ctx.unknown_ids.add_pubkey_if_missing(ctx.ndb, txn, &bytes);
+                        let profile = ctx.ndb.get_profile_by_pubkey(txn, &bytes).ok();
+                        let display = display_name_from_profile(profile.as_ref())
+                            .unwrap_or_else(|| short_pubkey(hex));
+                        (profile, display)
+                    } else {
+                        (None, short_pubkey(hex))
+                    };
+
+                let mut display = name;
+                if let Some(role) = role {
+                    display = format!("{display} ({role})");
+                }
+
+                ui.group(|ui| {
+                    ui.vertical(|ui| {
+                        ui.horizontal(|ui| {
+                            let mut avatar = ProfilePic::from_profile_or_default(
+                                ctx.img_cache,
+                                profile.as_ref(),
+                            )
+                            .size(36.0)
+                            .border(ProfilePic::border_stroke(ui));
+                            let response = ui.add(&mut avatar);
+                            response.on_hover_text(display.clone());
+
+                            ui.add_space(8.0);
+                            ui.label(
+                                egui::RichText::new(display.clone())
+                                    .size(13.0)
+                                    .color(ui.visuals().text_color()),
+                            );
+                        });
+                        ui.add_space(4.0);
+                        if ui.add(egui::Button::new("Remove").small()).clicked() {
+                            removal = Some(idx);
+                        }
+                    });
+                });
+                ui.add_space(8.0);
+            }
+
+            let input_response = ui.add(
+                egui::TextEdit::singleline(&mut self.event_draft.participant_input)
+                    .hint_text("Add participant")
+                    .desired_width(220.0),
+            );
+
+            if input_response.changed() && self.event_draft.participant_input.contains('\n') {
+                pending_absorb = true;
+            }
+
+            if input_response.lost_focus()
+                && ui.input(|i| i.key_pressed(Key::Enter) || i.key_pressed(Key::Tab))
+            {
+                pending_absorb = true;
+            }
+        });
+
+        if pending_absorb && !self.event_draft.participant_input.trim().is_empty() {
+            if !self.event_draft.participant_input.ends_with('\n') {
+                self.event_draft.participant_input.push('\n');
+            }
+            self.event_draft.absorb_participant_input();
+        }
+
+        if let Some(idx) = removal {
+            self.event_draft.participants.remove(idx);
+        }
 
         ui.add_space(12.0);
         ui.separator();
@@ -920,18 +1255,23 @@ impl CalendarApp {
         let account = filled.to_full();
         self.creation_pending = true;
 
+        self.event_draft.absorb_participant_input();
+
         match self.build_calendar_event_note(&self.event_draft, &account) {
             Ok((note, mut event)) => {
                 self.populate_event_rsvps(&mut event);
                 let new_event_id = event.id_hex.clone();
                 let focus_date = event.date_span(&self.timezone).0;
 
-                let Ok(event_msg) = ClientMessage::event(&note) else {
-                    self.creation_pending = false;
-                    self.set_creation_feedback(EventCreationFeedback::Error(
-                        "Failed to serialize calendar event.".to_string(),
-                    ));
-                    return;
+                let event_msg = match ClientMessage::event(&note) {
+                    Ok(msg) => msg,
+                    Err(_) => {
+                        self.creation_pending = false;
+                        self.set_creation_feedback(EventCreationFeedback::Error(
+                            "Failed to serialize calendar event.".to_string(),
+                        ));
+                        return;
+                    }
                 };
 
                 if let Ok(json) = event_msg.to_json() {
@@ -940,7 +1280,19 @@ impl CalendarApp {
                         .process_event_with(&json, IngestMetadata::new().client(true));
                 }
 
-                ctx.pool.send(&event_msg);
+                let private_count = if self.event_draft.is_private {
+                    match self.publish_private_event(ctx, &account, &note, &event) {
+                        Ok(count) => Some(count),
+                        Err(err) => {
+                            self.creation_pending = false;
+                            self.set_creation_feedback(EventCreationFeedback::Error(err));
+                            return;
+                        }
+                    }
+                } else {
+                    ctx.pool.send(&event_msg);
+                    None
+                };
 
                 self.upsert_event(event);
                 self.resort_events();
@@ -954,9 +1306,19 @@ impl CalendarApp {
                 self.creating_event = false;
                 self.event_draft.reset_preserving_type();
 
-                self.set_creation_feedback(EventCreationFeedback::Success(
-                    "Calendar event published.".to_string(),
-                ));
+                let success_msg = match private_count {
+                    Some(0) => {
+                        "Private calendar event prepared, but no recipients resolved.".to_string()
+                    }
+                    Some(1) => "Private calendar event gift wrapped for 1 recipient.".to_string(),
+                    Some(count) => format!(
+                        "Private calendar event gift wrapped for {} recipients.",
+                        count
+                    ),
+                    None => "Calendar event published.".to_string(),
+                };
+
+                self.set_creation_feedback(EventCreationFeedback::Success(success_msg));
             }
             Err(err) => {
                 self.creation_pending = false;
@@ -1013,7 +1375,7 @@ impl CalendarApp {
             builder = builder.start_tag().tag_str("a").tag_str(&calendar);
         }
 
-        for (pubkey, role) in draft.parsed_participants()? {
+        for (pubkey, role) in draft.parsed_participants() {
             let mut tag_builder = builder.start_tag().tag_str("p").tag_str(&pubkey);
             if let Some(role_value) = role {
                 tag_builder = tag_builder.tag_str("").tag_str(&role_value);
@@ -1119,6 +1481,123 @@ impl CalendarApp {
         };
 
         Ok((note, event))
+    }
+
+    fn private_recipients(event: &CalendarEvent, account: &FullKeypair) -> Vec<String> {
+        let mut recipients: HashSet<String> = HashSet::new();
+        recipients.insert(account.pubkey.hex().to_ascii_lowercase());
+
+        for participant in &event.participants {
+            if participant.pubkey_hex.len() == 64 {
+                recipients.insert(participant.pubkey_hex.to_ascii_lowercase());
+            }
+        }
+
+        recipients.into_iter().collect()
+    }
+
+    fn random_backdated_timestamp() -> u64 {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        let mut rng = rand::rng();
+        let range = RANGE_RANDOM_TIMESTAMP_TWEAK;
+        let tweak = if range.start >= range.end {
+            0
+        } else {
+            rng.random_range(range)
+        };
+
+        now.saturating_sub(tweak)
+    }
+
+    fn publish_private_event(
+        &self,
+        ctx: &mut AppContext,
+        account: &FullKeypair,
+        note: &nostrdb::Note<'static>,
+        event: &CalendarEvent,
+    ) -> Result<usize, String> {
+        let recipients = Self::private_recipients(event, account);
+        if recipients.is_empty() {
+            return Err("No recipients resolved for private event.".to_string());
+        }
+
+        let note_json = note
+            .json()
+            .map_err(|err| format!("Failed to serialize calendar event: {err}"))?;
+        let event_for_rumor = NostrEvent::from_json(note_json)
+            .map_err(|err| format!("Failed to parse calendar event: {err}"))?;
+        let rumor_json = UnsignedEvent::from(event_for_rumor).as_json();
+
+        let account_secret_bytes = account.secret_key.secret_bytes();
+        let mut wrapped_count = 0usize;
+
+        for recipient_hex in recipients {
+            let recipient_pk = NostrPublicKey::from_hex(&recipient_hex)
+                .map_err(|_| format!("Invalid recipient pubkey: {}", recipient_hex))?;
+
+            let encrypted_rumor = nip44::encrypt(
+                &account.secret_key,
+                &recipient_pk,
+                &rumor_json,
+                Nip44Version::default(),
+            )
+            .map_err(|err| format!("Failed to encrypt rumor for {}: {err}", recipient_hex))?;
+
+            let mut seal_builder = nostrdb::NoteBuilder::new()
+                .kind(13)
+                .content(&encrypted_rumor)
+                .created_at(Self::random_backdated_timestamp());
+            seal_builder = seal_builder.sign(&account_secret_bytes);
+            let Some(seal_note) = seal_builder.build() else {
+                return Err("Failed to build seal event.".to_string());
+            };
+
+            let seal_json = seal_note
+                .json()
+                .map_err(|err| format!("Failed to serialize seal event: {err}"))?;
+            let keys = NostrKeys::generate();
+            let encrypted_seal = nip44::encrypt(
+                keys.secret_key(),
+                &recipient_pk,
+                &seal_json,
+                Nip44Version::default(),
+            )
+            .map_err(|err| format!("Failed to encrypt gift wrap for {}: {err}", recipient_hex))?;
+
+            let mut gift_builder = nostrdb::NoteBuilder::new()
+                .kind(1059)
+                .content(&encrypted_seal)
+                .created_at(Self::random_backdated_timestamp());
+            gift_builder = gift_builder
+                .start_tag()
+                .tag_str("p")
+                .tag_str(&recipient_hex);
+
+            let ephemeral_secret_bytes = keys.secret_key().secret_bytes();
+            gift_builder = gift_builder.sign(&ephemeral_secret_bytes);
+            let Some(gift_note) = gift_builder.build() else {
+                return Err("Failed to build gift wrap event.".to_string());
+            };
+
+            let gift_msg = ClientMessage::event(&gift_note)
+                .map_err(|err| format!("Failed to serialize gift wrap event: {err}"))?;
+
+            if let Ok(json) = gift_msg.to_json() {
+                let _ = ctx
+                    .ndb
+                    .process_event_with(&json, IngestMetadata::new().client(true));
+            }
+
+            ctx.pool.send(&gift_msg);
+
+            wrapped_count += 1;
+        }
+
+        Ok(wrapped_count)
     }
 
     fn current_user_rsvp(
@@ -2057,6 +2536,7 @@ fn default_timezone_name() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nostr::nips::nip19::{Nip19, Nip19Profile, ToBech32};
 
     #[test]
     fn timed_events_use_kind_31923() {
@@ -2098,6 +2578,38 @@ mod tests {
         let expected = default_timezone_name();
         assert_eq!(draft.start_tzid, expected);
         assert_eq!(draft.end_tzid, expected);
+    }
+
+    #[test]
+    fn participants_accept_extended_formats() {
+        let keys = NostrKeys::generate();
+        let expected_hex = keys.public_key().to_hex();
+
+        let npub = keys
+            .public_key()
+            .to_bech32()
+            .expect("npub encoding should succeed");
+
+        let mut draft = CalendarEventDraft::new();
+        draft.participant_input = format!("{npub},speaker");
+        draft.absorb_participant_input();
+        let parsed = draft.parsed_participants();
+        assert_eq!(
+            parsed,
+            vec![(expected_hex.clone(), Some("speaker".to_string()))]
+        );
+
+        let profile = Nip19Profile::new(keys.public_key(), Vec::<&str>::new())
+            .expect("should construct profile");
+        let nprofile = Nip19::Profile(profile)
+            .to_bech32()
+            .expect("nprofile encoding should succeed");
+
+        draft.participant_input = nprofile;
+        draft.absorb_participant_input();
+        let parsed_profile = draft.parsed_participants();
+        assert_eq!(parsed_profile[1].0, expected_hex);
+        assert!(parsed_profile[1].1.is_none());
     }
 }
 

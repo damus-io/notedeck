@@ -3623,7 +3623,11 @@ dependencies = [
  "nostrdb",
  "notedeck",
  "notedeck_ui",
+ "rand 0.9.2",
+ "serde_json",
  "tracing",
+ "ureq",
+ "urlencoding",
  "uuid",
 ]
 
@@ -6533,6 +6537,8 @@ dependencies = [
  "once_cell",
  "rustls",
  "rustls-pki-types",
+ "serde",
+ "serde_json",
  "url",
  "webpki-roots 0.26.11",
 ]
