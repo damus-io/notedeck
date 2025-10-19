@@ -1,4 +1,3 @@
-use nostrdb::Transaction;
 use notedeck::AppContext;
 
 use crate::{
@@ -10,42 +9,24 @@ use crate::{
 #[profiling::function]
 pub fn unseen_notification(
     columns: &mut Damus,
-    ndb: &nostrdb::Ndb,
-    current_pk: notedeck::enostr::Pubkey,
+    accounts: &notedeck::Accounts,
+    active_col: usize,
 ) -> bool {
-    let Some(tl) = columns
-        .timeline_cache
-        .get_mut(&TimelineKind::Notifications(current_pk))
-    else {
+    let top = columns.columns(accounts).column(active_col).router().top();
+    let current_pk = accounts.get_selected_account().keypair().pubkey;
+
+    if let Route::Timeline(TimelineKind::Notifications(notif_pk)) = top {
+        if notif_pk == current_pk {
+            return false;
+        }
+    }
+
+    let notif_kind = TimelineKind::Notifications(*current_pk);
+    let Some(tl) = columns.timeline_cache.get_mut(&notif_kind) else {
         return false;
     };
 
-    let freshness = &mut tl.current_view_mut().freshness;
-    freshness.update(|timestamp_last_viewed| {
-        profiling::scope!("NotesFreshness::update closure");
-        let filter = {
-            profiling::scope!("NotesFreshness::update filter instantiation");
-            enostr::Filter::new_with_capacity(1)
-                .pubkeys([current_pk.bytes()])
-                .kinds(crate::timeline::kind::notification_kinds())
-                .limit(1)
-                .since(timestamp_last_viewed)
-                .build()
-        };
-        let txn = Transaction::new(ndb).expect("txn");
-
-        let Some(res) = {
-            profiling::scope!("NoteFreshness::update Ndb::query");
-            ndb.query(&txn, &[filter], 1)
-        }
-        .ok() else {
-            return false;
-        };
-
-        !res.is_empty()
-    });
-
-    freshness.has_unseen()
+    !tl.seen_latest_notes
 }
 
 /// When you click the toolbar button, these actions

@@ -243,6 +243,7 @@ pub struct Timeline {
     pub filter: FilterStates,
     pub views: Vec<TimelineTab>,
     pub selected_view: usize,
+    pub seen_latest_notes: bool,
 
     pub subscription: TimelineSub,
     pub enable_front_insert: bool,
@@ -317,6 +318,7 @@ impl Timeline {
             subscription,
             selected_view,
             enable_front_insert,
+            seen_latest_notes: false,
         }
     }
 
@@ -489,7 +491,7 @@ impl Timeline {
         if new_note_ids.is_empty() {
             return Ok(());
         } else {
-            debug!("{} new notes! {:?}", new_note_ids.len(), new_note_ids);
+            self.seen_latest_notes = false;
         }
 
         self.insert(&new_note_ids, ndb, txn, unknown_ids, note_cache, reversed)

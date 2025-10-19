@@ -698,11 +698,7 @@ fn render_damus_mobile(
                     break 'brk;
                 }
 
-                let unseen_notif = unseen_notification(
-                    app,
-                    app_ctx.ndb,
-                    app_ctx.accounts.get_selected_account().key.pubkey,
-                );
+                let unseen_notif = unseen_notification(app, app_ctx.accounts, active_col);
 
                 if skb_rect.is_none() {
                     let resp = toolbar(ui, unseen_notif);
