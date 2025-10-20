@@ -253,6 +253,12 @@ pub fn zap_light_image() -> Image<'static> {
     zap_dark_image().tint(Color32::BLACK)
 }
 
+pub fn like_image_filled() -> Image<'static> {
+    Image::new(include_image!(
+        "../../../assets/icons/like_icon_filled_4x.png"
+    ))
+}
+
 pub fn like_image() -> Image<'static> {
     Image::new(include_image!("../../../assets/icons/like_icon_4x.png"))
 }

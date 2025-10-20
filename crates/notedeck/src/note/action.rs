@@ -14,6 +14,9 @@ pub enum NoteAction {
     /// User has clicked the quote reply action
     Reply(NoteId),
 
+    /// User has clicked the like/reaction button
+    React(ReactAction),
+
     /// User has clicked the repost button
     Repost(NoteId),
 
@@ -50,6 +53,18 @@ impl NoteAction {
             preview: false,
             scroll_offset: 0.0,
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ReactAction {
+    pub note_id: NoteId,
+    pub content: &'static str,
+}
+
+impl ReactAction {
+    pub const fn new(note_id: NoteId, content: &'static str) -> Self {
+        Self { note_id, content }
     }
 }
 
