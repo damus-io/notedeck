@@ -19,7 +19,6 @@ pub use mention::Mention;
 pub use note::{NoteContents, NoteOptions, NoteView};
 pub use profile::{ProfilePic, ProfilePreview};
 pub use username::Username;
-pub use widgets::{info_icon, IosSwitch};
 
 use egui::{Label, Margin, RichText};
 

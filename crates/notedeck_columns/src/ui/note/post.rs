@@ -880,7 +880,6 @@ mod preview {
                 unknown_ids: app.unknown_ids,
                 clipboard: app.clipboard,
                 i18n: app.i18n,
-                wot_filter: None,
             };
 
             PostView::new(
