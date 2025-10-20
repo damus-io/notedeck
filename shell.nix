@@ -18,7 +18,6 @@ mkShell ({
     pkg-config
     #cmake
     fontconfig
-    gradle
     #gtk3
     #gsettings-desktop-schemas
     #brotli
@@ -28,6 +27,7 @@ mkShell ({
   ] ++ lib.optionals (!stdenv.isDarwin) [
     zenity
   ] ++ lib.optionals use_android [
+    gradle
     jre
     openssl
     libiconv
