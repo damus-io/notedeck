@@ -258,7 +258,7 @@ impl TimelineCache {
             return;
         };
 
-        tl.current_view_mut().freshness.set_fresh();
+        tl.seen_latest_notes = true;
     }
 }
 
