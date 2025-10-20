@@ -28,6 +28,18 @@ pub struct CalendarParticipant {
 }
 
 #[derive(Debug, Clone)]
+pub struct CalendarDefinition {
+    pub coordinate: String,
+    pub id_hex: String,
+    pub identifier: String,
+    pub title: String,
+    pub description: Option<String>,
+    pub author_hex: String,
+    pub created_at: u64,
+    pub is_private: bool,
+}
+
+#[derive(Debug, Clone)]
 pub struct CalendarRsvp {
     pub id_hex: String,
     pub attendee_hex: String,
@@ -333,7 +345,9 @@ pub fn parse_calendar_event(note: &Note<'_>) -> Option<CalendarEvent> {
             }
             "a" => {
                 if let Some(reference) = tag.get_str(1) {
-                    calendars.push(reference.to_owned());
+                    if let Some(coordinate) = canonical_calendar_coordinate(reference) {
+                        calendars.push(coordinate);
+                    }
                 }
             }
             "start" => {
@@ -539,6 +553,112 @@ pub fn parse_event_coordinate(value: &str) -> Option<(u32, String, String)> {
     }
 
     Some((kind, pubkey_str.to_ascii_lowercase(), identifier))
+}
+
+pub fn canonical_calendar_coordinate(value: &str) -> Option<String> {
+    let mut parts = value.splitn(3, ':');
+    let kind_str = parts.next()?.trim();
+    let pubkey_str = parts.next()?.trim();
+    let identifier = parts.next()?.trim();
+
+    if identifier.is_empty() {
+        return None;
+    }
+
+    let kind: u32 = kind_str.parse().ok()?;
+    if kind != 31924 {
+        return None;
+    }
+
+    let pubkey_hex = pubkey_str.to_ascii_lowercase();
+    Some(format!("{kind}:{pubkey_hex}:{identifier}"))
+}
+
+pub fn parse_calendar_coordinate(value: &str) -> Option<(String, String)> {
+    let mut parts = value.splitn(3, ':');
+    let kind: u32 = parts.next()?.trim().parse().ok()?;
+    if kind != 31924 {
+        return None;
+    }
+    let author = parts.next()?.trim().to_ascii_lowercase();
+    let identifier = parts.next()?.trim().to_string();
+    if identifier.is_empty() {
+        return None;
+    }
+    Some((author, identifier))
+}
+
+pub fn parse_calendar_definition(note: &Note<'_>) -> Option<CalendarDefinition> {
+    if note.kind() != 31924 {
+        return None;
+    }
+
+    let mut identifier = None;
+    let mut title = None;
+    let mut is_private = false;
+
+    for tag in note.tags() {
+        if tag.count() < 2 {
+            continue;
+        }
+
+        let Some(name) = tag.get_str(0) else {
+            continue;
+        };
+
+        match name {
+            "d" => {
+                if let Some(value) = tag.get_str(1) {
+                    identifier = Some(value.trim().to_owned());
+                }
+            }
+            "title" => {
+                if let Some(value) = tag.get_str(1) {
+                    title = Some(value.to_owned());
+                }
+            }
+            "name" => {
+                if title.is_none() {
+                    if let Some(value) = tag.get_str(1) {
+                        title = Some(value.to_owned());
+                    }
+                }
+            }
+            "privacy" => {
+                if let Some(value) = tag.get_str(1) {
+                    if value.eq_ignore_ascii_case("private") {
+                        is_private = true;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let identifier = identifier?;
+    if identifier.is_empty() {
+        return None;
+    }
+
+    let author_hex = hex::encode(note.pubkey());
+    let coordinate = format!("31924:{}:{}", author_hex, identifier);
+    let title_value = title.unwrap_or_else(|| identifier.clone());
+    let description = if note.content().is_empty() {
+        None
+    } else {
+        Some(note.content().to_string())
+    };
+
+    Some(CalendarDefinition {
+        coordinate,
+        id_hex: hex::encode(note.id()),
+        identifier,
+        title: title_value,
+        description,
+        author_hex,
+        created_at: note.created_at(),
+        is_private,
+    })
 }
 
 pub fn match_rsvps_for_event(event: &CalendarEvent, rsvps: &[CalendarRsvp]) -> Vec<CalendarRsvp> {

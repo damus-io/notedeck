@@ -38,16 +38,17 @@ use std::sync::Arc;
 use std::time::{Duration as StdDuration, Instant, SystemTime, UNIX_EPOCH};
 use std::{
     borrow::Cow,
-    collections::{HashMap, HashSet},
+    collections::{hash_map::Entry, HashMap, HashSet},
 };
 use tracing::warn;
 use urlencoding::encode;
 use uuid::Uuid;
 
 use model::{
-    event_naddr, event_nevent, match_rsvps_for_event, parse_calendar_event, parse_calendar_rsvp,
-    wrap_title, CalendarEvent, CalendarEventTime, CalendarParticipant, CalendarRsvp, RsvpFeedback,
-    RsvpStatus,
+    canonical_calendar_coordinate, event_naddr, event_nevent, match_rsvps_for_event,
+    parse_calendar_coordinate, parse_calendar_definition, parse_calendar_event,
+    parse_calendar_rsvp, wrap_title, CalendarDefinition, CalendarEvent, CalendarEventTime,
+    CalendarParticipant, CalendarRsvp, RsvpFeedback, RsvpStatus,
 };
 
 const FETCH_LIMIT: i32 = 1024;
@@ -56,6 +57,7 @@ const POLL_INTERVAL: StdDuration = StdDuration::from_secs(5);
 const EVENT_CREATION_FEEDBACK_TTL: StdDuration = StdDuration::from_secs(10);
 const WOT_CACHE_TTL: StdDuration = StdDuration::from_secs(60);
 const DEFAULT_WOT_DEPTH: u8 = 2;
+const NO_CALENDAR_COORD: &str = "__notedeck_calendar::no_calendar__";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DraftEventType {
@@ -84,6 +86,7 @@ struct CalendarEventDraft {
     hashtags_text: String,
     references_text: String,
     calendars_text: String,
+    selected_calendars: HashSet<String>,
     participants: Vec<(String, Option<String>)>,
     participant_input: String,
     start_date: String,
@@ -94,6 +97,35 @@ struct CalendarEventDraft {
     start_tzid: String,
     end_tzid: String,
     is_private: bool,
+}
+
+#[derive(Debug, Clone)]
+struct CalendarDraft {
+    identifier: String,
+    title: String,
+    description: String,
+    is_private: bool,
+}
+
+impl CalendarDraft {
+    fn new() -> Self {
+        Self {
+            identifier: Self::new_identifier(),
+            title: String::new(),
+            description: String::new(),
+            is_private: false,
+        }
+    }
+
+    fn reset(&mut self) {
+        let is_private = self.is_private;
+        *self = Self::new();
+        self.is_private = is_private;
+    }
+
+    fn new_identifier() -> String {
+        Uuid::new_v4().simple().to_string()
+    }
 }
 
 impl CalendarEventDraft {
@@ -114,6 +146,7 @@ impl CalendarEventDraft {
             hashtags_text: String::new(),
             references_text: String::new(),
             calendars_text: String::new(),
+            selected_calendars: HashSet::new(),
             participants: Vec::new(),
             participant_input: String::new(),
             start_date: today.format("%Y-%m-%d").to_string(),
@@ -134,8 +167,10 @@ impl CalendarEventDraft {
     fn reset_preserving_type(&mut self) {
         let event_type = self.event_type;
         let is_private = self.is_private;
+        let selected = self.selected_calendars.clone();
         *self = Self::with_kind(event_type);
         self.is_private = is_private;
+        self.selected_calendars = selected;
     }
 
     fn new_identifier() -> String {
@@ -178,12 +213,22 @@ impl CalendarEventDraft {
     }
 
     fn parsed_calendars(&self) -> Vec<String> {
-        self.calendars_text
+        let mut from_text: Vec<String> = self
+            .calendars_text
             .lines()
             .map(|line| line.trim())
             .filter(|line| !line.is_empty())
-            .map(|line| line.to_owned())
-            .collect()
+            .map(|line| canonical_calendar_coordinate(line).unwrap_or_else(|| line.to_owned()))
+            .collect();
+        for coord in &self.selected_calendars {
+            if !from_text
+                .iter()
+                .any(|existing| existing.eq_ignore_ascii_case(coord))
+            {
+                from_text.push(coord.clone());
+            }
+        }
+        from_text
     }
 
     fn parsed_participants(&self) -> Vec<(String, Option<String>)> {
@@ -453,6 +498,12 @@ enum EventCreationFeedback {
     Error(String),
 }
 
+#[derive(Debug, Clone)]
+enum CalendarCreationFeedback {
+    Success(String),
+    Error(String),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CalendarView {
     Month,
@@ -533,6 +584,8 @@ impl TimeZoneChoice {
 pub struct CalendarApp {
     subscription: Option<UnifiedSubscription>,
     events: Vec<CalendarEvent>,
+    calendars: HashMap<String, CalendarDefinition>,
+    hidden_calendars: HashSet<String>,
     all_rsvps: HashMap<String, CalendarRsvp>,
     pending_rsvps: HashMap<String, CalendarRsvp>,
     month_galley_cache: HashMap<(String, u16), Arc<egui::Galley>>,
@@ -549,6 +602,11 @@ pub struct CalendarApp {
     creation_feedback: Option<(Instant, EventCreationFeedback)>,
     creation_pending: bool,
     event_draft: CalendarEventDraft,
+    creating_calendar: bool,
+    calendar_creation_pending: bool,
+    calendar_creation_feedback: Option<(Instant, CalendarCreationFeedback)>,
+    calendar_draft: CalendarDraft,
+    private_calendars: HashSet<String>,
     wot_only: bool,
     wot_cache: Option<WebOfTrustCache>,
     user_pubkey_hex: String,
@@ -573,6 +631,8 @@ impl CalendarApp {
         Self {
             subscription: None,
             events: Vec::new(),
+            calendars: HashMap::new(),
+            hidden_calendars: HashSet::new(),
             all_rsvps: HashMap::new(),
             pending_rsvps: HashMap::new(),
             month_galley_cache: HashMap::new(),
@@ -589,6 +649,11 @@ impl CalendarApp {
             creation_feedback: None,
             creation_pending: false,
             event_draft: CalendarEventDraft::new(),
+            creating_calendar: false,
+            calendar_creation_pending: false,
+            calendar_creation_feedback: None,
+            calendar_draft: CalendarDraft::new(),
+            private_calendars: HashSet::new(),
             wot_only: true,
             wot_cache: None,
             user_pubkey_hex: String::new(),
@@ -596,7 +661,7 @@ impl CalendarApp {
     }
 
     fn filters() -> Vec<Filter> {
-        let mut kinds = Filter::new().kinds([31922, 31923, 31925]);
+        let mut kinds = Filter::new().kinds([31922, 31923, 31924, 31925]);
         kinds = kinds.limit(FETCH_LIMIT as u64);
         vec![kinds.build()]
     }
@@ -710,6 +775,7 @@ impl CalendarApp {
         };
 
         let mut events = Vec::new();
+        let mut calendars = HashMap::new();
         let mut rsvps = HashMap::new();
         for result in results {
             let note = result.note;
@@ -718,6 +784,11 @@ impl CalendarApp {
                 31922 | 31923 => {
                     if let Some(event) = parse_calendar_event(&note) {
                         events.push(event);
+                    }
+                }
+                31924 => {
+                    if let Some(calendar) = parse_calendar_definition(&note) {
+                        Self::insert_calendar_entry(&mut calendars, calendar);
                     }
                 }
                 31925 => {
@@ -748,6 +819,18 @@ impl CalendarApp {
         }
 
         self.events = events;
+        self.calendars = calendars;
+        self.private_calendars
+            .retain(|coord| self.calendars.contains_key(coord));
+        for (coord, definition) in self.calendars.iter_mut() {
+            if definition.is_private || self.private_calendars.contains(coord) {
+                definition.is_private = true;
+                self.private_calendars.insert(coord.clone());
+            }
+        }
+        self.prune_selected_calendars();
+        self.ensure_calendar_placeholders(ctx);
+        self.prune_hidden_calendars();
         self.resort_events();
         self.initialized = true;
     }
@@ -778,7 +861,7 @@ impl CalendarApp {
 
         for key in new_keys {
             match ctx.ndb.get_note_by_key(&txn, key) {
-                Ok(note) => self.process_note(&note),
+                Ok(note) => self.process_note(ctx, &note),
                 Err(err) => warn!("Calendar: missing note for key {:?}: {err}", key),
             }
         }
@@ -786,12 +869,18 @@ impl CalendarApp {
         self.resort_events();
     }
 
-    fn process_note(&mut self, note: &Note<'_>) {
+    fn process_note(&mut self, ctx: &mut AppContext, note: &Note<'_>) {
         match note.kind() {
             31922 | 31923 => {
                 if let Some(mut event) = parse_calendar_event(note) {
                     self.populate_event_rsvps(&mut event);
                     self.upsert_event(event);
+                    self.ensure_calendar_placeholders(ctx);
+                }
+            }
+            31924 => {
+                if let Some(calendar) = parse_calendar_definition(note) {
+                    self.upsert_calendar(calendar);
                 }
             }
             31925 => {
@@ -801,6 +890,189 @@ impl CalendarApp {
             }
             _ => {}
         }
+    }
+
+    fn insert_calendar_entry(
+        map: &mut HashMap<String, CalendarDefinition>,
+        calendar: CalendarDefinition,
+    ) {
+        let coordinate = calendar.coordinate.clone();
+        match map.entry(coordinate) {
+            Entry::Vacant(entry) => {
+                entry.insert(calendar);
+            }
+            Entry::Occupied(mut entry) => {
+                let replace = calendar.created_at > entry.get().created_at
+                    || (calendar.created_at == entry.get().created_at
+                        && calendar.id_hex > entry.get().id_hex);
+                if replace {
+                    entry.insert(calendar);
+                }
+            }
+        }
+    }
+
+    fn prune_hidden_calendars(&mut self) {
+        if self.hidden_calendars.is_empty() {
+            return;
+        }
+
+        let has_uncategorized = self.events.iter().any(|ev| ev.calendars.is_empty());
+        self.hidden_calendars.retain(|coord| {
+            if coord == NO_CALENDAR_COORD {
+                has_uncategorized
+            } else {
+                self.calendars.contains_key(coord)
+            }
+        });
+    }
+
+    fn ensure_calendar_placeholders(&mut self, ctx: &mut AppContext) {
+        let mut added = false;
+        let txn = Transaction::new(ctx.ndb).ok();
+
+        for coordinate in self.events.iter().flat_map(|event| event.calendars.iter()) {
+            if self.calendars.contains_key(coordinate) {
+                continue;
+            }
+
+            if let Some((author_hex, identifier)) = parse_calendar_coordinate(coordinate) {
+                if let (Some(txn), Some(bytes)) = (txn.as_ref(), decode_pubkey_hex(&author_hex)) {
+                    ctx.unknown_ids.add_pubkey_if_missing(ctx.ndb, txn, &bytes);
+                }
+
+                let mut definition = CalendarDefinition {
+                    coordinate: coordinate.clone(),
+                    id_hex: String::new(),
+                    identifier: identifier.clone(),
+                    title: identifier.clone(),
+                    description: None,
+                    author_hex,
+                    created_at: 0,
+                    is_private: false,
+                };
+                if self.private_calendars.contains(coordinate) {
+                    definition.is_private = true;
+                }
+                self.calendars.insert(coordinate.clone(), definition);
+                added = true;
+            }
+        }
+
+        if added {
+            self.prune_hidden_calendars();
+            self.prune_selected_calendars();
+        }
+    }
+
+    fn upsert_calendar(&mut self, mut calendar: CalendarDefinition) {
+        let coordinate = calendar.coordinate.clone();
+        if calendar.is_private {
+            self.private_calendars.insert(coordinate.clone());
+        } else if self.private_calendars.contains(&coordinate) {
+            calendar.is_private = true;
+        }
+
+        let mut updated = false;
+        match self.calendars.entry(coordinate.clone()) {
+            Entry::Vacant(entry) => {
+                entry.insert(calendar);
+                updated = true;
+            }
+            Entry::Occupied(mut entry) => {
+                let replace = calendar.created_at > entry.get().created_at
+                    || (calendar.created_at == entry.get().created_at
+                        && calendar.id_hex > entry.get().id_hex);
+                if replace {
+                    entry.insert(calendar);
+                    updated = true;
+                }
+            }
+        }
+
+        if updated {
+            if let Some(definition) = self.calendars.get(&coordinate) {
+                if definition.is_private {
+                    self.private_calendars.insert(coordinate.clone());
+                }
+            }
+            self.prune_hidden_calendars();
+            self.prune_selected_calendars();
+        }
+    }
+
+    fn readable_calendar_title(calendar: &CalendarDefinition, creator_name: &str) -> String {
+        let title = calendar.title.trim();
+        if title.is_empty() || Self::looks_like_identifier(title, &calendar.identifier) {
+            format!("{}'s calendar", creator_name)
+        } else {
+            title.to_string()
+        }
+    }
+
+    fn looks_like_identifier(candidate: &str, identifier: &str) -> bool {
+        let trimmed = candidate.trim();
+        if trimmed.eq_ignore_ascii_case(identifier.trim()) {
+            return true;
+        }
+
+        if trimmed.len() >= 16
+            && trimmed
+                .chars()
+                .all(|c| c.is_ascii_hexdigit() || c == '-' || c == '_')
+        {
+            return true;
+        }
+
+        false
+    }
+
+    fn user_owned_calendars(&self) -> Vec<CalendarDefinition> {
+        if self.user_pubkey_hex.is_empty() {
+            return Vec::new();
+        }
+
+        let mut owned: Vec<CalendarDefinition> = self
+            .calendars
+            .values()
+            .filter(|calendar| {
+                calendar
+                    .author_hex
+                    .eq_ignore_ascii_case(&self.user_pubkey_hex)
+            })
+            .cloned()
+            .collect();
+
+        for calendar in &mut owned {
+            if self.private_calendars.contains(&calendar.coordinate) {
+                calendar.is_private = true;
+            }
+        }
+
+        owned.sort_by(|a, b| {
+            let label_a = a.title.to_lowercase();
+            let label_b = b.title.to_lowercase();
+            let cmp = label_a.cmp(&label_b);
+            if cmp == std::cmp::Ordering::Equal {
+                a.identifier
+                    .to_lowercase()
+                    .cmp(&b.identifier.to_lowercase())
+            } else {
+                cmp
+            }
+        });
+
+        owned
+    }
+
+    fn prune_selected_calendars(&mut self) {
+        if self.event_draft.selected_calendars.is_empty() {
+            return;
+        }
+
+        self.event_draft
+            .selected_calendars
+            .retain(|coord| self.calendars.contains_key(coord));
     }
 
     fn upsert_event(&mut self, event: CalendarEvent) {
@@ -997,6 +1269,18 @@ impl CalendarApp {
         self.creation_feedback = Some((Instant::now(), feedback));
     }
 
+    fn prune_calendar_creation_feedback(&mut self) {
+        if let Some((timestamp, _)) = self.calendar_creation_feedback {
+            if timestamp.elapsed() >= EVENT_CREATION_FEEDBACK_TTL {
+                self.calendar_creation_feedback = None;
+            }
+        }
+    }
+
+    fn set_calendar_creation_feedback(&mut self, feedback: CalendarCreationFeedback) {
+        self.calendar_creation_feedback = Some((Instant::now(), feedback));
+    }
+
     fn render_event_creation_window(&mut self, ctx: &mut AppContext, egui_ctx: &egui::Context) {
         self.prune_creation_feedback();
         if !self.creating_event {
@@ -1018,6 +1302,115 @@ impl CalendarApp {
 
         if !open {
             self.creating_event = false;
+        }
+    }
+
+    fn render_calendar_creation_window(&mut self, ctx: &mut AppContext, egui_ctx: &egui::Context) {
+        self.prune_calendar_creation_feedback();
+        if !self.creating_calendar {
+            return;
+        }
+
+        let mut open = true;
+        egui::Window::new("Create Calendar")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(true)
+            .show(egui_ctx, |ui| {
+                egui::ScrollArea::vertical()
+                    .max_height(360.0)
+                    .show(ui, |ui| {
+                        self.render_calendar_creation_contents(ctx, ui);
+                    });
+            });
+
+        if !open {
+            self.creating_calendar = false;
+        }
+    }
+
+    fn render_calendar_creation_contents(&mut self, ctx: &mut AppContext, ui: &mut egui::Ui) {
+        let has_writable_account = ctx.accounts.selected_filled().is_some();
+
+        if !has_writable_account {
+            ui.colored_label(
+                ui.visuals().warn_fg_color,
+                "Select an account with its private key to publish calendars.",
+            );
+            ui.add_space(6.0);
+        }
+
+        if self.calendar_creation_pending {
+            ui.label("Publishing calendar…");
+        }
+
+        if let Some((_, feedback)) = &self.calendar_creation_feedback {
+            match feedback {
+                CalendarCreationFeedback::Success(msg) => {
+                    ui.colored_label(ui.visuals().hyperlink_color, msg);
+                }
+                CalendarCreationFeedback::Error(msg) => {
+                    ui.colored_label(Color32::from_rgb(220, 70, 70), msg);
+                }
+            }
+        }
+
+        ui.separator();
+        ui.add_space(6.0);
+
+        ui.label("Identifier*");
+        ui.horizontal(|ui| {
+            ui.text_edit_singleline(&mut self.calendar_draft.identifier);
+            if ui
+                .add(egui::Button::new("Regenerate").small())
+                .on_hover_text("Generate a new random identifier")
+                .clicked()
+            {
+                self.calendar_draft.identifier = CalendarDraft::new_identifier();
+            }
+        });
+
+        ui.add_space(6.0);
+        ui.label("Title*");
+        ui.text_edit_singleline(&mut self.calendar_draft.title);
+
+        ui.add_space(6.0);
+        ui.label("Description");
+        ui.text_edit_multiline(&mut self.calendar_draft.description)
+            .on_hover_text("Optional description shown to anyone viewing the calendar");
+
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            ui.label("Visibility");
+            let toggle_response = ui.add(IosSwitch::new(&mut self.calendar_draft.is_private));
+            if toggle_response.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+
+            let label = if self.calendar_draft.is_private {
+                "Private calendar"
+            } else {
+                "Public calendar"
+            };
+            ui.add_space(8.0);
+            ui.label(label);
+
+            let tooltip = if self.calendar_draft.is_private {
+                "Private calendars are only visible to you."
+            } else {
+                "Public calendars are visible to anyone."
+            };
+
+            Self::info_icon(ui, tooltip);
+        });
+
+        ui.add_space(10.0);
+        let publish_button = ui.add_enabled(
+            !self.calendar_creation_pending,
+            egui::Button::new("Create Calendar"),
+        );
+        if publish_button.clicked() {
+            self.submit_calendar_creation(ctx);
         }
     }
 
@@ -1090,19 +1483,12 @@ impl CalendarApp {
                 "Public events are visible to anyone."
             };
 
-            let info = egui::Label::new(
-                egui::RichText::new("i")
-                    .strong()
-                    .color(ui.visuals().weak_text_color()),
-            )
-            .sense(egui::Sense::click());
-
-            let response = ui.add(info);
-            if response.hovered() || response.clicked() {
+            let info_response = Self::info_icon(ui, tooltip_text);
+            if info_response.clicked() {
                 egui::show_tooltip_at_pointer(
                     ui.ctx(),
                     ui.layer_id(),
-                    response.id,
+                    info_response.id,
                     |ui: &mut egui::Ui| {
                         ui.label(tooltip_text);
                     },
@@ -1203,6 +1589,47 @@ impl CalendarApp {
         ui.add_space(6.0);
         ui.label("References / links (one per line)");
         ui.text_edit_multiline(&mut self.event_draft.references_text);
+
+        let owned_calendars = self.user_owned_calendars();
+        if !owned_calendars.is_empty() {
+            ui.add_space(6.0);
+            ui.label("Add to your calendars");
+            ui.add_space(4.0);
+
+            for calendar in owned_calendars {
+                let coordinate = calendar.coordinate.clone();
+                let mut selected = self.event_draft.selected_calendars.contains(&coordinate);
+                let mut title = calendar.title.trim().to_string();
+                if title.is_empty() || Self::looks_like_identifier(&title, &calendar.identifier) {
+                    title = truncated_identifier(&calendar.identifier);
+                }
+
+                ui.horizontal(|ui| {
+                    let tooltip = format!(
+                        "Identifier: {}\nOwner: {}",
+                        calendar.identifier,
+                        truncated_identifier(&calendar.author_hex)
+                    );
+                    let mut response = ui.checkbox(&mut selected, title.clone());
+                    response = response.on_hover_text(tooltip.clone());
+                    if response.changed() {
+                        if selected {
+                            self.event_draft
+                                .selected_calendars
+                                .insert(coordinate.clone());
+                        } else {
+                            self.event_draft.selected_calendars.remove(&coordinate);
+                        }
+                    }
+                    ui.add_space(6.0);
+                    ui.label(
+                        egui::RichText::new(truncated_identifier(&calendar.identifier))
+                            .color(ui.visuals().weak_text_color()),
+                    )
+                    .on_hover_text(tooltip);
+                });
+            }
+        }
 
         ui.add_space(6.0);
         ui.label("Calendars to request (enter full 'a' coordinate per line)");
@@ -1411,6 +1838,83 @@ impl CalendarApp {
         }
     }
 
+    fn submit_calendar_creation(&mut self, ctx: &mut AppContext) {
+        if self.calendar_creation_pending {
+            return;
+        }
+
+        if self.calendar_draft.identifier.trim().is_empty() {
+            self.set_calendar_creation_feedback(CalendarCreationFeedback::Error(
+                "Identifier is required.".to_string(),
+            ));
+            return;
+        }
+
+        if self.calendar_draft.title.trim().is_empty() {
+            self.set_calendar_creation_feedback(CalendarCreationFeedback::Error(
+                "Title is required.".to_string(),
+            ));
+            return;
+        }
+
+        let Some(filled) = ctx.accounts.selected_filled() else {
+            self.set_calendar_creation_feedback(CalendarCreationFeedback::Error(
+                "Select an account with its private key to publish calendars.".to_string(),
+            ));
+            return;
+        };
+
+        let account = filled.to_full();
+        self.calendar_creation_pending = true;
+
+        match self.build_calendar_note(&self.calendar_draft, &account) {
+            Ok((note, mut calendar)) => {
+                let calendar_msg = match ClientMessage::event(&note) {
+                    Ok(msg) => msg,
+                    Err(err) => {
+                        self.calendar_creation_pending = false;
+                        self.set_calendar_creation_feedback(CalendarCreationFeedback::Error(
+                            format!("Failed to serialize calendar: {err}"),
+                        ));
+                        return;
+                    }
+                };
+
+                if let Ok(json) = calendar_msg.to_json() {
+                    let _ = ctx
+                        .ndb
+                        .process_event_with(&json, IngestMetadata::new().client(true));
+                }
+
+                if self.calendar_draft.is_private {
+                    if let Err(err) = self.publish_private_calendar(ctx, &account, &note) {
+                        self.calendar_creation_pending = false;
+                        self.set_calendar_creation_feedback(CalendarCreationFeedback::Error(err));
+                        return;
+                    }
+                } else {
+                    ctx.pool.send(&calendar_msg);
+                }
+
+                calendar.is_private = self.calendar_draft.is_private;
+                if calendar.is_private {
+                    self.private_calendars.insert(calendar.coordinate.clone());
+                }
+                self.upsert_calendar(calendar);
+                self.calendar_creation_pending = false;
+                self.creating_calendar = false;
+                self.calendar_draft.reset();
+                self.set_calendar_creation_feedback(CalendarCreationFeedback::Success(
+                    "Calendar created.".to_string(),
+                ));
+            }
+            Err(err) => {
+                self.calendar_creation_pending = false;
+                self.set_calendar_creation_feedback(CalendarCreationFeedback::Error(err));
+            }
+        }
+    }
+
     fn build_calendar_event_note(
         &self,
         draft: &CalendarEventDraft,
@@ -1567,6 +2071,46 @@ impl CalendarApp {
         Ok((note, event))
     }
 
+    fn build_calendar_note(
+        &self,
+        draft: &CalendarDraft,
+        account: &FullKeypair,
+    ) -> Result<(nostrdb::Note<'static>, CalendarDefinition), String> {
+        let identifier = draft.identifier.trim();
+        if identifier.is_empty() {
+            return Err("Identifier is required.".to_string());
+        }
+
+        let title = draft.title.trim();
+        if title.is_empty() {
+            return Err("Title is required.".to_string());
+        }
+
+        let content_owned = draft.description.clone();
+        let mut builder = nostrdb::NoteBuilder::new()
+            .kind(31924)
+            .content(content_owned.as_str());
+
+        builder = builder.start_tag().tag_str("d").tag_str(identifier);
+        builder = builder.start_tag().tag_str("title").tag_str(title);
+        builder = builder.start_tag().tag_str("name").tag_str(title);
+
+        if draft.is_private {
+            builder = builder.start_tag().tag_str("privacy").tag_str("private");
+        }
+
+        let secret_bytes = account.secret_key.secret_bytes();
+        let Some(note) = builder.sign(&secret_bytes).build() else {
+            return Err("Failed to build calendar.".to_string());
+        };
+
+        let Some(calendar) = parse_calendar_definition(&note) else {
+            return Err("Failed to parse calendar definition.".to_string());
+        };
+
+        Ok((note, calendar))
+    }
+
     fn private_recipients(event: &CalendarEvent, account: &FullKeypair) -> Vec<String> {
         let mut recipients: HashSet<String> = HashSet::new();
         recipients.insert(account.pubkey.hex().to_ascii_lowercase());
@@ -1597,23 +2141,22 @@ impl CalendarApp {
         now.saturating_sub(tweak)
     }
 
-    fn publish_private_event(
+    fn publish_private_note(
         &self,
         ctx: &mut AppContext,
         account: &FullKeypair,
         note: &nostrdb::Note<'static>,
-        event: &CalendarEvent,
+        recipients: &[String],
     ) -> Result<usize, String> {
-        let recipients = Self::private_recipients(event, account);
         if recipients.is_empty() {
-            return Err("No recipients resolved for private event.".to_string());
+            return Err("No recipients resolved for private publish.".to_string());
         }
 
         let note_json = note
             .json()
-            .map_err(|err| format!("Failed to serialize calendar event: {err}"))?;
+            .map_err(|err| format!("Failed to serialize event: {err}"))?;
         let event_for_rumor = NostrEvent::from_json(note_json)
-            .map_err(|err| format!("Failed to parse calendar event: {err}"))?;
+            .map_err(|err| format!("Failed to parse event: {err}"))?;
         let rumor_json = UnsignedEvent::from(event_for_rumor).as_json();
 
         let account_secret_bytes = account.secret_key.secret_bytes();
@@ -1682,6 +2225,27 @@ impl CalendarApp {
         }
 
         Ok(wrapped_count)
+    }
+
+    fn publish_private_event(
+        &self,
+        ctx: &mut AppContext,
+        account: &FullKeypair,
+        note: &nostrdb::Note<'static>,
+        event: &CalendarEvent,
+    ) -> Result<usize, String> {
+        let recipients = Self::private_recipients(event, account);
+        self.publish_private_note(ctx, account, note, &recipients)
+    }
+
+    fn publish_private_calendar(
+        &self,
+        ctx: &mut AppContext,
+        account: &FullKeypair,
+        note: &nostrdb::Note<'static>,
+    ) -> Result<usize, String> {
+        let recipients = vec![account.pubkey.hex().to_ascii_lowercase()];
+        self.publish_private_note(ctx, account, note, &recipients)
     }
 
     fn current_user_rsvp(&self, event: &CalendarEvent) -> Option<RsvpStatus> {
@@ -1928,6 +2492,19 @@ impl CalendarApp {
     }
 
     fn is_event_visible(&self, event: &CalendarEvent) -> bool {
+        if self.hidden_calendars.contains(NO_CALENDAR_COORD) && event.calendars.is_empty() {
+            return false;
+        }
+
+        if !self.hidden_calendars.is_empty()
+            && event
+                .calendars
+                .iter()
+                .any(|coordinate| self.hidden_calendars.contains(coordinate))
+        {
+            return false;
+        }
+
         if !self.wot_only {
             return true;
         }
@@ -2053,6 +2630,218 @@ impl CalendarApp {
             });
         });
         ui.add_space(8.0);
+    }
+
+    fn calendar_filter_controls(&mut self, ctx: &mut AppContext, ui: &mut egui::Ui) {
+        let has_uncategorized = self.events.iter().any(|ev| ev.calendars.is_empty());
+        let total = self.calendars.len() + usize::from(has_uncategorized);
+        let hidden = self.hidden_calendars.len().min(total);
+        let shown = total.saturating_sub(hidden);
+        let label = if total == 0 {
+            "Calendars".to_string()
+        } else if hidden == 0 {
+            match total {
+                1 => "Calendars (1 shown)".to_string(),
+                _ => format!("Calendars ({shown} shown)"),
+            }
+        } else {
+            format!("Calendars ({shown} of {total} shown)")
+        };
+
+        let mut visibility_changed = false;
+
+        let txn = Transaction::new(ctx.ndb).ok();
+
+        ui.menu_button(label, |ui| {
+            ui.set_min_width(260.0);
+            if total == 0 {
+                ui.label("No calendars discovered yet.");
+                return;
+            }
+
+            ui.label("Uncheck to hide events from a calendar.");
+            ui.separator();
+
+            let mut entries: Vec<&CalendarDefinition> = self.calendars.values().collect();
+            entries.sort_by(|a, b| {
+                let title_cmp = a.title.to_lowercase().cmp(&b.title.to_lowercase());
+                if title_cmp == std::cmp::Ordering::Equal {
+                    a.identifier.cmp(&b.identifier)
+                } else {
+                    title_cmp
+                }
+            });
+
+            let mut updates = Vec::new();
+            egui::ScrollArea::vertical()
+                .max_height(280.0)
+                .show(ui, |ui| {
+                    for calendar in entries {
+                        let coordinate = calendar.coordinate.clone();
+                        let mut visible = !self.hidden_calendars.contains(&coordinate);
+                        let profile = txn.as_ref().and_then(|txn| {
+                            decode_pubkey_hex(&calendar.author_hex).and_then(|bytes| {
+                                ctx.unknown_ids.add_pubkey_if_missing(ctx.ndb, txn, &bytes);
+                                ctx.ndb.get_profile_by_pubkey(txn, &bytes).ok()
+                            })
+                        });
+                        let creator_name = display_name_from_profile(profile.as_ref())
+                            .unwrap_or_else(|| short_pubkey(&calendar.author_hex));
+
+                        let primary_label = Self::readable_calendar_title(calendar, &creator_name);
+
+                        let mut tooltip =
+                            format!("Owner: {creator_name}\nIdentifier: {}", calendar.identifier);
+                        if calendar.is_private {
+                            tooltip.push_str("\nPrivate calendar");
+                        }
+                        if let Some(desc) = &calendar.description {
+                            let trimmed = desc.trim();
+                            if !trimmed.is_empty() {
+                                tooltip.push_str("\n\n");
+                                tooltip.push_str(trimmed);
+                            }
+                        }
+
+                        let mut row_changed = false;
+                        let mut toggle_request = false;
+                        ui.horizontal(|ui| {
+                            ui.set_width(ui.available_width());
+
+                            let checkbox = ui.add(egui::Checkbox::new(&mut visible, ""));
+                            let checkbox = checkbox.on_hover_text(tooltip.clone());
+                            if checkbox.changed() {
+                                row_changed = true;
+                            }
+                            if checkbox.hovered() {
+                                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                            }
+
+                            let mut avatar = ProfilePic::from_profile_or_default(
+                                ctx.img_cache,
+                                profile.as_ref(),
+                            )
+                            .size(28.0)
+                            .border(ProfilePic::border_stroke(ui));
+                            let avatar_resp = ui.add(&mut avatar);
+                            let avatar_resp = avatar_resp.on_hover_text(creator_name.clone());
+                            if avatar_resp.clicked() {
+                                toggle_request = true;
+                            }
+
+                            ui.add_space(8.0);
+                            if calendar.is_private {
+                                let icon_resp = Self::private_calendar_icon(ui)
+                                    .on_hover_text("Private calendar");
+                                if icon_resp.clicked() {
+                                    toggle_request = true;
+                                }
+                                ui.add_space(6.0);
+                            }
+
+                            ui.vertical(|ui| {
+                                let title_resp = ui
+                                    .add(
+                                        egui::Label::new(
+                                            egui::RichText::new(primary_label.clone()).strong(),
+                                        )
+                                        .sense(Sense::click()),
+                                    )
+                                    .on_hover_text(tooltip.clone());
+                                if title_resp.clicked() {
+                                    toggle_request = true;
+                                }
+
+                                let subtitle_resp = ui
+                                    .add(
+                                        egui::Label::new(
+                                            egui::RichText::new(creator_name.as_str())
+                                                .color(ui.visuals().weak_text_color()),
+                                        )
+                                        .sense(Sense::click()),
+                                    )
+                                    .on_hover_text(tooltip.clone());
+                                if subtitle_resp.clicked() {
+                                    toggle_request = true;
+                                }
+                            });
+                        });
+
+                        if toggle_request {
+                            visible = !visible;
+                            row_changed = true;
+                        }
+
+                        if row_changed {
+                            updates.push((coordinate.clone(), visible));
+                        }
+
+                        ui.add_space(6.0);
+                    }
+
+                    if has_uncategorized {
+                        ui.separator();
+                        ui.label(egui::RichText::new("Events without a calendar").strong());
+
+                        let mut visible = !self.hidden_calendars.contains(NO_CALENDAR_COORD);
+                        let mut row_changed = false;
+                        let mut toggle_request = false;
+                        let tooltip =
+                            "Events that were published without referencing any calendar.";
+
+                        ui.horizontal(|ui| {
+                            ui.set_width(ui.available_width());
+
+                            let checkbox = ui.add(egui::Checkbox::new(&mut visible, ""));
+                            let checkbox = checkbox.on_hover_text(tooltip);
+                            if checkbox.changed() {
+                                row_changed = true;
+                            }
+                            if checkbox.hovered() {
+                                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                            }
+
+                            ui.add_space(8.0);
+                            let label_resp = ui
+                                .add(
+                                    egui::Label::new(
+                                        egui::RichText::new("Show events without a calendar")
+                                            .strong(),
+                                    )
+                                    .sense(Sense::click()),
+                                )
+                                .on_hover_text(tooltip);
+                            if label_resp.clicked() {
+                                toggle_request = true;
+                            }
+                        });
+
+                        if toggle_request {
+                            visible = !visible;
+                            row_changed = true;
+                        }
+
+                        if row_changed {
+                            updates.push((NO_CALENDAR_COORD.to_string(), visible));
+                        }
+                    }
+                });
+
+            if !updates.is_empty() {
+                visibility_changed = true;
+                for (coordinate, visible) in updates {
+                    if visible {
+                        self.hidden_calendars.remove(&coordinate);
+                    } else {
+                        self.hidden_calendars.insert(coordinate);
+                    }
+                }
+            }
+        });
+
+        if visibility_changed {
+            self.ensure_selected_event_visible();
+        }
     }
 
     fn adjust_focus(&mut self, delta: i32) {
@@ -2272,8 +3061,49 @@ impl CalendarApp {
                     if !event.calendars.is_empty() {
                         ui.separator();
                         ui.label(egui::RichText::new("Calendars").strong());
+                        let txn = Transaction::new(ctx.ndb).ok();
                         for cal in &event.calendars {
-                            ui.label(cal);
+                            if let Some(definition) = self.calendars.get(cal) {
+                                let profile = txn.as_ref().and_then(|txn| {
+                                    decode_pubkey_hex(&definition.author_hex).and_then(|bytes| {
+                                        ctx.ndb.get_profile_by_pubkey(txn, &bytes).ok()
+                                    })
+                                });
+                                let creator_name = display_name_from_profile(profile.as_ref())
+                                    .unwrap_or_else(|| short_pubkey(&definition.author_hex));
+                                let display_title =
+                                    Self::readable_calendar_title(definition, &creator_name);
+
+                                ui.vertical(|ui| {
+                                    ui.horizontal(|ui| {
+                                        if definition.is_private {
+                                            Self::private_calendar_icon(ui)
+                                                .on_hover_text("Private calendar");
+                                            ui.add_space(6.0);
+                                        }
+                                        ui.label(display_title.clone());
+                                    });
+                                    ui.label(
+                                        egui::RichText::new(format!("Owner: {}", creator_name))
+                                            .weak(),
+                                    );
+                                    if let Some(desc) = &definition.description {
+                                        let trimmed = desc.trim();
+                                        if !trimmed.is_empty() {
+                                            ui.label(egui::RichText::new(trimmed).weak());
+                                        }
+                                    }
+                                    ui.label(
+                                        egui::RichText::new(format!(
+                                            "Identifier: {}",
+                                            definition.identifier
+                                        ))
+                                        .weak(),
+                                    );
+                                });
+                            } else {
+                                ui.label(cal);
+                            }
                         }
                     }
                 }),
@@ -2361,12 +3191,14 @@ impl App for CalendarApp {
         self.load_initial_events(ctx);
         self.poll_for_new_notes(ctx);
         self.prune_creation_feedback();
+        self.prune_calendar_creation_feedback();
         self.ensure_wot_cache(ctx);
         self.ensure_selected_event_visible();
 
         let mut action = None;
         let mut drag_ids = Vec::new();
         let mut open_creation_requested = false;
+        let mut open_calendar_requested = false;
         let mut wot_changed = false;
         ui.vertical(|ui| {
             ui.horizontal(|ui| {
@@ -2379,27 +3211,52 @@ impl App for CalendarApp {
             self.view_switcher(ui);
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                if ui.button("New Event").clicked() {
-                    open_creation_requested = true;
-                }
+                ui.vertical(|ui| {
+                    if ui.button("New Event").clicked() {
+                        open_creation_requested = true;
+                    }
 
-                if self.creation_pending {
-                    ui.label("Publishing event…");
-                } else if let Some((_, feedback)) = &self.creation_feedback {
-                    match feedback {
-                        EventCreationFeedback::Success(message) => {
-                            ui.colored_label(ui.visuals().hyperlink_color, message);
-                        }
-                        EventCreationFeedback::Error(message) => {
-                            ui.colored_label(Color32::from_rgb(220, 70, 70), message);
+                    if self.creation_pending {
+                        ui.label("Publishing event…");
+                    } else if let Some((_, feedback)) = &self.creation_feedback {
+                        match feedback {
+                            EventCreationFeedback::Success(message) => {
+                                ui.colored_label(ui.visuals().hyperlink_color, message);
+                            }
+                            EventCreationFeedback::Error(message) => {
+                                ui.colored_label(Color32::from_rgb(220, 70, 70), message);
+                            }
                         }
                     }
-                }
+                });
+
+                ui.add_space(16.0);
+
+                ui.vertical(|ui| {
+                    if ui.button("New Calendar").clicked() {
+                        open_calendar_requested = true;
+                    }
+
+                    if self.calendar_creation_pending {
+                        ui.label("Publishing calendar…");
+                    } else if let Some((_, feedback)) = &self.calendar_creation_feedback {
+                        match feedback {
+                            CalendarCreationFeedback::Success(message) => {
+                                ui.colored_label(ui.visuals().hyperlink_color, message);
+                            }
+                            CalendarCreationFeedback::Error(message) => {
+                                ui.colored_label(Color32::from_rgb(220, 70, 70), message);
+                            }
+                        }
+                    }
+                });
             });
             ui.add_space(6.0);
             self.navigation_bar(ui);
             ui.add_space(8.0);
             self.timezone_controls(ui);
+            self.calendar_filter_controls(ctx, ui);
+            ui.add_space(4.0);
             ui.horizontal(|ui| {
                 let toggle_response = ui.add(IosSwitch::new(&mut self.wot_only));
                 if toggle_response.changed() {
@@ -2457,6 +3314,14 @@ impl App for CalendarApp {
             self.creating_event = true;
         }
 
+        if open_calendar_requested {
+            if !self.creating_calendar {
+                self.calendar_draft.reset();
+            }
+            self.creating_calendar = true;
+        }
+
+        self.render_calendar_creation_window(ctx, ui.ctx());
         self.render_event_creation_window(ctx, ui.ctx());
 
         let response = if let Some(action) = action {
@@ -2472,7 +3337,7 @@ impl App for CalendarApp {
 impl CalendarApp {
     fn info_icon(ui: &mut egui::Ui, tooltip: &str) -> egui::Response {
         let size = vec2(18.0, 18.0);
-        let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
+        let (rect, response) = ui.allocate_exact_size(size, Sense::click());
         let painter = ui.painter_at(rect);
         let visuals = ui.style().visuals.clone();
 
@@ -2488,6 +3353,43 @@ impl CalendarApp {
         );
 
         response.on_hover_text(tooltip)
+    }
+
+    fn private_calendar_icon(ui: &mut egui::Ui) -> egui::Response {
+        let size = vec2(16.0, 18.0);
+        let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+        let painter = ui.painter_at(rect);
+        let visuals = ui.style().visuals.clone();
+
+        let shackle_radius = 5.0;
+        let shackle_center = pos2(rect.center().x, rect.top() + shackle_radius + 1.0);
+        painter.circle_stroke(
+            shackle_center,
+            shackle_radius,
+            Stroke::new(1.2, visuals.strong_text_color()),
+        );
+
+        let cover_rect =
+            egui::Rect::from_min_max(pos2(rect.left(), shackle_center.y), rect.right_top());
+        painter.rect_filled(cover_rect, 0.0, visuals.extreme_bg_color);
+
+        let body_rect = egui::Rect::from_min_size(
+            pos2(rect.left() + 3.0, shackle_center.y - 1.0),
+            vec2(rect.width() - 6.0, rect.height() - shackle_radius - 4.0),
+        );
+        let body_fill = visuals.widgets.inactive.bg_fill.gamma_multiply(0.8);
+        painter.rect_filled(body_rect, 2.0, body_fill);
+        painter.rect_stroke(
+            body_rect,
+            2.0,
+            Stroke::new(1.2, visuals.strong_text_color()),
+            StrokeKind::Inside,
+        );
+
+        let keyhole_center = pos2(rect.center().x, body_rect.center().y);
+        painter.circle_filled(keyhole_center, 1.4, visuals.strong_text_color());
+
+        response
     }
 }
 
