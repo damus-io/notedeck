@@ -223,6 +223,7 @@ impl<'a> DaveUi<'a> {
             clipboard: ctx.clipboard,
             i18n: ctx.i18n,
             global_wallet: ctx.global_wallet,
+            wot_filter: None,
         };
 
         let txn = Transaction::new(note_context.ndb).unwrap();

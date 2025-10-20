@@ -404,6 +404,7 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
         let len = self.tab.units.len();
 
         let mute = self.note_context.accounts.mute();
+        let wot_filter = self.note_context.wot_filter.clone();
 
         self.tab
             .list
@@ -417,7 +418,7 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
                     return 0;
                 };
 
-                match self.render_entry(ui, entry, &mute) {
+                match self.render_entry(ui, entry, &mute, wot_filter.as_ref()) {
                     RenderEntryResponse::Unsuccessful => return 0,
 
                     RenderEntryResponse::Success(note_action) => {
@@ -438,6 +439,7 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
         ui: &mut egui::Ui,
         entry: &NoteUnit,
         mute: &std::sync::Arc<Muted>,
+        wot_filter: Option<&std::sync::Arc<std::collections::HashSet<Pubkey>>>,
     ) -> RenderEntryResponse {
         let underlying_note = {
             let underlying_note_key = match entry {
@@ -470,6 +472,13 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
 
         if muted {
             return RenderEntryResponse::Success(None);
+        }
+
+        if let Some(filter) = wot_filter {
+            let author = Pubkey::new(*underlying_note.pubkey());
+            if !filter.contains(&author) {
+                return RenderEntryResponse::Success(None);
+            }
         }
 
         match entry {

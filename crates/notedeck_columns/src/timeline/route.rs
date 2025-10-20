@@ -1,4 +1,5 @@
 use crate::{
+    app::WebOfTrustState,
     nav::{BodyResponse, RenderNavAction},
     profile::ProfileAction,
     timeline::{thread::Threads, ThreadSelection, TimelineCache, TimelineKind},
@@ -7,7 +8,7 @@ use crate::{
 
 use enostr::Pubkey;
 use notedeck::{JobsCache, NoteContext};
-use notedeck_ui::NoteOptions;
+use notedeck_ui::{info_icon, IosSwitch, NoteOptions};
 
 #[allow(clippy::too_many_arguments)]
 pub fn render_timeline_route(
@@ -19,8 +20,54 @@ pub fn render_timeline_route(
     ui: &mut egui::Ui,
     note_context: &mut NoteContext,
     jobs: &mut JobsCache,
+    wot: &mut WebOfTrustState,
     scroll_to_top: bool,
 ) -> BodyResponse<RenderNavAction> {
+    let mut wot_enabled = wot.is_enabled();
+    let mut wot_filter = if wot_enabled {
+        wot.ensure(note_context.ndb, note_context.accounts)
+    } else {
+        None
+    };
+
+    ui.horizontal(|ui| {
+        let toggle_response = ui.add(IosSwitch::new(&mut wot_enabled));
+        if toggle_response.changed() {
+            ui.ctx().request_repaint();
+        }
+
+        let state_label = if wot_enabled {
+            "Friends-of-friends"
+        } else {
+            "Nostr firehose"
+        };
+        ui.add_space(6.0);
+        ui.label(state_label);
+        ui.add_space(4.0);
+
+        let tooltip = if wot_enabled {
+            "Friends-of-friends: Limit notes to authors you follow and their followers."
+        } else {
+            "Display all notes from your relay list."
+        };
+        info_icon(ui, tooltip);
+    });
+    ui.add_space(8.0);
+
+    if wot.set_enabled(wot_enabled) {
+        if wot_enabled {
+            wot_filter = wot.ensure(note_context.ndb, note_context.accounts);
+        } else {
+            wot_filter = None;
+        }
+    }
+
+    note_context.wot_filter = if wot_enabled {
+        wot_filter.clone()
+    } else {
+        None
+    };
+
     match kind {
         TimelineKind::List(_)
         | TimelineKind::Search(_)

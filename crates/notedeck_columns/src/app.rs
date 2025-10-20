@@ -18,7 +18,8 @@ use crate::{
 };
 use egui_extras::{Size, StripBuilder};
 use enostr::{ClientMessage, PoolRelay, Pubkey, RelayEvent, RelayMessage, RelayPool};
-use nostrdb::Transaction;
+use nostrdb::{Ndb, Transaction};
+use notedeck::trust::WebOfTrustBuilder;
 use notedeck::{
     tr, ui::is_narrow, Accounts, AppAction, AppContext, AppResponse, DataPath, DataPathType,
     FilterState, Images, JobsCache, Localization, NotedeckOptions, SettingsHandler, UnknownIds,
@@ -27,8 +28,10 @@ use notedeck_ui::{
     media::{MediaViewer, MediaViewerFlags, MediaViewerState},
     NoteOptions,
 };
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::Path;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tracing::{debug, error, info, trace, warn};
 use uuid::Uuid;
 
@@ -36,6 +39,109 @@ use uuid::Uuid;
 pub enum DamusState {
     Initializing,
     Initialized,
+}
+
+const WOT_CACHE_TTL: Duration = Duration::from_secs(60);
+const DEFAULT_WOT_DEPTH: u8 = 2;
+
+pub struct WebOfTrustState {
+    enabled: bool,
+    cache: Option<WebOfTrustCache>,
+}
+
+struct WebOfTrustCache {
+    trusted: Arc<HashSet<Pubkey>>,
+    source_timestamp: Option<u64>,
+    computed_at: Instant,
+    root: Pubkey,
+}
+
+impl WebOfTrustState {
+    pub fn new() -> Self {
+        Self {
+            enabled: true,
+            cache: None,
+        }
+    }
+
+    pub fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+
+    pub fn set_enabled(&mut self, enabled: bool) -> bool {
+        if self.enabled == enabled {
+            return false;
+        }
+
+        self.enabled = enabled;
+        if !enabled {
+            self.cache = None;
+        }
+
+        true
+    }
+
+    pub fn ensure(&mut self, ndb: &Ndb, accounts: &Accounts) -> Option<Arc<HashSet<Pubkey>>> {
+        if !self.enabled {
+            return None;
+        }
+
+        let root = *accounts.selected_account_pubkey();
+        let snapshot = accounts.get_selected_account().data.contacts.snapshot();
+        let snapshot_timestamp = snapshot.as_ref().map(|s| s.timestamp);
+
+        let needs_refresh = match &self.cache {
+            Some(cache) => {
+                cache.root != root
+                    || cache.source_timestamp != snapshot_timestamp
+                    || cache.computed_at.elapsed() >= WOT_CACHE_TTL
+            }
+            None => true,
+        };
+
+        if needs_refresh {
+            match Transaction::new(ndb) {
+                Ok(txn) => {
+                    let mut builder = WebOfTrustBuilder::new(ndb, &txn, root)
+                        .max_depth(DEFAULT_WOT_DEPTH)
+                        .include_self(true);
+
+                    if let Some(snapshot) = snapshot {
+                        builder = builder.with_seed_contacts(snapshot.contacts.clone());
+                    }
+
+                    let mut trusted: HashSet<Pubkey> = builder.build().iter().cloned().collect();
+                    trusted.insert(root);
+
+                    let trusted = Arc::new(trusted);
+
+                    self.cache = Some(WebOfTrustCache {
+                        trusted: trusted.clone(),
+                        source_timestamp: snapshot_timestamp,
+                        computed_at: Instant::now(),
+                        root,
+                    });
+                }
+                Err(err) => {
+                    warn!("WOT: failed to open transaction: {err}");
+                    let mut trusted = HashSet::new();
+                    trusted.insert(root);
+                    self.cache = Some(WebOfTrustCache {
+                        trusted: Arc::new(trusted),
+                        source_timestamp: snapshot_timestamp,
+                        computed_at: Instant::now(),
+                        root,
+                    });
+                }
+            }
+        }
+
+        self.cache.as_ref().map(|cache| cache.trusted.clone())
+    }
+
+    pub fn filter_arc(&self) -> Option<Arc<HashSet<Pubkey>>> {
+        self.cache.as_ref().map(|cache| cache.trusted.clone())
+    }
 }
 
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
@@ -62,6 +168,7 @@ pub struct Damus {
 
     /// keep track of follow packs
     pub onboarding: Onboarding,
+    pub wot: WebOfTrustState,
 }
 
 fn handle_egui_events(input: &egui::InputState, columns: &mut Columns) {
@@ -533,6 +640,7 @@ impl Damus {
             jobs,
             threads,
             onboarding: Onboarding::default(),
+            wot: WebOfTrustState::new(),
         }
     }
 
@@ -584,6 +692,7 @@ impl Damus {
             jobs: JobsCache::default(),
             threads: Threads::default(),
             onboarding: Onboarding::default(),
+            wot: WebOfTrustState::new(),
         }
     }
 

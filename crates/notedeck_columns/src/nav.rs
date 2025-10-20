@@ -568,6 +568,7 @@ fn render_nav_body(
         clipboard: ctx.clipboard,
         i18n: ctx.i18n,
         global_wallet: ctx.global_wallet,
+        wot_filter: None,
     };
     match top {
         Route::Timeline(kind) => {
@@ -587,6 +588,7 @@ fn render_nav_body(
                 ui,
                 &mut note_context,
                 &mut app.jobs,
+                &mut app.wot,
                 scroll_to_top,
             );
 

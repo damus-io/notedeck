@@ -10,11 +10,13 @@ use crate::JobPool;
 use crate::Localization;
 use crate::UnknownIds;
 use crate::{notecache::NoteCache, zaps::Zaps, Images};
-use enostr::{NoteId, RelayPool};
+use enostr::{NoteId, Pubkey, RelayPool};
 use nostrdb::{Ndb, Note, NoteKey, QueryResult, Transaction};
 use std::borrow::Borrow;
 use std::cmp::Ordering;
+use std::collections::HashSet;
 use std::fmt;
+use std::sync::Arc;
 
 /// Aggregates dependencies to reduce the number of parameters
 /// passed to inner UI elements, minimizing prop drilling.
@@ -30,6 +32,7 @@ pub struct NoteContext<'d> {
     pub job_pool: &'d mut JobPool,
     pub unknown_ids: &'d mut UnknownIds,
     pub clipboard: &'d mut egui_winit::clipboard::Clipboard,
+    pub wot_filter: Option<Arc<HashSet<Pubkey>>>,
 }
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone, Hash)]
