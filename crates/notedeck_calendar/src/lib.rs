@@ -277,13 +277,7 @@ impl CalendarEventDraft {
 
         if let Ok(entries) = Self::parse_participant_lines(&self.participant_input) {
             for (hex, role) in entries {
-                if !self
-                    .participants
-                    .iter()
-                    .any(|(existing, _)| existing.eq_ignore_ascii_case(&hex))
-                {
-                    self.participants.push((hex, role));
-                }
+                self.participants.push((hex, role));
             }
             self.participant_input.clear();
         }
