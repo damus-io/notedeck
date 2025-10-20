@@ -522,7 +522,7 @@ impl<'a> AddColumnView<'a> {
                 "Stay up to date with someone's notes & replies",
                 "Description for individual user column"
             ),
-            icon: app_images::profile_image(),
+            icon: app_images::add_column_individual_image(),
             option: AddColumnOption::UndecidedIndividual,
         });
         vec.push(ColumnOptionData {
@@ -597,7 +597,7 @@ impl<'a> AddColumnView<'a> {
                 "Keep track of your notes & replies",
                 "Description for your notes column"
             ),
-            icon: app_images::profile_image(),
+            icon: app_images::add_column_individual_image(),
             option: AddColumnOption::Individual(source),
         });
 
@@ -612,7 +612,7 @@ impl<'a> AddColumnView<'a> {
                 "Stay up to date with someone else's notes & replies",
                 "Description for someone else's notes column"
             ),
-            icon: app_images::profile_image(),
+            icon: app_images::add_column_individual_image(),
             option: AddColumnOption::ExternalIndividual,
         });
 
