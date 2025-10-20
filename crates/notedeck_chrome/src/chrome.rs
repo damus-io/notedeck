@@ -345,6 +345,11 @@ impl Chrome {
 
 impl notedeck::App for Chrome {
     fn update(&mut self, ctx: &mut notedeck::AppContext, ui: &mut egui::Ui) -> AppResponse {
+        #[cfg(feature = "tracy")]
+        {
+            ui.ctx().request_repaint();
+        }
+
         if let Some(action) = self.show(ctx, ui) {
             action.process(ctx, self, ui);
             self.nav.close();
