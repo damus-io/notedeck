@@ -93,4 +93,13 @@ This document captures the current architecture, coding conventions, and design 
 - `crates/notedeck_dave/docs/*.md` for agent-style tooling and streaming patterns.
 - `crates/notedeck_ui/docs/components.md` for reusable widgets.
 
+## Notedeck Coding Patterns
+
+1. Please make all commits logically distinct.
+2. Please make all commits standalone (i.e. so that they can be readily removed tens of commits later without impact the rest of the code).
+3. Please set up code for performance profiling utilizing puffin (e.g. `cargo run --release --features puffin`).
+4. Related to Puffin & performance profiling, for code suspected of impacting performance, carefully consider adding performance profiling attributes such as e.g. profiling::function in order to see functions performance in the profiler. 
+
+
+
 Use this guide as a launchpad when extending Notedeck with new agents or protocol features. It highlights where to attach new functionality without duplicating existing infrastructure.
