@@ -6,8 +6,10 @@ plays videos in egui from file path or from bytes using pure Rust dependencies
 This project was forked from https://github.com/n00kii/egui-video which used ffmpeg and sdl2,
 and modified to use pure Rust libraries.
 
-This is not a performant implementation of video playback, as it renders each frame to an `egui::ColorImage`, and all
-video decoding is done on the CPU. However it does provide a simple way to add video playback to an egui application.
+This is not a fully optimized implementation of video playback, as it renders each frame to an `egui::ColorImage`.
+However it does provide a simple way to add video playback to an egui application. On Linux the player will attempt to
+decode video with VAAPI hardware acceleration when a compatible driver is present, and will automatically fall back to
+the existing CPU path when hardware decode is unavailable.
 
 ## usage:
 ```rust
@@ -41,3 +43,12 @@ player.ui(ui, [player.width as f32, player.height as f32]);
  - ~~seeking can be slow (is there better way of dropping packets?)~~
  - ~~depending on the specific stream, seeking can fail and mess up playback/seekbar (something to do with dts?)~~
  - ~~no audio playback~~
+
+### hardware acceleration on linux
+
+- The Linux build will attempt to create a VAAPI hardware decoder via FFmpeg. VAAPI support must be available in the
+  underlying FFmpeg build and the host system must expose a functional `/dev/dri` device with the appropriate driver.
+- When initialization fails (missing drivers, headless session, unsupported codec, etc.) the player falls back to the
+  software decoder automatically, so the feature is safe to ship without additional configuration.
+- Video frames are still uploaded through `ColorImage`, so GPU decode reduces CPU time spent in the decoder but the
+  upload step remains identical to the software path.

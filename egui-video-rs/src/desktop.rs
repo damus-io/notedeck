@@ -9,6 +9,7 @@ use egui::{
     vec2, Align2, Color32, ColorImage, CornerRadius, FontId, Image, Rect, Response, Sense,
     TextureHandle, TextureOptions, Ui, Vec2,
 };
+use ffmpeg::codec::decoder;
 use ffmpeg::ffi::AV_TIME_BASE;
 use ffmpeg::format::context::input::Input;
 use ffmpeg::format::{input, Pixel};
@@ -113,14 +114,56 @@ pub enum PlayerState {
 }
 
 /// Streams video.
+struct SoftwareFrameConverter {
+    scaler: software::scaling::Context,
+}
+
+impl SoftwareFrameConverter {
+    fn new(input_format: Pixel, width: u32, height: u32) -> Result<Self> {
+        let scaler = software::scaling::Context::get(
+            input_format,
+            width,
+            height,
+            Pixel::RGB24,
+            width,
+            height,
+            software::scaling::flag::Flags::BILINEAR,
+        )?;
+        Ok(Self { scaler })
+    }
+
+    fn convert(&mut self, frame: &Video) -> Result<ColorImage> {
+        let mut rgb_frame = Video::empty();
+        self.scaler.run(frame, &mut rgb_frame)?;
+        Ok(video_frame_to_image(rgb_frame))
+    }
+}
+
+enum FrameConverter {
+    Software(SoftwareFrameConverter),
+    #[cfg(target_os = "linux")]
+    Vaapi(hwaccel::VaapiRuntime),
+}
+
+impl FrameConverter {
+    fn convert(&mut self, frame: &Video) -> Result<ColorImage> {
+        match self {
+            FrameConverter::Software(converter) => converter.convert(frame),
+            #[cfg(target_os = "linux")]
+            FrameConverter::Vaapi(runtime) => runtime.convert(frame),
+        }
+    }
+}
+
+/// Streams video frames from the decoder into egui textures.
 pub struct VideoStreamer {
+    frame_converter: FrameConverter,
     video_decoder: ffmpeg::decoder::Video,
     video_stream_index: usize,
     player_state: Cache<PlayerState>,
     input_context: Input,
     video_elapsed_ms: Cache<i64>,
     _audio_elapsed_ms: Cache<i64>,
-    scaler: software::scaling::Context,
 }
 
 /// Streams audio.
@@ -651,30 +694,55 @@ impl Player {
 
         let video_context =
             ffmpeg::codec::context::Context::from_parameters(video_stream.parameters())?;
-        let video_decoder = video_context.decoder().video()?;
+        let mut raw_decoder = video_context.decoder();
+        let codec = decoder::find(raw_decoder.id()).ok_or(ffmpeg::Error::DecoderNotFound)?;
+        #[cfg(target_os = "linux")]
+        let hw_negotiation = hwaccel::VaapiNegotiation::try_new(&mut raw_decoder, codec)?;
+        let mut video_decoder = raw_decoder.open_as(codec)?.video()?;
         let framerate = (video_stream.avg_frame_rate().numerator() as f64)
             / video_stream.avg_frame_rate().denominator() as f64;
 
         let (width, height) = (video_decoder.width(), video_decoder.height());
-        let frame_scaler = software::scaling::Context::get(
+        #[cfg(target_os = "linux")]
+        let frame_converter = if let Some(negotiation) = hw_negotiation {
+            match negotiation.build_runtime(&mut video_decoder, width, height) {
+                Ok(runtime) => FrameConverter::Vaapi(runtime),
+                Err(err) => {
+                    eprintln!(
+                        "VAAPI initialization failed ({err}); falling back to software decoding."
+                    );
+                    let fallback_format = hwaccel::decoder_sw_format(&video_decoder)
+                        .unwrap_or(video_decoder.format());
+                    FrameConverter::Software(SoftwareFrameConverter::new(
+                        fallback_format,
+                        width,
+                        height,
+                    )?)
+                }
+            }
+        } else {
+            FrameConverter::Software(SoftwareFrameConverter::new(
+                video_decoder.format(),
+                width,
+                height,
+            )?)
+        };
+        #[cfg(not(target_os = "linux"))]
+        let frame_converter = FrameConverter::Software(SoftwareFrameConverter::new(
             video_decoder.format(),
-            video_decoder.width(),
-            video_decoder.height(),
-            Pixel::RGB24,
-            video_decoder.width(),
-            video_decoder.height(),
-            software::scaling::flag::Flags::BILINEAR,
-        )?;
+            width,
+            height,
+        )?);
 
         let duration_ms = timestamp_to_millisec(input_context.duration(), AV_TIME_BASE_RATIONAL); // in sec
         let stream_decoder = VideoStreamer {
+            frame_converter,
             video_decoder,
             video_stream_index,
             _audio_elapsed_ms: audio_elapsed_ms.clone(),
             video_elapsed_ms: video_elapsed_ms.clone(),
             input_context,
             player_state: player_state.clone(),
-            scaler: frame_scaler,
         };
         let texture_options = TextureOptions::LINEAR;
         let texture_handle = ctx.load_texture("vidstream", ColorImage::example(), texture_options);
@@ -891,11 +959,262 @@ impl Streamer for VideoStreamer {
         Ok(decoded_frame)
     }
     fn process_frame(&mut self, frame: Self::Frame) -> Result<Self::ProcessedFrame> {
-        let mut rgb_frame = Video::empty();
-        self.scaler.run(&frame, &mut rgb_frame)?;
+        self.frame_converter.convert(&frame)
+    }
+}
 
-        let image = video_frame_to_image(rgb_frame);
-        Ok(image)
+#[cfg(target_os = "linux")]
+mod hwaccel {
+    use super::{ffmpeg, video_frame_to_image, ColorImage};
+    use anyhow::Result;
+    use ffmpeg::codec::decoder::Decoder;
+    use ffmpeg::ffi;
+    use ffmpeg::format::Pixel;
+    use ffmpeg::util::frame::video::Video;
+    use ffmpeg::{software, Codec, Error as FfmpegError};
+    use std::ffi::c_void;
+    use std::os::raw::c_int;
+    use std::ptr;
+
+    #[repr(C)]
+    struct GetFormatOpaque {
+        hw_pix_fmt: ffi::AVPixelFormat,
+    }
+
+    unsafe impl Send for GetFormatOpaque {}
+    unsafe impl Sync for GetFormatOpaque {}
+
+    pub struct VaapiNegotiation {
+        decoder_ctx: *mut ffi::AVCodecContext,
+        device_ctx: *mut ffi::AVBufferRef,
+        get_format_ctx: Option<Box<GetFormatOpaque>>,
+    }
+
+    impl VaapiNegotiation {
+        pub fn try_new(decoder: &mut Decoder, codec: Codec) -> Result<Option<Self>> {
+            unsafe {
+                let mut index = 0;
+                let hw_pix_fmt = loop {
+                    let config = ffi::avcodec_get_hw_config(codec.as_ptr(), index);
+                    if config.is_null() {
+                        break None;
+                    }
+                    let config = &*config;
+                    if config.device_type == ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI
+                        && (config.methods & ffi::AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX as c_int)
+                            != 0
+                    {
+                        break Some(config.pix_fmt);
+                    }
+                    index += 1;
+                };
+
+                let Some(hw_pix_fmt) = hw_pix_fmt else {
+                    eprintln!(
+                        "VAAPI negotiation: codec {:?} exposes no VAAPI hw config",
+                        decoder.id()
+                    );
+                    return Ok(None);
+                };
+                if hw_pix_fmt == ffi::AVPixelFormat::AV_PIX_FMT_NONE {
+                    eprintln!(
+                        "VAAPI negotiation: codec {:?} returned AV_PIX_FMT_NONE",
+                        decoder.id()
+                    );
+                    return Ok(None);
+                }
+
+                let mut device_ctx: *mut ffi::AVBufferRef = ptr::null_mut();
+                let create_err = ffi::av_hwdevice_ctx_create(
+                    &mut device_ctx,
+                    ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI,
+                    ptr::null(),
+                    ptr::null_mut(),
+                    0,
+                );
+                if create_err < 0 {
+                    let err = FfmpegError::from(create_err);
+                    eprintln!(
+                        "VAAPI negotiation: av_hwdevice_ctx_create failed for codec {:?}: {err:?}",
+                        decoder.id()
+                    );
+                    return Ok(None);
+                }
+
+                let decoder_ctx = decoder.as_mut_ptr();
+                let device_ref = ffi::av_buffer_ref(device_ctx);
+                if device_ref.is_null() {
+                    eprintln!(
+                        "VAAPI negotiation: av_buffer_ref returned null for codec {:?}",
+                        decoder.id()
+                    );
+                    ffi::av_buffer_unref(&mut device_ctx);
+                    return Ok(None);
+                }
+                (*decoder_ctx).hw_device_ctx = device_ref;
+
+                let mut opaque = Box::new(GetFormatOpaque { hw_pix_fmt });
+                (*decoder_ctx).opaque = opaque.as_mut() as *mut GetFormatOpaque as *mut c_void;
+                (*decoder_ctx).get_format = Some(vaapi_get_format);
+
+                eprintln!(
+                    "VAAPI negotiation: selected hw pixel format {:?} for codec {:?}",
+                    hw_pix_fmt,
+                    decoder.id()
+                );
+
+                Ok(Some(Self {
+                    decoder_ctx,
+                    device_ctx,
+                    get_format_ctx: Some(opaque),
+                }))
+            }
+        }
+
+        pub fn build_runtime(
+            mut self,
+            video_decoder: &mut ffmpeg::decoder::Video,
+            width: u32,
+            height: u32,
+        ) -> Result<VaapiRuntime> {
+            unsafe {
+                let ctx = video_decoder.as_mut_ptr();
+                let mut sw_pix_fmt = (*ctx).sw_pix_fmt;
+                if sw_pix_fmt == ffi::AVPixelFormat::AV_PIX_FMT_NONE {
+                    sw_pix_fmt = ffi::AVPixelFormat::AV_PIX_FMT_NV12;
+                    eprintln!(
+                        "VAAPI negotiation: falling back to default NV12 software pixel format"
+                    );
+                }
+                let sw_format = Pixel::from(sw_pix_fmt);
+                let scaler = software::scaling::Context::get(
+                    sw_format,
+                    width,
+                    height,
+                    Pixel::RGB24,
+                    width,
+                    height,
+                    software::scaling::flag::Flags::BILINEAR,
+                )?;
+
+                let device_ctx = if self.device_ctx.is_null() {
+                    None
+                } else {
+                    let ctx_ptr = self.device_ctx;
+                    self.device_ctx = ptr::null_mut();
+                    Some(ctx_ptr)
+                };
+                let get_format_ctx = self.get_format_ctx.take();
+
+                Ok(VaapiRuntime {
+                    decoder_ctx: ctx,
+                    device_ctx,
+                    get_format_ctx,
+                    sw_format,
+                    scaler,
+                })
+            }
+        }
+    }
+
+    impl Drop for VaapiNegotiation {
+        fn drop(&mut self) {
+            unsafe {
+                if let Some(opaque) = self.get_format_ctx.take() {
+                    if !self.decoder_ctx.is_null() {
+                        (*self.decoder_ctx).get_format = None;
+                        (*self.decoder_ctx).opaque = ptr::null_mut();
+                    }
+                    drop(opaque);
+                }
+                if !self.device_ctx.is_null() {
+                    ffi::av_buffer_unref(&mut self.device_ctx);
+                }
+            }
+        }
+    }
+
+    pub struct VaapiRuntime {
+        decoder_ctx: *mut ffi::AVCodecContext,
+        device_ctx: Option<*mut ffi::AVBufferRef>,
+        get_format_ctx: Option<Box<GetFormatOpaque>>,
+        sw_format: Pixel,
+        scaler: software::scaling::Context,
+    }
+
+    unsafe impl Send for VaapiRuntime {}
+
+    impl VaapiRuntime {
+        pub fn convert(&mut self, frame: &Video) -> Result<ColorImage> {
+            unsafe {
+                let mut mapped = Video::empty();
+                mapped.alloc(self.sw_format, frame.width(), frame.height());
+                let transfer_err =
+                    ffi::av_hwframe_transfer_data(mapped.as_mut_ptr(), frame.as_ptr(), 0);
+                if transfer_err < 0 {
+                    return Err(FfmpegError::from(transfer_err).into());
+                }
+                let mut rgb_frame = Video::empty();
+                self.scaler.run(&mapped, &mut rgb_frame)?;
+                Ok(video_frame_to_image(rgb_frame))
+            }
+        }
+
+        fn teardown(&mut self) {
+            unsafe {
+                if let Some(mut device_ctx) = self.device_ctx.take() {
+                    ffi::av_buffer_unref(&mut device_ctx);
+                }
+                if let Some(opaque) = self.get_format_ctx.take() {
+                    if !self.decoder_ctx.is_null() {
+                        (*self.decoder_ctx).get_format = None;
+                        (*self.decoder_ctx).opaque = ptr::null_mut();
+                    }
+                    drop(opaque);
+                }
+            }
+        }
+    }
+
+    impl Drop for VaapiRuntime {
+        fn drop(&mut self) {
+            self.teardown();
+        }
+    }
+
+    unsafe extern "C" fn vaapi_get_format(
+        ctx: *mut ffi::AVCodecContext,
+        formats: *const ffi::AVPixelFormat,
+    ) -> ffi::AVPixelFormat {
+        if ctx.is_null() || formats.is_null() {
+            return ffi::AVPixelFormat::AV_PIX_FMT_NONE;
+        }
+        let opaque = (*ctx).opaque as *const GetFormatOpaque;
+        if opaque.is_null() {
+            return *formats;
+        }
+        let desired = (*opaque).hw_pix_fmt;
+        let mut fmt = formats;
+        while *fmt != ffi::AVPixelFormat::AV_PIX_FMT_NONE {
+            if *fmt == desired {
+                return *fmt;
+            }
+            fmt = fmt.add(1);
+        }
+        *formats
+    }
+
+    pub fn decoder_sw_format(decoder: &ffmpeg::decoder::Video) -> Option<Pixel> {
+        unsafe {
+            let ctx = decoder.as_ref();
+            let ctx = ctx.as_ptr();
+            let sw_pix_fmt = (*ctx).sw_pix_fmt;
+            if sw_pix_fmt == ffi::AVPixelFormat::AV_PIX_FMT_NONE {
+                None
+            } else {
+                Some(Pixel::from(sw_pix_fmt))
+            }
+        }
     }
 }
 
