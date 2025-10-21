@@ -187,7 +187,7 @@ fn switch(configure: &mut Command, feature: &str, name: &str) {
     configure.arg(arg.to_string() + name);
 }
 
-fn build() -> io::Result<()> {
+fn build(enable_vaapi: bool) -> io::Result<()> {
     let source_dir = source();
 
     // Command's path is not relative to command's current_dir
@@ -335,8 +335,10 @@ fn build() -> io::Result<()> {
     enable!(configure, "BUILD_NVENC", "nvenc");
 
     // Ensure VAAPI support is always built when bundling FFmpeg.
-    configure.arg("--enable-vaapi");
-    configure.arg("--enable-libdrm");
+    if enable_vaapi {
+        configure.arg("--enable-vaapi");
+        configure.arg("--enable-libdrm");
+    }
 
     if cfg!(target_os = "linux") {
         println!("cargo:rustc-link-lib=drm");
@@ -642,7 +644,7 @@ fn maybe_search_include(include_paths: &[PathBuf], header: &str) -> Option<Strin
     }
 }
 
-fn link_to_libraries(statik: bool) {
+fn link_to_libraries(statik: bool, enable_vaapi: bool) {
     let ffmpeg_ty = if statik { "static" } else { "dylib" };
     for lib in LIBRARIES {
         let feat_is_enabled = lib.feature_name().and_then(|f| env::var(f).ok()).is_some();
@@ -653,11 +655,20 @@ fn link_to_libraries(statik: bool) {
     if env::var("CARGO_FEATURE_BUILD_ZLIB").is_ok() && cfg!(target_os = "linux") {
         println!("cargo:rustc-link-lib=z");
     }
-    if cfg!(target_os = "linux") {
+    if enable_vaapi {
         println!("cargo:rustc-link-lib=va");
         println!("cargo:rustc-link-lib=va-drm");
         println!("cargo:rustc-link-lib=drm");
     }
+}
+
+fn should_enable_vaapi() -> bool {
+    if let Ok(value) = env::var("NOTEDECK_DISABLE_VAAPI") {
+        if value == "1" || value.eq_ignore_ascii_case("true") {
+            return false;
+        }
+    }
+    matches!(env::var("CARGO_CFG_TARGET_OS").as_deref(), Ok("linux"))
 }
 
 fn main() {
@@ -669,12 +680,13 @@ fn main() {
             "cargo:rustc-link-search=native={}",
             search().join("lib").to_string_lossy()
         );
-        link_to_libraries(statik);
+        let enable_vaapi = should_enable_vaapi();
         if fs::metadata(&search().join("lib").join("libavutil.a")).is_err() {
             fs::create_dir_all(&output()).expect("failed to create build directory");
             fetch().unwrap();
-            build().unwrap();
+            build(enable_vaapi).unwrap();
         }
+        link_to_libraries(statik, enable_vaapi);
 
         // Check additional required libraries.
         {
@@ -706,7 +718,7 @@ fn main() {
             "cargo:rustc-link-search=native={}",
             ffmpeg_dir.join("lib").to_string_lossy()
         );
-        link_to_libraries(statik);
+        link_to_libraries(statik, false);
         vec![ffmpeg_dir.join("include")]
     } else if let Some(paths) = try_vcpkg(statik) {
         // vcpkg doesn't detect the "system" dependencies

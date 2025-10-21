@@ -21,7 +21,7 @@ jobs:
       - name: Install FFmpeg build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y pkg-config nasm yasm ffmpeg libavcodec-dev libavformat-dev libavutil-dev libswresample-dev libswscale-dev libsdl2-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libspeechd-dev libxkbcommon-dev libssl-dev
+          sudo apt-get install -y pkg-config nasm yasm ffmpeg libavcodec-dev libavformat-dev libavutil-dev libswresample-dev libswscale-dev libsdl2-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libspeechd-dev libxkbcommon-dev libssl-dev libva-dev libva-drm2 libdrm-dev
       - run: |
           cargo fmt --all -- --check
           cargo clippy
@@ -59,7 +59,7 @@ jobs:
       os: ubuntu-22.04
       additional-setup: |
         sudo apt-get update
-        sudo apt-get install -y pkg-config nasm yasm ffmpeg libavcodec-dev libavformat-dev libavutil-dev libswresample-dev libswscale-dev libsdl2-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libspeechd-dev libxkbcommon-dev libssl-dev
+        sudo apt-get install -y pkg-config nasm yasm ffmpeg libavcodec-dev libavformat-dev libavutil-dev libswresample-dev libswscale-dev libsdl2-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libspeechd-dev libxkbcommon-dev libssl-dev libva-dev libva-drm2 libdrm-dev
 
   macos-test:
     name: Test (macOS)
@@ -104,7 +104,7 @@ jobs:
       - name: Install Packaging Tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y pkg-config nasm yasm ffmpeg libavcodec-dev libavformat-dev libavutil-dev libswresample-dev libswscale-dev libsdl2-dev
+          sudo apt-get install -y pkg-config nasm yasm ffmpeg libavcodec-dev libavformat-dev libavutil-dev libswresample-dev libswscale-dev libsdl2-dev libva-dev libva-drm2 libdrm-dev
           if [ "${{ matrix.arch }}" != "$(uname -m)" ]; then
             sudo apt-get install -y gcc-${{ matrix.arch }}-linux-gnu g++-aarch64-linux-gnu
             rustup target add ${{ matrix.arch }}-unknown-linux-gnu

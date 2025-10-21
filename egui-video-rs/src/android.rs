@@ -1,7 +1,7 @@
 //! Android backend for egui-video – backed by MediaCodec + ImageReader.
 
 use std::{
-    ffi::{c_void, CString},
+    ffi::CString,
     ptr::NonNull,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -210,7 +210,8 @@ impl Player {
 
         let init = init_rx
             .recv_timeout(Duration::from_secs(3))
-            .map_err(|_| anyhow!("timeout initialising video decoder"))??;
+            .map_err(|_| anyhow!("timeout initialising video decoder"))?
+            .map_err(|err| anyhow!("{err}"))?;
 
         Ok(Self {
             player_state,
@@ -779,7 +780,7 @@ impl MediaExtractor {
         let read = unsafe {
             ffi::AMediaExtractor_readSampleData(
                 self.inner.as_ptr(),
-                buffer.as_mut_ptr() as *mut c_void,
+                buffer.as_mut_ptr(),
                 buffer.len(),
             )
         };
@@ -810,7 +811,7 @@ impl MediaExtractor {
             ffi::AMediaExtractor_seekTo(
                 self.inner.as_ptr(),
                 0,
-                ffi::AMEDIAEXTRACTOR_SEEK_CLOSEST_SYNC,
+                ffi::SeekMode::AMEDIAEXTRACTOR_SEEK_CLOSEST_SYNC,
             )
         };
         media_status_to_result(status)?;
@@ -825,5 +826,9 @@ impl Drop for MediaExtractor {
 }
 
 fn media_status_to_result(status: ffi::media_status_t) -> Result<()> {
-    MediaError::from_status(status).map_err(|e| anyhow!("{e:?}"))
+    if status == ffi::media_status_t::AMEDIA_OK {
+        Ok(())
+    } else {
+        Err(anyhow!("{:?}", MediaError::from(status.0)))
+    }
 }
