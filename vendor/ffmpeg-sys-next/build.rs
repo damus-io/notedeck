@@ -334,6 +334,10 @@ fn build() -> io::Result<()> {
     enable!(configure, "BUILD_LIB_DRM", "libdrm");
     enable!(configure, "BUILD_NVENC", "nvenc");
 
+    // Ensure VAAPI support is always built when bundling FFmpeg.
+    configure.arg("--enable-vaapi");
+    configure.arg("--enable-libdrm");
+
     if cfg!(target_os = "linux") {
         println!("cargo:rustc-link-lib=drm");
         println!("cargo:rustc-link-lib=va");
@@ -648,6 +652,11 @@ fn link_to_libraries(statik: bool) {
     }
     if env::var("CARGO_FEATURE_BUILD_ZLIB").is_ok() && cfg!(target_os = "linux") {
         println!("cargo:rustc-link-lib=z");
+    }
+    if cfg!(target_os = "linux") {
+        println!("cargo:rustc-link-lib=va");
+        println!("cargo:rustc-link-lib=va-drm");
+        println!("cargo:rustc-link-lib=drm");
     }
 }
 
