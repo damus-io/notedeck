@@ -1,0 +1,40 @@
+[package]
+name = "owned_ttf_parser"
+# Version should be inline with ttf-parser
+version = "0.25.0"
+authors = ["Alex Butler <alexheretic@gmail.com>"]
+edition = "2021"
+description = "ttf-parser plus support for owned data"
+repository = "https://github.com/alexheretic/owned-ttf-parser"
+keywords = ["ttf", "truetype", "otf", "opentype"]
+license = "Apache-2.0"
+readme = "README.md"
+
+[dependencies]
+ttf-parser = { version = "0.25", default-features = false }
+
+[features] 
+default = ["std", "opentype-layout", "apple-layout", "variable-fonts", "glyph-names"]
+# Activates usage of std.
+# When disabled, the `no-std-float` feature must be enabled instead.
+std = ["ttf-parser/std"]
+no-std-float = ["ttf-parser/no-std-float"]
+# Enables variable fonts support. Increases binary size almost twice.
+# Includes avar, CFF2, fvar, gvar, HVAR, MVAR and VVAR tables.
+variable-fonts = ["ttf-parser/variable-fonts"]
+# Enables GDEF, GPOS and GSUB tables.
+opentype-layout = ["ttf-parser/opentype-layout"]
+# Enables ankr, feat, format1 subtable in kern, kerx, morx and trak tables.
+apple-layout = ["ttf-parser/apple-layout"]
+# Enables glyph name query via `Face::glyph_name`.
+# TrueType fonts do not store default glyph names, to reduce file size,
+# which means we have to store them in ttf-parser. And there are almost 500 of them.
+# By disabling this feature a user can reduce binary size a bit.
+glyph-names = ["ttf-parser/glyph-names"]
+# Enables heap allocations during gvar table parsing used by Apple's variable fonts.
+# Due to the way gvar table is structured, we cannot avoid allocations.
+# By default, only up to 32 variable tuples will be allocated on the stack,
+# while the spec allows up to 4095. Most variable fonts use 10-20 tuples,
+# so our limit is suitable for most of the cases. But if you need full support, you have to
+# enable this feature.
+gvar-alloc = ["std", "ttf-parser/gvar-alloc"]

@@ -1,0 +1,16 @@
+language: rust
+
+rust: nightly
+
+os:
+  - linux
+
+script:
+  - cargo build
+  - cargo test
+  - cargo run --example fluentresource
+  - cargo run --example arena
+  - cargo run --example mutable_arena
+  - cargo run --example sync
+  - cargo run --example string_interner --features indexmap
+

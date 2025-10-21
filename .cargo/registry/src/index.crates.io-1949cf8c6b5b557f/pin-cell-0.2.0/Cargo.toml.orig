@@ -1,0 +1,15 @@
+[package]
+name = "pin-cell"
+version = "0.2.0"
+repository = "https://github.com/dignifiedquire/pin-cell"
+documentation = "https://docs.rs/pin-cell"
+authors = [
+  "Without Boats <boats@mozilla.com>",
+  "dignifiedquire <me@dignifiedquire.com>"
+]
+license = "MIT"
+description = "A pin-safe cell"
+readme = "README.md"
+edition = "2018"
+
+[dependencies]

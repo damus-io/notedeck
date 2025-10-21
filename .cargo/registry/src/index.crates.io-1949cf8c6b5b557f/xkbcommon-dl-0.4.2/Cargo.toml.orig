@@ -1,0 +1,22 @@
+[package]
+name = "xkbcommon-dl"
+version = "0.4.2"
+documentation = "https://docs.rs/xkbcommon-dl/"
+repository = "https://github.com/rust-windowing/xkbcommon-dl"
+authors = ["Francesca Frangipane <francesca@comfysoft.net>"]
+license = "MIT"
+description = "Dynamically loaded xkbcommon and xkbcommon-x11 Rust bindings."
+edition = "2021"
+rust-version = "1.64"
+
+[badges]
+
+[features]
+x11 = []
+
+[dependencies]
+bitflags = "2.3.1"
+dlib = "0.5.2"
+log = "0.4"
+once_cell = "1.17"
+xkeysym = "0.2.0"

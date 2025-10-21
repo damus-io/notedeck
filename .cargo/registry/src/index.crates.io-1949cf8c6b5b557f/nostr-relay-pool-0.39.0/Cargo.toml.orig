@@ -1,0 +1,35 @@
+[package]
+name = "nostr-relay-pool"
+version = "0.39.0"
+edition = "2021"
+description = "Nostr Relay Pool"
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+license.workspace = true
+readme = "README.md"
+rust-version.workspace = true
+keywords = ["nostr", "relay", "pool"]
+
+[features]
+default = []
+tor = ["async-wsocket/tor"]
+nip11 = ["nostr/nip11"]
+
+[dependencies]
+async-utility.workspace = true
+async-wsocket = { workspace = true, features = ["socks"] }
+atomic-destructor.workspace = true
+negentropy = { workspace = true, features = ["std"] }
+negentropy-deprecated = { workspace = true, features = ["std"] }
+nostr = { workspace = true, features = ["std"] }
+nostr-database.workspace = true
+tokio = { workspace = true, features = ["macros", "sync"] }
+tracing.workspace = true
+
+[dev-dependencies]
+nostr-relay-builder.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+
+[[example]]
+name = "pool"

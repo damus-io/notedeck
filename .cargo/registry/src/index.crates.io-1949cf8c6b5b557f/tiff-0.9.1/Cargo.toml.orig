@@ -1,0 +1,29 @@
+[package]
+name = "tiff"
+version = "0.9.1"
+edition = "2021"
+resolver = "2"
+
+# note: when changed, also update test runner in `.github/workflows/rust.yml`
+rust-version = "1.61.0"
+
+license = "MIT"
+description = "TIFF decoding and encoding library in pure Rust"
+authors = ["The image-rs Developers"]
+
+repository = "https://github.com/image-rs/image-tiff"
+categories = ["multimedia::images", "multimedia::encoding"]
+
+exclude = ["tests/images/*", "tests/fuzz_images/*"]
+
+[dependencies]
+weezl = "0.1.0"
+jpeg = { package = "jpeg-decoder", version = "0.3.0", default-features = false }
+flate2 = "1.0.20"
+
+[dev-dependencies]
+criterion = "0.3.1"
+
+[[bench]]
+name = "lzw"
+harness = false

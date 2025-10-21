@@ -1,0 +1,29 @@
+[package]
+name = "fluent"
+description = """
+An umbrella crate exposing the combined features of fluent-rs crates with additional convenience macros for Project Fluent,
+a localization system designed to unleash the entire expressive power of natural language translations.
+"""
+version = "0.17.0"
+edition.workspace = true
+rust-version.workspace = true
+homepage.workspace = true
+repository.workspace = true
+license.workspace = true
+authors.workspace = true
+categories.workspace = true
+keywords.workspace = true
+readme = "README.md"
+include = [
+  "src/**/*",
+  "benches/*.rs",
+  "Cargo.toml",
+  "README.md",
+  "LICENSE-APACHE",
+  "LICENSE-MIT",
+]
+
+[dependencies]
+fluent-bundle.workspace = true
+fluent-pseudo = { workspace = true, optional = true }
+unic-langid.workspace = true

@@ -1,0 +1,21 @@
+[package]
+name = "unic-langid-macros-impl"
+description = "API for managing Unicode Language Identifiers"
+
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+readme.workspace = true
+license.workspace = true
+categories.workspace = true
+include.workspace = true
+
+[lib]
+proc_macro = true
+
+[dependencies]
+unic-langid-impl = { workspace = true }
+syn = { version = "2.0", default-features = false, features = ["parsing", "proc-macro"] }
+quote = "1.0"
+proc-macro-hack = "0.5"

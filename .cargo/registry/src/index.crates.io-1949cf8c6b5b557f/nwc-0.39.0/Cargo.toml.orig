@@ -1,0 +1,25 @@
+[package]
+name = "nwc"
+version = "0.39.0"
+edition = "2021"
+description = "Nostr Wallet Connect"
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+license.workspace = true
+readme = "README.md"
+rust-version.workspace = true
+keywords = ["nostr", "zapper", "nwc"]
+
+[features]
+default = []
+tor = ["nostr-relay-pool/tor"]
+
+[dependencies]
+async-utility.workspace = true
+nostr = { workspace = true, features = ["std", "nip47"] }
+nostr-relay-pool.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tracing-subscriber.workspace = true

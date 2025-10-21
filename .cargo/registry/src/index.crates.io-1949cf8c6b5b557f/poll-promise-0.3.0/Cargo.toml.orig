@@ -1,0 +1,65 @@
+[package]
+name = "poll-promise"
+version = "0.3.0"
+authors = ["Embark <opensource@embark-studios.com>"]
+license = "MIT OR Apache-2.0"
+description = "Poll the result of an async operation in a game or immediate mode GUI."
+edition = "2021"
+homepage = "https://github.com/EmbarkStudios/poll-promise"
+repository = "https://github.com/EmbarkStudios/poll-promise"
+readme = "README.md"
+categories = ["asynchronous"]
+keywords = ["promise", "poll", "async", "gamedev", "gui"]
+include = ["LICENSE-APACHE", "LICENSE-MIT", "**/*.rs", "Cargo.toml"]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[lib]
+
+[features]
+## If you enable the `async-std` feature you can use [`Promise::spawn_async`] and [`Promise::spawn_blocking`]
+## which will spawn tasks in the surrounding async-std runtime.
+async-std = ["dep:async-std"]
+
+## If you enable the `smol` feature you can use [`Promise::spawn_async`] and [`Promise::spawn_local`]
+## which will spawn tasks using the smol executor. Remember to tick the smol executor with [`tick`] and [`tick_local`].
+smol = ["dep:smol"]
+
+## Enabling the `smol_tick_poll` feature (together with `smol`) calling [`Promise::poll`] will automatically tick the smol executor.
+## This means you do not have to worry about calling [`tick`] but comes at the cost of loss of finer control over the executor.
+##
+## Since calling [`tick_local`] will block the current thread, running multiple local promises at once with `smol_tick_poll` enabled
+## may also cause stuttering.
+##
+## poll-promise will automatically tick the smol executor with this feature disabled for you when using [`Promise::block_until_ready`]
+## and friends, however.
+smol_tick_poll = []
+
+## If you enable the `tokio` feature you can use [`Promise::spawn_async`], [`Promise::spawn_local`] and [`Promise::spawn_blocking`]
+## which will spawn tasks in the surrounding tokio runtime.
+tokio = ["dep:tokio"]
+
+## If you enable the `web` feature you can use [`Promise::spawn_local`] which will spawn tasks using
+## [`wasm_bindgen_futures::spawn_local`](https://rustwasm.github.io/wasm-bindgen/api/wasm_bindgen_futures/fn.spawn_local.html).
+web = ["wasm-bindgen", "wasm-bindgen-futures"]
+
+
+[dependencies]
+async-std = { version = "1.12", optional = true }
+document-features = "0.2"
+smol = { version = "1.2.5", optional = true }
+static_assertions = "1.1"
+tokio = { version = "1", features = [
+    "rt",
+    "rt-multi-thread",
+    "sync",
+    "macros",
+], optional = true }
+
+wasm-bindgen = { version = "0.2", optional = true }
+wasm-bindgen-futures = { version = "0.4", optional = true }
+
+[dev-dependencies]
+async-net = "1.7.0"

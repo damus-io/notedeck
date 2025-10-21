@@ -1,0 +1,9 @@
+[package]
+name = "oot_bitset"
+version = "0.1.1"
+edition = "2024"
+description = "A no‑frills, zero‑overhead bit flag system"
+license = "MIT"
+repository = "https://github.com/jb55/oot_bitset"
+
+[dependencies]

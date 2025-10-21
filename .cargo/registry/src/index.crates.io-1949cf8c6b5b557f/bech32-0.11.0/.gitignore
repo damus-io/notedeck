@@ -1,0 +1,8 @@
+**/target
+*.o
+/Cargo.lock
+
+/embedded/no-allocator/Cargo.lock
+/embedded/no-allocator/.cargo
+/embedded/with-allocator/Cargo.lock
+/embedded/with-allocator/.cargo

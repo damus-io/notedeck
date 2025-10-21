@@ -1,0 +1,77 @@
+[package]
+authors = ["Pascal Seitz <pascal.seitz@gmail.com>", "Arthur Silva <arthurprs@gmail.com>", "ticki <Ticki@users.noreply.github.com>"]
+description = "Fastest LZ4 implementation in Rust, no unsafe by default."
+edition = "2021"
+keywords = ["compression", "lz4", "compress", "decompression", "decompress"]
+name = "lz4_flex"
+homepage = "https://github.com/pseitz/lz4_flex"
+repository = "https://github.com/pseitz/lz4_flex"
+readme = "README.md"
+license = "MIT"
+version = "0.11.5"
+include = ["src/*.rs", "src/frame/**/*", "src/block/**/*", "README.md", "LICENSE"]
+rust-version = "1.81"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[dev-dependencies]
+lzzzz = "1.0.4"
+lz4-compress = "0.1.1"
+more-asserts = "0.3.1"
+snap = "1.1.0"
+serde_json = "1.0.91"
+proptest = "1.0.0"
+binggan = { version = "0.12.0"}
+jemallocator = "0.5.4"
+
+[dev-dependencies.lz-fear]
+git = "https://github.com/main--/rust-lz-fear"
+
+ #Uncomment to make lz4_flex master available as lz4_flex_master
+ #[dev-dependencies.lz4_flex_master]
+ #rev= "a122673" # v10
+ #git = "https://github.com/PSeitz/lz4_flex"
+ #package = "lz4_flex"
+ #default-features=false
+ #features = ["std", "safe-encode", "safe-decode", "frame"]
+
+[features]
+default = ["std", "safe-encode", "safe-decode", "frame", "checked-decode"]
+safe-decode = []
+safe-encode = []
+checked-decode = [] # Adds important checks while decoding. Only remove on trusted input!
+frame = ["std", "dep:twox-hash"]
+std = []
+# use nightly compiler features
+nightly = []
+
+[dependencies]
+twox-hash = { version = "2.0.0", default-features = false, features = ["xxhash32"], optional = true }
+
+[profile.bench]
+codegen-units = 1
+lto = true
+opt-level = 3
+
+[profile.release]
+codegen-units = 1
+#debug = true
+opt-level = 3
+panic = "unwind"
+
+[[bench]]
+harness = false
+name = "binggan_bench"
+path = "benches/binggan_bench.rs"
+
+# [[bench]]
+# harness = false
+# name = "quickbench"
+# path = "benches/quickbench.rs"
+
+# [[bench]]
+# harness = false
+# name = "bench"
+# path = "benches/bench.rs"

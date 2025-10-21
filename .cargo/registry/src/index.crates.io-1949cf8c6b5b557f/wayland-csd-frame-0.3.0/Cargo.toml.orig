@@ -1,0 +1,17 @@
+[package]
+name = "wayland-csd-frame"
+version = "0.3.0"
+authors = ["Kirill Chibisov <contact@kchibisov.com>"]
+repository = "https://github.com/rust-windowing/wayland-csd-frame"
+description = "Common trait and types for wayland CSD interop"
+keywords = ["windowing", "wayland"]
+readme = "README.md"
+license = "MIT"
+edition = "2021"
+categories = ["gui"]
+rust-version = "1.65.0"
+
+[dependencies]
+bitflags = "2.0"
+cursor-icon = "1.0.0"
+wayland-backend = { version = "0.3.0", default-features = false }

@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+   test:
+     name: Run all tests
+     strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        rust: [stable, nightly]
+     runs-on: ${{ matrix.os }}
+     steps:
+       - uses: actions/checkout@v2
+       - uses: actions-rs/toolchain@v1
+         with:
+           toolchain: ${{ matrix.rust }}
+           profile: minimal
+           override: true
+       
+       - name: Add rustfmt and clippy (nightly only)
+         if: matrix.rust == 'nightly'
+         run: rustup component add rustfmt clippy
+       
+       - name: Fetch dependencies
+         uses: actions-rs/cargo@v1
+         with:
+           command: fetch
+       
+       - name: Check formatting (nightly only)
+         uses: actions-rs/cargo@v1
+         if: matrix.rust == 'nightly'
+         with:
+           command: fmt
+           args: --all -- --check
+       
+       - name: Check clippy (nightly only)
+         uses: actions-rs/cargo@v1
+         if: matrix.rust == 'nightly'
+         with:
+           command: clippy
+           args: -- -D warnings
+       
+       - name: Build
+         uses: actions-rs/cargo@v1
+         with:
+           command: build
+           args: --tests
+       
+       - name: Run tests
+         uses: actions-rs/cargo@v1
+         with:
+           command: test
+           args: -- --show-output

@@ -1,0 +1,51 @@
+2025-10-21T15:33:11.638897Z  INFO notedeck::timed_serializer: Could not find file app_size.json
+2025-10-21T15:33:11.748298Z  INFO notedeck::persist::settings_handler: theme.txt file not found, using default theme
+2025-10-21T15:33:11.748306Z  INFO notedeck::persist::settings_handler: zoom_factor.txt exists migrate file not found, using default zoom factor
+2025-10-21T15:33:11.748310Z ERROR notedeck::persist::settings_handler: Could not read settings. Using defaults
+2025-10-21T15:33:11.760581Z ERROR notedeck::account::accounts: could not get keys: io error: No such file or directory (os error 2)
+2025-10-21T15:33:11.760812Z ERROR notedeck::app: error migrating image cache: io error: No such file or directory (os error 2)
+2025-10-21T15:33:11.761130Z ERROR notedeck::urls: problem deserializing UrlMimes: io error: No such file or directory (os error 2)
+2025-10-21T15:33:11.761151Z  INFO notedeck::i18n::manager: Attempting to set locale to: en-US
+2025-10-21T15:33:11.761161Z  INFO notedeck::i18n::manager: Available locales: [LanguageIdentifier { language: Language(Some("en")), script: None, region: Some(Region("US")), variants: None }, LanguageIdentifier { language: Language(Some("en")), script: None, region: Some(Region("XA")), variants: None }, LanguageIdentifier { language: Language(Some("de")), script: None, region: None, variants: None }, LanguageIdentifier { language: Language(Some("es")), script: None, region: Some(Region("419")), variants: None }, LanguageIdentifier { language: Language(Some("es")), script: None, region: Some(Region("ES")), variants: None }, LanguageIdentifier { language: Language(Some("fr")), script: None, region: None, variants: None }, LanguageIdentifier { language: Language(Some("ja")), script: None, region: None, variants: None }, LanguageIdentifier { language: Language(Some("pt")), script: None, region: Some(Region("BR")), variants: None }, LanguageIdentifier { language: Language(Some("pt")), script: None, region: Some(Region("PT")), variants: None }, LanguageIdentifier { language: Language(Some("th")), script: None, region: None, variants: None }, LanguageIdentifier { language: Language(Some("zh")), script: None, region: Some(Region("CN")), variants: None }, LanguageIdentifier { language: Language(Some("zh")), script: None, region: Some(Region("TW")), variants: None }]
+2025-10-21T15:33:11.761168Z  INFO notedeck::i18n::manager: Switching locale from en-US to en-US
+2025-10-21T15:33:11.761174Z  INFO notedeck::setup: Loaded theme Dark from disk
+2025-10-21T15:33:11.763831Z ERROR notedeck_columns::storage::decks: Could not read decks cache from file decks_cache.json:  io error: Requested file was not found: decks_cache.json
+2025-10-21T15:33:11.763840Z  INFO notedeck_columns::app: DecksCache: creating new with demo configuration
+2025-10-21T15:33:11.764114Z  WARN notedeck_columns::timeline::cache: NotesHolder query returned 0 notes? 
+2025-10-21T15:33:11.764151Z ERROR notedeck_columns::timeline::cache: open: filter not ready, so could not setup subscription. this should never happen
+2025-10-21T15:33:11.764256Z  WARN notedeck_columns::timeline::cache: NotesHolder query returned 0 notes? 
+2025-10-21T15:33:11.764351Z  INFO notedeck::i18n::manager: loaded en-US bundle OK!
+2025-10-21T15:33:11.767393Z ERROR notedeck_columns::timeline: setup_initial_nostrdb_subs: notedeck app error: filter error: empty contact list
+2025-10-21T15:33:11.770782Z  INFO notedeck::timed_serializer: wrote item {"theme":"Dark","locale":"en-US","zoom_factor":1.0,"show_source_client":"hide","show_replies_newest_first":false,"note_body_font_size":16.0}
+2025-10-21T15:33:11.770796Z  INFO notedeck::timed_serializer: wrote item {"x":640.0,"y":480.0}
+2025-10-21T15:33:12.255279Z  INFO notedeck_columns::timeline: Sending initial filters to wss://relay.damus.io/
+2025-10-21T15:33:12.255310Z  WARN notedeck_columns::timeline: Skipping since optimization for Notifications(aa733081e4f0f79dd43023d8983265593f2b41a988671cfcef3f489b91ad93fe): number of local notes is less than limit, attempting to backfill.
+2025-10-21T15:33:12.303434Z  INFO notedeck_columns::timeline: Sending initial filters to wss://nostr.wine/
+2025-10-21T15:33:12.303465Z  WARN notedeck_columns::timeline: Skipping since optimization for Notifications(aa733081e4f0f79dd43023d8983265593f2b41a988671cfcef3f489b91ad93fe): number of local notes is less than limit, attempting to backfill.
+2025-10-21T15:33:12.371497Z  WARN notedeck_columns::app: got unknown eose subid 36e2b323-5de7-4588-b3f0-f9a216fef259, 4 tracked subscriptions
+2025-10-21T15:33:12.413811Z  INFO notedeck_columns::timeline: Sending initial filters to wss://purplepag.es/
+2025-10-21T15:33:12.413857Z  WARN notedeck_columns::timeline: Skipping since optimization for Notifications(aa733081e4f0f79dd43023d8983265593f2b41a988671cfcef3f489b91ad93fe): number of local notes is less than limit, attempting to backfill.
+2025-10-21T15:33:12.441417Z  WARN notedeck_columns::app: got unknown eose subid ea27ae6b-ed67-45e4-9e82-bcc8ac9ccf0b, 5 tracked subscriptions
+2025-10-21T15:33:12.441447Z  WARN notedeck_columns::app: got unknown eose subid fcfce030-afd3-4a57-ba03-3223bcda2e10, 5 tracked subscriptions
+2025-10-21T15:33:12.459847Z  WARN notedeck_columns::app: got unknown eose subid 36e2b323-5de7-4588-b3f0-f9a216fef259, 5 tracked subscriptions
+2025-10-21T15:33:12.459912Z  WARN notedeck_columns::app: got unknown eose subid ea27ae6b-ed67-45e4-9e82-bcc8ac9ccf0b, 5 tracked subscriptions
+2025-10-21T15:33:12.459943Z  WARN notedeck_columns::app: got unknown eose subid fcfce030-afd3-4a57-ba03-3223bcda2e10, 5 tracked subscriptions
+2025-10-21T15:33:12.570994Z  WARN notedeck_columns::app: got unknown eose subid 36e2b323-5de7-4588-b3f0-f9a216fef259, 5 tracked subscriptions
+2025-10-21T15:33:12.687314Z  INFO notedeck_columns::timeline: Sending initial filters to wss://nos.lol/
+2025-10-21T15:33:12.687379Z  WARN notedeck_columns::timeline: Skipping since optimization for Notifications(aa733081e4f0f79dd43023d8983265593f2b41a988671cfcef3f489b91ad93fe): number of local notes is less than limit, attempting to backfill.
+2025-10-21T15:33:12.726752Z  WARN notedeck_columns::app: got unknown eose subid ea27ae6b-ed67-45e4-9e82-bcc8ac9ccf0b, 6 tracked subscriptions
+2025-10-21T15:33:12.726804Z  WARN notedeck_columns::app: got unknown eose subid fcfce030-afd3-4a57-ba03-3223bcda2e10, 6 tracked subscriptions
+2025-10-21T15:33:13.097752Z  WARN notedeck_columns::app: got unknown eose subid 36e2b323-5de7-4588-b3f0-f9a216fef259, 6 tracked subscriptions
+2025-10-21T15:33:13.097815Z  WARN notedeck_columns::app: got unknown eose subid ea27ae6b-ed67-45e4-9e82-bcc8ac9ccf0b, 6 tracked subscriptions
+2025-10-21T15:33:13.097833Z  WARN notedeck_columns::app: got unknown eose subid fcfce030-afd3-4a57-ba03-3223bcda2e10, 6 tracked subscriptions
+2025-10-21T15:33:13.135211Z  INFO notedeck_columns::timeline: Found contact list! Setting up local and remote contact list query
+2025-10-21T15:33:13.508905Z  WARN notedeck_columns::app: got unknown eose subid 8712eb67-4675-4a79-a6f2-1317b32fc58d, 6 tracked subscriptions
+2025-10-21T15:33:13.524469Z  WARN notedeck_columns::app: got unknown eose subid 8712eb67-4675-4a79-a6f2-1317b32fc58d, 6 tracked subscriptions
+2025-10-21T15:33:13.624998Z  WARN notedeck_columns::app: got unknown eose subid 8712eb67-4675-4a79-a6f2-1317b32fc58d, 6 tracked subscriptions
+2025-10-21T15:33:13.643492Z  WARN notedeck_columns::app: got unknown eose subid 8712eb67-4675-4a79-a6f2-1317b32fc58d, 6 tracked subscriptions
+2025-10-21T15:33:39.358001Z  INFO notedeck_columns::timeline::thread: Opening thread: ThreadSelection { root_id: RootNoteIdBuf(fe94af34ded7426ee06a3cc2a05fa4e55337485e3cc9d085b5ed333a5f5f8d91), selected_note: None }
+2025-10-21T15:33:39.474411Z  WARN notedeck_columns::app: got unknown eose subid 96eb8045-e8f4-473d-aea9-40fa87c8d78a, 6 tracked subscriptions
+2025-10-21T15:33:39.507659Z  INFO notedeck_columns::timeline::thread: Got 1 new notes
+2025-10-21T15:33:39.541345Z  WARN notedeck_columns::app: got unknown eose subid 96eb8045-e8f4-473d-aea9-40fa87c8d78a, 6 tracked subscriptions
+2025-10-21T15:33:39.574900Z  WARN notedeck_columns::app: got unknown eose subid 96eb8045-e8f4-473d-aea9-40fa87c8d78a, 6 tracked subscriptions
+2025-10-21T15:33:39.607688Z  WARN notedeck_columns::app: got unknown eose subid 96eb8045-e8f4-473d-aea9-40fa87c8d78a, 6 tracked subscriptions

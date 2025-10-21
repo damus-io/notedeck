@@ -1,0 +1,27 @@
+[package]
+name = "elsa"
+version = "1.11.2"
+authors = ["Manish Goregaokar <manishsmail@gmail.com>"]
+edition = "2018"
+description = "Append-only collections for Rust where borrows to entries can outlive insertions"
+license = "MIT/Apache-2.0"
+documentation = "https://docs.rs/elsa/"
+repository = "https://github.com/manishearth/elsa"
+keywords = ["data-structure", "map", "frozen", "cache", "arena"]
+categories = ["data-structures", "caching"]
+
+[dependencies]
+stable_deref_trait = "1.1.1"
+indexmap = { version = "2.0.2", optional = true }
+
+[package.metadata.docs.rs]
+features = ["indexmap"]
+
+[[example]]
+name = "string_interner"
+path = "examples/string_interner.rs"
+required-features = ["indexmap"]
+
+[features]
+default = []
+indexmap = ["dep:indexmap"]

@@ -1,0 +1,121 @@
+name: Build
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+env:
+  CARGO_INCREMENTAL: 0
+  CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build_and_test:
+    name: cargo test
+    runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: -D warnings
+    strategy:
+      fail-fast: false
+      matrix:
+        toolchain: ["stable", "beta"]
+        coverage: [false]
+        include:
+          - toolchain: "nightly"
+            coverage: true
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v2
+
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          override: true
+
+      - name: Configure CI cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --all-targets
+
+      - name: Run tests with default features
+        uses: actions-rs/cargo@v1
+        if: ${{ !matrix.coverage }}
+        with:
+          command: test
+          args: --all-targets --no-fail-fast
+
+      - name: Run tests with all features
+        uses: actions-rs/cargo@v1
+        if: ${{ !matrix.coverage }}
+        with:
+          command: test
+          args: --all-targets --no-fail-fast --all-features
+
+      - name: Run doc tests
+        uses: actions-rs/cargo@v1
+        if: ${{ !matrix.coverage }}
+        with:
+          command: test
+          args: --doc --no-fail-fast --all-features
+
+      - name: Run tests
+        uses: actions-rs/cargo@v1
+        if: ${{ matrix.coverage }}
+        with:
+          command: test
+          args: --all-targets --no-fail-fast --all-features
+        env:
+          CARGO_INCREMENTAL: '0'
+          RUSTFLAGS: '-Zprofile -Ccodegen-units=1 -Cinline-threshold=0 -Clink-dead-code -Coverflow-checks=off -Cpanic=abort -Zpanic_abort_tests'
+          RUSTDOCFLAGS: '-Zprofile -Ccodegen-units=1 -Cinline-threshold=0 -Clink-dead-code -Coverflow-checks=off -Cpanic=abort -Zpanic_abort_tests'
+
+      - name: Generate code coverage
+        uses: actions-rs/grcov@v0.1
+        if: ${{ matrix.coverage }}
+
+      - name: Upload coverage reports to Codecov with GitHub Action
+        uses: codecov/codecov-action@v3
+        if: ${{ matrix.coverage }}
+
+  rustfmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v2
+
+      - name: Setup Rust toolchain
+        run: rustup install stable
+      
+      - name: Check code format
+        uses: actions-rs/cargo@v1
+        with:
+          command: fmt
+          args: -- --check
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v2
+      
+      - name: Setup Rust toolchain
+        run: rustup install stable
+      
+      - name: Setup CI cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run clippy lints
+        uses: actions-rs/cargo@v1
+        with:
+          command: clippy
+

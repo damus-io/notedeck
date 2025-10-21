@@ -1,0 +1,28 @@
+name: Tests
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    # Check all PR
+
+jobs:
+  tests:
+    runs-on: ubuntu-22.04
+    name: rust ${{ matrix.rust-version }}
+    strategy:
+      matrix:
+        include:
+          - rust-version: stable
+          - rust-version: 1.65
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: setup rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust-version }}
+          target: ${{ matrix.rust-target }}
+
+      - name: run tests
+        run: cargo test

@@ -1,0 +1,14 @@
+[package]
+name = "dlib"
+version = "0.5.2"
+repository = "https://github.com/elinorbgr/dlib"
+authors = ["Elinor Berger <elinor@safaradeg.net>"]
+license = "MIT"
+description = "Helper macros for handling manually loading optional system libraries."
+exclude = ["/dlib-test", "README.tpl"]
+readme = "README.md"
+keywords = ["dylib", "dlopen"]
+categories = ["api-bindings"]
+
+[dependencies]
+libloading = ">=0.7, <0.9"

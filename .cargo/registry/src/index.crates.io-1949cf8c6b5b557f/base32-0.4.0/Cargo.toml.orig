@@ -1,0 +1,16 @@
+[package]
+
+name = "base32"
+version = "0.4.0"
+authors = [ "Andreas Ots <qrpth@qrpth.eu>", "Tim Dumol <tim@timdumol.com>" ]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/andreasots/base32"
+description = "Base32 encoder/decoder for Rust"
+
+[lib]
+
+name = "base32"
+
+[dev-dependencies]
+quickcheck = "0.7.1"
+rand = "0.5.5"

@@ -1,0 +1,6 @@
+{
+  "git": {
+    "sha1": "dbd7756145fb52fc212eb51b552f788b3c99d88d"
+  },
+  "path_in_vcs": "crates/nostr-relay-pool"
+}

@@ -1,0 +1,150 @@
+[package]
+name = "wgpu-core"
+version = "24.0.5"
+authors = ["gfx-rs developers"]
+edition = "2021"
+description = "Core implementation logic of wgpu, the cross-platform, safe, pure-rust graphics API"
+homepage = "https://wgpu.rs/"
+repository = "https://github.com/gfx-rs/wgpu"
+keywords = ["graphics"]
+license = "MIT OR Apache-2.0"
+
+# Override the workspace's `rust-version` key. Firefox uses `cargo vendor` to
+# copy the crates it actually uses out of the workspace, so it's meaningful for
+# them to have less restrictive MSRVs individually than the workspace as a
+# whole, if their code permits. See `../README.md` for details.
+rust-version = "1.76"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+    "wasm32-unknown-unknown",
+]
+
+[package.metadata.cargo-machete]
+# Cargo machete can't check build.rs dependencies. See https://github.com/bnjbvr/cargo-machete/issues/100
+ignored = ["cfg_aliases"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(wgpu_validate_locks)'] }
+
+[lib]
+
+[features]
+## Internally count resources and events for debugging purposes. If the counters
+## feature is disabled, the counting infrastructure is removed from the build and
+## the exposed counters always return 0.
+counters = ["wgt/counters"]
+
+## Log all API entry points at info instead of trace level.
+## Also, promotes certain debug log calls to info.
+api_log_info = []
+
+## Log resource lifecycle management at info instead of trace level.
+resource_log_info = []
+
+## Support the Renderdoc graphics debugger:
+## <https://renderdoc.org/>
+renderdoc = ["hal/renderdoc"]
+
+## Apply run-time checks, even in release builds. These are in addition
+## to the validation carried out at public APIs in all builds.
+strict_asserts = ["wgt/strict_asserts"]
+
+## Validates indirect draw/dispatch calls. This will also enable naga's
+## WGSL frontend since we use a WGSL compute shader to do the validation.
+indirect-validation = ["naga/wgsl-in"]
+
+## Enables serialization via `serde` on common wgpu types.
+serde = ["dep:serde", "wgt/serde", "arrayvec/serde"]
+
+## Enable API tracing.
+trace = ["dep:ron", "serde", "naga/serialize"]
+
+## Enable lock order observation.
+observe_locks = ["dep:ron", "serde/serde_derive"]
+
+## Enable API replaying
+replay = ["serde", "naga/deserialize"]
+
+## Enable creating instances using raw-window-handle
+raw-window-handle = ["dep:raw-window-handle"]
+
+## Enable `ShaderModuleSource::Wgsl`
+wgsl = ["naga/wgsl-in"]
+
+## Enable `ShaderModuleSource::Glsl`
+glsl = ["naga/glsl-in"]
+
+## Enable `ShaderModuleSource::SpirV`
+spirv = ["naga/spv-in", "dep:bytemuck"]
+
+## Implement `Send` and `Sync` on Wasm, but only if atomics are not enabled.
+##
+## WebGL/WebGPU objects can not be shared between threads.
+## However, it can be useful to artificially mark them as `Send` and `Sync`
+## anyways to make it easier to write cross-platform code.
+## This is technically *very* unsafe in a multithreaded environment,
+## but on a wasm binary compiled without atomics we know we are definitely
+## not in a multithreaded environment.
+fragile-send-sync-non-atomic-wasm = [
+    "hal/fragile-send-sync-non-atomic-wasm",
+    "wgt/fragile-send-sync-non-atomic-wasm",
+]
+
+#! ### Backends, passed through to wgpu-hal
+# --------------------------------------------------------------------
+
+## Enable the `metal` backend.
+metal = ["hal/metal"]
+
+## Enable the `vulkan` backend.
+vulkan = ["hal/vulkan"]
+
+## Enable the `GLES` backend.
+##
+## This is used for all of GLES, OpenGL, and WebGL.
+gles = ["hal/gles"]
+
+## Enable the `dx12` backend.
+dx12 = ["hal/dx12"]
+
+[dependencies]
+arrayvec.workspace = true
+bit-vec.workspace = true
+bitflags.workspace = true
+bytemuck = { workspace = true, optional = true }
+document-features.workspace = true
+indexmap.workspace = true
+log.workspace = true
+once_cell.workspace = true
+parking_lot.workspace = true
+profiling = { workspace = true, default-features = false }
+raw-window-handle = { workspace = true, optional = true }
+ron = { workspace = true, optional = true }
+rustc-hash.workspace = true
+serde = { workspace = true, features = ["default", "derive"], optional = true }
+smallvec.workspace = true
+thiserror.workspace = true
+
+[dependencies.naga]
+path = "../naga"
+version = "24.0.0"
+
+[dependencies.wgt]
+package = "wgpu-types"
+path = "../wgpu-types"
+version = "24.0.0"
+
+[dependencies.hal]
+package = "wgpu-hal"
+path = "../wgpu-hal"
+version = "24.0.0"
+default-features = false
+
+[build-dependencies]
+cfg_aliases.workspace = true

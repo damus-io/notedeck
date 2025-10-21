@@ -1,0 +1,21 @@
+[package]
+name = "tracing-logcat"
+version = "0.1.0"
+license = "Apache-2.0"
+edition = "2021"
+description = "A writer for the tracing library that outputs to Android's logcat"
+repository = "https://github.com/chenxiaolong/tracing-logcat"
+keywords = ["android", "logcat", "logd", "tracing"]
+
+[dependencies]
+rustix = { version = "0.38", features = ["thread"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+[package.metadata.docs.rs]
+targets = [
+    "aarch64-linux-android",
+    "armv7-linux-androideabi",
+    "i686-linux-android",
+    "x86_64-linux-android",
+]

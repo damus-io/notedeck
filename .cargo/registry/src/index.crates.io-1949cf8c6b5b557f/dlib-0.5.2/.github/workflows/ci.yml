@@ -1,0 +1,44 @@
+name: Continuous Integration
+
+on:
+  push:
+    branches:
+    - master
+  pull_request:
+
+jobs:
+  ci:
+    strategy:
+      fail-fast: false
+      matrix:
+        rust: ['1.40.0', 'stable', 'beta']
+      
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v2
+
+      - name: Cargo cache
+        uses: actions/cache@v1
+        with:
+          path: ~/.cargo
+          key: cargo-${{ matrix.rust }}
+
+      - name: Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: ${{ matrix.rust }}
+          override: true
+
+      - name: Test link
+        uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: --manifest-path dlib-test/Cargo.toml
+      
+      - name: Test dlopen
+        uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: --manifest-path dlib-test/Cargo.toml --features "dlopen"

@@ -1,0 +1,29 @@
+build:linux:
+  image: "redoxos/redoxer"
+  before_script:
+    - apt-get update
+    - apt-get install cmake libsdl2-dev -y
+  script:
+    - cargo +nightly build --all-features
+    - cargo +nightly build --examples
+
+test:linux:
+  image: "redoxos/redoxer"
+  before_script:
+    - apt-get update
+    - apt-get install cmake -y
+  script:
+    - cargo +nightly test --all-features
+
+build:redox:
+  image: "redoxos/redoxer"
+  script:
+    - redoxer build
+
+build:no_std:
+  image: "rust:latest"
+  before_script:
+    - rustup toolchain add nightly
+    - rustup target add thumbv6m-none-eabi --toolchain nightly
+  script:
+    - cargo +nightly build --no-default-features --target thumbv6m-none-eabi

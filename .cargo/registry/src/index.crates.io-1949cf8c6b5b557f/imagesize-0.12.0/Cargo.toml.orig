@@ -1,0 +1,23 @@
+[package]
+name = "imagesize"
+version = "0.12.0"
+authors = ["Maid Dog <maiddogsrl@gmail.com>"]
+edition = "2018"
+description = "Quick probing of image dimensions without loading the entire file."
+documentation = "https://docs.rs/imagesize"
+repository = "https://github.com/Roughsketch/imagesize"
+readme = "README.md"
+keywords = ["image", "size"]
+categories = ["multimedia", "multimedia::images"]
+license = "MIT"
+exclude = ["tests/*"]
+
+[dependencies]
+
+[dev-dependencies]
+criterion = { version = "0.4", features = ["html_reports"] }
+walkdir = "2.3.3"
+
+[[bench]]
+name = "parse_benchmark"
+harness = false

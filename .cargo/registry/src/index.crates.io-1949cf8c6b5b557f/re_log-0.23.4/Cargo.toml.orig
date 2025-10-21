@@ -1,0 +1,52 @@
+[package]
+name = "re_log"
+authors.workspace = true
+description = "Helpers for setting up and doing text logging in the Rerun crates."
+edition.workspace = true
+homepage.workspace = true
+include.workspace = true
+license.workspace = true
+publish = true
+readme = "README.md"
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+
+[package.metadata.cargo-shear]
+ignored = ["js-sys", "env_filter"]
+
+
+[features]
+default = []
+
+## Feature to set up logging in binaries,
+## i.e. from `main` or in a web-app.
+setup = ["dep:env_logger", "dep:js-sys", "dep:wasm-bindgen"]
+
+
+[dependencies]
+log = { workspace = true, features = ["std"] }
+log-once.workspace = true
+parking_lot.workspace = true
+
+# make sure dependencies that user tracing gets forwarded to `log`:
+tracing = { workspace = true, features = ["log"] }
+
+# Native dependencies:
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+env_filter.workspace = true
+env_logger = { workspace = true, optional = true, features = [
+  "auto-color",
+  "humantime",
+] }
+
+# web dependencies:
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = { workspace = true, optional = true }
+wasm-bindgen = { workspace = true, optional = true }

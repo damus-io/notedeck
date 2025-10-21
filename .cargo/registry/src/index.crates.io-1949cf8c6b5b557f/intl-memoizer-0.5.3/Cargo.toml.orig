@@ -1,0 +1,32 @@
+[package]
+name = "intl-memoizer"
+description = """
+A memoizer specifically tailored for storing lazy-initialized intl formatters for Project Fluent,
+a localization system designed to unleash the entire expressive power of natural language translations.
+"""
+version = "0.5.3"
+edition.workspace = true
+rust-version.workspace = true
+homepage.workspace = true
+repository.workspace = true
+license.workspace = true
+authors.workspace = true
+categories.workspace = true
+keywords.workspace = true
+readme = "README.md"
+include = [
+  "src/**/*",
+  "benches/*.rs",
+  "Cargo.toml",
+  "README.md",
+  "LICENSE-APACHE",
+  "LICENSE-MIT",
+]
+
+[dependencies]
+unic-langid.workspace = true
+type-map = "0.5"
+
+[dev-dependencies]
+intl_pluralrules.workspace = true
+fluent-langneg.workspace = true

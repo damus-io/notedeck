@@ -1,0 +1,26 @@
+[package]
+name = "lnsocket"
+version = "0.5.1"
+edition = "2024"
+description = "An async lightning network socket with with core-lightning rpc support"
+authors = ["William Casarin <jb55@jb55.com>"]
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/jb55/lnsocket-rs"    # update this
+homepage = "https://github.com/jb55/lnsocket-rs"      # update if you have docs site
+documentation = "https://docs.rs/lnsocket"
+keywords = ["lightning", "bolt8", "noise", "lnsocket", "bitcoin"]
+categories = ["cryptography::cryptocurrencies", "network-programming", "asynchronous"]
+
+[dependencies]
+bitcoin = { version = "0.32.5", features = ["std", "rand", "rand-std"] }
+lightning-types = "0.2.0"
+tracing = "0.1.41"
+hashbrown = { version = "0.13", default-features = false }
+tokio = { version = "1", features = [ "rt", "net", "io-util", "macros", "time", "sync" ] }
+serde = { version = "1", features = ["derive"] }
+#serde_derive = "1"
+serde_json = "1"
+hex = "0.4.3"
+
+

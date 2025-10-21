@@ -1,0 +1,21 @@
+[package]
+name = "negentropy"
+version = "0.5.0"
+edition = "2018"
+description = "Rust implementation of the negentropy set-reconciliation protocol."
+authors = ["Yuki Kishimoto <yukikishimoto@protonmail.com>"]
+homepage = "https://github.com/rust-nostr/negentropy"
+repository = "https://github.com/rust-nostr/negentropy.git"
+license = "MIT"
+rust-version = "1.51.0"
+exclude = ["fuzz"]
+
+[features]
+default = ["std"]
+std = []
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bench)'] }
+
+[[example]]
+name = "negentropy"

@@ -1,0 +1,61 @@
+[package]
+version = "1.12.1"
+authors = ["Philipp Korber <philipp@korber.dev>"]
+categories = ["data-structures"]
+description = "a std Vec wrapper assuring that it has at least 1 element"
+documentation = "https://docs.rs/vec1"
+keywords = ["vec", "min", "length", "1"]
+license = "MIT OR Apache-2.0"
+name = "vec1"
+readme = "./README.md"
+repository = "https://github.com/rustonaut/vec1/"
+edition = "2021"
+rust-version = "1.71.1"
+
+[features]
+default = ["std"]
+std = []
+
+# Keep feature as to not brake code which used it in the past.
+# The Vec1 crate roughly traces rust stable=1 but tries to keep
+# as much compatiblility with older compiler versions. But it
+# should never require changes to older projects compiled with
+# a new enough rust compiler. As such this features needs to
+# stay in existence.
+unstable-nightly-try-from-impl = []
+
+# Provide a `SmallVec1` which works like a `Vec1` but is backed by a `SmallVec`
+# it's explicitly v1 as I do not intend to do a braking change once v2 is released.
+# Enabling this crates serde features will also enable (de-)serialization for the
+# `SmallVec1` (but not for the `SmallVec` if not wrapped into a `SmallVec1`, this
+# is necessary as you can't implicitly pull in `smallvec_v1_/serde` if `serde` and
+# `smallvec_v1_` are enabled).
+#
+# To enable `smallvec_v1_/union` import it seperately in your crate with the
+# dependency enabled (and using a compatible version). In the future `union`
+# might be enabled by default.
+smallvec-v1 = ["smallvec_v1_"]
+
+# Enables the smallvec-v1/write feature
+smallvec-v1-write = ["std", "smallvec_v1_/write"]
+
+[dependencies]
+# Is a feature!
+serde = { version = "1.0", optional = true, features = ["derive"], default-features=false }
+# In the future we will support smallvec v1 and v2 so if we had
+# a optional dependency called smallvec people might acidentally
+# pull it in as feature and create anoyences wrt. backward compatibility.
+
+[dependencies.smallvec_v1_]
+version = "1.6.1"
+package = "smallvec"
+optional = true
+features = ["const_generics", "const_new"]
+
+[dev-dependencies]
+serde_json = "1.0"
+proptest = "1.0"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docs"]

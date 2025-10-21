@@ -1,0 +1,48 @@
+[package]
+name = "mime_guess2"
+version = "2.3.1"
+edition = "2024"
+authors = ["Austin Bonander <austin.bonander@gmail.com>"]
+license = "MIT"
+description = "A simple crate for detection of a file's MIME type by its extension."
+keywords = ["mime", "filesystem", "extension"]
+repository = "https://github.com/ttys3/mime_guess2"
+documentation = "https://docs.rs/mime_guess2/"
+readme = "README.md"
+
+[features]
+default = ["rev-map"]
+phf-map = ["phf", "phf_codegen"]
+
+# generate reverse-mappings for lookup of extensions by MIME type
+# default-on but can be turned off for smaller generated code
+rev-map = []
+
+[dependencies]
+mime = "0.3"
+unicase = "2.8.1"
+
+[dependencies.phf]
+version = "0.11"
+features = ["unicase"]
+optional = true
+
+[build-dependencies]
+phf = { version = "0.11", features = ["unicase"] }
+phf_shared = "0.11.3"
+unicase = "2.8.1"
+
+[build-dependencies.phf_codegen]
+version = "0.11"
+optional = true
+
+[dev-dependencies]
+divan = "0.1.17"
+
+[[example]]
+name = "rev_map"
+required-features = ["rev-map"]
+
+[[bench]]
+name = "benchmark"
+harness = false

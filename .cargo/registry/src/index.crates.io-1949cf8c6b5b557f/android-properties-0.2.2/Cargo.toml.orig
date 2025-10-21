@@ -1,0 +1,27 @@
+[package]
+name = "android-properties"
+description = "Rust-based Android properties wrapper"
+version = "0.2.2"
+authors = ["Mikhail Lappo <mikhail.lappo@esrlabs.com>"]
+edition = "2018"
+license = "MIT"
+repository = "https://github.com/miklelappo/android-properties"
+homepage = "https://github.com/miklelappo/android-properties"
+documentation = "https://docs.rs/android-properties/0.2.2"
+readme = "README.md"
+keywords = [
+    "android",
+    "properties",
+    "cutils",
+    "bionic",
+    "persistent"
+]
+categories = ["external-ffi-bindings", "os", "os::linux-apis"]
+exclude = [".travis.yml", "check.sh"]
+
+[features]
+# Use this feature if you have Android 8 and older versions
+bionic-deprecated = []
+
+[package.metadata.docs.rs]
+targets = ["arm-linux-androideabi", "armv7-linux-androideabi", "aarch64-linux-android", "i686-linux-android", "x86_64-unknown-linux-gnu"]

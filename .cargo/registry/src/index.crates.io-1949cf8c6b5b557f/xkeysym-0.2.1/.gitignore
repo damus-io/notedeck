@@ -1,0 +1,4 @@
+/target
+/Cargo.lock
+/keysym-generator/target
+/keysym-generator/Cargo.lock

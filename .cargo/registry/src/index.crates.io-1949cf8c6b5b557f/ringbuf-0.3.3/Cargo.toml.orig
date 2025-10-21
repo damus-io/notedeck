@@ -1,0 +1,35 @@
+[package]
+name = "ringbuf"
+version = "0.3.3"
+authors = ["Alexey Gerasev <alexey.gerasev@gmail.com>"]
+edition = "2021"
+
+description = "Lock-free SPSC FIFO ring buffer with direct access to inner data"
+documentation = "https://docs.rs/ringbuf"
+homepage = "https://github.com/agerasev/ringbuf"
+repository = "https://github.com/agerasev/ringbuf.git"
+readme = "README.md"
+keywords = ["lock-free", "spsc", "ring-buffer", "rb", "fifo"]
+categories = ["concurrency", "data-structures", "no-std"]
+license = "MIT/Apache-2.0"
+
+[features]
+default = ["alloc", "std"]
+alloc = []
+std = ["alloc"]
+bench = []
+
+[dependencies]
+crossbeam-utils = { version = "0.8", default-features = false }
+
+[[example]]
+name = "simple"
+required-features = ["alloc"]
+
+[[example]]
+name = "overwrite"
+required-features = ["alloc"]
+
+[[example]]
+name = "message"
+required-features = ["std"]

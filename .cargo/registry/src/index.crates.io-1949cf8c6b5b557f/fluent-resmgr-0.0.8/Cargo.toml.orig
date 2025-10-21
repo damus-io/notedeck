@@ -1,0 +1,29 @@
+[package]
+name = "fluent-resmgr"
+description = """
+A standalone solution for managing resource files and returning locale bundles for Project Fluent,
+a localization system designed to unleash the entire expressive power of natural language translations.
+"""
+version = "0.0.8"
+edition.workspace = true
+rust-version.workspace = true
+homepage.workspace = true
+repository.workspace = true
+license.workspace = true
+authors.workspace = true
+categories.workspace = true
+keywords.workspace = true
+readme = "README.md"
+
+[dependencies]
+fluent-bundle.workspace = true
+fluent-fallback.workspace = true
+futures.workspace = true
+rustc-hash.workspace = true
+thiserror.workspace = true
+unic-langid.workspace = true
+elsa = "1.10"
+
+[dev-dependencies]
+fluent-langneg.workspace = true
+unic-langid = { workspace = true, features = ["macros"] }

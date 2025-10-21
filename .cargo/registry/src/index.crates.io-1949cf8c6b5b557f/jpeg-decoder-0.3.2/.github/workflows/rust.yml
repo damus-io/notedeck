@@ -1,0 +1,102 @@
+name: Rust CI
+
+on:
+  push:
+    branches: [master, github-actions]
+  pull_request:
+    branches: [master]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        rust: ["1.61.0", stable, beta, nightly]
+        features: ["", "rayon"]
+        command: [test, benchmark]
+
+    steps:
+      - name: Installing Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          override: true
+          toolchain: ${{ matrix.rust }}
+      - uses: actions/checkout@v2
+      - name: build
+        run: >
+          cargo build --verbose --no-default-features --features "$FEATURES"
+      - name: test
+        run: >
+          cargo test --tests --benches --no-default-features --features "$FEATURES"
+        if: ${{ matrix.command == 'test' && matrix.rust != '1.61.0' }}
+        env:
+          FEATURES: ${{ matrix.features }}
+      - name: benchmark
+        run: cargo bench --bench decoding_benchmark --no-default-features --features "$FEATURES" -- --warm-up-time 1 --measurement-time 1 --sample-size 25
+        if: ${{ matrix.command == 'benchmark' && matrix.rust != '1.61.0' }}
+        env:
+          FEATURES: ${{ matrix.features }}
+
+  cross_compile_aarch64:
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        rust: [nightly-2024-01-13]
+        features: ["", "rayon", "nightly_aarch64_neon"]
+
+    steps:
+      - name: Installing emulator and linker
+        run: |
+          sudo apt-get update
+          sudo apt-get install qemu-system binfmt-support qemu-user-static gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
+
+      - name: Installing Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          override: true
+          toolchain: ${{ matrix.rust }}
+          target: aarch64-unknown-linux-musl
+      - uses: actions/checkout@v2
+      - name: build
+        run: >
+          cargo build --verbose --no-default-features --target aarch64-unknown-linux-musl --features "$FEATURES"
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: aarch64-linux-gnu-gcc
+      - name: test
+        run: >
+          cargo test --tests --benches --no-default-features --target aarch64-unknown-linux-musl --features "$FEATURES"
+        env:
+          FEATURES: ${{ matrix.features }}
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: aarch64-linux-gnu-gcc
+  cross_compile_wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install node
+        run: |
+          sudo apt-get update
+          sudo apt-get install nodejs
+          node -v
+      - name: Install wasm-bindgen
+        run: >
+          curl -L "$WASMBINDGEN_UPSTREAM"
+          | tar xzf - --strip-components=1 wasm-bindgen-0.2.89-x86_64-unknown-linux-musl/wasm-bindgen-test-runner
+          && sudo mv wasm-bindgen-test-runner /usr/bin/wasm-bindgen-test-runner
+        env:
+          WASMBINDGEN_UPSTREAM: https://github.com/rustwasm/wasm-bindgen/releases/download/0.2.89/wasm-bindgen-0.2.89-x86_64-unknown-linux-musl.tar.gz
+      - name: Installing Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          override: true
+          toolchain: stable
+          target: wasm32-unknown-unknown
+      - uses: actions/checkout@v2
+      - name: Test
+        run: |
+          cargo update
+          # update wasm-bindgen to the version we want and bring -test along for the ride
+          cargo update -p wasm-bindgen --precise 0.2.89 -p wasm-bindgen-test
+          cargo test -vv --target wasm32-unknown-unknown
+        env:
+          CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER: wasm-bindgen-test-runner

@@ -1,0 +1,62 @@
+[package]
+name = "smithay-client-toolkit"
+version = "0.19.2"
+authors = ["Elinor Berger <elinor@safaradeg.net>", "i509VCB <mail@i509.me>", "Ashley Wulber <ashley@system76.com>"]
+documentation = "https://smithay.github.io/client-toolkit"
+repository = "https://github.com/smithay/client-toolkit"
+license = "MIT"
+edition = "2021"
+categories = ["gui"]
+keywords = ["wayland", "client"]
+description = "Toolkit for making client wayland applications."
+readme = "README.md"
+
+[package.metadata.docs.rs]
+features = ["calloop", "xkbcommon"]
+rustdoc-args = ["--cfg", "docsrs"]
+
+[dependencies]
+bitflags = "2.4"
+bytemuck = { version = "1.13.0", optional = true }
+cursor-icon = "1.1.0"
+libc = "0.2.148"
+log = "0.4"
+memmap2 = "0.9.0"
+rustix = { version = "0.38.15", features = ["fs", "pipe", "shm"] }
+thiserror = "1.0.30"
+wayland-backend = "0.3.0"
+wayland-client = "0.31.1"
+wayland-cursor = "0.31.0"
+wayland-protocols = { version = "0.32.1", features = ["client", "staging", "unstable"] }
+wayland-protocols-wlr = { version = "0.3.1", features = ["client"] }
+wayland-scanner = "0.31.0"
+wayland-csd-frame = "0.3.0"
+
+xkbcommon = { version = "0.7.0", optional = true, features = ["wayland"] }
+xkeysym = "0.2.0"
+
+calloop = { version = "0.13.0", optional = true }
+calloop-wayland-source = { version = "0.3.0", optional = true }
+
+[features]
+default = ["calloop", "xkbcommon"]
+calloop = ["dep:calloop", "calloop-wayland-source"]
+xkbcommon = ["dep:xkbcommon", "bytemuck", "pkg-config", "xkeysym/bytemuck"]
+
+[build-dependencies]
+pkg-config = { version = "0.3", optional = true }
+
+[dev-dependencies]
+bytemuck = "1.13.0"
+drm-fourcc = "2.2.0"
+font-kit = "0.11.0"
+image = "0.24"
+env_logger = "0.10"
+wgpu = "0.19.0"
+raqote = "0.8.2"
+raw-window-handle = "0.6.0"
+pollster = "0.3.0"
+
+[[example]]
+name = "wgpu"
+required-features = ["wayland-backend/client_system"]

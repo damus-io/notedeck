@@ -1,0 +1,19 @@
+[package]
+name = "timer"
+version = "0.2.0"
+authors = ["David Teller <yoric@rajtel.name>"]
+description = "A simple timer. Use it to schedule execution of closures after a delay or at a given timestamp."
+documentation = "http://yoric.github.io/timer.rs/doc/timer/"
+homepage = "https://github.com/Yoric/timer.rs"
+readme = "README.md"
+keywords = ["timer", "alarm", "schedule", "chrono", "chronometer"]
+license = "MPL-2.0"
+exclude = [
+    "publish-doc.sh",
+    ".gitignore",
+    ".travis.yml",
+]
+
+[dependencies]
+chrono = "^0.4"
+

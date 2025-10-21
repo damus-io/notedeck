@@ -1,0 +1,65 @@
+[package]
+name = "fluent-syntax"
+description = """
+A low-level parser, AST, and serializer API for the syntax used by Project Fluent,
+a localization system designed to unleash the entire expressive power of natural language translations.
+"""
+version = "0.12.0"
+edition.workspace = true
+rust-version = "1.64.0"
+homepage.workspace = true
+repository.workspace = true
+license.workspace = true
+authors.workspace = true
+categories.workspace = true
+keywords.workspace = true
+readme = "README.md"
+include = [
+  "src/**/*",
+  "benches/*.rs",
+  "Cargo.toml",
+  "README.md",
+  "LICENSE-APACHE",
+  "LICENSE-MIT",
+]
+
+[dependencies]
+memchr = "2.0"
+serde = { workspace = true, optional = true, features = ["derive"] }
+serde_json = { workspace = true, optional = true }
+thiserror.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+iai.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+glob = "0.3"
+
+[features]
+default = []
+serde = ["dep:serde"]
+json = ["serde", "dep:serde_json"]
+all-benchmarks = []
+
+[[bench]]
+name = "parser"
+harness = false
+
+[[bench]]
+name = "parser_iai"
+harness = false
+
+[[bin]]
+name = "parser"
+path = "src/bin/parser.rs"
+
+[[bin]]
+name = "update_fixtures"
+path = "src/bin/update_fixtures.rs"
+required-features = ["json"]
+
+[[test]]
+name = "parser_fixtures"
+path = "tests/parser_fixtures.rs"
+required-features = ["json"]

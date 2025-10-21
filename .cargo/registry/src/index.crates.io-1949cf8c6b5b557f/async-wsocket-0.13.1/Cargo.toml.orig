@@ -1,0 +1,52 @@
+[package]
+name = "async-wsocket"
+version = "0.13.1"
+edition = "2021"
+description = "A convenience library for using websockets both in native and WASM environments! Include embedded tor client support."
+authors = ["Yuki Kishimoto <yukikishimoto@protonmail.com>"]
+homepage = "https://github.com/yukibtc/async-wsocket"
+repository = "https://github.com/yukibtc/async-wsocket.git"
+license = "MIT"
+readme = "README.md"
+categories = ["asynchronous", "network-programming", "api-bindings", "wasm", "web-programming::websocket"]
+keywords = ["async", "tokio", "wasm", "websocket"]
+
+[features]
+default = []
+socks = ["dep:tokio-socks"]
+tor = ["tokio/sync", "dep:arti-client", "dep:tor-rtcompat"]
+tor-launch-service = ["tor", "arti-client?/onion-service-service", "dep:tor-hsservice", "dep:tor-hsrproxy"]
+
+[dependencies]
+futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
+url = { version = "2.5", default-features = false }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { version = "1", features = ["net", "time"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] } # Required to enable the necessary features for tokio-tungstenite
+tokio-socks = { version = "0.5", optional = true }
+tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
+
+# TOR deps
+arti-client = { version = "0.28", default-features = false, features = ["onion-service-client", "rustls", "static-sqlite", "tokio"], optional = true }
+tor-hsservice = { version = "0.28", default-features = false, optional = true }
+tor-hsrproxy = { version = "0.28", default-features = false, optional = true }
+tor-rtcompat = { version = "0.28", default-features = false, features = ["rustls", "tokio"], optional = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+async-utility = "0.3"
+futures = { version = "0.3", default-features = false, features = ["std"] } # TODO: remove this
+js-sys = "0.3"
+wasm-bindgen = "0.2"
+web-sys = { version = "0.3", features = ["BinaryType", "Blob", "CloseEvent", "ErrorEvent", "MessageEvent", "DomException", "WebSocket"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros"] }
+
+[[example]]
+name = "client"
+required-features = ["tor"]
+
+[[example]]
+name = "hs-server"
+required-features = ["tor"]

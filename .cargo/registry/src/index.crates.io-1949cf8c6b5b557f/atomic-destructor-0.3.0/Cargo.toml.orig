@@ -1,0 +1,12 @@
+[package]
+name = "atomic-destructor"
+version = "0.3.0"
+edition = "2021"
+description = "Atomic destructor for multi-threaded env"
+authors = ["Yuki Kishimoto <yukikishimoto@protonmail.com>"]
+homepage = "https://github.com/yukibtc/atomic-destructor"
+repository = "https://github.com/yukibtc/atomic-destructor.git"
+license = "MIT"
+rust-version = "1.56.0"
+readme = "README.md"
+keywords = ["atomic", "drop", "thread", "util"]

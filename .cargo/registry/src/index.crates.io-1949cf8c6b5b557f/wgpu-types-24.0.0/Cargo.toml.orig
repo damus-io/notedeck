@@ -1,0 +1,69 @@
+[package]
+name = "wgpu-types"
+version = "24.0.0"
+authors = ["gfx-rs developers"]
+edition = "2021"
+description = "Common types and utilities for wgpu, the cross-platform, safe, pure-rust graphics API"
+homepage = "https://wgpu.rs/"
+repository = "https://github.com/gfx-rs/wgpu"
+keywords = ["graphics"]
+license = "MIT OR Apache-2.0"
+
+# Override the workspace's `rust-version` key. Firefox uses `cargo vendor` to
+# copy the crates it actually uses out of the workspace, so it's meaningful for
+# them to have less restrictive MSRVs individually than the workspace as a
+# whole, if their code permits. See `../README.md` for details.
+rust-version = "1.76"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+    "wasm32-unknown-unknown",
+]
+
+[lib]
+
+[features]
+default = ["std"]
+std = ["js-sys/std", "web-sys/std"]
+strict_asserts = []
+fragile-send-sync-non-atomic-wasm = []
+serde = ["dep:serde"]
+# Enables some internal instrumentation for debugging purposes.
+counters = []
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(web_sys_unstable_apis)'] }
+
+[dependencies]
+bitflags = { workspace = true, features = ["serde"] }
+log.workspace = true
+serde = { workspace = true, default-features = false, features = [
+    "alloc",
+    "derive",
+], optional = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = { workspace = true, default-features = false }
+web-sys = { workspace = true, default-features = false, features = [
+    "ImageBitmap",
+    "ImageData",
+    "HtmlImageElement",
+    "HtmlVideoElement",
+    "HtmlCanvasElement",
+    "OffscreenCanvas",
+    "VideoFrame",
+] }
+
+[dev-dependencies]
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+
+[lints.clippy]
+std_instead_of_core = "warn"
+std_instead_of_alloc = "warn"
+alloc_instead_of_core = "warn"

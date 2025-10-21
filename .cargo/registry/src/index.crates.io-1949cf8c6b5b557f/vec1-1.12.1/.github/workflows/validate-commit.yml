@@ -1,0 +1,16 @@
+name: validate commit
+
+on: [push]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v2
+    - run: cargo test --no-default-features --verbose
+    - run: cargo test --verbose
+    - run: cargo test --all-features --verbose

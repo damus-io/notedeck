@@ -1,0 +1,34 @@
+[package]
+name = "blurhash"
+description = "A pure Rust implementation of blurhash"
+documentation = "https://docs.rs/blurhash"
+repository = "https://github.com/whisperfish/blurhash-rs"
+readme = "README.md"
+keywords = ["blurhash", "image"]
+license = "Apache-2.0/MIT"
+version = "0.2.3"
+authors = ["Ruben De Smet <ruben.de.smet@rubdos.be>", "Raincal <cyj94228@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+image = { version = ">= 0.23, <= 0.25", optional = true }
+gdk-pixbuf = { version = ">= 0.18, <= 0.19", optional = true }
+
+[dev-dependencies]
+image = ">= 0.23, <= 0.25"
+criterion = "0.5"
+proptest = "1"
+
+[features]
+default = ["fast-linear-to-srgb"]
+image = [ "dep:image" ]
+gdk-pixbuf = [ "dep:gdk-pixbuf" ]
+fast-linear-to-srgb = []
+
+[[bench]]
+name = "decode"
+harness = false
+
+[[bench]]
+name = "encode"
+harness = false

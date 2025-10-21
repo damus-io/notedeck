@@ -1,0 +1,53 @@
+[package]
+name = "backoff"
+version = "0.4.0"
+edition = "2018"
+authors = ["Tibor Benke <ihrwein@gmail.com>"]
+license = "MIT/Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/ihrwein/backoff"
+homepage = "https://github.com/ihrwein/backoff"
+documentation = "https://docs.rs/backoff"
+categories = ["network-programming"]
+description = """
+Retry operations with exponential backoff policy.
+"""
+
+[badges]
+travis-ci = { repository = "ihrwein/backoff" }
+
+[dependencies]
+async_std_1 = { package = "async-std", version = "1.9", optional = true }
+futures-core = { version = "0.3.8", default-features = false, optional = true }
+instant = "0.1"
+pin-project-lite = { version = "0.2.7", optional = true }
+rand = "0.8"
+getrandom = "0.2"
+tokio_1 = { package = "tokio", version = "1.0", features = ["time"], optional = true }
+
+[dev-dependencies]
+async_std_1 = { package = "async-std", version = "1.6", features = ["attributes"] }
+reqwest = { version = "0.11", features = ["json", "blocking"] }
+tokio_1 = { package = "tokio", version = "1.0", features = ["macros", "time", "rt-multi-thread"] }
+futures-executor = "0.3"
+
+[features]
+default = []
+wasm-bindgen = ["instant/wasm-bindgen", "getrandom/js"]
+futures = ["futures-core", "pin-project-lite"]
+tokio = ["futures", "tokio_1"]
+async-std = ["futures", "async_std_1"]
+
+[[example]]
+name = "async"
+required-features = ["tokio"]
+
+[[example]]
+name = "permanent_error"
+
+[[example]]
+name = "retry"
+
+[package.metadata.docs.rs]
+features = ["tokio"]
+rustdoc-args = ["--cfg", "docsrs"]
