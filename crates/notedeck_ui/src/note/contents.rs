@@ -1,4 +1,5 @@
 use super::media::image_carousel;
+use super::video;
 use crate::{
     note::{NoteAction, NoteOptions, NoteResponse, NoteView},
     secondary_label,
@@ -188,6 +189,7 @@ fn render_undecorated_note_contents<'a>(
     }
 
     let mut supported_medias: Vec<RenderableMedia> = vec![];
+    let mut video_urls: Vec<String> = Vec::new();
 
     let response = ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 1.0;
@@ -270,14 +272,28 @@ fn render_undecorated_note_contents<'a>(
 
                 BlockType::Url => {
                     profiling::scope!("url-block");
-                    let mut found_supported = || -> bool {
-                        let url = block.as_str();
+                    let mut handle_media_url = || -> bool {
+                        let url = block.as_str().trim();
+
+                        if url.is_empty() {
+                            return false;
+                        }
+
+                        if hide_media {
+                            return false;
+                        }
 
                         if !note_context.img_cache.metadata.contains_key(url) {
                             update_imeta_blurhashes(note, &mut note_context.img_cache.metadata);
                         }
 
                         let Some(media) = note_context.img_cache.get_renderable_media(url) else {
+                            if is_supported_video_url(url) {
+                                if !video_urls.iter().any(|existing| existing == url) {
+                                    video_urls.push(url.to_owned());
+                                }
+                                return true;
+                            }
                             return false;
                         };
 
@@ -285,7 +301,7 @@ fn render_undecorated_note_contents<'a>(
                         true
                     };
 
-                    if hide_media || !found_supported() {
+                    if !handle_media_url() {
                         if block.as_str().trim().is_empty() {
                             continue;
                         }
@@ -385,11 +401,34 @@ fn render_undecorated_note_contents<'a>(
         ui.add_space(2.0);
     }
 
+    if !hide_media && !video_urls.is_empty() {
+        ui.add_space(8.0);
+        video::show_video_embeds(ui, note_context.video_store, &video_urls);
+    }
+
     let note_action = preview_note_action
         .or(note_action)
         .or(media_action.map(NoteAction::Media));
 
     NoteResponse::new(response.response).with_action(note_action)
+}
+
+fn is_supported_video_url(url: &str) -> bool {
+    let trimmed = url
+        .split('#')
+        .next()
+        .unwrap_or(url)
+        .split('?')
+        .next()
+        .unwrap_or(url);
+
+    let extension = trimmed
+        .rsplit('.')
+        .next()
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
+
+    matches!(extension.as_str(), "mp4" | "m4v" | "mov" | "webm")
 }
 
 fn rot13(input: &str) -> String {

@@ -3,10 +3,10 @@ pub mod context;
 pub mod media;
 pub mod options;
 pub mod reply_description;
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "android"))]
 #[path = "video_stub.rs"]
 pub mod video;
-#[cfg(not(target_os = "windows"))]
+#[cfg(all(not(target_os = "windows"), not(target_os = "android")))]
 pub mod video;
 
 use crate::{app_images, secondary_label};

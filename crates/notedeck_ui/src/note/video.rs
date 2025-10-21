@@ -2,15 +2,13 @@ use egui::{
     vec2, Align, Align2, Area, Color32, FontId, Key, Layout, Order, Pos2, Rect, Response, RichText,
     Sense, Ui, UiBuilder, WidgetText,
 };
-use egui_video::AudioDevice;
 use egui_video::{ensure_initialized, Player, PlayerState};
 use hex::encode;
+use notedeck::{AudioSupport, VideoSlot, VideoStore};
 use poll_promise::Promise;
 use sdl2;
 use sha2::{Digest, Sha256};
 use std::{
-    cell::RefCell,
-    collections::HashMap,
     env,
     fs::{self, File},
     io::copy,
@@ -18,40 +16,19 @@ use std::{
 };
 use ureq;
 
-enum VideoSlot {
-    Loading {
-        promise: Promise<Result<String, String>>,
-    },
-    Ready {
-        player: Player,
-        started: bool,
-    },
-    Failed(String),
-}
-
 enum VideoStatus {
     Loading,
     Error(String),
 }
 
-thread_local! {
-    static VIDEO_PLAYERS: RefCell<HashMap<String, VideoSlot>> = RefCell::new(HashMap::new());
-    static AUDIO_SUPPORT: RefCell<Option<AudioSupport>> = RefCell::new(None);
-    static FULLSCREEN_VIDEOS: RefCell<HashMap<String, bool>> = RefCell::new(HashMap::new());
-}
-
-struct AudioSupport {
-    #[allow(dead_code)]
-    sdl: sdl2::Sdl,
-    device: AudioDevice,
-}
-
 /// Render embedded video players for the provided URLs.
-pub fn show_video_embeds(ui: &mut Ui, urls: &[String]) {
+pub fn show_video_embeds(ui: &mut Ui, store: &VideoStore, urls: &[String]) {
     for url in urls {
         ui.add_space(6.0);
-        ui.vertical(
-            |ui| match with_player(url, ui, |player, ui| render_player(ui, url, player)) {
+        ui.vertical(|ui| {
+            match with_player(store, url, ui, |player, ui| {
+                render_player(store, ui, url, player)
+            }) {
                 Ok(response) => {
                     let _ = response;
                     ui.horizontal(|ui| {
@@ -83,7 +60,7 @@ pub fn show_video_embeds(ui: &mut Ui, urls: &[String]) {
                     );
                     ui.horizontal(|ui| {
                         if ui.button("Retry").clicked() {
-                            reset_player(url);
+                            reset_player(store, url);
                         }
                         ui.hyperlink_to(
                             WidgetText::RichText(
@@ -93,12 +70,12 @@ pub fn show_video_embeds(ui: &mut Ui, urls: &[String]) {
                         );
                     });
                 }
-            },
-        );
+            }
+        });
     }
 }
 
-fn render_player(ui: &mut Ui, url: &str, player: &mut Player) -> Response {
+fn render_player(store: &VideoStore, ui: &mut Ui, url: &str, player: &mut Player) -> Response {
     let max_height = 360.0;
     let available_width = ui.available_width();
 
@@ -159,12 +136,16 @@ fn render_player(ui: &mut Ui, url: &str, player: &mut Player) -> Response {
         );
     }
 
-    sync_audio_with_state(current_state);
+    sync_audio_with_state(store, current_state);
 
     let button_size = vec2(32.0, 32.0);
     let button_pos = video_resp.rect.right_top() - vec2(button_size.x + 8.0, -8.0);
     let button_rect = Rect::from_min_size(button_pos, button_size);
-    let fullscreen_label = if is_fullscreen(url) { "⤡" } else { "⤢" };
+    let fullscreen_label = if is_fullscreen(store, url) {
+        "⤡"
+    } else {
+        "⤢"
+    };
     let fullscreen_resp = ui.put(
         button_rect,
         egui::Button::new(fullscreen_label)
@@ -174,10 +155,10 @@ fn render_player(ui: &mut Ui, url: &str, player: &mut Player) -> Response {
     );
 
     if fullscreen_resp.clicked() {
-        toggle_fullscreen(url);
+        toggle_fullscreen(store, url);
     }
 
-    if is_fullscreen(url) {
+    if is_fullscreen(store, url) {
         let ctx = ui.ctx();
         let screen_rect = ctx.screen_rect();
         Area::new(egui::Id::new(format!("video_fullscreen_{url}")))
@@ -191,7 +172,7 @@ fn render_player(ui: &mut Ui, url: &str, player: &mut Player) -> Response {
                     .rect_filled(overlay_rect, 0.0, Color32::from_black_alpha(210));
 
                 if area_ui.ctx().input(|i| i.key_pressed(Key::Escape)) {
-                    set_fullscreen(url, false);
+                    set_fullscreen(store, url, false);
                 }
 
                 let builder = UiBuilder::new().max_rect(overlay_rect);
@@ -202,7 +183,7 @@ fn render_player(ui: &mut Ui, url: &str, player: &mut Player) -> Response {
                         .add(egui::Button::new("✕").fill(ui.visuals().extreme_bg_color))
                         .clicked()
                     {
-                        set_fullscreen(url, false);
+                        set_fullscreen(store, url, false);
                     }
                 });
 
@@ -226,7 +207,7 @@ fn render_player(ui: &mut Ui, url: &str, player: &mut Player) -> Response {
                         }
                         state = player.player_state.get();
                     }
-                    sync_audio_with_state(state);
+                    sync_audio_with_state(store, state);
                 });
             });
     }
@@ -236,16 +217,22 @@ fn render_player(ui: &mut Ui, url: &str, player: &mut Player) -> Response {
     response
 }
 
-fn with_player<F, R>(url: &str, ui: &mut Ui, f: F) -> Result<R, VideoStatus>
+fn with_player<F, R>(store: &VideoStore, url: &str, ui: &mut Ui, mut f: F) -> Result<R, VideoStatus>
 where
-    F: FnOnce(&mut Player, &mut Ui) -> R,
+    F: FnMut(&mut Player, &mut Ui) -> R,
 {
     ensure_initialized();
-    VIDEO_PLAYERS.with(|store| {
-        let mut map = store.borrow_mut();
+    #[derive(Debug)]
+    enum Action<R> {
+        Loading,
+        Error(String),
+        Use { response: R, state: PlayerState },
+        Prepare(String),
+    }
 
-        loop {
-            let entry = map
+    loop {
+        let action = store.with_players(|players| {
+            let entry = players
                 .entry(url.to_string())
                 .or_insert_with(|| VideoSlot::Loading {
                     promise: spawn_video_fetch(url),
@@ -255,69 +242,84 @@ where
                 VideoSlot::Loading { promise } => {
                     if let Some(result) = promise.ready().cloned() {
                         match result {
-                            Ok(local_path) => match prepare_player(ui, &local_path) {
-                                Ok(player) => {
-                                    *entry = VideoSlot::Ready {
-                                        player,
-                                        started: false,
-                                    };
-                                    continue;
-                                }
-                                Err(err) => {
-                                    *entry = VideoSlot::Failed(err);
-                                    continue;
-                                }
-                            },
+                            Ok(local_path) => Action::Prepare(local_path),
                             Err(err) => {
-                                *entry = VideoSlot::Failed(err);
-                                continue;
+                                *entry = VideoSlot::Failed(err.clone());
+                                Action::Error(err)
                             }
                         }
                     } else {
-                        return Err(VideoStatus::Loading);
+                        Action::Loading
                     }
                 }
                 VideoSlot::Ready { player, started } => {
                     if !*started {
                         player.start();
                         *started = true;
-                        sync_audio_with_state(PlayerState::Playing);
                     }
-                    return Ok(f(player, ui));
+                    let response = f(player, ui);
+                    let state = player.player_state.get();
+                    Action::Use { response, state }
                 }
-                VideoSlot::Failed(err) => return Err(VideoStatus::Error(err.clone())),
+                VideoSlot::Failed(err) => Action::Error(err.clone()),
             }
+        });
+
+        match action {
+            Action::Loading => return Err(VideoStatus::Loading),
+            Action::Error(err) => return Err(VideoStatus::Error(err)),
+            Action::Use { response, state } => {
+                sync_audio_with_state(store, state);
+                return Ok(response);
+            }
+            Action::Prepare(local_path) => match prepare_player(store, ui, &local_path) {
+                Ok(player) => {
+                    store.with_players(|players| {
+                        players.insert(
+                            url.to_string(),
+                            VideoSlot::Ready {
+                                player,
+                                started: false,
+                            },
+                        );
+                    });
+                }
+                Err(err) => {
+                    store.with_players(|players| {
+                        players.insert(url.to_string(), VideoSlot::Failed(err.clone()));
+                    });
+                }
+            },
         }
-    })
+    }
 }
 
-fn reset_player(url: &str) {
-    VIDEO_PLAYERS.with(|store| {
-        store.borrow_mut().remove(url);
-    });
+fn reset_player(store: &VideoStore, url: &str) {
+    store.remove_player(url);
+    store.set_fullscreen(url, false);
 }
 
-fn prepare_player(ui: &Ui, path: &str) -> Result<Player, String> {
+fn prepare_player(store: &VideoStore, ui: &Ui, path: &str) -> Result<Player, String> {
     let player = Player::new(ui.ctx(), &path.to_owned()).map_err(|err| format!("{err:?}"))?;
-    attach_audio(player)
+    attach_audio(store, player)
 }
 
-fn attach_audio(player: Player) -> Result<Player, String> {
-    AUDIO_SUPPORT.with(|support| {
-        let mut support = support.borrow_mut();
-        if support.is_none() {
+fn attach_audio(store: &VideoStore, player: Player) -> Result<Player, String> {
+    store.with_audio(|audio| {
+        if audio.is_none() {
             let sdl = sdl2::init().map_err(|e| e.to_string())?;
             let audio_subsystem = sdl.audio().map_err(|e| e.to_string())?;
             let device = egui_video::init_audio_device(&audio_subsystem).map_err(|e| e)?;
-            *support = Some(AudioSupport { sdl, device });
+            *audio = Some(AudioSupport { sdl, device });
         }
-        if let Some(state) = support.as_mut() {
-            let player = player
+
+        if let Some(state) = audio.as_mut() {
+            player
                 .with_audio(&mut state.device)
-                .map_err(|e| format!("{e:?}"))?;
-            return Ok(player);
+                .map_err(|e| format!("{e:?}"))
+        } else {
+            Err("Failed to initialize audio support".to_string())
         }
-        Err("Failed to initialize audio support".to_string())
     })
 }
 
@@ -359,17 +361,17 @@ fn video_cache_path(url: &str) -> PathBuf {
     path
 }
 
-fn sync_audio_with_state(state: PlayerState) {
+fn sync_audio_with_state(store: &VideoStore, state: PlayerState) {
     let paused = matches!(
         state,
         PlayerState::Paused | PlayerState::Stopped | PlayerState::EndOfFile
     );
-    set_audio_playback(paused);
+    set_audio_playback(store, paused);
 }
 
-fn set_audio_playback(paused: bool) {
-    AUDIO_SUPPORT.with(|support| {
-        if let Some(state) = support.borrow_mut().as_mut() {
+fn set_audio_playback(store: &VideoStore, paused: bool) {
+    store.with_audio(|audio| {
+        if let Some(state) = audio.as_mut() {
             if paused {
                 state.device.pause();
             } else {
@@ -379,22 +381,15 @@ fn set_audio_playback(paused: bool) {
     });
 }
 
-fn toggle_fullscreen(url: &str) {
-    let new_state = !is_fullscreen(url);
-    set_fullscreen(url, new_state);
+fn toggle_fullscreen(store: &VideoStore, url: &str) {
+    let new_state = !is_fullscreen(store, url);
+    set_fullscreen(store, url, new_state);
 }
 
-fn set_fullscreen(url: &str, value: bool) {
-    FULLSCREEN_VIDEOS.with(|map| {
-        let mut map = map.borrow_mut();
-        if value {
-            map.insert(url.to_owned(), true);
-        } else {
-            map.remove(url);
-        }
-    });
+fn set_fullscreen(store: &VideoStore, url: &str, value: bool) {
+    store.set_fullscreen(url, value);
 }
 
-fn is_fullscreen(url: &str) -> bool {
-    FULLSCREEN_VIDEOS.with(|map| map.borrow().get(url).copied().unwrap_or(false))
+fn is_fullscreen(store: &VideoStore, url: &str) -> bool {
+    store.is_fullscreen(url)
 }

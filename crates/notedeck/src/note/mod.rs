@@ -4,12 +4,12 @@ mod context;
 pub use action::{NoteAction, ReactAction, ScrollInfo, ZapAction, ZapTargetAmount};
 pub use context::{BroadcastContext, ContextSelection, NoteContextSelection};
 
-use crate::Accounts;
 use crate::GlobalWallet;
 use crate::JobPool;
 use crate::Localization;
 use crate::UnknownIds;
 use crate::{notecache::NoteCache, zaps::Zaps, Images};
+use crate::{video::VideoStore, Accounts};
 use enostr::{NoteId, RelayPool};
 use nostrdb::{Ndb, Note, NoteKey, QueryResult, Transaction};
 use std::borrow::Borrow;
@@ -30,6 +30,7 @@ pub struct NoteContext<'d> {
     pub job_pool: &'d mut JobPool,
     pub unknown_ids: &'d mut UnknownIds,
     pub clipboard: &'d mut egui_winit::clipboard::Clipboard,
+    pub video_store: &'d VideoStore,
 }
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone, Hash)]

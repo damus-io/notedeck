@@ -1511,6 +1511,8 @@ dependencies = [
  "ffmpeg-next",
  "ffmpeg-sys-next",
  "itertools 0.10.5",
+ "ndk",
+ "ndk-sys 0.6.0+11769913",
  "parking_lot",
  "ringbuf",
  "sdl2",
@@ -1906,8 +1908,6 @@ dependencies = [
 [[package]]
 name = "ffmpeg-sys-next"
 version = "6.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cf650f461ccf130f4eef4927affed703cc387b183bfc4a7dfee86a076c131127"
 dependencies = [
  "bindgen 0.64.0",
  "cc",
@@ -3608,6 +3608,7 @@ dependencies = [
  "dirs",
  "eframe",
  "egui",
+ "egui-video",
  "egui-winit",
  "egui_extras",
  "ehttp",
@@ -3634,6 +3635,7 @@ dependencies = [
  "puffin_egui",
  "rand 0.9.2",
  "regex",
+ "sdl2",
  "secp256k1 0.30.0",
  "serde",
  "serde_json",

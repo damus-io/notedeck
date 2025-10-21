@@ -7,8 +7,8 @@ use crate::Error;
 use crate::JobPool;
 use crate::NotedeckOptions;
 use crate::{
-    frame_history::FrameHistory, AccountStorage, Accounts, AppContext, Args, DataPath,
-    DataPathType, Directory, Images, NoteAction, NoteCache, RelayDebugView, UnknownIds,
+    frame_history::FrameHistory, video::VideoStore, AccountStorage, Accounts, AppContext, Args,
+    DataPath, DataPathType, Directory, Images, NoteAction, NoteCache, RelayDebugView, UnknownIds,
 };
 use egui::Margin;
 use egui::ThemePreference;
@@ -78,6 +78,7 @@ pub struct Notedeck {
     frame_history: FrameHistory,
     job_pool: JobPool,
     i18n: Localization,
+    video_store: VideoStore,
 
     #[cfg(target_os = "android")]
     android_app: Option<AndroidApp>,
@@ -307,6 +308,7 @@ impl Notedeck {
             zaps,
             job_pool,
             i18n,
+            video_store: VideoStore::new(),
             #[cfg(target_os = "android")]
             android_app: None,
         }
@@ -372,6 +374,7 @@ impl Notedeck {
             frame_history: &mut self.frame_history,
             job_pool: &mut self.job_pool,
             i18n: &mut self.i18n,
+            video_store: &self.video_store,
             #[cfg(target_os = "android")]
             android: self.android_app.as_ref().unwrap().clone(),
         }

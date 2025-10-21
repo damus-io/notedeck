@@ -54,6 +54,7 @@ pub fn note_hover_ui(
             clipboard: ctx.clipboard,
             i18n: ctx.i18n,
             global_wallet: ctx.global_wallet,
+            video_store: ctx.video_store,
         };
 
         let mut jobs = notedeck::JobsCache::default();

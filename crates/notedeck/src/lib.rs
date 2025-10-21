@@ -40,6 +40,7 @@ pub mod ui;
 mod unknowns;
 mod urls;
 mod user_account;
+mod video;
 mod wallet;
 mod zaps;
 
@@ -91,6 +92,9 @@ pub use timecache::TimeCached;
 pub use unknowns::{get_unknown_note_ids, NoteRefsUnkIdAction, SingleUnkIdAction, UnknownIds};
 pub use urls::{supported_mime_hosted_at_url, SupportedMimeType, UrlMimes};
 pub use user_account::UserAccount;
+pub use video::VideoStore;
+#[cfg(all(not(target_os = "windows"), not(target_os = "android")))]
+pub use video::{AudioSupport, VideoSlot};
 pub use wallet::{
     get_current_wallet, get_current_wallet_mut, get_wallet_for, GlobalWallet, Wallet, WalletError,
     WalletType, WalletUIState, ZapWallet,

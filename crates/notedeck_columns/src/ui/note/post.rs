@@ -880,6 +880,7 @@ mod preview {
                 unknown_ids: app.unknown_ids,
                 clipboard: app.clipboard,
                 i18n: app.i18n,
+                video_store: app.video_store,
             };
 
             PostView::new(

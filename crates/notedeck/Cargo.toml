@@ -54,6 +54,10 @@ indexmap = {workspace = true}
 rand = {workspace = true}
 crossbeam-channel = "0.5"
 
+[target.'cfg(all(not(target_os = "windows"), not(target_os = "android")))'.dependencies]
+egui-video = { workspace = true }
+sdl2 = { workspace = true }
+
 [dev-dependencies]
 tempfile = { workspace = true }
 tokio = { workspace = true }
