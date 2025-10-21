@@ -99,7 +99,9 @@ This document captures the current architecture, coding conventions, and design 
 2. Please make all commits standalone (i.e. so that they can be readily removed tens of commits later without impact the rest of the code).
 3. Related to logically distinct code, and standalone commits care must be taken for all code to be human readable, and reviewable by human developers.
 4. Please set up code for performance profiling utilizing puffin (e.g. `cargo run --release --features puffin`).
-5. Related to Puffin & performance profiling, for code suspected of impacting performance, carefully consider adding performance profiling attributes such as e.g. profiling::function in order to see functions performance in the profiler. 
+5. Related to Puffin & performance profiling, for code suspected of impacting performance, carefully consider adding performance profiling attributes such as e.g. profiling::function in order to see functions performance in the profiler.
+6. Global variables are not allowed in this codebase, even if they are thread local. State should be managed in an struct that is passed in as reference.
+
 
 
 
