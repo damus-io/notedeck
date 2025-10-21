@@ -336,6 +336,11 @@ impl Route {
                     "Add Hashtag Column",
                     "Column title for adding hashtag column"
                 )),
+                AddColumnRoute::Nip05Domain => ColumnTitle::formatted(tr!(
+                    i18n,
+                    "Add NIP-05 Domain Column",
+                    "Column title for adding NIP-05 domain column"
+                )),
                 AddColumnRoute::UndecidedIndividual => ColumnTitle::formatted(tr!(
                     i18n,
                     "Subscribe to someone's notes",

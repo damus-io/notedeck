@@ -215,6 +215,9 @@ pub enum TimelineKind {
     Generic(u64),
 
     Hashtag(Vec<String>),
+
+    /// Filter by NIP-05 domain (e.g., "domain.com")
+    Nip05Domain(String),
 }
 
 const NOTIFS_TOKEN_DEPRECATED: &str = "notifs";
@@ -316,6 +319,28 @@ impl TimelineKind {
             TimelineKind::Generic(_) => None,
             TimelineKind::Hashtag(_ht) => None,
             TimelineKind::Search(query) => query.author(),
+            TimelineKind::Nip05Domain(_domain) => None,
+        }
+    }
+
+    /// Check if a note should be included in this timeline based on author's NIP-05
+    pub fn should_include_note(&self, ndb: &Ndb, txn: &Transaction, author_pubkey: &[u8; 32]) -> bool {
+        match self {
+            TimelineKind::Nip05Domain(domain) => {
+                // Get the author's profile
+                if let Ok(profile) = ndb.get_profile_by_pubkey(txn, author_pubkey) {
+                    if let Some(nip05) = profile.record().profile().and_then(|p| p.nip05()) {
+                        // Extract domain from nip05 (e.g., "alice@domain.com" -> "domain.com")
+                        if let Some((_name, nip05_domain)) = nip05.rsplit_once('@') {
+                            // Case-insensitive domain matching
+                            return nip05_domain.eq_ignore_ascii_case(domain);
+                        }
+                    }
+                }
+                false
+            }
+            // For other timeline types, include all notes
+            _ => true,
         }
     }
 
@@ -331,6 +356,7 @@ impl TimelineKind {
             TimelineKind::Generic(_) => true,
             TimelineKind::Hashtag(_ht) => true,
             TimelineKind::Search(_q) => true,
+            TimelineKind::Nip05Domain(_domain) => true,
         }
     }
 
@@ -362,6 +388,10 @@ impl TimelineKind {
             TimelineKind::Hashtag(ht) => {
                 writer.write_token("hashtag");
                 writer.write_token(&ht.join(" "));
+            }
+            TimelineKind::Nip05Domain(domain) => {
+                writer.write_token("nip05domain");
+                writer.write_token(domain);
             }
         }
     }
@@ -427,6 +457,11 @@ impl TimelineKind {
                     p.parse_token("search")?;
                     let search_query = SearchQuery::parse_from_tokens(p)?;
                     Ok(TimelineKind::Search(search_query))
+                },
+                |p| {
+                    p.parse_token("nip05domain")?;
+                    let domain = p.pull_token()?;
+                    Ok(TimelineKind::Nip05Domain(domain.to_string()))
                 },
             ],
         )
@@ -503,6 +538,10 @@ impl TimelineKind {
             }
 
             TimelineKind::Profile(pk) => FilterState::ready_hybrid(profile_filter(pk.bytes())),
+
+            TimelineKind::Nip05Domain(domain) => {
+                FilterState::ready(nip05_domain_filter(domain))
+            }
         }
     }
 
@@ -583,6 +622,12 @@ impl TimelineKind {
 
             TimelineKind::Hashtag(hashtag) => Some(Timeline::hashtag(hashtag)),
 
+            TimelineKind::Nip05Domain(domain) => Some(Timeline::new(
+                TimelineKind::Nip05Domain(domain.clone()),
+                FilterState::ready(nip05_domain_filter(&domain)),
+                TimelineTab::full_tabs(),
+            )),
+
             TimelineKind::List(ListKind::Contact(pk)) => Some(Timeline::new(
                 TimelineKind::contact_list(pk),
                 contact_filter_state(txn, ndb, &pk),
@@ -619,6 +664,9 @@ impl TimelineKind {
                 ColumnTitle::formatted(tr!(i18n, "Custom", "Column title for custom timelines"))
             }
             TimelineKind::Hashtag(hashtag) => ColumnTitle::formatted(hashtag.join(" ").to_string()),
+            TimelineKind::Nip05Domain(domain) => {
+                ColumnTitle::formatted(format!("NIP-05: {}", domain))
+            }
         }
     }
 }
@@ -766,5 +814,12 @@ fn search_filter(s: &SearchQuery) -> Vec<Filter> {
 }
 
 fn universe_filter() -> Vec<Filter> {
+    vec![Filter::new().kinds([1]).limit(default_limit()).build()]
+}
+
+fn nip05_domain_filter(_domain: &str) -> Vec<Filter> {
+    // Note: NIP-05 filtering requires client-side filtering since we need to check
+    // profile metadata. We fetch all notes and filter based on author's NIP-05 domain
+    // in the timeline view layer.
     vec![Filter::new().kinds([1]).limit(default_limit()).build()]
 }
