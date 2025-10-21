@@ -123,6 +123,7 @@ egui_extras = { git = "https://github.com/damus-io/egui", rev = "c9073832236dade
 epaint = { git = "https://github.com/damus-io/egui", rev = "c9073832236dadec21f263ef1f1ffa4d7a159f72" }
 puffin = { git = "https://github.com/jb55/puffin", package = "puffin", rev = "c6a6242adaf90b6292c0f462d2acd34d96d224d2" }
 puffin_egui = { git = "https://github.com/jb55/puffin", package = "puffin_egui", rev = "c6a6242adaf90b6292c0f462d2acd34d96d224d2" }
+ffmpeg-sys-next = { path = "vendor/ffmpeg-sys-next" }
 #winit = { git = "https://github.com/damus-io/winit", rev = "701a43d3c6479b0a3869acd2cebbfd410d399a59" }
 #winit = { path = "/home/jb55/dev/github/rust-windowing/winit" }
 #android-activity = { git = "https://github.com/damus-io/android-activity", rev = "f56c974aa5182d5fbd361879f5899eb8f11a37ec" }
