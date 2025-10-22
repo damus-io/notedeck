@@ -100,26 +100,23 @@ fn execute_note_action(
                 .open(ndb, note_cache, txn, pool, &kind)
                 .map(NotesOpenResult::Timeline);
         }
-        NoteAction::Note {
-            note_id,
-            preview,
-            scroll_offset,
-        } => 'ex: {
+        NoteAction::Note { note_id, preview } => 'ex: {
             let Ok(thread_selection) = ThreadSelection::from_note_id(ndb, note_cache, txn, note_id)
             else {
                 tracing::error!("No thread selection for {}?", hex::encode(note_id.bytes()));
                 break 'ex;
             };
 
+            tracing::info!("Opening thread: {thread_selection:?}");
             timeline_res = threads
                 .open(
                     ndb,
                     txn,
                     pool,
                     &thread_selection,
+                    Some(note_id),
                     preview,
                     col,
-                    scroll_offset,
                 )
                 .map(NotesOpenResult::Thread);
 
@@ -208,6 +205,20 @@ fn execute_note_action(
             });
 
             media_action.process_default_media_actions(images)
+        }
+        NoteAction::ThreadAutoUnfold { note_id, scroll_to } => 's: {
+            let Ok(thread_selection) = ThreadSelection::from_note_id(ndb, note_cache, txn, note_id)
+            else {
+                tracing::error!("No thread selection for {}?", hex::encode(note_id.bytes()));
+                break 's;
+            };
+            timeline_res = threads
+                .open(ndb, txn, pool, &thread_selection, scroll_to, false, col)
+                .map(NotesOpenResult::Thread);
+
+            router_action = Some(RouterAction::RouteInstantly(Route::Thread(
+                thread_selection,
+            )));
         }
     }
 
