@@ -301,29 +301,24 @@ impl Chrome {
 
         // if the soft keyboard is open, shrink the chrome contents
         let mut action: Option<ChromePanelAction> = None;
-
-        if keyboard_height == 0.0 {
-            action = self.panel(ctx, ui, keyboard_height);
-        } else {
-            // build a strip to carve out the soft keyboard inset
-            StripBuilder::new(ui)
-                .size(Size::remainder())
-                .size(Size::exact(keyboard_height))
-                .vertical(|mut strip| {
-                    // the actual content, shifted up because of the soft keyboard
-                    strip.cell(|ui| {
-                        action = self.panel(ctx, ui, keyboard_height);
-                    });
-
-                    // the filler space taken up by the soft keyboard
-                    strip.cell(|ui| {
-                        // keyboard-visibility virtual keyboard
-                        if virtual_keyboard && keyboard_height > 0.0 {
-                            virtual_keyboard_ui(ui, ui.available_rect_before_wrap())
-                        }
-                    });
+        // build a strip to carve out the soft keyboard inset
+        StripBuilder::new(ui)
+            .size(Size::remainder())
+            .size(Size::exact(keyboard_height))
+            .vertical(|mut strip| {
+                // the actual content, shifted up because of the soft keyboard
+                strip.cell(|ui| {
+                    action = self.panel(ctx, ui, keyboard_height);
                 });
-        }
+
+                // the filler space taken up by the soft keyboard
+                strip.cell(|ui| {
+                    // keyboard-visibility virtual keyboard
+                    if virtual_keyboard && keyboard_height > 0.0 {
+                        virtual_keyboard_ui(ui, ui.available_rect_before_wrap())
+                    }
+                });
+            });
 
         // hovering virtual keyboard
         if virtual_keyboard {
