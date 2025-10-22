@@ -302,6 +302,8 @@ impl Chrome {
         // if the soft keyboard is open, shrink the chrome contents
         let mut action: Option<ChromePanelAction> = None;
         // build a strip to carve out the soft keyboard inset
+        let prev_spacing = ui.spacing().item_spacing;
+        ui.spacing_mut().item_spacing.y = 0.0;
         StripBuilder::new(ui)
             .size(Size::remainder())
             .size(Size::exact(keyboard_height))
@@ -319,6 +321,7 @@ impl Chrome {
                     }
                 });
             });
+        ui.spacing_mut().item_spacing = prev_spacing;
 
         // hovering virtual keyboard
         if virtual_keyboard {
