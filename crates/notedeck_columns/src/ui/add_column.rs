@@ -29,6 +29,7 @@ pub enum AddColumnResponse {
     UndecidedNotification,
     ExternalNotification,
     Hashtag,
+    Nip05Domain,
     Algo(AlgoOption),
     UndecidedIndividual,
     ExternalIndividual,
@@ -59,6 +60,7 @@ enum AddColumnOption {
     Notification(PubkeySource),
     Contacts(PubkeySource),
     UndecidedHashtag,
+    UndecidedNip05Domain,
     UndecidedIndividual,
     ExternalIndividual,
     Individual(PubkeySource),
@@ -77,6 +79,7 @@ pub enum AddColumnRoute {
     UndecidedNotification,
     ExternalNotification,
     Hashtag,
+    Nip05Domain,
     Algo(AddAlgoRoute),
     UndecidedIndividual,
     ExternalIndividual,
@@ -105,6 +108,7 @@ impl AddColumnRoute {
             Self::UndecidedIndividual => &["column", "individual_selection"],
             Self::ExternalIndividual => &["column", "external_individual_selection"],
             Self::Hashtag => &["column", "hashtag"],
+            Self::Nip05Domain => &["column", "nip05domain"],
             Self::Algo(AddAlgoRoute::Base) => &["column", "algo_selection"],
             Self::Algo(AddAlgoRoute::LastPerPubkey) => {
                 &["column", "algo_selection", "last_per_pubkey"]
@@ -132,6 +136,7 @@ impl TokenSerializable for AddColumnRoute {
                 |p| parse_column_route(p, AddColumnRoute::UndecidedIndividual),
                 |p| parse_column_route(p, AddColumnRoute::ExternalIndividual),
                 |p| parse_column_route(p, AddColumnRoute::Hashtag),
+                |p| parse_column_route(p, AddColumnRoute::Nip05Domain),
                 |p| parse_column_route(p, AddColumnRoute::Algo(AddAlgoRoute::Base)),
                 |p| parse_column_route(p, AddColumnRoute::Algo(AddAlgoRoute::LastPerPubkey)),
             ],
@@ -153,6 +158,7 @@ impl AddColumnOption {
             ),
             AddColumnOption::ExternalNotification => AddColumnResponse::ExternalNotification,
             AddColumnOption::UndecidedHashtag => AddColumnResponse::Hashtag,
+            AddColumnOption::UndecidedNip05Domain => AddColumnResponse::Nip05Domain,
             AddColumnOption::UndecidedIndividual => AddColumnResponse::UndecidedIndividual,
             AddColumnOption::ExternalIndividual => AddColumnResponse::ExternalIndividual,
             AddColumnOption::Individual(pubkey_source) => AddColumnResponse::Timeline(
@@ -516,6 +522,16 @@ impl<'a> AddColumnView<'a> {
             option: AddColumnOption::UndecidedHashtag,
         });
         vec.push(ColumnOptionData {
+            title: tr!(self.i18n, "NIP-05 Domain", "Title for NIP-05 domain column"),
+            description: tr!(
+                self.i18n,
+                "Filter notes by NIP-05 verified domain",
+                "Description for NIP-05 domain column"
+            ),
+            icon: app_images::profile_image(),
+            option: AddColumnOption::UndecidedNip05Domain,
+        });
+        vec.push(ColumnOptionData {
             title: tr!(self.i18n, "Individual", "Title for individual user column"),
             description: tr!(
                 self.i18n,
@@ -684,6 +700,7 @@ pub fn render_add_column_routes(
         AddColumnRoute::UndecidedNotification => add_column_view.notifications_ui(ui),
         AddColumnRoute::ExternalNotification => add_column_view.external_notification_ui(ui),
         AddColumnRoute::Hashtag => hashtag_ui(ui, ctx.i18n, &mut app.view_state.id_string_map),
+        AddColumnRoute::Nip05Domain => nip05_domain_ui(ui, ctx.i18n, &mut app.view_state.id_string_map),
         AddColumnRoute::UndecidedIndividual => add_column_view.individual_ui(ui),
         AddColumnRoute::ExternalIndividual => add_column_view.external_individual_ui(ui),
     };
@@ -790,6 +807,12 @@ pub fn render_add_column_routes(
                     .router_mut()
                     .route_to(crate::route::Route::AddColumn(AddColumnRoute::Hashtag));
             }
+            AddColumnResponse::Nip05Domain => {
+                app.columns_mut(ctx.i18n, ctx.accounts)
+                    .column_mut(col)
+                    .router_mut()
+                    .route_to(crate::route::Route::AddColumn(AddColumnRoute::Nip05Domain));
+            }
             AddColumnResponse::UndecidedIndividual => {
                 app.columns_mut(ctx.i18n, ctx.accounts)
                     .column_mut(col)
@@ -867,6 +890,53 @@ fn sanitize_hashtag(raw_hashtag: &str) -> String {
         .chars()
         .filter(|c| c.is_alphanumeric()) // keep letters and numbers only
         .collect()
+}
+
+pub fn nip05_domain_ui(
+    ui: &mut Ui,
+    i18n: &mut Localization,
+    id_string_map: &mut HashMap<Id, String>,
+) -> Option<AddColumnResponse> {
+    padding(16.0, ui, |ui| {
+        let id = ui.id().with("nip05domain");
+        let text_buffer = id_string_map.entry(id).or_default();
+
+        let text_edit = egui::TextEdit::singleline(text_buffer)
+            .hint_text(
+                RichText::new(tr!(
+                    i18n,
+                    "Enter NIP-05 domain (e.g., domain.com)",
+                    "Placeholder for NIP-05 domain input field"
+                ))
+                .text_style(NotedeckTextStyle::Body.text_style()),
+            )
+            .vertical_align(Align::Center)
+            .desired_width(f32::INFINITY)
+            .min_size(Vec2::new(0.0, 40.0))
+            .margin(Margin::same(12));
+        ui.add(text_edit);
+
+        ui.add_space(8.0);
+
+        let mut handle_user_input = false;
+        if ui.input(|i| i.key_released(egui::Key::Enter))
+            || ui
+                .add_sized(egui::vec2(50.0, 40.0), add_column_button(i18n))
+                .clicked()
+        {
+            handle_user_input = true;
+        }
+
+        if handle_user_input && !text_buffer.is_empty() {
+            let domain = text_buffer.trim().to_lowercase();
+            let resp = AddColumnResponse::Timeline(TimelineKind::Nip05Domain(domain));
+            id_string_map.remove(&id);
+            Some(resp)
+        } else {
+            None
+        }
+    })
+    .inner
 }
 
 #[cfg(test)]

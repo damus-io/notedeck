@@ -452,6 +452,9 @@ impl<'a, 'd> NoteView<'a, 'd> {
                         // question: WTF? question 2: WHY?
                         ui.allocate_space(egui::vec2(0.0, 0.0));
 
+                        // Get cached note counts (replies, reposts, reactions)
+                        let counts = get_note_counts(ui, self.note_context.ndb, txn, self.note.id());
+
                         render_note_actionbar(
                             ui,
                             get_zapper(
@@ -464,6 +467,9 @@ impl<'a, 'd> NoteView<'a, 'd> {
                             self.note_context.accounts.selected_account_pubkey(),
                             note_key,
                             self.note_context.i18n,
+                            counts.replies,
+                            counts.reposts,
+                            counts.reactions,
                         )
                     })
                     .inner
@@ -541,6 +547,9 @@ impl<'a, 'd> NoteView<'a, 'd> {
                 if self.options().contains(NoteOptions::ActionBar) {
                     note_action = ui
                         .horizontal_wrapped(|ui| {
+                            // Get cached note counts (replies, reposts, reactions)
+                            let counts = get_note_counts(ui, self.note_context.ndb, txn, self.note.id());
+
                             render_note_actionbar(
                                 ui,
                                 get_zapper(
@@ -553,6 +562,9 @@ impl<'a, 'd> NoteView<'a, 'd> {
                                 self.note_context.accounts.selected_account_pubkey(),
                                 note_key,
                                 self.note_context.i18n,
+                                counts.replies,
+                                counts.reposts,
+                                counts.reactions,
                             )
                         })
                         .inner
@@ -844,6 +856,87 @@ fn zap_actionbar_button(
     action
 }
 
+/// Cache key for note counts
+fn note_counts_cache_key(note_id: &[u8; 32]) -> egui::Id {
+    egui::Id::new(("note_counts", note_id))
+}
+
+/// Cached counts for a note with timestamp
+#[derive(Clone, Copy)]
+struct NoteCountsCache {
+    counts: NoteCounts,
+    cached_at: f64,
+}
+
+/// Cached counts for a note
+#[derive(Clone, Copy)]
+struct NoteCounts {
+    replies: usize,
+    reposts: usize,
+    reactions: usize,
+}
+
+/// Get or compute note counts (replies, reposts, reactions) with time-based caching
+/// Cache is invalidated after 5 seconds to ensure counts update when new events arrive
+fn get_note_counts(ui: &egui::Ui, ndb: &Ndb, txn: &Transaction, note_id: &[u8; 32]) -> NoteCounts {
+    let cache_key = note_counts_cache_key(note_id);
+    let current_time = ui.input(|i| i.time);
+    const CACHE_DURATION_SECS: f64 = 5.0;
+
+    // Try to get from cache first and check if it's still valid
+    if let Some(cached) = ui.ctx().data(|d| d.get_temp::<NoteCountsCache>(cache_key)) {
+        if current_time - cached.cached_at < CACHE_DURATION_SECS {
+            return cached.counts;
+        }
+    }
+
+    // Cache miss or expired, compute the counts
+    let replies = {
+        let filter = nostrdb::Filter::new()
+            .kinds([1])
+            .event(note_id)
+            .build();
+        ndb.query(txn, &[filter], 500)
+            .map(|results| results.len())
+            .unwrap_or(0)
+    };
+
+    let reposts = {
+        let filter = nostrdb::Filter::new()
+            .kinds([6])
+            .event(note_id)
+            .build();
+        ndb.query(txn, &[filter], 500)
+            .map(|results| results.len())
+            .unwrap_or(0)
+    };
+
+    let reactions = {
+        let filter = nostrdb::Filter::new()
+            .kinds([7])
+            .event(note_id)
+            .build();
+        ndb.query(txn, &[filter], 500)
+            .map(|results| results.len())
+            .unwrap_or(0)
+    };
+
+    let counts = NoteCounts {
+        replies,
+        reposts,
+        reactions,
+    };
+
+    // Store in cache with current timestamp
+    let cache_entry = NoteCountsCache {
+        counts,
+        cached_at: current_time,
+    };
+    ui.ctx().data_mut(|d| d.insert_temp(cache_key, cache_entry));
+
+    counts
+}
+
 #[profiling::function]
 fn render_note_actionbar(
     ui: &mut egui::Ui,
@@ -853,6 +946,9 @@ fn render_note_actionbar(
     current_user_pubkey: &Pubkey,
     note_key: NoteKey,
     i18n: &mut Localization,
+    reply_count: usize,
+    repost_count: usize,
+    reaction_count: usize,
 ) -> Option<NoteAction> {
     let mut action = None;
 
@@ -860,7 +956,7 @@ fn render_note_actionbar(
     ui.spacing_mut().item_spacing.x = 24.0;
 
     let reply_resp =
-        reply_button(ui, i18n, note_key).on_hover_cursor(egui::CursorIcon::PointingHand);
+        reply_button(ui, i18n, note_key, reply_count).on_hover_cursor(egui::CursorIcon::PointingHand);
 
     let filled = ui
         .ctx()
@@ -868,10 +964,10 @@ fn render_note_actionbar(
         == Some(true);
 
     let like_resp =
-        like_button(ui, i18n, note_key, filled).on_hover_cursor(egui::CursorIcon::PointingHand);
+        like_button(ui, i18n, note_key, filled, reaction_count).on_hover_cursor(egui::CursorIcon::PointingHand);
 
     let quote_resp =
-        quote_repost_button(ui, i18n, note_key).on_hover_cursor(egui::CursorIcon::PointingHand);
+        quote_repost_button(ui, i18n, note_key, repost_count).on_hover_cursor(egui::CursorIcon::PointingHand);
 
     if reply_resp.clicked() {
         action = Some(NoteAction::Reply(NoteId::new(*note_id)));
@@ -913,27 +1009,39 @@ fn render_notetime(
     }
 }
 
-fn reply_button(ui: &mut egui::Ui, i18n: &mut Localization, note_key: NoteKey) -> egui::Response {
-    let img = if ui.style().visuals.dark_mode {
-        app_images::reply_dark_image()
-    } else {
-        app_images::reply_light_image()
-    };
+fn reply_button(ui: &mut egui::Ui, i18n: &mut Localization, note_key: NoteKey, reply_count: usize) -> egui::Response {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
 
-    let (rect, size, resp) =
-        crate::anim::hover_expand_small(ui, ui.id().with(("reply_anim", note_key)));
+        let img = if ui.style().visuals.dark_mode {
+            app_images::reply_dark_image()
+        } else {
+            app_images::reply_light_image()
+        };
 
-    // align rect to note contents
-    let expand_size = 5.0; // from hover_expand_small
-    let rect = rect.translate(egui::vec2(-(expand_size / 2.0), 0.0));
+        let (rect, size, resp) =
+            crate::anim::hover_expand_small(ui, ui.id().with(("reply_anim", note_key)));
 
-    let put_resp = ui.put(rect, img.max_width(size)).on_hover_text(tr!(
-        i18n,
-        "Reply to this note",
-        "Hover text for reply button"
-    ));
+        // align rect to note contents
+        let expand_size = 5.0; // from hover_expand_small
+        let rect = rect.translate(egui::vec2(-(expand_size / 2.0), 0.0));
 
-    resp.union(put_resp)
+        let put_resp = ui.put(rect, img.max_width(size)).on_hover_text(tr!(
+            i18n,
+            "Reply to this note",
+            "Hover text for reply button"
+        ));
+
+        let combined_resp = resp.union(put_resp);
+
+        if reply_count > 0 {
+            ui.add_space(2.0);
+            ui.label(egui::RichText::new(format!("{}", reply_count)).size(13.0));
+        }
+
+        combined_resp
+    })
+    .inner
 }
 
 fn like_button(
@@ -941,35 +1049,48 @@ fn like_button(
     i18n: &mut Localization,
     note_key: NoteKey,
     filled: bool,
+    reaction_count: usize,
 ) -> egui::Response {
-    let img = {
-        let img = if filled {
-            app_images::like_image_filled()
-        } else {
-            app_images::like_image()
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+
+        let img = {
+            let img = if filled {
+                app_images::like_image_filled()
+            } else {
+                app_images::like_image()
+            };
+
+            if ui.visuals().dark_mode {
+                img.tint(ui.visuals().text_color())
+            } else {
+                img
+            }
         };
 
-        if ui.visuals().dark_mode {
-            img.tint(ui.visuals().text_color())
-        } else {
-            img
+        let (rect, size, resp) =
+            crate::anim::hover_expand_small(ui, ui.id().with(("like_anim", note_key)));
+
+        // align rect to note contents
+        let expand_size = 5.0; // from hover_expand_small
+        let rect = rect.translate(egui::vec2(-(expand_size / 2.0), 0.0));
+
+        let put_resp = ui.put(rect, img.max_width(size)).on_hover_text(tr!(
+            i18n,
+            "Like this note",
+            "Hover text for like button"
+        ));
+
+        let combined_resp = resp.union(put_resp);
+
+        if reaction_count > 0 {
+            ui.add_space(2.0);
+            ui.label(egui::RichText::new(format!("{}", reaction_count)).size(13.0));
         }
-    };
 
-    let (rect, size, resp) =
-        crate::anim::hover_expand_small(ui, ui.id().with(("like_anim", note_key)));
-
-    // align rect to note contents
-    let expand_size = 5.0; // from hover_expand_small
-    let rect = rect.translate(egui::vec2(-(expand_size / 2.0), 0.0));
-
-    let put_resp = ui.put(rect, img.max_width(size)).on_hover_text(tr!(
-        i18n,
-        "Like this note",
-        "Hover text for like button"
-    ));
-
-    resp.union(put_resp)
+        combined_resp
+    })
+    .inner
 }
 
 fn repost_icon(dark_mode: bool) -> egui::Image<'static> {
@@ -984,25 +1105,38 @@ fn quote_repost_button(
     ui: &mut egui::Ui,
     i18n: &mut Localization,
     note_key: NoteKey,
+    repost_count: usize,
 ) -> egui::Response {
-    let size = crate::anim::hover_small_size() + 4.0;
-    let expand_size = 5.0;
-    let anim_speed = 0.05;
-    let id = ui.id().with(("repost_anim", note_key));
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
 
-    let (rect, size, resp) = crate::anim::hover_expand(ui, id, size, expand_size, anim_speed);
+        let size = crate::anim::hover_small_size() + 4.0;
+        let expand_size = 5.0;
+        let anim_speed = 0.05;
+        let id = ui.id().with(("repost_anim", note_key));
 
-    let rect = rect.translate(egui::vec2(-(expand_size / 2.0), -1.0));
+        let (rect, size, resp) = crate::anim::hover_expand(ui, id, size, expand_size, anim_speed);
 
-    let put_resp = ui
-        .put(rect, repost_icon(ui.visuals().dark_mode).max_width(size))
-        .on_hover_text(tr!(
-            i18n,
-            "Repost this note",
-            "Hover text for repost button"
-        ));
+        let rect = rect.translate(egui::vec2(-(expand_size / 2.0), -1.0));
 
-    resp.union(put_resp)
+        let put_resp = ui
+            .put(rect, repost_icon(ui.visuals().dark_mode).max_width(size))
+            .on_hover_text(tr!(
+                i18n,
+                "Repost this note",
+                "Hover text for repost button"
+            ));
+
+        let combined_resp = resp.union(put_resp);
+
+        if repost_count > 0 {
+            ui.add_space(2.0);
+            ui.label(egui::RichText::new(format!("{}", repost_count)).size(13.0));
+        }
+
+        combined_resp
+    })
+    .inner
 }
 
 fn zap_button<'a>(

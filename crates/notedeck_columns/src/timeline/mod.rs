@@ -442,9 +442,17 @@ impl Timeline {
             for payload in &payloads {
                 let cached_note = note_cache.cached_note_or_insert(payload.key, &payload.note);
 
-                if should_include(cached_note, &payload.note) {
-                    filtered_payloads.push(payload);
+                // Apply ViewFilter (Notes, NotesAndReplies, etc.)
+                if !should_include(cached_note, &payload.note) {
+                    continue;
                 }
+
+                // Apply timeline-specific filtering (e.g., NIP-05 domain)
+                if !self.kind.should_include_note(ndb, txn, payload.note.pubkey()) {
+                    continue;
+                }
+
+                filtered_payloads.push(payload);
             }
 
             if let Some(res) = view.insert(
