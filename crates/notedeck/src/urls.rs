@@ -4,23 +4,90 @@ use std::{
     io::{Read, Write},
     path::PathBuf,
     sync::{Arc, RwLock},
-    time::{Duration, SystemTime},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use egui::TextBuffer;
+use mime_guess::Mime;
 use poll_promise::Promise;
+use serde::{Deserialize, Serialize};
+use tracing::trace;
 use url::Url;
 
 use crate::{Error, MediaCacheType};
 
 const FILE_NAME: &str = "urls.bin";
 const SAVE_INTERVAL: Duration = Duration::from_secs(60);
+const MIME_TTL: Duration = Duration::from_secs(60 * 60 * 24 * 7); // one week
+const FAILURE_BACKOFF_BASE: Duration = Duration::from_secs(4);
+const FAILURE_BACKOFF_MAX: Duration = Duration::from_secs(60 * 60 * 6);
+const FAILURE_BACKOFF_EXPONENT_LIMIT: u32 = 10;
 
-type UrlsToMime = HashMap<String, String>;
+type UrlsToMime = HashMap<String, StoredMimeEntry>;
+
+#[derive(Clone, Serialize, Deserialize)]
+struct StoredMimeEntry {
+    entry: MimeEntry,
+    last_updated_secs: u64,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+enum MimeEntry {
+    Mime(String),
+    Fail { count: u32 },
+}
+
+impl StoredMimeEntry {
+    fn new_mime(mime: String, last_updated: SystemTime) -> Self {
+        Self {
+            entry: MimeEntry::Mime(mime),
+            last_updated_secs: system_time_to_secs(last_updated),
+        }
+    }
+
+    fn new_failure(count: u32, last_updated: SystemTime) -> Self {
+        Self {
+            entry: MimeEntry::Fail { count },
+            last_updated_secs: system_time_to_secs(last_updated),
+        }
+    }
+
+    fn last_updated(&self) -> SystemTime {
+        UNIX_EPOCH + Duration::from_secs(self.last_updated_secs)
+    }
+
+    fn expires_at(&self) -> SystemTime {
+        let ttl = match &self.entry {
+            MimeEntry::Mime(_) => MIME_TTL,
+            MimeEntry::Fail { count } => failure_backoff_duration(*count),
+        };
+
+        self.last_updated()
+            .checked_add(ttl)
+            .unwrap_or(SystemTime::UNIX_EPOCH)
+    }
+
+    fn is_expired(&self, now: SystemTime) -> bool {
+        self.expires_at() <= now
+    }
+
+    fn failure_count(&self) -> Option<u32> {
+        match &self.entry {
+            MimeEntry::Fail { count } => Some(*count),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct CachedMime {
+    mime: Option<Mime>,
+    expires_at: SystemTime,
+}
 
 /// caches mime type for a URL. saves to disk on interval [`SAVE_INTERVAL`]
 pub struct UrlCache {
     last_saved: SystemTime,
+    last_pruned: SystemTime,
     path: PathBuf,
     cache: Arc<RwLock<UrlsToMime>>,
     from_disk_promise: Option<Promise<Option<UrlsToMime>>>,
@@ -34,19 +101,29 @@ impl UrlCache {
     pub fn new(path: PathBuf) -> Self {
         Self {
             last_saved: SystemTime::now(),
+            last_pruned: SystemTime::now(),
             path: path.clone(),
             cache: Default::default(),
             from_disk_promise: Some(read_from_disk(path)),
         }
     }
 
-    pub fn get_type(&self, url: &str) -> Option<String> {
+    fn get_entry(&self, url: &str) -> Option<StoredMimeEntry> {
         self.cache.read().ok()?.get(url).cloned()
     }
 
-    pub fn set_type(&mut self, url: String, mime_type: String) {
+    fn set_entry(&mut self, url: String, entry: StoredMimeEntry) {
+        if url.is_empty() {
+            return;
+        }
         if let Ok(mut locked_cache) = self.cache.write() {
-            locked_cache.insert(url, mime_type);
+            locked_cache.insert(url, entry);
+        }
+    }
+
+    fn remove(&mut self, url: &str) {
+        if let Ok(mut locked_cache) = self.cache.write() {
+            locked_cache.remove(url);
         }
     }
 
@@ -67,6 +144,13 @@ impl UrlCache {
                 self.last_saved = SystemTime::now();
             }
         }
+
+        if let Ok(cur_duration) = SystemTime::now().duration_since(self.last_pruned) {
+            if cur_duration >= SAVE_INTERVAL {
+                self.purge_expired(SystemTime::now());
+                self.last_pruned = SystemTime::now();
+            }
+        }
     }
 
     pub fn clear(&mut self) {
@@ -79,10 +163,22 @@ impl UrlCache {
             });
         }
     }
+
+    fn purge_expired(&self, now: SystemTime) {
+        let cache = self.cache.clone();
+        std::thread::spawn(move || {
+            if let Ok(mut locked_cache) = cache.write() {
+                locked_cache.retain(|_, entry| !entry.is_expired(now));
+            }
+        });
+    }
 }
 
-fn merge_cache(cur_cache: Arc<RwLock<UrlsToMime>>, from_disk: UrlsToMime) {
+fn merge_cache(cur_cache: Arc<RwLock<UrlsToMime>>, mut from_disk: UrlsToMime) {
     std::thread::spawn(move || {
+        let now = SystemTime::now();
+        from_disk.retain(|_, entry| !entry.is_expired(now));
+
         if let Ok(mut locked_cache) = cur_cache.write() {
             locked_cache.extend(from_disk);
         }
@@ -97,9 +193,28 @@ fn read_from_disk(path: PathBuf) -> Promise<Option<UrlsToMime>> {
             let mut file = File::open(path)?;
             let mut buffer = Vec::new();
             file.read_to_end(&mut buffer)?;
-            let data: UrlsToMime =
-                bincode::deserialize(&buffer).map_err(|e| Error::Generic(e.to_string()))?;
-            Ok(data)
+            if buffer.is_empty() {
+                return Ok(Default::default());
+            }
+
+            match bincode::deserialize::<UrlsToMime>(&buffer) {
+                Ok(data) => {
+                    trace!("Got {} mime entries", data.len());
+                    Ok(data)
+                }
+                Err(err) => {
+                    tracing::debug!("Unable to deserialize UrlMimes with new format: {err}. Attempting legacy fallback.");
+                    let legacy: HashMap<String, String> =
+                        bincode::deserialize(&buffer).map_err(|e| Error::Generic(e.to_string()))?;
+                    trace!("legacy fallback has {} entries", legacy.len());
+                    let now = SystemTime::now();
+                    let migrated = legacy
+                        .into_iter()
+                        .map(|(url, mime)| (url, StoredMimeEntry::new_mime(mime, now)))
+                        .collect();
+                    Ok(migrated)
+                }
+            }
         })();
 
         match result {
@@ -119,12 +234,13 @@ fn save_to_disk(path: PathBuf, cache: Arc<RwLock<UrlsToMime>>) {
         let result: Result<(), Error> = (|| {
             if let Ok(cache) = cache.read() {
                 let cache = &*cache;
+                let num_items = cache.len();
                 let encoded =
                     bincode::serialize(cache).map_err(|e| Error::Generic(e.to_string()))?;
                 let mut file = File::create(&path)?;
                 file.write_all(&encoded)?;
                 file.sync_all()?;
-                tracing::debug!("Saved UrlCache to disk.");
+                tracing::debug!("Saved UrlCache with {num_items} mimes to disk.");
                 Ok(())
             } else {
                 Err(Error::Generic(
@@ -137,6 +253,26 @@ fn save_to_disk(path: PathBuf, cache: Arc<RwLock<UrlsToMime>>) {
             tracing::error!("Failed to save UrlMimes: {}", e);
         }
     });
+}
+
+fn system_time_to_secs(time: SystemTime) -> u64 {
+    time.duration_since(UNIX_EPOCH)
+        .unwrap_or_else(|_| Duration::from_secs(0))
+        .as_secs()
+}
+
+fn failure_backoff_duration(count: u32) -> Duration {
+    if count == 0 {
+        return FAILURE_BACKOFF_BASE;
+    }
+
+    let exponent = count.saturating_sub(1).min(FAILURE_BACKOFF_EXPONENT_LIMIT);
+    let base_secs = FAILURE_BACKOFF_BASE.as_secs().max(1);
+    let multiplier = 1u64 << exponent;
+    let delay_secs = base_secs.saturating_mul(multiplier);
+    let max_secs = FAILURE_BACKOFF_MAX.as_secs();
+
+    Duration::from_secs(delay_secs.min(max_secs))
 }
 
 fn ehttp_get_mime_type(url: &str, sender: poll_promise::Sender<MimeResult>) {
@@ -181,6 +317,7 @@ fn extract_mime_type(content_type: &str) -> &str {
 pub struct UrlMimes {
     pub cache: UrlCache,
     in_flight: HashMap<String, Promise<MimeResult>>,
+    mime_cache: HashMap<String, CachedMime>,
 }
 
 impl UrlMimes {
@@ -188,40 +325,168 @@ impl UrlMimes {
         Self {
             cache: url_cache,
             in_flight: Default::default(),
+            mime_cache: Default::default(),
         }
     }
 
-    pub fn get(&mut self, url: &str) -> Option<String> {
-        if let Some(mime_type) = self.cache.get_type(url) {
-            Some(mime_type)
-        } else if let Some(promise) = self.in_flight.get_mut(url) {
-            if let Some(mime_result) = promise.ready_mut() {
-                match mime_result {
-                    Ok(mime_type) => {
-                        let mime_type = mime_type.take();
-                        self.cache.set_type(url.to_owned(), mime_type.clone());
-                        self.in_flight.remove(url);
-                        Some(mime_type)
-                    }
-                    Err(HttpError::HttpFailure) => {
-                        // allow retrying
-                        //self.in_flight.remove(url);
-                        None
-                    }
-                    Err(HttpError::MissingHeader) => {
-                        // response was malformed, don't retry
-                        None
-                    }
-                }
-            } else {
-                None
+    pub fn get_or_fetch(&mut self, url: &str) -> Option<&Mime> {
+        let now = SystemTime::now();
+
+        if let Some(cached) = self.mime_cache.get(url) {
+            if cached.expires_at > now {
+                return self
+                    .mime_cache
+                    .get(url)
+                    .and_then(|cached| cached.mime.as_ref());
             }
-        } else {
+
+            tracing::trace!("mime {:?} at url {url} has expired", cached.mime);
+
+            self.mime_cache.remove(url);
+        }
+
+        let stored_entry = self.cache.get_entry(url);
+        let previous_failure_count = stored_entry
+            .as_ref()
+            .and_then(|entry| entry.failure_count())
+            .unwrap_or(0);
+
+        if let Some(entry) = stored_entry.as_ref() {
+            if !entry.is_expired(now) {
+                return match &entry.entry {
+                    MimeEntry::Mime(mime_string) => match mime_string.parse::<Mime>() {
+                        Ok(mime) => {
+                            let expires_at = entry.expires_at();
+                            trace!("inserted {mime:?} in mime cache for {url}");
+                            self.mime_cache.insert(
+                                url.to_owned(),
+                                CachedMime {
+                                    mime: Some(mime),
+                                    expires_at,
+                                },
+                            );
+                            self.mime_cache
+                                .get(url)
+                                .and_then(|cached| cached.mime.as_ref())
+                        }
+                        Err(err) => {
+                            tracing::warn!("Failed to parse mime '{mime_string}' for {url}: {err}");
+                            self.record_failure(
+                                url,
+                                previous_failure_count.saturating_add(1),
+                                SystemTime::now(),
+                            );
+                            None
+                        }
+                    },
+                    MimeEntry::Fail { .. } => {
+                        trace!("Read failure from storage for {url}, wrote None to cache");
+
+                        let expires_at = entry.expires_at();
+                        self.mime_cache.insert(
+                            url.to_owned(),
+                            CachedMime {
+                                mime: None,
+                                expires_at,
+                            },
+                        );
+                        None
+                    }
+                };
+            }
+
+            if !matches!(entry.entry, MimeEntry::Fail { count: _ }) {
+                self.cache.remove(url);
+            }
+        }
+
+        let Some(promise) = self.in_flight.get_mut(url) else {
+            if Url::parse(url).is_err() {
+                trace!("Found invalid url: {url}");
+                self.mime_cache.insert(
+                    url.to_owned(),
+                    CachedMime {
+                        mime: None,
+                        expires_at: SystemTime::UNIX_EPOCH + Duration::from_secs(u64::MAX / 2), // never expire...
+                    },
+                );
+            }
             let (sender, promise) = Promise::new();
             ehttp_get_mime_type(url, sender);
             self.in_flight.insert(url.to_owned(), promise);
-            None
+            return None;
+        };
+
+        let Ok(mime_type) = promise.ready_mut()? else {
+            self.in_flight.remove(url);
+            self.record_failure(
+                url,
+                previous_failure_count.saturating_add(1),
+                SystemTime::now(),
+            );
+            return None;
+        };
+
+        let mime_string = std::mem::take(mime_type);
+        self.in_flight.remove(url);
+
+        match mime_string.parse::<Mime>() {
+            Ok(mime) => {
+                let fetched_at = SystemTime::now();
+                let prev_entry = stored_entry;
+                let entry = StoredMimeEntry::new_mime(mime_string, fetched_at);
+                let expires_at = entry.expires_at();
+                if let Some(Some(failed_count)) = prev_entry.map(|p| {
+                    if let MimeEntry::Fail { count } = p.entry {
+                        Some(count)
+                    } else {
+                        None
+                    }
+                }) {
+                    trace!("found {mime:?} for {url}, inserting in cache & storage AFTER FAILING {failed_count} TIMES");
+                } else {
+                    trace!("found {mime:?} for {url}, inserting in cache & storage");
+                }
+                self.cache.set_entry(url.to_owned(), entry);
+                self.mime_cache.insert(
+                    url.to_owned(),
+                    CachedMime {
+                        mime: Some(mime),
+                        expires_at,
+                    },
+                );
+                self.mime_cache
+                    .get(url)
+                    .and_then(|cached| cached.mime.as_ref())
+            }
+            Err(err) => {
+                tracing::warn!("Unable to parse mime type returned for {url}: {err}");
+                self.record_failure(
+                    url,
+                    previous_failure_count.saturating_add(1),
+                    SystemTime::now(),
+                );
+                None
+            }
         }
+    }
+
+    fn record_failure(&mut self, url: &str, count: u32, timestamp: SystemTime) {
+        let count = count.max(1);
+        let entry = StoredMimeEntry::new_failure(count, timestamp);
+        let expires_at = entry.expires_at();
+        trace!(
+            "failed to get mime for {url} {count} times. next request in {:?}",
+            failure_backoff_duration(count)
+        );
+        self.cache.set_entry(url.to_owned(), entry);
+        self.mime_cache.insert(
+            url.to_owned(),
+            CachedMime {
+                mime: None,
+                expires_at,
+            },
+        );
     }
 }
 
@@ -258,11 +523,15 @@ impl SupportedMimeType {
     }
 
     pub fn to_cache_type(&self) -> MediaCacheType {
-        if self.mime == mime_guess::mime::IMAGE_GIF {
-            MediaCacheType::Gif
-        } else {
-            MediaCacheType::Image
-        }
+        mime_to_cache_type(&self.mime)
+    }
+}
+
+fn mime_to_cache_type(mime: &Mime) -> MediaCacheType {
+    if *mime == mime_guess::mime::IMAGE_GIF {
+        MediaCacheType::Gif
+    } else {
+        MediaCacheType::Image
     }
 }
 
@@ -297,18 +566,16 @@ fn url_has_supported_mime(url: &str) -> MimeHostedAtUrl {
 
 #[profiling::function]
 pub fn supported_mime_hosted_at_url(urls: &mut UrlMimes, url: &str) -> Option<MediaCacheType> {
-    match url_has_supported_mime(url) {
-        MimeHostedAtUrl::Yes(cache_type) => Some(cache_type),
-        MimeHostedAtUrl::Maybe => urls
-            .get(url)
-            .and_then(|s| s.parse::<mime_guess::mime::Mime>().ok())
-            .and_then(|mime: mime_guess::mime::Mime| {
-                SupportedMimeType::from_mime(mime)
-                    .ok()
-                    .map(|s| s.to_cache_type())
-            }),
-        MimeHostedAtUrl::No => None,
-    }
+    let Some(mime) = urls.get_or_fetch(url) else {
+        return match url_has_supported_mime(url) {
+            MimeHostedAtUrl::Yes(media_cache_type) => Some(media_cache_type),
+            MimeHostedAtUrl::Maybe | MimeHostedAtUrl::No => None,
+        };
+    };
+
+    Some(mime)
+        .filter(|mime| is_mime_supported(mime))
+        .map(mime_to_cache_type)
 }
 
 enum MimeHostedAtUrl {
