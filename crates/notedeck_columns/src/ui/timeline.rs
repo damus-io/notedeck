@@ -711,13 +711,16 @@ fn render_reaction_cluster(
             .reactions
             .values()
             .filter(|r| !mute.is_pk_muted(r.sender.bytes()))
-            .map(|r| &r.sender)
-            .map(|p| {
-                profiling::scope!("ndb by pubkey");
-                ProfileEntry {
-                    record: note_context.ndb.get_profile_by_pubkey(txn, p.bytes()).ok(),
-                    pk: p,
-                }
+            .map(|r| (&r.sender, r.sender_profilekey))
+            .map(|(p, key)| {
+                let record = if let Some(key) = key {
+                    profiling::scope!("ndb by key");
+                    note_context.ndb.get_profile_by_key(txn, key).ok()
+                } else {
+                    profiling::scope!("ndb by pubkey");
+                    note_context.ndb.get_profile_by_pubkey(txn, p.bytes()).ok()
+                };
+                ProfileEntry { record, pk: p }
             })
             .collect()
     };
