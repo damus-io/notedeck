@@ -231,6 +231,7 @@ pub struct SupportedMimeType {
 }
 
 impl SupportedMimeType {
+    #[profiling::function]
     pub fn from_extension(extension: &str) -> Result<Self, Error> {
         if let Some(mime) = mime_guess::from_ext(extension)
             .first()
@@ -269,8 +270,13 @@ fn is_mime_supported(mime: &mime_guess::Mime) -> bool {
     mime.type_() == mime_guess::mime::IMAGE
 }
 
+#[profiling::function]
 fn url_has_supported_mime(url: &str) -> MimeHostedAtUrl {
-    if let Ok(url) = Url::parse(url) {
+    let url = {
+        profiling::scope!("url parse");
+        Url::parse(url)
+    };
+    if let Ok(url) = url {
         if let Some(mut path) = url.path_segments() {
             if let Some(file_name) = path.next_back() {
                 if let Some(ext) = std::path::Path::new(file_name)
@@ -289,6 +295,7 @@ fn url_has_supported_mime(url: &str) -> MimeHostedAtUrl {
     MimeHostedAtUrl::Maybe
 }
 
+#[profiling::function]
 pub fn supported_mime_hosted_at_url(urls: &mut UrlMimes, url: &str) -> Option<MediaCacheType> {
     match url_has_supported_mime(url) {
         MimeHostedAtUrl::Yes(cache_type) => Some(cache_type),

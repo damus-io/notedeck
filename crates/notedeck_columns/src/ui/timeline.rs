@@ -705,16 +705,22 @@ fn render_reaction_cluster(
     underlying_note: &Note,
     reaction: &ReactionUnit,
 ) -> RenderEntryResponse {
-    let profiles_to_show: Vec<ProfileEntry> = reaction
-        .reactions
-        .values()
-        .filter(|r| !mute.is_pk_muted(r.sender.bytes()))
-        .map(|r| &r.sender)
-        .map(|p| ProfileEntry {
-            record: note_context.ndb.get_profile_by_pubkey(txn, p.bytes()).ok(),
-            pk: p,
-        })
-        .collect();
+    let profiles_to_show: Vec<ProfileEntry> = {
+        profiling::scope!("vec profile entries");
+        reaction
+            .reactions
+            .values()
+            .filter(|r| !mute.is_pk_muted(r.sender.bytes()))
+            .map(|r| &r.sender)
+            .map(|p| {
+                profiling::scope!("ndb by pubkey");
+                ProfileEntry {
+                    record: note_context.ndb.get_profile_by_pubkey(txn, p.bytes()).ok(),
+                    pk: p,
+                }
+            })
+            .collect()
+    };
 
     render_composite_entry(
         ui,
@@ -728,6 +734,7 @@ fn render_reaction_cluster(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[profiling::function]
 fn render_composite_entry(
     ui: &mut egui::Ui,
     note_context: &mut NoteContext,
@@ -772,6 +779,7 @@ fn render_composite_entry(
         .show(ui, |ui| {
             let show_label_newline = ui
                 .horizontal_wrapped(|ui| {
+                    profiling::scope!("header");
                     let pfps_resp = ui
                         .allocate_ui_with_layout(
                             vec2(ui.available_width(), 32.0),
@@ -832,6 +840,7 @@ fn render_composite_entry(
                 .inner;
 
             if let Some(desc) = show_label_newline {
+                profiling::scope!("description");
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     ui.add_space(48.0);
@@ -868,6 +877,7 @@ fn render_composite_entry(
     RenderEntryResponse::Success(action)
 }
 
+#[profiling::function]
 fn render_profiles(
     ui: &mut egui::Ui,
     profiles_to_show: Vec<ProfileEntry>,
@@ -895,11 +905,14 @@ fn render_profiles(
     }
 
     let resp = ui.horizontal(|ui| {
+        profiling::scope!("scroll area");
         ScrollArea::horizontal()
             .scroll_bar_visibility(ScrollBarVisibility::AlwaysHidden)
             .show(ui, |ui| {
+                profiling::scope!("scroll area closure");
                 let mut last_pfp_resp = None;
                 for entry in profiles_to_show {
+                    profiling::scope!("actual rendering individual pfp");
                     let mut resp = ui.add(
                         &mut ProfilePic::from_profile_or_default(img_cache, entry.record.as_ref())
                             .size(24.0)
