@@ -370,6 +370,7 @@ mod tests {
                 reaction: Reaction {
                     reaction: "+".to_owned(),
                     sender: self.random_sender(),
+                    sender_profilekey: None,
                 },
             }))
         }

@@ -144,9 +144,11 @@ fn render_pfp(
 
     match cur_state.texture_state {
         notedeck::TextureState::Pending => {
+            profiling::scope!("Render pending");
             egui::InnerResponse::new(None, paint_circle(ui, ui_size, border, sense))
         }
         notedeck::TextureState::Error(e) => {
+            profiling::scope!("Render error");
             let r = paint_circle(ui, ui_size, border, sense);
             show_one_error_message(ui, &format!("Failed to fetch profile at url {url}: {e}"));
             egui::InnerResponse::new(
@@ -159,6 +161,7 @@ fn render_pfp(
             )
         }
         notedeck::TextureState::Loaded(textured_image) => {
+            profiling::scope!("Render loaded");
             let texture_handle =
                 ensure_latest_texture(ui, url, cur_state.gifs, textured_image, animation_mode);
 

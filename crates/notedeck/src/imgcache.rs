@@ -545,6 +545,7 @@ pub struct LatestTexture {
     pub request_next_repaint: Option<SystemTime>,
 }
 
+#[profiling::function]
 pub fn get_render_state<'a>(
     ctx: &egui::Context,
     images: &'a mut Images,

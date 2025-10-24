@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, HashSet};
 
 use enostr::Pubkey;
+use nostrdb::ProfileKey;
 use notedeck::NoteRef;
 
 use crate::timeline::note_units::{CompositeKey, CompositeType, UnitKey};
@@ -275,6 +276,7 @@ impl ReactionFragment {
 pub struct Reaction {
     pub reaction: String, // can't use char because some emojis are 'grapheme clusters'
     pub sender: Pubkey,
+    pub sender_profilekey: Option<ProfileKey>,
 }
 
 /// Represents a singular repost

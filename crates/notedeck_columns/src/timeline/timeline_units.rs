@@ -169,6 +169,11 @@ fn to_reaction<'a>(
         created_at: reacted_to_note.created_at(),
     };
 
+    let sender_profilekey = ndb
+        .get_profile_by_pubkey(txn, payload.note.pubkey())
+        .ok()
+        .and_then(|p| p.key());
+
     Some(ReactionResponse {
         fragment: ReactionFragment {
             noteref_reacted_to,
@@ -176,6 +181,7 @@ fn to_reaction<'a>(
             reaction: Reaction {
                 reaction: reaction.to_string(),
                 sender: Pubkey::new(*payload.note.pubkey()),
+                sender_profilekey,
             },
         },
         pk: payload.note.pubkey(),
