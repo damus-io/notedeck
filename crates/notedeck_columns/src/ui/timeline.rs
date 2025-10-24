@@ -913,14 +913,30 @@ fn render_profiles(
             .scroll_bar_visibility(ScrollBarVisibility::AlwaysHidden)
             .show(ui, |ui| {
                 profiling::scope!("scroll area closure");
-                let mut last_pfp_resp = None;
+                let clip_rect = ui.clip_rect();
+                let mut last_resp = None;
+
+                let mut rendered = false;
                 for entry in profiles_to_show {
+                    let (rect, _) = ui.allocate_exact_size(vec2(24.0, 24.0), Sense::click());
+                    let should_render = rect.intersects(clip_rect);
+
+                    if !should_render {
+                        if rendered {
+                            break;
+                        } else {
+                            continue;
+                        }
+                    }
+
                     profiling::scope!("actual rendering individual pfp");
-                    let mut resp = ui.add(
-                        &mut ProfilePic::from_profile_or_default(img_cache, entry.record.as_ref())
+
+                    let mut widget =
+                        ProfilePic::from_profile_or_default(img_cache, entry.record.as_ref())
                             .size(24.0)
-                            .sense(Sense::click()),
-                    );
+                            .sense(Sense::click());
+                    let mut resp = ui.put(rect, &mut widget);
+                    rendered = true;
 
                     if let Some(record) = entry.record.as_ref() {
                         resp = resp.on_hover_ui_at_pointer(|ui| {
@@ -929,14 +945,14 @@ fn render_profiles(
                         });
                     }
 
-                    last_pfp_resp = Some(resp.clone());
-
                     if resp.clicked() {
-                        action = Some(NoteAction::Profile(*entry.pk))
+                        action = Some(NoteAction::Profile(*entry.pk));
                     }
+
+                    last_resp = Some(resp);
                 }
 
-                last_pfp_resp
+                last_resp
             })
             .inner
     });
