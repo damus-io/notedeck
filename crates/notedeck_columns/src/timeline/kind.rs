@@ -473,7 +473,7 @@ impl TimelineKind {
 
             // TODO: still need to update this to fetch likes, zaps, etc
             TimelineKind::Notifications(pubkey) => {
-                FilterState::ready(vec![notifications_filter(pubkey)])
+                FilterState::ready_hybrid(notifications_filter(pubkey))
             }
 
             TimelineKind::Hashtag(hashtag) => {
@@ -576,7 +576,7 @@ impl TimelineKind {
 
                 Some(Timeline::new(
                     TimelineKind::notifications(pk),
-                    FilterState::ready(vec![notifications_filter]),
+                    FilterState::ready_hybrid(notifications_filter),
                     TimelineTab::notifications(),
                 ))
             }
@@ -623,16 +623,93 @@ impl TimelineKind {
     }
 }
 
-pub fn notifications_filter(pk: &Pubkey) -> Filter {
-    Filter::new()
+pub fn notifications_filter(pk: &Pubkey) -> HybridFilter {
+    let kinds = notification_kinds();
+
+    let remote_filter = Filter::new()
         .pubkeys([pk.bytes()])
-        .kinds(notification_kinds())
+        .kinds(kinds)
+        .limit(default_remote_limit())
+        .build();
+
+    let local_base_filter = Filter::new()
+        .pubkeys([pk.bytes()])
+        .kinds(kinds)
         .limit(default_limit())
-        .build()
+        .build();
+
+    let target_pubkey = *pk.bytes();
+    let target_hex = pk.hex();
+
+    let local_quote_filter = Filter::new()
+        .kinds([1])
+        .limit(default_limit())
+        .custom(move |note: nostrdb::Note<'_>| {
+            note_refers_to_pubkey(&note, &target_pubkey, target_hex.as_str())
+        })
+        .build();
+
+    let local = vec![NdbQueryPackage {
+        filters: vec![local_base_filter, local_quote_filter],
+        kind: ValidKind::One,
+    }];
+
+    HybridFilter::split(local, vec![remote_filter])
 }
 
 pub fn notification_kinds() -> [u64; 3] {
     [1, 7, 6]
+}
+
+fn note_refers_to_pubkey(
+    note: &nostrdb::Note<'_>,
+    target_pubkey: &[u8; 32],
+    target_hex: &str,
+) -> bool {
+    for tag in note.tags().iter() {
+        let Some(tag_name) = tag.get_str(0) else {
+            continue;
+        };
+
+        match tag_name {
+            "p" => {
+                if tag_value_matches_pubkey(&tag, 1, target_pubkey, target_hex) {
+                    return true;
+                }
+            }
+            "q" => {
+                for idx in 1..tag.count() {
+                    if tag_value_matches_pubkey(&tag, idx, target_pubkey, target_hex) {
+                        return true;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    false
+}
+
+fn tag_value_matches_pubkey(
+    tag: &nostrdb::Tag<'_>,
+    index: u16,
+    target_pubkey: &[u8; 32],
+    target_hex: &str,
+) -> bool {
+    if let Some(id) = tag.get_id(index) {
+        if id == target_pubkey {
+            return true;
+        }
+    }
+
+    if let Some(value) = tag.get_str(index) {
+        if value.eq_ignore_ascii_case(target_hex) {
+            return true;
+        }
+    }
+
+    false
 }
 
 #[derive(Debug)]
