@@ -301,29 +301,27 @@ impl Chrome {
 
         // if the soft keyboard is open, shrink the chrome contents
         let mut action: Option<ChromePanelAction> = None;
-
-        if keyboard_height == 0.0 {
-            action = self.panel(ctx, ui, keyboard_height);
-        } else {
-            // build a strip to carve out the soft keyboard inset
-            StripBuilder::new(ui)
-                .size(Size::remainder())
-                .size(Size::exact(keyboard_height))
-                .vertical(|mut strip| {
-                    // the actual content, shifted up because of the soft keyboard
-                    strip.cell(|ui| {
-                        action = self.panel(ctx, ui, keyboard_height);
-                    });
-
-                    // the filler space taken up by the soft keyboard
-                    strip.cell(|ui| {
-                        // keyboard-visibility virtual keyboard
-                        if virtual_keyboard && keyboard_height > 0.0 {
-                            virtual_keyboard_ui(ui, ui.available_rect_before_wrap())
-                        }
-                    });
+        // build a strip to carve out the soft keyboard inset
+        let prev_spacing = ui.spacing().item_spacing;
+        ui.spacing_mut().item_spacing.y = 0.0;
+        StripBuilder::new(ui)
+            .size(Size::remainder())
+            .size(Size::exact(keyboard_height))
+            .vertical(|mut strip| {
+                // the actual content, shifted up because of the soft keyboard
+                strip.cell(|ui| {
+                    action = self.panel(ctx, ui, keyboard_height);
                 });
-        }
+
+                // the filler space taken up by the soft keyboard
+                strip.cell(|ui| {
+                    // keyboard-visibility virtual keyboard
+                    if virtual_keyboard && keyboard_height > 0.0 {
+                        virtual_keyboard_ui(ui, ui.available_rect_before_wrap())
+                    }
+                });
+            });
+        ui.spacing_mut().item_spacing = prev_spacing;
 
         // hovering virtual keyboard
         if virtual_keyboard {
@@ -345,6 +343,11 @@ impl Chrome {
 
 impl notedeck::App for Chrome {
     fn update(&mut self, ctx: &mut notedeck::AppContext, ui: &mut egui::Ui) -> AppResponse {
+        #[cfg(feature = "tracy")]
+        {
+            ui.ctx().request_repaint();
+        }
+
         if let Some(action) = self.show(ctx, ui) {
             action.process(ctx, self, ui);
             self.nav.close();
