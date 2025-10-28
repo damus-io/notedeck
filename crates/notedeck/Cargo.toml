@@ -53,6 +53,7 @@ chrono = { workspace = true }
 indexmap = {workspace = true}
 rand = {workspace = true}
 crossbeam-channel = "0.5"
+crossbeam = "0.8.4"
 
 [dev-dependencies]
 tempfile = { workspace = true }
