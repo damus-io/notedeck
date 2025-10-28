@@ -1,7 +1,8 @@
-use crate::JobPool;
 use egui::TextureHandle;
 use hashbrown::{hash_map::RawEntryMut, HashMap};
 use poll_promise::Promise;
+
+use crate::jobs::JobPool;
 
 #[derive(Default)]
 pub struct JobsCache {

@@ -13,8 +13,7 @@ pub mod fonts;
 mod frame_history;
 pub mod i18n;
 mod imgcache;
-mod job_pool;
-mod jobs;
+pub mod jobs;
 pub mod media;
 mod muted;
 pub mod name;
@@ -59,9 +58,8 @@ pub use imgcache::{
     LoadableTextureState, MediaCache, MediaCacheType, RenderState, TextureFrame, TextureState,
     TexturedImage, TexturesCache,
 };
-pub use job_pool::JobPool;
 pub use jobs::{
-    BlurhashParams, Job, JobError, JobId, JobParams, JobParamsOwned, JobState, JobsCache,
+    BlurhashParams, Job, JobError, JobId, JobParams, JobParamsOwned, JobPool, JobState, JobsCache,
 };
 pub use media::{
     compute_blurhash, update_imeta_blurhashes, ImageMetadata, ImageType, MediaAction,
