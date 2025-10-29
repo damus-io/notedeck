@@ -7,7 +7,7 @@ use enostr::NoteId;
 use nostrdb::Transaction;
 use notedeck::{
     tr,
-    ui::{is_narrow, richtext_small},
+    ui::{is_narrow, richtext_small, toggle_ui},
     Images, JobsCache, LanguageIdentifier, Localization, NoteContext, NotedeckTextStyle, Settings,
     SettingsHandler, DEFAULT_NOTE_BODY_FONT_SIZE,
 };
@@ -31,6 +31,7 @@ const RESET_ZOOM: f32 = 1.0;
 
 pub enum SettingsAction {
     SetZoomFactor(f32),
+    SetLoadMediaByDefault(bool),
     SetTheme(ThemePreference),
     SetLocale(LanguageIdentifier),
     SetRepliestNewestFirst(bool),
@@ -88,6 +89,12 @@ impl SettingsAction {
                 ctx.set_style(style);
 
                 settings.set_note_body_font_size(size);
+            }
+            Self::SetLoadMediaByDefault(load_media) => {
+                app.note_options
+                    .set(NoteOptions::LoadMediaByDefault, load_media);
+
+                settings.set_load_media_by_default(load_media);
             }
         }
         route_action
@@ -457,18 +464,7 @@ impl<'a> SettingsView<'a> {
                     "Label for Sort replies newest first, others settings section",
                 )));
 
-                if ui
-                    .toggle_value(
-                        &mut self.settings.show_replies_newest_first,
-                        RichText::new(tr!(
-                            self.note_context.i18n,
-                            "On",
-                            "Setting to turn on sorting replies so that the newest are shown first"
-                        ))
-                        .text_style(NotedeckTextStyle::Small.text_style()),
-                    )
-                    .changed()
-                {
+                if toggle_ui(ui, &mut self.settings.show_replies_newest_first).changed() {
                     action = Some(SettingsAction::SetRepliestNewestFirst(
                         self.settings.show_replies_newest_first,
                     ));
@@ -654,6 +650,10 @@ impl<'a> SettingsView<'a> {
 
                     ui.add_space(5.0);
 
+                    self.media_section(ui);
+
+                    ui.add_space(5.0);
+
                     if let Some(new_action) = self.storage_section(ui) {
                         action = Some(new_action);
                     }
@@ -679,6 +679,36 @@ impl<'a> SettingsView<'a> {
             .inner;
 
         BodyResponse::scroll(scroll_out)
+    }
+
+    fn media_section(&mut self, ui: &mut egui::Ui) -> Option<SettingsAction> {
+        let mut action = None;
+
+        let title = tr!(
+            self.note_context.i18n,
+            "Media",
+            "label for media setting section"
+        );
+
+        settings_group(ui, title, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(richtext_small(tr!(
+                    self.note_context.i18n,
+                    "Load media by default",
+                    "Label for load media by default, Media settings section",
+                )));
+
+                if toggle_ui(ui, &mut self.settings.load_media_by_default).changed() {
+                    action = Some(SettingsAction::SetLoadMediaByDefault(
+                        self.settings.load_media_by_default,
+                    ));
+                }
+            });
+
+            ui.end_row();
+        });
+
+        action
     }
 }
 

@@ -47,6 +47,9 @@ bitflags! {
 
         /// There is enough trust to show media in this note
         const TrustMedia = 1 << 20;
+
+        /// show media by default
+        const LoadMediaByDefault = 1 << 21;
     }
 }
 
