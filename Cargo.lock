@@ -1575,7 +1575,7 @@ dependencies = [
 [[package]]
 name = "egui_virtual_list"
 version = "0.7.0"
-source = "git+https://github.com/jb55/hello_egui?rev=a66b6794f5e707a2f4109633770e02b02fb722e1#a66b6794f5e707a2f4109633770e02b02fb722e1"
+source = "git+https://github.com/kernelkind/hello_egui?rev=542e6747703cf648bb462ec55f0f885fd37cf0b0#542e6747703cf648bb462ec55f0f885fd37cf0b0"
 dependencies = [
  "egui",
  "web-time 1.1.0",

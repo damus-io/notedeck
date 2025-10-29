@@ -1,5 +1,6 @@
 use egui::InnerResponse;
 use egui_virtual_list::VirtualList;
+use enostr::NoteId;
 use nostrdb::{Note, Transaction};
 use notedeck::note::root_note_id_from_selected_id;
 use notedeck::JobsCache;
@@ -47,31 +48,20 @@ impl<'a, 'd> ThreadView<'a, 'd> {
         let txn = Transaction::new(self.note_context.ndb).expect("txn");
 
         let scroll_id = ThreadView::scroll_id(self.selected_note_id, self.col);
-        let mut scroll_area = egui::ScrollArea::vertical()
+        let scroll_area = egui::ScrollArea::vertical()
             .id_salt(scroll_id)
             .animated(false)
             .auto_shrink([false, false])
             .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible);
 
-        if let Some(thread) = self.threads.threads.get_mut(&self.selected_note_id) {
-            if let Some(new_offset) = thread.set_scroll_offset.take() {
-                scroll_area = scroll_area.vertical_scroll_offset(new_offset);
-            }
-        }
-
         let output = scroll_area.show(ui, |ui| self.notes(ui, &txn));
 
-        let out_id = output.id;
-        let mut resp = output.inner;
-
-        if let Some(NoteAction::Note {
-            note_id: _,
-            preview: _,
-            scroll_offset,
-        }) = &mut resp
-        {
-            *scroll_offset = output.state.offset.y;
+        if let Some(scroll_to) = self.threads.scroll_to.as_mut() {
+            scroll_to.active = false;
         }
+
+        let out_id = output.id;
+        let resp = output.inner;
 
         BodyResponse::output(resp).scroll_raw(out_id)
     }
@@ -101,6 +91,12 @@ impl<'a, 'd> ThreadView<'a, 'd> {
         let full_chain = cur_node.have_all_ancestors;
         let mut note_builder = ThreadNoteBuilder::new(cur_note);
 
+        if let Some(scroll_note) = &self.threads.scroll_to {
+            if scroll_note.active {
+                note_builder = note_builder.scroll_to(&scroll_note.id);
+            }
+        }
+
         let mut parent_state = cur_node.prev.clone();
         while let ParentState::Parent(id) = parent_state {
             if let Ok(note) = self.note_context.ndb.get_note_by_id(txn, id.bytes()) {
@@ -113,8 +109,18 @@ impl<'a, 'd> ThreadView<'a, 'd> {
             parent_state = ParentState::Unknown;
         }
 
+        let mut action = None;
+
+        let only_reply = cur_node.replies.len() == 1;
+
         for note_ref in cur_node.replies.values() {
             if let Ok(note) = self.note_context.ndb.get_note_by_key(txn, note_ref.key) {
+                if only_reply {
+                    action = Some(NoteAction::ThreadAutoUnfold {
+                        note_id: enostr::NoteId::new(*note.id()),
+                        scroll_to: self.threads.scroll_to.as_ref().map(|s| s.id),
+                    });
+                }
                 note_builder.add_reply(note);
             }
         }
@@ -136,7 +142,7 @@ impl<'a, 'd> ThreadView<'a, 'd> {
             ui.colored_label(ui.visuals().error_fg_color, "LOADING NOTES");
         }
 
-        show_notes(
+        action = show_notes(
             ui,
             list,
             &notes,
@@ -145,6 +151,9 @@ impl<'a, 'd> ThreadView<'a, 'd> {
             self.jobs,
             txn,
         )
+        .or(action);
+
+        action
     }
 }
 
@@ -167,6 +176,10 @@ fn show_notes(
     let notes = &thread_notes.notes;
 
     let is_muted = note_context.accounts.mutefun();
+
+    if let Some(scroll_index) = thread_notes.scroll_to_index {
+        list.scroll_to_item(scroll_index);
+    }
 
     list.ui_custom_layout(ui, notes.len(), |ui, cur_index| {
         let note = &notes[cur_index];
@@ -206,7 +219,6 @@ fn strip_note_action(action: NoteAction) -> Option<NoteAction> {
         NoteAction::Note {
             note_id: _,
             preview: false,
-            scroll_offset: _,
         }
     ) {
         return None;
@@ -219,6 +231,7 @@ struct ThreadNoteBuilder<'a> {
     chain: Vec<Note<'a>>,
     selected: Note<'a>,
     replies: Vec<Note<'a>>,
+    scroll_to: Option<&'a NoteId>,
 }
 
 impl<'a> ThreadNoteBuilder<'a> {
@@ -227,7 +240,13 @@ impl<'a> ThreadNoteBuilder<'a> {
             chain: Vec::new(),
             selected,
             replies: Vec::new(),
+            scroll_to: None,
         }
+    }
+
+    pub fn scroll_to(mut self, note: &'a NoteId) -> Self {
+        self.scroll_to = Some(note);
+        self
     }
 
     pub fn add_chain(&mut self, note: Note<'a>) {
@@ -244,19 +263,35 @@ impl<'a> ThreadNoteBuilder<'a> {
         seen_flags: &mut NoteSeenFlags,
     ) -> ThreadNotes<'a> {
         let mut notes = Vec::new();
+        let mut scroll_to_index = None;
 
         let selected_is_root = self.chain.is_empty();
         let mut cur_is_root = true;
         while let Some(note) = self.chain.pop() {
+            if let Some(scroll_noteid) = self.scroll_to {
+                if note.id() == scroll_noteid.bytes() {
+                    scroll_to_index = Some(notes.len());
+                    self.scroll_to = None;
+                }
+            }
             notes.push(ThreadNote {
                 unread_and_have_replies: *seen_flags.get(note.id()).unwrap_or(&false),
                 note,
                 note_type: ThreadNoteType::Chain { root: cur_is_root },
             });
+
             cur_is_root = false;
         }
 
         let selected_index = notes.len();
+
+        if let Some(scroll_noteid) = self.scroll_to {
+            if self.selected.id() == scroll_noteid.bytes() {
+                scroll_to_index = Some(selected_index);
+                self.scroll_to = None;
+            }
+        }
+
         notes.push(ThreadNote {
             note: self.selected,
             note_type: ThreadNoteType::Selected {
@@ -271,6 +306,12 @@ impl<'a> ThreadNoteBuilder<'a> {
         }
 
         for reply in self.replies {
+            if let Some(scroll_noteid) = self.scroll_to {
+                if reply.id() == scroll_noteid.bytes() {
+                    scroll_to_index = Some(notes.len());
+                    self.scroll_to = None;
+                }
+            }
             notes.push(ThreadNote {
                 unread_and_have_replies: *seen_flags.get(reply.id()).unwrap_or(&false),
                 note: reply,
@@ -281,6 +322,7 @@ impl<'a> ThreadNoteBuilder<'a> {
         ThreadNotes {
             notes,
             selected_index,
+            scroll_to_index,
         }
     }
 }
@@ -300,6 +342,7 @@ impl ThreadNoteType {
 struct ThreadNotes<'a> {
     notes: Vec<ThreadNote<'a>>,
     selected_index: usize,
+    pub scroll_to_index: Option<usize>,
 }
 
 struct ThreadNote<'a> {

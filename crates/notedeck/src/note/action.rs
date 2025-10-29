@@ -27,10 +27,11 @@ pub enum NoteAction {
     Profile(Pubkey),
 
     /// User has clicked a note link
-    Note {
+    Note { note_id: NoteId, preview: bool },
+
+    ThreadAutoUnfold {
         note_id: NoteId,
-        preview: bool,
-        scroll_offset: f32,
+        scroll_to: Option<NoteId>,
     },
 
     /// User has selected some context option
@@ -51,7 +52,6 @@ impl NoteAction {
         NoteAction::Note {
             note_id: id,
             preview: false,
-            scroll_offset: 0.0,
         }
     }
 }
