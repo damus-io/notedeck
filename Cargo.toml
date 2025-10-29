@@ -70,7 +70,7 @@ thiserror = "2.0.7"
 tokio = { version = "1.16", features = ["macros", "rt-multi-thread", "fs"] }
 tracing = { version = "0.1.40", features = ["log"] }
 tracing-appender = "0.2.3"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 tempfile = "3.13.0"
 unic-langid = { version = "0.9.6", features = ["macros"] }
 url = "2.5.2"
