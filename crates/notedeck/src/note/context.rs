@@ -27,6 +27,18 @@ pub struct ContextSelection {
     pub action: NoteContextSelection,
 }
 
+const MAX_RELAY_HINTS: usize = 3;
+
+/// Collects at most `MAX_RELAY_HINTS` relay URLs where the note was actually observed.
+/// We intentionally skip pool-based fallbacks: NIP-19 hints should only advertise relays
+/// that are likely to store the event, and emitting no hint is preferable to speculating.
+fn relay_hints_for_note(note: &Note<'_>, txn: &Transaction) -> Vec<String> {
+    note.relays(txn)
+        .take(MAX_RELAY_HINTS)
+        .map(|relay| relay.to_owned())
+        .collect()
+}
+
 impl NoteContextSelection {
     pub fn process_selection(
         &self,
@@ -58,15 +70,7 @@ impl NoteContextSelection {
                 }
             }
             NoteContextSelection::CopyNoteId => {
-                let mut relay_hints: Vec<String> =
-                    note.relays(txn).take(1).map(|relay| relay.to_owned()).collect();
-
-                if relay_hints.is_empty() {
-                    if let Some(pool_relay) = pool.urls().into_iter().next() {
-                        relay_hints.push(pool_relay);
-                    }
-                }
-
+                let relay_hints = relay_hints_for_note(note, txn);
                 let nip19event = nostr::nips::nip19::Nip19Event::new(
                     nostr::event::EventId::from_byte_array(*note.id()),
                     relay_hints,
@@ -83,9 +87,10 @@ impl NoteContextSelection {
             NoteContextSelection::CopyLink => {
                 let damus_url = |s| format!("https://damus.io/{s}");
                 if note_author_is_selected_acc {
+                    let relay_hints = relay_hints_for_note(note, txn);
                     let nip19event = nostr::nips::nip19::Nip19Event::new(
                         nostr::event::EventId::from_byte_array(*note.id()),
-                        pool.urls(),
+                        relay_hints,
                     );
                     let Ok(bech) = nostr::nips::nip19::ToBech32::to_bech32(&nip19event) else {
                         return;
