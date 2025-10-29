@@ -193,6 +193,7 @@ fn execute_note_action(
                     ui,
                     &note,
                     pool,
+                    txn,
                     accounts.selected_account_pubkey().bytes() == note.pubkey(),
                 );
             }

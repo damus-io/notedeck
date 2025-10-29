@@ -1,5 +1,5 @@
 use enostr::{ClientMessage, NoteId, Pubkey, RelayPool};
-use nostrdb::{Note, NoteKey};
+use nostrdb::{Note, NoteKey, Transaction};
 use tracing::error;
 
 /// When broadcasting notes, this determines whether to broadcast
@@ -33,6 +33,7 @@ impl NoteContextSelection {
         ui: &mut egui::Ui,
         note: &Note<'_>,
         pool: &mut RelayPool,
+        txn: &Transaction,
         note_author_is_selected_acc: bool,
     ) {
         match self {
@@ -57,9 +58,18 @@ impl NoteContextSelection {
                 }
             }
             NoteContextSelection::CopyNoteId => {
+                let mut relay_hints: Vec<String> =
+                    note.relays(txn).take(1).map(|relay| relay.to_owned()).collect();
+
+                if relay_hints.is_empty() {
+                    if let Some(pool_relay) = pool.urls().into_iter().next() {
+                        relay_hints.push(pool_relay);
+                    }
+                }
+
                 let nip19event = nostr::nips::nip19::Nip19Event::new(
                     nostr::event::EventId::from_byte_array(*note.id()),
-                    Vec::<String>::new(),
+                    relay_hints,
                 );
                 let Ok(bech) = nostr::nips::nip19::ToBech32::to_bech32(&nip19event) else {
                     return;
