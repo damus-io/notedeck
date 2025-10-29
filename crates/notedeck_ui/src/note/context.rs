@@ -109,8 +109,8 @@ impl NoteContextButton {
             if ui
                 .button(tr!(
                     i18n,
-                    "Copy Note ID",
-                    "Copy the unique note identifier to clipboard"
+                    "Copy nevent ID",
+                    "Copy the nevent identifier to clipboard"
                 ))
                 .clicked()
             {

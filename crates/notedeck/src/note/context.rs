@@ -57,9 +57,14 @@ impl NoteContextSelection {
                 }
             }
             NoteContextSelection::CopyNoteId => {
-                if let Some(bech) = NoteId::new(*note.id()).to_bech() {
-                    ui.ctx().copy_text(bech);
-                }
+                let nip19event = nostr::nips::nip19::Nip19Event::new(
+                    nostr::event::EventId::from_byte_array(*note.id()),
+                    Vec::<String>::new(),
+                );
+                let Ok(bech) = nostr::nips::nip19::ToBech32::to_bech32(&nip19event) else {
+                    return;
+                };
+                ui.ctx().copy_text(bech);
             }
             NoteContextSelection::CopyNoteJSON => match note.json() {
                 Ok(json) => ui.ctx().copy_text(json),
