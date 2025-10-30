@@ -31,8 +31,6 @@ use notedeck::{
     note::{NoteAction, NoteContext, ReactAction, ZapAction},
     tr, AnyZapState, ContextSelection, NoteZapTarget, NoteZapTargetOwned, ZapTarget, Zaps,
 };
-use std::collections::HashSet;
-
 pub struct NoteView<'a, 'd> {
     note_context: &'a mut NoteContext<'d>,
     parent: Option<NoteKey>,
@@ -385,7 +383,6 @@ impl<'a, 'd> NoteView<'a, 'd> {
         note_key: NoteKey,
         profile: &Result<ProfileRecord, nostrdb::Error>,
     ) -> egui::InnerResponse<NoteUiResponse> {
-        let note_relays = collect_note_relays(self.note, txn);
         ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
             let mut note_action: Option<NoteAction> = None;
             let mut pfp_rect = None;
@@ -472,7 +469,8 @@ impl<'a, 'd> NoteView<'a, 'd> {
                             self.note_context.accounts.selected_account_pubkey(),
                             note_key,
                             self.note_context.i18n,
-                            &note_relays,
+                            self.note,
+                            txn,
                         )
                     })
                     .inner
@@ -493,7 +491,6 @@ impl<'a, 'd> NoteView<'a, 'd> {
         note_key: NoteKey,
         profile: &Result<ProfileRecord, nostrdb::Error>,
     ) -> egui::InnerResponse<NoteUiResponse> {
-        let note_relays = collect_note_relays(self.note, txn);
         // main design
         ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
             let (mut note_action, pfp_rect) =
@@ -563,7 +560,8 @@ impl<'a, 'd> NoteView<'a, 'd> {
                                 self.note_context.accounts.selected_account_pubkey(),
                                 note_key,
                                 self.note_context.i18n,
-                                &note_relays,
+                                self.note,
+                                txn,
                             )
                         })
                         .inner
@@ -864,14 +862,15 @@ fn render_note_actionbar(
     current_user_pubkey: &Pubkey,
     note_key: NoteKey,
     i18n: &mut Localization,
-    relays: &[String],
+    note: &Note,
+    txn: &Transaction,
 ) -> Option<NoteAction> {
     let mut action = None;
 
     let available_width = ui.available_width();
     let layout = egui::Layout::right_to_left(egui::Align::Center);
     ui.allocate_ui_with_layout(egui::vec2(available_width, 0.0), layout, |ui| {
-        let _ = relay_indicator(ui, i18n, note_key, relays);
+        let _ = relay_indicator(ui, i18n, note_key, note, txn);
         ui.add_space(16.0);
 
         ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
@@ -945,9 +944,9 @@ fn relay_indicator(
     ui: &mut egui::Ui,
     i18n: &mut Localization,
     note_key: NoteKey,
-    relays: &[String],
+    note: &Note,
+    txn: &Transaction,
 ) -> egui::Response {
-    let relay_count = relays.len();
     let empty_state = tr!(
         i18n,
         "This note has not been seen on any relays yet",
@@ -958,12 +957,24 @@ fn relay_indicator(
         "Seen on these relays",
         "Heading shown before a list of relays a note has appeared on"
     );
-    let hover_text = {
-        if relays.is_empty() {
-            empty_state.clone()
-        } else {
-            relays.join("\n")
+    let relay_iter = || {
+        note.relays(txn).filter_map(|relay| {
+            let trimmed = relay.trim();
+            (!trimmed.is_empty()).then_some(trimmed)
+        })
+    };
+    let relay_count = relay_iter().count();
+    let hover_text = if relay_count == 0 {
+        empty_state.clone()
+    } else {
+        let mut text = String::new();
+        for (idx, relay) in relay_iter().enumerate() {
+            if idx > 0 {
+                text.push('\n');
+            }
+            text.push_str(relay);
         }
+        text
     };
 
     let icon_size = 12.0;
@@ -992,8 +1003,8 @@ fn relay_indicator(
                         .max_height(160.0)
                         .show(ui, |ui| {
                             ui.spacing_mut().item_spacing.y = 4.0;
-                            for relay in relays {
-                                ui.label(egui::RichText::new(relay.as_str()).color(text_color))
+                            for relay in relay_iter() {
+                                ui.label(egui::RichText::new(relay).color(text_color))
                                     .on_hover_text(relay);
                             }
                         });
@@ -1078,24 +1089,6 @@ fn paint_server_glyph(painter: &egui::Painter, rect: Rect, color: Color32) {
         light_radius,
         color,
     );
-}
-
-fn collect_note_relays(note: &Note, txn: &Transaction) -> Vec<String> {
-    let mut seen: HashSet<&str> = HashSet::new();
-    let mut relays: Vec<String> = Vec::new();
-
-    for relay in note.relays(txn) {
-        if relay.trim().is_empty() {
-            continue;
-        }
-
-        if seen.insert(relay) {
-            relays.push(relay.to_owned());
-        }
-    }
-
-    relays.sort_unstable();
-    relays
 }
 
 fn reply_button(ui: &mut egui::Ui, i18n: &mut Localization, note_key: NoteKey) -> egui::Response {
