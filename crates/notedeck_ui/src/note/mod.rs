@@ -968,19 +968,6 @@ fn relay_indicator(
         })
         .collect();
     let relay_count = relays.len();
-    let hover_text = if relay_count == 0 {
-        empty_state.clone()
-    } else {
-        let mut text = String::new();
-        for (idx, relay) in relays.iter().enumerate() {
-            if idx > 0 {
-                text.push('\n');
-            }
-            text.push_str(relay);
-        }
-        text
-    };
-
     let icon_size = 12.0;
     let text_color = ui.style().visuals.noninteractive().fg_stroke.color;
 
@@ -996,7 +983,15 @@ fn relay_indicator(
 
         if relay_count > 0 {
             response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
-            response = response.on_hover_text(hover_text.clone());
+            // Clone the small pointer array so we can move it into the hover closure.
+            // This avoids rebuilding a String every frame while keeping the tooltip lazy.
+            let tooltip_relays = relays.clone();
+            response = response.on_hover_ui(move |ui| {
+                ui.spacing_mut().item_spacing.y = 2.0;
+                for relay in tooltip_relays {
+                    ui.label(relay);
+                }
+            });
             let _ =
                 crate::context_menu::stationary_arbitrary_menu_button(ui, response.clone(), |ui| {
                     ui.set_min_width(220.0);
