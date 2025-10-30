@@ -958,6 +958,8 @@ fn relay_indicator(
         "Heading shown before a list of relays a note has appeared on"
     );
     // Cache the trimmed relay slices so we only walk the iterator once per frame.
+    // note.relays(txn) is guaranteed to be de-duplicated upstream, so this view layer
+    // can rely on that and simply forward the slices we receive.
     let relays: Vec<&str> = note
         .relays(txn)
         .filter_map(|relay| {
