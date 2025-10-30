@@ -957,18 +957,20 @@ fn relay_indicator(
         "Seen on these relays",
         "Heading shown before a list of relays a note has appeared on"
     );
-    let relay_iter = || {
-        note.relays(txn).filter_map(|relay| {
+    // Cache the trimmed relay slices so we only walk the iterator once per frame.
+    let relays: Vec<&str> = note
+        .relays(txn)
+        .filter_map(|relay| {
             let trimmed = relay.trim();
             (!trimmed.is_empty()).then_some(trimmed)
         })
-    };
-    let relay_count = relay_iter().count();
+        .collect();
+    let relay_count = relays.len();
     let hover_text = if relay_count == 0 {
         empty_state.clone()
     } else {
         let mut text = String::new();
-        for (idx, relay) in relay_iter().enumerate() {
+        for (idx, relay) in relays.iter().enumerate() {
             if idx > 0 {
                 text.push('\n');
             }
@@ -1003,9 +1005,9 @@ fn relay_indicator(
                         .max_height(160.0)
                         .show(ui, |ui| {
                             ui.spacing_mut().item_spacing.y = 4.0;
-                            for relay in relay_iter() {
-                                ui.label(egui::RichText::new(relay).color(text_color))
-                                    .on_hover_text(relay);
+                            for relay in &relays {
+                                ui.label(egui::RichText::new(*relay).color(text_color))
+                                    .on_hover_text(*relay);
                             }
                         });
                 });
