@@ -22,13 +22,16 @@ pub use options::NoteOptions;
 pub use reply_description::reply_desc;
 
 use egui::emath::{pos2, Vec2};
-use egui::{Id, Pos2, Rect, Response, Sense};
+use egui::{
+    Align2, Color32, CornerRadius, FontId, Id, Pos2, Rect, Response, Sense, Stroke, StrokeKind,
+};
 use enostr::{KeypairUnowned, NoteId, Pubkey};
 use nostrdb::{Ndb, Note, NoteKey, ProfileRecord, Transaction};
 use notedeck::{
     note::{NoteAction, NoteContext, ReactAction, ZapAction},
     tr, AnyZapState, ContextSelection, NoteZapTarget, NoteZapTargetOwned, ZapTarget, Zaps,
 };
+use std::collections::HashSet;
 
 pub struct NoteView<'a, 'd> {
     note_context: &'a mut NoteContext<'d>,
@@ -223,44 +226,47 @@ impl<'a, 'd> NoteView<'a, 'd> {
     fn textmode_ui(&mut self, ui: &mut egui::Ui) -> egui::Response {
         let txn = self.note.txn().expect("todo: implement non-db notes");
 
-        ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
-            let profile = self
-                .note_context
-                .ndb
-                .get_profile_by_pubkey(txn, self.note.pubkey());
+        let response = ui
+            .with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
+                let profile = self
+                    .note_context
+                    .ndb
+                    .get_profile_by_pubkey(txn, self.note.pubkey());
 
-            //ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 2.0;
+                //ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
 
-            let (_id, rect) = ui.allocate_space(egui::vec2(50.0, 20.0));
-            ui.allocate_rect(rect, Sense::hover());
-            ui.put(rect, |ui: &mut egui::Ui| {
-                render_notetime(ui, self.note_context.i18n, self.note.created_at(), false)
-            });
-            let (_id, rect) = ui.allocate_space(egui::vec2(150.0, 20.0));
-            ui.allocate_rect(rect, Sense::hover());
-            ui.put(rect, |ui: &mut egui::Ui| {
-                ui.add(
-                    Username::new(
-                        self.note_context.i18n,
-                        profile.as_ref().ok(),
-                        self.note.pubkey(),
+                let (_id, rect) = ui.allocate_space(egui::vec2(50.0, 20.0));
+                ui.allocate_rect(rect, Sense::hover());
+                ui.put(rect, |ui: &mut egui::Ui| {
+                    render_notetime(ui, self.note_context.i18n, self.note.created_at(), false)
+                });
+                let (_id, rect) = ui.allocate_space(egui::vec2(150.0, 20.0));
+                ui.allocate_rect(rect, Sense::hover());
+                ui.put(rect, |ui: &mut egui::Ui| {
+                    ui.add(
+                        Username::new(
+                            self.note_context.i18n,
+                            profile.as_ref().ok(),
+                            self.note.pubkey(),
+                        )
+                        .abbreviated(6)
+                        .pk_colored(true),
                     )
-                    .abbreviated(6)
-                    .pk_colored(true),
-                )
-            });
+                });
 
-            ui.add(&mut NoteContents::new(
-                self.note_context,
-                txn,
-                self.note,
-                self.flags,
-                self.jobs,
-            ));
-            //});
-        })
-        .response
+                ui.add(&mut NoteContents::new(
+                    self.note_context,
+                    txn,
+                    self.note,
+                    self.flags,
+                    self.jobs,
+                ));
+                //});
+            })
+            .response;
+
+        response
     }
 
     pub fn expand_size() -> i8 {
@@ -349,6 +355,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
         let horiz_resp = ui
             .horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing.x = if is_narrow(ui.ctx()) { 1.0 } else { 2.0 };
+
                 let response = ui
                     .add(Username::new(i18n, profile.as_ref().ok(), note.pubkey()).abbreviated(20));
                 if !flags.contains(NoteOptions::FullCreatedDate) {
@@ -378,6 +385,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
         note_key: NoteKey,
         profile: &Result<ProfileRecord, nostrdb::Error>,
     ) -> egui::InnerResponse<NoteUiResponse> {
+        let note_relays = collect_note_relays(self.note, txn);
         ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
             let mut note_action: Option<NoteAction> = None;
             let mut pfp_rect = None;
@@ -464,6 +472,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
                             self.note_context.accounts.selected_account_pubkey(),
                             note_key,
                             self.note_context.i18n,
+                            &note_relays,
                         )
                     })
                     .inner
@@ -484,6 +493,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
         note_key: NoteKey,
         profile: &Result<ProfileRecord, nostrdb::Error>,
     ) -> egui::InnerResponse<NoteUiResponse> {
+        let note_relays = collect_note_relays(self.note, txn);
         // main design
         ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
             let (mut note_action, pfp_rect) =
@@ -553,6 +563,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
                                 self.note_context.accounts.selected_account_pubkey(),
                                 note_key,
                                 self.note_context.i18n,
+                                &note_relays,
                             )
                         })
                         .inner
@@ -853,42 +864,59 @@ fn render_note_actionbar(
     current_user_pubkey: &Pubkey,
     note_key: NoteKey,
     i18n: &mut Localization,
+    relays: &[String],
 ) -> Option<NoteAction> {
     let mut action = None;
 
-    ui.set_min_height(26.0);
-    ui.spacing_mut().item_spacing.x = 24.0;
+    let available_width = ui.available_width();
+    let layout = egui::Layout::right_to_left(egui::Align::Center);
+    ui.allocate_ui_with_layout(egui::vec2(available_width, 0.0), layout, |ui| {
+        let _ = relay_indicator(ui, i18n, note_key, relays);
+        ui.add_space(16.0);
 
-    let reply_resp =
-        reply_button(ui, i18n, note_key).on_hover_cursor(egui::CursorIcon::PointingHand);
+        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            let mut bar_action: Option<NoteAction> = None;
+            ui.set_min_height(26.0);
+            ui.spacing_mut().item_spacing.x = 24.0;
 
-    let filled = ui
-        .ctx()
-        .data(|d| d.get_temp(reaction_sent_id(current_user_pubkey, note_id)))
-        == Some(true);
+            let reply_resp =
+                reply_button(ui, i18n, note_key).on_hover_cursor(egui::CursorIcon::PointingHand);
 
-    let like_resp =
-        like_button(ui, i18n, note_key, filled).on_hover_cursor(egui::CursorIcon::PointingHand);
+            let filled = ui
+                .ctx()
+                .data(|d| d.get_temp(reaction_sent_id(current_user_pubkey, note_id)))
+                == Some(true);
 
-    let quote_resp =
-        quote_repost_button(ui, i18n, note_key).on_hover_cursor(egui::CursorIcon::PointingHand);
+            let like_resp = like_button(ui, i18n, note_key, filled)
+                .on_hover_cursor(egui::CursorIcon::PointingHand);
 
-    if reply_resp.clicked() {
-        action = Some(NoteAction::Reply(NoteId::new(*note_id)));
-    }
+            let quote_resp = quote_repost_button(ui, i18n, note_key)
+                .on_hover_cursor(egui::CursorIcon::PointingHand);
 
-    if like_resp.clicked() {
-        action = Some(NoteAction::React(ReactAction::new(
-            NoteId::new(*note_id),
-            "🤙🏻",
-        )));
-    }
+            if reply_resp.clicked() {
+                bar_action = Some(NoteAction::Reply(NoteId::new(*note_id)));
+            }
 
-    if quote_resp.clicked() {
-        action = Some(NoteAction::Repost(NoteId::new(*note_id)));
-    }
+            if like_resp.clicked() {
+                bar_action = Some(NoteAction::React(ReactAction::new(
+                    NoteId::new(*note_id),
+                    "🤙🏻",
+                )));
+            }
 
-    action = zap_actionbar_button(ui, note_id, note_pubkey, zapper, i18n).or(action);
+            if quote_resp.clicked() {
+                bar_action = Some(NoteAction::Repost(NoteId::new(*note_id)));
+            }
+
+            if let Some(zap_action) = zap_actionbar_button(ui, note_id, note_pubkey, zapper, i18n) {
+                bar_action = Some(zap_action);
+            }
+
+            if bar_action.is_some() {
+                action = bar_action;
+            }
+        });
+    });
 
     action
 }
@@ -911,6 +939,163 @@ fn render_notetime(
             format!("{} ⋅ ", notedeck::time_ago_since(i18n, created_at)),
         )
     }
+}
+
+fn relay_indicator(
+    ui: &mut egui::Ui,
+    i18n: &mut Localization,
+    note_key: NoteKey,
+    relays: &[String],
+) -> egui::Response {
+    let relay_count = relays.len();
+    let empty_state = tr!(
+        i18n,
+        "This note has not been seen on any relays yet",
+        "Empty state shown when relay metadata is missing for a note"
+    );
+    let heading = tr!(
+        i18n,
+        "Seen on these relays",
+        "Heading shown before a list of relays a note has appeared on"
+    );
+    let hover_text = {
+        if relays.is_empty() {
+            empty_state.clone()
+        } else {
+            relays.join("\n")
+        }
+    };
+
+    let icon_size = 12.0;
+    let text_color = ui.style().visuals.noninteractive().fg_stroke.color;
+
+    ui.push_id(("note-relay-indicator", note_key.as_u64()), |ui| {
+        let mut response = ui.add_enabled(
+            relay_count > 0,
+            RelayBadge {
+                count: relay_count,
+                icon_size,
+                color: text_color,
+            },
+        );
+
+        if relay_count > 0 {
+            response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+            response = response.on_hover_text(hover_text.clone());
+            let _ =
+                crate::context_menu::stationary_arbitrary_menu_button(ui, response.clone(), |ui| {
+                    ui.set_min_width(220.0);
+                    ui.label(heading.clone());
+                    ui.add_space(4.0);
+
+                    egui::ScrollArea::vertical()
+                        .max_height(160.0)
+                        .show(ui, |ui| {
+                            ui.spacing_mut().item_spacing.y = 4.0;
+                            for relay in relays {
+                                ui.label(egui::RichText::new(relay.as_str()).color(text_color))
+                                    .on_hover_text(relay);
+                            }
+                        });
+                });
+        } else {
+            response = response.on_hover_text(empty_state.clone());
+        }
+
+        response
+    })
+    .inner
+}
+
+struct RelayBadge {
+    count: usize,
+    icon_size: f32,
+    color: Color32,
+}
+
+impl egui::Widget for RelayBadge {
+    fn ui(self, ui: &mut egui::Ui) -> egui::Response {
+        let desired_size = egui::vec2(48.0, self.icon_size + 6.0);
+        let (rect, response) = ui.allocate_exact_size(desired_size, Sense::click());
+        let mut color = self.color;
+        if !ui.is_enabled() {
+            color = color.gamma_multiply(0.5);
+        }
+
+        let show_icon = ui.is_enabled() && self.count > 0 && !response.hovered();
+        let painter = ui.painter_at(rect);
+
+        let mut text_x = rect.left() + 4.0;
+        if show_icon {
+            let icon_rect = Rect::from_min_size(
+                pos2(rect.left() + 4.0, rect.center().y - self.icon_size * 0.5),
+                Vec2::splat(self.icon_size),
+            );
+            paint_server_glyph(&painter, icon_rect, color);
+            text_x = icon_rect.right() + 6.0;
+        }
+
+        if self.count > 0 {
+            painter.text(
+                pos2(text_x, rect.center().y),
+                Align2::LEFT_CENTER,
+                self.count.to_string(),
+                FontId::proportional(11.0),
+                color,
+            );
+        }
+
+        response
+    }
+}
+
+fn paint_server_glyph(painter: &egui::Painter, rect: Rect, color: Color32) {
+    let stroke = Stroke::new(1.2, color);
+    let gap = rect.height() * 0.15;
+    let segment_height = (rect.height() - gap) / 2.0;
+
+    let top_rect = Rect::from_min_size(rect.min, Vec2::new(rect.width(), segment_height));
+    let bottom_rect = Rect::from_min_size(
+        pos2(rect.left(), rect.bottom() - segment_height),
+        Vec2::new(rect.width(), segment_height),
+    );
+
+    let rounding = CornerRadius::same(2);
+    painter.rect_stroke(top_rect, rounding, stroke, StrokeKind::Outside);
+    painter.rect_stroke(bottom_rect, rounding, stroke, StrokeKind::Outside);
+
+    let light_radius = segment_height * 0.25;
+    painter.circle_filled(
+        pos2(top_rect.left() + light_radius * 2.0, top_rect.center().y),
+        light_radius,
+        color,
+    );
+    painter.circle_filled(
+        pos2(
+            bottom_rect.left() + light_radius * 2.0,
+            bottom_rect.center().y,
+        ),
+        light_radius,
+        color,
+    );
+}
+
+fn collect_note_relays(note: &Note, txn: &Transaction) -> Vec<String> {
+    let mut seen: HashSet<&str> = HashSet::new();
+    let mut relays: Vec<String> = Vec::new();
+
+    for relay in note.relays(txn) {
+        if relay.trim().is_empty() {
+            continue;
+        }
+
+        if seen.insert(relay) {
+            relays.push(relay.to_owned());
+        }
+    }
+
+    relays.sort_unstable();
+    relays
 }
 
 fn reply_button(ui: &mut egui::Ui, i18n: &mut Localization, note_key: NoteKey) -> egui::Response {
