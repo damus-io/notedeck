@@ -182,8 +182,12 @@ fn timeline_ui(
         let txn = Transaction::new(note_context.ndb).expect("failed to create txn");
 
         if matches!(timeline_id, TimelineKind::Notifications(_)) {
-            note_options.set(NoteOptions::Notification, true)
+            note_options.set(NoteOptions::Notification, true);
         }
+
+        note_options.set(NoteOptions::ActionBar, false);
+        note_options.set(NoteOptions::SmallPfp, true);
+        note_options.set(NoteOptions::Compact, true);
 
         TimelineTabView::new(
             timeline.current_view(),
@@ -680,13 +684,26 @@ fn render_note(
     note: &Note,
 ) -> RenderEntryResponse {
     let mut action = None;
-    notedeck_ui::padding(8.0, ui, |ui| {
-        let resp = NoteView::new(note_context, note, note_options, jobs).show(ui);
+    let mut padding = 8_i8;
 
-        if let Some(note_action) = resp.action {
-            action = Some(note_action);
-        }
-    });
+    if note_options.contains(NoteOptions::Compact) {
+        padding = 4_i8;
+    }
+
+    egui::Frame::new()
+        .inner_margin(Margin {
+            left: 8,
+            right: 8,
+            top: padding,
+            bottom: 0,
+        })
+        .show(ui, |ui| {
+            let resp = NoteView::new(note_context, note, note_options, jobs).show(ui);
+
+            if let Some(note_action) = resp.action {
+                action = Some(note_action);
+            }
+        });
 
     notedeck_ui::hline(ui);
 

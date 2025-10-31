@@ -47,6 +47,9 @@ bitflags! {
 
         /// There is enough trust to show media in this note
         const TrustMedia = 1 << 20;
+
+        /// Compact note rendering. Reduced padding
+        const Compact = 1 << 21;
     }
 }
 
