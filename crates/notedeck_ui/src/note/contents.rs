@@ -174,7 +174,7 @@ fn render_undecorated_note_contents<'a>(
     let note_key = note.key().expect("todo: implement non-db notes");
     let selectable = options.contains(NoteOptions::SelectableText);
     let mut note_action: Option<NoteAction> = None;
-    let mut inline_note: Option<(&[u8; 32], &str)> = None;
+    let mut inline_note: Vec<(&[u8; 32], &str)> = vec![];
     let hide_media = options.contains(NoteOptions::HideMedia);
     let link_color = ui.visuals().hyperlink_color;
 
@@ -234,11 +234,11 @@ fn render_undecorated_note_contents<'a>(
                     }
 
                     Mention::Note(note) if options.contains(NoteOptions::HasNotePreviews) => {
-                        inline_note = Some((note.id(), block.as_str()));
+                        inline_note.push((note.id(), block.as_str()));
                     }
 
                     Mention::Event(note) if options.contains(NoteOptions::HasNotePreviews) => {
-                        inline_note = Some((note.id(), block.as_str()));
+                        inline_note.push((note.id(), block.as_str()));
                     }
 
                     _ => {
@@ -354,8 +354,8 @@ fn render_undecorated_note_contents<'a>(
         }
     });
 
-    let preview_note_action = inline_note.and_then(|(id, _)| {
-        render_note_preview(ui, note_context, txn, id, note_key, options, jobs)
+    let preview_note_action = inline_note.iter().find_map(|(id, _)| {
+        render_note_preview(ui, note_context, txn, *id, note_key, options, jobs)
             .action
             .map(|a| match a {
                 NoteAction::Note { note_id, .. } => NoteAction::Note {
