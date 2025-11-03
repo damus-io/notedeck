@@ -77,7 +77,9 @@ pub use note::{
 };
 pub use notecache::{CachedNote, NoteCache};
 pub use options::NotedeckOptions;
-pub use outbox::{OutboxManager, RelaySelection};
+pub use outbox::{
+    dispatch_unknown_ids, OutboxManager, RelayPlan, RelaySelection, UNKNOWN_IDS_SUB,
+};
 pub use persist::*;
 pub use profile::*;
 pub use relay_debug::RelayDebugView;

@@ -1,8 +1,8 @@
 use std::collections::{BTreeSet, HashMap};
 use std::time::Duration;
 
-use enostr::{PubkeyRef, RelayPool};
-use nostrdb::{Ndb, Transaction};
+use enostr::{ClientMessage, PubkeyRef, RelayPool};
+use nostrdb::{Filter, Ndb, Transaction};
 
 use super::{OutboxRelayIndex, RelayHint};
 
@@ -248,6 +248,117 @@ impl OutboxManager {
         if !to_remove.is_empty() {
             pool.remove_urls(&to_remove);
         }
+    }
+}
+
+/// Describes the relay fan-out plan for a specific fallback request.
+#[derive(Debug, Default)]
+pub struct RelayPlan {
+    /// Ordered list of relays we want to target for the request. Hinted relays
+    /// are preserved at the front so we never regress existing coverage.
+    pub relays: Vec<String>,
+    /// Relay URLs that were brought online temporarily for this request.
+    pub touched_ephemeral: Vec<String>,
+    /// Debug map describing which authors contributed relay hints. Useful
+    /// during testing to reason about scoring choices.
+    pub per_author: HashMap<[u8; 32], Vec<String>>,
+}
+
+impl RelayPlan {
+    pub fn is_empty(&self) -> bool {
+        self.relays.is_empty()
+    }
+}
+
+impl OutboxManager {
+    /// Build the ordered relay list for a fallback read, reusing hinted relays
+    /// first and then filling the remaining slots with scored author hints.
+    /// The helper also makes sure we respect the connection budget before
+    /// dialing anything new.
+    pub fn prepare_relays<'a, H, A>(
+        &mut self,
+        pool: &mut RelayPool,
+        txn: &Transaction,
+        ndb: &Ndb,
+        hinted_relays: H,
+        authors: A,
+        wakeup: impl Fn() + Send + Sync + Clone + 'static,
+    ) -> RelayPlan
+    where
+        H: IntoIterator<Item = String>,
+        A: IntoIterator<Item = PubkeyRef<'a>>,
+    {
+        let mut ordered: Vec<String> = Vec::new();
+        let mut seen: BTreeSet<String> = BTreeSet::new();
+
+        for relay in hinted_relays {
+            if seen.insert(relay.clone()) {
+                ordered.push(relay);
+            }
+        }
+
+        let selection = self.resolve_relays_for_authors(txn, ndb, authors);
+
+        for relay in &selection.relays {
+            if ordered.len() >= self.connection_budget {
+                break;
+            }
+            // TODO: Once we persist NIP-66 liveness metadata, prefer relays
+            // that are actively advertising reachability and skip those
+            // repeatedly flagged as offline.
+            if seen.insert(relay.clone()) {
+                ordered.push(relay.clone());
+            }
+        }
+
+        if ordered.len() > self.connection_budget {
+            ordered.truncate(self.connection_budget);
+        }
+
+        let touched = if ordered.is_empty() {
+            Vec::new()
+        } else {
+            self.ensure_connections(pool, &ordered, wakeup)
+        };
+
+        RelayPlan {
+            relays: ordered,
+            touched_ephemeral: touched,
+            per_author: selection.per_author,
+        }
+    }
+
+    /// Convenience helper that prepares the relays and immediately dispatches a
+    /// `REQ` message across the pool. Callers receive the relay plan so they
+    /// can inspect scoring behaviour or augment logging.
+    pub fn dispatch_req<'a, H, A>(
+        &mut self,
+        pool: &mut RelayPool,
+        txn: &Transaction,
+        ndb: &Ndb,
+        sub_id: &str,
+        filters: Vec<Filter>,
+        hinted_relays: H,
+        authors: A,
+        wakeup: impl Fn() + Send + Sync + Clone + 'static,
+    ) -> Option<RelayPlan>
+    where
+        H: IntoIterator<Item = String>,
+        A: IntoIterator<Item = PubkeyRef<'a>>,
+    {
+        if filters.is_empty() {
+            return None;
+        }
+
+        let plan = self.prepare_relays(pool, txn, ndb, hinted_relays, authors, wakeup);
+
+        pool.send(&ClientMessage::req(sub_id.to_string(), filters));
+
+        if !plan.touched_ephemeral.is_empty() {
+            self.begin_request(sub_id, plan.touched_ephemeral.clone());
+        }
+
+        Some(plan)
     }
 }
 

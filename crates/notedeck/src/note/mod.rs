@@ -9,7 +9,12 @@ use crate::GlobalWallet;
 use crate::JobPool;
 use crate::Localization;
 use crate::UnknownIds;
-use crate::{notecache::NoteCache, zaps::Zaps, Images};
+use crate::{
+    notecache::NoteCache,
+    outbox::{dispatch_unknown_ids, OutboxManager},
+    zaps::Zaps,
+    Images,
+};
 use enostr::{NoteId, RelayPool};
 use nostrdb::{Ndb, Note, NoteKey, QueryResult, Transaction};
 use std::borrow::Borrow;
@@ -28,8 +33,34 @@ pub struct NoteContext<'d> {
     pub zaps: &'d mut Zaps,
     pub pool: &'d mut RelayPool,
     pub job_pool: &'d mut JobPool,
+    pub outbox: &'d mut OutboxManager,
     pub unknown_ids: &'d mut UnknownIds,
     pub clipboard: &'d mut egui_winit::clipboard::Clipboard,
+}
+
+impl<'d> NoteContext<'d> {
+    /// Flush pending unknown-id lookups through the shared outbox pipeline. The
+    /// helper returns whether a network request was dispatched so callers can
+    /// decide if they should show additional loading state.
+    pub fn drive_unknown_ids(&mut self, ctx: &egui::Context) -> bool {
+        if !self.unknown_ids.ready_to_send() {
+            return false;
+        }
+
+        let wakeup = {
+            let ctx = ctx.clone();
+            move || ctx.request_repaint()
+        };
+
+        dispatch_unknown_ids(
+            self.unknown_ids,
+            self.outbox,
+            self.pool,
+            self.ndb,
+            wakeup,
+        )
+        .is_some()
+    }
 }
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone, Hash)]
