@@ -14,6 +14,11 @@ const DEFAULT_LOCALE: &str = "en-US";
 const DEFAULT_ZOOM_FACTOR: f32 = 1.0;
 const DEFAULT_SHOW_SOURCE_CLIENT: &str = "hide";
 const DEFAULT_SHOW_REPLIES_NEWEST_FIRST: bool = false;
+const DEFAULT_OUTBOX_ENABLED: bool = true;
+
+fn default_outbox_enabled() -> bool {
+    DEFAULT_OUTBOX_ENABLED
+}
 #[cfg(any(target_os = "android", target_os = "ios"))]
 pub const DEFAULT_NOTE_BODY_FONT_SIZE: f32 = 13.0;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -36,6 +41,8 @@ pub struct Settings {
     pub show_source_client: String,
     pub show_replies_newest_first: bool,
     pub note_body_font_size: f32,
+    #[serde(default = "default_outbox_enabled")]
+    pub outbox_enabled: bool,
 }
 
 impl Default for Settings {
@@ -47,6 +54,7 @@ impl Default for Settings {
             show_source_client: DEFAULT_SHOW_SOURCE_CLIENT.to_string(),
             show_replies_newest_first: DEFAULT_SHOW_REPLIES_NEWEST_FIRST,
             note_body_font_size: DEFAULT_NOTE_BODY_FONT_SIZE,
+            outbox_enabled: DEFAULT_OUTBOX_ENABLED,
         }
     }
 }
@@ -191,6 +199,11 @@ impl SettingsHandler {
         self.try_save_settings();
     }
 
+    pub fn set_outbox_enabled(&mut self, value: bool) {
+        self.get_settings_mut().outbox_enabled = value;
+        self.try_save_settings();
+    }
+
     pub fn update_batch<F>(&mut self, update_fn: F)
     where
         F: FnOnce(&mut Settings),
@@ -249,5 +262,23 @@ impl SettingsHandler {
             .as_ref()
             .map(|s| s.note_body_font_size)
             .unwrap_or(DEFAULT_NOTE_BODY_FONT_SIZE)
+    }
+
+    pub fn outbox_enabled(&self) -> bool {
+        self.current_settings
+            .as_ref()
+            .map(|s| s.outbox_enabled)
+            .unwrap_or(DEFAULT_OUTBOX_ENABLED)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_settings_enable_outbox() {
+        let settings = Settings::default();
+        assert!(settings.outbox_enabled);
     }
 }

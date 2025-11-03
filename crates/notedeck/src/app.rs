@@ -6,6 +6,7 @@ use crate::zaps::Zaps;
 use crate::Error;
 use crate::JobPool;
 use crate::NotedeckOptions;
+use crate::OutboxManager;
 use crate::{
     frame_history::FrameHistory, AccountStorage, Accounts, AppContext, Args, DataPath,
     DataPathType, Directory, Images, NoteAction, NoteCache, RelayDebugView, UnknownIds,
@@ -77,6 +78,7 @@ pub struct Notedeck {
     zaps: Zaps,
     frame_history: FrameHistory,
     job_pool: JobPool,
+    outbox: OutboxManager,
     i18n: Localization,
 
     #[cfg(target_os = "android")]
@@ -138,6 +140,7 @@ impl eframe::App for Notedeck {
             } else {
                 ThemePreference::Light
             };
+            settings.outbox_enabled = self.outbox.enabled();
         });
         self.app_size.try_save_app_size(ctx);
 
@@ -204,6 +207,8 @@ impl Notedeck {
         };
 
         let settings = SettingsHandler::new(&path).load();
+        let mut outbox = OutboxManager::default();
+        outbox.set_enabled(settings.outbox_enabled());
 
         let config = Config::new().set_ingester_threads(2).set_mapsize(map_size);
 
@@ -306,6 +311,7 @@ impl Notedeck {
             clipboard: Clipboard::new(None),
             zaps,
             job_pool,
+            outbox,
             i18n,
             #[cfg(target_os = "android")]
             android_app: None,
@@ -372,6 +378,7 @@ impl Notedeck {
             frame_history: &mut self.frame_history,
             job_pool: &mut self.job_pool,
             i18n: &mut self.i18n,
+            outbox: &mut self.outbox,
             #[cfg(target_os = "android")]
             android: self.android_app.as_ref().unwrap().clone(),
         }
