@@ -117,6 +117,22 @@ impl UnknownIds {
         &mut self.ids
     }
 
+    pub fn add_note_hint(&mut self, note_id: &[u8; 32], relay: &str) {
+        if let Ok(relay_url) = RelayUrl::parse(relay) {
+            // Ensure the missing note entry exists (the caller probably already
+            // registered it via `add_note_id_if_missing`) and extend the hint
+            // set so outbox can dial this relay proactively.
+            let entry = self
+                .ids
+                .entry(UnknownId::Id(NoteId::new(*note_id)))
+                .or_default();
+
+            if entry.insert(relay_url) {
+                self.mark_updated();
+            }
+        }
+    }
+
     pub fn clear(&mut self) {
         self.ids = HashMap::default();
     }

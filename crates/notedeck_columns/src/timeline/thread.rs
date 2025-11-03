@@ -2,7 +2,7 @@ use egui_nav::ReturnType;
 use egui_virtual_list::VirtualList;
 use enostr::{NoteId, RelayPool};
 use hashbrown::{hash_map::RawEntryMut, HashMap};
-use nostrdb::{Filter, Ndb, Note, NoteKey, NoteReplyBuf, Transaction};
+use nostrdb::{Filter, Ndb, Note, NoteIdRef, NoteKey, NoteReplyBuf, Transaction};
 use notedeck::{NoteCache, NoteRef, UnknownIds};
 
 use crate::{
@@ -217,11 +217,11 @@ impl Threads {
             }
 
             let Ok(reply_note) = ndb.get_note_by_id(txn, parent.id) else {
-                break 's NextLink::Unknown(parent.id);
+                break 's NextLink::Unknown(parent);
             };
 
             let Some(notekey) = reply_note.key() else {
-                break 's NextLink::Unknown(parent.id);
+                break 's NextLink::Unknown(parent);
             };
 
             NextLink::Next(reply_note, notekey)
@@ -229,7 +229,14 @@ impl Threads {
 
         match next_link {
             NextLink::Unknown(parent) => {
-                unknown_ids.add_note_id_if_missing(ndb, txn, parent);
+                // Remember the missing event so the fallback downloader will
+                // issue a fetch, and capture any relay hint that came with the
+                // tag so we know where to look.
+                unknown_ids.add_note_id_if_missing(ndb, txn, parent.id);
+
+                if let Some(relay_hint) = parent.relay {
+                    unknown_ids.add_note_hint(parent.id, relay_hint);
+                }
             }
             NextLink::Next(next_note, note_key) => {
                 UnknownIds::update_from_note(txn, ndb, unknown_ids, note_cache, &next_note);
@@ -288,7 +295,7 @@ impl Threads {
 }
 
 enum NextLink<'a> {
-    Unknown(&'a [u8; 32]),
+    Unknown(NoteIdRef<'a>),
     Next(Note<'a>, NoteKey),
     None,
 }

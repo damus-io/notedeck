@@ -6,6 +6,8 @@ use nostrdb::{Filter, Ndb, NoteKey, Transaction};
 
 use crate::account::relay::AccountRelayData;
 
+/// Different ways we learn about a relay for an author. Higher quality
+/// inputs get higher base scores so they win ties when we rank relays.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HintSource {
     Nip65Read,
@@ -13,6 +15,9 @@ pub enum HintSource {
     Observed,
 }
 
+/// Lightweight record describing one relay candidate for a pubkey. We keep
+/// this struct intentionally small since the index refreshes every few
+/// frames inside egui.
 #[derive(Debug, Clone)]
 pub struct RelayHint {
     pub url: String,
@@ -32,6 +37,8 @@ impl RelayHint {
     }
 }
 
+/// Cached lookup result for a single author. The TTL keeps us from hammering
+/// nostrdb every frame while still letting the in-memory hints stay fresh.
 #[derive(Debug)]
 struct CacheEntry {
     hints: Vec<RelayHint>,

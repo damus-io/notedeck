@@ -527,9 +527,14 @@ fn process_render_nav_action(
                 .process_relay_action(ui.ctx(), ctx.pool, action);
             None
         }
-        RenderNavAction::SettingsAction(action) => {
-            action.process_settings_action(app, ctx.settings, ctx.i18n, ctx.img_cache, ui.ctx())
-        }
+        RenderNavAction::SettingsAction(action) => action.process_settings_action(
+            app,
+            ctx.settings,
+            ctx.i18n,
+            ctx.img_cache,
+            ctx.outbox,
+            ui.ctx(),
+        ),
         RenderNavAction::RepostAction(action) => {
             action.process(ctx.ndb, &ctx.accounts.get_selected_account().key, ctx.pool)
         }

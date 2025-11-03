@@ -8,8 +8,8 @@ use nostrdb::Transaction;
 use notedeck::{
     tr,
     ui::{is_narrow, richtext_small},
-    Images, JobsCache, LanguageIdentifier, Localization, NoteContext, NotedeckTextStyle, Settings,
-    SettingsHandler, DEFAULT_NOTE_BODY_FONT_SIZE,
+    Images, JobsCache, LanguageIdentifier, Localization, NoteContext, NotedeckTextStyle,
+    OutboxManager, Settings, SettingsHandler, DEFAULT_NOTE_BODY_FONT_SIZE,
 };
 use notedeck_ui::{
     app_images::{copy_to_clipboard_dark_image, copy_to_clipboard_image},
@@ -35,6 +35,7 @@ pub enum SettingsAction {
     SetLocale(LanguageIdentifier),
     SetRepliestNewestFirst(bool),
     SetNoteBodyFontSize(f32),
+    SetOutboxEnabled(bool),
     OpenRelays,
     OpenCacheFolder,
     ClearCacheFolder,
@@ -47,6 +48,7 @@ impl SettingsAction {
         settings: &'a mut SettingsHandler,
         i18n: &'a mut Localization,
         img_cache: &mut Images,
+        outbox: &mut OutboxManager,
         ctx: &egui::Context,
     ) -> Option<RouterAction> {
         let mut route_action: Option<RouterAction> = None;
@@ -88,6 +90,12 @@ impl SettingsAction {
                 ctx.set_style(style);
 
                 settings.set_note_body_font_size(size);
+            }
+            Self::SetOutboxEnabled(value) => {
+                // Keep preferences, runtime toggle, and persisted settings in
+                // sync so the next app launch resumes with the same state.
+                outbox.set_enabled(value);
+                settings.set_outbox_enabled(value);
             }
         }
         route_action
@@ -450,6 +458,41 @@ impl<'a> SettingsView<'a> {
             "Label for others settings section"
         );
         settings_group(ui, title, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(richtext_small(tr!(
+                    self.note_context.i18n,
+                    "Outbox fallback:",
+                    "Label for enabling automatic outbox relay fallbacks, others settings section",
+                )));
+
+                let toggle_label = if self.settings.outbox_enabled {
+                    tr!(
+                        self.note_context.i18n,
+                        "On",
+                        "Toggle label when a setting is enabled, others settings section"
+                    )
+                } else {
+                    tr!(
+                        self.note_context.i18n,
+                        "Off",
+                        "Toggle label when a setting is disabled, others settings section"
+                    )
+                };
+
+                if ui
+                    .toggle_value(
+                        &mut self.settings.outbox_enabled,
+                        RichText::new(toggle_label)
+                            .text_style(NotedeckTextStyle::Small.text_style()),
+                    )
+                    .changed()
+                {
+                    action = Some(SettingsAction::SetOutboxEnabled(
+                        self.settings.outbox_enabled,
+                    ));
+                }
+            });
+
             ui.horizontal_wrapped(|ui| {
                 ui.label(richtext_small(tr!(
                     self.note_context.i18n,

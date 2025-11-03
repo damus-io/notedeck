@@ -6,6 +6,9 @@ use nostrdb::{Ndb, Transaction};
 
 use super::{OutboxRelayIndex, RelayHint};
 
+/// Result of resolving fallback relays for a batch of authors. The `relays`
+/// vector captures the union we should dial, while `per_author` is useful for
+/// debugging/test assertions.
 #[derive(Debug, Default)]
 pub struct RelaySelection {
     pub relays: Vec<String>,
@@ -35,11 +38,17 @@ impl RelayAggregate {
     }
 }
 
+/// Coordinates relay discovery and connection lifetime for outbox reads.
 pub struct OutboxManager {
     enabled: bool,
     connection_budget: usize,
     index: OutboxRelayIndex,
+    /// Tracks only the relays we added temporarily. The counter lets us
+    /// share a single connection between overlapping requests.
     ephemeral_relays: HashMap<String, usize>,
+    /// Map subscription id -> list of relays the outbox layer touched for
+    /// that request. This lets us release a single relay on EOSE instead of
+    /// tearing everything down at once.
     active_requests: HashMap<String, Vec<String>>,
 }
 
@@ -146,6 +155,9 @@ impl OutboxManager {
         RelaySelection { relays, per_author }
     }
 
+    /// Ensure the provided relay URLs are connected before issuing a read.
+    /// Returns the subset we actually touched so the caller can later call
+    /// `begin_request`.
     pub fn ensure_connections(
         &mut self,
         pool: &mut RelayPool,
@@ -179,31 +191,54 @@ impl OutboxManager {
         touched
     }
 
+    /// Record that a new request will depend on the given relays so we can
+    /// release them once all EOSEs arrive.
     pub fn begin_request(&mut self, sub_id: &str, relays: Vec<String>) {
         if relays.is_empty() {
             return;
         }
         self.active_requests
             .entry(sub_id.to_string())
-            .or_default()
+            .or_insert_with(Vec::new)
             .extend(relays);
     }
 
-    pub fn finish_request(&mut self, pool: &mut RelayPool, sub_id: &str) {
-        let Some(relays) = self.active_requests.remove(sub_id) else {
+    /// Release a relay for the given subscription if that relay has finished
+    /// (EOSE, closed, etc). Other relays for the same subscription stay alive
+    /// until they each report completion.
+    pub fn finish_request(&mut self, pool: &mut RelayPool, sub_id: &str, relay: &str) {
+        let Some(pending) = self.active_requests.get_mut(sub_id) else {
             return;
         };
-        self.release_connections(pool, &relays);
+
+        let mut should_release = None;
+
+        if let Some(pos) = pending.iter().position(|r| r == relay) {
+            should_release = Some(pending.remove(pos));
+        }
+
+        if pending.is_empty() {
+            self.active_requests.remove(sub_id);
+        }
+
+        if let Some(relay) = should_release {
+            self.release_connections(pool, std::iter::once(relay));
+        }
     }
 
-    fn release_connections(&mut self, pool: &mut RelayPool, relays: &[String]) {
+    /// Reduce the reference count for each relay and drop the pool connection
+    /// once the last borrower releases it.
+    fn release_connections<I>(&mut self, pool: &mut RelayPool, relays: I)
+    where
+        I: IntoIterator<Item = String>,
+    {
         let mut to_remove: BTreeSet<String> = BTreeSet::new();
 
         for relay in relays {
-            if let Some(entry) = self.ephemeral_relays.get_mut(relay) {
+            if let Some(entry) = self.ephemeral_relays.get_mut(&relay) {
                 if entry.saturating_sub(1) == 0 {
-                    self.ephemeral_relays.remove(relay);
-                    to_remove.insert(relay.clone());
+                    self.ephemeral_relays.remove(&relay);
+                    to_remove.insert(relay);
                 } else {
                     *entry -= 1;
                 }

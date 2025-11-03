@@ -17,11 +17,11 @@ use crate::{
     Result,
 };
 use egui_extras::{Size, StripBuilder};
-use enostr::{ClientMessage, PoolRelay, Pubkey, RelayEvent, RelayMessage, RelayPool};
+use enostr::{ClientMessage, PoolRelay, Pubkey, RelayEvent, RelayMessage};
 use nostrdb::Transaction;
 use notedeck::{
     tr, ui::is_narrow, Accounts, AppAction, AppContext, AppResponse, DataPath, DataPathType,
-    FilterState, Images, JobsCache, Localization, NotedeckOptions, SettingsHandler, UnknownIds,
+    FilterState, Images, JobsCache, Localization, NotedeckOptions, SettingsHandler,
 };
 use notedeck_ui::{
     media::{MediaViewer, MediaViewerFlags, MediaViewerState},
@@ -31,6 +31,8 @@ use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 use tracing::{debug, error, info, trace, warn};
 use uuid::Uuid;
+
+const UNKNOWN_IDS_SUB: &str = "unknownids";
 
 #[derive(Debug, Eq, PartialEq, Clone)]
 pub enum DamusState {
@@ -187,22 +189,91 @@ fn try_process_event(
     }
 
     if app_ctx.unknown_ids.ready_to_send() {
-        unknown_id_send(app_ctx.unknown_ids, app_ctx.pool);
+        unknown_id_send(app_ctx, ctx);
     }
 
     Ok(())
 }
 
-fn unknown_id_send(unknown_ids: &mut UnknownIds, pool: &mut RelayPool) {
-    debug!("unknown_id_send called on: {:?}", &unknown_ids);
-    let filter = unknown_ids.filter().expect("filter");
+fn unknown_id_send(app_ctx: &mut AppContext<'_>, egui_ctx: &egui::Context) {
+    debug!("unknown_id_send called on: {:?}", &app_ctx.unknown_ids);
+
+    // Collect any relay hints we already know (from tags, prior fetches, etc.) so
+    // that the outbox manager can fan out before we build the fallback list.
+    let mut hinted_relays = BTreeSet::new();
+    let mut authors: Vec<Pubkey> = Vec::new();
+
+    {
+        let ids_map = app_ctx.unknown_ids.ids_mut();
+        for (unknown_id, relays) in ids_map.iter() {
+            if let Some(pk) = unknown_id.is_pubkey() {
+                authors.push(pk.to_owned());
+            }
+
+            hinted_relays.extend(relays.iter().map(|url| url.to_string()));
+        }
+    }
+
+    let Some(filter) = app_ctx.unknown_ids.filter() else {
+        return;
+    };
+
+    let txn = match Transaction::new(app_ctx.ndb) {
+        Ok(txn) => txn,
+        Err(err) => {
+            error!("unable to create transaction for outbox lookup: {err}");
+            return;
+        }
+    };
+
+    let outbox_relays = if !authors.is_empty() {
+        app_ctx
+            .outbox
+            .resolve_relays_for_authors(&txn, app_ctx.ndb, authors.iter().map(|pk| pk.as_ref()))
+            .relays
+    } else {
+        Vec::new()
+    };
+
+    let mut target_relays: Vec<String> = hinted_relays.into_iter().collect();
+    for relay in outbox_relays {
+        if !target_relays.contains(&relay) {
+            target_relays.push(relay);
+        }
+        if target_relays.len() >= app_ctx.outbox.connection_budget() {
+            break;
+        }
+    }
+
+    let mut ephemeral_relays = Vec::new();
+    if !target_relays.is_empty() {
+        let wakeup = {
+            let ctx = egui_ctx.clone();
+            move || ctx.request_repaint()
+        };
+
+        // The manager returns the subset of relays we actually touched so we
+        // can release them once the corresponding EOSE arrives.
+        ephemeral_relays = app_ctx
+            .outbox
+            .ensure_connections(app_ctx.pool, &target_relays, wakeup);
+    }
+
     debug!(
         "Getting {} unknown ids from relays",
-        unknown_ids.ids_iter().len()
+        app_ctx.unknown_ids.ids_iter().len()
     );
-    let msg = ClientMessage::req("unknownids".to_string(), filter);
-    unknown_ids.clear();
-    pool.send(&msg);
+    let msg = ClientMessage::req(UNKNOWN_IDS_SUB.to_string(), filter);
+    app_ctx.unknown_ids.clear();
+    app_ctx.pool.send(&msg);
+
+    if !ephemeral_relays.is_empty() {
+        // Track outstanding relays under the well-known sub id so the EOSE
+        // handler can call `finish_request` per relay.
+        app_ctx
+            .outbox
+            .begin_request(UNKNOWN_IDS_SUB, ephemeral_relays);
+    }
 }
 
 #[profiling::function]
@@ -221,7 +292,7 @@ fn update_damus(damus: &mut Damus, app_ctx: &mut AppContext<'_>, ctx: &egui::Con
             // this lets our eose handler know to close unknownids right away
             damus
                 .subscriptions()
-                .insert("unknownids".to_string(), SubKind::OneShot);
+                .insert(UNKNOWN_IDS_SUB.to_string(), SubKind::OneShot);
             if let Err(err) = timeline::setup_initial_nostrdb_subs(
                 app_ctx.ndb,
                 app_ctx.note_cache,
@@ -279,6 +350,10 @@ fn handle_eose(
 
         // oneshot subs just close when they're done
         SubKind::OneShot => {
+            // Relay-specific clean up: only drop the connection that just
+            // reached EOSE so slower relays still have a chance to deliver
+            // the missing parent.
+            ctx.outbox.finish_request(ctx.pool, subid, relay_url);
             let msg = ClientMessage::close(subid.to_string());
             ctx.pool.send_to(&msg, relay_url);
         }
