@@ -359,7 +359,8 @@ pub fn tabs_ui(
 
 fn get_label_width(ui: &mut egui::Ui, text: &str) -> f32 {
     let font_id = egui::FontId::default();
-    let galley = ui.fonts(|r| r.layout_no_wrap(text.to_string(), font_id, egui::Color32::WHITE));
+    let galley =
+        ui.fonts_mut(|r| r.layout_no_wrap(text.to_string(), font_id, egui::Color32::WHITE));
     galley.rect.width()
 }
 

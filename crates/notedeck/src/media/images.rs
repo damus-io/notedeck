@@ -190,16 +190,27 @@ fn parse_img_response(
 ) -> Result<ColorImage, crate::Error> {
     let content_type = response.content_type().unwrap_or_default();
     let size_hint = match imgtyp {
-        ImageType::Profile(size) => SizeHint::Size(size, size),
-        ImageType::Content(Some((w, h))) => SizeHint::Size(w, h),
+        ImageType::Profile(size) => SizeHint::Size {
+            width: size,
+            height: size,
+            maintain_aspect_ratio: true,
+        },
+        ImageType::Content(Some((width, height))) => SizeHint::Size {
+            width,
+            height,
+            maintain_aspect_ratio: true,
+        },
         ImageType::Content(None) => SizeHint::default(),
     };
 
     if content_type.starts_with("image/svg") {
         profiling::scope!("load_svg");
 
-        let mut color_image =
-            egui_extras::image::load_svg_bytes_with_size(&response.bytes, Some(size_hint))?;
+        let mut color_image = egui_extras::image::load_svg_bytes_with_size(
+            &response.bytes,
+            size_hint,
+            &usvg::Options::default(),
+        )?;
         round_image(&mut color_image);
         Ok(color_image)
     } else if content_type.starts_with("image/") {

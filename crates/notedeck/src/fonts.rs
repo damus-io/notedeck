@@ -128,7 +128,6 @@ pub fn setup_fonts(ctx: &egui::Context) {
                 scale: 1.22,            // This font is smaller than DejaVuSans
                 y_offset_factor: -0.18, // and too low
                 y_offset: 0.0,
-                baseline_offset_factor: 0.0,
             }),
         ),
     );
@@ -158,7 +157,6 @@ pub fn setup_fonts(ctx: &egui::Context) {
                 scale: 1.1, // make them a touch larger
                 y_offset_factor: 0.0,
                 y_offset: 0.0,
-                baseline_offset_factor: 0.0,
             }),
         ),
     );

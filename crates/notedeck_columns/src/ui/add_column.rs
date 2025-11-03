@@ -390,7 +390,7 @@ impl<'a> AddColumnView<'a> {
                 desc_min_font_size * ICON_EXPANSION_MULTIPLE,
                 desc_style.font_family(),
             );
-            let max_desc_galley = ui.fonts(|f| {
+            let max_desc_galley = ui.fonts_mut(|f| {
                 f.layout(
                     data.description.to_string(),
                     desc_max_font,
@@ -398,7 +398,7 @@ impl<'a> AddColumnView<'a> {
                     max_wrap_width,
                 )
             });
-            let max_title_galley = ui.fonts(|f| {
+            let max_title_galley = ui.fonts_mut(|f| {
                 f.layout(
                     data.title.to_string(),
                     title_max_font,

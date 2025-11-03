@@ -280,10 +280,11 @@ impl MentionSelectedResponse {
             return;
         };
 
-        let mut new_cursor = text_edit_output
-            .galley
-            .from_ccursor(CCursor::new(self.next_cursor_index));
-        new_cursor.ccursor.prefer_next_row = true;
+        // TODO(kernelkind): determine if this is necessary and if so convert to egui 0.33.0 API
+        // let mut new_cursor = text_edit_output
+        //     .galley
+        //     .from_ccursor(CCursor::new(self.next_cursor_index));
+        // new_cursor.ccursor.prefer_next_row = true;
 
         before_state
             .cursor

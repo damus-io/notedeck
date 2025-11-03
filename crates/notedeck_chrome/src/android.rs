@@ -36,10 +36,10 @@ pub async fn android_main(android_app: AndroidApp) {
         .or_else(|_| EnvFilter::try_new("info"))
         .unwrap();
 
-    tracing_subscriber::registry()
+    let _ = tracing_subscriber::registry()
         .with(filter_layer)
         .with(fmt_layer)
-        .init();
+        .try_init();
 
     let path = android_app.internal_data_path().expect("data path");
     let mut options = eframe::NativeOptions {
