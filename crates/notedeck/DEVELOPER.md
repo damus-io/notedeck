@@ -20,6 +20,7 @@ Notedeck is built around a modular architecture that separates concerns into dis
 3. **Network Layer**
    - `RelayPool` - Manages connections to Nostr relays
    - `UnknownIds` - Tracks and resolves unknown profiles and notes
+   - `OutboxManager` - Collects relay hints (NIP-65, observed relays) and spins up temporary fallback connections
 
 4. **User Accounts**
    - `Accounts` - Manages user keypairs and account information

@@ -22,6 +22,7 @@ mod nip51_set;
 pub mod note;
 mod notecache;
 mod options;
+mod outbox;
 mod persist;
 pub mod platform;
 pub mod profile;
@@ -76,6 +77,7 @@ pub use note::{
 };
 pub use notecache::{CachedNote, NoteCache};
 pub use options::NotedeckOptions;
+pub use outbox::{OutboxManager, RelaySelection};
 pub use persist::*;
 pub use profile::*;
 pub use relay_debug::RelayDebugView;
