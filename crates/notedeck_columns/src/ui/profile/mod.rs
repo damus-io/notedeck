@@ -90,6 +90,15 @@ impl<'a, 'd> ProfileView<'a, 'd> {
                 .get_profile_by_pubkey(&txn, self.pubkey.bytes())
                 .ok();
 
+            if profile.is_none() {
+                // Persist the missing profile so the shared outbox manager can
+                // fan out to the author's relays and hydrate this view.
+                self.note_context
+                    .unknown_ids
+                    .add_pubkey_if_missing(self.note_context.ndb, &txn, self.pubkey.bytes());
+                self.note_context.drive_unknown_ids(ui.ctx());
+            }
+
             if let Some(profile_view_action) =
                 profile_body(ui, self.pubkey, self.note_context, profile.as_ref())
             {

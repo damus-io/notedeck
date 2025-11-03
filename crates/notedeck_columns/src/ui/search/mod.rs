@@ -120,7 +120,7 @@ impl<'a, 'd> SearchView<'a, 'd> {
                     ui.ctx(),
                     search_type,
                     &self.query.string,
-                    self.note_context.ndb,
+                    self.note_context,
                     self.txn,
                     &mut self.query.notes,
                 );
@@ -183,7 +183,7 @@ fn execute_search(
     ctx: &egui::Context,
     search_type: &SearchType,
     raw_input: &String,
-    ndb: &Ndb,
+    note_context: &mut NoteContext,
     txn: &Transaction,
     tab: &mut TimelineTab,
 ) {
@@ -192,14 +192,48 @@ fn execute_search(
     }
 
     let max_results = 500;
+    let ndb = note_context.ndb;
 
     let Some(note_refs) = search_type.search(raw_input, ndb, txn, max_results) else {
+        handle_search_miss(ctx, search_type, note_context, txn);
         return;
     };
 
     tab.units = TimelineUnits::from_refs_single(note_refs);
     tab.list.borrow_mut().reset();
     ctx.request_repaint();
+}
+
+fn handle_search_miss(
+    ctx: &egui::Context,
+    search_type: &SearchType,
+    note_context: &mut NoteContext,
+    txn: &Transaction,
+) {
+    match search_type {
+        SearchType::NoteId(note_id) => {
+            // Queue the missing event so the shared outbox worker can fetch it
+            // from the author's relays if we do not already have it locally.
+            note_context
+                .unknown_ids
+                .add_note_id_if_missing(note_context.ndb, txn, note_id.bytes());
+            note_context.drive_unknown_ids(ctx);
+        }
+        SearchType::Profile(pubkey) => {
+            // Trigger a background fetch for the profile timeline so the view
+            // can hydrate once data arrives from fallback relays.
+            note_context
+                .unknown_ids
+                .add_pubkey_if_missing(note_context.ndb, txn, pubkey.bytes());
+            note_context.drive_unknown_ids(ctx);
+        }
+        SearchType::String | SearchType::Hashtag(_) => {
+            // Plain-text and hashtag searches rely entirely on local
+            // full-text indices today; once remote federation is available we
+            // can route through outbox-aware search providers here.
+        }
+    }
+
 }
 
 enum SearchAction {
