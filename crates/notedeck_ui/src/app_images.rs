@@ -195,6 +195,10 @@ pub fn repost_image(dark_mode: bool) -> Image<'static> {
     }
 }
 
+pub fn seen_on_relay_image() -> Image<'static> {
+    Image::new(include_image!("../../../assets/icons/seen_on_relay.svg"))
+}
+
 pub fn reply_dark_image() -> Image<'static> {
     Image::new(include_image!("../../../assets/icons/reply.png"))
 }

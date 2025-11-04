@@ -7,6 +7,9 @@
 # Profile about/bio field label
 About_00c0 = About
 
+# Button to go to the accounts view
+Accounts_03a0 = Accounts
+
 # Column title for account management
 Accounts_f018 = Accounts
 
@@ -64,6 +67,9 @@ Algo_2452 = Algo
 # Description for algorithmic feeds column
 Algorithmic_feeds_to_aid_in_note_discovery_d344 = Algorithmic feeds to aid in note discovery
 
+# Filter label for all notes view
+All_8729 = All
+
 # Label for zap amount input field
 Amount_70f0 = Amount
 
@@ -78,9 +84,6 @@ Ask_dave_anything_33d1 = Ask dave anything...
 
 # Profile banner URL field label
 Banner_52ef = Banner
-
-# Beta version label
-BETA_8e5d = BETA
 
 # Broadcast the note to all connected relays
 Broadcast_fe43 = Broadcast
@@ -99,6 +102,12 @@ Clear_cache_dccb = Clear cache
 
 # Hover text for editable zap amount
 Click_to_edit_0414 = Click to edit
+
+# Button to go to the ClnDash app
+ClnDash_2988 = ClnDash
+
+# Button to go to the Columns app
+Columns_7215 = Columns
 
 # Column title for note composition
 Compose_Note_c094 = Compose Note
@@ -130,6 +139,12 @@ Contacts__last_notes_3f84 = Contacts (last notes)
 # Button label to copy logs
 Copy_a688 = Copy
 
+# Copy a damus.io link to the author's profile to keyboard
+Copy_Link_490f = Copy Link
+
+# Copy the damus.io link to this note to clipboard
+Copy_Link_bb21 = Copy Link
+
 # Button to copy media link to clipboard
 Copy_Link_dc7c = Copy Link
 
@@ -148,27 +163,6 @@ Copy_Pubkey_9cc4 = Copy Pubkey
 # Copy the text content of the note to clipboard
 Copy_Text_f81c = Copy Text
 
-# Relative time in days
-count_d_b9be = {$count}d
-
-# Relative time in hours
-count_h_3ecb = {$count}h
-
-# Relative time in minutes
-count_m_b41e = {$count}m
-
-# Relative time in months
-count_mo_7aba = {$count}mo
-
-# Relative time in seconds
-count_s_aa26 = {$count}s
-
-# Relative time in weeks
-count_w_7468 = {$count}w
-
-# Relative time in years
-count_y_9408 = {$count}y
-
 # Button to create a new account
 Create_Account_6994 = Create Account
 
@@ -181,11 +175,20 @@ Custom_a69e = Custom
 # Column title for zap amount customization
 Customize_Zap_Amount_cfc4 = Customize Zap Amount
 
+# Damus android beta version label
+Damus_Android_BETA_e76b = Damus Android BETA
+
+# Damus notedeck beta version label
+Damus_Notedeck_BETA_99ac = Damus Notedeck BETA
+
 # Column title for support page
 Damus_Support_27c0 = Damus Support
 
 # Label for Theme Dark, Appearance settings section
 Dark_85fe = Dark
+
+# Button to go to the Dave app
+Dave_7a46 = Dave
 
 # Label for deck name input field
 Deck_name_cd32 = Deck name
@@ -292,6 +295,9 @@ k_5K_f7e6 = 5K
 # Description for your notes column
 Keep_track_of_your_notes___replies_a334 = Keep track of your notes & replies
 
+# desc
+key_1dee = key
+
 # label for keys setting section
 Keys_435f = Keys
 
@@ -307,6 +313,9 @@ Light_7475 = Light
 # Bitcoin Lightning network address field label
 Lightning_network_address__lud16_ea51 = Lightning network address (lud16)
 
+# Hover text for like button
+Like_this_note_dfb5 = Like this note
+
 # Login page title
 Login_9eef = Login
 
@@ -315,6 +324,9 @@ Login_now___let_s_do_this_5630 = Login now — let's do this!
 
 # Text shown on blurred media from unfollowed users
 Media_from_someone_you_don_t_follow_5611 = Media from someone you don't follow
+
+# Filter label for mentions only view
+Mentions_28d3 = Mentions
 
 # Tooltip for moving a column
 Moves_this_column_to_another_position_0d4b = Moves this column to another position
@@ -327,6 +339,9 @@ name__reacted_to_a_note_you_were_tagged_in_4b62 = {$name} reacted to a note you 
 
 # reaction from user to your note
 name__reacted_to_your_note_ead9 = {$name} reacted to your note
+
+# repost from user
+name__reposted_1379 = {$name} reposted
 
 # repost from user
 name__reposted_a_note_you_were_tagged_in_1379 = {$name} reposted a note you were tagged in
@@ -349,20 +364,17 @@ Not_Connected_6292 = Not Connected
 # Link text for note references
 note_cad6 = note
 
+# Button to go to the Notebook app
+Notebook_6f45 = Notebook
+
 # Beta product warning message
 Notedeck_is_a_beta_product__Expect_bugs_and_contact_us_when_you_run_into_issues_a671 = Notedeck is a beta product. Expect bugs and contact us when you run into issues.
 
 # Filter label for notes only view
 Notes_03fb = Notes
 
-# Label for notes-only filter
-Notes_60d2 = Notes
-
 # Filter label for notes and replies view
 Notes___Replies_1ec2 = Notes & Replies
-
-# Label for notes and replies filter
-Notes___Replies_6e3b = Notes & Replies
 
 # Column title for notifications
 Notifications_d673 = Notifications
@@ -372,6 +384,12 @@ Notifications_ef56 = Notifications
 
 # Relative time for very recent events (less than 3 seconds)
 now_2181 = now
+
+# Toggle label when a setting is disabled, others settings section
+Off_47be = Off
+
+# Toggle label when a setting is enabled, others settings section
+On_4578 = On
 
 # Setting to turn on sorting replies so that the newest are shown first
 On_f412 = On
@@ -385,8 +403,14 @@ Open_Email_25e9 = Open Email
 # Instruction to open email client
 Open_your_default_email_client_to_get_help_from_the_Damus_team_68dc = Open your default email client to get help from the Damus team
 
+# Button to go to the Other app
+Other_f4d8 = Other
+
 # Label for others settings section
 Others_7267 = Others
+
+# Label for enabling automatic outbox relay fallbacks, others settings section
+Outbox_fallback_4828 = Outbox fallback:
 
 # Placeholder text for NWC URI input
 Paste_your_NWC_URI_here_b471 = Paste your NWC URI here...
@@ -405,6 +429,9 @@ Post_now_8a49 = Post now
 
 # Instruction for copying logs
 Press_the_button_below_to_copy_your_most_recent_logs_to_your_system_s_clipboard__Then_paste_it_into_your_email_322e = Press the button below to copy your most recent logs to your system's clipboard. Then paste it into your email.
+
+# Button to go to the user's profile
+Profile_c0ba = Profile
 
 # Profile picture URL field label
 Profile_picture_81ff = Profile picture
@@ -454,11 +481,11 @@ replying_to__user__s__thread_444d = replying to {$user}'s {$thread}
 # Fallback text when reply note is not found
 replying_to_a_note_e0bc = replying to a note
 
+# Column title for deciding the type of repost
+Repost_06b2 = Repost
+
 # Hover text for repost button
 Repost_this_note_8e56 = Repost this note
-
-# Label for reposted notes
-Reposted_61c8 = Reposted
 
 # Label for reset note body font size, Appearance settings section
 Reset_4e60 = Reset
@@ -499,11 +526,17 @@ See_notes_from_your_contacts_ac16 = See notes from your contacts
 # Description for universe column
 See_the_whole_nostr_universe_7694 = See the whole nostr universe
 
+# Heading text for the relay badge tooltip and popup
+Seen_on_1263 = Seen on
+
 # Button to select all profiles in follow pack
 Select_All_a319 = Select All
 
 # Button label to send a zap
 Send_1ea4 = Send
+
+# Button to go to the settings view
+Settings_4d83 = Settings
 
 # Column title for app settings
 Settings_7a4f = Settings
@@ -559,14 +592,11 @@ Subscribe_to_someone_else_s_notes_d1e9 = Subscribe to someone else's notes
 # Column title for subscribing to individual user
 Subscribe_to_someone_s_notes_b3c8 = Subscribe to someone's notes
 
+# Button to go to the support view
+Support_75e2 = Support
+
 # Support email address
 Support_email_44d9 = Support email:
-
-# Hover text for dark mode toggle button
-Switch_to_dark_mode_4dec = Switch to dark mode
-
-# Hover text for light mode toggle button
-Switch_to_light_mode_72ce = Switch to light mode
 
 # Button text to load blurred media
 Tap_to_Load_4b05 = Tap to Load
@@ -576,6 +606,9 @@ The_Dave_Nostr_AI_assistant_trial_has_ended_____Thanks_for_testing__Zap-enabled_
 
 # Label for theme, Appearance settings section
 Theme_4aac = Theme:
+
+# Button to change the theme (light or dark)
+Theme_7e6b = Theme
 
 # Column title for note thread view
 Thread_0f20 = Thread
@@ -603,6 +636,9 @@ View_folder_9742 = View folder
 
 # Column title for wallet management
 Wallet_5e50 = Wallet
+
+# Button to go to the wallet view
+Wallet_899d = Wallet
 
 # Hint for deck name input field
 We_recommend_short_names_083e = We recommend short names
@@ -654,6 +690,14 @@ name__and__count__others_reacted_to_your_note_0f6a =
     { $count ->
         [one] {$name} and {$count} other reacted to your note
        *[other] {$name} and {$count} others reacted to your note
+    }
+
+
+# describing the amount of reposts a note has
+name__and__count__others_reposted_708c =
+    { $count ->
+        [one] {$name} and {$count} other reposted
+       *[other] {$name} and {$count} others reposted
     }
 
 

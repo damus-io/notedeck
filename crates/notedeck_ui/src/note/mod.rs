@@ -22,7 +22,8 @@ pub use options::NoteOptions;
 pub use reply_description::reply_desc;
 
 use egui::emath::{pos2, Vec2};
-use egui::{Id, Pos2, Rect, Response, Sense};
+use egui::popup::{popup_below_widget, PopupCloseBehavior};
+use egui::{Button, Color32, Id, Pos2, Rect, Response, RichText, Sense, Stroke};
 use enostr::{KeypairUnowned, NoteId, Pubkey};
 use nostrdb::{Ndb, Note, NoteKey, ProfileRecord, Transaction};
 use notedeck::{
@@ -322,7 +323,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
                 .inner_margin(egui::Margin::same(8))
                 .outer_margin(egui::Margin::symmetric(0, 8))
                 .corner_radius(egui::CornerRadius::same(10))
-                .stroke(egui::Stroke::new(
+                .stroke(Stroke::new(
                     1.0,
                     ui.visuals().noninteractive().bg_stroke.color,
                 ))
@@ -445,29 +446,35 @@ impl<'a, 'd> NoteView<'a, 'd> {
             note_action = contents.action.or(note_action);
 
             if self.options().contains(NoteOptions::ActionBar) {
-                note_action = ui
-                    .horizontal_wrapped(|ui| {
-                        // NOTE(jb55): without this we get a weird artifact where
-                        // there subsequent lines start sinking leftward off the screen.
-                        // question: WTF? question 2: WHY?
-                        ui.allocate_space(egui::vec2(0.0, 0.0));
+                let resp = ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    render_seen_on_button(ui, self.note_context.i18n, self.note, txn);
+                    ui.add_space(8.0);
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            // NOTE(jb55): without this we get a weird artifact where
+                            // subsequent lines start sinking leftward off the screen.
+                            ui.allocate_space(egui::vec2(0.0, 0.0));
 
-                        render_note_actionbar(
-                            ui,
-                            get_zapper(
-                                self.note_context.accounts,
-                                self.note_context.global_wallet,
-                                self.note_context.zaps,
-                            ),
-                            self.note.id(),
-                            self.note.pubkey(),
-                            self.note_context.accounts.selected_account_pubkey(),
-                            note_key,
-                            self.note_context.i18n,
-                        )
+                            render_note_actionbar(
+                                ui,
+                                get_zapper(
+                                    self.note_context.accounts,
+                                    self.note_context.global_wallet,
+                                    self.note_context.zaps,
+                                ),
+                                self.note.id(),
+                                self.note.pubkey(),
+                                self.note_context.accounts.selected_account_pubkey(),
+                                note_key,
+                                self.note_context.i18n,
+                            )
+                        })
+                        .inner
                     })
                     .inner
-                    .or(note_action);
+                });
+
+                note_action = resp.inner.or(note_action);
             }
 
             NoteUiResponse {
@@ -539,24 +546,32 @@ impl<'a, 'd> NoteView<'a, 'd> {
                 note_action = contents.action.or(note_action);
 
                 if self.options().contains(NoteOptions::ActionBar) {
-                    note_action = ui
-                        .horizontal_wrapped(|ui| {
-                            render_note_actionbar(
-                                ui,
-                                get_zapper(
-                                    self.note_context.accounts,
-                                    self.note_context.global_wallet,
-                                    self.note_context.zaps,
-                                ),
-                                self.note.id(),
-                                self.note.pubkey(),
-                                self.note_context.accounts.selected_account_pubkey(),
-                                note_key,
-                                self.note_context.i18n,
-                            )
-                        })
-                        .inner
-                        .or(note_action);
+                    let resp =
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            render_seen_on_button(ui, self.note_context.i18n, self.note, txn);
+                            ui.add_space(8.0);
+                            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                                ui.horizontal_wrapped(|ui| {
+                                    render_note_actionbar(
+                                        ui,
+                                        get_zapper(
+                                            self.note_context.accounts,
+                                            self.note_context.global_wallet,
+                                            self.note_context.zaps,
+                                        ),
+                                        self.note.id(),
+                                        self.note.pubkey(),
+                                        self.note_context.accounts.selected_account_pubkey(),
+                                        note_key,
+                                        self.note_context.i18n,
+                                    )
+                                })
+                                .inner
+                            })
+                            .inner
+                        });
+
+                    note_action = resp.inner.or(note_action);
                 }
 
                 NoteUiResponse {
@@ -913,6 +928,93 @@ fn render_notetime(
     }
 }
 
+/// Draws the "Seen on relay" badge and expansion UI.
+fn render_seen_on_button(
+    ui: &mut egui::Ui,
+    i18n: &mut Localization,
+    note: &Note,
+    txn: &Transaction,
+) {
+    let mut relays: Vec<String> = note
+        .relays(txn)
+        .filter_map(|relay| {
+            let trimmed = relay.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_owned())
+        })
+        .collect();
+
+    if relays.is_empty() {
+        return;
+    }
+
+    relays.sort();
+    relays.dedup();
+
+    let tooltip_heading = tr!(
+        i18n,
+        "Seen on",
+        "Heading text for the relay badge tooltip and popup"
+    );
+
+    let text_color = ui.visuals().weak_text_color();
+    let popup_id = ui.make_persistent_id(("relay_badge", *note.id()));
+
+    let badge_response = ui.add(
+        Button::image_and_text(
+            app_images::seen_on_relay_image()
+                .fit_to_exact_size(Vec2::splat(16.0))
+                .tint(text_color),
+            RichText::new(relays.len().to_string())
+                .size(12.0)
+                .color(text_color),
+        )
+        .frame(false)
+        .min_size(Vec2::ZERO)
+        .sense(Sense::click()),
+    );
+
+    let relays_for_hover = relays.clone();
+    let tooltip_heading_clone = tooltip_heading.clone();
+    badge_response.clone().on_hover_ui(move |ui| {
+        ui.label(RichText::new(&tooltip_heading_clone).strong());
+        for relay in &relays_for_hover {
+            ui.label(simplify_relay_label(relay));
+        }
+    });
+
+    if badge_response.clicked() {
+        ui.memory_mut(|mem| mem.toggle_popup(popup_id));
+    }
+
+    let relays_for_popup = relays.clone();
+    popup_below_widget(
+        ui,
+        popup_id,
+        &badge_response,
+        PopupCloseBehavior::CloseOnClickOutside,
+        |ui| {
+            ui.set_min_width(220.0);
+            ui.vertical(|ui| {
+                ui.label(RichText::new(&tooltip_heading).strong());
+                for relay in &relays_for_popup {
+                    ui.label(simplify_relay_label(relay));
+                }
+            });
+        },
+    );
+}
+
+fn simplify_relay_label(relay: &str) -> String {
+    relay
+        .trim()
+        .trim_end_matches('/')
+        .trim_start_matches("wss://")
+        .trim_start_matches("ws://")
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .to_string()
+}
+
 fn reply_button(ui: &mut egui::Ui, i18n: &mut Localization, note_key: NoteKey) -> egui::Response {
     let img = if ui.style().visuals.dark_mode {
         app_images::reply_dark_image()
@@ -1029,11 +1131,11 @@ fn zap_button<'a>(
                     .with_speed(0.35)
                     .animate();
 
-                let cur_color = egui::Color32::from_rgba_unmultiplied(0xFF, 0xB7, 0x57, cur_alpha);
+                let cur_color = Color32::from_rgba_unmultiplied(0xFF, 0xB7, 0x57, cur_alpha);
                 img = img.tint(cur_color);
             }
             AnyZapState::LocalOnly => {
-                img = img.tint(egui::Color32::from_rgb(0xFF, 0xB7, 0x57));
+                img = img.tint(Color32::from_rgb(0xFF, 0xB7, 0x57));
             }
             AnyZapState::Confirmed => {}
         }
