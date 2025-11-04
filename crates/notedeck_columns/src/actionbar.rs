@@ -189,9 +189,7 @@ fn execute_note_action(
         NoteAction::Context(context) => match ndb.get_note_by_key(txn, context.note_key) {
             Err(err) => tracing::error!("{err}"),
             Ok(note) => {
-                context
-                    .action
-                    .process_selection(ui, &note, pool, txn);
+                context.action.process_selection(ui, &note, pool, txn);
             }
         },
         NoteAction::Media(media_action) => {

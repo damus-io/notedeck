@@ -29,9 +29,7 @@ pub struct ContextSelection {
 
 /// Collects relay URLs where the note was actually observed.
 fn relay_hints_for_note(note: &Note<'_>, txn: &Transaction) -> Vec<String> {
-    note.relays(txn)
-        .map(|relay| relay.to_owned())
-        .collect()
+    note.relays(txn).map(|relay| relay.to_owned()).collect()
 }
 
 fn note_nip19_event_bech(note: &Note<'_>, txn: &Transaction) -> Option<String> {
