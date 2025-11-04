@@ -233,7 +233,6 @@ fn handle_search_miss(
             // can route through outbox-aware search providers here.
         }
     }
-
 }
 
 enum SearchAction {

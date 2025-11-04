@@ -52,14 +52,7 @@ impl<'d> NoteContext<'d> {
             move || ctx.request_repaint()
         };
 
-        dispatch_unknown_ids(
-            self.unknown_ids,
-            self.outbox,
-            self.pool,
-            self.ndb,
-            wakeup,
-        )
-        .is_some()
+        dispatch_unknown_ids(self.unknown_ids, self.outbox, self.pool, self.ndb, wakeup).is_some()
     }
 }
 

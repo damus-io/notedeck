@@ -20,9 +20,9 @@ use egui_extras::{Size, StripBuilder};
 use enostr::{ClientMessage, PoolRelay, Pubkey, RelayEvent, RelayMessage};
 use nostrdb::Transaction;
 use notedeck::{
-    dispatch_unknown_ids, tr, ui::is_narrow, Accounts, AppAction, AppContext, AppResponse, DataPath,
-    DataPathType, FilterState, Images, JobsCache, Localization, NotedeckOptions, SettingsHandler,
-    UNKNOWN_IDS_SUB,
+    dispatch_unknown_ids, tr, ui::is_narrow, Accounts, AppAction, AppContext, AppResponse,
+    DataPath, DataPathType, FilterState, Images, JobsCache, Localization, NotedeckOptions,
+    SettingsHandler, UNKNOWN_IDS_SUB,
 };
 use notedeck_ui::{
     media::{MediaViewer, MediaViewerFlags, MediaViewerState},
