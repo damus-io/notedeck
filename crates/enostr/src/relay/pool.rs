@@ -7,11 +7,8 @@ use std::time::{Duration, Instant};
 
 use url::Url;
 
-#[cfg(not(target_arch = "wasm32"))]
 use ewebsock::{WsEvent, WsMessage};
-
-#[cfg(not(target_arch = "wasm32"))]
-use tracing::{debug, error};
+use tracing::{debug, trace, error};
 
 use super::subs_debug::SubsDebug;
 
@@ -257,7 +254,7 @@ impl RelayPool {
 
                             let should_ping = now - relay.last_ping > self.ping_rate;
                             if should_ping {
-                                debug!("pinging {}", relay.relay.url);
+                                trace!("pinging {}", relay.relay.url);
                                 relay.relay.ping();
                                 relay.last_ping = Instant::now();
                             }
@@ -382,7 +379,7 @@ impl RelayPool {
                         // We only need to do this natively.
                         #[cfg(not(target_arch = "wasm32"))]
                         if let WsMessage::Ping(ref bs) = ev {
-                            debug!("pong {}", relay.url());
+                            trace!("pong {}", relay.url());
                             match relay {
                                 PoolRelay::Websocket(wsr) => {
                                     wsr.relay.sender.send(WsMessage::Pong(bs.to_owned()));
