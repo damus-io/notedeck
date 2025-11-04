@@ -102,7 +102,7 @@ pub fn summary_cards_ui(ui: &mut egui::Ui, s: &Summary, prev: Option<&Summary>) 
             }
 
             // If the last row wasn't full, close it anyway
-            if items_len % cols != 0 {
+            if !items_len.is_multiple_of(cols) {
                 ui.end_row();
             }
         });

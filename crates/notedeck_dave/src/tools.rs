@@ -145,11 +145,6 @@ pub enum ToolCalls {
     Invalid(InvalidToolCall),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct ErrorCall {
-    error: String,
-}
-
 impl ToolCalls {
     pub fn to_api(&self) -> FunctionCall {
         FunctionCall {

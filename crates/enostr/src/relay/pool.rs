@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use url::Url;
 
 use ewebsock::{WsEvent, WsMessage};
-use tracing::{debug, trace, error};
+use tracing::{debug, error, trace};
 
 use super::subs_debug::SubsDebug;
 
