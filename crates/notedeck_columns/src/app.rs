@@ -17,11 +17,12 @@ use crate::{
     Result,
 };
 use egui_extras::{Size, StripBuilder};
-use enostr::{ClientMessage, PoolRelay, Pubkey, RelayEvent, RelayMessage, RelayPool};
+use enostr::{ClientMessage, PoolRelay, Pubkey, RelayEvent, RelayMessage};
 use nostrdb::Transaction;
 use notedeck::{
-    tr, ui::is_narrow, Accounts, AppAction, AppContext, AppResponse, DataPath, DataPathType,
-    FilterState, Images, JobsCache, Localization, NotedeckOptions, SettingsHandler, UnknownIds,
+    dispatch_unknown_ids, tr, ui::is_narrow, Accounts, AppAction, AppContext, AppResponse,
+    DataPath, DataPathType, FilterState, Images, JobsCache, Localization, NotedeckOptions,
+    SettingsHandler, UNKNOWN_IDS_SUB,
 };
 use notedeck_ui::{
     media::{MediaViewer, MediaViewerFlags, MediaViewerState},
@@ -187,22 +188,39 @@ fn try_process_event(
     }
 
     if app_ctx.unknown_ids.ready_to_send() {
-        unknown_id_send(app_ctx.unknown_ids, app_ctx.pool);
+        unknown_id_send(app_ctx, ctx);
     }
 
     Ok(())
 }
 
-fn unknown_id_send(unknown_ids: &mut UnknownIds, pool: &mut RelayPool) {
-    debug!("unknown_id_send called on: {:?}", &unknown_ids);
-    let filter = unknown_ids.filter().expect("filter");
-    debug!(
-        "Getting {} unknown ids from relays",
-        unknown_ids.ids_iter().len()
-    );
-    let msg = ClientMessage::req("unknownids".to_string(), filter);
-    unknown_ids.clear();
-    pool.send(&msg);
+fn unknown_id_send(app_ctx: &mut AppContext<'_>, egui_ctx: &egui::Context) {
+    if !app_ctx.unknown_ids.ready_to_send() {
+        return;
+    }
+
+    let pending = app_ctx.unknown_ids.ids_iter().len();
+    let wakeup = {
+        let ctx = egui_ctx.clone();
+        move || ctx.request_repaint()
+    };
+
+    match dispatch_unknown_ids(
+        app_ctx.unknown_ids,
+        app_ctx.outbox,
+        app_ctx.pool,
+        app_ctx.ndb,
+        wakeup,
+    ) {
+        Some(plan) => {
+            debug!(
+                "Getting {} unknown ids from relays ({} relays fanned out)",
+                pending,
+                plan.relays.len()
+            );
+        }
+        None => debug!("unknown_id_send invoked without pending work"),
+    }
 }
 
 #[profiling::function]
@@ -221,7 +239,7 @@ fn update_damus(damus: &mut Damus, app_ctx: &mut AppContext<'_>, ctx: &egui::Con
             // this lets our eose handler know to close unknownids right away
             damus
                 .subscriptions()
-                .insert("unknownids".to_string(), SubKind::OneShot);
+                .insert(UNKNOWN_IDS_SUB.to_string(), SubKind::OneShot);
             if let Err(err) = timeline::setup_initial_nostrdb_subs(
                 app_ctx.ndb,
                 app_ctx.note_cache,
@@ -279,6 +297,10 @@ fn handle_eose(
 
         // oneshot subs just close when they're done
         SubKind::OneShot => {
+            // Relay-specific clean up: only drop the connection that just
+            // reached EOSE so slower relays still have a chance to deliver
+            // the missing parent.
+            ctx.outbox.finish_request(ctx.pool, subid, relay_url);
             let msg = ClientMessage::close(subid.to_string());
             ctx.pool.send_to(&msg, relay_url);
         }

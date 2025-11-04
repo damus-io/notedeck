@@ -219,6 +219,7 @@ impl<'a> DaveUi<'a> {
             zaps: ctx.zaps,
             pool: ctx.pool,
             job_pool: ctx.job_pool,
+            outbox: ctx.outbox,
             unknown_ids: ctx.unknown_ids,
             clipboard: ctx.clipboard,
             i18n: ctx.i18n,

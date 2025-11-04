@@ -877,6 +877,7 @@ mod preview {
                 zaps: app.zaps,
                 pool: app.pool,
                 job_pool: app.job_pool,
+                outbox: app.outbox,
                 unknown_ids: app.unknown_ids,
                 clipboard: app.clipboard,
                 i18n: app.i18n,
