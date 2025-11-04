@@ -15,10 +15,10 @@ pub enum BroadcastContext {
 pub enum NoteContextSelection {
     CopyText,
     CopyPubkey,
-    CopyNoteId,
+    CopyNevent,
     CopyNoteJSON,
     Broadcast(BroadcastContext),
-    CopyLink,
+    CopyNeventLink,
 }
 
 #[derive(Debug, Eq, PartialEq, Clone)]
@@ -27,16 +27,21 @@ pub struct ContextSelection {
     pub action: NoteContextSelection,
 }
 
-const MAX_RELAY_HINTS: usize = 3;
-
-/// Collects at most `MAX_RELAY_HINTS` relay URLs where the note was actually observed.
-/// We intentionally skip pool-based fallbacks: NIP-19 hints should only advertise relays
-/// that are likely to store the event, and emitting no hint is preferable to speculating.
+/// Collects relay URLs where the note was actually observed.
 fn relay_hints_for_note(note: &Note<'_>, txn: &Transaction) -> Vec<String> {
     note.relays(txn)
-        .take(MAX_RELAY_HINTS)
         .map(|relay| relay.to_owned())
         .collect()
+}
+
+fn note_nip19_event_bech(note: &Note<'_>, txn: &Transaction) -> Option<String> {
+    let relay_hints = relay_hints_for_note(note, txn);
+    let nip19event = nostr::nips::nip19::Nip19Event::new(
+        nostr::event::EventId::from_byte_array(*note.id()),
+        relay_hints,
+    );
+
+    nostr::nips::nip19::ToBech32::to_bech32(&nip19event).ok()
 }
 
 impl NoteContextSelection {
@@ -46,7 +51,6 @@ impl NoteContextSelection {
         note: &Note<'_>,
         pool: &mut RelayPool,
         txn: &Transaction,
-        note_author_is_selected_acc: bool,
     ) {
         match self {
             NoteContextSelection::Broadcast(context) => {
@@ -69,38 +73,24 @@ impl NoteContextSelection {
                     ui.ctx().copy_text(bech);
                 }
             }
-            NoteContextSelection::CopyNoteId => {
-                let relay_hints = relay_hints_for_note(note, txn);
-                let nip19event = nostr::nips::nip19::Nip19Event::new(
-                    nostr::event::EventId::from_byte_array(*note.id()),
-                    relay_hints,
-                );
-                let Ok(bech) = nostr::nips::nip19::ToBech32::to_bech32(&nip19event) else {
-                    return;
-                };
-                ui.ctx().copy_text(bech);
+            NoteContextSelection::CopyNevent => {
+                if let Some(bech) = note_nip19_event_bech(note, txn) {
+                    ui.ctx().copy_text(bech);
+                }
             }
             NoteContextSelection::CopyNoteJSON => match note.json() {
                 Ok(json) => ui.ctx().copy_text(json),
                 Err(err) => error!("error copying note json: {err}"),
             },
-            NoteContextSelection::CopyLink => {
+            NoteContextSelection::CopyNeventLink => {
                 let damus_url = |s| format!("https://damus.io/{s}");
-                if note_author_is_selected_acc {
-                    let relay_hints = relay_hints_for_note(note, txn);
-                    let nip19event = nostr::nips::nip19::Nip19Event::new(
-                        nostr::event::EventId::from_byte_array(*note.id()),
-                        relay_hints,
-                    );
-                    let Ok(bech) = nostr::nips::nip19::ToBech32::to_bech32(&nip19event) else {
-                        return;
-                    };
+                if let Some(bech) = note_nip19_event_bech(note, txn) {
                     ui.ctx().copy_text(damus_url(bech));
-                } else {
-                    let Some(bech) = NoteId::new(*note.id()).to_bech() else {
-                        return;
-                    };
+                    return;
+                }
 
+                // Fallback to event id without relay hints if encoding fails.
+                if let Some(bech) = NoteId::new(*note.id()).to_bech() {
                     ui.ctx().copy_text(damus_url(bech));
                 }
             }
