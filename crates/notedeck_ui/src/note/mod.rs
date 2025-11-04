@@ -844,6 +844,21 @@ fn zap_actionbar_button(
     action
 }
 
+fn is_root_note(note: &Note) -> bool {
+    for tag in note.tags() {
+        if tag.count() < 2 {
+            continue;
+        }
+
+        // any reference to an e tag is a non-root note
+        if tag.get_str(0) == Some("e") {
+            return false;
+        }
+    }
+
+    true
+}
+
 #[profiling::function]
 fn render_note_actionbar(
     ui: &mut egui::Ui,
