@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use enostr::Pubkey;
 use notedeck_ui::nip51_set::Nip51SetUiCache;
@@ -29,10 +30,62 @@ pub struct ViewState {
 
     /// Keep track of checkbox state of follow pack onboarding
     pub follow_packs: Nip51SetUiCache,
+
+    /// Ephemeral toast notifications shown over the UI
+    pub toasts: Toasts,
 }
 
 impl ViewState {
     pub fn login_mut(&mut self) -> &mut AcquireKeyState {
         &mut self.login
+    }
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum ToastKind {
+    Success,
+    Error,
+}
+
+#[derive(Debug, Clone)]
+pub struct ToastMessage {
+    pub id: u64,
+    pub message: String,
+    pub created_at: Instant,
+    pub kind: ToastKind,
+}
+
+#[derive(Debug, Default)]
+pub struct Toasts {
+    entries: Vec<ToastMessage>,
+    next_id: u64,
+}
+
+impl Toasts {
+    const LIFETIME: Duration = Duration::from_secs(4);
+
+    pub fn push(&mut self, message: impl Into<String>, kind: ToastKind) {
+        let msg = ToastMessage {
+            id: self.next_id,
+            message: message.into(),
+            created_at: Instant::now(),
+            kind,
+        };
+        self.next_id = self.next_id.wrapping_add(1);
+        self.entries.push(msg);
+    }
+
+    pub fn cleanup(&mut self) {
+        let now = Instant::now();
+        self.entries
+            .retain(|toast| now.duration_since(toast.created_at) < Self::LIFETIME);
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    pub fn entries(&self) -> &[ToastMessage] {
+        &self.entries
     }
 }

@@ -499,6 +499,7 @@ fn process_render_nav_action(
                 ctx.global_wallet,
                 ctx.zaps,
                 ctx.img_cache,
+                ctx.i18n,
                 &mut app.view_state,
                 ui,
             )

@@ -16,6 +16,7 @@ use crate::{
     view_state::ViewState,
     Result,
 };
+use egui::CornerRadius;
 use egui_extras::{Size, StripBuilder};
 use enostr::{ClientMessage, PoolRelay, Pubkey, RelayEvent, RelayMessage, RelayPool};
 use nostrdb::Transaction;
@@ -29,6 +30,7 @@ use notedeck_ui::{
 };
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
+use std::time::Duration;
 use tracing::{debug, error, info, trace, warn};
 use uuid::Uuid;
 
@@ -390,6 +392,7 @@ fn render_damus(damus: &mut Damus, app_ctx: &mut AppContext<'_>, ui: &mut egui::
     };
 
     fullscreen_media_viewer_ui(ui, &mut damus.view_state.media_viewer, app_ctx.img_cache);
+    toast_overlay(ui.ctx(), &mut damus.view_state.toasts);
 
     // We use this for keeping timestamps and things up to date
     //ui.ctx().request_repaint_after(Duration::from_secs(5));
@@ -425,6 +428,66 @@ fn fullscreen_media_viewer_ui(
 /// Close the fullscreen media player. This also resets the scene_rect state
 fn fullscreen_media_close(state: &mut MediaViewerState) {
     state.flags.set(MediaViewerFlags::Open, false);
+}
+
+fn toast_overlay(ctx: &egui::Context, toasts: &mut crate::view_state::Toasts) {
+    toasts.cleanup();
+
+    if toasts.is_empty() {
+        return;
+    }
+
+    ctx.request_repaint_after(Duration::from_millis(100));
+
+    let base_offset = egui::vec2(-24.0, -24.0);
+    let spacing = 12.0;
+    let max_width = 320.0;
+
+    for (idx, toast) in toasts.entries().iter().enumerate() {
+        let offset = egui::vec2(base_offset.x, base_offset.y - idx as f32 * (spacing + 48.0));
+
+        egui::Area::new(egui::Id::new(("toast", toast.id)))
+            .anchor(egui::Align2::RIGHT_BOTTOM, offset)
+            .order(egui::Order::Foreground)
+            .interactable(false)
+            .show(ctx, |ui| {
+                let visuals = ui.visuals().clone();
+                let (stroke, fill, text_color) = match toast.kind {
+                    crate::view_state::ToastKind::Success => (
+                        visuals.selection.stroke,
+                        visuals.extreme_bg_color,
+                        visuals.strong_text_color(),
+                    ),
+                    crate::view_state::ToastKind::Error => {
+                        let err = visuals.error_fg_color;
+                        let fill =
+                            egui::Color32::from_rgba_unmultiplied(err.r(), err.g(), err.b(), 200);
+                        (
+                            egui::Stroke {
+                                width: 1.0,
+                                color: err,
+                            },
+                            fill,
+                            egui::Color32::WHITE,
+                        )
+                    }
+                };
+
+                egui::Frame::default()
+                    .fill(fill)
+                    .corner_radius(CornerRadius::same(10))
+                    .stroke(stroke)
+                    .show(ui, |ui| {
+                        ui.set_min_width(max_width);
+                        ui.set_max_width(max_width);
+                        ui.label(
+                            egui::RichText::new(&toast.message)
+                                .color(text_color)
+                                .strong(),
+                        );
+                    });
+            });
+    }
 }
 
 /*

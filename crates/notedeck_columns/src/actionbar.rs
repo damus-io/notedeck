@@ -8,7 +8,7 @@ use crate::{
         thread::{selected_has_at_least_n_replies, NoteSeenFlags, ThreadNode, Threads},
         InsertionResponse, ThreadSelection, TimelineCache, TimelineKind,
     },
-    view_state::ViewState,
+    view_state::{ToastKind, ViewState},
 };
 
 use egui_nav::Percent;
@@ -17,7 +17,7 @@ use nostrdb::{IngestMetadata, Ndb, Note, NoteBuilder, NoteKey, Transaction};
 use notedeck::{
     get_wallet_for,
     note::{reaction_sent_id, ReactAction, ZapTargetAmount},
-    Accounts, GlobalWallet, Images, NoteAction, NoteCache, NoteContextSelection,
+    tr, Accounts, GlobalWallet, Images, Localization, NoteAction, NoteCache, NoteContextSelection,
     NoteZapTargetOwned, UnknownIds, ZapAction, ZapTarget, ZappingError, Zaps,
 };
 use notedeck_ui::media::MediaViewerFlags;
@@ -57,6 +57,7 @@ fn execute_note_action(
     global_wallet: &mut GlobalWallet,
     zaps: &mut Zaps,
     images: &mut Images,
+    i18n: &mut Localization,
     view_state: &mut ViewState,
     router_type: RouterType,
     ui: &mut egui::Ui,
@@ -198,6 +199,14 @@ fn execute_note_action(
                             warn!(
                                 "Ignoring deletion request for note not authored by the selected account"
                             );
+                            view_state.toasts.push(
+                                tr!(
+                                    i18n,
+                                    "You can only delete your own notes",
+                                    "Toast shown when attempting to delete someone else's note"
+                                ),
+                                ToastKind::Error,
+                            );
                         } else if let Some(filled) = accounts.selected_filled() {
                             match send_note_deletion_request(ndb, pool, filled, &note, None) {
                                 Ok(()) => {
@@ -205,11 +214,37 @@ fn execute_note_action(
                                         timeline_cache.remove_note(note_key);
                                         threads.remove_note(note_key);
                                     }
+                                    view_state.toasts.push(
+                                        tr!(
+                                            i18n,
+                                            "Deletion request sent",
+                                            "Toast shown after a deletion request is published"
+                                        ),
+                                        ToastKind::Success,
+                                    );
                                 }
-                                Err(err) => error!("Failed to send deletion request: {err}"),
+                                Err(err) => {
+                                    error!("Failed to send deletion request: {err}");
+                                    let msg = tr!(
+                                        i18n,
+                                        "Failed to send deletion request",
+                                        "Toast shown when publishing deletion request fails"
+                                    );
+                                    view_state
+                                        .toasts
+                                        .push(format!("{msg}: {err}"), ToastKind::Error);
+                                }
                             }
                         } else {
                             warn!("Selected account is missing a signing key for deletion request");
+                            view_state.toasts.push(
+                                tr!(
+                                    i18n,
+                                    "Account is missing a signing key",
+                                    "Toast shown when user cannot sign deletion requests"
+                                ),
+                                ToastKind::Error,
+                            );
                         }
                     }
                     action => {
@@ -255,6 +290,7 @@ pub fn execute_and_process_note_action(
     global_wallet: &mut GlobalWallet,
     zaps: &mut Zaps,
     images: &mut Images,
+    i18n: &mut Localization,
     view_state: &mut ViewState,
     ui: &mut egui::Ui,
 ) -> Option<RouterAction> {
@@ -280,6 +316,7 @@ pub fn execute_and_process_note_action(
         global_wallet,
         zaps,
         images,
+        i18n,
         view_state,
         router_type,
         ui,

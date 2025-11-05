@@ -483,6 +483,7 @@ fn chrome_handle_app_action(
                 ctx.global_wallet,
                 ctx.zaps,
                 ctx.img_cache,
+                ctx.i18n,
                 &mut columns.view_state,
                 ui,
             );
@@ -539,6 +540,7 @@ fn columns_route_to_profile(
         ctx.global_wallet,
         ctx.zaps,
         ctx.img_cache,
+        ctx.i18n,
         &mut columns.view_state,
         ui,
     );
