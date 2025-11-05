@@ -36,10 +36,10 @@ use egui::scroll_area::ScrollAreaOutput;
 use egui_nav::{
     Nav, NavAction, NavResponse, NavUiType, PopupResponse, PopupSheet, RouteResponse, Split,
 };
-use enostr::ProfileState;
+use enostr::{ProfileState, RelayPool};
 use nostrdb::{Filter, Ndb, Transaction};
 use notedeck::{
-    get_current_default_msats, tr, ui::is_narrow, Accounts, AppContext, NoteAction, NoteContext,
+    get_current_default_msats, tr, ui::is_narrow, Accounts, AppContext, NoteAction, NoteCache, NoteContext,
     RelayAction,
 };
 use notedeck_ui::NoteOptions;
@@ -317,6 +317,8 @@ fn process_nav_resp(
             NavAction::Navigating => {
                 // explicitly update the edit profile state when navigating
                 handle_navigating_edit_profile(ctx.ndb, ctx.accounts, app, col);
+                // open timeline in cache when navigating to timeline routes
+                handle_navigating_timeline(ctx.ndb, ctx.note_cache, ctx.pool, ctx.accounts, app, col);
             }
         }
     }
@@ -360,6 +362,30 @@ fn handle_navigating_edit_profile(ndb: &Ndb, accounts: &Accounts, app: &mut Damu
             ProfileState::default()
         }
     });
+}
+
+fn handle_navigating_timeline(
+    ndb: &Ndb,
+    note_cache: &mut NoteCache,
+    pool: &mut RelayPool,
+    accounts: &Accounts,
+    app: &mut Damus,
+    col: usize,
+) {
+    let kind = {
+        let Route::Timeline(kind) = app.columns(accounts).column(col).router().top() else {
+            return;
+        };
+
+        if app.timeline_cache.get(kind).is_some() {
+            return;
+        }
+
+        kind.to_owned()
+    };
+
+    let txn = Transaction::new(ndb).expect("txn");
+    app.timeline_cache.open(ndb, note_cache, &txn, pool, &kind);
 }
 
 pub enum RouterAction {

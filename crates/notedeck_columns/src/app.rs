@@ -870,6 +870,8 @@ fn timelines_view(
                     ctx.accounts.get_selected_account(),
                     &app.decks_cache,
                     ctx.i18n,
+                    ctx.ndb,
+                    ctx.img_cache,
                 )
                 .show(ui);
 
