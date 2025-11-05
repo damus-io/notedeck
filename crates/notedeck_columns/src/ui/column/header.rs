@@ -66,6 +66,11 @@ impl<'a> NavTitle<'a> {
                     .layout(egui::Layout::left_to_right(egui::Align::Center)),
             );
 
+            let interact_rect = child_ui.interact(rect, child_ui.id().with("drag"), Sense::drag());
+            if interact_rect.drag_started_by(egui::PointerButton::Primary) {
+                child_ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+            }
+
             let r = self.title_bar(&mut child_ui);
 
             ui.advance_cursor_after_rect(rect);
