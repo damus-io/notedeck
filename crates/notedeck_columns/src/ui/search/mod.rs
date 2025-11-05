@@ -307,8 +307,8 @@ fn search_box(
                             .hint_text(
                                 RichText::new(tr!(
                                     i18n,
-                                    "Search notes...",
-                                    "Placeholder for search notes input field"
+                                    "Search posts, @users, #hashtags...",
+                                    "Placeholder for search input field"
                                 ))
                                 .weak(),
                             )
