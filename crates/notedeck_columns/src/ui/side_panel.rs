@@ -29,6 +29,7 @@ pub struct DesktopSidePanel<'a> {
     i18n: &'a mut Localization,
     ndb: &'a nostrdb::Ndb,
     img_cache: &'a mut notedeck::Images,
+    current_route: Option<&'a Route>,
 }
 
 impl View for DesktopSidePanel<'_> {
@@ -72,6 +73,7 @@ impl<'a> DesktopSidePanel<'a> {
         i18n: &'a mut Localization,
         ndb: &'a nostrdb::Ndb,
         img_cache: &'a mut notedeck::Images,
+        current_route: Option<&'a Route>,
     ) -> Self {
         Self {
             selected_account,
@@ -79,6 +81,7 @@ impl<'a> DesktopSidePanel<'a> {
             i18n,
             ndb,
             img_cache,
+            current_route,
         }
     }
 
@@ -117,11 +120,11 @@ impl<'a> DesktopSidePanel<'a> {
                 .max_height(available_for_scroll)
                 .show(ui, |ui| {
                     ui.with_layout(Layout::top_down(egui::Align::Center), |ui| {
-                        let search_resp = ui.add(search_button());
-                        let settings_resp = ui.add(settings_button());
-                        let accounts_resp = ui.add(accounts_button());
-                        let wallet_resp = ui.add(wallet_button());
-                        let support_resp = ui.add(support_button());
+                        let search_resp = ui.add(search_button(self.current_route));
+                        let settings_resp = ui.add(settings_button(self.current_route));
+                        let accounts_resp = ui.add(accounts_button(self.current_route));
+                        let wallet_resp = ui.add(wallet_button(self.current_route));
+                        let support_resp = ui.add(support_button(self.current_route));
 
                         let dave_resp = ui.add(dave_button());
 
@@ -427,14 +430,24 @@ fn add_column_button() -> impl Widget {
     }
 }
 
-pub fn search_button_impl(color: egui::Color32, line_width: f32) -> impl Widget {
+pub fn search_button_impl(color: egui::Color32, line_width: f32, is_active: bool) -> impl Widget {
     move |ui: &mut egui::Ui| -> egui::Response {
-        let max_size = ICON_WIDTH * ICON_EXPANSION_MULTIPLE; // max size of the widget
-        let min_line_width_circle = line_width; // width of the magnifying glass
+        let max_size = ICON_WIDTH * ICON_EXPANSION_MULTIPLE;
+        let min_line_width_circle = line_width;
         let min_line_width_handle = line_width;
         let helper = AnimationHelper::new(ui, "search-button", vec2(max_size, max_size));
 
         let painter = ui.painter_at(helper.get_animation_rect());
+
+        if is_active {
+            let circle_radius = max_size / 2.0;
+            painter.circle(
+                helper.get_animation_rect().center(),
+                circle_radius,
+                ui.visuals().widgets.active.weak_bg_fill,
+                Stroke::NONE,
+            );
+        }
 
         let cur_line_width_circle = helper.scale_1d_pos(min_line_width_circle);
         let cur_line_width_handle = helper.scale_1d_pos(min_line_width_handle);
@@ -454,8 +467,9 @@ pub fn search_button_impl(color: egui::Color32, line_width: f32) -> impl Widget 
         let handle_pos_2 =
             circle_center + (handle_vec * (cur_outer_circle_radius + cur_handle_length));
 
-        let circle_stroke = Stroke::new(cur_line_width_circle, color);
-        let handle_stroke = Stroke::new(cur_line_width_handle, color);
+        let icon_color = if is_active { ui.visuals().strong_text_color() } else { color };
+        let circle_stroke = Stroke::new(cur_line_width_circle, icon_color);
+        let handle_stroke = Stroke::new(cur_line_width_handle, icon_color);
 
         painter.line_segment([handle_pos_1, handle_pos_2], handle_stroke);
         painter.circle(
@@ -472,8 +486,9 @@ pub fn search_button_impl(color: egui::Color32, line_width: f32) -> impl Widget 
     }
 }
 
-pub fn search_button() -> impl Widget {
-    search_button_impl(colors::MID_GRAY, 1.5)
+pub fn search_button(current_route: Option<&Route>) -> impl Widget + '_ {
+    let is_active = matches!(current_route, Some(Route::Search));
+    move |ui: &mut egui::Ui| search_button_impl(colors::MID_GRAY, 1.5, is_active).ui(ui)
 }
 
 // TODO: convert to responsive button when expanded side panel impl is finished
@@ -541,16 +556,29 @@ fn show_decks<'a>(
     InnerResponse::new(clicked_index, resp)
 }
 
-fn settings_button() -> impl Widget {
+fn settings_button(current_route: Option<&Route>) -> impl Widget + '_ {
+    let is_active = matches!(current_route, Some(Route::Settings));
     move |ui: &mut egui::Ui| {
         let img_size = 24.0;
         let max_size = ICON_WIDTH * ICON_EXPANSION_MULTIPLE;
+        let helper = AnimationHelper::new(ui, "settings-button", vec2(max_size, max_size));
+
+        let painter = ui.painter_at(helper.get_animation_rect());
+        if is_active {
+            let circle_radius = max_size / 2.0;
+            painter.circle(
+                helper.get_animation_rect().center(),
+                circle_radius,
+                ui.visuals().widgets.active.weak_bg_fill,
+                Stroke::NONE,
+            );
+        }
+
         let img = if ui.visuals().dark_mode {
             app_images::settings_dark_image()
         } else {
             app_images::settings_light_image()
         };
-        let helper = AnimationHelper::new(ui, "settings-button", vec2(max_size, max_size));
         let cur_img_size = helper.scale_1d_pos(img_size);
         img.paint_at(ui, helper.get_animation_rect().shrink((max_size - cur_img_size) / 2.0));
         helper.take_animation_response()
@@ -559,12 +587,25 @@ fn settings_button() -> impl Widget {
     }
 }
 
-fn accounts_button() -> impl Widget {
+fn accounts_button(current_route: Option<&Route>) -> impl Widget + '_ {
+    let is_active = matches!(current_route, Some(Route::Accounts(_)));
     move |ui: &mut egui::Ui| {
         let img_size = 24.0;
         let max_size = ICON_WIDTH * ICON_EXPANSION_MULTIPLE;
-        let img = app_images::accounts_image();
         let helper = AnimationHelper::new(ui, "accounts-button", vec2(max_size, max_size));
+
+        let painter = ui.painter_at(helper.get_animation_rect());
+        if is_active {
+            let circle_radius = max_size / 2.0;
+            painter.circle(
+                helper.get_animation_rect().center(),
+                circle_radius,
+                ui.visuals().widgets.active.weak_bg_fill,
+                Stroke::NONE,
+            );
+        }
+
+        let img = app_images::accounts_image();
         let cur_img_size = helper.scale_1d_pos(img_size);
         img.paint_at(ui, helper.get_animation_rect().shrink((max_size - cur_img_size) / 2.0));
         helper.take_animation_response()
@@ -573,16 +614,29 @@ fn accounts_button() -> impl Widget {
     }
 }
 
-fn wallet_button() -> impl Widget {
+fn wallet_button(current_route: Option<&Route>) -> impl Widget + '_ {
+    let is_active = matches!(current_route, Some(Route::Wallet(_)));
     move |ui: &mut egui::Ui| {
         let img_size = 24.0;
         let max_size = ICON_WIDTH * ICON_EXPANSION_MULTIPLE;
+        let helper = AnimationHelper::new(ui, "wallet-button", vec2(max_size, max_size));
+
+        let painter = ui.painter_at(helper.get_animation_rect());
+        if is_active {
+            let circle_radius = max_size / 2.0;
+            painter.circle(
+                helper.get_animation_rect().center(),
+                circle_radius,
+                ui.visuals().widgets.active.weak_bg_fill,
+                Stroke::NONE,
+            );
+        }
+
         let img = if ui.visuals().dark_mode {
             app_images::wallet_dark_image()
         } else {
             app_images::wallet_light_image()
         };
-        let helper = AnimationHelper::new(ui, "wallet-button", vec2(max_size, max_size));
         let cur_img_size = helper.scale_1d_pos(img_size);
         img.paint_at(ui, helper.get_animation_rect().shrink((max_size - cur_img_size) / 2.0));
         helper.take_animation_response()
@@ -591,16 +645,29 @@ fn wallet_button() -> impl Widget {
     }
 }
 
-fn support_button() -> impl Widget {
+fn support_button(current_route: Option<&Route>) -> impl Widget + '_ {
+    let is_active = matches!(current_route, Some(Route::Support));
     move |ui: &mut egui::Ui| {
         let img_size = 24.0;
         let max_size = ICON_WIDTH * ICON_EXPANSION_MULTIPLE;
+        let helper = AnimationHelper::new(ui, "support-button", vec2(max_size, max_size));
+
+        let painter = ui.painter_at(helper.get_animation_rect());
+        if is_active {
+            let circle_radius = max_size / 2.0;
+            painter.circle(
+                helper.get_animation_rect().center(),
+                circle_radius,
+                ui.visuals().widgets.active.weak_bg_fill,
+                Stroke::NONE,
+            );
+        }
+
         let img = if ui.visuals().dark_mode {
             app_images::help_dark_image()
         } else {
             app_images::help_light_image()
         };
-        let helper = AnimationHelper::new(ui, "support-button", vec2(max_size, max_size));
         let cur_img_size = helper.scale_1d_pos(img_size);
         img.paint_at(ui, helper.get_animation_rect().shrink((max_size - cur_img_size) / 2.0));
         helper.take_animation_response()

@@ -470,7 +470,7 @@ impl<'a> NavTitle<'a> {
                 TimelineKind::Search(_sq) => {
                     // TODO: show author pfp if author field set?
 
-                    Some(ui.add(ui::side_panel::search_button()))
+                    Some(ui.add(ui::side_panel::search_button(None)))
                 }
 
                 TimelineKind::Universe
@@ -490,7 +490,7 @@ impl<'a> NavTitle<'a> {
             Route::NewDeck => None,
             Route::EditDeck(_) => None,
             Route::EditProfile(pubkey) => Some(self.show_profile(ui, pubkey, pfp_size)),
-            Route::Search => Some(ui.add(ui::side_panel::search_button())),
+            Route::Search => Some(ui.add(ui::side_panel::search_button(None))),
             Route::Wallet(_) => None,
             Route::CustomizeZapAmount(_) => None,
             Route::Thread(thread_selection) => {

@@ -43,7 +43,7 @@ pub fn toolbar(ui: &mut egui::Ui, unseen_notification: bool) -> Option<ToolbarAc
                 }
             } else if index == 1
                 && ui
-                    .add(search_button_impl(ui.visuals().text_color(), 2.0))
+                    .add(search_button_impl(ui.visuals().text_color(), 2.0, false))
                     .clicked()
             {
                 action = Some(ToolbarAction::Search)
