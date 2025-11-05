@@ -1,7 +1,12 @@
 use egui::text::LayoutJob;
 use poll_promise::Promise;
 
-use crate::{media_upload::Nip94Event, post::PostBuffer, ui::note::PostType, Error};
+use crate::{
+    media_upload::Nip94Event,
+    post::PostBuffer,
+    ui::{note::PostType, search::FocusState},
+    Error,
+};
 use std::collections::HashMap;
 
 #[derive(Default)]
@@ -12,6 +17,7 @@ pub struct Draft {
     pub uploaded_media: Vec<Nip94Event>, // media uploads to include
     pub uploading_media: Vec<Promise<Result<Nip94Event, Error>>>, // promises that aren't ready yet
     pub upload_errors: Vec<String>,      // media upload errors to show the user
+    pub focus_state: FocusState,
 }
 
 pub struct MentionHint {
