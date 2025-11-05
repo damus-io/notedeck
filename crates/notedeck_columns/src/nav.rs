@@ -299,6 +299,9 @@ fn process_nav_resp(
             }
 
             NavAction::Navigated => {
+                handle_navigating_edit_profile(ctx.ndb, ctx.accounts, app, col);
+                handle_navigating_timeline(ctx.ndb, ctx.note_cache, ctx.pool, ctx.accounts, app, col);
+
                 let cur_router = app
                     .columns_mut(ctx.i18n, ctx.accounts)
                     .column_mut(col)
@@ -315,9 +318,7 @@ fn process_nav_resp(
             NavAction::Returning(_) => {}
             NavAction::Resetting => {}
             NavAction::Navigating => {
-                // explicitly update the edit profile state when navigating
                 handle_navigating_edit_profile(ctx.ndb, ctx.accounts, app, col);
-                // open timeline in cache when navigating to timeline routes
                 handle_navigating_timeline(ctx.ndb, ctx.note_cache, ctx.pool, ctx.accounts, app, col);
             }
         }
@@ -1144,6 +1145,7 @@ pub fn render_nav(
                 .router_mut()
                 .returning,
         )
+        .animate_transitions(ctx.settings.get_settings_mut().animate_nav_transitions)
         .show_mut(ui, |ui, render_type, nav| match render_type {
             NavUiType::Title => {
                 let action = NavTitle::new(

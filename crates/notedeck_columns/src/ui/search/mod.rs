@@ -318,6 +318,12 @@ fn search_box(
                             .frame(false),
                     );
 
+                    if response.has_focus() {
+                        if ui.input(|i| i.key_pressed(Key::ArrowUp) || i.key_pressed(Key::ArrowDown)) {
+                            response.surrender_focus();
+                        }
+                    }
+
                     input_context(ui, &response, clipboard, input, PasteBehavior::Append);
 
                     let mut requested_focus = false;
