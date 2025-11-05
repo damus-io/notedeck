@@ -19,7 +19,7 @@ pub enum TypingType {
     AutoSearch,
 }
 
-#[derive(Debug, Eq, PartialEq, Clone)]
+#[derive(Debug, Eq, PartialEq, Clone, Default)]
 pub enum FocusState {
     /// Get ready to focus
     Navigating,
@@ -28,6 +28,7 @@ pub enum FocusState {
     ShouldRequestFocus,
 
     /// We already focused, we don't need to do that again
+    #[default]
     RequestedFocus,
 }
 

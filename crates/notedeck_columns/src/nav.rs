@@ -738,7 +738,18 @@ fn render_nav_body(
             let Some(kp) = ctx.accounts.get_selected_account().key.to_full() else {
                 return BodyResponse::none();
             };
+            let navigating =
+                get_active_columns_mut(note_context.i18n, ctx.accounts, &mut app.decks_cache)
+                    .column(col)
+                    .router()
+                    .navigating;
             let draft = app.drafts.compose_mut();
+
+            if navigating {
+                draft.focus_state = FocusState::Navigating
+            } else if draft.focus_state == FocusState::Navigating {
+                draft.focus_state = FocusState::ShouldRequestFocus;
+            }
 
             let txn = Transaction::new(ctx.ndb).expect("txn");
             let post_response = ui::PostView::new(
