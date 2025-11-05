@@ -150,6 +150,10 @@ impl TimelineTab {
         }
     }
 
+    pub fn remove_note(&mut self, note_key: NoteKey) -> bool {
+        self.units.remove_by_note_key(note_key)
+    }
+
     fn insert<'a>(
         &mut self,
         payloads: Vec<&'a NotePayload>,
@@ -350,6 +354,12 @@ impl Timeline {
 
     pub fn view_mut(&mut self, view: ViewFilter) -> Option<&mut TimelineTab> {
         self.views.iter_mut().find(|tab| tab.filter == view)
+    }
+
+    pub fn remove_note(&mut self, note_key: NoteKey) -> bool {
+        self.views
+            .iter_mut()
+            .fold(false, |removed, tab| tab.remove_note(note_key) || removed)
     }
 
     /// Initial insert of notes into a timeline. Subsequent inserts should

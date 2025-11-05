@@ -13,15 +13,15 @@ use crate::{
 
 use egui_nav::Percent;
 use enostr::{FilledKeypair, NoteId, Pubkey, RelayPool};
-use nostrdb::{IngestMetadata, Ndb, NoteBuilder, NoteKey, Transaction};
+use nostrdb::{IngestMetadata, Ndb, Note, NoteBuilder, NoteKey, Transaction};
 use notedeck::{
     get_wallet_for,
     note::{reaction_sent_id, ReactAction, ZapTargetAmount},
-    Accounts, GlobalWallet, Images, NoteAction, NoteCache, NoteZapTargetOwned, UnknownIds,
-    ZapAction, ZapTarget, ZappingError, Zaps,
+    Accounts, GlobalWallet, Images, NoteAction, NoteCache, NoteContextSelection,
+    NoteZapTargetOwned, UnknownIds, ZapAction, ZapTarget, ZappingError, Zaps,
 };
 use notedeck_ui::media::MediaViewerFlags;
-use tracing::error;
+use tracing::{error, warn};
 
 pub struct NewNotes {
     pub id: TimelineKind,
@@ -189,12 +189,33 @@ fn execute_note_action(
         NoteAction::Context(context) => match ndb.get_note_by_key(txn, context.note_key) {
             Err(err) => tracing::error!("{err}"),
             Ok(note) => {
-                context.action.process_selection(
-                    ui,
-                    &note,
-                    pool,
-                    accounts.selected_account_pubkey().bytes() == note.pubkey(),
-                );
+                let authored_by_selected =
+                    accounts.selected_account_pubkey().bytes() == note.pubkey();
+
+                match context.action {
+                    NoteContextSelection::RequestDeletion => {
+                        if !authored_by_selected {
+                            warn!(
+                                "Ignoring deletion request for note not authored by the selected account"
+                            );
+                        } else if let Some(filled) = accounts.selected_filled() {
+                            match send_note_deletion_request(ndb, pool, filled, &note, None) {
+                                Ok(()) => {
+                                    if let Some(note_key) = note.key() {
+                                        timeline_cache.remove_note(note_key);
+                                        threads.remove_note(note_key);
+                                    }
+                                }
+                                Err(err) => error!("Failed to send deletion request: {err}"),
+                            }
+                        } else {
+                            warn!("Selected account is missing a signing key for deletion request");
+                        }
+                    }
+                    action => {
+                        action.process_selection(ui, &note, pool, authored_by_selected);
+                    }
+                }
             }
         },
         NoteAction::Media(media_action) => {
@@ -340,6 +361,47 @@ fn send_reaction_event(
 
     let Ok(json) = event.to_json() else {
         return Err("failed to serialize reaction event to json".to_owned());
+    };
+
+    let _ = ndb.process_event_with(&json, IngestMetadata::new().client(true));
+
+    pool.send(event);
+
+    Ok(())
+}
+
+fn send_note_deletion_request(
+    ndb: &mut Ndb,
+    pool: &mut RelayPool,
+    kp: FilledKeypair<'_>,
+    target_note: &Note<'_>,
+    reason: Option<&str>,
+) -> Result<(), String> {
+    if target_note.pubkey() != kp.pubkey.bytes() {
+        return Err(
+            "cannot request deletion for a note not authored by the selected account".to_owned(),
+        );
+    }
+
+    let mut builder = NoteBuilder::new().kind(5).content(reason.unwrap_or(""));
+
+    builder = builder.start_tag().tag_str("e").tag_id(target_note.id());
+    builder = builder
+        .start_tag()
+        .tag_str("k")
+        .tag_str(&target_note.kind().to_string());
+
+    let note = builder
+        .sign(&kp.secret_key.secret_bytes())
+        .build()
+        .ok_or_else(|| "failed to build deletion request event".to_owned())?;
+
+    let Ok(event) = &enostr::ClientMessage::event(&note) else {
+        return Err("failed to convert deletion request into client message".to_owned());
+    };
+
+    let Ok(json) = event.to_json() else {
+        return Err("failed to serialize deletion request event to json".to_owned());
     };
 
     let _ = ndb.process_event_with(&json, IngestMetadata::new().client(true));

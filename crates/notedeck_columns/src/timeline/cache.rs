@@ -7,7 +7,7 @@ use crate::{
 use notedeck::{filter, FilterState, NoteCache, NoteRef};
 
 use enostr::RelayPool;
-use nostrdb::{Filter, Ndb, Transaction};
+use nostrdb::{Filter, Ndb, NoteKey, Transaction};
 use std::collections::HashMap;
 use tracing::{debug, error, info, warn};
 
@@ -239,6 +239,16 @@ impl TimelineCache {
         }
 
         open_result
+    }
+
+    pub fn remove_note(&mut self, note_key: NoteKey) -> usize {
+        let mut affected = 0;
+        for timeline in self.timelines.values_mut() {
+            if timeline.remove_note(note_key) {
+                affected += 1;
+            }
+        }
+        affected
     }
 
     pub fn get(&self, id: &TimelineKind) -> Option<&Timeline> {

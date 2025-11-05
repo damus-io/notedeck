@@ -65,6 +65,7 @@ impl NoteContextButton {
         ui: &mut egui::Ui,
         i18n: &mut Localization,
         button_response: egui::Response,
+        can_request_deletion: bool,
     ) -> Option<NoteContextSelection> {
         let mut context_selection: Option<NoteContextSelection> = None;
 
@@ -153,6 +154,21 @@ impl NoteContextButton {
                     BroadcastContext::LocalNetwork,
                 ));
                 ui.close_menu();
+            }
+
+            if can_request_deletion {
+                ui.separator();
+                if ui
+                    .button(tr!(
+                        i18n,
+                        "Request Deletion",
+                        "Button label to create a NIP-09 deletion request for this note"
+                    ))
+                    .clicked()
+                {
+                    context_selection = Some(NoteContextSelection::RequestDeletion);
+                    ui.close_menu();
+                }
             }
         });
 

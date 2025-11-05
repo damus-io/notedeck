@@ -599,9 +599,16 @@ impl<'a, 'd> NoteView<'a, 'd> {
                 Rect::from_min_size(min, egui::vec2(size, size))
             };
 
+            let note_is_from_selected_account =
+                self.note_context.accounts.selected_account_pubkey().bytes() == self.note.pubkey();
+
             let resp = ui.add(NoteContextButton::new(note_key).place_at(context_pos));
-            if let Some(action) = NoteContextButton::menu(ui, self.note_context.i18n, resp.clone())
-            {
+            if let Some(action) = NoteContextButton::menu(
+                ui,
+                self.note_context.i18n,
+                resp.clone(),
+                note_is_from_selected_account,
+            ) {
                 note_action = Some(NoteAction::Context(ContextSelection { note_key, action }));
             }
         }

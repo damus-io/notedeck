@@ -285,6 +285,12 @@ impl Threads {
 
         have_all_ancestors
     }
+
+    pub fn remove_note(&mut self, note_key: NoteKey) -> bool {
+        self.threads.values_mut().fold(false, |removed, node| {
+            node.replies.remove(note_key) || removed
+        })
+    }
 }
 
 enum NextLink<'a> {
@@ -422,5 +428,9 @@ impl SingleNoteUnits {
 
     pub fn contains_key(&self, k: &NoteKey) -> bool {
         self.units.contains_key(&UnitKey::Single(*k))
+    }
+
+    pub fn remove(&mut self, note_key: NoteKey) -> bool {
+        self.units.remove_by_note_key(note_key)
     }
 }

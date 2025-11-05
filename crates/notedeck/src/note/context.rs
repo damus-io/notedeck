@@ -1,6 +1,6 @@
 use enostr::{ClientMessage, NoteId, Pubkey, RelayPool};
 use nostrdb::{Note, NoteKey};
-use tracing::error;
+use tracing::{error, warn};
 
 /// When broadcasting notes, this determines whether to broadcast
 /// over the local network via multicast, or globally
@@ -19,6 +19,7 @@ pub enum NoteContextSelection {
     CopyNoteJSON,
     Broadcast(BroadcastContext),
     CopyLink,
+    RequestDeletion,
 }
 
 #[derive(Debug, Eq, PartialEq, Clone)]
@@ -83,6 +84,9 @@ impl NoteContextSelection {
 
                     ui.ctx().copy_text(damus_url(bech));
                 }
+            }
+            NoteContextSelection::RequestDeletion => {
+                warn!("RequestDeletion should be handled by the caller before process_selection");
             }
         }
     }

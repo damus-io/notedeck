@@ -51,6 +51,23 @@ impl NoteUnits {
         self.storage.is_empty()
     }
 
+    pub fn remove_by_note_key(&mut self, note_key: NoteKey) -> bool {
+        let mut removed_any = false;
+
+        self.order.retain(|&idx| {
+            if let Some(unit) = self.storage.get(idx) {
+                if unit.get_underlying_noteref().key == note_key {
+                    self.lookup.remove(&unit.key());
+                    removed_any = true;
+                    return false;
+                }
+            }
+            true
+        });
+
+        removed_any
+    }
+
     /// Get the kth index from 0..Self::len
     pub fn kth(&self, k: usize) -> Option<&NoteUnit> {
         if k >= self.order.len() {

@@ -315,7 +315,8 @@ The `NoteContextButton` component provides a standard context menu for notes:
 
 ```rust
 let resp = ui.add(NoteContextButton::new(note_key));
-if let Some(action) = NoteContextButton::menu(ui, resp) {
+let can_request_deletion = note_pubkey == accounts.selected_account_pubkey().bytes();
+if let Some(action) = NoteContextButton::menu(ui, resp, can_request_deletion) {
     // Handle context action
 }
 ```

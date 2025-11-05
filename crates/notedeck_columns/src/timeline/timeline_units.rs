@@ -81,6 +81,10 @@ impl TimelineUnits {
     pub fn get(&self, index: usize) -> Option<&NoteUnit> {
         self.units.kth(index)
     }
+
+    pub fn remove_by_note_key(&mut self, note_key: NoteKey) -> bool {
+        self.units.remove_by_note_key(note_key)
+    }
 }
 
 pub struct MergeResponse<'a> {
