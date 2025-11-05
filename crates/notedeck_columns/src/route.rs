@@ -31,6 +31,8 @@ pub enum Route {
     EditDeck(usize),
     Wallet(WalletType),
     CustomizeZapAmount(NoteZapTargetOwned),
+    Following(Pubkey),
+    FollowedBy(Pubkey),
 }
 
 impl Route {
@@ -137,6 +139,14 @@ impl Route {
             Route::RepostDecision(note_id) => {
                 writer.write_token("repost_decision");
                 writer.write_token(&note_id.hex());
+            }
+            Route::Following(pubkey) => {
+                writer.write_token("following");
+                writer.write_token(&pubkey.hex());
+            }
+            Route::FollowedBy(pubkey) => {
+                writer.write_token("followed_by");
+                writer.write_token(&pubkey.hex());
             }
         }
     }
@@ -259,6 +269,22 @@ impl Route {
                         )))
                     })
                 },
+                |p| {
+                    p.parse_all(|p| {
+                        p.parse_token("following")?;
+                        let pubkey = Pubkey::from_hex(p.pull_token()?)
+                            .map_err(|_| ParseError::HexDecodeFailed)?;
+                        Ok(Route::Following(pubkey))
+                    })
+                },
+                |p| {
+                    p.parse_all(|p| {
+                        p.parse_token("followed_by")?;
+                        let pubkey = Pubkey::from_hex(p.pull_token()?)
+                            .map_err(|_| ParseError::HexDecodeFailed)?;
+                        Ok(Route::FollowedBy(pubkey))
+                    })
+                },
             ],
         )
     }
@@ -377,6 +403,14 @@ impl Route {
                 "Repost",
                 "Column title for deciding the type of repost"
             )),
+            Route::Following(_) => ColumnTitle::formatted(tr!(
+                i18n,
+                "Following",
+                "Column title for users being followed"
+            )),
+            Route::FollowedBy(_) => {
+                ColumnTitle::formatted(tr!(i18n, "Followed by", "Column title for followers"))
+            }
         }
     }
 }

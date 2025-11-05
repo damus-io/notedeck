@@ -1,5 +1,7 @@
+pub mod contacts_list;
 pub mod edit;
 
+pub use contacts_list::{ContactsListAction, ContactsListView};
 pub use edit::EditProfileView;
 use egui::{vec2, Color32, CornerRadius, Layout, Rect, RichText, ScrollArea, Sense, Stroke};
 use enostr::Pubkey;
@@ -39,6 +41,8 @@ pub enum ProfileViewAction {
     Unfollow(Pubkey),
     Follow(Pubkey),
     Context(ProfileContext),
+    ShowFollowing(Pubkey),
+    ShowFollowers(Pubkey),
 }
 
 struct ProfileScrollResponse {
@@ -257,6 +261,12 @@ fn profile_body(
 
             ui.add(about_section_widget(profile));
 
+            ui.add_space(8.0);
+
+            if let Some(stats_action) = profile_stats(ui, pubkey, note_context) {
+                action = Some(stats_action);
+            }
+
             ui.horizontal_wrapped(|ui| {
                 let website_url = profile
                     .as_ref()
@@ -293,6 +303,63 @@ enum ProfileType {
     MyProfile,
     ReadOnly,
     Followable(IsFollowing),
+}
+
+fn profile_stats(
+    ui: &mut egui::Ui,
+    pubkey: &Pubkey,
+    note_context: &mut NoteContext,
+) -> Option<ProfileViewAction> {
+    let mut action = None;
+    let selected = note_context.accounts.get_selected_account();
+
+    let following_count = if &selected.key.pubkey == pubkey {
+        if let notedeck::ContactState::Received { contacts, .. } =
+            selected.data.contacts.get_state()
+        {
+            Some(contacts.len())
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    ui.horizontal(|ui| {
+        if let Some(count) = following_count {
+            let resp = ui
+                .label(
+                    RichText::new(format!("{} ", count))
+                        .size(notedeck::fonts::get_font_size(
+                            ui.ctx(),
+                            &NotedeckTextStyle::Small,
+                        ))
+                        .color(ui.visuals().text_color()),
+                )
+                .on_hover_cursor(egui::CursorIcon::PointingHand);
+
+            let resp2 = ui
+                .label(
+                    RichText::new(tr!(
+                        note_context.i18n,
+                        "following",
+                        "Label for number of accounts being followed"
+                    ))
+                    .size(notedeck::fonts::get_font_size(
+                        ui.ctx(),
+                        &NotedeckTextStyle::Small,
+                    ))
+                    .color(ui.visuals().weak_text_color()),
+                )
+                .on_hover_cursor(egui::CursorIcon::PointingHand);
+
+            if resp.clicked() || resp2.clicked() {
+                action = Some(ProfileViewAction::ShowFollowing(*pubkey));
+            }
+        }
+    });
+
+    action
 }
 
 fn handle_link(ui: &mut egui::Ui, website_url: &str) {

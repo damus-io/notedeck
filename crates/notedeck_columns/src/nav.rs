@@ -72,6 +72,8 @@ pub enum RenderNavAction {
     RelayAction(RelayAction),
     SettingsAction(SettingsAction),
     RepostAction(RepostAction),
+    ShowFollowing(enostr::Pubkey),
+    ShowFollowers(enostr::Pubkey),
 }
 
 pub enum SwitchingAction {
@@ -582,6 +584,14 @@ fn process_render_nav_action(
         RenderNavAction::RepostAction(action) => {
             action.process(ctx.ndb, &ctx.accounts.get_selected_account().key, ctx.pool)
         }
+        RenderNavAction::ShowFollowing(pubkey) => Some(RouterAction::RouteTo(
+            crate::route::Route::Following(pubkey),
+            RouterType::Stack,
+        )),
+        RenderNavAction::ShowFollowers(pubkey) => Some(RouterAction::RouteTo(
+            crate::route::Route::FollowedBy(pubkey),
+            RouterType::Stack,
+        )),
     };
 
     if let Some(action) = router_action {
@@ -935,6 +945,29 @@ fn render_nav_body(
                     }
                 })
         }
+        Route::Following(pubkey) => {
+            let selected = ctx.accounts.get_selected_account();
+            let contacts = if &selected.key.pubkey == pubkey {
+                if let notedeck::ContactState::Received { contacts, .. } =
+                    selected.data.contacts.get_state()
+                {
+                    contacts.iter().copied().collect()
+                } else {
+                    vec![]
+                }
+            } else {
+                vec![]
+            };
+
+            crate::ui::profile::ContactsListView::new(pubkey, contacts, &mut note_context)
+                .ui(ui)
+                .map_output(|action| match action {
+                    crate::ui::profile::ContactsListAction::OpenProfile(pk) => {
+                        RenderNavAction::NoteAction(NoteAction::Profile(pk))
+                    }
+                })
+        }
+        Route::FollowedBy(_pubkey) => BodyResponse::none(),
         Route::Wallet(wallet_type) => {
             let state = match wallet_type {
                 notedeck::WalletType::Auto => 's: {
