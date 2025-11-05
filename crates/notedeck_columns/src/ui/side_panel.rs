@@ -1,6 +1,6 @@
 use egui::{
-    vec2, CursorIcon, InnerResponse, Layout, Margin, RichText, ScrollArea, Separator, Stroke,
-    Widget,
+    vec2, CursorIcon, InnerResponse, Label, Layout, Margin, RichText, ScrollArea, Separator,
+    Stroke, Widget,
 };
 use tracing::{error, info};
 
@@ -12,7 +12,7 @@ use crate::{
     route::Route,
 };
 
-use notedeck::{tr, Accounts, Localization, UserAccount};
+use notedeck::{tr, Accounts, Localization, NotedeckTextStyle, UserAccount};
 use notedeck_ui::{
     anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},
     app_images, colors, ProfilePic, View,
@@ -102,7 +102,9 @@ impl<'a> DesktopSidePanel<'a> {
     fn show_inner(&mut self, ui: &mut egui::Ui) -> Option<SidePanelResponse> {
         let avatar_size = 40.0;
         let bottom_padding = 8.0;
-        let avatar_section_height = avatar_size + bottom_padding;
+        let is_read_only = self.selected_account.key.secret_key.is_none();
+        let read_only_label_height = if is_read_only { 16.0 } else { 0.0 };
+        let avatar_section_height = avatar_size + bottom_padding + read_only_label_height;
 
         ui.vertical(|ui| {
             #[cfg(target_os = "macos")]
@@ -155,6 +157,27 @@ impl<'a> DesktopSidePanel<'a> {
             }
 
             let pfp_resp = ui.with_layout(Layout::top_down(egui::Align::Center), |ui| {
+                let is_read_only = self.selected_account.key.secret_key.is_none();
+
+                if is_read_only {
+                    ui.add(
+                        Label::new(
+                            RichText::new(tr!(
+                                self.i18n,
+                                "Read only",
+                                "Label for read-only profile mode"
+                            ))
+                            .size(notedeck::fonts::get_font_size(
+                                ui.ctx(),
+                                &NotedeckTextStyle::Tiny,
+                            ))
+                            .color(ui.visuals().warn_fg_color),
+                        )
+                        .selectable(false),
+                    );
+                    ui.add_space(4.0);
+                }
+
                 let txn = nostrdb::Transaction::new(self.ndb).ok();
                 let profile_url = if let Some(ref txn) = txn {
                     if let Ok(profile) = self.ndb.get_profile_by_pubkey(txn, self.selected_account.key.pubkey.bytes()) {
