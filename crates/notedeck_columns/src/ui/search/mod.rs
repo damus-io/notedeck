@@ -24,7 +24,7 @@ use tracing::{error, info, warn};
 
 mod state;
 
-pub use state::{FocusState, SearchQueryState, SearchState};
+pub use state::{FocusState, RecentSearchItem, SearchQueryState, SearchState};
 
 use super::mentions_picker::{MentionPickerResponse, MentionPickerView};
 
@@ -93,6 +93,9 @@ impl<'a, 'd> SearchView<'a, 'd> {
                 } else {
                     self.query.user_results.clear();
                     self.query.selected_index = -1;
+                    if let Some(action) = self.show_recent_searches(ui, keyboard_resp) {
+                        search_action = Some(action);
+                    }
                 }
             }
             SearchState::PerformSearch(search_type) => {
@@ -234,6 +237,70 @@ impl<'a, 'd> SearchView<'a, 'd> {
         None
     }
 
+    fn show_recent_searches(&mut self, ui: &mut egui::Ui, keyboard_resp: KeyboardResponse) -> Option<SearchAction> {
+        if self.query.recent_searches.is_empty() {
+            return None;
+        }
+
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            ui.label("Recent");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button(RichText::new("Clear all").size(14.0)).clicked() {
+                    self.query.clear_recent_searches();
+                }
+            });
+        });
+        ui.add_space(4.0);
+
+        let recent_searches = self.query.recent_searches.clone();
+        for (i, search_item) in recent_searches.iter().enumerate() {
+            let is_selected = self.query.selected_index == i as i32;
+
+            match search_item {
+                RecentSearchItem::Query(query) => {
+                    let resp = ui.add(recent_search_item(
+                        query,
+                        is_selected,
+                        ui.available_width(),
+                        false,
+                    ));
+
+                    if resp.clicked() || (is_selected && keyboard_resp.enter_pressed) {
+                        return Some(SearchAction::NewSearch {
+                            search_type: SearchType::get_type(query),
+                            new_search_text: query.clone(),
+                        });
+                    }
+
+                    if resp.secondary_clicked() || (is_selected && ui.input(|i| i.key_pressed(Key::Delete))) {
+                        self.query.remove_recent_search(i);
+                    }
+                }
+                RecentSearchItem::Profile { pubkey, query } => {
+                    let profile = self.note_context.ndb.get_profile_by_pubkey(self.txn, pubkey.bytes()).ok();
+                    let resp = ui.add(recent_profile_item(
+                        profile.as_ref(),
+                        query,
+                        is_selected,
+                        ui.available_width(),
+                        self.note_context.img_cache,
+                    ));
+
+                    if resp.clicked() || (is_selected && keyboard_resp.enter_pressed) {
+                        return Some(SearchAction::NavigateToProfile(*pubkey));
+                    }
+
+                    if resp.secondary_clicked() || (is_selected && ui.input(|i| i.key_pressed(Key::Delete))) {
+                        self.query.remove_recent_search(i);
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
     fn show_search_results(&mut self, ui: &mut egui::Ui) -> BodyResponse<NoteAction> {
         let scroll_out = egui::ScrollArea::vertical()
             .id_salt(SearchView::scroll_id())
@@ -307,6 +374,9 @@ impl SearchAction {
                 None
             }
             SearchAction::NavigateToProfile(pubkey) => {
+                state.add_recent_profile(pubkey, state.string.clone());
+                state.string.clear();
+                state.selected_index = -1;
                 Some(SearchViewAction::NavigateToProfile(pubkey))
             }
             SearchAction::CloseMention => {
@@ -318,6 +388,7 @@ impl SearchAction {
                 state.state = SearchState::Searched;
                 state.selected_index = -1;
                 state.user_results.clear();
+                state.add_recent_query(state.string.clone());
                 None
             }
         }
@@ -333,6 +404,8 @@ impl SearchResponse {
     fn process(self, state: &mut SearchQueryState) {
         if self.requested_focus {
             state.focus_state = FocusState::RequestedFocus;
+        } else if state.focus_state == FocusState::RequestedFocus && !self.input_changed {
+            state.focus_state = FocusState::Navigating;
         }
 
         if self.input_changed {
@@ -358,7 +431,11 @@ struct KeyboardResponse {
 }
 
 fn handle_keyboard_navigation(ui: &mut egui::Ui, selected_index: &mut i32, user_results: &[Vec<u8>]) -> KeyboardResponse {
-    let max_index = user_results.len() as i32;
+    let max_index = if user_results.is_empty() {
+        -1
+    } else {
+        user_results.len() as i32
+    };
 
     if ui.input(|i| i.key_pressed(Key::ArrowDown)) {
         *selected_index = (*selected_index + 1).min(max_index);
@@ -567,6 +644,171 @@ fn search_hashtag(
 
     let qrs = ndb.query(txn, &[filter], max_results as i32).ok()?;
     Some(qrs.into_iter().map(NoteRef::from_query_result).collect())
+}
+
+fn recent_profile_item<'a>(
+    profile: Option<&'a ProfileRecord<'_>>,
+    _query: &'a str,
+    is_selected: bool,
+    width: f32,
+    cache: &'a mut Images,
+) -> impl egui::Widget + 'a {
+    move |ui: &mut egui::Ui| -> egui::Response {
+        let min_img_size = 48.0;
+        let spacing = 8.0;
+        let body_font_size = get_font_size(ui.ctx(), &NotedeckTextStyle::Body);
+        let x_button_size = 32.0;
+
+        let (rect, resp) = ui.allocate_exact_size(
+            vec2(width, min_img_size + 8.0),
+            egui::Sense::click()
+        );
+
+        if is_selected {
+            ui.painter().rect_filled(
+                rect,
+                4.0,
+                ui.visuals().selection.bg_fill,
+            );
+        }
+
+        if resp.hovered() {
+            ui.painter().rect_filled(
+                rect,
+                4.0,
+                ui.visuals().widgets.hovered.bg_fill,
+            );
+        }
+
+        let pfp_rect = egui::Rect::from_min_size(
+            rect.min + vec2(4.0, 4.0),
+            vec2(min_img_size, min_img_size)
+        );
+
+        ui.put(
+            pfp_rect,
+            &mut ProfilePic::new(cache, get_profile_url(profile))
+                .size(min_img_size),
+        );
+
+        let name = get_display_name(profile).name();
+        let name_font = egui::FontId::new(body_font_size, NotedeckTextStyle::Body.font_family());
+        let painter = ui.painter();
+        let text_galley = painter.layout(
+            name.to_string(),
+            name_font,
+            ui.visuals().text_color(),
+            width - min_img_size - spacing - x_button_size - 8.0,
+        );
+
+        let galley_pos = egui::Pos2::new(
+            pfp_rect.right() + spacing,
+            rect.center().y - (text_galley.rect.height() / 2.0)
+        );
+
+        painter.galley(galley_pos, text_galley, ui.visuals().text_color());
+
+        let x_rect = egui::Rect::from_min_size(
+            egui::Pos2::new(rect.right() - x_button_size, rect.top()),
+            vec2(x_button_size, rect.height())
+        );
+
+        let x_center = x_rect.center();
+        let x_size = 12.0;
+        painter.line_segment(
+            [
+                egui::Pos2::new(x_center.x - x_size / 2.0, x_center.y - x_size / 2.0),
+                egui::Pos2::new(x_center.x + x_size / 2.0, x_center.y + x_size / 2.0),
+            ],
+            egui::Stroke::new(1.5, ui.visuals().text_color()),
+        );
+        painter.line_segment(
+            [
+                egui::Pos2::new(x_center.x + x_size / 2.0, x_center.y - x_size / 2.0),
+                egui::Pos2::new(x_center.x - x_size / 2.0, x_center.y + x_size / 2.0),
+            ],
+            egui::Stroke::new(1.5, ui.visuals().text_color()),
+        );
+
+        resp
+    }
+}
+
+fn recent_search_item(query: &str, is_selected: bool, width: f32, _is_profile: bool) -> impl egui::Widget + '_ {
+    move |ui: &mut egui::Ui| -> egui::Response {
+        let min_img_size = 48.0;
+        let spacing = 8.0;
+        let body_font_size = get_font_size(ui.ctx(), &NotedeckTextStyle::Body);
+        let x_button_size = 32.0;
+
+        let (rect, resp) = ui.allocate_exact_size(
+            vec2(width, min_img_size + 8.0),
+            egui::Sense::click()
+        );
+
+        if is_selected {
+            ui.painter().rect_filled(
+                rect,
+                4.0,
+                ui.visuals().selection.bg_fill,
+            );
+        }
+
+        if resp.hovered() {
+            ui.painter().rect_filled(
+                rect,
+                4.0,
+                ui.visuals().widgets.hovered.bg_fill,
+            );
+        }
+
+        let icon_rect = egui::Rect::from_min_size(
+            rect.min + vec2(4.0, 4.0),
+            vec2(min_img_size, min_img_size)
+        );
+
+        ui.put(icon_rect, search_icon(min_img_size / 2.0, min_img_size));
+
+        let name_font = egui::FontId::new(body_font_size, NotedeckTextStyle::Body.font_family());
+        let painter = ui.painter();
+        let text_galley = painter.layout(
+            query.to_string(),
+            name_font,
+            ui.visuals().text_color(),
+            width - min_img_size - spacing - x_button_size - 8.0,
+        );
+
+        let galley_pos = egui::Pos2::new(
+            icon_rect.right() + spacing,
+            rect.center().y - (text_galley.rect.height() / 2.0)
+        );
+
+        painter.galley(galley_pos, text_galley, ui.visuals().text_color());
+
+        let x_rect = egui::Rect::from_min_size(
+            egui::Pos2::new(rect.right() - x_button_size, rect.top()),
+            vec2(x_button_size, rect.height())
+        );
+
+        let x_center = x_rect.center();
+        let x_size = 12.0;
+        painter.line_segment(
+            [
+                egui::Pos2::new(x_center.x - x_size / 2.0, x_center.y - x_size / 2.0),
+                egui::Pos2::new(x_center.x + x_size / 2.0, x_center.y + x_size / 2.0),
+            ],
+            egui::Stroke::new(1.5, ui.visuals().text_color()),
+        );
+        painter.line_segment(
+            [
+                egui::Pos2::new(x_center.x + x_size / 2.0, x_center.y - x_size / 2.0),
+                egui::Pos2::new(x_center.x - x_size / 2.0, x_center.y + x_size / 2.0),
+            ],
+            egui::Stroke::new(1.5, ui.visuals().text_color()),
+        );
+
+        resp
+    }
 }
 
 fn search_posts_button(query: &str, is_selected: bool, width: f32) -> impl egui::Widget + '_ {

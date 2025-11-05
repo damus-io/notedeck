@@ -1,4 +1,5 @@
 use crate::timeline::TimelineTab;
+use enostr::Pubkey;
 
 use super::SearchType;
 
@@ -14,6 +15,12 @@ pub enum SearchState {
 #[derive(Debug, Eq, PartialEq)]
 pub enum TypingType {
     Mention(String),
+}
+
+#[derive(Debug, Clone)]
+pub enum RecentSearchItem {
+    Query(String),
+    Profile { pubkey: Pubkey, query: String },
 }
 
 #[derive(Debug, Eq, PartialEq, Clone)]
@@ -49,6 +56,9 @@ pub struct SearchQueryState {
 
     /// Cached user search results for the current query
     pub user_results: Vec<Vec<u8>>,
+
+    /// Recent search history (most recent first, max 10)
+    pub recent_searches: Vec<RecentSearchItem>,
 }
 
 impl Default for SearchQueryState {
@@ -66,6 +76,41 @@ impl SearchQueryState {
             focus_state: FocusState::Navigating,
             selected_index: -1,
             user_results: Vec::new(),
+            recent_searches: Vec::new(),
         }
+    }
+
+    pub fn add_recent_query(&mut self, query: String) {
+        if query.is_empty() {
+            return;
+        }
+
+        let item = RecentSearchItem::Query(query.clone());
+        self.recent_searches.retain(|s| !matches!(s, RecentSearchItem::Query(q) if q == &query));
+        self.recent_searches.insert(0, item);
+        self.recent_searches.truncate(10);
+    }
+
+    pub fn add_recent_profile(&mut self, pubkey: Pubkey, query: String) {
+        if query.is_empty() {
+            return;
+        }
+
+        let item = RecentSearchItem::Profile { pubkey, query: query.clone() };
+        self.recent_searches.retain(|s| {
+            !matches!(s, RecentSearchItem::Profile { pubkey: pk, .. } if pk == &pubkey)
+        });
+        self.recent_searches.insert(0, item);
+        self.recent_searches.truncate(10);
+    }
+
+    pub fn remove_recent_search(&mut self, index: usize) {
+        if index < self.recent_searches.len() {
+            self.recent_searches.remove(index);
+        }
+    }
+
+    pub fn clear_recent_searches(&mut self) {
+        self.recent_searches.clear();
     }
 }
