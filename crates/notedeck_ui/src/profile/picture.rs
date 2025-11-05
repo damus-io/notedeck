@@ -1,11 +1,12 @@
 use egui::{vec2, InnerResponse, Sense, Stroke, TextureHandle};
+use enostr::Pubkey;
 
 use notedeck::get_render_state;
 use notedeck::media::gif::ensure_latest_texture;
 use notedeck::media::images::{fetch_no_pfp_promise, ImageType};
 use notedeck::media::AnimationMode;
 use notedeck::MediaAction;
-use notedeck::{show_one_error_message, supported_mime_hosted_at_url, Images};
+use notedeck::{show_one_error_message, supported_mime_hosted_at_url, Accounts, Images, IsFollowing};
 
 pub struct ProfilePic<'cache, 'url> {
     cache: &'cache mut Images,
@@ -15,6 +16,8 @@ pub struct ProfilePic<'cache, 'url> {
     border: Option<Stroke>,
     animation_mode: AnimationMode,
     pub action: Option<MediaAction>,
+    pubkey: Option<&'url Pubkey>,
+    accounts: Option<&'url Accounts>,
 }
 
 impl egui::Widget for &mut ProfilePic<'_, '_> {
@@ -31,6 +34,34 @@ impl egui::Widget for &mut ProfilePic<'_, '_> {
         );
 
         self.action = inner.inner;
+
+        let should_show_badge = if let (Some(pubkey), Some(accounts)) = (self.pubkey, self.accounts) {
+            let selected = accounts.get_selected_account();
+            selected.is_following(pubkey.bytes()) == IsFollowing::Yes
+        } else {
+            false
+        };
+
+        if should_show_badge {
+            let rect = inner.response.rect;
+            let badge_size = (self.size * 0.4).max(12.0);
+            let offset = badge_size * 0.25;
+            let badge_pos = rect.right_top() + egui::vec2(-offset, offset);
+
+            ui.painter().circle_filled(
+                badge_pos,
+                badge_size / 2.0,
+                egui::Color32::from_rgb(139, 92, 246),
+            );
+
+            ui.painter().text(
+                badge_pos,
+                egui::Align2::CENTER_CENTER,
+                "✓",
+                egui::FontId::proportional(badge_size * 0.7),
+                egui::Color32::WHITE,
+            );
+        }
 
         inner.response
     }
@@ -49,7 +80,15 @@ impl<'cache, 'url> ProfilePic<'cache, 'url> {
             animation_mode: AnimationMode::Reactive,
             border: None,
             action: None,
+            pubkey: None,
+            accounts: None,
         }
+    }
+
+    pub fn with_follow_check(mut self, pubkey: &'url Pubkey, accounts: &'url Accounts) -> Self {
+        self.pubkey = Some(pubkey);
+        self.accounts = Some(accounts);
+        self
     }
 
     pub fn sense(mut self, sense: Sense) -> Self {

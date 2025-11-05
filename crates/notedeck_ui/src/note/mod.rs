@@ -295,6 +295,8 @@ impl<'a, 'd> NoteView<'a, 'd> {
                 pfp_size,
                 note_key,
                 profile,
+                self.note.pubkey(),
+                self.note_context.accounts,
             ),
 
             None => show_fallback_pfp(ui, self.note_context.img_cache, pfp_size),
@@ -717,6 +719,8 @@ fn show_actual_pfp(
     pfp_size: i8,
     note_key: NoteKey,
     profile: &Result<nostrdb::ProfileRecord<'_>, nostrdb::Error>,
+    note_pubkey: &[u8; 32],
+    accounts: &Accounts,
 ) -> PfpResponse {
     let anim_speed = 0.05;
     let profile_key = profile.as_ref().unwrap().record().note_key();
@@ -732,7 +736,10 @@ fn show_actual_pfp(
 
     let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
 
-    let mut pfp = ProfilePic::new(images, pic).size(size);
+    let pubkey = Pubkey::new(*note_pubkey);
+    let mut pfp = ProfilePic::new(images, pic)
+        .size(size)
+        .with_follow_check(&pubkey, accounts);
     let pfp_resp = ui.put(rect, &mut pfp);
     let action = pfp.action;
 

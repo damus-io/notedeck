@@ -307,6 +307,7 @@ impl<'a, 'd> PostView<'a, 'd> {
             self.note_context.ndb,
             txn,
             &res,
+            self.note_context.accounts,
         )
         .show_in_rect(hint_rect, ui);
 
