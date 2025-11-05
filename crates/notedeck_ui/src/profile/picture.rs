@@ -37,7 +37,7 @@ impl egui::Widget for &mut ProfilePic<'_, '_> {
 
         let should_show_badge = if let (Some(pubkey), Some(accounts)) = (self.pubkey, self.accounts) {
             let selected = accounts.get_selected_account();
-            selected.is_following(pubkey.bytes()) == IsFollowing::Yes
+            selected.key.pubkey == *pubkey || selected.is_following(pubkey.bytes()) == IsFollowing::Yes
         } else {
             false
         };
