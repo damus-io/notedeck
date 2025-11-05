@@ -1,6 +1,4 @@
 use crate::timeline::TimelineTab;
-use notedeck::debouncer::Debouncer;
-use std::time::Duration;
 
 use super::SearchType;
 
@@ -16,7 +14,6 @@ pub enum SearchState {
 #[derive(Debug, Eq, PartialEq)]
 pub enum TypingType {
     Mention(String),
-    AutoSearch,
 }
 
 #[derive(Debug, Eq, PartialEq, Clone)]
@@ -37,20 +34,21 @@ pub struct SearchQueryState {
     /// This holds our search query while we're updating it
     pub string: String,
 
-    /// When the debouncer timer elapses, we execute the search and mark
-    /// our state as searchd. This will make sure we don't try to search
-    /// again next frames
+    /// Current search state
     pub state: SearchState,
 
     /// A bit of context to know if we're navigating to the view. We
     /// can use this to know when to request focus on the textedit
     pub focus_state: FocusState,
 
-    /// When was the input updated? We use this to debounce searches
-    pub debouncer: Debouncer,
-
     /// The search results
     pub notes: TimelineTab,
+
+    /// Currently selected item index in search results (-1 = none, 0 = "search posts", 1+ = users)
+    pub selected_index: i32,
+
+    /// Cached user search results for the current query
+    pub user_results: Vec<Vec<u8>>,
 }
 
 impl Default for SearchQueryState {
@@ -66,7 +64,8 @@ impl SearchQueryState {
             state: SearchState::New,
             notes: TimelineTab::default(),
             focus_state: FocusState::Navigating,
-            debouncer: Debouncer::new(Duration::from_millis(200)),
+            selected_index: -1,
+            user_results: Vec::new(),
         }
     }
 }

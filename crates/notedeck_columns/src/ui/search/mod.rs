@@ -1,4 +1,4 @@
-use egui::{vec2, Align, Color32, CornerRadius, RichText, Stroke, TextEdit};
+use egui::{vec2, Align, Color32, CornerRadius, Key, RichText, Stroke, TextEdit};
 use enostr::{NoteId, Pubkey};
 use state::TypingType;
 
@@ -8,13 +8,16 @@ use crate::{
     ui::timeline::TimelineTabView,
 };
 use egui_winit::clipboard::Clipboard;
-use nostrdb::{Filter, Ndb, Transaction};
-use notedeck::{tr, tr_plural, JobsCache, Localization, NoteAction, NoteContext, NoteRef};
+use nostrdb::{Filter, Ndb, ProfileRecord, Transaction};
+use notedeck::{
+    fonts::get_font_size, name::get_display_name, profile::get_profile_url, tr, tr_plural,
+    Images, JobsCache, Localization, NoteAction, NoteContext, NoteRef, NotedeckTextStyle,
+};
 
 use notedeck_ui::{
     context_menu::{input_context, PasteBehavior},
     icons::search_icon,
-    padding, NoteOptions,
+    padding, NoteOptions, ProfilePic,
 };
 use std::time::{Duration, Instant};
 use tracing::{error, info, warn};
@@ -51,10 +54,13 @@ impl<'a, 'd> SearchView<'a, 'd> {
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui) -> BodyResponse<NoteAction> {
-        padding(8.0, ui, |ui| self.show_impl(ui)).inner
+        padding(8.0, ui, |ui| self.show_impl(ui)).inner.map_output(|action| match action {
+            SearchViewAction::NoteAction(note_action) => note_action,
+            SearchViewAction::NavigateToProfile(pubkey) => NoteAction::Profile(pubkey),
+        })
     }
 
-    pub fn show_impl(&mut self, ui: &mut egui::Ui) -> BodyResponse<NoteAction> {
+    fn show_impl(&mut self, ui: &mut egui::Ui) -> BodyResponse<SearchViewAction> {
         ui.spacing_mut().item_spacing = egui::vec2(0.0, 12.0);
 
         let search_resp = search_box(
@@ -67,53 +73,27 @@ impl<'a, 'd> SearchView<'a, 'd> {
 
         search_resp.process(self.query);
 
+        let keyboard_resp = handle_keyboard_navigation(ui, &mut self.query.selected_index, &self.query.user_results);
+
         let mut search_action = None;
         let mut body_resp = BodyResponse::none();
         match &self.query.state {
-            SearchState::New | SearchState::Navigating => {}
-            SearchState::Typing(TypingType::Mention(mention_name)) => 's: {
-                let Ok(results) = self
-                    .note_context
-                    .ndb
-                    .search_profile(self.txn, mention_name, 10)
-                else {
-                    break 's;
-                };
-
-                let search_res = MentionPickerView::new(
-                    self.note_context.img_cache,
-                    self.note_context.ndb,
-                    self.txn,
-                    &results,
-                )
-                .show_in_rect(ui.available_rect_before_wrap(), ui);
-
-                let Some(res) = search_res.output else {
-                    break 's;
-                };
-
-                search_action = match res {
-                    MentionPickerResponse::SelectResult(Some(index)) => {
-                        let Some(pk_bytes) = results.get(index) else {
-                            break 's;
-                        };
-
-                        let username = self
-                            .note_context
-                            .ndb
-                            .get_profile_by_pubkey(self.txn, pk_bytes)
-                            .ok()
-                            .and_then(|p| p.record().profile().and_then(|p| p.name()))
-                            .unwrap_or(&self.query.string);
-
-                        Some(SearchAction::NewSearch {
-                            search_type: SearchType::Profile(Pubkey::new(**pk_bytes)),
-                            new_search_text: format!("@{username}"),
-                        })
+            SearchState::New | SearchState::Navigating | SearchState::Typing(TypingType::Mention(_)) => {
+                if !self.query.string.is_empty() && !self.query.string.starts_with('@') {
+                    self.query.user_results = self.note_context.ndb.search_profile(self.txn, &self.query.string, 10)
+                        .unwrap_or_default()
+                        .iter()
+                        .map(|&pk| pk.to_vec())
+                        .collect();
+                    if let Some(action) = self.show_search_suggestions(ui, keyboard_resp) {
+                        search_action = Some(action);
                     }
-                    MentionPickerResponse::DeleteMention => Some(SearchAction::CloseMention),
-                    MentionPickerResponse::SelectResult(None) => break 's,
-                };
+                } else if self.query.string.starts_with('@') {
+                    self.handle_mention_search(ui, &mut search_action);
+                } else {
+                    self.query.user_results.clear();
+                    self.query.selected_index = -1;
+                }
             }
             SearchState::PerformSearch(search_type) => {
                 execute_search(
@@ -125,7 +105,7 @@ impl<'a, 'd> SearchView<'a, 'd> {
                     &mut self.query.notes,
                 );
                 search_action = Some(SearchAction::Searched);
-                body_resp.insert(self.show_search_results(ui));
+                body_resp.insert(self.show_search_results(ui).map_output(SearchViewAction::NoteAction));
             }
             SearchState::Searched => {
                 ui.label(tr_plural!(
@@ -136,25 +116,122 @@ impl<'a, 'd> SearchView<'a, 'd> {
                     self.query.notes.units.len(),        // count
                     query = &self.query.string
                 ));
-                body_resp.insert(self.show_search_results(ui));
-            }
-            SearchState::Typing(TypingType::AutoSearch) => {
-                ui.label(tr!(
-                    self.note_context.i18n,
-                    "Searching for '{query}'",
-                    "Search in progress message",
-                    query = &self.query.string
-                ));
-
-                body_resp.insert(self.show_search_results(ui));
+                body_resp.insert(self.show_search_results(ui).map_output(SearchViewAction::NoteAction));
             }
         };
 
-        if let Some(resp) = search_action {
-            resp.process(self.query);
+        if let Some(action) = search_action {
+            if let Some(view_action) = action.process(self.query) {
+                body_resp.output = Some(view_action);
+            }
         }
 
         body_resp
+    }
+
+    fn handle_mention_search(&mut self, ui: &mut egui::Ui, search_action: &mut Option<SearchAction>) {
+        let mention_name = if let Some(mention_text) = self.query.string.get(1..) {
+            mention_text
+        } else {
+            return;
+        };
+
+        's: {
+            let Ok(results) = self
+                .note_context
+                .ndb
+                .search_profile(self.txn, mention_name, 10)
+            else {
+                break 's;
+            };
+
+            let search_res = MentionPickerView::new(
+                self.note_context.img_cache,
+                self.note_context.ndb,
+                self.txn,
+                &results,
+            )
+            .show_in_rect(ui.available_rect_before_wrap(), ui);
+
+            let Some(res) = search_res.output else {
+                break 's;
+            };
+
+            *search_action = match res {
+                MentionPickerResponse::SelectResult(Some(index)) => {
+                    let Some(pk_bytes) = results.get(index) else {
+                        break 's;
+                    };
+
+                    let username = self
+                        .note_context
+                        .ndb
+                        .get_profile_by_pubkey(self.txn, pk_bytes)
+                        .ok()
+                        .and_then(|p| p.record().profile().and_then(|p| p.name()))
+                        .unwrap_or(&self.query.string);
+
+                    Some(SearchAction::NewSearch {
+                        search_type: SearchType::Profile(Pubkey::new(**pk_bytes)),
+                        new_search_text: format!("@{username}"),
+                    })
+                }
+                MentionPickerResponse::DeleteMention => Some(SearchAction::CloseMention),
+                MentionPickerResponse::SelectResult(None) => break 's,
+            };
+        }
+    }
+
+    fn show_search_suggestions(&mut self, ui: &mut egui::Ui, keyboard_resp: KeyboardResponse) -> Option<SearchAction> {
+        ui.add_space(8.0);
+
+        let is_selected = self.query.selected_index == 0;
+        let search_posts_clicked = ui.add(search_posts_button(
+            &self.query.string,
+            is_selected,
+            ui.available_width(),
+        )).clicked() || (is_selected && keyboard_resp.enter_pressed);
+
+        if search_posts_clicked {
+            return Some(SearchAction::NewSearch {
+                search_type: SearchType::get_type(&self.query.string),
+                new_search_text: self.query.string.clone(),
+            });
+        }
+
+        if keyboard_resp.enter_pressed && self.query.selected_index > 0 {
+            let user_idx = (self.query.selected_index - 1) as usize;
+            if let Some(pk_bytes) = self.query.user_results.get(user_idx) {
+                if let Ok(pk_array) = TryInto::<[u8; 32]>::try_into(pk_bytes.as_slice()) {
+                    return Some(SearchAction::NavigateToProfile(Pubkey::new(pk_array)));
+                }
+            }
+        }
+
+        if !self.query.user_results.is_empty() {
+            ui.add_space(8.0);
+            ui.label("Users");
+
+            for (i, pk_bytes) in self.query.user_results.iter().enumerate() {
+                let Ok(pk_array) = TryInto::<[u8; 32]>::try_into(pk_bytes.as_slice()) else {
+                    continue;
+                };
+                let profile = match self.note_context.ndb.get_profile_by_pubkey(self.txn, &pk_array) {
+                    Ok(rec) => rec,
+                    Err(e) => {
+                        error!("Error fetching profile for pubkey {:?}: {e}", pk_bytes);
+                        continue;
+                    }
+                };
+
+                let is_selected = self.query.selected_index == (i as i32 + 1);
+                if ui.add(user_result(&profile, self.note_context.img_cache, i, ui.available_width(), is_selected)).clicked() {
+                    return Some(SearchAction::NavigateToProfile(Pubkey::new(pk_array)));
+                }
+            }
+        }
+
+        None
     }
 
     fn show_search_results(&mut self, ui: &mut egui::Ui) -> BodyResponse<NoteAction> {
@@ -202,17 +279,23 @@ fn execute_search(
     ctx.request_repaint();
 }
 
+enum SearchViewAction {
+    NoteAction(NoteAction),
+    NavigateToProfile(Pubkey),
+}
+
 enum SearchAction {
     NewSearch {
         search_type: SearchType,
         new_search_text: String,
     },
+    NavigateToProfile(Pubkey),
     Searched,
     CloseMention,
 }
 
 impl SearchAction {
-    fn process(self, state: &mut SearchQueryState) {
+    fn process(self, state: &mut SearchQueryState) -> Option<SearchViewAction> {
         match self {
             SearchAction::NewSearch {
                 search_type,
@@ -220,9 +303,23 @@ impl SearchAction {
             } => {
                 state.state = SearchState::PerformSearch(search_type);
                 state.string = new_search_text;
+                state.selected_index = -1;
+                None
             }
-            SearchAction::CloseMention => state.state = SearchState::New,
-            SearchAction::Searched => state.state = SearchState::Searched,
+            SearchAction::NavigateToProfile(pubkey) => {
+                Some(SearchViewAction::NavigateToProfile(pubkey))
+            }
+            SearchAction::CloseMention => {
+                state.state = SearchState::New;
+                state.selected_index = -1;
+                None
+            }
+            SearchAction::Searched => {
+                state.state = SearchState::Searched;
+                state.selected_index = -1;
+                state.user_results.clear();
+                None
+            }
         }
     }
 }
@@ -238,27 +335,40 @@ impl SearchResponse {
             state.focus_state = FocusState::RequestedFocus;
         }
 
-        if state.string.chars().nth(0) != Some('@') {
-            if self.input_changed {
-                state.state = SearchState::Typing(TypingType::AutoSearch);
-                state.debouncer.bounce();
-            }
-
-            if state.state == SearchState::Typing(TypingType::AutoSearch)
-                && state.debouncer.should_act()
-            {
-                state.state = SearchState::PerformSearch(SearchType::get_type(&state.string));
-            }
-
-            return;
-        }
-
         if self.input_changed {
-            if let Some(mention_text) = state.string.get(1..) {
-                state.state = SearchState::Typing(TypingType::Mention(mention_text.to_owned()));
+            if state.string.starts_with('@') {
+                state.selected_index = -1;
+                if let Some(mention_text) = state.string.get(1..) {
+                    state.state = SearchState::Typing(TypingType::Mention(mention_text.to_owned()));
+                }
+            } else if state.state == SearchState::Searched {
+                state.state = SearchState::New;
+                state.selected_index = 0;
+            } else if !state.string.is_empty() {
+                state.selected_index = 0;
+            } else {
+                state.selected_index = -1;
             }
         }
     }
+}
+
+struct KeyboardResponse {
+    enter_pressed: bool,
+}
+
+fn handle_keyboard_navigation(ui: &mut egui::Ui, selected_index: &mut i32, user_results: &[Vec<u8>]) -> KeyboardResponse {
+    let max_index = user_results.len() as i32;
+
+    if ui.input(|i| i.key_pressed(Key::ArrowDown)) {
+        *selected_index = (*selected_index + 1).min(max_index);
+    } else if ui.input(|i| i.key_pressed(Key::ArrowUp)) {
+        *selected_index = (*selected_index - 1).max(-1);
+    }
+
+    let enter_pressed = ui.input(|i| i.key_pressed(Key::Enter));
+
+    KeyboardResponse { enter_pressed }
 }
 
 fn search_box(
@@ -307,7 +417,7 @@ fn search_box(
                             .hint_text(
                                 RichText::new(tr!(
                                     i18n,
-                                    "Search posts, @users, #hashtags...",
+                                    "Search",
                                     "Placeholder for search input field"
                                 ))
                                 .weak(),
@@ -457,4 +567,123 @@ fn search_hashtag(
 
     let qrs = ndb.query(txn, &[filter], max_results as i32).ok()?;
     Some(qrs.into_iter().map(NoteRef::from_query_result).collect())
+}
+
+fn search_posts_button(query: &str, is_selected: bool, width: f32) -> impl egui::Widget + '_ {
+    move |ui: &mut egui::Ui| -> egui::Response {
+        let min_img_size = 48.0;
+        let spacing = 8.0;
+        let body_font_size = get_font_size(ui.ctx(), &NotedeckTextStyle::Body);
+
+        let (rect, resp) = ui.allocate_exact_size(
+            vec2(width, min_img_size + 8.0),
+            egui::Sense::click()
+        );
+
+        if is_selected {
+            ui.painter().rect_filled(
+                rect,
+                4.0,
+                ui.visuals().selection.bg_fill,
+            );
+        }
+
+        if resp.hovered() {
+            ui.painter().rect_filled(
+                rect,
+                4.0,
+                ui.visuals().widgets.hovered.bg_fill,
+            );
+        }
+
+        let icon_rect = egui::Rect::from_min_size(
+            rect.min + vec2(4.0, 4.0),
+            vec2(min_img_size, min_img_size)
+        );
+
+        ui.put(icon_rect, search_icon(min_img_size / 2.0, min_img_size));
+
+        let text = format!("Search posts for \"{}\"", query);
+        let name_font = egui::FontId::new(body_font_size, NotedeckTextStyle::Body.font_family());
+        let painter = ui.painter();
+        let text_galley = painter.layout(
+            text,
+            name_font,
+            ui.visuals().text_color(),
+            width - min_img_size - spacing - 8.0,
+        );
+
+        let galley_pos = egui::Pos2::new(
+            icon_rect.right() + spacing,
+            rect.center().y - (text_galley.rect.height() / 2.0)
+        );
+
+        painter.galley(galley_pos, text_galley, ui.visuals().text_color());
+
+        resp
+    }
+}
+
+fn user_result<'a>(
+    profile: &'a ProfileRecord<'_>,
+    cache: &'a mut Images,
+    _index: usize,
+    width: f32,
+    is_selected: bool,
+) -> impl egui::Widget + 'a {
+    move |ui: &mut egui::Ui| -> egui::Response {
+        let min_img_size = 48.0;
+        let spacing = 8.0;
+        let body_font_size = get_font_size(ui.ctx(), &NotedeckTextStyle::Body);
+
+        let (rect, resp) = ui.allocate_exact_size(
+            vec2(width, min_img_size + 8.0),
+            egui::Sense::click()
+        );
+
+        if is_selected {
+            ui.painter().rect_filled(
+                rect,
+                4.0,
+                ui.visuals().selection.bg_fill,
+            );
+        }
+
+        if resp.hovered() {
+            ui.painter().rect_filled(
+                rect,
+                4.0,
+                ui.visuals().widgets.hovered.bg_fill,
+            );
+        }
+
+        let pfp_rect = egui::Rect::from_min_size(
+            rect.min + vec2(4.0, 4.0),
+            vec2(min_img_size, min_img_size)
+        );
+
+        ui.put(
+            pfp_rect,
+            &mut ProfilePic::new(cache, get_profile_url(Some(profile)))
+                .size(min_img_size),
+        );
+
+        let name_font = egui::FontId::new(body_font_size, NotedeckTextStyle::Body.font_family());
+        let painter = ui.painter();
+        let name_galley = painter.layout(
+            get_display_name(Some(profile)).name().to_owned(),
+            name_font,
+            ui.visuals().text_color(),
+            width - min_img_size - spacing - 8.0,
+        );
+
+        let galley_pos = egui::Pos2::new(
+            pfp_rect.right() + spacing,
+            rect.center().y - (name_galley.rect.height() / 2.0)
+        );
+
+        painter.galley(galley_pos, name_galley, ui.visuals().text_color());
+
+        resp
+    }
 }
