@@ -62,9 +62,12 @@ pub struct Damus {
 
     /// keep track of follow packs
     pub onboarding: Onboarding,
+
+    /// Track which column is hovered for mouse back/forward navigation
+    hovered_column: Option<usize>,
 }
 
-fn handle_egui_events(input: &egui::InputState, columns: &mut Columns) {
+fn handle_egui_events(input: &egui::InputState, columns: &mut Columns, hovered_column: Option<usize>) {
     for event in &input.raw.events {
         match event {
             egui::Event::Key { key, pressed, .. } if *pressed => match key {
@@ -89,6 +92,18 @@ fn handle_egui_events(input: &egui::InputState, columns: &mut Columns) {
                 _ => {}
             },
 
+            egui::Event::PointerButton {
+                button: egui::PointerButton::Extra1,
+                pressed: true,
+                ..
+            } => {
+                if let Some(col_idx) = hovered_column {
+                    columns.column_mut(col_idx).router_mut().go_back();
+                } else {
+                    columns.get_selected_router().go_back();
+                }
+            }
+
             egui::Event::InsetsChanged => {
                 tracing::debug!("insets have changed!");
             }
@@ -106,7 +121,7 @@ fn try_process_event(
 ) -> Result<()> {
     let current_columns =
         get_active_columns_mut(app_ctx.i18n, app_ctx.accounts, &mut damus.decks_cache);
-    ctx.input(|i| handle_egui_events(i, current_columns));
+    ctx.input(|i| handle_egui_events(i, current_columns, damus.hovered_column));
 
     let ctx2 = ctx.clone();
     let wakeup = move || {
@@ -533,6 +548,7 @@ impl Damus {
             jobs,
             threads,
             onboarding: Onboarding::default(),
+            hovered_column: None,
         }
     }
 
@@ -584,6 +600,7 @@ impl Damus {
             jobs: JobsCache::default(),
             threads: Threads::default(),
             onboarding: Onboarding::default(),
+            hovered_column: None,
         }
     }
 
@@ -876,6 +893,8 @@ fn timelines_view(
                 );
             });
 
+            app.hovered_column = None;
+
             for col_index in 0..num_cols {
                 strip.cell(|ui| {
                     let rect = ui.available_rect_before_wrap();
@@ -888,6 +907,11 @@ fn timelines_view(
                     let resp = nav::render_nav(col_index, inner_rect, app, ctx, ui);
                     can_take_drag_from.extend(resp.can_take_drag_from());
                     responses.push(resp);
+
+                    // Track hovered column for mouse back/forward navigation
+                    if ui.rect_contains_pointer(rect) {
+                        app.hovered_column = Some(col_index);
+                    }
 
                     // vertical line
                     ui.painter()
