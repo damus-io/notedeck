@@ -12,6 +12,7 @@ use crate::{
     route::Route,
 };
 
+use enostr::{RelayPool, RelayStatus};
 use notedeck::{tr, Accounts, Localization, NotedeckTextStyle, UserAccount};
 use notedeck_ui::{
     anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},
@@ -30,6 +31,7 @@ pub struct DesktopSidePanel<'a> {
     ndb: &'a nostrdb::Ndb,
     img_cache: &'a mut notedeck::Images,
     current_route: Option<&'a Route>,
+    pool: &'a RelayPool,
 }
 
 impl View for DesktopSidePanel<'_> {
@@ -51,6 +53,7 @@ pub enum SidePanelAction {
     Wallet,
     Profile,
     Settings,
+    Relays,
     Accounts,
     Support,
     Dave,
@@ -75,6 +78,7 @@ impl<'a> DesktopSidePanel<'a> {
         ndb: &'a nostrdb::Ndb,
         img_cache: &'a mut notedeck::Images,
         current_route: Option<&'a Route>,
+        pool: &'a RelayPool,
     ) -> Self {
         Self {
             selected_account,
@@ -83,6 +87,7 @@ impl<'a> DesktopSidePanel<'a> {
             ndb,
             img_cache,
             current_route,
+            pool,
         }
     }
 
@@ -107,9 +112,10 @@ impl<'a> DesktopSidePanel<'a> {
     fn show_inner(&mut self, ui: &mut egui::Ui) -> Option<SidePanelResponse> {
         let avatar_size = 40.0;
         let bottom_padding = 8.0;
+        let connectivity_indicator_height = 48.0; // Height for the connectivity indicator
         let is_read_only = self.selected_account.key.secret_key.is_none();
         let read_only_label_height = if is_read_only { 16.0 } else { 0.0 };
-        let avatar_section_height = avatar_size + bottom_padding + read_only_label_height;
+        let avatar_section_height = avatar_size + bottom_padding + read_only_label_height + connectivity_indicator_height;
 
         ui.vertical(|ui| {
             #[cfg(target_os = "macos")]
@@ -166,6 +172,11 @@ impl<'a> DesktopSidePanel<'a> {
                 ui.add_space(remaining - avatar_section_height);
             }
 
+            // Connectivity indicator
+            let connectivity_resp = ui.with_layout(Layout::top_down(egui::Align::Center), |ui| {
+                connectivity_indicator(ui, self.pool, self.current_route)
+            }).inner;
+
             let pfp_resp = ui.with_layout(Layout::top_down(egui::Align::Center), |ui| {
                 let is_read_only = self.selected_account.key.secret_key.is_none();
 
@@ -220,7 +231,9 @@ impl<'a> DesktopSidePanel<'a> {
             })
             .inner;
 
-            if home_resp.clicked() {
+            if connectivity_resp.clicked() {
+                Some(SidePanelResponse::new(SidePanelAction::Relays, connectivity_resp))
+            } else if home_resp.clicked() {
                 Some(SidePanelResponse::new(SidePanelAction::Home, home_resp))
             } else if dave_resp.clicked() {
                 Some(SidePanelResponse::new(SidePanelAction::Dave, dave_resp))
@@ -378,6 +391,13 @@ impl<'a> DesktopSidePanel<'a> {
                     router.go_back();
                 } else {
                     router.route_to(Route::Settings);
+                }
+            }
+            SidePanelAction::Relays => {
+                if router.routes().iter().any(|r| r == &Route::Relays) {
+                    router.go_back();
+                } else {
+                    router.route_to(Route::relays());
                 }
             }
             SidePanelAction::Accounts => {
@@ -718,4 +738,64 @@ fn dave_button() -> impl Widget {
             .on_hover_cursor(CursorIcon::PointingHand)
             .on_hover_text("Dave AI")
     }
+}
+
+fn connectivity_indicator(ui: &mut egui::Ui, pool: &RelayPool, _current_route: Option<&Route>) -> egui::Response {
+    let connected_count = pool.relays.iter().filter(|r| matches!(r.status(), RelayStatus::Connected)).count();
+    let total_count = pool.relays.len();
+
+    // Determine color based on connection status
+    let indicator_color = if total_count > 1 {
+        if connected_count == 0 {
+            egui::Color32::from_rgb(0xFF, 0x66, 0x66) // red
+        } else if connected_count == 1 {
+            egui::Color32::from_rgb(0xFF, 0xCC, 0x66) // yellow
+        } else {
+            colors::MID_GRAY // normal muted gray
+        }
+    } else {
+        colors::MID_GRAY // single relay, no color coding
+    };
+
+    let max_size = ICON_WIDTH * ICON_EXPANSION_MULTIPLE;
+    let helper = AnimationHelper::new(ui, "connectivity-indicator", vec2(max_size, max_size));
+
+    let painter = ui.painter_at(helper.get_animation_rect());
+    let rect = helper.get_animation_rect();
+    let center = rect.center();
+
+    // Draw network icon (three signal bars)
+    let bar_width = 2.0;
+    let bar_spacing = 3.0;
+
+    // Calculate base position for bars
+    let base_y = center.y + 4.0;
+    let start_x = center.x - (bar_width + bar_spacing);
+
+    // Draw three bars of increasing height
+    let bar_heights = [4.0, 7.0, 10.0];
+    for (i, &height) in bar_heights.iter().enumerate() {
+        let x = start_x + (i as f32) * (bar_width + bar_spacing);
+        let bar_rect = egui::Rect::from_min_size(
+            egui::pos2(x, base_y - height),
+            vec2(bar_width, height)
+        );
+        painter.rect_filled(bar_rect, 0.0, indicator_color);
+    }
+
+    // Draw count text
+    let count_text = format!("{}", connected_count);
+    let font_id = egui::FontId::proportional(10.0);
+
+    painter.text(
+        egui::pos2(center.x, center.y - 8.0),
+        egui::Align2::CENTER_CENTER,
+        count_text,
+        font_id,
+        indicator_color,
+    );
+
+    helper.take_animation_response()
+        .on_hover_cursor(CursorIcon::PointingHand)
+        .on_hover_text(format!("{}/{} relays connected", connected_count, total_count))
 }

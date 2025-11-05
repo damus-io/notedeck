@@ -894,6 +894,7 @@ fn timelines_view(
                     ctx.ndb,
                     ctx.img_cache,
                     current_route,
+                    ctx.pool,
                 )
                 .show(ui);
 
