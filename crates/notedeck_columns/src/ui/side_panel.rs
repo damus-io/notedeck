@@ -48,7 +48,7 @@ pub enum SidePanelAction {
     SwitchDeck(usize),
     EditDeck(usize),
     Wallet,
-    ProfileAvatar,
+    Profile,
     Settings,
     Accounts,
     Support,
@@ -122,11 +122,13 @@ impl<'a> DesktopSidePanel<'a> {
                     ui.with_layout(Layout::top_down(egui::Align::Center), |ui| {
                         let search_resp = ui.add(search_button(self.current_route));
                         let settings_resp = ui.add(settings_button(self.current_route));
-                        let accounts_resp = ui.add(accounts_button(self.current_route));
                         let wallet_resp = ui.add(wallet_button(self.current_route));
-                        let support_resp = ui.add(support_button(self.current_route));
 
                         let dave_resp = ui.add(dave_button());
+
+                        let profile_resp = ui.add(profile_button(self.current_route, self.selected_account.key.pubkey));
+
+                        let support_resp = ui.add(support_button(self.current_route));
 
                         let compose_resp = ui
                             .add(crate::ui::post::compose_note_button(ui.visuals().dark_mode))
@@ -151,11 +153,11 @@ impl<'a> DesktopSidePanel<'a> {
 
                         let decks_inner = show_decks(ui, self.decks_cache, self.selected_account);
 
-                        (dave_resp, compose_resp, search_resp, column_resp, settings_resp, accounts_resp, wallet_resp, support_resp, add_deck_resp, decks_inner)
+                        (dave_resp, compose_resp, search_resp, column_resp, settings_resp, profile_resp, wallet_resp, support_resp, add_deck_resp, decks_inner)
                     })
                 });
 
-            let (dave_resp, compose_resp, search_resp, column_resp, settings_resp, accounts_resp, wallet_resp, support_resp, add_deck_resp, decks_inner) = scroll_out.inner.inner;
+            let (dave_resp, compose_resp, search_resp, column_resp, settings_resp, profile_resp, wallet_resp, support_resp, add_deck_resp, decks_inner) = scroll_out.inner.inner;
 
             let remaining = ui.available_height();
             if remaining > avatar_section_height {
@@ -205,7 +207,7 @@ impl<'a> DesktopSidePanel<'a> {
             if dave_resp.clicked() {
                 Some(SidePanelResponse::new(SidePanelAction::Dave, dave_resp))
             } else if pfp_resp.clicked() {
-                Some(SidePanelResponse::new(SidePanelAction::ProfileAvatar, pfp_resp))
+                Some(SidePanelResponse::new(SidePanelAction::Accounts, pfp_resp))
             } else if compose_resp.clicked() {
                 Some(SidePanelResponse::new(SidePanelAction::ComposeNote, compose_resp))
             } else if search_resp.clicked() {
@@ -214,8 +216,8 @@ impl<'a> DesktopSidePanel<'a> {
                 Some(SidePanelResponse::new(SidePanelAction::Columns, column_resp))
             } else if settings_resp.clicked() {
                 Some(SidePanelResponse::new(SidePanelAction::Settings, settings_resp))
-            } else if accounts_resp.clicked() {
-                Some(SidePanelResponse::new(SidePanelAction::Accounts, accounts_resp))
+            } else if profile_resp.clicked() {
+                Some(SidePanelResponse::new(SidePanelAction::Profile, profile_resp))
             } else if wallet_resp.clicked() {
                 Some(SidePanelResponse::new(SidePanelAction::Wallet, wallet_resp))
             } else if support_resp.clicked() {
@@ -366,7 +368,7 @@ impl<'a> DesktopSidePanel<'a> {
 
                 router.route_to(Route::Wallet(notedeck::WalletType::Auto));
             }
-            SidePanelAction::ProfileAvatar => {
+            SidePanelAction::Profile => {
                 let pubkey = accounts.get_selected_account().key.pubkey;
                 if router.routes().iter().any(|r| r == &Route::profile(pubkey)) {
                     router.go_back();
@@ -587,12 +589,12 @@ fn settings_button(current_route: Option<&Route>) -> impl Widget + '_ {
     }
 }
 
-fn accounts_button(current_route: Option<&Route>) -> impl Widget + '_ {
-    let is_active = matches!(current_route, Some(Route::Accounts(_)));
+fn profile_button(current_route: Option<&Route>, pubkey: enostr::Pubkey) -> impl Widget + '_ {
+    let is_active = matches!(current_route, Some(Route::Timeline(crate::timeline::TimelineKind::Profile(pk))) if *pk == pubkey);
     move |ui: &mut egui::Ui| {
         let img_size = 24.0;
         let max_size = ICON_WIDTH * ICON_EXPANSION_MULTIPLE;
-        let helper = AnimationHelper::new(ui, "accounts-button", vec2(max_size, max_size));
+        let helper = AnimationHelper::new(ui, "profile-button", vec2(max_size, max_size));
 
         let painter = ui.painter_at(helper.get_animation_rect());
         if is_active {
@@ -605,12 +607,12 @@ fn accounts_button(current_route: Option<&Route>) -> impl Widget + '_ {
             );
         }
 
-        let img = app_images::accounts_image();
+        let img = app_images::profile_image();
         let cur_img_size = helper.scale_1d_pos(img_size);
         img.paint_at(ui, helper.get_animation_rect().shrink((max_size - cur_img_size) / 2.0));
         helper.take_animation_response()
             .on_hover_cursor(CursorIcon::PointingHand)
-            .on_hover_text("Accounts")
+            .on_hover_text("Profile")
     }
 }
 
@@ -680,7 +682,7 @@ fn dave_button() -> impl Widget {
     move |ui: &mut egui::Ui| {
         let img_size = 24.0;
         let max_size = ICON_WIDTH * ICON_EXPANSION_MULTIPLE;
-        let img = app_images::algo_image();
+        let img = app_images::sparkle_image();
         let helper = AnimationHelper::new(ui, "dave-button", vec2(max_size, max_size));
         let cur_img_size = helper.scale_1d_pos(img_size);
         img.paint_at(ui, helper.get_animation_rect().shrink((max_size - cur_img_size) / 2.0));
