@@ -104,6 +104,18 @@ fn handle_egui_events(input: &egui::InputState, columns: &mut Columns, hovered_c
                 }
             }
 
+            egui::Event::PointerButton {
+                button: egui::PointerButton::Extra2,
+                pressed: true,
+                ..
+            } => {
+                if let Some(col_idx) = hovered_column {
+                    columns.column_mut(col_idx).router_mut().go_forward();
+                } else {
+                    columns.get_selected_router().go_forward();
+                }
+            }
+
             egui::Event::InsetsChanged => {
                 tracing::debug!("insets have changed!");
             }

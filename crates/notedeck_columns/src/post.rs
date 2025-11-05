@@ -281,11 +281,6 @@ impl MentionSelectedResponse {
             return;
         };
 
-        let mut new_cursor = text_edit_output
-            .galley
-            .from_ccursor(CCursor::new(self.next_cursor_index));
-        new_cursor.ccursor.prefer_next_row = true;
-
         before_state
             .cursor
             .set_char_range(Some(CCursorRange::one(CCursor::new(
