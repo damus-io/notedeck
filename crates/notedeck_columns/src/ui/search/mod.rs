@@ -5,7 +5,7 @@ use state::TypingType;
 use crate::{
     nav::BodyResponse,
     timeline::{TimelineTab, TimelineUnits},
-    ui::timeline::TimelineTabView,
+    ui::{timeline::TimelineTabView, widgets::UserRow},
 };
 use egui_winit::clipboard::Clipboard;
 use nostrdb::{Filter, Ndb, ProfileRecord, Transaction};
@@ -153,6 +153,7 @@ impl<'a, 'd> SearchView<'a, 'd> {
                 self.note_context.ndb,
                 self.txn,
                 &results,
+                self.note_context.accounts,
             )
             .show_in_rect(ui.available_rect_before_wrap(), ui);
 
@@ -213,23 +214,19 @@ impl<'a, 'd> SearchView<'a, 'd> {
 
         if !self.query.user_results.is_empty() {
             ui.add_space(8.0);
-            ui.label("Users");
 
             for (i, pk_bytes) in self.query.user_results.iter().enumerate() {
                 let Ok(pk_array) = TryInto::<[u8; 32]>::try_into(pk_bytes.as_slice()) else {
                     continue;
                 };
-                let profile = match self.note_context.ndb.get_profile_by_pubkey(self.txn, &pk_array) {
-                    Ok(rec) => rec,
-                    Err(e) => {
-                        error!("Error fetching profile for pubkey {:?}: {e}", pk_bytes);
-                        continue;
-                    }
-                };
+                let pubkey = Pubkey::new(pk_array);
+                let profile = self.note_context.ndb.get_profile_by_pubkey(self.txn, &pk_array).ok();
 
                 let is_selected = self.query.selected_index == (i as i32 + 1);
-                if ui.add(user_result(&profile, self.note_context.img_cache, i, ui.available_width(), is_selected)).clicked() {
-                    return Some(SearchAction::NavigateToProfile(Pubkey::new(pk_array)));
+                if ui.add(UserRow::new(profile.as_ref(), &pubkey, self.note_context.img_cache, ui.available_width())
+                    .with_accounts(self.note_context.accounts)
+                    .with_selection(is_selected)).clicked() {
+                    return Some(SearchAction::NavigateToProfile(pubkey));
                 }
             }
         }
@@ -281,10 +278,12 @@ impl<'a, 'd> SearchView<'a, 'd> {
                     let profile = self.note_context.ndb.get_profile_by_pubkey(self.txn, pubkey.bytes()).ok();
                     let resp = ui.add(recent_profile_item(
                         profile.as_ref(),
+                        pubkey,
                         query,
                         is_selected,
                         ui.available_width(),
                         self.note_context.img_cache,
+                        self.note_context.accounts,
                     ));
 
                     if resp.clicked() || (is_selected && keyboard_resp.enter_pressed) {
@@ -505,6 +504,12 @@ fn search_box(
                             .frame(false),
                     );
 
+                    if response.has_focus() {
+                        if ui.input(|i| i.key_pressed(Key::ArrowUp) || i.key_pressed(Key::ArrowDown)) {
+                            response.surrender_focus();
+                        }
+                    }
+
                     input_context(ui, &response, clipboard, input, PasteBehavior::Append);
 
                     let mut requested_focus = false;
@@ -648,10 +653,12 @@ fn search_hashtag(
 
 fn recent_profile_item<'a>(
     profile: Option<&'a ProfileRecord<'_>>,
+    pubkey: &'a Pubkey,
     _query: &'a str,
     is_selected: bool,
     width: f32,
     cache: &'a mut Images,
+    accounts: &'a notedeck::Accounts,
 ) -> impl egui::Widget + 'a {
     move |ui: &mut egui::Ui| -> egui::Response {
         let min_img_size = 48.0;
@@ -663,6 +670,8 @@ fn recent_profile_item<'a>(
             vec2(width, min_img_size + 8.0),
             egui::Sense::click()
         );
+
+        let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
 
         if is_selected {
             ui.painter().rect_filled(
@@ -688,7 +697,8 @@ fn recent_profile_item<'a>(
         ui.put(
             pfp_rect,
             &mut ProfilePic::new(cache, get_profile_url(profile))
-                .size(min_img_size),
+                .size(min_img_size)
+                .with_follow_check(pubkey, accounts),
         );
 
         let name = get_display_name(profile).name();
@@ -866,66 +876,3 @@ fn search_posts_button(query: &str, is_selected: bool, width: f32) -> impl egui:
     }
 }
 
-fn user_result<'a>(
-    profile: &'a ProfileRecord<'_>,
-    cache: &'a mut Images,
-    _index: usize,
-    width: f32,
-    is_selected: bool,
-) -> impl egui::Widget + 'a {
-    move |ui: &mut egui::Ui| -> egui::Response {
-        let min_img_size = 48.0;
-        let spacing = 8.0;
-        let body_font_size = get_font_size(ui.ctx(), &NotedeckTextStyle::Body);
-
-        let (rect, resp) = ui.allocate_exact_size(
-            vec2(width, min_img_size + 8.0),
-            egui::Sense::click()
-        );
-
-        if is_selected {
-            ui.painter().rect_filled(
-                rect,
-                4.0,
-                ui.visuals().selection.bg_fill,
-            );
-        }
-
-        if resp.hovered() {
-            ui.painter().rect_filled(
-                rect,
-                4.0,
-                ui.visuals().widgets.hovered.bg_fill,
-            );
-        }
-
-        let pfp_rect = egui::Rect::from_min_size(
-            rect.min + vec2(4.0, 4.0),
-            vec2(min_img_size, min_img_size)
-        );
-
-        ui.put(
-            pfp_rect,
-            &mut ProfilePic::new(cache, get_profile_url(Some(profile)))
-                .size(min_img_size),
-        );
-
-        let name_font = egui::FontId::new(body_font_size, NotedeckTextStyle::Body.font_family());
-        let painter = ui.painter();
-        let name_galley = painter.layout(
-            get_display_name(Some(profile)).name().to_owned(),
-            name_font,
-            ui.visuals().text_color(),
-            width - min_img_size - spacing - 8.0,
-        );
-
-        let galley_pos = egui::Pos2::new(
-            pfp_rect.right() + spacing,
-            rect.center().y - (name_galley.rect.height() / 2.0)
-        );
-
-        painter.galley(galley_pos, name_galley, ui.visuals().text_color());
-
-        resp
-    }
-}
