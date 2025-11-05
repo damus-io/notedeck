@@ -906,20 +906,55 @@ fn render_nav_body(
                 })
         }
         Route::Following(pubkey) => {
-            let selected = ctx.accounts.get_selected_account();
-            let contacts = if &selected.key.pubkey == pubkey {
-                if let notedeck::ContactState::Received { contacts, .. } =
-                    selected.data.contacts.get_state()
-                {
-                    contacts.iter().copied().collect()
-                } else {
-                    vec![]
-                }
+            let cache_id = egui::Id::new(("following_contacts_cache", pubkey));
+
+            let contacts = ui.ctx().data_mut(|d| {
+                d.get_temp::<Vec<enostr::Pubkey>>(cache_id)
+            });
+
+            let (txn, contacts) = if let Some(cached) = contacts {
+                let txn = nostrdb::Transaction::new(ctx.ndb).expect("txn");
+                (txn, cached)
             } else {
-                vec![]
+                let txn = nostrdb::Transaction::new(ctx.ndb).expect("txn");
+                let filter = nostrdb::Filter::new()
+                    .authors([pubkey.bytes()])
+                    .kinds([3])
+                    .limit(1)
+                    .build();
+
+                let mut contacts = vec![];
+                if let Ok(results) = ctx.ndb.query(&txn, &[filter], 1) {
+                    if let Some(result) = results.first() {
+                        for tag in result.note.tags() {
+                            if tag.count() >= 2 {
+                                if let Some("p") = tag.get_str(0) {
+                                    if let Some(pk_bytes) = tag.get_id(1) {
+                                        contacts.push(enostr::Pubkey::new(*pk_bytes));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                contacts.sort_by_cached_key(|pk| {
+                    ctx.ndb
+                        .get_profile_by_pubkey(&txn, pk.bytes())
+                        .ok()
+                        .and_then(|p| {
+                            notedeck::name::get_display_name(Some(&p))
+                                .display_name
+                                .map(|s| s.to_lowercase())
+                        })
+                        .unwrap_or_else(|| "zzz".to_string())
+                });
+
+                ui.ctx().data_mut(|d| d.insert_temp(cache_id, contacts.clone()));
+                (txn, contacts)
             };
 
-            crate::ui::profile::ContactsListView::new(pubkey, contacts, &mut note_context)
+            crate::ui::profile::ContactsListView::new(pubkey, contacts, &mut note_context, &txn)
                 .ui(ui)
                 .map_output(|action| match action {
                     crate::ui::profile::ContactsListAction::OpenProfile(pk) => {

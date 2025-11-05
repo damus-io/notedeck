@@ -221,6 +221,7 @@ impl TimelineCache {
             debug!("got open with *new* subscription for {:?}", &timeline.kind);
             timeline.subscription.try_add_local(ndb, filter);
             timeline.subscription.try_add_remote(pool, filter);
+
         } else {
             // This should never happen reasoning, self.notes would have
             // failed above if the filter wasn't ready
