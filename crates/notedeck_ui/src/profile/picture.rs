@@ -58,7 +58,7 @@ impl egui::Widget for &mut ProfilePic<'_, '_> {
                 badge_pos,
                 egui::Align2::CENTER_CENTER,
                 "✓",
-                egui::FontId::proportional(badge_size * 0.7),
+                egui::FontId::proportional(badge_size * 0.6),
                 egui::Color32::WHITE,
             );
         }
