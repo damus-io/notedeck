@@ -15,7 +15,7 @@ use crate::{
 use notedeck::{tr, Accounts, Localization, UserAccount};
 use notedeck_ui::{
     anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},
-    app_images, colors, View,
+    app_images, colors, ProfilePic, View,
 };
 
 use super::configure_deck::deck_icon;
@@ -27,6 +27,8 @@ pub struct DesktopSidePanel<'a> {
     selected_account: &'a UserAccount,
     decks_cache: &'a DecksCache,
     i18n: &'a mut Localization,
+    ndb: &'a nostrdb::Ndb,
+    img_cache: &'a mut notedeck::Images,
 }
 
 impl View for DesktopSidePanel<'_> {
@@ -45,6 +47,10 @@ pub enum SidePanelAction {
     SwitchDeck(usize),
     EditDeck(usize),
     Wallet,
+    ProfileAvatar,
+    Settings,
+    Accounts,
+    Support,
 }
 
 pub struct SidePanelResponse {
@@ -63,11 +69,15 @@ impl<'a> DesktopSidePanel<'a> {
         selected_account: &'a UserAccount,
         decks_cache: &'a DecksCache,
         i18n: &'a mut Localization,
+        ndb: &'a nostrdb::Ndb,
+        img_cache: &'a mut notedeck::Images,
     ) -> Self {
         Self {
             selected_account,
             decks_cache,
             i18n,
+            ndb,
+            img_cache,
         }
     }
 
@@ -90,95 +100,121 @@ impl<'a> DesktopSidePanel<'a> {
     }
 
     fn show_inner(&mut self, ui: &mut egui::Ui) -> Option<SidePanelResponse> {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let avatar_size = 40.0;
+        let bottom_padding = 8.0;
+        let avatar_section_height = avatar_size + bottom_padding;
 
-        let inner = ui
-            .vertical(|ui| {
-                ui.with_layout(Layout::top_down(egui::Align::Center), |ui| {
-                    // macos needs a bit of space to make room for window
-                    // minimize/close buttons
-                    //if cfg!(target_os = "macos") {
-                    //    ui.add_space(24.0);
-                    //}
+        ui.vertical(|ui| {
+            #[cfg(target_os = "macos")]
+            ui.add_space(32.0);
 
-                    let compose_resp = ui
-                        .add(crate::ui::post::compose_note_button(dark_mode))
-                        .on_hover_cursor(egui::CursorIcon::PointingHand);
-                    let search_resp = ui.add(search_button());
-                    let column_resp = ui.add(add_column_button());
+            let available_for_scroll = ui.available_height() - avatar_section_height;
 
-                    ui.add(Separator::default().horizontal().spacing(8.0).shrink(4.0));
+            let scroll_out = ScrollArea::vertical()
+                .max_height(available_for_scroll)
+                .show(ui, |ui| {
+                    ui.with_layout(Layout::top_down(egui::Align::Center), |ui| {
+                        let search_resp = ui.add(search_button());
+                        let settings_resp = ui.add(settings_button());
+                        let accounts_resp = ui.add(accounts_button());
+                        let wallet_resp = ui.add(wallet_button());
+                        let support_resp = ui.add(support_button());
 
-                    ui.add_space(8.0);
-                    ui.add(egui::Label::new(
-                        RichText::new(tr!(
-                            self.i18n,
-                            "DECKS",
-                            "Label for decks section in side panel"
-                        ))
-                        .size(11.0)
-                        .color(ui.visuals().noninteractive().fg_stroke.color),
-                    ));
-                    ui.add_space(8.0);
-                    let add_deck_resp = ui.add(add_deck_button(self.i18n));
+                        let compose_resp = ui
+                            .add(crate::ui::post::compose_note_button(ui.visuals().dark_mode))
+                            .on_hover_cursor(egui::CursorIcon::PointingHand);
 
-                    let decks_inner = ScrollArea::vertical()
-                        .max_height(ui.available_height() - (3.0 * (ICON_WIDTH + 12.0)))
-                        .show(ui, |ui| {
-                            show_decks(ui, self.decks_cache, self.selected_account)
-                        })
-                        .inner;
+                        ui.add(Separator::default().horizontal().spacing(8.0).shrink(4.0));
 
-                    /*
-                    if expand_resp.clicked() {
-                        Some(InnerResponse::new(
-                            SidePanelAction::ExpandSidePanel,
-                            expand_resp,
-                        ))
-                    */
-                    if compose_resp.clicked() {
-                        Some(InnerResponse::new(
-                            SidePanelAction::ComposeNote,
-                            compose_resp,
-                        ))
-                    } else if search_resp.clicked() {
-                        Some(InnerResponse::new(SidePanelAction::Search, search_resp))
-                    } else if column_resp.clicked() {
-                        Some(InnerResponse::new(SidePanelAction::Columns, column_resp))
-                    } else if add_deck_resp.clicked() {
-                        Some(InnerResponse::new(SidePanelAction::NewDeck, add_deck_resp))
-                    } else if decks_inner.response.secondary_clicked() {
-                        info!("decks inner secondary click");
-                        if let Some(clicked_index) = decks_inner.inner {
-                            Some(InnerResponse::new(
-                                SidePanelAction::EditDeck(clicked_index),
-                                decks_inner.response,
+                        ui.add_space(8.0);
+                        ui.add(egui::Label::new(
+                            RichText::new(tr!(
+                                self.i18n,
+                                "DECKS",
+                                "Label for decks section in side panel"
                             ))
-                        } else {
-                            None
-                        }
-                    } else if decks_inner.response.clicked() {
-                        if let Some(clicked_index) = decks_inner.inner {
-                            Some(InnerResponse::new(
-                                SidePanelAction::SwitchDeck(clicked_index),
-                                decks_inner.response,
-                            ))
-                        } else {
-                            None
-                        }
+                            .size(11.0)
+                            .color(ui.visuals().noninteractive().fg_stroke.color),
+                        ));
+                        ui.add_space(8.0);
+
+                        let column_resp = ui.add(add_column_button());
+                        let add_deck_resp = ui.add(add_deck_button(self.i18n));
+
+                        let decks_inner = show_decks(ui, self.decks_cache, self.selected_account);
+
+                        (compose_resp, search_resp, column_resp, settings_resp, accounts_resp, wallet_resp, support_resp, add_deck_resp, decks_inner)
+                    })
+                });
+
+            let (compose_resp, search_resp, column_resp, settings_resp, accounts_resp, wallet_resp, support_resp, add_deck_resp, decks_inner) = scroll_out.inner.inner;
+
+            let remaining = ui.available_height();
+            if remaining > avatar_section_height {
+                ui.add_space(remaining - avatar_section_height);
+            }
+
+            let pfp_resp = ui.with_layout(Layout::top_down(egui::Align::Center), |ui| {
+                let txn = nostrdb::Transaction::new(self.ndb).ok();
+                let profile_url = if let Some(ref txn) = txn {
+                    if let Ok(profile) = self.ndb.get_profile_by_pubkey(txn, self.selected_account.key.pubkey.bytes()) {
+                        notedeck::profile::get_profile_url(Some(&profile))
                     } else {
-                        None
+                        notedeck::profile::no_pfp_url()
                     }
-                })
-                .inner
+                } else {
+                    notedeck::profile::no_pfp_url()
+                };
+
+                ui.add(&mut ProfilePic::new(self.img_cache, profile_url)
+                    .size(avatar_size)
+                    .sense(egui::Sense::click()))
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
             })
             .inner;
 
-        if let Some(inner) = inner {
-            Some(SidePanelResponse::new(inner.inner, inner.response))
-        } else {
-            None
-        }
+            if pfp_resp.clicked() {
+                Some(SidePanelResponse::new(SidePanelAction::ProfileAvatar, pfp_resp))
+            } else if compose_resp.clicked() {
+                Some(SidePanelResponse::new(SidePanelAction::ComposeNote, compose_resp))
+            } else if search_resp.clicked() {
+                Some(SidePanelResponse::new(SidePanelAction::Search, search_resp))
+            } else if column_resp.clicked() {
+                Some(SidePanelResponse::new(SidePanelAction::Columns, column_resp))
+            } else if settings_resp.clicked() {
+                Some(SidePanelResponse::new(SidePanelAction::Settings, settings_resp))
+            } else if accounts_resp.clicked() {
+                Some(SidePanelResponse::new(SidePanelAction::Accounts, accounts_resp))
+            } else if wallet_resp.clicked() {
+                Some(SidePanelResponse::new(SidePanelAction::Wallet, wallet_resp))
+            } else if support_resp.clicked() {
+                Some(SidePanelResponse::new(SidePanelAction::Support, support_resp))
+            } else if add_deck_resp.clicked() {
+                Some(SidePanelResponse::new(SidePanelAction::NewDeck, add_deck_resp))
+            } else if decks_inner.response.secondary_clicked() {
+                info!("decks inner secondary click");
+                if let Some(clicked_index) = decks_inner.inner {
+                    Some(SidePanelResponse::new(
+                        SidePanelAction::EditDeck(clicked_index),
+                        decks_inner.response,
+                    ))
+                } else {
+                    None
+                }
+            } else if decks_inner.response.clicked() {
+                if let Some(clicked_index) = decks_inner.inner {
+                    Some(SidePanelResponse::new(
+                        SidePanelAction::SwitchDeck(clicked_index),
+                        decks_inner.response,
+                    ))
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        })
+        .inner
     }
 
     pub fn perform_action(
@@ -299,6 +335,35 @@ impl<'a> DesktopSidePanel<'a> {
 
                 router.route_to(Route::Wallet(notedeck::WalletType::Auto));
             }
+            SidePanelAction::ProfileAvatar => {
+                let pubkey = accounts.get_selected_account().key.pubkey;
+                if router.routes().iter().any(|r| r == &Route::profile(pubkey)) {
+                    router.go_back();
+                } else {
+                    router.route_to(Route::profile(pubkey));
+                }
+            }
+            SidePanelAction::Settings => {
+                if router.routes().iter().any(|r| r == &Route::Settings) {
+                    router.go_back();
+                } else {
+                    router.route_to(Route::Settings);
+                }
+            }
+            SidePanelAction::Accounts => {
+                if router.routes().iter().any(|r| matches!(r, Route::Accounts(_))) {
+                    router.go_back();
+                } else {
+                    router.route_to(Route::accounts());
+                }
+            }
+            SidePanelAction::Support => {
+                if router.routes().iter().any(|r| r == &Route::Support) {
+                    router.go_back();
+                } else {
+                    router.route_to(Route::Support);
+                }
+            }
         }
         switching_response
     }
@@ -307,7 +372,7 @@ impl<'a> DesktopSidePanel<'a> {
 fn add_column_button() -> impl Widget {
     move |ui: &mut egui::Ui| {
         let img_size = 24.0;
-        let max_size = ICON_WIDTH * ICON_EXPANSION_MULTIPLE; // max size of the widget
+        let max_size = ICON_WIDTH * ICON_EXPANSION_MULTIPLE;
 
         let img = if ui.visuals().dark_mode {
             app_images::add_column_dark_image()
@@ -444,4 +509,72 @@ fn show_decks<'a>(
         resp = resp.union(deck_icon_resp);
     }
     InnerResponse::new(clicked_index, resp)
+}
+
+fn settings_button() -> impl Widget {
+    move |ui: &mut egui::Ui| {
+        let img_size = 24.0;
+        let max_size = ICON_WIDTH * ICON_EXPANSION_MULTIPLE;
+        let img = if ui.visuals().dark_mode {
+            app_images::settings_dark_image()
+        } else {
+            app_images::settings_light_image()
+        };
+        let helper = AnimationHelper::new(ui, "settings-button", vec2(max_size, max_size));
+        let cur_img_size = helper.scale_1d_pos(img_size);
+        img.paint_at(ui, helper.get_animation_rect().shrink((max_size - cur_img_size) / 2.0));
+        helper.take_animation_response()
+            .on_hover_cursor(CursorIcon::PointingHand)
+            .on_hover_text("Settings")
+    }
+}
+
+fn accounts_button() -> impl Widget {
+    move |ui: &mut egui::Ui| {
+        let img_size = 24.0;
+        let max_size = ICON_WIDTH * ICON_EXPANSION_MULTIPLE;
+        let img = app_images::accounts_image();
+        let helper = AnimationHelper::new(ui, "accounts-button", vec2(max_size, max_size));
+        let cur_img_size = helper.scale_1d_pos(img_size);
+        img.paint_at(ui, helper.get_animation_rect().shrink((max_size - cur_img_size) / 2.0));
+        helper.take_animation_response()
+            .on_hover_cursor(CursorIcon::PointingHand)
+            .on_hover_text("Accounts")
+    }
+}
+
+fn wallet_button() -> impl Widget {
+    move |ui: &mut egui::Ui| {
+        let img_size = 24.0;
+        let max_size = ICON_WIDTH * ICON_EXPANSION_MULTIPLE;
+        let img = if ui.visuals().dark_mode {
+            app_images::wallet_dark_image()
+        } else {
+            app_images::wallet_light_image()
+        };
+        let helper = AnimationHelper::new(ui, "wallet-button", vec2(max_size, max_size));
+        let cur_img_size = helper.scale_1d_pos(img_size);
+        img.paint_at(ui, helper.get_animation_rect().shrink((max_size - cur_img_size) / 2.0));
+        helper.take_animation_response()
+            .on_hover_cursor(CursorIcon::PointingHand)
+            .on_hover_text("Wallet")
+    }
+}
+
+fn support_button() -> impl Widget {
+    move |ui: &mut egui::Ui| {
+        let img_size = 24.0;
+        let max_size = ICON_WIDTH * ICON_EXPANSION_MULTIPLE;
+        let img = if ui.visuals().dark_mode {
+            app_images::help_dark_image()
+        } else {
+            app_images::help_light_image()
+        };
+        let helper = AnimationHelper::new(ui, "support-button", vec2(max_size, max_size));
+        let cur_img_size = helper.scale_1d_pos(img_size);
+        img.paint_at(ui, helper.get_animation_rect().shrink((max_size - cur_img_size) / 2.0));
+        helper.take_animation_response()
+            .on_hover_cursor(CursorIcon::PointingHand)
+            .on_hover_text("Support")
+    }
 }
