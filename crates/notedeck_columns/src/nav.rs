@@ -49,6 +49,7 @@ use tracing::error;
 pub enum ProcessNavResult {
     SwitchOccurred,
     PfpClicked,
+    SwitchAccount(enostr::Pubkey),
 }
 
 impl ProcessNavResult {
@@ -374,6 +375,7 @@ pub enum RouterAction {
         route: Route,
         make_new: bool,
     },
+    SwitchAccount(enostr::Pubkey),
 }
 
 pub enum RouterType {
@@ -438,6 +440,9 @@ impl RouterAction {
                 sheet_router.go_back();
                 sheet_router.after_action = Some(route);
                 None
+            }
+            RouterAction::SwitchAccount(pubkey) => {
+                Some(ProcessNavResult::SwitchAccount(pubkey))
             }
         }
     }

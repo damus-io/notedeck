@@ -80,10 +80,18 @@ impl ProfileAction {
                 None
             }
             ProfileAction::Context(profile_context) => {
-                profile_context
-                    .selection
-                    .process(ctx, &profile_context.profile);
-                None
+                use notedeck::ProfileContextSelection;
+                match &profile_context.selection {
+                    ProfileContextSelection::ViewAs => {
+                        Some(RouterAction::SwitchAccount(profile_context.profile))
+                    }
+                    _ => {
+                        profile_context
+                            .selection
+                            .process(ctx, &profile_context.profile);
+                        None
+                    }
+                }
             }
         }
     }

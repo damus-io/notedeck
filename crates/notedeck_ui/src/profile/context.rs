@@ -37,6 +37,18 @@ impl ProfileContextWidget {
             if ui
                 .button(tr!(
                     i18n,
+                    "View as",
+                    "Switch active user to this profile"
+                ))
+                .clicked()
+            {
+                context_selection = Some(ProfileContextSelection::ViewAs);
+                ui.close_menu();
+            }
+
+            if ui
+                .button(tr!(
+                    i18n,
                     "Copy Link",
                     "Copy a damus.io link to the author's profile to keyboard"
                 ))

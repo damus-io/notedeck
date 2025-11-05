@@ -686,6 +686,21 @@ fn render_damus_mobile(
                             ProcessNavResult::PfpClicked => {
                                 app_action = Some(AppAction::ToggleChrome);
                             }
+
+                            ProcessNavResult::SwitchAccount(pubkey) => {
+                                // Add as pubkey-only account if not already present
+                                let kp = enostr::Keypair::only_pubkey(*pubkey);
+                                let _ = app_ctx.accounts.add_account(kp);
+
+                                let txn = nostrdb::Transaction::new(app_ctx.ndb).expect("txn");
+                                app_ctx.accounts.select_account(
+                                    pubkey,
+                                    app_ctx.ndb,
+                                    &txn,
+                                    app_ctx.pool,
+                                    ui.ctx(),
+                                );
+                            }
                         }
                     }
                 }
@@ -928,6 +943,21 @@ fn timelines_view(
 
                 ProcessNavResult::PfpClicked => {
                     app_action = Some(AppAction::ToggleChrome);
+                }
+
+                ProcessNavResult::SwitchAccount(pubkey) => {
+                    // Add as pubkey-only account if not already present
+                    let kp = enostr::Keypair::only_pubkey(*pubkey);
+                    let _ = ctx.accounts.add_account(kp);
+
+                    let txn = nostrdb::Transaction::new(ctx.ndb).expect("txn");
+                    ctx.accounts.select_account(
+                        pubkey,
+                        ctx.ndb,
+                        &txn,
+                        ctx.pool,
+                        ui.ctx(),
+                    );
                 }
             }
         }
