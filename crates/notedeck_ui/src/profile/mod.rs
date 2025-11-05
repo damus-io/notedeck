@@ -78,16 +78,66 @@ pub fn display_name_widget<'a>(
 }
 
 pub fn about_section_widget<'a>(profile: Option<&'a ProfileRecord<'a>>) -> impl egui::Widget + 'a {
+    about_section_widget_impl(profile, None, false)
+}
+
+pub fn about_section_widget_with_truncate<'a>(
+    profile: Option<&'a ProfileRecord<'a>>,
+    max_chars: Option<usize>,
+) -> impl egui::Widget + 'a {
+    about_section_widget_impl(profile, max_chars, false)
+}
+
+pub fn about_section_widget_expandable<'a>(
+    profile: Option<&'a ProfileRecord<'a>>,
+    max_chars: Option<usize>,
+) -> impl egui::Widget + 'a {
+    about_section_widget_impl(profile, max_chars, true)
+}
+
+fn about_section_widget_impl<'a>(
+    profile: Option<&'a ProfileRecord<'a>>,
+    max_chars: Option<usize>,
+    expandable: bool,
+) -> impl egui::Widget + 'a {
     move |ui: &mut egui::Ui| {
         if let Some(about) = profile
             .map(|p| p.record().profile())
             .and_then(|p| p.and_then(|p| p.about()))
         {
-            let resp = ui.label(about);
+            let resp = if let Some(max) = max_chars {
+                if about.len() > max {
+                    if expandable {
+                        let id = ui.id().with("about_expanded");
+                        let mut expanded = ui.ctx().data_mut(|d| d.get_temp(id).unwrap_or(false));
+
+                        let resp = if expanded {
+                            ui.label(about)
+                        } else {
+                            let truncated: String = about.chars().take(max).collect();
+                            ui.label(truncated + "...")
+                        };
+
+                        let link_text = if expanded { "show less" } else { "show more" };
+                        if ui.add(egui::Label::new(egui::RichText::new(link_text).color(ui.visuals().hyperlink_color)).sense(egui::Sense::click())).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                            expanded = !expanded;
+                            ui.ctx().data_mut(|d| d.insert_temp(id, expanded));
+                        }
+
+                        resp
+                    } else {
+                        let truncated: String = about.chars().take(max).collect();
+                        ui.label(truncated + "...")
+                    }
+                } else {
+                    ui.label(about)
+                }
+            } else {
+                ui.label(about)
+            };
             ui.add_space(8.0);
             resp
         } else {
-            // need any Response so we dont need an Option
             ui.allocate_response(egui::Vec2::ZERO, egui::Sense::hover())
         }
     }

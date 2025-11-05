@@ -40,14 +40,14 @@ impl<'a> Username<'a> {
 
 impl Widget for Username<'_> {
     fn ui(self, ui: &mut egui::Ui) -> egui::Response {
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 0.0;
+        let color = if self.pk_colored {
+            Some(pk_color(self.pk))
+        } else {
+            None
+        };
 
-            let color = if self.pk_colored {
-                Some(pk_color(self.pk))
-            } else {
-                None
-            };
+        let text_resp = ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
 
             if let Some(profile) = self.profile {
                 if let Some(prof) = profile.record().profile() {
@@ -69,8 +69,12 @@ impl Widget for Username<'_> {
                 }
                 ui.label(txt);
             }
-        })
-        .response
+        });
+
+        let rect = text_resp.response.rect;
+        let id = ui.auto_id_with("username_clickable");
+
+        ui.interact(rect, id, egui::Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand)
     }
 }
 
@@ -98,6 +102,26 @@ fn ui_abbreviate_name(ui: &mut egui::Ui, name: &str, len: usize, color: Option<C
     if should_abbrev {
         ui.label(colored_name("..", color));
     }
+}
+
+fn ui_abbreviate_name_clickable(ui: &mut egui::Ui, name: &str, len: usize, color: Option<Color32>) -> bool {
+    let should_abbrev = name.len() > len;
+    let name = if should_abbrev {
+        let closest = notedeck::abbrev::floor_char_boundary(name, len);
+        &name[..closest]
+    } else {
+        name
+    };
+
+    let resp1 = ui.add(egui::Label::new(colored_name(name, color)).sense(egui::Sense::click()));
+
+    let resp2 = if should_abbrev {
+        ui.add(egui::Label::new(colored_name("..", color)).sense(egui::Sense::click()))
+    } else {
+        resp1.clone()
+    };
+
+    resp1.clicked() || resp2.clicked()
 }
 
 fn pk_color(pk: &[u8; 32]) -> Color32 {

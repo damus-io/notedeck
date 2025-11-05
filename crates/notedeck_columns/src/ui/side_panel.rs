@@ -40,6 +40,7 @@ impl View for DesktopSidePanel<'_> {
 
 #[derive(Debug, Eq, PartialEq, Clone, Copy)]
 pub enum SidePanelAction {
+    Home,
     Columns,
     ComposeNote,
     Search,
@@ -120,6 +121,7 @@ impl<'a> DesktopSidePanel<'a> {
                 .max_height(available_for_scroll)
                 .show(ui, |ui| {
                     ui.with_layout(Layout::top_down(egui::Align::Center), |ui| {
+                        let home_resp = ui.add(home_button(self.current_route));
                         let search_resp = ui.add(search_button(self.current_route));
                         let settings_resp = ui.add(settings_button(self.current_route));
                         let wallet_resp = ui.add(wallet_button(self.current_route));
@@ -153,11 +155,11 @@ impl<'a> DesktopSidePanel<'a> {
 
                         let decks_inner = show_decks(ui, self.decks_cache, self.selected_account);
 
-                        (dave_resp, compose_resp, search_resp, column_resp, settings_resp, profile_resp, wallet_resp, support_resp, add_deck_resp, decks_inner)
+                        (home_resp, dave_resp, compose_resp, search_resp, column_resp, settings_resp, profile_resp, wallet_resp, support_resp, add_deck_resp, decks_inner)
                     })
                 });
 
-            let (dave_resp, compose_resp, search_resp, column_resp, settings_resp, profile_resp, wallet_resp, support_resp, add_deck_resp, decks_inner) = scroll_out.inner.inner;
+            let (home_resp, dave_resp, compose_resp, search_resp, column_resp, settings_resp, profile_resp, wallet_resp, support_resp, add_deck_resp, decks_inner) = scroll_out.inner.inner;
 
             let remaining = ui.available_height();
             if remaining > avatar_section_height {
@@ -197,14 +199,30 @@ impl<'a> DesktopSidePanel<'a> {
                     notedeck::profile::no_pfp_url()
                 };
 
-                ui.add(&mut ProfilePic::new(self.img_cache, profile_url)
+                let resp = ui.add(&mut ProfilePic::new(self.img_cache, profile_url)
                     .size(avatar_size)
                     .sense(egui::Sense::click()))
-                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .on_hover_cursor(egui::CursorIcon::PointingHand);
+
+                // Draw border if Accounts route is active
+                let is_accounts_active = self.current_route.map_or(false, |r| matches!(r, Route::Accounts(_)));
+                if is_accounts_active {
+                    let rect = resp.rect;
+                    let radius = avatar_size / 2.0;
+                    ui.painter().circle_stroke(
+                        rect.center(),
+                        radius + 2.0,
+                        Stroke::new(1.5, ui.visuals().text_color()),
+                    );
+                }
+
+                resp
             })
             .inner;
 
-            if dave_resp.clicked() {
+            if home_resp.clicked() {
+                Some(SidePanelResponse::new(SidePanelAction::Home, home_resp))
+            } else if dave_resp.clicked() {
                 Some(SidePanelResponse::new(SidePanelAction::Dave, dave_resp))
             } else if pfp_resp.clicked() {
                 Some(SidePanelResponse::new(SidePanelAction::Accounts, pfp_resp))
@@ -259,37 +277,16 @@ impl<'a> DesktopSidePanel<'a> {
         let router = get_active_columns_mut(i18n, accounts, decks_cache).get_selected_router();
         let mut switching_response = None;
         match action {
-            /*
-            SidePanelAction::Panel => {} // TODO
-            SidePanelAction::Account => {
-                if router
-                    .routes()
-                    .iter()
-                    .any(|r| r == &Route::Accounts(AccountsRoute::Accounts))
-                {
-                    // return if we are already routing to accounts
-                    router.go_back();
+            SidePanelAction::Home => {
+                let pubkey = accounts.get_selected_account().key.pubkey;
+                let home_route = Route::timeline(crate::timeline::TimelineKind::contact_list(pubkey));
+
+                if router.top() == &home_route {
+                    // TODO: implement scroll to top when already on home route
                 } else {
-                    router.route_to(Route::accounts());
+                    router.route_to(home_route);
                 }
             }
-            SidePanelAction::Settings => {
-                if router.routes().iter().any(|r| r == &Route::Relays) {
-                    // return if we are already routing to accounts
-                    router.go_back();
-                } else {
-                    router.route_to(Route::relays());
-                }
-            }
-            SidePanelAction::Support => {
-                if router.routes().iter().any(|r| r == &Route::Support) {
-                    router.go_back();
-                } else {
-                    support.refresh();
-                    router.route_to(Route::Support);
-                }
-            }
-            */
             SidePanelAction::Columns => {
                 if router
                     .routes()
@@ -675,6 +672,37 @@ fn support_button(current_route: Option<&Route>) -> impl Widget + '_ {
         helper.take_animation_response()
             .on_hover_cursor(CursorIcon::PointingHand)
             .on_hover_text("Support")
+    }
+}
+
+fn home_button(current_route: Option<&Route>) -> impl Widget + '_ {
+    let is_active = matches!(current_route, Some(Route::Timeline(crate::timeline::TimelineKind::List(crate::timeline::kind::ListKind::Contact(_)))));
+    move |ui: &mut egui::Ui| {
+        let img_size = 24.0;
+        let max_size = ICON_WIDTH * ICON_EXPANSION_MULTIPLE;
+        let helper = AnimationHelper::new(ui, "home-button", vec2(max_size, max_size));
+
+        let painter = ui.painter_at(helper.get_animation_rect());
+        if is_active {
+            let circle_radius = max_size / 2.0;
+            painter.circle(
+                helper.get_animation_rect().center(),
+                circle_radius,
+                ui.visuals().widgets.active.weak_bg_fill,
+                Stroke::NONE,
+            );
+        }
+
+        let img = if ui.visuals().dark_mode {
+            app_images::home_dark_image()
+        } else {
+            app_images::home_light_image()
+        };
+        let cur_img_size = helper.scale_1d_pos(img_size);
+        img.paint_at(ui, helper.get_animation_rect().shrink((max_size - cur_img_size) / 2.0));
+        helper.take_animation_response()
+            .on_hover_cursor(CursorIcon::PointingHand)
+            .on_hover_text("Home")
     }
 }
 

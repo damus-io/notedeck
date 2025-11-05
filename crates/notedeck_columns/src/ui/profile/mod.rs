@@ -22,7 +22,7 @@ use notedeck::{
 };
 use notedeck_ui::{
     app_images,
-    profile::{about_section_widget, banner, display_name_widget},
+    profile::{about_section_widget_expandable, banner, display_name_widget},
     NoteOptions, ProfilePic,
 };
 
@@ -260,7 +260,7 @@ fn profile_body(
 
             ui.add_space(8.0);
 
-            ui.add(about_section_widget(profile));
+            ui.add(about_section_widget_expandable(profile, Some(200)));
 
             ui.add_space(8.0);
 

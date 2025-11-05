@@ -347,12 +347,18 @@ impl<'a, 'd> NoteView<'a, 'd> {
         note: &Note,
         profile: &Result<nostrdb::ProfileRecord<'_>, nostrdb::Error>,
         flags: NoteOptions,
-    ) {
+    ) -> Option<NoteAction> {
+        let mut note_action = None;
         let horiz_resp = ui
             .horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing.x = if is_narrow(ui.ctx()) { 1.0 } else { 2.0 };
                 let response = ui
                     .add(Username::new(i18n, profile.as_ref().ok(), note.pubkey()).abbreviated(20));
+
+                if response.clicked() {
+                    note_action = Some(NoteAction::Profile(enostr::Pubkey::new(*note.pubkey())));
+                }
+
                 if !flags.contains(NoteOptions::FullCreatedDate) {
                     return render_notetime(ui, i18n, note.created_at(), true);
                 }
@@ -371,6 +377,8 @@ impl<'a, 'd> NoteView<'a, 'd> {
             ui.painter()
                 .circle_filled(circle_center, radius, crate::colors::PINK);
         }
+
+        note_action
     }
 
     fn wide_ui(
@@ -399,13 +407,13 @@ impl<'a, 'd> NoteView<'a, 'd> {
                             [size.x, self.options().pfp_size() as f32],
                             |ui: &mut egui::Ui| {
                                 ui.horizontal_centered(|ui| {
-                                    NoteView::note_header(
+                                    note_action = NoteView::note_header(
                                         ui,
                                         self.note_context.i18n,
                                         self.note,
                                         profile,
                                         self.flags,
-                                    );
+                                    ).or(note_action.take());
                                 })
                                 .response
                             },
@@ -515,13 +523,13 @@ impl<'a, 'd> NoteView<'a, 'd> {
 
             ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
                 if !self.flags.contains(NoteOptions::NotificationPreview) {
-                    NoteView::note_header(
+                    note_action = NoteView::note_header(
                         ui,
                         self.note_context.i18n,
                         self.note,
                         profile,
                         self.flags,
-                    );
+                    ).or(note_action.take());
 
                     ui.horizontal_wrapped(|ui| {
                         ui.spacing_mut().item_spacing.x = 1.0;

@@ -7,7 +7,7 @@ use notedeck::{
     name::get_display_name, profile::get_profile_url, tr, Images, Localization, NotedeckTextStyle,
 };
 
-use super::{about_section_widget, banner, display_name_widget};
+use super::{about_section_widget_with_truncate, banner, display_name_widget};
 
 pub struct ProfilePreview<'a, 'cache> {
     profile: &'a ProfileRecord<'a>,
@@ -48,7 +48,10 @@ impl<'a, 'cache> ProfilePreview<'a, 'cache> {
                 &get_display_name(Some(self.profile)),
                 false,
             ));
-            ui.add(about_section_widget(Some(self.profile)));
+            ui.add(about_section_widget_with_truncate(
+                Some(self.profile),
+                Some(150),
+            ));
         });
     }
 }
