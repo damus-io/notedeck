@@ -843,6 +843,7 @@ fn timelines_view(
 ) -> AppResponse {
     let num_cols = get_active_columns(ctx.accounts, &app.decks_cache).num_columns();
     let mut side_panel_action: Option<nav::SwitchingAction> = None;
+    let mut app_action: Option<AppAction> = None;
     let mut responses = Vec::with_capacity(num_cols);
 
     let mut can_take_drag_from = Vec::new();
@@ -863,7 +864,9 @@ fn timelines_view(
 
                 if let Some(side_panel) = side_panel {
                     if side_panel.response.clicked() || side_panel.response.secondary_clicked() {
-                        if let Some(action) = DesktopSidePanel::perform_action(
+                        if side_panel.action == SidePanelAction::Dave {
+                            app_action = Some(AppAction::SwitchToDave);
+                        } else if let Some(action) = DesktopSidePanel::perform_action(
                             &mut app.decks_cache,
                             ctx.accounts,
                             side_panel.action,
@@ -934,9 +937,8 @@ fn timelines_view(
             );
     }
 
-    let mut app_action: Option<AppAction> = None;
-
-    for response in responses {
+    if app_action.is_none() {
+        for response in responses {
         let nav_result = response.process_render_nav_response(app, ctx, ui);
 
         if let Some(nr) = &nav_result {
@@ -962,6 +964,7 @@ fn timelines_view(
                     );
                 }
             }
+        }
         }
     }
 

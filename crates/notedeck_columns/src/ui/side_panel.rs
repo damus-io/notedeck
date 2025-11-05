@@ -51,6 +51,7 @@ pub enum SidePanelAction {
     Settings,
     Accounts,
     Support,
+    Dave,
 }
 
 pub struct SidePanelResponse {
@@ -122,6 +123,8 @@ impl<'a> DesktopSidePanel<'a> {
                         let wallet_resp = ui.add(wallet_button());
                         let support_resp = ui.add(support_button());
 
+                        let dave_resp = ui.add(dave_button());
+
                         let compose_resp = ui
                             .add(crate::ui::post::compose_note_button(ui.visuals().dark_mode))
                             .on_hover_cursor(egui::CursorIcon::PointingHand);
@@ -145,11 +148,11 @@ impl<'a> DesktopSidePanel<'a> {
 
                         let decks_inner = show_decks(ui, self.decks_cache, self.selected_account);
 
-                        (compose_resp, search_resp, column_resp, settings_resp, accounts_resp, wallet_resp, support_resp, add_deck_resp, decks_inner)
+                        (dave_resp, compose_resp, search_resp, column_resp, settings_resp, accounts_resp, wallet_resp, support_resp, add_deck_resp, decks_inner)
                     })
                 });
 
-            let (compose_resp, search_resp, column_resp, settings_resp, accounts_resp, wallet_resp, support_resp, add_deck_resp, decks_inner) = scroll_out.inner.inner;
+            let (dave_resp, compose_resp, search_resp, column_resp, settings_resp, accounts_resp, wallet_resp, support_resp, add_deck_resp, decks_inner) = scroll_out.inner.inner;
 
             let remaining = ui.available_height();
             if remaining > avatar_section_height {
@@ -196,7 +199,9 @@ impl<'a> DesktopSidePanel<'a> {
             })
             .inner;
 
-            if pfp_resp.clicked() {
+            if dave_resp.clicked() {
+                Some(SidePanelResponse::new(SidePanelAction::Dave, dave_resp))
+            } else if pfp_resp.clicked() {
                 Some(SidePanelResponse::new(SidePanelAction::ProfileAvatar, pfp_resp))
             } else if compose_resp.clicked() {
                 Some(SidePanelResponse::new(SidePanelAction::ComposeNote, compose_resp))
@@ -386,6 +391,8 @@ impl<'a> DesktopSidePanel<'a> {
                 } else {
                     router.route_to(Route::Support);
                 }
+            }
+            SidePanelAction::Dave => {
             }
         }
         switching_response
@@ -599,5 +606,19 @@ fn support_button() -> impl Widget {
         helper.take_animation_response()
             .on_hover_cursor(CursorIcon::PointingHand)
             .on_hover_text("Support")
+    }
+}
+
+fn dave_button() -> impl Widget {
+    move |ui: &mut egui::Ui| {
+        let img_size = 24.0;
+        let max_size = ICON_WIDTH * ICON_EXPANSION_MULTIPLE;
+        let img = app_images::algo_image();
+        let helper = AnimationHelper::new(ui, "dave-button", vec2(max_size, max_size));
+        let cur_img_size = helper.scale_1d_pos(img_size);
+        img.paint_at(ui, helper.get_animation_rect().shrink((max_size - cur_img_size) / 2.0));
+        helper.take_animation_response()
+            .on_hover_cursor(CursorIcon::PointingHand)
+            .on_hover_text("Dave AI")
     }
 }
