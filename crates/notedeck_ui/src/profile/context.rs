@@ -35,6 +35,14 @@ impl ProfileContextWidget {
             ui.set_max_width(100.0);
 
             if ui
+                .button(tr!(i18n, "View as", "Switch active user to this profile"))
+                .clicked()
+            {
+                context_selection = Some(ProfileContextSelection::ViewAs);
+                ui.close_menu();
+            }
+
+            if ui
                 .button(tr!(
                     i18n,
                     "Copy Link",
