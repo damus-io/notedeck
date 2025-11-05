@@ -801,6 +801,8 @@ fn should_show_compose_button(decks: &DecksCache, accounts: &Accounts) -> bool {
         Route::Wallet(_) => false,
         Route::CustomizeZapAmount(_) => false,
         Route::RepostDecision(_) => false,
+        Route::Following(_) => false,
+        Route::FollowedBy(_) => false,
     }
 }
 
