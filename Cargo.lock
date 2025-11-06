@@ -144,6 +144,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "android-keyring"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b051e1fab4f4c15e384424252c57321173b8fb274d50f30bd46145c35cd0a6a2"
+dependencies = [
+ "base64 0.22.1",
+ "jni 0.21.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "keyring",
+ "ndk-context",
+ "thiserror 2.0.12",
+ "tracing",
+]
+
+[[package]]
 name = "android-properties"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3668,6 +3682,7 @@ dependencies = [
 name = "notedeck_chrome"
 version = "0.7.1"
 dependencies = [
+ "android-keyring",
  "bitflags 2.9.1",
  "eframe",
  "egui",

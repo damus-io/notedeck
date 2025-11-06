@@ -91,6 +91,7 @@ oot_bitset = "0.1.1"
 blurhash = "0.2.3"
 android-activity = { git = "https://github.com/damus-io/android-activity", rev = "4ee16f1585e4a75031dc10785163d4b920f95805", features = [ "game-activity" ] }
 keyring = { version = "3.6.3", features = ["apple-native", "windows-native", "linux-native-sync-persistent", "vendored"] }
+android-keyring = "0.2.0"
 
 [profile.small]
 inherits = 'release'
