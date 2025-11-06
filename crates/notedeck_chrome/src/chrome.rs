@@ -101,7 +101,7 @@ impl ChromePanelAction {
             }
 
             Self::Settings => {
-                Self::columns_navigate(ctx, chrome, notedeck_columns::Route::Settings);
+                Self::columns_navigate(ctx, chrome, notedeck_columns::Route::settings());
             }
 
             Self::Wallet => {

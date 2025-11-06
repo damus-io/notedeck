@@ -387,10 +387,10 @@ impl<'a> DesktopSidePanel<'a> {
                 }
             }
             SidePanelAction::Settings => {
-                if router.routes().iter().any(|r| r == &Route::Settings) {
+                if router.routes().iter().any(|r| matches!(r, Route::Settings(_))) {
                     router.go_back();
                 } else {
-                    router.route_to(Route::Settings);
+                    router.route_to(Route::settings());
                 }
             }
             SidePanelAction::Relays => {
@@ -576,7 +576,7 @@ fn show_decks<'a>(
 }
 
 fn settings_button(current_route: Option<&Route>) -> impl Widget + '_ {
-    let is_active = matches!(current_route, Some(Route::Settings));
+    let is_active = matches!(current_route, Some(Route::Settings(_)));
     move |ui: &mut egui::Ui| {
         let img_size = 24.0;
         let max_size = ICON_WIDTH * ICON_EXPANSION_MULTIPLE;

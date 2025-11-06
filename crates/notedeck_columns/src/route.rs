@@ -21,7 +21,7 @@ pub enum Route {
     Quote(NoteId),
     RepostDecision(NoteId),
     Relays,
-    Settings,
+    Settings(SettingsRoute),
     ComposeNote,
     AddColumn(AddColumnRoute),
     EditProfile(Pubkey),
@@ -33,6 +33,15 @@ pub enum Route {
     CustomizeZapAmount(NoteZapTargetOwned),
     Following(Pubkey),
     FollowedBy(Pubkey),
+}
+
+#[derive(Clone, Copy, Eq, PartialEq, Debug)]
+pub enum SettingsRoute {
+    Menu,
+    Appearance,
+    Storage,
+    Keys,
+    Others,
 }
 
 impl Route {
@@ -53,7 +62,7 @@ impl Route {
     }
 
     pub fn settings() -> Self {
-        Route::Settings
+        Route::Settings(SettingsRoute::Menu)
     }
 
     pub fn thread(thread_selection: ThreadSelection) -> Self {
@@ -119,8 +128,15 @@ impl Route {
             Route::Relays => {
                 writer.write_token("relay");
             }
-            Route::Settings => {
+            Route::Settings(route) => {
                 writer.write_token("settings");
+                match route {
+                    SettingsRoute::Menu => {}
+                    SettingsRoute::Appearance => writer.write_token("appearance"),
+                    SettingsRoute::Storage => writer.write_token("storage"),
+                    SettingsRoute::Keys => writer.write_token("keys"),
+                    SettingsRoute::Others => writer.write_token("others"),
+                }
             }
             Route::ComposeNote => {
                 writer.write_token("compose");
@@ -196,7 +212,30 @@ impl Route {
                 |p| {
                     p.parse_all(|p| {
                         p.parse_token("settings")?;
-                        Ok(Route::Settings)
+                        let route = if let Ok(token) = p.peek_token() {
+                            match token {
+                                "appearance" => {
+                                    p.pull_token()?;
+                                    SettingsRoute::Appearance
+                                }
+                                "storage" => {
+                                    p.pull_token()?;
+                                    SettingsRoute::Storage
+                                }
+                                "keys" => {
+                                    p.pull_token()?;
+                                    SettingsRoute::Keys
+                                }
+                                "others" => {
+                                    p.pull_token()?;
+                                    SettingsRoute::Others
+                                }
+                                _ => SettingsRoute::Menu,
+                            }
+                        } else {
+                            SettingsRoute::Menu
+                        };
+                        Ok(Route::Settings(route))
                     })
                 },
                 |p| {
@@ -304,8 +343,24 @@ impl Route {
             Route::Relays => {
                 ColumnTitle::formatted(tr!(i18n, "Relays", "Column title for relay management"))
             }
-            Route::Settings => {
-                ColumnTitle::formatted(tr!(i18n, "Settings", "Column title for app settings"))
+            Route::Settings(route) => match route {
+                SettingsRoute::Menu => {
+                    ColumnTitle::formatted(tr!(i18n, "Settings", "Column title for app settings"))
+                }
+                SettingsRoute::Appearance => ColumnTitle::formatted(tr!(
+                    i18n,
+                    "Appearance",
+                    "Column title for appearance settings"
+                )),
+                SettingsRoute::Storage => {
+                    ColumnTitle::formatted(tr!(i18n, "Storage", "Column title for storage settings"))
+                }
+                SettingsRoute::Keys => {
+                    ColumnTitle::formatted(tr!(i18n, "Keys", "Column title for keys settings"))
+                }
+                SettingsRoute::Others => {
+                    ColumnTitle::formatted(tr!(i18n, "Others", "Column title for other settings"))
+                }
             }
             Route::Accounts(amr) => match amr {
                 AccountsRoute::Accounts => ColumnTitle::formatted(tr!(

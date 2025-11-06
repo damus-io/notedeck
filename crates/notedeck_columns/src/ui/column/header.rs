@@ -486,7 +486,7 @@ impl<'a> NavTitle<'a> {
             Route::AddColumn(_add_col_route) => None,
             Route::Support => None,
             Route::Relays => None,
-            Route::Settings => None,
+            Route::Settings(_) => None,
             Route::NewDeck => None,
             Route::EditDeck(_) => None,
             Route::EditProfile(pubkey) => Some(self.show_profile(ui, pubkey, pfp_size)),

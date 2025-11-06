@@ -819,7 +819,7 @@ fn should_show_compose_button(decks: &DecksCache, accounts: &Accounts) -> bool {
         Route::Reply(_) => false,
         Route::Quote(_) => false,
         Route::Relays => false,
-        Route::Settings => false,
+        Route::Settings(_) => false,
         Route::ComposeNote => false,
         Route::AddColumn(_) => false,
         Route::EditProfile(_) => false,

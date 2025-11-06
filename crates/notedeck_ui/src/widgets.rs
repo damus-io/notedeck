@@ -77,3 +77,17 @@ pub fn styled_button_toggleable(
         resp
     }
 }
+
+/// Standard rounded button with proper padding
+pub fn rounded_button<'a>(text: impl Into<egui::WidgetText>) -> egui::Button<'a> {
+    egui::Button::new(text)
+        .rounding(egui::Rounding::same(12))
+        .min_size(egui::vec2(60.0, 32.0))
+}
+
+/// Small rounded button for compact controls
+pub fn small_rounded_button<'a>(text: impl Into<egui::WidgetText>) -> egui::Button<'a> {
+    egui::Button::new(text)
+        .rounding(egui::Rounding::same(8))
+        .min_size(egui::vec2(60.0, 32.0))
+}

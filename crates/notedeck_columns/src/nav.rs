@@ -657,13 +657,13 @@ fn render_nav_body(
             .ui(ui)
             .map_output(RenderNavAction::RelayAction),
 
-        Route::Settings => SettingsView::new(
+        Route::Settings(route) => SettingsView::new(
             ctx.settings.get_settings_mut(),
             &mut note_context,
             &mut app.note_options,
             &mut app.jobs,
         )
-        .ui(ui)
+        .ui(ui, route)
         .map_output(RenderNavAction::SettingsAction),
 
         Route::Reply(id) => {
