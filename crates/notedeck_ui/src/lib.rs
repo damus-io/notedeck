@@ -21,7 +21,7 @@ pub use mention::Mention;
 pub use note::{NoteContents, NoteOptions, NoteView};
 pub use profile::{ProfilePic, ProfilePreview};
 pub use username::Username;
-pub use widgets::{rounded_button, small_rounded_button};
+pub use widgets::{rounded_button, segmented_button, side_panel_active_bg, side_panel_icon_tint, small_rounded_button};
 
 use egui::{Label, Margin, Pos2, RichText};
 

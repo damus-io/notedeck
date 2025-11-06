@@ -81,13 +81,53 @@ pub fn styled_button_toggleable(
 /// Standard rounded button with proper padding
 pub fn rounded_button<'a>(text: impl Into<egui::WidgetText>) -> egui::Button<'a> {
     egui::Button::new(text)
-        .rounding(egui::Rounding::same(12))
+        .corner_radius(egui::CornerRadius::same(12))
         .min_size(egui::vec2(60.0, 32.0))
 }
 
 /// Small rounded button for compact controls
 pub fn small_rounded_button<'a>(text: impl Into<egui::WidgetText>) -> egui::Button<'a> {
     egui::Button::new(text)
-        .rounding(egui::Rounding::same(8))
+        .corner_radius(egui::CornerRadius::same(8))
         .min_size(egui::vec2(60.0, 32.0))
+}
+
+/// Segmented button for binary choices (Light/Dark, On/Off, etc)
+pub fn segmented_button<'a>(text: impl Into<egui::WidgetText>, selected: bool, ui: &egui::Ui) -> egui::Button<'a> {
+    let fill = if selected {
+        if ui.visuals().dark_mode {
+            egui::Color32::from_rgb(70, 70, 70)
+        } else {
+            egui::Color32::WHITE
+        }
+    } else {
+        if ui.visuals().dark_mode {
+            egui::Color32::from_rgb(40, 40, 40)
+        } else {
+            egui::Color32::from_rgb(220, 220, 220)
+        }
+    };
+
+    egui::Button::new(text)
+        .corner_radius(egui::CornerRadius::same(8))
+        .min_size(egui::vec2(60.0, 32.0))
+        .fill(fill)
+}
+
+/// Get appropriate background color for active side panel icon button
+pub fn side_panel_active_bg(ui: &egui::Ui) -> egui::Color32 {
+    if ui.visuals().dark_mode {
+        egui::Color32::from_rgb(70, 70, 70)
+    } else {
+        egui::Color32::from_rgb(220, 220, 220)
+    }
+}
+
+/// Get appropriate tint color for side panel icons to ensure visibility
+pub fn side_panel_icon_tint(ui: &egui::Ui) -> egui::Color32 {
+    if ui.visuals().dark_mode {
+        egui::Color32::WHITE
+    } else {
+        egui::Color32::BLACK
+    }
 }

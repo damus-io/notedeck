@@ -1,5 +1,5 @@
 use egui::{
-    vec2, Button, Color32, ComboBox, CornerRadius, FontId, Frame, Layout, Margin, RichText,
+    vec2, Color32, ComboBox, CornerRadius, FontId, Frame, Layout, Margin, RichText,
     ScrollArea, TextEdit, ThemePreference,
 };
 use egui_extras::{Size, StripBuilder};
@@ -13,7 +13,7 @@ use notedeck::{
 };
 use notedeck_ui::{
     app_images::{connected_image, copy_to_clipboard_dark_image, copy_to_clipboard_image, key_image, settings_dark_image, settings_light_image},
-    rounded_button, small_rounded_button, AnimationHelper, NoteOptions, NoteView,
+    rounded_button, segmented_button, AnimationHelper, NoteOptions, NoteView,
 };
 
 use crate::{
@@ -205,6 +205,28 @@ impl<'a> SettingsView<'a> {
                 });
             });
 
+            // Preview note
+            let txn = Transaction::new(self.note_context.ndb).unwrap();
+            if let Some(note_id) = NoteId::from_bech(PREVIEW_NOTE_ID) {
+                if let Ok(preview_note) = self.note_context.ndb.get_note_by_id(&txn, note_id.bytes()) {
+                    ui.add_space(8.0);
+                    notedeck_ui::padding(8.0, ui, |ui| {
+                        ui.set_max_width(ui.available_width());
+
+                        NoteView::new(
+                            self.note_context,
+                            &preview_note,
+                            *self.note_options,
+                            self.jobs,
+                        )
+                        .actionbar(false)
+                        .options_button(false)
+                        .show(ui);
+                    });
+                    ui.add_space(8.0);
+                }
+            }
+
             ui.painter().line_segment(
                 [egui::pos2(ui.min_rect().left() + 16.0, ui.min_rect().bottom()), egui::pos2(ui.min_rect().right(), ui.min_rect().bottom())],
                 egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
@@ -272,7 +294,7 @@ impl<'a> SettingsView<'a> {
                     combo_style.spacing.combo_height = 32.0;
                     combo_style.spacing.button_padding = vec2(12.0, 6.0);
 
-                    ComboBox::from_id_source("language_combo")
+                    ComboBox::new("language_combo", "")
                         .selected_text(self.get_selected_language_name())
                         .show_ui(ui, |ui| {
                             for lang in self.note_context.i18n.get_available_locales() {
@@ -306,18 +328,22 @@ impl<'a> SettingsView<'a> {
                     ui.add_space(16.0);
 
                     let is_dark = self.settings.theme == ThemePreference::Dark;
-                    if ui.add(rounded_button(tr!(self.note_context.i18n, "Dark", "Label for Theme Dark, Appearance settings section"))
-                        .fill(if is_dark { ui.visuals().selection.bg_fill } else { ui.visuals().widgets.inactive.bg_fill }))
-                        .clicked() {
+                    if ui.add(segmented_button(
+                        tr!(self.note_context.i18n, "Dark", "Label for Theme Dark, Appearance settings section"),
+                        is_dark,
+                        ui
+                    )).clicked() {
                         action = Some(SettingsAction::SetTheme(ThemePreference::Dark));
                     }
 
                     ui.add_space(4.0);
 
                     let is_light = self.settings.theme == ThemePreference::Light;
-                    if ui.add(rounded_button(tr!(self.note_context.i18n, "Light", "Label for Theme Light, Appearance settings section"))
-                        .fill(if is_light { ui.visuals().selection.bg_fill } else { ui.visuals().widgets.inactive.bg_fill }))
-                        .clicked() {
+                    if ui.add(segmented_button(
+                        tr!(self.note_context.i18n, "Light", "Label for Theme Light, Appearance settings section"),
+                        is_light,
+                        ui
+                    )).clicked() {
                         action = Some(SettingsAction::SetTheme(ThemePreference::Light));
                     }
                 });
@@ -500,15 +526,16 @@ impl<'a> SettingsView<'a> {
                 ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.add_space(16.0);
 
-                    let btn_text = if self.settings.show_replies_newest_first { "On" } else { "Off" };
-                    if ui.add(rounded_button(btn_text)
-                        .fill(if self.settings.show_replies_newest_first {
-                            ui.visuals().selection.bg_fill
-                        } else {
-                            ui.visuals().widgets.inactive.bg_fill
-                        })).clicked() {
-                        self.settings.show_replies_newest_first = !self.settings.show_replies_newest_first;
-                        action = Some(SettingsAction::SetRepliestNewestFirst(self.settings.show_replies_newest_first));
+                    if ui.add(segmented_button("On", self.settings.show_replies_newest_first, ui)).clicked() {
+                        self.settings.show_replies_newest_first = true;
+                        action = Some(SettingsAction::SetRepliestNewestFirst(true));
+                    }
+
+                    ui.add_space(4.0);
+
+                    if ui.add(segmented_button("Off", !self.settings.show_replies_newest_first, ui)).clicked() {
+                        self.settings.show_replies_newest_first = false;
+                        action = Some(SettingsAction::SetRepliestNewestFirst(false));
                     }
                 });
             });
@@ -660,26 +687,6 @@ impl<'a> SettingsView<'a> {
         });
     }
 
-    fn manage_relays_section(&mut self, ui: &mut egui::Ui) -> Option<SettingsAction> {
-        let mut action = None;
-
-        if ui
-            .add_sized(
-                [ui.available_width(), 30.0],
-                Button::new(richtext_small(tr!(
-                    self.note_context.i18n,
-                    "Configure relays",
-                    "Label for configure relays, settings section",
-                ))),
-            )
-            .clicked()
-        {
-            action = Some(SettingsAction::OpenRelays);
-        }
-
-        action
-    }
-
     fn settings_menu(&mut self, ui: &mut egui::Ui) -> Option<SettingsAction> {
         let mut action = None;
 
@@ -689,8 +696,7 @@ impl<'a> SettingsView<'a> {
                 ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
 
                 let dark_mode = ui.visuals().dark_mode;
-
-                self.settings_section_with_relay(ui, "", &mut action, dark_mode, &[
+                self.settings_section_with_relay(ui, "", &mut action, &[
                     ("Appearance", SettingsRoute::Appearance, Some(SettingsIcon::Image(if dark_mode { settings_dark_image() } else { settings_light_image() }))),
                     ("Content", SettingsRoute::Others, Some(SettingsIcon::Emoji("📄"))),
                     ("Storage", SettingsRoute::Storage, Some(SettingsIcon::Emoji("💾"))),
@@ -706,10 +712,9 @@ impl<'a> SettingsView<'a> {
         ui: &mut egui::Ui,
         title: &str,
         action: &mut Option<SettingsAction>,
-        dark_mode: bool,
         items: &[(&str, SettingsRoute, Option<SettingsIcon<'b>>)],
     ) {
-        self.settings_section(ui, title, action, dark_mode, items, true);
+        self.settings_section(ui, title, action, items, true);
     }
 
     fn settings_section<'b>(
@@ -717,7 +722,6 @@ impl<'a> SettingsView<'a> {
         ui: &mut egui::Ui,
         title: &str,
         action: &mut Option<SettingsAction>,
-        dark_mode: bool,
         items: &[(&str, SettingsRoute, Option<SettingsIcon<'b>>)],
         include_relay: bool,
     ) {
