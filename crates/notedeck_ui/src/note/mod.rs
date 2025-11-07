@@ -916,7 +916,8 @@ fn actionbar_ui(
         };
 
         if count > 0 {
-            ui.weak(format!("{}", count));
+            //ui.weak(format!("{}", count));
+            crate::anim::rolling_number(ui, egui::Id::new((note_key, "replies")), count);
         }
     }
 
@@ -933,7 +934,7 @@ fn actionbar_ui(
     if let Some(c) = &counts {
         let count = c.reactions();
         if count > 0 {
-            ui.weak(format!("{}", count));
+            crate::anim::rolling_number(ui, egui::Id::new((note_key, "likes")), count);
         }
     }
 
@@ -945,7 +946,7 @@ fn actionbar_ui(
     if let Some(c) = &counts {
         let count = c.quotes() + c.reposts();
         if count > 0 {
-            ui.weak(format!("{}", count));
+            crate::anim::rolling_number(ui, egui::Id::new((note_key, "quotes")), count as u32);
         }
     }
 
