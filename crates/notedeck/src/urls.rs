@@ -407,7 +407,8 @@ impl UrlMimes {
                     url.to_owned(),
                     CachedMime {
                         mime: None,
-                        expires_at: SystemTime::UNIX_EPOCH + Duration::from_secs(u64::MAX / 2), // never expire...
+                        expires_at: SystemTime::UNIX_EPOCH
+                            + Duration::from_secs(253_402_300_799 / 2), // never expire...
                     },
                 );
             }
