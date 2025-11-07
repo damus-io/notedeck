@@ -467,7 +467,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
                                 })
                             });
 
-                        render_note_actionbar(
+                        actionbar_ui(
                             ui,
                             counts,
                             get_zapper(
@@ -571,7 +571,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
 
                     note_action = ui
                         .horizontal_wrapped(|ui| {
-                            render_note_actionbar(
+                            actionbar_ui(
                                 ui,
                                 counts,
                                 get_zapper(
@@ -890,7 +890,7 @@ fn is_root_note(note: &Note) -> bool {
 }
 
 #[profiling::function]
-fn render_note_actionbar(
+fn actionbar_ui(
     ui: &mut egui::Ui,
     counts: Option<nostrdb::CountsEntry<'_>>,
     zapper: Option<Zapper<'_>>,
