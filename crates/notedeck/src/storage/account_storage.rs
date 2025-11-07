@@ -222,6 +222,61 @@ mod tests {
         assert_num_storage(&reader.get_accounts(), 0);
     }
 
+    #[test]
+    fn test_secret_persisted_in_keyring_not_on_disk() {
+        let kp = enostr::FullKeypair::generate().to_keypair();
+        let (reader, writer) = AccountStorage::mock().unwrap().rw();
+
+        writer
+            .write_account(&UserAccountSerializable::new(kp.clone()))
+            .unwrap();
+
+        let files = reader
+            .storage
+            .accounts_directory
+            .get_files()
+            .expect("files");
+
+        let stored = files
+            .get(&kp.pubkey.hex())
+            .expect("account file should exist");
+
+        let secret_hex = {
+            let secret = kp.secret_key.as_ref().expect("secret key");
+            hex::encode(secret.to_secret_bytes())
+        };
+        assert!(
+            !stored.contains(&secret_hex),
+            "secret key unexpectedly persisted to disk"
+        );
+
+        let accounts = reader.get_accounts().expect("accounts");
+        assert_eq!(accounts.len(), 1);
+        assert!(accounts[0].key.secret_key.is_some());
+    }
+
+    #[test]
+    fn test_remove_key_removes_secret() {
+        let kp = enostr::FullKeypair::generate().to_keypair();
+        let (reader, writer) = AccountStorage::mock().unwrap().rw();
+
+        writer
+            .write_account(&UserAccountSerializable::new(kp.clone()))
+            .expect("write account");
+
+        writer.remove_key(&kp).expect("remove key");
+
+        assert!(
+            reader
+                .storage
+                .keyring
+                .get_secret(&kp.pubkey)
+                .expect("keyring read")
+                .is_none(),
+            "secret key should be removed from keyring"
+        );
+    }
+
     fn assert_num_storage(keys_response: &Result<Vec<UserAccountSerializable>>, n: usize) {
         match keys_response {
             Ok(keys) => {
