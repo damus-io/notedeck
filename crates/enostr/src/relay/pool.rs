@@ -313,7 +313,7 @@ impl RelayPool {
             return Ok(());
         }
         let relay = Relay::new(
-            nostr::RelayUrl::parse(url).map_err(|_| Error::InvalidRelayUrl)?,
+            nostr::RelayUrl::parse(&url).map_err(|_| Error::InvalidRelayUrl)?,
             wakeup,
         )?;
         let pool_relay = PoolRelay::websocket(relay);

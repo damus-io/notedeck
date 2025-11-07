@@ -43,8 +43,8 @@ image = { version = "0.25", features = ["jpeg", "png", "webp"] }
 indexmap = "2.6.0"
 log = "0.4.17"
 md5 = "0.7.0"
-nostr = { version = "0.37.0", default-features = false, features = ["std", "nip49"] }
-nwc = "0.39.0"
+nostr = { version = "0.44.0", default-features = false, features = ["std", "nip49"] }
+nwc = "0.44.0"
 mio = { version = "1.0.3", features = ["os-poll", "net"] }
 nostrdb = { git = "https://github.com/damus-io/nostrdb-rs", rev = "6956b9f955463404b8eff3b7abe0cc3092cb5958" }
 #nostrdb = "0.6.1"

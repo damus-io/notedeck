@@ -1,4 +1,5 @@
 use enostr::{ClientMessage, NoteId, Pubkey, RelayPool};
+use nostr::RelayUrl;
 use nostrdb::{Note, NoteKey};
 use tracing::error;
 
@@ -70,7 +71,11 @@ impl NoteContextSelection {
                 if note_author_is_selected_acc {
                     let nip19event = nostr::nips::nip19::Nip19Event::new(
                         nostr::event::EventId::from_byte_array(*note.id()),
-                        pool.urls(),
+                    )
+                    .relays(
+                        pool.urls()
+                            .iter()
+                            .filter_map(|url| RelayUrl::parse(url).ok()),
                     );
                     let Ok(bech) = nostr::nips::nip19::ToBech32::to_bech32(&nip19event) else {
                         return;

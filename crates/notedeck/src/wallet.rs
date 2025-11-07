@@ -1,4 +1,4 @@
-use std::{fmt::Display, sync::Arc};
+use std::sync::Arc;
 
 use nwc::{
     nostr::nips::nip47::{NostrWalletConnectURI, PayInvoiceRequest, PayInvoiceResponse},
@@ -68,7 +68,7 @@ pub enum WalletError {
 pub struct Wallet {
     pub uri: String,
     wallet: Arc<RwLock<NWC>>,
-    balance: Option<Promise<Result<u64, NwcError>>>,
+    balance: Option<Promise<Result<u64, nwc::Error>>>,
 }
 
 impl Clone for Wallet {
@@ -116,7 +116,7 @@ impl Wallet {
         })
     }
 
-    pub fn get_balance(&mut self) -> Option<&Result<u64, NwcError>> {
+    pub fn get_balance(&mut self) -> Option<&Result<u64, nwc::Error>> {
         if self.balance.is_none() {
             self.balance = Some(get_balance(self.wallet.clone()));
             return None;
@@ -138,51 +138,11 @@ impl Wallet {
     }
 }
 
-#[derive(Clone)]
-pub enum NwcError {
-    /// NIP47 error
-    NIP47(String),
-    /// Relay
-    Relay(String),
-    /// Premature exit
-    PrematureExit,
-    /// Request timeout
-    Timeout,
-}
-
-impl From<nwc::Error> for NwcError {
-    fn from(value: nwc::Error) -> Self {
-        match value {
-            nwc::error::Error::NIP47(error) => NwcError::NIP47(error.to_string()),
-            nwc::error::Error::Relay(error) => NwcError::Relay(error.to_string()),
-            nwc::error::Error::PrematureExit => NwcError::PrematureExit,
-            nwc::error::Error::Timeout => NwcError::Timeout,
-        }
-    }
-}
-
-impl Display for NwcError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            NwcError::NIP47(err) => write!(f, "NIP47 error: {err}"),
-            NwcError::Relay(err) => write!(f, "Relay error: {err}"),
-            NwcError::PrematureExit => write!(f, "Premature exit"),
-            NwcError::Timeout => write!(f, "Request timed out"),
-        }
-    }
-}
-
-fn get_balance(nwc: Arc<RwLock<NWC>>) -> Promise<Result<u64, NwcError>> {
+fn get_balance(nwc: Arc<RwLock<NWC>>) -> Promise<Result<u64, nwc::Error>> {
     let (sender, promise) = Promise::new();
 
     tokio::spawn(async move {
-        sender.send(
-            nwc.read()
-                .await
-                .get_balance()
-                .await
-                .map_err(nwc::Error::into),
-        );
+        sender.send(nwc.read().await.get_balance().await);
     });
 
     promise
