@@ -41,6 +41,8 @@ pub async fn android_main(android_app: AndroidApp) {
         .with(fmt_layer)
         .init();
 
+    let _ = android_keyring::set_android_keyring_credential_builder();
+
     let path = android_app.internal_data_path().expect("data path");
     let mut options = eframe::NativeOptions {
         depth_buffer: 24,
