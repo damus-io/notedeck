@@ -39,6 +39,7 @@ impl UserAccount {
     }
 }
 
+#[derive(Clone)]
 pub struct UserAccountSerializable {
     pub key: Keypair,
     pub wallet: Option<WalletSerializable>,
