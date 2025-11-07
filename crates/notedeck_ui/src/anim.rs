@@ -212,3 +212,120 @@ impl<'a> PulseAlpha<'a> {
         (cur_val + alpha_min_f32).clamp(self.alpha_min as f32, self.alpha_max as f32) as u8
     }
 }
+
+/// Stateless rolling number using egui's internal animation memory.
+/// Each digit has a different "speed" / easing.
+pub fn rolling_number(ui: &mut egui::Ui, id_source: impl std::hash::Hash, value: u32) -> Response {
+    let ctx = ui.ctx();
+    let id = ui.make_persistent_id(id_source);
+
+    // Global animated value (one float in egui's memory):
+    let anim = ctx.animate_value_with_time(id, value as f32, 0.35);
+
+    let anim_floor = anim.floor().max(0.0);
+    let base = anim_floor as u32;
+    let t_global = anim - anim_floor; // base step phase: 0..1
+    let next = if t_global == 0.0 {
+        base
+    } else {
+        base.saturating_add(1)
+    };
+
+    // Choose how many digits we want to show.
+    let max_show = value.max(next);
+    let num_digits = max_show.to_string().len().max(1);
+
+    let font_size = 12.0;
+    let font_id = egui::FontId::proportional(font_size);
+    let color = ui.visuals().text_color();
+
+    let response = ui.allocate_response(egui::Vec2::ZERO, Sense::hover());
+
+    let prev_spacing = ui.spacing().item_spacing.x;
+    ui.spacing_mut().item_spacing.x = 0.0;
+    //let pos = ui.available_rect_before_wrap().min;
+    let digit_size = egui::vec2(7.0, font_size);
+
+    for i in 0..num_digits {
+        // Leftmost digit = index 0, rightmost = num_digits - 1
+        let place = 10_u32.pow((num_digits - 1 - i) as u32);
+        let from = (base / place) % 10;
+        let to = (next / place) % 10;
+
+        // Per-digit "speed": rightmost digits move more / earlier.
+        let idx_from_right = (num_digits - 1 - i) as f32;
+        // tweak these constants to taste:
+        let speed_factor = 0.8 + 0.25 * idx_from_right; // higher place → slightly faster
+
+        // Local phase for this digit:
+        let mut t_digit = (t_global * speed_factor).clamp(0.0, 1.0);
+
+        // Add a nice easing curve so some digits ease in/out:
+        t_digit = ease_in_out_cubic(t_digit);
+
+        draw_rolling_digit(
+            ui, from as u8, to as u8, t_digit, &font_id, color, digit_size,
+        );
+    }
+
+    ui.spacing_mut().item_spacing.x = prev_spacing;
+
+    response
+}
+
+// Basic cubic ease-in-out
+fn ease_in_out_cubic(t: f32) -> f32 {
+    if t < 0.5 {
+        4.0 * t * t * t
+    } else {
+        let t = 2.0 * t - 2.0;
+        0.5 * t * t * t + 1.0
+    }
+}
+
+fn draw_rolling_digit(
+    ui: &mut egui::Ui,
+    from: u8,
+    to: u8,
+    t: f32, // 0..1, already "warped" per digit
+    font_id: &egui::FontId,
+    color: egui::Color32,
+    desired_size: egui::Vec2,
+) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(desired_size, egui::Sense::hover());
+
+    let painter = ui.painter().with_clip_rect(rect);
+
+    let current_str = format!("{from}");
+    let next_str = format!("{to}");
+
+    let current_galley = painter.layout_no_wrap(current_str, font_id.clone(), color);
+    let next_galley = painter.layout_no_wrap(next_str, font_id.clone(), color);
+
+    let h = current_galley.rect.height().max(next_galley.rect.height());
+    let center_x = rect.center().x;
+    let center_y = rect.center().y;
+
+    let current_y = egui::lerp(center_y..=center_y - h, t);
+    let next_y = egui::lerp(center_y + h..=center_y, t);
+
+    painter.galley(
+        egui::pos2(
+            center_x - current_galley.rect.width() * 0.5,
+            current_y - current_galley.rect.height() * 0.5,
+        ),
+        current_galley,
+        egui::Color32::RED,
+    );
+
+    painter.galley(
+        egui::pos2(
+            center_x - next_galley.rect.width() * 0.5,
+            next_y - next_galley.rect.height() * 0.5,
+        ),
+        next_galley,
+        egui::Color32::RED,
+    );
+
+    response
+}

@@ -14,7 +14,7 @@ pub mod profile;
 mod username;
 pub mod widgets;
 
-pub use anim::{AnimationHelper, PulseAlpha};
+pub use anim::{rolling_number, AnimationHelper, PulseAlpha};
 pub use debug::debug_slider;
 pub use icons::{expanding_button, ICON_EXPANSION_MULTIPLE, ICON_WIDTH};
 pub use mention::Mention;
