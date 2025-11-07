@@ -452,15 +452,30 @@ impl<'a, 'd> NoteView<'a, 'd> {
                         // question: WTF? question 2: WHY?
                         ui.allocate_space(egui::vec2(0.0, 0.0));
 
-                        render_note_actionbar(
+                        let counts = self
+                            .note_context
+                            .ndb
+                            .get_note_metadata(txn, self.note.id())
+                            .ok()
+                            .and_then(|md| {
+                                md.into_iter().find_map(|e| {
+                                    if let nostrdb::NoteMetadataEntryVariant::Counts(ce) = e {
+                                        Some(ce)
+                                    } else {
+                                        None
+                                    }
+                                })
+                            });
+
+                        actionbar_ui(
                             ui,
+                            counts,
                             get_zapper(
                                 self.note_context.accounts,
                                 self.note_context.global_wallet,
                                 self.note_context.zaps,
                             ),
-                            self.note.id(),
-                            self.note.pubkey(),
+                            self.note,
                             self.note_context.accounts.selected_account_pubkey(),
                             note_key,
                             self.note_context.i18n,
@@ -539,17 +554,32 @@ impl<'a, 'd> NoteView<'a, 'd> {
                 note_action = contents.action.or(note_action);
 
                 if self.options().contains(NoteOptions::ActionBar) {
+                    let counts = self
+                        .note_context
+                        .ndb
+                        .get_note_metadata(txn, self.note.id())
+                        .ok()
+                        .and_then(|md| {
+                            md.into_iter().find_map(|e| {
+                                if let nostrdb::NoteMetadataEntryVariant::Counts(ce) = e {
+                                    Some(ce)
+                                } else {
+                                    None
+                                }
+                            })
+                        });
+
                     note_action = ui
                         .horizontal_wrapped(|ui| {
-                            render_note_actionbar(
+                            actionbar_ui(
                                 ui,
+                                counts,
                                 get_zapper(
                                     self.note_context.accounts,
                                     self.note_context.global_wallet,
                                     self.note_context.zaps,
                                 ),
-                                self.note.id(),
-                                self.note.pubkey(),
+                                self.note,
                                 self.note_context.accounts.selected_account_pubkey(),
                                 note_key,
                                 self.note_context.i18n,
@@ -844,51 +874,100 @@ fn zap_actionbar_button(
     action
 }
 
+fn is_root_note(note: &Note) -> bool {
+    for tag in note.tags() {
+        if tag.count() < 2 {
+            continue;
+        }
+
+        // any reference to an e tag is a non-root note
+        if tag.get_str(0) == Some("e") {
+            return false;
+        }
+    }
+
+    true
+}
+
 #[profiling::function]
-fn render_note_actionbar(
+fn actionbar_ui(
     ui: &mut egui::Ui,
+    counts: Option<nostrdb::CountsEntry<'_>>,
     zapper: Option<Zapper<'_>>,
-    note_id: &[u8; 32],
-    note_pubkey: &[u8; 32],
+    note: &Note,
     current_user_pubkey: &Pubkey,
     note_key: NoteKey,
     i18n: &mut Localization,
 ) -> Option<NoteAction> {
     let mut action = None;
+    let spacing = 24.0;
 
+    ui.spacing_mut().item_spacing.x = 2.0;
     ui.set_min_height(26.0);
-    ui.spacing_mut().item_spacing.x = 24.0;
 
     let reply_resp =
         reply_button(ui, i18n, note_key).on_hover_cursor(egui::CursorIcon::PointingHand);
 
+    if let Some(c) = &counts {
+        let count = if is_root_note(note) {
+            c.thread_replies()
+        } else {
+            c.direct_replies() as u32
+        };
+
+        if count > 0 {
+            //ui.weak(format!("{}", count));
+            crate::anim::rolling_number(ui, egui::Id::new((note_key, "replies")), count);
+        }
+    }
+
+    ui.add_space(spacing);
+
     let filled = ui
         .ctx()
-        .data(|d| d.get_temp(reaction_sent_id(current_user_pubkey, note_id)))
+        .data(|d| d.get_temp(reaction_sent_id(current_user_pubkey, note.id())))
         == Some(true);
 
     let like_resp =
         like_button(ui, i18n, note_key, filled).on_hover_cursor(egui::CursorIcon::PointingHand);
 
+    if let Some(c) = &counts {
+        let count = c.reactions();
+        if count > 0 {
+            crate::anim::rolling_number(ui, egui::Id::new((note_key, "likes")), count);
+        }
+    }
+
+    ui.add_space(spacing);
+
     let quote_resp =
         quote_repost_button(ui, i18n, note_key).on_hover_cursor(egui::CursorIcon::PointingHand);
 
+    if let Some(c) = &counts {
+        let count = c.quotes() + c.reposts();
+        if count > 0 {
+            crate::anim::rolling_number(ui, egui::Id::new((note_key, "quotes")), count as u32);
+        }
+    }
+
+    ui.add_space(spacing);
+
     if reply_resp.clicked() {
-        action = Some(NoteAction::Reply(NoteId::new(*note_id)));
+        action = Some(NoteAction::Reply(NoteId::new(*note.id())));
     }
 
     if like_resp.clicked() {
         action = Some(NoteAction::React(ReactAction::new(
-            NoteId::new(*note_id),
+            NoteId::new(*note.id()),
             "🤙🏻",
         )));
     }
 
     if quote_resp.clicked() {
-        action = Some(NoteAction::Repost(NoteId::new(*note_id)));
+        action = Some(NoteAction::Repost(NoteId::new(*note.id())));
     }
 
-    action = zap_actionbar_button(ui, note_id, note_pubkey, zapper, i18n).or(action);
+    action = zap_actionbar_button(ui, note.id(), note.pubkey(), zapper, i18n).or(action);
 
     action
 }

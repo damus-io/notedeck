@@ -8,16 +8,13 @@ pub enum ConnectionState {
     Connecting,
     Active,
 }
+
+#[derive(Default)]
 pub enum LoadingState<T, E> {
+    #[default]
     Loading,
     Failed(E),
     Loaded(T),
-}
-
-impl<T, E> Default for LoadingState<T, E> {
-    fn default() -> Self {
-        Self::Loading
-    }
 }
 
 impl<T, E> LoadingState<T, E> {
