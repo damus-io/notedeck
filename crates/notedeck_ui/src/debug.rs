@@ -1,6 +1,6 @@
+use egui::{vec2, Pos2, Rect};
 
-/*
-fn debug_slider(
+pub fn debug_slider(
     ui: &mut egui::Ui,
     id: egui::Id,
     point: Pos2,
@@ -22,5 +22,3 @@ fn debug_slider(
 
     val
 }
-*/
-

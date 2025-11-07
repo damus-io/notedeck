@@ -3,6 +3,7 @@ pub mod app_images;
 pub mod colors;
 pub mod constants;
 pub mod context_menu;
+pub mod debug;
 pub mod icons;
 pub mod images;
 pub mod media;
@@ -14,6 +15,7 @@ mod username;
 pub mod widgets;
 
 pub use anim::{AnimationHelper, PulseAlpha};
+pub use debug::debug_slider;
 pub use icons::{expanding_button, ICON_EXPANSION_MULTIPLE, ICON_WIDTH};
 pub use mention::Mention;
 pub use note::{NoteContents, NoteOptions, NoteView};
