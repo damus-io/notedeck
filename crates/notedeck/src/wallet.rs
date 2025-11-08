@@ -142,21 +142,24 @@ impl Wallet {
 pub enum NwcError {
     /// NIP47 error
     NIP47(String),
-    /// Relay
-    Relay(String),
+    /// Relay pool error
+    Pool(String),
     /// Premature exit
     PrematureExit,
     /// Request timeout
     Timeout,
+    /// Handler error
+    Handler(String),
 }
 
 impl From<nwc::Error> for NwcError {
     fn from(value: nwc::Error) -> Self {
         match value {
             nwc::error::Error::NIP47(error) => NwcError::NIP47(error.to_string()),
-            nwc::error::Error::Relay(error) => NwcError::Relay(error.to_string()),
+            nwc::error::Error::Pool(error) => NwcError::Pool(error.to_string()),
             nwc::error::Error::PrematureExit => NwcError::PrematureExit,
             nwc::error::Error::Timeout => NwcError::Timeout,
+            nwc::error::Error::Handler(error) => NwcError::Handler(error),
         }
     }
 }
@@ -165,9 +168,10 @@ impl Display for NwcError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             NwcError::NIP47(err) => write!(f, "NIP47 error: {err}"),
-            NwcError::Relay(err) => write!(f, "Relay error: {err}"),
+            NwcError::Pool(err) => write!(f, "Relay pool error: {err}"),
             NwcError::PrematureExit => write!(f, "Premature exit"),
             NwcError::Timeout => write!(f, "Request timed out"),
+            NwcError::Handler(err) => write!(f, "Handler error: {err}"),
         }
     }
 }
