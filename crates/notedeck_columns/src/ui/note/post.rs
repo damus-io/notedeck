@@ -873,6 +873,7 @@ mod preview {
                 accounts: app.accounts,
                 global_wallet: app.global_wallet,
                 img_cache: app.img_cache,
+                video_store: Some(app.video_store), // Post preview needs video support
                 note_cache: app.note_cache,
                 zaps: app.zaps,
                 pool: app.pool,

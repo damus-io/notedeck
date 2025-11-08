@@ -9,7 +9,7 @@ use crate::GlobalWallet;
 use crate::JobPool;
 use crate::Localization;
 use crate::UnknownIds;
-use crate::{notecache::NoteCache, zaps::Zaps, Images};
+use crate::{notecache::NoteCache, zaps::Zaps, Images, VideoStore};
 use enostr::{NoteId, RelayPool};
 use nostrdb::{Ndb, Note, NoteKey, QueryResult, Transaction};
 use std::borrow::Borrow;
@@ -24,6 +24,9 @@ pub struct NoteContext<'d> {
     pub global_wallet: &'d GlobalWallet,
     pub i18n: &'d mut Localization,
     pub img_cache: &'d mut Images,
+    /// Video store is optional - only needed for views that render inline videos.
+    /// Views like CLNdash that don't display posts can pass None.
+    pub video_store: Option<&'d mut VideoStore>,
     pub note_cache: &'d mut NoteCache,
     pub zaps: &'d mut Zaps,
     pub pool: &'d mut RelayPool,

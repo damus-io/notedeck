@@ -1,7 +1,7 @@
 use crate::{
     account::accounts::Accounts, frame_history::FrameHistory, i18n::Localization,
     wallet::GlobalWallet, zaps::Zaps, Args, DataPath, Images, JobPool, NoteCache, SettingsHandler,
-    UnknownIds,
+    UnknownIds, VideoStore,
 };
 use egui_winit::clipboard::Clipboard;
 
@@ -16,6 +16,7 @@ use egui::{Pos2, Rect};
 pub struct AppContext<'a> {
     pub ndb: &'a mut Ndb,
     pub img_cache: &'a mut Images,
+    pub video_store: &'a mut VideoStore,
     pub unknown_ids: &'a mut UnknownIds,
     pub pool: &'a mut RelayPool,
     pub note_cache: &'a mut NoteCache,

@@ -63,5 +63,10 @@ jni = { workspace = true }
 android-activity = { workspace = true }
 ndk-context = "0.1"
 
+[target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))'.dependencies]
+rsmpeg = { workspace = true }
+ureq = { version = "2.9", default-features = true }
+rodio = { workspace = true }
+
 [features]
 puffin = ["puffin_egui", "dep:puffin"]

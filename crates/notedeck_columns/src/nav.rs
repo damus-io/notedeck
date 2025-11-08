@@ -527,9 +527,14 @@ fn process_render_nav_action(
                 .process_relay_action(ui.ctx(), ctx.pool, action);
             None
         }
-        RenderNavAction::SettingsAction(action) => {
-            action.process_settings_action(app, ctx.settings, ctx.i18n, ctx.img_cache, ui.ctx())
-        }
+        RenderNavAction::SettingsAction(action) => action.process_settings_action(
+            app,
+            ctx.settings,
+            ctx.i18n,
+            ctx.img_cache,
+            ctx.video_store,
+            ui.ctx(),
+        ),
         RenderNavAction::RepostAction(action) => {
             action.process(ctx.ndb, &ctx.accounts.get_selected_account().key, ctx.pool)
         }
@@ -560,6 +565,7 @@ fn render_nav_body(
         ndb: ctx.ndb,
         accounts: ctx.accounts,
         img_cache: ctx.img_cache,
+        video_store: Some(ctx.video_store), // Main columns view needs video support
         note_cache: ctx.note_cache,
         zaps: ctx.zaps,
         pool: ctx.pool,

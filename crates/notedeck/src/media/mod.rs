@@ -4,6 +4,7 @@ pub mod gif;
 pub mod images;
 pub mod imeta;
 pub mod renderable;
+pub mod video;
 
 pub use action::{MediaAction, MediaInfo, ViewMediaInfo};
 pub use blur::{
@@ -13,6 +14,7 @@ pub use blur::{
 use egui::{ColorImage, TextureHandle};
 pub use images::ImageType;
 pub use renderable::RenderableMedia;
+pub use video::{VideoClipMeta, VideoClipState, VideoPlaybackState, VideoStore};
 
 #[derive(Copy, Clone, Debug)]
 pub enum AnimationMode {

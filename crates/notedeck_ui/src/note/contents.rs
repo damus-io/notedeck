@@ -1,4 +1,4 @@
-use super::media::image_carousel;
+use super::media::{image_carousel, inline_video_player};
 use crate::{
     note::{NoteAction, NoteOptions, NoteResponse, NoteView},
     secondary_label,
@@ -6,7 +6,10 @@ use crate::{
 use egui::{Color32, Hyperlink, Label, RichText};
 use nostrdb::{BlockType, Mention, Note, NoteKey, Transaction};
 use notedeck::Localization;
-use notedeck::{time_format, update_imeta_blurhashes, NoteCache, NoteContext, NotedeckTextStyle};
+use notedeck::{
+    time_format, update_imeta_blurhashes, url_looks_like_video, NoteCache, NoteContext,
+    NotedeckTextStyle,
+};
 use notedeck::{JobsCache, RenderableMedia};
 use tracing::warn;
 
@@ -188,6 +191,7 @@ fn render_undecorated_note_contents<'a>(
     }
 
     let mut supported_medias: Vec<RenderableMedia> = vec![];
+    let mut video_urls: Vec<String> = vec![];
 
     let response = ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 1.0;
@@ -272,6 +276,13 @@ fn render_undecorated_note_contents<'a>(
                     profiling::scope!("url-block");
                     let mut found_supported = || -> bool {
                         let url = block.as_str();
+
+                        if !hide_media
+                            && url_looks_like_video(&mut note_context.img_cache.urls, url)
+                        {
+                            video_urls.push(url.to_owned());
+                            return true;
+                        }
 
                         if !note_context.img_cache.metadata.contains_key(url) {
                             update_imeta_blurhashes(note, &mut note_context.img_cache.metadata);
@@ -383,6 +394,25 @@ fn render_undecorated_note_contents<'a>(
             options,
         );
         ui.add_space(2.0);
+    }
+
+    if !video_urls.is_empty() && !options.contains(NoteOptions::Textmode) {
+        // Only render inline videos if video_store is available
+        if let Some(video_store) = note_context.video_store.as_mut() {
+            for url in video_urls {
+                inline_video_player(ui, video_store, &url, note_context.i18n);
+                ui.add_space(6.0);
+            }
+        } else {
+            // Fallback: show video links as hyperlinks when video player is not available
+            for url in video_urls {
+                ui.add(Hyperlink::from_label_and_url(
+                    RichText::new(&url).color(ui.visuals().hyperlink_color),
+                    &url,
+                ));
+                ui.add_space(6.0);
+            }
+        }
     }
 
     let note_action = preview_note_action

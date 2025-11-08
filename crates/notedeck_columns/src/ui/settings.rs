@@ -9,7 +9,7 @@ use notedeck::{
     tr,
     ui::{is_narrow, richtext_small},
     Images, JobsCache, LanguageIdentifier, Localization, NoteContext, NotedeckTextStyle, Settings,
-    SettingsHandler, DEFAULT_NOTE_BODY_FONT_SIZE,
+    SettingsHandler, VideoStore, DEFAULT_NOTE_BODY_FONT_SIZE,
 };
 use notedeck_ui::{
     app_images::{copy_to_clipboard_dark_image, copy_to_clipboard_image},
@@ -47,6 +47,7 @@ impl SettingsAction {
         settings: &'a mut SettingsHandler,
         i18n: &'a mut Localization,
         img_cache: &mut Images,
+        video_store: &mut VideoStore,
         ctx: &egui::Context,
     ) -> Option<RouterAction> {
         let mut route_action: Option<RouterAction> = None;
@@ -78,6 +79,7 @@ impl SettingsAction {
             }
             Self::ClearCacheFolder => {
                 let _ = img_cache.clear_folder_contents();
+                let _ = video_store.clear_cache();
             }
             Self::SetNoteBodyFontSize(size) => {
                 let mut style = (*ctx.style()).clone();

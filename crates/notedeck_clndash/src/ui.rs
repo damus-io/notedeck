@@ -46,6 +46,7 @@ pub fn note_hover_ui(
             ndb: ctx.ndb,
             accounts: ctx.accounts,
             img_cache: ctx.img_cache,
+            video_store: None, // CLNdash doesn't render posts, so no video needed
             note_cache: ctx.note_cache,
             zaps: ctx.zaps,
             pool: ctx.pool,

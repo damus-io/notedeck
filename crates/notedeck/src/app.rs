@@ -8,7 +8,7 @@ use crate::JobPool;
 use crate::NotedeckOptions;
 use crate::{
     frame_history::FrameHistory, AccountStorage, Accounts, AppContext, Args, DataPath,
-    DataPathType, Directory, Images, NoteAction, NoteCache, RelayDebugView, UnknownIds,
+    DataPathType, Directory, Images, NoteAction, NoteCache, RelayDebugView, UnknownIds, VideoStore,
 };
 use egui::Margin;
 use egui::ThemePreference;
@@ -62,6 +62,7 @@ impl AppResponse {
 pub struct Notedeck {
     ndb: Ndb,
     img_cache: Images,
+    video_store: VideoStore,
     unknown_ids: UnknownIds,
     pool: RelayPool,
     note_cache: NoteCache,
@@ -256,7 +257,10 @@ impl Notedeck {
             accounts.select_account(&first.pubkey, &mut ndb, &txn, &mut pool, ctx);
         }
 
+        let video_cache_dir = img_cache_dir.join("video");
+        let _ = std::fs::create_dir_all(&video_cache_dir);
         let img_cache = Images::new(img_cache_dir);
+        let video_store = VideoStore::new(video_cache_dir);
         let note_cache = NoteCache::default();
 
         let app_size = AppSizeHandler::new(&path);
@@ -291,6 +295,7 @@ impl Notedeck {
         Self {
             ndb,
             img_cache,
+            video_store,
             unknown_ids,
             pool,
             note_cache,
@@ -359,6 +364,7 @@ impl Notedeck {
         AppContext {
             ndb: &mut self.ndb,
             img_cache: &mut self.img_cache,
+            video_store: &mut self.video_store,
             unknown_ids: &mut self.unknown_ids,
             pool: &mut self.pool,
             note_cache: &mut self.note_cache,
