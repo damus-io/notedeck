@@ -215,6 +215,7 @@ impl<'a> DaveUi<'a> {
             ndb: ctx.ndb,
             accounts: ctx.accounts,
             img_cache: ctx.img_cache,
+            video_store: Some(ctx.video_store), // Dave can display notes with videos
             note_cache: ctx.note_cache,
             zaps: ctx.zaps,
             pool: ctx.pool,

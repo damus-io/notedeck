@@ -65,7 +65,8 @@ pub use jobs::{
 };
 pub use media::{
     compute_blurhash, update_imeta_blurhashes, ImageMetadata, ImageType, MediaAction,
-    ObfuscationType, PixelDimensions, PointDimensions, RenderableMedia,
+    ObfuscationType, PixelDimensions, PointDimensions, RenderableMedia, VideoClipMeta,
+    VideoClipState, VideoPlaybackState, VideoStore,
 };
 pub use muted::{MuteFun, Muted};
 pub use name::NostrName;
@@ -89,7 +90,7 @@ pub use time::time_ago_since;
 pub use time::time_format;
 pub use timecache::TimeCached;
 pub use unknowns::{get_unknown_note_ids, NoteRefsUnkIdAction, SingleUnkIdAction, UnknownIds};
-pub use urls::{supported_mime_hosted_at_url, SupportedMimeType, UrlMimes};
+pub use urls::{supported_mime_hosted_at_url, url_looks_like_video, SupportedMimeType, UrlMimes};
 pub use user_account::UserAccount;
 pub use wallet::{
     get_current_wallet, get_current_wallet_mut, get_wallet_for, GlobalWallet, Wallet, WalletError,

@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     fs::File,
     io::{Read, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, RwLock},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -538,6 +538,36 @@ fn mime_to_cache_type(mime: &Mime) -> MediaCacheType {
 
 fn is_mime_supported(mime: &mime_guess::Mime) -> bool {
     mime.type_() == mime_guess::mime::IMAGE
+}
+
+pub fn url_looks_like_video(urls: &mut UrlMimes, url: &str) -> bool {
+    if let Some(mime) = urls.get_or_fetch(url) {
+        if mime.type_() == mime_guess::mime::VIDEO {
+            return true;
+        }
+    }
+
+    has_video_extension(url)
+}
+
+fn has_video_extension(url: &str) -> bool {
+    Url::parse(url)
+        .ok()
+        .and_then(|parsed| {
+            parsed
+                .path_segments()
+                .and_then(|mut segments| segments.next_back())
+                .and_then(|filename| Path::new(filename).extension().and_then(|ext| ext.to_str()))
+                .map(is_video_extension)
+        })
+        .unwrap_or(false)
+}
+
+fn is_video_extension(ext: &str) -> bool {
+    matches!(
+        ext.to_ascii_lowercase().as_str(),
+        "mp4" | "m4v" | "mov" | "webm" | "mkv" | "avi" | "mpg" | "mpeg"
+    )
 }
 
 #[profiling::function]

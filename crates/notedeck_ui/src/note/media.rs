@@ -2,14 +2,15 @@ use std::path::Path;
 
 use bitflags::bitflags;
 use egui::{
-    vec2, Button, Color32, Context, CornerRadius, FontId, Image, InnerResponse, Response,
-    TextureHandle, Vec2,
+    vec2, Button, Color32, Context, CornerRadius, FontId, Hyperlink, Image, InnerResponse,
+    Response, RichText, Slider, TextureHandle, Vec2,
 };
 use notedeck::{
     compute_blurhash, fonts::get_font_size, show_one_error_message, tr, BlurhashParams,
     GifStateMap, Images, Job, JobId, JobParams, JobPool, JobState, JobsCache, Localization,
     MediaAction, MediaCacheType, NotedeckTextStyle, ObfuscationType, PointDimensions,
-    RenderableMedia, TexturedImage, TexturesCache,
+    RenderableMedia, TexturedImage, TexturesCache, VideoClipMeta, VideoClipState,
+    VideoPlaybackState, VideoStore,
 };
 
 use crate::NoteOptions;
@@ -361,6 +362,409 @@ fn copy_link(i18n: &mut Localization, url: &str, img_resp: &Response) {
             ui.close_menu();
         }
     });
+}
+
+// Placeholder height for loading state (when we don't know the aspect ratio yet)
+const VIDEO_LOADING_PLACEHOLDER_HEIGHT: f32 = 200.0;
+
+pub fn inline_video_player(
+    ui: &mut egui::Ui,
+    video_store: &mut VideoStore,
+    url: &str,
+    i18n: &mut Localization,
+) {
+    match video_store.clip_state(url) {
+        VideoClipState::Unsupported => {
+            ui.colored_label(
+                ui.visuals().warn_fg_color,
+                tr!(
+                    i18n,
+                    "Inline video playback isn't supported on this platform.",
+                    "Fallback message when inline video is unavailable"
+                ),
+            );
+            ui.add(Hyperlink::from_label_and_url(
+                RichText::new(url)
+                    .color(ui.visuals().hyperlink_color)
+                    .underline(),
+                url,
+            ));
+        }
+        VideoClipState::Loading => {
+            video_loading_placeholder(ui, i18n, url);
+        }
+        VideoClipState::ThumbnailReady(meta) => {
+            render_video_thumbnail(ui, video_store, url, meta, i18n);
+        }
+        VideoClipState::Error(err) => {
+            video_error_placeholder(ui, i18n, url, &err);
+        }
+        VideoClipState::Ready(meta) => {
+            render_ready_video(ui, video_store, url, meta, i18n);
+        }
+    }
+}
+
+fn video_loading_placeholder(ui: &mut egui::Ui, i18n: &mut Localization, url: &str) {
+    let height = VIDEO_LOADING_PLACEHOLDER_HEIGHT;
+    let width = ui.available_width();
+    let (rect, _) = ui.allocate_exact_size(vec2(width, height), egui::Sense::hover());
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(
+        rect,
+        6.0,
+        ui.visuals().widgets.inactive.bg_fill.gamma_multiply(0.9),
+    );
+    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(rect), |ui| {
+        ui.centered_and_justified(|ui| {
+            ui.spinner();
+            ui.label(tr!(
+                i18n,
+                "Loading video…",
+                "Label shown while video is decoding"
+            ));
+        });
+    });
+    ui.add_space(4.0);
+    ui.add(Hyperlink::from_label_and_url(
+        RichText::new(tr!(
+            i18n,
+            "Open in browser",
+            "Fallback link label while video loads"
+        ))
+        .color(ui.visuals().hyperlink_color),
+        url,
+    ));
+}
+
+fn video_error_placeholder(ui: &mut egui::Ui, i18n: &mut Localization, url: &str, err: &str) {
+    // Show the error message directly - localization can cause issues with dynamic content
+    ui.colored_label(
+        ui.visuals().warn_fg_color,
+        format!("Couldn't load video: {}", err),
+    );
+    ui.add(Hyperlink::from_label_and_url(
+        RichText::new(tr!(
+            i18n,
+            "Open in browser",
+            "Fallback link label when video fails"
+        ))
+        .color(ui.visuals().hyperlink_color),
+        url,
+    ));
+}
+
+/// Helper to calculate video surface dimensions and allocate space
+/// Returns (rect, size) for the video display area
+fn video_surface(ui: &mut egui::Ui, meta: &VideoClipMeta) -> (egui::Rect, Vec2) {
+    let width = ui.available_width();
+    let height = width / meta.aspect_ratio();
+    let size = vec2(width, height);
+    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+    (rect, size)
+}
+
+fn render_video_thumbnail(
+    ui: &mut egui::Ui,
+    video_store: &mut VideoStore,
+    url: &str,
+    meta: VideoClipMeta,
+    i18n: &mut Localization,
+) {
+    let Some(thumbnail) = video_store.thumbnail_texture(ui.ctx(), url) else {
+        video_loading_placeholder(ui, i18n, url);
+        return;
+    };
+
+    // Use shared helper for surface calculation
+    let (rect, size) = video_surface(ui, &meta);
+
+    // Render the thumbnail
+    let image = Image::new((thumbnail.id(), size)).fit_to_exact_size(size);
+    image.paint_at(ui, rect);
+
+    // Draw play overlay (semi-transparent overlay + play button + duration badge)
+    paint_play_overlay(ui, rect, size, meta.duration_secs());
+
+    // Make the whole area clickable
+    let response = ui.interact(rect, ui.id().with("video_thumb"), egui::Sense::click());
+
+    if response.clicked() {
+        video_store.request_full_video(url);
+    }
+
+    ui.add_space(4.0);
+    ui.add(Hyperlink::from_label_and_url(
+        RichText::new(tr!(
+            i18n,
+            "Open in browser",
+            "Link to open video in browser"
+        ))
+        .color(ui.visuals().hyperlink_color),
+        url,
+    ));
+}
+
+/// Paint play button overlay with duration badge on video thumbnail
+fn paint_play_overlay(ui: &mut egui::Ui, rect: egui::Rect, size: Vec2, duration_secs: f32) {
+    let visuals = ui.visuals();
+
+    // Semi-transparent overlay
+    let overlay_color = Color32::from_black_alpha(100);
+    ui.painter().rect_filled(rect, 6.0, overlay_color);
+
+    // Play button in center
+    let button_radius = (size.y * 0.15).min(60.0);
+    let center = rect.center();
+
+    // Use theme-aware color for play button background
+    let play_button_bg = visuals.extreme_bg_color.gamma_multiply(0.9);
+    ui.painter()
+        .circle_filled(center, button_radius, play_button_bg);
+
+    // Play triangle
+    let triangle_size = button_radius * 0.5;
+    let triangle_offset = triangle_size * 0.15;
+    let play_color = Color32::from_black_alpha(200);
+
+    let p1 = egui::pos2(
+        center.x - triangle_size * 0.4 + triangle_offset,
+        center.y - triangle_size * 0.6,
+    );
+    let p2 = egui::pos2(
+        center.x - triangle_size * 0.4 + triangle_offset,
+        center.y + triangle_size * 0.6,
+    );
+    let p3 = egui::pos2(center.x + triangle_size * 0.7 + triangle_offset, center.y);
+
+    ui.painter().add(egui::Shape::convex_polygon(
+        vec![p1, p2, p3],
+        play_color,
+        egui::Stroke::NONE,
+    ));
+
+    // Duration badge in bottom-right
+    let duration_text = format!("{:.1}s", duration_secs);
+    let duration_galley =
+        ui.painter()
+            .layout_no_wrap(duration_text, FontId::proportional(14.0), Color32::WHITE);
+
+    let duration_padding = 6.0;
+    let duration_bg_rect = egui::Rect::from_min_size(
+        egui::pos2(
+            rect.max.x - duration_galley.rect.width() - duration_padding * 2.0 - 4.0,
+            rect.max.y - duration_galley.rect.height() - duration_padding * 2.0 - 4.0,
+        ),
+        egui::vec2(
+            duration_galley.rect.width() + duration_padding * 2.0,
+            duration_galley.rect.height() + duration_padding * 2.0,
+        ),
+    );
+
+    ui.painter()
+        .rect_filled(duration_bg_rect, 4.0, Color32::from_black_alpha(160));
+
+    ui.painter().galley(
+        egui::pos2(
+            duration_bg_rect.min.x + duration_padding,
+            duration_bg_rect.min.y + duration_padding,
+        ),
+        duration_galley,
+        Color32::WHITE,
+    );
+}
+
+enum AudioSyncRequest {
+    None,
+    Force, // Force restart audio from current position
+}
+
+impl AudioSyncRequest {
+    fn merge(&mut self, other: Self) {
+        if matches!(other, AudioSyncRequest::Force) {
+            *self = AudioSyncRequest::Force;
+        }
+    }
+}
+
+fn render_ready_video(
+    ui: &mut egui::Ui,
+    video_store: &mut VideoStore,
+    url: &str,
+    meta: VideoClipMeta,
+    i18n: &mut Localization,
+) {
+    if meta.frame_count == 0 {
+        video_error_placeholder(ui, i18n, url, "Video reported zero frames");
+        return;
+    }
+
+    let now = ui.input(|i| i.time);
+
+    // Auto-play check, update playback state, and get current frame info
+    let should_auto_play = video_store.should_auto_play(url);
+    let (is_playing, frame_idx, was_playing_before_update) = {
+        let playback = video_store.playback_mut(url);
+
+        // Auto-play if user clicked thumbnail
+        if should_auto_play {
+            playback.set_playing(true, now);
+        }
+
+        let was_playing = playback.is_playing();
+        playback.update(now, &meta);
+        (
+            playback.is_playing(),
+            playback.current_frame(meta.frame_count),
+            was_playing,
+        )
+    };
+
+    // Pre-load upcoming frames to avoid stuttering during playback
+    if is_playing {
+        video_store.preload_upcoming_textures(ui.ctx(), url, frame_idx);
+        ui.ctx().request_repaint();
+    }
+
+    // Get the current frame texture
+    let Some(texture) = video_store.frame_texture(ui.ctx(), url, frame_idx) else {
+        video_loading_placeholder(ui, i18n, url);
+        return;
+    };
+
+    // Use shared helper for surface calculation
+    let (rect, size) = video_surface(ui, &meta);
+
+    // Render the video frame
+    let image = Image::new((texture.id(), size)).fit_to_exact_size(size);
+    image.paint_at(ui, rect);
+
+    // Handle click to toggle playback
+    let response = ui.interact(rect, ui.id().with("video_frame"), egui::Sense::click());
+
+    // Track audio sync requirements
+    let mut audio_sync = if was_playing_before_update && !is_playing {
+        // Video just stopped (ended naturally)
+        AudioSyncRequest::Force
+    } else {
+        AudioSyncRequest::None
+    };
+
+    if response.clicked() {
+        let playback = video_store.playback_mut(url);
+        playback.toggle(now);
+        audio_sync.merge(AudioSyncRequest::Force);
+    }
+
+    // Render playback controls
+    ui.add_space(4.0);
+    {
+        let playback = video_store.playback_mut(url);
+        if render_video_controls(ui, playback, meta, url, now, i18n).is_some() {
+            audio_sync.merge(AudioSyncRequest::Force);
+        }
+    }
+
+    // Sync audio state when needed
+    match audio_sync {
+        AudioSyncRequest::Force => {
+            let (is_playing, current_time) = {
+                let playback = video_store.playback_mut(url);
+                (playback.is_playing(), playback.current_time(&meta))
+            };
+            sync_audio_state(video_store, url, is_playing, current_time, true);
+        }
+        AudioSyncRequest::None if is_playing => {
+            let current_time = video_store.playback_mut(url).current_time(&meta);
+            sync_audio_state(video_store, url, true, current_time, false);
+        }
+        _ => {}
+    }
+}
+
+fn render_video_controls(
+    ui: &mut egui::Ui,
+    playback: &mut VideoPlaybackState,
+    meta: VideoClipMeta,
+    url: &str,
+    now: f64,
+    i18n: &mut Localization,
+) -> Option<(bool, f32, bool)> {
+    let mut sync = None;
+    let play_label = if playback.is_playing() {
+        tr!(i18n, "Pause", "Button label to pause inline video playback")
+    } else {
+        tr!(i18n, "Play", "Button label to start inline video playback")
+    };
+
+    let mut current_secs = playback.current_time(&meta);
+    let total_secs = meta.duration_secs().max(meta.frame_interval_secs());
+
+    ui.horizontal(|ui| {
+        // Play/Pause button
+        if ui
+            .button(play_label)
+            .on_hover_text(tr!(
+                i18n,
+                "Toggle inline video playback",
+                "Tooltip for video play button"
+            ))
+            .clicked()
+        {
+            playback.toggle(now);
+            sync = Some((playback.is_playing(), playback.current_time(&meta), true));
+        }
+
+        // Slider (takes available space automatically)
+        if ui
+            .add(Slider::new(&mut current_secs, 0.0..=total_secs).show_value(false))
+            .changed()
+        {
+            playback.seek_seconds(current_secs, &meta);
+            sync = Some((playback.is_playing(), current_secs, true));
+        }
+
+        // Time display
+        ui.label(format_time(current_secs, total_secs));
+
+        // Open button
+        if ui
+            .button(tr!(
+                i18n,
+                "Open",
+                "Button label to open video link in browser"
+            ))
+            .clicked()
+        {
+            ui.ctx().open_url(egui::OpenUrl::same_tab(url.to_owned()));
+        }
+    });
+
+    sync
+}
+
+fn sync_audio_state(
+    video_store: &mut VideoStore,
+    url: &str,
+    playing: bool,
+    current_time: f32,
+    force: bool,
+) {
+    if playing {
+        if force || !video_store.is_audio_active(url) {
+            video_store.play_audio_from(url, current_time);
+        }
+    } else {
+        video_store.stop_audio(url);
+    }
+}
+
+fn format_time(current: f32, total: f32) -> String {
+    let format_part = |secs: f32| {
+        let total_secs = secs.max(0.0).round() as u32;
+        format!("{:02}:{:02}", total_secs / 60, total_secs % 60)
+    };
+    format!("{} / {}", format_part(current), format_part(total))
 }
 
 #[allow(clippy::too_many_arguments)]
