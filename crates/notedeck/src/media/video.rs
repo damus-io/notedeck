@@ -369,6 +369,7 @@ mod imp {
         audio_engine: Option<AudioEngine>,
         auto_play_pending: HashSet<String>,
         pending_queue: VecDeque<String>,
+        muted: HashSet<String>,
     }
 
     impl VideoStore {
@@ -385,6 +386,7 @@ mod imp {
                 audio_engine,
                 auto_play_pending: HashSet::new(),
                 pending_queue: VecDeque::new(),
+                muted: HashSet::new(),
             }
         }
 
@@ -518,11 +520,25 @@ mod imp {
             }
         }
 
+        pub fn is_muted(&self, url: &str) -> bool {
+            self.muted.contains(url)
+        }
+
+        pub fn set_muted(&mut self, url: &str, muted: bool) {
+            if muted {
+                self.muted.insert(url.to_owned());
+                self.stop_audio(url);
+            } else {
+                self.muted.remove(url);
+            }
+        }
+
         pub fn clear_cache(&mut self) -> std::io::Result<()> {
             self.entries.clear();
             self.playback.clear();
             self.auto_play_pending.clear();
             self.pending_queue.clear();
+            self.muted.clear();
             if let Some(engine) = self.audio_engine.as_mut() {
                 for (_, sink) in engine.active.drain() {
                     sink.stop();
@@ -663,7 +679,7 @@ mod imp {
     // Hardware pixel format storage for callback (thread-local for safety)
     // Each decoder thread gets its own storage to avoid interference
     thread_local! {
-        static HW_PIX_FMT: RefCell<Option<AVPixelFormat>> = RefCell::new(None);
+        static HW_PIX_FMT: RefCell<Option<AVPixelFormat>> = const { RefCell::new(None) };
     }
 
     unsafe extern "C" fn get_hw_format(
