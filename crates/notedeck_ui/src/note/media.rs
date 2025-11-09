@@ -425,8 +425,13 @@ pub fn inline_video_player(
             // Show click-to-play placeholder
             render_video_placeholder(ui, video_store, url, i18n);
         }
+        VideoClipState::Queued => {
+            let msg = tr!(i18n, "Queued…", "Label shown while video is queued for loading");
+            video_loading_placeholder(ui, i18n, url, &msg);
+        }
         VideoClipState::Loading => {
-            video_loading_placeholder(ui, i18n, url);
+            let msg = tr!(i18n, "Loading video…", "Label shown while video is decoding");
+            video_loading_placeholder(ui, i18n, url, &msg);
         }
         VideoClipState::Error(err) => {
             video_error_placeholder(ui, i18n, url, &err);
@@ -437,7 +442,7 @@ pub fn inline_video_player(
     }
 }
 
-fn video_loading_placeholder(ui: &mut egui::Ui, i18n: &mut Localization, url: &str) {
+fn video_loading_placeholder(ui: &mut egui::Ui, i18n: &mut Localization, url: &str, message: &str) {
     let height = VIDEO_LOADING_PLACEHOLDER_HEIGHT;
     let width = ui.available_width();
     let (rect, _) = ui.allocate_exact_size(vec2(width, height), egui::Sense::hover());
@@ -450,11 +455,7 @@ fn video_loading_placeholder(ui: &mut egui::Ui, i18n: &mut Localization, url: &s
     ui.allocate_new_ui(egui::UiBuilder::new().max_rect(rect), |ui| {
         ui.centered_and_justified(|ui| {
             ui.spinner();
-            ui.label(tr!(
-                i18n,
-                "Loading video…",
-                "Label shown while video is decoding"
-            ));
+            ui.label(message);
         });
     });
     ui.add_space(4.0);
@@ -549,7 +550,7 @@ fn render_video_placeholder(
     // Make the whole area clickable
     let response = ui.interact(
         rect,
-        ui.id().with("video_placeholder"),
+        ui.id().with("video_placeholder").with(url),
         egui::Sense::click(),
     );
 
@@ -623,7 +624,8 @@ fn render_ready_video(
 
     // Get the current frame texture
     let Some(texture) = video_store.frame_texture(ui.ctx(), url, frame_idx) else {
-        video_loading_placeholder(ui, i18n, url);
+        let msg = tr!(i18n, "Loading frame…", "Label shown while video frame texture is loading");
+        video_loading_placeholder(ui, i18n, url, &msg);
         return;
     };
 
@@ -638,7 +640,7 @@ fn render_ready_video(
     image.paint_at(ui, rect);
 
     // Handle click to toggle playback
-    let response = ui.interact(rect, ui.id().with("video_frame"), egui::Sense::click());
+    let response = ui.interact(rect, ui.id().with("video_frame").with(url), egui::Sense::click());
 
     // Track audio sync requirements
     let mut audio_sync = if was_playing_before_update && !is_playing {

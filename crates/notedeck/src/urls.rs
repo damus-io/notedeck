@@ -541,13 +541,15 @@ fn is_mime_supported(mime: &mime_guess::Mime) -> bool {
 }
 
 pub fn url_looks_like_video(urls: &mut UrlMimes, url: &str) -> bool {
-    if let Some(mime) = urls.get_or_fetch(url) {
-        if mime.type_() == mime_guess::mime::VIDEO {
-            return true;
-        }
+    // Check extension first (fast path - no network request)
+    if has_video_extension(url) {
+        return true;
     }
 
-    has_video_extension(url)
+    // Fall back to MIME check for extensionless URLs
+    urls.get_or_fetch(url)
+        .map(|mime| mime.type_() == mime_guess::mime::VIDEO)
+        .unwrap_or(false)
 }
 
 fn has_video_extension(url: &str) -> bool {

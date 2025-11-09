@@ -14,7 +14,7 @@ mod imp {
     };
     use rsmpeg::ffi;
     use std::cell::RefCell;
-    use std::collections::{HashMap, HashSet};
+    use std::collections::{HashMap, HashSet, VecDeque};
     use std::ffi::CString;
     use std::fs;
     use std::io::{Read, Write};
@@ -113,6 +113,7 @@ mod imp {
     pub enum VideoClipState {
         Unsupported,
         NotLoaded,
+        Queued,
         Loading,
         Ready(VideoClipMeta),
         Error(String),
@@ -228,15 +229,7 @@ mod imp {
     impl VideoClip {
         fn frame_texture(&mut self, ctx: &Context, index: usize) -> Option<&TextureHandle> {
             let frame = self.frames.get_mut(index)?;
-            if frame.texture.is_none() {
-                let tex = load_texture_checked(
-                    ctx,
-                    format!("video:{}:{index}", self.key.clone()),
-                    frame.image.clone(),
-                    Default::default(),
-                );
-                frame.texture = Some(tex);
-            }
+            Self::ensure_frame_texture(ctx, &self.key, frame, index);
             frame.texture.as_ref()
         }
 
@@ -244,16 +237,19 @@ mod imp {
             let end_index = (start_index + count).min(self.frames.len());
             for index in start_index..end_index {
                 if let Some(frame) = self.frames.get_mut(index) {
-                    if frame.texture.is_none() {
-                        let tex = load_texture_checked(
-                            ctx,
-                            format!("video:{}:{index}", self.key.clone()),
-                            frame.image.clone(),
-                            Default::default(),
-                        );
-                        frame.texture = Some(tex);
-                    }
+                    Self::ensure_frame_texture(ctx, &self.key, frame, index);
                 }
+            }
+        }
+
+        fn ensure_frame_texture(ctx: &Context, key: &str, frame: &mut VideoFrame, index: usize) {
+            if frame.texture.is_none() {
+                frame.texture = Some(load_texture_checked(
+                    ctx,
+                    format!("video:{key}:{index}"),
+                    frame.image.clone(),
+                    Default::default(),
+                ));
             }
         }
     }
@@ -372,6 +368,7 @@ mod imp {
         playback: HashMap<String, VideoPlaybackState>,
         audio_engine: Option<AudioEngine>,
         auto_play_pending: HashSet<String>,
+        pending_queue: VecDeque<String>,
     }
 
     impl VideoStore {
@@ -387,17 +384,28 @@ mod imp {
                 playback: HashMap::new(),
                 audio_engine,
                 auto_play_pending: HashSet::new(),
+                pending_queue: VecDeque::new(),
             }
         }
 
         pub fn clip_state(&mut self, url: &str) -> VideoClipState {
             if let Some(entry) = self.entries.get_mut(url) {
                 Self::drive_entry(entry);
-                return match entry {
+                let state = match entry {
                     VideoEntry::PendingFull(_) => VideoClipState::Loading,
                     VideoEntry::Ready(clip) => VideoClipState::Ready(clip.meta),
                     VideoEntry::Error(err) => VideoClipState::Error(err.clone()),
                 };
+
+                // Process queue after driving entries (a slot may have freed up)
+                self.process_queue();
+
+                return state;
+            }
+
+            // Check if URL is in the pending queue
+            if self.pending_queue.contains(&url.to_owned()) {
+                return VideoClipState::Queued;
             }
 
             VideoClipState::NotLoaded
@@ -408,6 +416,11 @@ mod imp {
                 return;
             }
 
+            // Don't queue duplicates
+            if self.pending_queue.contains(&url.to_owned()) {
+                return;
+            }
+
             let loading_count = self
                 .entries
                 .values()
@@ -415,6 +428,8 @@ mod imp {
                 .count();
 
             if loading_count >= MAX_CONCURRENT_LOADS {
+                // Queue the request instead of silently dropping it
+                self.pending_queue.push_back(url.to_owned());
                 return;
             }
 
@@ -507,6 +522,7 @@ mod imp {
             self.entries.clear();
             self.playback.clear();
             self.auto_play_pending.clear();
+            self.pending_queue.clear();
             if let Some(engine) = self.audio_engine.as_mut() {
                 for (_, sink) in engine.active.drain() {
                     sink.stop();
@@ -517,6 +533,33 @@ mod imp {
             }
             fs::create_dir_all(&self.cache_dir)?;
             Ok(())
+        }
+
+        fn process_queue(&mut self) {
+            // Start loading queued videos if slots are available
+            loop {
+                let loading_count = self
+                    .entries
+                    .values()
+                    .filter(|e| matches!(e, VideoEntry::PendingFull(_)))
+                    .count();
+
+                if loading_count >= MAX_CONCURRENT_LOADS {
+                    break;
+                }
+
+                let Some(url) = self.pending_queue.pop_front() else {
+                    break;
+                };
+
+                // Double-check it's not already loaded (edge case)
+                if !self.entries.contains_key(&url) {
+                    self.entries.insert(
+                        url.clone(),
+                        Self::spawn_full_loader(url, self.cache_dir.clone()),
+                    );
+                }
+            }
         }
 
         fn spawn_full_loader(url: String, cache_dir: PathBuf) -> VideoEntry {
@@ -1132,6 +1175,7 @@ mod imp {
     pub enum VideoClipState {
         Unsupported,
         NotLoaded,
+        Queued,
         Loading,
         Ready(VideoClipMeta),
         Error(String),
@@ -1232,3 +1276,239 @@ mod imp {
 }
 
 pub use imp::*;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn test_video_clip_meta_aspect_ratio() {
+        let meta = VideoClipMeta {
+            width: 1920,
+            height: 1080,
+            duration: Duration::from_secs(10),
+            frame_interval: Duration::from_millis(33),
+            frame_count: 300,
+        };
+
+        assert_eq!(meta.aspect_ratio(), 1920.0 / 1080.0);
+        assert!((meta.aspect_ratio() - 16.0 / 9.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_video_clip_meta_aspect_ratio_zero_height() {
+        let meta = VideoClipMeta {
+            width: 1920,
+            height: 0,
+            duration: Duration::from_secs(10),
+            frame_interval: Duration::from_millis(33),
+            frame_count: 300,
+        };
+
+        assert_eq!(meta.aspect_ratio(), 1.0);
+    }
+
+    #[test]
+    fn test_video_clip_meta_duration_secs() {
+        let meta = VideoClipMeta {
+            width: 640,
+            height: 480,
+            duration: Duration::from_millis(5500),
+            frame_interval: Duration::from_millis(33),
+            frame_count: 166,
+        };
+
+        assert_eq!(meta.duration_secs(), 5.5);
+    }
+
+    #[test]
+    fn test_video_clip_meta_frame_interval_secs() {
+        let meta = VideoClipMeta {
+            width: 640,
+            height: 480,
+            duration: Duration::from_secs(10),
+            frame_interval: Duration::from_millis(33),
+            frame_count: 303,
+        };
+
+        assert!((meta.frame_interval_secs() - 0.033).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_playback_state_defaults() {
+        let state = VideoPlaybackState::default();
+        assert!(!state.is_playing());
+        assert_eq!(state.current_frame(100), 0);
+    }
+
+    #[test]
+    fn test_playback_toggle() {
+        let mut state = VideoPlaybackState::default();
+        let now = 0.0;
+
+        state.toggle(now);
+        assert!(state.is_playing());
+
+        state.toggle(now);
+        assert!(!state.is_playing());
+    }
+
+    #[test]
+    fn test_playback_set_playing() {
+        let mut state = VideoPlaybackState::default();
+        let now = 0.0;
+
+        state.set_playing(true, now);
+        assert!(state.is_playing());
+
+        state.set_playing(false, now);
+        assert!(!state.is_playing());
+    }
+
+    #[test]
+    fn test_playback_seek_seconds() {
+        let meta = VideoClipMeta {
+            width: 640,
+            height: 480,
+            duration: Duration::from_secs(10),
+            frame_interval: Duration::from_millis(100), // 10 fps
+            frame_count: 100,
+        };
+
+        let mut state = VideoPlaybackState::default();
+
+        // Seek to 5 seconds (should be frame 50 at 10fps with 100ms interval)
+        state.seek_seconds(5.0, &meta);
+        assert_eq!(state.current_frame(meta.frame_count), 50);
+
+        // Seek beyond duration (should clamp)
+        state.seek_seconds(15.0, &meta);
+        assert_eq!(state.current_frame(meta.frame_count), 99); // Last frame (frame_count - 1)
+
+        // Seek to negative (should clamp to 0)
+        state.seek_seconds(-1.0, &meta);
+        assert_eq!(state.current_frame(meta.frame_count), 0);
+    }
+
+    #[test]
+    fn test_playback_update_not_playing() {
+        let meta = VideoClipMeta {
+            width: 640,
+            height: 480,
+            duration: Duration::from_secs(10),
+            frame_interval: Duration::from_millis(100),
+            frame_count: 100,
+        };
+
+        let mut state = VideoPlaybackState::default();
+        // Seek to frame 10
+        state.seek_seconds(1.0, &meta); // 1 second at 10fps = frame 10
+
+        state.update(1.0, &meta);
+
+        // Frame should not advance when not playing
+        assert_eq!(state.current_frame(meta.frame_count), 10);
+    }
+
+    #[test]
+    fn test_playback_update_advances_frames() {
+        let meta = VideoClipMeta {
+            width: 640,
+            height: 480,
+            duration: Duration::from_secs(10),
+            frame_interval: Duration::from_millis(100), // 10 fps
+            frame_count: 100,
+        };
+
+        let mut state = VideoPlaybackState::default();
+        let start_frame = state.current_frame(meta.frame_count);
+        state.set_playing(true, 0.0);
+
+        // Advance time - frames should advance
+        state.update(1.0, &meta);
+        let advanced_frame = state.current_frame(meta.frame_count);
+
+        // Verify frames advanced (should be ~10 frames at 10fps over 1 second)
+        assert!(advanced_frame > start_frame, "Frames should advance when playing");
+        assert!(advanced_frame <= 10, "Should not advance too many frames");
+    }
+
+    #[test]
+    fn test_playback_resets_when_past_end() {
+        let meta = VideoClipMeta {
+            width: 640,
+            height: 480,
+            duration: Duration::from_secs(1),
+            frame_interval: Duration::from_millis(100),
+            frame_count: 10,
+        };
+
+        let mut state = VideoPlaybackState::default();
+        state.set_playing(true, 0.0);
+
+        // Play way past the end
+        state.update(100.0, &meta);
+
+        // Frame should reset to 0 when going past end (non-looping behavior)
+        assert_eq!(state.current_frame(meta.frame_count), 0, "Frame should reset to 0 after end");
+    }
+
+    #[test]
+    fn test_playback_from_start_to_end() {
+        let meta = VideoClipMeta {
+            width: 640,
+            height: 480,
+            duration: Duration::from_secs(1),
+            frame_interval: Duration::from_millis(100),
+            frame_count: 10,
+        };
+
+        let mut state = VideoPlaybackState::default();
+        state.set_playing(true, 0.0);
+
+        // Start at frame 0
+        assert_eq!(state.current_frame(meta.frame_count), 0);
+
+        // Play through entire duration
+        state.update(1.5, &meta); // Beyond end
+
+        // Should stop playing when reaching the end
+        assert!(!state.is_playing(), "Should stop playing at end");
+    }
+
+    #[test]
+    fn test_current_frame_bounds_checking() {
+        let meta = VideoClipMeta {
+            width: 640,
+            height: 480,
+            duration: Duration::from_secs(10),
+            frame_interval: Duration::from_millis(100),
+            frame_count: 100,
+        };
+
+        let mut state = VideoPlaybackState::default();
+        // Seek beyond the end to test clamping
+        state.seek_seconds(100.0, &meta); // Way beyond 10 second duration
+
+        // current_frame() should clamp to valid range
+        assert_eq!(state.current_frame(meta.frame_count), 99);
+    }
+
+    #[test]
+    fn test_current_time() {
+        let meta = VideoClipMeta {
+            width: 640,
+            height: 480,
+            duration: Duration::from_secs(10),
+            frame_interval: Duration::from_millis(100),
+            frame_count: 100,
+        };
+
+        let mut state = VideoPlaybackState::default();
+        state.seek_seconds(5.0, &meta); // Seek to 5 seconds (frame 50)
+
+        let current_time = state.current_time(&meta);
+        assert!((current_time - 5.0).abs() < 0.01); // Frame 50 at 10fps = 5 seconds
+    }
+}
