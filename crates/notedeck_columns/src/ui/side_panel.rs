@@ -15,7 +15,7 @@ use crate::{
 use notedeck::{tr, Accounts, Localization, UserAccount};
 use notedeck_ui::{
     anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},
-    app_images, colors, View,
+    app_images, colors, ProfilePic, View,
 };
 
 use super::configure_deck::deck_icon;
@@ -27,6 +27,8 @@ pub struct DesktopSidePanel<'a> {
     selected_account: &'a UserAccount,
     decks_cache: &'a DecksCache,
     i18n: &'a mut Localization,
+    ndb: &'a nostrdb::Ndb,
+    img_cache: &'a mut notedeck::Images,
 }
 
 impl View for DesktopSidePanel<'_> {
@@ -45,6 +47,7 @@ pub enum SidePanelAction {
     SwitchDeck(usize),
     EditDeck(usize),
     Wallet,
+    ProfileAvatar,
 }
 
 pub struct SidePanelResponse {
@@ -63,11 +66,15 @@ impl<'a> DesktopSidePanel<'a> {
         selected_account: &'a UserAccount,
         decks_cache: &'a DecksCache,
         i18n: &'a mut Localization,
+        ndb: &'a nostrdb::Ndb,
+        img_cache: &'a mut notedeck::Images,
     ) -> Self {
         Self {
             selected_account,
             decks_cache,
             i18n,
+            ndb,
+            img_cache,
         }
     }
 
@@ -122,12 +129,45 @@ impl<'a> DesktopSidePanel<'a> {
                     ui.add_space(8.0);
                     let add_deck_resp = ui.add(add_deck_button(self.i18n));
 
+                    let avatar_size = 40.0;
+                    let bottom_padding = 8.0;
+                    let avatar_section_height = avatar_size + bottom_padding;
+
+                    let available_for_decks = ui.available_height() - avatar_section_height;
+
                     let decks_inner = ScrollArea::vertical()
-                        .max_height(ui.available_height() - (3.0 * (ICON_WIDTH + 12.0)))
+                        .max_height(available_for_decks)
                         .show(ui, |ui| {
                             show_decks(ui, self.decks_cache, self.selected_account)
                         })
                         .inner;
+
+                    let remaining = ui.available_height();
+                    if remaining > avatar_section_height {
+                        ui.add_space(remaining - avatar_section_height);
+                    }
+
+                    let txn = nostrdb::Transaction::new(self.ndb).ok();
+                    let profile_url = if let Some(ref txn) = txn {
+                        if let Ok(profile) = self
+                            .ndb
+                            .get_profile_by_pubkey(txn, self.selected_account.key.pubkey.bytes())
+                        {
+                            notedeck::profile::get_profile_url(Some(&profile))
+                        } else {
+                            notedeck::profile::no_pfp_url()
+                        }
+                    } else {
+                        notedeck::profile::no_pfp_url()
+                    };
+
+                    let pfp_resp = ui
+                        .add(
+                            &mut ProfilePic::new(self.img_cache, profile_url)
+                                .size(avatar_size)
+                                .sense(egui::Sense::click()),
+                        )
+                        .on_hover_cursor(egui::CursorIcon::PointingHand);
 
                     /*
                     if expand_resp.clicked() {
@@ -136,7 +176,9 @@ impl<'a> DesktopSidePanel<'a> {
                             expand_resp,
                         ))
                     */
-                    if compose_resp.clicked() {
+                    if pfp_resp.clicked() {
+                        Some(InnerResponse::new(SidePanelAction::ProfileAvatar, pfp_resp))
+                    } else if compose_resp.clicked() {
                         Some(InnerResponse::new(
                             SidePanelAction::ComposeNote,
                             compose_resp,
@@ -298,6 +340,14 @@ impl<'a> DesktopSidePanel<'a> {
                 }
 
                 router.route_to(Route::Wallet(notedeck::WalletType::Auto));
+            }
+            SidePanelAction::ProfileAvatar => {
+                let pubkey = accounts.get_selected_account().key.pubkey;
+                if router.routes().iter().any(|r| r == &Route::profile(pubkey)) {
+                    router.go_back();
+                } else {
+                    router.route_to(Route::profile(pubkey));
+                }
             }
         }
         switching_response

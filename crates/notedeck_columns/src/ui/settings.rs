@@ -35,6 +35,7 @@ pub enum SettingsAction {
     SetLocale(LanguageIdentifier),
     SetRepliestNewestFirst(bool),
     SetNoteBodyFontSize(f32),
+    SetAnimateNavTransitions(bool),
     OpenRelays,
     OpenCacheFolder,
     ClearCacheFolder,
@@ -88,6 +89,9 @@ impl SettingsAction {
                 ctx.set_style(style);
 
                 settings.set_note_body_font_size(size);
+            }
+            Self::SetAnimateNavTransitions(value) => {
+                settings.set_animate_nav_transitions(value);
             }
         }
         route_action
@@ -471,6 +475,22 @@ impl<'a> SettingsView<'a> {
                 {
                     action = Some(SettingsAction::SetRepliestNewestFirst(
                         self.settings.show_replies_newest_first,
+                    ));
+                }
+            });
+
+            ui.horizontal_wrapped(|ui| {
+                ui.label(richtext_small("Animate view transitions:"));
+
+                if ui
+                    .toggle_value(
+                        &mut self.settings.animate_nav_transitions,
+                        RichText::new("On").text_style(NotedeckTextStyle::Small.text_style()),
+                    )
+                    .changed()
+                {
+                    action = Some(SettingsAction::SetAnimateNavTransitions(
+                        self.settings.animate_nav_transitions,
                     ));
                 }
             });

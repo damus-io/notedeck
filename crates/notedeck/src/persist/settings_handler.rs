@@ -36,6 +36,12 @@ pub struct Settings {
     pub show_source_client: String,
     pub show_replies_newest_first: bool,
     pub note_body_font_size: f32,
+    #[serde(default = "default_animate_nav_transitions")]
+    pub animate_nav_transitions: bool,
+}
+
+fn default_animate_nav_transitions() -> bool {
+    true
 }
 
 impl Default for Settings {
@@ -47,6 +53,7 @@ impl Default for Settings {
             show_source_client: DEFAULT_SHOW_SOURCE_CLIENT.to_string(),
             show_replies_newest_first: DEFAULT_SHOW_REPLIES_NEWEST_FIRST,
             note_body_font_size: DEFAULT_NOTE_BODY_FONT_SIZE,
+            animate_nav_transitions: default_animate_nav_transitions(),
         }
     }
 }
@@ -188,6 +195,11 @@ impl SettingsHandler {
 
     pub fn set_note_body_font_size(&mut self, value: f32) {
         self.get_settings_mut().note_body_font_size = value;
+        self.try_save_settings();
+    }
+
+    pub fn set_animate_nav_transitions(&mut self, value: bool) {
+        self.get_settings_mut().animate_nav_transitions = value;
         self.try_save_settings();
     }
 

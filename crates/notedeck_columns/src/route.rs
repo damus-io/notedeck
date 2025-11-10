@@ -389,6 +389,7 @@ pub struct Router<R: Clone> {
     pub returning: bool,
     pub navigating: bool,
     replacing: bool,
+    forward_stack: Vec<R>,
 
     // An overlay captures a range of routes where only one will persist when going back, the most recent added
     overlay_ranges: Vec<Range<usize>>,
@@ -407,12 +408,14 @@ impl<R: Clone> Router<R> {
             returning,
             navigating,
             replacing,
+            forward_stack: Vec::new(),
             overlay_ranges: Vec::new(),
         }
     }
 
     pub fn route_to(&mut self, route: R) {
         self.navigating = true;
+        self.forward_stack.clear();
         self.routes.push(route);
     }
 
@@ -454,31 +457,48 @@ impl<R: Clone> Router<R> {
         self.prev().cloned()
     }
 
+    pub fn go_forward(&mut self) -> bool {
+        if let Some(route) = self.forward_stack.pop() {
+            self.navigating = true;
+            self.routes.push(route);
+            true
+        } else {
+            false
+        }
+    }
+
     /// Pop a route, should only be called on a NavRespose::Returned reseponse
     pub fn pop(&mut self) -> Option<R> {
         if self.routes.len() == 1 {
             return None;
         }
 
-        's: {
+        let is_overlay = 's: {
             let Some(last_range) = self.overlay_ranges.last_mut() else {
-                break 's;
+                break 's false;
             };
 
             if last_range.end != self.routes.len() {
-                break 's;
+                break 's false;
             }
 
             if last_range.end - 1 <= last_range.start {
                 self.overlay_ranges.pop();
-                break 's;
+            } else {
+                last_range.end -= 1;
             }
 
-            last_range.end -= 1;
-        }
+            true
+        };
 
         self.returning = false;
-        self.routes.pop()
+        let popped = self.routes.pop();
+        if !is_overlay {
+            if let Some(ref route) = popped {
+                self.forward_stack.push(route.clone());
+            }
+        }
+        popped
     }
 
     pub fn remove_previous_routes(&mut self) {

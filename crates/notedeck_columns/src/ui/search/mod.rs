@@ -1,4 +1,4 @@
-use egui::{vec2, Align, Color32, CornerRadius, RichText, Stroke, TextEdit};
+use egui::{vec2, Align, Color32, CornerRadius, Key, RichText, Stroke, TextEdit};
 use enostr::{NoteId, Pubkey};
 use state::TypingType;
 
@@ -317,6 +317,13 @@ fn search_box(
                             .margin(vec2(0.0, 8.0))
                             .frame(false),
                     );
+
+                    if response.has_focus()
+                        && ui
+                            .input(|i| i.key_pressed(Key::ArrowUp) || i.key_pressed(Key::ArrowDown))
+                    {
+                        response.surrender_focus();
+                    }
 
                     input_context(ui, &response, clipboard, input, PasteBehavior::Append);
 
