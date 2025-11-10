@@ -206,15 +206,6 @@ impl<'a, 'd> SearchView<'a, 'd> {
         if !self.query.user_results.is_empty() {
             ui.add_space(8.0);
 
-            // Adjust selected index for dropdown (subtract 1 since "Search posts" is index 0)
-            // Dropdown feature commented out - not available in this version
-            // let _dropdown_index = self.query.selected_index - 1;
-            // let our_pubkey = self.note_context.accounts.selected_account_pubkey();
-            // let _dropdown = crate::ui::profile_search_dropdown::ProfileSearchDropdown::new(...);
-
-
-            // Convert user_results to query string format for dropdown
-            // For now, use the existing user_results directly with UserRow
             for (i, pk_bytes) in self.query.user_results.iter().enumerate() {
                 let Ok(pk_array) = TryInto::<[u8; 32]>::try_into(pk_bytes.as_slice()) else {
                     continue;
@@ -666,8 +657,8 @@ fn recent_profile_item<'a>(
     width: f32,
     cache: &'a mut Images,
     accounts: &'a notedeck::Accounts,
-    ndb: &'a nostrdb::Ndb,
-    txn: &'a nostrdb::Transaction,
+    _ndb: &'a nostrdb::Ndb,
+    _txn: &'a nostrdb::Transaction,
 ) -> impl egui::Widget + 'a {
     move |ui: &mut egui::Ui| -> egui::Response {
         let min_img_size = 48.0;
