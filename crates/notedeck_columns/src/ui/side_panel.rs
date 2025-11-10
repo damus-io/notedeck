@@ -43,7 +43,6 @@ impl View for DesktopSidePanel<'_> {
 #[derive(Debug, Eq, PartialEq, Clone, Copy)]
 pub enum SidePanelAction {
     Home,
-    Messages,
     Columns,
     ComposeNote,
     Search,
@@ -92,10 +91,6 @@ impl<'a> DesktopSidePanel<'a> {
         }
     }
 
-    fn can_show_messages(&self) -> bool {
-        self.selected_account.key.to_full().is_some()
-    }
-
     pub fn show(&mut self, ui: &mut egui::Ui) -> Option<SidePanelResponse> {
         let frame =
             egui::Frame::new().inner_margin(Margin::same(notedeck_ui::constants::FRAME_MARGIN));
@@ -133,11 +128,6 @@ impl<'a> DesktopSidePanel<'a> {
                 .show(ui, |ui| {
                     ui.with_layout(Layout::top_down(egui::Align::Center), |ui| {
                         let home_resp = ui.add(home_button(self.current_route));
-                        let messages_resp = if self.can_show_messages() {
-                            Some(ui.add(messages_button(self.current_route)))
-                        } else {
-                            None
-                        };
                         let search_resp = ui.add(search_button(self.current_route));
                         let settings_resp = ui.add(settings_button(self.current_route));
                         let wallet_resp = ui.add(wallet_button(self.current_route));
@@ -171,11 +161,11 @@ impl<'a> DesktopSidePanel<'a> {
 
                         let decks_inner = show_decks(ui, self.decks_cache, self.selected_account);
 
-                        (home_resp, messages_resp, dave_resp, compose_resp, search_resp, column_resp, settings_resp, profile_resp, wallet_resp, support_resp, add_deck_resp, decks_inner)
+                        (home_resp, dave_resp, compose_resp, search_resp, column_resp, settings_resp, profile_resp, wallet_resp, support_resp, add_deck_resp, decks_inner)
                     })
                 });
 
-            let (home_resp, opt_messages_resp, dave_resp, compose_resp, search_resp, column_resp, settings_resp, profile_resp, wallet_resp, support_resp, add_deck_resp, decks_inner) = scroll_out.inner.inner;
+            let (home_resp, dave_resp, compose_resp, search_resp, column_resp, settings_resp, profile_resp, wallet_resp, support_resp, add_deck_resp, decks_inner) = scroll_out.inner.inner;
 
             let remaining = ui.available_height();
             if remaining > avatar_section_height {
@@ -245,8 +235,6 @@ impl<'a> DesktopSidePanel<'a> {
                 Some(SidePanelResponse::new(SidePanelAction::Relays, connectivity_resp))
             } else if home_resp.clicked() {
                 Some(SidePanelResponse::new(SidePanelAction::Home, home_resp))
-            } else if opt_messages_resp.as_ref().map_or(false, |r| r.clicked()) {
-                opt_messages_resp.map(|r| SidePanelResponse::new(SidePanelAction::Messages, r))
             } else if dave_resp.clicked() {
                 Some(SidePanelResponse::new(SidePanelAction::Dave, dave_resp))
             } else if pfp_resp.clicked() {
@@ -310,13 +298,6 @@ impl<'a> DesktopSidePanel<'a> {
                     // TODO: implement scroll to top when already on home route
                 } else {
                     router.route_to(home_route);
-                }
-            }
-            SidePanelAction::Messages => {
-                if router.top() == &Route::Messages {
-                    router.go_back();
-                } else {
-                    router.route_to(Route::Messages);
                 }
             }
             SidePanelAction::Columns => {
@@ -817,47 +798,3 @@ fn connectivity_indicator(ui: &mut egui::Ui, pool: &RelayPool, _current_route: O
         .on_hover_text(format!("{}/{} relays connected", connected_count, total_count))
 }
 
-fn messages_button(current_route: Option<&Route>) -> impl Widget + '_ {
-    let is_active = matches!(current_route, Some(Route::Messages));
-    move |ui: &mut egui::Ui| {
-        let max_size = ICON_WIDTH * ICON_EXPANSION_MULTIPLE;
-        let helper = AnimationHelper::new(ui, "messages-button", vec2(max_size, max_size));
-
-        let painter = ui.painter_at(helper.get_animation_rect());
-        if is_active {
-            let circle_radius = max_size / 2.0;
-            painter.circle(
-                helper.get_animation_rect().center(),
-                circle_radius,
-                notedeck_ui::side_panel_active_bg(ui),
-                Stroke::NONE,
-            );
-        }
-
-        let icon_color = notedeck_ui::side_panel_icon_tint(ui);
-        let line_width = helper.scale_1d_pos(1.5);
-
-        let envelope_width = helper.scale_1d_pos(20.0);
-        let envelope_height = helper.scale_1d_pos(14.0);
-        let center = helper.get_animation_rect().center();
-
-        let top_left = center + vec2(-envelope_width / 2.0, -envelope_height / 2.0);
-        let top_right = center + vec2(envelope_width / 2.0, -envelope_height / 2.0);
-        let bottom_left = center + vec2(-envelope_width / 2.0, envelope_height / 2.0);
-        let bottom_right = center + vec2(envelope_width / 2.0, envelope_height / 2.0);
-
-        let stroke = Stroke::new(line_width, icon_color);
-
-        painter.line_segment([top_left, top_right], stroke);
-        painter.line_segment([top_right, bottom_right], stroke);
-        painter.line_segment([bottom_right, bottom_left], stroke);
-        painter.line_segment([bottom_left, top_left], stroke);
-
-        painter.line_segment([top_left, center + vec2(0.0, 2.0)], stroke);
-        painter.line_segment([top_right, center + vec2(0.0, 2.0)], stroke);
-
-        helper.take_animation_response()
-            .on_hover_cursor(CursorIcon::PointingHand)
-            .on_hover_text("Messages")
-    }
-}

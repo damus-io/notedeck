@@ -203,18 +203,18 @@ impl<'a, 'd> SearchView<'a, 'd> {
             });
         }
 
-        if keyboard_resp.enter_pressed && self.query.selected_index > 0 {
-            let user_idx = (self.query.selected_index - 1) as usize;
-            if let Some(pk_bytes) = self.query.user_results.get(user_idx) {
-                if let Ok(pk_array) = TryInto::<[u8; 32]>::try_into(pk_bytes.as_slice()) {
-                    return Some(SearchAction::NavigateToProfile(Pubkey::new(pk_array)));
-                }
-            }
-        }
-
         if !self.query.user_results.is_empty() {
             ui.add_space(8.0);
 
+            // Adjust selected index for dropdown (subtract 1 since "Search posts" is index 0)
+            // Dropdown feature commented out - not available in this version
+            // let _dropdown_index = self.query.selected_index - 1;
+            // let our_pubkey = self.note_context.accounts.selected_account_pubkey();
+            // let _dropdown = crate::ui::profile_search_dropdown::ProfileSearchDropdown::new(...);
+
+
+            // Convert user_results to query string format for dropdown
+            // For now, use the existing user_results directly with UserRow
             for (i, pk_bytes) in self.query.user_results.iter().enumerate() {
                 let Ok(pk_array) = TryInto::<[u8; 32]>::try_into(pk_bytes.as_slice()) else {
                     continue;
@@ -224,7 +224,13 @@ impl<'a, 'd> SearchView<'a, 'd> {
 
                 let is_selected = self.query.selected_index == (i as i32 + 1);
                 if ui.add(UserRow::new(profile.as_ref(), &pubkey, self.note_context.img_cache, ui.available_width())
+                    .with_accounts(self.note_context.accounts)
                     .with_selection(is_selected)).clicked() {
+                    return Some(SearchAction::NavigateToProfile(pubkey));
+                }
+
+                // Handle enter on selected user
+                if keyboard_resp.enter_pressed && is_selected {
                     return Some(SearchAction::NavigateToProfile(pubkey));
                 }
             }
@@ -277,10 +283,14 @@ impl<'a, 'd> SearchView<'a, 'd> {
                     let profile = self.note_context.ndb.get_profile_by_pubkey(self.txn, pubkey.bytes()).ok();
                     let resp = ui.add(recent_profile_item(
                         profile.as_ref(),
+                        pubkey,
                         query,
                         is_selected,
                         ui.available_width(),
                         self.note_context.img_cache,
+                        self.note_context.accounts,
+                        self.note_context.ndb,
+                        self.txn,
                     ));
 
                     if resp.clicked() || (is_selected && keyboard_resp.enter_pressed) {
@@ -650,10 +660,14 @@ fn search_hashtag(
 
 fn recent_profile_item<'a>(
     profile: Option<&'a ProfileRecord<'_>>,
+    pubkey: &'a Pubkey,
     _query: &'a str,
     is_selected: bool,
     width: f32,
     cache: &'a mut Images,
+    accounts: &'a notedeck::Accounts,
+    ndb: &'a nostrdb::Ndb,
+    txn: &'a nostrdb::Transaction,
 ) -> impl egui::Widget + 'a {
     move |ui: &mut egui::Ui| -> egui::Response {
         let min_img_size = 48.0;
@@ -665,6 +679,8 @@ fn recent_profile_item<'a>(
             vec2(width, min_img_size + 8.0),
             egui::Sense::click()
         );
+
+        let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
 
         if is_selected {
             ui.painter().rect_filled(
@@ -690,7 +706,8 @@ fn recent_profile_item<'a>(
         ui.put(
             pfp_rect,
             &mut ProfilePic::new(cache, get_profile_url(profile))
-                .size(min_img_size),
+                .size(min_img_size)
+                .with_follow_check(pubkey, accounts),
         );
 
         let name = get_display_name(profile).name();
