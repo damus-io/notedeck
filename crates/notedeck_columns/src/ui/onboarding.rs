@@ -63,6 +63,7 @@ impl<'a> FollowPackOnboardingView<'a> {
         let max_height = ui.available_height() - 48.0;
 
         let mut action = None;
+        let mut should_reset_list = false;
         let scroll_out = ScrollArea::vertical()
             .id_salt(Self::scroll_id())
             .max_height(max_height)
@@ -91,6 +92,10 @@ impl<'a> FollowPackOnboardingView<'a> {
                                 }
                             }
 
+                            if resp.visibility_changed {
+                                should_reset_list = true;
+                            }
+
                             if resp.rendered {
                                 1
                             } else {
@@ -100,6 +105,10 @@ impl<'a> FollowPackOnboardingView<'a> {
                     );
                 })
             });
+
+        if should_reset_list {
+            self.onboarding.list.borrow_mut().reset();
+        }
 
         ui.with_layout(Layout::top_down(egui::Align::Center), |ui| {
             ui.add_space(4.0);

@@ -75,10 +75,11 @@ impl<'a> Nip51SetWidget<'a> {
             return Nip51SetWidgetResponse {
                 action: None,
                 rendered: false,
+                visibility_changed: false,
             };
         }
 
-        let action = egui::Frame::new()
+        let pack_resp = egui::Frame::new()
             .corner_radius(CornerRadius::same(8))
             //.fill(ui.visuals().extreme_bg_color)
             .inner_margin(Margin::same(8))
@@ -97,8 +98,9 @@ impl<'a> Nip51SetWidget<'a> {
             .inner;
 
         Nip51SetWidgetResponse {
-            action,
+            action: pack_resp.action,
             rendered: true,
+            visibility_changed: pack_resp.visibility_changed,
         }
     }
 
@@ -107,6 +109,7 @@ impl<'a> Nip51SetWidget<'a> {
             return Nip51SetWidgetResponse {
                 action: None,
                 rendered: false,
+                visibility_changed: false,
             };
         };
 
@@ -136,6 +139,7 @@ impl<'a> Nip51SetWidget<'a> {
 pub struct Nip51SetWidgetResponse {
     pub action: Option<Nip51SetWidgetAction>,
     pub rendered: bool,
+    pub visibility_changed: bool,
 }
 
 fn should_skip(set: &Nip51Set, required: &Nip51SetWidgetFlags) -> bool {
@@ -144,6 +148,11 @@ fn should_skip(set: &Nip51Set, required: &Nip51SetWidgetFlags) -> bool {
         || (required.contains(Nip51SetWidgetFlags::REQUIRES_DESCRIPTION)
             && set.description.is_none())
         || (required.contains(Nip51SetWidgetFlags::NON_EMPTY_PKS) && set.pks.is_empty())
+}
+
+struct RenderPackResponse {
+    action: Option<Nip51SetWidgetAction>,
+    visibility_changed: bool,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -156,7 +165,7 @@ fn render_pack(
     jobs: &MediaJobSender,
     loc: &mut Localization,
     image_trusted: bool,
-) -> Option<Nip51SetWidgetAction> {
+) -> RenderPackResponse {
     let max_img_size = vec2(ui.available_width(), 200.0);
 
     ui.allocate_new_ui(UiBuilder::new(), |ui| 's: {
@@ -232,24 +241,65 @@ fn render_pack(
         None
     };
 
-    let mut resp = None;
-    let txn = Transaction::new(ndb).expect("txn");
+    ui.add_space(4.0);
 
-    for pk in &pack.pks {
-        let m_profile = ndb.get_profile_by_pubkey(&txn, pk.bytes()).ok();
-
-        let cur_state = ui_state.get_pk_selected_state(&pack.identifier, pk);
-        if let Some(use_state) = new_select_all_state {
-            *cur_state = use_state;
+    let (members_visible, visibility_changed) = {
+        let vis_state = ui_state.get_members_visible_state(&pack.identifier);
+        let base_label = if *vis_state {
+            tr!(
+                loc,
+                "Hide Accounts",
+                "Button to hide the list of accounts inside a follow pack"
+            )
+            .to_owned()
+        } else {
+            tr!(
+                loc,
+                "Show Accounts",
+                "Button to show the list of accounts inside a follow pack"
+            )
+            .to_owned()
         };
 
-        ui.separator();
-        if render_profile_item(ui, images, jobs, m_profile.as_ref(), cur_state) {
-            resp = Some(Nip51SetWidgetAction::ViewProfile(*pk));
+        let button_label = format!("{base_label} ({})", pack.pks.len());
+        let tooltip = tr!(
+            loc,
+            "Toggle whether the individual accounts for this follow pack are visible",
+            "Tooltip describing the show or hide accounts button on follow packs"
+        );
+        let visibility_changed = ui.button(button_label).on_hover_text(tooltip).clicked();
+        if visibility_changed {
+            *vis_state = !*vis_state;
+        }
+
+        (*vis_state, visibility_changed)
+    };
+
+    if let Some(use_state) = new_select_all_state {
+        ui_state.apply_select_all_to_pack(&pack.identifier, &pack.pks, use_state);
+    }
+
+    let mut action = None;
+
+    if members_visible {
+        let txn = Transaction::new(ndb).expect("txn");
+
+        for pk in &pack.pks {
+            let m_profile = ndb.get_profile_by_pubkey(&txn, pk.bytes()).ok();
+
+            let cur_state = ui_state.get_pk_selected_state(&pack.identifier, pk);
+
+            ui.separator();
+            if render_profile_item(ui, images, jobs, m_profile.as_ref(), cur_state) {
+                action = Some(Nip51SetWidgetAction::ViewProfile(*pk));
+            }
         }
     }
 
-    resp
+    RenderPackResponse {
+        action,
+        visibility_changed,
+    }
 }
 
 const PFP_SIZE: f32 = 32.0;
@@ -382,11 +432,12 @@ pub struct Nip51SetUiCache {
 struct Nip51SetUiState {
     select_all: bool,
     select_pk: HashMap<Pubkey, bool>,
+    show_members: bool,
 }
 
 impl Nip51SetUiCache {
-    pub fn get_pk_selected_state(&mut self, identifier: &str, pk: &Pubkey) -> &mut bool {
-        let pack_state = match self.state.raw_entry_mut().from_key(identifier) {
+    fn entry_for_pack(&mut self, identifier: &str) -> &mut Nip51SetUiState {
+        match self.state.raw_entry_mut().from_key(identifier) {
             RawEntryMut::Occupied(entry) => entry.into_mut(),
             RawEntryMut::Vacant(entry) => {
                 let (_, pack_state) =
@@ -394,7 +445,12 @@ impl Nip51SetUiCache {
 
                 pack_state
             }
-        };
+        }
+    }
+
+    pub fn get_pk_selected_state(&mut self, identifier: &str, pk: &Pubkey) -> &mut bool {
+        let pack_state = self.entry_for_pack(identifier);
+
         match pack_state.select_pk.raw_entry_mut().from_key(pk) {
             RawEntryMut::Occupied(entry) => entry.into_mut(),
             RawEntryMut::Vacant(entry) => {
@@ -405,14 +461,19 @@ impl Nip51SetUiCache {
     }
 
     pub fn get_select_all_state(&mut self, identifier: &str) -> &mut bool {
-        match self.state.raw_entry_mut().from_key(identifier) {
-            RawEntryMut::Occupied(entry) => &mut entry.into_mut().select_all,
-            RawEntryMut::Vacant(entry) => {
-                let (_, pack_state) =
-                    entry.insert(identifier.to_owned(), Nip51SetUiState::default());
+        &mut self.entry_for_pack(identifier).select_all
+    }
 
-                &mut pack_state.select_all
-            }
+    pub fn get_members_visible_state(&mut self, identifier: &str) -> &mut bool {
+        &mut self.entry_for_pack(identifier).show_members
+    }
+
+    pub fn apply_select_all_to_pack(&mut self, identifier: &str, pks: &[Pubkey], value: bool) {
+        let pack_state = self.entry_for_pack(identifier);
+        pack_state.select_all = value;
+
+        for pk in pks {
+            pack_state.select_pk.insert(*pk, value);
         }
     }
 
