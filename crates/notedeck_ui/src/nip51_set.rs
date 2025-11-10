@@ -240,8 +240,7 @@ fn render_pack(
 
     ui.add_space(4.0);
 
-    let mut members_visible = false;
-    {
+    let members_visible = {
         let vis_state = ui_state.get_members_visible_state(&pack.identifier);
         let base_label = if *vis_state {
             tr!(
@@ -260,23 +259,17 @@ fn render_pack(
         };
 
         let button_label = format!("{base_label} ({})", pack.pks.len());
-        if ui
-            .button(button_label)
-            .on_hover_text(
-                tr!(
-                    loc,
-                    "Toggle whether the individual accounts for this follow pack are visible",
-                    "Tooltip describing the show or hide accounts button on follow packs"
-                )
-                .as_ref(),
-            )
-            .clicked()
-        {
+        let tooltip = tr!(
+            loc,
+            "Toggle whether the individual accounts for this follow pack are visible",
+            "Tooltip describing the show or hide accounts button on follow packs"
+        );
+        if ui.button(button_label).on_hover_text(tooltip).clicked() {
             *vis_state = !*vis_state;
         }
 
-        members_visible = *vis_state;
-    }
+        *vis_state
+    };
 
     if let Some(use_state) = new_select_all_state {
         ui_state.apply_select_all_to_pack(&pack.identifier, &pack.pks, use_state);
