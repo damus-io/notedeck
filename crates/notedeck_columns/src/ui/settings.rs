@@ -7,7 +7,7 @@ use enostr::NoteId;
 use nostrdb::Transaction;
 use notedeck::{
     tr,
-    ui::{is_narrow, richtext_small},
+    ui::richtext_small,
     Images, JobsCache, LanguageIdentifier, Localization, NoteContext, NotedeckTextStyle, Settings,
     SettingsHandler, DEFAULT_NOTE_BODY_FONT_SIZE,
 };

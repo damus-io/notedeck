@@ -1,10 +1,10 @@
-use egui::{vec2, Color32, Stroke, Widget};
+use egui::{vec2, Stroke, Widget};
 use notedeck_ui::anim::AnimationHelper;
 
 static ICON_WIDTH: f32 = 40.0;
 static ICON_EXPANSION_MULTIPLE: f32 = 1.2;
 
-pub fn compose_note_button(dark_mode: bool) -> impl Widget {
+pub fn compose_note_button(_dark_mode: bool) -> impl Widget {
     move |ui: &mut egui::Ui| -> egui::Response {
         let max_size = ICON_WIDTH * ICON_EXPANSION_MULTIPLE; // max size of the widget
 
