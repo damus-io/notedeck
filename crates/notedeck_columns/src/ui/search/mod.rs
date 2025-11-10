@@ -211,9 +211,6 @@ impl<'a, 'd> SearchView<'a, 'd> {
             }
         }
 
-        // User results rendering commented out - UserRow widget not available in this version
-        // if !self.query.user_results.is_empty() { ... }
-
         None
     }
 
@@ -636,12 +633,12 @@ fn search_hashtag(
 
 fn recent_profile_item<'a>(
     profile: Option<&'a ProfileRecord<'_>>,
-    pubkey: &'a Pubkey,
+    _pubkey: &'a Pubkey,
     _query: &'a str,
     is_selected: bool,
     width: f32,
     cache: &'a mut Images,
-    accounts: &'a notedeck::Accounts,
+    _accounts: &'a notedeck::Accounts,
 ) -> impl egui::Widget + 'a {
     move |ui: &mut egui::Ui| -> egui::Response {
         let min_img_size = 48.0;
