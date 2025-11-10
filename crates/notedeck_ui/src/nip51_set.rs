@@ -249,14 +249,14 @@ fn render_pack(
                 "Hide Accounts",
                 "Button to hide the list of accounts inside a follow pack"
             )
-            .into_owned()
+            .to_owned()
         } else {
             tr!(
                 loc,
                 "Show Accounts",
                 "Button to show the list of accounts inside a follow pack"
             )
-            .into_owned()
+            .to_owned()
         };
 
         let button_label = format!("{base_label} ({})", pack.pks.len());
