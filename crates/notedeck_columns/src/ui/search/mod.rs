@@ -196,8 +196,13 @@ impl<'a, 'd> SearchView<'a, 'd> {
         )).clicked() || (is_selected && keyboard_resp.enter_pressed);
 
         if search_posts_clicked {
+            let search_type = SearchType::get_type(&self.query.string);
+            // If it's a profile (npub), navigate to the profile instead of searching posts
+            if let SearchType::Profile(pubkey) = search_type {
+                return Some(SearchAction::NavigateToProfile(pubkey));
+            }
             return Some(SearchAction::NewSearch {
-                search_type: SearchType::get_type(&self.query.string),
+                search_type,
                 new_search_text: self.query.string.clone(),
             });
         }
@@ -207,6 +212,28 @@ impl<'a, 'd> SearchView<'a, 'd> {
             if let Some(pk_bytes) = self.query.user_results.get(user_idx) {
                 if let Ok(pk_array) = TryInto::<[u8; 32]>::try_into(pk_bytes.as_slice()) {
                     return Some(SearchAction::NavigateToProfile(Pubkey::new(pk_array)));
+                }
+            }
+        }
+
+        for (i, pk_bytes) in self.query.user_results.iter().enumerate() {
+            if let Ok(pk_array) = TryInto::<[u8; 32]>::try_into(pk_bytes.as_slice()) {
+                let pubkey = Pubkey::new(pk_array);
+                let profile = self.note_context.ndb.get_profile_by_pubkey(self.txn, &pk_array).ok();
+                let is_selected = self.query.selected_index == (i + 1) as i32;
+
+                let resp = ui.add(recent_profile_item(
+                    profile.as_ref(),
+                    &pubkey,
+                    &self.query.string,
+                    is_selected,
+                    ui.available_width(),
+                    self.note_context.img_cache,
+                    self.note_context.accounts,
+                ));
+
+                if resp.clicked() {
+                    return Some(SearchAction::NavigateToProfile(pubkey));
                 }
             }
         }
