@@ -132,5 +132,11 @@ pub fn render_profile_route(
         ui::profile::ProfileViewAction::Context(profile_context_selection) => Some(
             RenderNavAction::ProfileAction(ProfileAction::Context(profile_context_selection)),
         ),
+        ui::profile::ProfileViewAction::ShowFollowing(pubkey) => {
+            Some(RenderNavAction::ShowFollowing(pubkey))
+        }
+        ui::profile::ProfileViewAction::ShowFollowers(pubkey) => {
+            Some(RenderNavAction::ShowFollowers(pubkey))
+        }
     })
 }

@@ -49,6 +49,7 @@ use tracing::error;
 pub enum ProcessNavResult {
     SwitchOccurred,
     PfpClicked,
+    SwitchAccount(enostr::Pubkey),
 }
 
 impl ProcessNavResult {
@@ -71,6 +72,8 @@ pub enum RenderNavAction {
     RelayAction(RelayAction),
     SettingsAction(SettingsAction),
     RepostAction(RepostAction),
+    ShowFollowing(enostr::Pubkey),
+    ShowFollowers(enostr::Pubkey),
 }
 
 pub enum SwitchingAction {
@@ -374,6 +377,7 @@ pub enum RouterAction {
         route: Route,
         make_new: bool,
     },
+    SwitchAccount(enostr::Pubkey),
 }
 
 pub enum RouterType {
@@ -438,6 +442,9 @@ impl RouterAction {
                 sheet_router.go_back();
                 sheet_router.after_action = Some(route);
                 None
+            }
+            RouterAction::SwitchAccount(pubkey) => {
+                Some(ProcessNavResult::SwitchAccount(pubkey))
             }
         }
     }
@@ -532,6 +539,18 @@ fn process_render_nav_action(
         }
         RenderNavAction::RepostAction(action) => {
             action.process(ctx.ndb, &ctx.accounts.get_selected_account().key, ctx.pool)
+        }
+        RenderNavAction::ShowFollowing(pubkey) => {
+            Some(RouterAction::RouteTo(
+                crate::route::Route::Following(pubkey),
+                RouterType::Stack,
+            ))
+        }
+        RenderNavAction::ShowFollowers(pubkey) => {
+            Some(RouterAction::RouteTo(
+                crate::route::Route::FollowedBy(pubkey),
+                RouterType::Stack,
+            ))
         }
     };
 
@@ -638,13 +657,13 @@ fn render_nav_body(
             .ui(ui)
             .map_output(RenderNavAction::RelayAction),
 
-        Route::Settings => SettingsView::new(
+        Route::Settings(route) => SettingsView::new(
             ctx.settings.get_settings_mut(),
             &mut note_context,
             &mut app.note_options,
             &mut app.jobs,
         )
-        .ui(ui)
+        .ui(ui, route)
         .map_output(RenderNavAction::SettingsAction),
 
         Route::Reply(id) => {
@@ -733,7 +752,18 @@ fn render_nav_body(
             let Some(kp) = ctx.accounts.get_selected_account().key.to_full() else {
                 return BodyResponse::none();
             };
+            let navigating =
+                get_active_columns_mut(note_context.i18n, ctx.accounts, &mut app.decks_cache)
+                    .column(col)
+                    .router()
+                    .navigating;
             let draft = app.drafts.compose_mut();
+
+            if navigating {
+                draft.focus_state = FocusState::Navigating
+            } else if draft.focus_state == FocusState::Navigating {
+                draft.focus_state = FocusState::ShouldRequestFocus;
+            }
 
             let txn = Transaction::new(ctx.ndb).expect("txn");
             let post_response = ui::PostView::new(
@@ -874,6 +904,66 @@ fn render_nav_body(
                         None
                     }
                 })
+        }
+        Route::Following(pubkey) => {
+            let cache_id = egui::Id::new(("following_contacts_cache", pubkey));
+
+            let contacts = ui.ctx().data_mut(|d| {
+                d.get_temp::<Vec<enostr::Pubkey>>(cache_id)
+            });
+
+            let (txn, contacts) = if let Some(cached) = contacts {
+                let txn = nostrdb::Transaction::new(ctx.ndb).expect("txn");
+                (txn, cached)
+            } else {
+                let txn = nostrdb::Transaction::new(ctx.ndb).expect("txn");
+                let filter = nostrdb::Filter::new()
+                    .authors([pubkey.bytes()])
+                    .kinds([3])
+                    .limit(1)
+                    .build();
+
+                let mut contacts = vec![];
+                if let Ok(results) = ctx.ndb.query(&txn, &[filter], 1) {
+                    if let Some(result) = results.first() {
+                        for tag in result.note.tags() {
+                            if tag.count() >= 2 {
+                                if let Some("p") = tag.get_str(0) {
+                                    if let Some(pk_bytes) = tag.get_id(1) {
+                                        contacts.push(enostr::Pubkey::new(*pk_bytes));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                contacts.sort_by_cached_key(|pk| {
+                    ctx.ndb
+                        .get_profile_by_pubkey(&txn, pk.bytes())
+                        .ok()
+                        .and_then(|p| {
+                            notedeck::name::get_display_name(Some(&p))
+                                .display_name
+                                .map(|s| s.to_lowercase())
+                        })
+                        .unwrap_or_else(|| "zzz".to_string())
+                });
+
+                ui.ctx().data_mut(|d| d.insert_temp(cache_id, contacts.clone()));
+                (txn, contacts)
+            };
+
+            crate::ui::profile::ContactsListView::new(pubkey, contacts, &mut note_context, &txn)
+                .ui(ui)
+                .map_output(|action| match action {
+                    crate::ui::profile::ContactsListAction::OpenProfile(pk) => {
+                        RenderNavAction::NoteAction(NoteAction::Profile(pk))
+                    }
+                })
+        }
+        Route::FollowedBy(_pubkey) => {
+            BodyResponse::none()
         }
         Route::Wallet(wallet_type) => {
             let state = match wallet_type {

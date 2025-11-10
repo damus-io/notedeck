@@ -62,9 +62,12 @@ pub struct Damus {
 
     /// keep track of follow packs
     pub onboarding: Onboarding,
+
+    /// Track which column is hovered for mouse back/forward navigation
+    hovered_column: Option<usize>,
 }
 
-fn handle_egui_events(input: &egui::InputState, columns: &mut Columns) {
+fn handle_egui_events(input: &egui::InputState, columns: &mut Columns, hovered_column: Option<usize>) {
     for event in &input.raw.events {
         match event {
             egui::Event::Key { key, pressed, .. } if *pressed => match key {
@@ -89,6 +92,30 @@ fn handle_egui_events(input: &egui::InputState, columns: &mut Columns) {
                 _ => {}
             },
 
+            egui::Event::PointerButton {
+                button: egui::PointerButton::Extra1,
+                pressed: true,
+                ..
+            } => {
+                if let Some(col_idx) = hovered_column {
+                    columns.column_mut(col_idx).router_mut().go_back();
+                } else {
+                    columns.get_selected_router().go_back();
+                }
+            }
+
+            egui::Event::PointerButton {
+                button: egui::PointerButton::Extra2,
+                pressed: true,
+                ..
+            } => {
+                if let Some(col_idx) = hovered_column {
+                    columns.column_mut(col_idx).router_mut().go_forward();
+                } else {
+                    columns.get_selected_router().go_forward();
+                }
+            }
+
             egui::Event::InsetsChanged => {
                 tracing::debug!("insets have changed!");
             }
@@ -106,7 +133,7 @@ fn try_process_event(
 ) -> Result<()> {
     let current_columns =
         get_active_columns_mut(app_ctx.i18n, app_ctx.accounts, &mut damus.decks_cache);
-    ctx.input(|i| handle_egui_events(i, current_columns));
+    ctx.input(|i| handle_egui_events(i, current_columns, damus.hovered_column));
 
     let ctx2 = ctx.clone();
     let wakeup = move || {
@@ -533,6 +560,7 @@ impl Damus {
             jobs,
             threads,
             onboarding: Onboarding::default(),
+            hovered_column: None,
         }
     }
 
@@ -584,6 +612,7 @@ impl Damus {
             jobs: JobsCache::default(),
             threads: Threads::default(),
             onboarding: Onboarding::default(),
+            hovered_column: None,
         }
     }
 
@@ -686,6 +715,21 @@ fn render_damus_mobile(
                             ProcessNavResult::PfpClicked => {
                                 app_action = Some(AppAction::ToggleChrome);
                             }
+
+                            ProcessNavResult::SwitchAccount(pubkey) => {
+                                // Add as pubkey-only account if not already present
+                                let kp = enostr::Keypair::only_pubkey(*pubkey);
+                                let _ = app_ctx.accounts.add_account(kp);
+
+                                let txn = nostrdb::Transaction::new(app_ctx.ndb).expect("txn");
+                                app_ctx.accounts.select_account(
+                                    pubkey,
+                                    app_ctx.ndb,
+                                    &txn,
+                                    app_ctx.pool,
+                                    ui.ctx(),
+                                );
+                            }
                         }
                     }
                 }
@@ -775,7 +819,7 @@ fn should_show_compose_button(decks: &DecksCache, accounts: &Accounts) -> bool {
         Route::Reply(_) => false,
         Route::Quote(_) => false,
         Route::Relays => false,
-        Route::Settings => false,
+        Route::Settings(_) => false,
         Route::ComposeNote => false,
         Route::AddColumn(_) => false,
         Route::EditProfile(_) => false,
@@ -786,6 +830,8 @@ fn should_show_compose_button(decks: &DecksCache, accounts: &Accounts) -> bool {
         Route::Wallet(_) => false,
         Route::CustomizeZapAmount(_) => false,
         Route::RepostDecision(_) => false,
+        Route::Following(_) => false,
+        Route::FollowedBy(_) => false,
     }
 }
 
@@ -826,6 +872,7 @@ fn timelines_view(
 ) -> AppResponse {
     let num_cols = get_active_columns(ctx.accounts, &app.decks_cache).num_columns();
     let mut side_panel_action: Option<nav::SwitchingAction> = None;
+    let mut app_action: Option<AppAction> = None;
     let mut responses = Vec::with_capacity(num_cols);
 
     let mut can_take_drag_from = Vec::new();
@@ -837,16 +884,25 @@ fn timelines_view(
         .horizontal(|mut strip| {
             strip.cell(|ui| {
                 let rect = ui.available_rect_before_wrap();
+                let current_route = get_active_columns(ctx.accounts, &app.decks_cache)
+                    .selected()
+                    .map(|col| col.router().top());
                 let side_panel = DesktopSidePanel::new(
                     ctx.accounts.get_selected_account(),
                     &app.decks_cache,
                     ctx.i18n,
+                    ctx.ndb,
+                    ctx.img_cache,
+                    current_route,
+                    ctx.pool,
                 )
                 .show(ui);
 
                 if let Some(side_panel) = side_panel {
                     if side_panel.response.clicked() || side_panel.response.secondary_clicked() {
-                        if let Some(action) = DesktopSidePanel::perform_action(
+                        if side_panel.action == SidePanelAction::Dave {
+                            app_action = Some(AppAction::SwitchToDave);
+                        } else if let Some(action) = DesktopSidePanel::perform_action(
                             &mut app.decks_cache,
                             ctx.accounts,
                             side_panel.action,
@@ -876,6 +932,8 @@ fn timelines_view(
                 );
             });
 
+            app.hovered_column = None;
+
             for col_index in 0..num_cols {
                 strip.cell(|ui| {
                     let rect = ui.available_rect_before_wrap();
@@ -888,6 +946,11 @@ fn timelines_view(
                     let resp = nav::render_nav(col_index, inner_rect, app, ctx, ui);
                     can_take_drag_from.extend(resp.can_take_drag_from());
                     responses.push(resp);
+
+                    // Track hovered column for mouse back/forward navigation
+                    if ui.rect_contains_pointer(rect) {
+                        app.hovered_column = Some(col_index);
+                    }
 
                     // vertical line
                     ui.painter()
@@ -917,9 +980,8 @@ fn timelines_view(
             );
     }
 
-    let mut app_action: Option<AppAction> = None;
-
-    for response in responses {
+    if app_action.is_none() {
+        for response in responses {
         let nav_result = response.process_render_nav_response(app, ctx, ui);
 
         if let Some(nr) = &nav_result {
@@ -929,7 +991,23 @@ fn timelines_view(
                 ProcessNavResult::PfpClicked => {
                     app_action = Some(AppAction::ToggleChrome);
                 }
+
+                ProcessNavResult::SwitchAccount(pubkey) => {
+                    // Add as pubkey-only account if not already present
+                    let kp = enostr::Keypair::only_pubkey(*pubkey);
+                    let _ = ctx.accounts.add_account(kp);
+
+                    let txn = nostrdb::Transaction::new(ctx.ndb).expect("txn");
+                    ctx.accounts.select_account(
+                        pubkey,
+                        ctx.ndb,
+                        &txn,
+                        ctx.pool,
+                        ui.ctx(),
+                    );
+                }
             }
+        }
         }
     }
 

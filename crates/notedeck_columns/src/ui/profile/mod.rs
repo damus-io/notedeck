@@ -1,6 +1,8 @@
 pub mod edit;
+pub mod contacts_list;
 
 pub use edit::EditProfileView;
+pub use contacts_list::{ContactsListView, ContactsListAction};
 use egui::{vec2, Color32, CornerRadius, Layout, Rect, RichText, ScrollArea, Sense, Stroke};
 use enostr::Pubkey;
 use nostrdb::{ProfileRecord, Transaction};
@@ -20,7 +22,7 @@ use notedeck::{
 };
 use notedeck_ui::{
     app_images,
-    profile::{about_section_widget, banner, display_name_widget},
+    profile::{about_section_widget_expandable, banner, display_name_widget},
     NoteOptions, ProfilePic,
 };
 
@@ -39,6 +41,8 @@ pub enum ProfileViewAction {
     Unfollow(Pubkey),
     Follow(Pubkey),
     Context(ProfileContext),
+    ShowFollowing(Pubkey),
+    ShowFollowers(Pubkey),
 }
 
 struct ProfileScrollResponse {
@@ -91,7 +95,7 @@ impl<'a, 'd> ProfileView<'a, 'd> {
                 .ok();
 
             if let Some(profile_view_action) =
-                profile_body(ui, self.pubkey, self.note_context, profile.as_ref())
+                profile_body(ui, self.pubkey, self.note_context, profile.as_ref(), &txn)
             {
                 action = Some(profile_view_action);
             }
@@ -146,6 +150,7 @@ fn profile_body(
     pubkey: &Pubkey,
     note_context: &mut NoteContext,
     profile: Option<&ProfileRecord<'_>>,
+    txn: &Transaction,
 ) -> Option<ProfileViewAction> {
     let mut action = None;
     ui.vertical(|ui| {
@@ -255,7 +260,13 @@ fn profile_body(
 
             ui.add_space(8.0);
 
-            ui.add(about_section_widget(profile));
+            ui.add(about_section_widget_expandable(profile, Some(200)));
+
+            ui.add_space(8.0);
+
+            if let Some(stats_action) = profile_stats(ui, pubkey, note_context, txn) {
+                action = Some(stats_action);
+            }
 
             ui.horizontal_wrapped(|ui| {
                 let website_url = profile
@@ -293,6 +304,93 @@ enum ProfileType {
     MyProfile,
     ReadOnly,
     Followable(IsFollowing),
+}
+
+fn profile_stats(
+    ui: &mut egui::Ui,
+    pubkey: &Pubkey,
+    note_context: &mut NoteContext,
+    txn: &Transaction,
+) -> Option<ProfileViewAction> {
+    let mut action = None;
+
+    let filter = nostrdb::Filter::new()
+        .authors([pubkey.bytes()])
+        .kinds([3])
+        .limit(1)
+        .build();
+
+    let mut count = 0;
+    let following_count = {
+        if let Ok(results) = note_context.ndb.query(txn, &[filter], 1) {
+            if let Some(result) = results.first() {
+                for tag in result.note.tags() {
+                    if tag.count() >= 2 {
+                        if let Some("p") = tag.get_str(0) {
+                            if tag.get_id(1).is_some() {
+                                count += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        count
+    };
+
+    ui.horizontal(|ui| {
+        let resp = ui
+            .label(
+                RichText::new(format!("{} ", following_count))
+                    .size(notedeck::fonts::get_font_size(
+                        ui.ctx(),
+                        &NotedeckTextStyle::Small,
+                    ))
+                    .color(ui.visuals().text_color()),
+            )
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
+
+        let resp2 = ui
+            .label(
+                RichText::new(tr!(
+                    note_context.i18n,
+                    "following",
+                    "Label for number of accounts being followed"
+                ))
+                .size(notedeck::fonts::get_font_size(
+                    ui.ctx(),
+                    &NotedeckTextStyle::Small,
+                ))
+                .color(ui.visuals().weak_text_color()),
+            )
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
+
+        if resp.clicked() || resp2.clicked() {
+            action = Some(ProfileViewAction::ShowFollowing(*pubkey));
+        }
+
+        let selected = note_context.accounts.get_selected_account();
+        if &selected.key.pubkey != pubkey {
+            if selected.is_following(pubkey.bytes()) == notedeck::IsFollowing::Yes {
+                ui.add_space(8.0);
+                ui.label(
+                    RichText::new(tr!(
+                        note_context.i18n,
+                        "Follows you",
+                        "Badge indicating user follows you"
+                    ))
+                    .size(notedeck::fonts::get_font_size(
+                        ui.ctx(),
+                        &NotedeckTextStyle::Tiny,
+                    ))
+                    .color(ui.visuals().weak_text_color()),
+                );
+            }
+        }
+    });
+
+    action
 }
 
 fn handle_link(ui: &mut egui::Ui, website_url: &str) {

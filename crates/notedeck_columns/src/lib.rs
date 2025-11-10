@@ -41,6 +41,6 @@ pub mod storage;
 
 pub use app::Damus;
 pub use error::Error;
-pub use route::Route;
+pub use route::{Route, SettingsRoute};
 
 pub type Result<T> = std::result::Result<T, error::Error>;

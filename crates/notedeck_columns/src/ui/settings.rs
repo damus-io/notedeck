@@ -1,5 +1,5 @@
 use egui::{
-    vec2, Button, Color32, ComboBox, CornerRadius, FontId, Frame, Layout, Margin, RichText,
+    vec2, Color32, ComboBox, CornerRadius, FontId, Frame, Layout, Margin, RichText,
     ScrollArea, TextEdit, ThemePreference,
 };
 use egui_extras::{Size, StripBuilder};
@@ -7,19 +7,19 @@ use enostr::NoteId;
 use nostrdb::Transaction;
 use notedeck::{
     tr,
-    ui::{is_narrow, richtext_small},
+    ui::richtext_small,
     Images, JobsCache, LanguageIdentifier, Localization, NoteContext, NotedeckTextStyle, Settings,
     SettingsHandler, DEFAULT_NOTE_BODY_FONT_SIZE,
 };
 use notedeck_ui::{
-    app_images::{copy_to_clipboard_dark_image, copy_to_clipboard_image},
-    AnimationHelper, NoteOptions, NoteView,
+    app_images::{connected_image, copy_to_clipboard_dark_image, copy_to_clipboard_image, key_image, settings_dark_image, settings_light_image},
+    rounded_button, segmented_button, AnimationHelper, NoteOptions, NoteView,
 };
 
 use crate::{
     nav::{BodyResponse, RouterAction},
     ui::account_login_view::eye_button,
-    Damus, Route,
+    Damus, Route, SettingsRoute,
 };
 
 const PREVIEW_NOTE_ID: &str = "note1edjc8ggj07hwv77g2405uh6j2jkk5aud22gktxrvc2wnre4vdwgqzlv2gw";
@@ -29,15 +29,22 @@ const MAX_ZOOM: f32 = 3.0;
 const ZOOM_STEP: f32 = 0.1;
 const RESET_ZOOM: f32 = 1.0;
 
+enum SettingsIcon<'a> {
+    Image(egui::Image<'a>),
+    Emoji(&'a str),
+}
+
 pub enum SettingsAction {
     SetZoomFactor(f32),
     SetTheme(ThemePreference),
     SetLocale(LanguageIdentifier),
     SetRepliestNewestFirst(bool),
     SetNoteBodyFontSize(f32),
+    SetAnimateNavTransitions(bool),
     OpenRelays,
     OpenCacheFolder,
     ClearCacheFolder,
+    RouteToSettings(SettingsRoute),
 }
 
 impl SettingsAction {
@@ -52,6 +59,9 @@ impl SettingsAction {
         let mut route_action: Option<RouterAction> = None;
 
         match self {
+            Self::RouteToSettings(settings_route) => {
+                route_action = Some(RouterAction::route_to(Route::Settings(settings_route)));
+            }
             Self::OpenRelays => {
                 route_action = Some(RouterAction::route_to(Route::Relays));
             }
@@ -89,6 +99,9 @@ impl SettingsAction {
 
                 settings.set_note_body_font_size(size);
             }
+            Self::SetAnimateNavTransitions(value) => {
+                settings.set_animate_nav_transitions(value);
+            }
         }
         route_action
     }
@@ -105,18 +118,21 @@ fn settings_group<S>(ui: &mut egui::Ui, title: S, contents: impl FnOnce(&mut egu
 where
     S: Into<String>,
 {
+    ui.label(
+        RichText::new(title)
+            .text_style(NotedeckTextStyle::Small.text_style())
+            .color(ui.visuals().weak_text_color()),
+    );
+
+    ui.add_space(8.0);
+
     Frame::group(ui.style())
         .fill(ui.style().visuals.widgets.open.bg_fill)
-        .inner_margin(10.0)
+        .corner_radius(CornerRadius::same(8))
+        .inner_margin(Margin::same(0))
         .show(ui, |ui| {
-            ui.label(RichText::new(title).text_style(NotedeckTextStyle::Body.text_style()));
-            ui.separator();
-
-            ui.vertical(|ui| {
-                ui.spacing_mut().item_spacing = vec2(10.0, 10.0);
-
-                contents(ui)
-            });
+            ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
+            contents(ui)
         });
 }
 
@@ -156,183 +172,208 @@ impl<'a> SettingsView<'a> {
             "Label for appearance settings section",
         );
         settings_group(ui, title, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.label(richtext_small(tr!(
+            // Font size row
+            ui.horizontal(|ui| {
+                ui.set_height(44.0);
+                ui.add_space(16.0);
+                ui.label(RichText::new(tr!(
                     self.note_context.i18n,
-                    "Font size:",
+                    "Font size",
                     "Label for font size, Appearance settings section",
-                )));
+                )).text_style(NotedeckTextStyle::Body.text_style()));
 
-                if ui
-                    .add(
-                        egui::Slider::new(&mut self.settings.note_body_font_size, 8.0..=32.0)
-                            .text(""),
-                    )
-                    .changed()
-                {
-                    action = Some(SettingsAction::SetNoteBodyFontSize(
-                        self.settings.note_body_font_size,
-                    ));
-                };
+                ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add_space(16.0);
 
-                if ui
-                    .button(richtext_small(tr!(
+                    if ui.add(rounded_button(tr!(
                         self.note_context.i18n,
                         "Reset",
                         "Label for reset note body font size, Appearance settings section",
-                    )))
-                    .clicked()
-                {
-                    action = Some(SettingsAction::SetNoteBodyFontSize(
-                        DEFAULT_NOTE_BODY_FONT_SIZE,
-                    ));
-                }
+                    ))).clicked() {
+                        action = Some(SettingsAction::SetNoteBodyFontSize(DEFAULT_NOTE_BODY_FONT_SIZE));
+                    }
+
+                    ui.add_space(8.0);
+                    ui.label(format!("{:.0}", self.settings.note_body_font_size));
+                    ui.add_space(8.0);
+
+                    if ui.add(egui::Slider::new(&mut self.settings.note_body_font_size, 8.0..=32.0)
+                        .text("")
+                        .show_value(false)).changed() {
+                        action = Some(SettingsAction::SetNoteBodyFontSize(self.settings.note_body_font_size));
+                    }
+                });
             });
 
+            // Preview note
             let txn = Transaction::new(self.note_context.ndb).unwrap();
-
             if let Some(note_id) = NoteId::from_bech(PREVIEW_NOTE_ID) {
-                if let Ok(preview_note) =
-                    self.note_context.ndb.get_note_by_id(&txn, note_id.bytes())
-                {
+                if let Ok(preview_note) = self.note_context.ndb.get_note_by_id(&txn, note_id.bytes()) {
+                    ui.add_space(8.0);
                     notedeck_ui::padding(8.0, ui, |ui| {
-                        if is_narrow(ui.ctx()) {
-                            ui.set_max_width(ui.available_width());
+                        ui.set_max_width(ui.available_width());
 
-                            NoteView::new(
-                                self.note_context,
-                                &preview_note,
-                                *self.note_options,
-                                self.jobs,
-                            )
-                            .actionbar(false)
-                            .options_button(false)
-                            .show(ui);
-                        }
+                        NoteView::new(
+                            self.note_context,
+                            &preview_note,
+                            *self.note_options,
+                            self.jobs,
+                        )
+                        .actionbar(false)
+                        .options_button(false)
+                        .show(ui);
                     });
-                    ui.separator();
+                    ui.add_space(8.0);
                 }
             }
 
+            ui.painter().line_segment(
+                [egui::pos2(ui.min_rect().left() + 16.0, ui.min_rect().bottom()), egui::pos2(ui.min_rect().right(), ui.min_rect().bottom())],
+                egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
+            );
+
+            // Zoom level row
             let current_zoom = ui.ctx().zoom_factor();
-
-            ui.horizontal_wrapped(|ui| {
-                ui.label(richtext_small(tr!(
+            ui.horizontal(|ui| {
+                ui.set_height(44.0);
+                ui.add_space(16.0);
+                ui.label(RichText::new(tr!(
                     self.note_context.i18n,
-                    "Zoom Level:",
+                    "Zoom level",
                     "Label for zoom level, Appearance settings section",
-                )));
+                )).text_style(NotedeckTextStyle::Body.text_style()));
 
-                let min_reached = current_zoom <= MIN_ZOOM;
-                let max_reached = current_zoom >= MAX_ZOOM;
+                ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add_space(16.0);
 
-                if ui
-                    .add_enabled(
-                        !min_reached,
-                        Button::new(
-                            RichText::new("-").text_style(NotedeckTextStyle::Small.text_style()),
-                        ),
-                    )
-                    .clicked()
-                {
-                    let new_zoom = (current_zoom - ZOOM_STEP).max(MIN_ZOOM);
-                    action = Some(SettingsAction::SetZoomFactor(new_zoom));
-                };
-
-                ui.label(
-                    RichText::new(format!("{:.0}%", current_zoom * 100.0))
-                        .text_style(NotedeckTextStyle::Small.text_style()),
-                );
-
-                if ui
-                    .add_enabled(
-                        !max_reached,
-                        Button::new(
-                            RichText::new("+").text_style(NotedeckTextStyle::Small.text_style()),
-                        ),
-                    )
-                    .clicked()
-                {
-                    let new_zoom = (current_zoom + ZOOM_STEP).min(MAX_ZOOM);
-                    action = Some(SettingsAction::SetZoomFactor(new_zoom));
-                };
-
-                if ui
-                    .button(richtext_small(tr!(
+                    if ui.add(rounded_button(tr!(
                         self.note_context.i18n,
                         "Reset",
                         "Label for reset zoom level, Appearance settings section",
-                    )))
-                    .clicked()
-                {
-                    action = Some(SettingsAction::SetZoomFactor(RESET_ZOOM));
-                }
+                    ))).clicked() {
+                        action = Some(SettingsAction::SetZoomFactor(RESET_ZOOM));
+                    }
+
+                    ui.add_space(8.0);
+
+                    let max_reached = current_zoom >= MAX_ZOOM;
+                    if ui.add_enabled(!max_reached, rounded_button("+")).clicked() {
+                        action = Some(SettingsAction::SetZoomFactor((current_zoom + ZOOM_STEP).min(MAX_ZOOM)));
+                    }
+
+                    ui.add_space(4.0);
+                    ui.label(format!("{:.0}%", current_zoom * 100.0));
+                    ui.add_space(4.0);
+
+                    let min_reached = current_zoom <= MIN_ZOOM;
+                    if ui.add_enabled(!min_reached, rounded_button("-")).clicked() {
+                        action = Some(SettingsAction::SetZoomFactor((current_zoom - ZOOM_STEP).max(MIN_ZOOM)));
+                    }
+                });
             });
 
-            ui.horizontal_wrapped(|ui| {
-                ui.label(richtext_small(tr!(
+            ui.painter().line_segment(
+                [egui::pos2(ui.min_rect().left() + 16.0, ui.min_rect().bottom()), egui::pos2(ui.min_rect().right(), ui.min_rect().bottom())],
+                egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
+            );
+
+            // Language row
+            ui.horizontal(|ui| {
+                ui.set_height(44.0);
+                ui.add_space(16.0);
+                ui.label(RichText::new(tr!(
                     self.note_context.i18n,
-                    "Language:",
+                    "Language",
                     "Label for language, Appearance settings section",
-                )));
+                )).text_style(NotedeckTextStyle::Body.text_style()));
 
-                //
-                ComboBox::from_label("")
-                    .selected_text(self.get_selected_language_name())
-                    .show_ui(ui, |ui| {
-                        for lang in self.note_context.i18n.get_available_locales() {
-                            let name = self
-                                .note_context
-                                .i18n
-                                .get_locale_native_name(lang)
-                                .map(|s| s.to_owned())
-                                .unwrap_or_else(|| lang.to_string());
-                            if ui
-                                .selectable_value(&mut self.settings.locale, lang.to_string(), name)
-                                .clicked()
-                            {
-                                action = Some(SettingsAction::SetLocale(lang.to_owned()))
+                ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add_space(16.0);
+
+                    let combo_style = ui.style_mut();
+                    combo_style.spacing.combo_height = 32.0;
+                    combo_style.spacing.button_padding = vec2(12.0, 6.0);
+
+                    ComboBox::new("language_combo", "")
+                        .selected_text(self.get_selected_language_name())
+                        .show_ui(ui, |ui| {
+                            for lang in self.note_context.i18n.get_available_locales() {
+                                let name = self.note_context.i18n.get_locale_native_name(lang)
+                                    .map(|s| s.to_owned())
+                                    .unwrap_or_else(|| lang.to_string());
+                                if ui.selectable_value(&mut self.settings.locale, lang.to_string(), name).clicked() {
+                                    action = Some(SettingsAction::SetLocale(lang.to_owned()));
+                                }
                             }
-                        }
-                    });
+                        });
+                });
             });
 
-            ui.horizontal_wrapped(|ui| {
-                ui.label(richtext_small(tr!(
+            ui.painter().line_segment(
+                [egui::pos2(ui.min_rect().left() + 16.0, ui.min_rect().bottom()), egui::pos2(ui.min_rect().right(), ui.min_rect().bottom())],
+                egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
+            );
+
+            // Theme row
+            ui.horizontal(|ui| {
+                ui.set_height(44.0);
+                ui.add_space(16.0);
+                ui.label(RichText::new(tr!(
                     self.note_context.i18n,
-                    "Theme:",
+                    "Theme",
                     "Label for theme, Appearance settings section",
-                )));
+                )).text_style(NotedeckTextStyle::Body.text_style()));
 
-                if ui
-                    .selectable_value(
-                        &mut self.settings.theme,
-                        ThemePreference::Light,
-                        richtext_small(tr!(
-                            self.note_context.i18n,
-                            "Light",
-                            "Label for Theme Light, Appearance settings section",
-                        )),
-                    )
-                    .clicked()
-                {
-                    action = Some(SettingsAction::SetTheme(ThemePreference::Light));
-                }
+                ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add_space(16.0);
 
-                if ui
-                    .selectable_value(
-                        &mut self.settings.theme,
-                        ThemePreference::Dark,
-                        richtext_small(tr!(
-                            self.note_context.i18n,
-                            "Dark",
-                            "Label for Theme Dark, Appearance settings section",
-                        )),
-                    )
-                    .clicked()
-                {
-                    action = Some(SettingsAction::SetTheme(ThemePreference::Dark));
-                }
+                    let is_dark = self.settings.theme == ThemePreference::Dark;
+                    if ui.add(segmented_button(
+                        tr!(self.note_context.i18n, "Dark", "Label for Theme Dark, Appearance settings section"),
+                        is_dark,
+                        ui
+                    )).clicked() {
+                        action = Some(SettingsAction::SetTheme(ThemePreference::Dark));
+                    }
+
+                    ui.add_space(4.0);
+
+                    let is_light = self.settings.theme == ThemePreference::Light;
+                    if ui.add(segmented_button(
+                        tr!(self.note_context.i18n, "Light", "Label for Theme Light, Appearance settings section"),
+                        is_light,
+                        ui
+                    )).clicked() {
+                        action = Some(SettingsAction::SetTheme(ThemePreference::Light));
+                    }
+                });
+            });
+
+            ui.painter().line_segment(
+                [egui::pos2(ui.min_rect().left() + 16.0, ui.min_rect().bottom()), egui::pos2(ui.min_rect().right(), ui.min_rect().bottom())],
+                egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
+            );
+
+            // Animate transitions row (last row, no separator)
+            ui.horizontal(|ui| {
+                ui.set_height(44.0);
+                ui.add_space(16.0);
+                ui.label(RichText::new("Animate view transitions").text_style(NotedeckTextStyle::Body.text_style()));
+
+                ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add_space(16.0);
+
+                    let btn_text = if self.settings.animate_nav_transitions { "On" } else { "Off" };
+                    if ui.add(rounded_button(btn_text)
+                        .fill(if self.settings.animate_nav_transitions {
+                            ui.visuals().selection.bg_fill
+                        } else {
+                            ui.visuals().widgets.inactive.bg_fill
+                        })).clicked() {
+                        self.settings.animate_nav_transitions = !self.settings.animate_nav_transitions;
+                        action = Some(SettingsAction::SetAnimateNavTransitions(self.settings.animate_nav_transitions));
+                    }
+                });
             });
         });
 
@@ -348,58 +389,81 @@ impl<'a> SettingsView<'a> {
             "Label for storage settings section"
         );
         settings_group(ui, title, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                let static_imgs_size = self
-                    .note_context
-                    .img_cache
-                    .static_imgs
-                    .cache_size
-                    .lock()
-                    .unwrap();
+            // Image cache size row
+            let static_imgs_size = self.note_context.img_cache.static_imgs.cache_size.lock().unwrap();
+            let gifs_size = self.note_context.img_cache.gifs.cache_size.lock().unwrap();
+            let total_size = [static_imgs_size, gifs_size].iter().fold(0_u64, |acc, cur| acc + cur.unwrap_or_default());
 
-                let gifs_size = self.note_context.img_cache.gifs.cache_size.lock().unwrap();
+            ui.horizontal(|ui| {
+                ui.set_height(44.0);
+                ui.add_space(16.0);
+                ui.label(RichText::new(tr!(
+                    self.note_context.i18n,
+                    "Image cache size",
+                    "Label for Image cache size, Storage settings section"
+                )).text_style(NotedeckTextStyle::Body.text_style()));
 
-                ui.label(
-                    RichText::new(format!(
-                        "{} {}",
-                        tr!(
-                            self.note_context.i18n,
-                            "Image cache size:",
-                            "Label for Image cache size, Storage settings section"
-                        ),
-                        format_size(
-                            [static_imgs_size, gifs_size]
-                                .iter()
-                                .fold(0_u64, |acc, cur| acc + cur.unwrap_or_default())
-                        )
-                    ))
-                    .text_style(NotedeckTextStyle::Small.text_style()),
+                ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add_space(16.0);
+                    ui.label(format_size(total_size));
+                });
+            });
+
+            // View folder row
+            if !notedeck::ui::is_compiled_as_mobile() {
+                ui.painter().line_segment(
+                    [egui::pos2(ui.min_rect().left() + 16.0, ui.min_rect().bottom()), egui::pos2(ui.min_rect().right(), ui.min_rect().bottom())],
+                    egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
                 );
 
-                ui.end_row();
+                ui.horizontal(|ui| {
+                    ui.set_height(44.0);
 
-                if !notedeck::ui::is_compiled_as_mobile()
-                    && ui
-                        .button(richtext_small(tr!(
-                            self.note_context.i18n,
-                            "View folder",
-                            "Label for view folder button, Storage settings section",
-                        )))
-                        .clicked()
-                {
-                    action = Some(SettingsAction::OpenCacheFolder);
-                }
+                    let response = ui.interact(ui.max_rect(), ui.id().with("view_folder"), egui::Sense::click());
 
-                let clearcache_resp = ui.button(
-                    richtext_small(tr!(
+                    ui.add_space(16.0);
+                    ui.label(RichText::new(tr!(
                         self.note_context.i18n,
-                        "Clear cache",
-                        "Label for clear cache button, Storage settings section",
-                    ))
-                    .color(Color32::LIGHT_RED),
-                );
+                        "View folder",
+                        "Label for view folder button, Storage settings section",
+                    )).text_style(NotedeckTextStyle::Body.text_style()));
 
-                let id_clearcache = id.with("clear_cache");
+                    ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.add_space(16.0);
+                        ui.label(RichText::new("›").color(ui.visuals().weak_text_color()));
+                    });
+
+                    if response.clicked() {
+                        action = Some(SettingsAction::OpenCacheFolder);
+                    }
+                });
+            }
+
+            // Clear cache row
+            let id_clearcache = id.with("clear_cache");
+
+            ui.painter().line_segment(
+                [egui::pos2(ui.min_rect().left() + 16.0, ui.min_rect().bottom()), egui::pos2(ui.min_rect().right(), ui.min_rect().bottom())],
+                egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
+            );
+
+            ui.horizontal(|ui| {
+                ui.set_height(44.0);
+
+                let clearcache_resp = ui.interact(ui.max_rect(), ui.id().with("clear_cache_btn"), egui::Sense::click());
+
+                ui.add_space(16.0);
+                ui.label(RichText::new(tr!(
+                    self.note_context.i18n,
+                    "Clear cache",
+                    "Label for clear cache button, Storage settings section",
+                )).text_style(NotedeckTextStyle::Body.text_style()).color(Color32::from_rgb(255, 69, 58)));
+
+                ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add_space(16.0);
+                    ui.label(RichText::new("›").color(ui.visuals().weak_text_color()));
+                });
+
                 if clearcache_resp.clicked() {
                     ui.data_mut(|d| d.insert_temp(id_clearcache, true));
                 }
@@ -407,23 +471,22 @@ impl<'a> SettingsView<'a> {
                 if ui.data_mut(|d| *d.get_temp_mut_or_default(id_clearcache)) {
                     let mut confirm_pressed = false;
                     clearcache_resp.show_tooltip_ui(|ui| {
-                        let confirm_resp = ui.button(tr!(
+                        let confirm_resp = ui.add(rounded_button(tr!(
                             self.note_context.i18n,
                             "Confirm",
                             "Label for confirm clear cache, Storage settings section"
-                        ));
+                        )));
+
                         if confirm_resp.clicked() {
                             confirm_pressed = true;
                         }
 
                         if confirm_resp.clicked()
-                            || ui
-                                .button(tr!(
-                                    self.note_context.i18n,
-                                    "Cancel",
-                                    "Label for cancel clear cache, Storage settings section"
-                                ))
-                                .clicked()
+                            || ui.add(rounded_button(tr!(
+                                self.note_context.i18n,
+                                "Cancel",
+                                "Label for cancel clear cache, Storage settings section"
+                            ))).clicked()
                         {
                             ui.data_mut(|d| d.insert_temp(id_clearcache, false));
                         }
@@ -434,7 +497,7 @@ impl<'a> SettingsView<'a> {
                     } else if !confirm_pressed && clearcache_resp.clicked_elsewhere() {
                         ui.data_mut(|d| d.insert_temp(id_clearcache, false));
                     }
-                };
+                }
             });
         });
 
@@ -446,33 +509,35 @@ impl<'a> SettingsView<'a> {
 
         let title = tr!(
             self.note_context.i18n,
-            "Others",
-            "Label for others settings section"
+            "Content",
+            "Label for content settings section"
         );
         settings_group(ui, title, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.label(richtext_small(tr!(
+            // Sort replies row
+            ui.horizontal(|ui| {
+                ui.set_height(44.0);
+                ui.add_space(16.0);
+                ui.label(RichText::new(tr!(
                     self.note_context.i18n,
-                    "Sort replies newest first:",
-                    "Label for Sort replies newest first, others settings section",
-                )));
+                    "Sort replies newest first",
+                    "Label for Sort replies newest first, content settings section",
+                )).text_style(NotedeckTextStyle::Body.text_style()));
 
-                if ui
-                    .toggle_value(
-                        &mut self.settings.show_replies_newest_first,
-                        RichText::new(tr!(
-                            self.note_context.i18n,
-                            "On",
-                            "Setting to turn on sorting replies so that the newest are shown first"
-                        ))
-                        .text_style(NotedeckTextStyle::Small.text_style()),
-                    )
-                    .changed()
-                {
-                    action = Some(SettingsAction::SetRepliestNewestFirst(
-                        self.settings.show_replies_newest_first,
-                    ));
-                }
+                ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add_space(16.0);
+
+                    if ui.add(segmented_button("On", self.settings.show_replies_newest_first, ui)).clicked() {
+                        self.settings.show_replies_newest_first = true;
+                        action = Some(SettingsAction::SetRepliestNewestFirst(true));
+                    }
+
+                    ui.add_space(4.0);
+
+                    if ui.add(segmented_button("Off", !self.settings.show_replies_newest_first, ui)).clicked() {
+                        self.settings.show_replies_newest_first = false;
+                        action = Some(SettingsAction::SetRepliestNewestFirst(false));
+                    }
+                });
             });
         });
 
@@ -622,63 +687,263 @@ impl<'a> SettingsView<'a> {
         });
     }
 
-    fn manage_relays_section(&mut self, ui: &mut egui::Ui) -> Option<SettingsAction> {
+    fn settings_menu(&mut self, ui: &mut egui::Ui) -> Option<SettingsAction> {
         let mut action = None;
 
-        if ui
-            .add_sized(
-                [ui.available_width(), 30.0],
-                Button::new(richtext_small(tr!(
-                    self.note_context.i18n,
-                    "Configure relays",
-                    "Label for configure relays, settings section",
-                ))),
-            )
-            .clicked()
-        {
-            action = Some(SettingsAction::OpenRelays);
-        }
+        Frame::default()
+            .inner_margin(Margin::symmetric(10, 10))
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
+
+                let dark_mode = ui.visuals().dark_mode;
+                self.settings_section_with_relay(ui, "", &mut action, &[
+                    ("Appearance", SettingsRoute::Appearance, Some(SettingsIcon::Image(if dark_mode { settings_dark_image() } else { settings_light_image() }))),
+                    ("Content", SettingsRoute::Others, Some(SettingsIcon::Emoji("📄"))),
+                    ("Storage", SettingsRoute::Storage, Some(SettingsIcon::Emoji("💾"))),
+                    ("Keys", SettingsRoute::Keys, Some(SettingsIcon::Image(key_image()))),
+                ]);
+            });
 
         action
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui) -> BodyResponse<SettingsAction> {
-        let scroll_out = Frame::default()
-            .inner_margin(Margin::symmetric(10, 10))
+    fn settings_section_with_relay<'b>(
+        &mut self,
+        ui: &mut egui::Ui,
+        title: &str,
+        action: &mut Option<SettingsAction>,
+        items: &[(&str, SettingsRoute, Option<SettingsIcon<'b>>)],
+    ) {
+        self.settings_section(ui, title, action, items, true);
+    }
+
+    fn settings_section<'b>(
+        &mut self,
+        ui: &mut egui::Ui,
+        title: &str,
+        action: &mut Option<SettingsAction>,
+        items: &[(&str, SettingsRoute, Option<SettingsIcon<'b>>)],
+        include_relay: bool,
+    ) {
+        if !title.is_empty() {
+            ui.label(
+                RichText::new(title)
+                    .text_style(NotedeckTextStyle::Small.text_style())
+                    .color(ui.visuals().weak_text_color()),
+            );
+
+            ui.add_space(8.0);
+        }
+
+        Frame::group(ui.style())
+            .fill(ui.style().visuals.widgets.open.bg_fill)
+            .corner_radius(CornerRadius::same(8))
+            .inner_margin(Margin::same(0))
             .show(ui, |ui| {
-                ScrollArea::vertical().show(ui, |ui| {
-                    let mut action = None;
-                    if let Some(new_action) = self.appearance_section(ui) {
-                        action = Some(new_action);
+                ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
+
+                for (idx, (label, route, icon)) in items.iter().enumerate() {
+                    let label = *label;
+                    let route = *route;
+                    let is_last = idx == items.len() - 1 && !include_relay;
+
+                    let response = ui.allocate_response(
+                        vec2(ui.available_width(), 44.0),
+                        egui::Sense::click(),
+                    );
+
+                    if response.clicked() {
+                        *action = Some(SettingsAction::RouteToSettings(route));
                     }
 
-                    ui.add_space(5.0);
+                    let rect = response.rect;
+                    let visuals = ui.style().interact(&response);
 
-                    if let Some(new_action) = self.storage_section(ui) {
-                        action = Some(new_action);
+                    if response.hovered() {
+                        ui.painter().rect_filled(
+                            rect,
+                            CornerRadius::same(0),
+                            ui.visuals().widgets.hovered.bg_fill,
+                        );
                     }
 
-                    ui.add_space(5.0);
+                    let mut text_x = rect.left() + 16.0;
 
-                    self.keys_section(ui);
-
-                    ui.add_space(5.0);
-
-                    if let Some(new_action) = self.other_options_section(ui) {
-                        action = Some(new_action);
+                    // Draw icon if present
+                    if let Some(icon_data) = icon {
+                        let icon_size = 20.0;
+                        match icon_data {
+                            SettingsIcon::Image(img) => {
+                                let icon_rect = egui::Rect::from_center_size(
+                                    egui::pos2(text_x + icon_size / 2.0, rect.center().y),
+                                    vec2(icon_size, icon_size),
+                                );
+                                img.clone().paint_at(ui, icon_rect);
+                                text_x += icon_size + 12.0;
+                            }
+                            SettingsIcon::Emoji(emoji) => {
+                                let emoji_galley = ui.painter().layout_no_wrap(
+                                    emoji.to_string(),
+                                    NotedeckTextStyle::Body.text_style().resolve(ui.style()),
+                                    visuals.text_color(),
+                                );
+                                ui.painter().galley(
+                                    egui::pos2(text_x, rect.center().y - emoji_galley.size().y / 2.0),
+                                    emoji_galley,
+                                    visuals.text_color(),
+                                );
+                                text_x += icon_size + 12.0;
+                            }
+                        }
                     }
 
-                    ui.add_space(10.0);
+                    let galley = ui.painter().layout_no_wrap(
+                        label.to_string(),
+                        NotedeckTextStyle::Body.text_style().resolve(ui.style()),
+                        visuals.text_color(),
+                    );
 
-                    if let Some(new_action) = self.manage_relays_section(ui) {
-                        action = Some(new_action);
+                    ui.painter().galley(
+                        egui::pos2(text_x, rect.center().y - galley.size().y / 2.0),
+                        galley,
+                        visuals.text_color(),
+                    );
+
+                    // Draw chevron
+                    let chevron_galley = ui.painter().layout_no_wrap(
+                        "›".to_string(),
+                        NotedeckTextStyle::Body.text_style().resolve(ui.style()),
+                        ui.visuals().weak_text_color(),
+                    );
+
+                    ui.painter().galley(
+                        rect.right_center() + vec2(-16.0 - chevron_galley.size().x, -chevron_galley.size().y / 2.0),
+                        chevron_galley,
+                        ui.visuals().weak_text_color(),
+                    );
+
+                    // Draw separator line
+                    if !is_last {
+                        let line_y = rect.bottom();
+                        ui.painter().line_segment(
+                            [
+                                egui::pos2(rect.left() + 16.0, line_y),
+                                egui::pos2(rect.right(), line_y),
+                            ],
+                            egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
+                        );
                     }
-                    action
-                })
-            })
-            .inner;
+                }
 
-        BodyResponse::scroll(scroll_out)
+                // Add relay configuration item if requested
+                if include_relay {
+                    let response = ui.allocate_response(
+                        vec2(ui.available_width(), 44.0),
+                        egui::Sense::click(),
+                    );
+
+                    if response.clicked() {
+                        *action = Some(SettingsAction::OpenRelays);
+                    }
+
+                    let rect = response.rect;
+                    let visuals = ui.style().interact(&response);
+
+                    if response.hovered() {
+                        ui.painter().rect_filled(
+                            rect,
+                            CornerRadius::same(0),
+                            ui.visuals().widgets.hovered.bg_fill,
+                        );
+                    }
+
+                    let mut text_x = rect.left() + 16.0;
+
+                    // Draw relay icon
+                    let icon_size = 20.0;
+                    let icon_rect = egui::Rect::from_center_size(
+                        egui::pos2(text_x + icon_size / 2.0, rect.center().y),
+                        vec2(icon_size, icon_size),
+                    );
+                    connected_image().paint_at(ui, icon_rect);
+                    text_x += icon_size + 12.0;
+
+                    // Draw label
+                    let label = tr!(
+                        self.note_context.i18n,
+                        "Configure relays",
+                        "Label for configure relays, settings section",
+                    );
+                    let galley = ui.painter().layout_no_wrap(
+                        label,
+                        NotedeckTextStyle::Body.text_style().resolve(ui.style()),
+                        visuals.text_color(),
+                    );
+
+                    ui.painter().galley(
+                        egui::pos2(text_x, rect.center().y - galley.size().y / 2.0),
+                        galley,
+                        visuals.text_color(),
+                    );
+
+                    // Draw chevron
+                    let chevron_galley = ui.painter().layout_no_wrap(
+                        "›".to_string(),
+                        NotedeckTextStyle::Body.text_style().resolve(ui.style()),
+                        ui.visuals().weak_text_color(),
+                    );
+
+                    ui.painter().galley(
+                        rect.right_center() + vec2(-16.0 - chevron_galley.size().x, -chevron_galley.size().y / 2.0),
+                        chevron_galley,
+                        ui.visuals().weak_text_color(),
+                    );
+                }
+            });
+    }
+
+    pub fn ui(&mut self, ui: &mut egui::Ui, route: &SettingsRoute) -> BodyResponse<SettingsAction> {
+        match route {
+            SettingsRoute::Menu => {
+                BodyResponse::output(self.settings_menu(ui))
+            }
+            _ => {
+                let scroll_out = Frame::default()
+                    .inner_margin(Margin::symmetric(10, 10))
+                    .show(ui, |ui| {
+                        ScrollArea::vertical().show(ui, |ui| {
+                            let mut action = None;
+
+                            match route {
+                                SettingsRoute::Appearance => {
+                                    if let Some(new_action) = self.appearance_section(ui) {
+                                        action = Some(new_action);
+                                    }
+                                }
+                                SettingsRoute::Storage => {
+                                    if let Some(new_action) = self.storage_section(ui) {
+                                        action = Some(new_action);
+                                    }
+                                }
+                                SettingsRoute::Keys => {
+                                    self.keys_section(ui);
+                                }
+                                SettingsRoute::Others => {
+                                    if let Some(new_action) = self.other_options_section(ui) {
+                                        action = Some(new_action);
+                                    }
+                                }
+                                SettingsRoute::Menu => {}
+                            }
+
+                            action
+                        })
+                    })
+                    .inner;
+
+                BodyResponse::scroll(scroll_out)
+            }
+        }
     }
 }
 

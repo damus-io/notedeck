@@ -101,7 +101,7 @@ impl ChromePanelAction {
             }
 
             Self::Settings => {
-                Self::columns_navigate(ctx, chrome, notedeck_columns::Route::Settings);
+                Self::columns_navigate(ctx, chrome, notedeck_columns::Route::settings());
             }
 
             Self::Wallet => {
@@ -192,6 +192,14 @@ impl Chrome {
     fn switch_to_columns(&mut self) {
         for (i, app) in self.apps.iter().enumerate() {
             if let NotedeckApp::Columns(_) = app {
+                self.active = i as i32;
+            }
+        }
+    }
+
+    fn switch_to_dave(&mut self) {
+        for (i, app) in self.apps.iter().enumerate() {
+            if let NotedeckApp::Dave(_) = app {
                 self.active = i as i32;
             }
         }
@@ -454,6 +462,10 @@ fn chrome_handle_app_action(
     match action {
         AppAction::ToggleChrome => {
             chrome.toggle();
+        }
+
+        AppAction::SwitchToDave => {
+            chrome.switch_to_dave();
         }
 
         AppAction::Note(note_action) => {

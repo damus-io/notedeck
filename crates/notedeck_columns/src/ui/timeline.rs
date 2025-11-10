@@ -794,6 +794,7 @@ fn render_composite_entry(
                                     &composite_type,
                                     note_context.img_cache,
                                     note_options.contains(NoteOptions::Notification),
+                                    note_context.accounts,
                                 )
                             },
                         )
@@ -887,6 +888,7 @@ fn render_profiles(
     composite_type: &CompositeType,
     img_cache: &mut notedeck::Images,
     notification: bool,
+    accounts: &notedeck::Accounts,
 ) -> PfpsResponse {
     let mut action = None;
     if notification {
@@ -934,7 +936,8 @@ fn render_profiles(
                     let mut widget =
                         ProfilePic::from_profile_or_default(img_cache, entry.record.as_ref())
                             .size(24.0)
-                            .sense(Sense::click());
+                            .sense(Sense::click())
+                            .with_follow_check(entry.pk, accounts);
                     let mut resp = ui.put(rect, &mut widget);
                     rendered = true;
 

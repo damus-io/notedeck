@@ -66,6 +66,11 @@ impl<'a> NavTitle<'a> {
                     .layout(egui::Layout::left_to_right(egui::Align::Center)),
             );
 
+            let interact_rect = child_ui.interact(rect, child_ui.id().with("drag"), Sense::drag());
+            if interact_rect.drag_started_by(egui::PointerButton::Primary) {
+                child_ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+            }
+
             let r = self.title_bar(&mut child_ui);
 
             ui.advance_cursor_after_rect(rect);
@@ -465,7 +470,7 @@ impl<'a> NavTitle<'a> {
                 TimelineKind::Search(_sq) => {
                     // TODO: show author pfp if author field set?
 
-                    Some(ui.add(ui::side_panel::search_button()))
+                    Some(ui.add(ui::side_panel::search_button(None)))
                 }
 
                 TimelineKind::Universe
@@ -481,17 +486,19 @@ impl<'a> NavTitle<'a> {
             Route::AddColumn(_add_col_route) => None,
             Route::Support => None,
             Route::Relays => None,
-            Route::Settings => None,
+            Route::Settings(_) => None,
             Route::NewDeck => None,
             Route::EditDeck(_) => None,
             Route::EditProfile(pubkey) => Some(self.show_profile(ui, pubkey, pfp_size)),
-            Route::Search => Some(ui.add(ui::side_panel::search_button())),
+            Route::Search => Some(ui.add(ui::side_panel::search_button(None))),
             Route::Wallet(_) => None,
             Route::CustomizeZapAmount(_) => None,
             Route::Thread(thread_selection) => {
                 Some(self.thread_pfp(ui, thread_selection, pfp_size))
             }
             Route::RepostDecision(_) => None,
+            Route::Following(pubkey) => Some(self.show_profile(ui, pubkey, pfp_size)),
+            Route::FollowedBy(pubkey) => Some(self.show_profile(ui, pubkey, pfp_size)),
         }
     }
 

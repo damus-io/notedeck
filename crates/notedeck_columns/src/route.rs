@@ -21,7 +21,7 @@ pub enum Route {
     Quote(NoteId),
     RepostDecision(NoteId),
     Relays,
-    Settings,
+    Settings(SettingsRoute),
     ComposeNote,
     AddColumn(AddColumnRoute),
     EditProfile(Pubkey),
@@ -31,6 +31,17 @@ pub enum Route {
     EditDeck(usize),
     Wallet(WalletType),
     CustomizeZapAmount(NoteZapTargetOwned),
+    Following(Pubkey),
+    FollowedBy(Pubkey),
+}
+
+#[derive(Clone, Copy, Eq, PartialEq, Debug)]
+pub enum SettingsRoute {
+    Menu,
+    Appearance,
+    Storage,
+    Keys,
+    Others,
 }
 
 impl Route {
@@ -51,7 +62,7 @@ impl Route {
     }
 
     pub fn settings() -> Self {
-        Route::Settings
+        Route::Settings(SettingsRoute::Menu)
     }
 
     pub fn thread(thread_selection: ThreadSelection) -> Self {
@@ -117,8 +128,15 @@ impl Route {
             Route::Relays => {
                 writer.write_token("relay");
             }
-            Route::Settings => {
+            Route::Settings(route) => {
                 writer.write_token("settings");
+                match route {
+                    SettingsRoute::Menu => {}
+                    SettingsRoute::Appearance => writer.write_token("appearance"),
+                    SettingsRoute::Storage => writer.write_token("storage"),
+                    SettingsRoute::Keys => writer.write_token("keys"),
+                    SettingsRoute::Others => writer.write_token("others"),
+                }
             }
             Route::ComposeNote => {
                 writer.write_token("compose");
@@ -137,6 +155,14 @@ impl Route {
             Route::RepostDecision(note_id) => {
                 writer.write_token("repost_decision");
                 writer.write_token(&note_id.hex());
+            }
+            Route::Following(pubkey) => {
+                writer.write_token("following");
+                writer.write_token(&pubkey.hex());
+            }
+            Route::FollowedBy(pubkey) => {
+                writer.write_token("followed_by");
+                writer.write_token(&pubkey.hex());
             }
         }
     }
@@ -186,7 +212,30 @@ impl Route {
                 |p| {
                     p.parse_all(|p| {
                         p.parse_token("settings")?;
-                        Ok(Route::Settings)
+                        let route = if let Ok(token) = p.peek_token() {
+                            match token {
+                                "appearance" => {
+                                    p.pull_token()?;
+                                    SettingsRoute::Appearance
+                                }
+                                "storage" => {
+                                    p.pull_token()?;
+                                    SettingsRoute::Storage
+                                }
+                                "keys" => {
+                                    p.pull_token()?;
+                                    SettingsRoute::Keys
+                                }
+                                "others" => {
+                                    p.pull_token()?;
+                                    SettingsRoute::Others
+                                }
+                                _ => SettingsRoute::Menu,
+                            }
+                        } else {
+                            SettingsRoute::Menu
+                        };
+                        Ok(Route::Settings(route))
                     })
                 },
                 |p| {
@@ -259,6 +308,22 @@ impl Route {
                         )))
                     })
                 },
+                |p| {
+                    p.parse_all(|p| {
+                        p.parse_token("following")?;
+                        let pubkey = Pubkey::from_hex(p.pull_token()?)
+                            .map_err(|_| ParseError::HexDecodeFailed)?;
+                        Ok(Route::Following(pubkey))
+                    })
+                },
+                |p| {
+                    p.parse_all(|p| {
+                        p.parse_token("followed_by")?;
+                        let pubkey = Pubkey::from_hex(p.pull_token()?)
+                            .map_err(|_| ParseError::HexDecodeFailed)?;
+                        Ok(Route::FollowedBy(pubkey))
+                    })
+                },
             ],
         )
     }
@@ -278,8 +343,24 @@ impl Route {
             Route::Relays => {
                 ColumnTitle::formatted(tr!(i18n, "Relays", "Column title for relay management"))
             }
-            Route::Settings => {
-                ColumnTitle::formatted(tr!(i18n, "Settings", "Column title for app settings"))
+            Route::Settings(route) => match route {
+                SettingsRoute::Menu => {
+                    ColumnTitle::formatted(tr!(i18n, "Settings", "Column title for app settings"))
+                }
+                SettingsRoute::Appearance => ColumnTitle::formatted(tr!(
+                    i18n,
+                    "Appearance",
+                    "Column title for appearance settings"
+                )),
+                SettingsRoute::Storage => {
+                    ColumnTitle::formatted(tr!(i18n, "Storage", "Column title for storage settings"))
+                }
+                SettingsRoute::Keys => {
+                    ColumnTitle::formatted(tr!(i18n, "Keys", "Column title for keys settings"))
+                }
+                SettingsRoute::Others => {
+                    ColumnTitle::formatted(tr!(i18n, "Others", "Column title for other settings"))
+                }
             }
             Route::Accounts(amr) => match amr {
                 AccountsRoute::Accounts => ColumnTitle::formatted(tr!(
@@ -377,6 +458,16 @@ impl Route {
                 "Repost",
                 "Column title for deciding the type of repost"
             )),
+            Route::Following(_) => ColumnTitle::formatted(tr!(
+                i18n,
+                "Following",
+                "Column title for users being followed"
+            )),
+            Route::FollowedBy(_) => ColumnTitle::formatted(tr!(
+                i18n,
+                "Followed by",
+                "Column title for followers"
+            )),
         }
     }
 }
@@ -389,6 +480,7 @@ pub struct Router<R: Clone> {
     pub returning: bool,
     pub navigating: bool,
     replacing: bool,
+    forward_stack: Vec<R>,
 
     // An overlay captures a range of routes where only one will persist when going back, the most recent added
     overlay_ranges: Vec<Range<usize>>,
@@ -407,12 +499,14 @@ impl<R: Clone> Router<R> {
             returning,
             navigating,
             replacing,
+            forward_stack: Vec::new(),
             overlay_ranges: Vec::new(),
         }
     }
 
     pub fn route_to(&mut self, route: R) {
         self.navigating = true;
+        self.forward_stack.clear();
         self.routes.push(route);
     }
 
@@ -454,31 +548,48 @@ impl<R: Clone> Router<R> {
         self.prev().cloned()
     }
 
+    pub fn go_forward(&mut self) -> bool {
+        if let Some(route) = self.forward_stack.pop() {
+            self.navigating = true;
+            self.routes.push(route);
+            true
+        } else {
+            false
+        }
+    }
+
     /// Pop a route, should only be called on a NavRespose::Returned reseponse
     pub fn pop(&mut self) -> Option<R> {
         if self.routes.len() == 1 {
             return None;
         }
 
-        's: {
+        let is_overlay = 's: {
             let Some(last_range) = self.overlay_ranges.last_mut() else {
-                break 's;
+                break 's false;
             };
 
             if last_range.end != self.routes.len() {
-                break 's;
+                break 's false;
             }
 
             if last_range.end - 1 <= last_range.start {
                 self.overlay_ranges.pop();
-                break 's;
+            } else {
+                last_range.end -= 1;
             }
 
-            last_range.end -= 1;
-        }
+            true
+        };
 
         self.returning = false;
-        self.routes.pop()
+        let popped = self.routes.pop();
+        if !is_overlay {
+            if let Some(ref route) = popped {
+                self.forward_stack.push(route.clone());
+            }
+        }
+        popped
     }
 
     pub fn remove_previous_routes(&mut self) {

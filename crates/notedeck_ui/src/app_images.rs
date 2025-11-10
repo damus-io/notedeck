@@ -272,3 +272,7 @@ pub fn copy_to_clipboard_image() -> Image<'static> {
 pub fn copy_to_clipboard_dark_image() -> Image<'static> {
     copy_to_clipboard_image().tint(Color32::BLACK)
 }
+
+pub fn sparkle_image() -> Image<'static> {
+    Image::new(include_image!("../../../assets/icons/sparkle.svg"))
+}

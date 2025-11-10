@@ -565,11 +565,14 @@ impl TimelineKind {
                 }
             }
 
-            TimelineKind::Profile(pk) => Some(Timeline::new(
-                TimelineKind::profile(pk),
-                FilterState::ready_hybrid(profile_filter(pk.bytes())),
-                TimelineTab::full_tabs(),
-            )),
+            TimelineKind::Profile(pk) => {
+                let filter = profile_filter(pk.bytes());
+                Some(Timeline::new(
+                    TimelineKind::profile(pk),
+                    FilterState::ready_hybrid(filter),
+                    TimelineTab::full_tabs(),
+                ))
+            }
 
             TimelineKind::Notifications(pk) => {
                 let notifications_filter = notifications_filter(&pk);
@@ -751,14 +754,14 @@ fn profile_filter(pk: &[u8; 32]) -> HybridFilter {
             kind: ValidKind::Six,
         },
     ];
-    HybridFilter::split(
-        local,
-        vec![Filter::new()
-            .authors([pk])
-            .kinds([1, 6, 0])
-            .limit(default_remote_limit())
-            .build()],
-    )
+
+    let remote = vec![Filter::new()
+        .authors([pk])
+        .kinds([1, 6, 0, 3])
+        .limit(default_remote_limit())
+        .build()];
+
+    HybridFilter::split(local, remote)
 }
 
 fn search_filter(s: &SearchQuery) -> Vec<Filter> {

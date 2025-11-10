@@ -210,6 +210,13 @@ impl<'a, 'd> PostView<'a, 'd> {
 
         let out = textedit.show(ui);
 
+        if self.draft.focus_state == crate::ui::search::FocusState::ShouldRequestFocus {
+            out.response.request_focus();
+            self.draft.focus_state = crate::ui::search::FocusState::RequestedFocus;
+        } else if self.draft.focus_state == crate::ui::search::FocusState::RequestedFocus {
+            self.draft.focus_state = crate::ui::search::FocusState::Navigating;
+        }
+
         input_context(
             ui,
             &out.response,
@@ -300,6 +307,7 @@ impl<'a, 'd> PostView<'a, 'd> {
             self.note_context.ndb,
             txn,
             &res,
+            self.note_context.accounts,
         )
         .show_in_rect(hint_rect, ui);
 

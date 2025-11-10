@@ -295,6 +295,8 @@ impl<'a, 'd> NoteView<'a, 'd> {
                 pfp_size,
                 note_key,
                 profile,
+                self.note.pubkey(),
+                self.note_context.accounts,
             ),
 
             None => show_fallback_pfp(ui, self.note_context.img_cache, pfp_size),
@@ -345,12 +347,18 @@ impl<'a, 'd> NoteView<'a, 'd> {
         note: &Note,
         profile: &Result<nostrdb::ProfileRecord<'_>, nostrdb::Error>,
         flags: NoteOptions,
-    ) {
+    ) -> Option<NoteAction> {
+        let mut note_action = None;
         let horiz_resp = ui
             .horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing.x = if is_narrow(ui.ctx()) { 1.0 } else { 2.0 };
                 let response = ui
                     .add(Username::new(i18n, profile.as_ref().ok(), note.pubkey()).abbreviated(20));
+
+                if response.clicked() {
+                    note_action = Some(NoteAction::Profile(enostr::Pubkey::new(*note.pubkey())));
+                }
+
                 if !flags.contains(NoteOptions::FullCreatedDate) {
                     return render_notetime(ui, i18n, note.created_at(), true);
                 }
@@ -369,6 +377,8 @@ impl<'a, 'd> NoteView<'a, 'd> {
             ui.painter()
                 .circle_filled(circle_center, radius, crate::colors::PINK);
         }
+
+        note_action
     }
 
     fn wide_ui(
@@ -397,13 +407,13 @@ impl<'a, 'd> NoteView<'a, 'd> {
                             [size.x, self.options().pfp_size() as f32],
                             |ui: &mut egui::Ui| {
                                 ui.horizontal_centered(|ui| {
-                                    NoteView::note_header(
+                                    note_action = NoteView::note_header(
                                         ui,
                                         self.note_context.i18n,
                                         self.note,
                                         profile,
                                         self.flags,
-                                    );
+                                    ).or(note_action.take());
                                 })
                                 .response
                             },
@@ -513,13 +523,13 @@ impl<'a, 'd> NoteView<'a, 'd> {
 
             ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
                 if !self.flags.contains(NoteOptions::NotificationPreview) {
-                    NoteView::note_header(
+                    note_action = NoteView::note_header(
                         ui,
                         self.note_context.i18n,
                         self.note,
                         profile,
                         self.flags,
-                    );
+                    ).or(note_action.take());
 
                     ui.horizontal_wrapped(|ui| {
                         ui.spacing_mut().item_spacing.x = 1.0;
@@ -717,6 +727,8 @@ fn show_actual_pfp(
     pfp_size: i8,
     note_key: NoteKey,
     profile: &Result<nostrdb::ProfileRecord<'_>, nostrdb::Error>,
+    note_pubkey: &[u8; 32],
+    accounts: &Accounts,
 ) -> PfpResponse {
     let anim_speed = 0.05;
     let profile_key = profile.as_ref().unwrap().record().note_key();
@@ -732,7 +744,10 @@ fn show_actual_pfp(
 
     let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
 
-    let mut pfp = ProfilePic::new(images, pic).size(size);
+    let pubkey = Pubkey::new(*note_pubkey);
+    let mut pfp = ProfilePic::new(images, pic)
+        .size(size)
+        .with_follow_check(&pubkey, accounts);
     let pfp_resp = ui.put(rect, &mut pfp);
     let action = pfp.action;
 
