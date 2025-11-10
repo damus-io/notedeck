@@ -238,20 +238,64 @@ fn render_pack(
         None
     };
 
-    let mut resp = None;
-    let txn = Transaction::new(ndb).expect("txn");
+    ui.add_space(4.0);
 
-    for pk in &pack.pks {
-        let m_profile = ndb.get_profile_by_pubkey(&txn, pk.bytes()).ok();
-
-        let cur_state = ui_state.get_pk_selected_state(&pack.identifier, pk);
-        if let Some(use_state) = new_select_all_state {
-            *cur_state = use_state;
+    let mut members_visible = false;
+    {
+        let vis_state = ui_state.get_members_visible_state(&pack.identifier);
+        let base_label = if *vis_state {
+            tr!(
+                loc,
+                "Hide Accounts",
+                "Button to hide the list of accounts inside a follow pack"
+            )
+            .into_owned()
+        } else {
+            tr!(
+                loc,
+                "Show Accounts",
+                "Button to show the list of accounts inside a follow pack"
+            )
+            .into_owned()
         };
 
-        ui.separator();
-        if render_profile_item(ui, images, m_profile.as_ref(), cur_state) {
-            resp = Some(Nip51SetWidgetAction::ViewProfile(*pk));
+        let button_label = format!("{base_label} ({})", pack.pks.len());
+        if ui
+            .button(button_label)
+            .on_hover_text(
+                tr!(
+                    loc,
+                    "Toggle whether the individual accounts for this follow pack are visible",
+                    "Tooltip describing the show or hide accounts button on follow packs"
+                )
+                .as_ref(),
+            )
+            .clicked()
+        {
+            *vis_state = !*vis_state;
+        }
+
+        members_visible = *vis_state;
+    }
+
+    if let Some(use_state) = new_select_all_state {
+        ui_state.apply_select_all_to_pack(&pack.identifier, &pack.pks, use_state);
+    }
+
+    let mut resp = None;
+
+    if members_visible {
+        let txn = Transaction::new(ndb).expect("txn");
+
+        for pk in &pack.pks {
+            let m_profile = ndb.get_profile_by_pubkey(&txn, pk.bytes()).ok();
+
+            let cur_state = ui_state.get_pk_selected_state(&pack.identifier, pk);
+
+            ui.separator();
+            if render_profile_item(ui, images, m_profile.as_ref(), cur_state) {
+                resp = Some(Nip51SetWidgetAction::ViewProfile(*pk));
+            }
         }
     }
 
@@ -387,11 +431,12 @@ pub struct Nip51SetUiCache {
 struct Nip51SetUiState {
     select_all: bool,
     select_pk: HashMap<Pubkey, bool>,
+    show_members: bool,
 }
 
 impl Nip51SetUiCache {
-    pub fn get_pk_selected_state(&mut self, identifier: &str, pk: &Pubkey) -> &mut bool {
-        let pack_state = match self.state.raw_entry_mut().from_key(identifier) {
+    fn entry_for_pack(&mut self, identifier: &str) -> &mut Nip51SetUiState {
+        match self.state.raw_entry_mut().from_key(identifier) {
             RawEntryMut::Occupied(entry) => entry.into_mut(),
             RawEntryMut::Vacant(entry) => {
                 let (_, pack_state) =
@@ -399,7 +444,12 @@ impl Nip51SetUiCache {
 
                 pack_state
             }
-        };
+        }
+    }
+
+    pub fn get_pk_selected_state(&mut self, identifier: &str, pk: &Pubkey) -> &mut bool {
+        let pack_state = self.entry_for_pack(identifier);
+
         match pack_state.select_pk.raw_entry_mut().from_key(pk) {
             RawEntryMut::Occupied(entry) => entry.into_mut(),
             RawEntryMut::Vacant(entry) => {
@@ -410,14 +460,19 @@ impl Nip51SetUiCache {
     }
 
     pub fn get_select_all_state(&mut self, identifier: &str) -> &mut bool {
-        match self.state.raw_entry_mut().from_key(identifier) {
-            RawEntryMut::Occupied(entry) => &mut entry.into_mut().select_all,
-            RawEntryMut::Vacant(entry) => {
-                let (_, pack_state) =
-                    entry.insert(identifier.to_owned(), Nip51SetUiState::default());
+        &mut self.entry_for_pack(identifier).select_all
+    }
 
-                &mut pack_state.select_all
-            }
+    pub fn get_members_visible_state(&mut self, identifier: &str) -> &mut bool {
+        &mut self.entry_for_pack(identifier).show_members
+    }
+
+    pub fn apply_select_all_to_pack(&mut self, identifier: &str, pks: &[Pubkey], value: bool) {
+        let pack_state = self.entry_for_pack(identifier);
+        pack_state.select_all = value;
+
+        for pk in pks {
+            pack_state.select_pk.insert(*pk, value);
         }
     }
 
