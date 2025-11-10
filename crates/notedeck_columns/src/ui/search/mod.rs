@@ -1,4 +1,4 @@
-use egui::{vec2, Align, Color32, CornerRadius, RichText, Stroke, TextEdit};
+use egui::{vec2, Align, Color32, CornerRadius, Key, RichText, Stroke, TextEdit};
 use enostr::{NoteId, Pubkey};
 use state::TypingType;
 

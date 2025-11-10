@@ -1145,7 +1145,6 @@ pub fn render_nav(
                 .router_mut()
                 .returning,
         )
-        .animate_transitions(ctx.settings.get_settings_mut().animate_nav_transitions)
         .show_mut(ui, |ui, render_type, nav| match render_type {
             NavUiType::Title => {
                 let action = NavTitle::new(
