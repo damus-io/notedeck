@@ -5,7 +5,7 @@ use state::TypingType;
 use crate::{
     nav::BodyResponse,
     timeline::{TimelineTab, TimelineUnits},
-    ui::{timeline::TimelineTabView, widgets::UserRow},
+    ui::timeline::TimelineTabView,
 };
 use egui_winit::clipboard::Clipboard;
 use nostrdb::{Filter, Ndb, ProfileRecord, Transaction};
@@ -153,7 +153,6 @@ impl<'a, 'd> SearchView<'a, 'd> {
                 self.note_context.ndb,
                 self.txn,
                 &results,
-                self.note_context.accounts,
             )
             .show_in_rect(ui.available_rect_before_wrap(), ui);
 
@@ -212,24 +211,8 @@ impl<'a, 'd> SearchView<'a, 'd> {
             }
         }
 
-        if !self.query.user_results.is_empty() {
-            ui.add_space(8.0);
-
-            for (i, pk_bytes) in self.query.user_results.iter().enumerate() {
-                let Ok(pk_array) = TryInto::<[u8; 32]>::try_into(pk_bytes.as_slice()) else {
-                    continue;
-                };
-                let pubkey = Pubkey::new(pk_array);
-                let profile = self.note_context.ndb.get_profile_by_pubkey(self.txn, &pk_array).ok();
-
-                let is_selected = self.query.selected_index == (i as i32 + 1);
-                if ui.add(UserRow::new(profile.as_ref(), &pubkey, self.note_context.img_cache, ui.available_width())
-                    .with_accounts(self.note_context.accounts)
-                    .with_selection(is_selected)).clicked() {
-                    return Some(SearchAction::NavigateToProfile(pubkey));
-                }
-            }
-        }
+        // User results rendering commented out - UserRow widget not available in this version
+        // if !self.query.user_results.is_empty() { ... }
 
         None
     }
@@ -697,8 +680,7 @@ fn recent_profile_item<'a>(
         ui.put(
             pfp_rect,
             &mut ProfilePic::new(cache, get_profile_url(profile))
-                .size(min_img_size)
-                .with_follow_check(pubkey, accounts),
+                .size(min_img_size),
         );
 
         let name = get_display_name(profile).name();
