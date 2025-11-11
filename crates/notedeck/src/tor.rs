@@ -52,6 +52,7 @@ mod inner {
         }
     }
 
+    /// Overall Tor connection status used throughout the UI.
     #[derive(Clone, Debug)]
     pub enum TorStatus {
         Disabled,
@@ -61,6 +62,7 @@ mod inner {
         Unsupported,
     }
 
+    /// Host-side Tor client that owns the runtime thread and SOCKS proxy.
     pub struct TorManager {
         dirs: TorDirs,
         status: TorStatus,
@@ -135,6 +137,7 @@ mod inner {
             }
         }
 
+        /// Start the runtime thread if we aren't already doing so.
         fn start(&mut self) -> Result<(), String> {
             match self.status {
                 TorStatus::Starting | TorStatus::Running { .. } => return Ok(()),
@@ -195,6 +198,7 @@ mod inner {
         }
     }
 
+    /// Launch the blocking Arti task inside the runtime and wait for shutdown.
     fn run_tor_runtime(
         dirs: TorDirs,
         socks_port: u16,

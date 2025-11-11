@@ -944,6 +944,7 @@ fn blend_colors(from: Color32, to: Color32, t: f32) -> Color32 {
     )
 }
 
+/// Paint the floating Tor onion badge that mirrors VPN-style indicators.
 fn show_tor_indicator(ui: &mut egui::Ui, status: TorStatus, i18n: &mut Localization) {
     let Some(style) = tor_indicator_style(status, i18n) else {
         return;
