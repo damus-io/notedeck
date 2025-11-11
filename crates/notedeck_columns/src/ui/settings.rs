@@ -529,8 +529,7 @@ impl<'a> SettingsView<'a> {
                     )
                 };
                 ui.label(
-                    richtext_small(&text)
-                        .color(ui.visuals().gray_out(ui.visuals().text_color())),
+                    richtext_small(&text).color(ui.visuals().gray_out(ui.visuals().text_color())),
                 );
             });
         });
