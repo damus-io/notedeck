@@ -14,9 +14,10 @@ use enostr::Pubkey;
 use nostrdb::{Ndb, Transaction};
 use notedeck::tr;
 use notedeck::{Images, Localization, NotedeckTextStyle};
-use notedeck_ui::app_images;
 use notedeck_ui::{
     anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},
+    app_images,
+    widgets::signal_tab_hint,
     ProfilePic,
 };
 
@@ -34,6 +35,7 @@ impl<'a> NavTitle<'a> {
     // options
     const SHOW_MOVE: u32 = 1 << 0;
     const SHOW_DELETE: u32 = 1 << 1;
+    const SHOW_MENU_HINT: u32 = 1 << 2;
 
     pub fn new(
         ndb: &'a Ndb,
@@ -272,7 +274,7 @@ impl<'a> NavTitle<'a> {
 
     fn move_tooltip_col_presentation(&mut self, ui: &mut egui::Ui, col: usize) -> egui::Response {
         ui.horizontal(|ui| {
-            self.title_presentation(ui, self.columns.column(col).router().top(), 32.0);
+            self.title_presentation(ui, self.columns.column(col).router().top(), 32.0, false)
         })
         .response
     }
@@ -569,6 +571,16 @@ impl<'a> NavTitle<'a> {
         self
     }
 
+    pub fn show_menu_hint(&mut self, enable: bool) -> &mut Self {
+        if enable {
+            self.options |= Self::SHOW_MENU_HINT;
+        } else {
+            self.options &= !Self::SHOW_MENU_HINT;
+        }
+
+        self
+    }
+
     fn should_show_move_button(&self) -> bool {
         (self.options & Self::SHOW_MOVE) == Self::SHOW_MOVE
     }
@@ -577,16 +589,21 @@ impl<'a> NavTitle<'a> {
         (self.options & Self::SHOW_DELETE) == Self::SHOW_DELETE
     }
 
+    fn should_show_menu_hint(&self) -> bool {
+        (self.options & Self::SHOW_MENU_HINT) == Self::SHOW_MENU_HINT
+    }
+
     fn title(&mut self, ui: &mut egui::Ui, top: &Route, navigating: bool) -> Option<TitleResponse> {
+        let show_menu_hint = self.should_show_menu_hint();
         let title_r = if !navigating {
-            self.title_presentation(ui, top, 32.0)
+            self.title_presentation(ui, top, 32.0, show_menu_hint)
         } else {
             None
         };
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if navigating {
-                self.title_presentation(ui, top, 32.0)
+                self.title_presentation(ui, top, 32.0, show_menu_hint)
             } else {
                 let mut move_col: Option<usize> = None;
                 let mut remove_col = false;
@@ -616,10 +633,25 @@ impl<'a> NavTitle<'a> {
         ui: &mut egui::Ui,
         top: &Route,
         pfp_size: f32,
+        show_menu_hint: bool,
     ) -> Option<TitleResponse> {
-        let pfp_r = self
+        let mut pfp_r = self
             .title_pfp(ui, top, pfp_size)
             .map(|r| r.on_hover_cursor(egui::CursorIcon::PointingHand));
+
+        if show_menu_hint {
+            ui.add_space(4.0);
+            let hint_resp = signal_tab_hint(ui, pfp_size).on_hover_text(tr!(
+                self.i18n,
+                "Tap here or your profile photo to open the deck menu",
+                "Tooltip explaining how to open the deck menu"
+            ));
+
+            if let Some(resp) = &mut pfp_r {
+                *resp = resp.union(hint_resp);
+            }
+            ui.add_space(2.0);
+        }
 
         self.title_label(ui, top);
 

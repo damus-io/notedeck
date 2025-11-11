@@ -6,8 +6,8 @@ use crate::ChromeOptions;
 use bitflags::bitflags;
 use eframe::CreationContext;
 use egui::{
-    vec2, Color32, CornerRadius, Label, Layout, Margin, Rect, RichText, Sense, ThemePreference, Ui,
-    Widget,
+    vec2, Color32, CornerRadius, CursorIcon, Label, Layout, Margin, Rect, RichText, Sense,
+    ThemePreference, Ui, Widget,
 };
 use egui_extras::{Size, StripBuilder};
 use egui_nav::RouteResponse;
@@ -26,7 +26,9 @@ use notedeck::{
 };
 use notedeck_columns::{timeline::TimelineKind, Damus};
 use notedeck_dave::{Dave, DaveAvatar};
-use notedeck_ui::{app_images, expanding_button, galley_centered_pos, ProfilePic};
+use notedeck_ui::{
+    app_images, expanding_button, galley_centered_pos, widgets::signal_tab_hint, ProfilePic,
+};
 use std::collections::HashMap;
 
 #[derive(Default)]
@@ -589,7 +591,27 @@ fn topdown_sidebar(
         get_profile_url_owned(None)
     };
 
-    let pfp_resp = ui.add(&mut ProfilePic::new(ctx.img_cache, profile_url).size(64.0));
+    let pfp_size = 64.0;
+    let mut profile_pic = ProfilePic::new(ctx.img_cache, profile_url).size(pfp_size);
+    let (pfp_resp, hamburger_resp) = ui
+        .horizontal(|ui| {
+            let pic_resp = ui.add(&mut profile_pic);
+            ui.add_space(12.0);
+            let hint_resp = signal_tab_hint(ui, pfp_size)
+                .on_hover_cursor(CursorIcon::PointingHand)
+                .on_hover_text(tr!(
+                    loc,
+                    "Hide menu",
+                    "Tooltip describing the button that closes the side menu"
+                ));
+            (pic_resp, hint_resp)
+        })
+        .inner;
+
+    if hamburger_resp.clicked() {
+        chrome.toggle();
+        return None;
+    }
 
     ui.horizontal_wrapped(|ui| {
         ui.add(egui::Label::new(
