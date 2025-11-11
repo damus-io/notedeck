@@ -34,6 +34,7 @@ impl<'a> NavTitle<'a> {
     // options
     const SHOW_MOVE: u32 = 1 << 0;
     const SHOW_DELETE: u32 = 1 << 1;
+    const SHOW_MENU_HINT: u32 = 1 << 2;
 
     pub fn new(
         ndb: &'a Ndb,
@@ -272,7 +273,12 @@ impl<'a> NavTitle<'a> {
 
     fn move_tooltip_col_presentation(&mut self, ui: &mut egui::Ui, col: usize) -> egui::Response {
         ui.horizontal(|ui| {
-            self.title_presentation(ui, self.columns.column(col).router().top(), 32.0);
+            self.title_presentation(
+                ui,
+                self.columns.column(col).router().top(),
+                32.0,
+                false,
+            );
         })
         .response
     }
@@ -569,6 +575,16 @@ impl<'a> NavTitle<'a> {
         self
     }
 
+    pub fn show_menu_hint(&mut self, enable: bool) -> &mut Self {
+        if enable {
+            self.options |= Self::SHOW_MENU_HINT;
+        } else {
+            self.options &= !Self::SHOW_MENU_HINT;
+        }
+
+        self
+    }
+
     fn should_show_move_button(&self) -> bool {
         (self.options & Self::SHOW_MOVE) == Self::SHOW_MOVE
     }
@@ -577,16 +593,21 @@ impl<'a> NavTitle<'a> {
         (self.options & Self::SHOW_DELETE) == Self::SHOW_DELETE
     }
 
+    fn should_show_menu_hint(&self) -> bool {
+        (self.options & Self::SHOW_MENU_HINT) == Self::SHOW_MENU_HINT
+    }
+
     fn title(&mut self, ui: &mut egui::Ui, top: &Route, navigating: bool) -> Option<TitleResponse> {
+        let show_menu_hint = self.should_show_menu_hint();
         let title_r = if !navigating {
-            self.title_presentation(ui, top, 32.0)
+            self.title_presentation(ui, top, 32.0, show_menu_hint)
         } else {
             None
         };
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if navigating {
-                self.title_presentation(ui, top, 32.0)
+                self.title_presentation(ui, top, 32.0, show_menu_hint)
             } else {
                 let mut move_col: Option<usize> = None;
                 let mut remove_col = false;
@@ -616,10 +637,25 @@ impl<'a> NavTitle<'a> {
         ui: &mut egui::Ui,
         top: &Route,
         pfp_size: f32,
+        show_menu_hint: bool,
     ) -> Option<TitleResponse> {
-        let pfp_r = self
+        let mut pfp_r = self
             .title_pfp(ui, top, pfp_size)
             .map(|r| r.on_hover_cursor(egui::CursorIcon::PointingHand));
+
+        if show_menu_hint {
+            ui.add_space(4.0);
+            let hint_resp = signal_tab_hint(ui, pfp_size * 0.55).on_hover_text(tr!(
+                self.i18n,
+                "Tap here or your profile photo to open the deck menu",
+                "Tooltip explaining how to open the deck menu"
+            ));
+
+            if let Some(resp) = &mut pfp_r {
+                *resp = resp.union(hint_resp);
+            }
+            ui.add_space(2.0);
+        }
 
         self.title_label(ui, top);
 
@@ -664,6 +700,40 @@ fn chevron(
     painter.line_segment([apex, bottom], stroke);
 
     r
+}
+
+fn signal_tab_hint(ui: &mut egui::Ui, size: f32) -> egui::Response {
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(size, size * 0.72), egui::Sense::click());
+    draw_signal_tab_hint(ui, rect);
+    response
+}
+
+#[profiling::function]
+fn draw_signal_tab_hint(ui: &mut egui::Ui, indicator: egui::Rect) {
+    let rounding = indicator.height() * 0.35;
+    let visuals = ui.visuals();
+    let bg_fill = visuals.faint_bg_color;
+    let stroke_color = visuals.widgets.inactive.fg_stroke.color.gamma_multiply(0.6);
+
+    let painter = ui.painter();
+    painter.rect_filled(indicator, rounding, bg_fill);
+    painter.rect_stroke(
+        indicator,
+        rounding,
+        Stroke::new(1.0, stroke_color),
+        egui::StrokeKind::Inside,
+    );
+
+    let line_color = visuals.hyperlink_color;
+    let inner_padding = indicator.height() * 0.24;
+    let spacing = (indicator.height() - (inner_padding * 2.0)) / 2.0;
+    for row in 0..3 {
+        let y = indicator.top() + inner_padding + (row as f32 * spacing);
+        let start = egui::pos2(indicator.left() + inner_padding, y);
+        let end = egui::pos2(indicator.right() - inner_padding, y);
+        painter.line_segment([start, end], Stroke::new(1.4, line_color));
+    }
 }
 
 fn grab_button() -> impl egui::Widget {

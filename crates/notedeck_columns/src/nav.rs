@@ -1120,6 +1120,11 @@ pub fn render_nav(
         )
         .show_mut(ui, |ui, render_type, nav| match render_type {
             NavUiType::Title => {
+                let show_menu_hint = nav.routes().len() == 1
+                    && nav
+                        .routes()
+                        .last()
+                        .is_some_and(|route| matches!(route, Route::Timeline(_)));
                 let action = NavTitle::new(
                     ctx.ndb,
                     ctx.img_cache,
@@ -1130,6 +1135,7 @@ pub fn render_nav(
                 )
                 .show_move_button(!narrow)
                 .show_delete_button(!narrow)
+                .show_menu_hint(show_menu_hint)
                 .show(ui);
                 RouteResponse {
                     response: action,
