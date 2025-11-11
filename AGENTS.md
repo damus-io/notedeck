@@ -103,6 +103,8 @@ This document captures the current architecture, coding conventions, and design 
 6. **Global variables are not allowed** in this codebase, even if they are thread local. State should be managed in an struct that is passed in as reference.
 7. **Inspect notedeck code for reusable components, elements, patterns** etc. before creating new code for both A) notedeck updates, and B) apps built on notedeck.
 8.  **Nevernesting** — favor early returns and guard clauses over deeply nested conditionals; simplify control flow by exiting early instead of wrapping logic in multiple layers of `if` statements.
+9.  **Do not fudge CI tests**, in order to get a commit or PR to pass. Instead identify the underlying root cause of CI failure, and address that.
+10.  Before proposing changes, please **review and analyze if a change or upgrade to nostrdb** is beneficial to the change at hand.
 
 
 
