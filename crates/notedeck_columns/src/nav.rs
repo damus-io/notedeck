@@ -1120,7 +1120,8 @@ pub fn render_nav(
         )
         .show_mut(ui, |ui, render_type, nav| match render_type {
             NavUiType::Title => {
-                let show_menu_hint = nav.routes().len() == 1
+                let show_menu_hint = col == 0
+                    && nav.routes().len() == 1
                     && nav
                         .routes()
                         .last()

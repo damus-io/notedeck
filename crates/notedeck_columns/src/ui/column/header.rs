@@ -645,7 +645,7 @@ impl<'a> NavTitle<'a> {
 
         if show_menu_hint {
             ui.add_space(4.0);
-            let hint_resp = signal_tab_hint(ui, pfp_size * 0.55).on_hover_text(tr!(
+            let hint_resp = signal_tab_hint(ui, pfp_size).on_hover_text(tr!(
                 self.i18n,
                 "Tap here or your profile photo to open the deck menu",
                 "Tooltip explaining how to open the deck menu"
@@ -703,36 +703,28 @@ fn chevron(
 }
 
 fn signal_tab_hint(ui: &mut egui::Ui, size: f32) -> egui::Response {
-    let (rect, response) =
-        ui.allocate_exact_size(egui::vec2(size, size * 0.72), egui::Sense::click());
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::click());
     draw_signal_tab_hint(ui, rect);
     response
 }
 
 #[profiling::function]
 fn draw_signal_tab_hint(ui: &mut egui::Ui, indicator: egui::Rect) {
-    let rounding = indicator.height() * 0.35;
+    let rounding = indicator.height() * 0.25;
     let visuals = ui.visuals();
     let bg_fill = visuals.faint_bg_color;
-    let stroke_color = visuals.widgets.inactive.fg_stroke.color.gamma_multiply(0.6);
 
     let painter = ui.painter();
     painter.rect_filled(indicator, rounding, bg_fill);
-    painter.rect_stroke(
-        indicator,
-        rounding,
-        Stroke::new(1.0, stroke_color),
-        egui::StrokeKind::Inside,
-    );
 
     let line_color = visuals.hyperlink_color;
-    let inner_padding = indicator.height() * 0.24;
+    let inner_padding = indicator.height() * 0.2;
     let spacing = (indicator.height() - (inner_padding * 2.0)) / 2.0;
     for row in 0..3 {
         let y = indicator.top() + inner_padding + (row as f32 * spacing);
         let start = egui::pos2(indicator.left() + inner_padding, y);
         let end = egui::pos2(indicator.right() - inner_padding, y);
-        painter.line_segment([start, end], Stroke::new(1.4, line_color));
+        painter.line_segment([start, end], Stroke::new(1.4 * 1.33, line_color));
     }
 }
 
