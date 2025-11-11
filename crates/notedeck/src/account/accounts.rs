@@ -272,6 +272,12 @@ impl Accounts {
         Box::new(Arc::clone(&account_data.muted.muted))
     }
 
+    pub fn update_max_hashtags_per_note(&mut self, max_hashtags: usize) {
+        for account in self.cache.accounts_mut() {
+            account.data.muted.update_max_hashtags(max_hashtags);
+        }
+    }
+
     pub fn send_initial_filters(&mut self, pool: &mut RelayPool, relay_url: &str) {
         let data = &self.get_selected_account().data;
         // send the active account's relay list subscription
