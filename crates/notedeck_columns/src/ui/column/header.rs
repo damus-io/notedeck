@@ -19,6 +19,7 @@ use notedeck_ui::{
     anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},
     ProfilePic,
 };
+use notedeck_ui::widgets::signal_tab_hint;
 
 pub struct NavTitle<'a> {
     ndb: &'a Ndb,
@@ -700,32 +701,6 @@ fn chevron(
     painter.line_segment([apex, bottom], stroke);
 
     r
-}
-
-fn signal_tab_hint(ui: &mut egui::Ui, size: f32) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::click());
-    draw_signal_tab_hint(ui, rect);
-    response
-}
-
-#[profiling::function]
-fn draw_signal_tab_hint(ui: &mut egui::Ui, indicator: egui::Rect) {
-    let rounding = indicator.height() * 0.25;
-    let visuals = ui.visuals();
-    let bg_fill = visuals.faint_bg_color;
-
-    let painter = ui.painter();
-    painter.rect_filled(indicator, rounding, bg_fill);
-
-    let line_color = visuals.hyperlink_color;
-    let inner_padding = indicator.height() * 0.2;
-    let spacing = (indicator.height() - (inner_padding * 2.0)) / 2.0;
-    for row in 0..3 {
-        let y = indicator.top() + inner_padding + (row as f32 * spacing);
-        let start = egui::pos2(indicator.left() + inner_padding, y);
-        let end = egui::pos2(indicator.right() - inner_padding, y);
-        painter.line_segment([start, end], Stroke::new(1.4 * 1.33, line_color));
-    }
 }
 
 fn grab_button() -> impl egui::Widget {
