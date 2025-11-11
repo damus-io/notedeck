@@ -85,8 +85,9 @@ pub use route::DrawerRouter;
 pub use storage::{AccountStorage, DataPath, DataPathType, Directory};
 pub use style::NotedeckTextStyle;
 pub use theme::ColorTheme;
-pub use time::time_ago_since;
-pub use time::time_format;
+pub use time::{
+    is_future_timestamp, time_ago_since, time_format, unix_time_secs, MAX_FUTURE_NOTE_SKEW_SECS,
+};
 pub use timecache::TimeCached;
 pub use unknowns::{get_unknown_note_ids, NoteRefsUnkIdAction, SingleUnkIdAction, UnknownIds};
 pub use urls::{supported_mime_hosted_at_url, SupportedMimeType, UrlMimes};
