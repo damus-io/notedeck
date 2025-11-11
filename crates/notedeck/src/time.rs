@@ -372,7 +372,10 @@ mod tests {
     fn test_future_skew_helper() {
         let now = 1_000_000u64;
         assert!(!is_future_timestamp(now, now));
-        assert!(!is_future_timestamp(now + MAX_FUTURE_NOTE_SKEW_SECS - 1, now));
+        assert!(!is_future_timestamp(
+            now + MAX_FUTURE_NOTE_SKEW_SECS - 1,
+            now
+        ));
         assert!(is_future_timestamp(
             now + MAX_FUTURE_NOTE_SKEW_SECS + 1,
             now

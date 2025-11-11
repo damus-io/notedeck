@@ -15,12 +15,10 @@ use egui_nav::Percent;
 use enostr::{FilledKeypair, NoteId, Pubkey, RelayPool};
 use nostrdb::{IngestMetadata, Ndb, NoteBuilder, NoteKey, Transaction};
 use notedeck::{
-    get_wallet_for,
-    is_future_timestamp,
+    get_wallet_for, is_future_timestamp,
     note::{reaction_sent_id, ReactAction, ZapTargetAmount},
-    unix_time_secs,
-    Accounts, GlobalWallet, Images, NoteAction, NoteCache, NoteZapTargetOwned, UnknownIds,
-    ZapAction, ZapTarget, ZappingError, Zaps,
+    unix_time_secs, Accounts, GlobalWallet, Images, NoteAction, NoteCache, NoteZapTargetOwned,
+    UnknownIds, ZapAction, ZapTarget, ZappingError, Zaps,
 };
 use notedeck_ui::media::MediaViewerFlags;
 use tracing::error;

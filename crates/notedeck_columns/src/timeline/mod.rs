@@ -9,10 +9,8 @@ use crate::{
 use notedeck::{
     contacts::hybrid_contacts_filter,
     filter::{self, HybridFilter},
-    is_future_timestamp, tr,
-    unix_time_secs,
-    Accounts, CachedNote, ContactState, FilterError, FilterState, FilterStates, Localization,
-    NoteCache, NoteRef, UnknownIds,
+    is_future_timestamp, tr, unix_time_secs, Accounts, CachedNote, ContactState, FilterError,
+    FilterState, FilterStates, Localization, NoteCache, NoteRef, UnknownIds,
 };
 
 use egui_virtual_list::VirtualList;
