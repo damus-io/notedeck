@@ -60,6 +60,11 @@ http-body-util = { workspace = true }
 hyper-rustls = { workspace = true }
 rustls = { workspace = true }
 keyring = { workspace = true }
+arti = { workspace = true }
+arti-client = { workspace = true }
+tor-config = { workspace = true }
+tor-config-path = { workspace = true }
+tor-rtcompat = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -36,6 +36,7 @@ pub mod theme;
 mod time;
 mod timecache;
 mod timed_serializer;
+pub mod tor;
 pub mod ui;
 mod unknowns;
 mod urls;
@@ -89,6 +90,7 @@ pub use time::{
     is_future_timestamp, time_ago_since, time_format, unix_time_secs, MAX_FUTURE_NOTE_SKEW_SECS,
 };
 pub use timecache::TimeCached;
+pub use tor::{TorManager, TorStatus};
 pub use unknowns::{get_unknown_note_ids, NoteRefsUnkIdAction, SingleUnkIdAction, UnknownIds};
 pub use urls::{supported_mime_hosted_at_url, SupportedMimeType, UrlMimes};
 pub use user_account::UserAccount;
