@@ -14,12 +14,12 @@ use enostr::Pubkey;
 use nostrdb::{Ndb, Transaction};
 use notedeck::tr;
 use notedeck::{Images, Localization, NotedeckTextStyle};
-use notedeck_ui::app_images;
 use notedeck_ui::{
     anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},
+    app_images,
+    widgets::signal_tab_hint,
     ProfilePic,
 };
-use notedeck_ui::widgets::signal_tab_hint;
 
 pub struct NavTitle<'a> {
     ndb: &'a Ndb,
@@ -274,12 +274,7 @@ impl<'a> NavTitle<'a> {
 
     fn move_tooltip_col_presentation(&mut self, ui: &mut egui::Ui, col: usize) -> egui::Response {
         ui.horizontal(|ui| {
-            self.title_presentation(
-                ui,
-                self.columns.column(col).router().top(),
-                32.0,
-                false,
-            );
+            self.title_presentation(ui, self.columns.column(col).router().top(), 32.0, false)
         })
         .response
     }
