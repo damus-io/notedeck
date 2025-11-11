@@ -9,7 +9,7 @@ use notedeck::{
     tr,
     ui::{is_narrow, richtext_small},
     Images, JobsCache, LanguageIdentifier, Localization, NoteContext, NotedeckTextStyle, Settings,
-    SettingsHandler, DEFAULT_NOTE_BODY_FONT_SIZE,
+    SettingsHandler, DEFAULT_MAX_HASHTAGS_PER_NOTE, DEFAULT_NOTE_BODY_FONT_SIZE,
 };
 use notedeck_ui::{
     app_images::{copy_to_clipboard_dark_image, copy_to_clipboard_image},
@@ -35,6 +35,7 @@ pub enum SettingsAction {
     SetLocale(LanguageIdentifier),
     SetRepliestNewestFirst(bool),
     SetNoteBodyFontSize(f32),
+    SetMaxHashtagsPerNote(usize),
     OpenRelays,
     OpenCacheFolder,
     ClearCacheFolder,
@@ -48,6 +49,7 @@ impl SettingsAction {
         i18n: &'a mut Localization,
         img_cache: &mut Images,
         ctx: &egui::Context,
+        accounts: &mut notedeck::Accounts,
     ) -> Option<RouterAction> {
         let mut route_action: Option<RouterAction> = None;
 
@@ -88,6 +90,10 @@ impl SettingsAction {
                 ctx.set_style(style);
 
                 settings.set_note_body_font_size(size);
+            }
+            Self::SetMaxHashtagsPerNote(value) => {
+                settings.set_max_hashtags_per_note(value);
+                accounts.update_max_hashtags_per_note(value);
             }
         }
         route_action
@@ -473,6 +479,59 @@ impl<'a> SettingsView<'a> {
                         self.settings.show_replies_newest_first,
                     ));
                 }
+            });
+
+            ui.horizontal_wrapped(|ui| {
+                ui.label(richtext_small(tr!(
+                    self.note_context.i18n,
+                    "Max hashtags per note:",
+                    "Label for max hashtags per note, others settings section",
+                )));
+
+                if ui
+                    .add(
+                        egui::Slider::new(&mut self.settings.max_hashtags_per_note, 0..=20)
+                            .text("")
+                            .step_by(1.0),
+                    )
+                    .changed()
+                {
+                    action = Some(SettingsAction::SetMaxHashtagsPerNote(
+                        self.settings.max_hashtags_per_note,
+                    ));
+                };
+
+                if ui
+                    .button(richtext_small(tr!(
+                        self.note_context.i18n,
+                        "Reset",
+                        "Label for reset max hashtags per note, others settings section",
+                    )))
+                    .clicked()
+                {
+                    action = Some(SettingsAction::SetMaxHashtagsPerNote(
+                        DEFAULT_MAX_HASHTAGS_PER_NOTE,
+                    ));
+                }
+            });
+
+            ui.horizontal_wrapped(|ui| {
+                let text = if self.settings.max_hashtags_per_note == 0 {
+                    tr!(
+                        self.note_context.i18n,
+                        "Hashtag filter disabled",
+                        "Info text when hashtag filter is disabled (set to 0)"
+                    )
+                } else {
+                    format!(
+                        "Hide posts with more than {} hashtags",
+                        self.settings.max_hashtags_per_note
+                    )
+                };
+                ui.label(
+                    richtext_small(&text)
+                        .color(ui.visuals().gray_out(ui.visuals().text_color())),
+                );
             });
         });
 
