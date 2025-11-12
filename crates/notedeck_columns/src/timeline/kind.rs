@@ -447,25 +447,12 @@ impl TimelineKind {
                 |p| {
                     p.parse_token("relay")?;
                     let encoded_relay_url = p.pull_token()?;
-
-                    // Try to URL-decode the relay URL (for new format)
-                    // If decoding fails, use the token as-is (backward compatibility with old format)
-                    let mut relay_url = urlencoding::decode(encoded_relay_url)
+                    // URL-decode the relay URL
+                    let relay_url = urlencoding::decode(encoded_relay_url)
                         .map(|s| s.to_string())
                         .unwrap_or_else(|_| encoded_relay_url.to_string());
 
-                    let mut hashtags_str = p.pull_token()?;
-
-                    // Migration: Fix broken relay URLs from old format where the colon delimiter
-                    // corrupted URLs like "wss://relay.com" into "wss" + "//relay.com"
-                    // If relay URL looks broken (just "wss" or "ws") and next token starts with "//",
-                    // reconstruct the full URL
-                    if (relay_url == "wss" || relay_url == "ws") && hashtags_str.starts_with("//") {
-                        relay_url = format!("{}:{}", relay_url, hashtags_str);
-                        // Pull the actual hashtags token now
-                        hashtags_str = p.pull_token().unwrap_or("");
-                    }
-
+                    let hashtags_str = p.pull_token()?;
                     let hashtags = if hashtags_str.is_empty() {
                         None
                     } else {
