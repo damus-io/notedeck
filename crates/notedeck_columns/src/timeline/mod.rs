@@ -562,7 +562,7 @@ pub fn setup_new_timeline(
     unknown_ids: &mut UnknownIds,
 ) {
     // if we're ready, setup local subs
-    if is_timeline_ready(ndb, pool, note_cache, timeline, accounts, unknown_ids) {
+    if is_timeline_ready(subs, ndb, pool, note_cache, timeline, accounts, unknown_ids) {
         if let Err(err) = setup_timeline_nostrdb_sub(ndb, txn, note_cache, timeline, unknown_ids) {
             error!("setup_new_timeline: {err}");
         }
@@ -783,6 +783,7 @@ fn setup_timeline_nostrdb_sub(
 /// example, when we have to fetch a contact list before we do the actual
 /// following list query.
 pub fn is_timeline_ready(
+    subs: &mut crate::subscriptions::Subscriptions,
     ndb: &Ndb,
     pool: &mut RelayPool,
     note_cache: &mut NoteCache,
@@ -870,7 +871,7 @@ pub fn is_timeline_ready(
 
             //let ck = &timeline.kind;
             //let subid = damus.gen_subid(&SubKind::Column(ck.clone()));
-            timeline.subscription.try_add_remote(pool, &filter);
+            timeline.subscription.try_add_remote(subs, pool, &filter, &timeline.kind);
             true
         }
     }
