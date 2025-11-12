@@ -80,12 +80,12 @@ impl DecksCache {
         }
     }
 
-    pub fn new_with_demo_config(timeline_cache: &mut TimelineCache, ctx: &mut AppContext) -> Self {
+    pub fn new_with_demo_config(subs: &mut crate::subscriptions::Subscriptions, timeline_cache: &mut TimelineCache, ctx: &mut AppContext) -> Self {
         let mut account_to_decks: HashMap<Pubkey, Decks> = Default::default();
         let fallback_pubkey = FALLBACK_PUBKEY();
         account_to_decks.insert(
             fallback_pubkey,
-            demo_decks(fallback_pubkey, timeline_cache, ctx),
+            demo_decks(fallback_pubkey, subs, timeline_cache, ctx),
         );
         DecksCache::new(account_to_decks, ctx.i18n)
     }
@@ -117,6 +117,7 @@ impl DecksCache {
     pub fn add_deck_default(
         &mut self,
         ctx: &mut AppContext,
+        subs: &mut crate::subscriptions::Subscriptions,
         timeline_cache: &mut TimelineCache,
         pubkey: Pubkey,
     ) {
@@ -125,6 +126,7 @@ impl DecksCache {
         // add home and notifications for new accounts
         add_demo_columns(
             ctx,
+            subs,
             timeline_cache,
             pubkey,
             &mut decks.decks_mut()[0].columns,
@@ -444,6 +446,7 @@ impl Deck {
 
 pub fn add_demo_columns(
     ctx: &mut AppContext,
+    subs: &mut crate::subscriptions::Subscriptions,
     timeline_cache: &mut TimelineCache,
     pubkey: Pubkey,
     columns: &mut Columns,
@@ -457,6 +460,7 @@ pub fn add_demo_columns(
 
     for kind in &timeline_kinds {
         if let Some(results) = columns.add_new_timeline_column(
+            subs,
             timeline_cache,
             &txn,
             ctx.ndb,
@@ -477,13 +481,14 @@ pub fn add_demo_columns(
 
 pub fn demo_decks(
     demo_pubkey: Pubkey,
+    subs: &mut crate::subscriptions::Subscriptions,
     timeline_cache: &mut TimelineCache,
     ctx: &mut AppContext,
 ) -> Decks {
     let deck = {
         let mut columns = Columns::default();
 
-        add_demo_columns(ctx, timeline_cache, demo_pubkey, &mut columns);
+        add_demo_columns(ctx, subs, timeline_cache, demo_pubkey, &mut columns);
 
         //columns.add_new_timeline_column(Timeline::hashtag("introductions".to_string()));
 

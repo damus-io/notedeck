@@ -371,7 +371,8 @@ impl TimelineKind {
             }
             TimelineKind::Relay(relay_url, hashtags) => {
                 writer.write_token("relay");
-                writer.write_token(relay_url);
+                // URL-encode the relay URL to avoid issues with the ":" delimiter
+                writer.write_token(&urlencoding::encode(relay_url));
                 if let Some(ht) = hashtags {
                     writer.write_token(&ht.join(" "));
                 } else {
@@ -445,7 +446,12 @@ impl TimelineKind {
                 },
                 |p| {
                     p.parse_token("relay")?;
-                    let relay_url = p.pull_token()?.to_string();
+                    let encoded_relay_url = p.pull_token()?;
+                    // URL-decode the relay URL
+                    let relay_url = urlencoding::decode(encoded_relay_url)
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|_| encoded_relay_url.to_string());
+
                     let hashtags_str = p.pull_token()?;
                     let hashtags = if hashtags_str.is_empty() {
                         None

@@ -471,6 +471,7 @@ fn chrome_handle_app_action(
             let m_action = notedeck_columns::actionbar::execute_and_process_note_action(
                 note_action,
                 ctx.ndb,
+                &mut columns.subscriptions,
                 cols,
                 0,
                 &mut columns.timeline_cache,
@@ -527,6 +528,7 @@ fn columns_route_to_profile(
     let m_action = notedeck_columns::actionbar::execute_and_process_note_action(
         notedeck::NoteAction::Profile(*pk),
         ctx.ndb,
+        &mut columns.subscriptions,
         cols,
         0,
         &mut columns.timeline_cache,
