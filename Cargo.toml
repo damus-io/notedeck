@@ -90,6 +90,11 @@ re_memory = "0.23.4"
 oot_bitset = "0.1.1"
 blurhash = "0.2.3"
 android-activity = { git = "https://github.com/damus-io/android-activity", rev = "4ee16f1585e4a75031dc10785163d4b920f95805", features = [ "game-activity" ] }
+arti = { git = "https://gitlab.torproject.org/tpo/core/arti.git", rev = "624cdc9ec220124692c369f96ecb3cc72d9bbb66", features = ["experimental-api"] }
+arti-client = { git = "https://gitlab.torproject.org/tpo/core/arti.git", rev = "624cdc9ec220124692c369f96ecb3cc72d9bbb66", package = "arti-client" }
+tor-config = { git = "https://gitlab.torproject.org/tpo/core/arti.git", rev = "624cdc9ec220124692c369f96ecb3cc72d9bbb66", package = "tor-config" }
+tor-config-path = { git = "https://gitlab.torproject.org/tpo/core/arti.git", rev = "624cdc9ec220124692c369f96ecb3cc72d9bbb66", package = "tor-config-path" }
+tor-rtcompat = { git = "https://gitlab.torproject.org/tpo/core/arti.git", rev = "624cdc9ec220124692c369f96ecb3cc72d9bbb66", package = "tor-rtcompat", features = ["tokio", "native-tls"] }
 
 [profile.small]
 inherits = 'release'
@@ -119,3 +124,4 @@ puffin_egui = { git = "https://github.com/jb55/puffin", package = "puffin_egui",
 #winit = { path = "/home/jb55/dev/github/rust-windowing/winit" }
 #android-activity = { git = "https://github.com/damus-io/android-activity", rev = "f56c974aa5182d5fbd361879f5899eb8f11a37ec" }
 #android-activity = { path = "/home/jb55/dev/github/rust-mobile/android-activity/android-activity" }
+ewebsock = { path = "vendor/ewebsock" }

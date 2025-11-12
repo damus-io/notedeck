@@ -53,6 +53,11 @@ chrono = { workspace = true }
 indexmap = {workspace = true}
 rand = {workspace = true}
 crossbeam-channel = "0.5"
+arti = { workspace = true }
+arti-client = { workspace = true }
+tor-config = { workspace = true }
+tor-config-path = { workspace = true }
+tor-rtcompat = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

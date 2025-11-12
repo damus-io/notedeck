@@ -8,7 +8,7 @@ use crate::JobPool;
 use crate::NotedeckOptions;
 use crate::{
     frame_history::FrameHistory, AccountStorage, Accounts, AppContext, Args, DataPath,
-    DataPathType, Directory, Images, NoteAction, NoteCache, RelayDebugView, UnknownIds,
+    DataPathType, Directory, Images, NoteAction, NoteCache, RelayDebugView, TorManager, UnknownIds,
 };
 use egui::Margin;
 use egui::ThemePreference;
@@ -24,6 +24,11 @@ use unic_langid::{LanguageIdentifier, LanguageIdentifierError};
 
 #[cfg(target_os = "android")]
 use android_activity::AndroidApp;
+
+#[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
+use enostr::ewebsock::{SocksOptions, Transport as WsTransport};
+#[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
+use std::sync::Arc;
 
 pub enum AppAction {
     Note(NoteAction),
@@ -78,6 +83,9 @@ pub struct Notedeck {
     frame_history: FrameHistory,
     job_pool: JobPool,
     i18n: Localization,
+    tor: TorManager,
+    #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
+    ws_transport: WsTransport,
 
     #[cfg(target_os = "android")]
     android_app: Option<AndroidApp>,
@@ -121,6 +129,10 @@ impl eframe::App for Notedeck {
         profiling::finish_frame!();
         self.frame_history
             .on_new_frame(ctx.input(|i| i.time), frame.info().cpu_usage);
+
+        self.tor.poll();
+        #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
+        self.update_relay_transport(ctx);
 
         // handle account updates
         self.accounts.update(&mut self.ndb, &mut self.pool, ctx);
@@ -203,7 +215,18 @@ impl Notedeck {
             1024usize * 1024usize * 1024usize * 1024usize
         };
 
-        let settings = SettingsHandler::new(&path).load();
+        let mut settings = SettingsHandler::new(&path).load();
+
+        let mut tor = TorManager::new(&path);
+        if TorManager::is_supported() && settings.use_tor() {
+            if let Err(err) = tor.set_enabled(true) {
+                error!("failed to enable tor: {err}");
+                settings.set_use_tor(false);
+            }
+        }
+
+        #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
+        let ws_transport = WsTransport::Direct;
 
         let config = Config::new().set_ingester_threads(2).set_mapsize(map_size);
 
@@ -307,6 +330,9 @@ impl Notedeck {
             zaps,
             job_pool,
             i18n,
+            tor,
+            #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
+            ws_transport,
             #[cfg(target_os = "android")]
             android_app: None,
         }
@@ -372,6 +398,7 @@ impl Notedeck {
             frame_history: &mut self.frame_history,
             job_pool: &mut self.job_pool,
             i18n: &mut self.i18n,
+            tor: &mut self.tor,
             #[cfg(target_os = "android")]
             android: self.android_app.as_ref().unwrap().clone(),
         }
@@ -399,5 +426,25 @@ impl Notedeck {
 
     pub fn unrecognized_args(&self) -> &BTreeSet<String> {
         &self.unrecognized_args
+    }
+
+    #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
+    #[profiling::function]
+    fn update_relay_transport(&mut self, ctx: &egui::Context) {
+        let desired = if let Some(addr) = self.tor.socks_proxy() {
+            WsTransport::Socks(SocksOptions {
+                proxy_address: addr,
+                auth: None,
+            })
+        } else {
+            WsTransport::Direct
+        };
+
+        if desired != self.ws_transport {
+            self.ws_transport = desired.clone();
+            let repaint_ctx = ctx.clone();
+            let wakeup = Arc::new(move || repaint_ctx.request_repaint());
+            self.pool.configure_transport(desired, wakeup);
+        }
     }
 }

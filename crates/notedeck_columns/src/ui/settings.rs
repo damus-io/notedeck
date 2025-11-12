@@ -9,7 +9,7 @@ use notedeck::{
     tr,
     ui::{is_narrow, richtext_small},
     Images, JobsCache, LanguageIdentifier, Localization, NoteContext, NotedeckTextStyle, Settings,
-    SettingsHandler, DEFAULT_NOTE_BODY_FONT_SIZE,
+    SettingsHandler, TorManager, TorStatus, DEFAULT_NOTE_BODY_FONT_SIZE,
 };
 use notedeck_ui::{
     app_images::{copy_to_clipboard_dark_image, copy_to_clipboard_image},
@@ -38,6 +38,7 @@ pub enum SettingsAction {
     OpenRelays,
     OpenCacheFolder,
     ClearCacheFolder,
+    ToggleTor(bool),
 }
 
 impl SettingsAction {
@@ -47,6 +48,7 @@ impl SettingsAction {
         settings: &'a mut SettingsHandler,
         i18n: &'a mut Localization,
         img_cache: &mut Images,
+        tor: &mut TorManager,
         ctx: &egui::Context,
     ) -> Option<RouterAction> {
         let mut route_action: Option<RouterAction> = None;
@@ -89,6 +91,15 @@ impl SettingsAction {
 
                 settings.set_note_body_font_size(size);
             }
+            Self::ToggleTor(enabled) => {
+                settings.set_use_tor(enabled);
+                if notedeck::TorManager::is_supported() {
+                    if let Err(err) = tor.set_enabled(enabled) {
+                        tracing::error!("failed to toggle tor: {err}");
+                        settings.set_use_tor(!enabled);
+                    }
+                }
+            }
         }
         route_action
     }
@@ -99,6 +110,8 @@ pub struct SettingsView<'a> {
     note_context: &'a mut NoteContext<'a>,
     note_options: &'a mut NoteOptions,
     jobs: &'a mut JobsCache,
+    tor_status: TorStatus,
+    tor_supported: bool,
 }
 
 fn settings_group<S>(ui: &mut egui::Ui, title: S, contents: impl FnOnce(&mut egui::Ui))
@@ -126,12 +139,16 @@ impl<'a> SettingsView<'a> {
         note_context: &'a mut NoteContext<'a>,
         note_options: &'a mut NoteOptions,
         jobs: &'a mut JobsCache,
+        tor_status: TorStatus,
+        tor_supported: bool,
     ) -> Self {
         Self {
             settings,
             note_context,
             note_options,
             jobs,
+            tor_status,
+            tor_supported,
         }
     }
 
@@ -479,6 +496,72 @@ impl<'a> SettingsView<'a> {
         action
     }
 
+    fn network_section(&mut self, ui: &mut egui::Ui) -> Option<SettingsAction> {
+        if !self.tor_supported {
+            return None;
+        }
+
+        let mut action = None;
+        let title = tr!(
+            self.note_context.i18n,
+            "Network",
+            "Label for network settings section"
+        );
+
+        settings_group(ui, title, |ui| {
+            ui.vertical(|ui| {
+                let label = tr!(
+                    self.note_context.i18n,
+                    "Route relay traffic through Tor:",
+                    "Label for Tor routing toggle in settings"
+                );
+
+                if ui
+                    .toggle_value(
+                        &mut self.settings.use_tor,
+                        RichText::new(label).text_style(NotedeckTextStyle::Small.text_style()),
+                    )
+                    .changed()
+                {
+                    action = Some(SettingsAction::ToggleTor(self.settings.use_tor));
+                }
+
+                let status_label = match &self.tor_status {
+                    TorStatus::Disabled => tr!(
+                        self.note_context.i18n,
+                        "Tor status: Off",
+                        "Status label when Tor is disabled"
+                    ),
+                    TorStatus::Starting => tr!(
+                        self.note_context.i18n,
+                        "Tor status: Starting…",
+                        "Status label when Tor is bootstrapping"
+                    ),
+                    TorStatus::Running { .. } => tr!(
+                        self.note_context.i18n,
+                        "Tor status: Connected",
+                        "Status label when Tor is running"
+                    ),
+                    TorStatus::Failed(err) => tr!(
+                        self.note_context.i18n,
+                        "Tor status: Failed ({err})",
+                        "Status label when Tor failed",
+                        err = err.as_str()
+                    ),
+                    TorStatus::Unsupported => tr!(
+                        self.note_context.i18n,
+                        "Tor is not available on this platform.",
+                        "Status label when Tor is unsupported"
+                    ),
+                };
+
+                ui.label(richtext_small(status_label));
+            });
+        });
+
+        action
+    }
+
     fn keys_section(&mut self, ui: &mut egui::Ui) {
         let title = tr!(
             self.note_context.i18n,
@@ -655,6 +738,12 @@ impl<'a> SettingsView<'a> {
                     ui.add_space(5.0);
 
                     if let Some(new_action) = self.storage_section(ui) {
+                        action = Some(new_action);
+                    }
+
+                    ui.add_space(5.0);
+
+                    if let Some(new_action) = self.network_section(ui) {
                         action = Some(new_action);
                     }
 

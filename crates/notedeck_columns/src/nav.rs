@@ -40,7 +40,7 @@ use enostr::ProfileState;
 use nostrdb::{Filter, Ndb, Transaction};
 use notedeck::{
     get_current_default_msats, tr, ui::is_narrow, Accounts, AppContext, NoteAction, NoteContext,
-    RelayAction,
+    RelayAction, TorManager,
 };
 use notedeck_ui::NoteOptions;
 use tracing::error;
@@ -527,9 +527,14 @@ fn process_render_nav_action(
                 .process_relay_action(ui.ctx(), ctx.pool, action);
             None
         }
-        RenderNavAction::SettingsAction(action) => {
-            action.process_settings_action(app, ctx.settings, ctx.i18n, ctx.img_cache, ui.ctx())
-        }
+        RenderNavAction::SettingsAction(action) => action.process_settings_action(
+            app,
+            ctx.settings,
+            ctx.i18n,
+            ctx.img_cache,
+            ctx.tor,
+            ui.ctx(),
+        ),
         RenderNavAction::RepostAction(action) => {
             action.process(ctx.ndb, &ctx.accounts.get_selected_account().key, ctx.pool)
         }
@@ -643,6 +648,8 @@ fn render_nav_body(
             &mut note_context,
             &mut app.note_options,
             &mut app.jobs,
+            ctx.tor.status(),
+            TorManager::is_supported(),
         )
         .ui(ui)
         .map_output(RenderNavAction::SettingsAction),
