@@ -336,6 +336,11 @@ impl Route {
                     "Add Hashtag Column",
                     "Column title for adding hashtag column"
                 )),
+                AddColumnRoute::Relay => ColumnTitle::formatted(tr!(
+                    i18n,
+                    "Add Relay Column",
+                    "Column title for adding relay column"
+                )),
                 AddColumnRoute::UndecidedIndividual => ColumnTitle::formatted(tr!(
                     i18n,
                     "Subscribe to someone's notes",

@@ -384,11 +384,24 @@ impl TimelineSub {
     }
 
     pub fn try_add_remote(&mut self, pool: &mut RelayPool, filter: &HybridFilter) {
+        self.try_add_remote_with_relay(pool, filter, None);
+    }
+
+    pub fn try_add_remote_with_relay(
+        &mut self,
+        pool: &mut RelayPool,
+        filter: &HybridFilter,
+        relay_url: Option<&str>,
+    ) {
         let before = self.state.clone();
         match &mut self.state {
             SubState::NoSub { dependers } => {
                 let subid = subscriptions::new_sub_id();
-                pool.subscribe(subid.clone(), filter.remote().to_vec());
+                if let Some(relay) = relay_url {
+                    pool.subscribe_to(relay, subid.clone(), filter.remote().to_vec());
+                } else {
+                    pool.subscribe(subid.clone(), filter.remote().to_vec());
+                }
                 self.filter = Some(filter.to_owned());
                 self.state = SubState::RemoteOnly {
                     remote: subid,
@@ -397,7 +410,11 @@ impl TimelineSub {
             }
             SubState::LocalOnly { local, dependers } => {
                 let subid = subscriptions::new_sub_id();
-                pool.subscribe(subid.clone(), filter.remote().to_vec());
+                if let Some(relay) = relay_url {
+                    pool.subscribe_to(relay, subid.clone(), filter.remote().to_vec());
+                } else {
+                    pool.subscribe(subid.clone(), filter.remote().to_vec());
+                }
                 self.filter = Some(filter.to_owned());
                 self.state = SubState::Unified {
                     unified: UnifiedSubscription {
