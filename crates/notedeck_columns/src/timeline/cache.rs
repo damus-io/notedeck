@@ -175,6 +175,7 @@ impl TimelineCache {
     /// subscription
     pub fn open(
         &mut self,
+        subs: &mut crate::subscriptions::Subscriptions,
         ndb: &Ndb,
         note_cache: &mut NoteCache,
         txn: &Transaction,
@@ -224,10 +225,10 @@ impl TimelineCache {
             // Check if this is a relay-specific timeline
             match &timeline.kind {
                 TimelineKind::Relay(relay_url, _) => {
-                    timeline.subscription.try_add_remote_with_relay(pool, filter, Some(relay_url));
+                    timeline.subscription.try_add_remote_with_relay(subs, pool, filter, Some(relay_url), &timeline.kind);
                 }
                 _ => {
-                    timeline.subscription.try_add_remote(pool, filter);
+                    timeline.subscription.try_add_remote(subs, pool, filter, &timeline.kind);
                 }
             }
         } else {
