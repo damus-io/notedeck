@@ -8,7 +8,6 @@ use nostrdb::{Note, NoteBuilder, NoteReply};
 use std::{
     any::TypeId,
     collections::{BTreeMap, HashMap, HashSet},
-    hash::{DefaultHasher, Hash, Hasher},
     ops::Range,
 };
 use tracing::error;
@@ -281,10 +280,11 @@ impl MentionSelectedResponse {
             return;
         };
 
-        let mut new_cursor = text_edit_output
-            .galley
-            .from_ccursor(CCursor::new(self.next_cursor_index));
-        new_cursor.ccursor.prefer_next_row = true;
+        // TODO(kernelkind): determine if this is necessary and if so convert to egui 0.33.0 API
+        // let mut new_cursor = text_edit_output
+        //     .galley
+        //     .from_ccursor(CCursor::new(self.next_cursor_index));
+        // new_cursor.ccursor.prefer_next_row = true;
 
         before_state
             .cursor
@@ -479,11 +479,7 @@ fn char_indices_to_byte(text: &str, char_range: Range<usize>) -> Option<Range<us
 }
 
 pub fn downcast_post_buffer(buffer: &dyn TextBuffer) -> Option<&PostBuffer> {
-    let mut hasher = DefaultHasher::new();
-    TypeId::of::<PostBuffer>().hash(&mut hasher);
-    let post_id = hasher.finish() as usize;
-
-    if buffer.type_id() == post_id {
+    if buffer.type_id() == TypeId::of::<PostBuffer>() {
         unsafe { Some(&*(buffer as *const dyn TextBuffer as *const PostBuffer)) }
     } else {
         None
@@ -720,10 +716,8 @@ impl TextBuffer for PostBuffer {
         }
     }
 
-    fn type_id(&self) -> usize {
-        let mut hasher = DefaultHasher::new();
-        TypeId::of::<PostBuffer>().hash(&mut hasher);
-        hasher.finish() as usize
+    fn type_id(&self) -> std::any::TypeId {
+        std::any::TypeId::of::<Self>()
     }
 }
 

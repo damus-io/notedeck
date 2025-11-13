@@ -20,7 +20,7 @@ impl AppSizeHandler {
 
     pub fn try_save_app_size(&mut self, ctx: &Context) {
         // There doesn't seem to be a way to check if user is resizing window, so if the rect is different than last saved, we'll wait DELAY before saving again to avoid spamming io
-        let cur_size = ctx.input(|i| i.screen_rect.size());
+        let cur_size = ctx.input(|i| i.screen_rect().size());
         self.serializer.try_save(cur_size);
     }
 

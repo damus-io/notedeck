@@ -192,7 +192,7 @@ impl<'a, 'd> PostView<'a, 'd> {
             };
 
             layout_job.wrap.max_width = wrap_width;
-            ui.fonts(|f| f.layout_job(layout_job))
+            ui.fonts_mut(|f| f.layout_job(layout_job))
         };
 
         let textedit = TextEdit::multiline(&mut self.draft.buffer)
@@ -801,7 +801,7 @@ fn calculate_mention_hints_pos(out: &TextEditOutput, char_pos: usize) -> egui::P
             cur_pos += row.glyphs.len();
         } else if let Some(glyph) = row.glyphs.get(char_pos - cur_pos) {
             let mut pos = glyph.pos + out.galley_pos.to_vec2();
-            pos.y += row.rect.height();
+            pos.y += row.rect().height();
             return pos;
         }
     }
