@@ -501,7 +501,9 @@ impl<'a> SettingsView<'a> {
                         self.settings.animate_nav_transitions,
                     ));
                 }
+            });
 
+            ui.horizontal_wrapped(|ui| {
                 ui.label(richtext_small(tr!(
                     self.note_context.i18n,
                     "Max hashtags per note:",
