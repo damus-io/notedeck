@@ -70,7 +70,7 @@ impl Muted {
 
         // Filter notes with too many hashtags (early return on limit exceeded)
         if self.max_hashtags_per_note > 0 {
-            let hashtag_count = self.count_hashtags(note);
+            let hashtag_count = crate::note::count_hashtags(note);
             if hashtag_count > self.max_hashtags_per_note {
                 return true;
             }
@@ -102,35 +102,6 @@ impl Muted {
         }
 
         false
-    }
-
-    /// Count the number of hashtags in a note by examining its tags
-    fn count_hashtags(&self, note: &Note) -> usize {
-        let mut count = 0;
-
-        for tag in note.tags() {
-            // Early continue if not enough elements
-            if tag.count() < 2 {
-                continue;
-            }
-
-            // Check if this is a hashtag tag (type "t")
-            let tag_type = match tag.get_unchecked(0).variant().str() {
-                Some(t) => t,
-                None => continue,
-            };
-
-            if tag_type != "t" {
-                continue;
-            }
-
-            // Verify the hashtag value exists
-            if tag.get_unchecked(1).variant().str().is_some() {
-                count += 1;
-            }
-        }
-
-        count
     }
 
     pub fn is_pk_muted(&self, pk: &[u8; 32]) -> bool {

@@ -218,3 +218,24 @@ pub fn event_tag<'a>(ev: &nostrdb::Note<'a>, name: &str) -> Option<&'a str> {
 pub fn reaction_sent_id(sender_pk: &enostr::Pubkey, note_reacted_to: &[u8; 32]) -> egui::Id {
     egui::Id::new(("sent-reaction-id", note_reacted_to, sender_pk))
 }
+
+/// Count the number of hashtags in a note by examining its tags
+pub fn count_hashtags(note: &Note) -> usize {
+    let mut count = 0;
+
+    for tag in note.tags() {
+        // Early continue if not enough elements
+        if tag.count() < 2 {
+            continue;
+        }
+
+        // Check if this is a hashtag tag (type "t")
+        let Some("t") = tag.get_unchecked(0).variant().str() else {
+            continue;
+        };
+
+        count += 1;
+    }
+
+    count
+}
