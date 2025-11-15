@@ -18,6 +18,7 @@ const DEFAULT_SHOW_REPLIES_NEWEST_FIRST: bool = false;
 pub const DEFAULT_NOTE_BODY_FONT_SIZE: f32 = 13.0;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub const DEFAULT_NOTE_BODY_FONT_SIZE: f32 = 16.0;
+pub const DEFAULT_MAX_HASHTAGS_PER_NOTE: usize = 3;
 
 fn deserialize_theme(serialized_theme: &str) -> Option<ThemePreference> {
     match serialized_theme {
@@ -38,6 +39,7 @@ pub struct Settings {
     pub note_body_font_size: f32,
     #[serde(default = "default_animate_nav_transitions")]
     pub animate_nav_transitions: bool,
+    pub max_hashtags_per_note: usize,
 }
 
 fn default_animate_nav_transitions() -> bool {
@@ -54,6 +56,7 @@ impl Default for Settings {
             show_replies_newest_first: DEFAULT_SHOW_REPLIES_NEWEST_FIRST,
             note_body_font_size: DEFAULT_NOTE_BODY_FONT_SIZE,
             animate_nav_transitions: default_animate_nav_transitions(),
+            max_hashtags_per_note: DEFAULT_MAX_HASHTAGS_PER_NOTE,
         }
     }
 }
@@ -203,6 +206,11 @@ impl SettingsHandler {
         self.try_save_settings();
     }
 
+    pub fn set_max_hashtags_per_note(&mut self, value: usize) {
+        self.get_settings_mut().max_hashtags_per_note = value;
+        self.try_save_settings();
+    }
+
     pub fn update_batch<F>(&mut self, update_fn: F)
     where
         F: FnOnce(&mut Settings),
@@ -261,5 +269,12 @@ impl SettingsHandler {
             .as_ref()
             .map(|s| s.note_body_font_size)
             .unwrap_or(DEFAULT_NOTE_BODY_FONT_SIZE)
+    }
+
+    pub fn max_hashtags_per_note(&self) -> usize {
+        self.current_settings
+            .as_ref()
+            .map(|s| s.max_hashtags_per_note)
+            .unwrap_or(DEFAULT_MAX_HASHTAGS_PER_NOTE)
     }
 }

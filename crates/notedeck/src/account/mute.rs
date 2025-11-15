@@ -20,10 +20,9 @@ impl AccountMutedData {
             .limit(1)
             .build();
 
-        AccountMutedData {
-            filter,
-            muted: Arc::new(Muted::default()),
-        }
+        let muted = Arc::new(Muted::default());
+
+        AccountMutedData { filter, muted }
     }
 
     pub(super) fn query(&mut self, ndb: &Ndb, txn: &Transaction) {
@@ -38,14 +37,24 @@ impl AccountMutedData {
             .iter()
             .map(|qr| qr.note_key)
             .collect::<Vec<NoteKey>>();
-        let muted = Self::harvest_nip51_muted(ndb, txn, &nks);
+        let max_hashtags = self.muted.max_hashtags_per_note;
+        let muted = Self::harvest_nip51_muted(ndb, txn, &nks, max_hashtags);
         debug!("initial muted {:?}", muted);
 
         self.muted = Arc::new(muted);
     }
 
-    pub(crate) fn harvest_nip51_muted(ndb: &Ndb, txn: &Transaction, nks: &[NoteKey]) -> Muted {
-        let mut muted = Muted::default();
+    pub(crate) fn harvest_nip51_muted(
+        ndb: &Ndb,
+        txn: &Transaction,
+        nks: &[NoteKey],
+        max_hashtags_per_note: usize,
+    ) -> Muted {
+        let mut muted = Muted {
+            max_hashtags_per_note,
+            ..Default::default()
+        };
+
         for nk in nks.iter() {
             if let Ok(note) = ndb.get_note_by_key(txn, *nk) {
                 for tag in note.tags() {
@@ -92,8 +101,16 @@ impl AccountMutedData {
             return;
         }
 
-        let muted = AccountMutedData::harvest_nip51_muted(ndb, txn, &nks);
+        let max_hashtags = self.muted.max_hashtags_per_note;
+        let muted = AccountMutedData::harvest_nip51_muted(ndb, txn, &nks, max_hashtags);
         debug!("updated muted {:?}", muted);
+        self.muted = Arc::new(muted);
+    }
+
+    /// Update the max hashtags per note setting
+    pub fn update_max_hashtags(&mut self, max_hashtags_per_note: usize) {
+        let mut muted = (*self.muted).clone();
+        muted.max_hashtags_per_note = max_hashtags_per_note;
         self.muted = Arc::new(muted);
     }
 }

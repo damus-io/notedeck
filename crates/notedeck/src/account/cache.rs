@@ -109,6 +109,10 @@ impl AccountCache {
     pub fn fallback(&self) -> &Pubkey {
         &self.fallback
     }
+
+    pub(super) fn accounts_mut(&mut self) -> impl Iterator<Item = &mut UserAccount> {
+        self.accounts.values_mut()
+    }
 }
 
 impl<'a> IntoIterator for &'a AccountCache {
