@@ -342,7 +342,7 @@ fn profile_stats(
     ui.horizontal(|ui| {
         let resp = ui
             .label(
-                RichText::new(format!("{} ", following_count))
+                RichText::new(format!("{following_count} "))
                     .size(notedeck::fonts::get_font_size(
                         ui.ctx(),
                         &NotedeckTextStyle::Small,
