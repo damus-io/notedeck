@@ -48,12 +48,13 @@ impl AccountStorage {
     fn persist_account(&self, account: &UserAccountSerializable) -> Result<()> {
         if let Some(secret) = account.key.secret_key.as_ref() {
             self.keyring.store_secret(&account.key.pubkey, secret)?;
+            self.write_account_without_secret(account)?;
         } else {
             // if the account is npub only, make sure the db doesn't somehow have the nsec
             self.keyring.remove_secret(&account.key.pubkey)?;
         }
 
-        self.write_account_without_secret(account)
+        Ok(())
     }
 
     fn write_account_without_secret(&self, account: &UserAccountSerializable) -> Result<()> {
@@ -136,11 +137,24 @@ impl AccountStorageReader {
             // sanitize our storage of secrets & inject the secret from `keyring` into `UserAccountSerializable`
             .map(|mut account| -> Result<UserAccountSerializable> {
                 if let Some(secret) = &account.key.secret_key {
-                    self.storage
+                    match self
+                        .storage
                         .keyring
-                        .store_secret(&account.key.pubkey, secret)?;
-                    self.storage.write_account_without_secret(&account)?;
-                } else if let Some(secret) = self.storage.keyring.get_secret(&account.key.pubkey)? {
+                        .store_secret(&account.key.pubkey, secret)
+                    {
+                        Ok(_) => {
+                            if let Err(e) = self.storage.write_account_without_secret(&account) {
+                                tracing::error!(
+                                    "failed to write account {:?} without secret: {e}",
+                                    account.key.pubkey
+                                );
+                            }
+                        }
+                        Err(e) => tracing::error!("failed to store secret in OS secure store: {e}"),
+                    }
+                } else if let Ok(Some(secret)) =
+                    self.storage.keyring.get_secret(&account.key.pubkey)
+                {
                     account.key.secret_key = Some(secret);
                 }
                 Ok(account)
