@@ -74,27 +74,49 @@ fn handle_egui_events(
 ) {
     for event in &input.raw.events {
         match event {
-            egui::Event::Key { key, pressed, .. } if *pressed => match key {
-                egui::Key::J => {
-                    //columns.select_down();
-                    {}
+            egui::Event::Key {
+                key,
+                pressed,
+                modifiers,
+                ..
+            } if *pressed => {
+                // Browser-like navigation: Cmd+Arrow (macOS) / Ctrl+Arrow (others)
+                if (modifiers.ctrl || modifiers.command) && !modifiers.shift && !modifiers.alt {
+                    match key {
+                        egui::Key::ArrowLeft => {
+                            columns.get_selected_router().go_back();
+                            continue;
+                        }
+                        egui::Key::ArrowRight => {
+                            columns.get_selected_router().go_forward();
+                            continue;
+                        }
+                        _ => {}
+                    }
                 }
-                /*
-                egui::Key::K => {
-                    columns.select_up();
+
+                match key {
+                    egui::Key::J => {
+                        //columns.select_down();
+                        {}
+                    }
+                    /*
+                    egui::Key::K => {
+                        columns.select_up();
+                    }
+                    egui::Key::H => {
+                        columns.select_left();
+                    }
+                    egui::Key::L => {
+                        columns.select_left();
+                    }
+                    */
+                    egui::Key::BrowserBack | egui::Key::Escape => {
+                        columns.get_selected_router().go_back();
+                    }
+                    _ => {}
                 }
-                egui::Key::H => {
-                    columns.select_left();
-                }
-                egui::Key::L => {
-                    columns.select_left();
-                }
-                */
-                egui::Key::BrowserBack | egui::Key::Escape => {
-                    columns.get_selected_router().go_back();
-                }
-                _ => {}
-            },
+            }
 
             egui::Event::PointerButton {
                 button: egui::PointerButton::Extra1,
