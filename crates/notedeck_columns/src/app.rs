@@ -83,11 +83,11 @@ fn handle_egui_events(
                 // Browser-like navigation: Cmd+Arrow (macOS) / Ctrl+Arrow (others)
                 if (modifiers.ctrl || modifiers.command) && !modifiers.shift && !modifiers.alt {
                     match key {
-                        egui::Key::ArrowLeft => {
+                        egui::Key::ArrowLeft | egui::Key::H => {
                             columns.get_selected_router().go_back();
                             continue;
                         }
-                        egui::Key::ArrowRight => {
+                        egui::Key::ArrowRight | egui::Key::L => {
                             columns.get_selected_router().go_forward();
                             continue;
                         }
