@@ -177,6 +177,8 @@ impl Notedeck {
         #[cfg(feature = "puffin")]
         setup_puffin();
 
+        install_crypto();
+
         // Skip the first argument, which is the program name.
         let (parsed_args, unrecognized_args) = Args::parse(&args[1..]);
 
@@ -400,4 +402,9 @@ impl Notedeck {
     pub fn unrecognized_args(&self) -> &BTreeSet<String> {
         &self.unrecognized_args
     }
+}
+
+pub fn install_crypto() {
+    let provider = rustls::crypto::aws_lc_rs::default_provider();
+    let _ = provider.install_default();
 }
