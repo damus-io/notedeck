@@ -3,6 +3,7 @@ pub mod blur;
 pub mod gif;
 pub mod images;
 pub mod imeta;
+pub mod network;
 pub mod renderable;
 
 pub use action::{MediaAction, MediaInfo, ViewMediaInfo};
