@@ -328,6 +328,11 @@ fn process_nav_resp(
             NavAction::Returning(_) => {}
             NavAction::Resetting => {}
             NavAction::Navigating => {
+                // since we are navigating, we should set this column as
+                // the selected one
+                app.columns_mut(ctx.i18n, ctx.accounts)
+                    .select_column(col as i32);
+
                 handle_navigating_edit_profile(ctx.ndb, ctx.accounts, app, col);
                 handle_navigating_timeline(
                     ctx.ndb,
