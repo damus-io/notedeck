@@ -10,8 +10,8 @@ const ONE_WEEK_IN_SECONDS: u64 = 604_800;
 const ONE_MONTH_IN_SECONDS: u64 = 2_592_000; // 30 days
 const ONE_YEAR_IN_SECONDS: u64 = 31_536_000; // 365 days
 
-/// Maximum tolerated skew for note timestamps in the future (24h in seconds).
-pub const MAX_FUTURE_NOTE_SKEW_SECS: u64 = ONE_DAY_IN_SECONDS;
+/// Maximum tolerated skew for note timestamps in the future (2 minutes / 120 seconds).
+pub const MAX_FUTURE_NOTE_SKEW_SECS: u64 = 2*ONE_MINUTE_IN_SECONDS;
 
 /// Returns the current UNIX timestamp in seconds.
 pub fn unix_time_secs() -> u64 {
