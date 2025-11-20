@@ -9,8 +9,8 @@ use crate::{
 use notedeck::{
     contacts::hybrid_contacts_filter,
     filter::{self, HybridFilter},
-    tr, Accounts, CachedNote, ContactState, FilterError, FilterState, FilterStates, Localization,
-    NoteCache, NoteRef, UnknownIds,
+    is_future_timestamp, tr, unix_time_secs, Accounts, CachedNote, ContactState, FilterError,
+    FilterState, FilterStates, Localization, NoteCache, NoteRef, UnknownIds,
 };
 
 use egui_virtual_list::VirtualList;
@@ -368,8 +368,13 @@ impl Timeline {
             filters
         };
 
+        let now = unix_time_secs();
         let mut unknown_pks = HashSet::new();
         for note_ref in notes {
+            if is_future_timestamp(note_ref.created_at, now) {
+                continue;
+            }
+
             for (view, filter) in filters.iter().enumerate() {
                 if let Ok(note) = ndb.get_note_by_key(txn, note_ref.key) {
                     if filter(
@@ -417,6 +422,7 @@ impl Timeline {
         reversed: bool,
     ) -> Result<()> {
         let mut payloads: Vec<NotePayload> = Vec::with_capacity(new_note_ids.len());
+        let now = unix_time_secs();
 
         for key in new_note_ids {
             let note = if let Ok(note) = ndb.get_note_by_key(txn, *key) {
@@ -428,6 +434,10 @@ impl Timeline {
                 );
                 continue;
             };
+
+            if is_future_timestamp(note.created_at(), now) {
+                continue;
+            }
 
             // Ensure that unknown ids are captured when inserting notes
             // into the timeline
