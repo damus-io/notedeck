@@ -435,7 +435,7 @@ fn go_back(stack: &mut Router<Route>, sheet: &mut SingletonRouter<Route>) {
 }
 
 impl RouterAction {
-    pub fn process(
+    pub fn process_router_action(
         self,
         stack_router: &mut Router<Route>,
         sheet_router: &mut SingletonRouter<Route>,
@@ -600,7 +600,7 @@ fn process_render_nav_action(
         let router = &mut cols.router;
         let sheet_router = &mut cols.sheet_router;
 
-        action.process(router, sheet_router)
+        action.process_router_action(router, sheet_router)
     } else {
         None
     }
