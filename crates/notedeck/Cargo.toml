@@ -54,6 +54,11 @@ indexmap = {workspace = true}
 rand = {workspace = true}
 crossbeam-channel = "0.5"
 crossbeam = "0.8.4"
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+http-body-util = { workspace = true }
+hyper-rustls = { workspace = true }
+rustls = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
