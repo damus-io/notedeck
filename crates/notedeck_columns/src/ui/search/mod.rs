@@ -884,7 +884,7 @@ fn search_posts_button(query: &str, is_selected: bool, width: f32) -> impl egui:
 
         ui.put(icon_rect, search_icon(min_img_size / 2.0, min_img_size));
 
-        let text = format!("Search posts for \"{}\"", query);
+        let text = format!("Search posts for \"{query}\"");
         let name_font = egui::FontId::new(body_font_size, NotedeckTextStyle::Body.font_family());
         let painter = ui.painter();
         let text_galley = painter.layout(
