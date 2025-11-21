@@ -5,7 +5,7 @@ use crate::{
 use egui::{Align, Key, KeyboardShortcut, Layout, Modifiers};
 use nostrdb::{Ndb, Transaction};
 use notedeck::{
-    tr, Accounts, AppContext, Images, JobsCache, Localization, NoteAction, NoteContext,
+    tr, Accounts, AppContext, Images, JobsCacheOld, Localization, NoteAction, NoteContext,
 };
 use notedeck_ui::{app_images, icons::search_icon, NoteOptions, ProfilePic};
 
@@ -89,7 +89,7 @@ impl<'a> DaveUi<'a> {
     pub fn ui(
         &mut self,
         app_ctx: &mut AppContext,
-        jobs: &mut JobsCache,
+        jobs: &mut JobsCacheOld,
         ui: &mut egui::Ui,
     ) -> DaveResponse {
         let action = top_buttons_ui(app_ctx, ui);
@@ -155,7 +155,7 @@ impl<'a> DaveUi<'a> {
     fn render_chat(
         &self,
         ctx: &mut AppContext,
-        jobs: &mut JobsCache,
+        jobs: &mut JobsCacheOld,
         ui: &mut egui::Ui,
     ) -> Option<NoteAction> {
         let mut action: Option<NoteAction> = None;
@@ -207,7 +207,7 @@ impl<'a> DaveUi<'a> {
     /// The ai has asked us to render some notes, so we do that here
     fn present_notes_ui(
         ctx: &mut AppContext,
-        jobs: &mut JobsCache,
+        jobs: &mut JobsCacheOld,
         call: &PresentNotesCall,
         ui: &mut egui::Ui,
     ) -> Option<NoteAction> {
@@ -272,7 +272,7 @@ impl<'a> DaveUi<'a> {
 
     fn tool_calls_ui(
         ctx: &mut AppContext,
-        jobs: &mut JobsCache,
+        jobs: &mut JobsCacheOld,
         toolcalls: &[ToolCall],
         ui: &mut egui::Ui,
     ) -> Option<NoteAction> {

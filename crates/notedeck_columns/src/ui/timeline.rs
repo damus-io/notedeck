@@ -6,7 +6,7 @@ use nostrdb::{Note, ProfileRecord, Transaction};
 use notedeck::fonts::get_font_size;
 use notedeck::name::get_display_name;
 use notedeck::ui::is_narrow;
-use notedeck::{tr_plural, JobsCache, Muted, NotedeckTextStyle};
+use notedeck::{tr_plural, JobsCacheOld, Muted, NotedeckTextStyle};
 use notedeck_ui::app_images::{like_image_filled, repost_image};
 use notedeck_ui::{ProfilePic, ProfilePreview};
 use std::f32::consts::PI;
@@ -30,7 +30,7 @@ pub struct TimelineView<'a, 'd> {
     timeline_cache: &'a mut TimelineCache,
     note_options: NoteOptions,
     note_context: &'a mut NoteContext<'d>,
-    jobs: &'a mut JobsCache,
+    jobs: &'a mut JobsCacheOld,
     col: usize,
     scroll_to_top: bool,
 }
@@ -42,7 +42,7 @@ impl<'a, 'd> TimelineView<'a, 'd> {
         timeline_cache: &'a mut TimelineCache,
         note_context: &'a mut NoteContext<'d>,
         note_options: NoteOptions,
-        jobs: &'a mut JobsCache,
+        jobs: &'a mut JobsCacheOld,
         col: usize,
     ) -> Self {
         let scroll_to_top = false;
@@ -93,7 +93,7 @@ fn timeline_ui(
     timeline_cache: &mut TimelineCache,
     mut note_options: NoteOptions,
     note_context: &mut NoteContext,
-    jobs: &mut JobsCache,
+    jobs: &mut JobsCacheOld,
     col: usize,
     scroll_to_top: bool,
 ) -> BodyResponse<NoteAction> {
@@ -378,7 +378,7 @@ pub struct TimelineTabView<'a, 'd> {
     note_options: NoteOptions,
     txn: &'a Transaction,
     note_context: &'a mut NoteContext<'d>,
-    jobs: &'a mut JobsCache,
+    jobs: &'a mut JobsCacheOld,
 }
 
 impl<'a, 'd> TimelineTabView<'a, 'd> {
@@ -388,7 +388,7 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
         note_options: NoteOptions,
         txn: &'a Transaction,
         note_context: &'a mut NoteContext<'d>,
-        jobs: &'a mut JobsCache,
+        jobs: &'a mut JobsCacheOld,
     ) -> Self {
         Self {
             tab,
@@ -676,7 +676,7 @@ fn render_note(
     ui: &mut egui::Ui,
     note_context: &mut NoteContext,
     note_options: NoteOptions,
-    jobs: &mut JobsCache,
+    jobs: &mut JobsCacheOld,
     note: &Note,
 ) -> RenderEntryResponse {
     let mut action = None;
@@ -699,7 +699,7 @@ fn render_reaction_cluster(
     ui: &mut egui::Ui,
     note_context: &mut NoteContext,
     note_options: NoteOptions,
-    jobs: &mut JobsCache,
+    jobs: &mut JobsCacheOld,
     mute: &std::sync::Arc<Muted>,
     txn: &Transaction,
     underlying_note: &Note,
@@ -742,7 +742,7 @@ fn render_composite_entry(
     ui: &mut egui::Ui,
     note_context: &mut NoteContext,
     mut note_options: NoteOptions,
-    jobs: &mut JobsCache,
+    jobs: &mut JobsCacheOld,
     underlying_note: &nostrdb::Note<'_>,
     profiles_to_show: Vec<ProfileEntry>,
     composite_type: CompositeType,
@@ -977,7 +977,7 @@ fn render_repost_cluster(
     ui: &mut egui::Ui,
     note_context: &mut NoteContext,
     note_options: NoteOptions,
-    jobs: &mut JobsCache,
+    jobs: &mut JobsCacheOld,
     mute: &std::sync::Arc<Muted>,
     txn: &Transaction,
     underlying_note: &Note,

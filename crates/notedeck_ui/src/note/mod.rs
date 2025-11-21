@@ -15,7 +15,7 @@ use notedeck::ui::is_narrow;
 use notedeck::Accounts;
 use notedeck::GlobalWallet;
 use notedeck::Images;
-use notedeck::JobsCache;
+use notedeck::JobsCacheOld;
 use notedeck::Localization;
 use notedeck::MediaAction;
 pub use options::NoteOptions;
@@ -35,7 +35,7 @@ pub struct NoteView<'a, 'd> {
     parent: Option<NoteKey>,
     note: &'a nostrdb::Note<'a>,
     flags: NoteOptions,
-    jobs: &'a mut JobsCache,
+    jobs: &'a mut JobsCacheOld,
 }
 
 pub struct NoteResponse {
@@ -83,7 +83,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
         note_context: &'a mut NoteContext<'d>,
         note: &'a nostrdb::Note<'a>,
         flags: NoteOptions,
-        jobs: &'a mut JobsCache,
+        jobs: &'a mut JobsCacheOld,
     ) -> Self {
         let parent: Option<NoteKey> = None;
 

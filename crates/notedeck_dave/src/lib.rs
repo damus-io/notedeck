@@ -8,7 +8,7 @@ use egui_wgpu::RenderState;
 use enostr::KeypairUnowned;
 use futures::StreamExt;
 use nostrdb::Transaction;
-use notedeck::{AppAction, AppContext, AppResponse, JobsCache};
+use notedeck::{AppAction, AppContext, AppResponse, JobsCacheOld};
 use std::collections::HashMap;
 use std::string::ToString;
 use std::sync::mpsc::{self, Receiver};
@@ -43,7 +43,7 @@ pub struct Dave {
     client: async_openai::Client<OpenAIConfig>,
     incoming_tokens: Option<Receiver<DaveApiResponse>>,
     model_config: ModelConfig,
-    jobs: JobsCache,
+    jobs: JobsCacheOld,
 }
 
 /// Calculate an anonymous user_id from a keypair
@@ -108,7 +108,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             input,
             model_config,
             chat: vec![],
-            jobs: JobsCache::default(),
+            jobs: JobsCacheOld::default(),
         }
     }
 

@@ -17,7 +17,7 @@ use crate::{
     ui::timeline::{tabs_ui, TimelineTabView},
 };
 use notedeck::{
-    name::get_display_name, profile::get_profile_url, IsFollowing, JobsCache, NoteAction,
+    name::get_display_name, profile::get_profile_url, IsFollowing, JobsCacheOld, NoteAction,
     NoteContext, NotedeckTextStyle,
 };
 use notedeck_ui::{
@@ -32,7 +32,7 @@ pub struct ProfileView<'a, 'd> {
     timeline_cache: &'a mut TimelineCache,
     note_options: NoteOptions,
     note_context: &'a mut NoteContext<'d>,
-    jobs: &'a mut JobsCache,
+    jobs: &'a mut JobsCacheOld,
 }
 
 pub enum ProfileViewAction {
@@ -58,7 +58,7 @@ impl<'a, 'd> ProfileView<'a, 'd> {
         timeline_cache: &'a mut TimelineCache,
         note_options: NoteOptions,
         note_context: &'a mut NoteContext<'d>,
-        jobs: &'a mut JobsCache,
+        jobs: &'a mut JobsCacheOld,
     ) -> Self {
         ProfileView {
             pubkey,

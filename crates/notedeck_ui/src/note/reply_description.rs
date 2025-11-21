@@ -3,7 +3,7 @@ use nostrdb::{NoteReply, Transaction};
 
 use super::NoteOptions;
 use crate::{note::NoteView, Mention};
-use notedeck::{tr, JobsCache, NoteAction, NoteContext};
+use notedeck::{tr, JobsCacheOld, NoteAction, NoteContext};
 
 // Rich text segment types for internationalized rendering
 #[derive(Debug, Clone)]
@@ -106,7 +106,7 @@ fn render_text_segments(
     txn: &Transaction,
     note_context: &mut NoteContext,
     note_options: NoteOptions,
-    jobs: &mut JobsCache,
+    jobs: &mut JobsCacheOld,
     size: f32,
     selectable: bool,
 ) -> Option<NoteAction> {
@@ -219,7 +219,7 @@ pub fn reply_desc(
     note_reply: &NoteReply,
     note_context: &mut NoteContext,
     note_options: NoteOptions,
-    jobs: &mut JobsCache,
+    jobs: &mut JobsCacheOld,
 ) -> Option<NoteAction> {
     let size = 10.0;
     let selectable = false;

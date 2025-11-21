@@ -2,7 +2,7 @@ use egui::InnerResponse;
 use egui_virtual_list::VirtualList;
 use nostrdb::{Note, Transaction};
 use notedeck::note::root_note_id_from_selected_id;
-use notedeck::JobsCache;
+use notedeck::JobsCacheOld;
 use notedeck::{NoteAction, NoteContext};
 use notedeck_ui::note::NoteResponse;
 use notedeck_ui::{NoteOptions, NoteView};
@@ -16,7 +16,7 @@ pub struct ThreadView<'a, 'd> {
     note_options: NoteOptions,
     col: usize,
     note_context: &'a mut NoteContext<'d>,
-    jobs: &'a mut JobsCache,
+    jobs: &'a mut JobsCacheOld,
 }
 
 impl<'a, 'd> ThreadView<'a, 'd> {
@@ -26,7 +26,7 @@ impl<'a, 'd> ThreadView<'a, 'd> {
         selected_note_id: &'a [u8; 32],
         note_options: NoteOptions,
         note_context: &'a mut NoteContext<'d>,
-        jobs: &'a mut JobsCache,
+        jobs: &'a mut JobsCacheOld,
         col: usize,
     ) -> Self {
         ThreadView {
@@ -155,7 +155,7 @@ fn show_notes(
     thread_notes: &ThreadNotes,
     note_context: &mut NoteContext<'_>,
     flags: NoteOptions,
-    jobs: &mut JobsCache,
+    jobs: &mut JobsCacheOld,
     txn: &Transaction,
 ) -> Option<NoteAction> {
     let mut action = None;
@@ -326,7 +326,7 @@ impl<'a> ThreadNote<'a> {
         &self,
         note_context: &'a mut NoteContext<'_>,
         flags: NoteOptions,
-        jobs: &'a mut JobsCache,
+        jobs: &'a mut JobsCacheOld,
         ui: &mut egui::Ui,
     ) -> NoteResponse {
         let inner = notedeck_ui::padding(8.0, ui, |ui| {

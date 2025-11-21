@@ -11,7 +11,7 @@ use egui_winit::clipboard::Clipboard;
 use nostrdb::{Filter, Ndb, ProfileRecord, Transaction};
 use notedeck::{
     fonts::get_font_size, name::get_display_name, profile::get_profile_url, tr, tr_plural, Images,
-    JobsCache, Localization, NoteAction, NoteContext, NoteRef, NotedeckTextStyle,
+    JobsCacheOld, Localization, NoteAction, NoteContext, NoteRef, NotedeckTextStyle,
 };
 
 use notedeck_ui::{
@@ -33,7 +33,7 @@ pub struct SearchView<'a, 'd> {
     note_options: NoteOptions,
     txn: &'a Transaction,
     note_context: &'a mut NoteContext<'d>,
-    jobs: &'a mut JobsCache,
+    jobs: &'a mut JobsCacheOld,
 }
 
 impl<'a, 'd> SearchView<'a, 'd> {
@@ -42,7 +42,7 @@ impl<'a, 'd> SearchView<'a, 'd> {
         note_options: NoteOptions,
         query: &'a mut SearchQueryState,
         note_context: &'a mut NoteContext<'d>,
-        jobs: &'a mut JobsCache,
+        jobs: &'a mut JobsCacheOld,
     ) -> Self {
         Self {
             txn,

@@ -21,7 +21,7 @@ use enostr::{ClientMessage, PoolRelay, Pubkey, RelayEvent, RelayMessage, RelayPo
 use nostrdb::Transaction;
 use notedeck::{
     tr, ui::is_narrow, Accounts, AppAction, AppContext, AppResponse, DataPath, DataPathType,
-    FilterState, Images, JobsCache, Localization, NotedeckOptions, SettingsHandler, UnknownIds,
+    FilterState, Images, JobsCacheOld, Localization, NotedeckOptions, SettingsHandler, UnknownIds,
 };
 use notedeck_ui::{
     media::{MediaViewer, MediaViewerFlags, MediaViewerState},
@@ -48,7 +48,7 @@ pub struct Damus {
     pub timeline_cache: TimelineCache,
     pub subscriptions: Subscriptions,
     pub support: Support,
-    pub jobs: JobsCache,
+    pub jobs: JobsCacheOld,
     pub threads: Threads,
 
     //frame_history: crate::frame_history::FrameHistory,
@@ -568,7 +568,7 @@ impl Damus {
 
         let support = Support::new(app_context.path);
         let note_options = get_note_options(parsed_args, app_context.settings);
-        let jobs = JobsCache::default();
+        let jobs = JobsCacheOld::default();
         let threads = Threads::default();
 
         Self {
@@ -635,7 +635,7 @@ impl Damus {
             options,
             decks_cache,
             unrecognized_args: BTreeSet::default(),
-            jobs: JobsCache::default(),
+            jobs: JobsCacheOld::default(),
             threads: Threads::default(),
             onboarding: Onboarding::default(),
             hovered_column: None,

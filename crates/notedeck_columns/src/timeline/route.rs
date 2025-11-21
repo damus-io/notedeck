@@ -6,7 +6,7 @@ use crate::{
 };
 
 use enostr::Pubkey;
-use notedeck::{JobsCache, NoteContext};
+use notedeck::{JobsCacheOld, NoteContext};
 use notedeck_ui::NoteOptions;
 
 #[allow(clippy::too_many_arguments)]
@@ -18,7 +18,7 @@ pub fn render_timeline_route(
     depth: usize,
     ui: &mut egui::Ui,
     note_context: &mut NoteContext,
-    jobs: &mut JobsCache,
+    jobs: &mut JobsCacheOld,
     scroll_to_top: bool,
 ) -> BodyResponse<RenderNavAction> {
     match kind {
@@ -74,7 +74,7 @@ pub fn render_thread_route(
     mut note_options: NoteOptions,
     ui: &mut egui::Ui,
     note_context: &mut NoteContext,
-    jobs: &mut JobsCache,
+    jobs: &mut JobsCacheOld,
 ) -> BodyResponse<RenderNavAction> {
     // don't truncate thread notes for now, since they are
     // default truncated everywher eelse
@@ -103,7 +103,7 @@ pub fn render_profile_route(
     ui: &mut egui::Ui,
     note_options: NoteOptions,
     note_context: &mut NoteContext,
-    jobs: &mut JobsCache,
+    jobs: &mut JobsCacheOld,
 ) -> BodyResponse<RenderNavAction> {
     let profile_view = ProfileView::new(
         pubkey,

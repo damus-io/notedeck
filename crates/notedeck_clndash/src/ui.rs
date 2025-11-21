@@ -56,7 +56,7 @@ pub fn note_hover_ui(
             global_wallet: ctx.global_wallet,
         };
 
-        let mut jobs = notedeck::JobsCache::default();
+        let mut jobs = notedeck::JobsCacheOld::default();
         let options = notedeck_ui::NoteOptions::default();
 
         notedeck_ui::ProfilePic::from_profile_or_default(note_context.img_cache, author.as_ref())

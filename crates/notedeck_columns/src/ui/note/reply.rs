@@ -7,7 +7,7 @@ use crate::ui::{
 
 use egui::{Rect, Response, ScrollArea, Ui};
 use enostr::{FilledKeypair, NoteId};
-use notedeck::{JobsCache, NoteContext};
+use notedeck::{JobsCacheOld, NoteContext};
 use notedeck_ui::{NoteOptions, NoteView, ProfilePic};
 
 pub struct PostReplyView<'a, 'd> {
@@ -18,7 +18,7 @@ pub struct PostReplyView<'a, 'd> {
     scroll_id: egui::Id,
     inner_rect: egui::Rect,
     note_options: NoteOptions,
-    jobs: &'a mut JobsCache,
+    jobs: &'a mut JobsCacheOld,
 }
 
 impl<'a, 'd> PostReplyView<'a, 'd> {
@@ -30,7 +30,7 @@ impl<'a, 'd> PostReplyView<'a, 'd> {
         note: &'a nostrdb::Note<'a>,
         inner_rect: egui::Rect,
         note_options: NoteOptions,
-        jobs: &'a mut JobsCache,
+        jobs: &'a mut JobsCacheOld,
         col: usize,
     ) -> Self {
         PostReplyView {

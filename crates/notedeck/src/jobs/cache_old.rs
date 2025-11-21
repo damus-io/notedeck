@@ -5,7 +5,7 @@ use poll_promise::Promise;
 use crate::jobs::JobPool;
 
 #[derive(Default)]
-pub struct JobsCache {
+pub struct JobsCacheOld {
     jobs: HashMap<JobIdOwned, JobState>,
 }
 
@@ -61,14 +61,14 @@ pub struct BlurhashParamsOwned {
     pub ctx: egui::Context,
 }
 
-impl JobsCache {
+impl JobsCacheOld {
     pub fn get_or_insert_with<
         'a,
         F: FnOnce(Option<JobParamsOwned>) -> Result<Job, JobError> + Send + 'static,
     >(
         &'a mut self,
         job_pool: &mut JobPool,
-        jobid: &JobId,
+        jobid: &JobIdOld,
         params: Option<JobParams>,
         run_job: F,
     ) -> &'a mut JobState {
@@ -110,23 +110,23 @@ impl JobsCache {
         }
     }
 
-    pub fn get(&self, jobid: &JobId) -> Option<&JobState> {
+    pub fn get(&self, jobid: &JobIdOld) -> Option<&JobState> {
         self.jobs.get(jobid)
     }
 }
 
-impl<'a> From<&JobId<'a>> for JobIdOwned {
-    fn from(jobid: &JobId<'a>) -> Self {
+impl<'a> From<&JobIdOld<'a>> for JobIdOwned {
+    fn from(jobid: &JobIdOld<'a>) -> Self {
         match jobid {
-            JobId::Blurhash(s) => JobIdOwned::Blurhash(s.to_string()),
+            JobIdOld::Blurhash(s) => JobIdOwned::Blurhash(s.to_string()),
         }
     }
 }
 
-impl hashbrown::Equivalent<JobIdOwned> for JobId<'_> {
+impl hashbrown::Equivalent<JobIdOwned> for JobIdOld<'_> {
     fn equivalent(&self, key: &JobIdOwned) -> bool {
         match (self, key) {
-            (JobId::Blurhash(a), JobIdOwned::Blurhash(b)) => *a == b.as_str(),
+            (JobIdOld::Blurhash(a), JobIdOwned::Blurhash(b)) => *a == b.as_str(),
         }
     }
 }
@@ -137,7 +137,7 @@ enum JobIdOwned {
 }
 
 #[derive(Debug, Hash)]
-pub enum JobId<'a> {
+pub enum JobIdOld<'a> {
     Blurhash(&'a str), // image URL
 }
 

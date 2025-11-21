@@ -7,7 +7,7 @@ use egui::{Color32, Hyperlink, Label, RichText};
 use nostrdb::{BlockType, Mention, Note, NoteKey, Transaction};
 use notedeck::Localization;
 use notedeck::{time_format, update_imeta_blurhashes, NoteCache, NoteContext, NotedeckTextStyle};
-use notedeck::{JobsCache, RenderableMedia};
+use notedeck::{JobsCacheOld, RenderableMedia};
 use tracing::warn;
 
 pub struct NoteContents<'a, 'd> {
@@ -16,7 +16,7 @@ pub struct NoteContents<'a, 'd> {
     note: &'a Note<'a>,
     options: NoteOptions,
     pub action: Option<NoteAction>,
-    jobs: &'a mut JobsCache,
+    jobs: &'a mut JobsCacheOld,
 }
 
 impl<'a, 'd> NoteContents<'a, 'd> {
@@ -26,7 +26,7 @@ impl<'a, 'd> NoteContents<'a, 'd> {
         txn: &'a Transaction,
         note: &'a Note,
         options: NoteOptions,
-        jobs: &'a mut JobsCache,
+        jobs: &'a mut JobsCacheOld,
     ) -> Self {
         NoteContents {
             note_context,
@@ -83,7 +83,7 @@ pub fn render_note_preview(
     id: &[u8; 32],
     parent: NoteKey,
     note_options: NoteOptions,
-    jobs: &mut JobsCache,
+    jobs: &mut JobsCacheOld,
 ) -> NoteResponse {
     let note = if let Ok(note) = note_context.ndb.get_note_by_id(txn, id) {
         // TODO: support other preview kinds
@@ -125,7 +125,7 @@ fn render_note_contents(
     txn: &Transaction,
     note: &Note,
     options: NoteOptions,
-    jobs: &mut JobsCache,
+    jobs: &mut JobsCacheOld,
 ) -> NoteResponse {
     let response = render_undecorated_note_contents(ui, note_context, txn, note, options, jobs);
 
@@ -169,7 +169,7 @@ fn render_undecorated_note_contents<'a>(
     txn: &Transaction,
     note: &'a Note,
     options: NoteOptions,
-    jobs: &mut JobsCache,
+    jobs: &mut JobsCacheOld,
 ) -> NoteResponse {
     let note_key = note.key().expect("todo: implement non-db notes");
     let selectable = options.contains(NoteOptions::SelectableText);

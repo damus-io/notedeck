@@ -4,8 +4,8 @@ use enostr::Pubkey;
 use hashbrown::{hash_map::RawEntryMut, HashMap};
 use nostrdb::{Ndb, ProfileRecord, Transaction};
 use notedeck::{
-    fonts::get_font_size, get_profile_url, name::get_display_name, tr, Images, JobPool, JobsCache,
-    Localization, Nip51Set, Nip51SetCache, NotedeckTextStyle,
+    fonts::get_font_size, get_profile_url, name::get_display_name, tr, Images, JobPool,
+    JobsCacheOld, Localization, Nip51Set, Nip51SetCache, NotedeckTextStyle,
 };
 
 use crate::{
@@ -20,7 +20,7 @@ pub struct Nip51SetWidget<'a> {
     images: &'a mut Images,
     loc: &'a mut Localization,
     job_pool: &'a mut JobPool,
-    jobs: &'a mut JobsCache,
+    jobs: &'a mut JobsCacheOld,
     flags: Nip51SetWidgetFlags,
 }
 
@@ -54,7 +54,7 @@ impl<'a> Nip51SetWidget<'a> {
         loc: &'a mut Localization,
         images: &'a mut Images,
         job_pool: &'a mut JobPool,
-        jobs: &'a mut JobsCache,
+        jobs: &'a mut JobsCacheOld,
     ) -> Self {
         Self {
             state,
@@ -158,7 +158,7 @@ fn render_pack(
     ndb: &Ndb,
     images: &mut Images,
     job_pool: &mut JobPool,
-    jobs: &mut JobsCache,
+    jobs: &mut JobsCacheOld,
     loc: &mut Localization,
     image_trusted: bool,
 ) -> Option<Nip51SetWidgetAction> {

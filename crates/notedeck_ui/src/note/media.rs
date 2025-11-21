@@ -7,7 +7,7 @@ use egui::{
 };
 use notedeck::{
     compute_blurhash, fonts::get_font_size, show_one_error_message, tr, BlurhashParams,
-    GifStateMap, Images, Job, JobId, JobParams, JobPool, JobState, JobsCache, Localization,
+    GifStateMap, Images, Job, JobIdOld, JobParams, JobPool, JobState, JobsCacheOld, Localization,
     MediaAction, MediaCacheType, NotedeckTextStyle, ObfuscationType, PointDimensions,
     RenderableMedia, TexturedImage, TexturesCache,
 };
@@ -31,7 +31,7 @@ pub fn image_carousel(
     ui: &mut egui::Ui,
     img_cache: &mut Images,
     job_pool: &mut JobPool,
-    jobs: &mut JobsCache,
+    jobs: &mut JobsCacheOld,
     medias: &[RenderableMedia],
     carousel_id: egui::Id,
     i18n: &mut Localization,
@@ -120,7 +120,7 @@ pub fn render_media(
     ui: &mut egui::Ui,
     img_cache: &mut Images,
     job_pool: &mut JobPool,
-    jobs: &mut JobsCache,
+    jobs: &mut JobsCacheOld,
     media: &RenderableMedia,
     trusted_media: bool,
     i18n: &mut Localization,
@@ -242,7 +242,7 @@ impl MediaUIAction {
 pub fn get_content_media_render_state<'a>(
     ui: &mut egui::Ui,
     job_pool: &'a mut JobPool,
-    jobs: &'a mut JobsCache,
+    jobs: &'a mut JobsCacheOld,
     media_trusted: bool,
     size: Vec2,
     cache: &'a mut TexturesCache,
@@ -302,7 +302,7 @@ fn get_obfuscated<'a>(
     url: &str,
     obfuscation_type: &'a ObfuscationType,
     job_pool: &'a mut JobPool,
-    jobs: &'a mut JobsCache,
+    jobs: &'a mut JobsCacheOld,
     size: Vec2,
 ) -> ObfuscatedTexture<'a> {
     let ObfuscationType::Blurhash(renderable_blur) = obfuscation_type else {
@@ -324,7 +324,7 @@ fn get_obfuscated<'a>(
 
     let job_state = jobs.get_or_insert_with(
         job_pool,
-        &JobId::Blurhash(url),
+        &JobIdOld::Blurhash(url),
         Some(JobParams::Blurhash(params)),
         move |params| compute_blurhash(params, pixel_sizes),
     );

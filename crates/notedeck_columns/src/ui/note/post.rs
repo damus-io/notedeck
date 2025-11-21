@@ -18,7 +18,7 @@ use notedeck::media::AnimationMode;
 #[cfg(target_os = "android")]
 use notedeck::platform::android::try_open_file_picker;
 use notedeck::platform::get_next_selected_file;
-use notedeck::{get_render_state, JobsCache, PixelDimensions, RenderState};
+use notedeck::{get_render_state, JobsCacheOld, PixelDimensions, RenderState};
 use notedeck::{
     name::get_display_name, supported_mime_hosted_at_url, tr, Localization, NoteAction, NoteContext,
 };
@@ -39,7 +39,7 @@ pub struct PostView<'a, 'd> {
     poster: FilledKeypair<'a>,
     inner_rect: egui::Rect,
     note_options: NoteOptions,
-    jobs: &'a mut JobsCache,
+    jobs: &'a mut JobsCacheOld,
     animation_mode: AnimationMode,
 }
 
@@ -112,7 +112,7 @@ impl<'a, 'd> PostView<'a, 'd> {
         poster: FilledKeypair<'a>,
         inner_rect: egui::Rect,
         note_options: NoteOptions,
-        jobs: &'a mut JobsCache,
+        jobs: &'a mut JobsCacheOld,
     ) -> Self {
         let animation_mode = if note_options.contains(NoteOptions::NoAnimations) {
             AnimationMode::NoAnimation
@@ -837,7 +837,7 @@ mod preview {
     pub struct PostPreview {
         draft: Draft,
         poster: FullKeypair,
-        jobs: JobsCache,
+        jobs: JobsCacheOld,
     }
 
     impl PostPreview {
