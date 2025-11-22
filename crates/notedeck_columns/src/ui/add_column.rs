@@ -5,7 +5,7 @@ use egui::{
     pos2, vec2, Align, Color32, FontId, Id, Image, Margin, Pos2, Rect, RichText, ScrollArea,
     Separator, Ui, Vec2, Widget,
 };
-use enostr::Pubkey;
+use enostr::{Pubkey, RelayPool};
 use nostrdb::{Ndb, Transaction};
 use tracing::error;
 
@@ -29,6 +29,7 @@ pub enum AddColumnResponse {
     UndecidedNotification,
     ExternalNotification,
     Hashtag,
+    Relay,
     Algo(AlgoOption),
     UndecidedIndividual,
     ExternalIndividual,
@@ -59,6 +60,7 @@ enum AddColumnOption {
     Notification(PubkeySource),
     Contacts(PubkeySource),
     UndecidedHashtag,
+    UndecidedRelay,
     UndecidedIndividual,
     ExternalIndividual,
     Individual(PubkeySource),
@@ -77,6 +79,7 @@ pub enum AddColumnRoute {
     UndecidedNotification,
     ExternalNotification,
     Hashtag,
+    Relay,
     Algo(AddAlgoRoute),
     UndecidedIndividual,
     ExternalIndividual,
@@ -105,6 +108,7 @@ impl AddColumnRoute {
             Self::UndecidedIndividual => &["column", "individual_selection"],
             Self::ExternalIndividual => &["column", "external_individual_selection"],
             Self::Hashtag => &["column", "hashtag"],
+            Self::Relay => &["column", "relay"],
             Self::Algo(AddAlgoRoute::Base) => &["column", "algo_selection"],
             Self::Algo(AddAlgoRoute::LastPerPubkey) => {
                 &["column", "algo_selection", "last_per_pubkey"]
@@ -132,6 +136,7 @@ impl TokenSerializable for AddColumnRoute {
                 |p| parse_column_route(p, AddColumnRoute::UndecidedIndividual),
                 |p| parse_column_route(p, AddColumnRoute::ExternalIndividual),
                 |p| parse_column_route(p, AddColumnRoute::Hashtag),
+                |p| parse_column_route(p, AddColumnRoute::Relay),
                 |p| parse_column_route(p, AddColumnRoute::Algo(AddAlgoRoute::Base)),
                 |p| parse_column_route(p, AddColumnRoute::Algo(AddAlgoRoute::LastPerPubkey)),
             ],
@@ -153,6 +158,7 @@ impl AddColumnOption {
             ),
             AddColumnOption::ExternalNotification => AddColumnResponse::ExternalNotification,
             AddColumnOption::UndecidedHashtag => AddColumnResponse::Hashtag,
+            AddColumnOption::UndecidedRelay => AddColumnResponse::Relay,
             AddColumnOption::UndecidedIndividual => AddColumnResponse::UndecidedIndividual,
             AddColumnOption::ExternalIndividual => AddColumnResponse::ExternalIndividual,
             AddColumnOption::Individual(pubkey_source) => AddColumnResponse::Timeline(
@@ -516,6 +522,16 @@ impl<'a> AddColumnView<'a> {
             option: AddColumnOption::UndecidedHashtag,
         });
         vec.push(ColumnOptionData {
+            title: tr!(self.i18n, "Relay", "Title for relay column"),
+            description: tr!(
+                self.i18n,
+                "View content from a specific relay",
+                "Description for relay column"
+            ),
+            icon: app_images::add_relay_image(),
+            option: AddColumnOption::UndecidedRelay,
+        });
+        vec.push(ColumnOptionData {
             title: tr!(self.i18n, "Individual", "Title for individual user column"),
             description: tr!(
                 self.i18n,
@@ -684,6 +700,7 @@ pub fn render_add_column_routes(
         AddColumnRoute::UndecidedNotification => add_column_view.notifications_ui(ui),
         AddColumnRoute::ExternalNotification => add_column_view.external_notification_ui(ui),
         AddColumnRoute::Hashtag => hashtag_ui(ui, ctx.i18n, &mut app.view_state.id_string_map),
+        AddColumnRoute::Relay => relay_ui(ui, ctx.i18n, &mut app.view_state.id_string_map, ctx.pool),
         AddColumnRoute::UndecidedIndividual => add_column_view.individual_ui(ui),
         AddColumnRoute::ExternalIndividual => add_column_view.external_individual_ui(ui),
     };
@@ -790,6 +807,12 @@ pub fn render_add_column_routes(
                     .router_mut()
                     .route_to(crate::route::Route::AddColumn(AddColumnRoute::Hashtag));
             }
+            AddColumnResponse::Relay => {
+                app.columns_mut(ctx.i18n, ctx.accounts)
+                    .column_mut(col)
+                    .router_mut()
+                    .route_to(crate::route::Route::AddColumn(AddColumnRoute::Relay));
+            }
             AddColumnResponse::UndecidedIndividual => {
                 app.columns_mut(ctx.i18n, ctx.accounts)
                     .column_mut(col)
@@ -867,6 +890,102 @@ fn sanitize_hashtag(raw_hashtag: &str) -> String {
         .chars()
         .filter(|c| c.is_alphanumeric()) // keep letters and numbers only
         .collect()
+}
+
+pub fn relay_ui(
+    ui: &mut Ui,
+    i18n: &mut Localization,
+    id_string_map: &mut HashMap<Id, String>,
+    pool: &RelayPool,
+) -> Option<AddColumnResponse> {
+    padding(16.0, ui, |ui| {
+        let relay_id = ui.id().with("relay_url");
+        let hashtag_id = ui.id().with("relay_hashtags");
+
+        // Relay URL input
+        ui.label(tr!(i18n, "Relay URL", "Label for relay URL input"));
+        let relay_buffer = id_string_map.entry(relay_id).or_default();
+        let relay_edit = egui::TextEdit::singleline(relay_buffer)
+            .hint_text(
+                RichText::new(tr!(
+                    i18n,
+                    "wss://relay.example.com",
+                    "Placeholder for relay URL input field"
+                ))
+                .text_style(NotedeckTextStyle::Body.text_style()),
+            )
+            .vertical_align(Align::Center)
+            .desired_width(f32::INFINITY)
+            .min_size(Vec2::new(0.0, 40.0))
+            .margin(Margin::same(12));
+        ui.add(relay_edit);
+
+        ui.add_space(8.0);
+
+        // Hashtag input (optional)
+        ui.label(tr!(i18n, "Hashtags (optional)", "Label for hashtag filter input"));
+        let hashtag_buffer = id_string_map.entry(hashtag_id).or_default();
+        let hashtag_edit = egui::TextEdit::singleline(hashtag_buffer)
+            .hint_text(
+                RichText::new(tr!(
+                    i18n,
+                    "Enter hashtags to filter (space-separated)",
+                    "Placeholder for hashtag filter input field"
+                ))
+                .text_style(NotedeckTextStyle::Body.text_style()),
+            )
+            .vertical_align(Align::Center)
+            .desired_width(f32::INFINITY)
+            .min_size(Vec2::new(0.0, 40.0))
+            .margin(Margin::same(12));
+        ui.add(hashtag_edit);
+
+        ui.add_space(8.0);
+
+        let mut handle_user_input = false;
+        if ui.input(|i| i.key_released(egui::Key::Enter))
+            || ui
+                .add_sized(egui::vec2(50.0, 40.0), add_column_button(i18n))
+                .clicked()
+        {
+            handle_user_input = true;
+        }
+
+        // Clone values before validation to avoid borrow issues
+        let relay_value = id_string_map.get(&relay_id).map(|s| s.clone()).unwrap_or_default();
+        let hashtag_value = id_string_map.get(&hashtag_id).map(|s| s.clone()).unwrap_or_default();
+
+        if handle_user_input && !relay_value.is_empty() {
+            // Validate relay URL
+            if !pool.is_valid_url(&relay_value) {
+                // Show error message - for now just don't process
+                return None;
+            }
+
+            let hashtags = if hashtag_value.is_empty() {
+                None
+            } else {
+                Some(
+                    hashtag_value
+                        .split_whitespace()
+                        .filter(|s| !s.is_empty())
+                        .map(|s| sanitize_hashtag(s).to_lowercase().to_string())
+                        .collect::<Vec<_>>(),
+                )
+            };
+
+            let resp = AddColumnResponse::Timeline(TimelineKind::Relay(
+                relay_value,
+                hashtags,
+            ));
+            id_string_map.remove(&relay_id);
+            id_string_map.remove(&hashtag_id);
+            Some(resp)
+        } else {
+            None
+        }
+    })
+    .inner
 }
 
 #[cfg(test)]
