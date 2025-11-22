@@ -242,6 +242,11 @@ impl Columns {
 
         self.columns.remove(index);
 
+        // if we've removed the selected column, reduce the index by 1
+        if self.selected == (index as i32) && self.selected != 0 {
+            self.selected -= 1;
+        }
+
         if self.columns.is_empty() {
             self.new_column_picker();
         }
