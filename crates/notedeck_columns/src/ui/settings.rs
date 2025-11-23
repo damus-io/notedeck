@@ -6,7 +6,7 @@ use egui_extras::{Size, StripBuilder};
 use enostr::NoteId;
 use nostrdb::Transaction;
 use notedeck::{
-    tr, ui::richtext_small, Images, JobsCacheOld, LanguageIdentifier, Localization, NoteContext,
+    tr, ui::richtext_small, Images, LanguageIdentifier, Localization, NoteContext,
     NotedeckTextStyle, Settings, SettingsHandler, DEFAULT_MAX_HASHTAGS_PER_NOTE,
     DEFAULT_NOTE_BODY_FONT_SIZE,
 };
@@ -109,7 +109,6 @@ pub struct SettingsView<'a> {
     settings: &'a mut Settings,
     note_context: &'a mut NoteContext<'a>,
     note_options: &'a mut NoteOptions,
-    jobs: &'a mut JobsCacheOld,
 }
 
 fn settings_group<S>(ui: &mut egui::Ui, title: S, contents: impl FnOnce(&mut egui::Ui))
@@ -136,13 +135,11 @@ impl<'a> SettingsView<'a> {
         settings: &'a mut Settings,
         note_context: &'a mut NoteContext<'a>,
         note_options: &'a mut NoteOptions,
-        jobs: &'a mut JobsCacheOld,
     ) -> Self {
         Self {
             settings,
             note_context,
             note_options,
-            jobs,
         }
     }
 
@@ -210,15 +207,10 @@ impl<'a> SettingsView<'a> {
                         if notedeck::ui::is_narrow(ui.ctx()) {
                             ui.set_max_width(ui.available_width());
 
-                            NoteView::new(
-                                self.note_context,
-                                &preview_note,
-                                *self.note_options,
-                                self.jobs,
-                            )
-                            .actionbar(false)
-                            .options_button(false)
-                            .show(ui);
+                            NoteView::new(self.note_context, &preview_note, *self.note_options)
+                                .actionbar(false)
+                                .options_button(false)
+                                .show(ui);
                         }
                     });
                     ui.separator();

@@ -1,7 +1,7 @@
 use bitflags::bitflags;
 use egui::{emath::TSTransform, pos2, Color32, Rangef, Rect};
 use notedeck::media::{AnimationMode, MediaInfo, ViewMediaInfo};
-use notedeck::{ImageType, Images};
+use notedeck::{ImageType, Images, MediaJobSender};
 
 bitflags! {
     #[repr(transparent)]
@@ -90,23 +90,33 @@ impl<'a> MediaViewer<'a> {
         self
     }
 
-    pub fn ui(&mut self, images: &mut Images, ui: &mut egui::Ui) -> egui::Response {
+    pub fn ui(
+        &mut self,
+        images: &mut Images,
+        jobs: &MediaJobSender,
+        ui: &mut egui::Ui,
+    ) -> egui::Response {
         if self.state.flags.contains(MediaViewerFlags::Fullscreen) {
             egui::Window::new("Media Viewer")
                 .title_bar(false)
                 .fixed_size(ui.ctx().screen_rect().size())
                 .fixed_pos(ui.ctx().screen_rect().min)
                 .frame(egui::Frame::NONE)
-                .show(ui.ctx(), |ui| self.ui_content(images, ui))
+                .show(ui.ctx(), |ui| self.ui_content(images, jobs, ui))
                 .unwrap() // SAFETY: we are always open
                 .inner
                 .unwrap()
         } else {
-            self.ui_content(images, ui)
+            self.ui_content(images, jobs, ui)
         }
     }
 
-    fn ui_content(&mut self, images: &mut Images, ui: &mut egui::Ui) -> egui::Response {
+    fn ui_content(
+        &mut self,
+        images: &mut Images,
+        jobs: &MediaJobSender,
+        ui: &mut egui::Ui,
+    ) -> egui::Response {
         let avail_rect = ui.available_rect_before_wrap();
 
         let scene_rect = if let Some(scene_rect) = self.state.scene_rect {
@@ -132,7 +142,7 @@ impl<'a> MediaViewer<'a> {
         let mut trans_rect = if transitioning {
             let clicked_img = &self.state.media_info.clicked_media();
             let src_pos = &clicked_img.original_position;
-            let in_scene_pos = Self::first_image_rect(ui, clicked_img, images);
+            let in_scene_pos = Self::first_image_rect(ui, clicked_img, images, jobs);
             transition_scene_rect(
                 &avail_rect,
                 &zoom_range,
@@ -161,7 +171,7 @@ impl<'a> MediaViewer<'a> {
         */
 
         let resp = scene.show(ui, &mut trans_rect, |ui| {
-            Self::render_image_tiles(&self.state.media_info.medias, images, ui, open_amount);
+            Self::render_image_tiles(&self.state.media_info.medias, images, jobs, ui, open_amount);
         });
 
         self.state.scene_rect = Some(trans_rect);
@@ -174,9 +184,15 @@ impl<'a> MediaViewer<'a> {
     ///
     /// TODO(jb55): replace this with a "placed" variant once
     /// we have image layouts
-    fn first_image_rect(ui: &mut egui::Ui, media: &MediaInfo, images: &mut Images) -> Rect {
+    fn first_image_rect(
+        ui: &mut egui::Ui,
+        media: &MediaInfo,
+        images: &mut Images,
+        jobs: &MediaJobSender,
+    ) -> Rect {
         // fetch image texture
-        let Some(texture) = images.latest_texture_old(
+        let Some(texture) = images.latest_texture(
+            jobs,
             ui,
             &media.url,
             ImageType::Content(None),
@@ -204,6 +220,7 @@ impl<'a> MediaViewer<'a> {
     fn render_image_tiles(
         infos: &[MediaInfo],
         images: &mut Images,
+        jobs: &MediaJobSender,
         ui: &mut egui::Ui,
         open_amount: f32,
     ) {
@@ -213,7 +230,8 @@ impl<'a> MediaViewer<'a> {
             // fetch image texture
 
             // we want to continually redraw things in the gallery
-            let Some(texture) = images.latest_texture_old(
+            let Some(texture) = images.latest_texture(
+                jobs,
                 ui,
                 url,
                 ImageType::Content(None),

@@ -21,7 +21,8 @@ use enostr::{ClientMessage, PoolRelay, Pubkey, RelayEvent, RelayMessage, RelayPo
 use nostrdb::Transaction;
 use notedeck::{
     tr, ui::is_narrow, Accounts, AppAction, AppContext, AppResponse, DataPath, DataPathType,
-    FilterState, Images, JobsCacheOld, Localization, NotedeckOptions, SettingsHandler, UnknownIds,
+    FilterState, Images, Localization, MediaJobSender, NotedeckOptions, SettingsHandler,
+    UnknownIds,
 };
 use notedeck_ui::{
     media::{MediaViewer, MediaViewerFlags, MediaViewerState},
@@ -48,7 +49,6 @@ pub struct Damus {
     pub timeline_cache: TimelineCache,
     pub subscriptions: Subscriptions,
     pub support: Support,
-    pub jobs: JobsCacheOld,
     pub threads: Threads,
 
     //frame_history: crate::frame_history::FrameHistory,
@@ -442,7 +442,12 @@ fn render_damus(damus: &mut Damus, app_ctx: &mut AppContext<'_>, ui: &mut egui::
         render_damus_desktop(damus, app_ctx, ui)
     };
 
-    fullscreen_media_viewer_ui(ui, &mut damus.view_state.media_viewer, app_ctx.img_cache);
+    fullscreen_media_viewer_ui(
+        ui,
+        &mut damus.view_state.media_viewer,
+        app_ctx.img_cache,
+        app_ctx.media_jobs.sender(),
+    );
 
     // We use this for keeping timestamps and things up to date
     //ui.ctx().request_repaint_after(Duration::from_secs(5));
@@ -457,6 +462,7 @@ fn fullscreen_media_viewer_ui(
     ui: &mut egui::Ui,
     state: &mut MediaViewerState,
     img_cache: &mut Images,
+    jobs: &MediaJobSender,
 ) {
     if !state.should_show(ui) {
         if state.scene_rect.is_some() {
@@ -468,7 +474,9 @@ fn fullscreen_media_viewer_ui(
         return;
     }
 
-    let resp = MediaViewer::new(state).fullscreen(true).ui(img_cache, ui);
+    let resp = MediaViewer::new(state)
+        .fullscreen(true)
+        .ui(img_cache, jobs, ui);
 
     if resp.clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
         fullscreen_media_close(state);
@@ -568,7 +576,6 @@ impl Damus {
 
         let support = Support::new(app_context.path);
         let note_options = get_note_options(parsed_args, app_context.settings);
-        let jobs = JobsCacheOld::default();
         let threads = Threads::default();
 
         Self {
@@ -583,7 +590,6 @@ impl Damus {
             support,
             decks_cache,
             unrecognized_args,
-            jobs,
             threads,
             onboarding: Onboarding::default(),
             hovered_column: None,
@@ -635,7 +641,6 @@ impl Damus {
             options,
             decks_cache,
             unrecognized_args: BTreeSet::default(),
-            jobs: JobsCacheOld::default(),
             threads: Threads::default(),
             onboarding: Onboarding::default(),
             hovered_column: None,
@@ -915,6 +920,7 @@ fn timelines_view(
                     ctx.i18n,
                     ctx.ndb,
                     ctx.img_cache,
+                    ctx.media_jobs.sender(),
                 )
                 .show(ui);
 

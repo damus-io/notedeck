@@ -60,7 +60,8 @@ pub use imgcache::{
 };
 pub use jobs::{
     deliver_completed_media_job, run_media_job_pre_action, BlurhashParams, Job, JobCache, JobError,
-    JobIdOld, JobParams, JobParamsOwned, JobPool, JobState, JobsCacheOld, MediaJobs,
+    JobIdOld, JobParams, JobParamsOwned, JobPool, JobState, JobsCacheOld, MediaJobSender,
+    MediaJobs,
 };
 pub use media::{
     compute_blurhash, update_imeta_blurhashes, ImageMetadata, ImageType, MediaAction,

@@ -6,7 +6,7 @@ use crate::{
 };
 
 use enostr::Pubkey;
-use notedeck::{JobsCacheOld, NoteContext};
+use notedeck::NoteContext;
 use notedeck_ui::NoteOptions;
 
 #[allow(clippy::too_many_arguments)]
@@ -18,7 +18,6 @@ pub fn render_timeline_route(
     depth: usize,
     ui: &mut egui::Ui,
     note_context: &mut NoteContext,
-    jobs: &mut JobsCacheOld,
     scroll_to_top: bool,
 ) -> BodyResponse<RenderNavAction> {
     match kind {
@@ -30,35 +29,20 @@ pub fn render_timeline_route(
         | TimelineKind::Hashtag(_)
         | TimelineKind::Generic(_) => {
             let resp =
-                ui::TimelineView::new(kind, timeline_cache, note_context, note_options, jobs, col)
-                    .ui(ui);
+                ui::TimelineView::new(kind, timeline_cache, note_context, note_options, col).ui(ui);
 
             resp.map_output(RenderNavAction::NoteAction)
         }
 
         TimelineKind::Profile(pubkey) => {
             if depth > 1 {
-                render_profile_route(
-                    pubkey,
-                    timeline_cache,
-                    col,
-                    ui,
-                    note_options,
-                    note_context,
-                    jobs,
-                )
+                render_profile_route(pubkey, timeline_cache, col, ui, note_options, note_context)
             } else {
                 // we render profiles like timelines if they are at the root
-                let resp = ui::TimelineView::new(
-                    kind,
-                    timeline_cache,
-                    note_context,
-                    note_options,
-                    jobs,
-                    col,
-                )
-                .scroll_to_top(scroll_to_top)
-                .ui(ui);
+                let resp =
+                    ui::TimelineView::new(kind, timeline_cache, note_context, note_options, col)
+                        .scroll_to_top(scroll_to_top)
+                        .ui(ui);
 
                 resp.map_output(RenderNavAction::NoteAction)
             }
@@ -74,7 +58,6 @@ pub fn render_thread_route(
     mut note_options: NoteOptions,
     ui: &mut egui::Ui,
     note_context: &mut NoteContext,
-    jobs: &mut JobsCacheOld,
 ) -> BodyResponse<RenderNavAction> {
     // don't truncate thread notes for now, since they are
     // default truncated everywher eelse
@@ -88,7 +71,6 @@ pub fn render_thread_route(
         selection.selected_or_root(),
         note_options,
         note_context,
-        jobs,
         col,
     )
     .ui(ui)
@@ -103,17 +85,9 @@ pub fn render_profile_route(
     ui: &mut egui::Ui,
     note_options: NoteOptions,
     note_context: &mut NoteContext,
-    jobs: &mut JobsCacheOld,
 ) -> BodyResponse<RenderNavAction> {
-    let profile_view = ProfileView::new(
-        pubkey,
-        col,
-        timeline_cache,
-        note_options,
-        note_context,
-        jobs,
-    )
-    .ui(ui);
+    let profile_view =
+        ProfileView::new(pubkey, col, timeline_cache, note_options, note_context).ui(ui);
 
     profile_view.map_output_maybe(|action| match action {
         ui::profile::ProfileViewAction::EditProfile => note_context

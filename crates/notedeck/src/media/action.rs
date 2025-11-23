@@ -1,5 +1,4 @@
-use crate::{Images, MediaCacheType, TexturedImage};
-use poll_promise::Promise;
+use crate::{jobs::MediaJobSender, ImageType, Images, MediaCacheType};
 
 /// Tracks where media was on the screen so that
 /// we can do fun animations when opening the
@@ -41,8 +40,8 @@ pub enum MediaAction {
     FetchImage {
         url: String,
         cache_type: MediaCacheType,
-        no_pfp_promise: Promise<Option<Result<TexturedImage, crate::Error>>>,
     },
+    // A media is "done loading" when it has the actual media and it has reached the peak of a shimmer, to transition smoothly
     DoneLoading {
         url: String,
         cache_type: MediaCacheType,
@@ -60,15 +59,10 @@ impl std::fmt::Debug for MediaAction {
                 .field("clicked_index", clicked_index)
                 .field("media", medias)
                 .finish(),
-            Self::FetchImage {
-                url,
-                cache_type,
-                no_pfp_promise,
-            } => f
+            Self::FetchImage { url, cache_type } => f
                 .debug_struct("FetchNoPfpImage")
                 .field("url", url)
                 .field("cache_type", cache_type)
-                .field("no_pfp_promise ready", &no_pfp_promise.ready().is_some())
                 .finish(),
             Self::DoneLoading { url, cache_type } => f
                 .debug_struct("DoneLoading")
@@ -89,7 +83,12 @@ impl MediaAction {
 
     /// Default processing logic for Media Actions. We don't handle ViewMedias here since
     /// this may be app specific ?
-    pub fn process_default_media_actions(self, images: &mut Images) {
+    pub fn process_default_media_actions(
+        self,
+        images: &mut Images,
+        jobs: &MediaJobSender,
+        ctx: &egui::Context,
+    ) {
         match self {
             MediaAction::ViewMedias(_urls) => {
                 // NOTE(jb55): don't assume we want to show a fullscreen
@@ -104,23 +103,22 @@ impl MediaAction {
                 //mview_state.set_urls(urls);
             }
 
-            MediaAction::FetchImage {
-                url,
-                cache_type,
-                no_pfp_promise: promise,
-            } => {
-                images
-                    .get_cache_mut(cache_type)
-                    .textures_cache
-                    .insert_pending(&url, promise);
-            }
-            MediaAction::DoneLoading { url, cache_type } => {
-                let cache = match cache_type {
-                    MediaCacheType::Image => &mut images.static_imgs,
-                    MediaCacheType::Gif => &mut images.gifs,
-                };
-
-                cache.textures_cache.move_to_loaded(&url);
+            MediaAction::FetchImage { url, cache_type } => match cache_type {
+                MediaCacheType::Image => {
+                    images
+                        .textures
+                        .static_image
+                        .request(jobs, ctx, &url, ImageType::Content(None))
+                }
+                MediaCacheType::Gif => {
+                    images
+                        .textures
+                        .animated
+                        .request(jobs, ctx, &url, ImageType::Content(None))
+                }
+            },
+            MediaAction::DoneLoading { url, cache_type: _ } => {
+                images.textures.blurred.finished_transitioning(&url);
             }
         }
     }

@@ -1,7 +1,7 @@
 use egui::{vec2, FontId, Layout, Pos2, Rect, ScrollArea, UiBuilder, Vec2b};
 use nostrdb::{Ndb, ProfileRecord, Transaction};
 use notedeck::{
-    fonts::get_font_size, name::get_display_name, profile::get_profile_url, Images,
+    fonts::get_font_size, name::get_display_name, profile::get_profile_url, Images, MediaJobSender,
     NotedeckTextStyle,
 };
 use notedeck_ui::{
@@ -20,6 +20,7 @@ pub struct MentionPickerView<'a> {
     txn: &'a Transaction,
     img_cache: &'a mut Images,
     results: &'a Vec<&'a [u8; 32]>,
+    jobs: &'a MediaJobSender,
 }
 
 pub enum MentionPickerResponse {
@@ -33,12 +34,14 @@ impl<'a> MentionPickerView<'a> {
         ndb: &'a Ndb,
         txn: &'a Transaction,
         results: &'a Vec<&'a [u8; 32]>,
+        jobs: &'a MediaJobSender,
     ) -> Self {
         Self {
             ndb,
             txn,
             img_cache,
             results,
+            jobs,
         }
     }
 
@@ -55,7 +58,7 @@ impl<'a> MentionPickerView<'a> {
                 };
 
                 if ui
-                    .add(user_result(&profile, self.img_cache, i, width))
+                    .add(user_result(&profile, self.img_cache, self.jobs, i, width))
                     .clicked()
                 {
                     selection = Some(i)
@@ -129,6 +132,7 @@ impl<'a> MentionPickerView<'a> {
 fn user_result<'a>(
     profile: &'a ProfileRecord<'_>,
     cache: &'a mut Images,
+    jobs: &'a MediaJobSender,
     index: usize,
     width: f32,
 ) -> impl egui::Widget + 'a {
@@ -161,7 +165,7 @@ fn user_result<'a>(
 
         let pfp_resp = ui.put(
             icon_rect,
-            &mut ProfilePic::new(cache, get_profile_url(Some(profile)))
+            &mut ProfilePic::new(cache, jobs, get_profile_url(Some(profile)))
                 .size(helper.scale_1d_pos(min_img_size)),
         );
 

@@ -484,6 +484,7 @@ fn chrome_handle_app_action(
                 ctx.zaps,
                 ctx.img_cache,
                 &mut columns.view_state,
+                ctx.media_jobs.sender(),
                 ui,
             );
 
@@ -540,6 +541,7 @@ fn columns_route_to_profile(
         ctx.zaps,
         ctx.img_cache,
         &mut columns.view_state,
+        ctx.media_jobs.sender(),
         ui,
     );
 
@@ -589,7 +591,8 @@ fn topdown_sidebar(
         get_profile_url_owned(None)
     };
 
-    let pfp_resp = ui.add(&mut ProfilePic::new(ctx.img_cache, profile_url).size(64.0));
+    let pfp_resp = ui
+        .add(&mut ProfilePic::new(ctx.img_cache, ctx.media_jobs.sender(), profile_url).size(64.0));
 
     ui.horizontal_wrapped(|ui| {
         ui.add(egui::Label::new(

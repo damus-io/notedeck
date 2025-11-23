@@ -6,8 +6,8 @@ use crate::{
 use egui::{Color32, Hyperlink, Label, RichText};
 use nostrdb::{BlockType, Mention, Note, NoteKey, Transaction};
 use notedeck::Localization;
+use notedeck::RenderableMedia;
 use notedeck::{time_format, update_imeta_blurhashes, NoteCache, NoteContext, NotedeckTextStyle};
-use notedeck::{JobsCacheOld, RenderableMedia};
 use tracing::warn;
 
 pub struct NoteContents<'a, 'd> {
@@ -16,7 +16,6 @@ pub struct NoteContents<'a, 'd> {
     note: &'a Note<'a>,
     options: NoteOptions,
     pub action: Option<NoteAction>,
-    jobs: &'a mut JobsCacheOld,
 }
 
 impl<'a, 'd> NoteContents<'a, 'd> {
@@ -26,7 +25,6 @@ impl<'a, 'd> NoteContents<'a, 'd> {
         txn: &'a Transaction,
         note: &'a Note,
         options: NoteOptions,
-        jobs: &'a mut JobsCacheOld,
     ) -> Self {
         NoteContents {
             note_context,
@@ -34,21 +32,13 @@ impl<'a, 'd> NoteContents<'a, 'd> {
             note,
             options,
             action: None,
-            jobs,
         }
     }
 }
 
 impl egui::Widget for &mut NoteContents<'_, '_> {
     fn ui(self, ui: &mut egui::Ui) -> egui::Response {
-        let result = render_note_contents(
-            ui,
-            self.note_context,
-            self.txn,
-            self.note,
-            self.options,
-            self.jobs,
-        );
+        let result = render_note_contents(ui, self.note_context, self.txn, self.note, self.options);
         self.action = result.action;
         result.response
     }
@@ -83,7 +73,6 @@ pub fn render_note_preview(
     id: &[u8; 32],
     parent: NoteKey,
     note_options: NoteOptions,
-    jobs: &mut JobsCacheOld,
 ) -> NoteResponse {
     let note = if let Ok(note) = note_context.ndb.get_note_by_id(txn, id) {
         // TODO: support other preview kinds
@@ -112,7 +101,7 @@ pub fn render_note_preview(
             */
     };
 
-    NoteView::new(note_context, &note, note_options, jobs)
+    NoteView::new(note_context, &note, note_options)
         .preview_style()
         .parent(parent)
         .show(ui)
@@ -125,9 +114,8 @@ fn render_note_contents(
     txn: &Transaction,
     note: &Note,
     options: NoteOptions,
-    jobs: &mut JobsCacheOld,
 ) -> NoteResponse {
-    let response = render_undecorated_note_contents(ui, note_context, txn, note, options, jobs);
+    let response = render_undecorated_note_contents(ui, note_context, txn, note, options);
 
     ui.horizontal_wrapped(|ui| {
         note_bottom_metadata_ui(
@@ -169,7 +157,6 @@ fn render_undecorated_note_contents<'a>(
     txn: &Transaction,
     note: &'a Note,
     options: NoteOptions,
-    jobs: &mut JobsCacheOld,
 ) -> NoteResponse {
     let note_key = note.key().expect("todo: implement non-db notes");
     let selectable = options.contains(NoteOptions::SelectableText);
@@ -208,6 +195,7 @@ fn render_undecorated_note_contents<'a>(
                         let act = crate::Mention::new(
                             note_context.ndb,
                             note_context.img_cache,
+                            note_context.jobs,
                             txn,
                             profile.pubkey(),
                         )
@@ -223,6 +211,7 @@ fn render_undecorated_note_contents<'a>(
                         let act = crate::Mention::new(
                             note_context.ndb,
                             note_context.img_cache,
+                            note_context.jobs,
                             txn,
                             npub.pubkey(),
                         )
@@ -355,7 +344,7 @@ fn render_undecorated_note_contents<'a>(
     });
 
     let preview_note_action = inline_note.and_then(|(id, _)| {
-        render_note_preview(ui, note_context, txn, id, note_key, options, jobs)
+        render_note_preview(ui, note_context, txn, id, note_key, options)
             .action
             .map(|a| match a {
                 NoteAction::Note { note_id, .. } => NoteAction::Note {
@@ -375,8 +364,7 @@ fn render_undecorated_note_contents<'a>(
         media_action = image_carousel(
             ui,
             note_context.img_cache,
-            note_context.job_pool,
-            jobs,
+            note_context.jobs,
             &supported_medias,
             carousel_id,
             note_context.i18n,
