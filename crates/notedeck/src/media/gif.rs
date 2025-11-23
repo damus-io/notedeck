@@ -135,72 +135,8 @@ pub(crate) fn process_gif_frame<'a>(
 ) -> ProcessedGifFrame<'a> {
     let now = Instant::now();
 
-    match frame_state {
-        Some(prev_state) => {
-            let should_advance = animation_mode.can_animate()
-                && (now - prev_state.last_frame_rendered >= prev_state.last_frame_duration);
-
-            if should_advance {
-                let maybe_new_index = if prev_state.last_frame_index < animation.num_frames() - 1 {
-                    prev_state.last_frame_index + 1
-                } else {
-                    0
-                };
-
-                match animation.get_frame(maybe_new_index) {
-                    Some(frame) => {
-                        let next_frame_time = match animation_mode {
-                            AnimationMode::Continuous { fps } => match fps {
-                                Some(fps) => {
-                                    let max_delay_ms = Duration::from_millis((1000.0 / fps) as u64);
-                                    SystemTime::now().checked_add(frame.delay.max(max_delay_ms))
-                                }
-                                None => SystemTime::now().checked_add(frame.delay),
-                            },
-
-                            AnimationMode::NoAnimation | AnimationMode::Reactive => None,
-                        };
-
-                        ProcessedGifFrame {
-                            texture: &frame.texture,
-                            maybe_new_state: Some(GifState {
-                                last_frame_rendered: now,
-                                last_frame_duration: frame.delay,
-                                next_frame_time,
-                                last_frame_index: maybe_new_index,
-                            }),
-                            repaint_at: next_frame_time,
-                        }
-                    }
-                    None => {
-                        let (texture, maybe_new_state) =
-                            match animation.get_frame(prev_state.last_frame_index) {
-                                Some(frame) => (&frame.texture, None),
-                                None => (&animation.first_frame.texture, None),
-                            };
-
-                        ProcessedGifFrame {
-                            texture,
-                            maybe_new_state,
-                            repaint_at: prev_state.next_frame_time,
-                        }
-                    }
-                }
-            } else {
-                let (texture, maybe_new_state) =
-                    match animation.get_frame(prev_state.last_frame_index) {
-                        Some(frame) => (&frame.texture, None),
-                        None => (&animation.first_frame.texture, None),
-                    };
-
-                ProcessedGifFrame {
-                    texture,
-                    maybe_new_state,
-                    repaint_at: prev_state.next_frame_time,
-                }
-            }
-        }
-        None => ProcessedGifFrame {
+    let Some(prev_state) = frame_state else {
+        return ProcessedGifFrame {
             texture: &animation.first_frame.texture,
             maybe_new_state: Some(GifState {
                 last_frame_rendered: now,
@@ -209,7 +145,65 @@ pub(crate) fn process_gif_frame<'a>(
                 last_frame_index: 0,
             }),
             repaint_at: None,
+        };
+    };
+
+    let should_advance = animation_mode.can_animate()
+        && (now - prev_state.last_frame_rendered >= prev_state.last_frame_duration);
+
+    if !should_advance {
+        let (texture, maybe_new_state) = match animation.get_frame(prev_state.last_frame_index) {
+            Some(frame) => (&frame.texture, None),
+            None => (&animation.first_frame.texture, None),
+        };
+
+        return ProcessedGifFrame {
+            texture,
+            maybe_new_state,
+            repaint_at: prev_state.next_frame_time,
+        };
+    }
+
+    let maybe_new_index = if prev_state.last_frame_index < animation.num_frames() - 1 {
+        prev_state.last_frame_index + 1
+    } else {
+        0
+    };
+
+    let Some(frame) = animation.get_frame(maybe_new_index) else {
+        let (texture, maybe_new_state) = match animation.get_frame(prev_state.last_frame_index) {
+            Some(frame) => (&frame.texture, None),
+            None => (&animation.first_frame.texture, None),
+        };
+
+        return ProcessedGifFrame {
+            texture,
+            maybe_new_state,
+            repaint_at: prev_state.next_frame_time,
+        };
+    };
+
+    let next_frame_time = match animation_mode {
+        AnimationMode::Continuous { fps } => match fps {
+            Some(fps) => {
+                let max_delay_ms = Duration::from_millis((1000.0 / fps) as u64);
+                SystemTime::now().checked_add(frame.delay.max(max_delay_ms))
+            }
+            None => SystemTime::now().checked_add(frame.delay),
         },
+
+        AnimationMode::NoAnimation | AnimationMode::Reactive => None,
+    };
+
+    ProcessedGifFrame {
+        texture: &frame.texture,
+        maybe_new_state: Some(GifState {
+            last_frame_rendered: now,
+            last_frame_duration: frame.delay,
+            next_frame_time,
+            last_frame_index: maybe_new_index,
+        }),
+        repaint_at: next_frame_time,
     }
 }
 
