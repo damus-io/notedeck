@@ -25,7 +25,7 @@ pub fn ensure_latest_texture_from_cache(
     Some(ensure_latest_texture(ui, url, gifs, img, animation_mode))
 }
 
-struct ProcessedGifFrame {
+struct ProcessedGifFrameOld {
     texture: TextureHandle,
     maybe_new_state: Option<GifState>,
     repaint_at: Option<SystemTime>,
@@ -33,11 +33,11 @@ struct ProcessedGifFrame {
 
 /// Process a gif state frame, and optionally present a new
 /// state and when to repaint it
-fn process_gif_frame(
+fn process_gif_frame_old(
     animation: &AnimationOld,
     frame_state: Option<&GifState>,
     animation_mode: AnimationMode,
-) -> ProcessedGifFrame {
+) -> ProcessedGifFrameOld {
     let now = Instant::now();
 
     match frame_state {
@@ -68,7 +68,7 @@ fn process_gif_frame(
                             AnimationMode::NoAnimation | AnimationMode::Reactive => None,
                         };
 
-                        ProcessedGifFrame {
+                        ProcessedGifFrameOld {
                             texture: frame.texture.clone(),
                             maybe_new_state: Some(GifState {
                                 last_frame_rendered: now,
@@ -86,7 +86,7 @@ fn process_gif_frame(
                                 None => (animation.first_frame.texture.clone(), None),
                             };
 
-                        ProcessedGifFrame {
+                        ProcessedGifFrameOld {
                             texture,
                             maybe_new_state,
                             repaint_at: prev_state.next_frame_time,
@@ -100,14 +100,14 @@ fn process_gif_frame(
                         None => (animation.first_frame.texture.clone(), None),
                     };
 
-                ProcessedGifFrame {
+                ProcessedGifFrameOld {
                     texture,
                     maybe_new_state,
                     repaint_at: prev_state.next_frame_time,
                 }
             }
         }
-        None => ProcessedGifFrame {
+        None => ProcessedGifFrameOld {
             texture: animation.first_frame.texture.clone(),
             maybe_new_state: Some(GifState {
                 last_frame_rendered: now,
@@ -145,7 +145,7 @@ pub fn ensure_latest_texture(
                 }
             }
 
-            let next_state = process_gif_frame(animation, gifs.get(url), animation_mode);
+            let next_state = process_gif_frame_old(animation, gifs.get(url), animation_mode);
 
             if let Some(new_state) = next_state.maybe_new_state {
                 gifs.insert(url.to_owned(), new_state);
