@@ -1,6 +1,7 @@
 mod cache;
 mod cache_old;
 mod job_pool;
+mod media;
 pub(crate) mod types;
 
 pub use crate::jobs::types::{
@@ -11,3 +12,4 @@ pub use cache_old::{
     BlurhashParams, Job, JobError, JobIdOld, JobParams, JobParamsOwned, JobState, JobsCacheOld,
 };
 pub use job_pool::JobPool;
+pub use media::{MediaJobKind, MediaJobResult, MediaJobSender, MediaJobs};
