@@ -137,7 +137,7 @@ fn resize_image_if_too_big(
 ///   - resize if any larger, using [`resize_image_if_too_big`]
 ///
 #[profiling::function]
-fn process_image(imgtyp: ImageType, mut image: image::DynamicImage) -> ColorImage {
+pub fn process_image(imgtyp: ImageType, mut image: image::DynamicImage) -> ColorImage {
     const MAX_IMG_LENGTH: u32 = 2048;
     const FILTER_TYPE: FilterType = FilterType::CatmullRom;
 
@@ -371,7 +371,7 @@ fn generate_animation_frame(
     }
 }
 
-fn buffer_to_color_image(
+pub fn buffer_to_color_image(
     samples: Option<FlatSamples<&[u8]>>,
     width: u32,
     height: u32,
