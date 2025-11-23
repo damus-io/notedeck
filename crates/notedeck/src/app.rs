@@ -3,13 +3,13 @@ use crate::i18n::Localization;
 use crate::persist::{AppSizeHandler, SettingsHandler};
 use crate::wallet::GlobalWallet;
 use crate::zaps::Zaps;
-use crate::Error;
-use crate::JobPool;
 use crate::NotedeckOptions;
 use crate::{
     frame_history::FrameHistory, AccountStorage, Accounts, AppContext, Args, DataPath,
     DataPathType, Directory, Images, NoteAction, NoteCache, RelayDebugView, UnknownIds,
 };
+use crate::{Error, JobCache};
+use crate::{JobPool, MediaJobs};
 use egui::Margin;
 use egui::ThemePreference;
 use egui_winit::clipboard::Clipboard;
@@ -77,6 +77,7 @@ pub struct Notedeck {
     zaps: Zaps,
     frame_history: FrameHistory,
     job_pool: JobPool,
+    media_jobs: MediaJobs,
     i18n: Localization,
 
     #[cfg(target_os = "android")]
@@ -121,6 +122,13 @@ impl eframe::App for Notedeck {
         profiling::finish_frame!();
         self.frame_history
             .on_new_frame(ctx.input(|i| i.time), frame.info().cpu_usage);
+
+        self.media_jobs.run_received(&mut self.job_pool, |id| {
+            crate::run_media_job_pre_action(id, &mut self.img_cache.textures);
+        });
+        self.media_jobs.deliver_all_completed(|completed| {
+            crate::deliver_completed_media_job(completed, &mut self.img_cache.textures)
+        });
 
         // handle account updates
         self.accounts.update(&mut self.ndb, &mut self.pool, ctx);
@@ -290,6 +298,9 @@ impl Notedeck {
             }
         }
 
+        let (send_new_jobs, receive_new_jobs) = std::sync::mpsc::channel();
+        let media_job_cache = JobCache::new(receive_new_jobs, send_new_jobs);
+
         Self {
             ndb,
             img_cache,
@@ -308,6 +319,7 @@ impl Notedeck {
             clipboard: Clipboard::new(None),
             zaps,
             job_pool,
+            media_jobs: media_job_cache,
             i18n,
             #[cfg(target_os = "android")]
             android_app: None,
@@ -373,6 +385,7 @@ impl Notedeck {
             zaps: &mut self.zaps,
             frame_history: &mut self.frame_history,
             job_pool: &mut self.job_pool,
+            media_jobs: &mut self.media_jobs,
             i18n: &mut self.i18n,
             #[cfg(target_os = "android")]
             android: self.android_app.as_ref().unwrap().clone(),

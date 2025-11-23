@@ -59,8 +59,8 @@ pub use imgcache::{
     TextureState, TextureStateOld, TexturedImage, TexturesCache, TexturesCacheOld,
 };
 pub use jobs::{
-    BlurhashParams, Job, JobError, JobIdOld, JobParams, JobParamsOwned, JobPool, JobState,
-    JobsCacheOld,
+    deliver_completed_media_job, run_media_job_pre_action, BlurhashParams, Job, JobCache, JobError,
+    JobIdOld, JobParams, JobParamsOwned, JobPool, JobState, JobsCacheOld, MediaJobs,
 };
 pub use media::{
     compute_blurhash, update_imeta_blurhashes, ImageMetadata, ImageType, MediaAction,
