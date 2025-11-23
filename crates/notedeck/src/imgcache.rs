@@ -206,7 +206,7 @@ impl<'a> From<&'a mut TextureStateInternal> for LoadableTextureState<'a> {
 
 pub enum TexturedImage {
     Static(TextureHandle),
-    Animated(Animation),
+    Animated(AnimationOld),
 }
 
 impl TexturedImage {
@@ -218,13 +218,13 @@ impl TexturedImage {
     }
 }
 
-pub struct Animation {
+pub struct AnimationOld {
     pub first_frame: TextureFrame,
     pub other_frames: Vec<TextureFrame>,
     pub receiver: Option<Receiver<TextureFrame>>,
 }
 
-impl Animation {
+impl AnimationOld {
     pub fn get_frame(&self, index: usize) -> Option<&TextureFrame> {
         if index == 0 {
             Some(&self.first_frame)

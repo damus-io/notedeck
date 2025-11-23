@@ -1,5 +1,5 @@
 use crate::media::load_texture_checked;
-use crate::{Animation, ImageFrame, MediaCache, MediaCacheType, TextureFrame, TexturedImage};
+use crate::{AnimationOld, ImageFrame, MediaCache, MediaCacheType, TextureFrame, TexturedImage};
 use egui::{pos2, Color32, ColorImage, Context, Rect, Sense, SizeHint};
 use image::codecs::gif::GifDecoder;
 use image::imageops::FilterType;
@@ -335,7 +335,7 @@ fn generate_gif(
             ))
         },
         |first_frame| {
-            Ok(TexturedImage::Animated(Animation {
+            Ok(TexturedImage::Animated(AnimationOld {
                 other_frames: Default::default(),
                 receiver: Some(tex_output),
                 first_frame,

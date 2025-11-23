@@ -4,7 +4,7 @@ use std::{
 };
 
 use crate::media::AnimationMode;
-use crate::Animation;
+use crate::AnimationOld;
 use crate::{GifState, GifStateMap, TextureStateOld, TexturedImage, TexturesCache};
 use egui::TextureHandle;
 use std::time::Duration;
@@ -34,7 +34,7 @@ struct ProcessedGifFrame {
 /// Process a gif state frame, and optionally present a new
 /// state and when to repaint it
 fn process_gif_frame(
-    animation: &Animation,
+    animation: &AnimationOld,
     frame_state: Option<&GifState>,
     animation_mode: AnimationMode,
 ) -> ProcessedGifFrame {
