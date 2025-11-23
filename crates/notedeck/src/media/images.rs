@@ -1,4 +1,5 @@
 use crate::media::load_texture_checked;
+use crate::media::network::HyperHttpResponse;
 use crate::{AnimationOld, ImageFrame, MediaCache, MediaCacheType, TextureFrame, TexturedImage};
 use egui::{pos2, Color32, ColorImage, Context, Rect, Sense, SizeHint};
 use image::codecs::gif::GifDecoder;
@@ -189,6 +190,34 @@ fn parse_img_response_old(
     imgtyp: ImageType,
 ) -> Result<ColorImage, crate::Error> {
     let content_type = response.content_type().unwrap_or_default();
+    let size_hint = match imgtyp {
+        ImageType::Profile(size) => SizeHint::Size(size, size),
+        ImageType::Content(Some((w, h))) => SizeHint::Size(w, h),
+        ImageType::Content(None) => SizeHint::default(),
+    };
+
+    if content_type.starts_with("image/svg") {
+        profiling::scope!("load_svg");
+
+        let mut color_image =
+            egui_extras::image::load_svg_bytes_with_size(&response.bytes, Some(size_hint))?;
+        round_image(&mut color_image);
+        Ok(color_image)
+    } else if content_type.starts_with("image/") {
+        profiling::scope!("load_from_memory");
+        let dyn_image = image::load_from_memory(&response.bytes)?;
+        Ok(process_image(imgtyp, dyn_image))
+    } else {
+        Err(format!("Expected image, found content-type {content_type:?}").into())
+    }
+}
+
+#[profiling::function]
+pub fn parse_img_response(
+    response: HyperHttpResponse,
+    imgtyp: ImageType,
+) -> Result<ColorImage, crate::Error> {
+    let content_type = response.content_type.unwrap_or_default();
     let size_hint = match imgtyp {
         ImageType::Profile(size) => SizeHint::Size(size, size),
         ImageType::Content(Some((w, h))) => SizeHint::Size(w, h),
