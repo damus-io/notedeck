@@ -12,4 +12,7 @@ pub use cache_old::{
     BlurhashParams, Job, JobError, JobIdOld, JobParams, JobParamsOwned, JobState, JobsCacheOld,
 };
 pub use job_pool::JobPool;
-pub use media::{MediaJobKind, MediaJobResult, MediaJobSender, MediaJobs};
+pub use media::{
+    deliver_completed_media_job, run_media_job_pre_action, MediaJobKind, MediaJobResult,
+    MediaJobSender,
+};
