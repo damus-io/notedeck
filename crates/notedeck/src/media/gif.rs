@@ -3,8 +3,8 @@ use std::{
     time::{Instant, SystemTime},
 };
 
-use crate::media::AnimationMode;
 use crate::AnimationOld;
+use crate::{media::AnimationMode, Animation};
 use crate::{GifState, GifStateMap, TextureStateOld, TexturedImage, TexturesCache};
 use egui::TextureHandle;
 use std::time::Duration;
@@ -109,6 +109,99 @@ fn process_gif_frame_old(
         }
         None => ProcessedGifFrameOld {
             texture: animation.first_frame.texture.clone(),
+            maybe_new_state: Some(GifState {
+                last_frame_rendered: now,
+                last_frame_duration: animation.first_frame.delay,
+                next_frame_time: None,
+                last_frame_index: 0,
+            }),
+            repaint_at: None,
+        },
+    }
+}
+
+pub(crate) struct ProcessedGifFrame<'a> {
+    pub texture: &'a TextureHandle,
+    pub maybe_new_state: Option<GifState>,
+    pub repaint_at: Option<SystemTime>,
+}
+
+/// Process a gif state frame, and optionally present a new
+/// state and when to repaint it
+pub(crate) fn process_gif_frame<'a>(
+    animation: &'a Animation,
+    frame_state: Option<&GifState>,
+    animation_mode: AnimationMode,
+) -> ProcessedGifFrame<'a> {
+    let now = Instant::now();
+
+    match frame_state {
+        Some(prev_state) => {
+            let should_advance = animation_mode.can_animate()
+                && (now - prev_state.last_frame_rendered >= prev_state.last_frame_duration);
+
+            if should_advance {
+                let maybe_new_index = if prev_state.last_frame_index < animation.num_frames() - 1 {
+                    prev_state.last_frame_index + 1
+                } else {
+                    0
+                };
+
+                match animation.get_frame(maybe_new_index) {
+                    Some(frame) => {
+                        let next_frame_time = match animation_mode {
+                            AnimationMode::Continuous { fps } => match fps {
+                                Some(fps) => {
+                                    let max_delay_ms = Duration::from_millis((1000.0 / fps) as u64);
+                                    SystemTime::now().checked_add(frame.delay.max(max_delay_ms))
+                                }
+                                None => SystemTime::now().checked_add(frame.delay),
+                            },
+
+                            AnimationMode::NoAnimation | AnimationMode::Reactive => None,
+                        };
+
+                        ProcessedGifFrame {
+                            texture: &frame.texture,
+                            maybe_new_state: Some(GifState {
+                                last_frame_rendered: now,
+                                last_frame_duration: frame.delay,
+                                next_frame_time,
+                                last_frame_index: maybe_new_index,
+                            }),
+                            repaint_at: next_frame_time,
+                        }
+                    }
+                    None => {
+                        let (texture, maybe_new_state) =
+                            match animation.get_frame(prev_state.last_frame_index) {
+                                Some(frame) => (&frame.texture, None),
+                                None => (&animation.first_frame.texture, None),
+                            };
+
+                        ProcessedGifFrame {
+                            texture,
+                            maybe_new_state,
+                            repaint_at: prev_state.next_frame_time,
+                        }
+                    }
+                }
+            } else {
+                let (texture, maybe_new_state) =
+                    match animation.get_frame(prev_state.last_frame_index) {
+                        Some(frame) => (&frame.texture, None),
+                        None => (&animation.first_frame.texture, None),
+                    };
+
+                ProcessedGifFrame {
+                    texture,
+                    maybe_new_state,
+                    repaint_at: prev_state.next_frame_time,
+                }
+            }
+        }
+        None => ProcessedGifFrame {
+            texture: &animation.first_frame.texture,
             maybe_new_state: Some(GifState {
                 last_frame_rendered: now,
                 last_frame_duration: animation.first_frame.delay,
