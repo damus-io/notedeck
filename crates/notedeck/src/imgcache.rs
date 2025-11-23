@@ -518,7 +518,7 @@ impl Images {
         })
     }
 
-    pub fn latest_texture(
+    pub fn latest_texture_old(
         &mut self,
         ui: &mut egui::Ui,
         url: &str,

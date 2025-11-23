@@ -176,7 +176,7 @@ impl<'a> MediaViewer<'a> {
     /// we have image layouts
     fn first_image_rect(ui: &mut egui::Ui, media: &MediaInfo, images: &mut Images) -> Rect {
         // fetch image texture
-        let Some(texture) = images.latest_texture(
+        let Some(texture) = images.latest_texture_old(
             ui,
             &media.url,
             ImageType::Content(None),
@@ -213,7 +213,7 @@ impl<'a> MediaViewer<'a> {
             // fetch image texture
 
             // we want to continually redraw things in the gallery
-            let Some(texture) = images.latest_texture(
+            let Some(texture) = images.latest_texture_old(
                 ui,
                 url,
                 ImageType::Content(None),
