@@ -250,7 +250,7 @@ pub fn get_content_media_render_state<'a>(
     cache_type: MediaCacheType,
     cache_dir: &Path,
     obfuscation_type: &'a ObfuscationType,
-) -> MediaRenderState<'a> {
+) -> MediaRenderStateOld<'a> {
     let render_type = if media_trusted {
         cache.handle_and_get_or_insert_loadable(url, || {
             notedeck::media::images::fetch_img(
@@ -264,7 +264,7 @@ pub fn get_content_media_render_state<'a>(
     } else if let Some(render_type) = cache.get_and_handle(url) {
         render_type
     } else {
-        return MediaRenderState::Obfuscated(get_obfuscated(
+        return MediaRenderStateOld::Obfuscated(get_obfuscated(
             ui,
             url,
             obfuscation_type,
@@ -275,7 +275,7 @@ pub fn get_content_media_render_state<'a>(
     };
 
     match render_type {
-        notedeck::LoadableTextureState::Pending => MediaRenderState::Shimmering(get_obfuscated(
+        notedeck::LoadableTextureState::Pending => MediaRenderStateOld::Shimmering(get_obfuscated(
             ui,
             url,
             obfuscation_type,
@@ -283,16 +283,16 @@ pub fn get_content_media_render_state<'a>(
             jobs,
             size,
         )),
-        notedeck::LoadableTextureState::Error(e) => MediaRenderState::Error(e),
+        notedeck::LoadableTextureState::Error(e) => MediaRenderStateOld::Error(e),
         notedeck::LoadableTextureState::Loading { actual_image_tex } => {
             let obfuscation = get_obfuscated(ui, url, obfuscation_type, job_pool, jobs, size);
-            MediaRenderState::Transitioning {
+            MediaRenderStateOld::Transitioning {
                 image: actual_image_tex,
                 obfuscation,
             }
         }
         notedeck::LoadableTextureState::Loaded(textured_image) => {
-            MediaRenderState::ActualImage(textured_image)
+            MediaRenderStateOld::ActualImage(textured_image)
         }
     }
 }
@@ -367,7 +367,7 @@ fn copy_link(i18n: &mut Localization, url: &str, img_resp: &Response) {
 fn render_media_internal(
     ui: &mut egui::Ui,
     gifs: &mut GifStateMap,
-    render_state: MediaRenderState,
+    render_state: MediaRenderStateOld,
     url: &str,
     size: egui::Vec2,
     i18n: &mut Localization,
@@ -375,7 +375,7 @@ fn render_media_internal(
     animation_mode: AnimationMode,
 ) -> egui::InnerResponse<Option<MediaUIAction>> {
     match render_state {
-        MediaRenderState::ActualImage(image) => {
+        MediaRenderStateOld::ActualImage(image) => {
             let resp = render_success_media(
                 ui,
                 url,
@@ -392,7 +392,7 @@ fn render_media_internal(
                 egui::InnerResponse::new(None, resp)
             }
         }
-        MediaRenderState::Transitioning { image, obfuscation } => match obfuscation {
+        MediaRenderStateOld::Transitioning { image, obfuscation } => match obfuscation {
             ObfuscatedTexture::Blur(texture) => {
                 let resp = render_blur_transition(
                     ui,
@@ -414,12 +414,12 @@ fn render_media_internal(
                 egui::InnerResponse::new(Some(MediaUIAction::DoneLoading), resp)
             }
         },
-        MediaRenderState::Error(e) => {
+        MediaRenderStateOld::Error(e) => {
             let response = ui.allocate_response(size, egui::Sense::hover());
             show_one_error_message(ui, &format!("Could not render media {url}: {e}"));
             egui::InnerResponse::new(Some(MediaUIAction::Error), response)
         }
-        MediaRenderState::Shimmering(obfuscated_texture) => match obfuscated_texture {
+        MediaRenderStateOld::Shimmering(obfuscated_texture) => match obfuscated_texture {
             ObfuscatedTexture::Blur(texture_handle) => egui::InnerResponse::new(
                 None,
                 shimmer_blurhash(texture_handle, ui, url, size, scale_flags),
@@ -438,7 +438,7 @@ fn render_media_internal(
                 )
             }
         },
-        MediaRenderState::Obfuscated(obfuscated_texture) => {
+        MediaRenderStateOld::Obfuscated(obfuscated_texture) => {
             let resp = match obfuscated_texture {
                 ObfuscatedTexture::Blur(texture_handle) => {
                     let scaled = ScaledTexture::new(texture_handle, size, scale_flags);
@@ -592,7 +592,7 @@ fn render_default_blur_bg(
     response
 }
 
-pub enum MediaRenderState<'a> {
+pub enum MediaRenderStateOld<'a> {
     ActualImage(&'a mut TexturedImage),
     Transitioning {
         image: &'a mut TexturedImage,
