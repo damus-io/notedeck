@@ -238,6 +238,25 @@ impl AnimationOld {
     }
 }
 
+pub struct Animation {
+    pub first_frame: TextureFrame,
+    pub other_frames: Vec<TextureFrame>,
+}
+
+impl Animation {
+    pub fn get_frame(&self, index: usize) -> Option<&TextureFrame> {
+        if index == 0 {
+            Some(&self.first_frame)
+        } else {
+            self.other_frames.get(index - 1)
+        }
+    }
+
+    pub fn num_frames(&self) -> usize {
+        self.other_frames.len() + 1
+    }
+}
+
 pub struct TextureFrame {
     pub delay: Duration,
     pub texture: TextureHandle,

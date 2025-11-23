@@ -54,9 +54,9 @@ pub use filter::{FilterState, FilterStates, UnifiedSubscription};
 pub use fonts::NamedFontFamily;
 pub use i18n::{CacheStats, FluentArgs, FluentValue, LanguageIdentifier, Localization};
 pub use imgcache::{
-    get_render_state, AnimationOld, GifState, GifStateMap, ImageFrame, Images, LatestTexture,
-    LoadableTextureState, MediaCache, MediaCacheType, RenderState, TextureFrame, TextureState,
-    TextureStateOld, TexturedImage, TexturesCache,
+    get_render_state, Animation, AnimationOld, GifState, GifStateMap, ImageFrame, Images,
+    LatestTexture, LoadableTextureState, MediaCache, MediaCacheType, RenderState, TextureFrame,
+    TextureState, TextureStateOld, TexturedImage, TexturesCache,
 };
 pub use jobs::{
     BlurhashParams, Job, JobError, JobIdOld, JobParams, JobParamsOwned, JobPool, JobState,
