@@ -9,7 +9,7 @@ use notedeck::{
     compute_blurhash, fonts::get_font_size, show_one_error_message, tr, BlurhashParams,
     GifStateMap, Images, Job, JobIdOld, JobParams, JobPool, JobState, JobsCacheOld, Localization,
     MediaAction, MediaCacheType, NotedeckTextStyle, ObfuscationType, PointDimensions,
-    RenderableMedia, TexturedImage, TexturesCache,
+    RenderableMedia, TexturedImage, TexturesCacheOld,
 };
 
 use crate::NoteOptions;
@@ -245,7 +245,7 @@ pub fn get_content_media_render_state<'a>(
     jobs: &'a mut JobsCacheOld,
     media_trusted: bool,
     size: Vec2,
-    cache: &'a mut TexturesCache,
+    cache: &'a mut TexturesCacheOld,
     url: &'a str,
     cache_type: MediaCacheType,
     cache_dir: &Path,

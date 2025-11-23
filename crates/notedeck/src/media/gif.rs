@@ -18,7 +18,7 @@ use crate::{
     AnimationOld, Error, ImageFrame, ImageType, MediaCache, TextureFrame, TextureState,
 };
 use crate::{media::AnimationMode, Animation};
-use crate::{GifState, GifStateMap, TextureStateOld, TexturedImage, TexturesCache};
+use crate::{GifState, GifStateMap, TextureStateOld, TexturedImage, TexturesCacheOld};
 use egui::{ColorImage, TextureHandle};
 use image::{codecs::gif::GifDecoder, AnimationDecoder, DynamicImage, Frame};
 use std::time::Duration;
@@ -27,7 +27,7 @@ pub fn ensure_latest_texture_from_cache(
     ui: &egui::Ui,
     url: &str,
     gifs: &mut GifStateMap,
-    textures: &mut TexturesCache,
+    textures: &mut TexturesCacheOld,
     animation_mode: AnimationMode,
 ) -> Option<TextureHandle> {
     let tstate = textures.cache.get_mut(url)?;

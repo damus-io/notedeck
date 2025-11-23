@@ -26,11 +26,11 @@ use std::path::{self, Path};
 use tracing::warn;
 
 #[derive(Default)]
-pub struct TexturesCache {
+pub struct TexturesCacheOld {
     pub cache: hashbrown::HashMap<String, TextureStateInternal>,
 }
 
-impl TexturesCache {
+impl TexturesCacheOld {
     pub fn handle_and_get_or_insert_loadable(
         &mut self,
         url: &str,
@@ -269,7 +269,7 @@ pub struct ImageFrame {
 
 pub struct MediaCache {
     pub cache_dir: path::PathBuf,
-    pub textures_cache: TexturesCache,
+    pub textures_cache: TexturesCacheOld,
     pub cache_type: MediaCacheType,
     pub cache_size: Arc<Mutex<Option<u64>>>,
 }
@@ -303,7 +303,7 @@ impl MediaCache {
 
         Self {
             cache_dir,
-            textures_cache: TexturesCache::default(),
+            textures_cache: TexturesCacheOld::default(),
             cache_type,
             cache_size,
         }
