@@ -304,9 +304,9 @@ fn get_obfuscated<'a>(
     job_pool: &'a mut JobPool,
     jobs: &'a mut JobsCacheOld,
     size: Vec2,
-) -> ObfuscatedTexture<'a> {
+) -> ObfuscatedTextureOld<'a> {
     let ObfuscationType::Blurhash(renderable_blur) = obfuscation_type else {
-        return ObfuscatedTexture::Default;
+        return ObfuscatedTextureOld::Default;
     };
 
     let params = BlurhashParams {
@@ -330,21 +330,21 @@ fn get_obfuscated<'a>(
     );
 
     let JobState::Completed(m_blur_job) = job_state else {
-        return ObfuscatedTexture::Default;
+        return ObfuscatedTextureOld::Default;
     };
 
     #[allow(irrefutable_let_patterns)]
     let Job::Blurhash(m_texture_handle) = m_blur_job
     else {
         tracing::error!("Did not get the correct job type: {:?}", m_blur_job);
-        return ObfuscatedTexture::Default;
+        return ObfuscatedTextureOld::Default;
     };
 
     let Some(texture_handle) = m_texture_handle else {
-        return ObfuscatedTexture::Default;
+        return ObfuscatedTextureOld::Default;
     };
 
-    ObfuscatedTexture::Blur(texture_handle)
+    ObfuscatedTextureOld::Blur(texture_handle)
 }
 
 fn copy_link(i18n: &mut Localization, url: &str, img_resp: &Response) {
@@ -393,7 +393,7 @@ fn render_media_internal(
             }
         }
         MediaRenderStateOld::Transitioning { image, obfuscation } => match obfuscation {
-            ObfuscatedTexture::Blur(texture) => {
+            ObfuscatedTextureOld::Blur(texture) => {
                 let resp = render_blur_transition(
                     ui,
                     url,
@@ -408,7 +408,7 @@ fn render_media_internal(
                     egui::InnerResponse::new(None, resp.response)
                 }
             }
-            ObfuscatedTexture::Default => {
+            ObfuscatedTextureOld::Default => {
                 let scaled = ScaledTexture::new(image.get_first_texture(), size, scale_flags);
                 let resp = ui.add(scaled.get_image());
                 egui::InnerResponse::new(Some(MediaUIAction::DoneLoading), resp)
@@ -420,11 +420,11 @@ fn render_media_internal(
             egui::InnerResponse::new(Some(MediaUIAction::Error), response)
         }
         MediaRenderStateOld::Shimmering(obfuscated_texture) => match obfuscated_texture {
-            ObfuscatedTexture::Blur(texture_handle) => egui::InnerResponse::new(
+            ObfuscatedTextureOld::Blur(texture_handle) => egui::InnerResponse::new(
                 None,
                 shimmer_blurhash(texture_handle, ui, url, size, scale_flags),
             ),
-            ObfuscatedTexture::Default => {
+            ObfuscatedTextureOld::Default => {
                 let shimmer = true;
                 egui::InnerResponse::new(
                     None,
@@ -440,13 +440,13 @@ fn render_media_internal(
         },
         MediaRenderStateOld::Obfuscated(obfuscated_texture) => {
             let resp = match obfuscated_texture {
-                ObfuscatedTexture::Blur(texture_handle) => {
+                ObfuscatedTextureOld::Blur(texture_handle) => {
                     let scaled = ScaledTexture::new(texture_handle, size, scale_flags);
 
                     let resp = ui.add(scaled.get_image());
                     render_blur_text(ui, i18n, url, resp.rect)
                 }
-                ObfuscatedTexture::Default => render_default_blur(
+                ObfuscatedTextureOld::Default => render_default_blur(
                     ui,
                     i18n,
                     size,
@@ -596,14 +596,14 @@ pub enum MediaRenderStateOld<'a> {
     ActualImage(&'a mut TexturedImage),
     Transitioning {
         image: &'a mut TexturedImage,
-        obfuscation: ObfuscatedTexture<'a>,
+        obfuscation: ObfuscatedTextureOld<'a>,
     },
     Error(&'a notedeck::Error),
-    Shimmering(ObfuscatedTexture<'a>),
-    Obfuscated(ObfuscatedTexture<'a>),
+    Shimmering(ObfuscatedTextureOld<'a>),
+    Obfuscated(ObfuscatedTextureOld<'a>),
 }
 
-pub enum ObfuscatedTexture<'a> {
+pub enum ObfuscatedTextureOld<'a> {
     Blur(&'a TextureHandle),
     Default,
 }
