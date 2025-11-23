@@ -3,6 +3,7 @@ pub mod blur;
 pub mod gif;
 pub mod images;
 pub mod imeta;
+pub mod latest;
 pub mod network;
 pub mod renderable;
 pub mod static_imgs;
@@ -14,6 +15,9 @@ pub use blur::{
 };
 use egui::{ColorImage, TextureHandle};
 pub use images::ImageType;
+pub use latest::{
+    MediaRenderState, NoLoadingLatestTex, TrustedMediaLatestTex, UntrustedMediaLatestTex,
+};
 pub use renderable::RenderableMedia;
 
 #[derive(Copy, Clone, Debug)]
