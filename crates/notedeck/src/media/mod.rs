@@ -5,6 +5,7 @@ pub mod images;
 pub mod imeta;
 pub mod network;
 pub mod renderable;
+pub mod static_imgs;
 
 pub use action::{MediaAction, MediaInfo, ViewMediaInfo};
 pub use blur::{
