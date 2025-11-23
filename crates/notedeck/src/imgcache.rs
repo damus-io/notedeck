@@ -2,7 +2,9 @@ use crate::jobs::MediaJobSender;
 use crate::media::gif::{ensure_latest_texture_from_cache, AnimatedImgTexCache};
 use crate::media::images::ImageType;
 use crate::media::static_imgs::StaticImgTexCache;
-use crate::media::{AnimationMode, BlurCache, NoLoadingLatestTex};
+use crate::media::{
+    AnimationMode, BlurCache, NoLoadingLatestTex, TrustedMediaLatestTex, UntrustedMediaLatestTex,
+};
 use crate::urls::{UrlCache, UrlMimes};
 use crate::ImageMetadata;
 use crate::ObfuscationType;
@@ -607,6 +609,36 @@ impl Images {
         self.gif_states.clear();
 
         Ok(())
+    }
+
+    pub fn trusted_texture_loader(&mut self) -> TrustedMediaLatestTex<'_> {
+        TrustedMediaLatestTex::new(
+            NoLoadingLatestTex::new(
+                &self.textures.static_image,
+                &self.textures.animated,
+                &mut self.gif_states,
+            ),
+            &self.textures.blurred,
+        )
+    }
+
+    pub fn untrusted_texture_loader(&mut self) -> UntrustedMediaLatestTex<'_> {
+        UntrustedMediaLatestTex::new(&self.textures.blurred)
+    }
+
+    pub fn no_img_loading_tex_loader(&'_ mut self) -> NoLoadingLatestTex<'_> {
+        NoLoadingLatestTex::new(
+            &self.textures.static_image,
+            &self.textures.animated,
+            &mut self.gif_states,
+        )
+    }
+
+    pub fn user_trusts_img(&self, url: &str, media_type: MediaCacheType) -> bool {
+        match media_type {
+            MediaCacheType::Image => self.textures.static_image.contains(url),
+            MediaCacheType::Gif => self.textures.animated.contains(url),
+        }
     }
 }
 
