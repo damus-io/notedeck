@@ -153,6 +153,22 @@ impl<'a> TextureStateOld<'a> {
     }
 }
 
+pub enum TextureState<T> {
+    Pending,
+    Error(crate::Error),
+    Loaded(T),
+}
+
+impl<T> std::fmt::Debug for TextureState<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Pending => write!(f, "Pending"),
+            Self::Error(_) => f.debug_tuple("Error").field(&"").finish(),
+            Self::Loaded(_) => f.debug_tuple("Loaded").field(&"").finish(),
+        }
+    }
+}
+
 impl<'a> From<&'a mut TextureStateInternal> for TextureStateOld<'a> {
     fn from(value: &'a mut TextureStateInternal) -> Self {
         match value {
