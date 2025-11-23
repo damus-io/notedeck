@@ -471,6 +471,7 @@ pub struct Images {
     pub base_path: path::PathBuf,
     pub static_imgs: MediaCache,
     pub gifs: MediaCache,
+    pub textures: TexturesCache,
     pub urls: UrlMimes,
     /// cached imeta data
     pub metadata: HashMap<String, ImageMetadata>,
@@ -487,6 +488,7 @@ impl Images {
             urls: UrlMimes::new(UrlCache::new(path.join(UrlCache::rel_dir()))),
             gif_states: Default::default(),
             metadata: Default::default(),
+            textures: TexturesCache::new(path.clone()),
         }
     }
 
