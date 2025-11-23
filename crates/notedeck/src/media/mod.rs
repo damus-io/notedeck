@@ -10,8 +10,8 @@ pub mod static_imgs;
 
 pub use action::{MediaAction, MediaInfo, ViewMediaInfo};
 pub use blur::{
-    compute_blurhash, update_imeta_blurhashes, BlurCache, ImageMetadata, ObfuscationType,
-    PixelDimensions, PointDimensions,
+    update_imeta_blurhashes, BlurCache, ImageMetadata, ObfuscationType, PixelDimensions,
+    PointDimensions,
 };
 use egui::{ColorImage, TextureHandle};
 pub use images::ImageType;

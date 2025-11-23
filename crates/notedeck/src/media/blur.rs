@@ -5,8 +5,8 @@ use nostrdb::Note;
 
 use crate::{
     jobs::{
-        CompleteResponse, Job, JobError, JobOutput, JobPackage, JobParamsOwned, JobRun,
-        MediaJobKind, MediaJobResult, MediaJobSender, RunType,
+        CompleteResponse, JobOutput, JobPackage, JobRun, MediaJobKind, MediaJobResult,
+        MediaJobSender, RunType,
     },
     media::load_texture_checked,
     TextureState,
@@ -168,33 +168,6 @@ fn find_blur(tag_iter: nostrdb::TagIter<'_>) -> Option<(String, ImageMetadata)> 
 pub enum ObfuscationType {
     Blurhash(ImageMetadata),
     Default,
-}
-
-pub fn compute_blurhash(
-    params: Option<JobParamsOwned>,
-    dims: PixelDimensions,
-) -> Result<Job, JobError> {
-    #[allow(irrefutable_let_patterns)]
-    let Some(JobParamsOwned::Blurhash(params)) = params
-    else {
-        return Err(JobError::InvalidParameters);
-    };
-
-    let maybe_handle = match generate_blurhash_texturehandle(
-        &params.ctx,
-        &params.blurhash,
-        &params.url,
-        dims.x,
-        dims.y,
-    ) {
-        Ok(tex) => Some(tex),
-        Err(e) => {
-            tracing::error!("failed to render blurhash: {e}");
-            None
-        }
-    };
-
-    Ok(Job::Blurhash(maybe_handle))
 }
 
 fn generate_blurhash_texturehandle(

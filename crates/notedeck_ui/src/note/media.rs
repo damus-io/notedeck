@@ -1,15 +1,10 @@
-use std::path::Path;
-
 use bitflags::bitflags;
 use egui::{
     vec2, Button, Color32, Context, CornerRadius, FontId, Image, InnerResponse, Response,
     TextureHandle, Vec2,
 };
 use notedeck::media::latest::ObfuscatedTexture;
-use notedeck::{
-    compute_blurhash, BlurhashParams, Job, JobIdOld, JobParams, JobPool, JobState, JobsCacheOld,
-    MediaJobSender, ObfuscationType, PointDimensions, TexturedImage, TexturesCacheOld,
-};
+use notedeck::MediaJobSender;
 use notedeck::{
     fonts::get_font_size, show_one_error_message, tr, Images, Localization, MediaAction,
     MediaCacheType, NotedeckTextStyle, RenderableMedia,
@@ -215,115 +210,6 @@ impl MediaUIAction {
             }),
         }
     }
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn get_content_media_render_state<'a>(
-    ui: &mut egui::Ui,
-    job_pool: &'a mut JobPool,
-    jobs: &'a mut JobsCacheOld,
-    media_trusted: bool,
-    size: Vec2,
-    cache: &'a mut TexturesCacheOld,
-    url: &'a str,
-    cache_type: MediaCacheType,
-    cache_dir: &Path,
-    obfuscation_type: &'a ObfuscationType,
-) -> MediaRenderStateOld<'a> {
-    let render_type = if media_trusted {
-        cache.handle_and_get_or_insert_loadable(url, || {
-            notedeck::media::images::fetch_img(
-                cache_dir,
-                ui.ctx(),
-                url,
-                ImageType::Content(None),
-                cache_type,
-            )
-        })
-    } else if let Some(render_type) = cache.get_and_handle(url) {
-        render_type
-    } else {
-        return MediaRenderStateOld::Obfuscated(get_obfuscated(
-            ui,
-            url,
-            obfuscation_type,
-            job_pool,
-            jobs,
-            size,
-        ));
-    };
-
-    match render_type {
-        notedeck::LoadableTextureState::Pending => MediaRenderStateOld::Shimmering(get_obfuscated(
-            ui,
-            url,
-            obfuscation_type,
-            job_pool,
-            jobs,
-            size,
-        )),
-        notedeck::LoadableTextureState::Error(e) => MediaRenderStateOld::Error(e),
-        notedeck::LoadableTextureState::Loading { actual_image_tex } => {
-            let obfuscation = get_obfuscated(ui, url, obfuscation_type, job_pool, jobs, size);
-            MediaRenderStateOld::Transitioning {
-                image: actual_image_tex,
-                obfuscation,
-            }
-        }
-        notedeck::LoadableTextureState::Loaded(textured_image) => {
-            MediaRenderStateOld::ActualImage(textured_image)
-        }
-    }
-}
-
-fn get_obfuscated<'a>(
-    ui: &mut egui::Ui,
-    url: &str,
-    obfuscation_type: &'a ObfuscationType,
-    job_pool: &'a mut JobPool,
-    jobs: &'a mut JobsCacheOld,
-    size: Vec2,
-) -> ObfuscatedTextureOld<'a> {
-    let ObfuscationType::Blurhash(renderable_blur) = obfuscation_type else {
-        return ObfuscatedTextureOld::Default;
-    };
-
-    let params = BlurhashParams {
-        blurhash: &renderable_blur.blurhash,
-        url,
-        ctx: ui.ctx(),
-    };
-
-    let available_points = PointDimensions {
-        x: size.x,
-        y: size.y,
-    };
-
-    let pixel_sizes = renderable_blur.scaled_pixel_dimensions(ui, available_points);
-
-    let job_state = jobs.get_or_insert_with(
-        job_pool,
-        &JobIdOld::Blurhash(url),
-        Some(JobParams::Blurhash(params)),
-        move |params| compute_blurhash(params, pixel_sizes),
-    );
-
-    let JobState::Completed(m_blur_job) = job_state else {
-        return ObfuscatedTextureOld::Default;
-    };
-
-    #[allow(irrefutable_let_patterns)]
-    let Job::Blurhash(m_texture_handle) = m_blur_job
-    else {
-        tracing::error!("Did not get the correct job type: {:?}", m_blur_job);
-        return ObfuscatedTextureOld::Default;
-    };
-
-    let Some(texture_handle) = m_texture_handle else {
-        return ObfuscatedTextureOld::Default;
-    };
-
-    ObfuscatedTextureOld::Blur(texture_handle)
 }
 
 fn copy_link(i18n: &mut Localization, url: &str, img_resp: &Response) {
@@ -555,43 +441,6 @@ fn render_default_blur_bg(
 
     response
 }
-
-pub enum MediaRenderStateOld<'a> {
-    ActualImage(&'a mut TexturedImage),
-    Transitioning {
-        image: &'a mut TexturedImage,
-        obfuscation: ObfuscatedTextureOld<'a>,
-    },
-    Error(&'a notedeck::Error),
-    Shimmering(ObfuscatedTextureOld<'a>),
-    Obfuscated(ObfuscatedTextureOld<'a>),
-}
-
-pub enum ObfuscatedTextureOld<'a> {
-    Blur(&'a TextureHandle),
-    Default,
-}
-
-/*
-pub(crate) fn find_renderable_media<'a>(
-    urls: &mut UrlMimes,
-    imeta: &'a HashMap<String, ImageMetadata>,
-    url: &'a str,
-) -> Option<RenderableMedia> {
-    let media_type = supported_mime_hosted_at_url(urls, url)?;
-
-    let obfuscation_type = match imeta.get(url) {
-        Some(blur) => ObfuscationType::Blurhash(blur.clone()),
-        None => ObfuscationType::Default,
-    };
-
-    Some(RenderableMedia {
-        url,
-        media_type,
-        obfuscation_type,
-    })
-}
-*/
 
 #[allow(clippy::too_many_arguments)]
 fn render_success_media(
