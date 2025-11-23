@@ -256,12 +256,9 @@ impl<'a, 'd> SearchView<'a, 'd> {
 
                 let resp = ui.add(recent_profile_item(
                     profile.as_ref(),
-                    &pubkey,
-                    &self.query.string,
                     is_selected,
                     ui.available_width(),
                     self.note_context.img_cache,
-                    self.note_context.accounts,
                 ));
 
                 if resp.clicked() {
@@ -319,7 +316,7 @@ impl<'a, 'd> SearchView<'a, 'd> {
                         self.query.remove_recent_search(i);
                     }
                 }
-                RecentSearchItem::Profile { pubkey, query } => {
+                RecentSearchItem::Profile { pubkey, query: _ } => {
                     let profile = self
                         .note_context
                         .ndb
@@ -327,12 +324,9 @@ impl<'a, 'd> SearchView<'a, 'd> {
                         .ok();
                     let resp = ui.add(recent_profile_item(
                         profile.as_ref(),
-                        pubkey,
-                        query,
                         is_selected,
                         ui.available_width(),
                         self.note_context.img_cache,
-                        self.note_context.accounts,
                     ));
 
                     if resp.clicked() || (is_selected && keyboard_resp.enter_pressed) {
@@ -709,12 +703,9 @@ fn search_hashtag(
 
 fn recent_profile_item<'a>(
     profile: Option<&'a ProfileRecord<'_>>,
-    _pubkey: &'a Pubkey,
-    _query: &'a str,
     is_selected: bool,
     width: f32,
     cache: &'a mut Images,
-    _accounts: &'a notedeck::Accounts,
 ) -> impl egui::Widget + 'a {
     move |ui: &mut egui::Ui| -> egui::Response {
         let min_img_size = 48.0;
