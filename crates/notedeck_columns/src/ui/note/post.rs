@@ -649,14 +649,14 @@ fn render_post_view_media(
     animation_mode: AnimationMode,
 ) {
     match render_state.texture_state {
-        notedeck::TextureState::Pending => {
+        notedeck::TextureStateOld::Pending => {
             ui.spinner();
         }
-        notedeck::TextureState::Error(e) => {
+        notedeck::TextureStateOld::Error(e) => {
             upload_errors.push(e.to_string());
             error!("{e}");
         }
-        notedeck::TextureState::Loaded(renderable_media) => {
+        notedeck::TextureStateOld::Loaded(renderable_media) => {
             let max_size = 300;
             let size = if width > max_size || height > max_size {
                 PixelDimensions { x: 300, y: 300 }

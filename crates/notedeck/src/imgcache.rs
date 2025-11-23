@@ -45,7 +45,7 @@ impl TexturesCache {
         &mut self,
         url: &str,
         closure: impl FnOnce() -> Promise<Option<Result<TexturedImage>>>,
-    ) -> TextureState<'_> {
+    ) -> TextureStateOld<'_> {
         let internal = self.handle_and_get_state_internal(url, false, closure);
 
         internal.into()
@@ -141,25 +141,27 @@ pub enum LoadableTextureState<'a> {
     Loaded(&'a mut TexturedImage),
 }
 
-pub enum TextureState<'a> {
+pub enum TextureStateOld<'a> {
     Pending,
     Error(&'a crate::Error),
     Loaded(&'a mut TexturedImage),
 }
 
-impl<'a> TextureState<'a> {
+impl<'a> TextureStateOld<'a> {
     pub fn is_loaded(&self) -> bool {
         matches!(self, Self::Loaded(_))
     }
 }
 
-impl<'a> From<&'a mut TextureStateInternal> for TextureState<'a> {
+impl<'a> From<&'a mut TextureStateInternal> for TextureStateOld<'a> {
     fn from(value: &'a mut TextureStateInternal) -> Self {
         match value {
-            TextureStateInternal::Pending(_) => TextureState::Pending,
-            TextureStateInternal::Error(error) => TextureState::Error(error),
-            TextureStateInternal::Loading(textured_image) => TextureState::Loaded(textured_image),
-            TextureStateInternal::Loaded(textured_image) => TextureState::Loaded(textured_image),
+            TextureStateInternal::Pending(_) => TextureStateOld::Pending,
+            TextureStateInternal::Error(error) => TextureStateOld::Error(error),
+            TextureStateInternal::Loading(textured_image) => {
+                TextureStateOld::Loaded(textured_image)
+            }
+            TextureStateInternal::Loaded(textured_image) => TextureStateOld::Loaded(textured_image),
         }
     }
 }
@@ -569,6 +571,6 @@ pub fn get_render_state<'a>(
 }
 
 pub struct RenderState<'a> {
-    pub texture_state: TextureState<'a>,
+    pub texture_state: TextureStateOld<'a>,
     pub gifs: &'a mut GifStateMap,
 }

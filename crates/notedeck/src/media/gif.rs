@@ -5,7 +5,7 @@ use std::{
 
 use crate::media::AnimationMode;
 use crate::Animation;
-use crate::{GifState, GifStateMap, TextureState, TexturedImage, TexturesCache};
+use crate::{GifState, GifStateMap, TextureStateOld, TexturedImage, TexturesCache};
 use egui::TextureHandle;
 use std::time::Duration;
 
@@ -18,7 +18,7 @@ pub fn ensure_latest_texture_from_cache(
 ) -> Option<TextureHandle> {
     let tstate = textures.cache.get_mut(url)?;
 
-    let TextureState::Loaded(img) = tstate.into() else {
+    let TextureStateOld::Loaded(img) = tstate.into() else {
         return None;
     };
 
