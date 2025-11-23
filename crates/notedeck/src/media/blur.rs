@@ -1,10 +1,15 @@
 use std::collections::HashMap;
 
+use egui::TextureHandle;
 use nostrdb::Note;
 
 use crate::{
-    jobs::{Job, JobError, JobParamsOwned},
+    jobs::{
+        CompleteResponse, Job, JobError, JobOutput, JobPackage, JobParamsOwned, JobRun,
+        MediaJobKind, MediaJobResult, MediaJobSender, RunType,
+    },
     media::load_texture_checked,
+    TextureState,
 };
 
 #[derive(Clone)]
@@ -204,4 +209,82 @@ fn generate_blurhash_texturehandle(
 
     let img = egui::ColorImage::from_rgba_unmultiplied([width as usize, height as usize], &bytes);
     Ok(load_texture_checked(ctx, url, img, Default::default()))
+}
+
+#[derive(Default)]
+pub struct BlurCache {
+    pub(crate) cache: HashMap<String, BlurState>,
+}
+
+pub struct BlurState {
+    pub tex_state: TextureState<TextureHandle>,
+    pub finished_transitioning: bool,
+}
+
+impl From<TextureState<TextureHandle>> for BlurState {
+    fn from(value: TextureState<TextureHandle>) -> Self {
+        BlurState {
+            tex_state: value,
+            finished_transitioning: false,
+        }
+    }
+}
+
+impl BlurCache {
+    pub fn get(&self, url: &str) -> Option<&BlurState> {
+        self.cache.get(url)
+    }
+
+    pub fn get_or_request(
+        &self,
+        jobs: &MediaJobSender,
+        ui: &egui::Ui,
+        url: &str,
+        blurhash: &ImageMetadata,
+        size: egui::Vec2,
+    ) -> &BlurState {
+        if let Some(res) = self.cache.get(url) {
+            return res;
+        }
+
+        let available_points = PointDimensions {
+            x: size.x,
+            y: size.y,
+        };
+        let pixel_sizes = blurhash.scaled_pixel_dimensions(ui, available_points);
+        let blurhash = blurhash.blurhash.to_owned();
+        let url = url.to_owned();
+        let ctx = ui.ctx().clone();
+
+        if let Err(e) = jobs.send(JobPackage::new(
+            url.to_owned(),
+            MediaJobKind::Blurhash,
+            RunType::Output(JobRun::Sync(Box::new(move || {
+                tracing::trace!("Starting blur job for {url}");
+                let res = generate_blurhash_texturehandle(
+                    &ctx,
+                    &blurhash,
+                    &url,
+                    pixel_sizes.x,
+                    pixel_sizes.y,
+                );
+                JobOutput::Complete(CompleteResponse::new(MediaJobResult::Blurhash(res)))
+            }))),
+        )) {
+            tracing::error!("{e}");
+        }
+
+        &BlurState {
+            tex_state: TextureState::Pending,
+            finished_transitioning: false,
+        }
+    }
+
+    pub fn finished_transitioning(&mut self, url: &str) {
+        let Some(state) = self.cache.get_mut(url) else {
+            return;
+        };
+
+        state.finished_transitioning = true;
+    }
 }

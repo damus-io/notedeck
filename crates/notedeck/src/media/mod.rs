@@ -8,8 +8,8 @@ pub mod renderable;
 
 pub use action::{MediaAction, MediaInfo, ViewMediaInfo};
 pub use blur::{
-    compute_blurhash, update_imeta_blurhashes, ImageMetadata, ObfuscationType, PixelDimensions,
-    PointDimensions,
+    compute_blurhash, update_imeta_blurhashes, BlurCache, ImageMetadata, ObfuscationType,
+    PixelDimensions, PointDimensions,
 };
 use egui::{ColorImage, TextureHandle};
 pub use images::ImageType;
