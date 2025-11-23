@@ -56,7 +56,7 @@ pub use i18n::{CacheStats, FluentArgs, FluentValue, LanguageIdentifier, Localiza
 pub use imgcache::{
     get_render_state, Animation, AnimationOld, GifState, GifStateMap, ImageFrame, Images,
     LatestTexture, LoadableTextureState, MediaCache, MediaCacheType, RenderState, TextureFrame,
-    TextureState, TextureStateOld, TexturedImage, TexturesCacheOld,
+    TextureState, TextureStateOld, TexturedImage, TexturesCache, TexturesCacheOld,
 };
 pub use jobs::{
     BlurhashParams, Job, JobError, JobIdOld, JobParams, JobParamsOwned, JobPool, JobState,

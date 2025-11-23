@@ -1,6 +1,7 @@
-use crate::media::gif::ensure_latest_texture_from_cache;
+use crate::media::gif::{ensure_latest_texture_from_cache, AnimatedImgTexCache};
 use crate::media::images::ImageType;
-use crate::media::AnimationMode;
+use crate::media::static_imgs::StaticImgTexCache;
+use crate::media::{AnimationMode, BlurCache};
 use crate::urls::{UrlCache, UrlMimes};
 use crate::ImageMetadata;
 use crate::ObfuscationType;
@@ -101,6 +102,26 @@ impl TexturesCacheOld {
             handle_occupied(state, true);
             state.into()
         })
+    }
+}
+
+pub struct TexturesCache {
+    pub static_image: StaticImgTexCache,
+    pub blurred: BlurCache,
+    pub animated: AnimatedImgTexCache,
+}
+
+impl TexturesCache {
+    pub fn new(base_dir: PathBuf) -> Self {
+        Self {
+            static_image: StaticImgTexCache::new(
+                base_dir.join(MediaCache::rel_dir(MediaCacheType::Image)),
+            ),
+            blurred: Default::default(),
+            animated: AnimatedImgTexCache::new(
+                base_dir.join(MediaCache::rel_dir(MediaCacheType::Gif)),
+            ),
+        }
     }
 }
 
