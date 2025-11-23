@@ -184,7 +184,7 @@ pub fn process_image(imgtyp: ImageType, mut image: image::DynamicImage) -> Color
 }
 
 #[profiling::function]
-fn parse_img_response(
+fn parse_img_response_old(
     response: ehttp::Response,
     imgtyp: ImageType,
 ) -> Result<ColorImage, crate::Error> {
@@ -429,7 +429,7 @@ fn fetch_img_from_net(
         let handle = response.map_err(crate::Error::Generic).and_then(|resp| {
             match cache_type {
                 MediaCacheType::Image => {
-                    let img = parse_img_response(resp, imgtyp);
+                    let img = parse_img_response_old(resp, imgtyp);
                     img.map(|img| {
                         let texture_handle = load_texture_checked(
                             &ctx,
