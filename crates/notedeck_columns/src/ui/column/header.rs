@@ -13,7 +13,7 @@ use egui::{Margin, Response, RichText, Sense, Stroke, UiBuilder};
 use enostr::Pubkey;
 use nostrdb::{Ndb, Transaction};
 use notedeck::tr;
-use notedeck::{Images, Localization, NotedeckTextStyle};
+use notedeck::{Images, Localization, MediaJobSender, NotedeckTextStyle};
 use notedeck_ui::app_images;
 use notedeck_ui::{
     anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},
@@ -28,6 +28,7 @@ pub struct NavTitle<'a> {
     col_id: usize,
     options: u32,
     i18n: &'a mut Localization,
+    jobs: &'a MediaJobSender,
 }
 
 impl<'a> NavTitle<'a> {
@@ -42,6 +43,7 @@ impl<'a> NavTitle<'a> {
         routes: &'a [Route],
         col_id: usize,
         i18n: &'a mut Localization,
+        jobs: &'a MediaJobSender,
     ) -> Self {
         let options = Self::SHOW_MOVE | Self::SHOW_DELETE;
         NavTitle {
@@ -52,6 +54,7 @@ impl<'a> NavTitle<'a> {
             col_id,
             options,
             i18n,
+            jobs,
         }
     }
 
@@ -435,11 +438,8 @@ impl<'a> NavTitle<'a> {
             .as_ref()
             .ok()
             .and_then(move |p| {
-                Some(
-                    ProfilePic::from_profile(self.img_cache, p)?
-                        .size(pfp_size)
-                        .sense(Sense::click()),
-                )
+                ProfilePic::from_profile(self.img_cache, self.jobs, p)
+                    .map(|pfp| pfp.size(pfp_size).sense(Sense::click()))
             })
     }
 
@@ -453,7 +453,7 @@ impl<'a> NavTitle<'a> {
             ui.add(&mut pfp)
         } else {
             ui.add(
-                &mut ProfilePic::new(self.img_cache, notedeck::profile::no_pfp_url())
+                &mut ProfilePic::new(self.img_cache, self.jobs, notedeck::profile::no_pfp_url())
                     .size(pfp_size)
                     .sense(Sense::click()),
             )
@@ -515,7 +515,7 @@ impl<'a> NavTitle<'a> {
             ui.add(&mut pfp)
         } else {
             ui.add(
-                &mut ProfilePic::new(self.img_cache, notedeck::profile::no_pfp_url())
+                &mut ProfilePic::new(self.img_cache, self.jobs, notedeck::profile::no_pfp_url())
                     .size(pfp_size)
                     .sense(Sense::click()),
             )
@@ -536,7 +536,10 @@ impl<'a> NavTitle<'a> {
             }
         }
 
-        ui.add(&mut ProfilePic::new(self.img_cache, notedeck::profile::no_pfp_url()).size(pfp_size))
+        ui.add(
+            &mut ProfilePic::new(self.img_cache, self.jobs, notedeck::profile::no_pfp_url())
+                .size(pfp_size),
+        )
     }
 
     fn title_label_value(title: &str) -> egui::Label {

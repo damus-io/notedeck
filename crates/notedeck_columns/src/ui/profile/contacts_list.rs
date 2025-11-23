@@ -67,7 +67,12 @@ impl<'a, 'd, 'txn> ContactsListView<'a, 'd, 'txn> {
                     ui.add_space(16.0);
 
                     ui.add(
-                        &mut ProfilePic::new(self.note_context.img_cache, profile_url).size(48.0),
+                        &mut ProfilePic::new(
+                            self.note_context.img_cache,
+                            self.note_context.jobs,
+                            profile_url,
+                        )
+                        .size(48.0),
                     );
 
                     ui.add_space(12.0);

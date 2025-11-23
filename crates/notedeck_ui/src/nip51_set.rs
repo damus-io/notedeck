@@ -4,8 +4,8 @@ use enostr::Pubkey;
 use hashbrown::{hash_map::RawEntryMut, HashMap};
 use nostrdb::{Ndb, ProfileRecord, Transaction};
 use notedeck::{
-    fonts::get_font_size, get_profile_url, name::get_display_name, tr, Images, JobPool, JobsCache,
-    Localization, Nip51Set, Nip51SetCache, NotedeckTextStyle,
+    fonts::get_font_size, get_profile_url, name::get_display_name, tr, Images, Localization,
+    MediaJobSender, Nip51Set, Nip51SetCache, NotedeckTextStyle,
 };
 
 use crate::{
@@ -19,8 +19,7 @@ pub struct Nip51SetWidget<'a> {
     ndb: &'a Ndb,
     images: &'a mut Images,
     loc: &'a mut Localization,
-    job_pool: &'a mut JobPool,
-    jobs: &'a mut JobsCache,
+    jobs: &'a MediaJobSender,
     flags: Nip51SetWidgetFlags,
 }
 
@@ -53,8 +52,7 @@ impl<'a> Nip51SetWidget<'a> {
         ndb: &'a Ndb,
         loc: &'a mut Localization,
         images: &'a mut Images,
-        job_pool: &'a mut JobPool,
-        jobs: &'a mut JobsCache,
+        jobs: &'a MediaJobSender,
     ) -> Self {
         Self {
             state,
@@ -62,7 +60,6 @@ impl<'a> Nip51SetWidget<'a> {
             ndb,
             loc,
             images,
-            job_pool,
             jobs,
             flags: Nip51SetWidgetFlags::default(),
         }
@@ -92,7 +89,6 @@ impl<'a> Nip51SetWidget<'a> {
                     self.ui_state,
                     self.ndb,
                     self.images,
-                    self.job_pool,
                     self.jobs,
                     self.loc,
                     self.flags.contains(Nip51SetWidgetFlags::TRUST_IMAGES),
@@ -157,8 +153,7 @@ fn render_pack(
     ui_state: &mut Nip51SetUiCache,
     ndb: &Ndb,
     images: &mut Images,
-    job_pool: &mut JobPool,
-    jobs: &mut JobsCache,
+    jobs: &MediaJobSender,
     loc: &mut Localization,
     image_trusted: bool,
 ) -> Option<Nip51SetWidgetAction> {
@@ -175,7 +170,6 @@ fn render_pack(
         let media_rect = render_media(
             ui,
             images,
-            job_pool,
             jobs,
             &media,
             image_trusted,
@@ -250,7 +244,7 @@ fn render_pack(
         };
 
         ui.separator();
-        if render_profile_item(ui, images, m_profile.as_ref(), cur_state) {
+        if render_profile_item(ui, images, jobs, m_profile.as_ref(), cur_state) {
             resp = Some(Nip51SetWidgetAction::ViewProfile(*pk));
         }
     }
@@ -263,6 +257,7 @@ const PFP_SIZE: f32 = 32.0;
 fn render_profile_item(
     ui: &mut egui::Ui,
     images: &mut Images,
+    jobs: &MediaJobSender,
     profile: Option<&ProfileRecord>,
     checked: &mut bool,
 ) -> bool {
@@ -294,7 +289,7 @@ fn render_profile_item(
 
     let _ = ui.allocate_new_ui(UiBuilder::new().max_rect(pfp_rect), |ui| {
         let pfp_resp = ui.add(
-            &mut ProfilePic::new(images, get_profile_url(profile))
+            &mut ProfilePic::new(images, jobs, get_profile_url(profile))
                 .sense(Sense::click())
                 .size(PFP_SIZE),
         );

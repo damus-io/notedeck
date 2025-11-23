@@ -6,7 +6,7 @@ use enostr::Pubkey;
 use nostrdb::{Ndb, ProfileRecord, Transaction};
 use notedeck::{
     fonts::get_font_size, get_profile_url, name::get_display_name, tr, Images, Localization,
-    NotedeckTextStyle,
+    MediaJobSender, NotedeckTextStyle,
 };
 use notedeck_ui::{
     app_images, colors, profile::display_name_widget, widgets::styled_button_toggleable,
@@ -20,6 +20,7 @@ pub struct CustomZapView<'a> {
     target_pubkey: &'a Pubkey,
     default_msats: u64,
     i18n: &'a mut Localization,
+    jobs: &'a MediaJobSender,
 }
 
 #[allow(clippy::new_without_default)]
@@ -31,6 +32,7 @@ impl<'a> CustomZapView<'a> {
         txn: &'a Transaction,
         target_pubkey: &'a Pubkey,
         default_msats: u64,
+        jobs: &'a MediaJobSender,
     ) -> Self {
         Self {
             target_pubkey,
@@ -39,6 +41,7 @@ impl<'a> CustomZapView<'a> {
             txn,
             default_msats,
             i18n,
+            jobs,
         }
     }
 
@@ -59,7 +62,7 @@ impl<'a> CustomZapView<'a> {
             .get_profile_by_pubkey(self.txn, self.target_pubkey.bytes())
             .ok();
         let profile = profile.as_ref();
-        show_profile(ui, self.images, profile);
+        show_profile(ui, self.images, self.jobs, profile);
 
         ui.add_space(8.0);
 
@@ -167,13 +170,18 @@ fn show_title(ui: &mut egui::Ui, i18n: &mut Localization) {
     );
 }
 
-fn show_profile(ui: &mut egui::Ui, images: &mut Images, profile: Option<&ProfileRecord>) {
+fn show_profile(
+    ui: &mut egui::Ui,
+    images: &mut Images,
+    jobs: &MediaJobSender,
+    profile: Option<&ProfileRecord>,
+) {
     let max_size = 24.0;
     ui.allocate_ui_with_layout(
         vec2(ui.available_width(), max_size),
         Layout::left_to_right(egui::Align::Center).with_main_wrap(true),
         |ui| {
-            ui.add(&mut ProfilePic::new(images, get_profile_url(profile)).size(max_size));
+            ui.add(&mut ProfilePic::new(images, jobs, get_profile_url(profile)).size(max_size));
             ui.vertical(|ui| {
                 ui.add(display_name_widget(&get_display_name(profile), false));
             });

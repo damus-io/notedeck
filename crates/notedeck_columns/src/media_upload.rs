@@ -352,7 +352,6 @@ mod tests {
         // just a random image to test image upload
         let file_path = PathBuf::from_str("../../../assets/damus_rounded_80.png").unwrap();
         let selected_media = SelectedMedia::from_path(file_path).unwrap();
-        let img_bytes = include_bytes!("../../../assets/damus_rounded_80.png");
         let promise = get_upload_url_from_provider(NOSTR_BUILD_URL());
         let kp = FullKeypair::generate();
         println!("Using pubkey: {:?}", kp.pubkey);

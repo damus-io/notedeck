@@ -1,6 +1,10 @@
-use crate::media::gif::ensure_latest_texture_from_cache;
+use crate::jobs::MediaJobSender;
+use crate::media::gif::AnimatedImgTexCache;
 use crate::media::images::ImageType;
-use crate::media::AnimationMode;
+use crate::media::static_imgs::StaticImgTexCache;
+use crate::media::{
+    AnimationMode, BlurCache, NoLoadingLatestTex, TrustedMediaLatestTex, UntrustedMediaLatestTex,
+};
 use crate::urls::{UrlCache, UrlMimes};
 use crate::ImageMetadata;
 use crate::ObfuscationType;
@@ -8,13 +12,11 @@ use crate::RenderableMedia;
 use crate::Result;
 use egui::TextureHandle;
 use image::{Delay, Frame};
-use poll_promise::Promise;
 
 use egui::ColorImage;
 
 use std::collections::HashMap;
 use std::fs::{self, create_dir_all, File};
-use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 use std::{io, thread};
@@ -25,177 +27,38 @@ use std::path::PathBuf;
 use std::path::{self, Path};
 use tracing::warn;
 
-#[derive(Default)]
 pub struct TexturesCache {
-    pub cache: hashbrown::HashMap<String, TextureStateInternal>,
+    pub static_image: StaticImgTexCache,
+    pub blurred: BlurCache,
+    pub animated: AnimatedImgTexCache,
 }
 
 impl TexturesCache {
-    pub fn handle_and_get_or_insert_loadable(
-        &mut self,
-        url: &str,
-        closure: impl FnOnce() -> Promise<Option<Result<TexturedImage>>>,
-    ) -> LoadableTextureState<'_> {
-        let internal = self.handle_and_get_state_internal(url, true, closure);
-
-        internal.into()
-    }
-
-    pub fn handle_and_get_or_insert(
-        &mut self,
-        url: &str,
-        closure: impl FnOnce() -> Promise<Option<Result<TexturedImage>>>,
-    ) -> TextureState<'_> {
-        let internal = self.handle_and_get_state_internal(url, false, closure);
-
-        internal.into()
-    }
-
-    fn handle_and_get_state_internal(
-        &mut self,
-        url: &str,
-        use_loading: bool,
-        closure: impl FnOnce() -> Promise<Option<Result<TexturedImage>>>,
-    ) -> &mut TextureStateInternal {
-        let state = match self.cache.raw_entry_mut().from_key(url) {
-            hashbrown::hash_map::RawEntryMut::Occupied(entry) => {
-                let state = entry.into_mut();
-                handle_occupied(state, use_loading);
-
-                state
-            }
-            hashbrown::hash_map::RawEntryMut::Vacant(entry) => {
-                let res = closure();
-                let (_, state) = entry.insert(url.to_owned(), TextureStateInternal::Pending(res));
-
-                state
-            }
-        };
-
-        state
-    }
-
-    pub fn insert_pending(&mut self, url: &str, promise: Promise<Option<Result<TexturedImage>>>) {
-        self.cache
-            .insert(url.to_owned(), TextureStateInternal::Pending(promise));
-    }
-
-    pub fn move_to_loaded(&mut self, url: &str) {
-        let hashbrown::hash_map::RawEntryMut::Occupied(entry) =
-            self.cache.raw_entry_mut().from_key(url)
-        else {
-            return;
-        };
-
-        entry.replace_entry_with(|_, v| {
-            let TextureStateInternal::Loading(textured) = v else {
-                return Some(v);
-            };
-
-            Some(TextureStateInternal::Loaded(textured))
-        });
-    }
-
-    pub fn get_and_handle(&mut self, url: &str) -> Option<LoadableTextureState<'_>> {
-        self.cache.get_mut(url).map(|state| {
-            handle_occupied(state, true);
-            state.into()
-        })
-    }
-}
-
-fn handle_occupied(state: &mut TextureStateInternal, use_loading: bool) {
-    let TextureStateInternal::Pending(promise) = state else {
-        return;
-    };
-
-    let Some(res) = promise.ready_mut() else {
-        return;
-    };
-
-    let Some(res) = res.take() else {
-        tracing::error!("Failed to take the promise");
-        *state =
-            TextureStateInternal::Error(crate::Error::Generic("Promise already taken".to_owned()));
-        return;
-    };
-
-    match res {
-        Ok(textured) => {
-            *state = if use_loading {
-                TextureStateInternal::Loading(textured)
-            } else {
-                TextureStateInternal::Loaded(textured)
-            }
-        }
-        Err(e) => *state = TextureStateInternal::Error(e),
-    }
-}
-
-pub enum LoadableTextureState<'a> {
-    Pending,
-    Error(&'a crate::Error),
-    Loading {
-        actual_image_tex: &'a mut TexturedImage,
-    }, // the texture is in the loading state, for transitioning between the pending and loaded states
-    Loaded(&'a mut TexturedImage),
-}
-
-pub enum TextureState<'a> {
-    Pending,
-    Error(&'a crate::Error),
-    Loaded(&'a mut TexturedImage),
-}
-
-impl<'a> TextureState<'a> {
-    pub fn is_loaded(&self) -> bool {
-        matches!(self, Self::Loaded(_))
-    }
-}
-
-impl<'a> From<&'a mut TextureStateInternal> for TextureState<'a> {
-    fn from(value: &'a mut TextureStateInternal) -> Self {
-        match value {
-            TextureStateInternal::Pending(_) => TextureState::Pending,
-            TextureStateInternal::Error(error) => TextureState::Error(error),
-            TextureStateInternal::Loading(textured_image) => TextureState::Loaded(textured_image),
-            TextureStateInternal::Loaded(textured_image) => TextureState::Loaded(textured_image),
+    pub fn new(base_dir: PathBuf) -> Self {
+        Self {
+            static_image: StaticImgTexCache::new(
+                base_dir.join(MediaCache::rel_dir(MediaCacheType::Image)),
+            ),
+            blurred: Default::default(),
+            animated: AnimatedImgTexCache::new(
+                base_dir.join(MediaCache::rel_dir(MediaCacheType::Gif)),
+            ),
         }
     }
 }
 
-pub enum TextureStateInternal {
-    Pending(Promise<Option<Result<TexturedImage>>>),
+pub enum TextureState<T> {
+    Pending,
     Error(crate::Error),
-    Loading(TexturedImage), // the image is in the loading state, for transitioning between blur and image
-    Loaded(TexturedImage),
+    Loaded(T),
 }
 
-impl<'a> From<&'a mut TextureStateInternal> for LoadableTextureState<'a> {
-    fn from(value: &'a mut TextureStateInternal) -> Self {
-        match value {
-            TextureStateInternal::Pending(_) => LoadableTextureState::Pending,
-            TextureStateInternal::Error(error) => LoadableTextureState::Error(error),
-            TextureStateInternal::Loading(textured_image) => LoadableTextureState::Loading {
-                actual_image_tex: textured_image,
-            },
-            TextureStateInternal::Loaded(textured_image) => {
-                LoadableTextureState::Loaded(textured_image)
-            }
-        }
-    }
-}
-
-pub enum TexturedImage {
-    Static(TextureHandle),
-    Animated(Animation),
-}
-
-impl TexturedImage {
-    pub fn get_first_texture(&self) -> &TextureHandle {
+impl<T> std::fmt::Debug for TextureState<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            TexturedImage::Static(texture_handle) => texture_handle,
-            TexturedImage::Animated(animation) => &animation.first_frame.texture,
+            Self::Pending => write!(f, "Pending"),
+            Self::Error(_) => f.debug_tuple("Error").field(&"").finish(),
+            Self::Loaded(_) => f.debug_tuple("Loaded").field(&"").finish(),
         }
     }
 }
@@ -203,7 +66,6 @@ impl TexturedImage {
 pub struct Animation {
     pub first_frame: TextureFrame,
     pub other_frames: Vec<TextureFrame>,
-    pub receiver: Option<Receiver<TextureFrame>>,
 }
 
 impl Animation {
@@ -232,7 +94,6 @@ pub struct ImageFrame {
 
 pub struct MediaCache {
     pub cache_dir: path::PathBuf,
-    pub textures_cache: TexturesCache,
     pub cache_type: MediaCacheType,
     pub cache_size: Arc<Mutex<Option<u64>>>,
 }
@@ -266,7 +127,6 @@ impl MediaCache {
 
         Self {
             cache_dir,
-            textures_cache: TexturesCache::default(),
             cache_type,
             cache_size,
         }
@@ -370,7 +230,6 @@ impl MediaCache {
     }
 
     fn clear(&mut self) {
-        self.textures_cache.cache.clear();
         *self.cache_size.try_lock().unwrap() = Some(0);
     }
 }
@@ -413,6 +272,7 @@ pub struct Images {
     pub base_path: path::PathBuf,
     pub static_imgs: MediaCache,
     pub gifs: MediaCache,
+    pub textures: TexturesCache,
     pub urls: UrlMimes,
     /// cached imeta data
     pub metadata: HashMap<String, ImageMetadata>,
@@ -429,6 +289,7 @@ impl Images {
             urls: UrlMimes::new(UrlCache::new(path.join(UrlCache::rel_dir()))),
             gif_states: Default::default(),
             metadata: Default::default(),
+            textures: TexturesCache::new(path.clone()),
         }
     }
 
@@ -460,40 +321,22 @@ impl Images {
         })
     }
 
-    pub fn latest_texture(
-        &mut self,
+    pub fn latest_texture<'a>(
+        &'a mut self,
+        jobs: &MediaJobSender,
         ui: &mut egui::Ui,
         url: &str,
         img_type: ImageType,
         animation_mode: AnimationMode,
-    ) -> Option<TextureHandle> {
+    ) -> Option<&'a TextureHandle> {
         let cache_type = crate::urls::supported_mime_hosted_at_url(&mut self.urls, url)?;
 
-        let cache_dir = self.get_cache(cache_type).cache_dir.clone();
-        let is_loaded = self
-            .get_cache_mut(cache_type)
-            .textures_cache
-            .handle_and_get_or_insert(url, || {
-                crate::media::images::fetch_img(&cache_dir, ui.ctx(), url, img_type, cache_type)
-            })
-            .is_loaded();
-
-        if !is_loaded {
-            return None;
-        }
-
-        let cache = match cache_type {
-            MediaCacheType::Image => &mut self.static_imgs,
-            MediaCacheType::Gif => &mut self.gifs,
-        };
-
-        ensure_latest_texture_from_cache(
-            ui,
-            url,
+        let mut loader = NoLoadingLatestTex::new(
+            &self.textures.static_image,
+            &self.textures.animated,
             &mut self.gif_states,
-            &mut cache.textures_cache,
-            animation_mode,
-        )
+        );
+        loader.latest(jobs, ui.ctx(), url, cache_type, img_type, animation_mode)
     }
 
     pub fn get_cache(&self, cache_type: MediaCacheType) -> &MediaCache {
@@ -529,6 +372,36 @@ impl Images {
 
         Ok(())
     }
+
+    pub fn trusted_texture_loader(&mut self) -> TrustedMediaLatestTex<'_> {
+        TrustedMediaLatestTex::new(
+            NoLoadingLatestTex::new(
+                &self.textures.static_image,
+                &self.textures.animated,
+                &mut self.gif_states,
+            ),
+            &self.textures.blurred,
+        )
+    }
+
+    pub fn untrusted_texture_loader(&mut self) -> UntrustedMediaLatestTex<'_> {
+        UntrustedMediaLatestTex::new(&self.textures.blurred)
+    }
+
+    pub fn no_img_loading_tex_loader(&'_ mut self) -> NoLoadingLatestTex<'_> {
+        NoLoadingLatestTex::new(
+            &self.textures.static_image,
+            &self.textures.animated,
+            &mut self.gif_states,
+        )
+    }
+
+    pub fn user_trusts_img(&self, url: &str, media_type: MediaCacheType) -> bool {
+        match media_type {
+            MediaCacheType::Image => self.textures.static_image.contains(url),
+            MediaCacheType::Gif => self.textures.animated.contains(url),
+        }
+    }
 }
 
 pub type GifStateMap = HashMap<String, GifState>;
@@ -543,32 +416,4 @@ pub struct GifState {
 pub struct LatestTexture {
     pub texture: TextureHandle,
     pub request_next_repaint: Option<SystemTime>,
-}
-
-#[profiling::function]
-pub fn get_render_state<'a>(
-    ctx: &egui::Context,
-    images: &'a mut Images,
-    cache_type: MediaCacheType,
-    url: &str,
-    img_type: ImageType,
-) -> RenderState<'a> {
-    let cache = match cache_type {
-        MediaCacheType::Image => &mut images.static_imgs,
-        MediaCacheType::Gif => &mut images.gifs,
-    };
-
-    let texture_state = cache.textures_cache.handle_and_get_or_insert(url, || {
-        crate::media::images::fetch_img(&cache.cache_dir, ctx, url, img_type, cache_type)
-    });
-
-    RenderState {
-        texture_state,
-        gifs: &mut images.gif_states,
-    }
-}
-
-pub struct RenderState<'a> {
-    pub texture_state: TextureState<'a>,
-    pub gifs: &'a mut GifStateMap,
 }

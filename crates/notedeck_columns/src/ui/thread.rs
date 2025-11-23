@@ -2,7 +2,6 @@ use egui::InnerResponse;
 use egui_virtual_list::VirtualList;
 use nostrdb::{Note, Transaction};
 use notedeck::note::root_note_id_from_selected_id;
-use notedeck::JobsCache;
 use notedeck::{NoteAction, NoteContext};
 use notedeck_ui::note::NoteResponse;
 use notedeck_ui::{NoteOptions, NoteView};
@@ -16,7 +15,6 @@ pub struct ThreadView<'a, 'd> {
     note_options: NoteOptions,
     col: usize,
     note_context: &'a mut NoteContext<'d>,
-    jobs: &'a mut JobsCache,
 }
 
 impl<'a, 'd> ThreadView<'a, 'd> {
@@ -26,7 +24,6 @@ impl<'a, 'd> ThreadView<'a, 'd> {
         selected_note_id: &'a [u8; 32],
         note_options: NoteOptions,
         note_context: &'a mut NoteContext<'d>,
-        jobs: &'a mut JobsCache,
         col: usize,
     ) -> Self {
         ThreadView {
@@ -34,7 +31,6 @@ impl<'a, 'd> ThreadView<'a, 'd> {
             selected_note_id,
             note_options,
             note_context,
-            jobs,
             col,
         }
     }
@@ -136,15 +132,7 @@ impl<'a, 'd> ThreadView<'a, 'd> {
             ui.colored_label(ui.visuals().error_fg_color, "LOADING NOTES");
         }
 
-        show_notes(
-            ui,
-            list,
-            &notes,
-            self.note_context,
-            self.note_options,
-            self.jobs,
-            txn,
-        )
+        show_notes(ui, list, &notes, self.note_context, self.note_options, txn)
     }
 }
 
@@ -155,7 +143,6 @@ fn show_notes(
     thread_notes: &ThreadNotes,
     note_context: &mut NoteContext<'_>,
     flags: NoteOptions,
-    jobs: &mut JobsCache,
     txn: &Transaction,
 ) -> Option<NoteAction> {
     let mut action = None;
@@ -185,7 +172,7 @@ fn show_notes(
             return 1;
         }
 
-        let resp = note.show(note_context, flags, jobs, ui);
+        let resp = note.show(note_context, flags, ui);
 
         action = if cur_index == selected_note_index {
             resp.action.and_then(strip_note_action)
@@ -326,11 +313,10 @@ impl<'a> ThreadNote<'a> {
         &self,
         note_context: &'a mut NoteContext<'_>,
         flags: NoteOptions,
-        jobs: &'a mut JobsCache,
         ui: &mut egui::Ui,
     ) -> NoteResponse {
         let inner = notedeck_ui::padding(8.0, ui, |ui| {
-            NoteView::new(note_context, &self.note, self.options(flags), jobs)
+            NoteView::new(note_context, &self.note, self.options(flags))
                 .selected_style(self.note_type.is_selected())
                 .unread_indicator(self.unread_and_have_replies)
                 .show(ui)

@@ -7,7 +7,7 @@ use crate::{
 
 use egui::ScrollArea;
 use enostr::{FilledKeypair, NoteId};
-use notedeck::{JobsCache, NoteContext};
+use notedeck::NoteContext;
 use notedeck_ui::NoteOptions;
 
 pub struct QuoteRepostView<'a, 'd> {
@@ -18,7 +18,6 @@ pub struct QuoteRepostView<'a, 'd> {
     scroll_id: egui::Id,
     inner_rect: egui::Rect,
     note_options: NoteOptions,
-    jobs: &'a mut JobsCache,
 }
 
 impl<'a, 'd> QuoteRepostView<'a, 'd> {
@@ -30,7 +29,6 @@ impl<'a, 'd> QuoteRepostView<'a, 'd> {
         quoting_note: &'a nostrdb::Note<'a>,
         inner_rect: egui::Rect,
         note_options: NoteOptions,
-        jobs: &'a mut JobsCache,
         col: usize,
     ) -> Self {
         QuoteRepostView {
@@ -41,7 +39,6 @@ impl<'a, 'd> QuoteRepostView<'a, 'd> {
             scroll_id: QuoteRepostView::scroll_id(col, quoting_note.id()),
             inner_rect,
             note_options,
-            jobs,
         }
     }
 
@@ -78,7 +75,6 @@ impl<'a, 'd> QuoteRepostView<'a, 'd> {
             self.poster,
             self.inner_rect,
             self.note_options,
-            self.jobs,
         )
         .ui_no_scroll(self.quoting_note.txn().unwrap(), ui);
         post_resp

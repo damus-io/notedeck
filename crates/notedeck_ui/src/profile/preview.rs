@@ -4,7 +4,8 @@ use egui_extras::Size;
 use nostrdb::ProfileRecord;
 
 use notedeck::{
-    name::get_display_name, profile::get_profile_url, tr, Images, Localization, NotedeckTextStyle,
+    name::get_display_name, profile::get_profile_url, tr, Images, Localization, MediaJobSender,
+    NotedeckTextStyle,
 };
 
 use super::{about_section_widget, banner, display_name_widget};
@@ -12,14 +13,20 @@ use super::{about_section_widget, banner, display_name_widget};
 pub struct ProfilePreview<'a, 'cache> {
     profile: &'a ProfileRecord<'a>,
     cache: &'cache mut Images,
+    jobs: &'cache MediaJobSender,
     banner_height: Size,
 }
 
 impl<'a, 'cache> ProfilePreview<'a, 'cache> {
-    pub fn new(profile: &'a ProfileRecord<'a>, cache: &'cache mut Images) -> Self {
+    pub fn new(
+        profile: &'a ProfileRecord<'a>,
+        cache: &'cache mut Images,
+        jobs: &'cache MediaJobSender,
+    ) -> Self {
         let banner_height = Size::exact(80.0);
         ProfilePreview {
             profile,
+            jobs,
             cache,
             banner_height,
         }
@@ -40,7 +47,7 @@ impl<'a, 'cache> ProfilePreview<'a, 'cache> {
 
             ui.put(
                 pfp_rect,
-                &mut ProfilePic::new(self.cache, get_profile_url(Some(self.profile)))
+                &mut ProfilePic::new(self.cache, self.jobs, get_profile_url(Some(self.profile)))
                     .size(size)
                     .border(ProfilePic::border_stroke(ui)),
             );
@@ -72,6 +79,7 @@ pub struct SimpleProfilePreview<'a, 'cache> {
     profile: Option<&'a ProfileRecord<'a>>,
     pub i18n: &'cache mut Localization,
     cache: &'cache mut Images,
+    jobs: &'cache MediaJobSender,
     is_nsec: bool,
 }
 
@@ -79,6 +87,7 @@ impl<'a, 'cache> SimpleProfilePreview<'a, 'cache> {
     pub fn new(
         profile: Option<&'a ProfileRecord<'a>>,
         cache: &'cache mut Images,
+        jobs: &'cache MediaJobSender,
         i18n: &'cache mut Localization,
         is_nsec: bool,
     ) -> Self {
@@ -87,6 +96,7 @@ impl<'a, 'cache> SimpleProfilePreview<'a, 'cache> {
             cache,
             is_nsec,
             i18n,
+            jobs,
         }
     }
 }
@@ -95,7 +105,10 @@ impl egui::Widget for SimpleProfilePreview<'_, '_> {
     fn ui(self, ui: &mut egui::Ui) -> egui::Response {
         Frame::new()
             .show(ui, |ui| {
-                ui.add(&mut ProfilePic::new(self.cache, get_profile_url(self.profile)).size(48.0));
+                ui.add(
+                    &mut ProfilePic::new(self.cache, self.jobs, get_profile_url(self.profile))
+                        .size(48.0),
+                );
                 ui.vertical(|ui| {
                     ui.add(display_name_widget(&get_display_name(self.profile), true));
                     if !self.is_nsec {

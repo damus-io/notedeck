@@ -11,7 +11,7 @@ use egui_winit::clipboard::Clipboard;
 use nostrdb::{Filter, Ndb, ProfileRecord, Transaction};
 use notedeck::{
     fonts::get_font_size, name::get_display_name, profile::get_profile_url, tr, tr_plural, Images,
-    JobsCache, Localization, NoteAction, NoteContext, NoteRef, NotedeckTextStyle,
+    Localization, MediaJobSender, NoteAction, NoteContext, NoteRef, NotedeckTextStyle,
 };
 
 use notedeck_ui::{
@@ -33,7 +33,6 @@ pub struct SearchView<'a, 'd> {
     note_options: NoteOptions,
     txn: &'a Transaction,
     note_context: &'a mut NoteContext<'d>,
-    jobs: &'a mut JobsCache,
 }
 
 impl<'a, 'd> SearchView<'a, 'd> {
@@ -42,14 +41,12 @@ impl<'a, 'd> SearchView<'a, 'd> {
         note_options: NoteOptions,
         query: &'a mut SearchQueryState,
         note_context: &'a mut NoteContext<'d>,
-        jobs: &'a mut JobsCache,
     ) -> Self {
         Self {
             txn,
             query,
             note_options,
             note_context,
-            jobs,
         }
     }
 
@@ -174,6 +171,7 @@ impl<'a, 'd> SearchView<'a, 'd> {
                 self.note_context.ndb,
                 self.txn,
                 &results,
+                self.note_context.jobs,
             )
             .show_in_rect(ui.available_rect_before_wrap(), ui);
 
@@ -256,12 +254,10 @@ impl<'a, 'd> SearchView<'a, 'd> {
 
                 let resp = ui.add(recent_profile_item(
                     profile.as_ref(),
-                    &pubkey,
-                    &self.query.string,
                     is_selected,
                     ui.available_width(),
                     self.note_context.img_cache,
-                    self.note_context.accounts,
+                    self.note_context.jobs,
                 ));
 
                 if resp.clicked() {
@@ -319,7 +315,7 @@ impl<'a, 'd> SearchView<'a, 'd> {
                         self.query.remove_recent_search(i);
                     }
                 }
-                RecentSearchItem::Profile { pubkey, query } => {
+                RecentSearchItem::Profile { pubkey, query: _ } => {
                     let profile = self
                         .note_context
                         .ndb
@@ -327,12 +323,10 @@ impl<'a, 'd> SearchView<'a, 'd> {
                         .ok();
                     let resp = ui.add(recent_profile_item(
                         profile.as_ref(),
-                        pubkey,
-                        query,
                         is_selected,
                         ui.available_width(),
                         self.note_context.img_cache,
-                        self.note_context.accounts,
+                        self.note_context.jobs,
                     ));
 
                     if resp.clicked() || (is_selected && keyboard_resp.enter_pressed) {
@@ -360,7 +354,6 @@ impl<'a, 'd> SearchView<'a, 'd> {
                     self.note_options,
                     self.txn,
                     self.note_context,
-                    self.jobs,
                 )
                 .show(ui)
             });
@@ -709,12 +702,10 @@ fn search_hashtag(
 
 fn recent_profile_item<'a>(
     profile: Option<&'a ProfileRecord<'_>>,
-    _pubkey: &'a Pubkey,
-    _query: &'a str,
     is_selected: bool,
     width: f32,
     cache: &'a mut Images,
-    _accounts: &'a notedeck::Accounts,
+    jobs: &'a MediaJobSender,
 ) -> impl egui::Widget + 'a {
     move |ui: &mut egui::Ui| -> egui::Response {
         let min_img_size = 48.0;
@@ -742,7 +733,7 @@ fn recent_profile_item<'a>(
 
         ui.put(
             pfp_rect,
-            &mut ProfilePic::new(cache, get_profile_url(profile)).size(min_img_size),
+            &mut ProfilePic::new(cache, jobs, get_profile_url(profile)).size(min_img_size),
         );
 
         let name = get_display_name(profile).name();

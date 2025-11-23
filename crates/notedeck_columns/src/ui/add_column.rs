@@ -17,7 +17,9 @@ use crate::{
     Damus,
 };
 
-use notedeck::{tr, AppContext, Images, Localization, NotedeckTextStyle, UserAccount};
+use notedeck::{
+    tr, AppContext, Images, Localization, MediaJobSender, NotedeckTextStyle, UserAccount,
+};
 use notedeck_ui::{anim::ICON_EXPANSION_MULTIPLE, app_images};
 use tokenator::{ParseError, TokenParser, TokenSerializable, TokenWriter};
 
@@ -168,6 +170,7 @@ pub struct AddColumnView<'a> {
     img_cache: &'a mut Images,
     cur_account: &'a UserAccount,
     i18n: &'a mut Localization,
+    jobs: &'a MediaJobSender,
 }
 
 impl<'a> AddColumnView<'a> {
@@ -177,6 +180,7 @@ impl<'a> AddColumnView<'a> {
         img_cache: &'a mut Images,
         cur_account: &'a UserAccount,
         i18n: &'a mut Localization,
+        jobs: &'a MediaJobSender,
     ) -> Self {
         Self {
             key_state_map,
@@ -184,6 +188,7 @@ impl<'a> AddColumnView<'a> {
             img_cache,
             cur_account,
             i18n,
+            jobs,
         }
     }
 
@@ -349,7 +354,7 @@ impl<'a> AddColumnView<'a> {
                                 bottom: 32,
                             })
                             .show(ui, |ui| {
-                                ProfilePreview::new(&profile, self.img_cache).ui(ui);
+                                ProfilePreview::new(&profile, self.img_cache, self.jobs).ui(ui);
                             });
                     }
                 }
@@ -673,6 +678,7 @@ pub fn render_add_column_routes(
         ctx.img_cache,
         ctx.accounts.get_selected_account(),
         ctx.i18n,
+        ctx.media_jobs.sender(),
     );
     let resp = match route {
         AddColumnRoute::Base => add_column_view.ui(ui),

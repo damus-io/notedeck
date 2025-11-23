@@ -12,7 +12,7 @@ use crate::{
     route::Route,
 };
 
-use notedeck::{tr, Accounts, Localization, UserAccount};
+use notedeck::{tr, Accounts, Localization, MediaJobSender, UserAccount};
 use notedeck_ui::{
     anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},
     app_images, colors, ProfilePic, View,
@@ -29,6 +29,7 @@ pub struct DesktopSidePanel<'a> {
     i18n: &'a mut Localization,
     ndb: &'a nostrdb::Ndb,
     img_cache: &'a mut notedeck::Images,
+    jobs: &'a MediaJobSender,
 }
 
 impl View for DesktopSidePanel<'_> {
@@ -68,6 +69,7 @@ impl<'a> DesktopSidePanel<'a> {
         i18n: &'a mut Localization,
         ndb: &'a nostrdb::Ndb,
         img_cache: &'a mut notedeck::Images,
+        jobs: &'a MediaJobSender,
     ) -> Self {
         Self {
             selected_account,
@@ -75,6 +77,7 @@ impl<'a> DesktopSidePanel<'a> {
             i18n,
             ndb,
             img_cache,
+            jobs,
         }
     }
 
@@ -163,7 +166,7 @@ impl<'a> DesktopSidePanel<'a> {
 
                     let pfp_resp = ui
                         .add(
-                            &mut ProfilePic::new(self.img_cache, profile_url)
+                            &mut ProfilePic::new(self.img_cache, self.jobs, profile_url)
                                 .size(avatar_size)
                                 .sense(egui::Sense::click()),
                         )
