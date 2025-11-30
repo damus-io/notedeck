@@ -3939,6 +3939,7 @@ dependencies = [
  "notedeck_clndash",
  "notedeck_columns",
  "notedeck_dave",
+ "notedeck_messages",
  "notedeck_notebook",
  "notedeck_ui",
  "profiling",
@@ -4054,6 +4055,14 @@ dependencies = [
  "sha2",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "notedeck_messages"
+version = "0.7.1"
+dependencies = [
+ "egui",
+ "notedeck",
 ]
 
 [[package]]

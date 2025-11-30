@@ -18,6 +18,7 @@ egui = { workspace = true }
 notedeck_columns = { workspace = true }
 notedeck_ui = { workspace = true }
 notedeck_dave = { workspace = true }
+notedeck_messages = { workspace = true }
 notedeck_notebook = { workspace = true }
 notedeck_clndash = { workspace = true }
 notedeck = { workspace = true }

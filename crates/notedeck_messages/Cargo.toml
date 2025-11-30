@@ -1,0 +1,10 @@
+[package]
+name = "notedeck_messages"
+version = { workspace = true }
+edition = "2021"
+description = "The direct messages app that ships with Notedeck"
+license = "GPL-3.0-or-later"
+
+[dependencies]
+egui = { workspace = true }
+notedeck = { workspace = true }
