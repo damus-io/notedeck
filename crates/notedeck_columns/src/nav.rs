@@ -567,9 +567,15 @@ fn process_render_nav_action(
                 return None;
             }
         }
-        RenderNavAction::ProfileAction(profile_action) => {
-            profile_action.process_profile_action(ui.ctx(), ctx.ndb, ctx.pool, ctx.accounts)
-        }
+        RenderNavAction::ProfileAction(profile_action) => profile_action.process_profile_action(
+            app,
+            ctx.path,
+            ctx.i18n,
+            ui.ctx(),
+            ctx.ndb,
+            ctx.pool,
+            ctx.accounts,
+        ),
         RenderNavAction::WalletAction(wallet_action) => {
             wallet_action.process(ctx.accounts, ctx.global_wallet)
         }
