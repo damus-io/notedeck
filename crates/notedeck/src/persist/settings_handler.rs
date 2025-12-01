@@ -40,6 +40,7 @@ pub struct Settings {
     #[serde(default = "default_animate_nav_transitions")]
     pub animate_nav_transitions: bool,
     pub max_hashtags_per_note: usize,
+    pub load_media_by_default: bool,
 }
 
 fn default_animate_nav_transitions() -> bool {
@@ -57,6 +58,7 @@ impl Default for Settings {
             note_body_font_size: DEFAULT_NOTE_BODY_FONT_SIZE,
             animate_nav_transitions: default_animate_nav_transitions(),
             max_hashtags_per_note: DEFAULT_MAX_HASHTAGS_PER_NOTE,
+            load_media_by_default: false,
         }
     }
 }
@@ -75,7 +77,7 @@ impl SettingsHandler {
         }
     }
 
-    fn read_from_zomfactor_file(&self) -> Option<f32> {
+    fn read_from_zoomfactor_file(&self) -> Option<f32> {
         match self.directory.get_file(ZOOM_FACTOR_FILE.to_string()) {
             Ok(contents) => serde_json::from_str::<f32>(&contents).ok(),
             Err(_) => None,
@@ -97,11 +99,11 @@ impl SettingsHandler {
         };
 
         // if zoom_factor.txt exists migrate
-        if let Some(zom_factor) = self.read_from_zomfactor_file() {
+        if let Some(zoom_factor) = self.read_from_zoomfactor_file() {
             info!("migrating theme preference from zom_factor file");
             _ = delete_file(&self.directory.file_path, ZOOM_FACTOR_FILE.to_string());
 
-            settings.zoom_factor = zom_factor;
+            settings.zoom_factor = zoom_factor;
             migrated = true;
         } else {
             info!("zoom_factor.txt exists migrate file not found, using default zoom factor");
@@ -196,6 +198,11 @@ impl SettingsHandler {
         self.try_save_settings();
     }
 
+    pub fn set_load_media_by_default(&mut self, value: bool) {
+        self.get_settings_mut().load_media_by_default = value;
+        self.try_save_settings();
+    }
+
     pub fn set_note_body_font_size(&mut self, value: f32) {
         self.get_settings_mut().note_body_font_size = value;
         self.try_save_settings();
@@ -262,6 +269,13 @@ impl SettingsHandler {
 
     pub fn is_loaded(&self) -> bool {
         self.current_settings.is_some()
+    }
+
+    pub fn load_media_by_default(&self) -> bool {
+        self.current_settings
+            .as_ref()
+            .map(|s| s.load_media_by_default)
+            .unwrap_or(false)
     }
 
     pub fn note_body_font_size(&self) -> f32 {
