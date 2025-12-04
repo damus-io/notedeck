@@ -15,10 +15,10 @@ use egui_nav::Percent;
 use enostr::{FilledKeypair, NoteId, Pubkey, RelayPool};
 use nostrdb::{IngestMetadata, Ndb, NoteBuilder, NoteKey, Transaction};
 use notedeck::{
-    get_wallet_for,
+    get_wallet_for, is_future_timestamp,
     note::{reaction_sent_id, ReactAction, ZapTargetAmount},
-    Accounts, GlobalWallet, Images, MediaJobSender, NoteAction, NoteCache, NoteZapTargetOwned,
-    UnknownIds, ZapAction, ZapTarget, ZappingError, Zaps,
+    unix_time_secs, Accounts, GlobalWallet, Images, MediaJobSender, NoteAction, NoteCache,
+    NoteZapTargetOwned, UnknownIds, ZapAction, ZapTarget, ZappingError, Zaps,
 };
 use notedeck_ui::media::MediaViewerFlags;
 use tracing::error;
@@ -504,6 +504,7 @@ pub fn process_thread_notes(
         return;
     }
 
+    let now = unix_time_secs();
     let mut has_spliced_resp = false;
     let mut num_new_notes = 0;
     for key in notes {
@@ -516,6 +517,10 @@ pub fn process_thread_notes(
             );
             continue;
         };
+
+        if is_future_timestamp(note.created_at(), now) {
+            continue;
+        }
 
         // Ensure that unknown ids are captured when inserting notes
         UnknownIds::update_from_note(txn, ndb, unknown_ids, note_cache, &note);

@@ -10,6 +10,22 @@ const ONE_WEEK_IN_SECONDS: u64 = 604_800;
 const ONE_MONTH_IN_SECONDS: u64 = 2_592_000; // 30 days
 const ONE_YEAR_IN_SECONDS: u64 = 31_536_000; // 365 days
 
+/// Maximum tolerated skew for note timestamps in the future (2 minutes / 120 seconds).
+pub const MAX_FUTURE_NOTE_SKEW_SECS: u64 = 2 * ONE_MINUTE_IN_SECONDS;
+
+/// Returns the current UNIX timestamp in seconds.
+pub fn unix_time_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("Time went backwards")
+        .as_secs()
+}
+
+/// Whether `timestamp` is further in the future than the allowed skew.
+pub fn is_future_timestamp(timestamp: u64, now: u64) -> bool {
+    timestamp > now + MAX_FUTURE_NOTE_SKEW_SECS
+}
+
 /// Calculate relative time between two timestamps, with two units only
 /// when the scale is large enough (e.g., "1y 6m", "5d 4h"),
 /// but not for hours/minutes/seconds.
@@ -95,10 +111,7 @@ pub fn time_format(_i18n: &mut Localization, timestamp: u64) -> String {
 }
 
 pub fn time_ago_since(i18n: &mut Localization, timestamp: u64) -> String {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("Time went backwards")
-        .as_secs();
+    let now = unix_time_secs();
 
     time_ago_between(i18n, timestamp, now)
 }
@@ -353,5 +366,19 @@ mod tests {
             "Expected '1d' for exactly 86400 seconds, got: {}",
             result
         );
+    }
+
+    #[test]
+    fn test_future_skew_helper() {
+        let now = 1_000_000u64;
+        assert!(!is_future_timestamp(now, now));
+        assert!(!is_future_timestamp(
+            now + MAX_FUTURE_NOTE_SKEW_SECS - 1,
+            now
+        ));
+        assert!(is_future_timestamp(
+            now + MAX_FUTURE_NOTE_SKEW_SECS + 1,
+            now
+        ));
     }
 }
