@@ -37,7 +37,7 @@ impl ProfileContextWidget {
             if ui
                 .button(tr!(
                     i18n,
-                    "Add profile column",
+                    "Add as column",
                     "Add new column to current deck from profile context menu"
                 ))
                 .clicked()
