@@ -59,6 +59,7 @@ hyper-util = { workspace = true }
 http-body-util = { workspace = true }
 hyper-rustls = { workspace = true }
 rustls = { workspace = true }
+keyring = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

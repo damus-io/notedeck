@@ -21,6 +21,9 @@ pub enum Error {
     #[error("io error: {0}")]
     Nostrdb(#[from] nostrdb::Error),
 
+    #[error("keyring error: {0}")]
+    Keyring(#[from] keyring::Error),
+
     #[error("generic error: {0}")]
     Generic(String),
 
