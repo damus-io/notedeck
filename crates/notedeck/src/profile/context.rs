@@ -1,6 +1,7 @@
 use enostr::Pubkey;
 
 pub enum ProfileContextSelection {
+    AddProfileColumn,
     CopyLink,
     ViewAs,
 }
@@ -20,7 +21,7 @@ impl ProfileContextSelection {
 
                 ctx.copy_text(format!("https://damus.io/{npub}"));
             }
-            ProfileContextSelection::ViewAs => {
+            ProfileContextSelection::ViewAs | ProfileContextSelection::AddProfileColumn => {
                 // handled separately in profile.rs
             }
         }
