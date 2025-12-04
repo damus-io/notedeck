@@ -9,15 +9,14 @@ use crate::{widgets::x_button, ProfilePic, ProfilePreview, PulseAlpha, Username}
 
 pub use contents::{render_note_preview, NoteContents};
 pub use context::NoteContextButton;
-use notedeck::get_current_wallet;
 use notedeck::note::{reaction_sent_id, ZapTargetAmount};
 use notedeck::ui::is_narrow;
 use notedeck::Accounts;
 use notedeck::GlobalWallet;
 use notedeck::Images;
-use notedeck::JobsCache;
 use notedeck::Localization;
 use notedeck::MediaAction;
+use notedeck::{get_current_wallet, MediaJobSender};
 pub use options::NoteOptions;
 pub use reply_description::reply_desc;
 
@@ -35,7 +34,6 @@ pub struct NoteView<'a, 'd> {
     parent: Option<NoteKey>,
     note: &'a nostrdb::Note<'a>,
     flags: NoteOptions,
-    jobs: &'a mut JobsCache,
 }
 
 pub struct NoteResponse {
@@ -83,7 +81,6 @@ impl<'a, 'd> NoteView<'a, 'd> {
         note_context: &'a mut NoteContext<'d>,
         note: &'a nostrdb::Note<'a>,
         flags: NoteOptions,
-        jobs: &'a mut JobsCache,
     ) -> Self {
         let parent: Option<NoteKey> = None;
 
@@ -92,7 +89,6 @@ impl<'a, 'd> NoteView<'a, 'd> {
             parent,
             note,
             flags,
-            jobs,
         }
     }
 
@@ -256,7 +252,6 @@ impl<'a, 'd> NoteView<'a, 'd> {
                 txn,
                 self.note,
                 self.flags,
-                self.jobs,
             ));
             //});
         })
@@ -291,13 +286,19 @@ impl<'a, 'd> NoteView<'a, 'd> {
             Some(pic) => show_actual_pfp(
                 ui,
                 self.note_context.img_cache,
+                self.note_context.jobs,
                 pic,
                 pfp_size,
                 note_key,
                 profile,
             ),
 
-            None => show_fallback_pfp(ui, self.note_context.img_cache, pfp_size),
+            None => show_fallback_pfp(
+                ui,
+                self.note_context.img_cache,
+                self.note_context.jobs,
+                pfp_size,
+            ),
         }
     }
 
@@ -423,22 +424,15 @@ impl<'a, 'd> NoteView<'a, 'd> {
                         ui.horizontal_wrapped(|ui| {
                             ui.spacing_mut().item_spacing.x = 0.0;
 
-                            note_action = reply_desc(
-                                ui,
-                                txn,
-                                &note_reply,
-                                self.note_context,
-                                self.flags,
-                                self.jobs,
-                            )
-                            .or(note_action.take());
+                            note_action =
+                                reply_desc(ui, txn, &note_reply, self.note_context, self.flags)
+                                    .or(note_action.take());
                         });
                     });
                 });
             }
 
-            let mut contents =
-                NoteContents::new(self.note_context, txn, self.note, self.flags, self.jobs);
+            let mut contents = NoteContents::new(self.note_context, txn, self.note, self.flags);
 
             ui.add(&mut contents);
 
@@ -535,20 +529,13 @@ impl<'a, 'd> NoteView<'a, 'd> {
                             return;
                         }
 
-                        note_action = reply_desc(
-                            ui,
-                            txn,
-                            &note_reply,
-                            self.note_context,
-                            self.flags,
-                            self.jobs,
-                        )
-                        .or(note_action.take());
+                        note_action =
+                            reply_desc(ui, txn, &note_reply, self.note_context, self.flags)
+                                .or(note_action.take());
                     });
                 }
 
-                let mut contents =
-                    NoteContents::new(self.note_context, txn, self.note, self.flags, self.jobs);
+                let mut contents = NoteContents::new(self.note_context, txn, self.note, self.flags);
                 ui.add(&mut contents);
 
                 note_action = contents.action.or(note_action);
@@ -713,6 +700,7 @@ impl PfpResponse {
 fn show_actual_pfp(
     ui: &mut egui::Ui,
     images: &mut Images,
+    jobs: &MediaJobSender,
     pic: &str,
     pfp_size: i8,
     note_key: NoteKey,
@@ -732,13 +720,13 @@ fn show_actual_pfp(
 
     let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
 
-    let mut pfp = ProfilePic::new(images, pic).size(size);
+    let mut pfp = ProfilePic::new(images, jobs, pic).size(size);
     let pfp_resp = ui.put(rect, &mut pfp);
     let action = pfp.action;
 
     pfp_resp.on_hover_ui_at_pointer(|ui| {
         ui.set_max_width(300.0);
-        ui.add(ProfilePreview::new(profile.as_ref().unwrap(), images));
+        ui.add(ProfilePreview::new(profile.as_ref().unwrap(), images, jobs));
     });
 
     PfpResponse {
@@ -748,14 +736,20 @@ fn show_actual_pfp(
     }
 }
 
-fn show_fallback_pfp(ui: &mut egui::Ui, images: &mut Images, pfp_size: i8) -> PfpResponse {
+fn show_fallback_pfp(
+    ui: &mut egui::Ui,
+    images: &mut Images,
+    jobs: &MediaJobSender,
+    pfp_size: i8,
+) -> PfpResponse {
     let sense = Sense::click();
     // This has to match the expand size from the above case to
     // prevent bounciness
     let size = (pfp_size + NoteView::expand_size()) as f32;
     let (rect, _response) = ui.allocate_exact_size(egui::vec2(size, size), sense);
 
-    let mut pfp = ProfilePic::new(images, notedeck::profile::no_pfp_url()).size(pfp_size as f32);
+    let mut pfp =
+        ProfilePic::new(images, jobs, notedeck::profile::no_pfp_url()).size(pfp_size as f32);
     let response = ui.put(rect, &mut pfp).interact(sense);
 
     PfpResponse {

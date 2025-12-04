@@ -1,14 +1,15 @@
 use egui::{vec2, InnerResponse, Sense, Stroke, TextureHandle};
 
-use notedeck::get_render_state;
-use notedeck::media::gif::ensure_latest_texture;
-use notedeck::media::images::{fetch_no_pfp_promise, ImageType};
+use notedeck::media::images::ImageType;
+use notedeck::media::latest::LatestImageTex;
 use notedeck::media::AnimationMode;
 use notedeck::MediaAction;
+use notedeck::MediaJobSender;
 use notedeck::{show_one_error_message, supported_mime_hosted_at_url, Images};
 
 pub struct ProfilePic<'cache, 'url> {
     cache: &'cache mut Images,
+    jobs: &'cache MediaJobSender,
     url: &'url str,
     size: f32,
     sense: Sense,
@@ -22,6 +23,7 @@ impl egui::Widget for &mut ProfilePic<'_, '_> {
     fn ui(self, ui: &mut egui::Ui) -> egui::Response {
         let inner = render_pfp(
             ui,
+            self.jobs,
             self.cache,
             self.url,
             self.size,
@@ -37,12 +39,13 @@ impl egui::Widget for &mut ProfilePic<'_, '_> {
 }
 
 impl<'cache, 'url> ProfilePic<'cache, 'url> {
-    pub fn new(cache: &'cache mut Images, url: &'url str) -> Self {
+    pub fn new(cache: &'cache mut Images, jobs: &'cache MediaJobSender, url: &'url str) -> Self {
         let size = Self::default_size() as f32;
         let sense = Sense::hover();
 
         ProfilePic {
             cache,
+            jobs,
             sense,
             url,
             size,
@@ -68,17 +71,19 @@ impl<'cache, 'url> ProfilePic<'cache, 'url> {
 
     pub fn from_profile(
         cache: &'cache mut Images,
+        jobs: &'cache MediaJobSender,
         profile: &nostrdb::ProfileRecord<'url>,
     ) -> Option<Self> {
         profile
             .record()
             .profile()
             .and_then(|p| p.picture())
-            .map(|url| ProfilePic::new(cache, url))
+            .map(|url| ProfilePic::new(cache, jobs, url))
     }
 
     pub fn from_profile_or_default(
         cache: &'cache mut Images,
+        jobs: &'cache MediaJobSender,
         profile: Option<&nostrdb::ProfileRecord<'url>>,
     ) -> Self {
         let url = profile
@@ -87,7 +92,7 @@ impl<'cache, 'url> ProfilePic<'cache, 'url> {
             .and_then(|p| p.picture())
             .unwrap_or(notedeck::profile::no_pfp_url());
 
-        ProfilePic::new(cache, url)
+        ProfilePic::new(cache, jobs, url)
     }
 
     #[inline]
@@ -119,8 +124,10 @@ impl<'cache, 'url> ProfilePic<'cache, 'url> {
 }
 
 #[profiling::function]
+#[allow(clippy::too_many_arguments)]
 fn render_pfp(
     ui: &mut egui::Ui,
+    jobs: &MediaJobSender,
     img_cache: &mut Images,
     url: &str,
     ui_size: f32,
@@ -134,38 +141,29 @@ fn render_pfp(
     let cache_type = supported_mime_hosted_at_url(&mut img_cache.urls, url)
         .unwrap_or(notedeck::MediaCacheType::Image);
 
-    let cur_state = get_render_state(
+    let cur_state = img_cache.no_img_loading_tex_loader().latest_state(
+        jobs,
         ui.ctx(),
-        img_cache,
-        cache_type,
         url,
+        cache_type,
         ImageType::Profile(img_size),
+        animation_mode,
     );
 
-    match cur_state.texture_state {
-        notedeck::TextureState::Pending => {
+    match cur_state {
+        LatestImageTex::Pending => {
             profiling::scope!("Render pending");
             egui::InnerResponse::new(None, paint_circle(ui, ui_size, border, sense))
         }
-        notedeck::TextureState::Error(e) => {
+        LatestImageTex::Error(e) => {
             profiling::scope!("Render error");
             let r = paint_circle(ui, ui_size, border, sense);
             show_one_error_message(ui, &format!("Failed to fetch profile at url {url}: {e}"));
-            egui::InnerResponse::new(
-                Some(MediaAction::FetchImage {
-                    url: url.to_owned(),
-                    cache_type,
-                    no_pfp_promise: fetch_no_pfp_promise(ui.ctx(), img_cache.get_cache(cache_type)),
-                }),
-                r,
-            )
+            egui::InnerResponse::new(None, r)
         }
-        notedeck::TextureState::Loaded(textured_image) => {
+        LatestImageTex::Loaded(texture_handle) => {
             profiling::scope!("Render loaded");
-            let texture_handle =
-                ensure_latest_texture(ui, url, cur_state.gifs, textured_image, animation_mode);
-
-            egui::InnerResponse::new(None, pfp_image(ui, &texture_handle, ui_size, border, sense))
+            egui::InnerResponse::new(None, pfp_image(ui, texture_handle, ui_size, border, sense))
         }
     }
 }

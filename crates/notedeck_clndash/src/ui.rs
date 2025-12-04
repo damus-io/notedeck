@@ -49,23 +49,26 @@ pub fn note_hover_ui(
             note_cache: ctx.note_cache,
             zaps: ctx.zaps,
             pool: ctx.pool,
-            job_pool: ctx.job_pool,
+            jobs: ctx.media_jobs.sender(),
             unknown_ids: ctx.unknown_ids,
             clipboard: ctx.clipboard,
             i18n: ctx.i18n,
             global_wallet: ctx.global_wallet,
         };
 
-        let mut jobs = notedeck::JobsCache::default();
         let options = notedeck_ui::NoteOptions::default();
 
-        notedeck_ui::ProfilePic::from_profile_or_default(note_context.img_cache, author.as_ref())
-            .ui(ui);
+        notedeck_ui::ProfilePic::from_profile_or_default(
+            note_context.img_cache,
+            note_context.jobs,
+            author.as_ref(),
+        )
+        .ui(ui);
 
         let nostr_name = notedeck::name::get_display_name(author.as_ref());
         ui.label(format!("{} zapped you", nostr_name.name()));
 
-        return notedeck_ui::NoteView::new(&mut note_context, &note, options, &mut jobs)
+        return notedeck_ui::NoteView::new(&mut note_context, &note, options)
             .preview_style()
             .hide_media(true)
             .show(ui)

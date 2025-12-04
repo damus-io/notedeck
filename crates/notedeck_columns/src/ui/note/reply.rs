@@ -7,7 +7,7 @@ use crate::ui::{
 
 use egui::{Rect, Response, ScrollArea, Ui};
 use enostr::{FilledKeypair, NoteId};
-use notedeck::{JobsCache, NoteContext};
+use notedeck::NoteContext;
 use notedeck_ui::{NoteOptions, NoteView, ProfilePic};
 
 pub struct PostReplyView<'a, 'd> {
@@ -18,7 +18,6 @@ pub struct PostReplyView<'a, 'd> {
     scroll_id: egui::Id,
     inner_rect: egui::Rect,
     note_options: NoteOptions,
-    jobs: &'a mut JobsCache,
 }
 
 impl<'a, 'd> PostReplyView<'a, 'd> {
@@ -30,7 +29,6 @@ impl<'a, 'd> PostReplyView<'a, 'd> {
         note: &'a nostrdb::Note<'a>,
         inner_rect: egui::Rect,
         note_options: NoteOptions,
-        jobs: &'a mut JobsCache,
         col: usize,
     ) -> Self {
         PostReplyView {
@@ -41,7 +39,6 @@ impl<'a, 'd> PostReplyView<'a, 'd> {
             scroll_id: PostReplyView::scroll_id(col, note.id()),
             inner_rect,
             note_options,
-            jobs,
         }
     }
 
@@ -85,7 +82,7 @@ impl<'a, 'd> PostReplyView<'a, 'd> {
             let quoted_note = egui::Frame::NONE
                 .outer_margin(egui::Margin::same(note_offset))
                 .show(ui, |ui| {
-                    NoteView::new(self.note_context, self.note, self.note_options, self.jobs)
+                    NoteView::new(self.note_context, self.note, self.note_options)
                         .truncate(false)
                         .selectable_text(true)
                         .actionbar(false)
@@ -106,7 +103,6 @@ impl<'a, 'd> PostReplyView<'a, 'd> {
                     self.poster,
                     self.inner_rect,
                     self.note_options,
-                    self.jobs,
                 )
                 .ui_no_scroll(self.note.txn().unwrap(), ui)
             };

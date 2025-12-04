@@ -1,19 +1,8 @@
-use crate::media::load_texture_checked;
-use crate::{Animation, ImageFrame, MediaCache, MediaCacheType, TextureFrame, TexturedImage};
-use egui::{pos2, Color32, ColorImage, Context, Rect, Sense, SizeHint};
-use image::codecs::gif::GifDecoder;
+use crate::media::network::HyperHttpResponse;
+use egui::{pos2, Color32, ColorImage, Rect, Sense, SizeHint};
 use image::imageops::FilterType;
-use image::{AnimationDecoder, DynamicImage, FlatSamples, Frame};
-use poll_promise::Promise;
-use std::collections::VecDeque;
-use std::io::Cursor;
+use image::FlatSamples;
 use std::path::PathBuf;
-use std::path::{self, Path};
-use std::sync::mpsc;
-use std::sync::mpsc::SyncSender;
-use std::thread;
-use std::time::Duration;
-use tokio::fs;
 
 // NOTE(jb55): chatgpt wrote this because I was too dumb to
 pub fn aspect_fill(
@@ -137,7 +126,7 @@ fn resize_image_if_too_big(
 ///   - resize if any larger, using [`resize_image_if_too_big`]
 ///
 #[profiling::function]
-fn process_image(imgtyp: ImageType, mut image: image::DynamicImage) -> ColorImage {
+pub fn process_image(imgtyp: ImageType, mut image: image::DynamicImage) -> ColorImage {
     const MAX_IMG_LENGTH: u32 = 2048;
     const FILTER_TYPE: FilterType = FilterType::CatmullRom;
 
@@ -184,11 +173,11 @@ fn process_image(imgtyp: ImageType, mut image: image::DynamicImage) -> ColorImag
 }
 
 #[profiling::function]
-fn parse_img_response(
-    response: ehttp::Response,
+pub fn parse_img_response(
+    response: HyperHttpResponse,
     imgtyp: ImageType,
 ) -> Result<ColorImage, crate::Error> {
-    let content_type = response.content_type().unwrap_or_default();
+    let content_type = response.content_type.unwrap_or_default();
     let size_hint = match imgtyp {
         ImageType::Profile(size) => SizeHint::Size(size, size),
         ImageType::Content(Some((w, h))) => SizeHint::Size(w, h),
@@ -211,167 +200,7 @@ fn parse_img_response(
     }
 }
 
-fn fetch_img_from_disk(
-    ctx: &egui::Context,
-    url: &str,
-    path: &path::Path,
-    cache_type: MediaCacheType,
-) -> Promise<Option<Result<TexturedImage, crate::Error>>> {
-    let ctx = ctx.clone();
-    let url = url.to_owned();
-    let path = path.to_owned();
-
-    Promise::spawn_async(async move {
-        Some(async_fetch_img_from_disk(ctx, url, &path, cache_type).await)
-    })
-}
-
-async fn async_fetch_img_from_disk(
-    ctx: egui::Context,
-    url: String,
-    path: &path::Path,
-    cache_type: MediaCacheType,
-) -> Result<TexturedImage, crate::Error> {
-    match cache_type {
-        MediaCacheType::Image => {
-            let data = fs::read(path).await?;
-            let image_buffer = image::load_from_memory(&data).map_err(crate::Error::Image)?;
-
-            let img = buffer_to_color_image(
-                image_buffer.as_flat_samples_u8(),
-                image_buffer.width(),
-                image_buffer.height(),
-            );
-            Ok(TexturedImage::Static(load_texture_checked(
-                &ctx,
-                &url,
-                img,
-                Default::default(),
-            )))
-        }
-        MediaCacheType::Gif => {
-            let gif_bytes = fs::read(path).await?; // Read entire file into a Vec<u8>
-            generate_gif(ctx, url, path, gif_bytes, false, |i| {
-                buffer_to_color_image(i.as_flat_samples_u8(), i.width(), i.height())
-            })
-        }
-    }
-}
-
-fn generate_gif(
-    ctx: egui::Context,
-    url: String,
-    path: &path::Path,
-    data: Vec<u8>,
-    write_to_disk: bool,
-    process_to_egui: impl Fn(DynamicImage) -> ColorImage + Send + Copy + 'static,
-) -> Result<TexturedImage, crate::Error> {
-    let decoder = {
-        let reader = Cursor::new(data.as_slice());
-        GifDecoder::new(reader)?
-    };
-    let (tex_input, tex_output) = mpsc::sync_channel(4);
-    let (maybe_encoder_input, maybe_encoder_output) = if write_to_disk {
-        let (inp, out) = mpsc::sync_channel(4);
-        (Some(inp), Some(out))
-    } else {
-        (None, None)
-    };
-
-    let mut frames: VecDeque<Frame> = decoder
-        .into_frames()
-        .collect::<std::result::Result<VecDeque<_>, image::ImageError>>()
-        .map_err(|e| crate::Error::Generic(e.to_string()))?;
-
-    let first_frame = frames.pop_front().map(|frame| {
-        generate_animation_frame(
-            &ctx,
-            &url,
-            0,
-            frame,
-            maybe_encoder_input.as_ref(),
-            process_to_egui,
-        )
-    });
-
-    let cur_url = url.clone();
-    thread::spawn(move || {
-        for (index, frame) in frames.into_iter().enumerate() {
-            let texture_frame = generate_animation_frame(
-                &ctx,
-                &cur_url,
-                index,
-                frame,
-                maybe_encoder_input.as_ref(),
-                process_to_egui,
-            );
-
-            if tex_input.send(texture_frame).is_err() {
-                //tracing::debug!("AnimationTextureFrame mpsc stopped abruptly");
-                break;
-            }
-        }
-    });
-
-    if let Some(encoder_output) = maybe_encoder_output {
-        let path = path.to_owned();
-
-        thread::spawn(move || {
-            let mut imgs = Vec::new();
-            while let Ok(img) = encoder_output.recv() {
-                imgs.push(img);
-            }
-
-            if let Err(e) = MediaCache::write_gif(&path, &url, imgs) {
-                tracing::error!("Could not write gif to disk: {e}");
-            }
-        });
-    }
-
-    first_frame.map_or_else(
-        || {
-            Err(crate::Error::Generic(
-                "first frame not found for gif".to_owned(),
-            ))
-        },
-        |first_frame| {
-            Ok(TexturedImage::Animated(Animation {
-                other_frames: Default::default(),
-                receiver: Some(tex_output),
-                first_frame,
-            }))
-        },
-    )
-}
-
-fn generate_animation_frame(
-    ctx: &egui::Context,
-    url: &str,
-    index: usize,
-    frame: image::Frame,
-    maybe_encoder_input: Option<&SyncSender<ImageFrame>>,
-    process_to_egui: impl Fn(DynamicImage) -> ColorImage + Send + 'static,
-) -> TextureFrame {
-    let delay = Duration::from(frame.delay());
-    let img = DynamicImage::ImageRgba8(frame.into_buffer());
-    let color_img = process_to_egui(img);
-
-    if let Some(sender) = maybe_encoder_input {
-        if let Err(e) = sender.send(ImageFrame {
-            delay,
-            image: color_img.clone(),
-        }) {
-            tracing::error!("ImageFrame mpsc unexpectedly closed: {e}");
-        }
-    }
-
-    TextureFrame {
-        delay,
-        texture: load_texture_checked(ctx, format!("{url}{index}"), color_img, Default::default()),
-    }
-}
-
-fn buffer_to_color_image(
+pub fn buffer_to_color_image(
     samples: Option<FlatSamples<&[u8]>>,
     width: u32,
     height: u32,
@@ -392,90 +221,4 @@ pub enum ImageType {
     Profile(u32),
     /// Content Image with optional size hint
     Content(Option<(u32, u32)>),
-}
-
-pub fn fetch_img(
-    img_cache_path: &Path,
-    ctx: &egui::Context,
-    url: &str,
-    imgtyp: ImageType,
-    cache_type: MediaCacheType,
-) -> Promise<Option<Result<TexturedImage, crate::Error>>> {
-    let key = MediaCache::key(url);
-    let path = img_cache_path.join(key);
-
-    if path.exists() {
-        fetch_img_from_disk(ctx, url, &path, cache_type)
-    } else {
-        fetch_img_from_net(img_cache_path, ctx, url, imgtyp, cache_type)
-    }
-
-    // TODO: fetch image from local cache
-}
-
-fn fetch_img_from_net(
-    cache_path: &path::Path,
-    ctx: &egui::Context,
-    url: &str,
-    imgtyp: ImageType,
-    cache_type: MediaCacheType,
-) -> Promise<Option<Result<TexturedImage, crate::Error>>> {
-    let (sender, promise) = Promise::new();
-    let request = ehttp::Request::get(url);
-    let ctx = ctx.clone();
-    let cloned_url = url.to_owned();
-    let cache_path = cache_path.to_owned();
-    ehttp::fetch(request, move |response| {
-        let handle = response.map_err(crate::Error::Generic).and_then(|resp| {
-            match cache_type {
-                MediaCacheType::Image => {
-                    let img = parse_img_response(resp, imgtyp);
-                    img.map(|img| {
-                        let texture_handle = load_texture_checked(
-                            &ctx,
-                            &cloned_url,
-                            img.clone(),
-                            Default::default(),
-                        );
-
-                        // write to disk
-                        std::thread::spawn(move || {
-                            MediaCache::write(&cache_path, &cloned_url, img)
-                        });
-
-                        TexturedImage::Static(texture_handle)
-                    })
-                }
-                MediaCacheType::Gif => {
-                    let gif_bytes = resp.bytes;
-                    generate_gif(
-                        ctx.clone(),
-                        cloned_url,
-                        &cache_path,
-                        gif_bytes,
-                        true,
-                        move |img| process_image(imgtyp, img),
-                    )
-                }
-            }
-        });
-
-        sender.send(Some(handle)); // send the results back to the UI thread.
-        ctx.request_repaint();
-    });
-
-    promise
-}
-
-pub fn fetch_no_pfp_promise(
-    ctx: &Context,
-    cache: &MediaCache,
-) -> Promise<Option<Result<TexturedImage, crate::Error>>> {
-    crate::media::images::fetch_img(
-        &cache.cache_dir,
-        ctx,
-        crate::profile::no_pfp_url(),
-        ImageType::Profile(128),
-        MediaCacheType::Image,
-    )
 }

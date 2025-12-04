@@ -17,8 +17,8 @@ use crate::{
     ui::timeline::{tabs_ui, TimelineTabView},
 };
 use notedeck::{
-    name::get_display_name, profile::get_profile_url, IsFollowing, JobsCache, NoteAction,
-    NoteContext, NotedeckTextStyle,
+    name::get_display_name, profile::get_profile_url, IsFollowing, NoteAction, NoteContext,
+    NotedeckTextStyle,
 };
 use notedeck_ui::{
     app_images,
@@ -32,7 +32,6 @@ pub struct ProfileView<'a, 'd> {
     timeline_cache: &'a mut TimelineCache,
     note_options: NoteOptions,
     note_context: &'a mut NoteContext<'d>,
-    jobs: &'a mut JobsCache,
 }
 
 pub enum ProfileViewAction {
@@ -58,7 +57,6 @@ impl<'a, 'd> ProfileView<'a, 'd> {
         timeline_cache: &'a mut TimelineCache,
         note_options: NoteOptions,
         note_context: &'a mut NoteContext<'d>,
-        jobs: &'a mut JobsCache,
     ) -> Self {
         ProfileView {
             pubkey,
@@ -66,7 +64,6 @@ impl<'a, 'd> ProfileView<'a, 'd> {
             timeline_cache,
             note_options,
             note_context,
-            jobs,
         }
     }
 
@@ -125,7 +122,6 @@ impl<'a, 'd> ProfileView<'a, 'd> {
                 self.note_options,
                 &txn,
                 self.note_context,
-                self.jobs,
             )
             .show(ui)
             {
@@ -191,9 +187,13 @@ fn profile_body(
             ui.horizontal(|ui| {
                 ui.put(
                     pfp_rect,
-                    &mut ProfilePic::new(note_context.img_cache, get_profile_url(profile))
-                        .size(size)
-                        .border(ProfilePic::border_stroke(ui)),
+                    &mut ProfilePic::new(
+                        note_context.img_cache,
+                        note_context.jobs,
+                        get_profile_url(profile),
+                    )
+                    .size(size)
+                    .border(ProfilePic::border_stroke(ui)),
                 );
 
                 if ui

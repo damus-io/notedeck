@@ -17,8 +17,8 @@ use nostrdb::{IngestMetadata, Ndb, NoteBuilder, NoteKey, Transaction};
 use notedeck::{
     get_wallet_for,
     note::{reaction_sent_id, ReactAction, ZapTargetAmount},
-    Accounts, GlobalWallet, Images, NoteAction, NoteCache, NoteZapTargetOwned, UnknownIds,
-    ZapAction, ZapTarget, ZappingError, Zaps,
+    Accounts, GlobalWallet, Images, MediaJobSender, NoteAction, NoteCache, NoteZapTargetOwned,
+    UnknownIds, ZapAction, ZapTarget, ZappingError, Zaps,
 };
 use notedeck_ui::media::MediaViewerFlags;
 use tracing::error;
@@ -59,6 +59,7 @@ fn execute_note_action(
     images: &mut Images,
     view_state: &mut ViewState,
     router_type: RouterType,
+    jobs: &MediaJobSender,
     ui: &mut egui::Ui,
     col: usize,
 ) -> NoteActionResponse {
@@ -207,7 +208,7 @@ fn execute_note_action(
                     .set(MediaViewerFlags::Open, true);
             });
 
-            media_action.process_default_media_actions(images)
+            media_action.process_default_media_actions(images, jobs, ui.ctx())
         }
     }
 
@@ -235,6 +236,7 @@ pub fn execute_and_process_note_action(
     zaps: &mut Zaps,
     images: &mut Images,
     view_state: &mut ViewState,
+    jobs: &MediaJobSender,
     ui: &mut egui::Ui,
 ) -> Option<RouterAction> {
     let router_type = {
@@ -261,6 +263,7 @@ pub fn execute_and_process_note_action(
         images,
         view_state,
         router_type,
+        jobs,
         ui,
         col,
     );

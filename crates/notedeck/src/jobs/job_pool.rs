@@ -1,16 +1,11 @@
-use std::{
-    future::Future,
-    sync::{
-        mpsc::{self, Sender},
-        Arc, Mutex,
-    },
-};
-use tokio::sync::oneshot;
+use crossbeam::channel;
+use std::future::Future;
+use tokio::sync::oneshot::{self, Receiver};
 
 type Job = Box<dyn FnOnce() + Send + 'static>;
 
 pub struct JobPool {
-    tx: Sender<Job>,
+    tx: channel::Sender<Job>,
 }
 
 impl Default for JobPool {
@@ -21,25 +16,15 @@ impl Default for JobPool {
 
 impl JobPool {
     pub fn new(num_threads: usize) -> Self {
-        let (tx, rx) = mpsc::channel::<Job>();
-
-        // TODO(jb55) why not mpmc here !???
-        let arc_rx = Arc::new(Mutex::new(rx));
-        for _ in 0..num_threads {
-            let arc_rx_clone = arc_rx.clone();
-            std::thread::spawn(move || loop {
-                let job = {
-                    let Ok(unlocked) = arc_rx_clone.lock() else {
-                        continue;
-                    };
-                    let Ok(job) = unlocked.recv() else {
-                        continue;
-                    };
-
-                    job
-                };
-
-                job();
+        let (tx, rx) = channel::unbounded::<Job>();
+        for i in 0..num_threads {
+            let rx = rx.clone();
+            std::thread::spawn(move || {
+                for job in rx.iter() {
+                    tracing::trace!("Starting job on thread {i}");
+                    job();
+                    tracing::trace!("Finished job on thread {i}");
+                }
             });
         }
 
@@ -51,6 +36,19 @@ impl JobPool {
         F: FnOnce() -> T + Send + 'static,
         T: Send + 'static,
     {
+        let rx_result = self.schedule_receivable(job);
+        async move {
+            rx_result.await.unwrap_or_else(|_| {
+                panic!("Worker thread or channel dropped before returning the result.")
+            })
+        }
+    }
+
+    pub fn schedule_receivable<F, T>(&self, job: F) -> Receiver<T>
+    where
+        F: FnOnce() -> T + Send + 'static,
+        T: Send + 'static,
+    {
         let (tx_result, rx_result) = oneshot::channel::<T>();
 
         let job = Box::new(move || {
@@ -58,21 +56,25 @@ impl JobPool {
             let _ = tx_result.send(output);
         });
 
-        self.tx
-            .send(job)
-            .expect("receiver should not be deallocated");
+        self.push_job(job);
 
-        async move {
-            rx_result.await.unwrap_or_else(|_| {
-                panic!("Worker thread or channel dropped before returning the result.")
-            })
+        rx_result
+    }
+
+    pub fn schedule_no_output(&self, job: impl FnOnce() + Send + 'static) {
+        self.push_job(Box::new(job));
+    }
+
+    fn push_job(&self, job: Job) {
+        if let Err(e) = self.tx.send(job) {
+            tracing::error!("job queue closed unexpectedly: {e}");
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::job_pool::JobPool;
+    use crate::jobs::JobPool;
 
     fn test_fn(a: u32, b: u32) -> u32 {
         a + b

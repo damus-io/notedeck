@@ -3,7 +3,7 @@ use nostrdb::{NoteReply, Transaction};
 
 use super::NoteOptions;
 use crate::{note::NoteView, Mention};
-use notedeck::{tr, JobsCache, NoteAction, NoteContext};
+use notedeck::{tr, NoteAction, NoteContext};
 
 // Rich text segment types for internationalized rendering
 #[derive(Debug, Clone)]
@@ -106,7 +106,6 @@ fn render_text_segments(
     txn: &Transaction,
     note_context: &mut NoteContext,
     note_options: NoteOptions,
-    jobs: &mut JobsCache,
     size: f32,
     selectable: bool,
 ) -> Option<NoteAction> {
@@ -126,6 +125,7 @@ fn render_text_segments(
                 let action = Mention::new(
                     note_context.ndb,
                     note_context.img_cache,
+                    note_context.jobs,
                     txn,
                     pubkey.expect("expected pubkey"),
                 )
@@ -163,7 +163,7 @@ fn render_text_segments(
                     if r.hovered() {
                         r.on_hover_ui_at_pointer(|ui| {
                             ui.set_max_width(400.0);
-                            NoteView::new(note_context, &note, note_options, jobs)
+                            NoteView::new(note_context, &note, note_options)
                                 .actionbar(false)
                                 .wide(true)
                                 .show(ui);
@@ -197,7 +197,7 @@ fn render_text_segments(
                     if r.hovered() {
                         r.on_hover_ui_at_pointer(|ui| {
                             ui.set_max_width(400.0);
-                            NoteView::new(note_context, &note, note_options, jobs)
+                            NoteView::new(note_context, &note, note_options)
                                 .actionbar(false)
                                 .wide(true)
                                 .show(ui);
@@ -219,7 +219,6 @@ pub fn reply_desc(
     note_reply: &NoteReply,
     note_context: &mut NoteContext,
     note_options: NoteOptions,
-    jobs: &mut JobsCache,
 ) -> Option<NoteAction> {
     let size = 10.0;
     let selectable = false;
@@ -242,7 +241,6 @@ pub fn reply_desc(
             txn,
             note_context,
             note_options,
-            jobs,
             size,
             selectable,
         );
@@ -271,7 +269,6 @@ pub fn reply_desc(
             txn,
             note_context,
             note_options,
-            jobs,
             size,
             selectable,
         )
@@ -294,7 +291,6 @@ pub fn reply_desc(
                     txn,
                     note_context,
                     note_options,
-                    jobs,
                     size,
                     selectable,
                 )
@@ -324,7 +320,6 @@ pub fn reply_desc(
                     txn,
                     note_context,
                     note_options,
-                    jobs,
                     size,
                     selectable,
                 )
@@ -345,7 +340,6 @@ pub fn reply_desc(
                 txn,
                 note_context,
                 note_options,
-                jobs,
                 size,
                 selectable,
             )
@@ -366,7 +360,6 @@ pub fn reply_desc(
             txn,
             note_context,
             note_options,
-            jobs,
             size,
             selectable,
         )

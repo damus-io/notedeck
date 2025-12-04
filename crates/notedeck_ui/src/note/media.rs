@@ -1,21 +1,18 @@
-use std::path::Path;
-
 use bitflags::bitflags;
 use egui::{
     vec2, Button, Color32, Context, CornerRadius, FontId, Image, InnerResponse, Response,
     TextureHandle, Vec2,
 };
+use notedeck::media::latest::ObfuscatedTexture;
+use notedeck::MediaJobSender;
 use notedeck::{
-    compute_blurhash, fonts::get_font_size, show_one_error_message, tr, BlurhashParams,
-    GifStateMap, Images, Job, JobId, JobParams, JobPool, JobState, JobsCache, Localization,
-    MediaAction, MediaCacheType, NotedeckTextStyle, ObfuscationType, PointDimensions,
-    RenderableMedia, TexturedImage, TexturesCache,
+    fonts::get_font_size, show_one_error_message, tr, Images, Localization, MediaAction,
+    MediaCacheType, NotedeckTextStyle, RenderableMedia,
 };
 
 use crate::NoteOptions;
-use notedeck::media::gif::ensure_latest_texture;
-use notedeck::media::images::{fetch_no_pfp_promise, ImageType};
-use notedeck::media::AnimationMode;
+use notedeck::media::images::ImageType;
+use notedeck::media::{AnimationMode, MediaRenderState};
 use notedeck::media::{MediaInfo, ViewMediaInfo};
 
 use crate::{app_images, AnimationHelper, PulseAlpha};
@@ -30,8 +27,7 @@ pub enum MediaViewAction {
 pub fn image_carousel(
     ui: &mut egui::Ui,
     img_cache: &mut Images,
-    job_pool: &mut JobPool,
-    jobs: &mut JobsCache,
+    jobs: &MediaJobSender,
     medias: &[RenderableMedia],
     carousel_id: egui::Id,
     i18n: &mut Localization,
@@ -65,10 +61,10 @@ pub fn image_carousel(
                             let media_response = render_media(
                                 ui,
                                 img_cache,
-                                job_pool,
                                 jobs,
                                 media,
-                                note_options.contains(NoteOptions::TrustMedia),
+                                note_options.contains(NoteOptions::TrustMedia)
+                                    || img_cache.user_trusts_img(&media.url, media.media_type),
                                 i18n,
                                 size,
                                 if note_options.contains(NoteOptions::NoAnimations) {
@@ -96,7 +92,6 @@ pub fn image_carousel(
 
                         if let Some((i, media_action)) = media_action {
                             action = media_action.into_media_action(
-                                ui.ctx(),
                                 medias,
                                 media_infos,
                                 i,
@@ -119,8 +114,7 @@ pub fn image_carousel(
 pub fn render_media(
     ui: &mut egui::Ui,
     img_cache: &mut Images,
-    job_pool: &mut JobPool,
-    jobs: &mut JobsCache,
+    jobs: &MediaJobSender,
     media: &RenderableMedia,
     trusted_media: bool,
     i18n: &mut Localization,
@@ -134,23 +128,6 @@ pub fn render_media(
         obfuscation_type: blur_type,
     } = media;
 
-    let cache = match media_type {
-        MediaCacheType::Image => &mut img_cache.static_imgs,
-        MediaCacheType::Gif => &mut img_cache.gifs,
-    };
-    let media_state = get_content_media_render_state(
-        ui,
-        job_pool,
-        jobs,
-        trusted_media,
-        size,
-        &mut cache.textures_cache,
-        url,
-        *media_type,
-        &cache.cache_dir,
-        blur_type,
-    );
-
     let animation_mode = animation_mode.unwrap_or_else(|| {
         // if animations aren't disabled, we cap it at 24fps for gifs in carousels
         let fps = match media_type {
@@ -159,17 +136,24 @@ pub fn render_media(
         };
         AnimationMode::Continuous { fps }
     });
+    let media_state = if trusted_media {
+        img_cache.trusted_texture_loader().latest(
+            jobs,
+            ui,
+            url,
+            *media_type,
+            ImageType::Content(None),
+            animation_mode,
+            blur_type,
+            size,
+        )
+    } else {
+        img_cache
+            .untrusted_texture_loader()
+            .latest(jobs, ui, url, blur_type, size)
+    };
 
-    render_media_internal(
-        ui,
-        &mut img_cache.gif_states,
-        media_state,
-        url,
-        size,
-        i18n,
-        scale_flags,
-        animation_mode,
-    )
+    render_media_internal(ui, media_state, url, size, i18n, scale_flags)
 }
 
 pub enum MediaUIAction {
@@ -182,7 +166,6 @@ pub enum MediaUIAction {
 impl MediaUIAction {
     pub fn into_media_action(
         self,
-        ctx: &egui::Context,
         medias: &[RenderableMedia],
         responses: Vec<MediaInfo>,
         selected: usize,
@@ -203,17 +186,9 @@ impl MediaUIAction {
                 let url = &medias[selected].url;
                 let cache = img_cache.get_cache(medias[selected].media_type);
                 let cache_type = cache.cache_type;
-                let no_pfp_promise = notedeck::media::images::fetch_img(
-                    &cache.cache_dir,
-                    ctx,
-                    url,
-                    img_type,
-                    cache_type,
-                );
                 Some(MediaAction::FetchImage {
                     url: url.to_owned(),
                     cache_type,
-                    no_pfp_promise,
                 })
             }
 
@@ -227,7 +202,6 @@ impl MediaUIAction {
                 Some(MediaAction::FetchImage {
                     url: medias[selected].url.to_owned(),
                     cache_type,
-                    no_pfp_promise: fetch_no_pfp_promise(ctx, cache),
                 })
             }
             MediaUIAction::DoneLoading => Some(MediaAction::DoneLoading {
@@ -236,115 +210,6 @@ impl MediaUIAction {
             }),
         }
     }
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn get_content_media_render_state<'a>(
-    ui: &mut egui::Ui,
-    job_pool: &'a mut JobPool,
-    jobs: &'a mut JobsCache,
-    media_trusted: bool,
-    size: Vec2,
-    cache: &'a mut TexturesCache,
-    url: &'a str,
-    cache_type: MediaCacheType,
-    cache_dir: &Path,
-    obfuscation_type: &'a ObfuscationType,
-) -> MediaRenderState<'a> {
-    let render_type = if media_trusted {
-        cache.handle_and_get_or_insert_loadable(url, || {
-            notedeck::media::images::fetch_img(
-                cache_dir,
-                ui.ctx(),
-                url,
-                ImageType::Content(None),
-                cache_type,
-            )
-        })
-    } else if let Some(render_type) = cache.get_and_handle(url) {
-        render_type
-    } else {
-        return MediaRenderState::Obfuscated(get_obfuscated(
-            ui,
-            url,
-            obfuscation_type,
-            job_pool,
-            jobs,
-            size,
-        ));
-    };
-
-    match render_type {
-        notedeck::LoadableTextureState::Pending => MediaRenderState::Shimmering(get_obfuscated(
-            ui,
-            url,
-            obfuscation_type,
-            job_pool,
-            jobs,
-            size,
-        )),
-        notedeck::LoadableTextureState::Error(e) => MediaRenderState::Error(e),
-        notedeck::LoadableTextureState::Loading { actual_image_tex } => {
-            let obfuscation = get_obfuscated(ui, url, obfuscation_type, job_pool, jobs, size);
-            MediaRenderState::Transitioning {
-                image: actual_image_tex,
-                obfuscation,
-            }
-        }
-        notedeck::LoadableTextureState::Loaded(textured_image) => {
-            MediaRenderState::ActualImage(textured_image)
-        }
-    }
-}
-
-fn get_obfuscated<'a>(
-    ui: &mut egui::Ui,
-    url: &str,
-    obfuscation_type: &'a ObfuscationType,
-    job_pool: &'a mut JobPool,
-    jobs: &'a mut JobsCache,
-    size: Vec2,
-) -> ObfuscatedTexture<'a> {
-    let ObfuscationType::Blurhash(renderable_blur) = obfuscation_type else {
-        return ObfuscatedTexture::Default;
-    };
-
-    let params = BlurhashParams {
-        blurhash: &renderable_blur.blurhash,
-        url,
-        ctx: ui.ctx(),
-    };
-
-    let available_points = PointDimensions {
-        x: size.x,
-        y: size.y,
-    };
-
-    let pixel_sizes = renderable_blur.scaled_pixel_dimensions(ui, available_points);
-
-    let job_state = jobs.get_or_insert_with(
-        job_pool,
-        &JobId::Blurhash(url),
-        Some(JobParams::Blurhash(params)),
-        move |params| compute_blurhash(params, pixel_sizes),
-    );
-
-    let JobState::Completed(m_blur_job) = job_state else {
-        return ObfuscatedTexture::Default;
-    };
-
-    #[allow(irrefutable_let_patterns)]
-    let Job::Blurhash(m_texture_handle) = m_blur_job
-    else {
-        tracing::error!("Did not get the correct job type: {:?}", m_blur_job);
-        return ObfuscatedTexture::Default;
-    };
-
-    let Some(texture_handle) = m_texture_handle else {
-        return ObfuscatedTexture::Default;
-    };
-
-    ObfuscatedTexture::Blur(texture_handle)
 }
 
 fn copy_link(i18n: &mut Localization, url: &str, img_resp: &Response) {
@@ -366,42 +231,27 @@ fn copy_link(i18n: &mut Localization, url: &str, img_resp: &Response) {
 #[allow(clippy::too_many_arguments)]
 fn render_media_internal(
     ui: &mut egui::Ui,
-    gifs: &mut GifStateMap,
     render_state: MediaRenderState,
     url: &str,
     size: egui::Vec2,
     i18n: &mut Localization,
     scale_flags: ScaledTextureFlags,
-    animation_mode: AnimationMode,
 ) -> egui::InnerResponse<Option<MediaUIAction>> {
     match render_state {
         MediaRenderState::ActualImage(image) => {
-            let resp = render_success_media(
-                ui,
-                url,
-                image,
-                gifs,
-                size,
-                i18n,
-                scale_flags,
-                animation_mode,
-            );
+            let resp = render_success_media(ui, url, image, size, i18n, scale_flags);
             if resp.clicked() {
                 egui::InnerResponse::new(Some(MediaUIAction::Clicked), resp)
             } else {
                 egui::InnerResponse::new(None, resp)
             }
         }
-        MediaRenderState::Transitioning { image, obfuscation } => match obfuscation {
-            ObfuscatedTexture::Blur(texture) => {
-                let resp = render_blur_transition(
-                    ui,
-                    url,
-                    size,
-                    texture,
-                    image.get_first_texture(),
-                    scale_flags,
-                );
+        MediaRenderState::Transitioning {
+            image: img_tex,
+            obfuscation,
+        } => match obfuscation {
+            ObfuscatedTexture::Blur(blur_tex) => {
+                let resp = render_blur_transition(ui, url, size, blur_tex, img_tex, scale_flags);
                 if resp.inner {
                     egui::InnerResponse::new(Some(MediaUIAction::DoneLoading), resp.response)
                 } else {
@@ -409,7 +259,7 @@ fn render_media_internal(
                 }
             }
             ObfuscatedTexture::Default => {
-                let scaled = ScaledTexture::new(image.get_first_texture(), size, scale_flags);
+                let scaled = ScaledTexture::new(img_tex, size, scale_flags);
                 let resp = ui.add(scaled.get_image());
                 egui::InnerResponse::new(Some(MediaUIAction::DoneLoading), resp)
             }
@@ -592,57 +442,16 @@ fn render_default_blur_bg(
     response
 }
 
-pub enum MediaRenderState<'a> {
-    ActualImage(&'a mut TexturedImage),
-    Transitioning {
-        image: &'a mut TexturedImage,
-        obfuscation: ObfuscatedTexture<'a>,
-    },
-    Error(&'a notedeck::Error),
-    Shimmering(ObfuscatedTexture<'a>),
-    Obfuscated(ObfuscatedTexture<'a>),
-}
-
-pub enum ObfuscatedTexture<'a> {
-    Blur(&'a TextureHandle),
-    Default,
-}
-
-/*
-pub(crate) fn find_renderable_media<'a>(
-    urls: &mut UrlMimes,
-    imeta: &'a HashMap<String, ImageMetadata>,
-    url: &'a str,
-) -> Option<RenderableMedia> {
-    let media_type = supported_mime_hosted_at_url(urls, url)?;
-
-    let obfuscation_type = match imeta.get(url) {
-        Some(blur) => ObfuscationType::Blurhash(blur.clone()),
-        None => ObfuscationType::Default,
-    };
-
-    Some(RenderableMedia {
-        url,
-        media_type,
-        obfuscation_type,
-    })
-}
-*/
-
 #[allow(clippy::too_many_arguments)]
 fn render_success_media(
     ui: &mut egui::Ui,
     url: &str,
-    tex: &mut TexturedImage,
-    gifs: &mut GifStateMap,
+    tex: &TextureHandle,
     size: Vec2,
     i18n: &mut Localization,
     scale_flags: ScaledTextureFlags,
-    animation_mode: AnimationMode,
 ) -> Response {
-    let texture = ensure_latest_texture(ui, url, gifs, tex, animation_mode);
-
-    let scaled = ScaledTexture::new(&texture, size, scale_flags);
+    let scaled = ScaledTexture::new(tex, size, scale_flags);
 
     let img_resp = ui.add(Button::image(scaled.get_image()).frame(false));
 

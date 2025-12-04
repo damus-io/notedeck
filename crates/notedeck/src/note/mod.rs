@@ -4,9 +4,9 @@ mod context;
 pub use action::{NoteAction, ReactAction, ScrollInfo, ZapAction, ZapTargetAmount};
 pub use context::{BroadcastContext, ContextSelection, NoteContextSelection};
 
+use crate::jobs::MediaJobSender;
 use crate::Accounts;
 use crate::GlobalWallet;
-use crate::JobPool;
 use crate::Localization;
 use crate::UnknownIds;
 use crate::{notecache::NoteCache, zaps::Zaps, Images};
@@ -27,7 +27,7 @@ pub struct NoteContext<'d> {
     pub note_cache: &'d mut NoteCache,
     pub zaps: &'d mut Zaps,
     pub pool: &'d mut RelayPool,
-    pub job_pool: &'d mut JobPool,
+    pub jobs: &'d MediaJobSender,
     pub unknown_ids: &'d mut UnknownIds,
     pub clipboard: &'d mut egui_winit::clipboard::Clipboard,
 }
