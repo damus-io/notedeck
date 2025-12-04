@@ -219,6 +219,26 @@ impl RelayPool {
         }
     }
 
+    /// Subscribe to a specific relay by URL
+    pub fn subscribe_to(&mut self, relay_url: &str, subid: String, filter: Vec<Filter>) {
+        for relay in &mut self.relays {
+            if relay.url() == relay_url {
+                if let Some(debug) = &mut self.debug {
+                    debug.send_cmd(
+                        relay.url().to_owned(),
+                        &ClientMessage::req(subid.clone(), filter.clone()),
+                    );
+                }
+
+                if let Err(err) = relay.send(&ClientMessage::req(subid, filter)) {
+                    error!("error subscribing to {}: {err}", relay.url());
+                }
+                return;
+            }
+        }
+        error!("relay {} not found in pool", relay_url);
+    }
+
     /// Keep relay connectiongs alive by pinging relays that haven't been
     /// pinged in awhile. Adjust ping rate with [`ping_rate`].
     pub fn keepalive_ping(&mut self, wakeup: impl Fn() + Send + Sync + Clone + 'static) {
