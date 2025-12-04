@@ -74,7 +74,7 @@ impl NoteContextButton {
             if ui
                 .button(tr!(
                     i18n,
-                    "Copy note Link",
+                    "Copy Note Link",
                     "Copy the damus.io note link for this note to clipboard"
                 ))
                 .clicked()
@@ -109,7 +109,7 @@ impl NoteContextButton {
             if ui
                 .button(tr!(
                     i18n,
-                    "Copy note ID",
+                    "Copy Note ID",
                     "Copy the note identifier to clipboard"
                 ))
                 .clicked()
