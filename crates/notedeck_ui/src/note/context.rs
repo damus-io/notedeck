@@ -74,12 +74,12 @@ impl NoteContextButton {
             if ui
                 .button(tr!(
                     i18n,
-                    "Copy Link",
-                    "Copy the damus.io link to this note to clipboard"
+                    "Copy Note Link",
+                    "Copy the damus.io note link for this note to clipboard"
                 ))
                 .clicked()
             {
-                context_selection = Some(NoteContextSelection::CopyLink);
+                context_selection = Some(NoteContextSelection::CopyNeventLink);
                 ui.close_menu();
             }
 
@@ -110,11 +110,11 @@ impl NoteContextButton {
                 .button(tr!(
                     i18n,
                     "Copy Note ID",
-                    "Copy the unique note identifier to clipboard"
+                    "Copy the note identifier to clipboard"
                 ))
                 .clicked()
             {
-                context_selection = Some(NoteContextSelection::CopyNoteId);
+                context_selection = Some(NoteContextSelection::CopyNevent);
                 ui.close_menu();
             }
             if ui

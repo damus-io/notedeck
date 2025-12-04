@@ -1,5 +1,5 @@
 use enostr::{ClientMessage, NoteId, Pubkey, RelayPool};
-use nostrdb::{Note, NoteKey};
+use nostrdb::{Note, NoteKey, Transaction};
 use tracing::error;
 
 /// When broadcasting notes, this determines whether to broadcast
@@ -15,10 +15,10 @@ pub enum BroadcastContext {
 pub enum NoteContextSelection {
     CopyText,
     CopyPubkey,
-    CopyNoteId,
+    CopyNevent,
     CopyNoteJSON,
     Broadcast(BroadcastContext),
-    CopyLink,
+    CopyNeventLink,
 }
 
 #[derive(Debug, Eq, PartialEq, Clone)]
@@ -27,13 +27,28 @@ pub struct ContextSelection {
     pub action: NoteContextSelection,
 }
 
+/// Collects relay URLs where the note was actually observed.
+fn relay_hints_for_note(note: &Note<'_>, txn: &Transaction) -> Vec<String> {
+    note.relays(txn).map(|relay| relay.to_owned()).collect()
+}
+
+fn note_nip19_event_bech(note: &Note<'_>, txn: &Transaction) -> Option<String> {
+    let relay_hints = relay_hints_for_note(note, txn);
+    let nip19event = nostr::nips::nip19::Nip19Event::new(
+        nostr::event::EventId::from_byte_array(*note.id()),
+        relay_hints,
+    );
+
+    nostr::nips::nip19::ToBech32::to_bech32(&nip19event).ok()
+}
+
 impl NoteContextSelection {
     pub fn process_selection(
         &self,
         ui: &mut egui::Ui,
         note: &Note<'_>,
         pool: &mut RelayPool,
-        note_author_is_selected_acc: bool,
+        txn: &Transaction,
     ) {
         match self {
             NoteContextSelection::Broadcast(context) => {
@@ -56,8 +71,8 @@ impl NoteContextSelection {
                     ui.ctx().copy_text(bech);
                 }
             }
-            NoteContextSelection::CopyNoteId => {
-                if let Some(bech) = NoteId::new(*note.id()).to_bech() {
+            NoteContextSelection::CopyNevent => {
+                if let Some(bech) = note_nip19_event_bech(note, txn) {
                     ui.ctx().copy_text(bech);
                 }
             }
@@ -65,22 +80,15 @@ impl NoteContextSelection {
                 Ok(json) => ui.ctx().copy_text(json),
                 Err(err) => error!("error copying note json: {err}"),
             },
-            NoteContextSelection::CopyLink => {
+            NoteContextSelection::CopyNeventLink => {
                 let damus_url = |s| format!("https://damus.io/{s}");
-                if note_author_is_selected_acc {
-                    let nip19event = nostr::nips::nip19::Nip19Event::new(
-                        nostr::event::EventId::from_byte_array(*note.id()),
-                        pool.urls(),
-                    );
-                    let Ok(bech) = nostr::nips::nip19::ToBech32::to_bech32(&nip19event) else {
-                        return;
-                    };
+                if let Some(bech) = note_nip19_event_bech(note, txn) {
                     ui.ctx().copy_text(damus_url(bech));
-                } else {
-                    let Some(bech) = NoteId::new(*note.id()).to_bech() else {
-                        return;
-                    };
+                    return;
+                }
 
+                // Fallback to event id without relay hints if encoding fails.
+                if let Some(bech) = NoteId::new(*note.id()).to_bech() {
                     ui.ctx().copy_text(damus_url(bech));
                 }
             }
