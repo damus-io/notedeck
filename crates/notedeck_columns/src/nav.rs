@@ -7,7 +7,7 @@ use crate::{
     options::AppOptions,
     profile::{ProfileAction, SaveProfileChanges},
     repost::RepostAction,
-    route::{Route, Router, SingletonRouter},
+    route::{ColumnsRouter, Route, SingletonRouter},
     subscriptions::Subscriptions,
     timeline::{
         kind::ListKind,
@@ -316,7 +316,7 @@ fn process_nav_resp(
                     .columns_mut(ctx.i18n, ctx.accounts)
                     .column_mut(col)
                     .router_mut();
-                cur_router.navigating = false;
+                cur_router.navigating_mut(false);
                 if cur_router.is_replacing() {
                     cur_router.remove_previous_routes();
                 }
@@ -431,7 +431,7 @@ pub enum RouterType {
     Stack,
 }
 
-fn go_back(stack: &mut Router<Route>, sheet: &mut SingletonRouter<Route>) {
+fn go_back(stack: &mut ColumnsRouter<Route>, sheet: &mut SingletonRouter<Route>) {
     if sheet.route().is_some() {
         sheet.go_back();
     } else {
@@ -442,7 +442,7 @@ fn go_back(stack: &mut Router<Route>, sheet: &mut SingletonRouter<Route>) {
 impl RouterAction {
     pub fn process_router_action(
         self,
-        stack_router: &mut Router<Route>,
+        stack_router: &mut ColumnsRouter<Route>,
         sheet_router: &mut SingletonRouter<Route>,
     ) -> Option<ProcessNavResult> {
         match self {
@@ -802,7 +802,7 @@ fn render_nav_body(
                 get_active_columns_mut(note_context.i18n, ctx.accounts, &mut app.decks_cache)
                     .column(col)
                     .router()
-                    .navigating;
+                    .navigating();
             let draft = app.drafts.compose_mut();
 
             if navigating {
@@ -839,7 +839,7 @@ fn render_nav_body(
                 get_active_columns_mut(note_context.i18n, ctx.accounts, &mut app.decks_cache)
                     .column(col)
                     .router()
-                    .navigating;
+                    .navigating();
             let search_buffer = app.view_state.searches.entry(id).or_default();
             let txn = Transaction::new(ctx.ndb).expect("txn");
 
@@ -1246,13 +1246,13 @@ pub fn render_nav(
             app.columns_mut(ctx.i18n, ctx.accounts)
                 .column_mut(col)
                 .router_mut()
-                .navigating,
+                .navigating(),
         )
         .returning(
             app.columns_mut(ctx.i18n, ctx.accounts)
                 .column_mut(col)
                 .router_mut()
-                .returning,
+                .returning(),
         )
         .animate_transitions(ctx.settings.get_settings_mut().animate_nav_transitions)
         .show_mut(ui, |ui, render_type, nav| match render_type {
