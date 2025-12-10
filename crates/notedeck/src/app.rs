@@ -252,13 +252,18 @@ impl Notedeck {
             &mut unknown_ids,
         );
 
-        {
-            for key in &parsed_args.keys {
-                info!("adding account: {}", &key.pubkey);
-                if let Some(resp) = accounts.add_account(key.clone()) {
-                    resp.unk_id_action
-                        .process_action(&mut unknown_ids, &ndb, &txn);
-                }
+        for key in &parsed_args.keys {
+            info!("adding account: {}", &key.pubkey);
+            if let Some(resp) = accounts.add_account(key.clone()) {
+                resp.unk_id_action
+                    .process_action(&mut unknown_ids, &ndb, &txn);
+            }
+        }
+
+        /* add keys to nostrdb ingest threads for giftwrap processing */
+        for account in accounts.cache.accounts() {
+            if let Some(seckey) = &account.key.secret_key {
+                ndb.add_key(&seckey.secret_bytes());
             }
         }
 

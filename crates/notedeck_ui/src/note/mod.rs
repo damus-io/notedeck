@@ -342,7 +342,8 @@ impl<'a, 'd> NoteView<'a, 'd> {
     #[profiling::function]
     fn note_header(
         ui: &mut egui::Ui,
-        i18n: &mut Localization,
+        txn: &Transaction,
+        note_context: &mut NoteContext,
         note: &Note,
         profile: &Result<nostrdb::ProfileRecord<'_>, nostrdb::Error>,
         flags: NoteOptions,
@@ -350,10 +351,12 @@ impl<'a, 'd> NoteView<'a, 'd> {
         let horiz_resp = ui
             .horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing.x = if is_narrow(ui.ctx()) { 1.0 } else { 2.0 };
-                let response = ui
-                    .add(Username::new(i18n, profile.as_ref().ok(), note.pubkey()).abbreviated(20));
+                let response = ui.add(
+                    Username::new(note_context.i18n, profile.as_ref().ok(), note.pubkey())
+                        .abbreviated(20),
+                );
                 if !flags.contains(NoteOptions::FullCreatedDate) {
-                    return render_notetime(ui, i18n, note.created_at(), true);
+                    return render_notetime(ui, note_context.i18n, note.created_at(), true);
                 }
                 response
             })
@@ -369,6 +372,25 @@ impl<'a, 'd> NoteView<'a, 'd> {
 
             ui.painter()
                 .circle_filled(circle_center, radius, crate::colors::PINK);
+        }
+
+        if note.is_rumor() {
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = if is_narrow(ui.ctx()) { 1.0 } else { 2.0 };
+
+                secondary_label(ui, "encrypted privately to");
+
+                crate::Mention::new(
+                    note_context.ndb,
+                    note_context.img_cache,
+                    note_context.jobs,
+                    txn,
+                    note.rumor_receiver_pubkey().expect("expected pubkey"),
+                )
+                .size(10.0)
+                .selectable(true)
+                .show(ui);
+            });
         }
     }
 
@@ -400,7 +422,8 @@ impl<'a, 'd> NoteView<'a, 'd> {
                                 ui.horizontal_centered(|ui| {
                                     NoteView::note_header(
                                         ui,
-                                        self.note_context.i18n,
+                                        txn,
+                                        self.note_context,
                                         self.note,
                                         profile,
                                         self.flags,
@@ -509,7 +532,8 @@ impl<'a, 'd> NoteView<'a, 'd> {
                 if !self.flags.contains(NoteOptions::NotificationPreview) {
                     NoteView::note_header(
                         ui,
-                        self.note_context.i18n,
+                        txn,
+                        self.note_context,
                         self.note,
                         profile,
                         self.flags,
