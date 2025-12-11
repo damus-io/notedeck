@@ -3,12 +3,16 @@ use std::collections::HashSet;
 use crate::ProfilePic;
 use egui::{RichText, Sense};
 use enostr::Pubkey;
-use nostrdb::Transaction;
-use notedeck::{name::get_display_name, profile::get_profile_url, DragResponse, NoteContext};
+use nostrdb::{Ndb, Transaction};
+use notedeck::{
+    name::get_display_name, profile::get_profile_url, DragResponse, Images, MediaJobSender,
+};
 
-pub struct ContactsListView<'a, 'd, 'txn> {
+pub struct ContactsListView<'a, 'txn> {
     contacts: ContactsCollection<'a>,
-    note_context: &'a mut NoteContext<'d>,
+    jobs: &'a MediaJobSender,
+    ndb: &'a Ndb,
+    img_cache: &'a mut Images,
     txn: &'txn Transaction,
 }
 
@@ -47,16 +51,20 @@ impl<'a> Iterator for ContactsIter<'a> {
     }
 }
 
-impl<'a, 'd, 'txn> ContactsListView<'a, 'd, 'txn> {
+impl<'a, 'txn> ContactsListView<'a, 'txn> {
     pub fn new(
         contacts: ContactsCollection<'a>,
-        note_context: &'a mut NoteContext<'d>,
+        jobs: &'a MediaJobSender,
+        ndb: &'a Ndb,
+        img_cache: &'a mut Images,
         txn: &'txn Transaction,
     ) -> Self {
         ContactsListView {
             contacts,
-            note_context,
+            ndb,
+            img_cache,
             txn,
+            jobs,
         }
     }
 
@@ -75,7 +83,6 @@ impl<'a, 'd, 'txn> ContactsListView<'a, 'd, 'txn> {
                 }
 
                 let profile = self
-                    .note_context
                     .ndb
                     .get_profile_by_pubkey(self.txn, contact_pubkey.bytes())
                     .ok();
@@ -95,14 +102,7 @@ impl<'a, 'd, 'txn> ContactsListView<'a, 'd, 'txn> {
                 child_ui.horizontal(|ui| {
                     ui.add_space(16.0);
 
-                    ui.add(
-                        &mut ProfilePic::new(
-                            self.note_context.img_cache,
-                            self.note_context.jobs,
-                            profile_url,
-                        )
-                        .size(48.0),
-                    );
+                    ui.add(&mut ProfilePic::new(self.img_cache, self.jobs, profile_url).size(48.0));
 
                     ui.add_space(12.0);
 

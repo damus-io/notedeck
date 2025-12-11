@@ -1001,13 +1001,19 @@ fn render_nav_body(
                 (txn, contacts)
             };
 
-            ContactsListView::new(ContactsCollection::Vec(&contacts), &mut note_context, &txn)
-                .ui(ui)
-                .map_output(|action| match action {
-                    ContactsListAction::OpenProfile(pk) => {
-                        RenderNavAction::NoteAction(NoteAction::Profile(pk))
-                    }
-                })
+            ContactsListView::new(
+                ContactsCollection::Vec(&contacts),
+                note_context.jobs,
+                note_context.ndb,
+                note_context.img_cache,
+                &txn,
+            )
+            .ui(ui)
+            .map_output(|action| match action {
+                ContactsListAction::OpenProfile(pk) => {
+                    RenderNavAction::NoteAction(NoteAction::Profile(pk))
+                }
+            })
         }
         Route::FollowedBy(_pubkey) => DragResponse::none(),
         Route::Wallet(wallet_type) => {
