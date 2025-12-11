@@ -30,7 +30,6 @@ mod test_data;
 pub mod timeline;
 mod toolbar;
 pub mod ui;
-mod unknowns;
 mod view_state;
 
 #[cfg(test)]
