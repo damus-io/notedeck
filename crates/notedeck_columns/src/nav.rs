@@ -41,7 +41,9 @@ use notedeck::{
     get_current_default_msats, nav::DragResponse, tr, ui::is_narrow, Accounts, AppContext,
     NoteAction, NoteCache, NoteContext, RelayAction,
 };
-use notedeck_ui::{ContactsListAction, ContactsListView, NoteOptions};
+use notedeck_ui::{
+    contacts_list::ContactsCollection, ContactsListAction, ContactsListView, NoteOptions,
+};
 use tracing::error;
 
 /// The result of processing a nav response
@@ -999,7 +1001,7 @@ fn render_nav_body(
                 (txn, contacts)
             };
 
-            ContactsListView::new(pubkey, contacts, &mut note_context, &txn)
+            ContactsListView::new(ContactsCollection::Vec(&contacts), &mut note_context, &txn)
                 .ui(ui)
                 .map_output(|action| match action {
                     ContactsListAction::OpenProfile(pk) => {

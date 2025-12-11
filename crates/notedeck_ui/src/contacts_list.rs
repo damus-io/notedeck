@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use crate::ProfilePic;
 use egui::{RichText, Sense};
 use enostr::Pubkey;
@@ -5,7 +7,7 @@ use nostrdb::Transaction;
 use notedeck::{name::get_display_name, profile::get_profile_url, DragResponse, NoteContext};
 
 pub struct ContactsListView<'a, 'd, 'txn> {
-    contacts: Vec<Pubkey>,
+    contacts: ContactsCollection<'a>,
     note_context: &'a mut NoteContext<'d>,
     txn: &'txn Transaction,
 }
@@ -15,10 +17,39 @@ pub enum ContactsListAction {
     OpenProfile(Pubkey),
 }
 
+pub enum ContactsCollection<'a> {
+    Vec(&'a Vec<Pubkey>),
+    Set(&'a HashSet<Pubkey>),
+}
+
+pub enum ContactsIter<'a> {
+    Vec(std::slice::Iter<'a, Pubkey>),
+    Set(std::collections::hash_set::Iter<'a, Pubkey>),
+}
+
+impl<'a> ContactsCollection<'a> {
+    pub fn iter(&'a self) -> ContactsIter<'a> {
+        match self {
+            ContactsCollection::Vec(v) => ContactsIter::Vec(v.iter()),
+            ContactsCollection::Set(s) => ContactsIter::Set(s.iter()),
+        }
+    }
+}
+
+impl<'a> Iterator for ContactsIter<'a> {
+    type Item = &'a Pubkey;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            ContactsIter::Vec(iter) => iter.next().as_ref().copied(),
+            ContactsIter::Set(iter) => iter.next().as_ref().copied(),
+        }
+    }
+}
+
 impl<'a, 'd, 'txn> ContactsListView<'a, 'd, 'txn> {
     pub fn new(
-        _pubkey: &'a Pubkey,
-        contacts: Vec<Pubkey>,
+        contacts: ContactsCollection<'a>,
         note_context: &'a mut NoteContext<'d>,
         txn: &'txn Transaction,
     ) -> Self {
@@ -35,7 +66,7 @@ impl<'a, 'd, 'txn> ContactsListView<'a, 'd, 'txn> {
         egui::ScrollArea::vertical().show(ui, |ui| {
             let clip_rect = ui.clip_rect();
 
-            for contact_pubkey in &self.contacts {
+            for contact_pubkey in self.contacts.iter() {
                 let (rect, resp) =
                     ui.allocate_exact_size(egui::vec2(ui.available_width(), 56.0), Sense::click());
 
