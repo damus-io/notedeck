@@ -2,6 +2,7 @@ pub mod anim;
 pub mod app_images;
 pub mod colors;
 pub mod constants;
+pub mod contacts_list;
 pub mod context_menu;
 pub mod debug;
 pub mod icons;
@@ -15,6 +16,7 @@ mod username;
 pub mod widgets;
 
 pub use anim::{rolling_number, AnimationHelper, PulseAlpha};
+pub use contacts_list::{ContactsListAction, ContactsListView};
 pub use debug::debug_slider;
 pub use icons::{expanding_button, ICON_EXPANSION_MULTIPLE, ICON_WIDTH};
 pub use mention::Mention;

@@ -1,7 +1,5 @@
-pub mod contacts_list;
 pub mod edit;
 
-pub use contacts_list::{ContactsListAction, ContactsListView};
 pub use edit::EditProfileView;
 use egui::{vec2, Color32, CornerRadius, Layout, Rect, RichText, ScrollArea, Sense, Stroke};
 use enostr::Pubkey;
