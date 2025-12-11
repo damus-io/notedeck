@@ -1,10 +1,8 @@
 use egui::{RichText, Sense};
 use enostr::Pubkey;
 use nostrdb::Transaction;
-use notedeck::{name::get_display_name, profile::get_profile_url, NoteContext};
+use notedeck::{name::get_display_name, profile::get_profile_url, BodyResponse, NoteContext};
 use notedeck_ui::ProfilePic;
-
-use crate::nav::BodyResponse;
 
 pub struct ContactsListView<'a, 'd, 'txn> {
     contacts: Vec<Pubkey>,

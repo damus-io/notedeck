@@ -1,10 +1,9 @@
 use std::collections::HashMap;
 
-use crate::nav::BodyResponse;
 use crate::ui::{Preview, PreviewConfig};
 use egui::{Align, Button, CornerRadius, Frame, Id, Layout, Margin, Rgba, RichText, Ui, Vec2};
 use enostr::{RelayPool, RelayStatus};
-use notedeck::{tr, Localization, NotedeckTextStyle, RelayAction};
+use notedeck::{tr, BodyResponse, Localization, NotedeckTextStyle, RelayAction};
 use notedeck_ui::app_images;
 use notedeck_ui::{colors::PINK, padding};
 use tracing::debug;

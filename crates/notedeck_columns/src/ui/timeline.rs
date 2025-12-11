@@ -12,11 +12,11 @@ use notedeck_ui::{ProfilePic, ProfilePreview};
 use std::f32::consts::PI;
 use tracing::{error, warn};
 
-use crate::nav::BodyResponse;
 use crate::timeline::{
     CompositeType, CompositeUnit, NoteUnit, ReactionUnit, RepostUnit, TimelineCache, TimelineKind,
     TimelineTab,
 };
+use notedeck::BodyResponse;
 use notedeck::{
     note::root_note_id_from_selected_id, tr, Localization, NoteAction, NoteContext, ScrollInfo,
 };

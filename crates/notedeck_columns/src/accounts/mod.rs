@@ -1,13 +1,12 @@
 use enostr::{FullKeypair, Pubkey};
 use nostrdb::{Ndb, Transaction};
 
-use notedeck::{Accounts, AppContext, Localization, SingleUnkIdAction, UnknownIds};
+use notedeck::{Accounts, AppContext, BodyResponse, Localization, SingleUnkIdAction, UnknownIds};
 use notedeck_ui::nip51_set::Nip51SetUiCache;
 
 pub use crate::accounts::route::AccountsResponse;
 use crate::app::get_active_columns_mut;
 use crate::decks::DecksCache;
-use crate::nav::BodyResponse;
 use crate::onboarding::Onboarding;
 use crate::profile::send_new_contact_list;
 use crate::subscriptions::Subscriptions;

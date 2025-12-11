@@ -6,8 +6,8 @@ use notedeck::{NoteAction, NoteContext};
 use notedeck_ui::note::NoteResponse;
 use notedeck_ui::{NoteOptions, NoteView};
 
-use crate::nav::BodyResponse;
 use crate::timeline::thread::{NoteSeenFlags, ParentState, Threads};
+use notedeck::BodyResponse;
 
 pub struct ThreadView<'a, 'd> {
     threads: &'a mut Threads,

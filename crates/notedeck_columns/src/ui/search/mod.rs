@@ -3,15 +3,15 @@ use enostr::{NoteId, Pubkey};
 use state::TypingType;
 
 use crate::{
-    nav::BodyResponse,
     timeline::{TimelineTab, TimelineUnits},
     ui::timeline::TimelineTabView,
 };
 use egui_winit::clipboard::Clipboard;
 use nostrdb::{Filter, Ndb, ProfileRecord, Transaction};
 use notedeck::{
-    fonts::get_font_size, name::get_display_name, profile::get_profile_url, tr, tr_plural, Images,
-    Localization, MediaJobSender, NoteAction, NoteContext, NoteRef, NotedeckTextStyle,
+    fonts::get_font_size, name::get_display_name, profile::get_profile_url, tr, tr_plural,
+    BodyResponse, Images, Localization, MediaJobSender, NoteAction, NoteContext, NoteRef,
+    NotedeckTextStyle,
 };
 
 use notedeck_ui::{

@@ -6,13 +6,12 @@ pub use edit::EditProfileView;
 use egui::{vec2, Color32, CornerRadius, Layout, Rect, RichText, ScrollArea, Sense, Stroke};
 use enostr::Pubkey;
 use nostrdb::{ProfileRecord, Transaction};
-use notedeck::{tr, Localization, ProfileContext};
+use notedeck::{tr, BodyResponse, Localization, ProfileContext};
 use notedeck_ui::profile::{context::ProfileContextWidget, follow_button};
 use robius_open::Uri;
 use tracing::error;
 
 use crate::{
-    nav::BodyResponse,
     timeline::{TimelineCache, TimelineKind},
     ui::timeline::{tabs_ui, TimelineTabView},
 };

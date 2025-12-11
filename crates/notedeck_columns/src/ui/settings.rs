@@ -6,7 +6,7 @@ use egui_extras::{Size, StripBuilder};
 use enostr::NoteId;
 use nostrdb::Transaction;
 use notedeck::{
-    tr, ui::richtext_small, Images, LanguageIdentifier, Localization, NoteContext,
+    tr, ui::richtext_small, BodyResponse, Images, LanguageIdentifier, Localization, NoteContext,
     NotedeckTextStyle, Settings, SettingsHandler, DEFAULT_MAX_HASHTAGS_PER_NOTE,
     DEFAULT_NOTE_BODY_FONT_SIZE,
 };
@@ -15,11 +15,7 @@ use notedeck_ui::{
     AnimationHelper, NoteOptions, NoteView,
 };
 
-use crate::{
-    nav::{BodyResponse, RouterAction},
-    ui::account_login_view::eye_button,
-    Damus, Route,
-};
+use crate::{nav::RouterAction, ui::account_login_view::eye_button, Damus, Route};
 
 const PREVIEW_NOTE_ID: &str = "note1edjc8ggj07hwv77g2405uh6j2jkk5aud22gktxrvc2wnre4vdwgqzlv2gw";
 

@@ -1,6 +1,5 @@
 use crate::draft::{Draft, Drafts, MentionHint};
 use crate::media_upload::nostrbuild_nip96_upload;
-use crate::nav::BodyResponse;
 use crate::post::{downcast_post_buffer, MentionType, NewPost};
 use crate::ui::mentions_picker::MentionPickerView;
 use crate::ui::{self, Preview, PreviewConfig};
@@ -18,10 +17,10 @@ use notedeck::media::AnimationMode;
 #[cfg(target_os = "android")]
 use notedeck::platform::android::try_open_file_picker;
 use notedeck::platform::get_next_selected_file;
-use notedeck::PixelDimensions;
 use notedeck::{
     name::get_display_name, supported_mime_hosted_at_url, tr, Localization, NoteAction, NoteContext,
 };
+use notedeck::{BodyResponse, PixelDimensions};
 use notedeck_ui::{
     app_images,
     context_menu::{input_context, PasteBehavior},

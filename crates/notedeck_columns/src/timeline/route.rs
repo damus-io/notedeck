@@ -1,12 +1,12 @@
 use crate::{
-    nav::{BodyResponse, RenderNavAction},
+    nav::RenderNavAction,
     profile::ProfileAction,
     timeline::{thread::Threads, ThreadSelection, TimelineCache, TimelineKind},
     ui::{self, ProfileView},
 };
 
 use enostr::Pubkey;
-use notedeck::NoteContext;
+use notedeck::{BodyResponse, NoteContext};
 use notedeck_ui::NoteOptions;
 
 #[allow(clippy::too_many_arguments)]

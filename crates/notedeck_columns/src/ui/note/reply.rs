@@ -1,5 +1,4 @@
 use crate::draft::Draft;
-use crate::nav::BodyResponse;
 use crate::ui::{
     self,
     note::{PostAction, PostResponse, PostType},
@@ -7,7 +6,7 @@ use crate::ui::{
 
 use egui::{Rect, Response, ScrollArea, Ui};
 use enostr::{FilledKeypair, NoteId};
-use notedeck::NoteContext;
+use notedeck::{BodyResponse, NoteContext};
 use notedeck_ui::{NoteOptions, NoteView, ProfilePic};
 
 pub struct PostReplyView<'a, 'd> {

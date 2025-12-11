@@ -3,13 +3,12 @@ use core::f32;
 use egui::{vec2, Button, CornerRadius, Layout, Margin, RichText, ScrollArea, TextEdit};
 use egui_winit::clipboard::Clipboard;
 use enostr::ProfileState;
+use notedeck::BodyResponse;
 use notedeck::{
     profile::unwrap_profile_url, tr, Images, Localization, MediaJobSender, NotedeckTextStyle,
 };
 use notedeck_ui::context_menu::{input_context, PasteBehavior};
 use notedeck_ui::{profile::banner, ProfilePic};
-
-use crate::nav::BodyResponse;
 
 pub struct EditProfileView<'a> {
     state: &'a mut ProfileState,
