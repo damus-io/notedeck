@@ -1,7 +1,7 @@
 use egui::{RichText, Sense};
 use enostr::Pubkey;
 use nostrdb::Transaction;
-use notedeck::{name::get_display_name, profile::get_profile_url, BodyResponse, NoteContext};
+use notedeck::{name::get_display_name, profile::get_profile_url, DragResponse, NoteContext};
 use notedeck_ui::ProfilePic;
 
 pub struct ContactsListView<'a, 'd, 'txn> {
@@ -29,7 +29,7 @@ impl<'a, 'd, 'txn> ContactsListView<'a, 'd, 'txn> {
         }
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui) -> BodyResponse<ContactsListAction> {
+    pub fn ui(&mut self, ui: &mut egui::Ui) -> DragResponse<ContactsListAction> {
         let mut action = None;
 
         egui::ScrollArea::vertical().show(ui, |ui| {
@@ -91,6 +91,6 @@ impl<'a, 'd, 'txn> ContactsListView<'a, 'd, 'txn> {
             }
         });
 
-        BodyResponse::output(action)
+        DragResponse::output(action)
     }
 }

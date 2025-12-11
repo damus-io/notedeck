@@ -1,7 +1,7 @@
 use enostr::{FullKeypair, Pubkey};
 use nostrdb::{Ndb, Transaction};
 
-use notedeck::{Accounts, AppContext, BodyResponse, Localization, SingleUnkIdAction, UnknownIds};
+use notedeck::{Accounts, AppContext, DragResponse, Localization, SingleUnkIdAction, UnknownIds};
 use notedeck_ui::nip51_set::Nip51SetUiCache;
 
 pub use crate::accounts::route::AccountsResponse;
@@ -80,7 +80,7 @@ pub fn render_accounts_route(
     onboarding: &mut Onboarding,
     follow_packs_ui: &mut Nip51SetUiCache,
     route: AccountsRoute,
-) -> BodyResponse<AccountsResponse> {
+) -> DragResponse<AccountsResponse> {
     match route {
         AccountsRoute::Accounts => AccountsView::new(
             app_ctx.ndb,
@@ -98,7 +98,7 @@ pub fn render_accounts_route(
                 .inner
                 .map(AccountsRouteResponse::AddAccount)
                 .map(AccountsResponse::Account);
-            BodyResponse::output(action)
+            DragResponse::output(action)
         }
         AccountsRoute::Onboarding => FollowPackOnboardingView::new(
             onboarding,

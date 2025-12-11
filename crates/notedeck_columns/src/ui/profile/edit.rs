@@ -3,7 +3,7 @@ use core::f32;
 use egui::{vec2, Button, CornerRadius, Layout, Margin, RichText, ScrollArea, TextEdit};
 use egui_winit::clipboard::Clipboard;
 use enostr::ProfileState;
-use notedeck::BodyResponse;
+use notedeck::DragResponse;
 use notedeck::{
     profile::unwrap_profile_url, tr, Images, Localization, MediaJobSender, NotedeckTextStyle,
 };
@@ -40,7 +40,7 @@ impl<'a> EditProfileView<'a> {
     }
 
     // return true to save
-    pub fn ui(&mut self, ui: &mut egui::Ui) -> BodyResponse<bool> {
+    pub fn ui(&mut self, ui: &mut egui::Ui) -> DragResponse<bool> {
         let scroll_out = ScrollArea::vertical()
             .id_salt(EditProfileView::scroll_id())
             .stick_to_bottom(true)
@@ -79,7 +79,7 @@ impl<'a> EditProfileView<'a> {
 
                 Some(save)
             });
-        BodyResponse::scroll(scroll_out)
+        DragResponse::scroll(scroll_out)
     }
 
     fn inner(&mut self, ui: &mut egui::Ui, padding: f32) {

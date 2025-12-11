@@ -6,7 +6,7 @@ pub use edit::EditProfileView;
 use egui::{vec2, Color32, CornerRadius, Layout, Rect, RichText, ScrollArea, Sense, Stroke};
 use enostr::Pubkey;
 use nostrdb::{ProfileRecord, Transaction};
-use notedeck::{tr, BodyResponse, Localization, ProfileContext};
+use notedeck::{tr, DragResponse, Localization, ProfileContext};
 use notedeck_ui::profile::{context::ProfileContextWidget, follow_button};
 use robius_open::Uri;
 use tracing::error;
@@ -70,7 +70,7 @@ impl<'a, 'd> ProfileView<'a, 'd> {
         egui::Id::new(("profile_scroll", col_id, profile_pubkey))
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui) -> BodyResponse<ProfileViewAction> {
+    pub fn ui(&mut self, ui: &mut egui::Ui) -> DragResponse<ProfileViewAction> {
         let scroll_id = ProfileView::scroll_id(self.col_id, self.pubkey);
         let scroll_area = ScrollArea::vertical().id_salt(scroll_id).animated(false);
 
@@ -78,7 +78,7 @@ impl<'a, 'd> ProfileView<'a, 'd> {
             .timeline_cache
             .get_mut(&TimelineKind::Profile(*self.pubkey))
         else {
-            return BodyResponse::none();
+            return DragResponse::none();
         };
 
         let output = scroll_area.show(ui, |ui| {
@@ -136,7 +136,7 @@ impl<'a, 'd> ProfileView<'a, 'd> {
         // only allow front insert when the profile body is fully obstructed
         profile_timeline.enable_front_insert = output.inner.body_end_pos < ui.clip_rect().top();
 
-        BodyResponse::output(output.inner.action).scroll_raw(output.id)
+        DragResponse::output(output.inner.action).scroll_raw(output.id)
     }
 }
 

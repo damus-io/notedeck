@@ -1,7 +1,7 @@
 use egui::{vec2, FontId, Layout, Pos2, Rect, ScrollArea, UiBuilder, Vec2b};
 use nostrdb::{Ndb, ProfileRecord, Transaction};
 use notedeck::{
-    fonts::get_font_size, name::get_display_name, profile::get_profile_url, BodyResponse, Images,
+    fonts::get_font_size, name::get_display_name, profile::get_profile_url, DragResponse, Images,
     MediaJobSender, NotedeckTextStyle,
 };
 use notedeck_ui::{
@@ -71,7 +71,7 @@ impl<'a> MentionPickerView<'a> {
         &mut self,
         rect: egui::Rect,
         ui: &mut egui::Ui,
-    ) -> BodyResponse<MentionPickerResponse> {
+    ) -> DragResponse<MentionPickerResponse> {
         let widget_id = ui.id().with("mention_results");
         let area_resp = egui::Area::new(widget_id)
             .order(egui::Order::Foreground)
@@ -112,7 +112,7 @@ impl<'a> MentionPickerView<'a> {
                             .show(ui, |ui| Some(self.show(ui, width)));
                         ui.advance_cursor_after_rect(rect);
 
-                        BodyResponse::scroll(scroll_resp).map_output(|o| {
+                        DragResponse::scroll(scroll_resp).map_output(|o| {
                             if close_button_resp {
                                 MentionPickerResponse::DeleteMention
                             } else {

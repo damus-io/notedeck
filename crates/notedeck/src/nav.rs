@@ -1,11 +1,11 @@
 use egui::scroll_area::ScrollAreaOutput;
 
-pub struct BodyResponse<R> {
+pub struct DragResponse<R> {
     pub drag_id: Option<egui::Id>, // the id which was used for dragging.
     pub output: Option<R>,
 }
 
-impl<R> BodyResponse<R> {
+impl<R> DragResponse<R> {
     pub fn none() -> Self {
         Self {
             drag_id: None,
@@ -51,29 +51,29 @@ impl<R> BodyResponse<R> {
         id.with("area")
     }
 
-    pub fn map_output<S>(self, f: impl FnOnce(R) -> S) -> BodyResponse<S> {
-        BodyResponse {
+    pub fn map_output<S>(self, f: impl FnOnce(R) -> S) -> DragResponse<S> {
+        DragResponse {
             drag_id: self.drag_id,
             output: self.output.map(f),
         }
     }
 
-    pub fn map_output_maybe<S>(self, f: impl FnOnce(R) -> Option<S>) -> BodyResponse<S> {
-        BodyResponse {
+    pub fn map_output_maybe<S>(self, f: impl FnOnce(R) -> Option<S>) -> DragResponse<S> {
+        DragResponse {
             drag_id: self.drag_id,
             output: self.output.and_then(f),
         }
     }
 
-    pub fn maybe_map_output<S>(self, f: impl FnOnce(Option<R>) -> S) -> BodyResponse<S> {
-        BodyResponse {
+    pub fn maybe_map_output<S>(self, f: impl FnOnce(Option<R>) -> S) -> DragResponse<S> {
+        DragResponse {
             drag_id: self.drag_id,
             output: Some(f(self.output)),
         }
     }
 
-    /// insert the contents of the new BodyResponse if they are empty in Self
-    pub fn insert(&mut self, body: BodyResponse<R>) {
+    /// insert the contents of the new DragResponse if they are empty in Self
+    pub fn insert(&mut self, body: DragResponse<R>) {
         self.drag_id = self.drag_id.or(body.drag_id);
         if self.output.is_none() {
             self.output = body.output;

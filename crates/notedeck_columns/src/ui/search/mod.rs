@@ -10,7 +10,7 @@ use egui_winit::clipboard::Clipboard;
 use nostrdb::{Filter, Ndb, ProfileRecord, Transaction};
 use notedeck::{
     fonts::get_font_size, name::get_display_name, profile::get_profile_url, tr, tr_plural,
-    BodyResponse, Images, Localization, MediaJobSender, NoteAction, NoteContext, NoteRef,
+    DragResponse, Images, Localization, MediaJobSender, NoteAction, NoteContext, NoteRef,
     NotedeckTextStyle,
 };
 
@@ -50,7 +50,7 @@ impl<'a, 'd> SearchView<'a, 'd> {
         }
     }
 
-    pub fn show(&mut self, ui: &mut egui::Ui) -> BodyResponse<NoteAction> {
+    pub fn show(&mut self, ui: &mut egui::Ui) -> DragResponse<NoteAction> {
         padding(8.0, ui, |ui| self.show_impl(ui))
             .inner
             .map_output(|action| match action {
@@ -59,7 +59,7 @@ impl<'a, 'd> SearchView<'a, 'd> {
             })
     }
 
-    fn show_impl(&mut self, ui: &mut egui::Ui) -> BodyResponse<SearchViewAction> {
+    fn show_impl(&mut self, ui: &mut egui::Ui) -> DragResponse<SearchViewAction> {
         ui.spacing_mut().item_spacing = egui::vec2(0.0, 12.0);
 
         let search_resp = search_box(
@@ -79,7 +79,7 @@ impl<'a, 'd> SearchView<'a, 'd> {
         );
 
         let mut search_action = None;
-        let mut body_resp = BodyResponse::none();
+        let mut body_resp = DragResponse::none();
         match &self.query.state {
             SearchState::New
             | SearchState::Navigating
@@ -345,7 +345,7 @@ impl<'a, 'd> SearchView<'a, 'd> {
         None
     }
 
-    fn show_search_results(&mut self, ui: &mut egui::Ui) -> BodyResponse<NoteAction> {
+    fn show_search_results(&mut self, ui: &mut egui::Ui) -> DragResponse<NoteAction> {
         let scroll_out = egui::ScrollArea::vertical()
             .id_salt(SearchView::scroll_id())
             .show(ui, |ui| {
@@ -358,7 +358,7 @@ impl<'a, 'd> SearchView<'a, 'd> {
                 .show(ui)
             });
 
-        BodyResponse::scroll(scroll_out)
+        DragResponse::scroll(scroll_out)
     }
 
     pub fn scroll_id() -> egui::Id {

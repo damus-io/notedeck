@@ -68,7 +68,7 @@ pub use media::{
 };
 pub use muted::{MuteFun, Muted};
 pub use name::NostrName;
-pub use nav::BodyResponse;
+pub use nav::DragResponse;
 pub use nip51_set::{create_nip51_set, Nip51Set, Nip51SetCache};
 pub use note::{
     BroadcastContext, ContextSelection, NoteAction, NoteContext, NoteContextSelection, NoteRef,

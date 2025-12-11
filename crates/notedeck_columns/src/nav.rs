@@ -38,7 +38,7 @@ use egui_nav::{
 use enostr::{ProfileState, RelayPool};
 use nostrdb::{Filter, Ndb, Transaction};
 use notedeck::{
-    get_current_default_msats, nav::BodyResponse, tr, ui::is_narrow, Accounts, AppContext,
+    get_current_default_msats, nav::DragResponse, tr, ui::is_narrow, Accounts, AppContext,
     NoteAction, NoteCache, NoteContext, RelayAction,
 };
 use notedeck_ui::NoteOptions;
@@ -625,7 +625,7 @@ fn render_nav_body(
     depth: usize,
     col: usize,
     inner_rect: egui::Rect,
-) -> BodyResponse<RenderNavAction> {
+) -> DragResponse<RenderNavAction> {
     let mut note_context = NoteContext {
         ndb: ctx.ndb,
         accounts: ctx.accounts,
@@ -722,7 +722,7 @@ fn render_nav_body(
                     "Reply to unknown note",
                     "Error message when reply note cannot be found"
                 ));
-                return BodyResponse::none();
+                return DragResponse::none();
             };
 
             let note = if let Ok(note) = ctx.ndb.get_note_by_id(&txn, id.bytes()) {
@@ -733,11 +733,11 @@ fn render_nav_body(
                     "Reply to unknown note",
                     "Error message when reply note cannot be found"
                 ));
-                return BodyResponse::none();
+                return DragResponse::none();
             };
 
             let Some(poster) = ctx.accounts.selected_filled() else {
-                return BodyResponse::none();
+                return DragResponse::none();
             };
 
             let resp = {
@@ -771,11 +771,11 @@ fn render_nav_body(
                     "Quote of unknown note",
                     "Error message when quote note cannot be found"
                 ));
-                return BodyResponse::none();
+                return DragResponse::none();
             };
 
             let Some(poster) = ctx.accounts.selected_filled() else {
-                return BodyResponse::none();
+                return DragResponse::none();
             };
 
             let draft = app.drafts.quote_mut(note.id());
@@ -795,7 +795,7 @@ fn render_nav_body(
         }
         Route::ComposeNote => {
             let Some(kp) = ctx.accounts.get_selected_account().key.to_full() else {
-                return BodyResponse::none();
+                return DragResponse::none();
             };
             let navigating =
                 get_active_columns_mut(note_context.i18n, ctx.accounts, &mut app.decks_cache)
@@ -826,11 +826,11 @@ fn render_nav_body(
         Route::AddColumn(route) => {
             render_add_column_routes(ui, app, ctx, col, route);
 
-            BodyResponse::none()
+            DragResponse::none()
         }
         Route::Support => {
             SupportView::new(&mut app.support, ctx.i18n).show(ui);
-            BodyResponse::none()
+            DragResponse::none()
         }
         Route::Search => {
             let id = ui.id().with(("search", depth, col));
@@ -879,7 +879,7 @@ fn render_nav_body(
                     .go_back();
             }
 
-            BodyResponse::output(resp)
+            DragResponse::output(resp)
         }
         Route::EditDeck(index) => {
             let mut action = None;
@@ -911,19 +911,19 @@ fn render_nav_body(
                     .go_back();
             }
 
-            BodyResponse::output(action)
+            DragResponse::output(action)
         }
         Route::EditProfile(pubkey) => {
             let Some(kp) = ctx.accounts.get_full(pubkey) else {
                 error!("Pubkey in EditProfile route did not have an nsec attached in Accounts");
-                return BodyResponse::none();
+                return DragResponse::none();
             };
 
             let Some(state) = app.view_state.pubkey_to_profile_state.get_mut(kp.pubkey) else {
                 tracing::error!(
                     "No profile state when navigating to EditProfile... was handle_navigating_edit_profile not called?"
                 );
-                return BodyResponse::none();
+                return DragResponse::none();
             };
 
             EditProfileView::new(
@@ -1007,7 +1007,7 @@ fn render_nav_body(
                     }
                 })
         }
-        Route::FollowedBy(_pubkey) => BodyResponse::none(),
+        Route::FollowedBy(_pubkey) => DragResponse::none(),
         Route::Wallet(wallet_type) => {
             let state = match wallet_type {
                 notedeck::WalletType::Auto => 's: {
@@ -1053,13 +1053,13 @@ fn render_nav_body(
                 }
             };
 
-            BodyResponse::output(WalletView::new(state, ctx.i18n, ctx.clipboard).ui(ui))
+            DragResponse::output(WalletView::new(state, ctx.i18n, ctx.clipboard).ui(ui))
                 .map_output(RenderNavAction::WalletAction)
         }
         Route::CustomizeZapAmount(target) => {
             let txn = Transaction::new(ctx.ndb).expect("txn");
             let default_msats = get_current_default_msats(ctx.accounts, ctx.global_wallet);
-            BodyResponse::output(
+            DragResponse::output(
                 CustomZapView::new(
                     ctx.i18n,
                     ctx.img_cache,
@@ -1085,7 +1085,7 @@ fn render_nav_body(
             })
         }
         Route::RepostDecision(note_id) => {
-            BodyResponse::output(RepostDecisionView::new(note_id).show(ui))
+            DragResponse::output(RepostDecisionView::new(note_id).show(ui))
                 .map_output(RenderNavAction::RepostAction)
         }
     }
@@ -1197,7 +1197,7 @@ pub fn render_nav(
                 let resp = if let Some(top) = nav.routes().last() {
                     render_nav_body(ui, app, ctx, top, nav.routes().len(), col, inner_rect)
                 } else {
-                    BodyResponse::none()
+                    DragResponse::none()
                 };
 
                 RouteResponse {
