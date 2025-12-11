@@ -5,6 +5,7 @@ pub mod constants;
 pub mod contacts_list;
 pub mod context_menu;
 pub mod debug;
+pub mod header;
 pub mod icons;
 pub mod images;
 pub mod media;
