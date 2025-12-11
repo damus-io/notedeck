@@ -16,7 +16,7 @@ mkShell ({
     rustup
     libiconv
     pkg-config
-    #cmake
+    cmake
     fontconfig
     #gtk3
     #gsettings-desktop-schemas
