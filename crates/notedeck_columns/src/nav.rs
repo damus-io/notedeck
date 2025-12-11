@@ -1010,7 +1010,7 @@ fn render_nav_body(
             )
             .ui(ui)
             .map_output(|action| match action {
-                ContactsListAction::OpenProfile(pk) => {
+                ContactsListAction::Select(pk) => {
                     RenderNavAction::NoteAction(NoteAction::Profile(pk))
                 }
             })
