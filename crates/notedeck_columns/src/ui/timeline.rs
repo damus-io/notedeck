@@ -507,12 +507,13 @@ impl CompositeType {
         total_count: usize,
         referenced_type: ReferencedNoteType,
         notification: bool,
+        rumor: bool,
     ) -> String {
         let count = total_count - 1;
 
         match self {
             CompositeType::Reaction => {
-                reaction_description(loc, first_name, count, referenced_type)
+                reaction_description(loc, first_name, count, referenced_type, rumor)
             }
             CompositeType::Repost => repost_description(
                 loc,
@@ -533,15 +534,18 @@ fn reaction_description(
     first_name: &str,
     count: usize,
     referenced_type: ReferencedNoteType,
+    rumor: bool,
 ) -> String {
+    let privately = if rumor { "privately " } else { "" };
     match referenced_type {
         ReferencedNoteType::Tagged => {
             if count == 0 {
                 tr!(
                     loc,
-                    "{name} reacted to a note you were tagged in",
+                    "{name} {privately}reacted to a note you were tagged in",
                     "reaction from user to a note you were tagged in",
-                    name = first_name
+                    name = first_name,
+                    privately = privately
                 )
             } else {
                 tr_plural!(
@@ -785,6 +789,7 @@ fn render_composite_entry(
                         num_profiles,
                         referenced_type,
                         note_options.contains(NoteOptions::Notification),
+                        underlying_note.is_rumor(),
                     );
                     let galley = ui.painter().layout_no_wrap(
                         description.clone(),
