@@ -470,6 +470,7 @@ pub struct AddAccountResponse {
 
 pub struct AccountSubs {
     relay: UnifiedSubscription,
+    giftwraps: UnifiedSubscription,
     mute: UnifiedSubscription,
     pub contacts: UnifiedSubscription,
 }
@@ -483,15 +484,24 @@ impl AccountSubs {
         data: &AccountData,
         wakeup: impl Fn() + Send + Sync + Clone + 'static,
     ) -> Self {
+        // TODO: since optimize
+        let giftwraps_filter = nostrdb::Filter::new()
+            .kinds([1059])
+            .pubkeys([pk.bytes()])
+            .build();
+
+        update_relay_configuration(pool, relay_defaults, pk, &data.relay, wakeup);
+
         let relay = subscribe(ndb, pool, &data.relay.filter);
+        let giftwraps = subscribe(ndb, pool, &giftwraps_filter);
         let mute = subscribe(ndb, pool, &data.muted.filter);
         let contacts = subscribe(ndb, pool, &data.contacts.filter);
-        update_relay_configuration(pool, relay_defaults, pk, &data.relay, wakeup);
 
         Self {
             relay,
             mute,
             contacts,
+            giftwraps,
         }
     }
 
@@ -507,6 +517,7 @@ impl AccountSubs {
         unsubscribe(ndb, pool, &self.relay);
         unsubscribe(ndb, pool, &self.mute);
         unsubscribe(ndb, pool, &self.contacts);
+        unsubscribe(ndb, pool, &self.giftwraps);
 
         *self = AccountSubs::new(ndb, pool, relay_defaults, pk, new_selection_data, wakeup);
     }
