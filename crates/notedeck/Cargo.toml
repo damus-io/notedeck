@@ -11,6 +11,7 @@ url = { workspace = true }
 strum = { workspace = true }
 blurhash = { workspace = true }
 thumbhash = { workspace = true }
+base64 = { workspace = true }
 strum_macros = { workspace = true }
 dirs = { workspace = true }
 enostr = { workspace = true }
