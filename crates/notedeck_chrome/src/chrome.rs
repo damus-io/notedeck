@@ -26,7 +26,10 @@ use notedeck::{
 };
 use notedeck_columns::{timeline::TimelineKind, Damus};
 use notedeck_dave::{Dave, DaveAvatar};
-use notedeck_ui::{app_images, expanding_button, galley_centered_pos, ProfilePic};
+use notedeck_ui::{
+    app_images, constants::MACOS_TRAFFIC_LIGHT_SPACING, expanding_button, galley_centered_pos,
+    ProfilePic,
+};
 use std::collections::HashMap;
 
 #[derive(Default)]
@@ -218,6 +221,8 @@ impl Chrome {
 
         let resp = drawer.show_mut(ui, |ui, route| match route {
             ChromeRoute::Chrome => {
+                // Paint sidebar background to the top edge so traffic lights
+                // float over it (no visible line)
                 ui.painter().rect_filled(
                     ui.available_rect_before_wrap(),
                     CornerRadius::ZERO,
@@ -565,10 +570,10 @@ fn topdown_sidebar(
 
     let loc = &mut ctx.i18n;
 
-    // macos needs a bit of space to make room for window
-    // minimize/close buttons
+    // macos needs space to make room for window traffic lights
+    // (close/minimize/maximize buttons)
     if cfg!(target_os = "macos") {
-        ui.add_space(8.0);
+        ui.add_space(MACOS_TRAFFIC_LIGHT_SPACING);
     }
 
     let txn = Transaction::new(ctx.ndb).expect("should be able to create txn");
