@@ -2,9 +2,9 @@ use std::{error::Error, fmt};
 
 use http_body_util::{BodyExt, Empty};
 use hyper::{
-    body::Bytes,
+    body::{Bytes, Incoming},
     header::{self},
-    Request, Uri,
+    Request, Response, Uri,
 };
 use hyper_rustls::HttpsConnectorBuilder;
 use hyper_util::{client::legacy::Client, rt::TokioExecutor};
@@ -34,87 +34,83 @@ pub async fn http_req(url: &str) -> Result<HyperHttpResponse, HyperHttpError> {
     const MAX_REDIRECTS: usize = 5;
     let mut redirects = 0;
 
-    let res = loop {
+    // Follow redirects until we get a non-redirect response
+    let (content_type, body) = loop {
         let authority = current_uri.authority().ok_or(HyperHttpError::Host)?.clone();
 
-        // Fetch the url...
         let req = Request::builder()
             .uri(current_uri.clone())
             .header(hyper::header::HOST, authority.as_str())
             .body(Empty::<Bytes>::new())
             .map_err(|e| HyperHttpError::Hyper(Box::new(e)))?;
 
-        let res = client
+        let res: Response<Incoming> = client
             .request(req)
             .await
             .map_err(|e| HyperHttpError::Hyper(Box::new(e)))?;
 
-        if res.status().is_redirection() {
-            if redirects >= MAX_REDIRECTS {
-                return Err(HyperHttpError::TooManyRedirects);
+        if !res.status().is_redirection() {
+            // Extract what we need before consuming the response
+            let content_type = res
+                .headers()
+                .get(hyper::header::CONTENT_TYPE)
+                .and_then(|t: &hyper::header::HeaderValue| t.to_str().ok())
+                .map(|s: &str| s.to_string());
+
+            let content_length: Option<usize> = res
+                .headers()
+                .get(header::CONTENT_LENGTH)
+                .and_then(|hv: &hyper::header::HeaderValue| hv.to_str().ok())
+                .and_then(|s: &str| s.parse().ok());
+
+            if let Some(len) = content_length {
+                if len > MAX_BODY_BYTES {
+                    return Err(HyperHttpError::BodyTooLarge);
+                }
             }
 
-            let location_header = res
-                .headers()
-                .get(header::LOCATION)
-                .ok_or(HyperHttpError::MissingRedirectLocation)?
-                .clone();
-
-            let location = location_header
-                .to_str()
-                .map_err(|_| HyperHttpError::InvalidRedirectLocation)?
-                .to_string();
-
-            res.into_body()
-                .collect()
-                .await
-                .map_err(|e| HyperHttpError::Hyper(Box::new(e)))?;
-
-            current_uri = resolve_redirect(&current_uri, &location)?;
-            redirects += 1;
-            continue;
-        } else {
-            break res;
+            break (content_type, res.into_body());
         }
+
+        // Handle redirect
+        if redirects >= MAX_REDIRECTS {
+            return Err(HyperHttpError::TooManyRedirects);
+        }
+
+        let location_header = res
+            .headers()
+            .get(header::LOCATION)
+            .ok_or(HyperHttpError::MissingRedirectLocation)?
+            .clone();
+
+        let location = location_header
+            .to_str()
+            .map_err(|_| HyperHttpError::InvalidRedirectLocation)?
+            .to_string();
+
+        // Drain redirect response body before following redirect
+        let redirect_body: Incoming = res.into_body();
+        let _: http_body_util::Collected<Bytes> = BodyExt::collect(redirect_body)
+            .await
+            .map_err(|e| HyperHttpError::Hyper(Box::new(e)))?;
+
+        current_uri = resolve_redirect(&current_uri, &location)?;
+        redirects += 1;
     };
 
-    let content_type = res
-        .headers()
-        .get(hyper::header::CONTENT_TYPE)
-        .and_then(|t| t.to_str().ok())
-        .map(|s| s.to_string());
+    // Consume body and collect bytes with size limit check
+    let collected = BodyExt::collect(body)
+        .await
+        .map_err(|e| HyperHttpError::Hyper(Box::new(e)))?;
 
-    let content_length = res
-        .headers()
-        .get(header::CONTENT_LENGTH)
-        .and_then(|s| s.to_str().ok())
-        .and_then(|s| s.parse::<usize>().ok());
-
-    if let Some(len) = content_length {
-        if len > MAX_BODY_BYTES {
-            return Err(HyperHttpError::BodyTooLarge);
-        }
-    }
-
-    let mut body = res.into_body();
-    let mut bytes = Vec::with_capacity(content_length.unwrap_or(0).min(MAX_BODY_BYTES));
-
-    while let Some(frame_result) = body.frame().await {
-        let frame = frame_result.map_err(|e| HyperHttpError::Hyper(Box::new(e)))?;
-        let Ok(chunk) = frame.into_data() else {
-            continue;
-        };
-
-        if bytes.len() + chunk.len() > MAX_BODY_BYTES {
-            return Err(HyperHttpError::BodyTooLarge);
-        }
-
-        bytes.extend_from_slice(&chunk);
+    let bytes = collected.to_bytes();
+    if bytes.len() > MAX_BODY_BYTES {
+        return Err(HyperHttpError::BodyTooLarge);
     }
 
     Ok(HyperHttpResponse {
         content_type,
-        bytes,
+        bytes: bytes.to_vec(),
     })
 }
 
