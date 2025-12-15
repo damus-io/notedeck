@@ -15,7 +15,9 @@ use crate::{
 use notedeck::{tr, Accounts, Localization, MediaJobSender, UserAccount};
 use notedeck_ui::{
     anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},
-    app_images, colors, ProfilePic, View,
+    app_images, colors,
+    constants::MACOS_TRAFFIC_LIGHT_SPACING,
+    ProfilePic, View,
 };
 
 use super::configure_deck::deck_icon;
@@ -86,7 +88,12 @@ impl<'a> DesktopSidePanel<'a> {
             egui::Frame::new().inner_margin(Margin::same(notedeck_ui::constants::FRAME_MARGIN));
 
         if !ui.visuals().dark_mode {
-            let rect = ui.available_rect_before_wrap();
+            // Paint background, but on macOS start below traffic lights
+            // to avoid a visible line at the top
+            let mut rect = ui.available_rect_before_wrap();
+            if cfg!(target_os = "macos") {
+                rect.set_top(rect.top() + MACOS_TRAFFIC_LIGHT_SPACING);
+            }
             ui.painter().rect(
                 rect,
                 0,
@@ -105,11 +112,11 @@ impl<'a> DesktopSidePanel<'a> {
         let inner = ui
             .vertical(|ui| {
                 ui.with_layout(Layout::top_down(egui::Align::Center), |ui| {
-                    // macos needs a bit of space to make room for window
-                    // minimize/close buttons
-                    //if cfg!(target_os = "macos") {
-                    //    ui.add_space(24.0);
-                    //}
+                    // macos needs space to make room for window traffic lights
+                    // (close/minimize/maximize buttons)
+                    if cfg!(target_os = "macos") {
+                        ui.add_space(MACOS_TRAFFIC_LIGHT_SPACING);
+                    }
 
                     let compose_resp = ui
                         .add(crate::ui::post::compose_note_button(dark_mode))

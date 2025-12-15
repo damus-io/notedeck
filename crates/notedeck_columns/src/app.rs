@@ -25,6 +25,7 @@ use notedeck::{
     UnknownIds,
 };
 use notedeck_ui::{
+    constants::MACOS_TRAFFIC_LIGHT_SPACING,
     media::{MediaViewer, MediaViewerFlags, MediaViewerState},
     NoteOptions,
 };
@@ -948,10 +949,15 @@ fn timelines_view(
                 );
                 */
 
-                // vertical sidebar line
+                // vertical sidebar line (starts below traffic lights on macOS)
+                let line_top = if cfg!(target_os = "macos") {
+                    rect.top() + MACOS_TRAFFIC_LIGHT_SPACING
+                } else {
+                    rect.top()
+                };
                 ui.painter().vline(
                     rect.right(),
-                    rect.y_range(),
+                    egui::Rangef::new(line_top, rect.bottom()),
                     ui.visuals().widgets.noninteractive.bg_stroke,
                 );
             });
