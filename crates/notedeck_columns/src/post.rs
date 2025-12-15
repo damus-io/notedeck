@@ -227,6 +227,11 @@ fn add_imeta_tags<'a>(builder: NoteBuilder<'a>, media: &Vec<Nip94Event>) -> Note
         if let Some(dims) = &item.dimensions {
             builder = builder.tag_str(&format!("dim {}x{}", dims.0, dims.1));
         }
+        // Include both thumbhash and blurhash for maximum compatibility.
+        // Thumbhash is preferred but blurhash provides fallback for older clients.
+        if let Some(th) = &item.thumbhash {
+            builder = builder.tag_str(&format!("thumbhash {th}"));
+        }
         if let Some(bh) = &item.blurhash {
             builder = builder.tag_str(&format!("blurhash {bh}"));
         }
