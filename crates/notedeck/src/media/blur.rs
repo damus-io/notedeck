@@ -351,3 +351,80 @@ impl BlurCache {
         state.finished_transitioning = true;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Test thumbhash decoding produces valid RGBA data
+    #[test]
+    fn test_thumbhash_decode() {
+        // A valid thumbhash (base64 encoded, then decoded to bytes)
+        // This is a simple test image thumbhash
+        let thumbhash_base64 = "1QcSHQRnh493V4dIh4eXh1h4kJUI";
+        let thumbhash_bytes = BASE64_STANDARD.decode(thumbhash_base64).unwrap();
+
+        let result = thumbhash::thumb_hash_to_rgba(&thumbhash_bytes);
+        assert!(result.is_ok());
+
+        let (width, height, rgba) = result.unwrap();
+        assert!(width > 0);
+        assert!(height > 0);
+        assert!(!rgba.is_empty());
+        // RGBA means 4 bytes per pixel
+        assert_eq!(rgba.len(), (width * height * 4) as usize);
+    }
+
+    /// Test blurhash decoding produces valid RGBA data
+    #[test]
+    fn test_blurhash_decode() {
+        // A valid blurhash string
+        let blurhash = "LEHV6nWB2yk8pyo0adR*.7kCMdnj";
+
+        let result = blurhash::decode(blurhash, 32, 32, 1.0);
+        assert!(result.is_ok());
+
+        let rgba = result.unwrap();
+        // 32x32 pixels * 4 bytes per pixel
+        assert_eq!(rgba.len(), 32 * 32 * 4);
+    }
+
+    /// Test PlaceholderHash enum can store both types
+    #[test]
+    fn test_placeholder_hash_variants() {
+        let thumbhash = PlaceholderHash::ThumbHash(vec![1, 2, 3, 4]);
+        let blurhash = PlaceholderHash::BlurHash("LEHV6nWB2yk8".to_string());
+
+        match thumbhash {
+            PlaceholderHash::ThumbHash(data) => assert_eq!(data.len(), 4),
+            _ => panic!("Expected ThumbHash variant"),
+        }
+
+        match blurhash {
+            PlaceholderHash::BlurHash(hash) => assert!(!hash.is_empty()),
+            _ => panic!("Expected BlurHash variant"),
+        }
+    }
+
+    /// Test ImageMetadata construction with different hash types
+    #[test]
+    fn test_image_metadata_construction() {
+        let meta_with_thumbhash = ImageMetadata {
+            hash: PlaceholderHash::ThumbHash(vec![1, 2, 3]),
+            dimensions: Some(PixelDimensions { x: 100, y: 100 }),
+        };
+
+        let meta_with_blurhash = ImageMetadata {
+            hash: PlaceholderHash::BlurHash("test".to_string()),
+            dimensions: None,
+        };
+
+        assert!(meta_with_thumbhash.dimensions.is_some());
+        assert!(meta_with_blurhash.dimensions.is_none());
+
+        match &meta_with_thumbhash.hash {
+            PlaceholderHash::ThumbHash(_) => {}
+            _ => panic!("Expected ThumbHash"),
+        }
+    }
+}

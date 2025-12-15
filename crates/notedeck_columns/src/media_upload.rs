@@ -393,13 +393,86 @@ impl Nip94Event {
 mod tests {
     use std::{fs, path::PathBuf, str::FromStr};
 
+    use base64::Engine;
     use enostr::FullKeypair;
 
     use crate::media_upload::{
+        generate_blurhash, generate_placeholder_hashes, generate_thumbhash,
         get_upload_url_from_provider, nostrbuild_nip96_upload, SelectedMedia, NOSTR_BUILD_URL,
     };
 
     use super::internal_nip96_upload;
+
+    /// Test thumbhash encoding produces valid base64 output
+    #[test]
+    fn test_generate_thumbhash() {
+        // Load test image
+        let image_path = PathBuf::from_str("../../assets/damus_rounded_80.png").unwrap();
+        let image_bytes = fs::read(&image_path).expect("Test image should exist");
+
+        let result = generate_thumbhash(&image_bytes);
+        assert!(result.is_some(), "Thumbhash generation should succeed");
+
+        let thumbhash = result.unwrap();
+        // Thumbhash should be base64 encoded
+        assert!(!thumbhash.is_empty());
+        // Should be decodable as base64
+        let decoded = base64::prelude::BASE64_STANDARD.decode(&thumbhash);
+        assert!(decoded.is_ok(), "Thumbhash should be valid base64");
+    }
+
+    /// Test blurhash encoding produces valid output
+    #[test]
+    fn test_generate_blurhash() {
+        // Load test image
+        let image_path = PathBuf::from_str("../../assets/damus_rounded_80.png").unwrap();
+        let image_bytes = fs::read(&image_path).expect("Test image should exist");
+
+        let result = generate_blurhash(&image_bytes);
+        assert!(result.is_some(), "Blurhash generation should succeed");
+
+        let blurhash = result.unwrap();
+        // Blurhash should not be empty and should be decodable
+        assert!(!blurhash.is_empty());
+        // Verify it can be decoded
+        let decode_result = blurhash::decode(&blurhash, 32, 32, 1.0);
+        assert!(
+            decode_result.is_ok(),
+            "Generated blurhash should be decodable"
+        );
+    }
+
+    /// Test that both hashes are generated together
+    #[test]
+    fn test_generate_placeholder_hashes() {
+        // Load test image
+        let image_path = PathBuf::from_str("../../assets/damus_rounded_80.png").unwrap();
+        let image_bytes = fs::read(&image_path).expect("Test image should exist");
+
+        let hashes = generate_placeholder_hashes(&image_bytes);
+
+        // Both should be present for a valid image
+        assert!(hashes.thumbhash.is_some(), "Thumbhash should be generated");
+        assert!(hashes.blurhash.is_some(), "Blurhash should be generated");
+    }
+
+    /// Test invalid image data returns None for both hashes
+    #[test]
+    fn test_invalid_image_returns_none() {
+        let invalid_bytes = vec![0, 1, 2, 3, 4, 5];
+
+        let thumbhash = generate_thumbhash(&invalid_bytes);
+        let blurhash = generate_blurhash(&invalid_bytes);
+
+        assert!(
+            thumbhash.is_none(),
+            "Invalid image should return None for thumbhash"
+        );
+        assert!(
+            blurhash.is_none(),
+            "Invalid image should return None for blurhash"
+        );
+    }
 
     #[test]
     fn test_nostrbuild_upload_url() {
