@@ -17,12 +17,12 @@ use crate::{
     Result,
 };
 use egui_extras::{Size, StripBuilder};
-use enostr::{ClientMessage, PoolRelay, Pubkey, RelayEvent, RelayMessage, RelayPool};
+use enostr::{ClientMessage, Pubkey, RelayEvent, RelayMessage};
 use nostrdb::Transaction;
 use notedeck::{
-    tr, ui::is_narrow, Accounts, AppAction, AppContext, AppResponse, DataPath, DataPathType,
-    FilterState, Images, Localization, MediaJobSender, NotedeckOptions, SettingsHandler,
-    UnknownIds,
+    tr, try_process_events_core, ui::is_narrow, Accounts, AppAction, AppContext, AppResponse,
+    DataPath, DataPathType, FilterState, Images, Localization, MediaJobSender, NotedeckOptions,
+    SettingsHandler,
 };
 use notedeck_ui::{
     media::{MediaViewer, MediaViewerFlags, MediaViewerState},
@@ -30,7 +30,7 @@ use notedeck_ui::{
 };
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
-use tracing::{debug, error, info, trace, warn};
+use tracing::{error, info, warn};
 use uuid::Uuid;
 
 #[derive(Debug, Eq, PartialEq, Clone)]
@@ -161,47 +161,22 @@ fn try_process_event(
         get_active_columns_mut(app_ctx.i18n, app_ctx.accounts, &mut damus.decks_cache);
     ctx.input(|i| handle_egui_events(i, current_columns, damus.hovered_column));
 
-    let ctx2 = ctx.clone();
-    let wakeup = move || {
-        ctx2.request_repaint();
-    };
-
-    app_ctx.pool.keepalive_ping(wakeup);
-
-    // NOTE: we don't use the while let loop due to borrow issues
-    #[allow(clippy::while_let_loop)]
-    loop {
-        profiling::scope!("receiving events");
-        let ev = if let Some(ev) = app_ctx.pool.try_recv() {
-            ev.into_owned()
-        } else {
-            break;
-        };
-
-        match (&ev.event).into() {
-            RelayEvent::Opened => {
-                app_ctx
-                    .accounts
-                    .send_initial_filters(app_ctx.pool, &ev.relay);
-
-                timeline::send_initial_timeline_filters(
-                    damus.options.contains(AppOptions::SinceOptimize),
-                    &mut damus.timeline_cache,
-                    &mut damus.subscriptions,
-                    app_ctx.pool,
-                    &ev.relay,
-                    app_ctx.accounts,
-                );
-            }
-            // TODO: handle reconnects
-            RelayEvent::Closed => warn!("{} connection closed", &ev.relay),
-            RelayEvent::Error(e) => error!("{}: {}", &ev.relay, e),
-            RelayEvent::Other(msg) => trace!("other event {:?}", &msg),
-            RelayEvent::Message(msg) => {
-                process_message(damus, app_ctx, &ev.relay, &msg);
-            }
+    try_process_events_core(app_ctx, ctx, |app_ctx, ev| match (&ev.event).into() {
+        RelayEvent::Opened => {
+            timeline::send_initial_timeline_filters(
+                damus.options.contains(AppOptions::SinceOptimize),
+                &mut damus.timeline_cache,
+                &mut damus.subscriptions,
+                app_ctx.pool,
+                &ev.relay,
+                app_ctx.accounts,
+            );
         }
-    }
+        RelayEvent::Message(msg) => {
+            process_message(damus, app_ctx, &ev.relay, &msg);
+        }
+        _ => {}
+    });
 
     for (kind, timeline) in &mut damus.timeline_cache {
         let is_ready = timeline::is_timeline_ready(
@@ -239,23 +214,7 @@ fn try_process_event(
         follow_packs.poll_for_notes(app_ctx.ndb, app_ctx.unknown_ids);
     }
 
-    if app_ctx.unknown_ids.ready_to_send() {
-        unknown_id_send(app_ctx.unknown_ids, app_ctx.pool);
-    }
-
     Ok(())
-}
-
-fn unknown_id_send(unknown_ids: &mut UnknownIds, pool: &mut RelayPool) {
-    debug!("unknown_id_send called on: {:?}", &unknown_ids);
-    let filter = unknown_ids.filter().expect("filter");
-    debug!(
-        "Getting {} unknown ids from relays",
-        unknown_ids.ids_iter().len()
-    );
-    let msg = ClientMessage::req("unknownids".to_string(), filter);
-    unknown_ids.clear();
-    pool.send(&msg);
 }
 
 #[profiling::function]
@@ -381,53 +340,18 @@ fn handle_eose(
 }
 
 fn process_message(damus: &mut Damus, ctx: &mut AppContext<'_>, relay: &str, msg: &RelayMessage) {
-    match msg {
-        RelayMessage::Event(_subid, ev) => {
-            let relay = if let Some(relay) = ctx.pool.relays.iter().find(|r| r.url() == relay) {
-                relay
-            } else {
-                error!("couldn't find relay {} for note processing!?", relay);
-                return;
-            };
+    let RelayMessage::Eose(sid) = msg else {
+        return;
+    };
 
-            match relay {
-                PoolRelay::Websocket(_) => {
-                    //info!("processing event {}", event);
-                    if let Err(err) = ctx.ndb.process_event_with(
-                        ev,
-                        nostrdb::IngestMetadata::new()
-                            .client(false)
-                            .relay(relay.url()),
-                    ) {
-                        error!("error processing event {ev}: {err}");
-                    }
-                }
-                PoolRelay::Multicast(_) => {
-                    // multicast events are client events
-                    if let Err(err) = ctx.ndb.process_event_with(
-                        ev,
-                        nostrdb::IngestMetadata::new()
-                            .client(true)
-                            .relay(relay.url()),
-                    ) {
-                        error!("error processing multicast event {ev}: {err}");
-                    }
-                }
-            }
-        }
-        RelayMessage::Notice(msg) => warn!("Notice from {}: {}", relay, msg),
-        RelayMessage::OK(cr) => info!("OK {:?}", cr),
-        RelayMessage::Eose(sid) => {
-            if let Err(err) = handle_eose(
-                &damus.subscriptions,
-                &mut damus.timeline_cache,
-                ctx,
-                sid,
-                relay,
-            ) {
-                error!("error handling eose: {}", err);
-            }
-        }
+    if let Err(err) = handle_eose(
+        &damus.subscriptions,
+        &mut damus.timeline_cache,
+        ctx,
+        sid,
+        relay,
+    ) {
+        error!("error handling eose: {}", err);
     }
 }
 

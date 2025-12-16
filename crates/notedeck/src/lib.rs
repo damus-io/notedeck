@@ -47,7 +47,7 @@ pub use account::accounts::{AccountData, AccountSubs, Accounts};
 pub use account::contacts::{ContactState, IsFollowing};
 pub use account::relay::RelayAction;
 pub use account::FALLBACK_PUBKEY;
-pub use app::{App, AppAction, AppResponse, Notedeck};
+pub use app::{try_process_events_core, App, AppAction, AppResponse, Notedeck};
 pub use args::Args;
 pub use context::{AppContext, SoftKeyboardContext};
 pub use error::{show_one_error_message, Error, FilterError, ZapError};
