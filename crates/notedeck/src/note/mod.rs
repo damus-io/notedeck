@@ -239,3 +239,24 @@ pub fn count_hashtags(note: &Note) -> usize {
 
     count
 }
+
+pub fn get_p_tags<'a>(note: &Note<'a>) -> Vec<&'a [u8; 32]> {
+    let mut items = Vec::new();
+    for tag in note.tags() {
+        if tag.count() < 2 {
+            continue;
+        }
+
+        if tag.get_str(0) != Some("p") {
+            continue;
+        }
+
+        let Some(item) = tag.get_id(1) else {
+            continue;
+        };
+
+        items.push(item);
+    }
+
+    items
+}

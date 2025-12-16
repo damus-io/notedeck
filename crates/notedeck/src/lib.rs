@@ -71,8 +71,8 @@ pub use name::NostrName;
 pub use nav::DragResponse;
 pub use nip51_set::{create_nip51_set, Nip51Set, Nip51SetCache};
 pub use note::{
-    BroadcastContext, ContextSelection, NoteAction, NoteContext, NoteContextSelection, NoteRef,
-    RootIdError, RootNoteId, RootNoteIdBuf, ScrollInfo, ZapAction,
+    get_p_tags, BroadcastContext, ContextSelection, NoteAction, NoteContext, NoteContextSelection,
+    NoteRef, RootIdError, RootNoteId, RootNoteIdBuf, ScrollInfo, ZapAction,
 };
 pub use notecache::{CachedNote, NoteCache};
 pub use options::NotedeckOptions;
