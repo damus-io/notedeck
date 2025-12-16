@@ -8,7 +8,7 @@ pub use crate::accounts::route::AccountsResponse;
 use crate::app::get_active_columns_mut;
 use crate::decks::DecksCache;
 use crate::onboarding::Onboarding;
-use crate::profile::send_new_contact_list;
+use crate::profile::{send_default_dms_relay_list, send_new_contact_list};
 use crate::subscriptions::Subscriptions;
 use crate::ui::onboarding::{FollowPackOnboardingView, FollowPacksResponse, OnboardingResponse};
 use crate::{
@@ -184,6 +184,7 @@ pub fn process_login_view_response(
                 let kp = FullKeypair::generate();
 
                 send_new_contact_list(kp.to_filled(), app_ctx.ndb, app_ctx.pool, pks_to_follow);
+                send_default_dms_relay_list(kp.to_filled(), app_ctx.ndb, app_ctx.pool);
                 cur_router.go_back();
                 onboarding.end_onboarding(app_ctx.pool, app_ctx.ndb);
 

@@ -288,3 +288,24 @@ fn construct_new_contact_list<'a>(pks: Vec<Pubkey>) -> NoteBuilder<'a> {
 
     builder
 }
+
+pub fn send_default_dms_relay_list(kp: FilledKeypair<'_>, ndb: &Ndb, pool: &mut RelayPool) {
+    send_note_builder(construct_default_dms_relay_list(), ndb, pool, kp);
+}
+
+fn construct_default_dms_relay_list<'a>() -> NoteBuilder<'a> {
+    let mut builder = NoteBuilder::new()
+        .content("")
+        .kind(10050)
+        .options(NoteBuildOptions::default());
+
+    for relay in default_dms_relays() {
+        builder = builder.start_tag().tag_str("relay").tag_str(relay);
+    }
+
+    builder
+}
+
+fn default_dms_relays() -> Vec<&'static str> {
+    vec!["wss://relay.damus.io", "wss://nos.lol"]
+}
