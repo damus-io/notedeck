@@ -42,6 +42,7 @@ pub enum ProfileAction {
 }
 
 impl ProfileAction {
+    #[allow(clippy::too_many_arguments)]
     pub fn process_profile_action(
         &self,
         app: &mut Damus,
