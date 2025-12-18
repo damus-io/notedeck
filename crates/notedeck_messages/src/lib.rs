@@ -2,6 +2,7 @@ pub mod cache;
 pub mod convo_renderable;
 pub mod nav;
 pub mod nip17;
+pub mod ui;
 
 use notedeck::{App, AppContext, AppResponse};
 
