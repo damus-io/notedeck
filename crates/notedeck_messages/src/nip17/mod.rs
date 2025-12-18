@@ -1,4 +1,7 @@
+pub mod message;
+
 use enostr::{FullKeypair, Pubkey, SecretKey};
+pub use message::send_conversation_message;
 pub use nostr::secp256k1::rand::rngs::OsRng;
 use nostr::secp256k1::rand::Rng;
 use nostr::{
