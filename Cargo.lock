@@ -4061,8 +4061,21 @@ dependencies = [
 name = "notedeck_messages"
 version = "0.7.1"
 dependencies = [
+ "chrono",
  "egui",
+ "egui_extras",
+ "egui_nav",
+ "egui_virtual_list",
+ "enostr",
+ "hashbrown 0.15.4",
+ "nostr 0.37.0",
+ "nostrdb",
  "notedeck",
+ "notedeck_ui",
+ "profiling",
+ "tempfile",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
