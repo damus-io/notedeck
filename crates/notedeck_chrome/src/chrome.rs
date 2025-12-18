@@ -155,9 +155,7 @@ impl Chrome {
         chrome.add_app(NotedeckApp::Columns(Box::new(columns)));
         chrome.add_app(NotedeckApp::Dave(Box::new(dave)));
 
-        if notedeck.has_option(NotedeckOptions::FeatureMessages) {
-            chrome.add_app(NotedeckApp::Messages(Box::new(MessagesApp::new())));
-        }
+        chrome.add_app(NotedeckApp::Messages(Box::new(MessagesApp::new())));
 
         if notedeck.has_option(NotedeckOptions::FeatureNotebook) {
             chrome.add_app(NotedeckApp::Notebook(Box::default()));
