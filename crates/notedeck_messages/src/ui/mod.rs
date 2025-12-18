@@ -13,6 +13,7 @@ use notedeck_ui::ProfilePic;
 use crate::cache::{Conversation, ConversationCache, ConversationMetadata};
 
 pub mod convo;
+pub mod convo_list;
 
 #[derive(Clone, Debug)]
 pub struct ConversationSummary<'a> {
