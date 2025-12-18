@@ -1,12 +1,12 @@
 use crate::{
-    nav::{BodyResponse, RenderNavAction},
+    nav::RenderNavAction,
     profile::ProfileAction,
     timeline::{thread::Threads, ThreadSelection, TimelineCache, TimelineKind},
     ui::{self, ProfileView},
 };
 
 use enostr::Pubkey;
-use notedeck::NoteContext;
+use notedeck::{DragResponse, NoteContext};
 use notedeck_ui::NoteOptions;
 
 #[allow(clippy::too_many_arguments)]
@@ -19,7 +19,7 @@ pub fn render_timeline_route(
     ui: &mut egui::Ui,
     note_context: &mut NoteContext,
     scroll_to_top: bool,
-) -> BodyResponse<RenderNavAction> {
+) -> DragResponse<RenderNavAction> {
     match kind {
         TimelineKind::List(_)
         | TimelineKind::Search(_)
@@ -58,7 +58,7 @@ pub fn render_thread_route(
     mut note_options: NoteOptions,
     ui: &mut egui::Ui,
     note_context: &mut NoteContext,
-) -> BodyResponse<RenderNavAction> {
+) -> DragResponse<RenderNavAction> {
     // don't truncate thread notes for now, since they are
     // default truncated everywher eelse
     note_options.set(NoteOptions::Truncate, false);
@@ -85,7 +85,7 @@ pub fn render_profile_route(
     ui: &mut egui::Ui,
     note_options: NoteOptions,
     note_context: &mut NoteContext,
-) -> BodyResponse<RenderNavAction> {
+) -> DragResponse<RenderNavAction> {
     let profile_view =
         ProfileView::new(pubkey, col, timeline_cache, note_options, note_context).ui(ui);
 

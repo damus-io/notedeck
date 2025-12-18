@@ -6,8 +6,8 @@ use notedeck::{NoteAction, NoteContext};
 use notedeck_ui::note::NoteResponse;
 use notedeck_ui::{NoteOptions, NoteView};
 
-use crate::nav::BodyResponse;
 use crate::timeline::thread::{NoteSeenFlags, ParentState, Threads};
+use notedeck::DragResponse;
 
 pub struct ThreadView<'a, 'd> {
     threads: &'a mut Threads,
@@ -39,7 +39,7 @@ impl<'a, 'd> ThreadView<'a, 'd> {
         egui::Id::new(("threadscroll", selected_note_id, col))
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui) -> BodyResponse<NoteAction> {
+    pub fn ui(&mut self, ui: &mut egui::Ui) -> DragResponse<NoteAction> {
         let txn = Transaction::new(self.note_context.ndb).expect("txn");
 
         let scroll_id = ThreadView::scroll_id(self.selected_note_id, self.col);
@@ -69,7 +69,7 @@ impl<'a, 'd> ThreadView<'a, 'd> {
             *scroll_offset = output.state.offset.y;
         }
 
-        BodyResponse::output(resp).scroll_raw(out_id)
+        DragResponse::output(resp).scroll_raw(out_id)
     }
 
     fn notes(&mut self, ui: &mut egui::Ui, txn: &Transaction) -> Option<NoteAction> {

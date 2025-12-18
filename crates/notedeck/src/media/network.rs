@@ -147,7 +147,7 @@ impl Error for HyperHttpError {
 impl fmt::Display for HyperHttpError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Hyper(e) => write!(f, "Hyper error: {}", e),
+            Self::Hyper(e) => write!(f, "Hyper error: {e}"),
             Self::Host => write!(f, "Missing host in URL"),
             Self::Uri => write!(f, "Invalid URI"),
             Self::BodyTooLarge => write!(f, "Body too large"),

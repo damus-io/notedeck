@@ -29,6 +29,9 @@ bitflags! {
 
         /// Is clndash enabled?
         const FeatureClnDash = 1 << 33;
+
+        /// Is the Notedeck DMs app enabled?
+        const FeatureMessages = 1 << 34;
     }
 }
 

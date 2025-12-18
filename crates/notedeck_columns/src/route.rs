@@ -1,6 +1,8 @@
 use egui_nav::Percent;
 use enostr::{NoteId, Pubkey};
-use notedeck::{tr, Localization, NoteZapTargetOwned, RootNoteIdBuf, WalletType};
+use notedeck::{
+    tr, Localization, NoteZapTargetOwned, ReplacementType, RootNoteIdBuf, Router, WalletType,
+};
 use std::ops::Range;
 
 use crate::{
@@ -418,39 +420,30 @@ impl Route {
 // TODO: add this to egui-nav so we don't have to deal with returning
 // and navigating headaches
 #[derive(Clone, Debug)]
-pub struct Router<R: Clone> {
-    routes: Vec<R>,
-    pub returning: bool,
-    pub navigating: bool,
-    replacing: bool,
+pub struct ColumnsRouter<R: Clone> {
+    router_internal: Router<R>,
     forward_stack: Vec<R>,
 
     // An overlay captures a range of routes where only one will persist when going back, the most recent added
     overlay_ranges: Vec<Range<usize>>,
 }
 
-impl<R: Clone> Router<R> {
+impl<R: Clone> ColumnsRouter<R> {
     pub fn new(routes: Vec<R>) -> Self {
         if routes.is_empty() {
             panic!("routes can't be empty")
         }
-        let returning = false;
-        let navigating = false;
-        let replacing = false;
-        Router {
-            routes,
-            returning,
-            navigating,
-            replacing,
+        let router_internal = Router::new(routes);
+        ColumnsRouter {
+            router_internal,
             forward_stack: Vec::new(),
             overlay_ranges: Vec::new(),
         }
     }
 
     pub fn route_to(&mut self, route: R) {
-        self.navigating = true;
+        self.router_internal.route_to(route);
         self.forward_stack.clear();
-        self.routes.push(route);
     }
 
     pub fn route_to_overlaid(&mut self, route: R) {
@@ -465,17 +458,15 @@ impl<R: Clone> Router<R> {
 
     // Route to R. Then when it is successfully placed, should call `remove_previous_routes` to remove all previous routes
     pub fn route_to_replaced(&mut self, route: R) {
-        self.navigating = true;
-        self.replacing = true;
-        self.routes.push(route);
+        self.router_internal
+            .route_to_replaced(route, ReplacementType::All);
     }
 
     /// Go back, start the returning process
     pub fn go_back(&mut self) -> Option<R> {
-        if self.returning || self.routes.len() == 1 {
+        if self.router_internal.returning || self.router_internal.len() == 1 {
             return None;
         }
-        self.returning = true;
 
         if let Some(range) = self.overlay_ranges.pop() {
             tracing::debug!("Going back, found overlay: {:?}", range);
@@ -484,17 +475,12 @@ impl<R: Clone> Router<R> {
             tracing::debug!("Going back, no overlay");
         }
 
-        if self.routes.len() == 1 {
-            return None;
-        }
-
-        self.prev().cloned()
+        self.router_internal.go_back()
     }
 
     pub fn go_forward(&mut self) -> bool {
         if let Some(route) = self.forward_stack.pop() {
-            self.navigating = true;
-            self.routes.push(route);
+            self.router_internal.route_to(route);
             true
         } else {
             false
@@ -503,7 +489,7 @@ impl<R: Clone> Router<R> {
 
     /// Pop a route, should only be called on a NavRespose::Returned reseponse
     pub fn pop(&mut self) -> Option<R> {
-        if self.routes.len() == 1 {
+        if self.router_internal.len() == 1 {
             return None;
         }
 
@@ -512,7 +498,7 @@ impl<R: Clone> Router<R> {
                 break 's false;
             };
 
-            if last_range.end != self.routes.len() {
+            if last_range.end != self.router_internal.len() {
                 break 's false;
             }
 
@@ -525,30 +511,20 @@ impl<R: Clone> Router<R> {
             true
         };
 
-        self.returning = false;
-        let popped = self.routes.pop();
+        let popped = self.router_internal.pop()?;
         if !is_overlay {
-            if let Some(ref route) = popped {
-                self.forward_stack.push(route.clone());
-            }
+            self.forward_stack.push(popped.clone());
         }
-        popped
+        Some(popped)
     }
 
     pub fn remove_previous_routes(&mut self) {
-        let num_routes = self.routes.len();
-        if num_routes <= 1 {
-            return;
-        }
-
-        self.returning = false;
-        self.replacing = false;
-        self.routes.drain(..num_routes - 1);
+        self.router_internal.complete_replacement();
     }
 
     /// Removes all routes in the overlay besides the last
     fn remove_overlay(&mut self, overlay_range: Range<usize>) {
-        let num_routes = self.routes.len();
+        let num_routes = self.router_internal.routes.len();
         if num_routes <= 1 {
             return;
         }
@@ -557,46 +533,63 @@ impl<R: Clone> Router<R> {
             return;
         }
 
-        self.routes
+        self.router_internal
+            .routes
             .drain(overlay_range.start..overlay_range.end - 1);
     }
 
     pub fn is_replacing(&self) -> bool {
-        self.replacing
+        self.router_internal.is_replacing()
     }
 
     fn set_overlaying(&mut self) {
         let mut overlaying_active = None;
         let mut binding = self.overlay_ranges.last_mut();
         if let Some(range) = &mut binding {
-            if range.end == self.routes.len() - 1 {
+            if range.end == self.router_internal.len() - 1 {
                 overlaying_active = Some(range);
             }
         };
 
         if let Some(range) = overlaying_active {
-            range.end = self.routes.len();
+            range.end = self.router_internal.len();
         } else {
-            let new_range = self.routes.len() - 1..self.routes.len();
+            let new_range = self.router_internal.len() - 1..self.router_internal.len();
             self.overlay_ranges.push(new_range);
         }
     }
 
     fn new_overlay(&mut self) {
-        let new_range = self.routes.len() - 1..self.routes.len();
+        let new_range = self.router_internal.len() - 1..self.router_internal.len();
         self.overlay_ranges.push(new_range);
     }
 
+    pub fn routes(&self) -> &Vec<R> {
+        self.router_internal.routes()
+    }
+
+    pub fn navigating(&self) -> bool {
+        self.router_internal.navigating
+    }
+
+    pub fn navigating_mut(&mut self, new: bool) {
+        self.router_internal.navigating = new;
+    }
+
+    pub fn returning(&self) -> bool {
+        self.router_internal.returning
+    }
+
+    pub fn returning_mut(&mut self, new: bool) {
+        self.router_internal.returning = new;
+    }
+
     pub fn top(&self) -> &R {
-        self.routes.last().expect("routes can't be empty")
+        self.router_internal.top()
     }
 
     pub fn prev(&self) -> Option<&R> {
-        self.routes.get(self.routes.len() - 2)
-    }
-
-    pub fn routes(&self) -> &Vec<R> {
-        &self.routes
+        self.router_internal.prev()
     }
 }
 

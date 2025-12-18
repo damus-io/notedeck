@@ -9,12 +9,14 @@ use crate::{
     ui::{self},
 };
 
-use egui::{Margin, Response, RichText, Sense, Stroke, UiBuilder};
+use egui::UiBuilder;
+use egui::{Margin, Response, RichText, Sense, Stroke};
 use enostr::Pubkey;
 use nostrdb::{Ndb, Transaction};
 use notedeck::tr;
 use notedeck::{Images, Localization, MediaJobSender, NotedeckTextStyle};
 use notedeck_ui::app_images;
+use notedeck_ui::header::chevron;
 use notedeck_ui::{
     anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},
     ProfilePic,
@@ -654,28 +656,6 @@ enum TitleResponse {
 
 fn prev<R>(xs: &[R]) -> Option<&R> {
     xs.get(xs.len().checked_sub(2)?)
-}
-
-fn chevron(
-    ui: &mut egui::Ui,
-    pad: f32,
-    size: egui::Vec2,
-    stroke: impl Into<Stroke>,
-) -> egui::Response {
-    let (r, painter) = ui.allocate_painter(size, egui::Sense::click());
-
-    let min = r.rect.min;
-    let max = r.rect.max;
-
-    let apex = egui::Pos2::new(min.x + pad, min.y + size.y / 2.0);
-    let top = egui::Pos2::new(max.x - pad, min.y + pad);
-    let bottom = egui::Pos2::new(max.x - pad, max.y - pad);
-
-    let stroke = stroke.into();
-    painter.line_segment([apex, top], stroke);
-    painter.line_segment([apex, bottom], stroke);
-
-    r
 }
 
 fn grab_button() -> impl egui::Widget {

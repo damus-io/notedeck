@@ -2,13 +2,13 @@ use std::mem;
 
 use egui::{Layout, ScrollArea};
 use nostrdb::Ndb;
-use notedeck::{tr, Images, Localization, MediaJobSender};
+use notedeck::{tr, DragResponse, Images, Localization, MediaJobSender};
 use notedeck_ui::{
     colors,
     nip51_set::{Nip51SetUiCache, Nip51SetWidget, Nip51SetWidgetAction, Nip51SetWidgetFlags},
 };
 
-use crate::{nav::BodyResponse, onboarding::Onboarding, ui::widgets::styled_button};
+use crate::{onboarding::Onboarding, ui::widgets::styled_button};
 
 /// Display Follow Packs for the user to choose from authors trusted by the Damus team
 pub struct FollowPackOnboardingView<'a> {
@@ -53,9 +53,9 @@ impl<'a> FollowPackOnboardingView<'a> {
         egui::Id::new("follow_pack_onboarding")
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui) -> BodyResponse<OnboardingResponse> {
+    pub fn ui(&mut self, ui: &mut egui::Ui) -> DragResponse<OnboardingResponse> {
         let Some(follow_pack_state) = self.onboarding.get_follow_packs() else {
-            return BodyResponse::output(Some(OnboardingResponse::FollowPacks(
+            return DragResponse::output(Some(OnboardingResponse::FollowPacks(
                 FollowPacksResponse::NoFollowPacks,
             )));
         };
@@ -110,6 +110,6 @@ impl<'a> FollowPackOnboardingView<'a> {
             }
         });
 
-        BodyResponse::output(action).scroll_raw(scroll_out.id)
+        DragResponse::output(action).scroll_raw(scroll_out.id)
     }
 }

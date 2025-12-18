@@ -1,10 +1,9 @@
 use std::collections::HashMap;
 
-use crate::nav::BodyResponse;
 use crate::ui::{Preview, PreviewConfig};
 use egui::{Align, Button, CornerRadius, Frame, Id, Layout, Margin, Rgba, RichText, Ui, Vec2};
 use enostr::{RelayPool, RelayStatus};
-use notedeck::{tr, Localization, NotedeckTextStyle, RelayAction};
+use notedeck::{tr, DragResponse, Localization, NotedeckTextStyle, RelayAction};
 use notedeck_ui::app_images;
 use notedeck_ui::{colors::PINK, padding};
 use tracing::debug;
@@ -18,7 +17,7 @@ pub struct RelayView<'a> {
 }
 
 impl RelayView<'_> {
-    pub fn ui(&mut self, ui: &mut egui::Ui) -> BodyResponse<RelayAction> {
+    pub fn ui(&mut self, ui: &mut egui::Ui) -> DragResponse<RelayAction> {
         let scroll_out = Frame::new()
             .inner_margin(Margin::symmetric(10, 0))
             .show(ui, |ui| {
@@ -53,7 +52,7 @@ impl RelayView<'_> {
             })
             .inner;
 
-        BodyResponse::scroll(scroll_out)
+        DragResponse::scroll(scroll_out)
     }
 
     pub fn scroll_id() -> egui::Id {

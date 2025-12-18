@@ -152,7 +152,7 @@ pub fn link_light_image() -> Image<'static> {
 }
 
 pub fn new_message_image() -> Image<'static> {
-    Image::new(include_image!("../../../assets/icons/newmessage_64.png"))
+    Image::new(include_image!("../../../assets/icons/new-message.svg"))
 }
 
 pub fn new_deck_image() -> Image<'static> {

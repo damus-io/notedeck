@@ -72,3 +72,5 @@ ndk-context = "0.1"
 
 [features]
 puffin = ["puffin_egui", "dep:puffin"]
+debug-widget-callstack = ["egui/callstack"]
+debug-interactive-widgets = []

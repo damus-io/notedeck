@@ -6,6 +6,7 @@ members = [
     "crates/notedeck_chrome",
     "crates/notedeck_columns",
     "crates/notedeck_dave",
+    "crates/notedeck_messages",
     "crates/notedeck_notebook",
     "crates/notedeck_ui",
     "crates/notedeck_clndash",
@@ -28,7 +29,7 @@ egui = { version = "0.31.1", features = ["serde"] }
 egui-wgpu = "0.31.1"
 egui_extras = { version = "0.31.1", features = ["all_loaders"] }
 egui-winit = { version = "0.31.1", features = ["android-game-activity", "clipboard"] }
-egui_nav = { git = "https://github.com/damus-io/egui-nav", rev = "4a54a6c7c34243e4bcfdeb37cc15de3536811719" }
+egui_nav = { git = "https://github.com/kernelkind/egui-nav", rev = "8d8e93b7ea4e87c70af9627fa8e3591489abafd0" }
 egui_tabs = { git = "https://github.com/damus-io/egui-tabs", rev = "6eb91740577b374a8a6658c09c9a4181299734d0" }
 #egui_virtual_list = "0.6.0"
 egui_virtual_list = { git = "https://github.com/jb55/hello_egui", rev = "a66b6794f5e707a2f4109633770e02b02fb722e1" }
@@ -48,7 +49,7 @@ image = { version = "0.25", features = ["jpeg", "png", "webp"] }
 indexmap = "2.6.0"
 log = "0.4.17"
 md5 = "0.7.0"
-nostr = { version = "0.37.0", default-features = false, features = ["std", "nip49"] }
+nostr = { version = "0.37.0", default-features = false, features = ["std", "nip44", "nip49"] }
 nwc = "0.39.0"
 mio = { version = "1.0.3", features = ["os-poll", "net"] }
 nostrdb = { git = "https://github.com/damus-io/nostrdb-rs", rev = "8148dd3cea9bc8ff0bc510c720d0c51f327a0a1a" }
@@ -58,6 +59,7 @@ notedeck_chrome = { path = "crates/notedeck_chrome" }
 notedeck_clndash = { path = "crates/notedeck_clndash" }
 notedeck_columns = { path = "crates/notedeck_columns" }
 notedeck_dave = { path = "crates/notedeck_dave" }
+notedeck_messages = { path = "crates/notedeck_messages" }
 notedeck_notebook = { path = "crates/notedeck_notebook" }
 notedeck_ui = { path = "crates/notedeck_ui" }
 tokenator = { path = "crates/tokenator" }

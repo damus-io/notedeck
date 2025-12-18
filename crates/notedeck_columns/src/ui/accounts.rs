@@ -3,13 +3,11 @@ use egui::{
 };
 use enostr::Pubkey;
 use nostrdb::{Ndb, Transaction};
-use notedeck::{tr, Accounts, Images, Localization, MediaJobSender};
+use notedeck::{tr, Accounts, DragResponse, Images, Localization, MediaJobSender};
 use notedeck_ui::colors::PINK;
 use notedeck_ui::profile::preview::SimpleProfilePreview;
 
 use notedeck_ui::app_images;
-
-use crate::nav::BodyResponse;
 
 pub struct AccountsView<'a> {
     ndb: &'a Ndb,
@@ -49,8 +47,8 @@ impl<'a> AccountsView<'a> {
         }
     }
 
-    pub fn ui(&mut self, ui: &mut Ui) -> BodyResponse<AccountsViewResponse> {
-        let mut out = BodyResponse::none();
+    pub fn ui(&mut self, ui: &mut Ui) -> DragResponse<AccountsViewResponse> {
+        let mut out = DragResponse::none();
         Frame::new().outer_margin(12.0).show(ui, |ui| {
             if let Some(resp) = Self::top_section_buttons_widget(ui, self.i18n).inner {
                 out.set_output(resp);
