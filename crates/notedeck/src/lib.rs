@@ -81,7 +81,7 @@ pub use profile::*;
 pub use relay_debug::RelayDebugView;
 pub use relayspec::RelaySpec;
 pub use result::Result;
-pub use route::{DrawerRouter, Router};
+pub use route::{DrawerRouter, ReplacementType, Router};
 pub use storage::{AccountStorage, DataPath, DataPathType, Directory};
 pub use style::NotedeckTextStyle;
 pub use theme::ColorTheme;

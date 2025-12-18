@@ -1,6 +1,8 @@
 use egui_nav::Percent;
 use enostr::{NoteId, Pubkey};
-use notedeck::{tr, Localization, NoteZapTargetOwned, RootNoteIdBuf, Router, WalletType};
+use notedeck::{
+    tr, Localization, NoteZapTargetOwned, ReplacementType, RootNoteIdBuf, Router, WalletType,
+};
 use std::ops::Range;
 
 use crate::{
@@ -420,7 +422,6 @@ impl Route {
 #[derive(Clone, Debug)]
 pub struct ColumnsRouter<R: Clone> {
     router_internal: Router<R>,
-    replacing: bool,
     forward_stack: Vec<R>,
 
     // An overlay captures a range of routes where only one will persist when going back, the most recent added
@@ -432,11 +433,9 @@ impl<R: Clone> ColumnsRouter<R> {
         if routes.is_empty() {
             panic!("routes can't be empty")
         }
-        let replacing = false;
         let router_internal = Router::new(routes);
         ColumnsRouter {
             router_internal,
-            replacing,
             forward_stack: Vec::new(),
             overlay_ranges: Vec::new(),
         }
@@ -459,8 +458,8 @@ impl<R: Clone> ColumnsRouter<R> {
 
     // Route to R. Then when it is successfully placed, should call `remove_previous_routes` to remove all previous routes
     pub fn route_to_replaced(&mut self, route: R) {
-        self.replacing = true;
-        self.router_internal.route_to(route);
+        self.router_internal
+            .route_to_replaced(route, ReplacementType::All);
     }
 
     /// Go back, start the returning process
@@ -520,14 +519,7 @@ impl<R: Clone> ColumnsRouter<R> {
     }
 
     pub fn remove_previous_routes(&mut self) {
-        let num_routes = self.router_internal.len();
-        if num_routes <= 1 {
-            return;
-        }
-
-        self.router_internal.returning = false;
-        self.replacing = false;
-        self.router_internal.routes.drain(..num_routes - 1);
+        self.router_internal.complete_replacement();
     }
 
     /// Removes all routes in the overlay besides the last
@@ -547,7 +539,7 @@ impl<R: Clone> ColumnsRouter<R> {
     }
 
     pub fn is_replacing(&self) -> bool {
-        self.replacing
+        self.router_internal.is_replacing()
     }
 
     fn set_overlaying(&mut self) {

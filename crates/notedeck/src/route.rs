@@ -35,6 +35,13 @@ pub struct Router<R: Clone> {
     pub routes: Vec<R>,
     pub returning: bool,
     pub navigating: bool,
+    replacing: Option<ReplacementType>,
+}
+
+#[derive(Clone, Debug)]
+pub enum ReplacementType {
+    Single,
+    All,
 }
 
 impl<R: Clone> Router<R> {
@@ -44,10 +51,12 @@ impl<R: Clone> Router<R> {
         }
         let returning = false;
         let navigating = false;
+        let replacing = None;
 
         Self {
             routes,
             returning,
+            replacing,
             navigating,
         }
     }
@@ -55,6 +64,12 @@ impl<R: Clone> Router<R> {
     pub fn route_to(&mut self, route: R) {
         self.navigating = true;
         self.routes.push(route);
+    }
+
+    // Route to R. Then when it is successfully placed, should call `remove_previous_routes` to remove all previous routes
+    pub fn route_to_replaced(&mut self, route: R, replacement_type: ReplacementType) {
+        self.replacing = Some(replacement_type);
+        self.route_to(route);
     }
 
     /// Go back, start the returning process
@@ -98,5 +113,30 @@ impl<R: Clone> Router<R> {
 
     pub fn is_empty(&self) -> bool {
         self.routes.is_empty()
+    }
+
+    pub fn is_replacing(&self) -> bool {
+        self.replacing.is_some()
+    }
+
+    pub fn complete_replacement(&mut self) {
+        let num_routes = self.len();
+
+        self.returning = false;
+        let Some(replacement) = self.replacing.take() else {
+            return;
+        };
+        if num_routes < 2 {
+            return;
+        }
+
+        match replacement {
+            ReplacementType::Single => {
+                self.routes.remove(num_routes - 2);
+            }
+            ReplacementType::All => {
+                self.routes.drain(..num_routes - 1);
+            }
+        }
     }
 }
