@@ -103,6 +103,7 @@ impl Columns {
 
     pub fn add_new_timeline_column(
         &mut self,
+        subs: &mut crate::subscriptions::Subscriptions,
         timeline_cache: &mut TimelineCache,
         txn: &Transaction,
         ndb: &Ndb,
@@ -112,7 +113,7 @@ impl Columns {
     ) -> Option<TimelineOpenResult> {
         self.columns
             .push(Column::new(vec![Route::timeline(kind.to_owned())]));
-        timeline_cache.open(ndb, note_cache, txn, pool, kind)
+        timeline_cache.open(subs, ndb, note_cache, txn, pool, kind)
     }
 
     pub fn new_column_picker(&mut self) {

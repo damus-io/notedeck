@@ -175,6 +175,7 @@ impl TimelineCache {
     /// subscription
     pub fn open(
         &mut self,
+        subs: &mut crate::subscriptions::Subscriptions,
         ndb: &Ndb,
         note_cache: &mut NoteCache,
         txn: &Transaction,
@@ -220,7 +221,16 @@ impl TimelineCache {
         if let Some(filter) = timeline.filter.get_any_ready() {
             debug!("got open with *new* subscription for {:?}", &timeline.kind);
             timeline.subscription.try_add_local(ndb, filter);
-            timeline.subscription.try_add_remote(pool, filter);
+
+            // Check if this is a relay-specific timeline
+            match &timeline.kind {
+                TimelineKind::Relay(relay_url, _) => {
+                    timeline.subscription.try_add_remote_with_relay(subs, pool, filter, Some(relay_url), &timeline.kind);
+                }
+                _ => {
+                    timeline.subscription.try_add_remote(subs, pool, filter, &timeline.kind);
+                }
+            }
         } else {
             // This should never happen reasoning, self.notes would have
             // failed above if the filter wasn't ready
