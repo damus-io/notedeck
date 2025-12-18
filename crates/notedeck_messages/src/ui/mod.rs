@@ -15,6 +15,7 @@ use crate::cache::{Conversation, ConversationCache, ConversationMetadata};
 pub mod convo;
 pub mod convo_list;
 pub mod create_convo;
+pub mod nav;
 
 #[derive(Clone, Debug)]
 pub struct ConversationSummary<'a> {
