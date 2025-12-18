@@ -1,4 +1,5 @@
 pub mod cache;
+pub mod convo_renderable;
 
 use notedeck::{App, AppContext, AppResponse};
 
