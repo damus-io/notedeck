@@ -1,3 +1,5 @@
+pub mod cache;
+
 use notedeck::{App, AppContext, AppResponse};
 
 #[derive(Default)]
