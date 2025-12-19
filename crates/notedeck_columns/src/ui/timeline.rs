@@ -562,9 +562,10 @@ fn reaction_description(
             if count == 0 {
                 tr!(
                     loc,
-                    "{name} reacted to your note",
+                    "{name} {privately}reacted to your note",
                     "reaction from user to your note",
-                    name = first_name
+                    name = first_name,
+                    privately = privately
                 )
             } else {
                 tr_plural!(
