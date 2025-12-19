@@ -408,7 +408,7 @@ impl<'a, 'd> PostView<'a, 'd> {
         let mut frame = egui::Frame::default()
             .inner_margin(egui::Margin::same(PostView::inner_margin()))
             .outer_margin(egui::Margin::same(PostView::outer_margin()))
-            .fill(ui.visuals().extreme_bg_color)
+            .fill(ui.visuals().window_fill)
             .stroke(stroke)
             .corner_radius(12.0);
 

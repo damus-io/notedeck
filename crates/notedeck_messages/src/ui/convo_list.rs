@@ -161,7 +161,7 @@ pub fn render_summary(
     let fill = if is_narrow(ui.ctx()) {
         Color32::TRANSPARENT
     } else if selected {
-        visuals.selection.bg_fill
+        visuals.extreme_bg_color
     } else if summary.unread {
         visuals.faint_bg_color
     } else {

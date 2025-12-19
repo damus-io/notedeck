@@ -119,7 +119,7 @@ pub fn desktop_dark_color_theme() -> ColorTheme {
     ColorTheme {
         // VISUALS
         panel_fill: DARKER_BG,
-        extreme_bg_color: DARK_ISH_BG,
+        extreme_bg_color: SEMI_DARKER_BG,
         text_color: Color32::WHITE,
         err_fg_color: RED_700,
         warn_fg_color: ORANGE_700,
