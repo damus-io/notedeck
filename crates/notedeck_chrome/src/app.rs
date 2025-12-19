@@ -2,6 +2,7 @@ use notedeck::{AppContext, AppResponse};
 use notedeck_clndash::ClnDash;
 use notedeck_columns::Damus;
 use notedeck_dave::Dave;
+use notedeck_messages::MessagesApp;
 use notedeck_notebook::Notebook;
 
 #[allow(clippy::large_enum_variant)]
@@ -10,6 +11,7 @@ pub enum NotedeckApp {
     Columns(Box<Damus>),
     Notebook(Box<Notebook>),
     ClnDash(Box<ClnDash>),
+    Messages(Box<MessagesApp>),
     Other(Box<dyn notedeck::App>),
 }
 
@@ -21,6 +23,7 @@ impl notedeck::App for NotedeckApp {
             NotedeckApp::Columns(columns) => columns.update(ctx, ui),
             NotedeckApp::Notebook(notebook) => notebook.update(ctx, ui),
             NotedeckApp::ClnDash(clndash) => clndash.update(ctx, ui),
+            NotedeckApp::Messages(dms) => dms.update(ctx, ui),
             NotedeckApp::Other(other) => other.update(ctx, ui),
         }
     }

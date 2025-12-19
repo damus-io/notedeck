@@ -1,8 +1,8 @@
 use egui::{vec2, FontId, Layout, Pos2, Rect, ScrollArea, UiBuilder, Vec2b};
 use nostrdb::{Ndb, ProfileRecord, Transaction};
 use notedeck::{
-    fonts::get_font_size, name::get_display_name, profile::get_profile_url, Images, MediaJobSender,
-    NotedeckTextStyle,
+    fonts::get_font_size, name::get_display_name, profile::get_profile_url, DragResponse, Images,
+    MediaJobSender, NotedeckTextStyle,
 };
 use notedeck_ui::{
     anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},
@@ -10,8 +10,6 @@ use notedeck_ui::{
     ProfilePic,
 };
 use tracing::error;
-
-use crate::nav::BodyResponse;
 
 /// Displays user profiles for the user to pick from.
 /// Useful for manually typing a username and selecting the profile desired
@@ -73,7 +71,7 @@ impl<'a> MentionPickerView<'a> {
         &mut self,
         rect: egui::Rect,
         ui: &mut egui::Ui,
-    ) -> BodyResponse<MentionPickerResponse> {
+    ) -> DragResponse<MentionPickerResponse> {
         let widget_id = ui.id().with("mention_results");
         let area_resp = egui::Area::new(widget_id)
             .order(egui::Order::Foreground)
@@ -114,7 +112,7 @@ impl<'a> MentionPickerView<'a> {
                             .show(ui, |ui| Some(self.show(ui, width)));
                         ui.advance_cursor_after_rect(rect);
 
-                        BodyResponse::scroll(scroll_resp).map_output(|o| {
+                        DragResponse::scroll(scroll_resp).map_output(|o| {
                             if close_button_resp {
                                 MentionPickerResponse::DeleteMention
                             } else {

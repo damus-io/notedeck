@@ -1,13 +1,12 @@
 use super::{PostResponse, PostType};
 use crate::{
     draft::Draft,
-    nav::BodyResponse,
     ui::{self},
 };
 
 use egui::ScrollArea;
 use enostr::{FilledKeypair, NoteId};
-use notedeck::NoteContext;
+use notedeck::{DragResponse, NoteContext};
 use notedeck_ui::NoteOptions;
 
 pub struct QuoteRepostView<'a, 'd> {
@@ -50,7 +49,7 @@ impl<'a, 'd> QuoteRepostView<'a, 'd> {
         QuoteRepostView::id(col, note_id).with("scroll")
     }
 
-    pub fn show(&mut self, ui: &mut egui::Ui) -> BodyResponse<PostResponse> {
+    pub fn show(&mut self, ui: &mut egui::Ui) -> DragResponse<PostResponse> {
         let scroll_out = ScrollArea::vertical()
             .id_salt(self.scroll_id)
             .show(ui, |ui| Some(self.show_internal(ui)));
@@ -60,12 +59,12 @@ impl<'a, 'd> QuoteRepostView<'a, 'd> {
         if let Some(inner) = scroll_out.inner {
             inner
         } else {
-            BodyResponse::none()
+            DragResponse::none()
         }
         .scroll_raw(scroll_id)
     }
 
-    fn show_internal(&mut self, ui: &mut egui::Ui) -> BodyResponse<PostResponse> {
+    fn show_internal(&mut self, ui: &mut egui::Ui) -> DragResponse<PostResponse> {
         let quoting_note_id = self.quoting_note.id();
 
         let post_resp = ui::PostView::new(
