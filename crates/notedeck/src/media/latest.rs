@@ -144,8 +144,10 @@ impl<'a> UntrustedMediaLatestTex<'a> {
         obfuscation_type: &'a ObfuscationType,
         size: egui::Vec2,
     ) -> ObfuscatedTexture<'a> {
-        let ObfuscationType::Blurhash(meta) = obfuscation_type else {
-            return ObfuscatedTexture::Default;
+        // Extract metadata from either ThumbHash or Blurhash variant
+        let meta = match obfuscation_type {
+            ObfuscationType::ThumbHash(meta) | ObfuscationType::Blurhash(meta) => meta,
+            ObfuscationType::Default => return ObfuscatedTexture::Default,
         };
 
         let state = self.blur_cache.get_or_request(jobs, ui, url, meta, size);

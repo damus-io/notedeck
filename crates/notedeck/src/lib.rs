@@ -62,8 +62,8 @@ pub use jobs::{
     MediaJobs,
 };
 pub use media::{
-    update_imeta_blurhashes, ImageMetadata, ImageType, MediaAction, ObfuscationType,
-    PixelDimensions, PointDimensions, RenderableMedia,
+    update_imeta_placeholders, ImageMetadata, ImageType, MediaAction, ObfuscationType,
+    PixelDimensions, PlaceholderHash, PointDimensions, RenderableMedia,
 };
 pub use muted::{MuteFun, Muted};
 pub use name::NostrName;

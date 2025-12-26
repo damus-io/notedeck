@@ -8,6 +8,7 @@ use crate::media::{
 use crate::urls::{UrlCache, UrlMimes};
 use crate::ImageMetadata;
 use crate::ObfuscationType;
+use crate::PlaceholderHash;
 use crate::RenderableMedia;
 use crate::Result;
 use egui::TextureHandle;
@@ -309,8 +310,12 @@ impl Images {
     ) -> Option<RenderableMedia> {
         let media_type = crate::urls::supported_mime_hosted_at_url(urls, url)?;
 
+        // Select the appropriate obfuscation type based on available placeholder hash
         let obfuscation_type = match imeta.get(url) {
-            Some(blur) => ObfuscationType::Blurhash(blur.clone()),
+            Some(meta) => match &meta.hash {
+                PlaceholderHash::ThumbHash(_) => ObfuscationType::ThumbHash(meta.clone()),
+                PlaceholderHash::BlurHash(_) => ObfuscationType::Blurhash(meta.clone()),
+            },
             None => ObfuscationType::Default,
         };
 
