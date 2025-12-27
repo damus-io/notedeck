@@ -55,8 +55,24 @@ impl App for MessagesApp {
             };
 
             ctx.ndb.add_key(&secret.secret_bytes());
-            let txn = Transaction::new(ctx.ndb).expect("txn");
-            ctx.ndb.process_giftwraps(&txn);
+
+            let giftwrap_ndb = ctx.ndb.clone();
+            let r = std::thread::Builder::new()
+                .name("process_giftwraps".into())
+                .spawn(move || {
+                    let txn = Transaction::new(&giftwrap_ndb).expect("txn");
+                    // although the actual giftwrap processing happens on the ingestion pool, this
+                    // function still looks up giftwraps to process on the main thread, which can
+                    // cause a freeze.
+                    //
+                    // TODO(jb55): move the giftwrap query logic into the internal threadpool so we
+                    // don't have to spawn a thread here
+                    giftwrap_ndb.process_giftwraps(&txn);
+                });
+
+            if let Err(err) = r {
+                tracing::error!("failed to spawn process_giftwraps thread: {err}");
+            }
         }
 
         match cache.state {
