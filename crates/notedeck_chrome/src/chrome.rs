@@ -26,6 +26,7 @@ use notedeck::{
 };
 use notedeck_columns::{timeline::TimelineKind, Damus};
 use notedeck_dave::{Dave, DaveAvatar};
+use notedeck_messages::MessagesApp;
 use notedeck_ui::{
     app_images, constants::MACOS_TRAFFIC_LIGHT_SPACING, expanding_button, galley_centered_pos,
     ProfilePic,
@@ -156,6 +157,8 @@ impl Chrome {
 
         chrome.add_app(NotedeckApp::Columns(Box::new(columns)));
         chrome.add_app(NotedeckApp::Dave(Box::new(dave)));
+
+        chrome.add_app(NotedeckApp::Messages(Box::new(MessagesApp::new())));
 
         if notedeck.has_option(NotedeckOptions::FeatureNotebook) {
             chrome.add_app(NotedeckApp::Notebook(Box::default()));
@@ -776,6 +779,9 @@ fn topdown_sidebar(
         let text = match &app {
             NotedeckApp::Dave(_) => tr!(loc, "Dave", "Button to go to the Dave app"),
             NotedeckApp::Columns(_) => tr!(loc, "Columns", "Button to go to the Columns app"),
+            NotedeckApp::Messages(_) => {
+                tr!(loc, "Messaging", "Button to go to the messaging app")
+            }
             NotedeckApp::Notebook(_) => {
                 tr!(loc, "Notebook", "Button to go to the Notebook app")
             }
@@ -805,6 +811,10 @@ fn topdown_sidebar(
                                             vec2(30.0, 30.0),
                                         ),
                                     );
+                                }
+
+                                NotedeckApp::Messages(_dms) => {
+                                    ui.add(app_images::new_message_image());
                                 }
 
                                 NotedeckApp::ClnDash(_clndash) => {

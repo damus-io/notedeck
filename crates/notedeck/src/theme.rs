@@ -119,7 +119,7 @@ pub fn desktop_dark_color_theme() -> ColorTheme {
     ColorTheme {
         // VISUALS
         panel_fill: DARKER_BG,
-        extreme_bg_color: DARK_ISH_BG,
+        extreme_bg_color: SEMI_DARKER_BG,
         text_color: Color32::WHITE,
         err_fg_color: RED_700,
         warn_fg_color: ORANGE_700,
@@ -204,7 +204,6 @@ pub fn add_custom_style(is_mobile: bool, style: &mut Style) {
 
     // debug: show callstack for the current widget on hover if all
     // modifier keys are pressed down.
-    /*
     #[cfg(feature = "debug-widget-callstack")]
     {
         #[cfg(not(debug_assertions))]
@@ -225,7 +224,6 @@ pub fn add_custom_style(is_mobile: bool, style: &mut Style) {
         );
         style.debug.show_interactive_widgets = true;
     }
-    */
 }
 
 pub fn light_mode() -> Visuals {

@@ -1,6 +1,5 @@
 use crate::draft::{Draft, Drafts, MentionHint};
 use crate::media_upload::nostrbuild_nip96_upload;
-use crate::nav::BodyResponse;
 use crate::post::{downcast_post_buffer, MentionType, NewPost};
 use crate::ui::mentions_picker::MentionPickerView;
 use crate::ui::{self, Preview, PreviewConfig};
@@ -18,10 +17,10 @@ use notedeck::media::AnimationMode;
 #[cfg(target_os = "android")]
 use notedeck::platform::android::try_open_file_picker;
 use notedeck::platform::get_next_selected_file;
-use notedeck::PixelDimensions;
 use notedeck::{
     name::get_display_name, supported_mime_hosted_at_url, tr, Localization, NoteAction, NoteContext,
 };
+use notedeck::{DragResponse, PixelDimensions};
 use notedeck_ui::{
     app_images,
     context_menu::{input_context, PasteBehavior},
@@ -364,7 +363,7 @@ impl<'a, 'd> PostView<'a, 'd> {
         12
     }
 
-    pub fn ui(&mut self, txn: &Transaction, ui: &mut egui::Ui) -> BodyResponse<PostResponse> {
+    pub fn ui(&mut self, txn: &Transaction, ui: &mut egui::Ui) -> DragResponse<PostResponse> {
         let scroll_out = ScrollArea::vertical()
             .id_salt(PostView::scroll_id())
             .show(ui, |ui| Some(self.ui_no_scroll(txn, ui)));
@@ -373,7 +372,7 @@ impl<'a, 'd> PostView<'a, 'd> {
         if let Some(inner) = scroll_out.inner {
             inner // should override the PostView scroll for the mention scroll
         } else {
-            BodyResponse::none()
+            DragResponse::none()
         }
         .scroll_raw(scroll_id)
     }
@@ -382,7 +381,7 @@ impl<'a, 'd> PostView<'a, 'd> {
         &mut self,
         txn: &Transaction,
         ui: &mut egui::Ui,
-    ) -> BodyResponse<PostResponse> {
+    ) -> DragResponse<PostResponse> {
         while let Some(selected_file) = get_next_selected_file() {
             match selected_file {
                 Ok(selected_media) => {
@@ -409,7 +408,7 @@ impl<'a, 'd> PostView<'a, 'd> {
         let mut frame = egui::Frame::default()
             .inner_margin(egui::Margin::same(PostView::inner_margin()))
             .outer_margin(egui::Margin::same(PostView::outer_margin()))
-            .fill(ui.visuals().extreme_bg_color)
+            .fill(ui.visuals().window_fill)
             .stroke(stroke)
             .corner_radius(12.0);
 
@@ -427,7 +426,7 @@ impl<'a, 'd> PostView<'a, 'd> {
             .inner
     }
 
-    fn input_ui(&mut self, txn: &Transaction, ui: &mut egui::Ui) -> BodyResponse<PostResponse> {
+    fn input_ui(&mut self, txn: &Transaction, ui: &mut egui::Ui) -> DragResponse<PostResponse> {
         let edit_response = ui.horizontal(|ui| self.editbox(txn, ui)).inner;
 
         let note_response = if let PostType::Quote(id) = self.post_type {
@@ -478,7 +477,7 @@ impl<'a, 'd> PostView<'a, 'd> {
             .and_then(|nr| nr.action.map(PostAction::QuotedNoteAction))
             .or(post_action.map(PostAction::NewPostAction));
 
-        let mut resp = BodyResponse::output(action);
+        let mut resp = DragResponse::output(action);
         if let Some(drag_id) = edit_response.mention_hints_drag_id {
             resp.set_drag_id_raw(drag_id);
         }

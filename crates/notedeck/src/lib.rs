@@ -17,6 +17,7 @@ pub mod jobs;
 pub mod media;
 mod muted;
 pub mod name;
+pub mod nav;
 mod nip51_set;
 pub mod note;
 mod notecache;
@@ -46,7 +47,7 @@ pub use account::accounts::{AccountData, AccountSubs, Accounts};
 pub use account::contacts::{ContactState, IsFollowing};
 pub use account::relay::RelayAction;
 pub use account::FALLBACK_PUBKEY;
-pub use app::{App, AppAction, AppResponse, Notedeck};
+pub use app::{try_process_events_core, App, AppAction, AppResponse, Notedeck};
 pub use args::Args;
 pub use context::{AppContext, SoftKeyboardContext};
 pub use error::{show_one_error_message, Error, FilterError, ZapError};
@@ -67,10 +68,11 @@ pub use media::{
 };
 pub use muted::{MuteFun, Muted};
 pub use name::NostrName;
+pub use nav::DragResponse;
 pub use nip51_set::{create_nip51_set, Nip51Set, Nip51SetCache};
 pub use note::{
-    BroadcastContext, ContextSelection, NoteAction, NoteContext, NoteContextSelection, NoteRef,
-    RootIdError, RootNoteId, RootNoteIdBuf, ScrollInfo, ZapAction,
+    get_p_tags, BroadcastContext, ContextSelection, NoteAction, NoteContext, NoteContextSelection,
+    NoteRef, RootIdError, RootNoteId, RootNoteIdBuf, ScrollInfo, ZapAction,
 };
 pub use notecache::{CachedNote, NoteCache};
 pub use options::NotedeckOptions;
@@ -79,7 +81,7 @@ pub use profile::*;
 pub use relay_debug::RelayDebugView;
 pub use relayspec::RelaySpec;
 pub use result::Result;
-pub use route::DrawerRouter;
+pub use route::{DrawerRouter, ReplacementType, Router};
 pub use storage::{AccountStorage, DataPath, DataPathType, Directory};
 pub use style::NotedeckTextStyle;
 pub use theme::ColorTheme;

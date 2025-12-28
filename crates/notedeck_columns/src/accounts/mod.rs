@@ -1,15 +1,14 @@
 use enostr::{FullKeypair, Pubkey};
 use nostrdb::{Ndb, Transaction};
 
-use notedeck::{Accounts, AppContext, Localization, SingleUnkIdAction, UnknownIds};
+use notedeck::{Accounts, AppContext, DragResponse, Localization, SingleUnkIdAction, UnknownIds};
 use notedeck_ui::nip51_set::Nip51SetUiCache;
 
 pub use crate::accounts::route::AccountsResponse;
 use crate::app::get_active_columns_mut;
 use crate::decks::DecksCache;
-use crate::nav::BodyResponse;
 use crate::onboarding::Onboarding;
-use crate::profile::send_new_contact_list;
+use crate::profile::{send_default_dms_relay_list, send_new_contact_list};
 use crate::subscriptions::Subscriptions;
 use crate::ui::onboarding::{FollowPackOnboardingView, FollowPacksResponse, OnboardingResponse};
 use crate::{
@@ -81,7 +80,7 @@ pub fn render_accounts_route(
     onboarding: &mut Onboarding,
     follow_packs_ui: &mut Nip51SetUiCache,
     route: AccountsRoute,
-) -> BodyResponse<AccountsResponse> {
+) -> DragResponse<AccountsResponse> {
     match route {
         AccountsRoute::Accounts => AccountsView::new(
             app_ctx.ndb,
@@ -99,7 +98,7 @@ pub fn render_accounts_route(
                 .inner
                 .map(AccountsRouteResponse::AddAccount)
                 .map(AccountsResponse::Account);
-            BodyResponse::output(action)
+            DragResponse::output(action)
         }
         AccountsRoute::Onboarding => FollowPackOnboardingView::new(
             onboarding,
@@ -185,6 +184,7 @@ pub fn process_login_view_response(
                 let kp = FullKeypair::generate();
 
                 send_new_contact_list(kp.to_filled(), app_ctx.ndb, app_ctx.pool, pks_to_follow);
+                send_default_dms_relay_list(kp.to_filled(), app_ctx.ndb, app_ctx.pool);
                 cur_router.go_back();
                 onboarding.end_onboarding(app_ctx.pool, app_ctx.ndb);
 

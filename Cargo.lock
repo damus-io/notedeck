@@ -1706,7 +1706,7 @@ dependencies = [
 [[package]]
 name = "egui_nav"
 version = "0.2.0"
-source = "git+https://github.com/damus-io/egui-nav?rev=4a54a6c7c34243e4bcfdeb37cc15de3536811719#4a54a6c7c34243e4bcfdeb37cc15de3536811719"
+source = "git+https://github.com/kernelkind/egui-nav?rev=8d8e93b7ea4e87c70af9627fa8e3591489abafd0#8d8e93b7ea4e87c70af9627fa8e3591489abafd0"
 dependencies = [
  "bitflags 2.9.1",
  "egui",
@@ -3845,7 +3845,7 @@ dependencies = [
 [[package]]
 name = "nostrdb"
 version = "0.8.0"
-source = "git+https://github.com/damus-io/nostrdb-rs?rev=a286376a8c00c8bea170cfd70901e055f6a1b39a#a286376a8c00c8bea170cfd70901e055f6a1b39a"
+source = "git+https://github.com/damus-io/nostrdb-rs?rev=8148dd3cea9bc8ff0bc510c720d0c51f327a0a1a#8148dd3cea9bc8ff0bc510c720d0c51f327a0a1a"
 dependencies = [
  "bindgen 0.69.5",
  "cc",
@@ -3939,6 +3939,7 @@ dependencies = [
  "notedeck_clndash",
  "notedeck_columns",
  "notedeck_dave",
+ "notedeck_messages",
  "notedeck_notebook",
  "notedeck_ui",
  "profiling",
@@ -4054,6 +4055,27 @@ dependencies = [
  "sha2",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "notedeck_messages"
+version = "0.7.1"
+dependencies = [
+ "chrono",
+ "egui",
+ "egui_extras",
+ "egui_nav",
+ "egui_virtual_list",
+ "enostr",
+ "hashbrown 0.15.4",
+ "nostr 0.37.0",
+ "nostrdb",
+ "notedeck",
+ "notedeck_ui",
+ "profiling",
+ "tempfile",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

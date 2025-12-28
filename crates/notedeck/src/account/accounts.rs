@@ -303,6 +303,16 @@ impl Accounts {
             ),
             relay_url,
         );
+        if let Some(cur_pk) = self.selected_filled().map(|s| s.pubkey) {
+            let giftwraps_filter = nostrdb::Filter::new()
+                .kinds([1059])
+                .pubkeys([cur_pk.bytes()])
+                .build();
+            pool.send_to(
+                &ClientMessage::req(self.subs.giftwraps.remote.clone(), vec![giftwraps_filter]),
+                relay_url,
+            );
+        }
     }
 
     pub fn update(&mut self, ndb: &mut Ndb, pool: &mut RelayPool, ctx: &egui::Context) {
