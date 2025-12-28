@@ -150,6 +150,16 @@ impl TimelineTab {
         }
     }
 
+    /// Reset the tab to an empty state, clearing all cached notes.
+    ///
+    /// Used when the contact list changes and we need to rebuild
+    /// the timeline with a new filter.
+    pub fn reset(&mut self) {
+        self.units = TimelineUnits::with_capacity(1000);
+        self.selection = 0;
+        self.list.borrow_mut().reset();
+    }
+
     fn insert<'a>(
         &mut self,
         payloads: Vec<&'a NotePayload>,
@@ -350,6 +360,16 @@ impl Timeline {
 
     pub fn view_mut(&mut self, view: ViewFilter) -> Option<&mut TimelineTab> {
         self.views.iter_mut().find(|tab| tab.filter == view)
+    }
+
+    /// Reset all views to an empty state, clearing all cached notes.
+    ///
+    /// Used when the contact list changes and we need to rebuild
+    /// the timeline with a new filter.
+    pub fn reset_views(&mut self) {
+        for view in &mut self.views {
+            view.reset();
+        }
     }
 
     /// Initial insert of notes into a timeline. Subsequent inserts should

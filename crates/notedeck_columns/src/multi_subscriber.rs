@@ -307,6 +307,45 @@ impl Default for TimelineSub {
 }
 
 impl TimelineSub {
+    /// Reset the subscription state, properly unsubscribing from ndb and
+    /// relay pool before clearing.
+    ///
+    /// Used when the contact list changes and we need to rebuild the
+    /// timeline with a new filter. Preserves the depender count so that
+    /// shared subscription reference counting remains correct.
+    pub fn reset(&mut self, ndb: &mut Ndb, pool: &mut RelayPool) {
+        let before = self.state.clone();
+
+        let dependers = match &mut self.state {
+            SubState::NoSub { dependers } => *dependers,
+
+            SubState::LocalOnly { local, dependers } => {
+                if let Err(e) = ndb.unsubscribe(*local) {
+                    tracing::error!("TimelineSub::reset: failed to unsubscribe from ndb: {e}");
+                }
+                *dependers
+            }
+
+            SubState::RemoteOnly { remote, dependers } => {
+                pool.unsubscribe(remote.to_owned());
+                *dependers
+            }
+
+            SubState::Unified { unified, dependers } => {
+                pool.unsubscribe(unified.remote.to_owned());
+                if let Err(e) = ndb.unsubscribe(unified.local) {
+                    tracing::error!("TimelineSub::reset: failed to unsubscribe from ndb: {e}");
+                }
+                *dependers
+            }
+        };
+
+        self.state = SubState::NoSub { dependers };
+        self.filter = None;
+
+        tracing::debug!("TimelineSub::reset: {:?} => {:?}", before, self.state);
+    }
+
     pub fn try_add_local(&mut self, ndb: &Ndb, filter: &HybridFilter) {
         let before = self.state.clone();
         match &mut self.state {
