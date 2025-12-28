@@ -20,6 +20,11 @@ pub struct UnifiedSubscription {
 pub struct FilterStates {
     pub initial_state: FilterState,
     pub states: HashMap<String, FilterState>,
+
+    /// Timestamp (`created_at`) of the contact list note used to build
+    /// the current filter. Used to detect when the contact list has
+    /// changed (e.g., after follow/unfollow) so the filter can be rebuilt.
+    pub contact_list_timestamp: Option<u64>,
 }
 
 impl FilterStates {
@@ -73,6 +78,7 @@ impl FilterStates {
         Self {
             initial_state,
             states: HashMap::new(),
+            contact_list_timestamp: None,
         }
     }
 
@@ -92,6 +98,22 @@ impl FilterStates {
         for cur_state in self.states.values_mut() {
             *cur_state = state.clone();
         }
+    }
+
+    /// Invalidate the filter states, forcing a rebuild on the next check.
+    ///
+    /// This resets all relay states to [`FilterState::NeedsRemote`] and
+    /// clears the contact list timestamp, which will trigger the filter
+    /// rebuild flow when the timeline is next polled.
+    ///
+    /// Note: We reset states rather than clearing them so that
+    /// [`Self::set_all_states`] can update them during the rebuild.
+    pub fn invalidate(&mut self) {
+        self.initial_state = FilterState::NeedsRemote;
+        for state in self.states.values_mut() {
+            *state = FilterState::NeedsRemote;
+        }
+        self.contact_list_timestamp = None;
     }
 }
 
