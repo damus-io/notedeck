@@ -7,7 +7,7 @@ use egui::{Color32, Hyperlink, Label, RichText};
 use nostrdb::{BlockType, Mention, Note, NoteKey, Transaction};
 use notedeck::Localization;
 use notedeck::RenderableMedia;
-use notedeck::{time_format, update_imeta_blurhashes, NoteCache, NoteContext, NotedeckTextStyle};
+use notedeck::{time_format, update_imeta_placeholders, NoteCache, NoteContext, NotedeckTextStyle};
 use tracing::warn;
 
 pub struct NoteContents<'a, 'd> {
@@ -263,7 +263,7 @@ fn render_undecorated_note_contents<'a>(
                         let url = block.as_str();
 
                         if !note_context.img_cache.metadata.contains_key(url) {
-                            update_imeta_blurhashes(note, &mut note_context.img_cache.metadata);
+                            update_imeta_placeholders(note, &mut note_context.img_cache.metadata);
                         }
 
                         let Some(media) = note_context.img_cache.get_renderable_media(url) else {
