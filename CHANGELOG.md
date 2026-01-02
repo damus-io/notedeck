@@ -22,6 +22,7 @@
 
 # Fixed
 
+- Fix debug mode crash on macOS due to objc2 type encoding mismatch (alltheseas)
 - Fix timelines sometimes not updating (stale feeds)
 - Fix ui bounciness when loading profile pictures
 - Fix unselectable post replies
