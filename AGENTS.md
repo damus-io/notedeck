@@ -104,9 +104,10 @@ This document captures the current architecture, coding conventions, and design 
 7. **Inspect notedeck code for reusable components, elements, patterns** etc. before creating new code for both A) notedeck updates, and B) apps built on notedeck.
 8.  **Nevernesting** — favor early returns and guard clauses over deeply nested conditionals; simplify control flow by exiting early instead of wrapping logic in multiple layers of `if` statements.
 9.  **Do not fudge CI tests**, in order to get a commit or PR to pass. Instead identify the underlying root cause of CI failure, and address that.
-10.  Before proposing changes, please **review and analyze if a change or upgrade to nostrdb** is beneficial to the change at hand.
-11.  Ensure docstring coverage for any code added, or modified.
-12. Run cargo fmt, cargo clippy, cargo test
+10. Before proposing changes, please **review and analyze if a change or upgrade to nostrdb** is beneficial to the change at hand.
+11. **Ensure docstring coverage** for any code added, or modified.
+12. Run **cargo fmt, cargo clippy, cargo test**.
+13. **Do not vendor code**. In cargo.toml replace the existing url with the fork that includes the new code. If vendoring is absolutely necessary you must present the case why no other options are feasible.
 
 
 
