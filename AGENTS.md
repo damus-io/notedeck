@@ -55,7 +55,9 @@ This document captures the current architecture, coding conventions, and design 
 
 ### Async & Background Work
 
-- **`JobPool`** (`crates/notedeck/src/job_pool.rs`) provides a lightweight thread pool returning Futures via `tokio::sync::oneshot`, useful for CPU-bound tasks without blocking the UI.
+- **Promise-based async** (`poll_promise::Promise`): The dominant pattern for async work. Promises are polled via `promise.ready()` in the render loop—never blocking. Results are consumed when available.
+- **`JobPool`** (`crates/notedeck/src/job_pool.rs`): A 2-thread pool for CPU-bound work (e.g., blurhash computation). Returns results via `tokio::sync::oneshot` wrapped in Promises.
+- **Tokio tasks**: Network I/O, wallet operations, and relay sync use `tokio::spawn()`. Use `tokio::task::JoinSet` when managing multiple concurrent tasks.
 - **Dave async**: Streams AI tokens through channels, spawns tasks with `tokio::spawn`, and updates the UI as chunks arrive—see `crates/notedeck_dave/src/lib.rs`.
 - **Relay events**: Columns polls `RelayPool::try_recv()` inside the egui loop, translates network activity into timeline mutations, and schedules follow-up fetches (e.g., `timeline::poll_notes_into_view`).
 
