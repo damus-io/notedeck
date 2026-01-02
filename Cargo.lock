@@ -3942,6 +3942,7 @@ dependencies = [
  "notedeck_messages",
  "notedeck_notebook",
  "notedeck_ui",
+ "objc2 0.5.2",
  "profiling",
  "puffin",
  "puffin_egui",
