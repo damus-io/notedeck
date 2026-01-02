@@ -17,7 +17,7 @@ This document captures the current architecture, coding conventions, and design 
 
 - **`App` trait** (`crates/notedeck/src/app.rs`): Apps implement `update(&mut self, &mut AppContext, &mut egui::Ui) -> AppResponse` to drive egui rendering and signal high-level actions (`AppAction` for route changes, chrome toggles, etc.).
 - **`Notedeck` struct** (`crates/notedeck/src/app.rs`) owns global resources—NostrDB connection, caches, relay pool, accounts, zaps, localization, clipboard, frame history—and injects them through `AppContext`.
-- **`AppContext`** (`crates/notedeck/src/context.rs`) is the dependency hub handed to every app update. It exposes mutable handles to services (database, caches, relay pool, account state, localization, job pool, settings, wallet) so apps stay decoupled from the host.
+- **`AppContext`** (`crates/notedeck/src/context.rs`) is the dependency hub handed to every app update. It exposes mutable handles to services (database, caches, relay pool, account state, localization, settings, wallet) so apps stay decoupled from the host.
 - **`AppResponse`** carries optional actions and drag targets; chrome inspects it to react to app-level intent.
 
 ### UI Container & Navigation
@@ -38,8 +38,7 @@ This document captures the current architecture, coding conventions, and design 
 - **Caches**:
   - `NoteCache` (NIP-10/thread metadata),
   - `Images` (image/GIF cache),
-  - `UnknownIds` (tracks pubkeys/notes discovered via tags),
-  - `JobsCache` (Columns-specific async job state).
+  - `UnknownIds` (tracks pubkeys/notes discovered via tags).
 - **Relay management**: `enostr::RelayPool` is shared in `AppContext`. Apps enqueue filters, process `RelayEvent`s, and update timelines.
 - **Subscriptions**: Columns crate layers `Subscriptions`, `MultiSubscriber`, and `TimelineCache` to fan out relay queries per column. Unknown IDs are resolved lazily and retried until satisfied.
 - **Debouncing & persistence**: `TimedSerializer` + `Debouncer` persist settings/state without hammering the filesystem (`crates/notedeck/src/timed_serializer.rs`).
@@ -86,7 +85,7 @@ This document captures the current architecture, coding conventions, and design 
 
 ## Integrating New Agents
 
-1. **Prototype as an App**: Implement the `App` trait, using `AppContext` to read from `Ndb`, inspect accounts, schedule jobs, and access localization.
+1. **Prototype as an App**: Implement the `App` trait, using `AppContext` to read from `Ndb`, inspect accounts, and access localization.
 2. **Register in Chrome**: Add a variant to `NotedeckApp`, supply icon/label metadata, and hook it into the sidebar.
 3. **Leverage shared UI**: Reuse `notedeck_ui` components (note previews, media viewers) for consistency. Compose with `NoteContext` when rendering Nostr events.
 4. **Relay access pattern**: Subscribe to the relevant Nostr kinds through `RelayPool`, mirroring Columns’ subscription helpers or Dave’s targeted queries.
