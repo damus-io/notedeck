@@ -119,6 +119,7 @@ This document captures the current architecture, coding conventions, and design 
 13. **Do not vendor code**. In cargo.toml replace the existing url with the fork that includes the new code. If vendoring is absolutely necessary you must present the case why no other options are feasible.
 14. **Avoid Mutexes** — prefer `poll_promise::Promise` for async results, `Rc<RefCell<>>` for single-threaded interior mutability, or `tokio::sync::RwLock` when cross-thread sharing is truly necessary. Mutexes can cause UI stalls if held across frames.
 15. **Per-frame UI constraints** — the UI runs every frame; never block the render loop. Use `Promise::ready()` for non-blocking result checks. Offload CPU-heavy work to `JobPool` or `tokio::spawn()`, returning results via channels or Promises.
+16. **Cherry-pick commits** — when incorporating work from other branches or contributors, use `git cherry-pick` to preserve original authorship rather than copying code manually.
 
 
 
