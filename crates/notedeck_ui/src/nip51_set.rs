@@ -4,8 +4,8 @@ use enostr::Pubkey;
 use hashbrown::{hash_map::RawEntryMut, HashMap};
 use nostrdb::{Ndb, ProfileRecord, Transaction};
 use notedeck::{
-    fonts::get_font_size, get_profile_url, name::get_display_name, tr, Images, Localization,
-    MediaJobSender, Nip51Set, Nip51SetCache, NotedeckTextStyle,
+    fonts::get_font_size, get_profile_url, name::get_display_name, tr, tr_plural, Images,
+    Localization, MediaJobSender, Nip51Set, Nip51SetCache, NotedeckTextStyle,
 };
 
 use crate::{
@@ -249,25 +249,31 @@ fn render_pack(
     let pack_len = pack.pks.len();
     let default_open = pack_len < 6;
 
-    let r = egui::CollapsingHeader::new(format!("{} people", pack_len))
-        .default_open(default_open)
-        .show(ui, |ui| {
-            select_all_ui(pack, ui_state, loc, ui);
+    let r = egui::CollapsingHeader::new(tr_plural!(
+        loc,
+        "{pack_len} person",
+        "{pack_len} people",
+        "Label showing count of people in a follow pack",
+        pack_len,
+    ))
+    .default_open(default_open)
+    .show(ui, |ui| {
+        select_all_ui(pack, ui_state, loc, ui);
 
-            let txn = Transaction::new(ndb).expect("txn");
+        let txn = Transaction::new(ndb).expect("txn");
 
-            for pk in &pack.pks {
-                let m_profile = ndb.get_profile_by_pubkey(&txn, pk.bytes()).ok();
+        for pk in &pack.pks {
+            let m_profile = ndb.get_profile_by_pubkey(&txn, pk.bytes()).ok();
 
-                let cur_state = ui_state.get_pk_selected_state(&pack.identifier, pk);
+            let cur_state = ui_state.get_pk_selected_state(&pack.identifier, pk);
 
-                crate::hline(ui);
+            crate::hline(ui);
 
-                if render_profile_item(ui, images, jobs, m_profile.as_ref(), cur_state).clicked() {
-                    action = Some(Nip51SetWidgetAction::ViewProfile(*pk));
-                }
+            if render_profile_item(ui, images, jobs, m_profile.as_ref(), cur_state).clicked() {
+                action = Some(Nip51SetWidgetAction::ViewProfile(*pk));
             }
-        });
+        }
+    });
 
     let visibility_changed = r.header_response.clicked();
     RenderPackResponse {
