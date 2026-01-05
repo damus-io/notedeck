@@ -316,7 +316,7 @@ impl TimelineSub {
     pub fn reset(&mut self, ndb: &mut Ndb, pool: &mut RelayPool) {
         let before = self.state.clone();
 
-        let dependers = match &mut self.state {
+        let dependers = match &self.state {
             SubState::NoSub { dependers } => *dependers,
 
             SubState::LocalOnly { local, dependers } => {
