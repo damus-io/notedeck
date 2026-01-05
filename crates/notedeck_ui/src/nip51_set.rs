@@ -423,6 +423,8 @@ struct Nip51SetUiState {
 }
 
 impl Nip51SetUiCache {
+    /// Gets or creates a mutable reference to the UI state for a given pack identifier.  If the
+    /// pack state doesn't exist, it will be initialized with default values.
     fn entry_for_pack(&mut self, identifier: &str) -> &mut Nip51SetUiState {
         match self.state.raw_entry_mut().from_key(identifier) {
             RawEntryMut::Occupied(entry) => entry.into_mut(),
