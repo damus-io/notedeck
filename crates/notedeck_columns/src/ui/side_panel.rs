@@ -107,9 +107,9 @@ impl<'a> DesktopSidePanel<'a> {
                 ui.with_layout(Layout::top_down(egui::Align::Center), |ui| {
                     // macos needs a bit of space to make room for window
                     // minimize/close buttons
-                    //if cfg!(target_os = "macos") {
-                    //    ui.add_space(24.0);
-                    //}
+                    if cfg!(target_os = "macos") {
+                        ui.add_space(24.0);
+                    }
 
                     let compose_resp = ui
                         .add(crate::ui::post::compose_note_button(dark_mode))
