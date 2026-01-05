@@ -428,6 +428,7 @@ pub fn install_crypto() {
     let _ = provider.install_default();
 }
 
+#[profiling::function]
 pub fn try_process_events_core(
     app_ctx: &mut AppContext<'_>,
     ctx: &egui::Context,
@@ -443,7 +444,6 @@ pub fn try_process_events_core(
     // NOTE: we don't use the while let loop due to borrow issues
     #[allow(clippy::while_let_loop)]
     loop {
-        profiling::scope!("receiving events");
         let ev = if let Some(ev) = app_ctx.pool.try_recv() {
             ev.into_owned()
         } else {
@@ -475,6 +475,7 @@ pub fn try_process_events_core(
     }
 }
 
+#[profiling::function]
 fn process_message_core(ctx: &mut AppContext<'_>, relay: &str, msg: &RelayMessage) {
     match msg {
         RelayMessage::Event(_subid, ev) => {

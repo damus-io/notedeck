@@ -71,29 +71,33 @@ impl ConversationCache {
 
         // We should try and get more messages... this isn't ideal
         let chatroom_filter = chatroom_filter(participants, selected);
-        let results = match ndb.query(txn, &chatroom_filter, 500) {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::error!("problem with chatroom filter ndb::query: {e:?}");
-                return;
-            }
-        };
 
         let mut updated = false;
-        for res in results {
-            let participants = get_participants(&res.note);
-            let parts = ParticipantSetUnowned::new(participants);
-            let cur_id = self
-                .registry
-                .get_or_insert(ConversationIdentifierUnowned::Nip17(parts));
+        {
+            profiling::scope!("chatroom_filter");
+            let results = match ndb.query(txn, &chatroom_filter, 500) {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::error!("problem with chatroom filter ndb::query: {e:?}");
+                    return;
+                }
+            };
 
-            if cur_id != id {
-                // this note isn't relevant to the current conversation, unfortunately...
-                continue;
+            for res in results {
+                let participants = get_participants(&res.note);
+                let parts = ParticipantSetUnowned::new(participants);
+                let cur_id = self
+                    .registry
+                    .get_or_insert(ConversationIdentifierUnowned::Nip17(parts));
+
+                if cur_id != id {
+                    // this note isn't relevant to the current conversation, unfortunately...
+                    continue;
+                }
+
+                UnknownIds::update_from_note(txn, ndb, unknown_ids, note_cache, &res.note);
+                updated |= conversation.ingest_kind_14(res.note, res.note_key);
             }
-
-            UnknownIds::update_from_note(txn, ndb, unknown_ids, note_cache, &res.note);
-            updated |= conversation.ingest_kind_14(res.note, res.note_key);
         }
 
         if updated {
@@ -105,6 +109,7 @@ impl ConversationCache {
         tracing::info!("Set active to {id}");
     }
 
+    #[profiling::function]
     pub fn init_conversations(
         &mut self,
         ndb: &Ndb,
@@ -125,6 +130,7 @@ impl ConversationCache {
         }
     }
 
+    #[profiling::function]
     pub fn ingest_chatroom_msg(
         &mut self,
         note: Note,
@@ -309,6 +315,7 @@ impl Default for ConversationCache {
     }
 }
 
+#[profiling::function]
 fn get_conversations<'a>(
     ndb: &Ndb,
     txn: &'a Transaction,

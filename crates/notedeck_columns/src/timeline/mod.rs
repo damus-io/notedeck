@@ -354,6 +354,7 @@ impl Timeline {
 
     /// Initial insert of notes into a timeline. Subsequent inserts should
     /// just use the insert function
+    #[profiling::function]
     pub fn insert_new(
         &mut self,
         txn: &Transaction,
@@ -588,6 +589,7 @@ pub fn setup_new_timeline(
 /// when we first connect to a new relay for the first time. For
 /// situations where you are adding a new timeline, use
 /// setup_new_timeline.
+#[profiling::function]
 pub fn send_initial_timeline_filters(
     since_optimize: bool,
     timeline_cache: &mut TimelineCache,
@@ -702,6 +704,7 @@ pub fn fetch_contact_list(subs: &mut Subscriptions, timeline: &mut Timeline, acc
     subs.subs.insert(sub.remote.clone(), sub_kind);
 }
 
+#[profiling::function]
 fn setup_initial_timeline(
     ndb: &Ndb,
     txn: &Transaction,
@@ -754,6 +757,7 @@ fn setup_initial_timeline(
     Ok(())
 }
 
+#[profiling::function]
 pub fn setup_initial_nostrdb_subs(
     ndb: &Ndb,
     note_cache: &mut NoteCache,

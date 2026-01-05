@@ -41,6 +41,7 @@ impl Default for MessagesApp {
 }
 
 impl App for MessagesApp {
+    #[profiling::function]
     fn update(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
         try_process_events_core(ctx, ui.ctx(), |_, _| {});
 
@@ -113,6 +114,7 @@ impl App for MessagesApp {
     }
 }
 
+#[profiling::function]
 fn initialize(ctx: &mut AppContext, cache: &mut ConversationCache, is_narrow: bool) {
     let txn = Transaction::new(ctx.ndb).expect("txn");
     cache.init_conversations(
@@ -148,6 +150,7 @@ fn initialize(ctx: &mut AppContext, cache: &mut ConversationCache, is_narrow: bo
     cache.state = ConversationListState::Initialized(sub);
 }
 
+#[profiling::function]
 fn update_initialized(ctx: &mut AppContext, cache: &mut ConversationCache, sub: Subscription) {
     let notes = ctx.ndb.poll_for_notes(sub, 10);
     let txn = Transaction::new(ctx.ndb).expect("txn");

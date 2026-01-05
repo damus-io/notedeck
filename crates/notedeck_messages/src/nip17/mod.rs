@@ -140,6 +140,7 @@ fn randomized_timestamp(rng: &mut OsRng) -> u64 {
     now.saturating_sub(tweak)
 }
 
+#[profiling::function]
 pub fn get_participants<'a>(note: &Note<'a>) -> Vec<&'a [u8; 32]> {
     let mut participants = get_p_tags(note);
     let chat_message_sender = note.pubkey();
