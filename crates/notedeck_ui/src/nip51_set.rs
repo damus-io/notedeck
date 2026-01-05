@@ -150,6 +150,8 @@ fn should_skip(set: &Nip51Set, required: &Nip51SetWidgetFlags) -> bool {
         || (required.contains(Nip51SetWidgetFlags::NON_EMPTY_PKS) && set.pks.is_empty())
 }
 
+/// Internal response type from rendering a follow pack.  Tracks user actions and whether the
+/// pack's visibility state changed.
 struct RenderPackResponse {
     action: Option<Nip51SetWidgetAction>,
     visibility_changed: bool,
