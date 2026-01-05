@@ -346,7 +346,7 @@ fn render_profile_item(
         if let Some(username) = name.username {
             let galley = painter.layout_no_wrap(
                 format!("@{username}"),
-                NotedeckTextStyle::Body.get_font_id(ui.ctx()),
+                NotedeckTextStyle::Small.get_font_id(ui.ctx()),
                 crate::colors::MID_GRAY,
             );
 
@@ -356,7 +356,7 @@ fn render_profile_item(
 
                 let padding = name_rect.height() - galley.rect.height();
 
-                pos.y += padding / 2.0;
+                pos.y += padding * 2.5;
 
                 pos
             };
@@ -381,7 +381,9 @@ fn render_profile_item(
 
         ui.add(
             egui::Label::new(
-                RichText::new(about).size(get_font_size(ui.ctx(), &NotedeckTextStyle::Heading4)),
+                RichText::new(about)
+                    .color(ui.visuals().weak_text_color())
+                    .size(get_font_size(ui.ctx(), &NotedeckTextStyle::Small)),
             )
             .selectable(false)
             .truncate(),
