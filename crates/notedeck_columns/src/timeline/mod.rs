@@ -150,6 +150,16 @@ impl TimelineTab {
         }
     }
 
+    /// Reset the tab to an empty state, clearing all cached notes.
+    ///
+    /// Used when the contact list changes and we need to rebuild
+    /// the timeline with a new filter.
+    pub fn reset(&mut self) {
+        self.units = TimelineUnits::with_capacity(1000);
+        self.selection = 0;
+        self.list.borrow_mut().reset();
+    }
+
     fn insert<'a>(
         &mut self,
         payloads: Vec<&'a NotePayload>,
@@ -240,6 +250,11 @@ pub struct Timeline {
 
     pub subscription: TimelineSub,
     pub enable_front_insert: bool,
+
+    /// Timestamp (`created_at`) of the contact list note used to build
+    /// the current filter. Used to detect when the contact list has
+    /// changed (e.g., after follow/unfollow) so the filter can be rebuilt.
+    pub contact_list_timestamp: Option<u64>,
 }
 
 impl Timeline {
@@ -312,6 +327,7 @@ impl Timeline {
             selected_view,
             enable_front_insert,
             seen_latest_notes: false,
+            contact_list_timestamp: None,
         }
     }
 
@@ -350,6 +366,16 @@ impl Timeline {
 
     pub fn view_mut(&mut self, view: ViewFilter) -> Option<&mut TimelineTab> {
         self.views.iter_mut().find(|tab| tab.filter == view)
+    }
+
+    /// Reset all views to an empty state, clearing all cached notes.
+    ///
+    /// Used when the contact list changes and we need to rebuild
+    /// the timeline with a new filter.
+    pub fn reset_views(&mut self) {
+        for view in &mut self.views {
+            view.reset();
+        }
     }
 
     /// Initial insert of notes into a timeline. Subsequent inserts should
@@ -500,6 +526,22 @@ impl Timeline {
 
         self.insert(&new_note_ids, ndb, txn, unknown_ids, note_cache, reversed)
     }
+
+    /// Invalidate the timeline, forcing a rebuild on the next check.
+    ///
+    /// This resets all relay states to [`FilterState::NeedsRemote`] and
+    /// clears the contact list timestamp, which will trigger the filter
+    /// rebuild flow when the timeline is next polled.
+    ///
+    /// Note: We reset states rather than clearing them so that
+    /// [`Self::set_all_states`] can update them during the rebuild.
+    pub fn invalidate(&mut self) {
+        self.filter.initial_state = FilterState::NeedsRemote;
+        for state in self.filter.states.values_mut() {
+            *state = FilterState::NeedsRemote;
+        }
+        self.contact_list_timestamp = None;
+    }
 }
 
 pub struct UnknownPksOwned {
@@ -563,7 +605,7 @@ pub fn merge_sorted_vecs<T: Ord + Copy>(vec1: &[T], vec2: &[T]) -> (Vec<T>, Merg
 #[allow(clippy::too_many_arguments)]
 pub fn setup_new_timeline(
     timeline: &mut Timeline,
-    ndb: &Ndb,
+    ndb: &mut Ndb,
     txn: &Transaction,
     subs: &mut Subscriptions,
     pool: &mut RelayPool,
@@ -792,22 +834,64 @@ fn setup_timeline_nostrdb_sub(
     Ok(())
 }
 
+/// Check if the contact list has changed since the filter was built.
+///
+/// Returns `Some(timestamp)` if the contact list has a newer timestamp
+/// than when the filter was built, indicating the filter needs rebuilding.
+/// Returns `None` if the filter is up-to-date or this isn't a contact timeline.
+fn contact_list_needs_rebuild(timeline: &Timeline, accounts: &Accounts) -> Option<u64> {
+    if !timeline.kind.is_contacts() {
+        return None;
+    }
+
+    let ContactState::Received {
+        contacts: _,
+        note_key: _,
+        timestamp,
+    } = accounts.get_selected_account().data.contacts.get_state()
+    else {
+        return None;
+    };
+
+    if timeline.contact_list_timestamp == Some(*timestamp) {
+        return None;
+    }
+
+    Some(*timestamp)
+}
+
 /// Check our timeline filter and see if we have any filter data ready.
+///
 /// Our timelines may require additional data before it is functional. For
 /// example, when we have to fetch a contact list before we do the actual
 /// following list query.
+///
+/// For contact list timelines, this also detects when the contact list has
+/// changed (e.g., after follow/unfollow) and triggers a filter rebuild.
+#[profiling::function]
 pub fn is_timeline_ready(
-    ndb: &Ndb,
+    ndb: &mut Ndb,
     pool: &mut RelayPool,
     note_cache: &mut NoteCache,
     timeline: &mut Timeline,
     accounts: &Accounts,
     unknown_ids: &mut UnknownIds,
 ) -> bool {
-    // TODO: we should debounce the filter states a bit to make sure we have
-    // seen all of the different contact lists from each relay
-    if let Some(_f) = timeline.filter.get_any_ready() {
-        return true;
+    // Check if filter is ready and contact list hasn't changed
+    if timeline.filter.get_any_ready().is_some() {
+        let Some(new_timestamp) = contact_list_needs_rebuild(timeline, accounts) else {
+            return true;
+        };
+
+        // Contact list changed - invalidate and rebuild
+        info!(
+            "Contact list changed (old: {:?}, new: {}), rebuilding timeline filter",
+            timeline.contact_list_timestamp, new_timestamp
+        );
+        timeline.invalidate();
+        timeline.reset_views();
+        timeline.subscription.reset(ndb, pool);
+        // Fall through to rebuild
     }
 
     let Some(res) = timeline.filter.get_any_gotremote() else {
@@ -847,12 +931,16 @@ pub fn is_timeline_ready(
 
     let with_hashtags = false;
 
-    let filter = {
+    let (filter, contact_timestamp) = {
         let txn = Transaction::new(ndb).expect("txn");
         let note = ndb.get_note_by_key(&txn, note_key).expect("note");
         let add_pk = timeline.kind.pubkey().map(|pk| pk.bytes());
+        let timestamp = note.created_at();
 
-        hybrid_contacts_filter(&note, add_pk, with_hashtags)
+        (
+            hybrid_contacts_filter(&note, add_pk, with_hashtags),
+            timestamp,
+        )
     };
 
     // TODO: into_follow_filter is hardcoded to contact lists, let's generalize
@@ -882,8 +970,9 @@ pub fn is_timeline_ready(
                 .filter
                 .set_relay_state(relay_id, FilterState::ready_hybrid(filter.clone()));
 
-            //let ck = &timeline.kind;
-            //let subid = damus.gen_subid(&SubKind::Column(ck.clone()));
+            // Store timestamp so we can detect when contact list changes
+            timeline.contact_list_timestamp = Some(contact_timestamp);
+
             timeline.subscription.try_add_remote(pool, &filter);
             true
         }
