@@ -21,3 +21,7 @@ notedeck_ui = { workspace = true }
 chrono = { workspace = true }
 nostr = { workspace = true }
 egui_nav = { workspace = true }
+
+[features]
+default = []
+profiling = ["egui_nav/profiling"]

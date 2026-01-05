@@ -62,6 +62,12 @@ tracing-logcat = "0.1.0"
 egui-winit.workspace = true
 android-keyring = { workspace = true }
 
+# Fix debug mode crash on macOS: objc2-foundation 0.2.2 has incorrect type
+# encoding for NSFastEnumeration. The relax-sign-encoding feature allows
+# signed/unsigned mismatches to pass runtime verification.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.5.2", features = ["relax-sign-encoding"] }
+
 [package.metadata.bundle]
 name = "Notedeck"
 short_description = "The nostr browser"

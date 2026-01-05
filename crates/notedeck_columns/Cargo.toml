@@ -72,6 +72,6 @@ security-framework = "2.11.0"
 
 [features]
 default = []
-puffin = ["dep:puffin", "profiling/profile-with-puffin"]
-tracy = ["profiling/profile-with-tracy"]
+puffin = ["dep:puffin", "profiling/profile-with-puffin", "egui_nav/profiling"]
+tracy = ["profiling/profile-with-tracy", "egui_nav/profiling"]
 

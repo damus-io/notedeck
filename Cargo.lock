@@ -1706,11 +1706,12 @@ dependencies = [
 [[package]]
 name = "egui_nav"
 version = "0.2.0"
-source = "git+https://github.com/kernelkind/egui-nav?rev=8d8e93b7ea4e87c70af9627fa8e3591489abafd0#8d8e93b7ea4e87c70af9627fa8e3591489abafd0"
+source = "git+https://github.com/alltheseas/egui-nav?branch=id-scope-fix#ccc2941f2fdf9c4784d6940535782b80c7f42bdb"
 dependencies = [
  "bitflags 2.9.1",
  "egui",
  "egui_extras",
+ "profiling",
  "tracing",
 ]
 
@@ -2798,7 +2799,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.61.2",
+ "windows-core 0.58.0",
 ]
 
 [[package]]
@@ -3315,7 +3316,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "07033963ba89ebaf1584d767badaa2e8fcec21aedea6b8c0346d487d49c28667"
 dependencies = [
  "cfg-if",
- "windows-targets 0.53.2",
+ "windows-targets 0.48.5",
 ]
 
 [[package]]
@@ -3942,6 +3943,7 @@ dependencies = [
  "notedeck_messages",
  "notedeck_notebook",
  "notedeck_ui",
+ "objc2 0.5.2",
  "profiling",
  "puffin",
  "puffin_egui",
@@ -6707,7 +6709,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "319c70195101a93f56db4c74733e272d720768e13471f400c78406a326b172b0"
 dependencies = [
  "cc",
- "windows-targets 0.52.6",
+ "windows-targets 0.48.5",
 ]
 
 [[package]]
