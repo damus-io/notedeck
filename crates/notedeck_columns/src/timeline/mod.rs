@@ -250,6 +250,11 @@ pub struct Timeline {
 
     pub subscription: TimelineSub,
     pub enable_front_insert: bool,
+
+    /// Timestamp (`created_at`) of the contact list note used to build
+    /// the current filter. Used to detect when the contact list has
+    /// changed (e.g., after follow/unfollow) so the filter can be rebuilt.
+    pub contact_list_timestamp: Option<u64>,
 }
 
 impl Timeline {
@@ -322,6 +327,7 @@ impl Timeline {
             selected_view,
             enable_front_insert,
             seen_latest_notes: false,
+            contact_list_timestamp: None,
         }
     }
 
@@ -518,6 +524,22 @@ impl Timeline {
         }
 
         self.insert(&new_note_ids, ndb, txn, unknown_ids, note_cache, reversed)
+    }
+
+    /// Invalidate the timeline, forcing a rebuild on the next check.
+    ///
+    /// This resets all relay states to [`FilterState::NeedsRemote`] and
+    /// clears the contact list timestamp, which will trigger the filter
+    /// rebuild flow when the timeline is next polled.
+    ///
+    /// Note: We reset states rather than clearing them so that
+    /// [`Self::set_all_states`] can update them during the rebuild.
+    pub fn invalidate(&mut self) {
+        self.filter.initial_state = FilterState::NeedsRemote;
+        for state in self.filter.states.values_mut() {
+            *state = FilterState::NeedsRemote;
+        }
+        self.contact_list_timestamp = None;
     }
 }
 
@@ -827,7 +849,7 @@ fn contact_list_needs_rebuild(timeline: &Timeline, accounts: &Accounts) -> Optio
         return None;
     };
 
-    if timeline.filter.contact_list_timestamp == Some(*timestamp) {
+    if timeline.contact_list_timestamp == Some(*timestamp) {
         return None;
     }
 
@@ -860,9 +882,9 @@ pub fn is_timeline_ready(
         // Contact list changed - invalidate and rebuild
         info!(
             "Contact list changed (old: {:?}, new: {}), rebuilding timeline filter",
-            timeline.filter.contact_list_timestamp, new_timestamp
+            timeline.contact_list_timestamp, new_timestamp
         );
-        timeline.filter.invalidate();
+        timeline.invalidate();
         timeline.reset_views();
         timeline.subscription.reset(ndb, pool);
         // Fall through to rebuild
@@ -945,7 +967,7 @@ pub fn is_timeline_ready(
                 .set_relay_state(relay_id, FilterState::ready_hybrid(filter.clone()));
 
             // Store timestamp so we can detect when contact list changes
-            timeline.filter.contact_list_timestamp = Some(contact_timestamp);
+            timeline.contact_list_timestamp = Some(contact_timestamp);
 
             timeline.subscription.try_add_remote(pool, &filter);
             true
