@@ -155,6 +155,8 @@ struct RenderPackResponse {
     visibility_changed: bool,
 }
 
+/// Renders a "Select All" checkbox for a follow pack.
+/// When toggled, applies the selection state to all profiles in the pack.
 fn select_all_ui(
     pack: &Nip51Set,
     ui_state: &mut Nip51SetUiCache,
