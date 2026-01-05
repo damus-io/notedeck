@@ -1,5 +1,5 @@
 use bitflags::bitflags;
-use egui::{vec2, Checkbox, CornerRadius, Layout, Margin, RichText, Sense, UiBuilder};
+use egui::{vec2, Checkbox, CornerRadius, Margin, RichText, Sense, UiBuilder};
 use enostr::Pubkey;
 use hashbrown::{hash_map::RawEntryMut, HashMap};
 use nostrdb::{Ndb, ProfileRecord, Transaction};
@@ -155,6 +155,36 @@ struct RenderPackResponse {
     visibility_changed: bool,
 }
 
+fn select_all_ui(
+    pack: &Nip51Set,
+    ui_state: &mut Nip51SetUiCache,
+    loc: &mut Localization,
+    ui: &mut egui::Ui,
+) {
+    let select_all_resp = ui.checkbox(
+        ui_state.get_select_all_state(&pack.identifier),
+        format!(
+            "{} ({})",
+            tr!(
+                loc,
+                "Select All",
+                "Button to select all profiles in follow pack"
+            ),
+            pack.pks.len()
+        ),
+    );
+
+    let new_select_all_state = if select_all_resp.clicked() {
+        Some(*ui_state.get_select_all_state(&pack.identifier))
+    } else {
+        None
+    };
+
+    if let Some(use_state) = new_select_all_state {
+        ui_state.apply_select_all_to_pack(&pack.identifier, &pack.pks, use_state);
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn render_pack(
     ui: &mut egui::Ui,
@@ -193,109 +223,51 @@ fn render_pack(
         ui.advance_cursor_after_rect(media_rect);
     });
 
-    let (title_rect, _) =
-        ui.allocate_at_least(vec2(ui.available_width(), 0.0), egui::Sense::hover());
-
-    let select_all_resp = ui
-        .allocate_new_ui(
-            UiBuilder::new()
-                .max_rect(title_rect)
-                .layout(Layout::top_down(egui::Align::Min)),
-            |ui| {
-                if let Some(title) = &pack.title {
-                    ui.add(egui::Label::new(egui::RichText::new(title).size(
-                        get_font_size(ui.ctx(), &notedeck::NotedeckTextStyle::Heading),
-                    )));
-                }
-                if let Some(desc) = &pack.description {
-                    ui.add(egui::Label::new(
-                        egui::RichText::new(desc)
-                            .size(get_font_size(
-                                ui.ctx(),
-                                &notedeck::NotedeckTextStyle::Heading3,
-                            ))
-                            .color(ui.visuals().weak_text_color()),
-                    ));
-                }
-                let checked = ui.checkbox(
-                    ui_state.get_select_all_state(&pack.identifier),
-                    format!(
-                        "{} ({})",
-                        tr!(
-                            loc,
-                            "Select All",
-                            "Button to select all profiles in follow pack"
-                        ),
-                        pack.pks.len()
-                    ),
-                );
-
-                checked
-            },
-        )
-        .inner;
-
-    let new_select_all_state = if select_all_resp.clicked() {
-        Some(*ui_state.get_select_all_state(&pack.identifier))
-    } else {
-        None
-    };
-
     ui.add_space(4.0);
-
-    let (members_visible, visibility_changed) = {
-        let vis_state = ui_state.get_members_visible_state(&pack.identifier);
-        let base_label = if *vis_state {
-            tr!(
-                loc,
-                "Hide Accounts",
-                "Button to hide the list of accounts inside a follow pack"
-            )
-            .to_owned()
-        } else {
-            tr!(
-                loc,
-                "Show Accounts",
-                "Button to show the list of accounts inside a follow pack"
-            )
-            .to_owned()
-        };
-
-        let button_label = format!("{base_label} ({})", pack.pks.len());
-        let tooltip = tr!(
-            loc,
-            "Toggle whether the individual accounts for this follow pack are visible",
-            "Tooltip describing the show or hide accounts button on follow packs"
-        );
-        let visibility_changed = ui.button(button_label).on_hover_text(tooltip).clicked();
-        if visibility_changed {
-            *vis_state = !*vis_state;
-        }
-
-        (*vis_state, visibility_changed)
-    };
-
-    if let Some(use_state) = new_select_all_state {
-        ui_state.apply_select_all_to_pack(&pack.identifier, &pack.pks, use_state);
-    }
 
     let mut action = None;
 
-    if members_visible {
-        let txn = Transaction::new(ndb).expect("txn");
-
-        for pk in &pack.pks {
-            let m_profile = ndb.get_profile_by_pubkey(&txn, pk.bytes()).ok();
-
-            let cur_state = ui_state.get_pk_selected_state(&pack.identifier, pk);
-
-            ui.separator();
-            if render_profile_item(ui, images, jobs, m_profile.as_ref(), cur_state) {
-                action = Some(Nip51SetWidgetAction::ViewProfile(*pk));
-            }
-        }
+    if let Some(title) = &pack.title {
+        ui.add(egui::Label::new(egui::RichText::new(title).size(
+            get_font_size(ui.ctx(), &notedeck::NotedeckTextStyle::Heading),
+        )));
     }
 
+    if let Some(desc) = &pack.description {
+        ui.add(egui::Label::new(
+            egui::RichText::new(desc)
+                .size(get_font_size(
+                    ui.ctx(),
+                    &notedeck::NotedeckTextStyle::Heading3,
+                ))
+                .color(ui.visuals().weak_text_color()),
+        ));
+    }
+
+    let pack_len = pack.pks.len();
+    let default_open = pack_len < 6;
+
+    let r = egui::CollapsingHeader::new(format!("{} people", pack_len))
+        .default_open(default_open)
+        .show(ui, |ui| {
+            select_all_ui(pack, ui_state, loc, ui);
+
+            let txn = Transaction::new(ndb).expect("txn");
+
+            for pk in &pack.pks {
+                let m_profile = ndb.get_profile_by_pubkey(&txn, pk.bytes()).ok();
+
+                let cur_state = ui_state.get_pk_selected_state(&pack.identifier, pk);
+
+                crate::hline(ui);
+
+                if render_profile_item(ui, images, jobs, m_profile.as_ref(), cur_state) {
+                    action = Some(Nip51SetWidgetAction::ViewProfile(*pk));
+                }
+            }
+        });
+
+    let visibility_changed = r.header_response.clicked();
     RenderPackResponse {
         action,
         visibility_changed,
@@ -432,7 +404,6 @@ pub struct Nip51SetUiCache {
 struct Nip51SetUiState {
     select_all: bool,
     select_pk: HashMap<Pubkey, bool>,
-    show_members: bool,
 }
 
 impl Nip51SetUiCache {
@@ -462,10 +433,6 @@ impl Nip51SetUiCache {
 
     pub fn get_select_all_state(&mut self, identifier: &str) -> &mut bool {
         &mut self.entry_for_pack(identifier).select_all
-    }
-
-    pub fn get_members_visible_state(&mut self, identifier: &str) -> &mut bool {
-        &mut self.entry_for_pack(identifier).show_members
     }
 
     pub fn apply_select_all_to_pack(&mut self, identifier: &str, pks: &[Pubkey], value: bool) {
