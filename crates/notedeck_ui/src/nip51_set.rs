@@ -453,6 +453,8 @@ impl Nip51SetUiCache {
         &mut self.entry_for_pack(identifier).select_all
     }
 
+    /// Applies a selection state to all profiles in a pack.  Updates both the pack's select_all
+    /// flag and individual profile selection states.
     pub fn apply_select_all_to_pack(&mut self, identifier: &str, pks: &[Pubkey], value: bool) {
         let pack_state = self.entry_for_pack(identifier);
         pack_state.select_all = value;
