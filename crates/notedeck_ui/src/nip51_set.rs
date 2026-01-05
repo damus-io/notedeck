@@ -261,7 +261,7 @@ fn render_pack(
 
                 crate::hline(ui);
 
-                if render_profile_item(ui, images, jobs, m_profile.as_ref(), cur_state) {
+                if render_profile_item(ui, images, jobs, m_profile.as_ref(), cur_state).clicked() {
                     action = Some(Nip51SetWidgetAction::ViewProfile(*pk));
                 }
             }
@@ -282,7 +282,7 @@ fn render_profile_item(
     jobs: &MediaJobSender,
     profile: Option<&ProfileRecord>,
     checked: &mut bool,
-) -> bool {
+) -> egui::Response {
     let (card_rect, card_resp) =
         ui.allocate_exact_size(vec2(ui.available_width(), PFP_SIZE), egui::Sense::click());
 
@@ -309,15 +309,16 @@ fn render_profile_item(
     let (pfp_rect, body_rect) =
         remaining_rect.split_left_right_at_x(remaining_rect.left() + PFP_SIZE);
 
-    let _ = ui.allocate_new_ui(UiBuilder::new().max_rect(pfp_rect), |ui| {
-        let pfp_resp = ui.add(
-            &mut ProfilePic::new(images, jobs, get_profile_url(profile))
-                .sense(Sense::click())
-                .size(PFP_SIZE),
-        );
+    let pfp_response = ui
+        .allocate_new_ui(UiBuilder::new().max_rect(pfp_rect), |ui| {
+            ui.add(
+                &mut ProfilePic::new(images, jobs, get_profile_url(profile))
+                    .sense(Sense::click())
+                    .size(PFP_SIZE),
+            )
+        })
+        .inner;
 
-        clicked_response = clicked_response.union(pfp_resp);
-    });
     ui.advance_cursor_after_rect(pfp_rect);
 
     let (_, body_rect) = body_rect.split_left_right_at_x(body_rect.left() + 8.0);
@@ -364,6 +365,7 @@ fn render_profile_item(
         }
     });
     ui.advance_cursor_after_rect(name_rect);
+
     clicked_response = clicked_response.union(resp.response);
 
     let resp = ui.allocate_new_ui(UiBuilder::new().max_rect(description_rect), |ui| 's: {
@@ -394,7 +396,11 @@ fn render_profile_item(
 
     clicked_response = clicked_response.union(resp.response);
 
-    clicked_response.clicked()
+    if clicked_response.clicked() {
+        *checked = !*checked;
+    }
+
+    pfp_response
 }
 
 #[derive(Default)]
