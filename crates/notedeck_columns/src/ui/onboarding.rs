@@ -63,6 +63,7 @@ impl<'a> FollowPackOnboardingView<'a> {
         let max_height = ui.available_height() - 48.0;
 
         let mut action = None;
+        let mut should_reset_list = false;
         let scroll_out = ScrollArea::vertical()
             .id_salt(Self::scroll_id())
             .max_height(max_height)
@@ -83,12 +84,18 @@ impl<'a> FollowPackOnboardingView<'a> {
                             .with_flags(Nip51SetWidgetFlags::TRUST_IMAGES)
                             .render_at_index(ui, index);
 
+                            notedeck_ui::hline(ui);
+
                             if let Some(cur_action) = resp.action {
                                 match cur_action {
                                     Nip51SetWidgetAction::ViewProfile(pubkey) => {
                                         action = Some(OnboardingResponse::ViewProfile(pubkey));
                                     }
                                 }
+                            }
+
+                            if resp.visibility_changed {
+                                should_reset_list = true;
                             }
 
                             if resp.rendered {
@@ -100,6 +107,10 @@ impl<'a> FollowPackOnboardingView<'a> {
                     );
                 })
             });
+
+        if should_reset_list {
+            self.onboarding.list.borrow_mut().reset();
+        }
 
         ui.with_layout(Layout::top_down(egui::Align::Center), |ui| {
             ui.add_space(4.0);
