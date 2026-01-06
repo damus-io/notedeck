@@ -470,6 +470,18 @@ pub fn try_process_events_core(
         receive(app_ctx, ev);
     }
 
+    // Check for grace period IDs that are ready to send
+    if app_ctx.unknown_ids.has_grace_period_ids() {
+        crate::unknowns::send_grace_period_ids(app_ctx.unknown_ids, app_ctx.pool);
+    }
+
+    // Check for hint-routed IDs that timed out and need broadcast retry
+    if app_ctx.unknown_ids.has_pending_hints() {
+        if let Ok(txn) = Transaction::new(app_ctx.ndb) {
+            app_ctx.unknown_ids.check_hint_timeouts(app_ctx.ndb, &txn);
+        }
+    }
+
     if app_ctx.unknown_ids.ready_to_send() {
         unknown_id_send(app_ctx.unknown_ids, app_ctx.pool);
     }
