@@ -96,7 +96,7 @@ impl ProfileAction {
 
                         let missing_column = {
                             let deck_columns = app.columns(accounts).columns();
-                            let router_head = &[timeline_route.clone()];
+                            let router_head = std::slice::from_ref(&timeline_route);
                             !deck_columns
                                 .iter()
                                 .any(|column| column.router.routes().starts_with(router_head))
