@@ -54,19 +54,17 @@ impl<'a> ConversationUi<'a> {
         let mut action = None;
         Frame::new().fill(ui.visuals().panel_fill).show(ui, |ui| {
             ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
-                let focusing_composer = ui
-                    .allocate_ui(vec2(ui.available_width(), 64.0), |ui| {
-                        let comp_resp =
-                            conversation_composer(ui, self.state, self.conversation.id, self.i18n);
-                        if action.is_none() {
-                            action = comp_resp.action;
-                        }
-                        comp_resp.composer_has_focus
-                    })
-                    .inner;
+                ui.allocate_ui(vec2(ui.available_width(), 64.0), |ui| {
+                    let comp_resp =
+                        conversation_composer(ui, self.state, self.conversation.id, self.i18n);
+                    if action.is_none() {
+                        action = comp_resp.action;
+                    }
+                    comp_resp.composer_has_focus
+                });
                 ui.with_layout(Layout::top_down(Align::Min), |ui| {
                     ScrollArea::vertical()
-                        .stick_to_bottom(focusing_composer)
+                        .stick_to_bottom(true)
                         .id_salt(ui.id().with(self.conversation.id))
                         .show(ui, |ui| {
                             conversation_history(
