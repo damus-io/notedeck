@@ -1793,6 +1793,7 @@ dependencies = [
  "mio",
  "nostr 0.37.0",
  "nostrdb",
+ "profiling",
  "serde",
  "serde_derive",
  "serde_json",
