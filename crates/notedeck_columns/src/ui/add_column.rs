@@ -55,6 +55,7 @@ pub enum AlgoOption {
 #[derive(Clone, Debug)]
 enum AddColumnOption {
     Universe,
+    Publications,
     UndecidedNotification,
     ExternalNotification,
     Algo(AlgoOption),
@@ -146,6 +147,9 @@ impl AddColumnOption {
         match self {
             AddColumnOption::Algo(algo_option) => AddColumnResponse::Algo(algo_option),
             AddColumnOption::Universe => AddColumnResponse::Timeline(TimelineKind::Universe),
+            AddColumnOption::Publications => {
+                AddColumnResponse::Timeline(TimelineKind::Publications)
+            }
             AddColumnOption::Notification(pubkey) => AddColumnResponse::Timeline(
                 TimelineKind::Notifications(*pubkey.as_pubkey(&cur_account.key.pubkey)),
             ),
@@ -509,6 +513,16 @@ impl<'a> AddColumnView<'a> {
             ),
             icon: app_images::universe_image(),
             option: AddColumnOption::Universe,
+        });
+        vec.push(ColumnOptionData {
+            title: tr!(self.i18n, "Publications", "Title for publications column"),
+            description: tr!(
+                self.i18n,
+                "Browse curated publications and knowledge bases",
+                "Description for publications column"
+            ),
+            icon: app_images::columns_image(),
+            option: AddColumnOption::Publications,
         });
         vec.push(ColumnOptionData {
             title: tr!(self.i18n, "Hashtags", "Title for hashtags column"),
