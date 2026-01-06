@@ -1,6 +1,6 @@
 use std::{error::Error, fmt};
 
-use http_body_util::{BodyExt, Empty};
+use http_body_util::{BodyExt, Empty, Limited};
 use hyper::{
     body::Bytes,
     header::{self},
@@ -16,15 +16,9 @@ pub async fn http_req(url: &str) -> Result<HyperHttpResponse, HyperHttpError> {
     let mut current_uri: Uri = url.parse().map_err(|_| HyperHttpError::Uri)?;
 
     let https = {
-        let builder = match HttpsConnectorBuilder::new().with_native_roots() {
-            Ok(builder) => builder,
-            Err(err) => {
-                tracing::warn!(
-                    "Failed to load native root certificates ({err}). Falling back to WebPKI store."
-                );
-                HttpsConnectorBuilder::new().with_webpki_roots()
-            }
-        };
+        let builder = HttpsConnectorBuilder::new()
+            .with_native_roots()
+            .expect("Failed to load native root certificates");
 
         builder.https_or_http().enable_http1().build()
     };
@@ -47,7 +41,9 @@ pub async fn http_req(url: &str) -> Result<HyperHttpResponse, HyperHttpError> {
         let res = client
             .request(req)
             .await
-            .map_err(|e| HyperHttpError::Hyper(Box::new(e)))?;
+            .map_err(|e: hyper_util::client::legacy::Error| {
+                HyperHttpError::Hyper(Box::new(e))
+            })?;
 
         if res.status().is_redirection() {
             if redirects >= MAX_REDIRECTS {
@@ -65,10 +61,8 @@ pub async fn http_req(url: &str) -> Result<HyperHttpResponse, HyperHttpError> {
                 .map_err(|_| HyperHttpError::InvalidRedirectLocation)?
                 .to_string();
 
-            res.into_body()
-                .collect()
-                .await
-                .map_err(|e| HyperHttpError::Hyper(Box::new(e)))?;
+            // Consume the redirect body
+            let _ = BodyExt::collect(res.into_body()).await;
 
             current_uri = resolve_redirect(&current_uri, &location)?;
             redirects += 1;
@@ -81,14 +75,14 @@ pub async fn http_req(url: &str) -> Result<HyperHttpResponse, HyperHttpError> {
     let content_type = res
         .headers()
         .get(hyper::header::CONTENT_TYPE)
-        .and_then(|t| t.to_str().ok())
-        .map(|s| s.to_string());
+        .and_then(|t: &hyper::header::HeaderValue| t.to_str().ok())
+        .map(|s: &str| s.to_string());
 
     let content_length = res
         .headers()
         .get(header::CONTENT_LENGTH)
-        .and_then(|s| s.to_str().ok())
-        .and_then(|s| s.parse::<usize>().ok());
+        .and_then(|s: &hyper::header::HeaderValue| s.to_str().ok())
+        .and_then(|s: &str| s.parse::<usize>().ok());
 
     if let Some(len) = content_length {
         if len > MAX_BODY_BYTES {
@@ -96,21 +90,12 @@ pub async fn http_req(url: &str) -> Result<HyperHttpResponse, HyperHttpError> {
         }
     }
 
-    let mut body = res.into_body();
-    let mut bytes = Vec::with_capacity(content_length.unwrap_or(0).min(MAX_BODY_BYTES));
-
-    while let Some(frame_result) = body.frame().await {
-        let frame = frame_result.map_err(|e| HyperHttpError::Hyper(Box::new(e)))?;
-        let Ok(chunk) = frame.into_data() else {
-            continue;
-        };
-
-        if bytes.len() + chunk.len() > MAX_BODY_BYTES {
-            return Err(HyperHttpError::BodyTooLarge);
-        }
-
-        bytes.extend_from_slice(&chunk);
-    }
+    // Limit body size and collect all bytes
+    let limited_body = Limited::new(res.into_body(), MAX_BODY_BYTES);
+    let collected = BodyExt::collect(limited_body)
+        .await
+        .map_err(|e| HyperHttpError::Hyper(e))?;
+    let bytes = collected.to_bytes().to_vec();
 
     Ok(HyperHttpResponse {
         content_type,
