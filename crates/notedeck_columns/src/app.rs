@@ -762,6 +762,7 @@ fn should_show_compose_button(decks: &DecksCache, accounts: &Accounts) -> bool {
                 TimelineKind::Universe => true,
                 TimelineKind::Generic(_) => true,
                 TimelineKind::Hashtag(_) => true,
+                TimelineKind::Publications => true,
 
                 // no!
                 TimelineKind::Search(_) => false,

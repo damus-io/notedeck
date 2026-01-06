@@ -215,6 +215,9 @@ pub enum TimelineKind {
     Generic(u64),
 
     Hashtag(Vec<String>),
+
+    /// NKBIP-01 Publications feed (kind 30040)
+    Publications,
 }
 
 const NOTIFS_TOKEN_DEPRECATED: &str = "notifs";
@@ -290,6 +293,11 @@ impl Display for TimelineKind {
                 "{}",
                 tr!("Universe", "Timeline kind label for universe feed")
             ),
+            TimelineKind::Publications => write!(
+                f,
+                "{}",
+                tr!("Publications", "Timeline kind label for publications feed")
+            ),
             TimelineKind::Hashtag(_) => write!(
                 f,
                 "{}",
@@ -316,6 +324,7 @@ impl TimelineKind {
             TimelineKind::Generic(_) => None,
             TimelineKind::Hashtag(_ht) => None,
             TimelineKind::Search(query) => query.author(),
+            TimelineKind::Publications => None,
         }
     }
 
@@ -331,6 +340,7 @@ impl TimelineKind {
             TimelineKind::Generic(_) => true,
             TimelineKind::Hashtag(_ht) => true,
             TimelineKind::Search(_q) => true,
+            TimelineKind::Publications => true,
         }
     }
 
@@ -354,6 +364,9 @@ impl TimelineKind {
             }
             TimelineKind::Universe => {
                 writer.write_token("universe");
+            }
+            TimelineKind::Publications => {
+                writer.write_token("publications");
             }
             TimelineKind::Generic(_usize) => {
                 // TODO: lookup filter and then serialize
@@ -407,6 +420,10 @@ impl TimelineKind {
                 |p| {
                     p.parse_token("universe")?;
                     Ok(TimelineKind::Universe)
+                },
+                |p| {
+                    p.parse_token("publications")?;
+                    Ok(TimelineKind::Publications)
                 },
                 |p| {
                     p.parse_token("generic")?;
@@ -503,6 +520,8 @@ impl TimelineKind {
             }
 
             TimelineKind::Profile(pk) => FilterState::ready_hybrid(profile_filter(pk.bytes())),
+
+            TimelineKind::Publications => FilterState::ready(publications_filter()),
         }
     }
 
@@ -521,6 +540,12 @@ impl TimelineKind {
                 TimelineKind::Universe,
                 FilterState::ready(universe_filter()),
                 TimelineTab::full_tabs(),
+            )),
+
+            TimelineKind::Publications => Some(Timeline::new(
+                TimelineKind::Publications,
+                FilterState::ready(publications_filter()),
+                TimelineTab::no_replies(),
             )),
 
             TimelineKind::Generic(_filter_id) => {
@@ -617,6 +642,9 @@ impl TimelineKind {
             TimelineKind::Profile(_pubkey_source) => ColumnTitle::needs_db(self),
             TimelineKind::Universe => {
                 ColumnTitle::formatted(tr!(i18n, "Universe", "Column title for universe feed"))
+            }
+            TimelineKind::Publications => {
+                ColumnTitle::formatted(tr!(i18n, "Publications", "Column title for publications feed"))
             }
             TimelineKind::Generic(_) => {
                 ColumnTitle::formatted(tr!(i18n, "Custom", "Column title for custom timelines"))
@@ -770,4 +798,9 @@ fn search_filter(s: &SearchQuery) -> Vec<Filter> {
 
 fn universe_filter() -> Vec<Filter> {
     vec![Filter::new().kinds([1]).limit(default_limit()).build()]
+}
+
+/// Filter for NKBIP-01 publication indices (kind 30040)
+fn publications_filter() -> Vec<Filter> {
+    vec![Filter::new().kinds([30040]).limit(default_limit()).build()]
 }

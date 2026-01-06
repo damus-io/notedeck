@@ -481,6 +481,7 @@ impl<'a> NavTitle<'a> {
                 | TimelineKind::Algo(_)
                 | TimelineKind::Notifications(_)
                 | TimelineKind::Generic(_)
+                | TimelineKind::Publications
                 | TimelineKind::List(_) => Some(self.timeline_pfp(ui, kind, pfp_size)),
             },
             Route::Reply(_) => None,
